@@ -1,0 +1,11 @@
+1120:         return;
+1121:     }
+1122: // 说明
+1123:         // Trigger regeneration
+1124:         startRegenerate(index);
+1125:     });
+1126: };
+1127: 
+1128: async function startRegenerate(index) {
+1129:     if (isGenerating) return;
+1130:     

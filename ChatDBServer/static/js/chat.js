@@ -174,7 +174,7 @@ function initUI() {
     // New Chat
     if(els.newChatBtn) els.newChatBtn.addEventListener('click', () => createNewConversation());
 
-    // Token Modal
+// 说明
     if(els.tokenDisplay) els.tokenDisplay.addEventListener('click', openTokenModal);
     if(els.closeModalBtn) els.closeModalBtn.addEventListener('click', () => els.tokenModal.classList.remove('active'));
     if(els.tokenModal) els.tokenModal.addEventListener('click', (e) => {
@@ -187,7 +187,7 @@ function initUI() {
             e.stopPropagation();
             els.userMenu.classList.toggle('active');
             if (els.userMenu.classList.contains('active')) {
-                checkUserRole(); // ???????????
+                checkUserRole(); // 说明
             }
         });
     }
@@ -195,7 +195,7 @@ function initUI() {
     // Prevent menu from closing when clicking inside it
     if (els.userMenu) {
         els.userMenu.addEventListener('click', (e) => {
-            // e.stopPropagation(); // ???????? document.click ???????????
+// 说明
         });
         
         // 点击菜单项后臊关闭
@@ -230,8 +230,8 @@ function initUI() {
     if (adminBtn) {
         adminBtn.addEventListener('click', (e) => {
             e.preventDefault();
-            e.stopPropagation(); // 阻止冒泡
-            if (els.userMenu) els.userMenu.classList.remove('active'); // ???????
+// 说明
+            if (els.userMenu) els.userMenu.classList.remove('active'); // 说明
             openAdminDashboard();
         });
     }
@@ -282,7 +282,7 @@ function initUI() {
         });
     }
     
-    // AddUser Modal ?????????
+// 说明
     const addUserModal = document.getElementById('addUserModal');
     if (addUserModal) {
         addUserModal.addEventListener('click', (e) => {
@@ -294,7 +294,7 @@ function initUI() {
         });
     }
     
-    // Token Modal ??????????
+// 说明
     const closeModalBtn = document.getElementById('closeModalBtn');
     if (closeModalBtn) {
         closeModalBtn.addEventListener('click', () => {
@@ -367,7 +367,7 @@ async function loadConversations() {
         const res = await fetch('/api/conversations');
         const data = await res.json();
         // Assuming data is array or object with list
-        // API usually returns dict keys as IDs? Or list?
+// 说明
         // Let's assume list for now or adapt.
         const list = Array.isArray(data) ? data : (data.conversations || []);
         renderConversationList(list);
@@ -380,7 +380,7 @@ function renderConversationList(conversations) {
     if(!els.conversationList) return;
     els.conversationList.innerHTML = '';
     
-    // Sort logic if needed? 
+// 说明
     // Assuming backend returns sorted or we just list them.
     
     conversations.forEach(c => {
@@ -498,7 +498,7 @@ async function sendMessage() {
     const text = els.messageInput.value.trim();
     if (!text && !isGenerating && uploadedFileIds.length === 0) return;
     
-    // ????????????????????
+// 说明
     if (isGenerating) {
         stopGeneration();
         return;
@@ -583,7 +583,7 @@ async function sendMessage() {
         while (true) {
             const { done, value } = await reader.read();
             if (done) {
-                // 流结束后，自动折叠所有栏（除非用户手动操作过?
+// 说明
                 const thinkingBlocks = aiMsgDiv.querySelectorAll('.thinking-block');
                 thinkingBlocks.forEach(thinkingBlock => {
                     if (thinkingBlock.dataset.userToggled !== 'true') {
@@ -632,10 +632,10 @@ async function sendMessage() {
                             const msgContentContainer = aiMsgDiv.querySelector('.message-content');
                             if (!currentContentSpan || msgContentContainer.lastElementChild !== currentContentSpan) {
                                 currentContentSpan = createContentSpan(aiMsgDiv);
-                                currentRoundContent = chunk.content; // ? Round ??
+// 说明
                             }
                             
-                            // ?? Round ???
+// 说明
                             // 注意：为了保持Markdown上下文一致，我们通常倾向于在同一个Block显示
                             // 但用户求在工具链下方显示，以必须开吖Block
                             currentContentSpan.innerHTML = marked.parse(currentRoundContent);
@@ -644,21 +644,21 @@ async function sendMessage() {
                         } 
                         else if (chunk.type === 'reasoning_content') { 
                            const msgContentContainer = aiMsgDiv.querySelector('.message-content');
-                           // ????????????????????????????
-                           // 这样如果丗插入了工具调甼lastElementChild 就不再是当前思，从而触发新?
+// 说明
+// 说明
                            let thinkingBlock = msgContentContainer.lastElementChild;
                            
                            if(!thinkingBlock || !thinkingBlock.classList.contains('thinking-block')) {
                                thinkingBlock = document.createElement('div');
                                thinkingBlock.className = 'thinking-block'; // 流式输出时默认展
-                               thinkingBlock.dataset.userToggled = 'false'; // ??????????
+// 说明
                                thinkingBlock.innerHTML = `
                                 <div class="thinking-header">
                                     <svg class="thinking-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                         <circle cx="12" cy="12" r="10"></circle>
                                         <path d="M12 6v6l4 2"></path>
                                     </svg>
-                                    <span class="thinking-title">????</span>
+// 说明
                                     <svg class="chevron-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                         <polyline points="6 9 12 15 18 9"></polyline>
                                     </svg>
@@ -666,14 +666,14 @@ async function sendMessage() {
                                 <div class="thinking-content"></div>
                                `;
                                
-                               // ?????????????????
+// 说明
                                const header = thinkingBlock.querySelector('.thinking-header');
                                header.addEventListener('click', function() {
                                    thinkingBlock.classList.toggle('collapsed');
-                                   thinkingBlock.dataset.userToggled = 'true'; // ?????????
+// 说明
                                });
                                
-                               // 始终追加到末尾以保持时间线?
+// 说明
                                msgContentContainer.appendChild(thinkingBlock);
                            }
                            
@@ -840,7 +840,7 @@ function appendToolEvent(aiMsgDiv, name, details, isFunction = false) {
         <div class="tool-output" style="display:none;"></div>
     `;
     
-    // If content exists, insert before it? Usually tools come before content or interleaved.
+// 说明
     // If we are strictly streaming, we append to parent. 
     // But if 'content' already started, appending to parent puts it AFTER content, which is fine for interleaved.
     parent.appendChild(div);
@@ -938,7 +938,7 @@ function appendMessage(msg, index) {
                         <circle cx="12" cy="12" r="10"></circle>
                         <path d="M12 6v6l4 2"></path>
                     </svg>
-                    <span class="thinking-title">????</span>
+// 说明
                     <svg class="chevron-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <polyline points="6 9 12 15 18 9"></polyline>
                     </svg>
@@ -956,7 +956,7 @@ function appendMessage(msg, index) {
             content.appendChild(thinkingBlock);
         }
         
-        // ?????????Metadata???Steps?
+// 说明
         if (msg.metadata && msg.metadata.process_steps) {
             msg.metadata.process_steps.forEach(step => {
                 if (step.type === 'web_search') {
@@ -1030,7 +1030,7 @@ function appendMessage(msg, index) {
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
                     </button>
                     <span>${currentVerNum} / ${totalVersions}</span>
-                    <button class="btn-ver" disabled title="已经昜新版?>
+// 说明
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"></polyline></svg>
                     </button>
                 </div>
@@ -1086,7 +1086,7 @@ function renderMessages(messages, noScroll) {
 // Global modal functions
 window.confirmDelete = function(index) {
     if (!currentConversationId) {
-        alert("姝ゅ璇濆皻鏈繚瀛橈紝鏃犳硶删除");
+// 说明
         return;
     }
     showConfirm("删除确认", "确定要删除这条消息及其后的所有内容吗？此操作不可撤销。", "danger", async () => {
@@ -1116,10 +1116,10 @@ window.confirmDelete = function(index) {
 
 window.confirmRegenerate = function(index) {
     if (!currentConversationId) {
-        alert("此话尚朿存，无法重新回答");
+        alert("此对话尚未保存，无法重新回答");
         return;
     }
-    showConfirm("????", "???????????????????????????", "primary", async () => {
+    showConfirm("重新回答", "我们将保留当前回答并生成一个新版本，确定要重新生成吗？", "primary", async () => {
         // Trigger regeneration
         startRegenerate(index);
     });
@@ -1251,7 +1251,7 @@ function updateMessageDivThinking(index, delta) {
                     <circle cx="12" cy="12" r="10"></circle>
                     <path d="M12 6v6l4 2"></path>
                 </svg>
-                <span class="thinking-title">????</span>
+// 说明
                 <svg class="chevron-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <polyline points="6 9 12 15 18 9"></polyline>
                 </svg>
@@ -1299,10 +1299,10 @@ window.showConfirm = function(title, message, type, onOk) {
     
     // Explicitly set text and style to ensure visibility
     if(type === 'danger') {
-        newOkBtn.textContent = "纭删除";
+// 说明
         newOkBtn.className = "btn-confirm btn-confirm-del";
     } else {
-        newOkBtn.textContent = "纭畾閲嶆柊生成";
+// 说明
         newOkBtn.className = "btn-confirm";
     }
     
@@ -1429,7 +1429,7 @@ function renderKnowledgeList(container, items, type) {
              div.onclick = () => viewKnowledge(title);
         }
         else {
-            div.onclick = () => {} // Maybe view short term too?
+            div.onclick = () => {} // 说明
         }
         container.appendChild(div);
     });
@@ -1741,11 +1741,11 @@ async function deleteKnowledge(title) {
         closeConfirmModal();
         
         if(data.success) {
-            showToast('ɾɹ');
+// 说明
             closeKnowledgeView();
             loadKnowledge(); 
         } else {
-            showToast('ɾʧ: ' + (data.message || data.error));
+// 说明
         }
     } catch(e) {
         closeConfirmModal();
@@ -2066,7 +2066,7 @@ function updateFilePreview() {
         
         badge.innerHTML = `
             <span>${file.name}</span>
-            <span style="cursor:pointer; font-weight:bold; color:#666;" onclick="removeUploadedFile(${index})">×</span>
+            <span style="cursor:pointer; font-weight:bold; color:#666;" onclick="removeUploadedFile(${index})">&times;</span>
         `;
         els.filePreviewArea.appendChild(badge);
     });
@@ -2087,7 +2087,7 @@ async function checkUserRole() {
             currentUsername = data.username;
             currentUserRole = data.role;
             
-            // 设置头像首字?
+// 说明
             const avatar = document.getElementById('sidebar-avatar');
             if (avatar && data.username) {
                 avatar.textContent = data.username.charAt(0).toUpperCase();
@@ -2193,7 +2193,7 @@ window.openUserModelPerm = async function(username) {
     
     const listContainer = document.getElementById('modelPermList');
     if(listContainer) {
-        listContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">???????...</div>';
+// 说明
     }
     
     try {
@@ -2216,7 +2216,7 @@ window.openUserModelPerm = async function(username) {
             listContainer.innerHTML = `<div style="padding: 20px; color: #ef4444;">${data.message || '获取失败'}</div>`;
         }
     } catch (err) {
-        if (listContainer) listContainer.innerHTML = '<div style="padding: 20px; color: #ef4444;">ʧ</div>';
+// 说明
     }
 };
 
@@ -2242,7 +2242,7 @@ window.saveUserModelPermissions = async function() {
         });
         const data = await res.json();
         if (data.success) {
-            showToast('Ȩ޸³ɹ');
+// 说明
             closeModelPermModal();
             // 如果俔的是当前登录用户，则刷新页面
             if (currentTargetPermUser === currentUsername) {
@@ -2324,7 +2324,7 @@ async function loadAdminStats() {
     }
 }
 
-// ?????
+// 说明
 function switchAdminTab(tabName) {
     // Hide all tabs
     document.querySelectorAll('#adminModal .admin-tab-content').forEach(tab => {
@@ -2356,7 +2356,7 @@ function openAddUserModal() {
     const modal = document.getElementById('addUserModal');
     if (modal) {
         modal.classList.add('active');
-        // 禁底层管理的点?
+// 说明
         const adminModal = document.getElementById('adminModal');
         if (adminModal) adminModal.style.pointerEvents = 'none';
     }
@@ -2366,7 +2366,7 @@ function closeAddUserModal() {
     const modal = document.getElementById('addUserModal');
     if (modal) {
         modal.classList.remove('active');
-        // 恢底层管理的点?
+// 说明
         const adminModal = document.getElementById('adminModal');
         if (adminModal) adminModal.style.pointerEvents = 'auto';
     }
@@ -2883,7 +2883,7 @@ function startVectorProgress(total) {
     if (!wrap || !bar || !text) return;
     wrap.style.display = 'block';
     bar.style.width = '0%';
-        text.textContent = `?????... 0/${total || 0}`;
+// 说明
     if (vectorProgressTimer) clearInterval(vectorProgressTimer);
     vectorProgressTimer = null;
     updateVectorProgress(0, total || 0);
@@ -2895,12 +2895,12 @@ function updateVectorProgress(done, total) {
     if (!bar || !text) return;
     if (!total) {
         bar.style.width = '0%';
-        text.textContent = '???...';
+// 说明
         return;
     }
     const pct = Math.min(100, Math.round((done / total) * 100));
     bar.style.width = `${pct}%`;
-    text.textContent = `???... ${done}/${total}`;
+// 说明
 }
 
 function stopVectorProgress(message, isError = false) {

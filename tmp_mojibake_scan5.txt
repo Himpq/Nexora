@@ -1,0 +1,1 @@
+2069:             <span style="cursor:pointer; font-weight:bold; color:#666;" onclick="removeUploadedFile(${index})">×</span>
