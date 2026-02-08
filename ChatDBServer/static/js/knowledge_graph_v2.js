@@ -516,7 +516,7 @@ class GraphEditor {
            // Looping back
            const stub = 20;
            // Out -> Down/Up -> Back -> In
-           // M x1 y1 -> H x1+stub -> V midY -> H x2-stub -> V y2 -> H x2 ???
+           // M x1 y1 -> H x1+stub -> V midY -> H x2-stub -> V y2 -> H x2 
            // Simple loop-back style:
            // M x1 y1 -> H x1+20 -> V (y1+y2)/2 or y2+40? -> H x2-20 -> V y2 -> H x2
            

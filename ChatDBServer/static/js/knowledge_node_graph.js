@@ -60,12 +60,16 @@ class NodeGraph {
         this.ghost = document.createElement('div');
         this.ghost.className = 'knowledge-item ghost';
         this.ghost.style.position = 'fixed';
+        this.ghost.style.top = '0';
+        this.ghost.style.left = '0';
+        this.ghost.style.margin = '0';
         this.ghost.style.pointerEvents = 'none';
         this.ghost.style.display = 'none';
         this.ghost.style.zIndex = '9999';
-        this.ghost.style.opacity = '0.8';
-        this.ghost.style.boxShadow = '0 8px 16px rgba(0,0,0,0.2)';
-        this.container.appendChild(this.ghost);
+        this.ghost.style.opacity = '0.9';
+        this.ghost.style.boxShadow = '0 10px 25px rgba(0,0,0,0.2)';
+        this.ghost.style.transformOrigin = 'center center';
+        document.body.appendChild(this.ghost);
 
         this.setupEventListeners();
     }
@@ -197,15 +201,29 @@ class NodeGraph {
         };
 
         window.addEventListener('mousemove', (e) => {
+            this.dragState.lastEvent = e;
             if (this.requestFrame) return;
             this.requestFrame = requestAnimationFrame(() => {
-                this.handleMouseMove(e);
+                const lastEvent = this.dragState.lastEvent;
+                if (lastEvent) this.handleMouseMove(lastEvent);
                 this.requestFrame = null;
             });
         });
 
         window.addEventListener('mouseup', (e) => {
             this.handleMouseUp(e);
+        });
+
+        window.addEventListener('blur', () => {
+            this.cancelDrag();
+        });
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) this.cancelDrag();
+        });
+
+        document.addEventListener('mouseleave', () => {
+            this.cancelDrag();
         });
 
         this.container.onwheel = (e) => {
@@ -247,20 +265,16 @@ class NodeGraph {
             const gy = e.clientY - (this.dragState.offset?.y || 0);
             this.ghost.style.transform = `translate3d(${gx}px, ${gy}px, 0)`;
             
-            // Highlight target category using cached rects
-            const cx = e.clientX;
-            const cy = e.clientY;
-            
-            if (this.dragState.categoryRects) {
-                this.dragState.categoryRects.forEach(({el, rect}) => {
-                    // Check intersection
-                    if (cx >= rect.left && cx <= rect.right && cy >= rect.top && cy <= rect.bottom) {
-                        if (!el.classList.contains('drag-over')) el.classList.add('drag-over');
-                    } else {
-                        if (el.classList.contains('drag-over')) el.classList.remove('drag-over');
-                    }
-                });
-            }
+            // Highlight target category
+            const cats = document.querySelectorAll('.category-node');
+            cats.forEach(cat => {
+                const r = cat.getBoundingClientRect();
+                if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
+                    cat.classList.add('drag-over');
+                } else {
+                    cat.classList.remove('drag-over');
+                }
+            });
         } else if (this.dragState.isConnecting) {
             const contentRect = this.content.getBoundingClientRect();
             const mx = (e.clientX - contentRect.left) / this.transform.k;
@@ -279,14 +293,28 @@ class NodeGraph {
         } else if (this.dragState.isDraggingItem) {
             this.ghost.style.display = 'none';
             this.handleDropItem(e);
-            
-            // Cleanup highlights
-            if (this.dragState.categoryRects) {
-                this.dragState.categoryRects.forEach(({el}) => el.classList.remove('drag-over'));
-                this.dragState.categoryRects = null;
-            }
+            document.querySelectorAll('.category-node').forEach(c => c.classList.remove('drag-over'));
         } else if (this.dragState.isConnecting) {
             this.handleConnectionDrop(e);
+        }
+
+        this.dragState.isPanning = false;
+        this.dragState.isDraggingBox = false;
+        this.dragState.isDraggingItem = false;
+        this.dragState.isConnecting = false;
+        this.dragState.target = null;
+        this.dragState.tempEdge = null;
+        this.container.style.cursor = 'grab';
+    }
+
+    cancelDrag() {
+        if (!this.dragState.isPanning && !this.dragState.isDraggingBox && !this.dragState.isDraggingItem && !this.dragState.isConnecting) {
+            return;
+        }
+
+        if (this.dragState.isDraggingItem) {
+            this.ghost.style.display = 'none';
+            document.querySelectorAll('.category-node').forEach(c => c.classList.remove('drag-over'));
         }
 
         this.dragState.isPanning = false;
@@ -320,15 +348,12 @@ class NodeGraph {
             y: e.clientY - rect.top
         };
 
-        // Cache category bounding boxes to avoid layout thrashing during drag
-        this.dragState.categoryRects = Array.from(document.querySelectorAll('.category-node')).map(cat => ({
-            el: cat,
-            rect: cat.getBoundingClientRect()
-        }));
-
         this.dragState.moved = false;
         this.ghost.innerHTML = el.innerHTML;
         this.ghost.style.width = `${el.offsetWidth}px`;
+        this.ghost.style.height = `${el.offsetHeight}px`;
+        this.ghost.style.transition = 'none';
+        this.ghost.style.willChange = 'transform';
         // Clear old transform to prevent additive offsets
         this.ghost.style.transform = 'none'; 
     }
@@ -343,36 +368,81 @@ class NodeGraph {
     async handleDropItem(e) {
         const title = this.dragState.target.dataset.title;
         
-        let targetCat = null;
+        let targetCatName = null;
+        let targetCatEl = null;
         const cats = document.querySelectorAll('.category-node');
         cats.forEach(cat => {
             const r = cat.getBoundingClientRect();
             if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
-                targetCat = cat.dataset.name;
+                targetCatName = cat.dataset.name;
+                targetCatEl = cat;
             }
         });
 
-        if (targetCat && targetCat !== this.nodes[title].category) {
-            // Optimistic UI update
-            const oldCatName = this.nodes[title].category;
-            this.nodes[title].category = targetCat;
-            
-            try {
-                const res = await fetch('/api/knowledge/move', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ knowledge: title, category: targetCat })
-                });
-                const data = await res.json();
-                if (data.success) {
-                    if (window.loadData) window.loadData(true);
-                } else {
-                    this.nodes[title].category = oldCatName; // Rollback
-                    if (window.loadData) window.loadData(true);
-                }
-            } catch(e) {
-                this.nodes[title].category = oldCatName;
+        const oldCatName = this.nodes[title].category;
+        if (!targetCatName || targetCatName === oldCatName) return;
+
+        // Optimistic UI update
+        const oldParent = this.dragState.target.parentElement;
+        this.nodes[title].category = targetCatName;
+
+        if (targetCatEl) {
+            const targetContent = targetCatEl.querySelector('.category-content');
+            if (targetContent) targetContent.appendChild(this.dragState.target);
+        }
+
+        this.updateCategoryCount(oldCatName, -1);
+        this.updateCategoryCount(targetCatName, 1);
+        this.updateCategoryData(oldCatName, targetCatName, title);
+
+        try {
+            const res = await fetch('/api/knowledge/move', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ knowledge: title, category: targetCatName })
+            });
+            const data = await res.json();
+            if (data.success) {
                 if (window.loadData) window.loadData(true);
+            } else {
+                this.rollbackMove(title, oldCatName, oldParent, targetCatName);
+                if (window.loadData) window.loadData(true);
+            }
+        } catch(e) {
+            this.rollbackMove(title, oldCatName, oldParent, targetCatName);
+            if (window.loadData) window.loadData(true);
+        }
+    }
+
+    rollbackMove(title, oldCatName, oldParent, targetCatName) {
+        this.nodes[title].category = oldCatName;
+        if (oldParent) oldParent.appendChild(this.dragState.target);
+        this.updateCategoryCount(targetCatName, -1);
+        this.updateCategoryCount(oldCatName, 1);
+        this.updateCategoryData(targetCatName, oldCatName, title);
+    }
+
+    updateCategoryCount(catName, delta) {
+        const cats = document.querySelectorAll('.category-node');
+        let target = null;
+        cats.forEach(cat => {
+            if (cat.dataset.name === catName) target = cat;
+        });
+        if (!target) return;
+        const countEl = target.querySelector('.category-count');
+        if (!countEl) return;
+        const current = parseInt(countEl.textContent || '0', 10) || 0;
+        countEl.textContent = Math.max(0, current + delta);
+    }
+
+    updateCategoryData(fromCat, toCat, title) {
+        if (this.categories[fromCat]) {
+            const idx = this.categories[fromCat].knowledge_ids.indexOf(title);
+            if (idx >= 0) this.categories[fromCat].knowledge_ids.splice(idx, 1);
+        }
+        if (this.categories[toCat]) {
+            if (!this.categories[toCat].knowledge_ids.includes(title)) {
+                this.categories[toCat].knowledge_ids.push(title);
             }
         }
     }

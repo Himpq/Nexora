@@ -1,0 +1,131 @@
+2755:         return window.CSS.escape(value);
+2756:     }
+2757:     return String(value || '').replace(/"/g, '\\"');
+2758: }
+2759: 
+2760: async function bulkVectorizeAllBasis() {
+2761:     if (bulkVectorizeRunning) {
+2762:         showToast('姝ｅ湪鎵归噺鍚戦噺鍖栵紝璇风◢鍊?);
+2763:         return;
+2764:     }
+2765:     bulkVectorizeRunning = true;
+2766:     showToast('寮€始批量向量化');
+2767:     try {
+2768:         const metaRes = await fetch('/api/knowledge/list');
+2769:         const metaData = await metaRes.json();
+2770:         const basisMeta = metaData?.basis_knowledge || {};
+2771:         const titles = Object.keys(basisMeta);
+2772:         if (titles.length === 0) {
+2773:             showToast('没有叐量化的知识点');
+2774:             bulkVectorizeRunning = false;
+2775:             return;
+2776:         }
+2777:         for (const title of titles) {
+2778:             const meta = basisMeta[title] || {};
+2779:             const updatedAt = Number(meta.updated_at || 0);
+2780:             const vectorUpdatedAt = Number(meta.vector_updated_at || 0);
+2781:             if (updatedAt > 0 && vectorUpdatedAt >= updatedAt) {
+2782:                 const chunksRes = await fetch('/api/knowledge/vector/chunks', {
+2783:                     method: 'POST',
+2784:                     headers: { 'Content-Type': 'application/json' },
+2785:                     body: JSON.stringify({ title })
+2786:                 });
+2787:                 const chunksData = await chunksRes.json();
+2788:                 const chunkCount = (chunksData?.chunks || []).length;
+2789:                 if (chunkCount > 0) {
+2790:                     continue;
+2791:                 }
+2792:             }
+2793:             await vectorizeKnowledgeTitle(title);
+2794:         }
+2795:     } catch (e) {
+2796:         showToast('批量向量化失? ' + e.message);
+2797:     } finally {
+2798:         bulkVectorizeRunning = false;
+2799:         // Refresh knowledge list so stale icons are recalculated
+2800:         loadKnowledge(currentConversationId);
+2801:     }
+2802: }
+2803: 
+2804: async function vectorizeKnowledgeTitle(title) {
+2805:     try {
+2806:         setKnowledgeItemProgress(title, 1, true);
+2807:         const res = await fetch(`/api/knowledge/basis/${encodeURIComponent(title)}`);
+2808:         const data = await res.json();
+2809:         if (!data.success) {
+2810:             setKnowledgeItemProgress(title, 100, false);
+2811:             return;
+2812:         }
+2813:         const content = data.knowledge?.content || '';
+2814:         const cfgRes = await fetch('/api/knowledge/vector/config');
+2815:         const cfgData = await cfgRes.json();
+2816:         const chunkSize = cfgData.chunk_size || 800;
+2817:         const chunkOverlap = cfgData.chunk_overlap || 120;
+2818:         const chunks = splitTextForVector(content, chunkSize, chunkOverlap);
+2819:         if (chunks.length === 0) {
+2820:             setKnowledgeItemProgress(title, 100, false);
+2821:             return;
+2822:         }
+2823:         await fetch('/api/knowledge/vector/delete', {
+2824:             method: 'POST',
+2825:             headers: { 'Content-Type': 'application/json' },
+2826:             body: JSON.stringify({ title })
+2827:         });
+2828:         for (let i = 0; i < chunks.length; i++) {
+2829:             const chunkObj = chunks[i];
+2830:             const resChunk = await fetch('/api/knowledge/vectorize/chunk', {
+2831:                 method: 'POST',
+2832:                 headers: { 'Content-Type': 'application/json' },
+2833:                 body: JSON.stringify({
+2834:                     title,
+2835:                     text: chunkObj.text,
+2836:                     chunk_id: i,
+2837:                     chunk_total: chunks.length,
+2838:                     metadata: {
+2839:                         chunk_start: chunkObj.start,
+2840:                         chunk_end: chunkObj.end
+2841:                     }
+2842:                 })
+2843:             });
+2844:             const dataChunk = await resChunk.json();
+2845:             if (!dataChunk.success) {
+2846:                 setKnowledgeItemProgress(title, 100, false);
+2847:                 return;
+2848:             }
+2849:             const pct = Math.round(((i + 1) / chunks.length) * 100);
+2850:             setKnowledgeItemProgress(title, pct, true);
+2851:         }
+2852:         await fetch('/api/knowledge/vector/mark', {
+2853:             method: 'POST',
+2854:             headers: { 'Content-Type': 'application/json' },
+2855:             body: JSON.stringify({ title })
+2856:         });
+2857:         // Update local meta cache so refresh icon clears
+2858:         if (knowledgeMetaCache[title]) {
+2859:             const updatedAt = Number(knowledgeMetaCache[title].updated_at || 0);
+2860:             knowledgeMetaCache[title].vector_updated_at = Math.max(updatedAt, Date.now());
+2861:         }
+2862:         // Remove refresh icon if present
+2863:         const list = els.panelBasisList;
+2864:         if (list) {
+2865:             const safeTitle = escapeCssSelector(title);
+2866:             const item = list.querySelector(`.knowledge-item[data-title="${safeTitle}"]`);
+2867:             if (item) {
+2868:                 const icon = item.querySelector('.fa-rotate');
+2869:                 if (icon) icon.remove();
+2870:             }
+2871:         }
+2872:         setKnowledgeItemProgress(title, 100, false);
+2873:     } catch (e) {
+2874:         setKnowledgeItemProgress(title, 100, false);
+2875:     }
+2876: }
+2877: 
+2878: let vectorProgressTimer = null;
+2879: let vectorizeRunId = 0;
+2880: let vectorizeTitle = null;
+2881: const vectorizeTasks = {};
+2882: function startVectorProgress(total) {
+2883:     const wrap = document.getElementById('vectorProgressWrap');
+2884:     const bar = document.getElementById('vectorProgressBar');
+2885:     const text = document.getElementById('vectorProgressText');

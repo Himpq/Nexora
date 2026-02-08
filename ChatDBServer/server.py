@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'api'))
 from model import Model
 from database import User
 from conversation_manager import ConversationManager
+from chroma_client import ChromaStore
 
 app = Flask(__name__)
 app.secret_key = 'chatdb-secret-key-change-in-production'
@@ -29,16 +30,46 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 # ==================== 配置与全局变量 ====================
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+MODELS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models.json')
 
 def get_config_all():
-    """获取所有配置"""
+    """??????"""
+    config = {}
     if os.path.exists(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                config = json.load(f)
         except Exception as e:
             print(f"Error loading config: {e}")
-    return {}
+    if os.path.exists(MODELS_PATH):
+        try:
+            with open(MODELS_PATH, 'r', encoding='utf-8') as f:
+                models_cfg = json.load(f)
+            config["models"] = models_cfg.get("models", models_cfg)
+            if "providers" in models_cfg:
+                config["providers"] = models_cfg.get("providers", {})
+        except Exception as e:
+            print(f"Error loading models config: {e}")
+    return config
+
+def get_chroma_store():
+    """Get Chroma store if enabled."""
+    config = get_config_all()
+    rag = config.get('rag_database', {})
+    if not rag.get('rag_database_enabled', False):
+        return None, 'disabled'
+    try:
+        return ChromaStore(rag), None
+    except Exception as e:
+        return None, str(e)
+
+def jsonify_safe(payload, status=200):
+    return Response(
+        json.dumps(payload, ensure_ascii=False, default=str),
+        status=status,
+        mimetype='application/json'
+    )
+
 
 def require_papi_key(f):
     """公有 API 密钥验证装饰器"""
@@ -372,6 +403,32 @@ def admin_token_stats():
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 
+@app.route('/api/admin/chroma/stats', methods=['GET'])
+@require_admin
+def admin_chroma_stats():
+    """ChromaDB stats for admin UI"""
+    config = get_config_all()
+    rag = config.get('rag_database', {})
+    if not rag.get('rag_database_enabled', False):
+        return jsonify({'success': True, 'enabled': False, 'message': 'disabled'})
+
+    store, store_err = get_chroma_store()
+    if not store:
+        return jsonify({'success': True, 'enabled': False, 'message': store_err})
+
+    try:
+        stats = store.stats()
+        return jsonify({
+            'success': True,
+            'enabled': True,
+            'mode': rag.get('mode'),
+            'service_url': rag.get('service_url'),
+            'collections': stats.get('collections', []),
+            'total_vectors': stats.get('total_vectors', 0)
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
 
 # ==================== 通用开放接口 (Public API - papi) ====================
 
@@ -390,7 +447,7 @@ def papi_list_knowledge(username):
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 
-@app.route('/api/papi/knowledge/basis/<username>/<title>', methods=['GET'])
+@app.route('/api/papi/knowledge/basis/<username>/<path:title>', methods=['GET'])
 @require_papi_key
 def papi_get_knowledge(username, title):
     """获取指定用户的某个知识内容"""
@@ -455,6 +512,28 @@ def papi_get_conversation(username, conv_id):
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 
+@app.route('/api/papi/knowledge/query/<username>', methods=['POST'])
+@require_papi_key
+def papi_query_vectors(username):
+    """PAPI: vector query"""
+    data = request.get_json() or {}
+    query_text = data.get('text') or data.get('query')
+    top_k = int(data.get('top_k') or 5)
+
+    if not query_text:
+        return jsonify({'success': False, 'message': 'missing query text'})
+
+    store, store_err = get_chroma_store()
+    if not store:
+        return jsonify({'success': False, 'message': f'ChromaDB unavailable: {store_err}'})
+
+    try:
+        if getattr(store, 'mode', '') != 'service':
+            return jsonify({'success': False, 'message': 'NexoraDB service mode required'})
+        result = store.query_text(username, query_text, top_k=top_k)
+        return jsonify({'success': True, 'result': result})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
 
 # ==================== 聊天相关 ====================
 
@@ -617,93 +696,77 @@ def switch_version():
 @app.route('/api/config', methods=['GET'])
 @require_login
 def get_config():
-    """获取系统配置（根据权限过滤模型列表）"""
+    """??????????????????"""
     username = session.get('username')
     try:
-        # 加载黑名单配置
         blacklist_path = './data/model_permissions.json'
         blacklist = []
         if os.path.exists(blacklist_path):
             with open(blacklist_path, 'r', encoding='utf-8') as f:
                 perm_config = json.load(f)
-                # 获取该用户的黑名单
                 user_blacklists = perm_config.get('user_blacklists', {})
                 blacklist = user_blacklists.get(username, perm_config.get('default_blacklist', []))
 
-        CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
-        if os.path.exists(CONFIG_PATH):
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-                
-            # 只返回前端需要的信息，并排除黑名单中的模型
-            models_info = []
-            for model_id, info in config.get('models', {}).items():
-                if model_id in blacklist:
-                    continue
-                models_info.append({
-                    'id': model_id,
-                    'name': info['name'],
-                    'provider': info.get('provider', 'volcengine'),
-                    'status': info.get('status', 'normal')
-                })
-            
-            # 确保返回的默认模型不在黑名单中
-            default_model = config.get('default_model')
-            if default_model in blacklist:
-                if models_info:
-                    default_model = models_info[0]['id']
-                else:
-                    default_model = None
-                
-            return jsonify({
-                'success': True,
-                'models': models_info,
-                'default_model': default_model
+        config = get_config_all()
+
+        models_info = []
+        for model_id, info in config.get('models', {}).items():
+            if model_id in blacklist:
+                continue
+            models_info.append({
+                'id': model_id,
+                'name': info.get('name', model_id),
+                'provider': info.get('provider', 'volcengine'),
+                'status': info.get('status', 'normal')
             })
+
+        default_model = config.get('default_model')
+        if default_model in blacklist:
+            default_model = models_info[0]['id'] if models_info else None
+
+        return jsonify({
+            'success': True,
+            'models': models_info,
+            'default_model': default_model
+        })
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 
-# ==================== 管理员：模型权限控制 API ====================
 
 @app.route('/api/admin/user/models', methods=['GET'])
 @require_admin
 def admin_get_user_models():
-    """获取用户可用的模型列表（带黑名单标记）"""
+    """???????????????????"""
     target_username = request.args.get('username')
     if not target_username:
         return jsonify({"success": False, "message": "Missing username"}), 400
-        
-    try:
-        # 1. 获取所有可用模型
-        CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
-        with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-            full_config = json.load(f)
-            all_models = full_config.get('models', {})
 
-        # 2. 获取该用户的黑名单
+    try:
+        config = get_config_all()
+        all_models = config.get('models', {})
+
         blacklist_path = './data/model_permissions.json'
         blacklist = []
         if os.path.exists(blacklist_path):
             with open(blacklist_path, 'r', encoding='utf-8') as f:
                 perm_config = json.load(f)
-                blacklist = perm_config.get('user_blacklists', {}).get(target_username, [])
+                user_blacklists = perm_config.get('user_blacklists', {})
+                blacklist = user_blacklists.get(target_username, perm_config.get('default_blacklist', []))
 
-        # 3. 组织数据
-        model_list = []
-        for mid, info in all_models.items():
-            model_list.append({
-                'id': mid,
-                'name': info.get('name', mid),
-                'is_blocked': mid in blacklist
+        models = []
+        for model_id, info in all_models.items():
+            models.append({
+                'id': model_id,
+                'name': info.get('name', model_id),
+                'provider': info.get('provider', 'volcengine'),
+                'status': info.get('status', 'normal'),
+                'disabled': model_id in blacklist
             })
-            
-        return jsonify({
-            'success': True,
-            'username': target_username,
-            'models': model_list
-        })
+
+        return jsonify({"success": True, "models": models})
     except Exception as e:
-        return jsonify({'success': False, 'message': str(e)})
+        return jsonify({"success": False, "message": str(e)})
+
 
 @app.route('/api/admin/user/models/update', methods=['POST'])
 @require_admin
@@ -774,11 +837,9 @@ def chat_stream():
                 blacklist = user_blacklists.get(username, perm_config.get('default_blacklist', []))
         
         # 获取系统配置中的默认模型和全部模型
-        CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
-        with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-            sys_config = json.load(f)
-            all_models = list(sys_config.get('models', {}).keys())
-            default_sys_model = sys_config.get('default_model')
+        sys_config = get_config_all()
+        all_models = list(sys_config.get('models', {}).keys())
+        default_sys_model = sys_config.get('default_model')
 
         # 校验请求的模型是否合法（存在且未被禁）
         if model_name and (model_name not in all_models or model_name in blacklist):
@@ -956,7 +1017,7 @@ def update_basis_content():
         return jsonify({'success': False, 'message': str(e)})
 
 
-@app.route('/api/knowledge/basis/<title>', methods=['GET'])
+@app.route('/api/knowledge/basis/<path:title>', methods=['GET'])
 @require_login
 def get_basis_content(title):
     """获取单个基础知识内容"""
@@ -998,7 +1059,7 @@ def add_basis():
         return jsonify({'success': False, 'message': str(e)})
 
 
-@app.route('/api/knowledge/basis/<title>', methods=['PUT'])
+@app.route('/api/knowledge/basis/<path:title>', methods=['PUT'])
 @require_login
 def update_basis(title):
     """更新基础知识"""
@@ -1023,7 +1084,7 @@ def update_basis(title):
         return jsonify({'success': False, 'error': str(e)})
 
 
-@app.route('/api/knowledge/basis/<title>', methods=['DELETE'])
+@app.route('/api/knowledge/basis/<path:title>', methods=['DELETE'])
 @require_login
 def delete_basis(title):
     """删除基础知识"""
@@ -1059,7 +1120,7 @@ def update_knowledge_settings():
         return jsonify({'success': True, 'message': msg, 'share_url': share_url})
     return jsonify({'success': False, 'message': msg})
 
-@app.route('/api/knowledge/basis/<title>/share', methods=['POST'])
+@app.route('/api/knowledge/basis/<path:title>/share', methods=['POST'])
 @require_login
 def share_basis(title):
     """切换知识点公开状态"""
@@ -1158,7 +1219,7 @@ def get_all_short():
         return jsonify({'success': False, 'error': str(e)})
 
 
-@app.route('/api/knowledge/short/<title>', methods=['GET'])
+@app.route('/api/knowledge/short/<path:title>', methods=['GET'])
 @require_login
 def get_short_content(title):
     """获取单个短期记忆"""
@@ -1202,7 +1263,7 @@ def add_short():
         return jsonify({'success': False, 'error': str(e)})
 
 
-@app.route('/api/knowledge/short/<title>', methods=['PUT'])
+@app.route('/api/knowledge/short/<path:title>', methods=['PUT'])
 @require_login
 def update_short(title):
     """更新短期记忆"""
@@ -1254,7 +1315,7 @@ def update_short(title):
         return jsonify({'success': False, 'error': str(e)})
 
 
-@app.route('/api/knowledge/short/<title>', methods=['DELETE'])
+@app.route('/api/knowledge/short/<path:title>', methods=['DELETE'])
 @require_login
 def delete_short(title):
     """删除短期记忆"""
@@ -1794,34 +1855,236 @@ def ai_generate_index():
 @app.route('/api/knowledge/vectorize', methods=['POST'])
 @require_login
 def vectorize_knowledge():
-    """将知识点向量化"""
+    # Vectorize and store (auto chunking)
     username = session['username']
     user = User(username)
     data = request.get_json()
     
     title = data.get('title')
     text = data.get('text')
+    metadata = data.get('metadata') or {}
     
     if not text:
-        # 如果没传 text，尝试从知识库读取
+        # If text is missing, try to load from knowledge base
         if title:
             text = user.getBasisContent(title)
         else:
-            return jsonify({'success': False, 'message': '未提供内容或标题'})
+            return jsonify({'success': False, 'message': '????????'})
+
+    def split_text(t, max_len=800, overlap=120):
+        if not t:
+            return []
+        if max_len <= 0:
+            return [t]
+        if overlap >= max_len:
+            overlap = max_len // 4
+        t = t.replace('\r\n', '\n')
+        chunks = []
+        start = 0
+        length = len(t)
+        while start < length:
+            end = min(start + max_len, length)
+            chunk = t[start:end]
+            chunks.append(chunk)
+            if end == length:
+                break
+            start = end - overlap if overlap > 0 else end
+        return chunks
             
     try:
-        model = Model(username, auto_create=False)
-        vector = model.get_embedding(text)
+        config = get_config_all()
+        rag = config.get('rag_database', {})
+        chunk_size = int(rag.get('chunk_size') or 800)
+        chunk_overlap = int(rag.get('chunk_overlap') or 120)
+
+        chunks = split_text(text, chunk_size, chunk_overlap)
+        if not chunks:
+            return jsonify({'success': False, 'message': '????'})
         
-        # 目前仅返回向量结果。后续可以存入 ChromaDB 等
+        store, store_err = get_chroma_store()
+        if not store:
+            return jsonify({'success': False, 'message': f'ChromaDB???: {store_err}'})
+        if getattr(store, 'mode', '') != 'service':
+            return jsonify({'success': False, 'message': 'NexoraDB service mode required'})
+
+        stored = False
+        stored_count = 0
+        doc_ids = []
+
+        if title:
+            try:
+                store.delete_by_title(username, title)
+            except Exception:
+                pass
+
+        try:
+            for i, chunk in enumerate(chunks):
+                chunk_meta = dict(metadata)
+                chunk_meta.update({
+                    'chunk_id': i,
+                    'chunk_total': len(chunks)
+                })
+                doc_id = store.upsert_text(
+                    username,
+                    title,
+                    chunk,
+                    chunk_meta,
+                    chunk_id=i
+                )
+                doc_ids.append(doc_id)
+                stored_count += 1
+            stored = stored_count == len(chunks)
+        except Exception as e:
+            return jsonify({'success': False, 'message': f'?????: {str(e)}'})
+        
         return jsonify({
             'success': True, 
-            'vector_length': len(vector),
-            'vector_preview': vector[:5], # 仅返回前5位作为预览
-            'message': '向量化成功'
+            'chunk_count': len(chunks),
+            'stored': stored,
+            'stored_count': stored_count,
+            'vector_length': 0,
+            'vector_preview': [],
+            'vector_ids': doc_ids,
+            'store_error': None if stored else 'store error',
+            'message': '?????'
         })
     except Exception as e:
-        return jsonify({'success': False, 'message': f'向量化失败: {str(e)}'})
+        return jsonify({'success': False, 'message': f'?????: {str(e)}'})
+
+@app.route('/api/knowledge/vector/config', methods=['GET'])
+@require_login
+def get_vector_config():
+    """????????"""
+    config = get_config_all()
+    rag = config.get('rag_database', {})
+    return jsonify({
+        'success': True,
+        'chunk_size': int(rag.get('chunk_size') or 800),
+        'chunk_overlap': int(rag.get('chunk_overlap') or 120)
+    })
+
+
+@app.route('/api/knowledge/vectorize/chunk', methods=['POST'])
+@require_login
+def vectorize_knowledge_chunk():
+    """???????????"""
+    username = session['username']
+    data = request.get_json() or {}
+    title = data.get('title')
+    text = data.get('text')
+    chunk_id = data.get('chunk_id')
+    metadata = data.get('metadata') or {}
+    chunk_total = data.get('chunk_total')
+
+    if not title or text is None:
+        return jsonify({'success': False, 'message': '???????'})
+
+    store, store_err = get_chroma_store()
+    if not store:
+        return jsonify({'success': False, 'message': f'ChromaDB???: {store_err}'})
+    if getattr(store, 'mode', '') != 'service':
+        return jsonify({'success': False, 'message': 'NexoraDB service mode required'})
+
+    try:
+        chunk_meta = dict(metadata)
+        if chunk_id is not None:
+            chunk_meta['chunk_id'] = chunk_id
+        if chunk_total is not None:
+            chunk_meta['chunk_total'] = chunk_total
+        doc_id = store.upsert_text(username, title, text, chunk_meta, chunk_id=chunk_id)
+        return jsonify({'success': True, 'vector_id': doc_id})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+
+
+
+@app.route('/api/knowledge/query', methods=['POST'])
+@require_login
+def query_knowledge_vectors():
+    """????(ChromaDB)"""
+    username = session['username']
+    data = request.get_json() or {}
+    query_text = data.get('text') or data.get('query')
+    top_k = int(data.get('top_k') or 5)
+    
+    if not query_text:
+        return jsonify({'success': False, 'message': '???????'})
+
+    store, store_err = get_chroma_store()
+    if not store:
+        return jsonify({'success': False, 'message': f'ChromaDB???: {store_err}'})
+
+    try:
+        if getattr(store, 'mode', '') != 'service':
+            return jsonify({'success': False, 'message': 'NexoraDB service mode required'})
+        result = store.query_text(username, query_text, top_k=top_k)
+        return jsonify({'success': True, 'result': result})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+
+@app.route('/api/knowledge/vector/delete', methods=['POST'])
+@require_login
+def delete_knowledge_vectors():
+    """?????????????????"""
+    username = session['username']
+    data = request.get_json() or {}
+    title = data.get('title')
+    vector_id = data.get('vector_id')
+    if not title and not vector_id:
+        return jsonify({'success': False, 'message': '????????ID'})
+
+    store, store_err = get_chroma_store()
+    if not store:
+        return jsonify({'success': False, 'message': f'ChromaDB???: {store_err}'})
+    try:
+        if vector_id:
+            store.delete_by_id(username, vector_id)
+        else:
+            store.delete_by_title(username, title)
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+
+@app.route('/api/knowledge/vector/chunks', methods=['POST'])
+@require_login
+def get_vector_chunks():
+    """Get vector chunks for a knowledge item"""
+    username = session['username']
+    data = request.get_json() or {}
+    title = data.get('title')
+    if not title:
+        return jsonify_safe({'success': False, 'message': 'missing title'})
+
+    store, store_err = get_chroma_store()
+    if not store:
+        return jsonify_safe({'success': False, 'message': f'ChromaDB unavailable: {store_err}'})
+    try:
+        chunks = store.get_chunks(username, title)
+        return jsonify_safe({'success': True, 'chunks': chunks})
+    except Exception as e:
+        return jsonify_safe({'success': False, 'message': str(e)})
+
+
+@app.route('/api/knowledge/vector/mark', methods=['POST'])
+@require_login
+def mark_vector_updated():
+    """Mark knowledge vectorization time"""
+    username = session['username']
+    data = request.get_json() or {}
+    title = data.get('title')
+    if not title:
+        return jsonify_safe({'success': False, 'message': 'missing title'})
+    try:
+        user = User(username)
+        success, msg = user.updateBasisVectorTime(title)
+        if not success:
+            return jsonify_safe({'success': False, 'message': msg})
+        return jsonify_safe({'success': True})
+    except Exception as e:
+        return jsonify_safe({'success': False, 'message': str(e)})
 
 
 @app.route('/api/token_logs', methods=['GET'])

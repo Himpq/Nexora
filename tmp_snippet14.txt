@@ -1,0 +1,11 @@
+1786:         if (vectorizeTitle && vectorizeTitle !== title) {
+1787:             resetVectorProgressUI();
+1788:         }
+1789:         vectorizeTitle = title;
+1790:         document.getElementById('knowledgeSettingsModal').classList.add('active');
+1791:         setVectorStatus('???...');
+1792:         loadVectorChunks(title);
+1793:     } catch(e) { console.error(e); }
+1794: }
+1795: 
+1796: function closeKnowledgeSettingsModal() {

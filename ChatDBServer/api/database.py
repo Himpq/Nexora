@@ -125,10 +125,26 @@ class User:
                 self.save_knowledge_graph(graph)
                 
             meta["updated_at"] = time.time()
+            meta["vector_updated_at"] = 0
             with open(self.path + "database.json", "w", encoding="utf-8") as f:
                 json.dump(db, f, indent=4, ensure_ascii=False)
             return True, "更新成功"
         
+    def updateBasisVectorTime(self, title):
+        """???????????"""
+        lock = get_user_lock(self.user)
+        with lock:
+            with open(self.path + "database.json", "r", encoding="utf-8") as f:
+                db = json.load(f)
+
+            if title not in db["data_basis"]:
+                return False, "??????"
+
+            db["data_basis"][title]["vector_updated_at"] = time.time()
+            with open(self.path + "database.json", "w", encoding="utf-8") as f:
+                json.dump(db, f, indent=4, ensure_ascii=False)
+            return True, "OK"
+
     def addShort(self, title):
         lock = get_user_lock(self.user)
         with lock:
@@ -182,7 +198,8 @@ class User:
                 "collaborative": False, # 默认不开启协同编辑
                 "share_id": share_id,
                 "created_at": time.time(),
-                "updated_at": time.time()
+                "updated_at": time.time(),
+                "vector_updated_at": 0
             }
             with open(f"./data/users/{self.user}/database/{ID}.txt", "w", encoding="utf-8") as f:
                 f.write(context)
@@ -194,20 +211,20 @@ class User:
         return True
 
     def setBasisPublic(self, title, is_public=True):
-        """设置知识点是否公开"""
+        """?????????"""
         lock = get_user_lock(self.user)
         try:
             with lock:
                 with open(self.path + "database.json", "r", encoding="utf-8") as f:
                     db = json.load(f)
-                
+
                 if title in db["data_basis"]:
                     db["data_basis"][title]["public"] = is_public
                     db["data_basis"][title]["updated_at"] = time.time()
                     with open(self.path + "database.json", "w", encoding="utf-8") as f:
                         json.dump(db, f, indent=4, ensure_ascii=False)
-                    return True, "更新成功"
-                return False, "知识点不存在"
+                    return True, "????"
+                return False, "??????"
         except Exception as e:
             return False, str(e)
 
@@ -350,6 +367,10 @@ class User:
         try:
             with open(src, "w", encoding="utf-8") as f:
                 f.write(content)
+            db["data_basis"][title]["updated_at"] = time.time()
+            db["data_basis"][title]["vector_updated_at"] = 0
+            with open(self.path + "database.json", "w", encoding="utf-8") as f:
+                json.dump(db, f, indent=4, ensure_ascii=False)
             # 更新内容后重新扫描链接
             self.auto_link_knowledge(title)
             return True, "Success"
@@ -393,6 +414,9 @@ class User:
             # 更新知识图谱中的引用
             self._update_knowledge_graph_title(title, new_title)
         
+        old_record["updated_at"] = time.time()
+        old_record["vector_updated_at"] = 0
+
         # 保存更新
         with open(self.path + "database.json", "w", encoding="utf-8") as f:
             json.dump(db, f, indent=4, ensure_ascii=False)

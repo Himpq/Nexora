@@ -50,9 +50,7 @@ const els = {
     adminModal: document.getElementById('adminModal'),
     closeAdminBtn: document.getElementById('closeAdminBtn'),
     userTableBody: document.getElementById('userTableBody'),
-    userCount: document.getElementById('userCount'),
-    knowledgeSearchInput: document.getElementById('knowledgeSearchInput'),
-    knowledgeSearchBtn: document.getElementById('knowledgeSearchBtn')
+    userCount: document.getElementById('userCount')
 };
 
 // --- Initialization ---
@@ -91,28 +89,6 @@ function initUI() {
             this.style.height = 'auto';
             this.style.height = (this.scrollHeight) + 'px';
             if(this.value === '') this.style.height = 'auto'; // Reset
-        });
-    }
-
-    if (els.knowledgeSearchInput) {
-        els.knowledgeSearchInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                handleKnowledgeSearch();
-            }
-        });
-    }
-    if (els.knowledgeSearchBtn) {
-        els.knowledgeSearchBtn.addEventListener('click', (e) => {
-            e.preventDefault();
-            handleKnowledgeSearch();
-        });
-    }
-    const bulkBtn = document.getElementById('bulkVectorizeBtn');
-    if (bulkBtn) {
-        bulkBtn.addEventListener('click', (e) => {
-            e.preventDefault();
-            bulkVectorizeAllBasis();
         });
     }
 
@@ -187,7 +163,7 @@ function initUI() {
             e.stopPropagation();
             els.userMenu.classList.toggle('active');
             if (els.userMenu.classList.contains('active')) {
-                checkUserRole(); // ???????????
+                checkUserRole(); // 展开菜单时实时获取权限
             }
         });
     }
@@ -195,10 +171,10 @@ function initUI() {
     // Prevent menu from closing when clicking inside it
     if (els.userMenu) {
         els.userMenu.addEventListener('click', (e) => {
-            // e.stopPropagation(); // ???????? document.click ???????????
+            // e.stopPropagation(); // 这一行去掉，允许冒泡到 document.click 来关闭菜单，或者手动关闭
         });
         
-        // 点击菜单项后臊关闭
+        // 点击菜单项后自动关闭
         els.userMenu.querySelectorAll('.menu-item').forEach(item => {
             item.addEventListener('click', () => {
                 els.userMenu.classList.remove('active');
@@ -231,7 +207,7 @@ function initUI() {
         adminBtn.addEventListener('click', (e) => {
             e.preventDefault();
             e.stopPropagation(); // 阻止冒泡
-            if (els.userMenu) els.userMenu.classList.remove('active'); // ???????
+            if (els.userMenu) els.userMenu.classList.remove('active'); // 明确关闭小菜单
             openAdminDashboard();
         });
     }
@@ -252,10 +228,6 @@ function initUI() {
     if (adminModal) {
         adminModal.addEventListener('click', (e) => {
             if (e.target === adminModal) {
-                const selection = window.getSelection ? window.getSelection().toString() : '';
-                if (selection) {
-                    return;
-                }
                 e.preventDefault();
                 e.stopPropagation();
                 adminModal.classList.remove('active');
@@ -263,7 +235,7 @@ function initUI() {
         });
     }
 
-    // 添加用户 Modal 相馆
+    // 添加用户 Modal 相关
     const openAddUserBtn = document.getElementById('openAddUserForm'); 
     if (openAddUserBtn) {
         openAddUserBtn.addEventListener('click', (e) => {
@@ -282,7 +254,7 @@ function initUI() {
         });
     }
     
-    // AddUser Modal ?????????
+    // 给 AddUser Modal 的背景也加个点击关闭
     const addUserModal = document.getElementById('addUserModal');
     if (addUserModal) {
         addUserModal.addEventListener('click', (e) => {
@@ -294,7 +266,7 @@ function initUI() {
         });
     }
     
-    // Token Modal ??????????
+    // 给 Token Modal 的具体关闭按钮也补一下
     const closeModalBtn = document.getElementById('closeModalBtn');
     if (closeModalBtn) {
         closeModalBtn.addEventListener('click', () => {
@@ -302,8 +274,8 @@ function initUI() {
         });
     }
 
-    // Admin tabs (admin modal only)
-    document.querySelectorAll('#adminModal .admin-tab').forEach(tab => {
+    // Admin tabs
+    document.querySelectorAll('.admin-tab').forEach(tab => {
         tab.addEventListener('click', () => {
             const tabName = tab.getAttribute('data-tab');
             switchAdminTab(tabName);
@@ -498,7 +470,7 @@ async function sendMessage() {
     const text = els.messageInput.value.trim();
     if (!text && !isGenerating && uploadedFileIds.length === 0) return;
     
-    // ????????????????????
+    // 如果正在生成，则点击按钮的行为是停止生成
     if (isGenerating) {
         stopGeneration();
         return;
@@ -583,7 +555,7 @@ async function sendMessage() {
         while (true) {
             const { done, value } = await reader.read();
             if (done) {
-                // 流结束后，自动折叠所有栏（除非用户手动操作过?
+                // 流结束后，自动折叠所有思考栏（除非用户手动操作过）
                 const thinkingBlocks = aiMsgDiv.querySelectorAll('.thinking-block');
                 thinkingBlocks.forEach(thinkingBlock => {
                     if (thinkingBlock.dataset.userToggled !== 'true') {
@@ -628,37 +600,37 @@ async function sendMessage() {
                             currentFullContent += chunk.content;
                             currentRoundContent += chunk.content;
                             
-                            // 如果当前没有正在渲染的内容Span，或者它不是消息气泡的最后一丅素（说明丗插入了工具）
+                            // 如果当前没有正在渲染的内容Span，或者它不是消息气泡的最后一个元素（说明中间插入了工具）
                             const msgContentContainer = aiMsgDiv.querySelector('.message-content');
                             if (!currentContentSpan || msgContentContainer.lastElementChild !== currentContentSpan) {
                                 currentContentSpan = createContentSpan(aiMsgDiv);
-                                currentRoundContent = chunk.content; // ? Round ??
+                                currentRoundContent = chunk.content; // 新Round开始
                             }
                             
-                            // ?? Round ???
-                            // 注意：为了保持Markdown上下文一致，我们通常倾向于在同一个Block显示
-                            // 但用户求在工具链下方显示，以必须开吖Block
+                            // 渲染当前Round的内容
+                            // 注意：为了保持Markdown上下文一致性，我们通常倾向于在同一个Block显示
+                            // 但用户要求在工具链下方显示，所以必须开启新Block
                             currentContentSpan.innerHTML = marked.parse(currentRoundContent);
                             renderMathInElement(currentContentSpan);
                             highlightCode(currentContentSpan);
                         } 
                         else if (chunk.type === 'reasoning_content') { 
                            const msgContentContainer = aiMsgDiv.querySelector('.message-content');
-                           // ????????????????????????????
-                           // 这样如果丗插入了工具调甼lastElementChild 就不再是当前思，从而触发新?
+                           // 核心逻辑：检查容器最后一个元素是否已经是正在输出的思考框
+                           // 这样如果中间插入了工具调用，lastElementChild 就不再是当前思考框，从而触发新建
                            let thinkingBlock = msgContentContainer.lastElementChild;
                            
                            if(!thinkingBlock || !thinkingBlock.classList.contains('thinking-block')) {
                                thinkingBlock = document.createElement('div');
-                               thinkingBlock.className = 'thinking-block'; // 流式输出时默认展
-                               thinkingBlock.dataset.userToggled = 'false'; // ??????????
+                               thinkingBlock.className = 'thinking-block'; // 流式输出时默认展开
+                               thinkingBlock.dataset.userToggled = 'false'; // 跟踪用户是否手动操作过
                                thinkingBlock.innerHTML = `
                                 <div class="thinking-header">
                                     <svg class="thinking-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                         <circle cx="12" cy="12" r="10"></circle>
                                         <path d="M12 6v6l4 2"></path>
                                     </svg>
-                                    <span class="thinking-title">????</span>
+                                    <span class="thinking-title">思考过程</span>
                                     <svg class="chevron-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                         <polyline points="6 9 12 15 18 9"></polyline>
                                     </svg>
@@ -666,14 +638,14 @@ async function sendMessage() {
                                 <div class="thinking-content"></div>
                                `;
                                
-                               // ?????????????????
+                               // 添加点击事件监听，记录用户手动操作
                                const header = thinkingBlock.querySelector('.thinking-header');
                                header.addEventListener('click', function() {
                                    thinkingBlock.classList.toggle('collapsed');
-                                   thinkingBlock.dataset.userToggled = 'true'; // ?????????
+                                   thinkingBlock.dataset.userToggled = 'true'; // 标记用户已手动操作
                                });
                                
-                               // 始终追加到末尾以保持时间线?
+                               // 始终追加到末尾以保持时间线次序
                                msgContentContainer.appendChild(thinkingBlock);
                            }
                            
@@ -704,7 +676,7 @@ async function sendMessage() {
                             if(els.conversationTitle) els.conversationTitle.textContent = chunk.title;
                         }
                         else if (chunk.type === 'error') {
-                            appendErrorEvent(aiMsgDiv, chunk.content || 'Unknown error');
+                            aiMsgDiv.innerHTML += `<div class="error" style="color:red; margin:10px;">Error: ${chunk.content}</div>`;
                         }
                         
                     } catch (e) { console.error("Parse error", e); }
@@ -723,9 +695,9 @@ async function sendMessage() {
         }
     } catch (e) {
         if (e.name === 'AbortError') {
-            appendErrorEvent(aiMsgDiv, '[Generation Terminated by User]');
+            aiMsgDiv.innerHTML += `<div class="error" style="color:#666; font-size:12px; margin-top:5px;">[Generation Terminated by User]</div>`;
         } else {
-            appendErrorEvent(aiMsgDiv, e.message || 'Unknown error');
+            aiMsgDiv.innerHTML += `<div class="error">Error: ${e.message}</div>`;
         }
         isGenerating = false;
     } finally {
@@ -781,23 +753,6 @@ function updateWebSearchStatus(aiMsgDiv, status, query, fullContent, isHistory =
     }
     
     badge.querySelector('.tool-status').textContent = displayText;
-}
-
-function appendErrorEvent(aiMsgDiv, message, isHistory = false) {
-    const parent = aiMsgDiv.querySelector('.message-content') || aiMsgDiv;
-    const div = document.createElement('div');
-    div.className = 'tool-usage tool-error';
-    div.dataset.toolName = 'Error';
-    const iconSvg = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="13"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>';
-    div.innerHTML = `
-        <div class="tool-badge">
-            ${iconSvg}
-            <span class="tool-name">Error</span>
-            <span class="tool-status">${message || ''}</span>
-        </div>
-        <div class="tool-output" style="display:none;"></div>
-    `;
-    parent.appendChild(div);
 }
 
 function appendAddBasisView(aiMsgDiv, args) {
@@ -931,14 +886,14 @@ function appendMessage(msg, index) {
         // Render reasoning_content (thinking process) if exists
         if (msg.metadata && msg.metadata.reasoning_content) {
             const thinkingBlock = document.createElement('div');
-            thinkingBlock.className = 'thinking-block collapsed'; // 默۵
+            thinkingBlock.className = 'thinking-block collapsed'; // 默认折叠
             thinkingBlock.innerHTML = `
                 <div class="thinking-header">
                     <svg class="thinking-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <circle cx="12" cy="12" r="10"></circle>
                         <path d="M12 6v6l4 2"></path>
                     </svg>
-                    <span class="thinking-title">????</span>
+                    <span class="thinking-title">思考过程</span>
                     <svg class="chevron-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <polyline points="6 9 12 15 18 9"></polyline>
                     </svg>
@@ -956,7 +911,7 @@ function appendMessage(msg, index) {
             content.appendChild(thinkingBlock);
         }
         
-        // ?????????Metadata???Steps?
+        // 渲染工具调用过程（Metadata中保存的Steps）
         if (msg.metadata && msg.metadata.process_steps) {
             msg.metadata.process_steps.forEach(step => {
                 if (step.type === 'web_search') {
@@ -974,11 +929,8 @@ function appendMessage(msg, index) {
                 else if (step.type === 'function_result') {
                     updateLastToolResult(div, step.name, step.result);
                 }
-                else if (step.type === 'error') {
-                    appendErrorEvent(div, step.content || step.message || 'Unknown error', true);
-                }
                 else if (step.type === 'content') {
-                    // 对于历史记录丩插的文本内
+                    // 对于历史记录中穿插的文本内容
                     const body = document.createElement('div');
                     body.className = 'content-body';
                     body.innerHTML = marked.parse(step.content);
@@ -1017,20 +969,20 @@ function appendMessage(msg, index) {
         actions.className = 'msg-actions';
         
         // Branching (Versions)
-        const versions = (msg.metadata && msg.metadata.versions) ? msg.metadata.versions : [];
+        const versions = msg.metadata?.versions || [];
         if (versions.length > 0) {
-            // 在当前逻辑中，versions 数组里存的是之前的版本
+            // 在我们的逻辑中，versions 数组里存的是之前的版本
             // 假设 versions 有 2 个元素，那么当前是第 3 个版本
             const totalVersions = versions.length + 1;
             const currentVerNum = totalVersions; // 默认当前显示的是最新的
 
             actions.innerHTML += `
                 <div class="version-switcher">
-                    <button class="btn-ver" onclick="switchVersion(${index}, ${versions.length - 1})" title="鿴һ汾">
+                    <button class="btn-ver" onclick="switchVersion(${index}, ${versions.length - 1})" title="查看上一版本">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"></polyline></svg>
                     </button>
                     <span>${currentVerNum} / ${totalVersions}</span>
-                    <button class="btn-ver" disabled title="已经昜新版?>
+                    <button class="btn-ver" disabled title="已经是最新版本">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"></polyline></svg>
                     </button>
                 </div>
@@ -1086,7 +1038,7 @@ function renderMessages(messages, noScroll) {
 // Global modal functions
 window.confirmDelete = function(index) {
     if (!currentConversationId) {
-        alert("姝ゅ璇濆皻鏈繚瀛橈紝鏃犳硶删除");
+        alert("此对话尚未保存，无法删除");
         return;
     }
     showConfirm("删除确认", "确定要删除这条消息及其后的所有内容吗？此操作不可撤销。", "danger", async () => {
@@ -1116,10 +1068,10 @@ window.confirmDelete = function(index) {
 
 window.confirmRegenerate = function(index) {
     if (!currentConversationId) {
-        alert("此话尚朿存，无法重新回答");
+        alert("此对话尚未保存，无法重新回答");
         return;
     }
-    showConfirm("????", "???????????????????????????", "primary", async () => {
+    showConfirm("重新回答", "我们将保留当前回答并生成一个新版本，确定要重新生成吗？", "primary", async () => {
         // Trigger regeneration
         startRegenerate(index);
     });
@@ -1251,7 +1203,7 @@ function updateMessageDivThinking(index, delta) {
                     <circle cx="12" cy="12" r="10"></circle>
                     <path d="M12 6v6l4 2"></path>
                 </svg>
-                <span class="thinking-title">????</span>
+                <span class="thinking-title">思考过程</span>
                 <svg class="chevron-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <polyline points="6 9 12 15 18 9"></polyline>
                 </svg>
@@ -1299,10 +1251,10 @@ window.showConfirm = function(title, message, type, onOk) {
     
     // Explicitly set text and style to ensure visibility
     if(type === 'danger') {
-        newOkBtn.textContent = "纭删除";
+        newOkBtn.textContent = "确认删除";
         newOkBtn.className = "btn-confirm btn-confirm-del";
     } else {
-        newOkBtn.textContent = "纭畾閲嶆柊生成";
+        newOkBtn.textContent = "确定重新生成";
         newOkBtn.className = "btn-confirm";
     }
     
@@ -1346,16 +1298,13 @@ window.switchVersion = async function(msgIndex, verIndex) {
 async function loadKnowledge(cid) {
     // Knowledge is likely user-global, not per conversation, but we reload on chat interactions
     try {
-        const [resBasis, resShort, resMeta] = await Promise.all([
+        const [resBasis, resShort] = await Promise.all([
             fetch('/api/knowledge/basis'),
-            fetch('/api/knowledge/short'),
-            fetch('/api/knowledge/list')
+            fetch('/api/knowledge/short')
         ]);
         
         const basisData = await resBasis.json();
         const shortData = await resShort.json();
-        const metaData = await resMeta.json();
-        knowledgeMetaCache = (metaData && metaData.basis_knowledge) ? metaData.basis_knowledge : {};
 
         if (basisData.success) {
             renderKnowledgeList(els.panelBasisList, basisData.knowledge || [], 'basis');
@@ -1376,54 +1325,8 @@ function renderKnowledgeList(container, items, type) {
         const title = typeof item === 'string' ? item : item.title;
         const div = document.createElement('div');
         div.className = 'knowledge-item';
-        div.dataset.title = title;
-        div.style.position = 'relative';
-        div.style.overflow = 'hidden';
-        div.style.paddingRight = '26px';
-        const label = document.createElement('span');
-        label.textContent = title;
-        label.style.position = 'relative';
-        label.style.zIndex = '1';
-        label.style.display = 'block';
-        label.style.paddingRight = '12px';
-        div.appendChild(label);
+        div.textContent = title;
         div.style.cursor = 'pointer';
-        const progress = document.createElement('div');
-        progress.className = 'knowledge-progress';
-        progress.style.position = 'absolute';
-        progress.style.left = '0';
-        progress.style.bottom = '0';
-        progress.style.height = '100%';
-        progress.style.opacity = '0.18';
-        progress.style.width = '0%';
-        progress.style.background = 'rgba(34, 197, 94, 0.7)';
-        progress.style.transition = 'width 120ms ease';
-        progress.style.zIndex = '0';
-        div.appendChild(progress);
-        // Add refresh icon for basis when vector is stale
-        if (type === 'basis') {
-            const meta = knowledgeMetaCache[title] || {};
-            const updatedAt = Number(meta.updated_at || 0);
-            const vectorUpdatedAt = Number(meta.vector_updated_at || 0);
-            if (updatedAt > 0 && vectorUpdatedAt < updatedAt) {
-                const icon = document.createElement('i');
-                icon.className = 'fa-solid fa-rotate';
-                icon.style.position = 'absolute';
-                icon.style.right = '6px';
-                icon.style.top = '50%';
-                icon.style.transform = 'translateY(-50%)';
-                icon.style.fontSize = '12px';
-                icon.style.color = '#16a34a';
-                icon.style.zIndex = '2';
-                icon.style.cursor = 'pointer';
-                icon.title = '闇€要重新向量化';
-                icon.onclick = (e) => {
-                    e.stopPropagation();
-                    vectorizeKnowledgeTitle(title);
-                };
-                div.appendChild(icon);
-            }
-        }
         // Add click handler to view details ONLY for basis for now
         if(type === 'basis') {
              div.onclick = () => viewKnowledge(title);
@@ -1440,12 +1343,9 @@ function renderKnowledgeList(container, items, type) {
 let easyMDE = null;
 let originalHeaderState = null;
 let currentViewingKnowledge = null;
-let knowledgeMetaCache = {};
-let bulkVectorizeRunning = false;
 
-async function viewKnowledge(title, options = {}) {
+async function viewKnowledge(title) {
     currentViewingKnowledge = title;
-    const { forceEditMode = false } = options;
     const viewer = document.getElementById('knowledgeViewer');
     const msgs = document.getElementById('messagesContainer');
     const inputWrapper = document.getElementById('inputWrapper');
@@ -1456,13 +1356,11 @@ async function viewKnowledge(title, options = {}) {
     if(!viewer || !msgs) return;
     
     // 1. Save Header State
-    if (!originalHeaderState) {
-        originalHeaderState = {
-            title: headerTitle.textContent,
-            leftHTML: headerLeft.innerHTML,
-            rightHTML: headerRight.innerHTML
-        };
-    }
+    originalHeaderState = {
+        title: headerTitle.textContent,
+        leftHTML: headerLeft.innerHTML,
+        rightHTML: headerRight.innerHTML
+    };
 
     // 2. Fetch Content
     let content = '';
@@ -1487,17 +1385,21 @@ async function viewKnowledge(title, options = {}) {
         </button>
     `;
 
-    // Right Buttons: Settings, Save, Delete (All Icons)
+    // Right Buttons: Settings, Save, Delete
     headerRight.innerHTML = `
-        <button class="btn-icon knowledge-action" onclick="openKnowledgeSettingsModal()" title="设置">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
-        </button>
-        <button class="btn-icon knowledge-action" id="btnSaveKnowledge" onclick="saveKnowledge('${title.replace(/'/g, "\\'")}')" title="保存">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
-        </button>
-        <button class="btn-icon knowledge-action knowledge-action-danger" onclick="confirmDeleteKnowledge('${title.replace(/'/g, "\\'")}')" title="删除">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-        </button>
+        <div class="header-actions">
+            <button class="btn-header-save" id="btnSaveKnowledge" onclick="saveKnowledge('${title.replace(/'/g, "\\'")}')">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
+                保存
+            </button>
+            <div class="header-divider"></div>
+            <button class="btn-header-icon" onclick="openKnowledgeSettingsModal()" title="设置">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+            </button>
+            <button class="btn-header-icon danger" onclick="confirmDeleteKnowledge('${title.replace(/'/g, "\\'")}')" title="删除">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+            </button>
+        </div>
     `;
 
     // 5. Initialize Editor
@@ -1525,7 +1427,12 @@ async function viewKnowledge(title, options = {}) {
         });
         
         // 提示用户如何切换模式
-        showToast('提示：点击编辑器工具栏中的“眼睛”图标可切换预览与编辑模式。');
+        showToast('小贴士：点击编辑器工具栏中的“眼睛”图标可切换预览与编辑模式');
+    }
+    
+    // Default to Preview Mode
+    if (!easyMDE.isPreviewActive()) {
+        EasyMDE.togglePreview(easyMDE);
     }
     
     const viewportHeight = window.innerHeight;
@@ -1533,18 +1440,6 @@ async function viewKnowledge(title, options = {}) {
     easyMDE.codemirror.setSize(null, `${viewportHeight - headerHeight}px`);
 
     easyMDE.value(content || '');
-
-    // Default to Preview Mode unless forced edit mode
-    if (forceEditMode) {
-        if (easyMDE.isPreviewActive()) {
-            EasyMDE.togglePreview(easyMDE);
-        }
-    } else {
-        if (!easyMDE.isPreviewActive()) {
-            EasyMDE.togglePreview(easyMDE);
-        }
-    }
-
     setTimeout(() => easyMDE.codemirror.refresh(), 100);
 }
 
@@ -1564,9 +1459,6 @@ function closeKnowledgeView() {
         headerTitle.textContent = originalHeaderState.title;
         headerLeft.innerHTML = originalHeaderState.leftHTML;
         headerRight.innerHTML = originalHeaderState.rightHTML;
-        els.modelSelectContainer = document.getElementById('modelSelectContainer');
-        els.currentModelDisplay = document.getElementById('currentModelDisplay');
-        els.modelOptions = document.getElementById('modelOptions');
         loadModels(); 
         
         const toggleSidebar = document.getElementById('toggleSidebar');
@@ -1578,132 +1470,6 @@ function closeKnowledgeView() {
         if(toggleKP) toggleKP.onclick = () => els.knowledgePanel.classList.toggle('visible');
     }
     currentViewingKnowledge = null;
-    originalHeaderState = null;
-}
-
-// --- Knowledge Search ---
-let lastKnowledgeSearchResults = [];
-
-async function handleKnowledgeSearch() {
-    const input = els.knowledgeSearchInput;
-    if (!input) return;
-    const query = input.value.trim();
-    if (!query) return;
-    await searchKnowledgeVectors(query);
-}
-
-async function searchKnowledgeVectors(query) {
-    const modal = document.getElementById('knowledgeSearchModal');
-    const list = document.getElementById('knowledgeSearchResults');
-    if (!list) return;
-    list.innerHTML = '<div style="color:#94a3b8;">搜索中...</div>';
-    if (modal) modal.classList.add('active');
-    try {
-        const res = await fetch('/api/knowledge/query', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: query, top_k: 8 })
-        });
-        const data = await res.json();
-        if (!data.success) {
-            list.innerHTML = `<div style="color:#ef4444;">${data.message || '搜索失败'}</div>`;
-            return;
-        }
-        const docs = (data.result && data.result.documents && data.result.documents[0]) ? data.result.documents[0] : [];
-        const metas = (data.result && data.result.metadatas && data.result.metadatas[0]) ? data.result.metadatas[0] : [];
-        const dists = (data.result && data.result.distances && data.result.distances[0]) ? data.result.distances[0] : [];
-        if (docs.length === 0) {
-            list.innerHTML = '<div style="color:#94a3b8;">没有结果</div>';
-            return;
-        }
-        lastKnowledgeSearchResults = docs.map((doc, i) => ({
-            doc,
-            meta: metas[i] || {},
-            dist: dists[i]
-        }));
-
-        list.innerHTML = lastKnowledgeSearchResults.map((item, idx) => {
-            const title = item.meta.title || 'Untitled';
-            const preview = (item.doc || '').slice(0, 140);
-            const score = item.dist != null ? (1 - item.dist) : 0;
-            return `<div data-idx="${idx}" style="padding:8px 0; border-bottom:1px dashed #e2e8f0; cursor:pointer;">
-                <div style="font-weight:600; color:#0f172a;">${escapeHtml(title)} <span style="color:#64748b; font-size:11px;">(score ${score.toFixed(4)})</span></div>
-                <div style="color:#64748b; font-size:12px;">${escapeHtml(preview)}</div>
-            </div>`;
-        }).join('');
-
-        list.querySelectorAll('[data-idx]').forEach(el => {
-            el.addEventListener('click', () => {
-                const idx = Number(el.getAttribute('data-idx'));
-                const item = lastKnowledgeSearchResults[idx];
-                const title = (item && item.meta && item.meta.title) ? item.meta.title : '';
-                const chunkText = (item && item.doc) ? item.doc : '';
-                if (title) {
-                    closeKnowledgeSearchModal();
-                    openKnowledgeAtChunk(title, chunkText, (item && item.meta) ? item.meta : {});
-                }
-            });
-        });
-    } catch (e) {
-        list.innerHTML = `<div style="color:#ef4444;">搜索失败: ${e.message}</div>`;
-    }
-}
-
-function closeKnowledgeSearchModal() {
-    const modal = document.getElementById('knowledgeSearchModal');
-    if (modal) modal.classList.remove('active');
-}
-
-async function openKnowledgeAtChunk(title, chunkText, meta = {}) {
-    await viewKnowledge(title, { forceEditMode: true });
-    setTimeout(() => {
-        if (!easyMDE) return;
-        const content = easyMDE.value() || '';
-        let idx = -1;
-        if (meta && typeof meta.chunk_start === 'number') {
-            idx = meta.chunk_start;
-        } else {
-            idx = content.indexOf(chunkText);
-            if (idx < 0 && chunkText) {
-                const short = chunkText.slice(0, 80);
-                idx = content.indexOf(short);
-            }
-        }
-        if (idx < 0) return;
-        const pos = indexToPos(content, idx);
-        const cm = easyMDE.codemirror;
-        const endIdx = meta && typeof meta.chunk_end === 'number'
-            ? meta.chunk_end
-            : Math.min(content.length, idx + Math.min(160, chunkText.length || 160));
-        const endPos = indexToPos(content, endIdx);
-        cm.focus();
-        cm.setSelection(pos, endPos);
-        cm.scrollIntoView({ line: pos.line, ch: pos.ch }, 120);
-        if (cm.__lastHighlight) {
-            cm.__lastHighlight.clear();
-        }
-        cm.__lastHighlight = cm.markText(pos, endPos, { className: 'cm-search-highlight' });
-        if (!easyMDE.isPreviewActive()) {
-            EasyMDE.togglePreview(easyMDE);
-        }
-    }, 300);
-}
-
-function indexToPos(text, index) {
-    const before = text.slice(0, index);
-    const lines = before.split('\n');
-    const line = lines.length - 1;
-    const ch = lines[lines.length - 1].length;
-    return { line, ch };
-}
-
-function escapeHtml(str) {
-    return String(str || '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
 }
 
 async function saveKnowledge(title) {
@@ -1728,7 +1494,7 @@ async function saveKnowledge(title) {
 }
 
 function confirmDeleteKnowledge(title) {
-    showConfirm("删除知识", `确定要彻底删除 “${title}” 吗？此操作无法撤销。`, "danger", () => deleteKnowledge(title));
+    showConfirm("删除知识", `确定要彻底删除 "${title}" 吗？此操作无法撤销。`, "danger", () => deleteKnowledge(title));
 }
 
 async function deleteKnowledge(title) {
@@ -1741,15 +1507,15 @@ async function deleteKnowledge(title) {
         closeConfirmModal();
         
         if(data.success) {
-            showToast('ɾɹ');
+            showToast('删除成功');
             closeKnowledgeView();
             loadKnowledge(); 
         } else {
-            showToast('ɾʧ: ' + (data.message || data.error));
+            showToast('删除失败: ' + (data.message || data.error));
         }
     } catch(e) {
         closeConfirmModal();
-        showToast('쳣: ' + e.message);
+        showToast('请求异常: ' + e.message);
     }
 }
 
@@ -1772,63 +1538,27 @@ async function openKnowledgeSettingsModal() {
         document.getElementById('settingPublic').checked = metadata.public || false;
         document.getElementById('settingCollaborative').checked = metadata.collaborative || false;
         
-        const base = window.location.origin;
-        const shareId = metadata.share_id || '';
-        const shareUrl = shareId ? `${base}/public/knowledge/${currentUsername}/${shareId}` : '';
-        setShareLinkDisplay(shareUrl, metadata.public);
+        const shareSection = document.getElementById('shareLinkSection');
+        if (metadata.public) {
+            shareSection.style.display = 'block';
+            const base = window.location.origin;
+            // Ensure share_id is present (api returns it now)
+            const shareId = metadata.share_id || 'unknown';
+            document.getElementById('shareUrlDisplay').value = `${base}/public/knowledge/${currentUsername}/${shareId}`;
+        } else {
+            shareSection.style.display = 'none';
+        }
         
         if (metadata.updated_at) {
             document.getElementById('lastModifyTime').textContent = new Date(metadata.updated_at * 1000).toLocaleString();
         }
 
-        loadVectorChunks(title);
-        initKnowledgeSettingsTabs();
-        if (vectorizeTitle && vectorizeTitle !== title) {
-            resetVectorProgressUI();
-        }
-        vectorizeTitle = title;
         document.getElementById('knowledgeSettingsModal').classList.add('active');
-        setVectorStatus('加载中...');
-        loadVectorChunks(title);
     } catch(e) { console.error(e); }
 }
 
 function closeKnowledgeSettingsModal() {
     document.getElementById('knowledgeSettingsModal').classList.remove('active');
-    resetVectorProgressUI();
-}
-
-function initKnowledgeSettingsTabs() {
-    const modal = document.getElementById('knowledgeSettingsModal');
-    if (!modal || modal.dataset.tabsInit === '1') return;
-    modal.dataset.tabsInit = '1';
-    const tabs = modal.querySelectorAll('.admin-tab');
-    const contents = modal.querySelectorAll('.admin-tab-content');
-    tabs.forEach(tab => {
-        tab.addEventListener('click', () => {
-            const target = tab.getAttribute('data-tab');
-            tabs.forEach(t => t.classList.remove('active'));
-            tab.classList.add('active');
-            contents.forEach(c => c.classList.remove('active'));
-            const panel = modal.querySelector(`#${target}-tab`);
-            if (panel) panel.classList.add('active');
-        });
-    });
-}
-
-function setShareLinkDisplay(shareUrl, isPublic) {
-    const shareSection = document.getElementById('shareLinkSection');
-    const shareInput = document.getElementById('shareUrlDisplay');
-
-    if (!shareSection || !shareInput) return;
-
-    if (isPublic && shareUrl) {
-        shareInput.value = shareUrl;
-        shareSection.style.display = 'block';
-    } else {
-        shareSection.style.display = 'none';
-        shareInput.value = '';
-    }
 }
 
 async function applyKnowledgeSettings() {
@@ -1853,21 +1583,31 @@ async function applyKnowledgeSettings() {
         const data = await res.json();
         if (data.success) {
             showToast('设置已更新');
-            
-            // If title changed, we must reload the view
+            // update local current share_id if provided
+            if (data.share_url) {
+                // Update the share URL immediately
+                const shareSection = document.getElementById('shareLinkSection');
+                const urlInput = document.getElementById('shareUrlDisplay');
+                shareSection.style.display = 'block';
+                urlInput.value = data.share_url;
+            } else if (!isPublic) {
+                document.getElementById('shareLinkSection').style.display = 'none';
+            }
+
             if (newTitle !== oldTitle) {
-                closeKnowledgeSettingsModal();
+                closeKnowledgeSettingsModal(); // Must close if title changed as view logic depends on title
                 closeKnowledgeView();
                 viewKnowledge(newTitle);
             } else {
-                const shareUrl = data.share_url || '';
-                setShareLinkDisplay(shareUrl, isPublic);
+                // Do not close modal, user might want to copy link
+                // Update title just in case
+                if(currentViewingKnowledge) currentViewingKnowledge = newTitle;
             }
             loadKnowledge(); 
         } else {
             showToast('更新失败: ' + data.message);
         }
-    } catch(e) { showToast('网络错: ' + e.message); }
+    } catch(e) { showToast('网络错误: ' + e.message); }
 }
 
 function copyShareUrl() {
@@ -1887,6 +1627,28 @@ function showToast(msg) {
     toast.textContent = msg;
     toast.classList.add('show');
     setTimeout(() => toast.classList.remove('show'), 3000);
+}
+
+async function loadKnowledge(cid) {
+    try {
+        const [resBasis, resShort] = await Promise.all([
+            fetch('/api/knowledge/basis'),
+            fetch('/api/knowledge/short')
+        ]);
+        
+        const basisData = await resBasis.json();
+        const shortData = await resShort.json();
+
+        if (basisData.success) {
+            renderKnowledgeList(els.panelBasisList, basisData.knowledge || [], 'basis');
+            if(els.panelBasisCount) els.panelBasisCount.textContent = (basisData.knowledge || []).length;
+        }
+        if (shortData.success) {
+            renderKnowledgeList(els.panelShortList, shortData.memories || shortData.knowledge || [], 'short');
+            if(els.panelShortCount) els.panelShortCount.textContent = (shortData.memories || shortData.knowledge || []).length;
+        }
+
+    } catch(e) { console.error("Error loading knowledge", e); }
 }
 
 async function loadModels() {
@@ -2078,7 +1840,7 @@ window.removeUploadedFile = function(index) {
 }
 
 // --- Admin Functions ---
-// 查用户色并显示管理菜单
+// 检查用户角色并显示管理菜单
 async function checkUserRole() {
     try {
         const res = await fetch('/api/user/info');
@@ -2087,7 +1849,7 @@ async function checkUserRole() {
             currentUsername = data.username;
             currentUserRole = data.role;
             
-            // 设置头像首字?
+            // 设置头像首字母
             const avatar = document.getElementById('sidebar-avatar');
             if (avatar && data.username) {
                 avatar.textContent = data.username.charAt(0).toUpperCase();
@@ -2119,7 +1881,7 @@ async function checkUserRole() {
 async function openAdminDashboard() {
     const adminModal = document.getElementById('adminModal');
     const userMenu = document.getElementById('userMenu');
-    if (userMenu) userMenu.classList.remove('active'); // 臊۵菜单
+    if (userMenu) userMenu.classList.remove('active'); // 自动折叠菜单
     
     if (!adminModal) return;
     adminModal.classList.add('active');
@@ -2129,7 +1891,6 @@ async function openAdminDashboard() {
     
     // Load stats
     await loadAdminStats();
-    await loadAdminChromaStats();
 }
 
 // 加载用户列表
@@ -2193,7 +1954,7 @@ window.openUserModelPerm = async function(username) {
     
     const listContainer = document.getElementById('modelPermList');
     if(listContainer) {
-        listContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">???????...</div>';
+        listContainer.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">加载模型列表中...</div>';
     }
     
     try {
@@ -2216,7 +1977,7 @@ window.openUserModelPerm = async function(username) {
             listContainer.innerHTML = `<div style="padding: 20px; color: #ef4444;">${data.message || '获取失败'}</div>`;
         }
     } catch (err) {
-        if (listContainer) listContainer.innerHTML = '<div style="padding: 20px; color: #ef4444;">ʧ</div>';
+        if (listContainer) listContainer.innerHTML = '<div style="padding: 20px; color: #ef4444;">网络请求失败</div>';
     }
 };
 
@@ -2242,9 +2003,9 @@ window.saveUserModelPermissions = async function() {
         });
         const data = await res.json();
         if (data.success) {
-            showToast('Ȩ޸³ɹ');
+            showToast('权限更新成功');
             closeModelPermModal();
-            // 如果俔的是当前登录用户，则刷新页面
+            // 如果修改的是当前登录用户，则刷新页面
             if (currentTargetPermUser === currentUsername) {
                 setTimeout(() => location.reload(), 800);
             }
@@ -2263,44 +2024,6 @@ window.closeModelPermModal = function() {
 };
 
 // 加载统计信息
-
-// ChromaDB stats
-async function loadAdminChromaStats() {
-    try {
-        const res = await fetch('/api/admin/chroma/stats');
-        const data = await res.json();
-        const statusEl = document.getElementById('statChromaStatus');
-        const totalEl = document.getElementById('statChromaTotal');
-        const listEl = document.getElementById('adminChromaList');
-
-        if (!statusEl || !totalEl || !listEl) return;
-
-        if (!data.success) {
-            statusEl.textContent = 'error';
-            totalEl.textContent = '-';
-            listEl.innerHTML = `<tr><td colspan="2">${data.message || 'Failed to load'}</td></tr>`;
-            return;
-        }
-
-        if (!data.enabled) {
-            statusEl.textContent = 'disabled';
-            totalEl.textContent = '0';
-            listEl.innerHTML = `<tr><td colspan="2">ChromaDB disabled</td></tr>`;
-            return;
-        }
-
-        statusEl.textContent = data.mode || 'service';
-        totalEl.textContent = (data.total_vectors || 0).toLocaleString();
-
-        const rows = (data.collections || []).map(c => {
-            return `<tr><td>${c.name}</td><td class="mono">${(c.count || 0).toLocaleString()}</td></tr>`;
-        }).join('');
-        listEl.innerHTML = rows || '<tr><td colspan="2">No collections</td></tr>';
-    } catch (err) {
-        console.error('Failed to load chroma stats:', err);
-    }
-}
-
 async function loadAdminStats() {
     try {
         const res = await fetch('/api/admin/users');
@@ -2324,15 +2047,15 @@ async function loadAdminStats() {
     }
 }
 
-// ?????
+// 切换标签页
 function switchAdminTab(tabName) {
     // Hide all tabs
-    document.querySelectorAll('#adminModal .admin-tab-content').forEach(tab => {
+    document.querySelectorAll('.admin-tab-content').forEach(tab => {
         tab.classList.remove('active');
     });
     
     // Deactivate all buttons
-    document.querySelectorAll('#adminModal .admin-tab').forEach(btn => {
+    document.querySelectorAll('.admin-tab').forEach(btn => {
         btn.classList.remove('active');
     });
     
@@ -2343,20 +2066,15 @@ function switchAdminTab(tabName) {
     }
     
     // Activate selected button
-    const selectedBtn = document.querySelector(`#adminModal [data-tab="${tabName}"]`);
-    if (selectedBtn) selectedBtn.classList.add('active');
-    if (tabName === 'chroma') {
-        loadAdminChromaStats();
-    }
-
+    document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
 }
 
-// 切换添加用户
+// 切换添加用户弹窗
 function openAddUserModal() {
     const modal = document.getElementById('addUserModal');
     if (modal) {
         modal.classList.add('active');
-        // 禁底层管理的点?
+        // 禁止底层管理弹窗的点击
         const adminModal = document.getElementById('adminModal');
         if (adminModal) adminModal.style.pointerEvents = 'none';
     }
@@ -2366,7 +2084,7 @@ function closeAddUserModal() {
     const modal = document.getElementById('addUserModal');
     if (modal) {
         modal.classList.remove('active');
-        // 恢底层管理的点?
+        // 恢复底层管理弹窗的点击
         const adminModal = document.getElementById('adminModal');
         if (adminModal) adminModal.style.pointerEvents = 'auto';
     }
@@ -2394,7 +2112,7 @@ async function submitAddUser() {
             alert('用户添加成功');
             document.getElementById('formUsername').value = '';
             document.getElementById('formPassword').value = '';
-            closeAddUserModal(); // رյ
+            closeAddUserModal(); // 关闭弹窗
             await loadAdminUsersList();
             await loadAdminStats();
         } else {
@@ -2439,7 +2157,8 @@ async function changeUserRole(username, newRole) {
         alert('你不能修改自己的权限');
         return;
     }
-
+    
+    // 增加确认弹窗
     if (!confirm(`确定要将 ${username} 的权限修改为 ${newRole === 'admin' ? '管理员' : '普通用户'} 吗？`)) {
         return;
     }
@@ -2463,524 +2182,3 @@ async function changeUserRole(username, newRole) {
     }
 }
 
-
-
-async function updateVectorInSettings() {
-    if (!currentViewingKnowledge) {
-        showToast('请先选择知识点');
-        return;
-    }
-    if (vectorizeTasks[currentViewingKnowledge] && vectorizeTasks[currentViewingKnowledge].running) {
-        showToast('该知识点正在向量化');
-        return;
-    }
-    showToast('正在更新到向量库，可先关闭窗口');
-    setVectorStatus('更新中...');
-    vectorizeTitle = currentViewingKnowledge;
-    const runId = ++vectorizeRunId;
-    vectorizeTasks[currentViewingKnowledge] = { running: true, runId };
-    try {
-        const titleInput = document.getElementById('settingTargetTitle');
-        const liveTitle = titleInput && titleInput.value.trim() ? titleInput.value.trim() : currentViewingKnowledge;
-        if (runId !== vectorizeRunId) return;
-
-        const metaRes = await fetch('/api/knowledge/list');
-        const metaData = await metaRes.json();
-        const basisMeta = metaData && metaData.basis_knowledge ? metaData.basis_knowledge : {};
-        const meta = basisMeta[liveTitle] || {};
-        const updatedAt = Number(meta.updated_at || 0);
-        const vectorUpdatedAt = Number(meta.vector_updated_at || 0);
-        if (updatedAt > 0 && vectorUpdatedAt >= updatedAt) {
-            const chunksRes = await fetch('/api/knowledge/vector/chunks', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ title: liveTitle })
-            });
-            const chunksData = await chunksRes.json();
-            const chunkCount = (chunksData && chunksData.chunks ? chunksData.chunks : []).length;
-            if (chunkCount > 0) {
-                showToast('内容未变化，已跳过');
-                setVectorStatus('无需更新');
-                vectorizeTasks[currentViewingKnowledge] = { running: false, runId };
-                return;
-            }
-        }
-
-        const res = await fetch(`/api/knowledge/basis/${encodeURIComponent(liveTitle)}`);
-        const data = await res.json();
-        if (!data.success) {
-            showToast('读取知识内容失败');
-            setVectorStatus('读取失败');
-            vectorizeTasks[currentViewingKnowledge] = { running: false, runId };
-            return;
-        }
-        const content = data.knowledge && data.knowledge.content ? data.knowledge.content : '';
-        const title = data.knowledge && data.knowledge.title ? data.knowledge.title : liveTitle;
-
-        const cfgRes = await fetch('/api/knowledge/vector/config');
-        const cfgData = await cfgRes.json();
-        const chunkSize = cfgData.chunk_size || 800;
-        const chunkOverlap = cfgData.chunk_overlap || 120;
-        const chunks = splitTextForVector(content, chunkSize, chunkOverlap);
-        if (chunks.length === 0) {
-            showToast('内容为空');
-            setVectorStatus('内容为空');
-            vectorizeTasks[currentViewingKnowledge] = { running: false, runId };
-            return;
-        }
-
-        if (vectorizeTitle === currentViewingKnowledge) {
-            startVectorProgress(chunks.length);
-        }
-
-        await fetch('/api/knowledge/vector/delete', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title })
-        });
-
-        let storedCount = 0;
-        for (let i = 0; i < chunks.length; i++) {
-            if (runId !== vectorizeRunId) return;
-            const chunkObj = chunks[i];
-            const resChunk = await fetch('/api/knowledge/vectorize/chunk', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    title,
-                    text: chunkObj.text,
-                    chunk_id: i,
-                    chunk_total: chunks.length,
-                    metadata: {
-                        chunk_start: chunkObj.start,
-                        chunk_end: chunkObj.end
-                    }
-                })
-            });
-            const dataChunk = await resChunk.json();
-            if (!dataChunk.success) {
-                setVectorStatus('向量化失败');
-                if (vectorizeTitle === currentViewingKnowledge) {
-                    stopVectorProgress(`失败：${i + 1}/${chunks.length}`, true);
-                }
-                showToast('向量化失败: ' + (dataChunk.message || '未知错误'));
-                vectorizeTasks[currentViewingKnowledge] = { running: false, runId };
-                return;
-            }
-            storedCount += 1;
-            if (vectorizeTitle === currentViewingKnowledge) {
-                updateVectorProgress(i + 1, chunks.length);
-            }
-        }
-
-        showToast('已更新到向量库');
-        setVectorStatus(`已更新，${storedCount} 块`);
-        if (vectorizeTitle === currentViewingKnowledge) {
-            stopVectorProgress(`完成 ${storedCount} 块`);
-        }
-        loadVectorChunks(title);
-        vectorizeTasks[currentViewingKnowledge] = { running: false, runId };
-        await fetch('/api/knowledge/vector/mark', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title })
-        });
-    } catch (e) {
-        showToast('向量化失败: ' + e.message);
-        setVectorStatus('向量化失败');
-        if (vectorizeTitle === currentViewingKnowledge) {
-            stopVectorProgress('向量化失败', true);
-        }
-        vectorizeTasks[currentViewingKnowledge] = { running: false, runId };
-    }
-}
-
-async function deleteVectorInSettings() {
-    if (!currentViewingKnowledge) {
-        showToast('请先选择知识点');
-        return;
-    }
-    if (!confirm('确定要删除知识点在向量库中的所有内容吗？')) return;
-    setVectorStatus('删除中...');
-    try {
-        const titleInput = document.getElementById('settingTargetTitle');
-        const liveTitle = titleInput && titleInput.value.trim() ? titleInput.value.trim() : currentViewingKnowledge;
-        const res = await fetch('/api/knowledge/vector/delete', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title: liveTitle })
-        });
-        const data = await res.json();
-        if (data.success) {
-            showToast('向量已删除');
-            setVectorStatus('已删除');
-            loadVectorChunks(liveTitle);
-        } else {
-            showToast('删除失败: ' + (data.message || '未知错误'));
-            setVectorStatus('删除失败');
-        }
-    } catch (e) {
-        showToast('删除失败: ' + e.message);
-        setVectorStatus('删除失败');
-    }
-}
-
-async function searchChroma() {
-    const input = document.getElementById('chromaSearchInput');
-    const results = document.getElementById('chromaSearchResults');
-    if (!input || !results) return;
-    const query = input.value.trim();
-    if (!query) {
-        results.style.display = 'block';
-        results.textContent = '请输入查询内容';
-        return;
-    }
-
-    results.style.display = 'block';
-    results.textContent = '搜索中...';
-
-    try {
-        const res = await fetch('/api/knowledge/query', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: query, top_k: 5 })
-        });
-        const data = await res.json();
-        if (!data.success) {
-            results.textContent = data.message || '搜索失败';
-            return;
-        }
-        const result = data.result || {};
-        const docs = result.documents && result.documents[0] ? result.documents[0] : [];
-        const metas = result.metadatas && result.metadatas[0] ? result.metadatas[0] : [];
-        const dists = result.distances && result.distances[0] ? result.distances[0] : [];
-        if (docs.length === 0) {
-            results.textContent = '没有结果';
-            return;
-        }
-        const items = docs.map((doc, i) => ({
-            doc,
-            meta: metas[i],
-            dist: dists[i],
-            score: dists[i] != null ? (1 - dists[i]) : 0
-        })).sort((a, b) => (b.score || 0) - (a.score || 0));
-
-        results.innerHTML = items.map((item) => {
-            const doc = item.doc || '';
-            const meta = item.meta || {};
-            const title = meta.title || 'Untitled';
-            const scoreText = item.score != null ? item.score.toFixed(4) : '-';
-            const preview = doc.length > 120 ? doc.slice(0, 120) + '...' : doc;
-            return `<div style="padding:6px 0; border-bottom:1px dashed #e2e8f0;">
-                <div style="font-weight:600;">${title} <span style="color:#64748b; font-size:11px;">(score ${scoreText})</span></div>
-                <div style="color:#64748b; font-size:12px;">${preview}</div>
-            </div>`;
-        }).join('');
-    } catch (e) {
-        results.textContent = '搜索失败: ' + e.message;
-    }
-}
-
-async function loadVectorChunks(title) {
-    const list = document.getElementById('vectorChunkList');
-    if (!list) return;
-    if (!title) {
-        list.innerHTML = '<div style="color:#94a3b8;"></div>';
-        setVectorStatus('请选择知识点');
-        return;
-    }
-    list.innerHTML = '<div style="color:#94a3b8;">加载中...</div>';
-    setVectorStatus('加载中...');
-    try {
-        const res = await fetch('/api/knowledge/vector/chunks', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title })
-        });
-        const data = await res.json();
-        if (!data.success) {
-            list.innerHTML = `<div style="color:#ef4444;">${data.message || '加载失败'}</div>`;
-            setVectorStatus('加载失败');
-            return;
-        }
-        const chunks = data.chunks || [];
-        if (chunks.length === 0) {
-            list.innerHTML = '<div style="color:#94a3b8;">暂无数据</div>';
-            setVectorStatus('暂无数据');
-            return;
-        }
-        list.innerHTML = chunks.map(c => {
-            const idx = c.chunk_id != null ? c.chunk_id : '-';
-            const preview = (c.text || '').slice(0, 80);
-            const id = c.id || '';
-            const safeId = String(id).replace(/"/g, '&quot;');
-            return `<div style="padding:6px 0; border-bottom:1px dashed #e2e8f0; display:flex; gap:8px; align-items:flex-start; justify-content: space-between;">
-                <div style="flex:1;">
-                    <div style="font-weight:600;">Chunk ${idx}</div>
-                    <div style="color:#64748b; font-size:12px; word-break: break-word;">${preview}</div>
-                </div>
-                <button class="btn-primary" onclick="deleteVectorChunk('${safeId}', '${title.replace("'", "\'")}')" style="background:#ef4444; padding: 4px 8px; font-size: 11px;">删除</button>
-            </div>`;
-        }).join('');
-        setVectorStatus(`已加载 ${chunks.length} 块`);
-    } catch (e) {
-        list.innerHTML = `<div style="color:#ef4444;">加载失败: ${e.message}</div>`;
-        setVectorStatus('加载失败');
-    }
-}
-
-function setVectorStatus(text) {
-    const el = document.getElementById('vectorStatusText');
-    if (el) el.textContent = text;
-}
-function setKnowledgeItemProgress(title, percent, active = true) {
-    const container = els.panelBasisList;
-    if (!container) return;
-    const safeTitle = escapeCssSelector(title);
-    const item = container.querySelector(`.knowledge-item[data-title="${safeTitle}"]`);
-    if (!item) return;
-    const bar = item.querySelector('.knowledge-progress');
-    if (!bar) return;
-    bar.style.width = `${Math.max(0, Math.min(100, percent))}%`;
-    bar.style.opacity = active ? '1' : '0';
-    if (!active) {
-        setTimeout(() => {
-            bar.style.width = '0%';
-        }, 200);
-    }
-}
-
-function escapeCssSelector(value) {
-    if (window.CSS && typeof window.CSS.escape === 'function') {
-        return window.CSS.escape(value);
-    }
-    return String(value || '').replace(/"/g, '\\"');
-}
-
-async function bulkVectorizeAllBasis() {
-    if (bulkVectorizeRunning) {
-        showToast('正在批量向量化，请稍候');
-        return;
-    }
-    bulkVectorizeRunning = true;
-    showToast('开始批量向量化');
-    try {
-        const metaRes = await fetch('/api/knowledge/list');
-        const metaData = await metaRes.json();
-        const basisMeta = metaData && metaData.basis_knowledge ? metaData.basis_knowledge : {};
-        const titles = Object.keys(basisMeta);
-        if (titles.length === 0) {
-            showToast('没有可向量化的知识点');
-            bulkVectorizeRunning = false;
-            return;
-        }
-        for (const title of titles) {
-            const meta = basisMeta[title] || {};
-            const updatedAt = Number(meta.updated_at || 0);
-            const vectorUpdatedAt = Number(meta.vector_updated_at || 0);
-            if (updatedAt > 0 && vectorUpdatedAt >= updatedAt) {
-                const chunksRes = await fetch('/api/knowledge/vector/chunks', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ title })
-                });
-                const chunksData = await chunksRes.json();
-                const chunkCount = (chunksData && chunksData.chunks ? chunksData.chunks : []).length;
-                if (chunkCount > 0) {
-                    continue;
-                }
-            }
-            await vectorizeKnowledgeTitle(title);
-        }
-    } catch (e) {
-        showToast('批量向量化失败: ' + e.message);
-    } finally {
-        bulkVectorizeRunning = false;
-        loadKnowledge(currentConversationId);
-    }
-}
-
-async function vectorizeKnowledgeTitle(title) {
-    try {
-        setKnowledgeItemProgress(title, 1, true);
-        const res = await fetch(`/api/knowledge/basis/${encodeURIComponent(title)}`);
-        const data = await res.json();
-        if (!data.success) {
-            setKnowledgeItemProgress(title, 100, false);
-            return;
-        }
-        const content = data.knowledge && data.knowledge.content ? data.knowledge.content : '';
-        const cfgRes = await fetch('/api/knowledge/vector/config');
-        const cfgData = await cfgRes.json();
-        const chunkSize = cfgData.chunk_size || 800;
-        const chunkOverlap = cfgData.chunk_overlap || 120;
-        const chunks = splitTextForVector(content, chunkSize, chunkOverlap);
-        if (chunks.length === 0) {
-            setKnowledgeItemProgress(title, 100, false);
-            return;
-        }
-        await fetch('/api/knowledge/vector/delete', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title })
-        });
-        for (let i = 0; i < chunks.length; i++) {
-            const chunkObj = chunks[i];
-            const resChunk = await fetch('/api/knowledge/vectorize/chunk', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    title,
-                    text: chunkObj.text,
-                    chunk_id: i,
-                    chunk_total: chunks.length,
-                    metadata: {
-                        chunk_start: chunkObj.start,
-                        chunk_end: chunkObj.end
-                    }
-                })
-            });
-            const dataChunk = await resChunk.json();
-            if (!dataChunk.success) {
-                setKnowledgeItemProgress(title, 100, false);
-                return;
-            }
-            const pct = Math.round(((i + 1) / chunks.length) * 100);
-            setKnowledgeItemProgress(title, pct, true);
-        }
-        await fetch('/api/knowledge/vector/mark', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title })
-        });
-        if (knowledgeMetaCache[title]) {
-            const updatedAt = Number(knowledgeMetaCache[title].updated_at || 0);
-            knowledgeMetaCache[title].vector_updated_at = Math.max(updatedAt, Date.now());
-        }
-        const list = els.panelBasisList;
-        if (list) {
-            const safeTitle = escapeCssSelector(title);
-            const item = list.querySelector(`.knowledge-item[data-title="${safeTitle}"]`);
-            if (item) {
-                const icon = item.querySelector('.fa-rotate');
-                if (icon) icon.remove();
-            }
-        }
-        setKnowledgeItemProgress(title, 100, false);
-    } catch (e) {
-        setKnowledgeItemProgress(title, 100, false);
-    }
-}
-
-let vectorProgressTimer = null;
-let vectorizeRunId = 0;
-let vectorizeTitle = null;
-const vectorizeTasks = {};
-function startVectorProgress(total) {
-    const wrap = document.getElementById('vectorProgressWrap');
-    const bar = document.getElementById('vectorProgressBar');
-    const text = document.getElementById('vectorProgressText');
-    if (!wrap || !bar || !text) return;
-    wrap.style.display = 'block';
-    bar.style.width = '0%';
-        text.textContent = `?????... 0/${total || 0}`;
-    if (vectorProgressTimer) clearInterval(vectorProgressTimer);
-    vectorProgressTimer = null;
-    updateVectorProgress(0, total || 0);
-}
-
-function updateVectorProgress(done, total) {
-    const bar = document.getElementById('vectorProgressBar');
-    const text = document.getElementById('vectorProgressText');
-    if (!bar || !text) return;
-    if (!total) {
-        bar.style.width = '0%';
-        text.textContent = '???...';
-        return;
-    }
-    const pct = Math.min(100, Math.round((done / total) * 100));
-    bar.style.width = `${pct}%`;
-    text.textContent = `???... ${done}/${total}`;
-}
-
-function stopVectorProgress(message, isError = false) {
-    const wrap = document.getElementById('vectorProgressWrap');
-    const bar = document.getElementById('vectorProgressBar');
-    const text = document.getElementById('vectorProgressText');
-    if (!wrap || !bar || !text) return;
-    if (vectorProgressTimer) {
-        clearInterval(vectorProgressTimer);
-        vectorProgressTimer = null;
-    }
-    bar.style.width = '100%';
-    bar.style.background = isError ? '#ef4444' : 'linear-gradient(90deg, #0f172a, #1e293b)';
-    text.textContent = message || '完成';
-    setTimeout(() => {
-        wrap.style.display = 'none';
-        bar.style.width = '0%';
-        bar.style.background = 'linear-gradient(90deg, #0f172a, #1e293b)';
-        text.textContent = '';
-    }, 1200);
-}
-
-function cancelVectorizeProgress() {
-    vectorizeRunId += 1;
-    vectorizeTitle = null;
-    stopVectorProgress('已取消', true);
-}
-
-function resetVectorProgressUI() {
-    const wrap = document.getElementById('vectorProgressWrap');
-    const bar = document.getElementById('vectorProgressBar');
-    const textEl = document.getElementById('vectorProgressText');
-    if (wrap) wrap.style.display = 'none';
-    if (bar) {
-        bar.style.width = '0%';
-        bar.style.background = 'linear-gradient(90deg, #0f172a, #1e293b)';
-    }
-    if (textEl) textEl.textContent = '';
-}
-
-
-function splitTextForVector(t, maxLen, overlap) {
-    if (!t) return [];
-    if (!maxLen || maxLen <= 0) return [t];
-    if (!overlap) overlap = 0;
-    if (overlap >= maxLen) overlap = Math.floor(maxLen / 4);
-    const text = t.replace(/\r\n/g, '\n');
-    const chunks = [];
-    let start = 0;
-    while (start < text.length) {
-        const end = Math.min(start + maxLen, text.length);
-        chunks.push({
-            text: text.slice(start, end),
-            start,
-            end
-        });
-        if (end === text.length) break;
-        start = Math.max(0, end - overlap);
-    }
-    return chunks;
-}
-
-async function deleteVectorChunk(vectorId, title) {
-    if (!vectorId) return;
-    if (!confirm('确定删除该分块吗？')) return;
-    setVectorStatus('删除中...');
-    try {
-        const res = await fetch('/api/knowledge/vector/delete', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ vector_id: vectorId })
-        });
-        const data = await res.json();
-        if (!data.success) {
-            showToast('删除失败: ' + (data.message || 'Unknown error'));
-            setVectorStatus('删除失败');
-        }
-        loadVectorChunks(title);
-    } catch (e) {
-        showToast('删除失败: ' + e.message);
-        setVectorStatus('删除失败');
-    }
-}

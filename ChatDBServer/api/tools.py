@@ -3,6 +3,27 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "vectorSearch",
+            "description": "在向量数据库中搜索内容，返回最相关的文章ID列表（含标题与相似度分数）。仅在启用向量数据库时可用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "搜索文本"
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "description": "返回条数，默认5"
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "getKnowledgeList",
             "description": "获取用户知识库的标题列表，分为短期记忆和基础知识库两种，请优先使用本函数查阅知识库内容。",
 

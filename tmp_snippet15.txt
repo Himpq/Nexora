@@ -1,0 +1,11 @@
+1729: 
+1730: function confirmDeleteKnowledge(title) {
+1731:     showConfirm("删除知识", `确定要彻底删除 “${title}” 吗？此操作无法撤销。`, "danger", () => deleteKnowledge(title));
+1732: }
+1733: 
+1734: aasync function deleteKnowledge(title) {
+1735:     try {
+1736:         const res = await fetch(`/api/knowledge/basis/${encodeURIComponent(title)}`, {
+1737:             method: 'DELETE'
+1738:         });
+1739:         

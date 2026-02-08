@@ -14,31 +14,27 @@ from volcenginesdkarkruntime import Ark
 from openai import OpenAI
 from tools import TOOLS
 from database import User
+from chroma_client import ChromaStore
 from conversation_manager import ConversationManager
 
 # 配置文件路径
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.json')
+MODELS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models.json')
+MODELS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models.json')
 
 # 加载配置
 def load_config():
+    config = {}
     if os.path.exists(CONFIG_PATH):
         with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {
-        "providers": {
-            "volcengine": {
-                "api_key": "",
-                "base_url": "https://ark.cn-beijing.volces.com/api/v3"
-            }
-        },
-        "models": {
-            "doubao-seed-1-6-251015": {
-                "name": "Doubao Seed 1.6 (251015)",
-                "provider": "volcengine"
-            }
-        },
-        "default_model": "doubao-seed-1-6-251015"
-    }
+            config = json.load(f)
+    if os.path.exists(MODELS_PATH):
+        with open(MODELS_PATH, 'r', encoding='utf-8') as f:
+            models_cfg = json.load(f)
+        config["models"] = models_cfg.get("models", models_cfg)
+        if "providers" in models_cfg:
+            config["providers"] = models_cfg.get("providers", {})
+    return config
 
 CONFIG = load_config()
 
@@ -171,8 +167,12 @@ class Model:
     
     def get_embedding(self, text: str) -> List[float]:
         """获取文本向量 (OpenAI/Alibaba 兼容接口)"""
-        embedding_model = CONFIG.get('embedding_model', "text-embedding-v3")
-        provider_name = 'aliyun_embedding' if 'aliyun_embedding' in CONFIG.get('providers', {}) else self.provider
+        embedding_key = CONFIG.get('default_embedding_model', "text-embedding-v3")
+
+        embedding_model = CONFIG.get('embedding_model', {}).get(embedding_key, {}).get('name', embedding_key)
+        provider_name = CONFIG.get('embedding_model', {}).get(embedding_key, {}).get('provider')
+        if not provider_name:
+            provider_name = 'aliyun_embedding' if 'aliyun_embedding' in CONFIG.get('providers', {}) else self.provider
         provider_info = CONFIG.get('providers', {}).get(provider_name, {})
         
         api_key = provider_info.get('api_key')
@@ -202,6 +202,8 @@ class Model:
     def _parse_tools(self, tools_config: List[Dict]) -> List[Dict]:
         """解析工具定义为API格式 - 兼容不同供应商"""
         parsed_tools = []
+        rag_cfg = CONFIG.get("rag_database", {}) if isinstance(CONFIG, dict) else {}
+        rag_enabled = bool(rag_cfg.get("rag_database_enabled", False))
         
         # 1. 火山引擎专用：内置 web_search
         provider = getattr(self, 'provider', 'volcengine')
@@ -214,7 +216,9 @@ class Model:
         for tool in tools_config:
             if tool["type"] == "function":
                 func_def = tool["function"]
-                
+                if func_def.get("name") == "vectorSearch" and not rag_enabled:
+                                    continue
+                                
                 # 排除被 native web_search 替代的冗余工具
                 if func_def["name"] in ["searchOnline", "web_search"] and provider == 'volcengine':
                      continue
@@ -366,6 +370,35 @@ class Model:
             return result
         
         # 知识图谱功能 - 新增
+        elif function_name == "vectorSearch":
+            query = args.get("query", "")
+            top_k = int(args.get("top_k") or 5)
+            if not query:
+                return "missing query"
+            rag_cfg = CONFIG.get("rag_database", {}) if isinstance(CONFIG, dict) else {}
+            if not rag_cfg.get("rag_database_enabled", False):
+                return "vector db disabled"
+            try:
+                store = ChromaStore(rag_cfg)
+                result = store.query_text(self.username, query, top_k=top_k)
+                ids = result.get("ids", [[]])[0] if isinstance(result.get("ids"), list) else []
+                metas = result.get("metadatas", [[]])[0] if isinstance(result.get("metadatas"), list) else []
+                dists = result.get("distances", [[]])[0] if isinstance(result.get("distances"), list) else []
+                payload = []
+                for i, vid in enumerate(ids):
+                    meta = metas[i] if i < len(metas) else {}
+                    score = None
+                    if i < len(dists) and dists[i] is not None:
+                        score = 1 - dists[i]
+                    payload.append({
+                        "id": vid,
+                        "title": meta.get("title"),
+                        "score": score
+                    })
+                return json.dumps(payload, ensure_ascii=False)
+            except Exception as e:
+                return f"vector search error: {str(e)}"
+
         elif function_name == "linkKnowledge":
             success, msg = self.user.add_connection(
                 args.get("source"),

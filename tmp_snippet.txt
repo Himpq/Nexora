@@ -1,0 +1,138 @@
+2468: async function updateVectorInSettings() {
+2469:     if (!currentViewingKnowledge) {
+2470:         showToast('请先选择丟识点');
+2471:         return;
+2472:     }
+2473:     if (vectorizeTasks[currentViewingKnowledge]?.running) {
+2474:         showToast('该知识点正在向量?);
+2475:         return;
+2476:     }
+2477:     showToast('正在更新到向量库，可先关闪?);
+2478:     setVectorStatus('更新?..');
+2479:     vectorizeTitle = currentViewingKnowledge;
+2480:     const runId = ++vectorizeRunId;
+2481:     vectorizeTasks[currentViewingKnowledge] = { running: true, runId };
+2482:     try {
+2483:         const titleInput = document.getElementById('settingTargetTitle');
+2484:         const liveTitle = titleInput && titleInput.value.trim() ? titleInput.value.trim() : currentViewingKnowledge;
+2485:         if (runId !== vectorizeRunId) return;
+2486:         const metaRes = await fetch('/api/knowledge/list');
+2487:         const metaData = await metaRes.json();
+2488:         const meta = metaData?.basis_knowledge?.[liveTitle];
+2489:         const updatedAt = Number(meta?.updated_at || 0);
+2490:         const vectorUpdatedAt = Number(meta?.vector_updated_at || 0);
+2491:         if (updatedAt > 0 && vectorUpdatedAt >= updatedAt) {
+2492:             const chunksRes = await fetch('/api/knowledge/vector/chunks', {
+2493:                 method: 'POST',
+2494:                 headers: { 'Content-Type': 'application/json' },
+2495:                 body: JSON.stringify({ title: liveTitle })
+2496:             });
+2497:             const chunksData = await chunksRes.json();
+2498:             const chunkCount = (chunksData?.chunks || []).length;
+2499:             if (chunkCount > 0) {
+2500:                 showToast('?????????????');
+2501:                 setVectorStatus('?????');
+2502:                 vectorizeTasks[currentViewingKnowledge] = { running: false, runId };
+2503:                 return;
+2504:             }
+2505:         }
+2506: 
+2507:         const res = await fetch(`/api/knowledge/basis/${encodeURIComponent(liveTitle)}`);
+2508:         const data = await res.json();
+2509:         if (!data.success) {
+2510:             showToast('读取知识内ʧ');
+2511:             setVectorStatus('ȡʧ');
+2512:             vectorizeTasks[currentViewingKnowledge] = { running: false, runId };
+2513:             return;
+2514:         }
+2515:         const content = data.knowledge?.content || '';
+2516:         const title = data.knowledge?.title || liveTitle;
+2517: 
+2518:         const cfgRes = await fetch('/api/knowledge/vector/config');
+2519:         const cfgData = await cfgRes.json();
+2520:         const chunkSize = cfgData.chunk_size || 800;
+2521:         const chunkOverlap = cfgData.chunk_overlap || 120;
+2522:         const chunks = splitTextForVector(content, chunkSize, chunkOverlap);
+2523:         if (chunks.length === 0) {
+2524:             showToast('内为空');
+2525:             setVectorStatus('内为空');
+2526:             vectorizeTasks[currentViewingKnowledge] = { running: false, runId };
+2527:             return;
+2528:         }
+2529: 
+2530:         if (vectorizeTitle === currentViewingKnowledge) {
+2531:             startVectorProgress(chunks.length);
+2532:         }
+2533: 
+2534:         await fetch('/api/knowledge/vector/delete', {
+2535:             method: 'POST',
+2536:             headers: { 'Content-Type': 'application/json' },
+2537:             body: JSON.stringify({ title })
+2538:         });
+2539: 
+2540:         let storedCount = 0;
+2541:         for (let i = 0; i < chunks.length; i++) {
+2542:             if (runId !== vectorizeRunId) return;
+2543:             const chunkObj = chunks[i];
+2544:             const chunkText = chunkObj.text;
+2545:             const resChunk = await fetch('/api/knowledge/vectorize/chunk', {
+2546:                 method: 'POST',
+2547:                 headers: { 'Content-Type': 'application/json' },
+2548:                 body: JSON.stringify({
+2549:                     title,
+2550:                     text: chunkText,
+2551:                     chunk_id: i,
+2552:                     chunk_total: chunks.length,
+2553:                     metadata: {
+2554:                         chunk_start: chunkObj.start,
+2555:                         chunk_end: chunkObj.end
+2556:                     }
+2557:                 })
+2558:             });
+2559:             const dataChunk = await resChunk.json();
+2560:             if (!dataChunk.success) {
+2561:                 setVectorStatus('ʧ');
+2562:                 if (vectorizeTitle === currentViewingKnowledge) {
+2563:                     stopVectorProgress(`ʧ： ${i + 1} `, true);
+2564:                 }
+2565:                 showToast('ʧ: ' + (dataChunk.message || '期错'));
+2566:                 vectorizeTasks[currentViewingKnowledge] = { running: false, runId };
+2567:                 return;
+2568:             }
+2569:             storedCount += 1;
+2570:             if (vectorizeTitle === currentViewingKnowledge) {
+2571:                 updateVectorProgress(i + 1, chunks.length);
+2572:             }
+2573:         }
+2574: 
+2575:         showToast('已更新到向量?);
+2576:         setVectorStatus(`已更新，?${storedCount} `);
+2577:         if (vectorizeTitle === currentViewingKnowledge) {
+2578:             stopVectorProgress(`ɣ ${storedCount} `);
+2579:         }
+2580:         loadVectorChunks(title);
+2581:         vectorizeTasks[currentViewingKnowledge] = { running: false, runId };
+2582:         await fetch('/api/knowledge/vector/mark', {
+2583:             method: 'POST',
+2584:             headers: { 'Content-Type': 'application/json' },
+2585:             body: JSON.stringify({ title })
+2586:         });
+2587:     } catch (e) {
+2588:         showToast('ʧ: ' + e.message);
+2589:         setVectorStatus('ʧ');
+2590:         if (vectorizeTitle === currentViewingKnowledge) {
+2591:             stopVectorProgress('ʧ', true);
+2592:         }
+2593:         vectorizeTasks[currentViewingKnowledge] = { running: false, runId };
+2594:     }
+2595: }
+2596: 
+2597: async function deleteVectorInSettings() {
+2598:     if (!currentViewingKnowledge) {
+2599:         showToast('请先选择丟识点');
+2600:         return;
+2601:     }
+2602:     if (!confirm('确要删除知识点在向量库中的所有内容吗?)) return;
+2603:     setVectorStatus('ɾ?..');
+2604:     try {
+2605:         const titleInput = document.getElementById('settingTargetTitle');

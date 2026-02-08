@@ -225,6 +225,36 @@ body {
 .header-right { justify-content: flex-end; }
 .header-center { flex: 1; text-align: center; font-weight: 500; font-size: 14px; color: #000; }
 
+.chat-header .knowledge-action {
+    width: 36px;
+    height: 36px;
+    border: 1px solid #111;
+    background: #fff;
+    border-radius: 8px;
+    color: #111;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+}
+
+.chat-header .knowledge-action:hover {
+    background: #111;
+    color: #fff;
+    border-color: #111;
+}
+
+.chat-header .knowledge-action.knowledge-action-danger {
+    border-color: #ef4444;
+    color: #ef4444;
+}
+
+.chat-header .knowledge-action.knowledge-action-danger:hover {
+    background: #ef4444;
+    color: #fff;
+    border-color: #ef4444;
+}
+
 /* --- MESSAGES --- */
 .messages-area {
   flex: 1;

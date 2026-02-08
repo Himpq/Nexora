@@ -474,8 +474,8 @@ body {
 
 .btn-icon:hover {
     border-color: #cbd5e1;
-    color: #334155;
-    background-color: #f8fafc;
+    color: #0f172a;
+    background-color: #e2e8f0;
 }
 
 .btn-toggle-sidebar {
@@ -736,6 +736,57 @@ body {
 
 .thinking-block.collapsed .thinking-header {
     border-bottom: none;
+}
+
+/* Tool usage / error blocks */
+.tool-usage {
+    margin: 8px 0;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    overflow: hidden;
+    background: #ffffff;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+}
+.tool-usage .tool-badge {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    background: #f8fafc;
+    color: #475569;
+    font-size: 12px;
+    font-weight: 600;
+}
+.tool-usage .tool-name {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 11px;
+}
+.tool-usage .tool-status {
+    margin-left: auto;
+    color: #64748b;
+    font-weight: 500;
+}
+.tool-usage .tool-output {
+    padding: 10px 12px;
+    font-size: 12px;
+    color: #475569;
+    background: #fff;
+    border-top: 1px solid #e2e8f0;
+}
+.tool-usage.tool-error {
+    border-color: #fecaca;
+}
+.tool-usage.tool-error .tool-badge {
+    background: #fff1f2;
+    color: #b91c1c;
+}
+.tool-usage.tool-error .tool-status {
+    color: #b91c1c;
+}
+
+.cm-search-highlight {
+    background: rgba(251, 191, 36, 0.35);
 }
 
 /* 过程链容器（折叠收纳） */
@@ -1657,10 +1708,7 @@ body {
     background: #f1f5f9;
     margin: 6px 0;
 }
-    transition: all 0.2s ease;
-    position: relative;
-    overflow: hidden;
-}
+
 
 .menu-item::before {
     content: '';

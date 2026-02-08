@@ -1,0 +1,11 @@
+2757:     return String(value || '').replace(/"/g, '\\"');
+2758: }
+2759: 
+2760: async function bulkVectorizeAllBasis() {
+2761:     if (bulkVectorizeRunning) {
+2762:         showToast('姝ｅ湪鎵归噺鍚戦噺鍖栵紝璇风◢鍊?);
+2763:         return;
+2764:     }
+2765:     bulkVectorizeRunning = true;
+2766:     showToast('寮€始批量向量化');
+2767:     try {

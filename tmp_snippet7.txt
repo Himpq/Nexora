@@ -1,0 +1,11 @@
+2925: }
+2926: 
+2927: function cancelVectorizeProgress() {
+2928:     vectorizeRunId += 1;
+2929:     vectorizeTitle = null;
+2930:     stopVectorProgress('已取?, true);
+2931: }
+2932: function resetVectorProgressUI() {
+2933:     const wrap = document.getElementById('vectorProgressWrap');
+2934:     const bar = document.getElementById('vectorProgressBar');
+2935:     const textEl = document.getElementById('vectorProgressText');

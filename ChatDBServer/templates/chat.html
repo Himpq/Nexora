@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Knowa</title>
+    <title>Nexora</title>
     <!-- Fonts & Icons -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -29,7 +29,7 @@
         <!-- Sidebar: Navigation -->
         <nav class="sidebar" id="sidebar">
             <div class="sidebar-header">
-                <div class="logo">Knowa<span class="dot"></span></div>
+                <div class="logo">Nexora<span class="dot"></span></div>
                 <button class="btn-icon" id="toggleSidebarMobile" style="display:none;">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                 </button>
@@ -159,8 +159,14 @@
         <!-- Knowledge Panel (Right Sidebar) -->
         <aside class="knowledge-sidebar" id="knowledgePanel">
             <div class="k-header">
-                <h3>Knowledge</h3>
-                <div class="k-actions">
+                <div style="flex:1;">
+                    <h3 style="margin-bottom: 6px;">Knowledge</h3>
+                    <div class="k-search" style="display:flex; gap:6px;">
+                        <input id="knowledgeSearchInput" class="input-modern" placeholder="搜索向量库..." style="flex:1; font-size:12px; height: 28px; padding: 4px 8px;">
+                        <button id="knowledgeSearchBtn" class="btn-primary" style="padding: 4px 10px; height: 28px; background:#111; color:#fff; border:1px solid #111;">搜索</button>
+                    </div>
+                </div>
+                <div class="k-actions" style="align-self: flex-start; margin-top: 2px;">
                     <button class="btn-icon-small" id="refreshKnowledgeBtn" title="Refresh">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
                     </button>
@@ -173,14 +179,27 @@
             <div class="k-content">
                 <div class="k-section">
                     <div class="k-section-title">
-                        BASIS <span class="badge" id="panelBasisCount">0</span>
+                        <div style="display:flex; align-items:center; justify-content: space-between;">
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <span>BASIS</span>
+                                <span class="badge" id="panelBasisCount">0</span>
+                            </div>
+                            <button id="bulkVectorizeBtn" class="btn-primary" title="全部向量化" style="width: 24px; height: 24px; padding: 0; display: inline-flex; align-items:center; justify-content:center; background: transparent; color:#111; border:1px solid #cbd5e1; border-radius: 50%;">
+                                <i class="fa-solid fa-arrows-rotate" style="font-size: 11px;"></i>
+                            </button>
+                        </div>
                     </div>
                     <div id="panelBasisKnowledgeList" class="k-list"></div>
                 </div>
 
                 <div class="k-section">
                     <div class="k-section-title">
-                        SHORT-TERM <span class="badge" id="panelShortCount">0</span>
+                        <div style="display:flex; align-items:center; justify-content: space-between;">
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <span>SHORT-TERM</span>
+                                <span class="badge" id="panelShortCount">0</span>
+                            </div>
+                        </div>
                     </div>
                     <div id="panelShortMemoryList" class="k-list"></div>
                 </div>
@@ -256,6 +275,7 @@
                 <div class="admin-tabs">
                     <button class="admin-tab active" data-tab="users">用户管理</button>
                     <button class="admin-tab" data-tab="stats">统计信息</button>
+                    <button class="admin-tab" data-tab="chroma">ChromaDB</button>
                 </div>
 
                 <!-- 用户管理标签 -->
@@ -299,7 +319,41 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- ChromaDB -->
+                <div id="chroma-tab" class="admin-tab-content">
+                    <div class="admin-stats-grid" style="margin-bottom: 12px;">
+                        <div class="stat-card">
+                            <span class="label" style="font-size: 11px;">ChromaDB 状态</span>
+                            <span id="statChromaStatus" class="value mono" style="font-size: 14px;">-</span>
+                        </div>
+                        <div class="stat-card">
+                            <span class="label" style="font-size: 11px;">向量总数</span>
+                            <span id="statChromaTotal" class="value mono" style="font-size: 14px;">-</span>
+                        </div>
+                    </div>
+                    <div class="admin-search-bar" style="display: flex; gap: 8px; margin-bottom: 12px;">
+                        <input id="chromaSearchInput" class="input-modern" placeholder="搜索向量库..." style="flex: 1; font-size: 12px;">
+                        <button class="btn-primary" onclick="searchChroma()" style="padding: 6px 12px; min-width: 64px; background: #111; color: #fff; border: 1px solid #111;">搜索</button>
+                    </div>
+                    <div id="chromaSearchResults" style="display:none; margin-bottom: 12px; font-size: 12px; color: #475569;"></div>
+
+                    <div class="admin-table-wrapper">
+                        <table class="admin-table">
+                            <thead>
+                                <tr>
+                                    <th>Collection</th>
+                                    <th>向量数</th>
+                                </tr>
+                            </thead>
+                            <tbody id="adminChromaList"></tbody>
+                        </table>
+                    </div>
+                </div>
+
             </div>
+        </div>
+    </div>
         </div>
     </div>
 
@@ -346,6 +400,15 @@
         .knowledge-sidebar:not(.visible) { width: 0; border: none; overflow: hidden; }
         .modal-backdrop { display: none; }
         .modal-backdrop.active { display: flex; }
+        .cm-search-highlight { background: rgba(34, 197, 94, 0.25); border-bottom: 1px solid rgba(34, 197, 94, 0.7); }
+        #chroma-tab .admin-stats-grid { gap: 14px; }
+        #chroma-tab .stat-card { padding: 12px 14px; }
+        #chroma-tab .admin-search-bar { align-items: center; gap: 10px; }
+        #chroma-tab .admin-search-bar .input-modern { height: 34px; padding: 6px 10px; }
+        #chroma-tab .admin-search-bar .btn-primary { height: 34px; }
+        #chroma-tab .admin-table th,
+        #chroma-tab .admin-table td { padding: 10px 12px; }
+        #chroma-tab .admin-table-wrapper { max-height: 320px; }
     </style>
     <!-- 模型权限管理模态框 -->
     <div id="modelPermModal" class="modal-backdrop" style="z-index: 2300;">
@@ -396,43 +459,83 @@
                 <button onclick="closeKnowledgeSettingsModal()" class="btn-modal-close"><i class="fa-solid fa-xmark"></i></button>
             </div>
             <div class="modal-body" style="padding: 20px;">
-                <div class="form-group" style="margin-bottom: 20px;">
-                    <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 8px;">标题</label>
-                    <input type="text" id="settingTargetTitle" class="input-modern" style="width: 100%;" placeholder="修改标题...">
+                <div class="admin-tabs" style="margin-bottom: 12px;">
+                    <button class="admin-tab active" data-tab="ks-basic">基础信息</button>
+                    <button class="admin-tab" data-tab="ks-share">共享协作</button>
+                    <button class="admin-tab" data-tab="ks-vector">向量</button>
+                    <button class="admin-tab" data-tab="ks-history">记录</button>
                 </div>
-                <div class="form-group" style="margin-bottom: 20px;">
-                    <label class="check-box" style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-                        <input type="checkbox" id="settingPublic">
-                        <span style="font-size: 14px; font-weight: 500;">开启公开分享 (只读)</span>
-                    </label>
-                    <p style="font-size: 11px; color: #666; margin: 4px 0 0 24px;">开启后，任何人可以通过链接查看此知识点的渲染效果。</p>
-                </div>
-                <div class="form-group" style="margin-bottom: 20px;">
-                    <label class="check-box" style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-                        <input type="checkbox" id="settingCollaborative">
-                        <span style="font-size: 14px; font-weight: 500;">开启多人协作编辑</span>
-                    </label>
-                    <p style="font-size: 11px; color: #666; margin: 4px 0 0 24px;">开启后，访客可以直接在页面上编辑内容并实时保存。</p>
-                </div>
-                
-                <div id="shareLinkSection" style="display:none; background: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 8px; padding: 12px; margin-top: 10px;">
-                    <label style="font-size: 12px; color: #64748b; font-weight: 600;">公开访问链接:</label>
-                    <div style="display: flex; gap: 8px; margin-top: 6px;">
-                        <input type="text" id="shareUrlDisplay" readonly style="flex: 1; font-size: 11px; padding: 6px; border: 1px solid #ddd; border-radius: 4px;">
-                        <button class="btn-primary" onclick="copyShareUrl()" style="padding: 0 12px; font-size: 11px; height: auto;">复制</button>
+
+                <div id="ks-basic-tab" class="admin-tab-content active">
+                    <div class="form-group" style="margin-bottom: 20px;">
+                        <label style="display: block; font-size: 13px; font-weight: 600; margin-bottom: 8px;">标题</label>
+                        <input type="text" id="settingTargetTitle" class="input-modern" style="width: 100%;" placeholder="修改标题...">
                     </div>
                 </div>
 
-                <div style="margin-top: 24px; padding-top: 15px; border-top: 1px solid #eee;">
-                    <h4 style="font-size: 13px; margin-bottom: 10px;">最近编辑记录</h4>
-                    <div id="editHistoryList" style="font-size: 12px; color: #666; max-height: 100px; overflow-y: auto;">
+                <div id="ks-share-tab" class="admin-tab-content">
+                    <div class="form-group" style="margin-bottom: 20px;">
+                        <label class="check-box" style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                            <input type="checkbox" id="settingPublic">
+                            <span style="font-size: 14px; font-weight: 500;">开启公开分享 (只读)</span>
+                        </label>
+                        <p style="font-size: 11px; color: #666; margin: 4px 0 0 24px;">开启后，任何人可以通过链接查看此知识点的渲染效果。</p>
+                    </div>
+                    <div class="form-group" style="margin-bottom: 20px;">
+                        <label class="check-box" style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                            <input type="checkbox" id="settingCollaborative">
+                            <span style="font-size: 14px; font-weight: 500;">开启多人协作编辑</span>
+                        </label>
+                        <p style="font-size: 11px; color: #666; margin: 4px 0 0 24px;">开启后，访客可以直接在页面上编辑内容并实时保存。</p>
+                    </div>
+
+                    <div id="shareLinkSection" style="display:none; background: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 8px; padding: 12px; margin-top: 10px;">
+                        <label style="font-size: 12px; color: #64748b; font-weight: 600;">公开访问链接:</label>
+                        <div style="display: flex; gap: 8px; margin-top: 6px;">
+                            <input type="text" id="shareUrlDisplay" readonly style="flex: 1; font-size: 11px; padding: 6px; border: 1px solid #ddd; border-radius: 4px;">
+                            <button class="btn-primary" onclick="copyShareUrl()" style="padding: 0 12px; font-size: 11px; height: auto;">复制</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="ks-vector-tab" class="admin-tab-content">
+                    <div style="display:flex; gap: 8px; margin-bottom: 8px;">
+                        <button class="btn-primary" onclick="updateVectorInSettings()" style="background:#0f172a;">总更新</button>
+                        <button class="btn-primary" onclick="deleteVectorInSettings()" style="background:#ef4444;">删除</button>
+                    </div>
+                    <div id="vectorProgressWrap" style="display:none; margin-bottom: 8px;">
+                        <div style="height: 6px; background: #e2e8f0; border-radius: 999px; overflow: hidden;">
+                            <div id="vectorProgressBar" style="height: 100%; width: 0%; background: linear-gradient(90deg, #0f172a, #1e293b); transition: width 200ms ease;"></div>
+                        </div>
+                        <div id="vectorProgressText" style="font-size: 11px; color: #64748b; margin-top: 6px;">准备中</div>
+                    </div>
+                    <div id="vectorStatusText" style="font-size: 11px; color: #64748b; margin-bottom: 8px;">未加载</div>
+                    <div id="vectorChunkList" style="font-size: 12px; color: #475569; max-height: 180px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px; background: #f8fafc;">
+                        <div style="color:#94a3b8;">暂无数据</div>
+                    </div>
+                </div>
+
+                <div id="ks-history-tab" class="admin-tab-content">
+                    <div id="editHistoryList" style="font-size: 12px; color: #666; max-height: 140px; overflow-y: auto;">
                         <div style="padding: 4px 0;">最后修改: <span id="lastModifyTime">-</span></div>
                     </div>
                 </div>
             </div>
             <div class="modal-footer" style="padding: 16px 20px; border-top: 1px solid #eee; display: flex; justify-content: flex-end; gap: 12px;">
-                <button class="btn-cancel" onclick="closeKnowledgeSettingsModal()">取消</button>
-                <button class="btn-confirm" onclick="applyKnowledgeSettings()" style="background: #111; color: #fff; border: none; padding: 8px 20px; border-radius: 6px; cursor: pointer;">保存</button>
+                <button class="btn-cancel" onclick="closeKnowledgeSettingsModal()">取消</button>                <button class="btn-confirm" onclick="applyKnowledgeSettings()" style="background: #111; color: #fff; border: none; padding: 8px 20px; border-radius: 6px; cursor: pointer;">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 知识库搜索结果 -->
+    <div id="knowledgeSearchModal" class="modal-backdrop">
+        <div class="modal" style="width: 520px; padding: 0;">
+            <div class="modal-head" style="padding: 14px 18px; border-bottom: 1px solid #eee;">
+                <h3>向量库搜索结果</h3>
+                <button onclick="closeKnowledgeSearchModal()" class="btn-modal-close"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body" style="padding: 14px 18px;">
+                <div id="knowledgeSearchResults" style="font-size: 12px; color: #475569; max-height: 320px; overflow-y: auto;"></div>
             </div>
         </div>
     </div>

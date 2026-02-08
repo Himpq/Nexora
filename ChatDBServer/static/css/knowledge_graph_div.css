@@ -40,6 +40,8 @@
     color: white;
     z-index: 9999;
     width: 240px;
+    transition: none !important;
+    will-change: transform;
 }
 
 .category-header {

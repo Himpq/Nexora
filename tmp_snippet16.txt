@@ -1,0 +1,33 @@
+1728: }
+1729: 
+1730: function confirmDeleteKnowledge(title) {
+1731:     showConfirm("删除知识", `确定要彻底删除 “${title}” 吗？此操作无法撤销。`, "danger", () => deleteKnowledge(title));
+1732: }
+1733: 
+1734: async function deleteKnowledge(title) {
+1735:     try {
+1736:         const res = await fetch(`/api/knowledge/basis/${encodeURIComponent(title)}`, {
+1737:             method: 'DELETE'
+1738:         });
+1739:         
+1740:         const data = await res.json();
+1741:         closeConfirmModal();
+1742:         
+1743:         if(data.success) {
+1744:             showToast('ɾɹ');
+1745:             closeKnowledgeView();
+1746:             loadKnowledge(); 
+1747:         } else {
+1748:             showToast('ɾʧ: ' + (data.message || data.error));
+1749:         }
+1750:     } catch(e) {
+1751:         closeConfirmModal();
+1752:         showToast('쳣: ' + e.message);
+1753:     }
+1754: }
+1755: 
+1756: // --- Knowledge Settings ---
+1757: async function openKnowledgeSettingsModal() {
+1758:     if (!currentViewingKnowledge) return;
+1759:     const title = currentViewingKnowledge;
+1760:     

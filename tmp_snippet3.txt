@@ -1,0 +1,79 @@
+2687: async function loadVectorChunks(title) {
+2688:     const list = document.getElementById('vectorChunkList');
+2689:     if (!list) return;
+2690:     if (!title) {
+2691:         list.innerHTML = '<div style="color:#94a3b8;"></div>';
+2692:         setVectorStatus('朊?);
+2693:         return;
+2694:     }
+2695:     list.innerHTML = '<div style="color:#94a3b8;">加载?..</div>';
+2696:     setVectorStatus('加载?..');
+2697:     try {
+2698:         const res = await fetch('/api/knowledge/vector/chunks', {
+2699:             method: 'POST',
+2700:             headers: { 'Content-Type': 'application/json' },
+2701:             body: JSON.stringify({ title })
+2702:         });
+2703:         const data = await res.json();
+2704:         if (!data.success) {
+2705:             list.innerHTML = `<div style="color:#ef4444;">${data.message || '加载失败'}</div>`;
+2706:             setVectorStatus('加载失败');
+2707:             return;
+2708:         }
+2709:         const chunks = data.chunks || [];
+2710:         if (chunks.length === 0) {
+2711:             list.innerHTML = '<div style="color:#94a3b8;">暂无数据</div>';
+2712:             setVectorStatus('暂无数据');
+2713:             return;
+2714:         }
+2715:         list.innerHTML = chunks.map(c => {
+2716:             const idx = c.chunk_id != null ? c.chunk_id : '-';
+2717:             const preview = (c.text || '').slice(0, 80);
+2718:             const id = c.id || '';
+2719:             const safeId = String(id).replace(/"/g, '&quot;');
+2720:             return `<div style="padding:6px 0; border-bottom:1px dashed #e2e8f0; display:flex; gap:8px; align-items:flex-start; justify-content: space-between;">
+2721:                 <div style="flex:1;">
+2722:                     <div style="font-weight:600;">Chunk ${idx}</div>
+2723:                     <div style="color:#64748b; font-size:12px; word-break: break-word;">${preview}</div>
+2724:                 </div>
+2725:                 <button class="btn-primary" onclick="deleteVectorChunk('${safeId}', '${title.replace(/'/g, "\\'")}')" style="background:#ef4444; padding: 4px 8px; font-size: 11px;">删除</button>
+2726:             </div>`;
+2727:         }).join('');
+2728:         setVectorStatus(`已加载 ${chunks.length} 块`);
+2729:     } catch (e) {
+2730:         list.innerHTML = `<div style="color:#ef4444;">加载失败: ${e.message}</div>`;
+2731:         setVectorStatus('加载失败');
+2732:     }
+2733: }
+2734: 
+2735: function setVectorStatus(text) {
+2736:     const el = document.getElementById('vectorStatusText');
+2737:     if (el) el.textContent = text;
+2738: }
+2739: 
+2740: function setKnowledgeItemProgress(title, percent, active = true) {
+2741:     const container = els.panelBasisList;
+2742:     if (!container) return;
+2743:     const safeTitle = escapeCssSelector(title);
+2744:     const item = container.querySelector(`.knowledge-item[data-title="${safeTitle}"]`);
+2745:     if (!item) return;
+2746:     const bar = item.querySelector('.knowledge-progress');
+2747:     if (!bar) return;
+2748:     bar.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+2749:     bar.style.opacity = active ? '1' : '0';
+2750:     if (!active) {
+2751:         setTimeout(() => {
+2752:             bar.style.width = '0%';
+2753:         }, 200);
+2754:     }
+2755: }
+2756: 
+2757: function escapeCssSelector(value) {
+2758:     if (window.CSS && typeof window.CSS.escape === 'function') {
+2759:         return window.CSS.escape(value);
+2760:     }
+2761:     return String(value || '').replace(/"/g, '\\"');
+2762: }
+2763: 
+2764: async function bulkVectorizeAllBasis() {
+2765:     if (bulkVectorizeRunning) {
