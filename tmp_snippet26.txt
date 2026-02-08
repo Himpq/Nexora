@@ -1,0 +1,41 @@
+1768:     const msgs = document.getElementById('messagesContainer');
+1769:     const inputWrapper = document.getElementById('inputWrapper');
+1770:     const headerTitle = document.getElementById('conversationTitle');
+1771:     const headerLeft = document.querySelector('.header-left');
+1772:     const headerRight = document.querySelector('.header-right');
+1773: 
+1774:     currentViewingKnowledge = null;
+1775:     
+1776:     // 检查导航栈
+1777:     if (navigationStack.length > 1) {
+1778:         // 弹出当前项（知识详情），查看前一个项
+1779:         navigationStack.pop(); // 移除知识点
+1780:         const prevItem = navigationStack[navigationStack.length - 1];
+1781:         
+1782:         if (prevItem.type === 'search') {
+1783:             // 返回到搜索页面
+1784:             restoreViewerState(prevItem.state);
+1785:             // 重新初始化搜索结果的点击处理
+1786:             setTimeout(() => {
+1787:                 document.querySelectorAll('.search-result-item').forEach(el => {
+1788:                     el.onclick = (e) => {
+1789:                         e.preventDefault();
+1790:                         e.stopPropagation();
+1791:                         const idx = Number(el.getAttribute('data-idx'));
+1792:                         const title = el.getAttribute('data-title');
+1793:                         const item = lastKnowledgeSearchResults[idx];
+1794:                         const chunkText = (item && item.doc) ? item.doc : '';
+1795:                         if (title && chunkText) {
+1796:                             openKnowledgeAtChunk(title, chunkText, (item && item.meta) ? item.meta : {}, true);
+1797:                         }
+1798:                     };
+1799:                 });
+1800:             }, 50);
+1801:             return;
+1802:         } else if (prevItem.type === 'chat') {
+1803:             // 返回到聊天页面
+1804:             navigationStack.pop(); // 移除搜索项
+1805:         }
+1806:     }
+1807:     
+1808:     // 返回到聊天界面

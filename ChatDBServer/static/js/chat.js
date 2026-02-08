@@ -1476,7 +1476,7 @@ let navigationStack = [];
 let currentSearchQuery = ''; // 保存搜索关键词，以便返回时重新显示
 
 // 保存当前状态
-function saveCurrentViewerState() {
+function saveCurrentViewerState(extra = {}) {
     const viewer = document.getElementById('knowledgeViewer');
     const msgs = document.getElementById('messagesContainer');
     const inputWrapper = document.getElementById('inputWrapper');
@@ -1491,7 +1491,9 @@ function saveCurrentViewerState() {
         inputDisplay: inputWrapper ? inputWrapper.style.display : 'block',
         headerTitle: headerTitle.textContent,
         headerLeft: headerLeft.innerHTML,
-        headerRight: headerRight.innerHTML
+        headerRight: headerRight.innerHTML,
+        extra,
+        extra
     };
 }
 
@@ -1511,11 +1513,14 @@ function restoreViewerState(state) {
     headerTitle.textContent = state.headerTitle;
     headerLeft.innerHTML = state.headerLeft;
     headerRight.innerHTML = state.headerRight;
+    if (state.extra && state.extra.searchQuery) {
+        currentSearchQuery = state.extra.searchQuery;
+    }
 }
 
 async function viewKnowledge(title, options = {}) {
     currentViewingKnowledge = title;
-    const { forceEditMode = false, highlightData = null } = options;
+    const { forceEditMode = false, highlightData = null, fromSearch = false } = options;
     pendingHighlightData = highlightData;
     const viewer = document.getElementById('knowledgeViewer');
     const msgs = document.getElementById('messagesContainer');
@@ -1546,6 +1551,11 @@ async function viewKnowledge(title, options = {}) {
         });
     }
 
+    // 如果不是从搜索进入，清空导航栈（避免返回到搜索）
+    if (!fromSearch) {
+        navigationStack = [];
+    }
+
     // 2. Fetch Content
     let content = '';
     try {
@@ -1558,6 +1568,12 @@ async function viewKnowledge(title, options = {}) {
     msgs.style.display = 'none';
     if(inputWrapper) inputWrapper.style.display = 'none';
     viewer.style.display = 'block';
+    // 如果当前viewer是搜索页，先恢复为编辑器容器
+    if (!document.getElementById('knowledgeEditor')) {
+        viewer.innerHTML = '<textarea id="knowledgeEditor"></textarea>';
+        // 搜索页替换会销毁编辑器，需重建
+        easyMDE = null;
+    }
 
     // 4. Update Header
     headerTitle.textContent = title;
@@ -1610,6 +1626,31 @@ async function viewKnowledge(title, options = {}) {
         // 提示用户如何切换模式
         showToast('提示：点击编辑器工具栏中的“眼睛”图标可切换预览与编辑模式。');
     }
+    // 如果编辑器存在但绑定的 DOM 已被替换，重新创建
+    if (!easyMDE || !easyMDE.codemirror || !document.getElementById('knowledgeEditor')) {
+        easyMDE = null;
+        easyMDE = new EasyMDE({ 
+            element: document.getElementById('knowledgeEditor'),
+            status: false,
+            spellChecker: false,
+            sideBySideFullscreen: false,
+            previewRender: function(plainText) {
+                const html = marked.parse(plainText);
+                const tempDiv = document.createElement('div');
+                tempDiv.innerHTML = html;
+                renderMathInElement(tempDiv, {
+                    delimiters: [
+                        {left: '$$', right: '$$', display: true},
+                        {left: '$', right: '$', display: false}
+                    ],
+                    throwOnError: false
+                });
+                return tempDiv.innerHTML;
+            },
+            toolbar: ["bold", "italic", "heading", "|", "quote", "unordered-list", "ordered-list", "|", 
+                      "link", "image", "table", "|", "preview", "side-by-side", "fullscreen"]
+        });
+    }
     
     const viewportHeight = window.innerHeight;
     const headerHeight = 60; 
@@ -1629,20 +1670,48 @@ async function viewKnowledge(title, options = {}) {
         }
     }
 
+    const highlightWhenReady = (retryCount = 0) => {
+        if (!pendingHighlightData || !pendingHighlightData.text) return;
+        if (retryCount > 30) { // 最多重试30次（约4.5秒）
+            console.warn('预览内容加载超时，取消高亮');
+            pendingHighlightData = null;
+            return;
+        }
+        
+        const preview = document.querySelector('.editor-preview');
+        if (!preview) {
+            setTimeout(() => highlightWhenReady(retryCount + 1), 150);
+            return;
+        }
+        
+        // 检查预览内容是否真正包含文本内容（不只是HTML标签）
+        const textContent = preview.textContent || '';
+        const hasContent = textContent.trim().length > 50; // 至少有50个字符
+        
+        if (!hasContent) {
+            setTimeout(() => highlightWhenReady(retryCount + 1), 150);
+            return;
+        }
+        
+        // 内容已加载，执行高亮
+        highlightTextInPreview(pendingHighlightData.text, pendingHighlightData.meta);
+        pendingHighlightData = null; // 清空，避免重复高亮
+    };
+
     setTimeout(() => {
         easyMDE.codemirror.refresh();
-        // 预览模式下执行高亮
-        if (!forceEditMode && pendingHighlightData && pendingHighlightData.text) {
-            setTimeout(() => {
-                highlightTextInPreview(pendingHighlightData.text, pendingHighlightData.meta);
-            }, 150);
+        if (!forceEditMode) {
+            setTimeout(() => highlightWhenReady(0), 200);
         }
-    }, 100);
+    }, 150);
 }
 
 function highlightTextInPreview(text, meta = {}) {
     const preview = document.querySelector('.editor-preview');
-    if (!preview) return;
+    if (!preview) {
+        console.warn('预览元素不存在');
+        return;
+    }
     
     // 获取预览中的所有文本节点
     const walker = document.createTreeWalker(
@@ -1680,39 +1749,64 @@ function highlightTextInPreview(text, meta = {}) {
         node = walker.nextNode();
     }
     
-    if (foundNode) {
-        const parent = foundNode.parentNode;
-        if (!parent) return;
-        
-        // 创建高亮span
-        const span = document.createElement('span');
-        span.className = 'cm-search-highlight';
-        span.style.backgroundColor = 'rgba(34, 197, 94, 0.25)';
-        span.style.borderBottom = '1px solid rgba(34, 197, 94, 0.7)';
-        
-        // 分割文本节点
-        const beforeText = foundNode.textContent.slice(0, foundOffset);
-        const highlightedText = foundNode.textContent.slice(foundOffset, foundOffset + searchText.length);
-        const afterText = foundNode.textContent.slice(foundOffset + searchText.length);
-        
-        const beforeNode = document.createTextNode(beforeText);
-        const highlightNode = document.createTextNode(highlightedText);
-        const afterNode = document.createTextNode(afterText);
-        
-        span.appendChild(highlightNode);
-        
-        parent.insertBefore(beforeNode, foundNode);
-        parent.insertBefore(span, foundNode);
-        parent.insertBefore(afterNode, foundNode);
-        parent.removeChild(foundNode);
-        
-        // 先滚动到顶部，然后再滚动到高亮位置，形成从上到下的定位效果
-        preview.scrollTop = 0;
-        
-        setTimeout(() => {
-            span.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }, 300);
+    if (!foundNode) {
+        console.warn('未找到匹配的文本节点');
+        return;
     }
+    
+    const parent = foundNode.parentNode;
+    if (!parent) return;
+    
+    // 创建高亮span
+    const span = document.createElement('span');
+    span.className = 'cm-search-highlight';
+    span.style.backgroundColor = 'rgba(34, 197, 94, 0.25)';
+    span.style.borderBottom = '1px solid rgba(34, 197, 94, 0.7)';
+    
+    // 分割文本节点
+    const beforeText = foundNode.textContent.slice(0, foundOffset);
+    const highlightedText = foundNode.textContent.slice(foundOffset, foundOffset + searchText.length);
+    const afterText = foundNode.textContent.slice(foundOffset + searchText.length);
+    
+    const beforeNode = document.createTextNode(beforeText);
+    const highlightNode = document.createTextNode(highlightedText);
+    const afterNode = document.createTextNode(afterText);
+    
+    span.appendChild(highlightNode);
+    
+    parent.insertBefore(beforeNode, foundNode);
+    parent.insertBefore(span, foundNode);
+    parent.insertBefore(afterNode, foundNode);
+    parent.removeChild(foundNode);
+    
+    // 先滚动到顶部，然后再滚动到高亮位置，形成从上到下的定位效果
+    preview.scrollTop = 0;
+    
+    // 使用 requestAnimationFrame 确保滚动在下一帧执行
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+            // 增加延迟，让"从上到下"的滚动效果更明显
+            setTimeout(() => {
+                // 获取元素位置并手动滚动（更可靠）
+                const spanRect = span.getBoundingClientRect();
+                const previewRect = preview.getBoundingClientRect();
+                const scrollOffset = spanRect.top - previewRect.top - (previewRect.height / 2) + preview.scrollTop;
+                
+                // 使用平滑滚动
+                preview.scrollTo({
+                    top: scrollOffset,
+                    behavior: 'smooth'
+                });
+                
+                // 添加短暂的脉冲动画效果
+                span.style.transition = 'all 0.3s ease';
+                span.style.transform = 'scale(1.05)';
+                setTimeout(() => {
+                    span.style.transform = 'scale(1)';
+                }, 400);
+            }, 400);
+        });
+    });
 }
 
 function closeKnowledgeView() {
@@ -1732,24 +1826,40 @@ function closeKnowledgeView() {
         const prevItem = navigationStack[navigationStack.length - 1];
         
         if (prevItem.type === 'search') {
-            // 返回到搜索页面
-            restoreViewerState(prevItem.state);
-            // 重新初始化搜索结果的点击处理
-            setTimeout(() => {
-                document.querySelectorAll('.search-result-item').forEach(el => {
-                    el.onclick = (e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        const idx = Number(el.getAttribute('data-idx'));
-                        const title = el.getAttribute('data-title');
-                        const item = lastKnowledgeSearchResults[idx];
-                        const chunkText = (item && item.doc) ? item.doc : '';
-                        if (title && chunkText) {
-                            openKnowledgeAtChunk(title, chunkText, (item && item.meta) ? item.meta : {}, true);
-                        }
-                    };
-                });
-            }, 50);
+            // 返回到搜索页面 - 重新渲染搜索结果
+            const query = prevItem.query || currentSearchQuery;
+            
+            // 恢复搜索结果缓存
+            if (prevItem.resultsCache && prevItem.resultsCache.length > 0) {
+                lastKnowledgeSearchResults = prevItem.resultsCache;
+            }
+            
+            // 重新显示搜索界面
+            viewer.style.display = 'flex';
+            viewer.style.flexDirection = 'column';
+            msgs.style.display = 'none';
+            if (inputWrapper) inputWrapper.style.display = 'none';
+            
+            // 更新Header
+            headerTitle.textContent = '向量库搜索';
+            headerLeft.innerHTML = `
+                <button class="btn-icon" onclick="closeKnowledgeSearchResultView()" title="Back">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
+                </button>
+            `;
+            headerRight.innerHTML = '';
+            
+            // 重新渲染搜索结果
+            viewer.innerHTML = `
+                <div style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
+                    <div style="padding: 20px; border-bottom: 1px solid #e2e8f0; background: #f8fafc;">
+                        <div style="font-size: 14px; color: #64748b;">搜索: <strong style="color: #0f172a;">${escapeHtml(query)}</strong></div>
+                    </div>
+                    <div id="knowledgeSearchResultsList" style="flex: 1; overflow-y: auto; padding: 0;"></div>
+                </div>
+            `;
+            
+            renderSearchResultsFromCache();
             return;
         } else if (prevItem.type === 'chat') {
             // 返回到聊天页面
@@ -1854,14 +1964,6 @@ async function searchKnowledgeVectors(query) {
         </div>
     `;
     
-    // 现在保存搜索页面状态（在设置了所有UI之后）
-    currentSearchQuery = query;
-    navigationStack.push({
-        type: 'search',
-        state: saveCurrentViewerState(),
-        query: query
-    });
-    
     const resultsList = document.getElementById('knowledgeSearchResultsList');
     resultsList.innerHTML = '<div style="padding: 20px; color:#94a3b8; text-align: center;">搜索中...</div>';
     
@@ -1900,25 +2002,56 @@ async function searchKnowledgeVectors(query) {
         }).join('');
 
         // 添加搜索结果的点击处理
-        setTimeout(() => {
-            document.querySelectorAll('.search-result-item').forEach(el => {
-                el.onclick = (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    const idx = Number(el.getAttribute('data-idx'));
-                    const title = el.getAttribute('data-title');
-                    const item = lastKnowledgeSearchResults[idx];
-                    const chunkText = (item && item.doc) ? item.doc : '';
-                    if (title && chunkText) {
-                        // 保存搜索页面的状态然后进入知识点
-                        openKnowledgeAtChunk(title, chunkText, (item && item.meta) ? item.meta : {}, true);
-                    }
-                };
-            });
-        }, 100);
+        bindSearchResultHandlers();
+        
+        // 搜索结果加载完成后，保存搜索页面状态到栈
+        currentSearchQuery = query;
+        navigationStack.push({
+            type: 'search',
+            query: query,
+            // 不保存 HTML，而是保存查询信息，返回时重新渲染
+            resultsCache: lastKnowledgeSearchResults
+        });
     } catch (e) {
         resultsList.innerHTML = `<div style="padding: 20px; color:#ef4444; text-align: center;">搜索失败: ${e.message}</div>`;
     }
+}
+
+function bindSearchResultHandlers() {
+    setTimeout(() => {
+        document.querySelectorAll('.search-result-item').forEach(el => {
+            el.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const idx = Number(el.getAttribute('data-idx'));
+                const title = el.getAttribute('data-title');
+                const item = lastKnowledgeSearchResults[idx];
+                const chunkText = (item && item.doc) ? item.doc : '';
+                if (title && chunkText) {
+                    openKnowledgeAtChunk(title, chunkText, (item && item.meta) ? item.meta : {}, true);
+                }
+            };
+        });
+    }, 100);
+}
+
+function renderSearchResultsFromCache() {
+    const list = document.getElementById('knowledgeSearchResultsList');
+    if (!list) return;
+    if (!lastKnowledgeSearchResults || lastKnowledgeSearchResults.length === 0) {
+        list.innerHTML = '<div style="padding: 20px; color:#94a3b8; text-align: center;">????</div>';
+        return;
+    }
+    list.innerHTML = lastKnowledgeSearchResults.map((item, idx) => {
+        const title = item.meta.title || 'Untitled';
+        const preview = (item.doc || '').slice(0, 200);
+        const score = item.dist != null ? (1 - item.dist) : 0;
+        return `<div class="search-result-item" data-idx="${idx}" data-title="${escapeHtml(title)}" style="padding: 16px 20px; border-bottom: 1px solid #e2e8f0; cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background = '#f8fafc'" onmouseout="this.style.background = 'transparent'">
+            <div style="font-weight: 600; color: #0f172a; margin-bottom: 6px;">${escapeHtml(title)} <span style="color: #64748b; font-size: 11px;">(score ${score.toFixed(4)})</span></div>
+            <div style="color: #64748b; font-size: 13px; line-height: 1.6;">${escapeHtml(preview)}</div>
+        </div>`;
+    }).join('');
+    bindSearchResultHandlers();
 }
 
 function closeKnowledgeSearchResultView() {
@@ -1979,7 +2112,8 @@ async function openKnowledgeAtChunk(title, chunkText, meta = {}, fromSearch = fa
     // 直接在预览模式下打开，带有高亮信息
     await viewKnowledge(title, { 
         forceEditMode: false,
-        highlightData: { text: chunkText, meta }
+        highlightData: { text: chunkText, meta },
+        fromSearch
     });
 }
 

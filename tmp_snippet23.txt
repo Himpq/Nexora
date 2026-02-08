@@ -1,0 +1,246 @@
+1760:     // 返回到聊天界面
+1761:     viewer.style.display = 'none';
+1762:     msgs.style.display = 'flex';
+1763:     if(inputWrapper) inputWrapper.style.display = 'block';
+1764:     navigationStack = []; // 清空栈
+1765: 
+1766:     if (originalHeaderState) {
+1767:         headerTitle.textContent = originalHeaderState.title;
+1768:         headerLeft.innerHTML = originalHeaderState.leftHTML;
+1769:         headerRight.innerHTML = originalHeaderState.rightHTML;
+1770:         els.modelSelectContainer = document.getElementById('modelSelectContainer');
+1771:         els.currentModelDisplay = document.getElementById('currentModelDisplay');
+1772:         els.modelOptions = document.getElementById('modelOptions');
+1773:         loadModels(); 
+1774:         
+1775:         const toggleSidebar = document.getElementById('toggleSidebar');
+1776:         if(toggleSidebar) toggleSidebar.onclick = () => {
+1777:             if (window.innerWidth <= 768) els.sidebar.classList.toggle('mobile-open');
+1778:             else els.sidebar.classList.toggle('collapsed');
+1779:         };
+1780:         const toggleKP = document.getElementById('toggleKnowledgePanel');
+1781:         if(toggleKP) toggleKP.onclick = () => els.knowledgePanel.classList.toggle('visible');
+1782:     }
+1783:     originalHeaderState = null;
+1784: }
+1785: 
+1786: // --- Knowledge Search ---
+1787: let lastKnowledgeSearchResults = [];
+1788: 
+1789: async function handleKnowledgeSearch() {
+1790:     const input = els.knowledgeSearchInput;
+1791:     if (!input) return;
+1792:     const query = input.value.trim();
+1793:     if (!query) return;
+1794:     await searchKnowledgeVectors(query);
+1795: }
+1796: 
+1797: async function searchKnowledgeVectors(query) {
+1798:     const viewer = document.getElementById('knowledgeViewer');
+1799:     const msgs = document.getElementById('messagesContainer');
+1800:     const inputWrapper = document.getElementById('inputWrapper');
+1801:     const headerTitle = document.getElementById('conversationTitle');
+1802:     const headerLeft = document.querySelector('.header-left');
+1803:     const headerRight = document.querySelector('.header-right');
+1804:     
+1805:     // 关闭任何可能打开的知识库详情视图
+1806:     if (currentViewingKnowledge) {
+1807:         closeKnowledgeView();
+1808:     }
+1809:     
+1810:     // 导航栈管理：如果还没有搜索项在栈上，保存聊天页面状态
+1811:     if (navigationStack.length === 0) {
+1812:         // 第一次进入搜索，保存初始的聊天页面状态
+1813:         navigationStack.push({
+1814:             type: 'chat',
+1815:             state: {
+1816:                 title: headerTitle.textContent,
+1817:                 leftHTML: headerLeft.innerHTML,
+1818:                 rightHTML: headerRight.innerHTML
+1819:             }
+1820:         });
+1821:     }
+1822:     
+1823:     // 保存原始状态（兼容旧代码）
+1824:     if (!originalHeaderState) {
+1825:         originalHeaderState = {
+1826:             title: headerTitle.textContent,
+1827:             leftHTML: headerLeft.innerHTML,
+1828:             rightHTML: headerRight.innerHTML
+1829:         };
+1830:     }
+1831:     
+1832:     // 显示搜索结果视图
+1833:     msgs.style.display = 'none';
+1834:     if(inputWrapper) inputWrapper.style.display = 'none';
+1835:     viewer.style.display = 'flex';
+1836:     viewer.style.flexDirection = 'column';
+1837:     
+1838:     // 更新Header
+1839:     headerTitle.textContent = '向量库搜索';
+1840:     headerLeft.innerHTML = `
+1841:         <button class="btn-icon" onclick="closeKnowledgeSearchResultView()" title="Back">
+1842:             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
+1843:         </button>
+1844:     `;
+1845:     headerRight.innerHTML = '';
+1846:     
+1847:     // 更新viewer为搜索结果显示区
+1848:     viewer.innerHTML = `
+1849:         <div style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
+1850:             <div style="padding: 20px; border-bottom: 1px solid #e2e8f0; background: #f8fafc;">
+1851:                 <div style="font-size: 14px; color: #64748b;">搜索: <strong style="color: #0f172a;">${escapeHtml(query)}</strong></div>
+1852:             </div>
+1853:             <div id="knowledgeSearchResultsList" style="flex: 1; overflow-y: auto; padding: 0;"></div>
+1854:         </div>
+1855:     `;
+1856:     
+1857:     // 现在保存搜索页面状态（在设置了所有UI之后）
+1858:     currentSearchQuery = query;
+1859:     navigationStack.push({
+1860:         type: 'search',
+1861:         state: saveCurrentViewerState(),
+1862:         query: query
+1863:     });
+1864:     
+1865:     const resultsList = document.getElementById('knowledgeSearchResultsList');
+1866:     resultsList.innerHTML = '<div style="padding: 20px; color:#94a3b8; text-align: center;">搜索中...</div>';
+1867:     
+1868:     try {
+1869:         const res = await fetch('/api/knowledge/query', {
+1870:             method: 'POST',
+1871:             headers: { 'Content-Type': 'application/json' },
+1872:             body: JSON.stringify({ text: query, top_k: 8 })
+1873:         });
+1874:         const data = await res.json();
+1875:         if (!data.success) {
+1876:             resultsList.innerHTML = `<div style="padding: 20px; color:#ef4444; text-align: center;">${data.message || '搜索失败'}</div>`;
+1877:             return;
+1878:         }
+1879:         const docs = (data.result && data.result.documents && data.result.documents[0]) ? data.result.documents[0] : [];
+1880:         const metas = (data.result && data.result.metadatas && data.result.metadatas[0]) ? data.result.metadatas[0] : [];
+1881:         const dists = (data.result && data.result.distances && data.result.distances[0]) ? data.result.distances[0] : [];
+1882:         if (docs.length === 0) {
+1883:             resultsList.innerHTML = '<div style="padding: 20px; color:#94a3b8; text-align: center;">没有结果</div>';
+1884:             return;
+1885:         }
+1886:         lastKnowledgeSearchResults = docs.map((doc, i) => ({
+1887:             doc,
+1888:             meta: metas[i] || {},
+1889:             dist: dists[i]
+1890:         }));
+1891: 
+1892:         resultsList.innerHTML = lastKnowledgeSearchResults.map((item, idx) => {
+1893:             const title = item.meta.title || 'Untitled';
+1894:             const preview = (item.doc || '').slice(0, 200);
+1895:             const score = item.dist != null ? (1 - item.dist) : 0;
+1896:             return `<div class="search-result-item" data-idx="${idx}" data-title="${escapeHtml(title)}" style="padding: 16px 20px; border-bottom: 1px solid #e2e8f0; cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background = '#f8fafc'" onmouseout="this.style.background = 'transparent'">
+1897:                 <div style="font-weight: 600; color: #0f172a; margin-bottom: 6px;">${escapeHtml(title)} <span style="color: #64748b; font-size: 11px;">(score ${score.toFixed(4)})</span></div>
+1898:                 <div style="color: #64748b; font-size: 13px; line-height: 1.6;">${escapeHtml(preview)}</div>
+1899:             </div>`;
+1900:         }).join('');
+1901: 
+1902:         // 添加搜索结果的点击处理
+1903:         setTimeout(() => {
+1904:             document.querySelectorAll('.search-result-item').forEach(el => {
+1905:                 el.onclick = (e) => {
+1906:                     e.preventDefault();
+1907:                     e.stopPropagation();
+1908:                     const idx = Number(el.getAttribute('data-idx'));
+1909:                     const title = el.getAttribute('data-title');
+1910:                     const item = lastKnowledgeSearchResults[idx];
+1911:                     const chunkText = (item && item.doc) ? item.doc : '';
+1912:                     if (title && chunkText) {
+1913:                         // 保存搜索页面的状态然后进入知识点
+1914:                         openKnowledgeAtChunk(title, chunkText, (item && item.meta) ? item.meta : {}, true);
+1915:                     }
+1916:                 };
+1917:             });
+1918:         }, 100);
+1919:     } catch (e) {
+1920:         resultsList.innerHTML = `<div style="padding: 20px; color:#ef4444; text-align: center;">搜索失败: ${e.message}</div>`;
+1921:     }
+1922: }
+1923: 
+1924: function closeKnowledgeSearchResultView() {
+1925:     const viewer = document.getElementById('knowledgeViewer');
+1926:     const msgs = document.getElementById('messagesContainer');
+1927:     const inputWrapper = document.getElementById('inputWrapper');
+1928:     const headerTitle = document.getElementById('conversationTitle');
+1929:     const headerLeft = document.querySelector('.header-left');
+1930:     const headerRight = document.querySelector('.header-right');
+1931: 
+1932:     viewer.style.display = 'none';
+1933:     viewer.innerHTML = '<textarea id="knowledgeEditor"></textarea>';
+1934:     msgs.style.display = 'flex';
+1935:     if(inputWrapper) inputWrapper.style.display = 'block';
+1936:     
+1937:     // 清除导航栈和搜索状态
+1938:     navigationStack = [];
+1939:     currentSearchQuery = '';
+1940: 
+1941:     if (originalHeaderState) {
+1942:         headerTitle.textContent = originalHeaderState.title;
+1943:         headerLeft.innerHTML = originalHeaderState.leftHTML;
+1944:         headerRight.innerHTML = originalHeaderState.rightHTML;
+1945:         els.modelSelectContainer = document.getElementById('modelSelectContainer');
+1946:         els.currentModelDisplay = document.getElementById('currentModelDisplay');
+1947:         els.modelOptions = document.getElementById('modelOptions');
+1948:         loadModels(); 
+1949:         
+1950:         const toggleSidebar = document.getElementById('toggleSidebar');
+1951:         if(toggleSidebar) toggleSidebar.onclick = () => {
+1952:             if (window.innerWidth <= 768) els.sidebar.classList.toggle('mobile-open');
+1953:             else els.sidebar.classList.toggle('collapsed');
+1954:         };
+1955:         const toggleKP = document.getElementById('toggleKnowledgePanel');
+1956:         if(toggleKP) toggleKP.onclick = () => els.knowledgePanel.classList.toggle('visible');
+1957:     }
+1958:     originalHeaderState = null;
+1959: }
+1960: 
+1961: function closeKnowledgeSearchModal() {
+1962:     // 兼容性函数，调用新的搜索结果视图关闭函数
+1963:     closeKnowledgeSearchResultView();
+1964: }
+1965: 
+1966: async function openKnowledgeAtChunk(title, chunkText, meta = {}, fromSearch = false) {
+1967:     // 如果不是来自搜索，清除导航栈（直接跳转）
+1968:     if (!fromSearch) {
+1969:         navigationStack = [{
+1970:             type: 'chat',
+1971:             state: {
+1972:                 title: document.getElementById('conversationTitle').textContent,
+1973:                 leftHTML: document.querySelector('.header-left').innerHTML,
+1974:                 rightHTML: document.querySelector('.header-right').innerHTML
+1975:             }
+1976:         }];
+1977:     }
+1978:     
+1979:     // 直接在预览模式下打开，带有高亮信息
+1980:     await viewKnowledge(title, { 
+1981:         forceEditMode: false,
+1982:         highlightData: { text: chunkText, meta }
+1983:     });
+1984: }
+1985: 
+1986: function indexToPos(text, index) {
+1987:     const before = text.slice(0, index);
+1988:     const lines = before.split('\n');
+1989:     const line = lines.length - 1;
+1990:     const ch = lines[lines.length - 1].length;
+1991:     return { line, ch };
+1992: }
+1993: 
+1994: function escapeHtml(str) {
+1995:     return String(str || '')
+1996:         .replace(/&/g, '&amp;')
+1997:         .replace(/</g, '&lt;')
+1998:         .replace(/>/g, '&gt;')
+1999:         .replace(/"/g, '&quot;')
+2000:         .replace(/'/g, '&#039;');
+2001: }
+2002: 
+2003: async function saveKnowledge(title) {
+2004:     if(!easyMDE) return;
+2005:     const content = easyMDE.value();
