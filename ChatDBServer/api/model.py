@@ -1138,6 +1138,23 @@ class Model:
             # 适配不同 SDK 的 Token 字段命名 (OpenAI 使用 prompt_tokens/completion_tokens)
             input_tokens = getattr(usage, 'input_tokens', getattr(usage, 'prompt_tokens', 0))
             output_tokens = getattr(usage, 'output_tokens', getattr(usage, 'completion_tokens', 0))
+            total_tokens = getattr(usage, 'total_tokens', input_tokens + output_tokens)
+            
+            # 根据 config['log_status'] 决定是否输出详细日志
+            log_status = CONFIG.get('log_status', 'silent')
+            if log_status == 'all':
+                # 输出所有 token 信息用于调试
+                print(f"[TOKEN_DEBUG] ==================== Token Usage Info ====================")
+                print(f"[TOKEN_DEBUG] Model: {self.model_name}")
+                print(f"[TOKEN_DEBUG] Provider: {self.provider}")
+                print(f"[TOKEN_DEBUG] Action Type: {action_type}")
+                print(f"[TOKEN_DEBUG] Input Tokens: {input_tokens}")
+                print(f"[TOKEN_DEBUG] Output Tokens: {output_tokens}")
+                print(f"[TOKEN_DEBUG] Total Tokens: {total_tokens}")
+                print(f"[TOKEN_DEBUG] Usage Object Type: {type(usage).__name__}")
+                print(f"[TOKEN_DEBUG] Usage Object Attributes: {dir(usage)}")
+                print(f"[TOKEN_DEBUG] Raw Usage Object: {usage}")
+                print(f"[TOKEN_DEBUG] ==========================================================")
                 
             self.user.log_token_usage(
                 self.conversation_id or "unknown", 

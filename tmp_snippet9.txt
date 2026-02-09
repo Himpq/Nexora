@@ -1,7 +1,0 @@
-2927: function cancelVectorizeProgress() {
-2928:     vectorizeRunId += 1;
-2929:     vectorizeTitle = null;
-2930:     stopVectorProgress('\u5df2\u53d6\u6d88', true);
-2931: }
-2932: 
-2933: function resetVectorProgressUI() {

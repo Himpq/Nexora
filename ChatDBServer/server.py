@@ -33,7 +33,7 @@ CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.j
 MODELS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models.json')
 
 def get_config_all():
-    """??????"""
+    """获取配置"""
     config = {}
     if os.path.exists(CONFIG_PATH):
         try:
@@ -696,7 +696,7 @@ def switch_version():
 @app.route('/api/config', methods=['GET'])
 @require_login
 def get_config():
-    """??????????????????"""
+    """获取模型配置（用户接口）"""
     username = session.get('username')
     try:
         blacklist_path = './data/model_permissions.json'
@@ -736,7 +736,7 @@ def get_config():
 @app.route('/api/admin/user/models', methods=['GET'])
 @require_admin
 def admin_get_user_models():
-    """???????????????????"""
+    """获取用户可用模型列表（管理员）"""
     target_username = request.args.get('username')
     if not target_username:
         return jsonify({"success": False, "message": "Missing username"}), 400
@@ -1869,7 +1869,7 @@ def vectorize_knowledge():
         if title:
             text = user.getBasisContent(title)
         else:
-            return jsonify({'success': False, 'message': '????????'})
+            return jsonify({'success': False, 'message': '文本为空'})
 
     def split_text(t, max_len=800, overlap=120):
         if not t:
@@ -1899,11 +1899,11 @@ def vectorize_knowledge():
 
         chunks = split_text(text, chunk_size, chunk_overlap)
         if not chunks:
-            return jsonify({'success': False, 'message': '????'})
+            return jsonify({'success': False, 'message': '文本为空'})
         
         store, store_err = get_chroma_store()
         if not store:
-            return jsonify({'success': False, 'message': f'ChromaDB???: {store_err}'})
+            return jsonify({'success': False, 'message': f'ChromaDB错误: {store_err}'})
         if getattr(store, 'mode', '') != 'service':
             return jsonify({'success': False, 'message': 'NexoraDB service mode required'})
 
@@ -1935,7 +1935,7 @@ def vectorize_knowledge():
                 stored_count += 1
             stored = stored_count == len(chunks)
         except Exception as e:
-            return jsonify({'success': False, 'message': f'?????: {str(e)}'})
+            return jsonify({'success': False, 'message': f'存储失败: {str(e)}'})
         
         return jsonify({
             'success': True, 
@@ -1946,15 +1946,15 @@ def vectorize_knowledge():
             'vector_preview': [],
             'vector_ids': doc_ids,
             'store_error': None if stored else 'store error',
-            'message': '?????'
+            'message': '向量化成功'
         })
     except Exception as e:
-        return jsonify({'success': False, 'message': f'?????: {str(e)}'})
+        return jsonify({'success': False, 'message': f'向量化失败: {str(e)}'})
 
 @app.route('/api/knowledge/vector/config', methods=['GET'])
 @require_login
 def get_vector_config():
-    """????????"""
+    """获取向量配置"""
     config = get_config_all()
     rag = config.get('rag_database', {})
     return jsonify({
@@ -1967,7 +1967,7 @@ def get_vector_config():
 @app.route('/api/knowledge/vectorize/chunk', methods=['POST'])
 @require_login
 def vectorize_knowledge_chunk():
-    """???????????"""
+    """分块向量化知识"""
     username = session['username']
     data = request.get_json() or {}
     title = data.get('title')
@@ -1977,11 +1977,11 @@ def vectorize_knowledge_chunk():
     chunk_total = data.get('chunk_total')
 
     if not title or text is None:
-        return jsonify({'success': False, 'message': '???????'})
+        return jsonify({'success': False, 'message': '缺少标题或文本'})
 
     store, store_err = get_chroma_store()
     if not store:
-        return jsonify({'success': False, 'message': f'ChromaDB???: {store_err}'})
+        return jsonify({'success': False, 'message': f'ChromaDB错误: {store_err}'})
     if getattr(store, 'mode', '') != 'service':
         return jsonify({'success': False, 'message': 'NexoraDB service mode required'})
 
@@ -2002,18 +2002,18 @@ def vectorize_knowledge_chunk():
 @app.route('/api/knowledge/query', methods=['POST'])
 @require_login
 def query_knowledge_vectors():
-    """????(ChromaDB)"""
+    """查询知识向量(ChromaDB)"""
     username = session['username']
     data = request.get_json() or {}
     query_text = data.get('text') or data.get('query')
     top_k = int(data.get('top_k') or 5)
     
     if not query_text:
-        return jsonify({'success': False, 'message': '???????'})
+        return jsonify({'success': False, 'message': '缺少查询文本'})
 
     store, store_err = get_chroma_store()
     if not store:
-        return jsonify({'success': False, 'message': f'ChromaDB???: {store_err}'})
+        return jsonify({'success': False, 'message': f'ChromaDB错误: {store_err}'})
 
     try:
         if getattr(store, 'mode', '') != 'service':
@@ -2027,17 +2027,17 @@ def query_knowledge_vectors():
 @app.route('/api/knowledge/vector/delete', methods=['POST'])
 @require_login
 def delete_knowledge_vectors():
-    """?????????????????"""
+    """删除知识点的向量数据"""
     username = session['username']
     data = request.get_json() or {}
     title = data.get('title')
     vector_id = data.get('vector_id')
     if not title and not vector_id:
-        return jsonify({'success': False, 'message': '????????ID'})
+        return jsonify({'success': False, 'message': '缺少标题或向量ID'})
 
     store, store_err = get_chroma_store()
     if not store:
-        return jsonify({'success': False, 'message': f'ChromaDB???: {store_err}'})
+        return jsonify({'success': False, 'message': f'ChromaDB错误: {store_err}'})
     try:
         if vector_id:
             store.delete_by_id(username, vector_id)

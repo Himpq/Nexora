@@ -2039,7 +2039,7 @@ function renderSearchResultsFromCache() {
     const list = document.getElementById('knowledgeSearchResultsList');
     if (!list) return;
     if (!lastKnowledgeSearchResults || lastKnowledgeSearchResults.length === 0) {
-        list.innerHTML = '<div style="padding: 20px; color:#94a3b8; text-align: center;">????</div>';
+        list.innerHTML = '<div style="padding: 20px; color:#94a3b8; text-align: center;">无结果</div>';
         return;
     }
     list.innerHTML = lastKnowledgeSearchResults.map((item, idx) => {

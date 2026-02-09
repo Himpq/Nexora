@@ -144,16 +144,19 @@ def get_client():
     proj = get_project_config()
     data_path = proj.get("data_path") or "./chroma_data"
     try:
-        return chromadb.PersistentClient(path=data_path)
-    except Exception as e:
-        # Fallback for environments where Rust bindings/tenants fail
-        print(f"[WARN] PersistentClient failed, fallback to legacy client: {e}")
-        settings = Settings(
-            chroma_db_impl="duckdb+parquet",
-            persist_directory=data_path,
-            anonymized_telemetry=False
+        return chromadb.PersistentClient(
+            path=data_path,
+            settings=Settings(anonymized_telemetry=False)
         )
-        return chromadb.Client(settings)
+    except Exception as e:
+        # Retry with explicit tenant/database to avoid default_tenant issues
+        print(f"[WARN] PersistentClient failed, retry with tenant/database: {e}")
+        return chromadb.PersistentClient(
+            path=data_path,
+            settings=Settings(anonymized_telemetry=False),
+            tenant="default_tenant",
+            database="default_database"
+        )
 
 
 def get_collection(username: str):
@@ -454,6 +457,29 @@ def chunks():
             "metadata": meta
         })
     return jsonify({"success": True, "chunks": chunks})
+
+@app.route("/titles", methods=["POST"])
+def titles():
+    data = request.get_json() or {}
+    username = data.get("username")
+
+    if not username:
+        return jsonify({"success": False, "message": "missing username"}), 400
+
+    collection = get_collection(username)
+    result = collection.get(include=["metadatas"])
+    metas = result.get("metadatas", []) or []
+    titles = []
+    seen = set()
+    for meta in metas:
+        if not meta:
+            continue
+        t = meta.get("title") or ""
+        if t and t not in seen:
+            seen.add(t)
+            titles.append(t)
+    titles.sort()
+    return jsonify({"success": True, "titles": titles})
 
 @app.route("/delete", methods=["POST"])
 def delete():
