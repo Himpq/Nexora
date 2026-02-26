@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from html import unescape
 from functools import wraps
 from email import message_from_string, policy
-from email.header import decode_header
+from email.header import decode_header, Header
 
 from flask import Flask, jsonify, request
 
@@ -25,20 +25,55 @@ def _get_api_config():
     listen = cfg.get("listen", {}) if isinstance(cfg.get("listen"), dict) else {}
     auth = cfg.get("auth", {}) if isinstance(cfg.get("auth"), dict) else {}
     security = cfg.get("security", {}) if isinstance(cfg.get("security"), dict) else {}
-    # backward compatibility with old flat keys
-    host = listen.get("host", cfg.get("host", "127.0.0.1"))
-    port = listen.get("port", cfg.get("port", 17171))
-    api_key = auth.get("api_key", cfg.get("api_key", cfg.get("token", "")))
-    local_only = bool(
-        security.get(
+
+    def _as_bool(value, default=False):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            v = value.strip().lower()
+            if v in ("1", "true", "yes", "y", "on"):
+                return True
+            if v in ("0", "false", "no", "n", "off"):
+                return False
+        return default
+
+    # Prefer flat style:
+    # {
+    #   "api_server": {
+    #     "host": "...", "port": 17171, "api_key": "...",
+    #     "local_only_when_no_api_key": true, "enabled": true
+    #   }
+    # }
+    # Fallback to nested style (listen/auth/security) for compatibility.
+    host = cfg.get("host", listen.get("host", "127.0.0.1"))
+    port_raw = cfg.get("port", listen.get("port", 17171))
+    try:
+        port = int(port_raw)
+    except Exception:
+        port = 17171
+
+    api_key = (
+        cfg.get("api_key")
+        or auth.get("api_key")
+        or cfg.get("token", "")
+    )
+
+    local_only_raw = cfg.get("local_only_when_no_api_key", None)
+    if local_only_raw is None:
+        local_only_raw = cfg.get("localOnlyWhenNoApiKey", None)
+    if local_only_raw is None:
+        local_only_raw = security.get(
             "local_only_when_no_api_key",
             security.get("localOnlyWhenNoApiKey", True),
         )
-    )
+    local_only = _as_bool(local_only_raw, True)
+
     return {
         "enabled": bool(cfg.get("enabled", True)),
         "host": host,
-        "port": int(port),
+        "port": port,
         "api_key": (api_key or "").strip(),
         "local_only_when_no_api_key": local_only,
     }
@@ -139,7 +174,36 @@ def _decode_subject(value):
             out.append(text.decode(charset or "utf-8", errors="replace"))
         else:
             out.append(str(text))
-    return "".join(out).strip()
+    return _repair_common_mojibake("".join(out).strip())
+
+
+def _garbled_score_text(s):
+    text = str(s or "")
+    if not text:
+        return 0
+    suspicious = ("鎴", "馃", "锛", "锟", "�", "鏄", "鍐", "涓", "鐨")
+    score = 0
+    for token in suspicious:
+        score += text.count(token)
+    return score
+
+
+def _repair_common_mojibake(text):
+    src = str(text or "")
+    if not src:
+        return src
+    best = src
+    best_score = _garbled_score_text(src)
+    for enc in ("gb18030", "gbk"):
+        try:
+            cand = src.encode(enc, errors="strict").decode("utf-8", errors="strict")
+        except Exception:
+            continue
+        cand_score = _garbled_score_text(cand)
+        if cand_score < best_score:
+            best = cand
+            best_score = cand_score
+    return best
 
 
 def _extract_subject(raw_content):
@@ -151,7 +215,7 @@ def _extract_subject(raw_content):
     except Exception:
         for line in raw_content.splitlines()[:30]:
             if line.lower().startswith("subject:"):
-                return line.split(":", 1)[1].strip()
+                return _repair_common_mojibake(line.split(":", 1)[1].strip())
         return ""
 
 
@@ -313,6 +377,21 @@ def _mail_dir_for(user_path, mail_id):
     return os.path.join(user_path, safe_id)
 
 
+def _sent_root_for_user(user_path):
+    base = str(user_path or "").strip()
+    if not base:
+        return ""
+    return os.path.join(base, "sent")
+
+
+def _mail_dir_for_box(user_path, mail_id, box="inbox"):
+    if box == "sent":
+        root = _sent_root_for_user(user_path)
+    else:
+        root = user_path
+    return _mail_dir_for(root, mail_id)
+
+
 def _load_mail_entry(mail_dir, include_content=False):
     info_path = os.path.join(mail_dir, "mail.json")
     content_path = os.path.join(mail_dir, "content.txt")
@@ -399,15 +478,33 @@ def _list_mails(user_path):
     return mails
 
 
+def _list_sent_mails(user_path):
+    sent_root = _sent_root_for_user(user_path)
+    mails = []
+    if not sent_root or not os.path.isdir(sent_root):
+        return mails
+    for mail_id in os.listdir(sent_root):
+        mail_dir = os.path.join(sent_root, mail_id)
+        if not os.path.isdir(mail_dir):
+            continue
+        item = _load_mail_entry(mail_dir, include_content=False)
+        if item:
+            mails.append(item)
+    mails.sort(key=lambda x: (x.get("timestamp", 0), x.get("id", "")), reverse=True)
+    return mails
+
+
 def _compose_mail_raw(sender, recipient, subject, content):
     ts = time.strftime("%a, %d %b %Y %H:%M:%S +0000", time.gmtime())
     mail_id = f"{int(time.time())}.{os.getpid()}@nexoramail.local"
+    subject_clean = _repair_common_mojibake(subject)
+    subject_header = str(Header(subject_clean or "", "utf-8"))
     return (
         f"Date: {ts}\r\n"
         f"From: <{sender}>\r\n"
         f"To: <{recipient}>\r\n"
         f"Message-ID: <{mail_id}>\r\n"
-        f"Subject: {subject}\r\n"
+        f"Subject: {subject_header}\r\n"
         "MIME-Version: 1.0\r\n"
         "Content-Type: text/plain; charset=\"UTF-8\"\r\n"
         "\r\n"
@@ -611,6 +708,93 @@ def get_user_mail(group, username, mail_id):
     if not item:
         return jsonify({"success": False, "message": "mail not found"}), 404
     return jsonify({"success": True, "group": group_name, "username": uname, "mail": item})
+
+
+@app.get("/api/mailboxes/<group>/<username>/sent")
+@require_api_token
+def list_user_sent_mails(group, username):
+    group_name, ug, uname, user = _get_user(group, username)
+    if not user:
+        return jsonify({"success": False, "message": "user not found"}), 404
+
+    query = (request.args.get("q") or "").strip().lower()
+    offset = max(int(request.args.get("offset", 0) or 0), 0)
+    limit = min(max(int(request.args.get("limit", 50) or 50), 1), 200)
+
+    mails = _list_sent_mails(user.get("path", ""))
+    if query:
+        filtered = []
+        for m in mails:
+            text = " ".join(
+                [
+                    str(m.get("id", "")),
+                    str(m.get("sender", "")),
+                    str(m.get("recipient", "")),
+                    str(m.get("subject", "")),
+                    str(m.get("preview_text", "")),
+                    str(m.get("preview", "")),
+                ]
+            ).lower()
+            if query in text:
+                filtered.append(m)
+        mails = filtered
+
+    total = len(mails)
+    sliced = mails[offset : offset + limit]
+    return jsonify(
+        {
+            "success": True,
+            "group": group_name,
+            "username": uname,
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "mails": sliced,
+        }
+    )
+
+
+@app.get("/api/mailboxes/<group>/<username>/sent/<mail_id>")
+@require_api_token
+def get_user_sent_mail(group, username, mail_id):
+    group_name, ug, uname, user = _get_user(group, username)
+    if not user:
+        return jsonify({"success": False, "message": "user not found"}), 404
+
+    user_path = user.get("path", "")
+    mail_dir = _mail_dir_for_box(user_path, mail_id, box="sent")
+    sent_root = _sent_root_for_user(user_path)
+    if not sent_root or not mail_dir or not _safe_commonpath(sent_root, mail_dir) or not os.path.isdir(mail_dir):
+        return jsonify({"success": False, "message": "mail not found"}), 404
+
+    item = _load_mail_entry(mail_dir, include_content=True)
+    if not item:
+        return jsonify({"success": False, "message": "mail not found"}), 404
+    return jsonify({"success": True, "group": group_name, "username": uname, "mail": item})
+
+
+@app.delete("/api/mailboxes/<group>/<username>/sent/<mail_id>")
+@require_api_token
+def delete_user_sent_mail(group, username, mail_id):
+    group_name, ug, uname, user = _get_user(group, username)
+    if not user:
+        return jsonify({"success": False, "message": "user not found"}), 404
+
+    user_path = user.get("path", "")
+    mail_dir = _mail_dir_for_box(user_path, mail_id, box="sent")
+    sent_root = _sent_root_for_user(user_path)
+    if not sent_root or not mail_dir or not _safe_commonpath(sent_root, mail_dir) or not os.path.isdir(mail_dir):
+        return jsonify({"success": False, "message": "mail not found"}), 404
+
+    try:
+        for fn in os.listdir(mail_dir):
+            fp = os.path.join(mail_dir, fn)
+            if os.path.isfile(fp):
+                os.remove(fp)
+        os.rmdir(mail_dir)
+        return jsonify({"success": True, "group": group_name, "username": uname, "id": mail_id})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
 
 
 @app.patch("/api/mailboxes/<group>/<username>/mails/<mail_id>/read")

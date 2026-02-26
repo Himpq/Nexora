@@ -1000,6 +1000,61 @@ def sendMail(sender, recipient, data, session: Optional[SessionState], userGroup
             return False
         return perm in perms
 
+    def _read_mail_data_text(payload):
+        try:
+            if isinstance(payload, str) and os.path.exists(payload):
+                with open(payload, 'r', encoding='utf-8', errors='replace') as pf:
+                    return pf.read()
+            return str(payload)
+        except Exception:
+            try:
+                return str(payload)
+            except Exception:
+                return ""
+
+    def _save_sender_sent_copy():
+        """SMTP 层统一保存发件副本：sender/sent/<mail_id>"""
+        try:
+            if not sender or not userGroup.isIn(sender):
+                return False, None
+        except Exception:
+            return False, None
+
+        try:
+            sender_path = userGroup.getUserPath(sender)
+            if not sender_path:
+                return False, None
+
+            sent_root = os.path.join(sender_path, 'sent')
+            os.makedirs(sent_root, exist_ok=True)
+
+            mail_id = ''.join(random.choices(string.ascii_letters + string.digits, k=16))
+            mail_dir = os.path.join(sent_root, mail_id)
+            os.makedirs(mail_dir, exist_ok=True)
+
+            with open(os.path.join(mail_dir, 'content.txt'), 'w', encoding='utf-8') as f:
+                f.write(_read_mail_data_text(data))
+
+            with open(os.path.join(mail_dir, 'mail.json'), 'w', encoding='utf-8') as f:
+                json.dump(
+                    {
+                        'sender': sender,
+                        'recipient': recipient,
+                        'timestamp': int(time.time()),
+                        'id': mail_id,
+                        'box': 'sent',
+                        'is_read': True
+                    },
+                    f,
+                    ensure_ascii=False,
+                    indent=2
+                )
+            loginfo.write(f"[{sender}][SMTP] Sent copy saved: {mail_id} -> {recipient}")
+            return True, mail_id
+        except Exception as e:
+            loginfo.write(f"[{sender}][SMTP] Sent copy save failed: {e}")
+            return False, None
+
     # 目标是否为本地用户
     is_local = userGroup.isIn(recipient)
 
@@ -1023,15 +1078,9 @@ def sendMail(sender, recipient, data, session: Optional[SessionState], userGroup
             # 如果 data 表示一个文件路径，则把文件内容移动/复制到 mailbox
             try:
                 if isinstance(data, str) and os.path.exists(data):
-                    # 直接 move 文件到目标位置以节省内存
-                    f.close()
-                    try:
-                        os.replace(data, os.path.join(mail_dir, 'content.txt'))
-                    except Exception:
-                        # 回退到复制
-                        with open(data, 'r', encoding='utf-8', errors='replace') as sf:
-                            with open(os.path.join(mail_dir, 'content.txt'), 'w', encoding='utf-8') as df:
-                                df.write(sf.read())
+                    # 复制而不是 move，避免破坏后续多收件人投递和发件副本保存
+                    with open(data, 'r', encoding='utf-8', errors='replace') as sf:
+                        f.write(sf.read())
                 else:
                     f.write(data)
             except Exception:
@@ -1049,6 +1098,7 @@ def sendMail(sender, recipient, data, session: Optional[SessionState], userGroup
         with open(os.path.join(mail_dir, 'mail.json'), 'w', encoding='utf-8') as f:
             json.dump(mail_info, f, indent=2)
             loginfo.write(f"[{sender}][SMTP] Mail {mail_id} saved successfully")
+            _save_sender_sent_copy()
             # Provide a synthetic attempt entry for local delivery so DSN aggregation
             # can count attempts and successes correctly.
             try:
@@ -1205,6 +1255,7 @@ def sendMail(sender, recipient, data, session: Optional[SessionState], userGroup
                 # successful via relay
                 if hasattr(try_relay, 'attempts') and try_relay.attempts:
                     dsn_attempts.extend(try_relay.attempts)
+                _save_sender_sent_copy()
                 return True, dsn_attempts
             else:
                 if hasattr(try_relay, 'attempts') and try_relay.attempts:
@@ -1214,6 +1265,7 @@ def sendMail(sender, recipient, data, session: Optional[SessionState], userGroup
                 # successful via direct
                 if hasattr(try_direct, 'attempts') and try_direct.attempts:
                     dsn_attempts.extend(try_direct.attempts)
+                _save_sender_sent_copy()
                 return True, dsn_attempts
             else:
                 if hasattr(try_direct, 'attempts') and try_direct.attempts:
@@ -1435,6 +1487,17 @@ def sendDsnMail(sender, original, attempts, userGroup):
 class SMTPService:
     def __init__(self, bindIP, port, userGroup, ssl=False):
         self.socket = socket.socket()
+        # Allow fast restart without hitting transient EADDRINUSE after reboot/restart.
+        try:
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        except Exception:
+            pass
+        # Optional on Linux: allow rebinding in edge cases. Ignore if unsupported.
+        try:
+            if hasattr(socket, "SO_REUSEPORT"):
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        except Exception:
+            pass
         self.port = port
         self.userGroupName = userGroup
         self.userGroup = UserManager.getGroup(userGroup)
@@ -1465,7 +1528,26 @@ class SMTPService:
             except Exception as e:
                 loginfo.write(f"[SMTP] SSL error on port {port}: {str(e)}")
                 raise e
-        self.socket.bind((bindIP, port))
+        # Retry bind for a short window to tolerate transient kernel socket state on restart.
+        bind_ok = False
+        last_bind_exc = None
+        for i in range(3):
+            try:
+                self.socket.bind((bindIP, port))
+                bind_ok = True
+                break
+            except OSError as e:
+                last_bind_exc = e
+                # 98 = Address already in use (Linux)
+                if getattr(e, "errno", None) == 98 and i < 2:
+                    try:
+                        time.sleep(1 + i)
+                    except Exception:
+                        pass
+                    continue
+                raise
+        if not bind_ok and last_bind_exc:
+            raise last_bind_exc
         self.socket.listen(128)
             
 

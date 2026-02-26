@@ -8,8 +8,14 @@
 import os
 import json
 import time
+import re
+import base64
+import textwrap
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Generator
+from urllib import request as urllib_request, error as urllib_error, parse as urllib_parse
+from email.header import Header
+from email.utils import parsedate_to_datetime
 from volcenginesdkarkruntime import Ark
 from openai import OpenAI
 from tools import TOOLS
@@ -21,6 +27,12 @@ from conversation_manager import ConversationManager
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.json')
 MODELS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models.json')
 MODELS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models.json')
+SEARCH_ADAPTERS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'search_adapters.json')
+
+DEFAULT_SEARCH_ADAPTER_CONFIG = {
+    "version": 1,
+    "providers": {}
+}
 
 # 加载配置
 def load_config():
@@ -35,6 +47,25 @@ def load_config():
         if "providers" in models_cfg:
             config["providers"] = models_cfg.get("providers", {})
     return config
+
+
+def load_search_adapter_config() -> Dict[str, Any]:
+    """加载搜索适配器配置（providers -> {enabled, tools}）"""
+    cfg = json.loads(json.dumps(DEFAULT_SEARCH_ADAPTER_CONFIG))
+    try:
+        if os.path.exists(SEARCH_ADAPTERS_PATH):
+            with open(SEARCH_ADAPTERS_PATH, 'r', encoding='utf-8') as f:
+                file_cfg = json.load(f)
+            if isinstance(file_cfg, dict):
+                providers_cfg = file_cfg.get("providers")
+                if isinstance(providers_cfg, dict):
+                    cfg["providers"].update(providers_cfg)
+                elif isinstance(file_cfg.get("adapters"), dict):
+                    # 兼容旧格式：adapters 下键即 provider 名
+                    cfg["providers"].update(file_cfg.get("adapters", {}))
+    except Exception as e:
+        print(f"[SEARCH_ADAPTER] 配置加载失败，使用默认配置: {e}")
+    return cfg
 
 CONFIG = load_config()
 
@@ -140,13 +171,12 @@ class Model:
         else:
             self.conversation_id = None
         
-        # 系统提示词
-        self.system_prompt = system_prompt or self._get_default_system_prompt()
-        
         # 获取模型配置和供应商信息
         model_info = CONFIG.get('models', {}).get(self.model_name, {})
+        self.model_display_name = model_info.get('name', self.model_name)
         self.provider = model_info.get('provider', 'volcengine')
         provider_info = CONFIG.get('providers', {}).get(self.provider, {})
+        self.provider_display_name = provider_info.get('name', self.provider)
         
         api_key = provider_info.get('api_key', "")
         base_url = provider_info.get('base_url')
@@ -177,6 +207,18 @@ class Model:
                 )
             _CLIENT_CACHE[cache_key] = self.client
         
+        # 系统提示词（支持 {{var}} 模板变量）
+        self.system_prompt = self._render_prompt_template(system_prompt) if system_prompt else self._get_default_system_prompt()
+
+        # 搜索适配器（provider 级）配置
+        self.search_adapter_config = self._load_search_adapter_runtime_config()
+        self.provider_search_adapter = self._get_provider_search_adapter(self.provider)
+        self.native_search_tools = self._get_provider_native_tools(self.provider)
+        self.native_web_search_enabled = any(
+            str(t.get("type", "")).strip() == "web_search"
+            for t in self.native_search_tools
+        )
+
         # 工具定义
         self.tools = self._parse_tools(TOOLS)
     
@@ -210,13 +252,193 @@ class Model:
         import prompts
         # 检查是否有特定模型的自定义提示词
         if hasattr(prompts, 'others') and self.model_name in prompts.others:
-            return prompts.others[self.model_name]
-        return prompts.default
+            return self._render_prompt_template(prompts.others[self.model_name])
+        return self._render_prompt_template(prompts.default)
     
     def _get_default_web_search_prompt(self) -> str:
         """获取默认的联网搜索系统提示词"""
         import prompts
-        return prompts.web_search_default
+        return self._render_prompt_template(prompts.web_search_default)
+
+    def _load_search_adapter_runtime_config(self) -> Dict[str, Any]:
+        """读取搜索适配器配置（支持运行时热更新）"""
+        return load_search_adapter_config()
+
+    def _get_provider_search_adapter(self, provider_name: Optional[str] = None) -> Dict[str, Any]:
+        cfg = self._load_search_adapter_runtime_config()
+        providers_cfg = cfg.get("providers", {}) if isinstance(cfg, dict) else {}
+        if not isinstance(providers_cfg, dict):
+            providers_cfg = {}
+        p = str(provider_name or self.provider or "").strip()
+        adapter = providers_cfg.get(p, {})
+        return adapter if isinstance(adapter, dict) else {}
+
+    def _get_provider_native_tools(self, provider_name: Optional[str] = None) -> List[Dict[str, Any]]:
+        adapter = self._get_provider_search_adapter(provider_name)
+        if not adapter or not bool(adapter.get("enabled", False)):
+            return []
+        tools = adapter.get("tools", [])
+        if not isinstance(tools, list):
+            return []
+        normalized = []
+        for t in tools:
+            if not isinstance(t, dict):
+                continue
+            if not t.get("type"):
+                continue
+            normalized.append(json.loads(json.dumps(t)))
+        return normalized
+
+    def _provider_native_web_search_enabled(self, provider_name: Optional[str] = None) -> bool:
+        tools = self._get_provider_native_tools(provider_name)
+        return any(str(t.get("type", "")).strip() == "web_search" for t in tools)
+
+    def _get_provider_client_for_search(self, provider_name: str):
+        provider_info = CONFIG.get('providers', {}).get(provider_name, {})
+        api_key = str(provider_info.get('api_key', '') or '').strip()
+        base_url = str(provider_info.get('base_url', '') or '').strip()
+        if not api_key:
+            raise ValueError(f"provider {provider_name} 未配置 api_key")
+
+        global _CLIENT_CACHE
+        cache_key = f"search_{provider_name}_{api_key}"
+        if cache_key in _CLIENT_CACHE:
+            return _CLIENT_CACHE[cache_key]
+
+        if provider_name == 'volcengine':
+            client = Ark(api_key=api_key, base_url=base_url, timeout=120.0, max_retries=2)
+        else:
+            client = OpenAI(api_key=api_key, base_url=base_url, timeout=120.0)
+
+        _CLIENT_CACHE[cache_key] = client
+        return client
+
+    def _extract_responses_search_payload(self, response) -> Dict[str, Any]:
+        text = ""
+        references = []
+
+        output_text = getattr(response, "output_text", None)
+        if output_text:
+            text = str(output_text).strip()
+
+        if not text:
+            output_items = getattr(response, "output", None) or []
+            text_chunks = []
+            for item in output_items:
+                item_type = str(getattr(item, "type", "") or "")
+                if item_type != "message":
+                    continue
+                content_list = getattr(item, "content", None) or []
+                for content_item in content_list:
+                    c_type = str(getattr(content_item, "type", "") or "")
+                    if c_type not in ("output_text", "text"):
+                        continue
+                    piece = (
+                        getattr(content_item, "text", None)
+                        or getattr(content_item, "content", None)
+                        or ""
+                    )
+                    piece = str(piece).strip()
+                    if piece:
+                        text_chunks.append(piece)
+
+                    annotations = getattr(content_item, "annotations", None) or []
+                    for ann in annotations:
+                        url = str(getattr(ann, "url", "") or "").strip()
+                        if not url:
+                            continue
+                        title = str(
+                            getattr(ann, "title", "")
+                            or getattr(ann, "source_title", "")
+                            or "来源"
+                        ).strip()
+                        references.append({"title": title, "url": url})
+            text = "\n".join(text_chunks).strip()
+
+        return {"text": text, "references": references}
+
+    def _execute_local_web_search_relay(self, query: str, args: Dict[str, Any]) -> str:
+        """本地 web_search 中转：统一回退到火山引擎搜索模型。"""
+        provider_name = "volcengine"
+        models_map = CONFIG.get('models', {}) if isinstance(CONFIG.get('models', {}), dict) else {}
+
+        # 优先 websearch_model，其次第一个火山模型
+        model_id = str(CONFIG.get("websearch_model", "") or "").strip()
+        if model_id not in models_map or str(models_map.get(model_id, {}).get("provider", "") or "").strip() != provider_name:
+            model_id = ""
+            for m_id, m_info in models_map.items():
+                if str(m_info.get("provider", "") or "").strip() == provider_name:
+                    model_id = m_id
+                    break
+        if not model_id:
+            raise ValueError("未配置可用的火山引擎搜索模型")
+
+        client = self._get_provider_client_for_search(provider_name)
+        tools = [{"type": "web_search"}]
+        for key in ("limit", "sources", "user_location"):
+            if key in args and args.get(key) is not None:
+                tools[0][key] = args.get(key)
+
+        response = client.responses.create(
+            model=model_id,
+            input=[
+                {"role": "system", "content": [{"type": "input_text", "text": self._get_default_web_search_prompt()}]},
+                {"role": "user", "content": [{"type": "input_text", "text": query}]}
+            ],
+            tools=tools,
+            stream=False
+        )
+
+        payload = self._extract_responses_search_payload(response)
+        search_result = str(payload.get("text", "") or "").strip()
+        references = payload.get("references", [])
+        references = references if isinstance(references, list) else []
+
+        if not search_result:
+            search_result = "联网搜索成功，但模型未返回可解析的正文内容。"
+
+        if references:
+            seen = set()
+            ref_lines = []
+            for ref in references:
+                title = str((ref or {}).get("title", "") or "来源").strip()
+                url = str((ref or {}).get("url", "") or "").strip()
+                if not url:
+                    continue
+                key = (title, url)
+                if key in seen:
+                    continue
+                seen.add(key)
+                ref_lines.append(f"- {title}: {url}")
+            if ref_lines:
+                search_result = f"{search_result}\n\n参考来源:\n" + "\n".join(ref_lines)
+
+        return f"联网搜索结果 for '{query}':\n\n{search_result}\n\n(adapter=local-relay, model={model_id})"
+
+    def _render_prompt_template(self, text: Any) -> str:
+        """
+        Render prompt template variables:
+        - {{model_name}}: display model name from config models.<id>.name
+        - {{model_id}}: runtime model id used for API call
+        - {{user}}: current username
+        - {{provider}} / {{provider_id}}: provider id
+        - {{provider_name}}: provider display name (fallback to provider id)
+        """
+        s = str(text or "")
+        mapping = {
+            "model_name": str(getattr(self, "model_display_name", self.model_name) or self.model_name),
+            "model_id": str(self.model_name or ""),
+            "user": str(self.username or ""),
+            "provider": str(getattr(self, "provider", "") or ""),
+            "provider_id": str(getattr(self, "provider", "") or ""),
+            "provider_name": str(getattr(self, "provider_display_name", getattr(self, "provider", "")) or getattr(self, "provider", "")),
+        }
+
+        def repl(match):
+            key = (match.group(1) or "").strip()
+            return mapping.get(key, match.group(0))
+
+        return re.sub(r"\{\{\s*([a-zA-Z0-9_]+)\s*\}\}", repl, s)
 
     def _estimate_token_count(self, text: str) -> int:
         """估算 token 数（当 provider 不返回 usage 时的兜底）"""
@@ -235,28 +457,589 @@ class Model:
         except Exception:
             return max(1, len(str(text)) // 4)
 
+    def _prefix_suffix_overlap(self, previous: str, current: str, max_window: int = 12000) -> int:
+        """计算 previous 后缀与 current 前缀的最大重叠长度，用于跨轮去重。"""
+        prev = str(previous or "")
+        cur = str(current or "")
+        if not prev or not cur:
+            return 0
+        max_len = min(len(prev), len(cur), int(max_window or 12000))
+        if max_len <= 0:
+            return 0
+        prev_tail = prev[-max_len:]
+        for k in range(max_len, 0, -1):
+            if prev_tail[-k:] == cur[:k]:
+                return k
+        return 0
+
+    def _get_nexora_mail_config(self) -> Dict[str, Any]:
+        """读取 NexoraMail 集成配置"""
+        mail_cfg = CONFIG.get("nexora_mail", {}) if isinstance(CONFIG, dict) else {}
+        host = str(mail_cfg.get("host", "127.0.0.1")).strip() or "127.0.0.1"
+        port_raw = mail_cfg.get("port", 17171)
+        try:
+            port = int(port_raw)
+        except Exception:
+            port = 17171
+
+        service_url = str(mail_cfg.get("service_url", "") or "").strip()
+        if not service_url:
+            service_url = f"http://{host}:{port}"
+
+        timeout_raw = mail_cfg.get("timeout", 10)
+        try:
+            timeout = int(timeout_raw)
+        except Exception:
+            timeout = 10
+        timeout = max(1, timeout)
+
+        return {
+            "enabled": bool(mail_cfg.get("nexora_mail_enabled", False)),
+            "host": host,
+            "port": port,
+            "service_url": service_url.rstrip("/"),
+            "api_key": str(mail_cfg.get("api_key", "") or "").strip(),
+            "timeout": timeout,
+            "default_group": str(mail_cfg.get("default_group", "default") or "default").strip() or "default",
+        }
+
+    def _nexora_mail_call(self, path: str, method: str = "GET", payload: Optional[Dict[str, Any]] = None, query: Optional[Dict[str, Any]] = None):
+        """调用 NexoraMail API，返回 (ok, status, data)"""
+        cfg = self._get_nexora_mail_config()
+        if not cfg.get("enabled"):
+            return False, 503, {"success": False, "message": "NexoraMail disabled"}
+
+        q = ""
+        if query and isinstance(query, dict):
+            pairs = []
+            for k, v in query.items():
+                if v is None:
+                    continue
+                pairs.append((k, str(v)))
+            if pairs:
+                q = "?" + urllib_parse.urlencode(pairs)
+
+        url = f"{cfg['service_url']}{path}{q}"
+        headers = {"Accept": "application/json"}
+        if cfg.get("api_key"):
+            headers["X-API-Key"] = cfg["api_key"]
+
+        body = None
+        if payload is not None:
+            headers["Content-Type"] = "application/json; charset=utf-8"
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+        req = urllib_request.Request(url, data=body, method=str(method or "GET").upper(), headers=headers)
+        try:
+            with urllib_request.urlopen(req, timeout=cfg["timeout"]) as resp:
+                status = int(getattr(resp, "status", 200) or 200)
+                raw = resp.read().decode("utf-8", errors="replace")
+                data = {}
+                if raw.strip():
+                    try:
+                        data = json.loads(raw)
+                    except Exception:
+                        data = {"success": 200 <= status < 300, "raw": raw}
+                if not isinstance(data, dict):
+                    data = {"success": 200 <= status < 300}
+                if "success" not in data:
+                    data["success"] = 200 <= status < 300
+                return 200 <= status < 300, status, data
+        except urllib_error.HTTPError as e:
+            status = int(getattr(e, "code", 500) or 500)
+            try:
+                raw = e.read().decode("utf-8", errors="replace")
+                data = json.loads(raw) if raw.strip() else {}
+            except Exception:
+                data = {}
+            if not isinstance(data, dict):
+                data = {}
+            if "message" not in data:
+                data["message"] = f"NexoraMail HTTP {status}"
+            data["success"] = False
+            return False, status, data
+        except Exception as e:
+            return False, 502, {"success": False, "message": f"NexoraMail connect failed: {str(e)}"}
+
+    def _resolve_local_mail_binding(self):
+        """解析当前用户绑定的本地邮箱账号"""
+        users_path = os.path.join(os.path.dirname(CONFIG_PATH), "data", "user.json")
+        if not os.path.exists(users_path):
+            return None, "user database not found"
+
+        try:
+            with open(users_path, "r", encoding="utf-8") as f:
+                users = json.load(f)
+        except Exception as e:
+            return None, f"failed to read user database: {str(e)}"
+
+        user = users.get(self.username)
+        if not isinstance(user, dict):
+            return None, "current user not found"
+
+        local_mail = user.get("local_mail", {}) if isinstance(user.get("local_mail"), dict) else {}
+        mail_username = str(local_mail.get("username", "") or "").strip()
+        if not mail_username:
+            return None, "local mail account is not bound for current user"
+
+        cfg = self._get_nexora_mail_config()
+        group = str(local_mail.get("group") or cfg.get("default_group") or "default").strip() or "default"
+        return {
+            "group": group,
+            "mail_username": mail_username,
+            "local_mail": local_mail,
+        }, None
+
+    def _get_nexora_mail_primary_domain(self, group_name: str) -> Optional[str]:
+        ok, _, data = self._nexora_mail_call("/api/groups", method="GET")
+        if not ok or not isinstance(data, dict):
+            return None
+        groups = data.get("groups", [])
+        if not isinstance(groups, list):
+            return None
+        target = str(group_name or "").strip()
+        for item in groups:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("group") or "").strip() != target:
+                continue
+            domains = item.get("domains", [])
+            if isinstance(domains, list):
+                for d in domains:
+                    domain = str(d or "").strip()
+                    if domain:
+                        return domain
+        return None
+
+    def _build_nexora_sender_address(self, mail_username: str, group_name: str) -> str:
+        local = str(mail_username or "").strip()
+        if "@" in local:
+            local = local.split("@", 1)[0].strip()
+        if not local:
+            return ""
+
+        cfg = self._get_nexora_mail_config()
+        domain = self._get_nexora_mail_primary_domain(group_name) or cfg.get("host") or "localhost"
+        domain = str(domain).strip() or "localhost"
+        return f"{local}@{domain}"
+
+    def _decode_literal_unicode_escapes(self, text: Any) -> str:
+        """
+        Decode literal unicode escapes that may come from LLM tool arguments, e.g.
+        '\\\\u4f60\\\\u597d' or '\\\\U0001f464' -> actual characters.
+        Keep normal text unchanged.
+        """
+        s = str(text or "")
+        if ("\\" not in s) or ("\\u" not in s and "\\U" not in s and "\\x" not in s):
+            return s
+
+        # Handle surrogate pairs first: \uD83D\uDC64 -> 😀-style codepoint
+        def repl_surrogate_pair(m):
+            hi = int(m.group(1), 16)
+            lo = int(m.group(2), 16)
+            codepoint = 0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00)
+            try:
+                return chr(codepoint)
+            except Exception:
+                return m.group(0)
+
+        out = re.sub(
+            r"\\u([dD][89abAB][0-9a-fA-F]{2})\\u([dD][cdefCDEF][0-9a-fA-F]{2})",
+            repl_surrogate_pair,
+            s,
+        )
+
+        def repl_u8(m):
+            try:
+                return chr(int(m.group(1), 16))
+            except Exception:
+                return m.group(0)
+
+        def repl_u4(m):
+            try:
+                cp = int(m.group(1), 16)
+                # Skip lone surrogates (already handled above).
+                if 0xD800 <= cp <= 0xDFFF:
+                    return m.group(0)
+                return chr(cp)
+            except Exception:
+                return m.group(0)
+
+        def repl_x2(m):
+            try:
+                return chr(int(m.group(1), 16))
+            except Exception:
+                return m.group(0)
+
+        out = re.sub(r"\\U([0-9a-fA-F]{8})", repl_u8, out)
+        out = re.sub(r"\\u([0-9a-fA-F]{4})", repl_u4, out)
+        out = re.sub(r"\\x([0-9a-fA-F]{2})", repl_x2, out)
+        return out
+
+    def _garbled_score_text(self, text: Any) -> int:
+        s = str(text or "")
+        if not s:
+            return 0
+        suspicious = ("鎴", "馃", "锛", "锟", "�", "鏄", "鍐", "涓", "鐨")
+        score = 0
+        for token in suspicious:
+            score += s.count(token)
+        return score
+
+    def _repair_common_mojibake(self, text: Any) -> str:
+        """
+        Repair common UTF-8<->GBK mojibake in short text (mainly subject lines).
+        """
+        src = str(text or "")
+        if not src:
+            return src
+        best = src
+        best_score = self._garbled_score_text(src)
+        for enc in ("gb18030", "gbk"):
+            try:
+                cand = src.encode(enc, errors="strict").decode("utf-8", errors="strict")
+            except Exception:
+                continue
+            cand_score = self._garbled_score_text(cand)
+            if cand_score < best_score:
+                best = cand
+                best_score = cand_score
+        return best
+
+    def _build_utf8_raw_mail(self, sender: str, recipient: str, subject: str, content: str, is_html: bool) -> str:
+        """Build MIME raw email with UTF-8-safe headers/body."""
+        ctype = "text/html" if is_html else "text/plain"
+        subject_header = str(Header(subject or "", "utf-8"))
+        body_bytes = str(content or "").encode("utf-8", errors="replace")
+        body_b64 = base64.b64encode(body_bytes).decode("ascii")
+        body_lines = "\r\n".join(textwrap.wrap(body_b64, 76)) if body_b64 else ""
+        return (
+            f"From: <{sender}>\r\n"
+            f"To: <{recipient}>\r\n"
+            f"Subject: {subject_header}\r\n"
+            "MIME-Version: 1.0\r\n"
+            f"Content-Type: {ctype}; charset=\"UTF-8\"\r\n"
+            "Content-Transfer-Encoding: base64\r\n"
+            "\r\n"
+            f"{body_lines}\r\n"
+        )
+
+    def _tool_send_email(self, args: Dict[str, Any]) -> str:
+        """sendEMail 工具执行入口"""
+        cfg = self._get_nexora_mail_config()
+        if not cfg.get("enabled"):
+            return "发送失败：NexoraMail 未启用"
+
+        recipient = str(args.get("recipient") or args.get("to") or "").strip()
+        subject = str(args.get("subject") or "").strip() or "(No Subject)"
+        content = args.get("content")
+        knowledge_title = str(args.get("knowledge_title") or "").strip()
+        is_html = bool(args.get("is_html", False))
+
+        if not recipient:
+            return "发送失败：缺少 recipient"
+
+        if (content is None or str(content).strip() == "") and knowledge_title:
+            try:
+                content = self.user.getBasisContent(knowledge_title)
+            except Exception as e:
+                return f"发送失败：读取知识内容失败 ({str(e)})"
+            if not subject or subject == "(No Subject)":
+                subject = f"[Knowledge] {knowledge_title}"
+
+        if content is None:
+            content = ""
+        content = str(content)
+
+        # Normalize escaped unicode from tool-argument text, e.g. "\U0001f464"
+        subject = self._decode_literal_unicode_escapes(subject)
+        content = self._decode_literal_unicode_escapes(content)
+        subject = self._repair_common_mojibake(subject)
+
+        if not content.strip():
+            return "发送失败：缺少 content（可提供 content 或 knowledge_title）"
+
+        binding, bind_err = self._resolve_local_mail_binding()
+        if bind_err:
+            return f"发送失败：{bind_err}"
+
+        sender = self._build_nexora_sender_address(binding["mail_username"], binding["group"])
+        if not sender:
+            return "发送失败：无法生成发件地址"
+
+        send_body = {
+            "group": binding["group"],
+            "sender": sender,
+            "recipient": recipient,
+            "subject": subject,
+            "raw": self._build_utf8_raw_mail(
+                sender=sender,
+                recipient=recipient,
+                subject=subject,
+                content=content,
+                is_html=is_html,
+            ),
+        }
+
+        ok, status, data = self._nexora_mail_call("/api/send", method="POST", payload=send_body)
+        if not ok:
+            message = data.get("message") if isinstance(data, dict) else ""
+            return f"发送失败：{message or f'NexoraMail HTTP {status}'}"
+
+        return f"邮件发送成功：{sender} -> {recipient}，主题：{subject}"
+
+    def _tool_get_email_list(self, args: Dict[str, Any]) -> str:
+        """getEMailList 工具执行入口"""
+        cfg = self._get_nexora_mail_config()
+        if not cfg.get("enabled"):
+            return "获取失败：NexoraMail 未启用"
+
+        binding, bind_err = self._resolve_local_mail_binding()
+        if bind_err:
+            return f"获取失败：{bind_err}"
+
+        group = str(binding.get("group") or "default").strip() or "default"
+        username = str(binding.get("mail_username") or "").strip()
+        if not username:
+            return "获取失败：未绑定本地邮箱用户名"
+
+        q = str(args.get("query") or "").strip()
+        try:
+            mail_list_type = int(args.get("type", 1) or 1)
+        except Exception:
+            mail_list_type = 1
+        if mail_list_type not in (0, 1):
+            mail_list_type = 1
+        try:
+            date_range_days = int(args.get("date_range", 15) or 15)
+        except Exception:
+            date_range_days = 15
+        # 默认最近15天；允许显式传 <=0 表示不限制
+        if date_range_days < 0:
+            date_range_days = 15
+        try:
+            offset = max(int(args.get("offset", 0) or 0), 0)
+        except Exception:
+            offset = 0
+        try:
+            limit = int(args.get("limit", 20) or 20)
+        except Exception:
+            limit = 20
+        limit = min(max(limit, 1), 100)
+
+        path = f"/api/mailboxes/{urllib_parse.quote(group)}/{urllib_parse.quote(username)}/mails"
+        query = {"offset": offset, "limit": limit}
+        if q:
+            query["q"] = q
+
+        ok, status, data = self._nexora_mail_call(path, method="GET", query=query)
+        if not ok:
+            msg = data.get("message") if isinstance(data, dict) else ""
+            return f"获取失败：{msg or f'NexoraMail HTTP {status}'}"
+
+        source_mails = data.get("mails") or []
+
+        def _resolve_mail_timestamp(mail_item: Dict[str, Any]) -> int:
+            """优先用 timestamp；缺失时解析 date 字段（兼容 RFC822 / 普通日期字符串）。"""
+            try:
+                ts = int(mail_item.get("timestamp", 0) or 0)
+            except Exception:
+                ts = 0
+            if ts > 0:
+                return ts
+
+            date_text_raw = str(mail_item.get("date") or "").strip()
+            if not date_text_raw:
+                return 0
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+                try:
+                    return int(datetime.strptime(date_text_raw, fmt).timestamp())
+                except Exception:
+                    pass
+            try:
+                return int(parsedate_to_datetime(date_text_raw).timestamp())
+            except Exception:
+                return 0
+
+        if date_range_days > 0:
+            cutoff_ts = int(time.time()) - int(date_range_days) * 86400
+            source_mails = [
+                m for m in source_mails
+                if isinstance(m, dict) and _resolve_mail_timestamp(m) >= cutoff_ts
+            ]
+        if mail_list_type == 0:
+            source_mails = [m for m in source_mails if isinstance(m, dict) and not bool(m.get("is_read", False))]
+
+        mails = []
+        for m in source_mails:
+            if not isinstance(m, dict):
+                continue
+            ts = int(m.get("timestamp", 0) or 0)
+            date_text = str(m.get("date") or "").strip()
+            if not date_text and ts > 0:
+                try:
+                    date_text = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    date_text = ""
+            mails.append(
+                {
+                    "id": str(m.get("id") or ""),
+                    "title": str(m.get("subject") or ""),
+                    "sender": str(m.get("sender") or ""),
+                    "date": date_text,
+                }
+            )
+
+        payload = {
+            "success": True,
+            "group": group,
+            "username": username,
+            "type": mail_list_type,
+            "date_range": date_range_days,
+            "total": len(mails),
+            "offset": int(data.get("offset", offset) or offset),
+            "limit": int(data.get("limit", limit) or limit),
+            "mails": mails,
+        }
+        return json.dumps(payload, ensure_ascii=False)
+
+    def _tool_get_email(self, args: Dict[str, Any]) -> str:
+        """getEMail 工具执行入口"""
+        cfg = self._get_nexora_mail_config()
+        if not cfg.get("enabled"):
+            return "获取失败：NexoraMail 未启用"
+
+        mail_id = str(args.get("mail_id") or "").strip()
+        if not mail_id:
+            return "获取失败：缺少 mail_id"
+
+        binding, bind_err = self._resolve_local_mail_binding()
+        if bind_err:
+            return f"获取失败：{bind_err}"
+
+        group = str(binding.get("group") or "default").strip() or "default"
+        username = str(binding.get("mail_username") or "").strip()
+        if not username:
+            return "获取失败：未绑定本地邮箱用户名"
+
+        path = f"/api/mailboxes/{urllib_parse.quote(group)}/{urllib_parse.quote(username)}/mails/{urllib_parse.quote(mail_id)}"
+        ok, status, data = self._nexora_mail_call(path, method="GET")
+        if not ok:
+            msg = data.get("message") if isinstance(data, dict) else ""
+            return f"获取失败：{msg or f'NexoraMail HTTP {status}'}"
+
+        mail = data.get("mail") if isinstance(data, dict) else None
+        if not isinstance(mail, dict):
+            return "获取失败：邮件不存在或格式异常"
+
+        try:
+            content_type = int(args.get("content_type", 0) or 0)  # 0: extracted, 1: all
+        except Exception:
+            content_type = 0
+        if content_type not in (0, 1):
+            content_type = 0
+
+        raw_truncate = args.get("truncate", True)
+        if isinstance(raw_truncate, bool):
+            truncate_enabled = raw_truncate
+        elif isinstance(raw_truncate, str):
+            truncate_enabled = raw_truncate.strip().lower() in ("1", "true", "yes", "y", "on")
+        elif isinstance(raw_truncate, (int, float)):
+            truncate_enabled = bool(raw_truncate)
+        else:
+            truncate_enabled = True
+
+        try:
+            max_chars = int(args.get("max_chars", 12000) or 12000)
+        except Exception:
+            max_chars = 12000
+        max_chars = min(max(max_chars, 500), 50000)
+
+        def _truncate_text(text: Any, hint: str = "内容"):
+            s = str(text or "")
+            if not truncate_enabled:
+                return s, False
+            if len(s) <= max_chars:
+                return s, False
+            return s[:max_chars] + f"\n\n...[{hint}过长已截断，共{len(s)}字符，当前保留{max_chars}字符]...", True
+
+        text_body_raw = str(mail.get("content_text") or "")
+        html_body_raw = str(mail.get("content_html") or "")
+        raw_body_raw = str(mail.get("content") or "")
+
+        text_body, text_truncated = _truncate_text(text_body_raw, "文本")
+        html_body, html_truncated = _truncate_text(html_body_raw, "HTML")
+        raw_body, raw_truncated = _truncate_text(raw_body_raw, "原始邮件")
+
+        payload = {
+            "success": True,
+            "group": group,
+            "username": username,
+            "mail": {
+                "id": str(mail.get("id") or mail_id),
+                "subject": str(mail.get("subject") or ""),
+                "sender": str(mail.get("sender") or ""),
+                "recipient": str(mail.get("recipient") or ""),
+                "date": str(mail.get("date") or ""),
+                "timestamp": int(mail.get("timestamp", 0) or 0),
+                "is_read": bool(mail.get("is_read", False)),
+                "size": int(mail.get("size", 0) or 0),
+                "preview_text": str(mail.get("preview_text") or ""),
+                "content_type": content_type,
+                "truncate": bool(truncate_enabled),
+                "max_chars": int(max_chars),
+            },
+        }
+
+        if content_type == 0:
+            # 轻量模式：只返回提取文本
+            payload["mail"]["content_text"] = text_body
+            payload["mail"]["truncated"] = bool(text_truncated)
+        else:
+            # 完整模式：返回提取文本 + HTML + 原始内容
+            payload["mail"]["content_text"] = text_body
+            payload["mail"]["content_html"] = html_body
+            payload["mail"]["content_raw"] = raw_body
+            payload["mail"]["truncated"] = bool(text_truncated or html_truncated or raw_truncated)
+            payload["mail"]["truncate_details"] = {
+                "content_text": bool(text_truncated),
+                "content_html": bool(html_truncated),
+                "content_raw": bool(raw_truncated),
+            }
+        return json.dumps(payload, ensure_ascii=False)
+
     def _parse_tools(self, tools_config: List[Dict]) -> List[Dict]:
         """解析工具定义为API格式 - 兼容不同供应商"""
         parsed_tools = []
         rag_cfg = CONFIG.get("rag_database", {}) if isinstance(CONFIG, dict) else {}
         rag_enabled = bool(rag_cfg.get("rag_database_enabled", False))
-        
-        # 1. 火山引擎专用：内置 web_search
+        mail_cfg = CONFIG.get("nexora_mail", {}) if isinstance(CONFIG, dict) else {}
+        mail_enabled = bool(mail_cfg.get("nexora_mail_enabled", False))
+
         provider = getattr(self, 'provider', 'volcengine')
-        if provider == 'volcengine':
-            parsed_tools.append({
-                "type": "web_search"
-            })
+
+        # 1) 优先注入 provider 级 native tools（由 search_adapters.json 驱动）
+        if getattr(self, "native_search_tools", None):
+            for native_tool in self.native_search_tools:
+                if provider == 'volcengine':
+                    # 火山引擎 responses API 可直接使用 native tools
+                    parsed_tools.append(native_tool)
+                else:
+                    # 非火山 provider：仅注入 function 类型；native 搜索能力交由 provider 专属参数控制
+                    if str(native_tool.get("type", "")).strip() == "function":
+                        parsed_tools.append(native_tool)
         
-        # 2. 解析自定义 function 工具
+        # 2) 解析自定义 function 工具
         for tool in tools_config:
             if tool["type"] == "function":
                 func_def = tool["function"]
                 if func_def.get("name") == "vectorSearch" and not rag_enabled:
-                                    continue
+                    continue
+                if func_def.get("name") in ["sendEMail", "getEMail", "getEMailList"] and not mail_enabled:
+                    continue
                                 
-                # 排除被 native web_search 替代的冗余工具
-                if func_def["name"] in ["searchOnline", "web_search"] and provider == 'volcengine':
+                # provider 已启用 native web_search 时，隐藏本地中转 web_search/searchOnline
+                if func_def["name"] in ["searchOnline", "web_search"] and bool(getattr(self, "native_web_search_enabled", False)):
                      continue
                 
                 if provider == 'volcengine':
@@ -326,19 +1109,40 @@ class Model:
         """对函数输出进行'脱水'处理，防止 Context 溢出"""
         if not isinstance(result, str):
             result = str(result)
-            
-        # 设定阈值：2500 字符 (约 1500-2000 tokens)
-        limit = 2500
+
+        # 读取类工具必须返回完整内容，不能自动缩水
+        no_truncate_tools = {
+            "getBasisContent",
+            "getContext",
+            "getContext_findKeyword",
+            "getEMail",
+            "getEMailList",
+            "getKnowledgeGraphStructure",
+            "getKnowledgeConnections",
+            "findPathBetweenKnowledge",
+        }
+        if func_name in no_truncate_tools:
+            return result
+
+        # 其他工具保留兜底截断，但阈值提高，减少误伤
+        limit = 12000
         if len(result) <= limit:
             return result
-            
-        # 超过限制，保留头部 1200 和 尾部 800
+
+        # 超过限制，保留头部和尾部，避免单次响应极端膨胀
         print(f"[TOKEN_OPT] 对工具 {func_name} 的结果进行了脱水 (原长度: {len(result)})")
-        prefix = result[:1200]
-        suffix = result[-800:]
-        omitted_len = len(result) - 2000
-        
-        return f"{prefix}\n\n... [数据过长，已自动省略 {omitted_len} 字符。如果需要读取中间内容，请使用 getContext 指定范围阅读] ...\n\n{suffix}"
+        keep_head = 6000
+        keep_tail = 3000
+        prefix = result[:keep_head]
+        suffix = result[-keep_tail:]
+        omitted_len = len(result) - (keep_head + keep_tail)
+
+        return (
+            f"{prefix}\n\n"
+            f"... [数据过长，已自动省略 {omitted_len} 字符。"
+            f"如需完整结果，请缩小查询范围或使用分页参数重试] ...\n\n"
+            f"{suffix}"
+        )
     
     def _execute_function_impl(self, function_name: str, args: Dict) -> str:
         """函数执行实现"""
@@ -356,6 +1160,45 @@ class Model:
         elif function_name == "addShort":
             self.user.addShort(args.get("title", ""))
             return "已添加到短期记忆"
+
+        elif function_name == "queryShortMemory":
+            keyword = str(args.get("keyword", "") or "").strip()
+            try:
+                limit = int(args.get("limit", 20) or 20)
+            except Exception:
+                limit = 20
+            limit = min(max(limit, 1), 200)
+
+            short_dict = self.user.getKnowledgeList(0)
+            if not isinstance(short_dict, dict):
+                short_dict = {}
+
+            def _sort_key(item):
+                sid = str(item[0] or "")
+                try:
+                    return (0, -int(sid))
+                except Exception:
+                    return (1, sid)
+
+            filtered = []
+            for sid, title in sorted(short_dict.items(), key=_sort_key):
+                title_text = str(title or "")
+                if keyword and keyword not in title_text:
+                    continue
+                filtered.append({
+                    "id": str(sid),
+                    "title": title_text
+                })
+
+            payload = {
+                "success": True,
+                "keyword": keyword,
+                "total": len(short_dict),
+                "matched": len(filtered),
+                "limit": limit,
+                "items": filtered[:limit]
+            }
+            return json.dumps(payload, ensure_ascii=False)
         
         elif function_name == "addBasis":
             self.user.addBasis(
@@ -433,7 +1276,7 @@ class Model:
                     })
                 return json.dumps(payload, ensure_ascii=False)
             except Exception as e:
-                return f"vector search error: {str(e)}"
+                return f"vector search error: {str(e)}, fall back to searchKeyword immediately."
 
         elif function_name == "linkKnowledge":
             success, msg = self.user.add_connection(
@@ -507,67 +1350,22 @@ class Model:
         elif function_name == "web_search":
             query = args.get("query", "")
             print(f"[SEARCH] 执行联网搜索: {query}")
-            
-            # 如果是外部模型调用此函数，我们使用一个支持搜索的火山引擎模型来中转获取结果
+            if not str(query or "").strip():
+                return "联网搜索执行失败: query 不能为空"
             try:
-                # 寻找配置好的搜索模型，默认回退
-                volc_provider = CONFIG.get('providers', {}).get('volcengine', {})
-                volc_key = volc_provider.get('api_key')
-                volc_url = volc_provider.get('base_url')
-                
-                # 优先使用配置中的 websearch_model
-                volc_model = CONFIG.get('websearch_model')
-                
-                # 如果没配 websearch_model，则找第一个火山模型
-                if not volc_model:
-                    for m_id, m_info in CONFIG.get('models', {}).items():
-                        if m_info.get('provider') == 'volcengine':
-                            volc_model = m_id
-                            break
-                
-                if not volc_key or not volc_model:
-                    return f"错误：未配置火山引擎(Ark)模型或API Key，无法执行联网搜索。"
-                
-                print(f"[SEARCH] 使用搜索中转模型: {volc_model}")
-                
-                from volcenginesdkarkruntime import Ark
-                search_client = Ark(api_key=volc_key, base_url=volc_url)
-                
-                # 调用带搜索插件的模型
-                # 对于火山引擎，开启联网搜索的最佳实践是使用 extra_headers
-                # 并且不一定要传入 tools (除非是必须通过 tools 触发生命周期的模型)
-                response = search_client.chat.completions.create(
-                    model=volc_model,
-                    messages=[
-                        {"role": "system", "content": self._get_default_web_search_prompt()},
-                        {"role": "user", "content": query}
-                    ],
-                    # 提示模型立即使用搜索
-                    extra_headers={"x-ark-enable-web-search": "true"}, 
-                    stream=False
-                )
-                
-                # 获取结果，同时兼容思维链和正文
-                search_result = ""
-                message = response.choices[0].message
-                
-                # 优先获取 content
-                if hasattr(message, 'content') and message.content:
-                    search_result = message.content
-                
-                # 如果正文为空，尝试获取 reasoning_content (针对推理模型如 R1)
-                elif hasattr(message, 'reasoning_content') and message.reasoning_content:
-                    search_result = f"[思考过程]\n{message.reasoning_content}"
-                
-                # 如果还是为空，由于开启了 web_search，可能结果在 tool_calls 的输出里（虽然 stream=False 通常不该这样）
-                if not search_result:
-                    search_result = "联网搜索成功，但模型未返回具体文本结果。可能该关键词没有找到对应的信息，或模型策略拦截了输出。"
-                
-                return f"联网搜索结果 for '{query}':\n\n{search_result}"
-                
+                return self._execute_local_web_search_relay(query, args)
             except Exception as e:
-                print(f"[ERROR] 联网搜索失败: {e}")
+                print(f"[SEARCH][RELAY] 失败: {e}")
                 return f"联网搜索执行失败: {str(e)}"
+
+        elif function_name == "sendEMail":
+            return self._tool_send_email(args)
+        
+        elif function_name == "getEMailList":
+            return self._tool_get_email_list(args)
+        
+        elif function_name == "getEMail":
+            return self._tool_get_email(args)
         
         # 知识图谱
         elif function_name == "analyzeConnections":
@@ -619,7 +1417,7 @@ class Model:
         self,
         msg: str,
         stream: bool = True,
-        max_rounds: int = 10,
+        max_rounds: int = 100,
         enable_thinking: bool = True,
         enable_web_search: bool = True,
         enable_tools: bool = True,
@@ -713,6 +1511,7 @@ class Model:
             accumulated_content = ""
             accumulated_reasoning = ""  # 累积思维链内容
             process_steps = []  # 记录完整的工具调用过程
+            dedupe_after_tool_round = False  # 工具调用后下一轮启用跨轮前缀去重
             
             # previous_response_id 已在上面初始化
             current_function_outputs = []  # 当前轮的function输出
@@ -797,14 +1596,40 @@ class Model:
                     
                     # 处理响应流（直接在这里处理以支持实时yield）
                     round_content = ""
+                    raw_round_content = ""
+                    emitted_round_content_len = 0
                     function_calls = []
                     has_web_search = False
+                    enable_cross_round_dedupe = bool(round_num > 0 and dedupe_after_tool_round and accumulated_content)
+                    dedupe_base_text = accumulated_content if enable_cross_round_dedupe else ""
                     
                     # [FIX] 内部去重标志：防止某些模型同时输出 reasoning_text 和 reasoning_summary_text 导致前端重复
                     has_received_detail_reasoning = False
                     
                     # [FIX] 记录本轮最后一次出现的 usage，避免在流中多次记录导致日志爆炸
                     round_usage = None
+
+                    def _append_round_delta(delta_text):
+                        nonlocal raw_round_content, round_content, emitted_round_content_len, accumulated_content
+                        if delta_text is None:
+                            return ""
+                        piece = str(delta_text)
+                        if not piece:
+                            return ""
+                        raw_round_content += piece
+                        effective_text = raw_round_content
+                        if enable_cross_round_dedupe:
+                            overlap = self._prefix_suffix_overlap(dedupe_base_text, raw_round_content)
+                            if overlap > 0:
+                                effective_text = raw_round_content[overlap:]
+                        if len(effective_text) <= emitted_round_content_len:
+                            round_content = effective_text
+                            return ""
+                        new_piece = effective_text[emitted_round_content_len:]
+                        emitted_round_content_len = len(effective_text)
+                        round_content = effective_text
+                        accumulated_content += new_piece
+                        return new_piece
 
                     try:
                         for chunk in chunks:
@@ -860,11 +1685,10 @@ class Model:
                                 if chunk_type in ['response.output_text.delta', 'response.message.delta']:
                                     delta = getattr(chunk, 'delta', '')
                                     if delta:
-                                        # 关键修复：强制转换为字符串，防止 ResponseOutputText 对象导致 JSON 序列化失败
                                         delta_str = str(delta) if not isinstance(delta, str) else delta
-                                        round_content += delta_str
-                                        accumulated_content += delta_str
-                                        yield {"type": "content", "content": delta_str}
+                                        new_piece = _append_round_delta(delta_str)
+                                        if new_piece:
+                                            yield {"type": "content", "content": new_piece}
                             
                                 # 思考过程增量 (核心修复: 重新兼容 summary 类型，并防止 detail 和 summary 同时出现时的视觉重复)
                                 elif 'reasoning' in chunk_type_str and 'delta' in chunk_type_str:
@@ -886,6 +1710,24 @@ class Model:
                                         accumulated_reasoning += delta_str
                                         yield {"type": "reasoning_content", "content": delta_str}
 
+                                # 函数参数增量（用于前端展示工具调用 Delta）
+                                elif 'function_call_arguments.delta' in chunk_type_str:
+                                    arg_delta = getattr(chunk, 'delta', '')
+                                    if arg_delta is None:
+                                        arg_delta = ""
+                                    fc_obj = getattr(chunk, 'function_call', None) or getattr(chunk, 'item', None) or getattr(chunk, 'output_item', None)
+                                    fc_name = ""
+                                    fc_call_id = ""
+                                    if fc_obj is not None:
+                                        fc_name = str(getattr(fc_obj, 'name', '') or '')
+                                        fc_call_id = str(getattr(fc_obj, 'call_id', '') or getattr(fc_obj, 'id', '') or '')
+                                    yield {
+                                        "type": "function_call_delta",
+                                        "name": fc_name,
+                                        "call_id": fc_call_id,
+                                        "arguments_delta": str(arg_delta)
+                                    }
+
                                 # 核心修复: 过滤干扰并按序提取
                                 elif chunk_type == 'response.output_item.done':
                                     item = getattr(chunk, 'item', None)
@@ -901,16 +1743,15 @@ class Model:
                                                 process_steps.append(step)
                                         
                                         # 2. 只有在没有产生任何 delta 文本的情况下才使用 done 的文本，防止重复
-                                        elif item_type == 'text' and not round_content:
+                                        elif item_type == 'text' and not raw_round_content:
                                             # 关键修复：确保 content 被转换为字符串，防止 ResponseOutputText 对象导致 JSON 序列化失败
                                             text_content = getattr(item, 'content', '')
                                             if text_content:
                                                 # 如果是对象类型，**立即**转换为字符串，在任何其他操作之前
                                                 text_content = str(text_content) if not isinstance(text_content, str) else text_content
-                                                # 现在 text_content 肯定是字符串了，可以安全地累积和 yield
-                                                round_content += text_content
-                                                accumulated_content += text_content
-                                                yield {"type": "content", "content": text_content}
+                                                new_piece = _append_round_delta(text_content)
+                                                if new_piece:
+                                                    yield {"type": "content", "content": new_piece}
                                 
                                 # Web搜索实时状态
                                 elif 'web_search_call.searching' in str(chunk_type) or 'web_search_call.completed' in str(chunk_type):
@@ -961,9 +1802,9 @@ class Model:
                                 if hasattr(delta, 'content') and delta.content:
                                     # 关键修复：确保 OpenAI/Stepfun 的 delta.content 也是字符串
                                     content_str = str(delta.content) if not isinstance(delta.content, str) else delta.content
-                                    round_content += content_str
-                                    accumulated_content += content_str
-                                    yield {"type": "content", "content": content_str}
+                                    new_piece = _append_round_delta(content_str)
+                                    if new_piece:
+                                        yield {"type": "content", "content": new_piece}
                                 
                                 # 思维链 (Stepfun/Kimi/DeepSeek 兼容字段)
                                 if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
@@ -982,9 +1823,24 @@ class Model:
                                         
                                         f_info = function_calls[tc.index]
                                         if tc.id: f_info["call_id"] = str(tc.id)
+                                        name_delta = ""
+                                        arguments_delta = ""
                                         if tc.function:
-                                            if tc.function.name: f_info["name"] += str(tc.function.name)
-                                            if tc.function.arguments: f_info["arguments"] += str(tc.function.arguments)
+                                            if tc.function.name:
+                                                name_delta = str(tc.function.name)
+                                                f_info["name"] += name_delta
+                                            if tc.function.arguments:
+                                                arguments_delta = str(tc.function.arguments)
+                                                f_info["arguments"] += arguments_delta
+                                        if name_delta or arguments_delta:
+                                            yield {
+                                                "type": "function_call_delta",
+                                                "name": f_info.get("name", "") or name_delta,
+                                                "call_id": f_info.get("call_id", ""),
+                                                "arguments_delta": arguments_delta,
+                                                "name_delta": name_delta,
+                                                "index": tc.index
+                                            }
 
                                 # Token统计 (部分 OpenAI Provider 在最后一个 chunk 的 usage 字段)
                                 if hasattr(chunk, 'usage') and chunk.usage:
@@ -1098,7 +1954,8 @@ class Model:
                             step_call = {
                                 "type": "function_call",
                                 "name": func_name,
-                                "arguments": func_args
+                                "arguments": func_args,
+                                "call_id": call_id
                             }
                             process_steps.append(step_call)
                             yield step_call
@@ -1112,7 +1969,8 @@ class Model:
                             step_result = {
                                 "type": "function_result",
                                 "name": func_name,
-                                "result": result
+                                "result": result,
+                                "call_id": call_id
                             }
                             process_steps.append(step_result)
                             yield step_result
@@ -1153,6 +2011,7 @@ class Model:
                             print(f"[DEBUG_HIST] 最后一条: {messages[-1].get('role')} (Type: {messages[-1].get('type', 'text')})")
 
                         # 继续循环下一轮
+                        dedupe_after_tool_round = True
                         continue
                     
                     # 没有函数调用，对话结束
@@ -1338,34 +2197,41 @@ class Model:
             print(f"[WARNING] 记录 Token 日志失败: {e}")
 
     def _build_initial_messages(self, user_msg: str) -> List[Dict]:
-        """构建初始消息列表 (优化 Prefix Caching)"""
-        # 合并 System Prompt 和 历史摘要到第一条消息，以最大化 Prompt Caching 命中率
-        full_system_content = self.system_prompt
-        
-        # 添加最近交流概览（上下文）
-        if self.conversation_id:
-            recent_summaries = self.conversation_manager.get_recent_exchange_summaries(
-                self.conversation_id, limit=3
-            )
-            if recent_summaries:
-                context_summary = "\n\n## 历史上下文概览 (Stable Context)\n"
-                for i, exchange in enumerate(recent_summaries, 1):
-                    user_text = exchange['user'][:40] + "..." if len(exchange['user']) > 40 else exchange['user']
-                    context_summary += f"{i}. 用户: {user_text} | AI总结: {exchange.get('summary', '无')}\n"
-                full_system_content += context_summary
+        """构建初始消息列表（真实上下文模式）"""
+        messages = [{"role": "system", "content": self.system_prompt}]
 
-        messages = [
-            {"role": "system", "content": full_system_content}
-        ]
-        
-        # 添加用户消息
-        messages.append({"role": "user", "content": user_msg})
-        
+        # 真实上下文：注入当前会话历史 user/assistant 消息
+        history_messages: List[Dict[str, Any]] = []
+        if self.conversation_id:
+            try:
+                history_messages = self.conversation_manager.get_messages(self.conversation_id)
+            except Exception:
+                history_messages = []
+
+        for item in history_messages:
+            role = str(item.get("role", "") or "").strip()
+            if role not in ("user", "assistant"):
+                continue
+            content = item.get("content", "")
+            if content is None:
+                continue
+            if isinstance(content, str):
+                if not content.strip():
+                    continue
+                normalized = content
+            else:
+                normalized = str(content)
+                if not normalized.strip():
+                    continue
+            messages.append({"role": role, "content": normalized})
+
+        # 去重：sendMessage 在非 regenerate 路径已经先写入了当前 user 消息
+        if not messages or messages[-1].get("role") != "user" or str(messages[-1].get("content", "")) != str(user_msg):
+            messages.append({"role": "user", "content": user_msg})
+
         # 重要：剔除历史对话中的 reasoning_content 字段
         # 根据文档：模型版本在251228之前需要剔除，避免影响推理逻辑
-        messages = self._strip_reasoning_content(messages)
-        
-        return messages
+        return self._strip_reasoning_content(messages)
     
     def _strip_reasoning_content(self, messages: List[Dict]) -> List[Dict]:
         """剔除消息中的reasoning_content字段（符合文档要求）"""
@@ -1421,7 +2287,7 @@ class Model:
 3. 只输出标题，不要其他内容
 4. 避免使用"用户询问"、"提供信息"等冗余词汇
 
-标题："""
+你只用快速输出标题："""
             
             # 调用API
             if provider_name == 'volcengine':
@@ -1514,6 +2380,18 @@ class Model:
                      print(f"[DEBUG] [Phi-4-FIX] 模型 {self.model_name} 在 {self.provider} 下检测到 Reasoning，屏蔽 tools 以避免 400 错误。")
                 else:
                     params["tools"] = self.tools
+                    # provider 级 native tools（来自 search_adapters）
+                    native_tools = list(getattr(self, "native_search_tools", []) or [])
+                    if native_tools and self.provider != "aliyun":
+                        existing = params.get("tools", []) if isinstance(params.get("tools"), list) else []
+                        # 非 function 的 native tool 直接附加（是否生效由 provider 决定）
+                        for nt in native_tools:
+                            if not isinstance(nt, dict):
+                                continue
+                            if str(nt.get("type", "")).strip() == "function":
+                                continue
+                            existing.append(nt)
+                        params["tools"] = existing
                     # [FIX] 针对 GitHub 上的普通 Phi-4 模型，不要传 tool_choice，否则可能 400
                     if "phi-4" in self.model_name.lower() and self.provider == "github":
                         pass
@@ -1527,14 +2405,17 @@ class Model:
             params["messages"] = self._strip_reasoning_content(list(messages))
 
             # --- 阿里云 / DashScope 专用逻辑 ---
-            if self.provider == "aliyun" and enable_thinking:
-                # 查阅阿里云文档可知，需要通过 extra_body 传参控制
-                params["extra_body"] = {
-                    "enable_thinking": True
-                }
-                # Qwen-Max-Latest 和部分模型支持 thinking_config
-                # 但通用开启只需 enable_thinking
-                print(f"[DEBUG] [Aliyun-Thinking] 已为 {self.model_name} 开启思维链模式 (extra_body)")
+            if self.provider == "aliyun":
+                extra_body = params.get("extra_body", {})
+                if not isinstance(extra_body, dict):
+                    extra_body = {}
+                if enable_thinking:
+                    extra_body["enable_thinking"] = True
+                    print(f"[DEBUG] [Aliyun-Thinking] 已为 {self.model_name} 开启思维链模式 (extra_body)")
+                if enable_tools and bool(getattr(self, "native_web_search_enabled", False)):
+                    extra_body["enable_search"] = True
+                if extra_body:
+                    params["extra_body"] = extra_body
 
         return params
     

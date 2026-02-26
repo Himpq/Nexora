@@ -76,6 +76,27 @@ body {
 }
 .btn-icon { background: none; border: none; color: inherit; cursor: pointer; padding: 5px; border-radius: 4px; transition: all 0.2s; }
 .btn-icon:hover { background: rgba(0,0,0,0.08); color: inherit; }
+.mail-toggle-with-notify { position: relative; }
+.mail-notify-badge {
+  position: absolute;
+  top: -5px;
+  right: -6px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  border: 1px solid #fff;
+  box-shadow: 0 2px 6px rgba(239, 68, 68, 0.35);
+  display: none;
+  pointer-events: none;
+}
+.mail-notify-badge.visible { display: inline-block; }
 
 .sidebar-action { padding: 0 15px 15px; }
 .btn-primary-outline {
@@ -561,8 +582,27 @@ body {
     border: 1px solid #e5e5e5;
     font-family: 'JetBrains Mono', monospace;
     font-size: 12px;
+    cursor: pointer;
+    user-select: none;
+}
+.tool-usage:not(.has-output) .tool-badge {
+    cursor: default;
 }
 .tool-status { color: #666; font-size: 11px; margin-left: 4px; }
+.tool-toggle {
+    margin-left: 2px;
+    font-size: 11px;
+    color: #64748b;
+    transform: rotate(0deg);
+    transition: transform 0.2s ease;
+    display: none;
+}
+.tool-usage.has-output .tool-toggle {
+    display: inline-block;
+}
+.tool-usage.expanded .tool-toggle {
+    transform: rotate(90deg);
+}
 .tool-output {
     margin-top: 6px;
     background: #fcfcfc;
@@ -574,6 +614,11 @@ body {
     color: #555;
     max-height: 200px;
     overflow-y: auto;
+    display: none;
+    white-space: pre-wrap;
+}
+.tool-usage.expanded .tool-output {
+    display: block;
 }
 
 /* Model Selector - Improved */

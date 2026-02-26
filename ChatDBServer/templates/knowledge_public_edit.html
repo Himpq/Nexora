@@ -57,11 +57,25 @@
     </div>
 
     <script>
+        function rewriteHtmlFragmentLinksToNewTab(html) {
+            const div = document.createElement('div');
+            div.innerHTML = String(html || '');
+            div.querySelectorAll('a[href]').forEach((a) => {
+                a.setAttribute('target', '_blank');
+                a.setAttribute('rel', 'noopener noreferrer');
+            });
+            return div.innerHTML;
+        }
+
         const easyMDE = new EasyMDE({
             element: document.getElementById('editor'),
             spellChecker: false,
             autosave: { enabled: false },
             status: false,
+            previewRender: function(plainText) {
+                const html = marked.parse(plainText || '');
+                return rewriteHtmlFragmentLinksToNewTab(html);
+            },
             toolbar: ["bold", "italic", "heading", "|", "quote", "unordered-list", "ordered-list", "|", "link", "image", "table", "|", "preview", "side-by-side", "fullscreen"]
         });
 

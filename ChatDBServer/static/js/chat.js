@@ -26,12 +26,61 @@ let mailViewState = {
     currentMail: null,
     folder: 'all',
     isSending: false,
+    inboxTotal: 0,
+    unreadTotal: 0,
+    sentTotal: 0,
     inboxRequestId: 0,
     detailRequestId: 0
 };
 const MAIL_SIDEBAR_COLLAPSED_KEY = 'nexora_mail_sidebar_collapsed';
 const MAIL_SELECTED_ID_KEY = 'nexora_mail_selected_id';
 const MAIL_LIST_SCROLL_KEY = 'nexora_mail_list_scroll';
+const MAIL_LAST_OPEN_TS_KEY = 'nexora_mail_last_open_ts';
+const MAIL_POLL_INTERVAL_MS = 5000;
+let mailPollTimer = null;
+let mailPollInFlight = false;
+let mailNotifyState = {
+    lastOpenTs: 0,
+    newCount: 0,
+    initialized: false
+};
+
+function enforceLinksOpenInNewTab(root) {
+    if (!root || typeof root.querySelectorAll !== 'function') return;
+    root.querySelectorAll('a[href]').forEach((a) => {
+        a.setAttribute('target', '_blank');
+        a.setAttribute('rel', 'noopener noreferrer');
+    });
+}
+
+function rewriteHtmlFragmentLinksToNewTab(html) {
+    const div = document.createElement('div');
+    div.innerHTML = String(html || '');
+    enforceLinksOpenInNewTab(div);
+    return div.innerHTML;
+}
+
+function rewriteHtmlDocumentLinksToNewTab(html) {
+    const src = String(html || '');
+    if (!src.trim()) return '';
+    try {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(src, 'text/html');
+        enforceLinksOpenInNewTab(doc);
+        const isFullDoc = /<html[\s>]/i.test(src) || /<!doctype/i.test(src);
+        if (isFullDoc) {
+            return `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`;
+        }
+        return doc.body ? doc.body.innerHTML : src;
+    } catch (e) {
+        return src;
+    }
+}
+
+function renderMarkdownWithNewTabLinks(text) {
+    const html = marked.parse(String(text || ''));
+    return rewriteHtmlFragmentLinksToNewTab(html);
+}
 
 function loadMailSidebarCollapsedState() {
     try {
@@ -101,6 +150,140 @@ function isMailViewActiveInDom() {
     const display = (viewer.style.display || '').toLowerCase();
     if (display === 'none') return false;
     return !!viewer.querySelector('.mail-workspace');
+}
+
+function loadMailLastOpenTs() {
+    try {
+        const raw = Number(localStorage.getItem(MAIL_LAST_OPEN_TS_KEY) || 0);
+        return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+    } catch (e) {
+        return 0;
+    }
+}
+
+function saveMailLastOpenTs(ts) {
+    try {
+        const v = Number(ts || 0);
+        localStorage.setItem(MAIL_LAST_OPEN_TS_KEY, String(Number.isFinite(v) && v > 0 ? Math.floor(v) : 0));
+    } catch (e) {
+        // ignore
+    }
+}
+
+function ensureMailNotifyBadge() {
+    const btn = document.getElementById('toggleMailView');
+    if (!btn) return null;
+    btn.classList.add('mail-toggle-with-notify');
+    let badge = btn.querySelector('.mail-notify-badge');
+    if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'mail-notify-badge';
+        badge.textContent = '0';
+        btn.appendChild(badge);
+    }
+    return badge;
+}
+
+function renderMailNotifyBadge() {
+    const badge = ensureMailNotifyBadge();
+    if (!badge) return;
+    const count = Math.max(0, Number(mailNotifyState.newCount || 0));
+    if (count > 0) {
+        badge.textContent = count > 99 ? '99+' : String(count);
+        badge.classList.add('visible');
+    } else {
+        badge.textContent = '0';
+        badge.classList.remove('visible');
+    }
+}
+
+function getMailMaxTimestamp(mails) {
+    const arr = Array.isArray(mails) ? mails : [];
+    let maxTs = 0;
+    for (const m of arr) {
+        const ts = Number(m && m.timestamp ? m.timestamp : 0);
+        if (Number.isFinite(ts) && ts > maxTs) maxTs = ts;
+    }
+    return maxTs;
+}
+
+function updateMailNotifyFromMails(mails, options = {}) {
+    const markChecked = !!(options && options.markChecked);
+    const arr = Array.isArray(mails) ? mails : [];
+    const maxTs = getMailMaxTimestamp(arr);
+
+    if (markChecked) {
+        const markTs = maxTs > 0 ? maxTs : Math.floor(Date.now() / 1000);
+        mailNotifyState.lastOpenTs = markTs;
+        mailNotifyState.initialized = true;
+        mailNotifyState.newCount = 0;
+        saveMailLastOpenTs(mailNotifyState.lastOpenTs);
+        renderMailNotifyBadge();
+        return;
+    }
+
+    if (!mailNotifyState.initialized || mailNotifyState.lastOpenTs <= 0) {
+        const initTs = maxTs > 0 ? maxTs : Math.floor(Date.now() / 1000);
+        mailNotifyState.lastOpenTs = initTs;
+        mailNotifyState.initialized = true;
+        mailNotifyState.newCount = 0;
+        saveMailLastOpenTs(mailNotifyState.lastOpenTs);
+        renderMailNotifyBadge();
+        return;
+    }
+
+    const baseline = Number(mailNotifyState.lastOpenTs || 0);
+    const newCount = arr.filter((m) => {
+        const ts = Number(m && m.timestamp ? m.timestamp : 0);
+        return Number.isFinite(ts) && ts > baseline;
+    }).length;
+    mailNotifyState.newCount = newCount;
+    renderMailNotifyBadge();
+}
+
+async function pollMailNotifyOnly() {
+    try {
+        const res = await fetch('/api/mail/me/inbox');
+        const data = await res.json();
+        if (!data || !data.success) return;
+        const mails = Array.isArray(data.mails) ? data.mails.map(normalizeMailItem) : [];
+        updateMailNotifyFromMails(mails, { markChecked: false });
+    } catch (e) {
+        // ignore polling errors
+    }
+}
+
+function stopMailPolling() {
+    if (mailPollTimer) {
+        clearInterval(mailPollTimer);
+        mailPollTimer = null;
+    }
+    mailPollInFlight = false;
+}
+
+function startMailPolling() {
+    if (!document.getElementById('toggleMailView')) return;
+    stopMailPolling();
+    const tick = async () => {
+        if (mailPollInFlight) return;
+        mailPollInFlight = true;
+        try {
+            if (isMailViewActiveInDom()) {
+                await loadMailCurrentFolder(mailViewState.query || '', { silent: true, refreshDetail: false });
+                if (mailViewState.folder === 'sent') {
+                    await pollMailNotifyOnly();
+                }
+            } else {
+                await pollMailNotifyOnly();
+            }
+        } catch (e) {
+            // ignore polling errors to keep UI stable
+        } finally {
+            mailPollInFlight = false;
+        }
+    };
+    tick();
+    mailPollTimer = setInterval(tick, MAIL_POLL_INTERVAL_MS);
 }
 
 function loadMailSelectedId() {
@@ -208,6 +391,13 @@ document.addEventListener('DOMContentLoaded', () => {
 function initUI() {
     captureChatHeaderBaseState();
     mailViewState.sidebarCollapsed = loadMailSidebarCollapsedState();
+    mailNotifyState.lastOpenTs = loadMailLastOpenTs();
+    mailNotifyState.initialized = mailNotifyState.lastOpenTs > 0;
+    mailNotifyState.newCount = 0;
+    renderMailNotifyBadge();
+    if (document.getElementById('toggleMailView')) {
+        startMailPolling();
+    }
     // Event Listeners
     if(els.sendBtn) els.sendBtn.addEventListener('click', sendMessage);
     
@@ -781,7 +971,7 @@ async function sendMessage() {
     const aiMsgId = Date.now().toString(); // Temporary ID
     const aiMsgDiv = appendMessage({ role: 'assistant', content: '', id: aiMsgId, pending: true });
     let currentFullContent = '';
-    let currentRoundContent = '';
+    let currentSegmentContent = '';
     let currentContentSpan = null;
     
     // Create new abort controller
@@ -845,19 +1035,20 @@ async function sendMessage() {
                         
                         else if (chunk.type === 'content') {
                             currentFullContent += chunk.content;
-                            currentRoundContent += chunk.content;
                             
                             // 如果当前没有正在渲染的内容Span，或者它不是消息气泡的最后一丅素（说明丗插入了工具）
                             const msgContentContainer = aiMsgDiv.querySelector('.message-content');
                             if (!currentContentSpan || msgContentContainer.lastElementChild !== currentContentSpan) {
                                 currentContentSpan = createContentSpan(aiMsgDiv);
+                                currentSegmentContent = '';
 // 说明
                             }
                             
 // 说明
                             // 注意：为了保持Markdown上下文一致，我们通常倾向于在同一个Block显示
                             // 但用户求在工具链下方显示，以必须开吖Block
-                            currentContentSpan.innerHTML = marked.parse(currentRoundContent);
+                            currentSegmentContent += chunk.content;
+                            currentContentSpan.innerHTML = renderMarkdownWithNewTabLinks(currentSegmentContent);
                             renderMathInElement(currentContentSpan);
                             highlightCode(currentContentSpan);
                         } 
@@ -867,9 +1058,9 @@ async function sendMessage() {
 // 说明
                            let thinkingBlock = msgContentContainer.lastElementChild;
                            
-                           if(!thinkingBlock || !thinkingBlock.classList.contains('thinking-block')) {
+                           if(!thinkingBlock || !thinkingBlock.classList.contains('reasoning-thinking-block')) {
                                thinkingBlock = document.createElement('div');
-                               thinkingBlock.className = 'thinking-block'; // 流式输出时默认展
+                               thinkingBlock.className = 'thinking-block reasoning-thinking-block'; // 流式输出时默认展
 // 说明
                                thinkingBlock.innerHTML = `
                                 <div class="thinking-header">
@@ -903,6 +1094,9 @@ async function sendMessage() {
                         else if (chunk.type === 'web_search') {
                             updateWebSearchStatus(aiMsgDiv, chunk.status, chunk.query, chunk.content);
                         }
+                        else if (chunk.type === 'function_call_delta') {
+                            appendToolCallDelta(aiMsgDiv, chunk);
+                        }
                         else if (chunk.type === 'function_call') {
                             // Special handling for addBasis to show content
                             if (chunk.name === 'addBasis') {
@@ -911,10 +1105,10 @@ async function sendMessage() {
                                     appendAddBasisView(aiMsgDiv, args);
                                 } catch(e) { console.error("Error parsing addBasis args", e); }
                             }
-                            appendToolEvent(aiMsgDiv, chunk.name, chunk.arguments, true);
+                            finalizeToolCallBadge(aiMsgDiv, chunk.name, chunk.call_id || chunk.callId || '', chunk.arguments);
                         }
                         else if (chunk.type === 'function_result') {
-                            updateLastToolResult(aiMsgDiv, chunk.name, chunk.result);
+                            updateLastToolResult(aiMsgDiv, chunk.name, chunk.result, chunk.call_id || chunk.callId || '');
                         }
                         else if (chunk.type === 'token_usage') {
                             if(els.totalInputTokens) els.totalInputTokens.textContent = chunk.total_tokens || chunk.input_tokens + chunk.output_tokens;
@@ -980,12 +1174,14 @@ function updateWebSearchStatus(aiMsgDiv, status, query, fullContent, isHistory =
                 ${iconSvg}
                 <span>Web Search</span>
                 <span class="tool-status"></span>
+                <span class="tool-toggle" aria-hidden="true">▸</span>
             </div>
-            <div class="tool-output" style="display:none;"></div>
+            <div class="tool-output"></div>
         `;
         
         // 始终追加到末尾以保持时间线次序
         parent.appendChild(div);
+        bindToolUsageToggle(div);
         
         badge = div;
     }
@@ -1013,10 +1209,12 @@ function appendErrorEvent(aiMsgDiv, message, isHistory = false) {
             ${iconSvg}
             <span class="tool-name">Error</span>
             <span class="tool-status">${message || ''}</span>
+            <span class="tool-toggle" aria-hidden="true">▸</span>
         </div>
-        <div class="tool-output" style="display:none;"></div>
+        <div class="tool-output"></div>
     `;
     parent.appendChild(div);
+    bindToolUsageToggle(div);
 }
 
 function appendAddBasisView(aiMsgDiv, args) {
@@ -1033,59 +1231,207 @@ function appendAddBasisView(aiMsgDiv, args) {
     parent.appendChild(div);
 }
 
-function appendToolEvent(aiMsgDiv, name, details, isFunction = false) {
+function appendToolEvent(aiMsgDiv, name, details, isFunction = false, options = {}) {
     const parent = aiMsgDiv.querySelector('.message-content') || aiMsgDiv;
-    const contentBody = parent.querySelector('.content-body');
-    
-    const div = document.createElement('div');
-    div.className = 'tool-usage';
-    div.dataset.toolName = name; // Marker
-    
+    const toolName = String(name || '').trim() || 'tool';
+    const opts = (options && typeof options === 'object') ? options : {};
+    const callId = String(opts.callId || opts.call_id || '').trim();
+    const reuseIfExists = !!opts.reuseIfExists;
+    const pending = !!opts.pending;
+
+    let div = null;
+    if (reuseIfExists) {
+        div = findToolUsage(parent, toolName, callId, true);
+    }
+    if (!div) {
+        div = document.createElement('div');
+        div.className = 'tool-usage';
+        parent.appendChild(div);
+    }
+    div.dataset.toolName = toolName;
+    if (callId) div.dataset.callId = callId;
+    div.dataset.pending = pending ? 'true' : 'false';
+
     // Icon selection
     let iconSvg = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path></svg>'; // default toolbox
-    if(name === 'Web Search' || name === 'searchKeyword' || name === 'web_search') {
+    if(toolName === 'Web Search' || toolName === 'searchKeyword' || toolName === 'web_search') {
         iconSvg = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>';
     }
 
     let detailText = typeof details === 'object' ? JSON.stringify(details) : details;
-    if(isFunction && detailText) detailText = `argsStr: ${detailText.substring(0, 50)}...`;
+    detailText = String(detailText || '');
+    if (isFunction && detailText) {
+        detailText = `参数: ${detailText.replace(/\s+/g, ' ').slice(0, 56)}${detailText.length > 56 ? '...' : ''}`;
+    }
 
     div.innerHTML = `
         <div class="tool-badge">
             ${iconSvg}
-            <span>${name}</span>
+            <span>${toolName}</span>
             <span class="tool-status">${detailText || ''}</span>
+            <span class="tool-toggle" aria-hidden="true">▸</span>
         </div>
-        <div class="tool-output" style="display:none;"></div>
+        <div class="tool-output"></div>
     `;
-    
-// 说明
-    // If we are strictly streaming, we append to parent. 
-    // But if 'content' already started, appending to parent puts it AFTER content, which is fine for interleaved.
-    parent.appendChild(div);
+    bindToolUsageToggle(div);
     return div;
 }
 
-function updateLastToolResult(aiMsgDiv, name, result) {
+function bindToolUsageToggle(toolEl) {
+    if (!toolEl || toolEl.dataset.toggleBound === '1') return;
+    const badge = toolEl.querySelector('.tool-badge');
+    if (!badge) return;
+    badge.addEventListener('click', () => {
+        if (!toolEl.classList.contains('has-output')) return;
+        if (toolEl.__autoCollapseTimer) {
+            clearTimeout(toolEl.__autoCollapseTimer);
+            toolEl.__autoCollapseTimer = null;
+        }
+        toolEl.classList.toggle('expanded');
+    });
+    toolEl.dataset.toggleBound = '1';
+}
+
+function scheduleToolAutoCollapse(toolEl, delay = 260) {
+    if (!toolEl) return;
+    if (toolEl.__autoCollapseTimer) {
+        clearTimeout(toolEl.__autoCollapseTimer);
+    }
+    toolEl.__autoCollapseTimer = setTimeout(() => {
+        toolEl.classList.remove('expanded');
+        toolEl.__autoCollapseTimer = null;
+    }, Math.max(0, Number(delay) || 0));
+}
+
+function findToolUsage(parent, name, callId, pendingOnly = false) {
+    const targetName = String(name || '').trim();
+    const targetCallId = String(callId || '').trim();
+    const rows = parent.querySelectorAll('.tool-usage');
+    for (let i = rows.length - 1; i >= 0; i--) {
+        const row = rows[i];
+        if (pendingOnly && row.dataset.pending !== 'true') continue;
+        if (targetCallId && row.dataset.callId === targetCallId) return row;
+        if (!targetCallId && targetName && row.dataset.toolName === targetName) return row;
+    }
+    return null;
+}
+
+function formatToolArgsForOutput(argsRaw) {
+    const raw = String(argsRaw || '').trim();
+    if (!raw) return '';
+    try {
+        return JSON.stringify(JSON.parse(raw), null, 2);
+    } catch (_) {
+        return raw;
+    }
+}
+
+function formatToolDeltaStatus(argsRaw) {
+    const raw = String(argsRaw || '').replace(/\s+/g, ' ').trim();
+    if (!raw) return '参数构建中...';
+    const maxLen = 42;
+    return `参数构建中: ${raw.slice(0, maxLen)}${raw.length > maxLen ? '...' : ''}`;
+}
+
+function scrollToolOutputToBottom(outputEl) {
+    if (!outputEl) return;
+    const doScroll = () => {
+        outputEl.scrollTop = outputEl.scrollHeight;
+    };
+    doScroll();
+    requestAnimationFrame(doScroll);
+}
+
+function ensureToolUsageForDelta(aiMsgDiv, name, callId) {
+    const parent = aiMsgDiv.querySelector('.message-content') || aiMsgDiv;
+    const safeName = String(name || '').trim() || 'tool';
+    const safeCallId = String(callId || '').trim();
+    let row = findToolUsage(parent, safeName, safeCallId, true);
+    if (!row) {
+        row = appendToolEvent(aiMsgDiv, safeName, '参数构建中...', true, {
+            callId: safeCallId,
+            reuseIfExists: true,
+            pending: true
+        });
+    }
+    row.dataset.pending = 'true';
+    return row;
+}
+
+function appendToolCallDelta(aiMsgDiv, data) {
+    const name = String(data.name || '').trim() || 'tool';
+    const callId = String(data.call_id || data.callId || '').trim();
+    const delta = String(data.arguments_delta || data.delta || '');
+    const row = ensureToolUsageForDelta(aiMsgDiv, name, callId);
+    if (!delta) return;
+
+    const nextRaw = `${row.dataset.argsRaw || ''}${delta}`;
+    row.dataset.argsRaw = nextRaw;
+    const statusEl = row.querySelector('.tool-status');
+    if (statusEl) statusEl.textContent = formatToolDeltaStatus(nextRaw);
+    const outDiv = row.querySelector('.tool-output');
+    if (outDiv) {
+        outDiv.textContent = formatToolArgsForOutput(nextRaw);
+        if (outDiv.textContent) {
+            row.classList.add('has-output');
+            row.classList.add('expanded'); // 调用进行中自动展开
+            scrollToolOutputToBottom(outDiv);
+        }
+    }
+}
+
+function finalizeToolCallBadge(aiMsgDiv, name, callId, argumentsText = '', options = {}) {
+    const parent = aiMsgDiv.querySelector('.message-content') || aiMsgDiv;
+    const safeName = String(name || '').trim() || 'tool';
+    const safeCallId = String(callId || '').trim();
+    const autoExpand = !(options && options.autoExpand === false);
+    const row = findToolUsage(parent, safeName, safeCallId, true) || appendToolEvent(aiMsgDiv, safeName, argumentsText, true, {
+        callId: safeCallId,
+        reuseIfExists: true,
+        pending: false
+    });
+    row.dataset.pending = 'false';
+    const finalArgs = String(argumentsText || row.dataset.argsRaw || '');
+    if (finalArgs) row.dataset.argsRaw = finalArgs;
+    const statusEl = row.querySelector('.tool-status');
+    if (statusEl) statusEl.textContent = '执行中';
+    const outDiv = row.querySelector('.tool-output');
+    if (outDiv && row.dataset.argsRaw) {
+        outDiv.textContent = `参数:\n${formatToolArgsForOutput(row.dataset.argsRaw)}`;
+        if (outDiv.textContent.trim()) {
+            row.classList.add('has-output');
+            if (autoExpand) row.classList.add('expanded'); // 调用阶段保持展开
+            scrollToolOutputToBottom(outDiv);
+        }
+    }
+}
+
+function updateLastToolResult(aiMsgDiv, name, result, callId = '') {
     // Find the last tool usage of this name that doesn't have a result yet
     const parent = aiMsgDiv.querySelector('.message-content') || aiMsgDiv;
-    const tools = parent.querySelectorAll(`.tool-usage`);
-    // Iterate backwards
-    let target = null;
-    for (let i = tools.length - 1; i >= 0; i--) {
-        const t = tools[i];
-        // Check if it matches name (loose check) and has hidden output (empty)
-        // Just picking the last tool usage is usually safe given sequential execution
-        if (t.dataset.toolName === name || (name === 'web_search' && t.dataset.toolName === 'Web Search')) {
-            target = t;
-            break;
-        }
+    let target = findToolUsage(parent, name, callId, false);
+    if (!target) {
+        target = appendToolEvent(aiMsgDiv, name, '', true, {
+            callId: String(callId || '').trim(),
+            reuseIfExists: true,
+            pending: false
+        });
     }
     
     if (target) {
+        target.dataset.pending = 'false';
+        const statusEl = target.querySelector('.tool-status');
+        if (statusEl) statusEl.textContent = '完成';
         const outDiv = target.querySelector('.tool-output');
-        outDiv.style.display = 'block';
-        outDiv.textContent = typeof result === 'object' ? JSON.stringify(result, null, 2) : result;
+        const resultText = (typeof result === 'object') ? JSON.stringify(result, null, 2) : String(result || '');
+        const argsText = formatToolArgsForOutput(target.dataset.argsRaw || '');
+        outDiv.textContent = argsText ? `参数:\n${argsText}\n\n结果:\n${resultText}` : resultText;
+        if (outDiv.textContent.trim()) {
+            target.classList.add('has-output');
+            scrollToolOutputToBottom(outDiv);
+        }
+        // 调用结束后自动折叠
+        scheduleToolAutoCollapse(target, 320);
     }
 }
 
@@ -1124,7 +1470,7 @@ function appendMessage(msg, index) {
         // Wrap user content in bubble for alignment
         const bubble = document.createElement('div');
         bubble.className = 'message-bubble';
-        bubble.innerHTML = marked.parse(msg.content);
+        bubble.innerHTML = renderMarkdownWithNewTabLinks(msg.content);
         renderMathInElement(bubble, {
             delimiters: [
                 {left: "$$", right: "$$", display: true},
@@ -1150,7 +1496,7 @@ function appendMessage(msg, index) {
         // Render reasoning_content (thinking process) if exists
         if (msg.metadata && msg.metadata.reasoning_content) {
             const thinkingBlock = document.createElement('div');
-            thinkingBlock.className = 'thinking-block collapsed'; // 默۵
+            thinkingBlock.className = 'thinking-block reasoning-thinking-block collapsed'; // 默۵
             thinkingBlock.innerHTML = `
                 <div class="thinking-header">
                     <svg class="thinking-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1188,10 +1534,10 @@ function appendMessage(msg, index) {
                             appendAddBasisView(div, args);
                         } catch(e) {}
                     }
-                    appendToolEvent(div, step.name, step.arguments, true);
+                    finalizeToolCallBadge(div, step.name, step.call_id || '', step.arguments || '', { autoExpand: false });
                 }
                 else if (step.type === 'function_result') {
-                    updateLastToolResult(div, step.name, step.result);
+                    updateLastToolResult(div, step.name, step.result, step.call_id || '');
                 }
                 else if (step.type === 'error') {
                     appendErrorEvent(div, step.content || step.message || 'Unknown error', true);
@@ -1200,7 +1546,7 @@ function appendMessage(msg, index) {
                     // 对于历史记录补插的文本内容
                     const body = document.createElement('div');
                     body.className = 'content-body';
-                    body.innerHTML = marked.parse(step.content);
+                    body.innerHTML = renderMarkdownWithNewTabLinks(step.content);
                     renderMathInElement(body);
                     highlightCode(body);
                     content.appendChild(body);
@@ -1216,7 +1562,7 @@ function appendMessage(msg, index) {
         if(msg.content && !hasContentStep) {
             const body = document.createElement('div');
             body.className = 'content-body';
-            body.innerHTML = marked.parse(msg.content);
+            body.innerHTML = renderMarkdownWithNewTabLinks(msg.content);
             renderMathInElement(body);
             highlightCode(body);
             content.appendChild(body);
@@ -1409,7 +1755,7 @@ async function startRegenerate(index) {
                         updateMessageDivContent(index, accumulatedContent);
                     } else if (data.type === 'reasoning_content') {
                         updateMessageDivThinking(index, data.content);
-                    } else if (data.type === 'web_search' || data.type === 'function_call' || data.type === 'function_result') {
+                    } else if (data.type === 'web_search' || data.type === 'function_call_delta' || data.type === 'function_call' || data.type === 'function_result') {
                         updateMessageDivTools(index, data);
                     }
                 } catch (e) { }
@@ -1447,7 +1793,7 @@ function updateMessageDivContent(index, fullText) {
         messageDiv.querySelector('.message-content').appendChild(body);
     }
     
-    body.innerHTML = marked.parse(fullText);
+    body.innerHTML = renderMarkdownWithNewTabLinks(fullText);
     renderMathInElement(body);
     highlightCode(body);
     
@@ -1459,11 +1805,11 @@ function updateMessageDivThinking(index, delta) {
     if (!messageDiv) return;
     
     const content = messageDiv.querySelector('.message-content');
-    let thinkingBlock = messageDiv.querySelector('.thinking-block');
+    let thinkingBlock = messageDiv.querySelector('.thinking-block.reasoning-thinking-block');
     
     if (!thinkingBlock) {
         thinkingBlock = document.createElement('div');
-        thinkingBlock.className = 'thinking-block'; // No collapsed by default during live gen
+        thinkingBlock.className = 'thinking-block reasoning-thinking-block'; // No collapsed by default during live gen
         thinkingBlock.innerHTML = `
             <div class="thinking-header">
                 <svg class="thinking-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1493,10 +1839,12 @@ function updateMessageDivTools(index, data) {
     
     if (data.type === 'web_search') {
         updateWebSearchStatus(messageDiv, data.status, data.query, data.content);
+    } else if (data.type === 'function_call_delta') {
+        appendToolCallDelta(messageDiv, data);
     } else if (data.type === 'function_call') {
-        appendToolEvent(messageDiv, data.name, data.arguments);
+        finalizeToolCallBadge(messageDiv, data.name, data.call_id || data.callId || '', data.arguments || '');
     } else if (data.type === 'function_result') {
-        updateLastToolResult(messageDiv, data.name, data.result);
+        updateLastToolResult(messageDiv, data.name, data.result, data.call_id || data.callId || '');
     }
 }
 
@@ -1806,7 +2154,10 @@ function restoreHeaderState(state) {
     const toggleKP = document.getElementById('toggleKnowledgePanel');
     if (toggleKP) toggleKP.onclick = () => els.knowledgePanel.classList.toggle('visible');
     const toggleMail = document.getElementById('toggleMailView');
-    if (toggleMail) toggleMail.onclick = () => openMailPlaceholderView();
+    if (toggleMail) {
+        toggleMail.onclick = () => openMailPlaceholderView();
+        renderMailNotifyBadge();
+    }
 }
 
 // 保存当前状态
@@ -1940,7 +2291,7 @@ async function viewKnowledge(title, options = {}) {
             spellChecker: false,
             sideBySideFullscreen: false,
             previewRender: function(plainText) {
-                const html = marked.parse(plainText);
+                const html = renderMarkdownWithNewTabLinks(plainText);
                 const tempDiv = document.createElement('div');
                 tempDiv.innerHTML = html;
                 renderMathInElement(tempDiv, {
@@ -1969,7 +2320,7 @@ async function viewKnowledge(title, options = {}) {
             spellChecker: false,
             sideBySideFullscreen: false,
             previewRender: function(plainText) {
-                const html = marked.parse(plainText);
+                const html = renderMarkdownWithNewTabLinks(plainText);
                 const tempDiv = document.createElement('div');
                 tempDiv.innerHTML = html;
                 renderMathInElement(tempDiv, {
@@ -2239,6 +2590,11 @@ window.openMailPlaceholderView = function() {
     pendingHighlightData = null;
     navigationStack = [];
     setMailViewUrl(mailViewState.selectedId || '');
+    if (mailViewState.folder === 'sent') {
+        pollMailNotifyOnly();
+    } else {
+        updateMailNotifyFromMails(mailViewState.mails, { markChecked: true });
+    }
 
     msgs.style.display = 'none';
     if (inputWrapper) inputWrapper.style.display = 'none';
@@ -2277,6 +2633,11 @@ window.openMailPlaceholderView = function() {
                         <span>未读</span>
                         <span class="mail-folder-badge alert" id="mailUnreadCountBadge">0</span>
                     </button>
+                    <button class="mail-folder-item ${mailViewState.folder === 'sent' ? 'active' : ''}" type="button" id="mailFolderSentBtn" onclick="setMailFolder('sent')">
+                        <i class="fa-regular fa-paper-plane"></i>
+                        <span>发件箱</span>
+                        <span class="mail-folder-badge" id="mailSentCountBadge">0</span>
+                    </button>
                 </div>
             </aside>
             <section class="mail-list-panel">
@@ -2294,7 +2655,7 @@ window.openMailPlaceholderView = function() {
                     <div class="mail-detail-head-row">
                         <h3 id="mailDetailTitle">邮件详情</h3>
                         <div class="mail-icon-actions">
-                            <button class="mail-icon-btn" type="button" title="刷新" onclick="refreshMailInbox()"><i class="fa-solid fa-rotate-right"></i></button>
+                            <button class="mail-icon-btn" type="button" title="刷新" onclick="refreshMailFolder()"><i class="fa-solid fa-rotate-right"></i></button>
                             <button class="mail-icon-btn" type="button" title="回复" onclick="openMailComposeReply()"><i class="fa-solid fa-reply"></i></button>
                             <button class="mail-icon-btn" type="button" title="转发" onclick="openMailComposeForward()"><i class="fa-solid fa-share"></i></button>
                             <button class="mail-icon-btn danger" type="button" title="删除" onclick="deleteCurrentMail()"><i class="fa-regular fa-trash-can"></i></button>
@@ -2420,6 +2781,20 @@ function getMailPlainTextForQuote(mail) {
     return decodeUnicodeEscapes(String(m.preview_text || '')).trim();
 }
 
+function getMailHtmlForForward(mail) {
+    const m = mail || {};
+    const html = decodeUnicodeEscapes(String(m.content_html || '')).trim();
+    if (html) return html;
+
+    const raw = decodeUnicodeEscapes(String(m.content || '')).trim();
+    if (!raw) return '';
+    const parsed = parseRawMail(raw);
+    if (parsed.isHtml) {
+        return String(parsed.body || '').trim();
+    }
+    return '';
+}
+
 function parseMailReadState(value) {
     if (typeof value === 'boolean') return value;
     if (typeof value === 'number') return value !== 0;
@@ -2440,6 +2815,9 @@ function normalizeMailItem(item) {
 
 function getVisibleMailsByFolder() {
     const all = Array.isArray(mailViewState.mails) ? mailViewState.mails : [];
+    if (mailViewState.folder === 'sent') {
+        return all;
+    }
     if (mailViewState.folder === 'unread') {
         return all.filter((m) => !parseMailReadState(m.is_read));
     }
@@ -2447,14 +2825,18 @@ function getVisibleMailsByFolder() {
 }
 
 function getMailFolderTitle() {
-    return mailViewState.folder === 'unread' ? '未读邮件' : '收件箱';
+    if (mailViewState.folder === 'unread') return '未读邮件';
+    if (mailViewState.folder === 'sent') return '发件箱';
+    return '收件箱';
 }
 
 function updateMailFolderUiState() {
     const inboxBtn = document.getElementById('mailFolderInboxBtn');
     const unreadBtn = document.getElementById('mailFolderUnreadBtn');
+    const sentBtn = document.getElementById('mailFolderSentBtn');
     if (inboxBtn) inboxBtn.classList.toggle('active', mailViewState.folder === 'all');
     if (unreadBtn) unreadBtn.classList.toggle('active', mailViewState.folder === 'unread');
+    if (sentBtn) sentBtn.classList.toggle('active', mailViewState.folder === 'sent');
     const titleEl = document.getElementById('mailToolbarTitle');
     if (titleEl) titleEl.textContent = getMailFolderTitle();
 }
@@ -2526,7 +2908,7 @@ async function markMailRead(mailId, isRead = true) {
 }
 
 function renderMailDetailEmpty(text) {
-    mailViewState.mode = 'inbox';
+    mailViewState.mode = (mailViewState.folder === 'sent') ? 'sent' : 'inbox';
     const titleEl = document.getElementById('mailDetailTitle');
     const metaEl = document.getElementById('mailDetailMeta');
     const contentEl = document.getElementById('mailDetailContent');
@@ -2541,8 +2923,16 @@ function renderMailDetailEmpty(text) {
 function renderMailInboxActions() {
     const actionsEl = document.querySelector('.mail-icon-actions');
     if (!actionsEl) return;
+    if (mailViewState.folder === 'sent') {
+        actionsEl.innerHTML = `
+            <button class="mail-icon-btn" type="button" title="刷新" onclick="refreshMailFolder()"><i class="fa-solid fa-rotate-right"></i></button>
+            <button class="mail-icon-btn" type="button" title="转发" onclick="openMailComposeForward()"><i class="fa-solid fa-share"></i></button>
+            <button class="mail-icon-btn danger" type="button" title="删除" onclick="deleteCurrentMail()"><i class="fa-regular fa-trash-can"></i></button>
+        `;
+        return;
+    }
     actionsEl.innerHTML = `
-        <button class="mail-icon-btn" type="button" title="刷新" onclick="refreshMailInbox()"><i class="fa-solid fa-rotate-right"></i></button>
+        <button class="mail-icon-btn" type="button" title="刷新" onclick="refreshMailFolder()"><i class="fa-solid fa-rotate-right"></i></button>
         <button class="mail-icon-btn" type="button" title="回复" onclick="openMailComposeReply()"><i class="fa-solid fa-reply"></i></button>
         <button class="mail-icon-btn" type="button" title="转发" onclick="openMailComposeForward()"><i class="fa-solid fa-share"></i></button>
         <button class="mail-icon-btn danger" type="button" title="删除" onclick="deleteCurrentMail()"><i class="fa-regular fa-trash-can"></i></button>
@@ -2570,7 +2960,7 @@ function renderMailComposeForm(preset = {}) {
     }
     if (actionsEl) {
         actionsEl.innerHTML = `
-            <button class="mail-icon-btn" type="button" title="返回收件箱" onclick="returnToInboxView()"><i class="fa-solid fa-inbox"></i></button>
+            <button class="mail-icon-btn" type="button" title="返回邮件列表" onclick="returnToInboxView()"><i class="fa-solid fa-inbox"></i></button>
             <button class="mail-icon-btn" type="button" title="发送" onclick="submitMailCompose()"><i class="fa-solid fa-paper-plane"></i></button>
         `;
     }
@@ -2607,21 +2997,34 @@ function renderMailList() {
     const listEl = document.getElementById('mailListBody');
     const inboxBadgeEl = document.getElementById('mailInboxCountBadge');
     const unreadBadgeEl = document.getElementById('mailUnreadCountBadge');
+    const sentBadgeEl = document.getElementById('mailSentCountBadge');
     if (!listEl) return;
     const prevScrollTop = listEl.scrollTop;
     const mails = (Array.isArray(mailViewState.mails) ? mailViewState.mails : []).map(normalizeMailItem);
-    const unreadCount = mails.filter((m) => !m.is_read).length;
-    if (inboxBadgeEl) inboxBadgeEl.textContent = mails.length > 99 ? '99+' : String(mails.length);
+    if (mailViewState.folder === 'sent') {
+        mailViewState.sentTotal = mails.length;
+    } else {
+        mailViewState.inboxTotal = mails.length;
+        mailViewState.unreadTotal = mails.filter((m) => !m.is_read).length;
+    }
+    const inboxCount = Math.max(0, Number(mailViewState.inboxTotal || 0));
+    const unreadCount = Math.max(0, Number(mailViewState.unreadTotal || 0));
+    const sentCount = Math.max(0, Number(mailViewState.sentTotal || 0));
+    if (inboxBadgeEl) inboxBadgeEl.textContent = inboxCount > 99 ? '99+' : String(inboxCount);
     if (unreadBadgeEl) {
         unreadBadgeEl.textContent = unreadCount > 99 ? '99+' : String(unreadCount);
         unreadBadgeEl.classList.toggle('muted', unreadCount === 0);
     }
+    if (sentBadgeEl) sentBadgeEl.textContent = sentCount > 99 ? '99+' : String(sentCount);
 
     updateMailFolderUiState();
 
     const visibleMails = getVisibleMailsByFolder().map(normalizeMailItem);
     if (visibleMails.length === 0) {
-        listEl.innerHTML = `<div class="mail-empty-state">${mailViewState.folder === 'unread' ? '暂无未读邮件' : '暂无邮件'}</div>`;
+        const emptyText = mailViewState.folder === 'unread'
+            ? '暂无未读邮件'
+            : (mailViewState.folder === 'sent' ? '暂无发件记录' : '暂无邮件');
+        listEl.innerHTML = `<div class="mail-empty-state">${emptyText}</div>`;
         saveMailListScroll(0);
         return;
     }
@@ -2644,16 +3047,19 @@ function renderMailList() {
             const eid = encodeURIComponent(id);
             const active = id === mailViewState.selectedId ? 'active' : '';
             const sender = m.sender || '-';
+            const recipient = m.recipient || '-';
+            const roleLabel = mailViewState.folder === 'sent' ? '收件人' : '来自';
+            const roleValue = mailViewState.folder === 'sent' ? recipient : sender;
             const subject = m.subject || '(No Subject)';
             const snippet = extractMailSnippet(m.preview_text || m.preview || '');
-            const unreadDot = m.is_read ? '' : '<span class="mail-unread-dot" title="未读"></span>';
+            const unreadDot = (mailViewState.folder === 'sent' || m.is_read) ? '' : '<span class="mail-unread-dot" title="未读"></span>';
             return `
                 <div class="mail-list-item ${active}" data-mail-eid="${eid}" onclick="selectMailItemById('${eid}')">
                     <div class="mail-list-top">
                         <span class="mail-subject-row">${unreadDot}<span class="mail-subject">${escapeHtml(subject)}</span></span>
                         <span class="mail-time">${escapeHtml(formatMailTime(m.timestamp))}</span>
                     </div>
-                    <div class="mail-sender">来自: ${escapeHtml(sender)}</div>
+                    <div class="mail-sender">${escapeHtml(roleLabel)}: ${escapeHtml(roleValue)}</div>
                     <div class="mail-snippet">${escapeHtml(snippet)}</div>
                 </div>
             `;
@@ -2683,10 +3089,19 @@ function renderMailList() {
     }
 }
 
-async function loadMailInbox(query = '') {
+async function loadMailCurrentFolder(query = '', options = {}) {
+    if (mailViewState.folder === 'sent') {
+        return loadMailSent(query, options);
+    }
+    return loadMailInbox(query, options);
+}
+
+async function loadMailInbox(query = '', options = {}) {
+    const silent = !!(options && options.silent);
+    const refreshDetail = !options || options.refreshDetail !== false;
     const requestId = ++mailViewState.inboxRequestId;
     const listEl = document.getElementById('mailListBody');
-    if (listEl) listEl.innerHTML = `<div class="mail-empty-state">正在加载收件箱...</div>`;
+    if (!silent && listEl) listEl.innerHTML = `<div class="mail-empty-state">正在加载收件箱...</div>`;
     try {
         const q = query ? `?q=${encodeURIComponent(query)}` : '';
         const res = await fetch(`/api/mail/me/inbox${q}`);
@@ -2695,6 +3110,8 @@ async function loadMailInbox(query = '') {
         if (!data.success) {
             mailViewState.mails = [];
             mailViewState.selectedId = '';
+            mailViewState.inboxTotal = 0;
+            mailViewState.unreadTotal = 0;
             renderMailList();
             if (mailViewState.mode !== 'compose') {
                 renderMailDetailEmpty(data.message || '收件箱加载失败');
@@ -2702,6 +3119,9 @@ async function loadMailInbox(query = '') {
             return;
         }
         mailViewState.mails = Array.isArray(data.mails) ? data.mails.map(normalizeMailItem) : [];
+        mailViewState.inboxTotal = Number(data.total || mailViewState.mails.length || 0);
+        mailViewState.unreadTotal = Number(data.unread_total || mailViewState.mails.filter((m) => !m.is_read).length || 0);
+        updateMailNotifyFromMails(mailViewState.mails, { markChecked: isMailViewActiveInDom() });
         const visible = getVisibleMailsByFolder();
         if (!mailViewState.selectedId || !visible.some((m) => String(m.id || '') === mailViewState.selectedId)) {
             mailViewState.selectedId = visible[0] ? String(visible[0].id || '') : '';
@@ -2711,15 +3131,66 @@ async function loadMailInbox(query = '') {
             setMailViewUrl(mailViewState.selectedId || '');
         }
         renderMailList();
-        if (mailViewState.selectedId && mailViewState.mode !== 'compose') {
+        if (refreshDetail && mailViewState.selectedId && mailViewState.mode !== 'compose') {
             await loadMailDetail(mailViewState.selectedId, { markAsRead: false });
-        } else if (mailViewState.mode !== 'compose') {
+        } else if (refreshDetail && mailViewState.mode !== 'compose') {
             renderMailDetailEmpty('收件箱为空');
         }
     } catch (err) {
         if (requestId !== mailViewState.inboxRequestId) return;
         mailViewState.mails = [];
         mailViewState.selectedId = '';
+        mailViewState.inboxTotal = 0;
+        mailViewState.unreadTotal = 0;
+        renderMailList();
+        if (mailViewState.mode !== 'compose') {
+            renderMailDetailEmpty('邮件服务连接失败');
+        }
+    }
+}
+
+async function loadMailSent(query = '', options = {}) {
+    const silent = !!(options && options.silent);
+    const refreshDetail = !options || options.refreshDetail !== false;
+    const requestId = ++mailViewState.inboxRequestId;
+    const listEl = document.getElementById('mailListBody');
+    if (!silent && listEl) listEl.innerHTML = `<div class="mail-empty-state">正在加载发件箱...</div>`;
+    try {
+        const q = query ? `?q=${encodeURIComponent(query)}` : '';
+        const res = await fetch(`/api/mail/me/sent${q}`);
+        const data = await res.json();
+        if (requestId !== mailViewState.inboxRequestId) return;
+        if (!data.success) {
+            mailViewState.mails = [];
+            mailViewState.selectedId = '';
+            mailViewState.sentTotal = 0;
+            renderMailList();
+            if (mailViewState.mode !== 'compose') {
+                renderMailDetailEmpty(data.message || '发件箱加载失败');
+            }
+            return;
+        }
+        mailViewState.mails = Array.isArray(data.mails) ? data.mails.map(normalizeMailItem) : [];
+        mailViewState.sentTotal = Number(data.total || mailViewState.mails.length || 0);
+        const visible = getVisibleMailsByFolder();
+        if (!mailViewState.selectedId || !visible.some((m) => String(m.id || '') === mailViewState.selectedId)) {
+            mailViewState.selectedId = visible[0] ? String(visible[0].id || '') : '';
+        }
+        saveMailSelectedId(mailViewState.selectedId);
+        if (isMailViewActiveInDom()) {
+            setMailViewUrl(mailViewState.selectedId || '');
+        }
+        renderMailList();
+        if (refreshDetail && mailViewState.selectedId && mailViewState.mode !== 'compose') {
+            await loadMailDetail(mailViewState.selectedId, { markAsRead: false });
+        } else if (refreshDetail && mailViewState.mode !== 'compose') {
+            renderMailDetailEmpty('发件箱为空');
+        }
+    } catch (err) {
+        if (requestId !== mailViewState.inboxRequestId) return;
+        mailViewState.mails = [];
+        mailViewState.selectedId = '';
+        mailViewState.sentTotal = 0;
         renderMailList();
         if (mailViewState.mode !== 'compose') {
             renderMailDetailEmpty('邮件服务连接失败');
@@ -2734,6 +3205,7 @@ async function loadMailDetail(mailId, options = {}) {
     }
     const requestId = ++mailViewState.detailRequestId;
     const markAsRead = !!options.markAsRead;
+    const viewingSent = mailViewState.folder === 'sent';
     const titleEl = document.getElementById('mailDetailTitle');
     const metaEl = document.getElementById('mailDetailMeta');
     const contentEl = document.getElementById('mailDetailContent');
@@ -2742,29 +3214,38 @@ async function loadMailDetail(mailId, options = {}) {
     if (metaEl) metaEl.innerHTML = '';
     if (contentEl) contentEl.innerHTML = `<div class="mail-empty-state">正在加载邮件详情...</div>`;
     try {
-        const res = await fetch(`/api/mail/me/inbox/${encodeURIComponent(mailId)}`);
+        const basePath = viewingSent ? '/api/mail/me/sent' : '/api/mail/me/inbox';
+        const res = await fetch(`${basePath}/${encodeURIComponent(mailId)}`);
         const data = await res.json();
         if (requestId !== mailViewState.detailRequestId) return;
         if (mailViewState.mode === 'compose') return;
         if (!data.success || !data.mail) {
-            renderMailDetailEmpty(data.message || '读取邮件失败');
+            renderMailDetailEmpty(data.message || (viewingSent ? '读取发件失败' : '读取邮件失败'));
             return;
         }
         const mail = normalizeMailItem(data.mail);
         updateMailItemInState(mail);
         mailViewState.currentMail = mail;
-        mailViewState.mode = 'inbox';
+        mailViewState.mode = viewingSent ? 'sent' : 'inbox';
         const parsed = parseRawMail(mail.content || '');
         const senderLine = mail.sender || parsed.headers['from'] || '-';
         const recipientLine = mail.recipient || parsed.headers['to'] || '-';
         const dateLine = mail.date || parsed.headers['date'] || formatMailTime(mail.timestamp);
         if (titleEl) titleEl.textContent = mail.subject || parsed.headers['subject'] || '(No Subject)';
         if (metaEl) {
-            metaEl.innerHTML = `
-                <span><i class="fa-regular fa-user"></i> ${escapeHtml(senderLine)}</span>
-                <span><i class="fa-regular fa-clock"></i> ${escapeHtml(dateLine)}</span>
-                <span><i class="fa-regular fa-envelope"></i> ${escapeHtml(recipientLine)}</span>
-            `;
+            if (viewingSent) {
+                metaEl.innerHTML = `
+                    <span><i class="fa-regular fa-paper-plane"></i> 发件人: ${escapeHtml(senderLine)}</span>
+                    <span><i class="fa-regular fa-clock"></i> ${escapeHtml(dateLine)}</span>
+                    <span><i class="fa-regular fa-envelope"></i> 收件人: ${escapeHtml(recipientLine)}</span>
+                `;
+            } else {
+                metaEl.innerHTML = `
+                    <span><i class="fa-regular fa-user"></i> ${escapeHtml(senderLine)}</span>
+                    <span><i class="fa-regular fa-clock"></i> ${escapeHtml(dateLine)}</span>
+                    <span><i class="fa-regular fa-envelope"></i> ${escapeHtml(recipientLine)}</span>
+                `;
+            }
         }
         if (contentEl) {
             const htmlBody = decodeUnicodeEscapes(String(mail.content_html || '').trim());
@@ -2776,25 +3257,25 @@ async function loadMailDetail(mailId, options = {}) {
                 contentEl.innerHTML = `<iframe class="mail-html-frame" title="mail-html" sandbox="allow-popups allow-popups-to-escape-sandbox"></iframe>`;
                 const frame = contentEl.querySelector('.mail-html-frame');
                 if (frame) {
-                    frame.srcdoc = htmlBody;
+                    frame.srcdoc = rewriteHtmlDocumentLinksToNewTab(htmlBody);
                 }
             } else if (textBody) {
                 contentEl.innerHTML = `<pre class="mail-raw-content">${escapeHtml(textBody)}</pre>`;
             } else if (parsed.isHtml) {
                 contentEl.innerHTML = `<iframe class="mail-html-frame" title="mail-html" sandbox="allow-popups allow-popups-to-escape-sandbox"></iframe>`;
                 const frame = contentEl.querySelector('.mail-html-frame');
-                if (frame) frame.srcdoc = rawBody;
+                if (frame) frame.srcdoc = rewriteHtmlDocumentLinksToNewTab(rawBody);
             } else {
                 contentEl.innerHTML = `<pre class="mail-raw-content">${escapeHtml(rawBody)}</pre>`;
             }
         }
-        if (markAsRead && !mail.is_read) {
+        if (!viewingSent && markAsRead && !mail.is_read) {
             await markMailRead(mailId, true);
         }
     } catch (err) {
         if (requestId !== mailViewState.detailRequestId) return;
         if (mailViewState.mode === 'compose') return;
-        renderMailDetailEmpty('读取邮件失败');
+        renderMailDetailEmpty(viewingSent ? '读取发件失败' : '读取邮件失败');
     }
 }
 
@@ -2814,7 +3295,7 @@ async function initMailWorkspace() {
         searchEl.addEventListener('keydown', async (e) => {
             if (e.key === 'Enter') {
                 mailViewState.query = (searchEl.value || '').trim();
-                await loadMailInbox(mailViewState.query);
+                await loadMailCurrentFolder(mailViewState.query);
             }
         });
     }
@@ -2838,44 +3319,42 @@ async function initMailWorkspace() {
         renderMailDetailEmpty('无法获取邮件状态');
         return;
     }
-    await loadMailInbox(mailViewState.query || '');
+    await loadMailCurrentFolder(mailViewState.query || '');
 }
 
 window.selectMailItemById = async function(encodedMailId) {
     const mailId = decodeURIComponent(encodedMailId || '');
     if (!mailId) return;
-    mailViewState.mode = 'inbox';
+    mailViewState.mode = mailViewState.folder === 'sent' ? 'sent' : 'inbox';
     mailViewState.selectedId = mailId;
     saveMailSelectedId(mailId);
     if (isMailViewActiveInDom()) {
         setMailViewUrl(mailId);
     }
     renderMailList();
-    await loadMailDetail(mailId, { markAsRead: true });
+    await loadMailDetail(mailId, { markAsRead: mailViewState.folder !== 'sent' });
 };
 
 window.refreshMailInbox = async function() {
-    mailViewState.mode = 'inbox';
-    await loadMailInbox(mailViewState.query || '');
+    mailViewState.mode = mailViewState.folder === 'sent' ? 'sent' : 'inbox';
+    await loadMailCurrentFolder(mailViewState.query || '');
 };
+
+window.refreshMailFolder = window.refreshMailInbox;
 
 window.setMailFolder = async function(folder) {
     const f = String(folder || '').toLowerCase();
-    mailViewState.folder = (f === 'unread') ? 'unread' : 'all';
-    const visible = getVisibleMailsByFolder();
-    if (!mailViewState.selectedId || !visible.some((m) => String(m.id || '') === mailViewState.selectedId)) {
-        mailViewState.selectedId = visible[0] ? String(visible[0].id || '') : '';
-        saveMailSelectedId(mailViewState.selectedId);
-        if (isMailViewActiveInDom()) {
-            setMailViewUrl(mailViewState.selectedId || '');
-        }
+    if (f === 'sent') mailViewState.folder = 'sent';
+    else if (f === 'unread') mailViewState.folder = 'unread';
+    else mailViewState.folder = 'all';
+    mailViewState.selectedId = '';
+    saveMailSelectedId('');
+    if (isMailViewActiveInDom()) {
+        setMailViewUrl('');
     }
     renderMailList();
-    if (mailViewState.selectedId) {
-        await loadMailDetail(mailViewState.selectedId, { markAsRead: false });
-    } else {
-        renderMailDetailEmpty(mailViewState.folder === 'unread' ? '暂无未读邮件' : '暂无邮件');
-    }
+    renderMailDetailEmpty(mailViewState.folder === 'sent' ? '正在加载发件箱...' : '正在加载收件箱...');
+    await loadMailCurrentFolder(mailViewState.query || '');
 };
 
 window.deleteCurrentMail = async function() {
@@ -2889,23 +3368,24 @@ window.deleteCurrentMail = async function() {
         return;
     }
     try {
-        const res = await fetch(`/api/mail/me/inbox/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        const basePath = mailViewState.folder === 'sent' ? '/api/mail/me/sent' : '/api/mail/me/inbox';
+        const res = await fetch(`${basePath}/${encodeURIComponent(id)}`, { method: 'DELETE' });
         const data = await res.json();
         if (!data.success) {
             showToast(data.message || '删除失败');
             return;
         }
-        showToast('邮件已删除');
+        showToast(mailViewState.folder === 'sent' ? '发件记录已删除' : '邮件已删除');
         mailViewState.selectedId = '';
         saveMailSelectedId('');
-        await loadMailInbox(mailViewState.query || '');
+        await loadMailCurrentFolder(mailViewState.query || '');
     } catch (err) {
         showToast('删除失败');
     }
 };
 
 window.returnToInboxView = async function() {
-    mailViewState.mode = 'inbox';
+    mailViewState.mode = mailViewState.folder === 'sent' ? 'sent' : 'inbox';
     renderMailDetailEmpty('请选择一封邮件');
     if (mailViewState.selectedId) {
         await loadMailDetail(mailViewState.selectedId);
@@ -2937,6 +3417,18 @@ window.openMailComposeForward = function() {
         return;
     }
     const subject = String(m.subject || '').startsWith('Fwd:') ? String(m.subject || '') : `Fwd: ${m.subject || ''}`;
+    const htmlBody = getMailHtmlForForward(m);
+    if (htmlBody) {
+        const quoteHtml = `
+<div style="margin-top: 18px; padding-top: 12px; border-top: 1px solid #dbe3ef; color: #475569; font-size: 12px;">
+  ----- 转发内容 -----
+</div>
+${htmlBody}
+        `.trim();
+        openMailComposeView({ recipient: '', subject, content: quoteHtml, is_html: true });
+        return;
+    }
+
     const bodyText = getMailPlainTextForQuote(m);
     const quote = bodyText ? `\n\n\n----- 转发内容 -----\n${bodyText}` : '';
     openMailComposeView({ recipient: '', subject, content: quote, is_html: false });
@@ -2985,7 +3477,11 @@ window.submitMailCompose = async function() {
                 return;
             }
             showToast('邮件已发送');
-            await loadMailInbox(mailViewState.query || '');
+            if (mailViewState.folder !== 'sent') {
+                mailViewState.sentTotal = Math.max(0, Number(mailViewState.sentTotal || 0) + 1);
+                renderMailList();
+            }
+            await loadMailCurrentFolder(mailViewState.query || '');
         } catch (err) {
             showToast('发送失败');
         } finally {

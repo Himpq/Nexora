@@ -9,6 +9,7 @@ import base64
 import binascii
 from copy import deepcopy
 from urllib import request as urllib_request, error as urllib_error, parse as urllib_parse
+from email.header import Header
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for, Response, send_file
 from flask_cors import CORS
 from datetime import timedelta, datetime
@@ -301,6 +302,39 @@ def _build_mail_sender_address(mail_username, group, fallback_host):
     primary_domain = _get_nexora_mail_primary_domain(group)
     domain = str(primary_domain or fallback_host or 'localhost').strip() or 'localhost'
     return f"{local}@{domain}"
+
+
+def _garbled_score_text(s):
+    text = str(s or '')
+    if not text:
+        return 0
+    suspicious = ('鎴', '馃', '锛', '锟', '�', '鏄', '鍐', '涓', '鐨')
+    score = 0
+    for token in suspicious:
+        score += text.count(token)
+    return score
+
+
+def _repair_common_mojibake(text):
+    """
+    修复常见 UTF-8 被按 GBK/GB18030 错解后的乱码（如: 鎴戠殑 / 馃専）。
+    保守策略：仅当修复后乱码评分下降时采用。
+    """
+    src = str(text or '')
+    if not src:
+        return src
+    best = src
+    best_score = _garbled_score_text(src)
+    for enc in ('gb18030', 'gbk'):
+        try:
+            cand = src.encode(enc, errors='strict').decode('utf-8', errors='strict')
+        except Exception:
+            continue
+        cand_score = _garbled_score_text(cand)
+        if cand_score < best_score:
+            best = cand
+            best_score = cand_score
+    return best
 
 def load_models_config():
     """读取 models.json，返回标准结构"""
@@ -674,6 +708,34 @@ def mail_me_inbox():
     })
 
 
+@app.route('/api/mail/me/sent', methods=['GET'])
+@require_login
+def mail_me_sent():
+    """当前用户发件箱列表"""
+    binding, err = _resolve_current_user_mail_binding()
+    if err:
+        return jsonify({'success': False, 'message': err[0]}), err[1]
+
+    q = (request.args.get('q') or '').strip()
+    offset = max(int(request.args.get('offset', 0) or 0), 0)
+    limit = min(max(int(request.args.get('limit', 50) or 50), 1), 200)
+    path = f"/api/mailboxes/{urllib_parse.quote(binding['group'])}/{urllib_parse.quote(binding['mail_username'])}/sent"
+    ok, status, data = _nexora_mail_call(path, method='GET', query={'q': q, 'offset': offset, 'limit': limit})
+    if not ok:
+        return jsonify({'success': False, 'message': data.get('message', '读取发件箱失败'), 'upstream': data}), status
+
+    return jsonify({
+        'success': True,
+        'group': binding['group'],
+        'mail_username': binding['mail_username'],
+        'local_mail': binding['local_mail'],
+        'total': data.get('total', 0),
+        'offset': data.get('offset', offset),
+        'limit': data.get('limit', limit),
+        'mails': data.get('mails', [])
+    })
+
+
 @app.route('/api/mail/me/inbox/<mail_id>', methods=['GET'])
 @require_login
 def mail_me_inbox_item(mail_id):
@@ -686,6 +748,26 @@ def mail_me_inbox_item(mail_id):
     ok, status, data = _nexora_mail_call(path, method='GET')
     if not ok:
         return jsonify({'success': False, 'message': data.get('message', '读取邮件失败'), 'upstream': data}), status
+    return jsonify({
+        'success': True,
+        'group': binding['group'],
+        'mail_username': binding['mail_username'],
+        'mail': data.get('mail', {})
+    })
+
+
+@app.route('/api/mail/me/sent/<mail_id>', methods=['GET'])
+@require_login
+def mail_me_sent_item(mail_id):
+    """当前用户读取单封发件详情"""
+    binding, err = _resolve_current_user_mail_binding()
+    if err:
+        return jsonify({'success': False, 'message': err[0]}), err[1]
+
+    path = f"/api/mailboxes/{urllib_parse.quote(binding['group'])}/{urllib_parse.quote(binding['mail_username'])}/sent/{urllib_parse.quote(str(mail_id))}"
+    ok, status, data = _nexora_mail_call(path, method='GET')
+    if not ok:
+        return jsonify({'success': False, 'message': data.get('message', '读取发件失败'), 'upstream': data}), status
     return jsonify({
         'success': True,
         'group': binding['group'],
@@ -741,6 +823,21 @@ def mail_me_delete(mail_id):
     return jsonify({'success': True, 'id': mail_id})
 
 
+@app.route('/api/mail/me/sent/<mail_id>', methods=['DELETE'])
+@require_login
+def mail_me_sent_delete(mail_id):
+    """当前用户删除单封发件"""
+    binding, err = _resolve_current_user_mail_binding()
+    if err:
+        return jsonify({'success': False, 'message': err[0]}), err[1]
+
+    path = f"/api/mailboxes/{urllib_parse.quote(binding['group'])}/{urllib_parse.quote(binding['mail_username'])}/sent/{urllib_parse.quote(str(mail_id))}"
+    ok, status, data = _nexora_mail_call(path, method='DELETE')
+    if not ok:
+        return jsonify({'success': False, 'message': data.get('message', '删除发件失败'), 'upstream': data}), status
+    return jsonify({'success': True, 'id': mail_id})
+
+
 @app.route('/api/mail/me/send', methods=['POST'])
 @require_login
 def mail_me_send():
@@ -752,6 +849,8 @@ def mail_me_send():
     payload = request.get_json() or {}
     recipient = (payload.get('recipient') or payload.get('to') or '').strip()
     subject = (payload.get('subject') or '').strip() or '(No Subject)'
+    subject = _repair_common_mojibake(subject)
+    subject_header = str(Header(subject, 'utf-8'))
     content = payload.get('content')
     is_html = bool(payload.get('is_html', False))
 
@@ -780,7 +879,7 @@ def mail_me_send():
         send_body['raw'] = (
             f"From: <{sender}>\r\n"
             f"To: <{recipient}>\r\n"
-            f"Subject: {subject}\r\n"
+            f"Subject: {subject_header}\r\n"
             "MIME-Version: 1.0\r\n"
             "Content-Type: text/html; charset=\"UTF-8\"\r\n"
             "\r\n"

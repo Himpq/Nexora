@@ -58,8 +58,15 @@ def start_smtp_services():
     # 全局 SMTP 设置（例如是否强制禁用 ssl 端口）
     smtp_settings = Configure.get('SMTPSettings', {})
     
+    seen_ports = set()
     for port, config in smtp_services.items():
         try:
+            port_num = int(port)
+            if port_num in seen_ports:
+                DebugLog.write(f"[SMTP] Skip duplicated port config: {port_num}")
+                continue
+            seen_ports.add(port_num)
+
             sslEnabled = config.get("ssl", False)
             # 如果全局配置要求禁用 ssl 端口，则强制关闭
             if smtp_settings.get('disable_ssl_ports'):
@@ -84,9 +91,9 @@ def start_smtp_services():
             except Exception:
                 pass
 
-            smtp = SMTPService.SMTPService("0.0.0.0", int(port), userGroup, sslEnabled)
+            smtp = SMTPService.SMTPService("0.0.0.0", port_num, userGroup, sslEnabled)
             smtp_thread = threading.Thread(target=smtp.startListen, 
-                                        name=f"SMTP-{port}")
+                                        name=f"SMTP-{port_num}")
             smtp_thread.daemon = True
             smtp_thread.start()
             

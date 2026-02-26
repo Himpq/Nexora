@@ -1,0 +1,33 @@
+{
+    "version": 1,
+    "providers": {
+        "volcengine": {
+            "enabled": true,
+            "tools": [
+                {
+                    "type": "web_search"
+                }
+            ]
+        },
+        "aliyun": {
+            "enabled": true,
+            "tools": [
+                {
+                    "type": "web_search"
+                }
+            ]
+        },
+        "github": {
+            "enabled": false,
+            "tools": []
+        },
+        "stepfun": {
+            "enabled": false,
+            "tools": []
+        },
+        "suanli": {
+            "enabled": false,
+            "tools": []
+        }
+    }
+}

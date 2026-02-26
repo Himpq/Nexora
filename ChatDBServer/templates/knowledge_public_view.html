@@ -53,6 +53,14 @@
     <script>
         const rawContent = JSON.parse(document.getElementById('rawContentJson').textContent || '""');
         const contentEl = document.getElementById('content');
+
+        function enforceLinksOpenInNewTab(root) {
+            if (!root || typeof root.querySelectorAll !== 'function') return;
+            root.querySelectorAll('a[href]').forEach((a) => {
+                a.setAttribute('target', '_blank');
+                a.setAttribute('rel', 'noopener noreferrer');
+            });
+        }
         
         // Setup marked with highlight
         if (window.marked && window.hljs) {
@@ -67,6 +75,7 @@
         }
 
         contentEl.innerHTML = marked.parse(rawContent);
+        enforceLinksOpenInNewTab(contentEl);
 
         // Code highlighting
         if (window.hljs) {

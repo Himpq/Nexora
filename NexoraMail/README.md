@@ -76,6 +76,9 @@ Endpoints:
 - `GET /api/mailboxes/<group>/<username>/mails`
 - `GET /api/mailboxes/<group>/<username>/mails/<mail_id>`
 - `DELETE /api/mailboxes/<group>/<username>/mails/<mail_id>`
+- `GET /api/mailboxes/<group>/<username>/sent`
+- `GET /api/mailboxes/<group>/<username>/sent/<mail_id>`
+- `DELETE /api/mailboxes/<group>/<username>/sent/<mail_id>`
 - `POST /api/send`
 
 Auth:

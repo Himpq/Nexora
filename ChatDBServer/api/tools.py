@@ -21,25 +21,46 @@ TOOLS = [
             }
         }
     },
-    # {
-    #     "type": "function",
-    #     "function": {
-    #         "name": "getKnowledgeList",
-    #         "description": "获取用户知识库的标题列表，分为短期记忆和基础知识库两种，请优先使用本函数查阅知识库内容。",
+    {
+        "type": "function",
+        "function": {
+            "name": "getKnowledgeList",
+            "description": "获取用户知识库的标题列表，分为短期记忆和基础知识库两种，请优先使用本函数查阅知识库内容。",
 
-    #         "parameters": {
-    #             "type": "object",
-    #             "properties": {
-    #                 "_type": {
-    #                     "type": "integer",
-    #                     "description": "知识库的类型，例如短期记忆为0，基础知识库为1",
-    #                     "enum": [0, 1]
-    #                 }
-    #             },
-    #             "required": ["_type"]
-    #         }
-    #     }
-    # },
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "_type": {
+                        "type": "integer",
+                        "description": "知识库的类型，例如短期记忆为0，基础知识库为1",
+                        "enum": [0, 1]
+                    }
+                },
+                "required": ["_type"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "queryShortMemory",
+            "description": "查询用户短期记忆。支持按关键词过滤，返回短期记忆的ID与标题列表。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keyword": {
+                        "type": "string",
+                        "description": "可选，按关键词匹配短期记忆标题。为空时返回全部。"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "返回条数上限，默认20，范围1-200。"
+                    }
+                },
+                "required": []
+            }
+        }
+    },
     {
         "type": "function",
         "function": {
@@ -193,76 +214,76 @@ TOOLS = [
         }
     },
     
-    {
-        "type": "function",
-        "function": {
-            "name": "analyzeConnections",
-            "description": "分析知识库中指定知识的串联关系，返回与该知识相关联的其他知识及其关系类型（关联/依赖/扩展/对比/补充）。用于发现知识之间的联系和构建知识网络。",
+    # {
+    #     "type": "function",
+    #     "function": {
+    #         "name": "analyzeConnections",
+    #         "description": "分析知识库中指定知识的串联关系，返回与该知识相关联的其他知识及其关系类型（关联/依赖/扩展/对比/补充）。用于发现知识之间的联系和构建知识网络。",
 
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "title": {
-                        "type": "string",
-                        "description": "要分析串联关系的知识标题。"
-                    }
-                },
-                "required": ["title"]
-            }
-        }
-    },
+    #         "parameters": {
+    #             "type": "object",
+    #             "properties": {
+    #                 "title": {
+    #                     "type": "string",
+    #                     "description": "要分析串联关系的知识标题。"
+    #                 }
+    #             },
+    #             "required": ["title"]
+    #         }
+    #     }
+    # },
     
-    {
-        "type": "function",
-        "function": {
-            "name": "linkKnowledge",
-            "description": "建立两个知识点之间的关联连接。用于构建知识网络，帮助AI理解知识间的逻辑关系。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "source": {
-                        "type": "string",
-                        "description": "源知识标题"
-                    },
-                    "target": {
-                        "type": "string",
-                        "description": "目标知识标题"
-                    },
-                    "relation": {
-                        "type": "string",
-                        "description": "关系类型，如：包含、属于、导致、相关、对比、前置、后续等"
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "关系的详细描述"
-                    }
-                },
-                "required": ["source", "target", "relation"]
-            }
-        }
-    },
+    # {
+    #     "type": "function",
+    #     "function": {
+    #         "name": "linkKnowledge",
+    #         "description": "建立两个知识点之间的关联连接。用于构建知识网络，帮助AI理解知识间的逻辑关系。",
+    #         "parameters": {
+    #             "type": "object",
+    #             "properties": {
+    #                 "source": {
+    #                     "type": "string",
+    #                     "description": "源知识标题"
+    #                 },
+    #                 "target": {
+    #                     "type": "string",
+    #                     "description": "目标知识标题"
+    #                 },
+    #                 "relation": {
+    #                     "type": "string",
+    #                     "description": "关系类型，如：包含、属于、导致、相关、对比、前置、后续等"
+    #                 },
+    #                 "description": {
+    #                     "type": "string",
+    #                     "description": "关系的详细描述"
+    #                 }
+    #             },
+    #             "required": ["source", "target", "relation"]
+    #         }
+    #     }
+    # },
     
-    {
-        "type": "function",
-        "function": {
-            "name": "categorizeKnowledge",
-            "description": "将知识点归类到指定的分类中。如果知识点未分类，使用此工具将其整理到合适的类别。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "title": {
-                        "type": "string",
-                        "description": "知识标题"
-                    },
-                    "category": {
-                        "type": "string",
-                        "description": "目标分类名称"
-                    }
-                },
-                "required": ["title", "category"]
-            }
-        }
-    },
+    # {
+    #     "type": "function",
+    #     "function": {
+    #         "name": "categorizeKnowledge",
+    #         "description": "将知识点归类到指定的分类中。如果知识点未分类，使用此工具将其整理到合适的类别。",
+    #         "parameters": {
+    #             "type": "object",
+    #             "properties": {
+    #                 "title": {
+    #                     "type": "string",
+    #                     "description": "知识标题"
+    #                 },
+    #                 "category": {
+    #                     "type": "string",
+    #                     "description": "目标分类名称"
+    #                 }
+    #             },
+    #             "required": ["title", "category"]
+    #         }
+    #     }
+    # },
     
     {
         "type": "function",
@@ -299,45 +320,45 @@ TOOLS = [
         }
     },
 
-    {
-        "type": "function",
-        "function": {
-            "name": "getKnowledgeConnections",
-            "description": "获取指定知识点的所有连接关系（父子、关联、依赖等）。如果不指定知识点，则返回图谱中所有的连接关系。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "title": {
-                        "type": "string",
-                        "description": "知识点标题（可选）"
-                    }
-                },
-                "required": []
-            }
-        }
-    },
+    # {
+    #     "type": "function",
+    #     "function": {
+    #         "name": "getKnowledgeConnections",
+    #         "description": "获取指定知识点的所有连接关系（父子、关联、依赖等）。如果不指定知识点，则返回图谱中所有的连接关系。",
+    #         "parameters": {
+    #             "type": "object",
+    #             "properties": {
+    #                 "title": {
+    #                     "type": "string",
+    #                     "description": "知识点标题（可选）"
+    #                 }
+    #             },
+    #             "required": []
+    #         }
+    #     }
+    # },
     
-    {
-        "type": "function",
-        "function": {
-            "name": "findPathBetweenKnowledge",
-            "description": "查找两个知识点之间的关联路径。用于发现两个看似无关的知识点之间是否存在间接联系。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "start": {
-                        "type": "string",
-                        "description": "起始知识点标题"
-                    },
-                    "end": {
-                        "type": "string",
-                        "description": "结束知识点标题"
-                    }
-                },
-                "required": ["start", "end"]
-            }
-        }
-    },
+    # {
+    #     "type": "function",
+    #     "function": {
+    #         "name": "findPathBetweenKnowledge",
+    #         "description": "查找两个知识点之间的关联路径。用于发现两个看似无关的知识点之间是否存在间接联系。",
+    #         "parameters": {
+    #             "type": "object",
+    #             "properties": {
+    #                 "start": {
+    #                     "type": "string",
+    #                     "description": "起始知识点标题"
+    #                 },
+    #                 "end": {
+    #                     "type": "string",
+    #                     "description": "结束知识点标题"
+    #                 }
+    #             },
+    #             "required": ["start", "end"]
+    #         }
+    #     }
+    # },
 
     # {
     #     "type": "function",
@@ -410,28 +431,29 @@ TOOLS = [
     #             "required": ["offset", "keyword"]
     #         }
     #     }
-    # },        {
-    #     "type": "function",
-    #     "function": {
-    #         "name": "searchKeyword",
-    #         "description": "在知识库（短期记忆和基础知识）中搜索关键词，返回包含关键词的标题和内容片段。用于快速查找知识库中的相关信息。",
+    # },        
+    {
+        "type": "function",
+        "function": {
+            "name": "searchKeyword",
+            "description": "在知识库（短期记忆和基础知识）中搜索关键词，返回包含关键词的标题和内容片段。用于快速查找知识库中的相关信息。",
 
-    #         "parameters": {
-    #             "type": "object",
-    #             "properties": {
-    #                 "keyword": {
-    #                     "type": "string",
-    #                     "description": "要搜索的关键词"
-    #                 },
-    #                 "range": {
-    #                     "type": "integer",
-    #                     "description": "关键词前后返回的字符数，默认10"
-    #                 }
-    #             },
-    #             "required": ["keyword"]
-    #         }
-    #     }
-    # },
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keyword": {
+                        "type": "string",
+                        "description": "要搜索的关键词"
+                    },
+                    "range": {
+                        "type": "integer",
+                        "description": "关键词前后返回的字符数，默认10"
+                    }
+                },
+                "required": ["keyword"]
+            }
+        }
+    },
     
     # {
     #     "type": "function",
@@ -451,4 +473,71 @@ TOOLS = [
     #         }
     #     }
     # }
+    {
+        "type": "function",
+        "function": {
+            "name": "sendEMail",
+            "description": "使用用户绑定邮箱发送邮件。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "recipient": {"type": "string", "description": "Recipient email address"},
+                    "subject": {"type": "string", "description": "Email subject"},
+                    "content": {"type": "string", "description": "Email body content"},
+                    "knowledge_title": {"type": "string", "description": "Optional basis knowledge title; used when content is empty"},
+                    "is_html": {"type": "boolean", "description": "Send as HTML when true"}
+                },
+                "required": ["recipient", "subject"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "getEMail",
+            "description": "获取用户绑定邮箱中的指定邮件。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mail_id": {"type": "string", "description": "The ID of the email to retrieve"},
+                    "content_type": {
+                        "type": "integer",
+                        "description": "返回内容类型：0=提取文本（默认，轻量），1=完整内容（含HTML与原始内容）",
+                        "enum": [0, 1]
+                    },
+                    "truncate": {
+                        "type": "boolean",
+                        "description": "是否截断长内容，默认true"
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "description": "截断长度上限（字符），默认12000"
+                    }
+                },
+                "required": ["mail_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "getEMailList",
+            "description": "获取用户绑定邮箱中的邮件列表。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "type": {
+                        "type": "integer",
+                        "description": "邮件列表类型：0=新邮件（未读），1=全部邮件",
+                        "enum": [0, 1]
+                    },
+                    "date_range": {
+                        "type": "integer",
+                        "description": "时间范围（天），默认15，表示仅返回最近N天邮件"
+                    }
+                },
+                "required": []
+            }
+        }
+    }
 ]

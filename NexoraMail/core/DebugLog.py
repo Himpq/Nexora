@@ -22,7 +22,7 @@ def autoCleaner():
 
             
 
-            if avr > 20000:
+            if avr > 20000000:
                 try:
 
                     file.close()
