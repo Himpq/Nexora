@@ -11,6 +11,7 @@ import time
 import re
 import base64
 import textwrap
+import threading
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Generator
 from urllib import request as urllib_request, error as urllib_error, parse as urllib_parse
@@ -19,8 +20,8 @@ from email.utils import parsedate_to_datetime
 from volcenginesdkarkruntime import Ark
 from openai import OpenAI
 from tools import TOOLS
+from tool_executor import ToolExecutor
 from database import User
-from chroma_client import ChromaStore
 from conversation_manager import ConversationManager
 
 # 配置文件路径
@@ -31,7 +32,8 @@ SEARCH_ADAPTERS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.absp
 
 DEFAULT_SEARCH_ADAPTER_CONFIG = {
     "version": 1,
-    "providers": {}
+    "providers": {},
+    "relay_order": []
 }
 
 # 加载配置
@@ -50,7 +52,7 @@ def load_config():
 
 
 def load_search_adapter_config() -> Dict[str, Any]:
-    """加载搜索适配器配置（providers -> {enabled, tools}）"""
+    """加载搜索适配器配置（providers / relay_order）"""
     cfg = json.loads(json.dumps(DEFAULT_SEARCH_ADAPTER_CONFIG))
     try:
         if os.path.exists(SEARCH_ADAPTERS_PATH):
@@ -60,6 +62,9 @@ def load_search_adapter_config() -> Dict[str, Any]:
                 providers_cfg = file_cfg.get("providers")
                 if isinstance(providers_cfg, dict):
                     cfg["providers"].update(providers_cfg)
+                relay_order = file_cfg.get("relay_order")
+                if isinstance(relay_order, list):
+                    cfg["relay_order"] = [str(x).strip() for x in relay_order if str(x).strip()]
                 elif isinstance(file_cfg.get("adapters"), dict):
                     # 兼容旧格式：adapters 下键即 provider 名
                     cfg["providers"].update(file_cfg.get("adapters", {}))
@@ -77,6 +82,7 @@ if 'HTTPS_PROXY' in os.environ:
 
 # 全局客户端缓存，实现连接池复用 (Keep-Alive)
 _CLIENT_CACHE = {}
+_TOOL_USAGE_LOG_LOCK = threading.Lock()
 
 def _ensure_json_serializable(obj):
     """
@@ -120,6 +126,7 @@ class Model:
         # 加载配置
         global CONFIG
         CONFIG = load_config()
+        self.config = CONFIG
         
         # 确定模型名称（增加黑名单过滤逻辑）
         requested_model = model_name
@@ -218,9 +225,28 @@ class Model:
             str(t.get("type", "")).strip() == "web_search"
             for t in self.native_search_tools
         )
+        try:
+            log_status = str(CONFIG.get("log_status", "silent") or "silent").strip().lower()
+            if log_status in {"all", "debug", "verbose"}:
+                native_flag = self._adapter_flag(
+                    self.provider_search_adapter, "native_enabled", fallback_key="enabled", default=False
+                )
+                relay_flag = self._adapter_flag(
+                    self.provider_search_adapter, "relay_enabled", fallback_key="enabled", default=False
+                )
+                allowed = self._is_model_allowed_by_adapter(self.provider_search_adapter)
+                print(
+                    f"[SEARCH_ADAPTER] provider={self.provider} model={self.model_name} "
+                    f"native_enabled={native_flag} relay_enabled={relay_flag} "
+                    f"allowed={allowed} native_web_search_enabled={self.native_web_search_enabled} "
+                    f"native_tools={[str(t.get('type','')) for t in self.native_search_tools]}"
+                )
+        except Exception:
+            pass
 
         # 工具定义
         self.tools = self._parse_tools(TOOLS)
+        self.tool_executor = ToolExecutor(self)
     
     def get_embedding(self, text: str) -> List[float]:
         """获取文本向量 (OpenAI/Alibaba 兼容接口)"""
@@ -273,9 +299,192 @@ class Model:
         adapter = providers_cfg.get(p, {})
         return adapter if isinstance(adapter, dict) else {}
 
+    def _as_bool(self, value: Any, default: bool = False) -> bool:
+        if value is None:
+            return bool(default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+        return bool(value)
+
+    def _adapter_flag(
+        self,
+        adapter: Dict[str, Any],
+        key: str,
+        fallback_key: str = "enabled",
+        default: bool = False
+    ) -> bool:
+        if not isinstance(adapter, dict):
+            return bool(default)
+        if key in adapter:
+            return self._as_bool(adapter.get(key), default=default)
+        return self._as_bool(adapter.get(fallback_key), default=default)
+
+    def _provider_use_responses_api(self, provider_name: Optional[str] = None) -> bool:
+        """
+        是否使用 Responses API。
+        - volcengine: 始终使用 Responses API
+        - aliyun: 由 search_adapters.providers.aliyun.request_options.search_api 控制
+        """
+        p = str(provider_name or self.provider or "").strip().lower()
+        if p == "volcengine":
+            return True
+        if p == "aliyun":
+            opts = self._get_provider_request_options(p)
+            mode = str(
+                opts.get("search_api", opts.get("api_mode", "chat_completions"))
+            ).strip().lower()
+            return mode in {"responses", "responses_api", "openai_responses"}
+        return False
+
+    def _normalize_model_keys(self) -> List[str]:
+        keys = []
+        for raw in [getattr(self, "model_name", ""), getattr(self, "model_display_name", "")]:
+            v = str(raw or "").strip()
+            if v:
+                keys.append(v)
+        # 去重并保序
+        out = []
+        seen = set()
+        for k in keys:
+            low = k.lower()
+            if low in seen:
+                continue
+            seen.add(low)
+            out.append(k)
+        return out
+
+    def _normalize_model_token(self, value: Any) -> str:
+        s = str(value or "").strip().lower()
+        if not s:
+            return ""
+        return s.replace(" ", "").replace("_", "-")
+
+    def _expand_model_aliases(self, value: Any) -> List[str]:
+        """
+        扩展模型名别名，兼容以下形式：
+        - provider/model-id
+        - prefix:model-id
+        - 模型快照后缀 / thinking 后缀
+        """
+        raw = str(value or "").strip()
+        if not raw:
+            return []
+        candidates = [raw]
+        if "/" in raw:
+            candidates.append(raw.split("/")[-1])
+        if ":" in raw:
+            candidates.append(raw.split(":")[-1])
+
+        out = []
+        seen = set()
+        for c in candidates:
+            n = self._normalize_model_token(c)
+            if not n or n in seen:
+                continue
+            seen.add(n)
+            out.append(n)
+        return out
+
+    def _model_rule_match(self, model_token: str, rule_token: str) -> bool:
+        if not model_token or not rule_token:
+            return False
+        if model_token == rule_token:
+            return True
+        # 兼容快照/思考等后缀：qwen3.5-plus-thinking / qwen-plus-2026-xx
+        for sep in ("-", "_", "."):
+            if model_token.startswith(rule_token + sep):
+                return True
+        return False
+
+    def _is_model_allowed_by_adapter(self, adapter: Dict[str, Any]) -> bool:
+        """
+        基于 adapter 白/黑名单判断当前模型是否允许启用 native search。
+        规则：
+        - deny_models 命中即禁用
+        - allow_models / allows_models:
+          * 1/true/"1"/"all"/"*" => 全部允许
+          * list => 仅命中列表允许（空列表视为全部允许）
+          * 未配置 => 全部允许
+        """
+        if not isinstance(adapter, dict):
+            return False
+
+        model_keys = self._normalize_model_keys()
+        expanded_model_tokens = []
+        model_token_seen = set()
+        for m in model_keys:
+            for tk in self._expand_model_aliases(m):
+                if tk in model_token_seen:
+                    continue
+                model_token_seen.add(tk)
+                expanded_model_tokens.append(tk)
+
+        deny_models = adapter.get("deny_models", [])
+        if isinstance(deny_models, list):
+            deny_tokens = []
+            for x in deny_models:
+                deny_tokens.extend(self._expand_model_aliases(x))
+            if any(
+                self._model_rule_match(m, d)
+                for m in expanded_model_tokens
+                for d in deny_tokens
+            ):
+                return False
+
+        allow_models = adapter.get("allow_models", adapter.get("allows_models"))
+        if allow_models is None:
+            return True
+
+        if allow_models is True or allow_models == 1:
+            return True
+
+        if isinstance(allow_models, str):
+            token = allow_models.strip().lower()
+            if token in {"1", "all", "*", "true"}:
+                return True
+            # 兼容逗号分隔字符串
+            parts = [p.strip() for p in allow_models.split(",") if p.strip()]
+            if not parts:
+                return True
+            allow_tokens = []
+            for p in parts:
+                allow_tokens.extend(self._expand_model_aliases(p))
+            return any(
+                self._model_rule_match(m, a)
+                for m in expanded_model_tokens
+                for a in allow_tokens
+            )
+
+        if isinstance(allow_models, list):
+            allow_tokens = []
+            for x in allow_models:
+                allow_tokens.extend(self._expand_model_aliases(x))
+            if not allow_tokens:
+                return True
+            return any(
+                self._model_rule_match(m, a)
+                for m in expanded_model_tokens
+                for a in allow_tokens
+            )
+
+        return bool(allow_models)
+
+    def _get_provider_request_options(self, provider_name: Optional[str] = None) -> Dict[str, Any]:
+        adapter = self._get_provider_search_adapter(provider_name)
+        if not adapter:
+            return {}
+        opts = adapter.get("request_options", {})
+        return opts if isinstance(opts, dict) else {}
+
     def _get_provider_native_tools(self, provider_name: Optional[str] = None) -> List[Dict[str, Any]]:
         adapter = self._get_provider_search_adapter(provider_name)
-        if not adapter or not bool(adapter.get("enabled", False)):
+        if not adapter or not self._adapter_flag(adapter, "native_enabled", fallback_key="enabled", default=False):
+            return []
+        if not self._is_model_allowed_by_adapter(adapter):
             return []
         tools = adapter.get("tools", [])
         if not isinstance(tools, list):
@@ -358,41 +567,360 @@ class Model:
         return {"text": text, "references": references}
 
     def _execute_local_web_search_relay(self, query: str, args: Dict[str, Any]) -> str:
-        """本地 web_search 中转：统一回退到火山引擎搜索模型。"""
-        provider_name = "volcengine"
+        """
+        本地 web_search 中转：
+        - 优先当前模型 provider（若 search_adapters 已启用且允许当前模型）
+        - 否则回落到其它已启用且允许的 provider
+        """
         models_map = CONFIG.get('models', {}) if isinstance(CONFIG.get('models', {}), dict) else {}
+        websearch_model = str(CONFIG.get("websearch_model", "") or "").strip()
 
-        # 优先 websearch_model，其次第一个火山模型
-        model_id = str(CONFIG.get("websearch_model", "") or "").strip()
-        if model_id not in models_map or str(models_map.get(model_id, {}).get("provider", "") or "").strip() != provider_name:
-            model_id = ""
+        def _adapter_relay_enabled_with_web_search(provider_name: str) -> bool:
+            adapter = self._get_provider_search_adapter(provider_name)
+            if not adapter or not self._adapter_flag(adapter, "relay_enabled", fallback_key="enabled", default=False):
+                return False
+            tools = adapter.get("tools", [])
+            if not isinstance(tools, list):
+                return False
+            return any(str((t or {}).get("type", "")).strip() == "web_search" for t in tools if isinstance(t, dict))
+
+        def _pick_model_for_provider(provider_name: str) -> str:
+            if provider_name == self.provider:
+                adapter = self._get_provider_search_adapter(provider_name)
+                if (
+                    self.model_name in models_map
+                    and str(models_map.get(self.model_name, {}).get("provider", "") or "").strip() == provider_name
+                    and self._is_model_allowed_by_adapter(adapter)
+                ):
+                    return self.model_name
+
+            if (
+                websearch_model
+                and websearch_model in models_map
+                and str(models_map.get(websearch_model, {}).get("provider", "") or "").strip() == provider_name
+            ):
+                adapter = self._get_provider_search_adapter(provider_name)
+                model_backup = self.model_name
+                display_backup = self.model_display_name
+                try:
+                    self.model_name = websearch_model
+                    self.model_display_name = str(models_map.get(websearch_model, {}).get("name") or websearch_model)
+                    if self._is_model_allowed_by_adapter(adapter):
+                        return websearch_model
+                finally:
+                    self.model_name = model_backup
+                    self.model_display_name = display_backup
+
+            adapter = self._get_provider_search_adapter(provider_name)
             for m_id, m_info in models_map.items():
-                if str(m_info.get("provider", "") or "").strip() == provider_name:
-                    model_id = m_id
-                    break
-        if not model_id:
-            raise ValueError("未配置可用的火山引擎搜索模型")
+                if str(m_info.get("provider", "") or "").strip() != provider_name:
+                    continue
+                model_backup = self.model_name
+                display_backup = self.model_display_name
+                try:
+                    self.model_name = m_id
+                    self.model_display_name = str(m_info.get("name") or m_id)
+                    if self._is_model_allowed_by_adapter(adapter):
+                        return m_id
+                finally:
+                    self.model_name = model_backup
+                    self.model_display_name = display_backup
+            return ""
 
-        client = self._get_provider_client_for_search(provider_name)
-        tools = [{"type": "web_search"}]
-        for key in ("limit", "sources", "user_location"):
-            if key in args and args.get(key) is not None:
-                tools[0][key] = args.get(key)
+        provider_candidates = []
+        if _adapter_relay_enabled_with_web_search(self.provider):
+            provider_candidates.append(self.provider)
 
-        response = client.responses.create(
-            model=model_id,
-            input=[
-                {"role": "system", "content": [{"type": "input_text", "text": self._get_default_web_search_prompt()}]},
-                {"role": "user", "content": [{"type": "input_text", "text": query}]}
-            ],
-            tools=tools,
-            stream=False
-        )
+        runtime_cfg = self._load_search_adapter_runtime_config()
+        relay_order = runtime_cfg.get("relay_order", []) if isinstance(runtime_cfg, dict) else []
+        if isinstance(relay_order, list):
+            for p_name in relay_order:
+                p = str(p_name or "").strip()
+                if not p or p in provider_candidates:
+                    continue
+                if _adapter_relay_enabled_with_web_search(p):
+                    provider_candidates.append(p)
 
-        payload = self._extract_responses_search_payload(response)
+        if websearch_model and websearch_model in models_map:
+            wp = str(models_map.get(websearch_model, {}).get("provider", "") or "").strip()
+            if wp and wp not in provider_candidates and _adapter_relay_enabled_with_web_search(wp):
+                provider_candidates.append(wp)
+
+        all_adapters = runtime_cfg.get("providers", {}) if isinstance(runtime_cfg, dict) else {}
+        if isinstance(all_adapters, dict):
+            for p_name in all_adapters.keys():
+                p = str(p_name or "").strip()
+                if not p or p in provider_candidates:
+                    continue
+                if _adapter_relay_enabled_with_web_search(p):
+                    provider_candidates.append(p)
+
+        def _normalize_tool_list(raw_tools: Any) -> List[Dict[str, Any]]:
+            out = []
+            if not isinstance(raw_tools, list):
+                return out
+            for t in raw_tools:
+                if not isinstance(t, dict):
+                    continue
+                t_type = str(t.get("type", "")).strip()
+                if not t_type:
+                    continue
+                out.append(json.loads(json.dumps(t)))
+            return out
+
+        def _get_req_opt_headers(req_opts: Dict[str, Any]) -> Dict[str, str]:
+            if not isinstance(req_opts, dict):
+                return {}
+            raw = req_opts.get("extra_headers", req_opts.get("extra_head"))
+            if not isinstance(raw, dict):
+                return {}
+            headers = {}
+            for k, v in raw.items():
+                key = str(k or "").strip()
+                if not key:
+                    continue
+                headers[key] = str(v if v is not None else "")
+            return headers
+
+        def _build_relay_tools(provider_name: str, req_opts: Dict[str, Any], mode: str) -> List[Dict[str, Any]]:
+            adapter = self._get_provider_search_adapter(provider_name)
+            adapter_tools = _normalize_tool_list(adapter.get("tools", []) if isinstance(adapter, dict) else [])
+
+            tools = []
+            if mode == "responses":
+                tools = _normalize_tool_list(req_opts.get("responses_tools"))
+                if not tools:
+                    tools = _normalize_tool_list(req_opts.get("tools"))
+                if not tools:
+                    tools = adapter_tools
+                if not tools:
+                    tools = [{"type": "web_search"}]
+            else:
+                tools = _normalize_tool_list(req_opts.get("chat_tools"))
+                if not tools and self._as_bool(req_opts.get("chat_use_adapter_tools", False), default=False):
+                    tools = adapter_tools
+                if not tools and self._as_bool(req_opts.get("chat_use_default_web_search_tool", False), default=False):
+                    tools = [{"type": "web_search"}]
+
+            # 将工具参数透传到 web_search 工具项
+            for t in tools:
+                if str(t.get("type", "")).strip() != "web_search":
+                    continue
+                for key in ("limit", "sources", "user_location"):
+                    if key in args and args.get(key) is not None:
+                        t[key] = args.get(key)
+            return tools
+
+        def _build_relay_extra_body(req_opts: Dict[str, Any], mode: str) -> Dict[str, Any]:
+            extra_body = {}
+            base_extra = req_opts.get("extra_body")
+            if isinstance(base_extra, dict):
+                extra_body.update(json.loads(json.dumps(base_extra)))
+
+            mode_key = "responses_extra_body" if mode == "responses" else "chat_extra_body"
+            mode_extra = req_opts.get(mode_key)
+            if isinstance(mode_extra, dict):
+                extra_body.update(json.loads(json.dumps(mode_extra)))
+
+            if "enable_thinking" in req_opts:
+                extra_body["enable_thinking"] = self._as_bool(req_opts.get("enable_thinking"), default=True)
+
+            # 阿里云 chat/completions 主要依赖 enable_search；其余 provider 即使忽略该字段也不会报错
+            if mode == "chat_completions":
+                extra_body["enable_search"] = self._as_bool(req_opts.get("enable_search", True), default=True)
+                search_options = req_opts.get("search_options")
+                if isinstance(search_options, dict) and search_options:
+                    extra_body["search_options"] = json.loads(json.dumps(search_options))
+            else:
+                if "enable_search" in req_opts:
+                    extra_body["enable_search"] = self._as_bool(req_opts.get("enable_search"), default=True)
+                search_options = req_opts.get("search_options")
+                if isinstance(search_options, dict) and search_options:
+                    extra_body["search_options"] = json.loads(json.dumps(search_options))
+            return extra_body
+
+        def _build_relay_debug(
+            provider_name: str,
+            model_id: str,
+            mode: str,
+            tools: List[Dict[str, Any]],
+            extra_body: Dict[str, Any],
+            extra_headers: Dict[str, str]
+        ) -> Dict[str, Any]:
+            return {
+                "provider": provider_name,
+                "model": model_id,
+                "api_mode": mode,
+                "tools": _ensure_json_serializable(tools),
+                "extra_body": _ensure_json_serializable(extra_body),
+                "extra_headers_keys": sorted(list(extra_headers.keys()))
+            }
+
+        def _call_volcengine(provider_name: str, model_id: str) -> Dict[str, Any]:
+            client = self._get_provider_client_for_search(provider_name)
+            req_opts = self._get_provider_request_options(provider_name)
+            tools = _build_relay_tools(provider_name, req_opts, "responses")
+            extra_body = _build_relay_extra_body(req_opts, "responses")
+            extra_headers = _get_req_opt_headers(req_opts)
+
+            payload = {
+                "model": model_id,
+                "input": [
+                    {"role": "system", "content": [{"type": "input_text", "text": self._get_default_web_search_prompt()}]},
+                    {"role": "user", "content": [{"type": "input_text", "text": query}]}
+                ],
+                "tools": tools,
+                "stream": False
+            }
+            if extra_body:
+                payload["extra_body"] = extra_body
+            if extra_headers:
+                payload["extra_headers"] = extra_headers
+
+            response = client.responses.create(**payload)
+            out = self._extract_responses_search_payload(response)
+            out["_relay_debug"] = _build_relay_debug(
+                provider_name=provider_name,
+                model_id=model_id,
+                mode="responses",
+                tools=tools,
+                extra_body=extra_body,
+                extra_headers=extra_headers
+            )
+            return out
+
+        def _call_aliyun(provider_name: str, model_id: str) -> Dict[str, Any]:
+            client = self._get_provider_client_for_search(provider_name)
+            req_opts = self._get_provider_request_options(provider_name)
+            search_api = str(
+                req_opts.get("search_api", req_opts.get("api_mode", "chat_completions"))
+            ).strip().lower()
+
+            # 方式A: Responses API + tools
+            if search_api in {"responses", "responses_api", "openai_responses"}:
+                try:
+                    mode = "responses"
+                    tools = _build_relay_tools(provider_name, req_opts, mode)
+                    extra_body = _build_relay_extra_body(req_opts, mode)
+                    extra_headers = _get_req_opt_headers(req_opts)
+
+                    payload = {
+                        "model": model_id,
+                        "input": [
+                            {"role": "system", "content": [{"type": "input_text", "text": self._get_default_web_search_prompt()}]},
+                            {"role": "user", "content": [{"type": "input_text", "text": query}]}
+                        ],
+                        "tools": tools,
+                        "stream": False
+                    }
+                    if extra_body:
+                        payload["extra_body"] = extra_body
+                    if extra_headers:
+                        payload["extra_headers"] = extra_headers
+
+                    response = client.responses.create(**payload)
+                    out = self._extract_responses_search_payload(response)
+                    out["_relay_debug"] = _build_relay_debug(
+                        provider_name=provider_name,
+                        model_id=model_id,
+                        mode=mode,
+                        tools=tools,
+                        extra_body=extra_body,
+                        extra_headers=extra_headers
+                    )
+                    return out
+                except Exception as resp_err:
+                    if not self._as_bool(req_opts.get("responses_fallback_to_chat", True), default=True):
+                        raise resp_err
+                    print(f"[SEARCH][Aliyun] Responses search failed, fallback to chat.completions: {resp_err}")
+
+            # 方式B: Chat Completions + extra_body.enable_search
+            mode = "chat_completions"
+            extra_body = _build_relay_extra_body(req_opts, mode)
+            extra_headers = _get_req_opt_headers(req_opts)
+            tools = _build_relay_tools(provider_name, req_opts, mode)
+
+            payload = {
+                "model": model_id,
+                "messages": [
+                    {"role": "system", "content": self._get_default_web_search_prompt()},
+                    {"role": "user", "content": query}
+                ],
+                "stream": False
+            }
+            if extra_body:
+                payload["extra_body"] = extra_body
+            if extra_headers:
+                payload["extra_headers"] = extra_headers
+            sent_tools = []
+            # 默认带上 search_adapters 中的 tools；如需关闭可设置 chat_send_tools=false
+            send_tools_in_chat = self._as_bool(req_opts.get("chat_send_tools", True), default=True)
+            if tools and send_tools_in_chat:
+                payload["tools"] = tools
+                sent_tools = tools
+
+            try:
+                response = client.chat.completions.create(**payload)
+            except Exception as chat_err:
+                fallback_no_tools = self._as_bool(req_opts.get("chat_tools_fallback_to_no_tools", True), default=True)
+                if ("tools" in payload) and fallback_no_tools:
+                    print(f"[SEARCH][Aliyun] chat.completions with tools failed, retry without tools: {chat_err}")
+                    payload.pop("tools", None)
+                    sent_tools = []
+                    response = client.chat.completions.create(**payload)
+                else:
+                    raise
+            text = ""
+            try:
+                text = str(response.choices[0].message.content or "").strip()
+            except Exception:
+                text = ""
+            return {
+                "text": text,
+                "references": [],
+                "_relay_debug": _build_relay_debug(
+                    provider_name=provider_name,
+                    model_id=model_id,
+                    mode=mode,
+                    tools=sent_tools,
+                    extra_body=extra_body,
+                    extra_headers=extra_headers
+                )
+            }
+
+        last_err = None
+        chosen_provider = ""
+        chosen_model = ""
+        payload = None
+        for provider_name in provider_candidates:
+            model_id = _pick_model_for_provider(provider_name)
+            if not model_id:
+                continue
+            try:
+                if provider_name == "volcengine":
+                    payload = _call_volcengine(provider_name, model_id)
+                elif provider_name == "aliyun":
+                    payload = _call_aliyun(provider_name, model_id)
+                else:
+                    raise ValueError(f"provider {provider_name} 暂不支持本地 web_search 中转")
+                chosen_provider = provider_name
+                chosen_model = model_id
+                break
+            except Exception as e:
+                last_err = e
+                continue
+
+        if not payload:
+            if last_err:
+                raise ValueError(f"未找到可用的联网搜索 provider，最后一次错误: {last_err}")
+            raise ValueError("未找到可用的联网搜索 provider（请检查 search_adapters 与模型映射）")
+
         search_result = str(payload.get("text", "") or "").strip()
         references = payload.get("references", [])
         references = references if isinstance(references, list) else []
+        relay_debug = payload.get("_relay_debug", {})
+        if not isinstance(relay_debug, dict):
+            relay_debug = {}
 
         if not search_result:
             search_result = "联网搜索成功，但模型未返回可解析的正文内容。"
@@ -413,7 +941,28 @@ class Model:
             if ref_lines:
                 search_result = f"{search_result}\n\n参考来源:\n" + "\n".join(ref_lines)
 
-        return f"联网搜索结果 for '{query}':\n\n{search_result}\n\n(adapter=local-relay, model={model_id})"
+        caller_provider = str(getattr(self, "provider", "") or "")
+        caller_model = str(getattr(self, "model_name", "") or "")
+        relay_api_mode = str(relay_debug.get("api_mode", "") or "")
+        relay_tools_count = len(relay_debug.get("tools", []) or [])
+        relay_extra_keys = []
+        if isinstance(relay_debug.get("extra_body"), dict):
+            relay_extra_keys = sorted(list(relay_debug.get("extra_body", {}).keys()))
+        relay_header_keys = relay_debug.get("extra_headers_keys", [])
+        relay_header_keys = relay_header_keys if isinstance(relay_header_keys, list) else []
+
+        print(
+            f"[SEARCH][RELAY] provider={chosen_provider} model={chosen_model} mode={relay_api_mode} "
+            f"tools={relay_tools_count} extra_body_keys={relay_extra_keys} extra_headers_keys={relay_header_keys}"
+        )
+        return (
+            f"联网搜索结果 for '{query}':\n\n{search_result}\n\n"
+            f"(adapter=local-relay, provider={chosen_provider}, model={chosen_model}, "
+            f"caller_provider={caller_provider}, caller_model={caller_model}, "
+            f"relay_api={relay_api_mode or 'unknown'}, relay_tools={relay_tools_count}, "
+            f"relay_extra_body_keys={','.join(relay_extra_keys) if relay_extra_keys else '-'}, "
+            f"relay_extra_headers_keys={','.join(relay_header_keys) if relay_header_keys else '-'})"
+        )
 
     def _render_prompt_template(self, text: Any) -> str:
         """
@@ -493,6 +1042,13 @@ class Model:
             timeout = 10
         timeout = max(1, timeout)
 
+        send_timeout_raw = mail_cfg.get("send_timeout", 120)
+        try:
+            send_timeout = int(send_timeout_raw)
+        except Exception:
+            send_timeout = 120
+        send_timeout = max(1, send_timeout)
+
         return {
             "enabled": bool(mail_cfg.get("nexora_mail_enabled", False)),
             "host": host,
@@ -500,10 +1056,18 @@ class Model:
             "service_url": service_url.rstrip("/"),
             "api_key": str(mail_cfg.get("api_key", "") or "").strip(),
             "timeout": timeout,
+            "send_timeout": send_timeout,
             "default_group": str(mail_cfg.get("default_group", "default") or "default").strip() or "default",
         }
 
-    def _nexora_mail_call(self, path: str, method: str = "GET", payload: Optional[Dict[str, Any]] = None, query: Optional[Dict[str, Any]] = None):
+    def _nexora_mail_call(
+        self,
+        path: str,
+        method: str = "GET",
+        payload: Optional[Dict[str, Any]] = None,
+        query: Optional[Dict[str, Any]] = None,
+        timeout: Optional[int] = None
+    ):
         """调用 NexoraMail API，返回 (ok, status, data)"""
         cfg = self._get_nexora_mail_config()
         if not cfg.get("enabled"):
@@ -530,8 +1094,11 @@ class Model:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
         req = urllib_request.Request(url, data=body, method=str(method or "GET").upper(), headers=headers)
+        request_timeout = int(timeout) if timeout is not None else int(cfg["timeout"])
+        if request_timeout <= 0:
+            request_timeout = int(cfg["timeout"])
         try:
-            with urllib_request.urlopen(req, timeout=cfg["timeout"]) as resp:
+            with urllib_request.urlopen(req, timeout=request_timeout) as resp:
                 status = int(getattr(resp, "status", 200) or 200)
                 raw = resp.read().decode("utf-8", errors="replace")
                 data = {}
@@ -709,7 +1276,7 @@ class Model:
     def _build_utf8_raw_mail(self, sender: str, recipient: str, subject: str, content: str, is_html: bool) -> str:
         """Build MIME raw email with UTF-8-safe headers/body."""
         ctype = "text/html" if is_html else "text/plain"
-        subject_header = str(Header(subject or "", "utf-8"))
+        subject_header = Header(subject or "", "utf-8").encode()
         body_bytes = str(content or "").encode("utf-8", errors="replace")
         body_b64 = base64.b64encode(body_bytes).decode("ascii")
         body_lines = "\r\n".join(textwrap.wrap(body_b64, 76)) if body_b64 else ""
@@ -781,7 +1348,12 @@ class Model:
             ),
         }
 
-        ok, status, data = self._nexora_mail_call("/api/send", method="POST", payload=send_body)
+        ok, status, data = self._nexora_mail_call(
+            "/api/send",
+            method="POST",
+            payload=send_body,
+            timeout=int(cfg.get("send_timeout", cfg.get("timeout", 10))),
+        )
         if not ok:
             message = data.get("message") if isinstance(data, dict) else ""
             return f"发送失败：{message or f'NexoraMail HTTP {status}'}"
@@ -1017,15 +1589,16 @@ class Model:
         mail_enabled = bool(mail_cfg.get("nexora_mail_enabled", False))
 
         provider = getattr(self, 'provider', 'volcengine')
+        use_responses_api = self._provider_use_responses_api(provider)
 
         # 1) 优先注入 provider 级 native tools（由 search_adapters.json 驱动）
         if getattr(self, "native_search_tools", None):
             for native_tool in self.native_search_tools:
-                if provider == 'volcengine':
-                    # 火山引擎 responses API 可直接使用 native tools
+                if use_responses_api:
+                    # Responses API 可直接使用 native tools
                     parsed_tools.append(native_tool)
                 else:
-                    # 非火山 provider：仅注入 function 类型；native 搜索能力交由 provider 专属参数控制
+                    # Chat Completions：仅注入 function 类型，native 搜索走 provider 专属参数
                     if str(native_tool.get("type", "")).strip() == "function":
                         parsed_tools.append(native_tool)
         
@@ -1038,12 +1611,17 @@ class Model:
                 if func_def.get("name") in ["sendEMail", "getEMail", "getEMailList"] and not mail_enabled:
                     continue
                                 
-                # provider 已启用 native web_search 时，隐藏本地中转 web_search/searchOnline
-                if func_def["name"] in ["searchOnline", "web_search"] and bool(getattr(self, "native_web_search_enabled", False)):
+                # provider 已具备可直连的 native 搜索能力时，隐藏本地中转 relay_web_search/searchOnline。
+                # 当前已接入直连路径：volcengine(原生 web_search tool)、aliyun(extra_body.enable_search)。
+                if (
+                    func_def["name"] in ["searchOnline", "relay_web_search"]
+                    and self.provider in {"volcengine", "aliyun"}
+                    and bool(getattr(self, "native_web_search_enabled", False))
+                ):
                      continue
                 
-                if provider == 'volcengine':
-                    # 火山引擎 responses API 使用扁平结构
+                if use_responses_api:
+                    # Responses API 使用扁平结构
                     parsed_tools.append({
                         "type": "function",
                         "name": func_def["name"],
@@ -1073,6 +1651,8 @@ class Model:
         Returns:
             函数执行结果字符串
         """
+        start_ts = time.time()
+        args = {}
         try:
             # 解析参数
             if isinstance(arguments, str):
@@ -1092,18 +1672,95 @@ class Model:
                     if re.search(r'\b[a-zA-Z_][a-zA-Z0-9_]*\s*\(', value):
                         # 进一步检查：如果包含中文或大量文本，很可能是正常内容
                         if len(value) < 100 and not re.search(r'[\u4e00-\u9fff]', value):
-                            return f"错误：参数 '{key}' 的值似乎是嵌套函数调用 '{value[:50]}'。请先单独调用该函数获取结果。"
+                            msg = f"错误：参数 '{key}' 的值似乎是嵌套函数调用 '{value[:50]}'。请先单独调用该函数获取结果。"
+                            self._log_tool_usage(function_name, args, msg, False, start_ts)
+                            return msg
             
             # 执行函数
             raw_result = self._execute_function_impl(function_name, args)
             
             # [TOKEN 优化] 智能脱水处理
-            return self._sanitize_function_result(raw_result, function_name)
+            result = self._sanitize_function_result(raw_result, function_name)
+            success = self._infer_tool_success(result)
+            self._log_tool_usage(function_name, args, result, success, start_ts)
+            return result
             
         except json.JSONDecodeError as e:
-            return f"错误：参数JSON解析失败 - {str(e)}"
+            msg = f"错误：参数JSON解析失败 - {str(e)}"
+            self._log_tool_usage(function_name, args, msg, False, start_ts)
+            return msg
         except Exception as e:
-            return f"错误：{str(e)}"
+            msg = f"错误：{str(e)}"
+            self._log_tool_usage(function_name, args, msg, False, start_ts)
+            return msg
+
+    def _infer_tool_success(self, result: Any) -> bool:
+        """根据工具返回文本做轻量成功率判定（无异常但业务失败也计失败）。"""
+        text = str(result or "").strip()
+        if not text:
+            return True
+        low = text.lower()
+        fail_markers = [
+            "错误", "失败", "not found", "invalid", "missing", "exception", "traceback"
+        ]
+        return not any(m in low for m in fail_markers)
+
+    def _log_tool_usage(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        result: Any,
+        success: bool,
+        start_ts: float
+    ) -> None:
+        """记录工具调用日志，供管理端统计工具成功率与耗时。"""
+        try:
+            user_path = getattr(self.user, "path", "")
+            if not user_path:
+                return
+            os.makedirs(user_path, exist_ok=True)
+            log_path = os.path.join(user_path, "tool_usage.json")
+
+            now = datetime.now()
+            duration_ms = max(0, int((time.time() - float(start_ts)) * 1000))
+            result_text = str(result or "")
+            args_json = ""
+            try:
+                args_json = json.dumps(args if isinstance(args, dict) else {}, ensure_ascii=False)
+            except Exception:
+                args_json = "{}"
+
+            entry = {
+                "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+                "conversation_id": str(self.conversation_id or ""),
+                "tool_name": str(tool_name or ""),
+                "success": bool(success),
+                "duration_ms": duration_ms,
+                "provider": str(getattr(self, "provider", "") or ""),
+                "model": str(getattr(self, "model_name", "") or ""),
+                "username": str(self.username or ""),
+                "args_size": len(args_json),
+                "result_size": len(result_text),
+                "error_message": "" if success else result_text[:300],
+            }
+
+            with _TOOL_USAGE_LOG_LOCK:
+                logs = []
+                if os.path.exists(log_path):
+                    try:
+                        with open(log_path, "r", encoding="utf-8") as f:
+                            logs = json.load(f)
+                    except Exception:
+                        logs = []
+                if not isinstance(logs, list):
+                    logs = []
+                logs.insert(0, entry)
+                if len(logs) > 5000:
+                    logs = logs[:5000]
+                with open(log_path, "w", encoding="utf-8") as f:
+                    json.dump(logs, f, ensure_ascii=False, indent=2)
+        except Exception as log_err:
+            print(f"[TOOL_LOG] failed: {log_err}")
 
     def _sanitize_function_result(self, result: Any, func_name: str) -> str:
         """对函数输出进行'脱水'处理，防止 Context 溢出"""
@@ -1120,6 +1777,9 @@ class Model:
             "getKnowledgeGraphStructure",
             "getKnowledgeConnections",
             "findPathBetweenKnowledge",
+            "file_read",
+            "file_find",
+            "file_list",
         }
         if func_name in no_truncate_tools:
             return result
@@ -1145,255 +1805,8 @@ class Model:
         )
     
     def _execute_function_impl(self, function_name: str, args: Dict) -> str:
-        """函数执行实现"""
-        
-        # 知识库管理
-        if function_name == "getKnowledgeList":
-            result = self.user.getKnowledgeList(args.get("_type", 0))
-            if isinstance(result, dict):
-                if args.get("_type", 0) == 0:  # 短期记忆
-                    return "\n".join([f"{k}: {v}" for k, v in result.items()]) or "(空)"
-                else:  # 基础知识库
-                    return "\n".join(result.keys()) or "(空)"
-            return str(result)
-        
-        elif function_name == "addShort":
-            self.user.addShort(args.get("title", ""))
-            return "已添加到短期记忆"
-
-        elif function_name == "queryShortMemory":
-            keyword = str(args.get("keyword", "") or "").strip()
-            try:
-                limit = int(args.get("limit", 20) or 20)
-            except Exception:
-                limit = 20
-            limit = min(max(limit, 1), 200)
-
-            short_dict = self.user.getKnowledgeList(0)
-            if not isinstance(short_dict, dict):
-                short_dict = {}
-
-            def _sort_key(item):
-                sid = str(item[0] or "")
-                try:
-                    return (0, -int(sid))
-                except Exception:
-                    return (1, sid)
-
-            filtered = []
-            for sid, title in sorted(short_dict.items(), key=_sort_key):
-                title_text = str(title or "")
-                if keyword and keyword not in title_text:
-                    continue
-                filtered.append({
-                    "id": str(sid),
-                    "title": title_text
-                })
-
-            payload = {
-                "success": True,
-                "keyword": keyword,
-                "total": len(short_dict),
-                "matched": len(filtered),
-                "limit": limit,
-                "items": filtered[:limit]
-            }
-            return json.dumps(payload, ensure_ascii=False)
-        
-        elif function_name == "addBasis":
-            self.user.addBasis(
-                args.get("title", ""),
-                args.get("context", ""),
-                args.get("url", "")
-            )
-            return "已添加到基础知识库"
-        
-        elif function_name == "removeShort":
-            self.user.removeShort(args.get("ID"))
-            return "已删除短期记忆"
-        
-        elif function_name == "removeBasis":
-            self.user.removeBasis(args.get("title", ""))
-            return "已删除基础知识"
-        
-        elif function_name == "updateBasis":
-            success, message = self.user.updateBasis(
-                title=args.get("title", ""),
-                new_title=args.get("new_title"),
-                context=args.get("context"),
-                url=args.get("url")
-            )
-            if success:
-                updates = []
-                if args.get("new_title"):
-                    updates.append(f"标题已更新为'{args.get('new_title')}'")
-                if args.get("context"):
-                    updates.append("内容已更新")
-                if args.get("url"):
-                    updates.append("来源链接已更新")
-                return f"已成功更新基础知识。{', '.join(updates) if updates else ''}"
-            else:
-                return f"更新失败: {message}"
-        
-        elif function_name == "getBasisContent":
-            return self.user.getBasisContent(args.get("title", ""))
-        
-        elif function_name == "searchKeyword":
-            result = self.user.search_keyword(
-                args.get("keyword", ""),
-                args.get("range", 10)
-            )
-            # 智能反馈：如果找不到结果，明确告知模型应该使用 web_search
-            if result.startswith("未找到关键词"):
-                return f"{result}。建议：本地知识库中没有此信息。请立即调用 `web_search` 工具联网搜索: '{args.get('keyword', '')}'"
-            return result
-        
-        # 知识图谱功能 - 新增
-        elif function_name == "vectorSearch":
-            query = args.get("query", "")
-            top_k = int(args.get("top_k") or 5)
-            if not query:
-                return "missing query"
-            rag_cfg = CONFIG.get("rag_database", {}) if isinstance(CONFIG, dict) else {}
-            if not rag_cfg.get("rag_database_enabled", False):
-                return "vector db disabled"
-            try:
-                store = ChromaStore(rag_cfg)
-                result = store.query_text(self.username, query, top_k=top_k)
-                ids = result.get("ids", [[]])[0] if isinstance(result.get("ids"), list) else []
-                metas = result.get("metadatas", [[]])[0] if isinstance(result.get("metadatas"), list) else []
-                dists = result.get("distances", [[]])[0] if isinstance(result.get("distances"), list) else []
-                payload = []
-                for i, vid in enumerate(ids):
-                    meta = metas[i] if i < len(metas) else {}
-                    score = None
-                    if i < len(dists) and dists[i] is not None:
-                        score = 1 - dists[i]
-                    payload.append({
-                        "id": vid,
-                        "title": meta.get("title"),
-                        "score": score
-                    })
-                return json.dumps(payload, ensure_ascii=False)
-            except Exception as e:
-                return f"vector search error: {str(e)}, fall back to searchKeyword immediately."
-
-        elif function_name == "linkKnowledge":
-            success, msg = self.user.add_connection(
-                args.get("source"),
-                args.get("target"),
-                args.get("relation"),
-                args.get("description", "")
-            )
-            return f"{'成功' if success else '失败'}: {msg}"
-            
-        elif function_name == "categorizeKnowledge":
-            # 如果分类名不存在，默认先创建或由User内部处理
-            success, msg = self.user.move_knowledge_to_category(
-                args.get("title"),
-                args.get("category")
-            )
-            return f"{'成功' if success else '失败'}: {msg}"
-            
-        elif function_name == "createCategory":
-            success, msg = self.user.create_category(
-                args.get("name"),
-                args.get("description", "") # 注意create_category参数可能只有name和color，需要检查
-            )
-            return f"{'成功' if success else '失败'}: {msg}"
-
-        elif function_name == "analyzeConnections":
-            # 这是一个分析工具，不是动作工具，应该返回相关知识
-            # 现在改为 getKnowledgeConnections 
-            return self.user.get_knowledge_connections(args.get("title"))
-
-        elif function_name == "getKnowledgeGraphStructure":
-            return json.dumps(self.user.get_knowledge_graph_structure(), ensure_ascii=False)
-
-        elif function_name == "getKnowledgeConnections":
-            return json.dumps(self.user.get_knowledge_connections(args.get("title")), ensure_ascii=False)
-
-        elif function_name == "findPathBetweenKnowledge":
-            return json.dumps(self.user.find_knowledge_path(args.get("start"), args.get("end")), ensure_ascii=False)
-            
-        # 对话历史管理
-        elif function_name == "getContextLength":
-            length = self.conversation_manager.get_context_length(
-                args.get("offset", 0),
-                conversation_id=self.conversation_id
-            )
-            return f"对话长度: {length} 字符"
-        
-        elif function_name == "getContext":
-            content = self.conversation_manager.get_context(
-                args.get("offset", 0),
-                args.get("from_pos", 0),
-                args.get("to_pos", None),
-                conversation_id=self.conversation_id
-            )
-            return content if content else "无内容"
-        
-        elif function_name == "getContext_findKeyword":
-            return self.conversation_manager.get_context_find_keyword(
-                args.get("offset", 0),
-                args.get("keyword", ""),
-                args.get("range", 10),
-                conversation_id=self.conversation_id
-            )
-        
-        elif function_name == "getMainTitle":
-            return self.conversation_manager.get_main_title(
-                self.conversation_id,
-                args.get("offset", 0)
-            )
-        
-        elif function_name == "web_search":
-            query = args.get("query", "")
-            print(f"[SEARCH] 执行联网搜索: {query}")
-            if not str(query or "").strip():
-                return "联网搜索执行失败: query 不能为空"
-            try:
-                return self._execute_local_web_search_relay(query, args)
-            except Exception as e:
-                print(f"[SEARCH][RELAY] 失败: {e}")
-                return f"联网搜索执行失败: {str(e)}"
-
-        elif function_name == "sendEMail":
-            return self._tool_send_email(args)
-        
-        elif function_name == "getEMailList":
-            return self._tool_get_email_list(args)
-        
-        elif function_name == "getEMail":
-            return self._tool_get_email(args)
-        
-        # 知识图谱
-        elif function_name == "analyzeConnections":
-            connections = self.user.get_knowledge_connections(args.get("title", ""))
-            return json.dumps(connections, ensure_ascii=False) if connections else "无关联连接"
-            
-        elif function_name == "linkKnowledge":
-            success, msg = self.user.add_connection(
-                args.get("source"),
-                args.get("target"),
-                args.get("relation"),
-                args.get("description", "")
-            )
-            return msg
-            
-        elif function_name == "categorizeKnowledge":
-            success, msg = self.user.set_knowledge_category(
-                args.get("title"),
-                args.get("category")
-            )
-            return msg
-            
-        elif function_name == "createCategory":
-            success, msg = self.user.create_category(args.get("name"))
-            return msg
-        
-        else:
-            return f"错误：未知函数 {function_name}"
+        """函数执行实现（委托给统一工具执行器）"""
+        return self.tool_executor.execute(function_name, args)
     
     def upload_file(self, file_path: str):
         """
@@ -1515,6 +1928,7 @@ class Model:
             
             # previous_response_id 已在上面初始化
             current_function_outputs = []  # 当前轮的function输出
+            use_responses_api = self._provider_use_responses_api(self.provider)
             
             try:
                 for round_num in range(max_rounds):
@@ -1537,6 +1951,7 @@ class Model:
                         messages=messages,
                         previous_response_id=previous_response_id,
                         enable_thinking=enable_thinking,
+                        enable_web_search=enable_web_search,
                         enable_tools=enable_tools,
                         current_function_outputs=current_function_outputs
                     )
@@ -1549,7 +1964,7 @@ class Model:
                     
                     response_iterator = None
                     try:
-                        if self.provider == 'volcengine':
+                        if use_responses_api:
                             response_iterator = self.client.responses.create(**request_params)
                         else:
                             # Stepfun / OpenAI 兼容接口
@@ -1571,7 +1986,7 @@ class Model:
                     is_retry_mode = False
                     try:
                          if response_iterator is None:
-                             if self.provider == 'volcengine':
+                             if use_responses_api:
                                  response_iterator = self.client.responses.create(**request_params)
                              else:
                                  response_iterator = self.client.chat.completions.create(**request_params)
@@ -1634,8 +2049,9 @@ class Model:
                     try:
                         for chunk in chunks:
                             # [CHUNK_DEBUG] 每一个 chunk 的详细信息
-                            if CONFIG.get('log_status', 'silent') == 'all':
-                                if self.provider == 'volcengine':
+                            suppress_chunk_debug = os.environ.get("NEXORA_CLI_SUPPRESS_CHUNK_DEBUG", "0") == "1"
+                            if CONFIG.get('log_status', 'silent') == 'all' and not suppress_chunk_debug:
+                                if use_responses_api:
                                     c_type = getattr(chunk, 'type', 'unknown')
                                     # 提取内容摘要
                                     c_content = ""
@@ -1659,7 +2075,7 @@ class Model:
                                             c_content = str(delta.content)  # 强制转换为字符串
                                         elif hasattr(delta, 'reasoning_content') and delta.reasoning_content: 
                                             c_content = "[Reasoning] " + str(delta.reasoning_content)  # 强制转换为字符串
-                                        elif hasattr(delta, 'tool_calls'): 
+                                        elif hasattr(delta, 'tool_calls') and delta.tool_calls:
                                             c_content = "[ToolCalls]"
                                     
                                     # 额外检查 usage
@@ -1670,7 +2086,7 @@ class Model:
                                     print(f"[CHUNK_DEBUG] type={c_type} content={c_content}{usage_str}")
 
                             # --- 处理：火山引擎 (Ark Responses API 专用结构) ---
-                            if self.provider == 'volcengine':
+                            if use_responses_api:
                                 chunk_type = getattr(chunk, 'type', None)
                                 chunk_type_str = str(chunk_type)
                                 
@@ -1773,9 +2189,16 @@ class Model:
                                         output = response_obj.output
                                         for item in output:
                                             if getattr(item, 'type', None) == 'function_call':
+                                                fc_name = str(getattr(item, 'name', '') or '').strip()
+                                                # provider 原生联网搜索工具事件，不进入本地函数执行链
+                                                if bool(getattr(self, "native_web_search_enabled", False)) and fc_name in {
+                                                    "web_search", "web_extractor", "code_interpreter"
+                                                }:
+                                                    has_web_search = True
+                                                    continue
                                                 # 确保所有值都是可序列化的基本类型
                                                 func_call = {
-                                                    "name": str(getattr(item, 'name', '')) if getattr(item, 'name', None) else None,
+                                                    "name": fc_name if fc_name else None,
                                                     "arguments": str(getattr(item, 'arguments', '{}')),
                                                     "call_id": str(getattr(item, 'call_id', '')) if getattr(item, 'call_id', None) else None
                                                 }
@@ -1866,7 +2289,14 @@ class Model:
 
                     # [FIX] 在 chunk 循环结束后，统一记录本轮的 Token 消耗
                     if round_usage:
-                        self._log_token_usage_safe(round_usage, has_web_search, function_calls, process_steps, msg)
+                        self._log_token_usage_safe(
+                            round_usage,
+                            has_web_search,
+                            function_calls,
+                            process_steps,
+                            msg,
+                            round_content
+                        )
                     else:
                         # 某些 Provider 不返回 usage，使用估算值，避免 token 全为 0
                         fallback_title = (str(msg).strip()[:30] + "...") if msg and len(str(msg).strip()) > 30 else (str(msg).strip() if msg else "新对话")
@@ -1877,10 +2307,17 @@ class Model:
                         est_input = self._estimate_token_count(prompt_snapshot)
                         est_output = self._estimate_token_count(round_content or accumulated_content)
                         est_total = est_input + est_output
+                        has_text_output = bool(str(round_content or "").strip())
+                        est_action = "chat"
+                        primary_tool = ""
+                        if function_calls:
+                            primary_tool = str(function_calls[0].get('name', '') or '')
+                        elif has_web_search:
+                            primary_tool = "web_search"
                         self.user.log_token_usage(
                             self.conversation_id or "unknown",
                             fallback_title or "新对话",
-                            "tool:web_search" if has_web_search else ("tool:" + function_calls[0].get('name', 'unknown') if function_calls else "chat"),
+                            est_action,
                             est_input,
                             est_output,
                             total_tokens=est_total,
@@ -1894,12 +2331,15 @@ class Model:
                                     "output_chars": len(round_content or accumulated_content or "")
                                 },
                                 "has_web_search": has_web_search,
-                                "tool_call_count": len(function_calls or [])
+                                "tool_call_count": len(function_calls or []),
+                                "round_kind": "chat" if has_text_output else "tool_assisted",
+                                "primary_tool": primary_tool,
+                                "has_text_output": has_text_output
                             }
                         )
 
                     # 检查 previous_response_id 获取情况 (仅针对火山引擎)
-                    if self.provider == 'volcengine':
+                    if use_responses_api:
                         if previous_response_id:
                             print(f"[DEBUG] 已捕获 Response ID: {previous_response_id}")
                         else:
@@ -1976,7 +2416,7 @@ class Model:
                             yield step_result
                             
                             # 收集函数输出
-                            if self.provider == 'volcengine':
+                            if use_responses_api:
                                 current_function_outputs.append({
                                     "type": "function_call_output",
                                     "call_id": call_id,
@@ -2013,7 +2453,7 @@ class Model:
                         # 继续循环下一轮
                         dedupe_after_tool_round = True
                         continue
-                    
+
                     # 没有函数调用，对话结束
                     yield {"type": "done", "content": accumulated_content}
                     return
@@ -2097,7 +2537,7 @@ class Model:
             print(f"[ERROR] {error_msg}")
             yield {"type": "error", "content": error_msg}
 
-    def _log_token_usage_safe(self, usage, has_web_search, function_calls, process_steps, user_message=None):
+    def _log_token_usage_safe(self, usage, has_web_search, function_calls, process_steps, user_message=None, round_content=None):
         """安全记录Token日志（不影响主流程）"""
         try:
             def _safe_int(v, default=0):
@@ -2122,21 +2562,21 @@ class Model:
                     return obj.get(key, default)
                 return getattr(obj, key, default)
 
+            has_text_output = bool(str(round_content or "").strip())
             action_type = "chat"
-            if has_web_search:
-                action_type = "tool:web_search"
-            elif function_calls:
-                action_type = f"tool:{function_calls[0].get('name', 'unknown')}"
+            primary_tool = ""
+            if function_calls:
+                primary_tool = str(function_calls[0].get('name', '') or '')
+            elif has_web_search:
+                primary_tool = "web_search"
             elif len(process_steps) > 0:
                 for step in process_steps:
                     if step.get('type') == 'function_call':
-                        action_type = f"tool:{step.get('name')}"
+                        primary_tool = str(step.get('name', '') or '')
                         break
-                    elif step.get('type') == 'web_search':
-                        action_type = "tool:web_search"
+                    if step.get('type') == 'web_search':
+                        primary_tool = "web_search"
                         break
-
-            action_type = action_type.lower()
 
             if user_message:
                 clean_msg = str(user_message).strip()
@@ -2171,7 +2611,8 @@ class Model:
             }
 
             log_status = CONFIG.get('log_status', 'silent')
-            if log_status == 'all':
+            suppress_token_debug = os.environ.get("NEXORA_CLI_SUPPRESS_CHUNK_DEBUG", "0") == "1"
+            if log_status == 'all' and not suppress_token_debug:
                 print(f"[TOKEN_DEBUG] ==================== Token Usage Info ====================")
                 print(f"[TOKEN_DEBUG] Model: {self.model_name} | Provider: {self.provider}")
                 print(f"[TOKEN_DEBUG] Action: {action_type} | Input: {input_tokens_int} | Output: {output_tokens_int}")
@@ -2190,7 +2631,10 @@ class Model:
                     "model": self.model_name,
                     "token_details": token_details,
                     "has_web_search": has_web_search,
-                    "tool_call_count": len(function_calls or [])
+                    "tool_call_count": len(function_calls or []),
+                    "round_kind": "chat" if has_text_output else "tool_assisted",
+                    "primary_tool": primary_tool,
+                    "has_text_output": has_text_output
                 }
             )
         except Exception as e:
@@ -2320,6 +2764,7 @@ class Model:
         messages: List[Dict],
         previous_response_id: Optional[str],
         enable_thinking: bool,
+        enable_web_search: bool,
         enable_tools: bool,
         current_function_outputs: List[Dict] = None
     ) -> Dict:
@@ -2331,22 +2776,65 @@ class Model:
             "stream": True
         }
 
-        # 对于 OpenAI 兼容接口，开启 stream_options 以获取 Token 统计
-        if self.provider != 'volcengine':
+        use_responses_api = self._provider_use_responses_api(self.provider)
+
+        # Chat Completions 才需要 stream_options（含 usage）
+        if not use_responses_api:
             params["stream_options"] = {"include_usage": True}
 
-        # --- 火山引擎 (Ark Responses API) 专用逻辑 ---
-        if self.provider == 'volcengine':
-            # params["max_output_tokens"] = 65536
-            
-            if enable_thinking:
-                params["thinking"] = {"type": "enabled"}
-            else:
-                 params["thinking"] = {"type": "disabled"}
-            
-            if enable_tools:
-                params["tools"] = self.tools
-            
+        # --- Responses API 逻辑（volcengine + 可选 aliyun） ---
+        if use_responses_api:
+            tools_payload = []
+            if enable_tools and isinstance(self.tools, list):
+                tools_payload = list(self.tools)
+
+            # Responses API 下允许“仅联网搜索开关”生效（即使 enable_tools=false）
+            if enable_web_search and bool(getattr(self, "native_web_search_enabled", False)):
+                native_tools = list(getattr(self, "native_search_tools", []) or [])
+                for nt in native_tools:
+                    if not isinstance(nt, dict):
+                        continue
+                    ntype = str(nt.get("type", "")).strip()
+                    if not ntype or ntype == "function":
+                        continue
+                    if not any(
+                        isinstance(x, dict) and str(x.get("type", "")).strip() == ntype
+                        for x in tools_payload
+                    ):
+                        tools_payload.append(json.loads(json.dumps(nt)))
+
+            # 用户关闭联网搜索时，移除 native web_* 工具，避免误触发
+            if not enable_web_search and tools_payload:
+                filtered_tools = []
+                for t in tools_payload:
+                    if not isinstance(t, dict):
+                        filtered_tools.append(t)
+                        continue
+                    t_type = str(t.get("type", "")).strip()
+                    if t_type in {"web_search", "web_extractor"}:
+                        continue
+                    filtered_tools.append(t)
+                tools_payload = filtered_tools
+
+            if self.provider == 'volcengine':
+                if enable_thinking:
+                    params["thinking"] = {"type": "enabled"}
+                else:
+                    params["thinking"] = {"type": "disabled"}
+            elif self.provider == 'aliyun':
+                # DashScope Responses API: thinking 通过 extra_body 传递
+                extra_body = params.get("extra_body", {})
+                if not isinstance(extra_body, dict):
+                    extra_body = {}
+                if enable_thinking:
+                    extra_body["enable_thinking"] = True
+                    print(f"[DEBUG] [Aliyun-Responses] 已为 {self.model_name} 开启思维链模式 (extra_body)")
+                if extra_body:
+                    params["extra_body"] = extra_body
+
+            if tools_payload:
+                params["tools"] = tools_payload
+
             if previous_response_id is None:
                 params["input"] = messages
             else:
@@ -2412,8 +2900,14 @@ class Model:
                 if enable_thinking:
                     extra_body["enable_thinking"] = True
                     print(f"[DEBUG] [Aliyun-Thinking] 已为 {self.model_name} 开启思维链模式 (extra_body)")
-                if enable_tools and bool(getattr(self, "native_web_search_enabled", False)):
-                    extra_body["enable_search"] = True
+                if enable_web_search and bool(getattr(self, "native_web_search_enabled", False)):
+                    req_opts = self._get_provider_request_options(self.provider)
+                    enable_search_cfg = req_opts.get("enable_search", True)
+                    if bool(enable_search_cfg):
+                        extra_body["enable_search"] = True
+                        search_options = req_opts.get("search_options")
+                        if isinstance(search_options, dict) and search_options:
+                            extra_body["search_options"] = search_options
                 if extra_body:
                     params["extra_body"] = extra_body
 

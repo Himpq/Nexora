@@ -149,7 +149,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "updateBasis",
-            "description": "更新用户知识库中已存在的基础知识内容。可以修改知识的标题、内容或来源链接。如果要重命名，需要同时提供旧标题和新标题。",
+            "description": "更新基础知识。支持重命名、整段覆盖、URL更新，以及按字符索引区间替换（单次或批量）。",
 
             "parameters": {
                 "type": "object",
@@ -169,6 +169,37 @@ TOOLS = [
                     "url": {
                         "type": "string",
                         "description": "新的来源链接（如果需要更新，否则不填）。"
+                    },
+                    "from_pos": {
+                        "type": "integer",
+                        "description": "单次区间替换的起始索引（包含）。与 to_pos + replacement 配合使用。"
+                    },
+                    "to_pos": {
+                        "type": "integer",
+                        "description": "单次区间替换的结束索引（不包含）。"
+                    },
+                    "replacement": {
+                        "type": "string",
+                        "description": "单次区间替换的新文本。"
+                    },
+                    "replacements": {
+                        "type": "array",
+                        "description": "批量区间替换列表。每项包含 from_pos、to_pos、replacement。",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "from_pos": {
+                                    "type": "integer"
+                                },
+                                "to_pos": {
+                                    "type": "integer"
+                                },
+                                "replacement": {
+                                    "type": "string"
+                                }
+                            },
+                            "required": ["from_pos", "to_pos", "replacement"]
+                        }
                     }
                 },
                 "required": ["title"]
@@ -180,7 +211,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "getBasisContent",
-            "description": "通过title key读取基础知识库内容，title key不存在会报错。",
+            "description": "读取基础知识内容。支持全文读取、按字符索引区间读取、按关键词邻域读取，以及 regex（rg风格）匹配读取。",
 
             "parameters": {
                 "type": "object",
@@ -188,6 +219,35 @@ TOOLS = [
                     "title": {
                         "type": "string",
                         "description": "根据标题获取基础知识的内容。"
+                    },
+                    "keyword": {
+                        "type": "string",
+                        "description": "关键词或正则表达式（match_mode=regex/rg 时）。"
+                    },
+                    "range": {
+                        "type": "integer",
+                        "description": "关键词匹配时返回前后字符范围。默认 120。"
+                    },
+                    "from_pos": {
+                        "type": "integer",
+                        "description": "按字符区间读取的起始索引（包含）。"
+                    },
+                    "to_pos": {
+                        "type": "integer",
+                        "description": "按字符区间读取的结束索引（不包含）。"
+                    },
+                    "match_mode": {
+                        "type": "string",
+                        "description": "匹配模式：keyword（默认）或 regex（支持 rg）。",
+                        "enum": ["keyword", "regex", "rg"]
+                    },
+                    "max_matches": {
+                        "type": "integer",
+                        "description": "关键词/regex 匹配返回的最大命中数，默认 5。"
+                    },
+                    "case_sensitive": {
+                        "type": "boolean",
+                        "description": "关键词/regex 是否区分大小写，默认 true。"
                     }
                 },
                 "required": ["title"]
@@ -198,8 +258,8 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "web_search",
-            "description": "联网搜索功能，用于查询实时信息、新闻、天气、或知识库中不存在的特定产品信息及对比。当本地知识库搜索不到结果时，必须调用此工具。",
+            "name": "relay_web_search",
+            "description": "本地中转联网搜索工具（relay）。用于当前模型不具备原生联网搜索能力时，借助中转模型检索实时信息。",
 
             "parameters": {
                 "type": "object",
@@ -285,27 +345,27 @@ TOOLS = [
     #     }
     # },
     
-    {
-        "type": "function",
-        "function": {
-            "name": "createCategory",
-            "description": "创建一个新的知识分类。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "分类名称"
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "分类描述（可选）"
-                    }
-                },
-                "required": ["name"]
-            }
-        }
-    },
+    # {
+    #     "type": "function",
+    #     "function": {
+    #         "name": "createCategory",
+    #         "description": "创建一个新的知识分类。",
+    #         "parameters": {
+    #             "type": "object",
+    #             "properties": {
+    #                 "name": {
+    #                     "type": "string",
+    #                     "description": "分类名称"
+    #                 },
+    #                 "description": {
+    #                     "type": "string",
+    #                     "description": "分类描述（可选）"
+    #                 }
+    #             },
+    #             "required": ["name"]
+    #         }
+    #     }
+    # },
 
     {
         "type": "function",
@@ -473,6 +533,110 @@ TOOLS = [
     #         }
     #     }
     # }
+    {
+        "type": "function",
+        "function": {
+            "name": "file_create",
+            "description": "在用户文件沙箱中创建新文本文件。文件已存在时默认失败，可通过 overwrite=true 覆盖。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "文件路径，格式如 {username}/files/{filename} 或仅 filename"},
+                    "content": {"type": "string", "description": "初始文件内容，默认空字符串"},
+                    "overwrite": {"type": "boolean", "description": "文件已存在时是否覆盖，默认 false"}
+                },
+                "required": ["file_path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "file_read",
+            "description": "读取用户文件沙箱中的文本文件。支持全文读取、按行范围读取、按字符索引范围读取。单次调用最多返回500行且10000字符，超出部分会自动截断并返回截断位置(line, column)。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "文件路径，格式如 {username}/files/{filename} 或仅 filename"},
+                    "from_line": {"type": "integer", "description": "起始行（1-based，包含）"},
+                    "to_line": {"type": "integer", "description": "结束行（1-based，包含）"},
+                    "from_pos": {"type": "integer", "description": "起始字符索引（0-based，包含）"},
+                    "to_pos": {"type": "integer", "description": "结束字符索引（0-based，不包含）"}
+                },
+                "required": ["file_path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "file_write",
+            "description": "写入用户文件沙箱中的文本文件。支持整文件覆盖、按行范围替换、按句子/关键词替换。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "文件路径，格式如 {username}/files/{filename} 或仅 filename"},
+                    "content": {"type": "string", "description": "整文件覆盖内容（与其他替换参数互斥）"},
+                    "from_line": {"type": "integer", "description": "按行替换的起始行（1-based，包含）"},
+                    "to_line": {"type": "integer", "description": "按行替换的结束行（1-based，包含）"},
+                    "replacement": {"type": "string", "description": "按行替换内容（可多行）"},
+                    "old_text": {"type": "string", "description": "旧文本（用于文本替换）"},
+                    "new_text": {"type": "string", "description": "新文本（用于文本替换）"},
+                    "regex": {"type": "boolean", "description": "old_text 是否作为正则表达式，默认 false"},
+                    "max_replace": {"type": "integer", "description": "最大替换次数，默认全部替换"}
+                },
+                "required": ["file_path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "file_find",
+            "description": "在用户文件沙箱中的文本文件内查找关键词或正则，返回行号、列号和命中文本。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "文件路径，格式如 {username}/files/{filename} 或仅 filename"},
+                    "keyword": {"type": "string", "description": "搜索关键词或正则表达式"},
+                    "regex": {"type": "boolean", "description": "是否按正则匹配，默认 false"},
+                    "case_sensitive": {"type": "boolean", "description": "是否区分大小写，默认 true"},
+                    "max_results": {"type": "integer", "description": "最大返回命中数，默认 200"}
+                },
+                "required": ["file_path", "keyword"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "file_list",
+            "description": "列出用户文件沙箱中的文件，支持关键词筛选和 regex 匹配文件名。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "筛选关键词（匹配 alias/original_name/path）"},
+                    "regex": {"type": "boolean", "description": "是否按 regex 匹配 query，默认 false"},
+                    "max_items": {"type": "integer", "description": "最大返回条数，默认 200"}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "file_remove",
+            "description": "删除用户文件沙箱中的文件。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "文件路径，格式如 {username}/files/{filename} 或仅 filename"}
+                },
+                "required": ["file_path"]
+            }
+        }
+    },
     {
         "type": "function",
         "function": {

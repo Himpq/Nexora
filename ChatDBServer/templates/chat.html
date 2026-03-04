@@ -21,7 +21,7 @@
     <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
 
     <!-- App Styles -->
-    <link rel="stylesheet" href="/static/css/style.css?v=20260210"> 
+    <link rel="stylesheet" href="/static/css/style.css?v=20260303"> 
     <link rel="stylesheet" href="/static/css/easymde_override.css">
 </head>
 <body>
@@ -103,6 +103,12 @@
                         </svg>
                     </button>
                    {% endif %}
+                   <button class="btn-icon" id="toggleFilePanel" title="云端文件" onclick="toggleCloudFilePanel()">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                            <polyline points="14 2 14 8 20 8"></polyline>
+                        </svg>
+                    </button>
                    <button class="btn-icon" id="toggleKnowledgePanel" title="Knowledge Base">
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path></svg>
                     </button>
@@ -210,6 +216,38 @@
             </div>
         </aside>
 
+        <!-- Cloud Files Panel (Right Sidebar) -->
+        <aside class="knowledge-sidebar" id="filePanel">
+            <div class="k-header">
+                <div style="flex:1;">
+                    <h3 style="margin-bottom: 6px;">Cloud Files</h3>
+                    <div class="k-search" style="display:flex; gap:6px;">
+                        <input id="cloudFileSearchInput" class="input-modern" placeholder="搜索文件..." style="flex:1; font-size:12px; height: 28px; padding: 4px 8px;">
+                        <button id="cloudFileSearchBtn" class="btn-primary" style="padding: 4px 10px; height: 28px; background:#111; color:#fff; border:1px solid #111;">搜索</button>
+                    </div>
+                </div>
+                <div class="k-actions" style="align-self: flex-start; margin-top: 2px;">
+                    <button class="btn-icon-small" id="refreshCloudFilesBtn" title="Refresh">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+                    </button>
+                    <button class="btn-icon-small" id="btnToggleFilePanel" title="Close">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                    </button>
+                </div>
+            </div>
+            <div class="k-content">
+                <div class="k-section" style="margin-bottom:0;">
+                    <div class="k-section-title">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <span>FILES</span>
+                            <span class="badge" id="cloudFileCount">0</span>
+                        </div>
+                    </div>
+                    <div id="cloudFileList" class="k-list"></div>
+                </div>
+            </div>
+        </aside>
+
         <!-- Token Modal (Overlay) -->
         <div id="tokenModal" class="modal-backdrop">
             <div class="modal token-modal-custom">
@@ -264,7 +302,7 @@
     </div>
 
     <!-- Scripts -->
-    <script src="/static/js/chat.js?v=20260210"></script>
+    <script src="/static/js/chat.js?v=20260303"></script>
 
     <!-- 添加用户表单 -->
     <div id="addUserModal" class="modal-backdrop" style="z-index: 2200;">
@@ -631,6 +669,32 @@
                                 </div>
                                 <div id="adminTokenTrendChart" class="admin-token-trend-chart"></div>
                                 <div id="adminTokenTrendTop" class="admin-token-trend-top"></div>
+                            </div>
+                            <div class="admin-token-trend-card" style="margin-top: 12px;">
+                                <div class="admin-token-trend-head">
+                                    <h4>Tool Observability (30d)</h4>
+                                    <span id="adminToolTrendMeta" class="admin-token-trend-meta">-</span>
+                                </div>
+                                <div style="display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 10px;">
+                                    <div class="stat-card" style="padding:10px 12px;">
+                                        <span class="label">工具调用总数</span>
+                                        <span id="toolStatTotalCalls" class="value mono">-</span>
+                                    </div>
+                                    <div class="stat-card" style="padding:10px 12px;">
+                                        <span class="label">错误率</span>
+                                        <span id="toolStatErrorRate" class="value mono">-</span>
+                                    </div>
+                                    <div class="stat-card" style="padding:10px 12px;">
+                                        <span class="label">平均耗时(ms)</span>
+                                        <span id="toolStatAvgLatency" class="value mono">-</span>
+                                    </div>
+                                    <div class="stat-card" style="padding:10px 12px;">
+                                        <span class="label">24h 失败工具数</span>
+                                        <span id="toolStatFailed24h" class="value mono">-</span>
+                                    </div>
+                                </div>
+                                <div id="adminToolTrendChart" class="admin-token-trend-chart"></div>
+                                <div id="adminToolTrendTop" class="admin-token-trend-top"></div>
                             </div>
                         </div>
                         <div id="settings-admin-models-tab" class="admin-tab-content">

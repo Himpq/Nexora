@@ -7,9 +7,12 @@ import sys
 import json
 import base64
 import binascii
+import re
+import threading
 from copy import deepcopy
 from urllib import request as urllib_request, error as urllib_error, parse as urllib_parse
 from email.header import Header
+from email.utils import formatdate, make_msgid
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for, Response, send_file
 from flask_cors import CORS
 from datetime import timedelta, datetime
@@ -21,6 +24,8 @@ from model import Model
 from database import User
 from conversation_manager import ConversationManager
 from chroma_client import ChromaStore
+from file_sandbox import UserFileSandbox
+from longterm.orchestrator import LongTermOrchestrator
 
 app = Flask(__name__)
 app.secret_key = 'chatdb-secret-key-change-in-production'
@@ -69,6 +74,11 @@ DEFAULT_MAIN_CONFIG = {
         "nexora_mail_enabled": False,
         "service_url": "http://127.0.0.1:17171",
         "timeout": 10,
+        "send_timeout": 120,
+        "cache_enabled": True,
+        "cache_list_ttl": 180,
+        "cache_detail_ttl": 3600,
+        "cache_max_entries": 800,
         "default_group": "default"
     }
 }
@@ -196,18 +206,195 @@ def _get_nexora_mail_config():
     if timeout <= 0:
         timeout = 10.0
 
+    send_timeout_val = mail_cfg.get('send_timeout', 120)
+    try:
+        send_timeout = float(send_timeout_val)
+    except Exception:
+        send_timeout = 120.0
+    if send_timeout <= 0:
+        send_timeout = max(timeout, 10.0)
+
+    cache_enabled = bool(mail_cfg.get('cache_enabled', False))
+    cache_list_ttl_val = mail_cfg.get('cache_list_ttl', 180)
+    cache_detail_ttl_val = mail_cfg.get('cache_detail_ttl', 3600)
+    cache_max_entries_val = mail_cfg.get('cache_max_entries', 800)
+    try:
+        cache_list_ttl = max(0, int(cache_list_ttl_val))
+    except Exception:
+        cache_list_ttl = 180
+    try:
+        cache_detail_ttl = max(0, int(cache_detail_ttl_val))
+    except Exception:
+        cache_detail_ttl = 3600
+    try:
+        cache_max_entries = max(50, int(cache_max_entries_val))
+    except Exception:
+        cache_max_entries = 800
+
     return {
         'enabled': bool(mail_cfg.get('nexora_mail_enabled', False)),
         'service_url': service_url,
         'api_key': str(mail_cfg.get('api_key', '') or '').strip(),
         'timeout': timeout,
+        'send_timeout': send_timeout,
+        'cache_enabled': cache_enabled,
+        'cache_list_ttl': cache_list_ttl,
+        'cache_detail_ttl': cache_detail_ttl,
+        'cache_max_entries': cache_max_entries,
         'default_group': str(mail_cfg.get('default_group', 'default') or 'default').strip() or 'default',
         'host': host,
         'port': port
     }
 
 
-def _nexora_mail_call(path, method='GET', payload=None, query=None):
+_MAIL_CACHE_LOCKS = {}
+_MAIL_CACHE_LOCKS_GUARD = threading.Lock()
+
+
+def _get_mail_cache_lock(user_id):
+    uid = str(user_id or '').strip()
+    with _MAIL_CACHE_LOCKS_GUARD:
+        if uid not in _MAIL_CACHE_LOCKS:
+            _MAIL_CACHE_LOCKS[uid] = threading.Lock()
+        return _MAIL_CACHE_LOCKS[uid]
+
+
+def _mail_cache_file_path(user_id):
+    return os.path.join(os.path.dirname(__file__), 'data', 'users', str(user_id), 'mail_cache.json')
+
+
+def _mail_cache_empty():
+    return {
+        'version': 1,
+        'updated_at': int(time.time()),
+        'lists': {},
+        'details': {}
+    }
+
+
+def _mail_cache_load(user_id):
+    path = _mail_cache_file_path(user_id)
+    if not os.path.exists(path):
+        return _mail_cache_empty()
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return _mail_cache_empty()
+        lists = data.get('lists')
+        details = data.get('details')
+        if not isinstance(lists, dict):
+            lists = {}
+        if not isinstance(details, dict):
+            details = {}
+        data['lists'] = lists
+        data['details'] = details
+        return data
+    except Exception:
+        return _mail_cache_empty()
+
+
+def _mail_cache_save(user_id, data):
+    path = _mail_cache_file_path(user_id)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    data['updated_at'] = int(time.time())
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def _mail_cache_prune(cache_data, max_entries):
+    max_entries = max(50, int(max_entries or 800))
+
+    def _prune_bucket(bucket, limit):
+        if len(bucket) <= limit:
+            return
+        items = list(bucket.items())
+        items.sort(key=lambda kv: int((kv[1] or {}).get('cached_at', 0) or 0), reverse=True)
+        keep = dict(items[:limit])
+        bucket.clear()
+        bucket.update(keep)
+
+    _prune_bucket(cache_data.get('lists', {}), max_entries)
+    _prune_bucket(cache_data.get('details', {}), max_entries * 3)
+
+
+def _mail_cache_make_list_key(folder, q, offset, limit):
+    return f"{folder}|q={q}|offset={int(offset)}|limit={int(limit)}"
+
+
+def _mail_cache_make_detail_key(folder, mail_id):
+    return f"{folder}|id={str(mail_id)}"
+
+
+def _mail_cache_is_fresh(entry, ttl):
+    if not isinstance(entry, dict):
+        return False
+    cached_at = int(entry.get('cached_at', 0) or 0)
+    if cached_at <= 0:
+        return False
+    ttl = int(ttl or 0)
+    if ttl <= 0:
+        return True
+    return (int(time.time()) - cached_at) <= ttl
+
+
+def _mail_cache_get_list(user_id, key, ttl):
+    lock = _get_mail_cache_lock(user_id)
+    with lock:
+        cache_data = _mail_cache_load(user_id)
+        entry = cache_data.get('lists', {}).get(key)
+        if not _mail_cache_is_fresh(entry, ttl):
+            return None
+        payload = entry.get('payload')
+        if not isinstance(payload, dict):
+            return None
+        return payload, int(entry.get('cached_at', 0) or 0)
+
+
+def _mail_cache_set_list(user_id, key, payload, max_entries):
+    lock = _get_mail_cache_lock(user_id)
+    with lock:
+        cache_data = _mail_cache_load(user_id)
+        cache_data.setdefault('lists', {})[key] = {
+            'cached_at': int(time.time()),
+            'payload': payload
+        }
+        _mail_cache_prune(cache_data, max_entries)
+        _mail_cache_save(user_id, cache_data)
+
+
+def _mail_cache_get_detail(user_id, key, ttl):
+    lock = _get_mail_cache_lock(user_id)
+    with lock:
+        cache_data = _mail_cache_load(user_id)
+        entry = cache_data.get('details', {}).get(key)
+        if not _mail_cache_is_fresh(entry, ttl):
+            return None
+        payload = entry.get('payload')
+        if not isinstance(payload, dict):
+            return None
+        return payload, int(entry.get('cached_at', 0) or 0)
+
+
+def _mail_cache_set_detail(user_id, key, payload, max_entries):
+    lock = _get_mail_cache_lock(user_id)
+    with lock:
+        cache_data = _mail_cache_load(user_id)
+        cache_data.setdefault('details', {})[key] = {
+            'cached_at': int(time.time()),
+            'payload': payload
+        }
+        _mail_cache_prune(cache_data, max_entries)
+        _mail_cache_save(user_id, cache_data)
+
+
+def _mail_cache_invalidate_user(user_id):
+    lock = _get_mail_cache_lock(user_id)
+    with lock:
+        _mail_cache_save(user_id, _mail_cache_empty())
+
+
+def _nexora_mail_call(path, method='GET', payload=None, query=None, timeout=None):
     """
     调用 NexoraMail API，统一返回:
     (ok: bool, status: int, data: dict)
@@ -236,8 +423,11 @@ def _nexora_mail_call(path, method='GET', payload=None, query=None):
         body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
 
     req = urllib_request.Request(url, data=body, method=method.upper(), headers=headers)
+    request_timeout = cfg['timeout'] if timeout is None else float(timeout)
+    if request_timeout <= 0:
+        request_timeout = cfg['timeout']
     try:
-        with urllib_request.urlopen(req, timeout=cfg['timeout']) as resp:
+        with urllib_request.urlopen(req, timeout=request_timeout) as resp:
             status = getattr(resp, 'status', 200) or 200
             raw = resp.read().decode('utf-8', errors='replace')
             if raw.strip():
@@ -335,6 +525,75 @@ def _repair_common_mojibake(text):
             best = cand
             best_score = cand_score
     return best
+
+
+def _decode_literal_unicode_escapes(text):
+    """Decode literal escape sequences like \\U0001F389 / \\u4F60 / \\x41."""
+    s = str(text or "")
+    if not s:
+        return s
+
+    def repl_surrogate_pair(m):
+        try:
+            hi = int(m.group(1), 16)
+            lo = int(m.group(2), 16)
+            cp = ((hi - 0xD800) << 10) + (lo - 0xDC00) + 0x10000
+            return chr(cp)
+        except Exception:
+            return m.group(0)
+
+    out = re.sub(
+        r"\\u([dD][89abAB][0-9a-fA-F]{2})\\u([dD][cdefCDEF][0-9a-fA-F]{2})",
+        repl_surrogate_pair,
+        s,
+    )
+
+    def repl_u8(m):
+        try:
+            return chr(int(m.group(1), 16))
+        except Exception:
+            return m.group(0)
+
+    def repl_u4(m):
+        try:
+            cp = int(m.group(1), 16)
+            if 0xD800 <= cp <= 0xDFFF:
+                return m.group(0)
+            return chr(cp)
+        except Exception:
+            return m.group(0)
+
+    def repl_x2(m):
+        try:
+            return chr(int(m.group(1), 16))
+        except Exception:
+            return m.group(0)
+
+    out = re.sub(r"\\U([0-9a-fA-F]{8})", repl_u8, out)
+    out = re.sub(r"\\u([0-9a-fA-F]{4})", repl_u4, out)
+    out = re.sub(r"\\x([0-9a-fA-F]{2})", repl_x2, out)
+    return out
+
+
+def _build_utf8_raw_mail(sender, recipient, subject, content, is_html=False):
+    """Build MIME raw email with UTF-8-safe headers/body for broad client compatibility."""
+    ctype = "text/html" if bool(is_html) else "text/plain"
+    subject_header = Header(str(subject or ""), "utf-8").encode()
+    body_bytes = str(content or "").encode("utf-8", errors="replace")
+    body_b64 = base64.b64encode(body_bytes).decode("ascii")
+    body_lines = "\r\n".join(body_b64[i:i + 76] for i in range(0, len(body_b64), 76))
+    return (
+        f"Date: {formatdate(localtime=False)}\r\n"
+        f"Message-ID: {make_msgid(domain='nexora.local')}\r\n"
+        f"From: <{sender}>\r\n"
+        f"To: <{recipient}>\r\n"
+        f"Subject: {subject_header}\r\n"
+        "MIME-Version: 1.0\r\n"
+        f"Content-Type: {ctype}; charset=\"UTF-8\"\r\n"
+        "Content-Transfer-Encoding: base64\r\n"
+        "\r\n"
+        f"{body_lines}\r\n"
+    )
 
 def load_models_config():
     """读取 models.json，返回标准结构"""
@@ -687,15 +946,38 @@ def mail_me_inbox():
     if err:
         return jsonify({'success': False, 'message': err[0]}), err[1]
 
+    cfg = _get_nexora_mail_config()
+    cache_enabled = bool(cfg.get('cache_enabled'))
+    cache_mode = (request.args.get('cache_mode') or 'cache_first').strip().lower()
+    if cache_mode not in ('cache_first', 'refresh', 'off'):
+        cache_mode = 'cache_first'
     q = (request.args.get('q') or '').strip()
     offset = max(int(request.args.get('offset', 0) or 0), 0)
     limit = min(max(int(request.args.get('limit', 50) or 50), 1), 200)
+    list_key = _mail_cache_make_list_key('inbox', q, offset, limit)
+
+    if cache_enabled and cache_mode == 'cache_first':
+        cached = _mail_cache_get_list(binding['user_id'], list_key, cfg.get('cache_list_ttl', 180))
+        if cached:
+            payload, cached_at = cached
+            payload = dict(payload)
+            payload['cache'] = {'enabled': True, 'hit': True, 'mode': 'cache_first', 'cached_at': cached_at}
+            return jsonify(payload)
+
     path = f"/api/mailboxes/{urllib_parse.quote(binding['group'])}/{urllib_parse.quote(binding['mail_username'])}/mails"
     ok, status, data = _nexora_mail_call(path, method='GET', query={'q': q, 'offset': offset, 'limit': limit})
     if not ok:
+        if cache_enabled and cache_mode == 'refresh':
+            cached = _mail_cache_get_list(binding['user_id'], list_key, 0)
+            if cached:
+                payload, cached_at = cached
+                payload = dict(payload)
+                payload['cache'] = {'enabled': True, 'hit': True, 'mode': 'stale_fallback', 'cached_at': cached_at}
+                payload['stale'] = True
+                return jsonify(payload)
         return jsonify({'success': False, 'message': data.get('message', '读取收件箱失败'), 'upstream': data}), status
 
-    return jsonify({
+    response_payload = {
         'success': True,
         'group': binding['group'],
         'mail_username': binding['mail_username'],
@@ -705,7 +987,11 @@ def mail_me_inbox():
         'offset': data.get('offset', offset),
         'limit': data.get('limit', limit),
         'mails': data.get('mails', [])
-    })
+    }
+    if cache_enabled:
+        _mail_cache_set_list(binding['user_id'], list_key, response_payload, cfg.get('cache_max_entries', 800))
+    response_payload['cache'] = {'enabled': cache_enabled, 'hit': False, 'mode': cache_mode}
+    return jsonify(response_payload)
 
 
 @app.route('/api/mail/me/sent', methods=['GET'])
@@ -716,15 +1002,38 @@ def mail_me_sent():
     if err:
         return jsonify({'success': False, 'message': err[0]}), err[1]
 
+    cfg = _get_nexora_mail_config()
+    cache_enabled = bool(cfg.get('cache_enabled'))
+    cache_mode = (request.args.get('cache_mode') or 'cache_first').strip().lower()
+    if cache_mode not in ('cache_first', 'refresh', 'off'):
+        cache_mode = 'cache_first'
     q = (request.args.get('q') or '').strip()
     offset = max(int(request.args.get('offset', 0) or 0), 0)
     limit = min(max(int(request.args.get('limit', 50) or 50), 1), 200)
+    list_key = _mail_cache_make_list_key('sent', q, offset, limit)
+
+    if cache_enabled and cache_mode == 'cache_first':
+        cached = _mail_cache_get_list(binding['user_id'], list_key, cfg.get('cache_list_ttl', 180))
+        if cached:
+            payload, cached_at = cached
+            payload = dict(payload)
+            payload['cache'] = {'enabled': True, 'hit': True, 'mode': 'cache_first', 'cached_at': cached_at}
+            return jsonify(payload)
+
     path = f"/api/mailboxes/{urllib_parse.quote(binding['group'])}/{urllib_parse.quote(binding['mail_username'])}/sent"
     ok, status, data = _nexora_mail_call(path, method='GET', query={'q': q, 'offset': offset, 'limit': limit})
     if not ok:
+        if cache_enabled and cache_mode == 'refresh':
+            cached = _mail_cache_get_list(binding['user_id'], list_key, 0)
+            if cached:
+                payload, cached_at = cached
+                payload = dict(payload)
+                payload['cache'] = {'enabled': True, 'hit': True, 'mode': 'stale_fallback', 'cached_at': cached_at}
+                payload['stale'] = True
+                return jsonify(payload)
         return jsonify({'success': False, 'message': data.get('message', '读取发件箱失败'), 'upstream': data}), status
 
-    return jsonify({
+    response_payload = {
         'success': True,
         'group': binding['group'],
         'mail_username': binding['mail_username'],
@@ -733,7 +1042,11 @@ def mail_me_sent():
         'offset': data.get('offset', offset),
         'limit': data.get('limit', limit),
         'mails': data.get('mails', [])
-    })
+    }
+    if cache_enabled:
+        _mail_cache_set_list(binding['user_id'], list_key, response_payload, cfg.get('cache_max_entries', 800))
+    response_payload['cache'] = {'enabled': cache_enabled, 'hit': False, 'mode': cache_mode}
+    return jsonify(response_payload)
 
 
 @app.route('/api/mail/me/inbox/<mail_id>', methods=['GET'])
@@ -744,16 +1057,34 @@ def mail_me_inbox_item(mail_id):
     if err:
         return jsonify({'success': False, 'message': err[0]}), err[1]
 
+    cfg = _get_nexora_mail_config()
+    cache_enabled = bool(cfg.get('cache_enabled'))
+    cache_mode = (request.args.get('cache_mode') or 'cache_first').strip().lower()
+    if cache_mode not in ('cache_first', 'refresh', 'off'):
+        cache_mode = 'cache_first'
+    detail_key = _mail_cache_make_detail_key('inbox', mail_id)
+    if cache_enabled and cache_mode == 'cache_first':
+        cached = _mail_cache_get_detail(binding['user_id'], detail_key, cfg.get('cache_detail_ttl', 3600))
+        if cached:
+            payload, cached_at = cached
+            payload = dict(payload)
+            payload['cache'] = {'enabled': True, 'hit': True, 'mode': 'cache_first', 'cached_at': cached_at}
+            return jsonify(payload)
+
     path = f"/api/mailboxes/{urllib_parse.quote(binding['group'])}/{urllib_parse.quote(binding['mail_username'])}/mails/{urllib_parse.quote(str(mail_id))}"
     ok, status, data = _nexora_mail_call(path, method='GET')
     if not ok:
         return jsonify({'success': False, 'message': data.get('message', '读取邮件失败'), 'upstream': data}), status
-    return jsonify({
+    response_payload = {
         'success': True,
         'group': binding['group'],
         'mail_username': binding['mail_username'],
         'mail': data.get('mail', {})
-    })
+    }
+    if cache_enabled:
+        _mail_cache_set_detail(binding['user_id'], detail_key, response_payload, cfg.get('cache_max_entries', 800))
+    response_payload['cache'] = {'enabled': cache_enabled, 'hit': False, 'mode': cache_mode}
+    return jsonify(response_payload)
 
 
 @app.route('/api/mail/me/sent/<mail_id>', methods=['GET'])
@@ -764,16 +1095,34 @@ def mail_me_sent_item(mail_id):
     if err:
         return jsonify({'success': False, 'message': err[0]}), err[1]
 
+    cfg = _get_nexora_mail_config()
+    cache_enabled = bool(cfg.get('cache_enabled'))
+    cache_mode = (request.args.get('cache_mode') or 'cache_first').strip().lower()
+    if cache_mode not in ('cache_first', 'refresh', 'off'):
+        cache_mode = 'cache_first'
+    detail_key = _mail_cache_make_detail_key('sent', mail_id)
+    if cache_enabled and cache_mode == 'cache_first':
+        cached = _mail_cache_get_detail(binding['user_id'], detail_key, cfg.get('cache_detail_ttl', 3600))
+        if cached:
+            payload, cached_at = cached
+            payload = dict(payload)
+            payload['cache'] = {'enabled': True, 'hit': True, 'mode': 'cache_first', 'cached_at': cached_at}
+            return jsonify(payload)
+
     path = f"/api/mailboxes/{urllib_parse.quote(binding['group'])}/{urllib_parse.quote(binding['mail_username'])}/sent/{urllib_parse.quote(str(mail_id))}"
     ok, status, data = _nexora_mail_call(path, method='GET')
     if not ok:
         return jsonify({'success': False, 'message': data.get('message', '读取发件失败'), 'upstream': data}), status
-    return jsonify({
+    response_payload = {
         'success': True,
         'group': binding['group'],
         'mail_username': binding['mail_username'],
         'mail': data.get('mail', {})
-    })
+    }
+    if cache_enabled:
+        _mail_cache_set_detail(binding['user_id'], detail_key, response_payload, cfg.get('cache_max_entries', 800))
+    response_payload['cache'] = {'enabled': cache_enabled, 'hit': False, 'mode': cache_mode}
+    return jsonify(response_payload)
 
 
 @app.route('/api/mail/me/inbox/<mail_id>/read', methods=['PATCH'])
@@ -799,6 +1148,7 @@ def mail_me_mark_read(mail_id):
     ok, status, data = _nexora_mail_call(path, method='PATCH', payload={'is_read': bool(is_read)})
     if not ok:
         return jsonify({'success': False, 'message': data.get('message', '更新邮件状态失败'), 'upstream': data}), status
+    _mail_cache_invalidate_user(binding['user_id'])
 
     return jsonify({
         'success': True,
@@ -820,6 +1170,7 @@ def mail_me_delete(mail_id):
     ok, status, data = _nexora_mail_call(path, method='DELETE')
     if not ok:
         return jsonify({'success': False, 'message': data.get('message', '删除邮件失败'), 'upstream': data}), status
+    _mail_cache_invalidate_user(binding['user_id'])
     return jsonify({'success': True, 'id': mail_id})
 
 
@@ -835,6 +1186,7 @@ def mail_me_sent_delete(mail_id):
     ok, status, data = _nexora_mail_call(path, method='DELETE')
     if not ok:
         return jsonify({'success': False, 'message': data.get('message', '删除发件失败'), 'upstream': data}), status
+    _mail_cache_invalidate_user(binding['user_id'])
     return jsonify({'success': True, 'id': mail_id})
 
 
@@ -849,8 +1201,8 @@ def mail_me_send():
     payload = request.get_json() or {}
     recipient = (payload.get('recipient') or payload.get('to') or '').strip()
     subject = (payload.get('subject') or '').strip() or '(No Subject)'
+    subject = _decode_literal_unicode_escapes(subject)
     subject = _repair_common_mojibake(subject)
-    subject_header = str(Header(subject, 'utf-8'))
     content = payload.get('content')
     is_html = bool(payload.get('is_html', False))
 
@@ -858,7 +1210,7 @@ def mail_me_send():
         return jsonify({'success': False, 'message': '收件人不能为空'}), 400
     if content is None:
         content = ''
-    content = str(content)
+    content = _decode_literal_unicode_escapes(str(content))
     if not content.strip():
         return jsonify({'success': False, 'message': '邮件内容不能为空'}), 400
 
@@ -872,25 +1224,25 @@ def mail_me_send():
         'group': binding['group'],
         'sender': sender,
         'recipient': recipient,
-        'subject': subject
+        'subject': subject,
+        'raw': _build_utf8_raw_mail(
+            sender=sender,
+            recipient=recipient,
+            subject=subject,
+            content=content,
+            is_html=is_html
+        )
     }
 
-    if is_html:
-        send_body['raw'] = (
-            f"From: <{sender}>\r\n"
-            f"To: <{recipient}>\r\n"
-            f"Subject: {subject_header}\r\n"
-            "MIME-Version: 1.0\r\n"
-            "Content-Type: text/html; charset=\"UTF-8\"\r\n"
-            "\r\n"
-            f"{content}\r\n"
-        )
-    else:
-        send_body['content'] = content
-
-    ok, status, data = _nexora_mail_call('/api/send', method='POST', payload=send_body)
+    ok, status, data = _nexora_mail_call(
+        '/api/send',
+        method='POST',
+        payload=send_body,
+        timeout=cfg.get('send_timeout', cfg.get('timeout', 10))
+    )
     if not ok:
         return jsonify({'success': False, 'message': data.get('message', '发送失败'), 'upstream': data}), status
+    _mail_cache_invalidate_user(binding['user_id'])
 
     return jsonify({
         'success': True,
@@ -1607,7 +1959,7 @@ def chat():
 @app.route('/api/upload', methods=['POST'])
 @require_login
 def upload_file():
-    """上传文件"""
+    """上传文件到用户文件沙箱（文本 + docx/pdf/pptx 提取）"""
     if 'file' not in request.files:
         return jsonify({'success': False, 'message': '没有文件'}), 400
         
@@ -1616,64 +1968,448 @@ def upload_file():
         return jsonify({'success': False, 'message': '未选择文件'}), 400
         
     try:
-        filename = file.filename
+        username = session['username']
+        filename = os.path.basename(file.filename)
         suffix = os.path.splitext(filename)[1].lower()
-        
-        # VolcEngine File API 支持的格式 (图像, 视频, PDF)
-        # 遇到 JSON/TXT 等纯文本文件，File API 会报错，因此我们在服务端转为文本内容返回
-        VOLC_SUPPORTED_EXTS = {
-            '.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff',
-            '.pdf',
-            '.mp4', '.mov', '.avi', '.webm', '.mkv', '.flv'
-        }
-        
-        # 1. 如果是不支持直接上传的格式，尝试读取为文本
-        if suffix not in VOLC_SUPPORTED_EXTS:
-            try:
-                content = file.read().decode('utf-8')
-                return jsonify({
-                    'success': True,
-                    'type': 'text',
-                    'content': content,
-                    'filename': filename,
-                    'message': '已解析为文本内容'
-                })
-            except UnicodeDecodeError:
-                return jsonify({'success': False, 'message': '不支持的二进制文件格式'}), 400
-            except Exception as e:
-                return jsonify({'success': False, 'message': f'文件解析失败: {str(e)}'}), 500
-
-        # 2. 支持的格式，上传到 VolcEngine
-        # 保存到临时文件
-        import tempfile
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            file.save(tmp.name)
-            tmp_path = tmp.name
-            
-        try:
-            # 初始化模型并上传
-            model = Model(session['username'], auto_create=False)
-            file_obj = model.upload_file(tmp_path)
-            
-            # 返回文件ID和名称
+        if suffix not in UserFileSandbox.ALLOWED_UPLOAD_EXTS:
+            allow_preview = ", ".join(sorted(list(UserFileSandbox.ALLOWED_UPLOAD_EXTS)))
             return jsonify({
-                'success': True,
-                'type': 'file', 
-                'file_id': file_obj.id,
-                'filename': filename,
-                'message': '上传成功'
-            })
-        finally:
-            # 清理临时文件
-            if os.path.exists(tmp_path):
-                try:
-                    os.remove(tmp_path)
-                except:
-                    pass
+                'success': False,
+                'message': f'当前仅支持文本类 + docx/pdf/pptx 上传解析，后缀 {suffix or "(none)"} 不支持。支持后缀: {allow_preview}'
+            }), 400
+
+        update_file_name = (request.form.get('update_file_name') or '').strip() or None
+        raw = file.read()
+        sandbox = UserFileSandbox(username)
+        entry = sandbox.add_upload(
+            file_bytes=raw,
+            original_name=filename,
+            update_file_name=update_file_name
+        )
+
+        return jsonify({
+            'success': True,
+            'type': 'sandbox_file',
+            'filename': entry.get('original_name', filename),
+            'update_file_name': entry.get('alias'),
+            'sandbox_path': entry.get('sandbox_path'),
+            'stored_path': entry.get('stored_path'),
+            'source_ext': entry.get('source_ext'),
+            'parser_mode': entry.get('parser_mode'),
+            'size': entry.get('size', 0),
+            'message': '已上传到文件沙箱'
+        })
                 
     except Exception as e:
         print(f"[ERROR] Upload failed: {e}")
         return jsonify({'success': False, 'message': f'上传失败: {str(e)}'}), 500
+
+
+@app.route('/api/files/list', methods=['GET'])
+@require_login
+def list_cloud_files():
+    """列出当前用户文件沙箱中的云端文件"""
+    try:
+        username = session['username']
+        query = str(request.args.get('q', '') or '').strip()
+        regex_raw = str(request.args.get('regex', '') or '').strip().lower()
+        limit_raw = request.args.get('limit', 200)
+
+        try:
+            limit = int(limit_raw)
+        except Exception:
+            limit = 200
+        limit = max(1, min(limit, 1000))
+
+        regex = regex_raw in {'1', 'true', 'yes', 'y', 'on'}
+
+        sandbox = UserFileSandbox(username)
+        files = sandbox.list_files(query=query or None, regex=regex, max_items=limit)
+        return jsonify({
+            'success': True,
+            'files': files,
+            'total': len(files)
+        })
+    except ValueError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+    except Exception as e:
+        print(f"[ERROR] List cloud files failed: {e}")
+        return jsonify({'success': False, 'message': f'读取文件列表失败: {str(e)}'}), 500
+
+
+@app.route('/api/files/download', methods=['GET'])
+@require_login
+def download_cloud_file():
+    """下载当前用户文件沙箱中的文件（按 alias 或 sandbox_path）"""
+    try:
+        username = session['username']
+        file_ref = str(request.args.get('file_ref', '') or '').strip()
+        if not file_ref:
+            return jsonify({'success': False, 'message': '缺少 file_ref'}), 400
+
+        sandbox = UserFileSandbox(username)
+        entry = sandbox._get_entry(file_ref)
+        abs_path = sandbox._get_abs_path(entry)
+
+        download_name = str(entry.get('original_name') or entry.get('alias') or 'download.txt')
+        return send_file(abs_path, as_attachment=True, download_name=download_name)
+    except FileNotFoundError as e:
+        return jsonify({'success': False, 'message': str(e)}), 404
+    except Exception as e:
+        print(f"[ERROR] Download cloud file failed: {e}")
+        return jsonify({'success': False, 'message': f'下载失败: {str(e)}'}), 500
+
+
+@app.route('/api/files/remove', methods=['DELETE'])
+@require_login
+def remove_cloud_file():
+    """删除当前用户文件沙箱中的文件（按 alias 或 sandbox_path）"""
+    try:
+        username = session['username']
+        file_ref = str(request.args.get('file_ref', '') or '').strip()
+        if not file_ref:
+            payload = request.get_json(silent=True) or {}
+            file_ref = str(payload.get('file_ref', '') or '').strip()
+        if not file_ref:
+            return jsonify({'success': False, 'message': '缺少 file_ref'}), 400
+
+        sandbox = UserFileSandbox(username)
+        result = sandbox.remove_file(file_ref)
+        if not result.get('success'):
+            return jsonify({'success': False, 'message': result.get('message', '删除失败')}), 404
+        return jsonify({'success': True, 'removed': result.get('removed', {})})
+    except Exception as e:
+        print(f"[ERROR] Remove cloud file failed: {e}")
+        return jsonify({'success': False, 'message': f'删除失败: {str(e)}'}), 500
+
+
+@app.route('/api/files/read', methods=['GET'])
+@require_login
+def read_cloud_file():
+    """读取当前用户文件沙箱中文件内容（文本预览）"""
+    try:
+        username = session['username']
+        file_ref = str(request.args.get('file_ref', '') or '').strip()
+        if not file_ref:
+            return jsonify({'success': False, 'message': '缺少 file_ref'}), 400
+
+        sandbox = UserFileSandbox(username)
+        payload = sandbox.read_file(file_ref)
+        if not payload.get('success'):
+            return jsonify({'success': False, 'message': payload.get('message', '读取失败')}), 400
+        return jsonify({
+            'success': True,
+            'file': payload.get('file', {}),
+            'content': payload.get('content', ''),
+            'truncated': bool(payload.get('truncated', False)),
+            'truncate_at': payload.get('truncate_at'),
+            'limits': payload.get('limits', {}),
+        })
+    except FileNotFoundError as e:
+        return jsonify({'success': False, 'message': str(e)}), 404
+    except Exception as e:
+        print(f"[ERROR] Read cloud file failed: {e}")
+        return jsonify({'success': False, 'message': f'读取失败: {str(e)}'}), 500
+
+
+def _as_bool(value, default=False):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in {"1", "true", "yes", "y", "on"}:
+            return True
+        if v in {"0", "false", "no", "n", "off"}:
+            return False
+    if value is None:
+        return default
+    return bool(value)
+
+
+# ==================== Long-term Task API ====================
+
+@app.route('/api/longterm/tasks', methods=['GET'])
+@require_login
+def longterm_list_tasks():
+    username = session['username']
+    orchestrator = LongTermOrchestrator(username)
+    try:
+        limit_raw = request.args.get('limit', 100)
+        try:
+            limit = int(limit_raw)
+        except Exception:
+            limit = 100
+        status = (request.args.get('status') or '').strip() or None
+        items = orchestrator.list_tasks(limit=limit, status=status)
+        return jsonify({'success': True, 'tasks': items})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/longterm/tasks', methods=['POST'])
+@require_login
+def longterm_create_task():
+    username = session['username']
+    orchestrator = LongTermOrchestrator(username)
+    data = request.get_json() or {}
+    goal = str(data.get('goal') or '').strip()
+    if not goal:
+        return jsonify({'success': False, 'message': 'goal 不能为空'}), 400
+
+    title = str(data.get('title') or '').strip() or None
+    auto_plan = _as_bool(data.get('auto_plan', True), True)
+    step_count = data.get('step_count', 5)
+    system_prompt = str(data.get('system_prompt') or '')
+
+    try:
+        task = orchestrator.create_task(
+            goal=goal,
+            title=title,
+            auto_plan=auto_plan,
+            step_count=step_count,
+            system_prompt=system_prompt,
+        )
+        return jsonify({'success': True, 'task': task})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/longterm/tasks/<task_id>', methods=['GET'])
+@require_login
+def longterm_get_task(task_id):
+    username = session['username']
+    orchestrator = LongTermOrchestrator(username)
+    try:
+        task = orchestrator.get_task(task_id)
+        return jsonify({'success': True, 'task': task})
+    except FileNotFoundError:
+        return jsonify({'success': False, 'message': 'task not found'}), 404
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/longterm/tasks/<task_id>/plan', methods=['POST'])
+@require_login
+def longterm_regenerate_plan(task_id):
+    username = session['username']
+    orchestrator = LongTermOrchestrator(username)
+    data = request.get_json() or {}
+    step_count = data.get('step_count', 5)
+    try:
+        task = orchestrator.regenerate_plan(task_id, step_count=step_count)
+        return jsonify({'success': True, 'task': task})
+    except FileNotFoundError:
+        return jsonify({'success': False, 'message': 'task not found'}), 404
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/longterm/tasks/<task_id>/start', methods=['POST'])
+@require_login
+def longterm_start_task(task_id):
+    username = session['username']
+    orchestrator = LongTermOrchestrator(username)
+    try:
+        task = orchestrator.start(task_id)
+        return jsonify({'success': True, 'task': task})
+    except FileNotFoundError:
+        return jsonify({'success': False, 'message': 'task not found'}), 404
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/longterm/tasks/<task_id>/step', methods=['POST'])
+@require_login
+def longterm_submit_step(task_id):
+    username = session['username']
+    orchestrator = LongTermOrchestrator(username)
+    data = request.get_json() or {}
+    try:
+        task = orchestrator.submit_step_result(task_id, data)
+        return jsonify({'success': True, 'task': task})
+    except FileNotFoundError:
+        return jsonify({'success': False, 'message': 'task not found'}), 404
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/longterm/tasks/<task_id>/rework', methods=['POST'])
+@require_login
+def longterm_rework_task(task_id):
+    username = session['username']
+    orchestrator = LongTermOrchestrator(username)
+    data = request.get_json() or {}
+    step_ref = data.get('step_id')
+    if step_ref is None:
+        step_ref = data.get('step_index')
+    if step_ref is None:
+        return jsonify({'success': False, 'message': '需要 step_id 或 step_index'}), 400
+    reason = str(data.get('reason') or '')
+    try:
+        task = orchestrator.rework(task_id, step_ref=step_ref, reason=reason)
+        return jsonify({'success': True, 'task': task})
+    except FileNotFoundError:
+        return jsonify({'success': False, 'message': 'task not found'}), 404
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/longterm/tasks/<task_id>/end-review', methods=['POST'])
+@require_login
+def longterm_end_review(task_id):
+    username = session['username']
+    orchestrator = LongTermOrchestrator(username)
+    data = request.get_json() or {}
+    passed = _as_bool(data.get('passed', False), False)
+    rework_step = data.get('rework_step_id')
+    if rework_step is None:
+        rework_step = data.get('rework_step_index')
+    comments = str(data.get('comments') or '')
+    try:
+        task = orchestrator.end_review(task_id, passed=passed, rework_step=rework_step, comments=comments)
+        return jsonify({'success': True, 'task': task})
+    except FileNotFoundError:
+        return jsonify({'success': False, 'message': 'task not found'}), 404
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/longterm/tasks/<task_id>/status', methods=['POST'])
+@require_login
+def longterm_update_status(task_id):
+    username = session['username']
+    orchestrator = LongTermOrchestrator(username)
+    data = request.get_json() or {}
+    status = str(data.get('status') or '').strip().lower()
+    if not status:
+        return jsonify({'success': False, 'message': 'status 不能为空'}), 400
+    reason = str(data.get('reason') or '')
+    try:
+        task = orchestrator.set_status(task_id, status=status, reason=reason)
+        return jsonify({'success': True, 'task': task})
+    except FileNotFoundError:
+        return jsonify({'success': False, 'message': 'task not found'}), 404
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/longterm/tasks/<task_id>/transit', methods=['GET'])
+@require_login
+def longterm_transit_summary(task_id):
+    username = session['username']
+    orchestrator = LongTermOrchestrator(username)
+    try:
+        payload = orchestrator.summarize_for_transit(task_id)
+        return jsonify({'success': True, 'transit': payload})
+    except FileNotFoundError:
+        return jsonify({'success': False, 'message': 'task not found'}), 404
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/longterm/tasks/<task_id>/ai-plan', methods=['POST'])
+@require_login
+def longterm_ai_plan(task_id):
+    username = session['username']
+    orchestrator = LongTermOrchestrator(username)
+    data = request.get_json() or {}
+    model_name = data.get('model_name')
+    max_steps = data.get('max_steps', 6)
+    try:
+        task = orchestrator.ai_generate_plan(
+            task_id=task_id,
+            model_name=model_name,
+            max_steps=max_steps,
+            event_callback=None
+        )
+        return jsonify({'success': True, 'task': task})
+    except FileNotFoundError:
+        return jsonify({'success': False, 'message': 'task not found'}), 404
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/longterm/tasks/<task_id>/ai-step', methods=['POST'])
+@require_login
+def longterm_ai_step(task_id):
+    username = session['username']
+    orchestrator = LongTermOrchestrator(username)
+    data = request.get_json() or {}
+    model_name = data.get('model_name')
+    try:
+        task, payload = orchestrator.ai_execute_current_step(
+            task_id=task_id,
+            model_name=model_name,
+            event_callback=None
+        )
+        return jsonify({'success': True, 'task': task, 'step_payload': payload})
+    except FileNotFoundError:
+        return jsonify({'success': False, 'message': 'task not found'}), 404
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/longterm/tasks/<task_id>/ai-end-review', methods=['POST'])
+@require_login
+def longterm_ai_end_review(task_id):
+    username = session['username']
+    orchestrator = LongTermOrchestrator(username)
+    data = request.get_json() or {}
+    model_name = data.get('model_name')
+    try:
+        task, payload = orchestrator.ai_end_review(
+            task_id=task_id,
+            model_name=model_name,
+            event_callback=None
+        )
+        return jsonify({'success': True, 'task': task, 'review_payload': payload})
+    except FileNotFoundError:
+        return jsonify({'success': False, 'message': 'task not found'}), 404
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/longterm/tasks/<task_id>/run-auto', methods=['POST'])
+@require_login
+def longterm_run_auto(task_id):
+    username = session['username']
+    orchestrator = LongTermOrchestrator(username)
+    data = request.get_json() or {}
+    model_name = data.get('model_name')
+    max_cycles = data.get('max_cycles', 20)
+    try:
+        task = orchestrator.run_auto(
+            task_id=task_id,
+            model_name=model_name,
+            max_cycles=max_cycles,
+            event_callback=None
+        )
+        return jsonify({'success': True, 'task': task})
+    except FileNotFoundError:
+        return jsonify({'success': False, 'message': 'task not found'}), 404
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/longterm/route', methods=['POST'])
+@require_login
+def longterm_route_message():
+    username = session['username']
+    orchestrator = LongTermOrchestrator(username)
+    data = request.get_json() or {}
+    message = str(data.get('message') or '').strip()
+    model_name = data.get('model_name')
+    if not message:
+        return jsonify({'success': False, 'message': 'message 不能为空'}), 400
+    try:
+        decision = orchestrator.route_message(
+            user_message=message,
+            model_name=model_name,
+            event_callback=None
+        )
+        return jsonify({'success': True, 'decision': decision})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 
 @app.route('/api/conversations', methods=['GET'])
@@ -1873,6 +2609,184 @@ def admin_get_models_config():
             'success': True,
             'models': cfg.get('models', {}),
             'providers': cfg.get('providers', {})
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+
+@app.route('/api/admin/tools/stats', methods=['GET'])
+@require_admin
+def admin_tool_stats():
+    """管理端工具调用统计：总量、成功率、耗时、按工具/Provider/Model分布。"""
+    try:
+        try:
+            days = int(request.args.get('days', 30) or 30)
+        except Exception:
+            days = 30
+        days = max(1, min(days, 365))
+
+        now = datetime.now()
+        start_dt = now - timedelta(days=days - 1)
+        start_day = start_dt.date()
+        day_labels = []
+        day_buckets = {}
+        for i in range(days):
+            d = start_day + timedelta(days=i)
+            key = d.strftime('%Y-%m-%d')
+            day_labels.append(key)
+            day_buckets[key] = {'calls': 0, 'errors': 0, 'latency_ms': 0}
+
+        total_calls = 0
+        success_calls = 0
+        error_calls = 0
+        latency_sum = 0
+
+        tool_map = {}
+        provider_map = {}
+        model_map = {}
+
+        cutoff_24h = now - timedelta(hours=24)
+        failed_24h = {}
+
+        user_dir = os.path.join(os.path.dirname(__file__), "data/users")
+        if os.path.exists(user_dir):
+            for username in os.listdir(user_dir):
+                tool_file = os.path.join(user_dir, username, "tool_usage.json")
+                if not os.path.exists(tool_file):
+                    continue
+                try:
+                    with open(tool_file, 'r', encoding='utf-8') as f:
+                        logs = json.load(f)
+                except Exception:
+                    continue
+                if not isinstance(logs, list):
+                    continue
+
+                for log in logs:
+                    ts = str(log.get('timestamp') or '')
+                    day = ts[:10]
+                    if day not in day_buckets:
+                        continue
+
+                    tool_name = str(log.get('tool_name') or 'unknown').strip() or 'unknown'
+                    provider = str(log.get('provider') or 'unknown').strip() or 'unknown'
+                    model = str(log.get('model') or 'unknown').strip() or 'unknown'
+                    success = bool(log.get('success', True))
+                    duration = int(log.get('duration_ms', 0) or 0)
+                    error_message = str(log.get('error_message') or '')
+
+                    total_calls += 1
+                    latency_sum += duration
+                    if success:
+                        success_calls += 1
+                    else:
+                        error_calls += 1
+
+                    day_buckets[day]['calls'] += 1
+                    day_buckets[day]['latency_ms'] += duration
+                    if not success:
+                        day_buckets[day]['errors'] += 1
+
+                    if tool_name not in tool_map:
+                        tool_map[tool_name] = {
+                            'name': tool_name,
+                            'calls': 0,
+                            'errors': 0,
+                            'latency_sum_ms': 0,
+                            'last_error': ''
+                        }
+                    tool_map[tool_name]['calls'] += 1
+                    tool_map[tool_name]['latency_sum_ms'] += duration
+                    if not success:
+                        tool_map[tool_name]['errors'] += 1
+                        if error_message:
+                            tool_map[tool_name]['last_error'] = error_message
+
+                    if provider not in provider_map:
+                        provider_map[provider] = {'name': provider, 'calls': 0, 'errors': 0, 'latency_sum_ms': 0}
+                    provider_map[provider]['calls'] += 1
+                    provider_map[provider]['latency_sum_ms'] += duration
+                    if not success:
+                        provider_map[provider]['errors'] += 1
+
+                    if model not in model_map:
+                        model_map[model] = {'name': model, 'calls': 0, 'errors': 0, 'latency_sum_ms': 0}
+                    model_map[model]['calls'] += 1
+                    model_map[model]['latency_sum_ms'] += duration
+                    if not success:
+                        model_map[model]['errors'] += 1
+
+                    try:
+                        dt = datetime.strptime(ts, '%Y-%m-%d %H:%M:%S')
+                    except Exception:
+                        dt = None
+                    if (dt is not None) and (not success) and dt >= cutoff_24h:
+                        if tool_name not in failed_24h:
+                            failed_24h[tool_name] = {'name': tool_name, 'errors': 0, 'last_error': ''}
+                        failed_24h[tool_name]['errors'] += 1
+                        if error_message:
+                            failed_24h[tool_name]['last_error'] = error_message
+
+        def _finalize_rows(rows):
+            out = []
+            for item in rows:
+                calls = int(item.get('calls', 0) or 0)
+                errors = int(item.get('errors', 0) or 0)
+                lat_sum = int(item.get('latency_sum_ms', 0) or 0)
+                avg = round(lat_sum / calls, 2) if calls else 0
+                row = dict(item)
+                row['avg_latency_ms'] = avg
+                row['error_rate'] = round((errors / calls * 100.0), 2) if calls else 0.0
+                row.pop('latency_sum_ms', None)
+                out.append(row)
+            return out
+
+        top_tools = sorted(
+            _finalize_rows(list(tool_map.values())),
+            key=lambda x: x.get('calls', 0),
+            reverse=True
+        )[:20]
+        top_failed_tools_24h = sorted(
+            list(failed_24h.values()),
+            key=lambda x: x.get('errors', 0),
+            reverse=True
+        )[:10]
+        top_providers = sorted(
+            _finalize_rows(list(provider_map.values())),
+            key=lambda x: x.get('calls', 0),
+            reverse=True
+        )[:8]
+        top_models = sorted(
+            _finalize_rows(list(model_map.values())),
+            key=lambda x: x.get('calls', 0),
+            reverse=True
+        )[:10]
+
+        series = {
+            'calls': [day_buckets[d]['calls'] for d in day_labels],
+            'errors': [day_buckets[d]['errors'] for d in day_labels],
+            'avg_latency_ms': [
+                round(day_buckets[d]['latency_ms'] / day_buckets[d]['calls'], 2) if day_buckets[d]['calls'] else 0
+                for d in day_labels
+            ]
+        }
+
+        return jsonify({
+            'success': True,
+            'days': days,
+            'summary': {
+                'total_calls': total_calls,
+                'success_calls': success_calls,
+                'error_calls': error_calls,
+                'error_rate': round((error_calls / total_calls * 100.0), 2) if total_calls else 0.0,
+                'avg_latency_ms': round(latency_sum / total_calls, 2) if total_calls else 0.0
+            },
+            'labels': day_labels,
+            'series': series,
+            'top_tools': top_tools,
+            'top_failed_tools_24h': top_failed_tools_24h,
+            'top_providers': top_providers,
+            'top_models': top_models
         })
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
@@ -2244,7 +3158,29 @@ def get_token_stats():
     
     try:
         logs = user.get_token_logs()
-        
+        conversation_id = (request.args.get('conversation_id') or '').strip()
+        if conversation_id:
+            logs = [log for log in logs if str(log.get('conversation_id', '')) == conversation_id]
+
+        def _safe_int(v):
+            try:
+                if v is None:
+                    return 0
+                if isinstance(v, bool):
+                    return int(v)
+                if isinstance(v, (int, float)):
+                    return int(v)
+                s = str(v).strip()
+                if not s:
+                    return 0
+                if s.isdigit() or (s.startswith('-') and s[1:].isdigit()):
+                    return int(s)
+                return int(float(s))
+            except Exception:
+                return 0
+
+        input_total = 0
+        output_total = 0
         total_tokens = 0
         today_tokens = 0
         
@@ -2252,12 +3188,24 @@ def get_token_stats():
         today_str = time.strftime("%Y-%m-%d", time.localtime())
         
         for log in logs:
-            total_tokens += log.get('total_tokens', 0)
+            in_tokens = _safe_int(log.get('input_tokens', 0))
+            out_tokens = _safe_int(log.get('output_tokens', 0))
+            log_total = _safe_int(log.get('total_tokens', 0))
+            if log_total <= 0:
+                log_total = in_tokens + out_tokens
+
+            input_total += in_tokens
+            output_total += out_tokens
+            total_tokens += log_total
+
             if log.get('timestamp', '').startswith(today_str):
-                today_tokens += log.get('total_tokens', 0)
+                today_tokens += log_total
                 
         return jsonify({
             'success': True,
+            'conversation_id': conversation_id or None,
+            'input_total': input_total,
+            'output_total': output_total,
             'total': total_tokens,
             'today': today_tokens,
             'history': logs[:20]  # Optional: return recent logs if needed

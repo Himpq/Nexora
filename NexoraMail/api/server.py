@@ -206,6 +206,54 @@ def _repair_common_mojibake(text):
     return best
 
 
+def _decode_literal_unicode_escapes(text):
+    """Decode literal unicode escapes, e.g. \\U0001F389 / \\u4F60 / \\x41."""
+    s = str(text or "")
+    if not s:
+        return s
+
+    def repl_surrogate_pair(m):
+        try:
+            hi = int(m.group(1), 16)
+            lo = int(m.group(2), 16)
+            cp = ((hi - 0xD800) << 10) + (lo - 0xDC00) + 0x10000
+            return chr(cp)
+        except Exception:
+            return m.group(0)
+
+    out = re.sub(
+        r"\\u([dD][89abAB][0-9a-fA-F]{2})\\u([dD][cdefCDEF][0-9a-fA-F]{2})",
+        repl_surrogate_pair,
+        s,
+    )
+
+    def repl_u8(m):
+        try:
+            return chr(int(m.group(1), 16))
+        except Exception:
+            return m.group(0)
+
+    def repl_u4(m):
+        try:
+            cp = int(m.group(1), 16)
+            if 0xD800 <= cp <= 0xDFFF:
+                return m.group(0)
+            return chr(cp)
+        except Exception:
+            return m.group(0)
+
+    def repl_x2(m):
+        try:
+            return chr(int(m.group(1), 16))
+        except Exception:
+            return m.group(0)
+
+    out = re.sub(r"\\U([0-9a-fA-F]{8})", repl_u8, out)
+    out = re.sub(r"\\u([0-9a-fA-F]{4})", repl_u4, out)
+    out = re.sub(r"\\x([0-9a-fA-F]{2})", repl_x2, out)
+    return out
+
+
 def _extract_subject(raw_content):
     if not raw_content:
         return ""
@@ -497,8 +545,11 @@ def _list_sent_mails(user_path):
 def _compose_mail_raw(sender, recipient, subject, content):
     ts = time.strftime("%a, %d %b %Y %H:%M:%S +0000", time.gmtime())
     mail_id = f"{int(time.time())}.{os.getpid()}@nexoramail.local"
-    subject_clean = _repair_common_mojibake(subject)
-    subject_header = str(Header(subject_clean or "", "utf-8"))
+    subject_clean = _decode_literal_unicode_escapes(_repair_common_mojibake(subject))
+    body_clean = _decode_literal_unicode_escapes(content)
+    subject_header = Header(subject_clean or "", "utf-8").encode()
+    body_b64 = base64.b64encode(str(body_clean or "").encode("utf-8", errors="replace")).decode("ascii")
+    body_lines = "\r\n".join(body_b64[i:i + 76] for i in range(0, len(body_b64), 76))
     return (
         f"Date: {ts}\r\n"
         f"From: <{sender}>\r\n"
@@ -507,8 +558,9 @@ def _compose_mail_raw(sender, recipient, subject, content):
         f"Subject: {subject_header}\r\n"
         "MIME-Version: 1.0\r\n"
         "Content-Type: text/plain; charset=\"UTF-8\"\r\n"
+        "Content-Transfer-Encoding: base64\r\n"
         "\r\n"
-        f"{content}\r\n"
+        f"{body_lines}\r\n"
     )
 
 

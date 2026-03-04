@@ -1,6 +1,7 @@
 ﻿import os
 import json
 import time
+import re
 import threading
 
 # 全局文件锁，防止多用户并发写入 user.json 导致数据“串”或丢失
@@ -25,6 +26,7 @@ class User:
     def __init__(self, username):
         self.path = f"./data/users/{username}/"
         self.user = username
+        os.makedirs(self.path, exist_ok=True)
         self._ensure_knowledge_graph()
 
     def _ensure_knowledge_graph(self):
@@ -347,14 +349,154 @@ class User:
         self.save_knowledge_graph(graph)
         return True, "删除成功"
     
-    def getBasisContent(self, title):
+    def getBasisContent(
+        self,
+        title,
+        keyword=None,
+        range_size=None,
+        from_pos=None,
+        to_pos=None,
+        regex_mode=False,
+        max_matches=5,
+        case_sensitive=True
+    ):
         with open(self.path + "database.json", "r", encoding="utf-8") as f:
             db = json.load(f)
-        
+
+        if title not in db["data_basis"]:
+            raise KeyError(f"Title not found: {title}")
+
         src = db["data_basis"][title]["src"]
         with open(src, "r", encoding="utf-8") as f:
             content = f.read()
-        return content
+
+        has_slice = from_pos is not None or to_pos is not None
+        has_keyword = bool(str(keyword or "").strip())
+        has_range_arg = range_size is not None
+
+        # 兼容旧行为：无任何筛选参数时返回全文
+        if not has_slice and not has_keyword and not has_range_arg and not regex_mode:
+            return content
+
+        # 避免误调用：仅传 range 但未提供 keyword/区间时，不返回全文
+        if has_range_arg and not has_keyword and not has_slice:
+            return json.dumps({
+                "success": False,
+                "message": "range requires keyword, or use from_pos/to_pos for slice mode"
+            }, ensure_ascii=False)
+
+        # regex 模式必须提供 keyword（正则表达式）
+        if regex_mode and not has_keyword:
+            return json.dumps({
+                "success": False,
+                "message": "regex mode requires keyword pattern"
+            }, ensure_ascii=False)
+
+        total_len = len(content)
+
+        # 1) 按索引区间读取
+        if has_slice:
+            try:
+                start = 0 if from_pos is None else int(from_pos)
+                end = total_len if to_pos is None else int(to_pos)
+            except Exception:
+                return json.dumps({
+                    "success": False,
+                    "message": "from_pos/to_pos must be integers"
+                }, ensure_ascii=False)
+
+            start = max(0, min(start, total_len))
+            end = max(0, min(end, total_len))
+            if end < start:
+                start, end = end, start
+
+            return json.dumps({
+                "success": True,
+                "mode": "slice",
+                "title": title,
+                "from_pos": start,
+                "to_pos": end,
+                "total_length": total_len,
+                "content": content[start:end]
+            }, ensure_ascii=False)
+
+        # 2) 关键词邻域 / regex 邻域读取
+        try:
+            window = int(range_size if range_size is not None else 120)
+        except Exception:
+            window = 120
+        window = max(0, min(window, 10000))
+
+        try:
+            max_n = int(max_matches if max_matches is not None else 5)
+        except Exception:
+            max_n = 5
+        max_n = max(1, min(max_n, 100))
+
+        key = str(keyword or "")
+        matches = []
+
+        if regex_mode:
+            flags = 0 if case_sensitive else re.IGNORECASE
+            try:
+                pattern = re.compile(key, flags)
+            except Exception as e:
+                return json.dumps({
+                    "success": False,
+                    "mode": "regex",
+                    "message": f"invalid regex: {e}"
+                }, ensure_ascii=False)
+
+            for idx, m in enumerate(pattern.finditer(content), start=1):
+                if idx > max_n:
+                    break
+                s, e = m.span()
+                left = max(0, s - window)
+                right = min(total_len, e + window)
+                matches.append({
+                    "index": idx,
+                    "start": s,
+                    "end": e,
+                    "match": m.group(0),
+                    "snippet": content[left:right]
+                })
+        else:
+            hay = content if case_sensitive else content.lower()
+            needle = key if case_sensitive else key.lower()
+            pos = 0
+            idx = 0
+            while True:
+                found = hay.find(needle, pos)
+                if found == -1:
+                    break
+                idx += 1
+                if idx > max_n:
+                    break
+                s = found
+                e = found + len(needle)
+                left = max(0, s - window)
+                right = min(total_len, e + window)
+                matches.append({
+                    "index": idx,
+                    "start": s,
+                    "end": e,
+                    "match": content[s:e],
+                    "snippet": content[left:right]
+                })
+                pos = found + max(1, len(needle))
+
+        return json.dumps({
+            "success": True,
+            "mode": "regex" if regex_mode else "keyword",
+            "title": title,
+            "keyword": key,
+            "range": window,
+            "max_matches": max_n,
+            "case_sensitive": bool(case_sensitive),
+            "total_length": total_len,
+            "matched": len(matches),
+            "matches": matches
+        }, ensure_ascii=False)
 
     def updateBasisContent(self, title, content):
         with open(self.path + "database.json", "r", encoding="utf-8") as f:
@@ -377,8 +519,18 @@ class User:
         except Exception as e:
             return False, str(e)
     
-    def updateBasis(self, title, new_title=None, context=None, url=None):
-        """更新基础知识，支持修改标题、内容和URL"""
+    def updateBasis(
+        self,
+        title,
+        new_title=None,
+        context=None,
+        url=None,
+        from_pos=None,
+        to_pos=None,
+        replacement=None,
+        replacements=None
+    ):
+        """更新基础知识，支持修改标题、整段内容、URL、区间替换（单次/批量）"""
         with open(self.path + "database.json", "r", encoding="utf-8") as f:
             db = json.load(f)
         
@@ -389,13 +541,60 @@ class User:
         old_record = db["data_basis"][title]
         src = old_record["src"]
         
-        # 更新内容（如果提供）
+        has_range_replace = (
+            from_pos is not None
+            or to_pos is not None
+            or replacement is not None
+            or (isinstance(replacements, list) and len(replacements) > 0)
+        )
+
+        if context is not None and has_range_replace:
+            return False, "context and range replacement are mutually exclusive"
+
+        # 更新内容（整段覆盖）
         if context is not None:
             try:
                 with open(src, "w", encoding="utf-8") as f:
-                    f.write(context)
+                    f.write(str(context))
             except Exception as e:
                 return False, f"Failed to update content: {str(e)}"
+        # 更新内容（区间替换）
+        elif has_range_replace:
+            try:
+                with open(src, "r", encoding="utf-8") as f:
+                    current = f.read()
+
+                ops = []
+                if isinstance(replacements, list) and replacements:
+                    for item in replacements:
+                        if not isinstance(item, dict):
+                            return False, "replacements must be a list of objects"
+                        s = item.get("from_pos")
+                        e = item.get("to_pos")
+                        rep = item.get("replacement", "")
+                        if s is None or e is None:
+                            return False, "each replacement requires from_pos and to_pos"
+                        ops.append((int(s), int(e), str(rep)))
+                else:
+                    s = 0 if from_pos is None else int(from_pos)
+                    e = len(current) if to_pos is None else int(to_pos)
+                    rep = "" if replacement is None else str(replacement)
+                    ops.append((s, e, rep))
+
+                # 倒序替换，避免索引偏移
+                for s, e, rep in sorted(ops, key=lambda x: x[0], reverse=True):
+                    if s < 0 or e < 0:
+                        return False, "range index cannot be negative"
+                    if s > e:
+                        s, e = e, s
+                    if e > len(current):
+                        return False, f"range out of bounds: ({s}, {e}) > {len(current)}"
+                    current = current[:s] + rep + current[e:]
+
+                with open(src, "w", encoding="utf-8") as f:
+                    f.write(current)
+            except Exception as e:
+                return False, f"Failed to apply range replacement: {str(e)}"
         
         # 更新URL（如果提供）
         if url is not None:

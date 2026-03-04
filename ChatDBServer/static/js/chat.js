@@ -44,6 +44,19 @@ let mailNotifyState = {
     newCount: 0,
     initialized: false
 };
+let tokenMiniState = {
+    conversationId: null,
+    baseInput: 0,
+    baseOutput: 0,
+    streamInput: 0,
+    streamOutput: 0,
+    estimatedStreamOutput: 0,
+    usageSnapshotInput: 0,
+    usageSnapshotOutput: 0,
+    usageSnapshotInitialized: false,
+    requestSeq: 0,
+    streaming: false
+};
 
 function enforceLinksOpenInNewTab(root) {
     if (!root || typeof root.querySelectorAll !== 'function') return;
@@ -152,6 +165,21 @@ function isMailViewActiveInDom() {
     return !!viewer.querySelector('.mail-workspace');
 }
 
+function isMailMobileLayout() {
+    try {
+        return window.matchMedia('(max-width: 980px)').matches;
+    } catch (e) {
+        return window.innerWidth <= 980;
+    }
+}
+
+function setMailMobileDetailMode(showDetail) {
+    const workspace = document.getElementById('mailWorkspace');
+    if (!workspace) return;
+    if (isMailMobileLayout() && !!showDetail) workspace.classList.add('mail-mobile-detail');
+    else workspace.classList.remove('mail-mobile-detail');
+}
+
 function loadMailLastOpenTs() {
     try {
         const raw = Number(localStorage.getItem(MAIL_LAST_OPEN_TS_KEY) || 0);
@@ -243,7 +271,7 @@ function updateMailNotifyFromMails(mails, options = {}) {
 
 async function pollMailNotifyOnly() {
     try {
-        const res = await fetch('/api/mail/me/inbox');
+        const res = await fetch('/api/mail/me/inbox?cache_mode=refresh&limit=20');
         const data = await res.json();
         if (!data || !data.success) return;
         const mails = Array.isArray(data.mails) ? data.mails.map(normalizeMailItem) : [];
@@ -319,6 +347,228 @@ function saveMailListScroll(scrollTop) {
     }
 }
 
+function closeCloudFilePanel() {
+    if (els.filePanel) els.filePanel.classList.remove('visible');
+}
+
+function openCloudFilePanel() {
+    if (!els.filePanel) return;
+    if (els.knowledgePanel) els.knowledgePanel.classList.remove('visible');
+    els.filePanel.classList.add('visible');
+    loadCloudFiles();
+}
+
+function toggleCloudFilePanel() {
+    if (!els.filePanel) return;
+    const nextVisible = !els.filePanel.classList.contains('visible');
+    if (nextVisible) openCloudFilePanel();
+    else closeCloudFilePanel();
+}
+
+window.toggleCloudFilePanel = toggleCloudFilePanel;
+
+function formatFileSize(bytes) {
+    const n = Number(bytes || 0);
+    if (!Number.isFinite(n) || n <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let val = n;
+    let idx = 0;
+    while (val >= 1024 && idx < units.length - 1) {
+        val /= 1024;
+        idx += 1;
+    }
+    return `${val >= 10 || idx === 0 ? Math.round(val) : val.toFixed(1)} ${units[idx]}`;
+}
+
+function formatFileUpdatedAt(ts) {
+    const n = Number(ts || 0);
+    if (!Number.isFinite(n) || n <= 0) return '-';
+    try {
+        return new Date(n * 1000).toLocaleString();
+    } catch (_) {
+        return '-';
+    }
+}
+
+function downloadCloudFile(fileRef) {
+    const ref = String(fileRef || '').trim();
+    if (!ref) return;
+    const url = `/api/files/download?file_ref=${encodeURIComponent(ref)}`;
+    window.open(url, '_blank');
+}
+
+async function removeCloudFile(fileRef) {
+    const ref = String(fileRef || '').trim();
+    if (!ref) return;
+    const ok = confirm(`确定删除文件 "${ref}" 吗？`);
+    if (!ok) return;
+    try {
+        const res = await fetch(`/api/files/remove?file_ref=${encodeURIComponent(ref)}`, {
+            method: 'DELETE'
+        });
+        const data = await res.json();
+        if (!data || !data.success) {
+            showToast((data && data.message) ? data.message : '删除失败');
+            return;
+        }
+        showToast('文件已删除');
+        await loadCloudFiles();
+    } catch (e) {
+        showToast('删除失败');
+    }
+}
+
+async function loadCloudFilePreview(fileRef, previewEl) {
+    const ref = String(fileRef || '').trim();
+    if (!ref || !previewEl) return;
+    previewEl.textContent = '加载中...';
+    try {
+        const res = await fetch(`/api/files/read?file_ref=${encodeURIComponent(ref)}`);
+        const data = await res.json();
+        if (!data || !data.success) {
+            previewEl.textContent = (data && data.message) ? data.message : '读取失败';
+            return;
+        }
+        previewEl.textContent = String(data.content || '');
+    } catch (e) {
+        previewEl.textContent = '读取失败';
+    }
+}
+
+function attachCloudFilePath(path) {
+    const p = String(path || '').trim();
+    if (!p || !els.messageInput) return;
+    const sep = els.messageInput.value && !/\s$/.test(els.messageInput.value) ? '\n' : '';
+    els.messageInput.value += `${sep}${p}`;
+    els.messageInput.dispatchEvent(new Event('input'));
+    els.messageInput.focus();
+}
+
+function renderCloudFileList(files) {
+    if (!els.cloudFileList) return;
+    const arr = Array.isArray(files) ? files : [];
+    if (els.cloudFileCount) els.cloudFileCount.textContent = String(arr.length);
+    if (arr.length === 0) {
+        els.cloudFileList.innerHTML = '<div class="cloud-file-empty">暂无文件</div>';
+        return;
+    }
+
+    els.cloudFileList.innerHTML = arr.map((f) => {
+        const aliasRaw = String((f && f.alias) ? f.alias : '-');
+        const sandboxPathRaw = String((f && f.sandbox_path) ? f.sandbox_path : '');
+        const alias = escapeHtml(aliasRaw);
+        const sandboxPath = escapeHtml(sandboxPathRaw);
+        const sizeText = escapeHtml(formatFileSize(f && f.size ? f.size : 0));
+        const updatedText = escapeHtml(formatFileUpdatedAt(f && f.updated_at ? f.updated_at : 0));
+        return `
+            <div class="cloud-file-item" data-file-ref="${escapeHtml(aliasRaw)}" data-file-path="${escapeHtml(sandboxPathRaw)}" title="点击展开预览">
+                <div class="cloud-file-main">
+                    <div class="cloud-file-name">${alias}</div>
+                    <div class="cloud-file-path">${sandboxPath || '-'}</div>
+                    <div class="cloud-file-meta">
+                        <span>${sizeText}</span>
+                        <span>${updatedText}</span>
+                    </div>
+                    <div class="cloud-file-actions">
+                        <button class="cloud-file-btn cloud-file-attach" data-action="attach" title="附加路径到输入框">
+                            <i class="fa-solid fa-link"></i>
+                        </button>
+                        <button class="cloud-file-btn cloud-file-download" data-action="download" title="下载">
+                            <i class="fa-solid fa-download"></i>
+                        </button>
+                        <button class="cloud-file-btn cloud-file-delete" data-action="delete" title="删除">
+                            <i class="fa-regular fa-trash-can"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="cloud-file-preview-wrap">
+                    <div class="cloud-file-preview cloud-file-preview-empty">点击展开预览</div>
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    els.cloudFileList.querySelectorAll('.cloud-file-item').forEach((el) => {
+        const fileRef = (el.dataset.fileRef || '').trim();
+        const filePath = (el.dataset.filePath || '').trim();
+        const previewEl = el.querySelector('.cloud-file-preview');
+        const previewWrap = el.querySelector('.cloud-file-preview-wrap');
+        const mainRow = el.querySelector('.cloud-file-main');
+        const btnAttach = el.querySelector('.cloud-file-attach');
+        const btnDownload = el.querySelector('.cloud-file-download');
+        const btnDelete = el.querySelector('.cloud-file-delete');
+
+        if (mainRow) {
+            mainRow.addEventListener('click', async (e) => {
+                if (e.target && e.target.closest('.cloud-file-btn')) return;
+                const willExpand = !el.classList.contains('expanded');
+                els.cloudFileList.querySelectorAll('.cloud-file-item.expanded').forEach((other) => {
+                    if (other !== el) other.classList.remove('expanded');
+                });
+                if (!willExpand) {
+                    el.classList.remove('expanded');
+                    return;
+                }
+                el.classList.add('expanded');
+                if (!previewWrap || !previewEl) return;
+                if (previewWrap.dataset.loaded === '1') return;
+                await loadCloudFilePreview(fileRef, previewEl);
+                previewWrap.dataset.loaded = '1';
+            });
+        }
+
+        el.addEventListener('click', (e) => {
+            // clicking blank preview area should not trigger re-open logic from container
+            if (e.target && e.target.closest('.cloud-file-main')) return;
+            const willExpand = !el.classList.contains('expanded');
+            if (!willExpand) el.classList.remove('expanded');
+        });
+
+        if (btnAttach) {
+            btnAttach.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                attachCloudFilePath(filePath);
+            });
+        }
+        if (btnDownload) {
+            btnDownload.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                downloadCloudFile(fileRef);
+            });
+        }
+        if (btnDelete) {
+            btnDelete.addEventListener('click', async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                await removeCloudFile(fileRef);
+            });
+        }
+    });
+}
+
+async function loadCloudFiles() {
+    if (!els.cloudFileList) return;
+    const q = (els.cloudFileSearchInput && els.cloudFileSearchInput.value ? els.cloudFileSearchInput.value : '').trim();
+    els.cloudFileList.innerHTML = '<div class="cloud-file-empty">加载中...</div>';
+    try {
+        const url = `/api/files/list${q ? `?q=${encodeURIComponent(q)}` : ''}`;
+        const res = await fetch(url);
+        const data = await res.json();
+        if (!data || !data.success) {
+            const msg = data && data.message ? data.message : '读取失败';
+            els.cloudFileList.innerHTML = `<div class="cloud-file-empty">${escapeHtml(msg)}</div>`;
+            if (els.cloudFileCount) els.cloudFileCount.textContent = '0';
+            return;
+        }
+        renderCloudFileList(data.files || []);
+    } catch (e) {
+        els.cloudFileList.innerHTML = '<div class="cloud-file-empty">读取失败</div>';
+        if (els.cloudFileCount) els.cloudFileCount.textContent = '0';
+    }
+}
+
 // DOM Elements
 const els = {
     sidebar: document.getElementById('sidebar'),
@@ -337,14 +587,22 @@ const els = {
     newChatBtn: document.getElementById('newChatBtn'),
     conversationTitle: document.getElementById('conversationTitle'),
     knowledgePanel: document.getElementById('knowledgePanel'),
+    filePanel: document.getElementById('filePanel'),
     toggleMailView: document.getElementById('toggleMailView'),
+    toggleFilePanel: document.getElementById('toggleFilePanel'),
     toggleKnowledgePanel: document.getElementById('toggleKnowledgePanel'),
     btnTogglePanel: document.getElementById('btnTogglePanel'), // Close button inside panel
+    btnToggleFilePanel: document.getElementById('btnToggleFilePanel'),
     refreshKnowledgeBtn: document.getElementById('refreshKnowledgeBtn'),
+    refreshCloudFilesBtn: document.getElementById('refreshCloudFilesBtn'),
     panelBasisList: document.getElementById('panelBasisKnowledgeList'),
     panelShortList: document.getElementById('panelShortMemoryList'),
     panelBasisCount: document.getElementById('panelBasisCount'),
     panelShortCount: document.getElementById('panelShortCount'),
+    cloudFileSearchInput: document.getElementById('cloudFileSearchInput'),
+    cloudFileSearchBtn: document.getElementById('cloudFileSearchBtn'),
+    cloudFileCount: document.getElementById('cloudFileCount'),
+    cloudFileList: document.getElementById('cloudFileList'),
     tokenDisplay: document.getElementById('tokenDisplay'),
     modalTotalTokens: document.getElementById('modalTotalTokens'),
     modalTodayTokens: document.getElementById('modalTodayTokens'),
@@ -383,6 +641,7 @@ document.addEventListener('DOMContentLoaded', () => {
     } else if (cid) {
         loadConversation(cid);
     } else {
+        applyTokenMiniDisplay(0, 0);
         // Init load knowledge even without conversation
         loadKnowledge(null);
     }
@@ -398,6 +657,11 @@ function initUI() {
     if (document.getElementById('toggleMailView')) {
         startMailPolling();
     }
+    window.addEventListener('resize', () => {
+        if (!isMailMobileLayout()) {
+            setMailMobileDetailMode(false);
+        }
+    });
     // Event Listeners
     if(els.sendBtn) els.sendBtn.addEventListener('click', sendMessage);
     
@@ -431,6 +695,20 @@ function initUI() {
         els.knowledgeSearchBtn.addEventListener('click', (e) => {
             e.preventDefault();
             handleKnowledgeSearch();
+        });
+    }
+    if (els.cloudFileSearchInput) {
+        els.cloudFileSearchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                loadCloudFiles();
+            }
+        });
+    }
+    if (els.cloudFileSearchBtn) {
+        els.cloudFileSearchBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            loadCloudFiles();
         });
     }
     const bulkBtn = document.getElementById('bulkVectorizeBtn');
@@ -488,12 +766,24 @@ function initUI() {
     }
 
     // Knowledge Panel
-    const toggleKP = () => els.knowledgePanel.classList.toggle('visible');
+    const toggleKP = () => {
+        if (!els.knowledgePanel) return;
+        const nextVisible = !els.knowledgePanel.classList.contains('visible');
+        if (nextVisible && els.filePanel) els.filePanel.classList.remove('visible');
+        els.knowledgePanel.classList.toggle('visible');
+    };
     if(els.toggleKnowledgePanel) els.toggleKnowledgePanel.addEventListener('click', toggleKP);
     if(els.btnTogglePanel) els.btnTogglePanel.addEventListener('click', toggleKP);
+    if(els.btnToggleFilePanel) els.btnToggleFilePanel.addEventListener('click', (e) => {
+        e.preventDefault();
+        closeCloudFilePanel();
+    });
 
     if(els.refreshKnowledgeBtn) {
         els.refreshKnowledgeBtn.addEventListener('click', () => loadKnowledge(currentConversationId));
+    }
+    if (els.refreshCloudFilesBtn) {
+        els.refreshCloudFilesBtn.addEventListener('click', () => loadCloudFiles());
     }
 
     // New Chat
@@ -531,8 +821,41 @@ function initUI() {
         });
     }
 
-    document.addEventListener('click', () => {
+    document.addEventListener('click', (e) => {
         if(els.userMenu) els.userMenu.classList.remove('active');
+
+        // Mobile: tap blank area to close sidebar / knowledge panel
+        if (window.innerWidth <= 768) {
+            const target = e.target;
+            const mobileToggleBtn = document.getElementById('toggleSidebarMobile');
+
+            if (els.sidebar && els.sidebar.classList.contains('mobile-open')) {
+                const clickInSidebar = els.sidebar.contains(target);
+                const clickOnToggle = (els.toggleSidebar && els.toggleSidebar.contains(target)) ||
+                    (mobileToggleBtn && mobileToggleBtn.contains(target));
+                if (!clickInSidebar && !clickOnToggle) {
+                    els.sidebar.classList.remove('mobile-open');
+                }
+            }
+
+            if (els.knowledgePanel && els.knowledgePanel.classList.contains('visible')) {
+                const clickInPanel = els.knowledgePanel.contains(target);
+                const clickOnToggle = (els.toggleKnowledgePanel && els.toggleKnowledgePanel.contains(target)) ||
+                    (els.btnTogglePanel && els.btnTogglePanel.contains(target));
+                if (!clickInPanel && !clickOnToggle) {
+                    els.knowledgePanel.classList.remove('visible');
+                }
+            }
+
+            if (els.filePanel && els.filePanel.classList.contains('visible')) {
+                const clickInPanel = els.filePanel.contains(target);
+                const clickOnToggle = (els.toggleFilePanel && els.toggleFilePanel.contains(target)) ||
+                    (els.btnToggleFilePanel && els.btnToggleFilePanel.contains(target));
+                if (!clickInPanel && !clickOnToggle) {
+                    els.filePanel.classList.remove('visible');
+                }
+            }
+        }
     });
 
     // Check user role and show admin menu if needed
@@ -706,6 +1029,127 @@ function initUI() {
     }
 }
 
+function safeTokenInt(v) {
+    const n = Number(v || 0);
+    if (!Number.isFinite(n)) return 0;
+    return Math.max(0, Math.floor(n));
+}
+
+function estimateStreamTokensByText(text) {
+    const s = String(text || '');
+    if (!s) return 0;
+    const nonAscii = (s.match(/[^\x00-\x7F]/g) || []).length;
+    const ascii = s.length - nonAscii;
+    return Math.max(1, Math.ceil(nonAscii / 1.6 + ascii / 4));
+}
+
+function applyTokenMiniDisplay(inputTokens, outputTokens) {
+    if (els.totalInputTokens) els.totalInputTokens.textContent = safeTokenInt(inputTokens).toLocaleString();
+    if (els.totalOutputTokens) els.totalOutputTokens.textContent = safeTokenInt(outputTokens).toLocaleString();
+}
+
+function renderTokenMiniFromState() {
+    const inputNow = tokenMiniState.baseInput + tokenMiniState.streamInput;
+    const outputStream = Math.max(tokenMiniState.streamOutput, tokenMiniState.estimatedStreamOutput);
+    const outputNow = tokenMiniState.baseOutput + outputStream;
+    applyTokenMiniDisplay(inputNow, outputNow);
+}
+
+function resetTokenMiniStreamPart() {
+    tokenMiniState.streamInput = 0;
+    tokenMiniState.streamOutput = 0;
+    tokenMiniState.estimatedStreamOutput = 0;
+    tokenMiniState.usageSnapshotInput = 0;
+    tokenMiniState.usageSnapshotOutput = 0;
+    tokenMiniState.usageSnapshotInitialized = false;
+}
+
+function beginTokenMiniStreaming() {
+    tokenMiniState.streaming = true;
+    tokenMiniState.conversationId = currentConversationId || null;
+    resetTokenMiniStreamPart();
+    renderTokenMiniFromState();
+}
+
+function noteTokenMiniConversationId(conversationId) {
+    const cid = conversationId ? String(conversationId) : null;
+    if (!cid) return;
+    if (!tokenMiniState.conversationId) {
+        tokenMiniState.conversationId = cid;
+    }
+}
+
+function onTokenStreamTextChunk(content) {
+    if (!tokenMiniState.streaming) return;
+    tokenMiniState.estimatedStreamOutput += estimateStreamTokensByText(content);
+    renderTokenMiniFromState();
+}
+
+function onTokenStreamUsageChunk(chunk) {
+    if (!tokenMiniState.streaming) return;
+    const inTokens = safeTokenInt(chunk && chunk.input_tokens);
+    const outTokens = safeTokenInt(chunk && chunk.output_tokens);
+
+    if (!tokenMiniState.usageSnapshotInitialized) {
+        tokenMiniState.streamInput += inTokens;
+        tokenMiniState.streamOutput += outTokens;
+        tokenMiniState.usageSnapshotInput = inTokens;
+        tokenMiniState.usageSnapshotOutput = outTokens;
+        tokenMiniState.usageSnapshotInitialized = true;
+        renderTokenMiniFromState();
+        return;
+    }
+
+    // 大多数 provider 在流式中上报的是“当前轮快照”，不是“增量”。
+    // 这里把快照转成增量，避免重复累计导致数值暴涨。
+    if (inTokens >= tokenMiniState.usageSnapshotInput && outTokens >= tokenMiniState.usageSnapshotOutput) {
+        tokenMiniState.streamInput += (inTokens - tokenMiniState.usageSnapshotInput);
+        tokenMiniState.streamOutput += (outTokens - tokenMiniState.usageSnapshotOutput);
+    } else {
+        // 快照回退通常表示进入了新的一轮（如工具调用后的下一轮）
+        tokenMiniState.streamInput += inTokens;
+        tokenMiniState.streamOutput += outTokens;
+    }
+
+    tokenMiniState.usageSnapshotInput = inTokens;
+    tokenMiniState.usageSnapshotOutput = outTokens;
+    renderTokenMiniFromState();
+}
+
+async function refreshTokenMiniForConversation(conversationId, options = {}) {
+    const { keepStreamPart = false } = options;
+    const cid = conversationId ? String(conversationId) : '';
+
+    tokenMiniState.conversationId = cid || null;
+    if (!keepStreamPart) resetTokenMiniStreamPart();
+
+    if (!cid) {
+        tokenMiniState.baseInput = 0;
+        tokenMiniState.baseOutput = 0;
+        renderTokenMiniFromState();
+        return;
+    }
+
+    const reqId = ++tokenMiniState.requestSeq;
+    try {
+        const res = await fetch(`/api/tokens/stats?conversation_id=${encodeURIComponent(cid)}`);
+        const data = await res.json();
+        if (reqId !== tokenMiniState.requestSeq) return;
+        if (!data || !data.success) return;
+        tokenMiniState.baseInput = safeTokenInt(data.input_total);
+        tokenMiniState.baseOutput = safeTokenInt(data.output_total);
+        renderTokenMiniFromState();
+    } catch (e) {
+        console.error('Error loading conversation token stats', e);
+    }
+}
+
+async function finishTokenMiniStreaming() {
+    tokenMiniState.streaming = false;
+    const cid = currentConversationId || tokenMiniState.conversationId;
+    await refreshTokenMiniForConversation(cid, { keepStreamPart: false });
+}
+
 async function openTokenModal() {
     if(!els.tokenModal) return;
     els.tokenModal.classList.add('active');
@@ -721,7 +1165,9 @@ async function openTokenModal() {
             const logsTableBody = document.getElementById('tokenLogsTableBody');
             if (logsTableBody && data.history) {
                 logsTableBody.innerHTML = data.history.map(log => {
-                    const total = (log.input_tokens || 0) + (log.output_tokens || 0);
+                    const inTokens = Number(log.input_tokens || 0);
+                    const outTokens = Number(log.output_tokens || 0);
+                    const total = Number(log.total_tokens ?? (inTokens + outTokens));
                     const timeStr = log.timestamp ? log.timestamp.split(' ')[1] || log.timestamp : '-';
                     const dateStr = log.timestamp ? log.timestamp.split(' ')[0] : '-';
                     return `
@@ -737,7 +1183,7 @@ async function openTokenModal() {
                                 <span class="action-badge ${log.action}">${(log.action || 'chat').toUpperCase()}</span>
                             </td>
                             <td class="num">
-                                <div style="font-size: 10px; color: #94a3b8;">${log.input_tokens}+${log.output_tokens}</div>
+                                <div style="font-size: 10px; color: #94a3b8;">${inTokens}+${outTokens}</div>
                                 <div style="font-weight: 800; font-family: 'JetBrains Mono';">${total.toLocaleString()}</div>
                             </td>
                         </tr>
@@ -817,8 +1263,10 @@ async function createNewConversation(silent = false) {
             </div>
         `;
         els.conversationTitle.textContent = 'New Chat';
-        els.totalInputTokens.textContent = '0';
-        els.totalOutputTokens.textContent = '0';
+        tokenMiniState.baseInput = 0;
+        tokenMiniState.baseOutput = 0;
+        resetTokenMiniStreamPart();
+        applyTokenMiniDisplay(0, 0);
         if(window.history.pushState) window.history.pushState({}, '', '/chat');
         
         // Refresh list to remove active state
@@ -841,6 +1289,11 @@ async function loadConversation(id) {
     
     currentConversationId = id;
     els.messagesContainer.innerHTML = ''; // Loading state
+    tokenMiniState.conversationId = id ? String(id) : null;
+    tokenMiniState.baseInput = 0;
+    tokenMiniState.baseOutput = 0;
+    resetTokenMiniStreamPart();
+    renderTokenMiniFromState();
     
     // Update URL
     if(window.history.pushState) window.history.pushState({}, '', `/chat?cid=${id}`);
@@ -854,8 +1307,10 @@ async function loadConversation(id) {
             // Render
             renderMessages(data.conversation.messages);
             if(els.conversationTitle) els.conversationTitle.textContent = data.conversation.title || "Conversation " + id;
+            await refreshTokenMiniForConversation(id);
         } else {
             console.error("Failed to load conversation:", data.message);
+            await refreshTokenMiniForConversation(null);
         }
         
         // Update Token Counts (if available in stored data, otherwise calc)
@@ -868,6 +1323,7 @@ async function loadConversation(id) {
         
     } catch (e) {
         console.error("Error loading chat", e);
+        await refreshTokenMiniForConversation(null);
     }
 }
 
@@ -927,7 +1383,9 @@ async function sendMessage() {
     let displayContent = text;
     if (uploadedFileIds.length > 0) {
         displayContent += '\n\n' + uploadedFileIds.map(f => {
-            return f.type === 'text' ? `[File Content: ${f.name}]` : `[Attachment: ${f.name}]`;
+            if (f.type === 'text') return `[File Content: ${f.name}]`;
+            if (f.type === 'sandbox_file') return `[Sandbox File: ${f.name} -> ${f.sandbox_path}]`;
+            return `[Attachment: ${f.name}]`;
         }).join(' ');
     }
 
@@ -940,14 +1398,21 @@ async function sendMessage() {
     // Separate text files from Volc files
     let finalMessage = text;
     const volcFileIds = [];
+    const sandboxPaths = [];
     
     uploadedFileIds.forEach(f => {
         if (f.type === 'text') {
             finalMessage += `\n\n--- Start of File: ${f.name} ---\n${f.content}\n--- End of File: ${f.name} ---\n`;
+        } else if (f.type === 'sandbox_file') {
+            if (f.sandbox_path) sandboxPaths.push(f.sandbox_path);
         } else {
             volcFileIds.push(f.id);
         }
     });
+
+    if (sandboxPaths.length > 0) {
+        finalMessage += `\n\n[系统注入] 已上传文件到用户沙箱，请优先使用 file_list/file_create/file_read/file_find/file_write/file_remove 工具操作以下路径：\n${sandboxPaths.map(p => `- ${p}`).join('\n')}\n`;
+    }
 
     // Prepare API Payload
     const payload = {
@@ -966,6 +1431,7 @@ async function sendMessage() {
 
     isGenerating = true;
     updateSendButtonState();
+    beginTokenMiniStreaming();
     
     // Create Placeholder for AI Response
     const aiMsgId = Date.now().toString(); // Temporary ID
@@ -1021,6 +1487,7 @@ async function sendMessage() {
                         
                         if (chunk.conversation_id) {
                             currentConversationId = chunk.conversation_id;
+                            noteTokenMiniConversationId(chunk.conversation_id);
                         }
 
                         if (chunk.type === 'model_info') {
@@ -1035,6 +1502,7 @@ async function sendMessage() {
                         
                         else if (chunk.type === 'content') {
                             currentFullContent += chunk.content;
+                            onTokenStreamTextChunk(chunk.content);
                             
                             // 如果当前没有正在渲染的内容Span，或者它不是消息气泡的最后一丅素（说明丗插入了工具）
                             const msgContentContainer = aiMsgDiv.querySelector('.message-content');
@@ -1111,7 +1579,7 @@ async function sendMessage() {
                             updateLastToolResult(aiMsgDiv, chunk.name, chunk.result, chunk.call_id || chunk.callId || '');
                         }
                         else if (chunk.type === 'token_usage') {
-                            if(els.totalInputTokens) els.totalInputTokens.textContent = chunk.total_tokens || chunk.input_tokens + chunk.output_tokens;
+                            onTokenStreamUsageChunk(chunk);
                         }
                         else if (chunk.type === 'title') {
                             if(els.conversationTitle) els.conversationTitle.textContent = chunk.title;
@@ -1146,6 +1614,7 @@ async function sendMessage() {
         currentAbortController = null;
         updateSendButtonState();
         aiMsgDiv.classList.remove('pending');
+        await finishTokenMiniStreaming();
         loadConversations(); // Update list preview
         loadKnowledge(currentConversationId); // Refresh knowledge
     }
@@ -2152,7 +2621,12 @@ function restoreHeaderState(state) {
         };
     }
     const toggleKP = document.getElementById('toggleKnowledgePanel');
-    if (toggleKP) toggleKP.onclick = () => els.knowledgePanel.classList.toggle('visible');
+    if (toggleKP) toggleKP.onclick = () => {
+        if (els.filePanel) els.filePanel.classList.remove('visible');
+        if (els.knowledgePanel) els.knowledgePanel.classList.toggle('visible');
+    };
+    const toggleFile = document.getElementById('toggleFilePanel');
+    if (toggleFile) toggleFile.onclick = () => toggleCloudFilePanel();
     const toggleMail = document.getElementById('toggleMailView');
     if (toggleMail) {
         toggleMail.onclick = () => openMailPlaceholderView();
@@ -2569,6 +3043,8 @@ function closeKnowledgeView() {
 }
 
 window.openMailPlaceholderView = function() {
+    if (els.knowledgePanel) els.knowledgePanel.classList.remove('visible');
+    closeCloudFilePanel();
     const viewer = document.getElementById('knowledgeViewer');
     const msgs = document.getElementById('messagesContainer');
     const inputWrapper = document.getElementById('inputWrapper');
@@ -2589,6 +3065,10 @@ window.openMailPlaceholderView = function() {
     currentViewingKnowledge = null;
     pendingHighlightData = null;
     navigationStack = [];
+    if (isMailMobileLayout()) {
+        mailViewState.sidebarCollapsed = false;
+        saveMailSidebarCollapsedState(false);
+    }
     setMailViewUrl(mailViewState.selectedId || '');
     if (mailViewState.folder === 'sent') {
         pollMailNotifyOnly();
@@ -2653,7 +3133,12 @@ window.openMailPlaceholderView = function() {
             <section class="mail-detail-panel">
                 <div class="mail-detail-head">
                     <div class="mail-detail-head-row">
-                        <h3 id="mailDetailTitle">邮件详情</h3>
+                        <div class="mail-detail-head-left">
+                            <button class="mail-mobile-back-btn" type="button" title="返回邮件列表" onclick="backToMailListMobile()">
+                                <i class="fa-solid fa-arrow-left"></i>
+                            </button>
+                            <h3 id="mailDetailTitle">邮件详情</h3>
+                        </div>
                         <div class="mail-icon-actions">
                             <button class="mail-icon-btn" type="button" title="刷新" onclick="refreshMailFolder()"><i class="fa-solid fa-rotate-right"></i></button>
                             <button class="mail-icon-btn" type="button" title="回复" onclick="openMailComposeReply()"><i class="fa-solid fa-reply"></i></button>
@@ -2667,6 +3152,7 @@ window.openMailPlaceholderView = function() {
             </section>
         </div>
     `;
+    setMailMobileDetailMode(false);
     initMailWorkspace();
 };
 
@@ -2743,8 +3229,15 @@ function parseRawMail(raw) {
 
 function decodeUnicodeEscapes(text) {
     const src = String(text || '');
-    if (!src || (src.indexOf('\\u') < 0 && src.indexOf('\\x') < 0)) return src;
+    if (!src || (src.indexOf('\\u') < 0 && src.indexOf('\\U') < 0 && src.indexOf('\\x') < 0)) return src;
     return src
+        .replace(/\\U([0-9a-fA-F]{8})/g, (_, h) => {
+            try {
+                return String.fromCodePoint(parseInt(h, 16));
+            } catch (e) {
+                return `\\U${h}`;
+            }
+        })
         .replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
         .replace(/\\x([0-9a-fA-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
 }
@@ -3099,12 +3592,16 @@ async function loadMailCurrentFolder(query = '', options = {}) {
 async function loadMailInbox(query = '', options = {}) {
     const silent = !!(options && options.silent);
     const refreshDetail = !options || options.refreshDetail !== false;
+    const forceNetwork = !!(options && options.forceNetwork);
     const requestId = ++mailViewState.inboxRequestId;
     const listEl = document.getElementById('mailListBody');
     if (!silent && listEl) listEl.innerHTML = `<div class="mail-empty-state">正在加载收件箱...</div>`;
     try {
-        const q = query ? `?q=${encodeURIComponent(query)}` : '';
-        const res = await fetch(`/api/mail/me/inbox${q}`);
+        const params = new URLSearchParams();
+        if (query) params.set('q', query);
+        params.set('cache_mode', forceNetwork ? 'refresh' : 'cache_first');
+        const q = params.toString();
+        const res = await fetch(`/api/mail/me/inbox${q ? `?${q}` : ''}`);
         const data = await res.json();
         if (requestId !== mailViewState.inboxRequestId) return;
         if (!data.success) {
@@ -3131,9 +3628,11 @@ async function loadMailInbox(query = '', options = {}) {
             setMailViewUrl(mailViewState.selectedId || '');
         }
         renderMailList();
-        if (refreshDetail && mailViewState.selectedId && mailViewState.mode !== 'compose') {
+        const mobileAutoOpenAllowed = !isMailMobileLayout() || !!getMailIdFromUrl() || !!options.forceDetail;
+        if (refreshDetail && mailViewState.selectedId && mailViewState.mode !== 'compose' && mobileAutoOpenAllowed) {
             await loadMailDetail(mailViewState.selectedId, { markAsRead: false });
         } else if (refreshDetail && mailViewState.mode !== 'compose') {
+            setMailMobileDetailMode(false);
             renderMailDetailEmpty('收件箱为空');
         }
     } catch (err) {
@@ -3152,12 +3651,16 @@ async function loadMailInbox(query = '', options = {}) {
 async function loadMailSent(query = '', options = {}) {
     const silent = !!(options && options.silent);
     const refreshDetail = !options || options.refreshDetail !== false;
+    const forceNetwork = !!(options && options.forceNetwork);
     const requestId = ++mailViewState.inboxRequestId;
     const listEl = document.getElementById('mailListBody');
     if (!silent && listEl) listEl.innerHTML = `<div class="mail-empty-state">正在加载发件箱...</div>`;
     try {
-        const q = query ? `?q=${encodeURIComponent(query)}` : '';
-        const res = await fetch(`/api/mail/me/sent${q}`);
+        const params = new URLSearchParams();
+        if (query) params.set('q', query);
+        params.set('cache_mode', forceNetwork ? 'refresh' : 'cache_first');
+        const q = params.toString();
+        const res = await fetch(`/api/mail/me/sent${q ? `?${q}` : ''}`);
         const data = await res.json();
         if (requestId !== mailViewState.inboxRequestId) return;
         if (!data.success) {
@@ -3181,9 +3684,11 @@ async function loadMailSent(query = '', options = {}) {
             setMailViewUrl(mailViewState.selectedId || '');
         }
         renderMailList();
-        if (refreshDetail && mailViewState.selectedId && mailViewState.mode !== 'compose') {
+        const mobileAutoOpenAllowed = !isMailMobileLayout() || !!getMailIdFromUrl() || !!options.forceDetail;
+        if (refreshDetail && mailViewState.selectedId && mailViewState.mode !== 'compose' && mobileAutoOpenAllowed) {
             await loadMailDetail(mailViewState.selectedId, { markAsRead: false });
         } else if (refreshDetail && mailViewState.mode !== 'compose') {
+            setMailMobileDetailMode(false);
             renderMailDetailEmpty('发件箱为空');
         }
     } catch (err) {
@@ -3205,6 +3710,7 @@ async function loadMailDetail(mailId, options = {}) {
     }
     const requestId = ++mailViewState.detailRequestId;
     const markAsRead = !!options.markAsRead;
+    const forceNetwork = !!options.forceNetwork;
     const viewingSent = mailViewState.folder === 'sent';
     const titleEl = document.getElementById('mailDetailTitle');
     const metaEl = document.getElementById('mailDetailMeta');
@@ -3215,7 +3721,9 @@ async function loadMailDetail(mailId, options = {}) {
     if (contentEl) contentEl.innerHTML = `<div class="mail-empty-state">正在加载邮件详情...</div>`;
     try {
         const basePath = viewingSent ? '/api/mail/me/sent' : '/api/mail/me/inbox';
-        const res = await fetch(`${basePath}/${encodeURIComponent(mailId)}`);
+        const params = new URLSearchParams();
+        params.set('cache_mode', forceNetwork ? 'refresh' : 'cache_first');
+        const res = await fetch(`${basePath}/${encodeURIComponent(mailId)}?${params.toString()}`);
         const data = await res.json();
         if (requestId !== mailViewState.detailRequestId) return;
         if (mailViewState.mode === 'compose') return;
@@ -3227,6 +3735,7 @@ async function loadMailDetail(mailId, options = {}) {
         updateMailItemInState(mail);
         mailViewState.currentMail = mail;
         mailViewState.mode = viewingSent ? 'sent' : 'inbox';
+        setMailMobileDetailMode(true);
         const parsed = parseRawMail(mail.content || '');
         const senderLine = mail.sender || parsed.headers['from'] || '-';
         const recipientLine = mail.recipient || parsed.headers['to'] || '-';
@@ -3280,6 +3789,7 @@ async function loadMailDetail(mailId, options = {}) {
 }
 
 async function initMailWorkspace() {
+    setMailMobileDetailMode(false);
     mailViewState.selectedId = getMailIdFromUrl() || loadMailSelectedId() || mailViewState.selectedId || '';
     mailViewState.restorePositionOnce = true;
 
@@ -3333,11 +3843,12 @@ window.selectMailItemById = async function(encodedMailId) {
     }
     renderMailList();
     await loadMailDetail(mailId, { markAsRead: mailViewState.folder !== 'sent' });
+    setMailMobileDetailMode(true);
 };
 
 window.refreshMailInbox = async function() {
     mailViewState.mode = mailViewState.folder === 'sent' ? 'sent' : 'inbox';
-    await loadMailCurrentFolder(mailViewState.query || '');
+    await loadMailCurrentFolder(mailViewState.query || '', { forceNetwork: true });
 };
 
 window.refreshMailFolder = window.refreshMailInbox;
@@ -3349,6 +3860,7 @@ window.setMailFolder = async function(folder) {
     else mailViewState.folder = 'all';
     mailViewState.selectedId = '';
     saveMailSelectedId('');
+    setMailMobileDetailMode(false);
     if (isMailViewActiveInDom()) {
         setMailViewUrl('');
     }
@@ -3386,6 +3898,7 @@ window.deleteCurrentMail = async function() {
 
 window.returnToInboxView = async function() {
     mailViewState.mode = mailViewState.folder === 'sent' ? 'sent' : 'inbox';
+    setMailMobileDetailMode(false);
     renderMailDetailEmpty('请选择一封邮件');
     if (mailViewState.selectedId) {
         await loadMailDetail(mailViewState.selectedId);
@@ -3394,7 +3907,12 @@ window.returnToInboxView = async function() {
 
 window.openMailComposeView = function(preset = {}) {
     setMailViewUrl('');
+    setMailMobileDetailMode(true);
     renderMailComposeForm(preset);
+};
+
+window.backToMailListMobile = function() {
+    setMailMobileDetailMode(false);
 };
 
 window.openMailComposeReply = function() {
@@ -3695,7 +4213,12 @@ function closeKnowledgeSearchResultView() {
             else els.sidebar.classList.toggle('collapsed');
         };
         const toggleKP = document.getElementById('toggleKnowledgePanel');
-        if(toggleKP) toggleKP.onclick = () => els.knowledgePanel.classList.toggle('visible');
+        if(toggleKP) toggleKP.onclick = () => {
+            if (els.filePanel) els.filePanel.classList.remove('visible');
+            if (els.knowledgePanel) els.knowledgePanel.classList.toggle('visible');
+        };
+        const toggleFile = document.getElementById('toggleFilePanel');
+        if(toggleFile) toggleFile.onclick = () => toggleCloudFilePanel();
         const toggleMail = document.getElementById('toggleMailView');
         if(toggleMail) toggleMail.onclick = () => openMailPlaceholderView();
     }
@@ -4135,6 +4658,14 @@ async function handleFileUpload(e) {
                         content: data.content,
                         name: data.filename
                     });
+                } else if (data.type === 'sandbox_file') {
+                    uploadedFileIds.push({
+                        type: 'sandbox_file',
+                        name: data.update_file_name || data.filename,
+                        original_name: data.filename,
+                        sandbox_path: data.sandbox_path,
+                        stored_path: data.stored_path
+                    });
                 } else {
                     uploadedFileIds.push({
                         type: 'file',
@@ -4143,6 +4674,9 @@ async function handleFileUpload(e) {
                     });
                 }
                 updateFilePreview();
+                if (els.filePanel && els.filePanel.classList.contains('visible')) {
+                    loadCloudFiles();
+                }
             } else {
                 alert('Upload failed: ' + data.message);
             }
@@ -5300,6 +5834,12 @@ async function loadAdminStats() {
             if (trendData.success) {
                 renderAdminTokenTrend(trendData);
             }
+
+            const toolRes = await fetch('/api/admin/tools/stats?days=30');
+            const toolData = await toolRes.json();
+            if (toolData.success) {
+                renderAdminToolTrend(toolData);
+            }
         }
     } catch (err) {
         console.error('Failed to load stats:', err);
@@ -5379,6 +5919,103 @@ function renderAdminTokenTrend(data) {
             <div class="trend-title">Top Models</div>
             ${(models.length ? models : [{name:'-', tokens:0}]).map(m => `
                 <div class="trend-item"><span>${escapeHtml(String(m.name || '-'))}</span><span class="mono">${Number(m.tokens || 0).toLocaleString()}</span></div>
+            `).join('')}
+        </div>
+    `;
+}
+
+function renderAdminToolTrend(data) {
+    const chartWrap = document.getElementById('adminToolTrendChart');
+    const meta = document.getElementById('adminToolTrendMeta');
+    const top = document.getElementById('adminToolTrendTop');
+    const totalCallsEl = document.getElementById('toolStatTotalCalls');
+    const errorRateEl = document.getElementById('toolStatErrorRate');
+    const avgLatencyEl = document.getElementById('toolStatAvgLatency');
+    const failed24hEl = document.getElementById('toolStatFailed24h');
+    if (!chartWrap || !meta || !top || !totalCallsEl || !errorRateEl || !avgLatencyEl || !failed24hEl) return;
+
+    const summary = data.summary || {};
+    totalCallsEl.textContent = Number(summary.total_calls || 0).toLocaleString();
+    errorRateEl.textContent = `${Number(summary.error_rate || 0).toFixed(2)}%`;
+    avgLatencyEl.textContent = Number(summary.avg_latency_ms || 0).toFixed(2);
+    failed24hEl.textContent = Number((data.top_failed_tools_24h || []).length || 0).toLocaleString();
+
+    const labels = Array.isArray(data.labels) ? data.labels : [];
+    const callSeries = (data.series && Array.isArray(data.series.calls)) ? data.series.calls : [];
+    const errSeries = (data.series && Array.isArray(data.series.errors)) ? data.series.errors : [];
+    if (!labels.length || !callSeries.length) {
+        meta.textContent = '-';
+        chartWrap.innerHTML = '<div style="padding:12px;color:#94a3b8;font-size:12px;">暂无工具统计数据</div>';
+        top.innerHTML = '';
+        return;
+    }
+
+    const totalCalls = callSeries.reduce((a, b) => a + (Number(b) || 0), 0);
+    const totalErrs = errSeries.reduce((a, b) => a + (Number(b) || 0), 0);
+    meta.textContent = `调用 ${totalCalls.toLocaleString()} · 错误 ${totalErrs.toLocaleString()}`;
+
+    const width = Math.max((chartWrap.clientWidth || 720) - 24, 360);
+    const height = 220;
+    const padL = 44;
+    const padR = 14;
+    const padT = 12;
+    const padB = 28;
+    const plotW = width - padL - padR;
+    const plotH = height - padT - padB;
+    const maxVal = Math.max(...callSeries, ...errSeries, 1);
+
+    const makePoints = (series) => series.map((v, i) => {
+        const x = padL + (plotW * i / Math.max(series.length - 1, 1));
+        const y = padT + plotH - ((Number(v) || 0) / maxVal) * plotH;
+        return `${x.toFixed(2)},${y.toFixed(2)}`;
+    }).join(' ');
+
+    const callPoints = makePoints(callSeries);
+    const errPoints = makePoints(errSeries);
+
+    const yTicks = [0, 0.25, 0.5, 0.75, 1].map(r => {
+        const y = padT + plotH - (plotH * r);
+        const val = Math.round(maxVal * r).toLocaleString();
+        return `
+            <line x1="${padL}" y1="${y}" x2="${width - padR}" y2="${y}" stroke="#eef2f7" stroke-width="1"/>
+            <text x="${padL - 6}" y="${y + 4}" text-anchor="end" font-size="10" fill="#94a3b8">${val}</text>
+        `;
+    }).join('');
+
+    const firstLabel = labels[0] || '';
+    const midLabel = labels[Math.floor(labels.length / 2)] || '';
+    const lastLabel = labels[labels.length - 1] || '';
+
+    chartWrap.innerHTML = `
+        <svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" xmlns="http://www.w3.org/2000/svg">
+            ${yTicks}
+            <polyline fill="none" stroke="#0f172a" stroke-width="2.2" points="${callPoints}" stroke-linecap="round" stroke-linejoin="round"/>
+            <polyline fill="none" stroke="#dc2626" stroke-width="2.2" points="${errPoints}" stroke-linecap="round" stroke-linejoin="round"/>
+            <text x="${padL}" y="${height - 8}" font-size="10" fill="#94a3b8">${firstLabel}</text>
+            <text x="${padL + plotW / 2}" y="${height - 8}" font-size="10" fill="#94a3b8" text-anchor="middle">${midLabel}</text>
+            <text x="${width - padR}" y="${height - 8}" font-size="10" fill="#94a3b8" text-anchor="end">${lastLabel}</text>
+        </svg>
+    `;
+
+    const topTools = Array.isArray(data.top_tools) ? data.top_tools.slice(0, 5) : [];
+    const failedTools = Array.isArray(data.top_failed_tools_24h) ? data.top_failed_tools_24h.slice(0, 5) : [];
+    top.innerHTML = `
+        <div class="trend-block">
+            <div class="trend-title">Top Tools</div>
+            ${(topTools.length ? topTools : [{name:'-', calls:0, error_rate:0, avg_latency_ms:0}]).map(t => `
+                <div class="trend-item">
+                    <span>${escapeHtml(String(t.name || '-'))}</span>
+                    <span class="mono">${Number(t.calls || 0).toLocaleString()} / ${Number(t.error_rate || 0).toFixed(1)}%</span>
+                </div>
+            `).join('')}
+        </div>
+        <div class="trend-block">
+            <div class="trend-title">Top Failed (24h)</div>
+            ${(failedTools.length ? failedTools : [{name:'-', errors:0}]).map(t => `
+                <div class="trend-item">
+                    <span>${escapeHtml(String(t.name || '-'))}</span>
+                    <span class="mono">${Number(t.errors || 0).toLocaleString()}</span>
+                </div>
             `).join('')}
         </div>
     `;

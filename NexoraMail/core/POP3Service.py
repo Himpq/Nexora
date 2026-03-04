@@ -298,30 +298,30 @@ def handle_retr(conn, cmds, temp_data):
             msg_num = int(cmds[1]) - 1
             if 0 <= msg_num < len(mailList):
                 mail = mailList[msg_num]
-                # 分块读取并限速发送（配置 POP3Services.settings.maxSpeed 单位 MB/s）
+                # 按行读取并发送（配置 POP3Services.settings.maxSpeed 单位 MB/s）
+                # 注意：必须保持 MIME 结构，避免 \r\r\n 造成客户端把头部当正文。
                 speed_mb = Configure.get('POP3Services', {}).get('settings', {}).get('maxSpeed', 1)
                 bytes_per_sec = int(speed_mb) * 1024 * 1024
-                chunk_size = 16 * 1024
                 sent = 0
                 conn.send(f"+OK {mail['size']} octets\r\n".encode())
                 with open(os.path.join(mail['path'], 'content.txt'), 'rb') as f:
                     while True:
-                        chunk = f.read(chunk_size)
-                        if not chunk:
+                        raw_line = f.readline()
+                        if raw_line == b'':
                             break
-                        # 转换点行处理：如果 chunk 中包含行以'.'开头需要处理
-                        lines = chunk.split(b"\n")
-                        for i, ln in enumerate(lines):
-                            if ln.startswith(b'.'):
-                                ln = b'.' + ln
-                            try:
-                                conn.send(ln + b"\r\n")
-                            except Exception:
-                                return
-                        sent += len(chunk)
+                        line = raw_line.rstrip(b"\r\n")
+                        # Dot-stuffing
+                        if line.startswith(b'.'):
+                            line = b'.' + line
+                        out = line + b"\r\n"
+                        try:
+                            conn.send(out)
+                        except Exception:
+                            return
+                        sent += len(out)
                         # 限速 sleep
                         if bytes_per_sec > 0:
-                            sleep_time = len(chunk) / float(bytes_per_sec)
+                            sleep_time = len(out) / float(bytes_per_sec)
                             if sleep_time > 0:
                                 time.sleep(sleep_time)
                 try:
@@ -484,19 +484,52 @@ def list_mails(mailpath):
             continue
 
         try:
+            content_path = os.path.join(mail_dir, 'content.txt')
             with open(os.path.join(mail_dir, 'mail.json'), 'r') as f:
                 mail_info = json.load(f)
-            with open(os.path.join(mail_dir, 'content.txt'), 'r', encoding='utf-8') as f:
-                content = f.read()
+            size_bytes = int(os.path.getsize(content_path))
             mails.append({
                 'id': mail_info['id'],
-                'size': len(content),
+                'size': size_bytes,
+                'timestamp': int(mail_info.get('timestamp', 0) or 0),
                 'path': mail_dir,
                 'deleted': False
             })
         except Exception:
             continue
+    mails.sort(key=lambda x: (int(x.get('timestamp', 0) or 0), str(x.get('id', ''))), reverse=True)
     return mails
+
+
+def refresh_mail_list(temp_data):
+    """
+    Refresh mailbox snapshot during a live POP3 session.
+    Preserve DELE flags for messages that were already marked deleted.
+    """
+    try:
+        mailpath = temp_data.get('mailpath')
+        if not mailpath:
+            return
+        old_list = temp_data.get('mailList', [])
+        deleted_ids = set()
+        if isinstance(old_list, list):
+            for m in old_list:
+                try:
+                    if m.get('deleted'):
+                        deleted_ids.add(str(m.get('id', '')))
+                except Exception:
+                    continue
+
+        new_list = list_mails(mailpath)
+        for m in new_list:
+            if str(m.get('id', '')) in deleted_ids:
+                m['deleted'] = True
+        temp_data['mailList'] = new_list
+    except Exception as e:
+        try:
+            loginfo.write(f"[POP3] refresh_mail_list failed: {e}")
+        except Exception:
+            pass
 
 def handle(conn: socket.socket, addr, user_group):
     state = "AUTHORIZATION"
@@ -575,6 +608,10 @@ def handle(conn: socket.socket, addr, user_group):
                     conn.send("-ERR Invalid command in AUTHORIZATION state\r\n".encode())
 
             elif state == "TRANSACTION":
+                # Keep snapshot fresh so clients can see newly delivered mail
+                # without forcing reconnect. Preserve DELE flags.
+                if cmd not in ("DELE", "RSET", "QUIT"):
+                    refresh_mail_list(temp_data)
                 if cmd == "STAT":
                     handle_stat(conn, temp_data)
                 elif cmd == "LIST":

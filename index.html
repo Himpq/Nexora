@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nexora</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-sidebar: #050505;
+      --bg-sidebar-hover: #151515;
+      --bg-main: #ffffff;
+      --text-main: #111111;
+      --text-muted: #666666;
+      --line: #eaeaea;
+      --ok: #10b981;
+      --radius: 14px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Inter", "Noto Sans SC", "Segoe UI", sans-serif;
+      background: #f7f7f8;
+      color: var(--text-main);
+    }
+
+    .app-shell {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 260px 1fr;
+    }
+
+    .sidebar {
+      background: var(--bg-sidebar);
+      color: #a3a3a3;
+      padding: 20px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .logo {
+      color: #fff;
+      font-weight: 700;
+      font-size: 18px;
+      letter-spacing: -0.3px;
+      padding: 0 8px;
+    }
+    .logo .dot { color: #5a5a5a; }
+    .side-nav {
+      display: grid;
+      gap: 4px;
+    }
+    .side-nav a {
+      color: #a3a3a3;
+      text-decoration: none;
+      font-size: 13px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      transition: 0.15s ease;
+    }
+    .side-nav a:hover {
+      background: var(--bg-sidebar-hover);
+      color: #fff;
+    }
+    .side-nav a.active {
+      background: #fff;
+      color: #000;
+      font-weight: 600;
+    }
+    .side-footer {
+      margin-top: auto;
+      border-top: 1px solid #1f1f1f;
+      padding: 10px 8px 0;
+    }
+    .btn-primary {
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 12px;
+      cursor: pointer;
+      font-weight: 700;
+      font-size: 13px;
+      background: #fff;
+      color: #000;
+      width: 100%;
+    }
+
+    .main {
+      background: var(--bg-main);
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    .main-header {
+      height: 60px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      gap: 14px;
+    }
+    .header-left,
+    .header-right {
+      width: 220px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .header-right { justify-content: flex-end; }
+    .header-center {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      text-align: center;
+      font-weight: 600;
+      font-size: 14px;
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--ok);
+      box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.15);
+    }
+    .status-text {
+      font-size: 12px;
+      color: #4b4b4b;
+      font-weight: 500;
+    }
+    .btn-outline {
+      border: 1px solid #d9d9d9;
+      background: #fff;
+      color: #111;
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .main-scroll {
+      overflow-y: auto;
+      padding: 24px;
+    }
+    .workspace-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(320px, 1fr);
+      gap: 14px;
+      align-content: start;
+    }
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
+      padding: 20px;
+    }
+    .hero {
+      background: linear-gradient(160deg, #ffffff 0%, #f7f7f8 100%);
+      padding: 28px;
+    }
+    .hero h1 {
+      margin: 0;
+      font-size: clamp(34px, 4vw, 50px);
+      line-height: 1.04;
+      letter-spacing: -0.02em;
+      font-weight: 800;
+    }
+    .hero p {
+      margin: 10px 0 0;
+      font-size: 18px;
+      color: #5f5f5f;
+      line-height: 1.6;
+      max-width: 760px;
+    }
+    .hero p strong {
+      color: #111;
+      font-weight: 700;
+    }
+    .hero-actions {
+      margin-top: 20px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .intro {
+      padding: 20px;
+    }
+    .intro h2 {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 800;
+      letter-spacing: -0.01em;
+    }
+    .intro p {
+      margin: 8px 0 0;
+      font-size: 13px;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+    .intro-list {
+      margin: 14px 0 0;
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: 0;
+      border-top: 1px solid var(--line);
+    }
+    .intro-list li {
+      padding: 12px 0;
+      border-bottom: 1px solid var(--line);
+      display: grid;
+      gap: 4px;
+    }
+    .intro-list .title {
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .intro-list .desc {
+      font-size: 13px;
+      color: #666;
+      line-height: 1.6;
+    }
+    .spotlight h2 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 800;
+      letter-spacing: -0.01em;
+    }
+    .spotlight p {
+      margin: 8px 0 0;
+      font-size: 13px;
+      color: #666;
+      line-height: 1.6;
+    }
+    .spotlight-list {
+      margin: 14px 0 0;
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: 10px;
+    }
+    .spotlight-list li {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+      background: #fafafa;
+    }
+    .spotlight-list b {
+      display: block;
+      font-size: 13px;
+    }
+    .spotlight-list span {
+      margin-top: 3px;
+      display: block;
+      font-size: 12px;
+      color: #666;
+    }
+
+    @media (max-width: 1080px) {
+      .app-shell {
+        grid-template-columns: 1fr;
+      }
+      .sidebar {
+        display: none;
+      }
+      .workspace-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+    @media (max-width: 680px) {
+      .main-header {
+        padding: 0 12px;
+      }
+      .header-left,
+      .header-right {
+        width: auto;
+      }
+      .header-right {
+        display: none;
+      }
+      .main-scroll {
+        padding: 14px;
+      }
+      .hero {
+        padding: 18px;
+      }
+      .hero p {
+        font-size: 15px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="logo">Nexora<span class="dot">.</span></div>
+      <nav class="side-nav">
+        <a class="active" href="#">总览</a>
+        <a href="#">会话工作台</a>
+        <a href="#">邮件中心</a>
+        <a href="#">知识库</a>
+        <a href="#">文件沙箱</a>
+        <a href="#">系统设置</a>
+      </nav>
+      <div class="side-footer">
+        <button class="btn-primary">进入 Nexora</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="main-header">
+        <div class="header-left">
+          <span class="status-dot"></span>
+          <span class="status-text">系统状态正常</span>
+        </div>
+        <div class="header-center">Nexora 一体化智能工作台</div>
+        <div class="header-right">
+          <button class="btn-outline">打开控制台</button>
+        </div>
+      </header>
+
+      <div class="main-scroll">
+        <div class="workspace-grid">
+          <section class="hero panel">
+            <h1>一个界面，完成整条任务链</h1>
+            <p>以 <strong>会话</strong> 为核心，按需联动 <strong>邮件、知识、文件</strong>，把处理过程留在同一工作台里。</p>
+            <div class="hero-actions">
+              <button class="btn-primary">打开会话</button>
+              <button class="btn-outline">查看邮件工作台</button>
+            </div>
+          </section>
+
+          <section class="panel spotlight">
+            <h2>为什么是 Nexora</h2>
+            <p>不是信息展示页，而是面向执行的工作台入口。</p>
+            <ul class="spotlight-list">
+              <li><b>会话即入口</b><span>任务上下文、工具调用、结果输出都在同一条线。</span></li>
+              <li><b>模块可联动</b><span>邮件、知识、文件能力可被同一轮任务直接调用。</span></li>
+              <li><b>过程可追踪</b><span>每一步操作留痕，便于复盘和二次复用。</span></li>
+            </ul>
+          </section>
+
+          <section class="panel intro">
+            <h2>Nexora 重点能力</h2>
+            <p>只保留你最常用的核心模块，不做冗余展示。</p>
+            <ul class="intro-list">
+              <li>
+                <span class="title">会话驱动</span>
+                <span class="desc">在一轮对话中完成检索、生成、工具调用与结果整理。</span>
+              </li>
+              <li>
+                <span class="title">邮件联动</span>
+                <span class="desc">收件、回复、转发与会话协作打通，减少来回切换。</span>
+              </li>
+              <li>
+                <span class="title">知识与文件</span>
+                <span class="desc">知识沉淀和文件处理放在同一流程里，便于复用和追溯。</span>
+              </li>
+            </ul>
+          </section>
+
+          <section class="panel intro">
+            <h2>适用场景</h2>
+            <p>Nexora 更适合“要做完事情”的工作流，而不是只做单点问答。</p>
+            <ul class="intro-list">
+              <li>
+                <span class="title">研发协作</span>
+                <span class="desc">需求沟通、代码分析、邮件确认一条链路完成。</span>
+              </li>
+              <li>
+                <span class="title">内容与运营</span>
+                <span class="desc">生成内容后直接邮件触达并归档进知识库。</span>
+              </li>
+              <li>
+                <span class="title">个人工作台</span>
+                <span class="desc">把对话、文档、邮件整合到同一个长期上下文。</span>
+              </li>
+            </ul>
+          </section>
+        </div>
+      </div>
+    </main>
+  </div>
+</body>
+</html>
