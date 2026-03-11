@@ -1,0 +1,28 @@
+[
+  {
+    "timestamp": "2026-03-07 13:46:32",
+    "conversation_id": "",
+    "tool_name": "selectTools",
+    "success": false,
+    "duration_ms": 0,
+    "provider": "volcengine",
+    "model": "doubao-seed-1-6-250615",
+    "username": "mujica",
+    "args_size": 18,
+    "result_size": 208,
+    "error_message": "{\"success\": true, \"message\": \"工具选择已更新，将在下一轮生效\", \"selected_tool_ids\": [0, 3, 5], \"selected_tool_names\": [\"vectorSearch\", \"js_execute\", \"queryShortMemory\"], \"always_enabled\": [\"selectTools\"], \"invalid_ids\": []}"
+  },
+  {
+    "timestamp": "2026-03-07 13:46:32",
+    "conversation_id": "",
+    "tool_name": "js_execute",
+    "success": false,
+    "duration_ms": 0,
+    "provider": "volcengine",
+    "model": "doubao-seed-1-6-250615",
+    "username": "mujica",
+    "args_size": 2,
+    "result_size": 95,
+    "error_message": "错误：工具 'js_execute' 当前未启用。当前允许工具: selectTools。请先调用 selectTools 选择工具ID（例如 {\"ids\":[0,3,5]}），下一轮生效。"
+  }
+]

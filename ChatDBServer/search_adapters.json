@@ -9,7 +9,7 @@
     ],
     "providers": {
         "volcengine": {
-            "native_enabled": false,
+            "native_enabled": true,
             "relay_enabled": false,
             "allow_models": 1,
             "tools": [
@@ -51,10 +51,20 @@
                 "Moonshot-Kimi-K2-Instruct",
                 "MiniMax-M2.1"
             ],
+
             "request_options": {
                 "search_api": "chat_completions",
                 "enable_search": true,
                 "enable_thinking": true,
+                "forced_search": false,
+                "search_strategy": "turbo",
+                "enable_source": true,
+                "enable_citation": true,
+                "citation_format": "[ref_<number>]",
+                "native_protocol_enabled": true,
+                "native_metadata_allow_models": [
+                    "*"
+                ],
                 "responses_fallback_to_chat": true,
                 "responses_tools": [
                     {

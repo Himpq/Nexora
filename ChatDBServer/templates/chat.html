@@ -21,7 +21,7 @@
     <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
 
     <!-- App Styles -->
-    <link rel="stylesheet" href="/static/css/style.css?v=20260303"> 
+    <link rel="stylesheet" href="/static/css/style.css?v=20260311b"> 
     <link rel="stylesheet" href="/static/css/easymde_override.css">
 </head>
 <body>
@@ -30,7 +30,7 @@
         <nav class="sidebar" id="sidebar">
             <div class="sidebar-header">
                 <div class="logo">Nexora<span class="dot"></span></div>
-                <button class="btn-icon" id="toggleSidebarMobile" style="display:none;">
+                <button class="btn-icon" id="toggleSidebarMobile">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                 </button>
             </div>
@@ -95,6 +95,40 @@
                 </div>
 
                 <div class="header-right">
+                   <button class="btn-icon notes-toggle-btn" id="toggleNotesPanel" title="笔记" onclick="toggleNotesPanel()">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M4 3h12a2 2 0 0 1 2 2v12l-4 4H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"></path>
+                            <path d="M14 21v-4h4"></path>
+                            <line x1="8" y1="9" x2="14" y2="9"></line>
+                            <line x1="8" y1="13" x2="14" y2="13"></line>
+                        </svg>
+                        <span class="notes-toggle-badge" id="notesCountBadge">0</span>
+                    </button>
+                   <button class="btn-icon" id="toggleWorkflowView" title="AI 自动流程" onclick="openWorkflowPlaceholderView()">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="3" y="4" width="7" height="7" rx="1"></rect>
+                            <rect x="14" y="4" width="7" height="7" rx="1"></rect>
+                            <rect x="9" y="14" width="7" height="7" rx="1"></rect>
+                            <path d="M10 7h4"></path>
+                            <path d="M17.5 11v3"></path>
+                            <path d="M10.5 11v3"></path>
+                        </svg>
+                    </button>
+                   <div class="mobile-header-menu" id="mobileHeaderMenu">
+                        <button class="btn-icon mobile-header-menu-trigger" id="mobileHeaderMenuTrigger" title="更多" aria-haspopup="menu" aria-expanded="false">
+                            <i class="fa-solid fa-ellipsis-vertical"></i>
+                        </button>
+                        <div class="mobile-header-menu-panel" id="mobileHeaderMenuPanel" aria-hidden="true">
+                            <button type="button" class="mobile-header-menu-item" id="mobileWorkflowMenuItem">
+                                <i class="fa-solid fa-diagram-project"></i>
+                                <span>流程排布</span>
+                            </button>
+                            <button type="button" class="mobile-header-menu-item" id="mobileNotesMenuItem">
+                                <i class="fa-solid fa-note-sticky"></i>
+                                <span>笔记</span>
+                            </button>
+                        </div>
+                   </div>
                    {% if nexora_mail_enabled %}
                    <button class="btn-icon" id="toggleMailView" title="邮件" onclick="openMailPlaceholderView()">
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -132,25 +166,50 @@
             <div id="inputWrapper" class="input-wrapper">
                 <div class="input-container">
                     <div class="input-options">
-                        <label class="btn-icon-small" title="Upload File" style="cursor: pointer; display: inline-flex; align-items: center; justify-content: center; margin-right: 8px; color: var(--text-secondary);">
+                        <label class="btn-icon-small" title="Upload File / Image" style="cursor: pointer; display: inline-flex; align-items: center; justify-content: center; margin-right: 8px; color: var(--text-secondary);">
                             <input type="file" id="fileInput" style="display:none" multiple>
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path></svg>
                         </label>
                         <label class="check-box" title="Deep Thinking">
                             <input type="checkbox" id="enableThinking">
-                            <span class="check-label">Thinking</span>
+                            <span class="check-label-wrap">
+                                <i class="fa-solid fa-brain check-label-icon" aria-hidden="true"></i>
+                                <span class="check-label check-label-text">Thinking</span>
+                            </span>
                         </label>
                         <label class="check-box" title="Web Search">
                             <input type="checkbox" id="enableWebSearch" checked>
-                            <span class="check-label">Search</span>
+                            <span class="check-label-wrap">
+                                <i class="fa-solid fa-magnifying-glass check-label-icon" aria-hidden="true"></i>
+                                <span class="check-label check-label-text">Search</span>
+                            </span>
                         </label>
-                        <label class="check-box" title="Tool Use">
-                            <input type="checkbox" id="enableTools" checked>
-                            <span class="check-label">Tools</span>
+                        <label class="check-box tool-mode-box" title="Tool Use Mode">
+                            <span class="check-label-wrap">
+                                <i class="fa-solid fa-screwdriver-wrench check-label-icon" aria-hidden="true"></i>
+                                <span class="check-label check-label-text">Tools</span>
+                            </span>
+                            <div class="tool-mode-dropdown" id="toolsModeDropdown">
+                                <input type="hidden" id="toolsMode" value="auto">
+                                <button type="button" class="tool-mode-trigger" id="toolsModeTrigger" aria-haspopup="listbox" aria-expanded="false">
+                                    <span id="toolsModeLabel">Auto</span>
+                                    <i class="fa-solid fa-chevron-up"></i>
+                                </button>
+                                <div class="tool-mode-menu" id="toolsModeMenu" role="listbox" aria-label="Tools mode">
+                                    <button type="button" class="tool-mode-item" data-mode="off" role="option">Off</button>
+                                    <button type="button" class="tool-mode-item active" data-mode="auto" role="option" aria-selected="true">Auto</button>
+                                    <button type="button" class="tool-mode-item" data-mode="force" role="option">Force</button>
+                                </div>
+                            </div>
                         </label>
                     </div>
                     
                     <div id="filePreviewArea" class="file-preview-area" style="display:none; padding: 4px 8px; gap: 8px; flex-wrap: wrap; background: rgba(0,0,0,0.02); border-bottom: 1px solid var(--border-color);"></div>
+                    <div id="fileUploadProgressWrap" class="upload-progress-chip" style="display:none;">
+                        <div id="fileUploadProgressFill" class="upload-progress-chip-fill"></div>
+                        <span id="fileUploadProgressText" class="upload-progress-chip-text">上传中...</span>
+                        <button id="cancelFileUploadBtn" type="button" class="upload-progress-chip-cancel" title="中断上传">&times;</button>
+                    </div>
 
                     <textarea id="messageInput" placeholder="Type a message..." rows="1"></textarea>
                     
@@ -299,10 +358,69 @@
                 </div>
             </div>
         </div>
+
+        <!-- Fullscreen Image Viewer -->
+        <div id="imageViewerBackdrop" class="image-viewer-backdrop" aria-hidden="true">
+            <div class="image-viewer-shell" role="dialog" aria-modal="true" aria-label="Image Viewer">
+                <div class="image-viewer-toolbar">
+                    <button id="imageViewerZoomOut" type="button" class="image-viewer-btn" title="缩小">-</button>
+                    <span id="imageViewerScaleLabel" class="image-viewer-scale">100%</span>
+                    <button id="imageViewerZoomIn" type="button" class="image-viewer-btn" title="放大">+</button>
+                    <button id="imageViewerReset" type="button" class="image-viewer-btn" title="重置">重置</button>
+                    <button id="imageViewerClose" type="button" class="image-viewer-btn close" title="关闭">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+                <div id="imageViewerViewport" class="image-viewer-viewport">
+                    <img id="imageViewerImage" class="image-viewer-image" alt="preview">
+                </div>
+            </div>
+        </div>
+
+        <!-- Notes Panel -->
+        <div id="notesPanel" class="notes-panel" aria-hidden="true">
+            <div class="notes-panel-head">
+                <h3>笔记</h3>
+                <button class="notes-panel-close" id="closeNotesPanelBtn" type="button" title="关闭">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            <div class="notes-notebook-row">
+                <select id="notesNotebookSelect" class="notes-notebook-select"></select>
+                <button id="createNotebookBtn" class="notes-notebook-add" type="button" title="新建笔记本">
+                    <i class="fa-solid fa-plus"></i>
+                </button>
+                <button id="clearNotebookBtn" class="notes-notebook-tool" type="button" title="清空当前笔记本">
+                    <i class="fa-solid fa-eraser"></i>
+                </button>
+                <button id="deleteNotebookBtn" class="notes-notebook-tool danger" type="button" title="删除当前笔记本">
+                    <i class="fa-solid fa-trash"></i>
+                </button>
+                <button id="downloadNotebookBtn" class="notes-notebook-tool" type="button" title="下载当前笔记本">
+                    <i class="fa-solid fa-download"></i>
+                </button>
+            </div>
+            <div class="notes-list" id="notesList"></div>
+            <div id="notesResizeHandle" class="notes-resize-handle" aria-hidden="true"></div>
+        </div>
+
+        <!-- Notes Right-Click Menu -->
+        <div id="notesContextMenu" class="notes-context-menu" aria-hidden="true">
+            <button id="notesAddSelectionBtn" type="button">
+                <i class="fa-solid fa-note-sticky"></i>
+                <span>添加到笔记</span>
+            </button>
+        </div>
+
+        <!-- Mobile Selection Quick Add -->
+        <button id="mobileSelectionAddBtn" class="mobile-selection-add-btn" type="button" aria-hidden="true">
+            <i class="fa-solid fa-note-sticky"></i>
+            <span>添加到笔记</span>
+        </button>
     </div>
 
     <!-- Scripts -->
-    <script src="/static/js/chat.js?v=20260303"></script>
+    <script src="/static/js/chat.js?v=20260311_02"></script>
 
     <!-- 添加用户表单 -->
     <div id="addUserModal" class="modal-backdrop" style="z-index: 2200;">
@@ -343,8 +461,8 @@
 
     <style>
         /* Specific overrides */
-        .knowledge-sidebar.visible { width: 300px; border-left: 1px solid #eee; }
-        .knowledge-sidebar:not(.visible) { width: 0; border: none; overflow: hidden; }
+        .knowledge-sidebar.visible { border-left: 1px solid #eee; }
+        .knowledge-sidebar:not(.visible) { border-left: none; }
         .modal-backdrop { display: none; }
         .modal-backdrop.active { display: flex; }
         .cm-search-highlight { background: rgba(34, 197, 94, 0.25); border-bottom: 1px solid rgba(34, 197, 94, 0.7); }
@@ -512,7 +630,7 @@
                 <div id="ks-vector-tab" class="admin-tab-content">
                     <div style="display:flex; gap: 8px; margin-bottom: 8px;">
                         <button class="btn-primary" onclick="updateVectorInSettings()" style="background:#0f172a;">更新向量</button>
-                        <button class="btn-primary" onclick="deleteVectorInSettings()" style="background:#ef4444;">鍒犻櫎</button>
+                        <button class="btn-primary" onclick="deleteVectorInSettings()" style="background:#ef4444;">删除向量</button>
                     </div>
                     <div id="vectorProgressWrap" style="display:none; margin-bottom: 8px;">
                         <div style="height: 6px; background: #e2e8f0; border-radius: 999px; overflow: hidden;">
@@ -775,4 +893,3 @@
     </div>
 </body>
 </html>
-

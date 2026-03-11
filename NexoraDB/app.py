@@ -70,11 +70,16 @@ def get_embedder() -> SentenceTransformer:
     return _EMBEDDER
 
 
-def embed_texts(texts: List[str]) -> List[List[float]]:
+def embed_texts(texts: List[str], batch_size: Optional[int] = None) -> List[List[float]]:
     emb_cfg = CONFIG.get("embedding", {}) or {}
     normalize = emb_cfg.get("normalize", True)
+    bs = batch_size if batch_size is not None else emb_cfg.get("batch_size", 64)
+    try:
+        bs = max(1, int(bs))
+    except Exception:
+        bs = 64
     model = get_embedder()
-    vectors = model.encode(texts, normalize_embeddings=normalize)
+    vectors = model.encode(texts, normalize_embeddings=normalize, batch_size=bs)
     return [v.tolist() for v in vectors]
 
 
@@ -96,9 +101,47 @@ def require_api_key():
     return False
 
 
-def safe_id(username: str, title: Optional[str], chunk_id: Optional[int] = None) -> str:
+def _normalize_library(library: Optional[str], default: str = "knowledge") -> str:
+    value = str(library or default).strip()
+    return value or default
+
+
+def _build_where_with_library(
+    where: Optional[Dict[str, Any]],
+    library: Optional[str]
+) -> Optional[Dict[str, Any]]:
+    base = dict(where) if isinstance(where, dict) else {}
+    lib = _normalize_library(library, default="")
+
+    # If caller already passed operator-style where (e.g. {"$and":[...]}),
+    # append library via $and wrapper to keep "single operator at top-level".
+    has_operator = any(str(k).startswith("$") for k in base.keys())
+    if has_operator:
+        if not lib:
+            return base or None
+        return {"$and": [base, {"library": lib}]}
+
+    if lib:
+        base.setdefault("library", lib)
+    if not base:
+        return None
+
+    # Chroma where requires a single top-level operator or a single field.
+    # Convert flat multi-field dict into {$and: [{k:v}, ...]}.
+    if len(base) == 1:
+        return base
+    return {"$and": [{k: v} for k, v in base.items()]}
+
+
+def safe_id(
+    username: str,
+    title: Optional[str],
+    chunk_id: Optional[int] = None,
+    library: Optional[str] = None
+) -> str:
     suffix = f":{chunk_id}" if chunk_id is not None else ""
-    base = f"{username}:{title or ''}{suffix}"
+    lib = _normalize_library(library)
+    base = f"{username}:{lib}:{title or ''}{suffix}"
     digest = hashlib.sha1(base.encode("utf-8")).hexdigest()
     return f"{username}:{digest}"
 
@@ -336,16 +379,18 @@ def upsert():
     embedding = data.get("embedding")
     metadata = data.get("metadata") or {}
     chunk_id = data.get("chunk_id")
+    library = _normalize_library(data.get("library"))
 
     if not username or text is None or embedding is None:
         return jsonify({"success": False, "message": "missing username/text/embedding"}), 400
 
     collection = get_collection(username)
-    doc_id = safe_id(username, title, chunk_id)
+    doc_id = safe_id(username, title, chunk_id, library=library)
     meta = {
         "username": username,
         "title": title or "",
-        "source": "nexoradb"
+        "source": "nexoradb",
+        "library": library
     }
     if chunk_id is not None:
         meta["chunk_id"] = chunk_id
@@ -369,17 +414,19 @@ def upsert_text():
     text = data.get("text")
     metadata = data.get("metadata") or {}
     chunk_id = data.get("chunk_id")
+    library = _normalize_library(data.get("library"))
 
     if not username or text is None:
         return jsonify({"success": False, "message": "missing username/text"}), 400
 
     embedding = embed_texts([text])[0]
     collection = get_collection(username)
-    doc_id = safe_id(username, title, chunk_id)
+    doc_id = safe_id(username, title, chunk_id, library=library)
     meta = {
         "username": username,
         "title": title or "",
-        "source": "nexoradb"
+        "source": "nexoradb",
+        "library": library
     }
     if chunk_id is not None:
         meta["chunk_id"] = chunk_id
@@ -395,21 +442,87 @@ def upsert_text():
     return jsonify({"success": True, "vector_id": doc_id})
 
 
+@app.route("/upsert_texts", methods=["POST"])
+def upsert_texts():
+    data = request.get_json() or {}
+    username = data.get("username")
+    items = data.get("items")
+    fallback_library = _normalize_library(data.get("library"))
+
+    if not username or not isinstance(items, list) or not items:
+        return jsonify({"success": False, "message": "missing username/items"}), 400
+
+    texts: List[str] = []
+    doc_ids: List[str] = []
+    metas: List[Dict[str, Any]] = []
+    docs: List[str] = []
+
+    for idx, item in enumerate(items):
+        if not isinstance(item, dict):
+            return jsonify({"success": False, "message": f"items[{idx}] must be object"}), 400
+        title = item.get("title")
+        text = item.get("text")
+        metadata = item.get("metadata") or {}
+        chunk_id = item.get("chunk_id")
+        library = _normalize_library(item.get("library"), default=fallback_library or "knowledge")
+
+        if text is None:
+            return jsonify({"success": False, "message": f"items[{idx}] missing text"}), 400
+
+        text_str = str(text)
+        doc_id = safe_id(username, title, chunk_id, library=library)
+        meta = {
+            "username": username,
+            "title": title or "",
+            "source": "nexoradb",
+            "library": library
+        }
+        if chunk_id is not None:
+            meta["chunk_id"] = chunk_id
+        if isinstance(metadata, dict):
+            meta.update(metadata)
+
+        texts.append(text_str)
+        docs.append(text_str)
+        doc_ids.append(doc_id)
+        metas.append(meta)
+
+    embeddings = embed_texts(texts)
+    collection = get_collection(username)
+    collection.upsert(
+        ids=doc_ids,
+        embeddings=embeddings,
+        documents=docs,
+        metadatas=metas
+    )
+
+    return jsonify({
+        "success": True,
+        "vector_ids": doc_ids,
+        "count": len(doc_ids)
+    })
+
+
 @app.route("/query", methods=["POST"])
 def query():
     data = request.get_json() or {}
     username = data.get("username")
     embedding = data.get("embedding")
     top_k = int(data.get("top_k") or 5)
+    where = _build_where_with_library(data.get("where"), data.get("library"))
 
     if not username or embedding is None:
         return jsonify({"success": False, "message": "missing username/embedding"}), 400
 
     collection = get_collection(username)
+    kwargs: Dict[str, Any] = {}
+    if where:
+        kwargs["where"] = where
     result = collection.query(
         query_embeddings=[embedding],
         n_results=top_k,
-        include=["documents", "metadatas", "distances"]
+        include=["documents", "metadatas", "distances"],
+        **kwargs
     )
 
     return jsonify({"success": True, "result": result})
@@ -421,16 +534,21 @@ def query_text():
     username = data.get("username")
     text = data.get("text")
     top_k = int(data.get("top_k") or 5)
+    where = _build_where_with_library(data.get("where"), data.get("library"))
 
     if not username or text is None:
         return jsonify({"success": False, "message": "missing username/text"}), 400
 
     embedding = embed_texts([text])[0]
     collection = get_collection(username)
+    kwargs: Dict[str, Any] = {}
+    if where:
+        kwargs["where"] = where
     result = collection.query(
         query_embeddings=[embedding],
         n_results=top_k,
-        include=["documents", "metadatas", "distances"]
+        include=["documents", "metadatas", "distances"],
+        **kwargs
     )
 
     return jsonify({"success": True, "result": result})
@@ -441,12 +559,13 @@ def chunks():
     data = request.get_json() or {}
     username = data.get("username")
     title = data.get("title")
+    where = _build_where_with_library({"title": title} if title else None, data.get("library"))
 
     if not username or not title:
         return jsonify({"success": False, "message": "missing username/title"}), 400
 
     collection = get_collection(username)
-    result = collection.get(where={"title": title}, include=["documents", "metadatas"])
+    result = collection.get(where=where or {"title": title}, include=["documents", "metadatas"])
     ids = result.get("ids", [])
     docs = result.get("documents", [])
     metas = result.get("metadatas", [])
@@ -465,6 +584,7 @@ def chunks():
 def titles():
     data = request.get_json() or {}
     username = data.get("username")
+    library = _normalize_library(data.get("library"), default="")
 
     if not username:
         return jsonify({"success": False, "message": "missing username"}), 400
@@ -476,6 +596,8 @@ def titles():
     seen = set()
     for meta in metas:
         if not meta:
+            continue
+        if library and str(meta.get("library") or "") != library:
             continue
         t = meta.get("title") or ""
         if t and t not in seen:
@@ -490,20 +612,26 @@ def delete():
     username = data.get("username")
     title = data.get("title")
     vector_id = data.get("vector_id")
+    where = data.get("where") if isinstance(data.get("where"), dict) else None
+    library = _normalize_library(data.get("library"), default="")
 
     if not username:
         return jsonify({"success": False, "message": "missing username"}), 400
-    if not title and not vector_id:
-        return jsonify({"success": False, "message": "missing title/vector_id"}), 400
+    if not title and not vector_id and not where:
+        return jsonify({"success": False, "message": "missing title/vector_id/where"}), 400
 
     collection = get_collection(username)
     if vector_id:
         collection.delete(ids=[vector_id])
+    elif where:
+        delete_where = _build_where_with_library(where, library)
+        collection.delete(where=delete_where or where)
     else:
+        delete_where = _build_where_with_library({"title": title}, library)
         try:
-            collection.delete(where={"title": title})
+            collection.delete(where=delete_where or {"title": title})
         except Exception:
-            doc_id = safe_id(username, title)
+            doc_id = safe_id(username, title, library=library or None)
             collection.delete(ids=[doc_id])
     return jsonify({"success": True})
 

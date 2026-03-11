@@ -3,8 +3,39 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "selectTools",
+            "description": "根据工具名称选择使用的工具，默认除web_search以外的所有工具不可用，务必通过工具列表选择使用的工具，然后调用本函数启用。调用此函数后工具立即生效，且仅在本轮生效，下一轮自动失效。示例：selectTools(js_execute,vectorSearch)。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tools": {
+                        "type": "array",
+                        "description": "要启用的工具名数组，例如 [\"js_execute\",\"vectorSearch\"]。",
+                        "items": {"type": "string"}
+                    },
+                    "tool_names": {
+                        "type": "array",
+                        "description": "可选，和 tools 等价的别名字段。",
+                        "items": {"type": "string"}
+                    },
+                    "name_text": {
+                        "type": "string",
+                        "description": "可选，逗号分隔的工具名字符串，例如 \"js_execute,vectorSearch\"。"
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "可选，简要说明选择理由。"
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "vectorSearch",
-            "description": "在向量数据库中搜索内容，返回最相关的文章ID列表（含标题与相似度分数）。仅在启用向量数据库时可用。",
+            "description": "在向量数据库中搜索内容，返回最相关的结果（含标题与相似度分数）。默认搜索 knowledge 库。优先使用，优先级比searchKeyword高。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -15,9 +46,96 @@ TOOLS = [
                     "top_k": {
                         "type": "integer",
                         "description": "返回条数，默认5"
+                    },
+                    "library": {
+                        "type": "string",
+                        "description": "可选，向量库命名空间。默认 knowledge。"
                     }
                 },
                 "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "file_semantic_search",
+            "description": "在临时文件向量库（temp_file）中做语义检索。默认检索当前用户全部临时文件；仅在需要限定单文件时再传 file_alias。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "语义检索问题"
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "description": "返回条数，默认5，范围1-20"
+                    },
+                    "file_alias": {
+                        "type": "string",
+                        "description": "可选，单文件筛选参数（支持 user/files/xxx、alias、原始文件名）。不传则默认全文件库检索。"
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "arxivSearch",
+            "description": "在 arXiv 论文库中检索学术论文，返回标题、作者、摘要、发布时间和 PDF 链接。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "检索关键词，例如 'multimodal rag' 或 'cat:cs.CL AND transformer'"
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "返回条数，默认5，范围1-20"
+                    },
+                    "sort_by": {
+                        "type": "string",
+                        "description": "排序字段：relevance / submittedDate / lastUpdatedDate"
+                    },
+                    "sort_order": {
+                        "type": "string",
+                        "description": "排序方向：descending / ascending"
+                    },
+                    "strict": {
+                        "type": "boolean",
+                        "description": "是否启用相关性过滤（默认 true）。true 时会过滤明显不相关结果。"
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "js_execute",
+            "description": """在当前用户浏览器的隔离 Worker 中执行 JavaScript 并返回结果。适合轻量计算和文本处理，不可访问 DOM/网络。注意：code 必须是可直接执行的纯 JS（不要包含 Markdown 代码块或解释文本），并显式 return 结果。可以使用 const canvas = context.canvas; 来访问内置的 canvas 对象进行绘图而无需createElement。""",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "description": "待执行的 JavaScript 代码。应显式 return 结果。可使用 context 变量。"
+                    },
+                    "context": {
+                        "type": "object",
+                        "description": "可选，传入执行上下文对象（在代码中通过 context 读取）。"
+                    },
+                    "timeout_ms": {
+                        "type": "integer",
+                        "description": "可选，执行超时毫秒数，默认8000，范围500-30000。"
+                    }
+                },
+                "required": ["code"]
             }
         }
     },
@@ -95,7 +213,7 @@ TOOLS = [
                     },
                     "context": {
                         "type": "string",
-                        "description": "基础知识的内容。"
+                        "description": "基础知识的内容。支持参数模板：{{file:path}}、{{file:path,lines,1,200}}、{{basis:title,chars,0,2000}}。"
                     },
                     "url": {
                         "type": "string",
@@ -149,7 +267,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "updateBasis",
-            "description": "更新基础知识。支持重命名、整段覆盖、URL更新，以及按字符索引区间替换（单次或批量）。",
+            "description": "更新基础知识。支持重命名、整段覆盖、URL更新、公开/协作设置，以及按字符索引区间替换（单次或批量）。",
 
             "parameters": {
                 "type": "object",
@@ -164,11 +282,19 @@ TOOLS = [
                     },
                     "context": {
                         "type": "string",
-                        "description": "新的知识内容（Markdown格式，如果需要更新内容，否则不填）。"
+                        "description": "新的知识内容（Markdown格式，如果需要更新内容，否则不填）。支持参数模板 {{file:...}} / {{basis:...}}。"
                     },
                     "url": {
                         "type": "string",
                         "description": "新的来源链接（如果需要更新，否则不填）。"
+                    },
+                    "public": {
+                        "type": "boolean",
+                        "description": "是否公开该知识点（true=公开，false=私有）。"
+                    },
+                    "collaborative": {
+                        "type": "boolean",
+                        "description": "是否允许协作编辑（true=可编辑，false=只读）。"
                     },
                     "from_pos": {
                         "type": "integer",
@@ -180,7 +306,7 @@ TOOLS = [
                     },
                     "replacement": {
                         "type": "string",
-                        "description": "单次区间替换的新文本。"
+                        "description": "单次区间替换的新文本。支持参数模板 {{file:...}} / {{basis:...}}。"
                     },
                     "replacements": {
                         "type": "array",
@@ -259,14 +385,14 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "relay_web_search",
-            "description": "本地中转联网搜索工具（relay）。用于当前模型不具备原生联网搜索能力时，借助中转模型检索实时信息。",
+            "description": "本地中转联网搜索工具（relay）。仅在当前模型缺少原生联网搜索能力或本地知识不足时使用。必须返回可验证来源，严禁编造URL/日期/来源。",
 
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "搜索关键字或问题描述，必须是精确的单体查询，而不是宽泛的概念。"
+                        "description": "搜索关键词或问题描述。要求具体、可检索，避免过宽泛。"
                     }
                 },
                 "required": ["query"]
@@ -611,7 +737,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "file_list",
-            "description": "列出用户文件沙箱中的文件，支持关键词筛选和 regex 匹配文件名。",
+            "description": "读取用户文件沙箱中的文件，支持关键词筛选和 regex 匹配文件名。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -647,7 +773,7 @@ TOOLS = [
                 "properties": {
                     "recipient": {"type": "string", "description": "Recipient email address"},
                     "subject": {"type": "string", "description": "Email subject"},
-                    "content": {"type": "string", "description": "Email body content"},
+                    "content": {"type": "string", "description": "Email body content. 支持参数模板 {{file:path}}、{{file:path,lines,1,200}}、{{basis:title,chars,0,2000}}"},
                     "knowledge_title": {"type": "string", "description": "Optional basis knowledge title; used when content is empty"},
                     "is_html": {"type": "boolean", "description": "Send as HTML when true"}
                 },

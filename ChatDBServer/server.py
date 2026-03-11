@@ -9,11 +9,13 @@ import base64
 import binascii
 import re
 import threading
+import uuid
 from copy import deepcopy
+from typing import Any, Dict, List, Optional
 from urllib import request as urllib_request, error as urllib_error, parse as urllib_parse
 from email.header import Header
 from email.utils import formatdate, make_msgid
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for, Response, send_file
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for, Response, send_file, send_from_directory
 from flask_cors import CORS
 from datetime import timedelta, datetime
 import time
@@ -26,6 +28,8 @@ from conversation_manager import ConversationManager
 from chroma_client import ChromaStore
 from file_sandbox import UserFileSandbox
 from longterm.orchestrator import LongTermOrchestrator
+from provider_factory import create_provider_adapter
+from client_tool_bridge import pull_pending_request, submit_request_result
 
 app = Flask(__name__)
 app.secret_key = 'chatdb-secret-key-change-in-production'
@@ -44,6 +48,7 @@ MODELS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models.j
 USERS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'user.json')
 
 DEFAULT_MAIN_CONFIG = {
+    "public_base_url": "",
     "default_model": "doubao-seed-1-6-250615",
     "conclusion_model": "doubao-seed-1-6-flash-250828",
     "organization_model": "doubao-seed-1-6-flash-250828",
@@ -157,6 +162,70 @@ def get_config_all():
     return config
 
 
+def get_public_base_url() -> str:
+    """
+    生成对前端可见的基础 URL（优先公网域名）。
+    优先级：
+    1) config.public_base_url / config.api.public_base_url
+    2) 反代头 X-Forwarded-Proto + X-Forwarded-Host
+    3) 当前请求的 scheme + host
+    """
+    try:
+        cfg = get_config_all()
+    except Exception:
+        cfg = {}
+
+    def _is_local_host(hostname: str) -> bool:
+        h = str(hostname or "").strip().lower()
+        return h in {"127.0.0.1", "localhost", "0.0.0.0", "::1"}
+
+    if isinstance(cfg, dict):
+        c1 = str(cfg.get("public_base_url", "") or "").strip()
+        api_cfg = cfg.get("api", {}) if isinstance(cfg.get("api"), dict) else {}
+        c2 = str(api_cfg.get("public_base_url", "") or "").strip()
+        configured = c1 or c2
+        if configured:
+            if not configured.startswith(("http://", "https://")):
+                configured = f"https://{configured}"
+            return configured.rstrip("/")
+
+    xfh = str(request.headers.get("X-Forwarded-Host", "") or "").split(",")[0].strip()
+    xfp = str(request.headers.get("X-Forwarded-Proto", "") or "").split(",")[0].strip()
+    if xfh:
+        proto = xfp or request.scheme or "http"
+        url = f"{proto}://{xfh}".rstrip("/")
+    else:
+        host = str(request.headers.get("Host", "") or request.host or "").strip()
+        proto = xfp or request.scheme or "http"
+        if host:
+            url = f"{proto}://{host}".rstrip("/")
+        else:
+            url = request.host_url.rstrip("/")
+
+    # 如果仍是 localhost/127，尝试从 Origin/Referer 还原公网域名
+    try:
+        parsed = urllib_parse.urlsplit(url)
+        host_name = parsed.hostname or ""
+    except Exception:
+        host_name = ""
+    if _is_local_host(host_name):
+        origin = str(request.headers.get("Origin", "") or "").strip()
+        referer = str(request.headers.get("Referer", "") or "").strip()
+        candidate = origin or referer
+        if candidate:
+            p = urllib_parse.urlsplit(candidate)
+            if p.scheme and p.netloc and not _is_local_host(p.hostname or ""):
+                return f"{p.scheme}://{p.netloc}".rstrip("/")
+
+    # 最后回退：使用 rag_database.host
+    if _is_local_host(host_name) and isinstance(cfg, dict):
+        rag_cfg = cfg.get("rag_database", {}) if isinstance(cfg.get("rag_database"), dict) else {}
+        rag_host = str(rag_cfg.get("host", "") or "").strip()
+        if rag_host and not _is_local_host(rag_host):
+            return f"https://{rag_host}".rstrip("/")
+    return url
+
+
 def get_local_mail_profile(user_data):
     """标准化用户 local_mail 字段（默认空绑定）"""
     default_profile = {
@@ -249,6 +318,224 @@ def _get_nexora_mail_config():
 
 _MAIL_CACHE_LOCKS = {}
 _MAIL_CACHE_LOCKS_GUARD = threading.Lock()
+
+# Async upload tasks (in-memory)
+_UPLOAD_TASKS = {}
+_UPLOAD_TASKS_LOCK = threading.Lock()
+_UPLOAD_TASK_TTL_SEC = 2 * 3600
+
+_ASSET_IMAGE_MIME_TO_EXT = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+    "image/bmp": ".bmp",
+    "image/tiff": ".tiff",
+    "image/heic": ".heic",
+    "image/heif": ".heif",
+}
+
+
+def _conversation_asset_root(username: str) -> str:
+    return os.path.join(
+        os.path.dirname(__file__),
+        'data',
+        'users',
+        str(username or ''),
+        'conversation_assets'
+    )
+
+
+def _conversation_asset_dir(username: str, conversation_id: str) -> str:
+    return os.path.join(_conversation_asset_root(username), str(conversation_id or ''))
+
+
+def _conversation_asset_index_path(username: str, conversation_id: str) -> str:
+    return os.path.join(_conversation_asset_dir(username, conversation_id), 'index.json')
+
+
+def _load_conversation_asset_index(username: str, conversation_id: str) -> Dict[str, Any]:
+    idx_path = _conversation_asset_index_path(username, conversation_id)
+    if not os.path.exists(idx_path):
+        return {"assets": {}}
+    try:
+        with open(idx_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {"assets": {}}
+        assets = data.get("assets", {})
+        if not isinstance(assets, dict):
+            assets = {}
+        data["assets"] = assets
+        return data
+    except Exception:
+        return {"assets": {}}
+
+
+def _save_conversation_asset_index(username: str, conversation_id: str, data: Dict[str, Any]):
+    conv_dir = _conversation_asset_dir(username, conversation_id)
+    os.makedirs(conv_dir, exist_ok=True)
+    idx_path = _conversation_asset_index_path(username, conversation_id)
+    payload = data if isinstance(data, dict) else {"assets": {}}
+    if "assets" not in payload or not isinstance(payload.get("assets"), dict):
+        payload["assets"] = {}
+    with open(idx_path, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def _parse_image_data_url(raw_url: str):
+    text = str(raw_url or "").strip()
+    m = re.match(r"^data:(image/[a-zA-Z0-9.+-]+);base64,(.+)$", text, re.IGNORECASE | re.DOTALL)
+    if not m:
+        raise ValueError("invalid image data url")
+    mime = str(m.group(1) or "").strip().lower()
+    b64 = str(m.group(2) or "").strip()
+    try:
+        raw = base64.b64decode(b64, validate=True)
+    except (ValueError, binascii.Error) as e:
+        raise ValueError(f"invalid base64 image data: {str(e)}")
+    return mime, raw
+
+
+def _safe_asset_ext(mime: str) -> str:
+    mt = str(mime or "").strip().lower()
+    return _ASSET_IMAGE_MIME_TO_EXT.get(mt, ".bin")
+
+
+def _persist_conversation_image_asset(username: str, conversation_id: str, file_item: Dict[str, Any]) -> Dict[str, Any]:
+    item = file_item if isinstance(file_item, dict) else {}
+    raw_url = str(item.get("url") or item.get("image_url") or "").strip()
+    if not raw_url.startswith("data:image/"):
+        return item
+
+    mime, raw = _parse_image_data_url(raw_url)
+    max_image_bytes = 12 * 1024 * 1024
+    if len(raw) > max_image_bytes:
+        raise ValueError("image too large (>12MB)")
+
+    asset_id = uuid.uuid4().hex
+    ext = _safe_asset_ext(mime)
+    filename = f"{asset_id}{ext}"
+    conv_dir = _conversation_asset_dir(username, conversation_id)
+    os.makedirs(conv_dir, exist_ok=True)
+    file_path = os.path.join(conv_dir, filename)
+    with open(file_path, 'wb') as wf:
+        wf.write(raw)
+
+    index_data = _load_conversation_asset_index(username, conversation_id)
+    assets_map = index_data.setdefault("assets", {})
+    created_at = int(time.time())
+    assets_map[asset_id] = {
+        "asset_id": asset_id,
+        "file_name": filename,
+        "mime": mime,
+        "size": len(raw),
+        "name": str(item.get("name") or filename),
+        "created_at": created_at
+    }
+    _save_conversation_asset_index(username, conversation_id, index_data)
+
+    normalized = dict(item)
+    normalized["asset_id"] = asset_id
+    normalized["asset_url"] = f"/api/conversations/{conversation_id}/assets/{asset_id}"
+    normalized["mime"] = mime
+    normalized["size"] = len(raw)
+    return normalized
+
+
+def _prepare_chat_file_ids(username: str, conversation_id: str, file_ids: List[Any]) -> List[Any]:
+    if not isinstance(file_ids, list) or not file_ids:
+        return []
+    normalized = []
+    for f in file_ids:
+        if isinstance(f, dict):
+            f_type = str(f.get("type") or "").strip().lower()
+            if f_type == "image_url":
+                try:
+                    normalized.append(_persist_conversation_image_asset(username, conversation_id, f))
+                except Exception as e:
+                    print(f"[ASSET] image persist failed: {e}")
+                    normalized.append(f)
+            else:
+                normalized.append(f)
+        else:
+            normalized.append(f)
+    return normalized
+
+
+def _collect_referenced_asset_ids(conversation_data: Dict[str, Any]) -> set:
+    out = set()
+    if not isinstance(conversation_data, dict):
+        return out
+    msgs = conversation_data.get("messages", [])
+    if not isinstance(msgs, list):
+        return out
+    for msg in msgs:
+        if not isinstance(msg, dict):
+            continue
+        meta = msg.get("metadata", {})
+        if not isinstance(meta, dict):
+            continue
+        attachments = meta.get("attachments", [])
+        if not isinstance(attachments, list):
+            continue
+        for att in attachments:
+            if not isinstance(att, dict):
+                continue
+            aid = str(att.get("asset_id") or "").strip()
+            if aid:
+                out.add(aid)
+    return out
+
+
+def _cleanup_conversation_assets(username: str, conversation_id: str, keep_asset_ids: Optional[set] = None):
+    conv_dir = _conversation_asset_dir(username, conversation_id)
+    if not os.path.isdir(conv_dir):
+        return
+
+    keep = keep_asset_ids if isinstance(keep_asset_ids, set) else set()
+    idx = _load_conversation_asset_index(username, conversation_id)
+    assets = idx.get("assets", {}) if isinstance(idx.get("assets"), dict) else {}
+    kept_assets = {}
+    for aid, meta in assets.items():
+        aid_s = str(aid or "").strip()
+        if not aid_s:
+            continue
+        if aid_s in keep:
+            kept_assets[aid_s] = meta
+            continue
+        file_name = str((meta or {}).get("file_name") or "").strip()
+        if file_name:
+            fpath = os.path.join(conv_dir, file_name)
+            try:
+                if os.path.exists(fpath):
+                    os.remove(fpath)
+            except Exception:
+                pass
+    idx["assets"] = kept_assets
+    _save_conversation_asset_index(username, conversation_id, idx)
+
+
+def _remove_conversation_assets_dir(username: str, conversation_id: str):
+    conv_dir = _conversation_asset_dir(username, conversation_id)
+    if not os.path.isdir(conv_dir):
+        return
+    try:
+        for root, dirs, files in os.walk(conv_dir, topdown=False):
+            for name in files:
+                try:
+                    os.remove(os.path.join(root, name))
+                except Exception:
+                    pass
+            for name in dirs:
+                try:
+                    os.rmdir(os.path.join(root, name))
+                except Exception:
+                    pass
+        os.rmdir(conv_dir)
+    except Exception:
+        pass
 
 
 def _get_mail_cache_lock(user_id):
@@ -632,6 +919,565 @@ def get_chroma_store():
     except Exception as e:
         return None, str(e)
 
+
+def _normalize_vector_library(library, default='knowledge'):
+    val = str(library or default).strip()
+    return val or default
+
+
+def _split_text_for_vectorization(text, max_len=800, overlap=120):
+    t = str(text or '')
+    if not t:
+        return []
+    max_len = int(max_len or 800)
+    overlap = int(overlap or 120)
+    if max_len <= 0:
+        return [t]
+    if overlap >= max_len:
+        overlap = max_len // 4
+    t = t.replace('\r\n', '\n')
+    chunks = []
+    start = 0
+    length = len(t)
+    while start < length:
+        end = min(start + max_len, length)
+        chunks.append({
+            "text": t[start:end],
+            "start": start,
+            "end": end,
+        })
+        if end == length:
+            break
+        start = end - overlap if overlap > 0 else end
+    return chunks
+
+
+def _vectorize_text_to_store(
+    username,
+    title,
+    text,
+    *,
+    metadata=None,
+    library='knowledge',
+    clear_existing=True,
+    progress_callback=None
+):
+    store, store_err = get_chroma_store()
+    if not store:
+        return False, f'ChromaDB错误: {store_err}', []
+    if getattr(store, 'mode', '') != 'service':
+        return False, 'NexoraDB service mode required', []
+
+    cfg = get_config_all()
+    rag = cfg.get('rag_database', {}) if isinstance(cfg, dict) else {}
+    chunk_size = int(rag.get('chunk_size') or 800)
+    chunk_overlap = int(rag.get('chunk_overlap') or 120)
+    upsert_batch_size = int(rag.get('upsert_batch_size') or 32)
+    if upsert_batch_size <= 0:
+        upsert_batch_size = 32
+    chunks = _split_text_for_vectorization(text, chunk_size, chunk_overlap)
+    if not chunks:
+        return False, '文本为空', []
+
+    lib = _normalize_vector_library(library, default='knowledge')
+    meta_base = metadata if isinstance(metadata, dict) else {}
+    vector_ids = []
+
+    if clear_existing and title:
+        try:
+            store.delete_by_title(username, title, library=lib)
+        except Exception:
+            pass
+
+    total_chunks = len(chunks)
+    try:
+        use_batch = hasattr(store, 'upsert_texts')
+        done = 0
+        if use_batch:
+            for start in range(0, total_chunks, upsert_batch_size):
+                end = min(start + upsert_batch_size, total_chunks)
+                batch_items = []
+                for i in range(start, end):
+                    chunk = chunks[i]
+                    chunk_meta = dict(meta_base)
+                    chunk_meta.update({
+                        'chunk_id': i,
+                        'chunk_total': total_chunks,
+                        'chunk_start': chunk.get('start', 0),
+                        'chunk_end': chunk.get('end', 0),
+                    })
+                    batch_items.append({
+                        'title': title,
+                        'text': chunk.get('text', ''),
+                        'metadata': chunk_meta,
+                        'chunk_id': i,
+                        'library': lib
+                    })
+
+                try:
+                    batch_ids = store.upsert_texts(
+                        username=username,
+                        items=batch_items,
+                        library=lib
+                    )
+                except Exception:
+                    # 兼容旧版 NexoraDB：批量接口不可用时回退单条
+                    batch_ids = []
+                    for item in batch_items:
+                        vid = store.upsert_text(
+                            username,
+                            item.get('title'),
+                            item.get('text', ''),
+                            item.get('metadata') or {},
+                            chunk_id=item.get('chunk_id'),
+                            library=item.get('library', lib)
+                        )
+                        batch_ids.append(vid)
+
+                vector_ids.extend(batch_ids)
+                done = end
+                if callable(progress_callback):
+                    progress_callback(done, total_chunks)
+        else:
+            for i, chunk in enumerate(chunks):
+                chunk_meta = dict(meta_base)
+                chunk_meta.update({
+                    'chunk_id': i,
+                    'chunk_total': total_chunks,
+                    'chunk_start': chunk.get('start', 0),
+                    'chunk_end': chunk.get('end', 0),
+                })
+                vector_id = store.upsert_text(
+                    username,
+                    title,
+                    chunk.get('text', ''),
+                    chunk_meta,
+                    chunk_id=i,
+                    library=lib
+                )
+                vector_ids.append(vector_id)
+                if callable(progress_callback):
+                    progress_callback(i + 1, total_chunks)
+        return True, '', vector_ids
+    except Exception as e:
+        return False, f'存储失败: {str(e)}', vector_ids
+
+
+def _temp_file_vector_title(file_alias: str) -> str:
+    return f"temp_file::{str(file_alias or '').strip()}"
+
+
+def _build_temp_file_where(username: str, file_ref: str):
+    raw = str(file_ref or '').strip().replace('\\', '/')
+    if not raw:
+        return None
+    base = os.path.basename(raw) if raw else ''
+    candidates = []
+
+    def _push(k, v):
+        val = str(v or '').strip()
+        if not val:
+            return
+        candidates.append({str(k): val})
+
+    _push('file_alias', raw)
+    _push('sandbox_path', raw)
+    if base and base != raw:
+        _push('file_alias', base)
+        _push('sandbox_path', f"{username}/files/{base}")
+    elif base:
+        _push('sandbox_path', f"{username}/files/{base}")
+
+    # de-dup
+    uniq = []
+    seen = set()
+    for c in candidates:
+        key = tuple(sorted(c.items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(c)
+    if not uniq:
+        return None
+    if len(uniq) == 1:
+        return uniq[0]
+    return {"$or": uniq}
+
+
+def _is_query_result_empty(result: dict) -> bool:
+    if not isinstance(result, dict):
+        return True
+    ids = result.get('ids', [])
+    if not isinstance(ids, list) or not ids:
+        return True
+    first = ids[0]
+    if isinstance(first, list):
+        return len(first) == 0
+    return len(ids) == 0
+
+
+def _filter_temp_file_query_result(result: dict, username: str, file_ref: str, top_k: int = 5) -> dict:
+    if not isinstance(result, dict):
+        return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
+
+    raw = str(file_ref or '').strip().replace('\\', '/')
+    base = os.path.basename(raw) if raw else ''
+    expected_sandbox = f"{username}/files/{base}" if base else ""
+    expected_title = _temp_file_vector_title(base) if base else ""
+
+    ids = result.get('ids', [[]])
+    docs = result.get('documents', [[]])
+    metas = result.get('metadatas', [[]])
+    dists = result.get('distances', [[]])
+
+    src_ids = ids[0] if isinstance(ids, list) and ids and isinstance(ids[0], list) else []
+    src_docs = docs[0] if isinstance(docs, list) and docs and isinstance(docs[0], list) else []
+    src_metas = metas[0] if isinstance(metas, list) and metas and isinstance(metas[0], list) else []
+    src_dists = dists[0] if isinstance(dists, list) and dists and isinstance(dists[0], list) else []
+
+    out_ids, out_docs, out_metas, out_dists = [], [], [], []
+    for i, vid in enumerate(src_ids):
+        meta = src_metas[i] if i < len(src_metas) and isinstance(src_metas[i], dict) else {}
+        m_alias = str(meta.get('file_alias') or '').strip()
+        m_path = str(meta.get('sandbox_path') or '').strip().replace('\\', '/')
+        m_title = str(meta.get('title') or '').strip()
+        m_original = str(meta.get('original_name') or '').strip()
+
+        matched = False
+        if raw and (m_alias == raw or m_path == raw):
+            matched = True
+        if not matched and base and (
+            m_alias == base
+            or m_original == base
+            or m_path.endswith(f"/{base}")
+            or m_path == expected_sandbox
+        ):
+            matched = True
+        if not matched and expected_title and m_title == expected_title:
+            matched = True
+
+        if not matched:
+            continue
+        out_ids.append(vid)
+        out_docs.append(src_docs[i] if i < len(src_docs) else "")
+        out_metas.append(meta)
+        out_dists.append(src_dists[i] if i < len(src_dists) else None)
+        if len(out_ids) >= max(1, int(top_k or 5)):
+            break
+
+    return {
+        "ids": [out_ids],
+        "documents": [out_docs],
+        "metadatas": [out_metas],
+        "distances": [out_dists]
+    }
+
+
+def _upload_task_cleanup_locked():
+    now = int(time.time())
+    stale_ids = []
+    for tid, task in _UPLOAD_TASKS.items():
+        updated_at = int(task.get('updated_at', 0) or 0)
+        if updated_at <= 0:
+            updated_at = int(task.get('created_at', 0) or 0)
+        if updated_at > 0 and (now - updated_at) > _UPLOAD_TASK_TTL_SEC:
+            stale_ids.append(tid)
+    for tid in stale_ids:
+        _UPLOAD_TASKS.pop(tid, None)
+
+
+def _upload_task_create(
+    username: str,
+    filename: str,
+    task_type: str = 'upload_file',
+    extra: dict = None
+) -> str:
+    task_id = uuid.uuid4().hex
+    now = int(time.time())
+    task = {
+        'task_id': task_id,
+        'username': str(username or ''),
+        'filename': str(filename or ''),
+        'task_type': str(task_type or 'upload_file'),
+        'status': 'queued',
+        'stage': 'queued',
+        'progress': 0,
+        'message': '任务已创建',
+        'error': '',
+        'result': None,
+        'cancel_requested': False,
+        'created_at': now,
+        'updated_at': now
+    }
+    if isinstance(extra, dict) and extra:
+        task['extra'] = dict(extra)
+    with _UPLOAD_TASKS_LOCK:
+        _upload_task_cleanup_locked()
+        _UPLOAD_TASKS[task_id] = task
+    return task_id
+
+
+def _upload_task_update(task_id: str, **kwargs):
+    with _UPLOAD_TASKS_LOCK:
+        task = _UPLOAD_TASKS.get(task_id)
+        if not task:
+            return None
+        for k, v in kwargs.items():
+            task[k] = v
+        task['updated_at'] = int(time.time())
+        return dict(task)
+
+
+def _upload_task_get(task_id: str):
+    with _UPLOAD_TASKS_LOCK:
+        _upload_task_cleanup_locked()
+        task = _UPLOAD_TASKS.get(task_id)
+        if not task:
+            return None
+        return dict(task)
+
+
+def _upload_task_cancel_requested(task_id: str) -> bool:
+    with _UPLOAD_TASKS_LOCK:
+        task = _UPLOAD_TASKS.get(task_id)
+        if not task:
+            return False
+        return bool(task.get('cancel_requested', False))
+
+
+def _upload_task_mark_cancel(task_id: str) -> bool:
+    with _UPLOAD_TASKS_LOCK:
+        task = _UPLOAD_TASKS.get(task_id)
+        if not task:
+            return False
+        task['cancel_requested'] = True
+        task['updated_at'] = int(time.time())
+        if task.get('status') == 'queued':
+            task['status'] = 'cancelled'
+            task['stage'] = 'cancelled'
+            task['progress'] = 0
+            task['message'] = '任务已取消'
+        return True
+
+
+def _run_upload_task(task_id: str, username: str, filename: str, raw: bytes, update_file_name: str = None):
+    sentinel_cancel = '__UPLOAD_TASK_CANCELLED__'
+    sandbox = UserFileSandbox(username)
+    entry = None
+    try:
+        _upload_task_update(task_id, status='running', stage='parsing', progress=5, message='正在解析文件')
+        if _upload_task_cancel_requested(task_id):
+            raise RuntimeError(sentinel_cancel)
+
+        entry = sandbox.add_upload(
+            file_bytes=raw,
+            original_name=filename,
+            update_file_name=update_file_name
+        )
+        _upload_task_update(task_id, stage='parsing', progress=30, message='文件解析完成')
+
+        if _upload_task_cancel_requested(task_id):
+            raise RuntimeError(sentinel_cancel)
+
+        vectorized = False
+        vector_ids = []
+        vector_message = ''
+        try:
+            stored_rel = str(entry.get('stored_path') or '').replace('\\', '/')
+            abs_path = os.path.normpath(os.path.join(os.path.dirname(__file__), stored_rel))
+            if os.path.isfile(abs_path):
+                with open(abs_path, 'r', encoding='utf-8') as f:
+                    text = f.read()
+            else:
+                text = ''
+
+            if str(text or '').strip():
+                alias = str(entry.get('alias') or filename)
+                vec_title = _temp_file_vector_title(alias)
+                _upload_task_update(task_id, stage='vectorizing', progress=35, message='开始向量化')
+
+                def _on_vec_progress(done, total):
+                    if _upload_task_cancel_requested(task_id):
+                        raise RuntimeError(sentinel_cancel)
+                    total_num = max(1, int(total or 1))
+                    done_num = max(0, int(done or 0))
+                    pct = 35 + int((done_num / total_num) * 60)
+                    pct = max(35, min(95, pct))
+                    _upload_task_update(
+                        task_id,
+                        stage='vectorizing',
+                        progress=pct,
+                        message=f'向量化中 {done_num}/{total_num}'
+                    )
+
+                ok, err, vec_ids = _vectorize_text_to_store(
+                    username,
+                    vec_title,
+                    text,
+                    metadata={
+                        'library': 'temp_file',
+                        'source_type': 'upload_file',
+                        'file_alias': alias,
+                        'original_name': str(entry.get('original_name') or filename),
+                        'sandbox_path': str(entry.get('sandbox_path') or ''),
+                    },
+                    library='temp_file',
+                    clear_existing=True,
+                    progress_callback=_on_vec_progress
+                )
+                vectorized = bool(ok)
+                vector_ids = vec_ids if isinstance(vec_ids, list) else []
+                vector_message = '' if ok else str(err or '')
+        except Exception as ve:
+            if sentinel_cancel in str(ve):
+                raise
+            vectorized = False
+            vector_message = str(ve)
+
+        result = {
+            'success': True,
+            'type': 'sandbox_file',
+            'filename': entry.get('original_name', filename),
+            'update_file_name': entry.get('alias'),
+            'sandbox_path': entry.get('sandbox_path'),
+            'stored_path': entry.get('stored_path'),
+            'source_ext': entry.get('source_ext'),
+            'parser_mode': entry.get('parser_mode'),
+            'size': entry.get('size', 0),
+            'vectorized': vectorized,
+            'vector_chunk_count': len(vector_ids),
+            'vector_ids': vector_ids,
+            'vector_library': 'temp_file',
+            'vector_title': _temp_file_vector_title(entry.get('alias') or filename),
+            'vector_message': vector_message,
+            'message': '已上传到文件沙箱'
+        }
+
+        if _upload_task_cancel_requested(task_id):
+            raise RuntimeError(sentinel_cancel)
+
+        _upload_task_update(
+            task_id,
+            status='completed',
+            stage='done',
+            progress=100,
+            message='上传与向量化完成',
+            result=result
+        )
+    except Exception as e:
+        err_text = str(e)
+        if sentinel_cancel in err_text or _upload_task_cancel_requested(task_id):
+            try:
+                if entry and entry.get('alias'):
+                    sandbox.remove_file(str(entry.get('alias')))
+            except Exception:
+                pass
+            _upload_task_update(
+                task_id,
+                status='cancelled',
+                stage='cancelled',
+                progress=0,
+                message='任务已取消',
+                error=''
+            )
+            return
+
+        _upload_task_update(
+            task_id,
+            status='failed',
+            stage='failed',
+            progress=100,
+            message='处理失败',
+            error=err_text
+        )
+
+
+def _run_knowledge_vectorize_task(task_id: str, username: str, title: str, library: str = 'knowledge'):
+    sentinel_cancel = '__KNOWLEDGE_VECTOR_TASK_CANCELLED__'
+    lib = _normalize_vector_library(library, default='knowledge')
+    try:
+        _upload_task_update(task_id, status='running', stage='loading', progress=5, message='正在读取知识内容')
+        if _upload_task_cancel_requested(task_id):
+            raise RuntimeError(sentinel_cancel)
+
+        user = User(username)
+        text = user.getBasisContent(title)
+        if not str(text or '').strip():
+            raise ValueError('知识内容为空，无法向量化')
+
+        _upload_task_update(task_id, stage='vectorizing', progress=12, message='开始向量化')
+
+        def _on_vec_progress(done, total):
+            if _upload_task_cancel_requested(task_id):
+                raise RuntimeError(sentinel_cancel)
+            total_num = max(1, int(total or 1))
+            done_num = max(0, int(done or 0))
+            pct = 12 + int((done_num / total_num) * 84)
+            pct = max(12, min(96, pct))
+            _upload_task_update(
+                task_id,
+                stage='vectorizing',
+                progress=pct,
+                message=f'向量化中 {done_num}/{total_num}'
+            )
+
+        ok, err, doc_ids = _vectorize_text_to_store(
+            username,
+            title,
+            text,
+            metadata={'source_type': 'knowledge_basis', 'title': title, 'library': lib},
+            library=lib,
+            clear_existing=True,
+            progress_callback=_on_vec_progress
+        )
+        if not ok:
+            raise RuntimeError(str(err or '向量化失败'))
+
+        try:
+            user.updateBasisVectorTime(title)
+        except Exception:
+            pass
+
+        if _upload_task_cancel_requested(task_id):
+            raise RuntimeError(sentinel_cancel)
+
+        result = {
+            'success': True,
+            'title': title,
+            'library': lib,
+            'stored_count': len(doc_ids or []),
+            'vector_ids': doc_ids or [],
+            'message': '知识向量化完成'
+        }
+        _upload_task_update(
+            task_id,
+            status='completed',
+            stage='done',
+            progress=100,
+            message='知识向量化完成',
+            result=result
+        )
+    except Exception as e:
+        err_text = str(e)
+        if sentinel_cancel in err_text or _upload_task_cancel_requested(task_id):
+            _upload_task_update(
+                task_id,
+                status='cancelled',
+                stage='cancelled',
+                progress=0,
+                message='任务已取消',
+                error=''
+            )
+            return
+        _upload_task_update(
+            task_id,
+            status='failed',
+            stage='failed',
+            progress=100,
+            message='处理失败',
+            error=err_text
+        )
+
 def jsonify_safe(payload, status=200):
     return Response(
         json.dumps(payload, ensure_ascii=False, default=str),
@@ -694,20 +1540,31 @@ def require_papi_key(f):
 
 @app.route('/')
 def index():
-    """首页 - 重定向到聊天或登录"""
+    """首页：未登录展示 Landing，已登录进入聊天"""
     if 'username' in session:
         return redirect(url_for('chat', **request.args))
-    return redirect(url_for('login'))
+    return render_template('introduce.html')
+    
+@app.route('/favicon.ico')
+def favicon():
+    """Icon"""
+    return send_from_directory(
+        os.path.join(app.root_path, 'static', 'img'),
+        'Nexora.ico',
+        mimetype='image/vnd.microsoft.icon'
+    )
 
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     """登录页面"""
     if request.method == 'GET':
+        if 'username' in session:
+            return redirect(url_for('chat'))
         return render_template('login.html')
     
     # POST - 处理登录
-    data = request.get_json()
+    data = request.get_json() or {}
     username = data.get('username')
     password = data.get('password')
     
@@ -743,7 +1600,7 @@ def login():
 def logout():
     """登出"""
     session.clear()
-    return redirect(url_for('login'))
+    return redirect(url_for('index'))
 
 
 def require_login(f):
@@ -872,6 +1729,44 @@ def get_current_user_local_mail():
     if user_id not in users:
         return jsonify({'success': False, 'message': '用户不存在'}), 404
     return jsonify({'success': True, 'local_mail': get_local_mail_profile(users[user_id])})
+
+
+@app.route('/api/notes/store', methods=['GET'])
+@require_login
+def get_notes_store():
+    """获取当前用户笔记云存储。"""
+    username = session.get('username')
+    if not username:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+    try:
+        user = User(username)
+        store = user.get_notes_store()
+        return jsonify({'success': True, 'store': store})
+    except Exception as e:
+        print(f"Error getting notes store: {e}")
+        return jsonify({'success': False, 'message': '获取笔记失败'}), 500
+
+
+@app.route('/api/notes/store', methods=['PUT', 'POST'])
+@require_login
+def save_notes_store():
+    """保存当前用户笔记云存储（全量覆盖）。"""
+    username = session.get('username')
+    if not username:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+
+    payload = request.get_json(silent=True) or {}
+    store = payload.get('store')
+    if not isinstance(store, dict):
+        return jsonify({'success': False, 'message': 'store 参数缺失或格式错误'}), 400
+
+    try:
+        user = User(username)
+        normalized = user.save_notes_store(store)
+        return jsonify({'success': True, 'store': normalized})
+    except Exception as e:
+        print(f"Error saving notes store: {e}")
+        return jsonify({'success': False, 'message': '保存笔记失败'}), 500
 
 
 def _resolve_current_user_mail_binding():
@@ -1959,14 +2854,14 @@ def chat():
 @app.route('/api/upload', methods=['POST'])
 @require_login
 def upload_file():
-    """上传文件到用户文件沙箱（文本 + docx/pdf/pptx 提取）"""
+    """创建异步上传任务（上传 -> 解析 -> 向量化）"""
     if 'file' not in request.files:
         return jsonify({'success': False, 'message': '没有文件'}), 400
-        
+
     file = request.files['file']
     if file.filename == '':
         return jsonify({'success': False, 'message': '未选择文件'}), 400
-        
+
     try:
         username = session['username']
         filename = os.path.basename(file.filename)
@@ -1980,29 +2875,107 @@ def upload_file():
 
         update_file_name = (request.form.get('update_file_name') or '').strip() or None
         raw = file.read()
-        sandbox = UserFileSandbox(username)
-        entry = sandbox.add_upload(
-            file_bytes=raw,
-            original_name=filename,
-            update_file_name=update_file_name
+        task_id = _upload_task_create(username, filename)
+        worker = threading.Thread(
+            target=_run_upload_task,
+            args=(task_id, username, filename, raw, update_file_name),
+            daemon=True
         )
+        worker.start()
 
         return jsonify({
             'success': True,
-            'type': 'sandbox_file',
-            'filename': entry.get('original_name', filename),
-            'update_file_name': entry.get('alias'),
-            'sandbox_path': entry.get('sandbox_path'),
-            'stored_path': entry.get('stored_path'),
-            'source_ext': entry.get('source_ext'),
-            'parser_mode': entry.get('parser_mode'),
-            'size': entry.get('size', 0),
-            'message': '已上传到文件沙箱'
+            'async': True,
+            'task_id': task_id,
+            'status': 'queued',
+            'stage': 'queued',
+            'progress': 0,
+            'message': '上传任务已创建'
         })
-                
+
     except Exception as e:
         print(f"[ERROR] Upload failed: {e}")
         return jsonify({'success': False, 'message': f'上传失败: {str(e)}'}), 500
+
+
+@app.route('/api/upload/task/<task_id>', methods=['GET'])
+@require_login
+def get_upload_task(task_id):
+    username = session['username']
+    task = _upload_task_get(task_id)
+    if not task:
+        return jsonify({'success': False, 'message': '任务不存在'}), 404
+    if str(task.get('username') or '') != str(username):
+        return jsonify({'success': False, 'message': '无权限访问该任务'}), 403
+
+    return jsonify({
+        'success': True,
+        'task': {
+            'task_id': task.get('task_id'),
+            'task_type': task.get('task_type') or '',
+            'filename': task.get('filename'),
+            'status': task.get('status'),
+            'stage': task.get('stage'),
+            'progress': int(task.get('progress', 0) or 0),
+            'message': task.get('message') or '',
+            'error': task.get('error') or '',
+            'result': task.get('result'),
+            'created_at': task.get('created_at'),
+            'updated_at': task.get('updated_at')
+        }
+    })
+
+
+@app.route('/api/knowledge/vectorize/task', methods=['POST'])
+@require_login
+def create_knowledge_vectorize_task():
+    """创建知识点向量化异步任务（复用统一任务轮询接口）"""
+    username = session['username']
+    data = request.get_json() or {}
+    title = str(data.get('title') or '').strip()
+    library = _normalize_vector_library(data.get('library'), default='knowledge')
+    if not title:
+        return jsonify({'success': False, 'message': '缺少 title'}), 400
+
+    task_id = _upload_task_create(
+        username,
+        title,
+        task_type='knowledge_vectorize',
+        extra={'library': library}
+    )
+    worker = threading.Thread(
+        target=_run_knowledge_vectorize_task,
+        args=(task_id, username, title, library),
+        daemon=True
+    )
+    worker.start()
+    return jsonify({
+        'success': True,
+        'async': True,
+        'task_id': task_id,
+        'status': 'queued',
+        'stage': 'queued',
+        'progress': 0,
+        'message': '向量化任务已创建'
+    })
+
+
+@app.route('/api/upload/task/<task_id>/cancel', methods=['POST'])
+@require_login
+def cancel_upload_task(task_id):
+    username = session['username']
+    task = _upload_task_get(task_id)
+    if not task:
+        return jsonify({'success': False, 'message': '任务不存在'}), 404
+    if str(task.get('username') or '') != str(username):
+        return jsonify({'success': False, 'message': '无权限访问该任务'}), 403
+
+    status = str(task.get('status') or '')
+    if status in {'completed', 'failed', 'cancelled'}:
+        return jsonify({'success': True, 'already_done': True, 'status': status})
+
+    _upload_task_mark_cancel(task_id)
+    return jsonify({'success': True, 'cancel_requested': True})
 
 
 @app.route('/api/files/list', methods=['GET'])
@@ -2077,7 +3050,18 @@ def remove_cloud_file():
         result = sandbox.remove_file(file_ref)
         if not result.get('success'):
             return jsonify({'success': False, 'message': result.get('message', '删除失败')}), 404
-        return jsonify({'success': True, 'removed': result.get('removed', {})})
+
+        removed = result.get('removed', {}) if isinstance(result, dict) else {}
+        alias = str(removed.get('alias') or '').strip()
+        if alias:
+            try:
+                vec_title = _temp_file_vector_title(alias)
+                store, _ = get_chroma_store()
+                if store and getattr(store, 'mode', '') == 'service':
+                    store.delete_by_title(username, vec_title, library='temp_file')
+            except Exception:
+                pass
+        return jsonify({'success': True, 'removed': removed})
     except Exception as e:
         print(f"[ERROR] Remove cloud file failed: {e}")
         return jsonify({'success': False, 'message': f'删除失败: {str(e)}'}), 500
@@ -2442,6 +3426,8 @@ def delete_conversation(conv_id):
     username = session['username']
     manager = ConversationManager(username)
     success = manager.delete_conversation(conv_id)
+    if success:
+        _remove_conversation_assets_dir(username, conv_id)
     return jsonify({'success': success})
 
 
@@ -2463,8 +3449,40 @@ def delete_message():
         
     manager = ConversationManager(username)
     if manager.delete_message(conv_id, int(index)):
+        try:
+            conversation = manager.get_conversation(conv_id)
+            keep_ids = _collect_referenced_asset_ids(conversation)
+            _cleanup_conversation_assets(username, conv_id, keep_asset_ids=keep_ids)
+        except Exception as e:
+            print(f"[ASSET] cleanup after delete_message failed: {e}")
         return jsonify({"success": True})
     return jsonify({"success": False, "message": "Failed to delete"}), 500
+
+
+@app.route('/api/conversations/<conv_id>/assets/<asset_id>', methods=['GET'])
+@require_login
+def get_conversation_asset(conv_id, asset_id):
+    username = session['username']
+    aid = str(asset_id or '').strip()
+    if not aid:
+        return jsonify({'success': False, 'message': 'invalid asset id'}), 400
+
+    idx = _load_conversation_asset_index(username, conv_id)
+    assets = idx.get("assets", {}) if isinstance(idx.get("assets"), dict) else {}
+    meta = assets.get(aid)
+    if not isinstance(meta, dict):
+        return jsonify({'success': False, 'message': 'asset not found'}), 404
+
+    file_name = str(meta.get("file_name") or "").strip()
+    if not file_name:
+        return jsonify({'success': False, 'message': 'asset file missing'}), 404
+
+    fpath = os.path.join(_conversation_asset_dir(username, conv_id), file_name)
+    if not os.path.exists(fpath):
+        return jsonify({'success': False, 'message': 'asset file not found'}), 404
+
+    mime = str(meta.get("mime") or "").strip() or "application/octet-stream"
+    return send_file(fpath, mimetype=mime)
 
 
 @app.route('/api/switch_version', methods=['POST'])
@@ -2612,6 +3630,71 @@ def admin_get_models_config():
         })
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
+
+
+@app.route('/api/provider/models', methods=['GET'])
+@require_login
+def api_provider_models():
+    """
+    Provider model listing test endpoint.
+    Example:
+      /api/provider/models?provider=volcengine&capability=vision
+    """
+    provider_name = str(request.args.get('provider', 'volcengine') or 'volcengine').strip()
+    capability = str(request.args.get('capability', '') or '').strip().lower()
+    try:
+        timeout = float(request.args.get('timeout', 30) or 30)
+    except Exception:
+        timeout = 30.0
+    if timeout <= 0:
+        timeout = 30.0
+
+    try:
+        config = get_config_all()
+        providers = config.get('providers', {}) if isinstance(config, dict) else {}
+        provider_cfg = providers.get(provider_name)
+        if not isinstance(provider_cfg, dict):
+            return jsonify({
+                'success': False,
+                'message': f'provider 不存在: {provider_name}'
+            }), 404
+
+        adapter = create_provider_adapter(provider_name, provider_cfg)
+        api_key = str(provider_cfg.get('api_key', '') or '').strip()
+        base_url = str(provider_cfg.get('base_url', '') or '').strip()
+        if not api_key:
+            return jsonify({
+                'success': False,
+                'message': f'provider {provider_name} 未配置 api_key'
+            }), 400
+
+        client = adapter.create_client(api_key=api_key, base_url=base_url, timeout=timeout)
+        result = adapter.list_models(
+            client=client,
+            capability=capability,
+            request_options={}
+        )
+        if not isinstance(result, dict):
+            result = {
+                'ok': False,
+                'provider': provider_name,
+                'capability': capability,
+                'error': 'invalid_result_type',
+                'models': []
+            }
+        ok = bool(result.get('ok', False))
+        status_code = 200 if ok else 502
+        return jsonify({
+            'success': ok,
+            **result
+        }), status_code
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'provider': provider_name,
+            'capability': capability,
+            'message': str(e)
+        }), 500
 
 
 @app.route('/api/admin/tools/stats', methods=['GET'])
@@ -3048,13 +4131,29 @@ def chat_stream():
     enable_thinking = data.get('enable_thinking', False)
     enable_web_search = data.get('enable_web_search', True)
     enable_tools = data.get('enable_tools', True)
+    raw_tool_mode = data.get('tool_mode')
+    allow_history_images = _as_bool(data.get('allow_history_images', True), True)
     show_token_usage = data.get('show_token_usage', False)
+    raw_file_ids = data.get('file_ids', [])
+    file_ids = raw_file_ids if isinstance(raw_file_ids, list) else []
+
+    enable_tools = bool(enable_tools)
+    if raw_tool_mode is None:
+        tool_mode = 'auto' if enable_tools else 'off'
+    else:
+        tool_mode = str(raw_tool_mode or '').strip().lower()
+        if tool_mode not in {'off', 'auto', 'force'}:
+            tool_mode = 'auto' if enable_tools else 'off'
+    if tool_mode == 'off':
+        enable_tools = False
+    else:
+        enable_tools = True
     
     # 重新生成标志
     is_regenerate = data.get('is_regenerate', False)
     regenerate_index = data.get('regenerate_index')
     
-    if not message and not is_regenerate:
+    if not message and not is_regenerate and len(file_ids) == 0:
         return jsonify({'success': False, 'message': '消息不能为空'})
     
     username = session['username']
@@ -3116,6 +4215,12 @@ def chat_stream():
                 conversation_id=conversation_id,
                 auto_create=(conversation_id is None)
             )
+
+            prepared_file_ids = _prepare_chat_file_ids(
+                username=username,
+                conversation_id=model.conversation_id,
+                file_ids=file_ids
+            )
             
             # 发送对话ID
             if not conversation_id:
@@ -3128,7 +4233,10 @@ def chat_stream():
                 enable_thinking=enable_thinking,
                 enable_web_search=enable_web_search,
                 enable_tools=enable_tools,
+                tool_mode=tool_mode,
+                allow_history_images=allow_history_images,
                 show_token_usage=show_token_usage,
+                file_ids=prepared_file_ids,
                 is_regenerate=is_regenerate,
                 regenerate_index=regenerate_index
             ):
@@ -3147,6 +4255,64 @@ def chat_stream():
             yield f"data: {error_data}\n\n"
     
     return Response(generate(), mimetype='text/event-stream')
+
+
+@app.route('/api/client-tools/pull', methods=['POST'])
+@require_login
+def pull_client_tool_request():
+    data = request.get_json(silent=True) or {}
+    conversation_id = str(data.get('conversation_id') or '').strip()
+    if not conversation_id:
+        return jsonify({'success': False, 'message': 'conversation_id is required'}), 400
+
+    username = session['username']
+    wait_ms = data.get('wait_ms', 0)
+    req = pull_pending_request(
+        username=username,
+        conversation_id=conversation_id,
+        wait_ms=wait_ms
+    )
+    return jsonify({
+        'success': True,
+        'request': req
+    })
+
+
+@app.route('/api/client-tools/submit', methods=['POST'])
+@require_login
+def submit_client_tool_result_api():
+    data = request.get_json(silent=True) or {}
+    conversation_id = str(data.get('conversation_id') or '').strip()
+    request_id = str(data.get('request_id') or '').strip()
+    if not conversation_id:
+        return jsonify({'success': False, 'message': 'conversation_id is required'}), 400
+    if not request_id:
+        return jsonify({'success': False, 'message': 'request_id is required'}), 400
+
+    raw_exec_success = data.get('exec_success', data.get('success', True))
+    if isinstance(raw_exec_success, str):
+        exec_success = raw_exec_success.strip().lower() in {'1', 'true', 'yes', 'y', 'on'}
+    else:
+        exec_success = bool(raw_exec_success)
+
+    result_payload = {
+        'success': exec_success,
+        'result': data.get('result'),
+        'error': str(data.get('error') or '').strip(),
+        'logs': data.get('logs') if isinstance(data.get('logs'), list) else [],
+        'meta': data.get('meta') if isinstance(data.get('meta'), dict) else {},
+        'submitted_at': int(time.time())
+    }
+    username = session['username']
+    ok, msg = submit_request_result(
+        username=username,
+        conversation_id=conversation_id,
+        request_id=request_id,
+        result_payload=result_payload
+    )
+    if not ok:
+        return jsonify({'success': False, 'message': msg}), 404
+    return jsonify({'success': True})
 
 
 @app.route('/api/tokens/stats', methods=['GET'])
@@ -3178,6 +4344,57 @@ def get_token_stats():
                 return int(float(s))
             except Exception:
                 return 0
+
+        # 优先：当指定 conversation_id 时，使用对话消息中的 metadata.io_tokens 聚合。
+        # 这样可与前端 model-badge 保持一致（按单次 assistant 响应统计）。
+        if conversation_id:
+            try:
+                manager = ConversationManager(username)
+                convo = manager.get_conversation(conversation_id)
+                messages = convo.get('messages', []) if isinstance(convo, dict) else []
+                io_input_total = 0
+                io_output_total = 0
+                io_today_total = 0
+                io_found = False
+                today_str = time.strftime("%Y-%m-%d", time.localtime())
+
+                for msg in messages:
+                    if not isinstance(msg, dict):
+                        continue
+                    if str(msg.get('role', '') or '').strip() != 'assistant':
+                        continue
+                    md = msg.get('metadata', {})
+                    if not isinstance(md, dict):
+                        continue
+                    io_tokens = md.get('io_tokens', {})
+                    if not isinstance(io_tokens, dict):
+                        continue
+                    in_tok = _safe_int(io_tokens.get('input', 0))
+                    out_tok = _safe_int(io_tokens.get('output', 0))
+                    if in_tok <= 0 and out_tok <= 0:
+                        continue
+                    io_found = True
+                    io_input_total += in_tok
+                    io_output_total += out_tok
+
+                    ts = str(msg.get('timestamp', '') or '')
+                    if ts.startswith(today_str):
+                        io_today_total += (in_tok + out_tok)
+
+                if io_found:
+                    # history 仍返回 token 日志最近记录，便于排查
+                    return jsonify({
+                        'success': True,
+                        'conversation_id': conversation_id,
+                        'input_total': io_input_total,
+                        'output_total': io_output_total,
+                        'total': io_input_total + io_output_total,
+                        'today': io_today_total,
+                        'history': logs[:20]
+                    })
+            except Exception:
+                # 回退到旧日志聚合逻辑
+                pass
 
         input_total = 0
         output_total = 0
@@ -3234,7 +4451,34 @@ def list_knowledge():
     try:
         # 获取短期记忆和基础知识
         short_memory = user.getKnowledgeList(0)  # 短期记忆
-        basis_knowledge = user.getKnowledgeList(1)  # 基础知识
+        basis_knowledge_raw = user.getKnowledgeList(1)  # 基础知识
+
+        # 兼容旧数据：统一为 {title: meta_dict}
+        basis_knowledge = {}
+        if isinstance(basis_knowledge_raw, dict):
+            for title, meta in basis_knowledge_raw.items():
+                if isinstance(meta, dict):
+                    basis_knowledge[str(title)] = dict(meta)
+                else:
+                    basis_knowledge[str(title)] = {}
+        elif isinstance(basis_knowledge_raw, list):
+            for title in basis_knowledge_raw:
+                t = str(title or '').strip()
+                if t:
+                    basis_knowledge[t] = {}
+
+        # 增强：检测向量是否真实存在，防止外部删库后前端状态失真
+        vector_titles = None
+        store, _ = get_chroma_store()
+        if store and getattr(store, 'mode', '') == 'service':
+            try:
+                vector_titles = set(store.list_titles(username, library='knowledge'))
+            except Exception:
+                vector_titles = None
+
+        if vector_titles is not None:
+            for title, meta in basis_knowledge.items():
+                meta['vector_exists'] = title in vector_titles
         
         return jsonify({
             'success': True,
@@ -3385,7 +4629,7 @@ def update_knowledge_settings():
         # 如果获取了新标题或状态，返回新的 share_url
         meta = user.getBasisMetadata(new_title or title)
         share_id = meta.get('share_id', '')
-        base_url = request.host_url.rstrip('/')
+        base_url = get_public_base_url()
         share_url = f"{base_url}/public/knowledge/{username}/{share_id}"
         return jsonify({'success': True, 'message': msg, 'share_url': share_url})
     return jsonify({'success': False, 'message': msg})
@@ -3404,7 +4648,7 @@ def share_basis(title):
         meta = user.getBasisMetadata(title)
         share_id = meta.get('share_id', '')
         # 生成公开访问地址
-        base_url = request.host_url.rstrip('/')
+        base_url = get_public_base_url()
         share_url = f"{base_url}/public/knowledge/{username}/{share_id}"
         return jsonify({'success': True, 'message': msg, 'share_url': share_url})
     return jsonify({'success': False, 'message': msg})
@@ -4125,15 +5369,16 @@ def ai_generate_index():
 @app.route('/api/knowledge/vectorize', methods=['POST'])
 @require_login
 def vectorize_knowledge():
-    # Vectorize and store (auto chunking)
+    # Vectorize and store (server-side auto chunking)
     username = session['username']
     user = User(username)
-    data = request.get_json()
-    
+    data = request.get_json() or {}
+
     title = data.get('title')
     text = data.get('text')
     metadata = data.get('metadata') or {}
-    
+    library = _normalize_vector_library(data.get('library'), default='knowledge')
+
     if not text:
         # If text is missing, try to load from knowledge base
         if title:
@@ -4141,81 +5386,28 @@ def vectorize_knowledge():
         else:
             return jsonify({'success': False, 'message': '文本为空'})
 
-    def split_text(t, max_len=800, overlap=120):
-        if not t:
-            return []
-        if max_len <= 0:
-            return [t]
-        if overlap >= max_len:
-            overlap = max_len // 4
-        t = t.replace('\r\n', '\n')
-        chunks = []
-        start = 0
-        length = len(t)
-        while start < length:
-            end = min(start + max_len, length)
-            chunk = t[start:end]
-            chunks.append(chunk)
-            if end == length:
-                break
-            start = end - overlap if overlap > 0 else end
-        return chunks
-            
     try:
-        config = get_config_all()
-        rag = config.get('rag_database', {})
-        chunk_size = int(rag.get('chunk_size') or 800)
-        chunk_overlap = int(rag.get('chunk_overlap') or 120)
+        ok, err, doc_ids = _vectorize_text_to_store(
+            username,
+            title,
+            text,
+            metadata=metadata,
+            library=library,
+            clear_existing=True
+        )
+        if not ok:
+            return jsonify({'success': False, 'message': err or '向量化失败'})
 
-        chunks = split_text(text, chunk_size, chunk_overlap)
-        if not chunks:
-            return jsonify({'success': False, 'message': '文本为空'})
-        
-        store, store_err = get_chroma_store()
-        if not store:
-            return jsonify({'success': False, 'message': f'ChromaDB错误: {store_err}'})
-        if getattr(store, 'mode', '') != 'service':
-            return jsonify({'success': False, 'message': 'NexoraDB service mode required'})
-
-        stored = False
-        stored_count = 0
-        doc_ids = []
-
-        if title:
-            try:
-                store.delete_by_title(username, title)
-            except Exception:
-                pass
-
-        try:
-            for i, chunk in enumerate(chunks):
-                chunk_meta = dict(metadata)
-                chunk_meta.update({
-                    'chunk_id': i,
-                    'chunk_total': len(chunks)
-                })
-                doc_id = store.upsert_text(
-                    username,
-                    title,
-                    chunk,
-                    chunk_meta,
-                    chunk_id=i
-                )
-                doc_ids.append(doc_id)
-                stored_count += 1
-            stored = stored_count == len(chunks)
-        except Exception as e:
-            return jsonify({'success': False, 'message': f'存储失败: {str(e)}'})
-        
         return jsonify({
             'success': True, 
-            'chunk_count': len(chunks),
-            'stored': stored,
-            'stored_count': stored_count,
+            'chunk_count': len(doc_ids),
+            'stored': True,
+            'stored_count': len(doc_ids),
             'vector_length': 0,
             'vector_preview': [],
             'vector_ids': doc_ids,
-            'store_error': None if stored else 'store error',
+            'library': library,
+            'store_error': None,
             'message': '向量化成功'
         })
     except Exception as e:
@@ -4245,6 +5437,7 @@ def vectorize_knowledge_chunk():
     chunk_id = data.get('chunk_id')
     metadata = data.get('metadata') or {}
     chunk_total = data.get('chunk_total')
+    library = _normalize_vector_library(data.get('library'), default='knowledge')
 
     if not title or text is None:
         return jsonify({'success': False, 'message': '缺少标题或文本'})
@@ -4261,7 +5454,14 @@ def vectorize_knowledge_chunk():
             chunk_meta['chunk_id'] = chunk_id
         if chunk_total is not None:
             chunk_meta['chunk_total'] = chunk_total
-        doc_id = store.upsert_text(username, title, text, chunk_meta, chunk_id=chunk_id)
+        doc_id = store.upsert_text(
+            username,
+            title,
+            text,
+            chunk_meta,
+            chunk_id=chunk_id,
+            library=library
+        )
         return jsonify({'success': True, 'vector_id': doc_id})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
@@ -4277,6 +5477,7 @@ def query_knowledge_vectors():
     data = request.get_json() or {}
     query_text = data.get('text') or data.get('query')
     top_k = int(data.get('top_k') or 5)
+    library = _normalize_vector_library(data.get('library'), default='knowledge')
     
     if not query_text:
         return jsonify({'success': False, 'message': '缺少查询文本'})
@@ -4356,10 +5557,67 @@ def query_knowledge_vectors():
     try:
         if getattr(store, 'mode', '') != 'service':
             return jsonify(_keyword_fallback_payload('NexoraDB service mode not available'))
-        result = store.query_text(username, query_text, top_k=top_k)
+        result = store.query_text(
+            username,
+            query_text,
+            top_k=top_k,
+            library=library
+        )
         return jsonify({'success': True, 'result': result})
     except Exception as e:
         return jsonify(_keyword_fallback_payload(f'NexoraDB query failed: {str(e)}'))
+
+
+@app.route('/api/files/vector/query', methods=['POST'])
+@require_login
+def query_temp_file_vectors():
+    """查询临时文件库向量（library=temp_file）。默认全库检索，file_alias 可选用于单文件筛选。"""
+    username = session['username']
+    data = request.get_json() or {}
+    query_text = data.get('text') or data.get('query')
+    file_alias = str(data.get('file_alias') or data.get('alias') or '').strip()
+    if file_alias.lower() in {'*', 'all', '全部'}:
+        file_alias = ''
+    top_k = int(data.get('top_k') or 5)
+
+    if not query_text:
+        return jsonify({'success': False, 'message': '缺少查询文本'})
+
+    where = _build_temp_file_where(username, file_alias) if file_alias else None
+
+    store, store_err = get_chroma_store()
+    if not store:
+        return jsonify({'success': False, 'message': f'NexoraDB unavailable: {store_err}'})
+    if getattr(store, 'mode', '') != 'service':
+        return jsonify({'success': False, 'message': 'NexoraDB service mode not available'})
+
+    try:
+        result = store.query_text(
+            username,
+            query_text,
+            top_k=top_k,
+            library='temp_file',
+            where=where
+        )
+        # 兼容：老数据/路径参数导致 where 未命中时，自动宽查询后按文件再过滤一次
+        if file_alias and _is_query_result_empty(result):
+            fallback_top_k = min(max(int(top_k) * 6, int(top_k)), 60)
+            broad = store.query_text(
+                username,
+                query_text,
+                top_k=fallback_top_k,
+                library='temp_file',
+                where=None
+            )
+            result = _filter_temp_file_query_result(broad, username, file_alias, top_k=top_k)
+        return jsonify({
+            'success': True,
+            'library': 'temp_file',
+            'file_alias': file_alias,
+            'result': result
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
 
 
 @app.route('/api/knowledge/vector/delete', methods=['POST'])
@@ -4370,6 +5628,7 @@ def delete_knowledge_vectors():
     data = request.get_json() or {}
     title = data.get('title')
     vector_id = data.get('vector_id')
+    library = _normalize_vector_library(data.get('library'), default='knowledge')
     if not title and not vector_id:
         return jsonify({'success': False, 'message': '缺少标题或向量ID'})
 
@@ -4380,7 +5639,7 @@ def delete_knowledge_vectors():
         if vector_id:
             store.delete_by_id(username, vector_id)
         else:
-            store.delete_by_title(username, title)
+            store.delete_by_title(username, title, library=library)
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
@@ -4393,6 +5652,7 @@ def get_vector_chunks():
     username = session['username']
     data = request.get_json() or {}
     title = data.get('title')
+    library = _normalize_vector_library(data.get('library'), default='knowledge')
     if not title:
         return jsonify_safe({'success': False, 'message': 'missing title'})
 
@@ -4400,8 +5660,8 @@ def get_vector_chunks():
     if not store:
         return jsonify_safe({'success': False, 'message': f'ChromaDB unavailable: {store_err}'})
     try:
-        chunks = store.get_chunks(username, title)
-        return jsonify_safe({'success': True, 'chunks': chunks})
+        chunks = store.get_chunks(username, title, library=library)
+        return jsonify_safe({'success': True, 'library': library, 'chunks': chunks})
     except Exception as e:
         return jsonify_safe({'success': False, 'message': str(e)})
 
@@ -4449,5 +5709,3 @@ if __name__ == '__main__':
     print("💡 使用 Ctrl+C 停止服务器")
     
     app.run(debug=True, host='0.0.0.0', port=5000, threaded=True)
-
-

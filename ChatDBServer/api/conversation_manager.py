@@ -127,6 +127,12 @@ class ConversationManager:
         
         with open(conversation_path, 'w', encoding='utf-8') as f:
             json.dump(conversation_data, f, ensure_ascii=False, indent=2)
+
+    def update_last_response_id(self, conversation_id, response_id, model_name=None):
+        """
+        更新可续接的 last response id（通用命名，兼容历史 volc 命名字段）
+        """
+        self.update_volc_response_id(conversation_id, response_id, model_name=model_name)
             
     def get_last_volc_response_id(self, conversation_id, current_model_name=None):
         """
@@ -150,6 +156,12 @@ class ConversationManager:
                 return None
             
             return last_id
+
+    def get_last_response_id(self, conversation_id, current_model_name=None):
+        """
+        获取可续接的 last response id（通用命名，兼容历史 volc 命名字段）
+        """
+        return self.get_last_volc_response_id(conversation_id, current_model_name=current_model_name)
 
     def add_message(self, conversation_id, role, content, metadata=None, index=None):
         """

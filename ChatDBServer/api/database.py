@@ -127,7 +127,6 @@ class User:
                 self.save_knowledge_graph(graph)
                 
             meta["updated_at"] = time.time()
-            meta["vector_updated_at"] = 0
             with open(self.path + "database.json", "w", encoding="utf-8") as f:
                 json.dump(db, f, indent=4, ensure_ascii=False)
             return True, "更新成功"
@@ -525,6 +524,8 @@ class User:
         new_title=None,
         context=None,
         url=None,
+        is_public=None,
+        is_collaborative=None,
         from_pos=None,
         to_pos=None,
         replacement=None,
@@ -551,18 +552,28 @@ class User:
         if context is not None and has_range_replace:
             return False, "context and range replacement are mutually exclusive"
 
+        content_updated = False
+
         # 更新内容（整段覆盖）
         if context is not None:
             try:
-                with open(src, "w", encoding="utf-8") as f:
-                    f.write(str(context))
+                with open(src, "r", encoding="utf-8") as f:
+                    original = f.read()
+                new_content = str(context)
+                if new_content == original:
+                    content_updated = False
+                else:
+                    with open(src, "w", encoding="utf-8") as f:
+                        f.write(new_content)
+                    content_updated = True
             except Exception as e:
                 return False, f"Failed to update content: {str(e)}"
         # 更新内容（区间替换）
         elif has_range_replace:
             try:
                 with open(src, "r", encoding="utf-8") as f:
-                    current = f.read()
+                    original = f.read()
+                current = original
 
                 ops = []
                 if isinstance(replacements, list) and replacements:
@@ -591,14 +602,23 @@ class User:
                         return False, f"range out of bounds: ({s}, {e}) > {len(current)}"
                     current = current[:s] + rep + current[e:]
 
-                with open(src, "w", encoding="utf-8") as f:
-                    f.write(current)
+                if current != original:
+                    with open(src, "w", encoding="utf-8") as f:
+                        f.write(current)
+                    content_updated = True
+                else:
+                    content_updated = False
             except Exception as e:
                 return False, f"Failed to apply range replacement: {str(e)}"
         
         # 更新URL（如果提供）
         if url is not None:
             old_record["url"] = url
+        # 更新公开/协作设置（如果提供）
+        if is_public is not None:
+            old_record["public"] = bool(is_public)
+        if is_collaborative is not None:
+            old_record["collaborative"] = bool(is_collaborative)
         
         # 更新标题（如果提供且不同）
         if new_title and new_title != title:
@@ -614,7 +634,8 @@ class User:
             self._update_knowledge_graph_title(title, new_title)
         
         old_record["updated_at"] = time.time()
-        old_record["vector_updated_at"] = 0
+        if content_updated:
+            old_record["vector_updated_at"] = 0
 
         # 保存更新
         with open(self.path + "database.json", "w", encoding="utf-8") as f:
@@ -732,6 +753,181 @@ class User:
                 return json.load(f)
         except:
             return []
+
+    # ==================== 笔记云存储 ====================
+
+    def _notes_store_path(self):
+        return self.path + "notes_store.json"
+
+    def _default_notes_store(self):
+        now_ts = int(time.time())
+        return {
+            "activeNotebookId": "nb_default",
+            "notebooks": [
+                {
+                    "id": "nb_default",
+                    "name": "默认笔记本",
+                    "ts": now_ts
+                }
+            ],
+            "notes": []
+        }
+
+    def _normalize_note_anchor(self, raw):
+        if not isinstance(raw, dict):
+            return None
+        anchor_type = str(raw.get("type", "")).strip()
+        if anchor_type == "chat":
+            conversation_id = str(raw.get("conversationId", "")).strip()[:128]
+            message_role = str(raw.get("messageRole", "")).strip()
+            if message_role not in {"assistant", "user"}:
+                message_role = ""
+            message_index = raw.get("messageIndex", None)
+            try:
+                if message_index is None or message_index == "":
+                    message_index = None
+                else:
+                    message_index = max(0, int(message_index))
+            except Exception:
+                message_index = None
+            snippet = str(raw.get("snippet", "")).strip()[:600]
+            plain_snippet = str(raw.get("plainSnippet", "")).strip()[:600]
+            return {
+                "type": "chat",
+                "conversationId": conversation_id,
+                "messageIndex": message_index,
+                "messageRole": message_role,
+                "snippet": snippet,
+                "plainSnippet": plain_snippet
+            }
+        if anchor_type == "knowledge":
+            title = str(raw.get("title", "")).strip()[:200]
+            snippet = str(raw.get("snippet", "")).strip()[:600]
+            plain_snippet = str(raw.get("plainSnippet", "")).strip()[:600]
+            return {
+                "type": "knowledge",
+                "title": title,
+                "snippet": snippet,
+                "plainSnippet": plain_snippet
+            }
+        return None
+
+    def _normalize_notes_store(self, raw):
+        src = raw if isinstance(raw, dict) else {}
+        default = self._default_notes_store()
+
+        notebooks_raw = src.get("notebooks", [])
+        if not isinstance(notebooks_raw, list):
+            notebooks_raw = []
+
+        notebooks = []
+        notebook_ids = set()
+        now_ts = int(time.time())
+        for idx, item in enumerate(notebooks_raw):
+            if not isinstance(item, dict):
+                continue
+            notebook_id = str(item.get("id", "")).strip() or f"nb_{now_ts}_{idx}"
+            if notebook_id in notebook_ids:
+                continue
+            notebook_name = str(item.get("name", "")).strip() or "未命名笔记本"
+            try:
+                notebook_ts = int(item.get("ts", now_ts) or now_ts)
+            except Exception:
+                notebook_ts = now_ts
+            notebooks.append({
+                "id": notebook_id,
+                "name": notebook_name[:64],
+                "ts": notebook_ts
+            })
+            notebook_ids.add(notebook_id)
+
+        if not notebooks:
+            notebooks = default["notebooks"]
+            notebook_ids = {default["notebooks"][0]["id"]}
+
+        active_notebook_id = str(src.get("activeNotebookId", "")).strip()
+        if not active_notebook_id or active_notebook_id not in notebook_ids:
+            active_notebook_id = notebooks[0]["id"]
+
+        notes_raw = src.get("notes", [])
+        if not isinstance(notes_raw, list):
+            notes_raw = []
+
+        normalized_notes = []
+        for idx, item in enumerate(notes_raw):
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text", "")).strip()
+            if not text:
+                continue
+
+            note_notebook_id = str(item.get("notebookId", "")).strip()
+            if note_notebook_id not in notebook_ids:
+                note_notebook_id = active_notebook_id
+
+            note_id = str(item.get("id", "")).strip() or f"note_{now_ts}_{idx}"
+            source = str(item.get("source", "聊天")).strip() or "聊天"
+            source_title = str(item.get("sourceTitle", "")).strip()
+            anchor = self._normalize_note_anchor(item.get("anchor"))
+            try:
+                note_ts = int(item.get("ts", now_ts) or now_ts)
+            except Exception:
+                note_ts = now_ts
+
+            normalized_notes.append({
+                "id": note_id,
+                "notebookId": note_notebook_id,
+                "text": text[:12000],
+                "source": source[:64],
+                "sourceTitle": source_title[:200],
+                "anchor": anchor,
+                "ts": note_ts
+            })
+
+        # 防止单用户笔记无限增长
+        if len(normalized_notes) > 6000:
+            normalized_notes = normalized_notes[:6000]
+
+        return {
+            "activeNotebookId": active_notebook_id,
+            "notebooks": notebooks,
+            "notes": normalized_notes
+        }
+
+    def get_notes_store(self):
+        """读取用户笔记云存储，若不存在则自动初始化。"""
+        lock = get_user_lock(self.user)
+        with lock:
+            fpath = self._notes_store_path()
+            if not os.path.exists(fpath):
+                data = self._default_notes_store()
+                with open(fpath, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+                return data
+
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+            except Exception:
+                raw = self._default_notes_store()
+
+            normalized = self._normalize_notes_store(raw)
+            try:
+                with open(fpath, "w", encoding="utf-8") as f:
+                    json.dump(normalized, f, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
+            return normalized
+
+    def save_notes_store(self, store):
+        """保存用户笔记云存储，返回归一化后的结果。"""
+        normalized = self._normalize_notes_store(store)
+        lock = get_user_lock(self.user)
+        with lock:
+            fpath = self._notes_store_path()
+            with open(fpath, "w", encoding="utf-8") as f:
+                json.dump(normalized, f, indent=2, ensure_ascii=False)
+        return normalized
 
     # ==================== 知识图谱管理 ====================
     

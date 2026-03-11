@@ -13,9 +13,14 @@ def _strip_scheme(host: str) -> str:
     return re.sub(r"^https?://", "", host).rstrip("/")
 
 
-def _safe_id(username: str, title: Optional[str], chunk_id: Optional[int] = None) -> str:
+def _safe_id(
+    username: str,
+    title: Optional[str],
+    chunk_id: Optional[int] = None,
+    library: Optional[str] = None
+) -> str:
     suffix = f":{chunk_id}" if chunk_id is not None else ""
-    base = f"{username}:{title or ''}{suffix}"
+    base = f"{username}:{library or 'knowledge'}:{title or ''}{suffix}"
     digest = hashlib.sha1(base.encode("utf-8")).hexdigest()
     return f"{username}:{digest}"
 
@@ -110,16 +115,25 @@ class ChromaStore:
         text: str,
         embedding: List[float],
         extra_metadata: Optional[Dict[str, Any]] = None,
-        chunk_id: Optional[int] = None
+        chunk_id: Optional[int] = None,
+        library: str = "knowledge"
     ) -> str:
         if self.mode == "service":
-            return self.upsert_text(username, title, text, extra_metadata, chunk_id=chunk_id)
+            return self.upsert_text(
+                username,
+                title,
+                text,
+                extra_metadata,
+                chunk_id=chunk_id,
+                library=library
+            )
         collection = self._get_collection(username)
-        doc_id = _safe_id(username, title, chunk_id)
+        doc_id = _safe_id(username, title, chunk_id, library=library)
         metadata = {
             "username": username,
             "title": title or "",
-            "source": "nexora"
+            "source": "nexora",
+            "library": str(library or "knowledge")
         }
         if extra_metadata:
             metadata.update(extra_metadata)
@@ -137,7 +151,8 @@ class ChromaStore:
         title: Optional[str],
         text: str,
         extra_metadata: Optional[Dict[str, Any]] = None,
-        chunk_id: Optional[int] = None
+        chunk_id: Optional[int] = None,
+        library: str = "knowledge"
     ) -> str:
         if self.mode != "service":
             raise RuntimeError("upsert_text only supported in service mode")
@@ -146,58 +161,109 @@ class ChromaStore:
             "title": title,
             "text": text,
             "metadata": extra_metadata or {},
-            "chunk_id": chunk_id
+            "chunk_id": chunk_id,
+            "library": str(library or "knowledge")
         })
         if not resp.get("success", True):
             raise RuntimeError(resp.get("message") or "upsert_text failed")
         return resp.get("vector_id") or ""
 
+    def upsert_texts(
+        self,
+        username: str,
+        items: List[Dict[str, Any]],
+        library: str = "knowledge"
+    ) -> List[str]:
+        if self.mode != "service":
+            raise RuntimeError("upsert_texts only supported in service mode")
+        if not isinstance(items, list) or not items:
+            return []
+        resp = self._service_post("/upsert_texts", {
+            "username": username,
+            "items": items,
+            "library": str(library or "knowledge")
+        })
+        if not resp.get("success", True):
+            raise RuntimeError(resp.get("message") or "upsert_texts failed")
+        vector_ids = resp.get("vector_ids") or []
+        return vector_ids if isinstance(vector_ids, list) else []
+
     def query(
         self,
         username: str,
         embedding: List[float],
-        top_k: int = 5
+        top_k: int = 5,
+        where: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         if self.mode == "service":
             raise RuntimeError("query embedding is not supported in service mode")
         collection = self._get_collection(username)
+        kwargs: Dict[str, Any] = {}
+        if isinstance(where, dict) and where:
+            kwargs["where"] = where
         return collection.query(
             query_embeddings=[embedding],
             n_results=top_k,
-            include=["documents", "metadatas", "distances", "ids"]
+            include=["documents", "metadatas", "distances", "ids"],
+            **kwargs
         )
 
     def query_text(
         self,
         username: str,
         text: str,
-        top_k: int = 5
+        top_k: int = 5,
+        library: Optional[str] = None,
+        where: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         if self.mode != "service":
             raise RuntimeError("query_text only supported in service mode")
-        resp = self._service_post("/query_text", {
+        payload: Dict[str, Any] = {
             "username": username,
             "text": text,
             "top_k": top_k
+        }
+        if library:
+            payload["library"] = str(library)
+        if isinstance(where, dict) and where:
+            payload["where"] = where
+        resp = self._service_post("/query_text", {
+            **payload
         })
         if not resp.get("success", True):
             raise RuntimeError(resp.get("message") or "query_text failed")
         return resp.get("result") or {}
 
-    def delete_by_title(self, username: str, title: str) -> None:
+    def delete_by_title(
+        self,
+        username: str,
+        title: str,
+        library: Optional[str] = None,
+        where: Optional[Dict[str, Any]] = None
+    ) -> None:
         if self.mode == "service":
-            resp = self._service_post("/delete", {
+            payload: Dict[str, Any] = {
                 "username": username,
                 "title": title
-            })
+            }
+            if library:
+                payload["library"] = str(library)
+            if isinstance(where, dict) and where:
+                payload["where"] = where
+            resp = self._service_post("/delete", payload)
             if not resp.get("success", True):
                 raise RuntimeError(resp.get("message") or "delete failed")
             return
         collection = self._get_collection(username)
+        local_where = where if isinstance(where, dict) else {}
+        if not local_where and library:
+            local_where = {"title": title, "library": str(library)}
+        elif not local_where:
+            local_where = {"title": title}
         try:
-            collection.delete(where={"title": title})
+            collection.delete(where=local_where)
         except Exception:
-            doc_id = _safe_id(username, title)
+            doc_id = _safe_id(username, title, library=library)
             collection.delete(ids=[doc_id])
 
     def delete_by_id(self, username: str, vector_id: str) -> None:
@@ -231,18 +297,24 @@ class ChromaStore:
             total += count
         return {"success": True, "collections": items, "total_vectors": total}
 
-    def get_chunks(self, username: str, title: str) -> List[Dict[str, Any]]:
+    def get_chunks(self, username: str, title: str, library: Optional[str] = None) -> List[Dict[str, Any]]:
         if self.mode == "service":
-            resp = self._service_post("/chunks", {
+            payload: Dict[str, Any] = {
                 "username": username,
                 "title": title
-            })
+            }
+            if library:
+                payload["library"] = str(library)
+            resp = self._service_post("/chunks", payload)
             if not resp.get("success", True):
                 raise RuntimeError(resp.get("message") or "chunks failed")
             return resp.get("chunks") or []
 
         collection = self._get_collection(username)
-        result = collection.get(where={"title": title}, include=["documents", "metadatas", "ids"])
+        where: Dict[str, Any] = {"title": title}
+        if library:
+            where["library"] = str(library)
+        result = collection.get(where=where, include=["documents", "metadatas", "ids"])
         ids = result.get("ids", [])
         docs = result.get("documents", [])
         metas = result.get("metadatas", [])
@@ -256,3 +328,29 @@ class ChromaStore:
                 "metadata": meta
             })
         return chunks
+
+    def list_titles(self, username: str, library: Optional[str] = None) -> List[str]:
+        if self.mode == "service":
+            payload: Dict[str, Any] = {"username": username}
+            if library:
+                payload["library"] = str(library)
+            resp = self._service_post("/titles", payload)
+            if not resp.get("success", True):
+                raise RuntimeError(resp.get("message") or "titles failed")
+            titles = resp.get("titles") or []
+            return [str(t) for t in titles if str(t).strip()]
+
+        collection = self._get_collection(username)
+        result = collection.get(include=["metadatas"])
+        metas = result.get("metadatas", []) or []
+        title_set = set()
+        lib = str(library or "").strip()
+        for meta in metas:
+            if not isinstance(meta, dict):
+                continue
+            if lib and str(meta.get("library") or "") != lib:
+                continue
+            title = str(meta.get("title") or "").strip()
+            if title:
+                title_set.add(title)
+        return sorted(title_set)
