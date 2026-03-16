@@ -20,7 +20,7 @@ from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 import requests
 import webview
 
-from core.server import start_local_server, LOCAL_PORT, set_shell_html
+from core.server import start_local_server, LOCAL_PORT, set_shell_html, set_notes_shell_html
 from core.tray import run_tray
 from core.config import config
 from core.tool_registry import ToolRegistry
@@ -917,13 +917,13 @@ _BOOTSTRAP_HTML = """<!doctype html>
 _BOOTSTRAP_HTML_MODE = _BOOTSTRAP_HTML.replace("__NC_WINDOW_MODE__", _WINDOW_MODE)
 _NOTES_BOOTSTRAP_HTML_MODE = (
     _BOOTSTRAP_HTML_MODE
+    .replace("<title>NexoraCode</title>", "<title>Nexora Notes</title>")
     .replace("start_window_resize", "start_notes_window_resize")
     .replace("start_window_drag", "start_notes_window_drag")
     .replace("is_window_maximized", "is_notes_window_maximized")
     .replace("minimize_window", "minimize_notes_window")
     .replace("maximize_window", "maximize_notes_window")
     .replace("close_window", "close_notes_window")
-    .replace("__NC_ENTRY_URL__", json.dumps("about:blank", ensure_ascii=False))
     .replace("__NC_AUTO_ESCAPE_IFRAME_LOGIN_LOOP__", "false")
 )
 
@@ -1730,13 +1730,15 @@ class NexoraWindowApi:
                 # For notes companion, always render bootstrap shell first in custom titlebar mode
                 # to avoid first-frame black flash before page CSS is ready.
                 if notes_local_mode:
-                    notes_kwargs["html"] = _build_notes_local_shell_html()
-                    notes_kwargs.pop("url", None)
+                    set_notes_shell_html(_build_notes_local_shell_html())
+                    notes_kwargs["url"] = f"http://127.0.0.1:{LOCAL_PORT}/nc/notes-shell"
+                    notes_kwargs.pop("html", None)
                     notes_kwargs["background_color"] = "#050505"
-                    _notes_log("notes_local_mode enabled: use local notes shell")
+                    _notes_log("notes_local_mode enabled: use local notes shell via localhost")
                 elif notes_use_custom:
-                    notes_kwargs["html"] = _NOTES_BOOTSTRAP_HTML_MODE
-                    notes_kwargs.pop("url", None)
+                    set_notes_shell_html(_NOTES_BOOTSTRAP_HTML_MODE.replace("__NC_ENTRY_URL__", json.dumps(url, ensure_ascii=False)))
+                    notes_kwargs["url"] = f"http://127.0.0.1:{LOCAL_PORT}/nc/notes-shell"
+                    notes_kwargs.pop("html", None)
                     notes_kwargs["easy_drag"] = False
                     notes_kwargs["background_color"] = "#050505"
                 try:
@@ -1774,37 +1776,23 @@ class NexoraWindowApi:
                 except Exception as ex:
                     _notes_log(f"prefill builder failed: {ex}; fallback noop")
                 notes_nav_started = threading.Event()
+                _notes_shown_fired = [False]
 
                 def _notes_on_shown():
+                    if _notes_shown_fired[0]: return
+                    _notes_shown_fired[0] = True
                     _notes_log("event shown")
                     if notes_use_custom:
                         wintitle.install(notes_window, emulate_snap=_USE_FRAMELESS)
+                        if _USE_FRAMELESS:
+                            threading.Thread(target=lambda: (time.sleep(0.06), wintitle.enforce_borderless_chrome(notes_window), wintitle.force_frame_refresh(notes_window)), daemon=True).start()
                         _notes_log("wintitle.install done")
                         threading.Thread(target=lambda: wintitle.set_webview_dark_background(notes_window, 5, 5, 5), daemon=True).start()
-                        if (_WINDOW_MODE == "custom") or (not _USE_FRAMELESS):
-                            def _apply_notes_custom_chrome_retry():
-                                for idx in range(70):
-                                    try:
-                                        if wintitle.enable_custom_chrome(notes_window):
-                                            _notes_log(f"enable_custom_chrome success at retry={idx}")
-                                            wintitle.force_frame_refresh(notes_window)
-                                            if idx < 6:
-                                                time.sleep(0.04)
-                                                wintitle.force_frame_refresh(notes_window)
-                                            return
-                                    except Exception:
-                                        pass
-                                    time.sleep(0.03)
-                                _notes_log("enable_custom_chrome timeout; native border may remain")
-                            threading.Thread(target=_apply_notes_custom_chrome_retry, daemon=True).start()
                         try:
                             wintitle.add_startup_script(notes_window, notes_prefill_js)
                         except Exception:
                             pass
-                        try:
-                            wintitle.add_startup_script(notes_window, notes_titlebar_js)
-                        except Exception:
-                            pass
+                        # Removed early injection of notes_titlebar_js to prevent it showing during load
                         try:
                             wintitle.add_startup_script(notes_window, _EARLY_PAGE_ACCEL_JS)
                         except Exception:
@@ -1852,6 +1840,40 @@ class NexoraWindowApi:
                             target=lambda: (time.sleep(0.12), wintitle.sync_max_state(notes_window)),
                             daemon=True,
                         ).start()
+                        if _USE_FRAMELESS:
+                            threading.Thread(target=lambda: (time.sleep(0.26), wintitle.enforce_borderless_chrome(notes_window), wintitle.force_frame_refresh(notes_window)), daemon=True).start()
+                        elif (_WINDOW_MODE == "custom") or (not _USE_FRAMELESS):
+                            def _apply_notes_chrome_on_load():
+                                _notes_log("Start _apply_notes_chrome_on_load loop")
+                                for idx in range(80):
+                                    ok = False
+                                    try:
+                                        ok = bool(notes_window.evaluate_js("(function(){return !!document.getElementById('nc-notes-titlebar');})();"))
+                                    except Exception:
+                                        pass
+                                    if not ok and idx < 40:
+                                        time.sleep(0.04)
+                                        continue
+                                    try:
+                                        if wintitle.enable_custom_chrome(notes_window):
+                                            _notes_log(f"enable_custom_chrome succeeded at idx={idx}")
+                                            wintitle.force_frame_refresh(notes_window)
+                                            if idx < 6:
+                                                time.sleep(0.04)
+                                                wintitle.force_frame_refresh(notes_window)
+                                            break
+                                    except Exception as e:
+                                        _notes_log(f"enable_custom_chrome failed at idx={idx} error={e}")
+                                    time.sleep(0.03)
+                                _notes_log("End _apply_notes_chrome_on_load loop")
+                                time.sleep(0.2)
+                                try:
+                                    wintitle.ensure_resizable_frame(notes_window)
+                                    wintitle.force_frame_refresh(notes_window)
+                                    _notes_log("ensure_resizable_frame called")
+                                except Exception as e:
+                                    _notes_log(f"ensure_resizable_frame error={e}")
+                            threading.Thread(target=_apply_notes_chrome_on_load, daemon=True).start()
 
                 def _notes_on_closed():
                     _notes_log("event closed")
@@ -1863,6 +1885,11 @@ class NexoraWindowApi:
                 notes_window.events.loaded += _notes_on_loaded
                 notes_window.events.closed += _notes_on_closed
                 _notes_log("notes window handlers bound")
+                
+                # In PyWebView, dynamically created windows might already be "shown" by the time
+                # create_window returns, thus missing the shown event. We manually dispatch it.
+                threading.Thread(target=_notes_on_shown, daemon=True).start()
+                
                 return {"success": True, "reused": False}
         except Exception as e:
             _notes_log(f"open failed error={e}\n{traceback.format_exc()}")
@@ -2488,7 +2515,7 @@ def _build_notes_local_shell_html() -> str:
 <head>
 <meta charset=\"utf-8\"/>
 <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"/>
-<title>Nexora Notes Local</title>
+<title>Nexora Notes</title>
 <style>
     html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#050505;color:#ddd;font-family:'Segoe UI','Microsoft YaHei',sans-serif;}
     #notes-shell{position:fixed;top:36px;left:0;right:0;bottom:0;overflow:auto;padding:10px;box-sizing:border-box;}
