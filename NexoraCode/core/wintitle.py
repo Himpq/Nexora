@@ -2,7 +2,7 @@
 wintitle.py  -  Windows frameless window native behaviour
 
 Provides:
-  install(win)            - subclass WndProc for resize edges + WM_SIZE notify
+    install(win)            - subclass WndProc for resize edges + WM_SIZE notify
   toggle_max_restore(win) - native ShowWindow maximize / restore toggle
   start_window_drag(win)  - ReleaseCapture+SendMessage(NCLBUTTONDOWN) on UI thread
   enable_app_region(win)  - enable WebView2 -webkit-app-region CSS support
@@ -43,7 +43,7 @@ __all__ = [
 ]
 
 if sys.platform != "win32":
-    def install(win, emulate_snap=True):
+    def install(win, emulate_snap=True, borderless_mode=False):
         pass
 
     def enable_custom_chrome(win):
@@ -1095,6 +1095,13 @@ else:
                         return 0
                     _maximize_to_work_area(hwnd)
                     _notify_js(win, hwnd)
+
+                def _borderless_mode_enabled(hwnd):
+                    try:
+                        st = _STATE.get(hwnd) or {}
+                        return bool(st.get("borderless_mode", False))
+                    except Exception:
+                        return False
                     return 0
                 try:
                     if bool(_IsZoomed(hwnd)):
@@ -1121,10 +1128,9 @@ else:
                     _dbg_print(f"WM_EXITSIZEMOVE rect_before={_rect_tuple(rc)} emulate_snap={bool(emulate_snap)}")
                 try:
                     style = _GetWindowLongPtrW(hwnd, GWL_STYLE)
-                    # Keep style consistent with current window mode.
-                    # Frameless mode previously re-added native frame bits here,
-                    # which caused visible border flicker/tug-of-war.
-                    if _emulate_snap_enabled(hwnd):
+                    # Keep style consistent with window mode, independent from
+                    # snap emulation strategy (native/manual).
+                    if _borderless_mode_enabled(hwnd):
                         style = (int(style) | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU) & ~(WS_CAPTION | WS_BORDER | WS_THICKFRAME | WS_SIZEBOX)
                     else:
                         style = int(style) | WS_THICKFRAME | WS_SIZEBOX | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU
@@ -1147,7 +1153,7 @@ else:
 
         return _WndProcType(_proc)
 
-    def install(win, emulate_snap=True):
+    def install(win, emulate_snap=True, borderless_mode=False):
         """Subclass the top-level Form HWND (called from on_shown)."""
 
         def _attach():
@@ -1188,6 +1194,7 @@ else:
                     "proc": proc,
                     "old": old,
                     "emulate_snap": bool(emulate_snap),
+                    "borderless_mode": bool(borderless_mode),
                 }
                 _WIN_HWND[id(win)] = hwnd
                 _install_child_hit_test(win, hwnd)

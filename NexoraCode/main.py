@@ -450,7 +450,7 @@ _BOOTSTRAP_HTML = """<!doctype html>
     .nc-boot-rsz.corner-br{bottom:0;right:0;width:12px;height:12px;cursor:nwse-resize;}
     #nc-shell-frame{position:fixed;top:36px;left:0;right:0;bottom:0;background:#050505;z-index:1;}
     #nc-shell-iframe{position:absolute;inset:0;width:100%;height:100%;border:none;outline:none;background:#050505;display:block;}
-        #nc-boot-stage{position:fixed;left:0;right:0;top:36px;bottom:0;overflow:hidden;display:flex;align-items:center;justify-content:center;}
+        #nc-boot-stage{position:fixed;left:0;right:0;top:36px;bottom:0;overflow:hidden;display:flex;align-items:center;justify-content:center;z-index:50;background:#050505;}
         #nc-boot-center{display:flex;flex-direction:column;align-items:center;gap:14px;min-width:340px;max-width:min(560px,92vw);}
         #nc-brand{font-size:84px;font-weight:700;color:#ffffff;letter-spacing:-4px;display:flex;align-items:baseline;z-index:10;text-shadow:0 10px 30px rgba(0,0,0,0.5);animation:fadeInLogo 1.2s ease-out;line-height:1;}
         #nc-boot-sub{color:rgba(255,255,255,0.72);font-size:13px;letter-spacing:.3px;}
@@ -608,10 +608,13 @@ _BOOTSTRAP_HTML = """<!doctype html>
         if (String(shellIframe.getAttribute('src') || '')) return;
         shellIframe.setAttribute('src', String(ENTRY_URL || 'about:blank'));
         traceAuth('iframe src set=' + String(ENTRY_URL || 'about:blank'));
-        setBootResource('正在加载页面资源...');
+        setBootResource('正在加载结构与资源...');
+
         shellIframe.addEventListener('load', function() {
             completeBootProgress('页面已加载');
-            hideBootStage('页面已就绪');
+            setTimeout(function() {
+                hideBootStage('页面已就绪');
+            }, 600);
             traceAuth('iframe load event fired');
             try {
                 const href = String((shellIframe.contentWindow && shellIframe.contentWindow.location && shellIframe.contentWindow.location.href) || '');
@@ -633,6 +636,21 @@ _BOOTSTRAP_HTML = """<!doctype html>
                             if (cw.__ncAuthAssistInstalled) return;
                             cw.__ncAuthAssistInstalled = true;
                             traceAuth('iframe auth assist installed');
+                            cw.addEventListener('unload', function() {
+                                try {
+                                    const stage = document.getElementById('nc-boot-stage');
+                                    if (stage) {
+                                        stage.style.display = 'flex';
+                                        void stage.offsetHeight;
+                                        stage.style.opacity = '1';
+                                        const bb = document.getElementById('nc-boot-resource');
+                                        if (bb) bb.textContent = '页面跳转中...';
+                                        // Reset progress for the next page
+                                        bootProgress = 10;
+                                        startBootProgress();
+                                    }
+                                } catch(e) {}
+                            });
 
                             const probeCookie = function(tag) {
                                 try {
@@ -733,12 +751,12 @@ _BOOTSTRAP_HTML = """<!doctype html>
             } catch (e) {
                 traceAuth('iframe auth assist outer failed: ' + String(e || ''));
             }
-        }, { once: true });
+        });
         setTimeout(function() {
-            hideBootStage('网络较慢，继续加载中...');
+            setBootResource('网络较慢，继续加载中...');
         }, 2800);
     }
-    initShellIframe();
+    setTimeout(initShellIframe, 200);
     setInterval(function() {
         try {
             traceAuth('bootstrap heartbeat cookieLen=' + String((document.cookie || '').length));
@@ -3525,7 +3543,7 @@ def main():
                 document.querySelector('input[type="password"]') ||
                 document.querySelector('form[action*="login" i], form[id*="login" i], form[class*="login" i]')
             );
-            return hasChatSignals && !hasLoginSignals;
+            return hasChatSignals || hasLoginSignals;
         } catch (_) {
             return false;
         }
@@ -4093,19 +4111,24 @@ def main():
         try:
             win.evaluate_js(f"""(function() {{
     document.cookie = 'nexoracode_agent={agent_token}; path=/; SameSite=Lax';
-    fetch('/api/local_agent/register', {{
-        method: 'POST',
-        credentials: 'include',
-        headers: {{'Content-Type': 'application/json', 'X-NexoraCode-Agent': '{agent_token}'}},
-        body: {payload_js_literal}
+    function registerLocalAgent() {{
+        fetch('/api/local_agent/register', {{
+            method: 'POST',
+            credentials: 'include',
+            headers: {{'Content-Type': 'application/json', 'X-NexoraCode-Agent': '{agent_token}'}},
+            body: {payload_js_literal}
         }}).then(async r => {{
+            if (r.status === 401) {{
+                setTimeout(registerLocalAgent, 3000);
+                return {{status: r.status}};
+            }}
             let d = null;
             try {{ d = await r.json(); }} catch (_) {{ d = null; }}
-            console.log('[NexoraCode] \u6ce8\u518c\u72b6\u6001:', r.status, d);
+            console.log('[NexoraCode]', r.status, d);
             return {{ status: r.status, body: d }};
-        }})
-            .then(d => console.log('[NexoraCode] \u6ce8\u518c\u7ed3\u679c:', d))
-      .catch(e => console.error('[NexoraCode] \u6ce8\u518c\u5931\u8d25:', e));
+        }}).catch(e => console.error('[NexoraCode] error:', e));
+    }}
+    registerLocalAgent();
 }})();
 """)
         except Exception:

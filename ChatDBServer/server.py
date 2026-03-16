@@ -4543,7 +4543,6 @@ def chat_stream():
                 # 关键修复：添加 default=str 作为最后的保险，防止任何遗漏的 SDK 对象导致 JSON 序列化失败
                 chunk_data = json.dumps(chunk, ensure_ascii=False, default=str)
                 yield f"data: {chunk_data}\n\n"
-                time.sleep(0.01)  # 小延迟避免过快
             
         except Exception as e:
             error_data = json.dumps({
@@ -4552,7 +4551,12 @@ def chat_stream():
             }, ensure_ascii=False)
             yield f"data: {error_data}\n\n"
     
-    return Response(generate(), mimetype='text/event-stream')
+    from flask import stream_with_context
+    resp = Response(stream_with_context(generate()), mimetype='text/event-stream')
+    resp.headers['Cache-Control'] = 'no-cache, no-transform'
+    resp.headers['X-Accel-Buffering'] = 'no'
+    resp.headers['Connection'] = 'keep-alive'
+    return resp
 
 
 @app.route('/api/client-tools/pull', methods=['POST'])

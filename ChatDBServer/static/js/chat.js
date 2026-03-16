@@ -2373,6 +2373,11 @@ async function flushNotesCloudSync() {
 function saveNotesToStorage(options = {}) {
     const immediate = !!(options && options.immediate);
     notesCloudSyncPendingStore = buildNotesStorePayload();
+    try {
+        localStorage.setItem('nc_sync_notes_data_payload', JSON.stringify(notesCloudSyncPendingStore));
+        localStorage.setItem('nc_sync_notes_ts', String(Date.now()));
+          if (typeof notesSyncChannel !== 'undefined') notesSyncChannel.postMessage({ type: 'SYNC', payload: notesCloudSyncPendingStore });
+    } catch (_) {}
     if (notesCloudSyncTimer) {
         clearTimeout(notesCloudSyncTimer);
         notesCloudSyncTimer = null;
@@ -2386,6 +2391,31 @@ function saveNotesToStorage(options = {}) {
         void flushNotesCloudSync();
     }, NOTES_CLOUD_SYNC_DEBOUNCE_MS);
 }
+
+const notesSyncChannel = new BroadcastChannel('nc_notes_sync');
+  notesSyncChannel.onmessage = (e) => {
+      if (e.data && e.data.type === 'SYNC') {
+          if (e.data.payload && typeof e.data.payload === 'object') {
+              applyNotesStoreToState(e.data.payload);
+              renderNotesList();
+          }
+      }
+  };
+
+  window.addEventListener('storage', (e) => {
+    if (e.key === 'nc_sync_notes_ts') {
+        try {
+            const raw = localStorage.getItem('nc_sync_notes_data_payload');
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (parsed && typeof parsed === 'object') {
+                    applyNotesStoreToState(parsed);
+                    renderNotesList();
+                }
+            }
+        } catch (_) {}
+    }
+});
 
 async function hydrateNotesState() {
     const localStore = loadNotesStore();
@@ -2933,6 +2963,18 @@ function renderNotesList() {
         listEl.ondragover = null;
         listEl.ondrop = null;
         renderNotesBadge();
+        setTimeout(() => {
+            try {
+                const panel = document.getElementById('notesPanel');
+                if (panel) {
+                    localStorage.setItem('nc_notes_html_snapshot', String(panel.outerHTML));
+                    localStorage.setItem('nc_notes_html_ts', String(Date.now()));
+                    if (window.parent && window.parent !== window) {
+                        try { window.parent.postMessage({ type: 'NC_SYNC_NOTES_HTML', snapshot: String(panel.outerHTML) }, '*'); } catch(_) {}
+                    }
+                }
+            } catch (_) {}
+        }, 50);
         return;
     }
     listEl.innerHTML = '';
@@ -3095,6 +3137,19 @@ function renderNotesList() {
         saveNotesToStorage();
     }
     renderNotesBadge();
+    
+    setTimeout(() => {
+        try {
+            const panel = document.getElementById('notesPanel');
+            if (panel) {
+                localStorage.setItem('nc_notes_html_snapshot', String(panel.outerHTML));
+                localStorage.setItem('nc_notes_html_ts', String(Date.now()));
+                if (window.parent && window.parent !== window) {
+                    try { window.parent.postMessage({ type: 'NC_SYNC_NOTES_HTML', snapshot: String(panel.outerHTML) }, '*'); } catch(_) {}
+                }
+            }
+        } catch (_) {}
+    }, 50);
 }
 
 function syncNotesForConversation(_conversationId = currentConversationId) {
@@ -3132,24 +3187,94 @@ function closeNotesPanel() {
     panel.setAttribute('aria-hidden', 'true');
 }
 
+function logNotesBridge(message) {
+    const msg = String(message || '').trim();
+    if (!msg) return;
+    try {
+        const info = getNotesCompanionApiInfo();
+        const api = info.api;
+        if (api && typeof api.log_notes_bridge_event === 'function') {
+            api.log_notes_bridge_event(msg);
+        }
+    } catch (_) {}
+    try { console.log('[NexoraNotesBridge] ' + msg); } catch (_) {}
+}
+
 window.toggleNotesPanel = function() {
+    if (!NOTES_COMPANION_MODE) {
+        // Prefer external notes companion when bridge is available.
+        // Fallback to in-page panel if companion open fails.
+        Promise.resolve().then(async () => {
+            const apiInfo = getNotesCompanionApiInfo();
+            logNotesBridge('toggleNotesPanel companion_mode=0 source=' + String(apiInfo.source || 'none') + ' hasApi=' + String(!!apiInfo.api));
+            if (canOpenNotesCompanionWindow()) {
+                const ok = await openNotesCompanionWindow();
+                if (ok) return;
+            }
+            logNotesBridge('toggleNotesPanel fallback=open-inline-notes-panel');
+            if (notesState.open) closeNotesPanel();
+            else openNotesPanel();
+        });
+        return;
+    }
     if (notesState.open) closeNotesPanel();
     else openNotesPanel();
 };
 
 function canOpenNotesCompanionWindow() {
-    return !NOTES_COMPANION_MODE
-        && !!(window.pywebview
-            && window.pywebview.api
-            && typeof window.pywebview.api.open_notes_companion === 'function');
+    if (NOTES_COMPANION_MODE) return false;
+    const info = getNotesCompanionApiInfo();
+    const isDesktop = document.documentElement.classList.contains('nc-desktop-mode');
+    return !!(info && info.api && typeof info.api.open_notes_companion === 'function') || isDesktop;
+}
+
+function getNotesCompanionApiInfo() {
+    try {
+        if (window.pywebview && window.pywebview.api) {
+            return { api: window.pywebview.api, source: 'self' };
+        }
+    } catch (_) {}
+    try {
+        if (window.parent && window.parent !== window && window.parent.pywebview && window.parent.pywebview.api) {
+            return { api: window.parent.pywebview.api, source: 'parent' };
+        }
+    } catch (_) {}
+    try {
+        if (window.top && window.top !== window && window.top.pywebview && window.top.pywebview.api) {
+            return { api: window.top.pywebview.api, source: 'top' };
+        }
+    } catch (_) {}
+    return { api: null, source: 'none' };
+}
+
+function getNotesCompanionApi() {
+    return getNotesCompanionApiInfo().api;
 }
 
 async function openNotesCompanionWindow() {
-    if (!canOpenNotesCompanionWindow()) return false;
+    const info = getNotesCompanionApiInfo();
+    const api = info && info.api;
+    if (NOTES_COMPANION_MODE) {
+        return false;
+    }
+    if (!api || typeof api.open_notes_companion !== 'function') {
+        const isDesktop = document.documentElement.classList.contains('nc-desktop-mode');
+        if (isDesktop) {
+            logNotesBridge('openNotesCompanionWindow postMessage fallback');
+            if (window.parent && window.parent !== window) {
+                window.parent.postMessage({ type: 'NC_OPEN_NOTES_COMPANION' }, '*');
+                return true;
+            }
+        }
+        return false;
+    }
     try {
-        const res = await window.pywebview.api.open_notes_companion();
+        logNotesBridge('openNotesCompanionWindow call source=' + String(info.source || 'unknown'));
+        const res = await api.open_notes_companion();
+        logNotesBridge('openNotesCompanionWindow result=' + JSON.stringify(res || {}));
         return !!(res && res.success);
-    } catch (_) {
+    } catch (e) {
+        logNotesBridge('openNotesCompanionWindow error=' + String(e || 'unknown'));
         return false;
     }
 }
@@ -4023,15 +4148,16 @@ function initNotesUi() {
         els.closeNotesPanelBtn.addEventListener('click', () => closeNotesPanel());
     }
     if (els.openNotesCompanionBtn) {
-        const canOpenCompanion = canOpenNotesCompanionWindow();
-        if (!canOpenCompanion || NOTES_COMPANION_MODE) {
+        if (NOTES_COMPANION_MODE) {
             els.openNotesCompanionBtn.style.display = 'none';
         } else {
+            els.openNotesCompanionBtn.style.display = '';
             els.openNotesCompanionBtn.addEventListener('click', async (e) => {
                 e.preventDefault();
                 const ok = await openNotesCompanionWindow();
                 if (!ok) {
-                    showToast('打开独立笔记窗口失败');
+                    showToast('独立笔记窗口暂不可用，已切换到页面内笔记');
+                    openNotesPanel();
                 }
             });
         }
@@ -5504,6 +5630,7 @@ async function sendMessage() {
     let currentFullContent = '';
     let currentSegmentContent = '';
     let currentContentSpan = null;
+    let streamRenderFinalized = false;
     const toolArgsDeltaSeenByCallId = new Set();
     const modelBadgeState = {
         modelName: String(model || ''),
@@ -5518,6 +5645,29 @@ async function sendMessage() {
         snapshotOutput: 0,
         snapshotInitialized: false
     };
+
+    function finalizeStreamingContentRender() {
+        if (streamRenderFinalized) return;
+        streamRenderFinalized = true;
+        try {
+            const blocks = aiMsgDiv.querySelectorAll('.content-body[data-stream-live="1"]');
+            blocks.forEach((block) => {
+                const raw = String(block.dataset.streamRaw || '');
+                const sourceText = rewriteCitationRefsMarkdown(raw, aiMsgDiv.__citationUrlMap || {});
+                block.innerHTML = renderMarkdownWithNewTabLinks(sourceText);
+                bindSourceMarkdown(block, sourceText);
+                renderMathSafe(block);
+                highlightCode(block);
+                block.dataset.streamLive = '0';
+            });
+            const thinkingBlocks = aiMsgDiv.querySelectorAll('.thinking-block.reasoning-thinking-block[data-stream-live="1"] .thinking-content');
+            thinkingBlocks.forEach((contentDiv) => {
+                try { renderMathSafe(contentDiv); } catch (_) {}
+                const host = contentDiv.closest('.thinking-block.reasoning-thinking-block');
+                if (host) host.dataset.streamLive = '0';
+            });
+        } catch (_) {}
+    }
     
     // Create new abort controller
     currentAbortController = new AbortController();
@@ -5537,6 +5687,7 @@ async function sendMessage() {
         while (true) {
             const { done, value } = await reader.read();
             if (done) {
+                finalizeStreamingContentRender();
 // 说明
                 const thinkingBlocks = aiMsgDiv.querySelectorAll('.thinking-block');
                 thinkingBlocks.forEach(thinkingBlock => {
@@ -5597,10 +5748,9 @@ async function sendMessage() {
                             // 但用户求在工具链下方显示，以必须开吖Block
                             currentSegmentContent += chunk.content;
                             const sourceText = rewriteCitationRefsMarkdown(currentSegmentContent, aiMsgDiv.__citationUrlMap || {});
-                            currentContentSpan.innerHTML = renderMarkdownWithNewTabLinks(sourceText);
-                            bindSourceMarkdown(currentContentSpan, sourceText);
-                            renderMathSafe(currentContentSpan);
-                            highlightCode(currentContentSpan);
+                            currentContentSpan.dataset.streamRaw = currentSegmentContent;
+                            currentContentSpan.dataset.streamLive = '1';
+                            currentContentSpan.textContent = sourceText;
                         } 
                         else if (chunk.type === 'reasoning_content') { 
                            onTokenStreamReasoningChunk(chunk.content);
@@ -5640,7 +5790,7 @@ async function sendMessage() {
                            
                            const contentDiv = thinkingBlock.querySelector('.thinking-content');
                            contentDiv.textContent += chunk.content;
-                           renderMathSafe(contentDiv);
+                                    thinkingBlock.dataset.streamLive = '1';
                         }
                         // --- New Chunk Types Support ---
                         else if (chunk.type === 'web_search') {
@@ -5727,6 +5877,7 @@ async function sendMessage() {
         }
         isGenerating = false;
     } finally {
+        finalizeStreamingContentRender();
         isGenerating = false;
         currentAbortController = null;
         updateSendButtonState();

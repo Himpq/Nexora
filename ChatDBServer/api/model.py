@@ -2461,9 +2461,7 @@ class Model:
             
             try:
                 for round_num in range(max_rounds):
-                    # [FIX] 增加短暂延迟以提高多轮对话稳定性 (官方建议 100ms)
-                    if round_num > 0:
-                        time.sleep(0.1)
+                    # Keep follow-up rounds immediate to avoid perceptible stream stalls.
                         
                     print(f"\n[DEBUG] ===== 第 {round_num + 1} 轮 =====")
                     print(f"[DEBUG] Messages数量: {len(messages)} | Function消息: {len([m for m in messages if m.get('role')=='function'])}")
@@ -2704,6 +2702,13 @@ class Model:
                         piece = str(delta_text)
                         if not piece:
                             return ""
+                        if not citation_url_map:
+                            # Fast path: no citation remap required for this round.
+                            raw_round_content += piece
+                            round_content += piece
+                            emitted_round_content_len = len(round_content)
+                            accumulated_content += piece
+                            return piece
                         raw_round_content += piece
                         effective_text = raw_round_content
 

@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, stream_with_context
 
 from core.tool_registry import ToolRegistry
 from core.config import config
@@ -21,6 +21,7 @@ LOCAL_PORT = 27700
 app = Flask(__name__, static_folder=None)
 registry = ToolRegistry()
 _NEXORA_SHELL_HTML = """<!doctype html><html><head><meta charset=\"utf-8\"><title>Nexora Shell</title></head><body>Shell not ready</body></html>"""
+_NEXORA_NOTES_SHELL_HTML = """<!doctype html><html><head><meta charset=\"utf-8\"><title>Nexora Notes Shell</title></head><body>Notes shell not ready</body></html>"""
 _PROXY_TIMEOUT = 30
 _WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
 _VENDOR_ROOTS = [
@@ -143,6 +144,13 @@ def set_shell_html(html: str) -> None:
         _NEXORA_SHELL_HTML = txt
 
 
+def set_notes_shell_html(html: str) -> None:
+    global _NEXORA_NOTES_SHELL_HTML
+    txt = str(html or "").strip()
+    if txt:
+        _NEXORA_NOTES_SHELL_HTML = txt
+
+
 def _check_token() -> bool:
     """验证请求来自 Nexora 服务器（使用持久化的 agent_token）"""
     token = request.headers.get("X-Agent-Token") or request.args.get("token")
@@ -215,6 +223,12 @@ def _proxy_request(path: str):
 
     method = request.method
     body = request.get_data() if method in {"POST", "PUT", "PATCH", "DELETE"} else None
+    body_text = ""
+    if body:
+        try:
+            body_text = body.decode("utf-8", errors="ignore")
+        except Exception:
+            body_text = ""
     try:
         upstream = requests.request(
             method=method,
@@ -225,6 +239,7 @@ def _proxy_request(path: str):
             cookies=request.cookies,
             allow_redirects=False,
             timeout=_PROXY_TIMEOUT,
+            stream=True,
         )
     except Exception as e:
         return jsonify({"success": False, "error": f"proxy request failed: {e}"}), 502
@@ -238,18 +253,72 @@ def _proxy_request(path: str):
         except Exception:
             pass
 
-    body_bytes = upstream.content
     content_type = str(upstream.headers.get("Content-Type", "") or "")
-    if "text/html" in content_type.lower():
+    ct_lower = content_type.lower()
+    accept_lower = str(request.headers.get("Accept", "") or "").lower()
+    path_lower = str(path or "").lower()
+    body_indicates_stream = bool(re.search(r'"stream"\s*:\s*true', body_text, flags=re.IGNORECASE))
+    path_likely_stream = any(k in path_lower for k in (
+        "chat/completions",
+        "/responses",
+        "/api/chat",
+        "/v1/chat",
+    ))
+    is_streaming_response = (
+        "text/event-stream" in ct_lower
+        or "application/x-ndjson" in ct_lower
+        or "text/event-stream" in accept_lower
+        or str(request.args.get("stream", "")).strip().lower() in {"1", "true", "yes", "on"}
+        or body_indicates_stream
+        or path_likely_stream
+    )
+
+    try:
+        print(
+            f"[NexoraProxy] stream_detect path=/{path_lower} accept_sse={'text/event-stream' in accept_lower} "
+            f"body_stream={body_indicates_stream} ct={ct_lower} result={is_streaming_response}"
+        )
+    except Exception:
+        pass
+
+    if is_streaming_response:
+        # Preserve incremental token delivery for chat streaming responses.
+        def _iter_chunks():
+            try:
+                chunk_size = 1 if "text/event-stream" in ct_lower else 64
+                raw = getattr(upstream, "raw", None)
+                if raw is not None and hasattr(raw, "stream"):
+                    for chunk in raw.stream(amt=chunk_size, decode_content=False):
+                        if chunk:
+                            yield chunk
+                else:
+                    for chunk in upstream.iter_content(chunk_size=chunk_size):
+                        if chunk:
+                            yield chunk
+            finally:
+                try:
+                    upstream.close()
+                except Exception:
+                    pass
+
+        resp = Response(stream_with_context(_iter_chunks()), status=upstream.status_code, direct_passthrough=True)
+        resp.headers["Cache-Control"] = "no-cache, no-transform"
+        resp.headers["X-Accel-Buffering"] = "no"
+    else:
+        body_bytes = upstream.content
+        if "text/html" in ct_lower:
+            try:
+                txt = body_bytes.decode(upstream.encoding or "utf-8", errors="replace")
+                txt = _rewrite_html_for_local_proxy(txt)
+                body_bytes = txt.encode("utf-8", errors="replace")
+                content_type = "text/html; charset=utf-8"
+            except Exception:
+                pass
+        resp = Response(body_bytes, status=upstream.status_code)
         try:
-            txt = body_bytes.decode(upstream.encoding or "utf-8", errors="replace")
-            txt = _rewrite_html_for_local_proxy(txt)
-            body_bytes = txt.encode("utf-8", errors="replace")
-            content_type = "text/html; charset=utf-8"
+            upstream.close()
         except Exception:
             pass
-
-    resp = Response(body_bytes, status=upstream.status_code)
 
     # 复制响应头（排除 hop-by-hop、长度、cookie/location 单独处理）
     for k, v in upstream.headers.items():
@@ -308,6 +377,11 @@ def health():
 @app.route("/nc/shell")
 def nc_shell():
     return Response(_NEXORA_SHELL_HTML, mimetype="text/html; charset=utf-8")
+
+
+@app.route("/nc/notes-shell")
+def nc_notes_shell():
+    return Response(_NEXORA_NOTES_SHELL_HTML, mimetype="text/html; charset=utf-8")
 
 
 @app.route("/favicon.ico")
