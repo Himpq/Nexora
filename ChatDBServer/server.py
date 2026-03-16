@@ -29,7 +29,7 @@ from chroma_client import ChromaStore
 from file_sandbox import UserFileSandbox
 from longterm.orchestrator import LongTermOrchestrator
 from provider_factory import create_provider_adapter
-from client_tool_bridge import pull_pending_request, submit_request_result
+from client_tool_bridge import pull_pending_request, submit_request_result, enqueue_request, wait_for_result, pull_local_tool_request
 
 app = Flask(__name__)
 app.secret_key = 'chatdb-secret-key-change-in-production'
@@ -45,7 +45,12 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
 MODELS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models.json')
+MODELS_CONTEXT_WINDOW_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models_context_window.json')
 USERS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'user.json')
+_MODELS_CTX_CACHE_LOCK = threading.Lock()
+
+# NexoraCode 本地 Agent 注册表: {agent_token: {callback_url, tools, username, registered_at}}
+_LOCAL_AGENTS: Dict[str, Dict] = {}
 
 DEFAULT_MAIN_CONFIG = {
     "public_base_url": "",
@@ -907,6 +912,238 @@ def save_models_config(models_cfg):
     }
     with open(MODELS_PATH, 'w', encoding='utf-8') as f:
         json.dump(payload, f, indent=4, ensure_ascii=False)
+
+
+def _safe_context_window_int(raw):
+    try:
+        n = int(raw)
+    except Exception:
+        return 0
+    if n < 1024:
+        return 0
+    return min(n, 4_000_000)
+
+
+def _normalize_model_id_for_ctx(raw):
+    return str(raw or '').strip().lower()
+
+
+def _trim_model_id_last_hyphen_number(raw):
+    s = _normalize_model_id_for_ctx(raw)
+    if not s:
+        return ''
+    return re.sub(r'-\d+$', '', s).strip()
+
+
+def _load_models_context_window_cache():
+    if not os.path.exists(MODELS_CONTEXT_WINDOW_CACHE_PATH):
+        return {"providers": {}, "updated_at": 0}
+    try:
+        with open(MODELS_CONTEXT_WINDOW_CACHE_PATH, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {"providers": {}, "updated_at": 0}
+        providers = data.get("providers", {})
+        if not isinstance(providers, dict):
+            providers = {}
+        return {
+            "providers": providers,
+            "updated_at": int(data.get("updated_at", 0) or 0),
+        }
+    except Exception:
+        return {"providers": {}, "updated_at": 0}
+
+
+def _save_models_context_window_cache(cache_obj):
+    payload = cache_obj if isinstance(cache_obj, dict) else {"providers": {}, "updated_at": 0}
+    providers = payload.get("providers", {})
+    if not isinstance(providers, dict):
+        providers = {}
+    payload["providers"] = providers
+    payload["updated_at"] = int(time.time())
+    try:
+        with open(MODELS_CONTEXT_WINDOW_CACHE_PATH, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def _extract_context_window_from_provider_row(row_obj):
+    row = row_obj if isinstance(row_obj, dict) else {}
+    for key in ('context_window', 'context_length', 'max_context_tokens', 'max_input_tokens', 'max_prompt_tokens'):
+        n = _safe_context_window_int(row.get(key))
+        if n > 0:
+            return n
+    raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+    for key in ('context_window', 'context_length', 'max_context_tokens', 'max_input_tokens', 'max_prompt_tokens'):
+        n = _safe_context_window_int(raw.get(key))
+        if n > 0:
+            return n
+    return 0
+
+
+def _read_cached_volc_context_window_map():
+    with _MODELS_CTX_CACHE_LOCK:
+        cache = _load_models_context_window_cache()
+    providers = cache.get("providers", {}) if isinstance(cache, dict) else {}
+    volc = providers.get("volcengine", {}) if isinstance(providers, dict) else {}
+    models_map = volc.get("models", {}) if isinstance(volc, dict) else {}
+    out = {}
+    if isinstance(models_map, dict):
+        for k, v in models_map.items():
+            key = _normalize_model_id_for_ctx(k)
+            if not key:
+                continue
+            if isinstance(v, dict):
+                n = _safe_context_window_int(v.get("context_window"))
+            else:
+                n = _safe_context_window_int(v)
+            if n > 0:
+                out[key] = n
+    return out
+
+
+def _write_cached_volc_context_window_map(models_map):
+    src = models_map if isinstance(models_map, dict) else {}
+    normalized = {}
+    for k, v in src.items():
+        key = _normalize_model_id_for_ctx(k)
+        n = _safe_context_window_int(v)
+        if key and n > 0:
+            normalized[key] = {"context_window": n, "ts": int(time.time())}
+    with _MODELS_CTX_CACHE_LOCK:
+        cache = _load_models_context_window_cache()
+        providers = cache.get("providers", {}) if isinstance(cache.get("providers"), dict) else {}
+        providers["volcengine"] = {
+            "models": normalized,
+            "updated_at": int(time.time())
+        }
+        cache["providers"] = providers
+        _save_models_context_window_cache(cache)
+
+
+def _refresh_volc_context_window_map(config_obj, timeout=8.0):
+    cfg = config_obj if isinstance(config_obj, dict) else {}
+    providers = cfg.get("providers", {}) if isinstance(cfg.get("providers"), dict) else {}
+    provider_cfg = providers.get("volcengine")
+    cached = _read_cached_volc_context_window_map()
+    if not isinstance(provider_cfg, dict):
+        return cached
+    api_key = str(provider_cfg.get('api_key', '') or '').strip()
+    if not api_key:
+        return cached
+
+    try:
+        adapter = create_provider_adapter('volcengine', provider_cfg)
+        client = adapter.create_client(
+            api_key=api_key,
+            base_url=str(provider_cfg.get('base_url', '') or '').strip(),
+            timeout=max(2.0, float(timeout or 8.0))
+        )
+        result = adapter.list_models(
+            client=client,
+            capability='',
+            request_options={}
+        )
+        fresh_map = {}
+        if isinstance(result, dict) and bool(result.get('ok', False)):
+            models = result.get('models', [])
+            if isinstance(models, list):
+                for item in models:
+                    if not isinstance(item, dict):
+                        continue
+                    model_id = _normalize_model_id_for_ctx(
+                        item.get('id') or item.get('model_id') or item.get('name') or ''
+                    )
+                    if not model_id:
+                        continue
+                    ctx = _extract_context_window_from_provider_row(item)
+                    if ctx <= 0:
+                        continue
+                    fresh_map[model_id] = ctx
+        if not fresh_map:
+            extra = _fetch_volc_foundation_models_context_map(provider_cfg, timeout=timeout)
+            if isinstance(extra, dict) and extra:
+                fresh_map.update(extra)
+        if not fresh_map:
+            return cached
+        merged = dict(cached)
+        merged.update(fresh_map)
+        _write_cached_volc_context_window_map(merged)
+        return merged
+    except Exception:
+        return cached
+
+
+def _resolve_volc_context_window_by_model_id(model_id, models_map):
+    sid = _normalize_model_id_for_ctx(model_id)
+    if not sid or not isinstance(models_map, dict):
+        return 0
+    trimmed_target = _trim_model_id_last_hyphen_number(sid)
+    if trimmed_target:
+        for remote_id, ctx in models_map.items():
+            if _trim_model_id_last_hyphen_number(remote_id) == trimmed_target:
+                n = _safe_context_window_int(ctx)
+                if n > 0:
+                    return n
+    n = _safe_context_window_int(models_map.get(sid))
+    if n > 0:
+        return n
+    return 0
+
+
+def _fetch_volc_foundation_models_context_map(provider_cfg, timeout=8.0):
+    cfg = provider_cfg if isinstance(provider_cfg, dict) else {}
+    signed_url = str(cfg.get('foundation_models_url', '') or '').strip()
+    if not signed_url:
+        return {}
+    payload = cfg.get('foundation_models_payload')
+    if not isinstance(payload, dict):
+        payload = {"PageNumber": 1, "PageSize": 100, "SortBy": "CreateTime", "SortOrder": "Desc"}
+    body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+    req = urllib_request.Request(
+        signed_url,
+        data=body,
+        method='POST',
+        headers={'Content-Type': 'application/json; charset=utf-8'}
+    )
+    try:
+        with urllib_request.urlopen(req, timeout=max(2.0, float(timeout or 8.0))) as resp:
+            raw = resp.read().decode('utf-8', errors='replace')
+            data = json.loads(raw) if raw.strip() else {}
+    except Exception:
+        return {}
+
+    def _extract_items(obj):
+        if isinstance(obj, list):
+            return obj
+        if not isinstance(obj, dict):
+            return []
+        for key in ('data', 'models', 'items', 'ModelList', 'FoundationModels'):
+            v = obj.get(key)
+            if isinstance(v, list):
+                return v
+        result = obj.get('result') or obj.get('Result')
+        if isinstance(result, dict):
+            for key in ('data', 'models', 'items', 'ModelList', 'FoundationModels'):
+                v = result.get(key)
+                if isinstance(v, list):
+                    return v
+        return []
+
+    out = {}
+    for item in _extract_items(data):
+        if not isinstance(item, dict):
+            continue
+        mid = _normalize_model_id_for_ctx(
+            item.get('id') or item.get('model_id') or item.get('ModelId') or item.get('name') or item.get('Name') or ''
+        )
+        if not mid:
+            continue
+        ctx = _extract_context_window_from_provider_row(item)
+        if ctx > 0:
+            out[mid] = ctx
+    return out
 
 def get_chroma_store():
     """Get Chroma store if enabled."""
@@ -3406,6 +3643,21 @@ def list_conversations():
     return jsonify({'success': True, 'conversations': conversations})
 
 
+@app.route('/api/conversations/<conv_id>/pin', methods=['POST'])
+@require_login
+def set_conversation_pin(conv_id):
+    """设置对话置顶状态"""
+    username = session['username']
+    manager = ConversationManager(username)
+    data = request.get_json(silent=True) or {}
+    pin = bool(data.get('pin', True))
+    try:
+        manager.set_conversation_pin(conv_id, pin=pin)
+        return jsonify({'success': True, 'conversation_id': conv_id, 'pin': pin})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+
+
 @app.route('/api/conversations/<conv_id>', methods=['GET'])
 @require_login
 def get_conversation(conv_id):
@@ -3512,6 +3764,18 @@ def get_config():
     """获取模型配置（用户接口）"""
     username = session.get('username')
     try:
+        def _to_context_window(info_obj):
+            src = info_obj if isinstance(info_obj, dict) else {}
+            for key in ('context_window', 'context_length', 'max_context_tokens', 'max_input_tokens'):
+                raw = src.get(key)
+                try:
+                    n = int(raw)
+                except Exception:
+                    n = 0
+                if n > 0:
+                    return n
+            return None
+
         blacklist_path = './data/model_permissions.json'
         blacklist = []
         if os.path.exists(blacklist_path):
@@ -3521,17 +3785,29 @@ def get_config():
                 blacklist = user_blacklists.get(username, perm_config.get('default_blacklist', []))
 
         config = get_config_all()
+        has_volcengine_model = any(
+            isinstance(info, dict) and str(info.get('provider', 'volcengine')).strip().lower() == 'volcengine'
+            for info in (config.get('models', {}) or {}).values()
+        )
+        volc_context_map = _refresh_volc_context_window_map(config, timeout=8.0) if has_volcengine_model else {}
 
         models_info = []
         for model_id, info in config.get('models', {}).items():
             if model_id in blacklist:
                 continue
-            models_info.append({
+            provider_name = str(info.get('provider', 'volcengine') or 'volcengine').strip().lower()
+            item = {
                 'id': model_id,
                 'name': info.get('name', model_id),
                 'provider': info.get('provider', 'volcengine'),
                 'status': info.get('status', 'normal')
-            })
+            }
+            context_window = _to_context_window(info)
+            if not context_window and provider_name == 'volcengine':
+                context_window = _resolve_volc_context_window_by_model_id(model_id, volc_context_map)
+            if context_window:
+                item['context_window'] = context_window
+            models_info.append(item)
 
         default_model = config.get('default_model')
         if default_model in blacklist:
@@ -4064,6 +4340,7 @@ def admin_upsert_model():
     """新增或更新模型"""
     data = request.get_json() or {}
     model_id = (data.get('model_id') or '').strip()
+    original_model_id = (data.get('original_model_id') or '').strip()
     name = (data.get('name') or '').strip()
     provider = (data.get('provider') or '').strip()
     status = (data.get('status') or 'normal').strip()
@@ -4081,12 +4358,22 @@ def admin_upsert_model():
         if provider not in providers:
             return jsonify({'success': False, 'message': f'Provider 不存在: {provider}'}), 400
 
+        is_rename = bool(original_model_id and original_model_id != model_id)
+        if is_rename:
+            if original_model_id not in models:
+                return jsonify({'success': False, 'message': f'原模型不存在: {original_model_id}'}), 404
+            if model_id in models:
+                return jsonify({'success': False, 'message': f'目标模型ID已存在: {model_id}'}), 400
+            del models[original_model_id]
+
         models[model_id] = {
             'name': name or model_id,
             'provider': provider,
             'status': status or 'normal'
         }
         save_models_config(cfg)
+        if is_rename:
+            return jsonify({'success': True, 'message': f'模型 {original_model_id} 已重命名为 {model_id}'})
         return jsonify({'success': True, 'message': f'模型 {model_id} 已保存'})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
@@ -4193,7 +4480,14 @@ def chat_stream():
     except Exception as e:
         print(f"Permission check error: {e}")
     # ------------------
-    
+
+    # 检测 NexoraCode 本地 Agent（通过 Cookie 识别，注入本地工具）
+    _agent_token = request.cookies.get("nexoracode_agent", "").strip()
+    _agent_info = _LOCAL_AGENTS.get(_agent_token) if _agent_token else None
+    # 安全验证：agent 必须属于当前登录用户
+    if _agent_info and _agent_info.get("username") != username:
+        _agent_info = None
+
     # 如果是重新生成，处理版本保存逻辑
     if is_regenerate and conversation_id and regenerate_index is not None:
         manager = ConversationManager(username)
@@ -4215,6 +4509,10 @@ def chat_stream():
                 conversation_id=conversation_id,
                 auto_create=(conversation_id is None)
             )
+
+            # 若存在 NexoraCode 本地 Agent，注入其本地工具
+            if _agent_info:
+                _inject_local_agent_tools(model, _agent_info)
 
             prepared_file_ids = _prepare_chat_file_ids(
                 username=username,
@@ -4279,7 +4577,6 @@ def pull_client_tool_request():
 
 
 @app.route('/api/client-tools/submit', methods=['POST'])
-@require_login
 def submit_client_tool_result_api():
     data = request.get_json(silent=True) or {}
     conversation_id = str(data.get('conversation_id') or '').strip()
@@ -4303,7 +4600,20 @@ def submit_client_tool_result_api():
         'meta': data.get('meta') if isinstance(data.get('meta'), dict) else {},
         'submitted_at': int(time.time())
     }
-    username = session['username']
+    username = session.get('username')
+    if not username:
+        agent_token = str(
+            request.headers.get('X-NexoraCode-Agent')
+            or data.get('agent_token')
+            or request.cookies.get('nexoracode_agent')
+            or ''
+        ).strip()
+        agent_info = _LOCAL_AGENTS.get(agent_token) if agent_token else None
+        if agent_info:
+            username = str(agent_info.get('username') or '').strip()
+    if not username:
+        return jsonify({'success': False, 'message': '请先登录或提供有效 agent_token'}), 401
+
     ok, msg = submit_request_result(
         username=username,
         conversation_id=conversation_id,
@@ -4313,6 +4623,160 @@ def submit_client_tool_result_api():
     if not ok:
         return jsonify({'success': False, 'message': msg}), 404
     return jsonify({'success': True})
+
+
+# ==================== NexoraCode 本地 Agent 桥接 ====================
+
+def _inject_local_agent_tools(model, agent_info: dict):
+    """将本地 Agent 工具注入到 model 实例（工具定义 + 执行处理器）
+
+    执行路径：服务器 enqueue_request → NexoraCode 长轮询 pull → 本地执行 →
+    POST /api/client-tools/submit → wait_for_result 返回结果给模型。
+    避免服务器直连 localhost（服务器端 localhost != 用户本机）。
+    """
+    username = agent_info.get("username", "")
+
+    # 判断当前 provider 是否使用 Responses API（扁平格式，无 "function" 包装层）
+    use_responses_api = (
+        hasattr(model, '_provider_use_responses_api')
+        and model._provider_use_responses_api(getattr(model, 'provider', ''))
+    )
+
+    for tool_def in agent_info.get("tools", []):
+        if tool_def.get("type") != "function":
+            continue
+        # 兼容两种输入格式：OpenAI 嵌套格式 或 Responses API 扁平格式
+        func = tool_def.get("function") or {}
+        tool_name = func.get("name") or tool_def.get("name")
+        description = func.get("description") or tool_def.get("description", "")
+        parameters = func.get("parameters") or tool_def.get("parameters", {})
+        if not tool_name:
+            continue
+
+        # 按 provider 要求选择正确格式，与 _parse_tools 保持一致
+        if use_responses_api:
+            formatted = {
+                "type": "function",
+                "name": tool_name,
+                "description": description,
+                "parameters": parameters,
+            }
+        else:
+            formatted = {
+                "type": "function",
+                "function": {
+                    "name": tool_name,
+                    "description": description,
+                    "parameters": parameters,
+                },
+            }
+
+        # 注入工具定义（前置，避免在 selectTools 目录提示中被截断）
+        if isinstance(model.tools, list):
+            model.tools.insert(0, formatted)
+        else:
+            model.tools = [formatted]
+
+        # 注入执行处理器：通过 client_tool_bridge 长轮询，NexoraCode 主动 pull 执行
+        def _make_handler(name: str, uname: str):
+            def _handler(args: dict) -> str:
+                conv_id = str(getattr(model, 'conversation_id', '') or '')
+                req_obj = enqueue_request(
+                    username=uname,
+                    conversation_id=conv_id,
+                    request_type="local_tool",
+                    payload={"tool": name, "params": args},
+                    timeout_ms=120000,
+                )
+                result = wait_for_result(
+                    username=uname,
+                    conversation_id=conv_id,
+                    request_id=req_obj["request_id"],
+                    timeout_ms=120000,
+                )
+                if not result.get("success"):
+                    return f"本地工具执行失败: {result.get('error', result.get('message', '超时'))}"
+                r = result.get("result", result)
+                return r if isinstance(r, str) else json.dumps(r, ensure_ascii=False)
+            return _handler
+
+        model.tool_executor.handlers[tool_name] = _make_handler(tool_name, username)
+
+
+@app.route('/api/local_agent/register', methods=['POST'])
+@require_login
+def local_agent_register():
+    """NexoraCode 通过 WebView JS 注册本地工具（借助已有 session 完成身份验证）"""
+    data = request.get_json(silent=True) or {}
+    token = str(data.get("token") or "").strip()
+    callback_url = str(data.get("callback_url") or "").strip()
+    tools = data.get("tools")
+
+    if not token or not callback_url or not isinstance(tools, list):
+        return jsonify({"success": False, "message": "token, callback_url, tools 均为必填"}), 400
+
+    # 安全限制：callback_url 只允许 localhost
+    parsed = urllib_parse.urlsplit(callback_url)
+    if parsed.hostname not in ("localhost", "127.0.0.1"):
+        return jsonify({"success": False, "message": "callback_url 只允许指向 localhost"}), 400
+
+    username = session["username"]
+    _LOCAL_AGENTS[token] = {
+        "token": token,
+        "callback_url": callback_url,
+        "tools": tools,
+        "username": username,
+        "registered_at": int(time.time()),
+    }
+    registered_tools = []
+    for t in tools:
+        if str((t or {}).get("type", "")).strip() != "function":
+            continue
+        func = (t or {}).get("function")
+        if isinstance(func, dict):
+            name = str(func.get("name") or "").strip()
+        else:
+            name = str((t or {}).get("name") or "").strip()
+        if name:
+            registered_tools.append(name)
+    return jsonify({"success": True, "registered_tools": registered_tools})
+
+
+@app.route('/api/local_agent/unregister', methods=['POST'])
+@require_login
+def local_agent_unregister():
+    """NexoraCode 关闭时注销本地工具"""
+    data = request.get_json(silent=True) or {}
+    token = str(data.get("token") or "").strip()
+    username = session["username"]
+
+    agent = _LOCAL_AGENTS.get(token)
+    if agent and agent.get("username") == username:
+        del _LOCAL_AGENTS[token]
+        return jsonify({"success": True})
+    return jsonify({"success": False, "message": "未找到对应注册记录"}), 404
+
+
+@app.route('/api/local_agent/pull', methods=['POST'])
+def local_agent_pull():
+    """NexoraCode 长轮询：取出属于当前用户的下一个 local_tool 执行请求"""
+    data = request.get_json(silent=True) or {}
+    wait_ms = int(data.get("wait_ms", 10000))
+    agent_token = str(
+        request.headers.get('X-NexoraCode-Agent')
+        or data.get('agent_token')
+        or request.cookies.get('nexoracode_agent')
+        or ''
+    ).strip()
+    agent_info = _LOCAL_AGENTS.get(agent_token) if agent_token else None
+    if not agent_info:
+        return jsonify({"success": False, "message": "invalid agent token"}), 401
+    username = str(agent_info.get("username") or "").strip()
+    if not username:
+        return jsonify({"success": False, "message": "invalid agent user"}), 401
+
+    req = pull_local_tool_request(username=username, wait_ms=wait_ms)
+    return jsonify({"success": True, "request": req})
 
 
 @app.route('/api/tokens/stats', methods=['GET'])
@@ -4479,6 +4943,11 @@ def list_knowledge():
         if vector_titles is not None:
             for title, meta in basis_knowledge.items():
                 meta['vector_exists'] = title in vector_titles
+                meta['pin'] = bool(meta.get('pin', False))
+        else:
+            for _, meta in basis_knowledge.items():
+                if isinstance(meta, dict):
+                    meta['pin'] = bool(meta.get('pin', False))
         
         return jsonify({
             'success': True,
@@ -4499,11 +4968,20 @@ def get_all_basis():
     try:
         knowledge_list = user.getKnowledgeList(1)  # 1表示基础知识
         result = []
-        for title in knowledge_list:
-            content = user.getBasisContent(title)
+        if isinstance(knowledge_list, dict):
+            iterable = list(knowledge_list.items())
+        else:
+            iterable = [(title, {}) for title in knowledge_list]
+
+        for title, meta in iterable:
+            safe_title = str(title or '').strip()
+            if not safe_title:
+                continue
+            content = user.getBasisContent(safe_title)
             result.append({
-                'title': title,
-                'content': content
+                'title': safe_title,
+                'content': content,
+                'pin': bool((meta or {}).get('pin', False)) if isinstance(meta, dict) else False
             })
         return jsonify({'success': True, 'knowledge': result})
     except Exception as e:
@@ -4610,6 +5088,23 @@ def delete_basis(title):
         return jsonify({'success': True, 'message': '删除成功'})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
+
+
+@app.route('/api/knowledge/basis/<path:title>/pin', methods=['POST'])
+@require_login
+def set_basis_pin(title):
+    """设置基础知识置顶状态"""
+    username = session['username']
+    user = User(username)
+    data = request.get_json(silent=True) or {}
+    pin = bool(data.get('pin', True))
+    try:
+        success, msg = user.setBasisPin(title, pin=pin)
+        if not success:
+            return jsonify({'success': False, 'message': msg}), 400
+        return jsonify({'success': True, 'title': title, 'pin': pin, 'message': msg})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/api/knowledge/settings', methods=['POST'])
 @require_login
@@ -4837,14 +5332,34 @@ def delete_short(title):
     user = User(username)
     
     try:
-        # 通过title找到索引
-        short_list = user.getKnowledgeList(0)
-        if title in short_list:
-            idx = short_list.index(title)
+        short_data = user.getKnowledgeList(0)
+        # 兼容字典返回：{id: title}
+        if isinstance(short_data, dict):
+            target_id = None
+            for mem_id, mem_title in short_data.items():
+                if str(mem_title) == str(title):
+                    target_id = mem_id
+                    break
+            if target_id is None:
+                return jsonify({'success': False, 'error': '未找到该记忆'})
+            ordered_ids = list(short_data.keys())
+            idx = ordered_ids.index(target_id)
             user.removeShort(idx)
             return jsonify({'success': True, 'message': '删除成功'})
-        else:
-            return jsonify({'success': False, 'error': '未找到该记忆'})
+
+        # 兼容列表返回
+        if isinstance(short_data, list):
+            idx = None
+            for i, item in enumerate(short_data):
+                if str(item) == str(title):
+                    idx = i
+                    break
+            if idx is None:
+                return jsonify({'success': False, 'error': '未找到该记忆'})
+            user.removeShort(idx)
+            return jsonify({'success': True, 'message': '删除成功'})
+
+        return jsonify({'success': False, 'error': '短期记忆数据格式异常'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 

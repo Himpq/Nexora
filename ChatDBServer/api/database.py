@@ -66,12 +66,22 @@ class User:
             if "data_basis" in db:
                 import hashlib
                 for title, meta in db["data_basis"].items():
+                    if not isinstance(meta, dict):
+                        continue
                     if "share_id" not in meta:
                         meta["share_id"] = hashlib.md5(f"{title}{meta.get('created_at', 0)}".encode()).hexdigest()[:8]
                         migrated = True
                     if "collaborative" not in meta:
                         meta["collaborative"] = False
                         migrated = True
+                    if "pin" not in meta:
+                        meta["pin"] = False
+                        migrated = True
+                    else:
+                        normalized_pin = bool(meta.get("pin", False))
+                        if meta.get("pin") is not normalized_pin:
+                            meta["pin"] = normalized_pin
+                            migrated = True
             if migrated:
                 with open(self.path + "database.json", "w", encoding="utf-8") as f:
                     json.dump(db, f, indent=4, ensure_ascii=False)
@@ -197,6 +207,7 @@ class User:
                 "url": url,
                 "public": False,  # 默认不公开
                 "collaborative": False, # 默认不开启协同编辑
+                "pin": False,
                 "share_id": share_id,
                 "created_at": time.time(),
                 "updated_at": time.time(),
@@ -226,6 +237,30 @@ class User:
                         json.dump(db, f, indent=4, ensure_ascii=False)
                     return True, "设置成功"
                 return False, "知识不存在"
+        except Exception as e:
+            return False, str(e)
+
+    def setBasisPin(self, title, pin=True):
+        """设置基础知识置顶状态"""
+        lock = get_user_lock(self.user)
+        try:
+            with lock:
+                with open(self.path + "database.json", "r", encoding="utf-8") as f:
+                    db = json.load(f)
+
+                if title not in db.get("data_basis", {}):
+                    return False, "知识不存在"
+
+                meta = db["data_basis"].get(title, {})
+                if not isinstance(meta, dict):
+                    return False, "知识元数据异常"
+
+                meta["pin"] = bool(pin)
+                meta["pin_updated_at"] = time.time()
+
+                with open(self.path + "database.json", "w", encoding="utf-8") as f:
+                    json.dump(db, f, indent=4, ensure_ascii=False)
+                return True, "设置成功"
         except Exception as e:
             return False, str(e)
 

@@ -36,9 +36,7 @@ default = """
 RUNTIME_HINT_NATIVE_TAG = "[运行时能力提示]"
 RUNTIME_HINT_TOOL_TAG = "[工具选择协议]"
 
-runtime_native_search_hint = f"""{RUNTIME_HINT_NATIVE_TAG} 当前会话已启用原生联网搜索能力（非函数工具形式）。
-即使工具列表中没有 web_search/relay_web_search，也必须在需要实时信息或用户明确要求联网时直接执行联网检索。
-"""
+runtime_native_search_hint = f"""{RUNTIME_HINT_NATIVE_TAG} 当前会话已启用原生联网搜索能力。"""
 
 runtime_tool_selector_empty = f"""{RUNTIME_HINT_TOOL_TAG}
 本轮可调用工具仅有 selectTools，但当前可选目录为空。
@@ -72,7 +70,7 @@ def build_runtime_tool_not_enabled_message(function_name: str, allowed_names) ->
     return (
         f"错误：工具 '{fn}' 当前未启用。"
         f"当前允许工具: {allowed_text}。"
-        "请先调用 selectTools 选择工具名（例如 {\"tools\":[\"js_execute\",\"vectorSearch\"]}），下一轮生效。"
+        "请先调用 selectTools 选择工具名（例如 {\"tools\":[\"js_execute\",\"vectorSearch\"]}），随后在当前回复的后续轮次生效。"
     )
 
 

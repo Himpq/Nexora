@@ -61,6 +61,12 @@ let tokenMiniState = {
     requestSeq: 0,
     streaming: false
 };
+const TOKEN_BUDGET_DEFAULT_LIMIT = 32768;
+let tokenBudgetState = {
+    contextWindow: TOKEN_BUDGET_DEFAULT_LIMIT,
+    estimated: true,
+    roundInput: 0
+};
 let clientToolPollTimer = null;
 let clientToolPollInFlight = false;
 const clientToolHandledRequestIds = new Set();
@@ -129,6 +135,19 @@ let notesMobilePanelState = {
 let notesCloudSyncTimer = null;
 let notesCloudSyncPendingStore = null;
 let notesCloudSyncInFlight = false;
+const NOTES_COMPANION_MODE = (() => {
+    try {
+        const p = new URLSearchParams(window.location.search || '');
+        const raw = String(p.get('notes_companion') || '').trim().toLowerCase();
+        return raw === '1' || raw === 'true' || raw === 'yes';
+    } catch (_) {
+        return false;
+    }
+})();
+let pinContextMenuState = null;
+let pinContextMenuBusy = false;
+let conversationListCache = [];
+let basisKnowledgeListCache = [];
 
 function setHoverProxyMessage(target) {
     if (hoverProxyMessageEl === target) return;
@@ -1438,6 +1457,44 @@ function positionMobileHeaderMenuPanel() {
     panel.style.right = 'auto';
 }
 
+function bindBackdropSafeClose(backdrop, onClose) {
+    const modal = backdrop;
+    if (!modal || typeof onClose !== 'function') return;
+    if (modal.dataset.safeCloseBound === '1') return;
+    modal.dataset.safeCloseBound = '1';
+
+    let pressedOnBackdrop = false;
+
+    const onStart = (e) => {
+        pressedOnBackdrop = (e.target === modal);
+    };
+    const onEnd = (e) => {
+        const shouldClose = pressedOnBackdrop && (e.target === modal);
+        pressedOnBackdrop = false;
+        if (!shouldClose) return;
+        e.preventDefault();
+        e.stopPropagation();
+        onClose();
+    };
+    const onCancel = () => {
+        pressedOnBackdrop = false;
+    };
+    const swallowBackdropClick = (e) => {
+        if (e.target !== modal) return;
+        // Avoid legacy click close paths when selection drag ends outside the dialog.
+        e.preventDefault();
+        e.stopPropagation();
+    };
+
+    modal.addEventListener('mousedown', onStart);
+    modal.addEventListener('mouseup', onEnd);
+    modal.addEventListener('mouseleave', onCancel);
+    modal.addEventListener('touchstart', onStart, { passive: true });
+    modal.addEventListener('touchend', onEnd);
+    modal.addEventListener('touchcancel', onCancel);
+    modal.addEventListener('click', swallowBackdropClick, true);
+}
+
 function bindMobileHeaderMenu() {
     els.mobileHeaderMenu = document.getElementById('mobileHeaderMenu');
     els.mobileHeaderMenuTrigger = document.getElementById('mobileHeaderMenuTrigger');
@@ -1476,10 +1533,15 @@ function bindMobileHeaderMenu() {
 
     const notesItem = els.mobileNotesMenuItem;
     if (notesItem) {
-        notesItem.onclick = (e) => {
+        notesItem.onclick = async (e) => {
             e.preventDefault();
             e.stopPropagation();
             closeMobileHeaderMenu();
+            if (canOpenNotesCompanionWindow()) {
+                const ok = await openNotesCompanionWindow();
+                if (!ok) showToast('打开独立笔记窗口失败');
+                return;
+            }
             toggleNotesPanel();
         };
     }
@@ -1694,14 +1756,50 @@ function saveMailListScroll(scrollTop) {
     }
 }
 
+function setRightSidebarPanelVisible(panel, visible) {
+    const p = panel || null;
+    if (!p) return;
+    const show = !!visible;
+    if (p.__panelAnimTimer) {
+        clearTimeout(p.__panelAnimTimer);
+        p.__panelAnimTimer = null;
+    }
+    p.classList.add('panel-animating');
+    requestAnimationFrame(() => {
+        if (show) p.classList.add('visible');
+        else p.classList.remove('visible');
+    });
+    p.__panelAnimTimer = setTimeout(() => {
+        p.classList.remove('panel-animating');
+        p.__panelAnimTimer = null;
+    }, 280);
+}
+
+function closeKnowledgePanel() {
+    if (els.knowledgePanel) setRightSidebarPanelVisible(els.knowledgePanel, false);
+}
+
+function openKnowledgePanel() {
+    if (!els.knowledgePanel) return;
+    if (els.filePanel) setRightSidebarPanelVisible(els.filePanel, false);
+    setRightSidebarPanelVisible(els.knowledgePanel, true);
+}
+
+function toggleKnowledgePanel() {
+    if (!els.knowledgePanel) return;
+    const nextVisible = !els.knowledgePanel.classList.contains('visible');
+    if (nextVisible) openKnowledgePanel();
+    else closeKnowledgePanel();
+}
+
 function closeCloudFilePanel() {
-    if (els.filePanel) els.filePanel.classList.remove('visible');
+    if (els.filePanel) setRightSidebarPanelVisible(els.filePanel, false);
 }
 
 function openCloudFilePanel() {
     if (!els.filePanel) return;
-    if (els.knowledgePanel) els.knowledgePanel.classList.remove('visible');
-    els.filePanel.classList.add('visible');
+    if (els.knowledgePanel) setRightSidebarPanelVisible(els.knowledgePanel, false);
+    setRightSidebarPanelVisible(els.filePanel, true);
     loadCloudFiles();
 }
 
@@ -1713,6 +1811,26 @@ function toggleCloudFilePanel() {
 }
 
 window.toggleCloudFilePanel = toggleCloudFilePanel;
+window.toggleKnowledgePanel = toggleKnowledgePanel;
+
+function openMobileSidebar() {
+    if (!els.sidebar) return;
+    els.sidebar.classList.remove('collapsed');
+    requestAnimationFrame(() => {
+        els.sidebar.classList.add('mobile-open');
+    });
+}
+
+function closeMobileSidebar() {
+    if (!els.sidebar) return;
+    els.sidebar.classList.remove('mobile-open');
+}
+
+function toggleMobileSidebar() {
+    if (!els.sidebar) return;
+    if (els.sidebar.classList.contains('mobile-open')) closeMobileSidebar();
+    else openMobileSidebar();
+}
 
 function formatFileSize(bytes) {
     const n = Number(bytes || 0);
@@ -1994,6 +2112,9 @@ const els = {
     cloudFileSearchBtn: document.getElementById('cloudFileSearchBtn'),
     cloudFileCount: document.getElementById('cloudFileCount'),
     cloudFileList: document.getElementById('cloudFileList'),
+    tokenBudgetMini: document.getElementById('tokenBudgetMini'),
+    tokenBudgetRing: document.getElementById('tokenBudgetRing'),
+    tokenBudgetUsage: document.getElementById('tokenBudgetUsage'),
     tokenDisplay: document.getElementById('tokenDisplay'),
     modalTotalTokens: document.getElementById('modalTotalTokens'),
     modalTodayTokens: document.getElementById('modalTodayTokens'),
@@ -2010,6 +2131,7 @@ const els = {
     notesPanel: document.getElementById('notesPanel'),
     notesPanelHead: document.querySelector('#notesPanel .notes-panel-head'),
     closeNotesPanelBtn: document.getElementById('closeNotesPanelBtn'),
+    openNotesCompanionBtn: document.getElementById('openNotesCompanionBtn'),
     notesNotebookSelect: document.getElementById('notesNotebookSelect'),
     createNotebookBtn: document.getElementById('createNotebookBtn'),
     clearNotebookBtn: document.getElementById('clearNotebookBtn'),
@@ -2020,6 +2142,8 @@ const els = {
     notesCountBadge: document.getElementById('notesCountBadge'),
     notesContextMenu: document.getElementById('notesContextMenu'),
     notesAddSelectionBtn: document.getElementById('notesAddSelectionBtn'),
+    pinContextMenu: document.getElementById('pinContextMenu'),
+    pinContextMenuAction: document.getElementById('pinContextMenuAction'),
     mobileSelectionAddBtn: document.getElementById('mobileSelectionAddBtn'),
     totalInputTokens: document.getElementById('totalInputTokens'),
     totalOutputTokens: document.getElementById('totalOutputTokens'),
@@ -2639,6 +2763,29 @@ async function jumpToKnowledgeSource(anchor, fallbackTitle = '') {
     return true;
 }
 
+async function jumpToNoteAnchorPayload(anchor, fallbackTitle = '') {
+    const a = normalizeNoteAnchor(anchor);
+    if (!a || !a.type) {
+        showToast('该笔记缺少来源定位信息');
+        return false;
+    }
+    if (a.type === 'chat') {
+        return await jumpToChatSource(a);
+    }
+    if (a.type === 'knowledge') {
+        return await jumpToKnowledgeSource(a, String(fallbackTitle || '').trim());
+    }
+    showToast('该笔记缺少来源定位信息');
+    return false;
+}
+
+window.__nexoraJumpToNoteAnchor = async function(payload = {}) {
+    const p = (payload && typeof payload === 'object') ? payload : {};
+    const anchor = normalizeNoteAnchor(p.anchor) || null;
+    const sourceTitle = String(p.sourceTitle || '').trim();
+    return await jumpToNoteAnchorPayload(anchor, sourceTitle);
+};
+
 function buildFallbackAnchorFromNote(note) {
     const n = (note && typeof note === 'object') ? note : {};
     const source = String(n.source || '').trim();
@@ -2679,15 +2826,26 @@ async function jumpToNoteSource(noteId) {
         return;
     }
 
+    if (
+        NOTES_COMPANION_MODE
+        && window.pywebview
+        && window.pywebview.api
+        && typeof window.pywebview.api.jump_note_source_external === 'function'
+    ) {
+        try {
+            const res = await window.pywebview.api.jump_note_source_external({
+                anchor,
+                sourceTitle: String(note.sourceTitle || '')
+            });
+            if (res && res.success) return;
+        } catch (_) {
+            // fallback to local jump
+        }
+    }
+
     noteSourceJumpInFlight = true;
     try {
-        if (anchor.type === 'chat') {
-            await jumpToChatSource(anchor);
-        } else if (anchor.type === 'knowledge') {
-            await jumpToKnowledgeSource(anchor, String(note.sourceTitle || ''));
-        } else {
-            showToast('该笔记缺少来源定位信息');
-        }
+        await jumpToNoteAnchorPayload(anchor, String(note.sourceTitle || ''));
     } finally {
         noteSourceJumpInFlight = false;
     }
@@ -2964,6 +3122,7 @@ function openNotesPanel() {
 }
 
 function closeNotesPanel() {
+    if (NOTES_COMPANION_MODE) return;
     const panel = els.notesPanel || document.getElementById('notesPanel');
     if (!panel) return;
     notesState.open = false;
@@ -2977,6 +3136,23 @@ window.toggleNotesPanel = function() {
     if (notesState.open) closeNotesPanel();
     else openNotesPanel();
 };
+
+function canOpenNotesCompanionWindow() {
+    return !NOTES_COMPANION_MODE
+        && !!(window.pywebview
+            && window.pywebview.api
+            && typeof window.pywebview.api.open_notes_companion === 'function');
+}
+
+async function openNotesCompanionWindow() {
+    if (!canOpenNotesCompanionWindow()) return false;
+    try {
+        const res = await window.pywebview.api.open_notes_companion();
+        return !!(res && res.success);
+    } catch (_) {
+        return false;
+    }
+}
 
 function isEditableTarget(target) {
     if (!target) return false;
@@ -3066,6 +3242,7 @@ function hideNotesContextMenu() {
 function showNotesContextMenu(x, y, selectionText, sourceMeta) {
     const menu = els.notesContextMenu || document.getElementById('notesContextMenu');
     if (!menu) return;
+    hidePinContextMenu();
     menu.classList.add('active');
     menu.setAttribute('aria-hidden', 'false');
     const menuWidth = menu.offsetWidth || 160;
@@ -3074,6 +3251,204 @@ function showNotesContextMenu(x, y, selectionText, sourceMeta) {
     menu.style.top = `${Math.min(Math.max(8, y), Math.max(8, window.innerHeight - menuHeight - 12))}px`;
     notesState.pendingSelectionText = normalizeSelectionTextForNotes(selectionText);
     notesState.pendingSelectionSource = sourceMeta && typeof sourceMeta === 'object' ? sourceMeta : null;
+}
+
+function hidePinContextMenu() {
+    const menu = els.pinContextMenu || document.getElementById('pinContextMenu');
+    if (!menu) return;
+    menu.classList.remove('active');
+    menu.setAttribute('aria-hidden', 'true');
+    pinContextMenuState = null;
+    pinContextMenuBusy = false;
+    const actionBtn = els.pinContextMenuAction || document.getElementById('pinContextMenuAction');
+    if (actionBtn) actionBtn.disabled = false;
+}
+
+function updatePinContextMenuAction(state) {
+    const actionBtn = els.pinContextMenuAction || document.getElementById('pinContextMenuAction');
+    if (!actionBtn) return;
+    const pinned = !!(state && state.pinned);
+    const label = pinned ? '解除置顶' : '置顶';
+    actionBtn.title = label;
+    const span = actionBtn.querySelector('span');
+    if (span) span.textContent = label;
+    const icon = actionBtn.querySelector('i');
+    if (icon) icon.className = 'fa-solid fa-thumbtack';
+}
+
+function showPinContextMenu(x, y, payload) {
+    const menu = els.pinContextMenu || document.getElementById('pinContextMenu');
+    if (!menu) return;
+    const state = (payload && typeof payload === 'object') ? payload : null;
+    if (!state || !state.targetType) return;
+    hideNotesContextMenu();
+    pinContextMenuState = { ...state };
+    updatePinContextMenuAction(pinContextMenuState);
+    menu.classList.add('active');
+    menu.setAttribute('aria-hidden', 'false');
+    const menuWidth = menu.offsetWidth || 136;
+    const menuHeight = menu.offsetHeight || 44;
+    const left = Math.min(Math.max(8, Number(x || 0)), Math.max(8, window.innerWidth - menuWidth - 12));
+    const top = Math.min(Math.max(8, Number(y || 0)), Math.max(8, window.innerHeight - menuHeight - 12));
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+}
+
+async function setConversationPinned(conversationId, pin) {
+    const cid = String(conversationId || '').trim();
+    if (!cid) return false;
+    const res = await fetch(`/api/conversations/${encodeURIComponent(cid)}/pin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin: !!pin })
+    });
+    const data = await res.json();
+    return !!(data && data.success);
+}
+
+async function setBasisKnowledgePinned(title, pin) {
+    const safeTitle = String(title || '').trim();
+    if (!safeTitle) return false;
+    const res = await fetch(`/api/knowledge/basis/${encodeURIComponent(safeTitle)}/pin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin: !!pin })
+    });
+    const data = await res.json();
+    return !!(data && data.success);
+}
+
+function setConversationPinLocal(conversationId, pin) {
+    const cid = String(conversationId || '').trim();
+    if (!cid) return false;
+    let found = false;
+    const source = Array.isArray(conversationListCache) ? conversationListCache : [];
+    conversationListCache = source.map((item) => {
+        const src = (item && typeof item === 'object') ? item : {};
+        const itemId = String(src.conversation_id || src.id || '').trim();
+        if (itemId !== cid) return src;
+        found = true;
+        return { ...src, pin: !!pin };
+    });
+    if (found) {
+        renderConversationList(conversationListCache);
+    }
+    return found;
+}
+
+function setBasisPinLocal(title, pin) {
+    const safeTitle = String(title || '').trim();
+    if (!safeTitle) return false;
+    let found = false;
+    const source = Array.isArray(basisKnowledgeListCache) ? basisKnowledgeListCache : [];
+    basisKnowledgeListCache = source.map((item) => {
+        const src = (item && typeof item === 'object') ? item : {};
+        const itemTitle = String((src && src.title) || (typeof item === 'string' ? item : '')).trim();
+        if (itemTitle !== safeTitle) return item;
+        found = true;
+        const nextObj = {
+            ...(src || {}),
+            title: itemTitle,
+            content: String((src && src.content) || itemTitle),
+            pin: !!pin
+        };
+        return nextObj;
+    });
+    if (!found) return false;
+    if (!knowledgeMetaCache || typeof knowledgeMetaCache !== 'object') {
+        knowledgeMetaCache = {};
+    }
+    if (!knowledgeMetaCache[safeTitle] || typeof knowledgeMetaCache[safeTitle] !== 'object') {
+        knowledgeMetaCache[safeTitle] = {};
+    }
+    knowledgeMetaCache[safeTitle].pin = !!pin;
+    renderKnowledgeList(els.panelBasisList, basisKnowledgeListCache, 'basis');
+    return true;
+}
+
+async function applyPinContextMenuAction() {
+    if (!pinContextMenuState || pinContextMenuBusy) return;
+    const actionBtn = els.pinContextMenuAction || document.getElementById('pinContextMenuAction');
+    const state = { ...pinContextMenuState };
+    hidePinContextMenu();
+    pinContextMenuBusy = true;
+    if (actionBtn) actionBtn.disabled = true;
+    try {
+        const targetType = String(state.targetType || '').trim();
+        const nextPin = !state.pinned;
+        let ok = false;
+        let patched = false;
+        if (targetType === 'conversation') {
+            patched = setConversationPinLocal(state.conversationId, nextPin);
+            ok = await setConversationPinned(state.conversationId, nextPin);
+            if (ok) {
+                await loadConversations();
+                showToast(nextPin ? '对话已置顶' : '已取消置顶');
+            } else if (patched) {
+                setConversationPinLocal(state.conversationId, state.pinned);
+            }
+        } else if (targetType === 'knowledge_basis') {
+            patched = setBasisPinLocal(state.title, nextPin);
+            ok = await setBasisKnowledgePinned(state.title, nextPin);
+            if (ok) {
+                await loadKnowledge(currentConversationId);
+                showToast(nextPin ? '知识已置顶' : '已取消置顶');
+            } else if (patched) {
+                setBasisPinLocal(state.title, state.pinned);
+            }
+        }
+        if (!ok) {
+            if (targetType === 'conversation') {
+                await loadConversations();
+            } else if (targetType === 'knowledge_basis') {
+                await loadKnowledge(currentConversationId);
+            }
+            showToast('置顶操作失败');
+        }
+    } catch (_) {
+        const targetType = String(state.targetType || '').trim();
+        if (targetType === 'conversation') {
+            setConversationPinLocal(state.conversationId, state.pinned);
+            await loadConversations();
+        } else if (targetType === 'knowledge_basis') {
+            setBasisPinLocal(state.title, state.pinned);
+            await loadKnowledge(currentConversationId);
+        }
+        showToast('置顶操作失败');
+    } finally {
+        pinContextMenuBusy = false;
+        if (actionBtn) actionBtn.disabled = false;
+    }
+}
+
+function bindPinContextMenu() {
+    const menu = els.pinContextMenu || document.getElementById('pinContextMenu');
+    const actionBtn = els.pinContextMenuAction || document.getElementById('pinContextMenuAction');
+    if (!menu || !actionBtn) return;
+    if (menu.dataset.bindDone === '1') return;
+    menu.dataset.bindDone = '1';
+
+    actionBtn.addEventListener('click', async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        await applyPinContextMenuAction();
+    });
+
+    document.addEventListener('click', (e) => {
+        if (!menu.classList.contains('active')) return;
+        if (menu.contains(e.target)) return;
+        hidePinContextMenu();
+    }, true);
+
+    document.addEventListener('scroll', () => {
+        if (menu.classList.contains('active')) hidePinContextMenu();
+    }, true);
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && menu.classList.contains('active')) {
+            hidePinContextMenu();
+        }
+    });
 }
 
 function normalizeSelectionTextForNotes(raw) {
@@ -3636,7 +4011,7 @@ function bindNotesContextCapture() {
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') {
             hideNotesContextMenu();
-            if (notesState.open) closeNotesPanel();
+            if (!NOTES_COMPANION_MODE && notesState.open) closeNotesPanel();
         }
     });
 }
@@ -3646,6 +4021,20 @@ function initNotesUi() {
     bindNotesPanelMobileDrag();
     if (els.closeNotesPanelBtn) {
         els.closeNotesPanelBtn.addEventListener('click', () => closeNotesPanel());
+    }
+    if (els.openNotesCompanionBtn) {
+        const canOpenCompanion = canOpenNotesCompanionWindow();
+        if (!canOpenCompanion || NOTES_COMPANION_MODE) {
+            els.openNotesCompanionBtn.style.display = 'none';
+        } else {
+            els.openNotesCompanionBtn.addEventListener('click', async (e) => {
+                e.preventDefault();
+                const ok = await openNotesCompanionWindow();
+                if (!ok) {
+                    showToast('打开独立笔记窗口失败');
+                }
+            });
+        }
     }
     if (els.notesNotebookSelect) {
         els.notesNotebookSelect.addEventListener('change', (e) => {
@@ -3676,7 +4065,13 @@ function initNotesUi() {
             hideNotesContextMenu();
             if (!text) return;
             addNoteItemFromSelection(text, sourceMeta);
-            if (!notesState.open) openNotesPanel();
+            if (!notesState.open) {
+                if (canOpenNotesCompanionWindow()) {
+                    void openNotesCompanionWindow();
+                } else {
+                    openNotesPanel();
+                }
+            }
         });
     }
     if (els.mobileSelectionAddBtn) {
@@ -3697,6 +4092,11 @@ function initNotesUi() {
     bindNotesContextCapture();
     updateMobileSelectionQuickAdd();
     renderNotesList();
+    if (NOTES_COMPANION_MODE) {
+        if (document.body) document.body.classList.add('notes-companion-mode');
+        if (els.closeNotesPanelBtn) els.closeNotesPanelBtn.style.display = 'none';
+        openNotesPanel();
+    }
 }
 
 function clampImageViewerScale(v) {
@@ -3819,6 +4219,9 @@ function bindImageViewerEvents() {
 // --- Initialization ---
 document.addEventListener('DOMContentLoaded', () => {
     initUI();
+    if (NOTES_COMPANION_MODE) {
+        return;
+    }
     loadModels();
     loadConversations();
     
@@ -3832,6 +4235,8 @@ document.addEventListener('DOMContentLoaded', () => {
         loadConversation(cid);
     } else {
         applyTokenMiniDisplay(0, 0);
+        tokenBudgetState.roundInput = 0;
+        renderTokenBudgetUi();
         // Init load knowledge even without conversation
         loadKnowledge(null);
     }
@@ -3843,6 +4248,11 @@ function initUI() {
     bindToolsModeDropdown();
     bindMobileHeaderMenu();
     initNotesUi();
+    renderTokenBudgetUi();
+    if (NOTES_COMPANION_MODE) {
+        return;
+    }
+    bindPinContextMenu();
     mailViewState.sidebarCollapsed = loadMailSidebarCollapsedState();
     mailNotifyState.lastOpenTs = loadMailLastOpenTs();
     mailNotifyState.initialized = mailNotifyState.lastOpenTs > 0;
@@ -4016,18 +4426,13 @@ function initUI() {
     const mobileToggle = document.getElementById('toggleSidebarMobile');
     if (mobileToggle) {
         mobileToggle.addEventListener('click', () => {
-            els.sidebar.classList.toggle('mobile-open');
+            toggleMobileSidebar();
         });
     }
 
     // Knowledge Panel
-    const toggleKP = () => {
-        if (!els.knowledgePanel) return;
-        const nextVisible = !els.knowledgePanel.classList.contains('visible');
-        if (nextVisible && els.filePanel) els.filePanel.classList.remove('visible');
-        els.knowledgePanel.classList.toggle('visible');
-    };
-    if(els.btnTogglePanel) els.btnTogglePanel.addEventListener('click', toggleKP);
+    const toggleKP = () => toggleKnowledgePanel();
+    if (els.btnTogglePanel) els.btnTogglePanel.addEventListener('click', closeKnowledgePanel);
     if(els.btnToggleFilePanel) els.btnToggleFilePanel.addEventListener('click', (e) => {
         e.preventDefault();
         closeCloudFilePanel();
@@ -4046,9 +4451,7 @@ function initUI() {
 // 说明
     if(els.tokenDisplay) els.tokenDisplay.addEventListener('click', openTokenModal);
     if(els.closeModalBtn) els.closeModalBtn.addEventListener('click', () => els.tokenModal.classList.remove('active'));
-    if(els.tokenModal) els.tokenModal.addEventListener('click', (e) => {
-        if(e.target === els.tokenModal) els.tokenModal.classList.remove('active');
-    });
+    if (els.tokenModal) bindBackdropSafeClose(els.tokenModal, () => els.tokenModal.classList.remove('active'));
 
     // User Menu & Admin
     if (els.usernameBtn) {
@@ -4085,6 +4488,9 @@ function initUI() {
         // Mobile: tap blank area to close sidebar / knowledge panel
         if (isChatMobileLayout()) {
             const target = e.target;
+            if (target && target.closest && target.closest('.modal-backdrop')) {
+                return;
+            }
             const mobileToggleBtn = document.getElementById('toggleSidebarMobile');
 
             if (els.sidebar && els.sidebar.classList.contains('mobile-open')) {
@@ -4092,7 +4498,7 @@ function initUI() {
                 const clickOnToggle = (els.toggleSidebar && els.toggleSidebar.contains(target)) ||
                     (mobileToggleBtn && mobileToggleBtn.contains(target));
                 if (!clickInSidebar && !clickOnToggle) {
-                    els.sidebar.classList.remove('mobile-open');
+                    closeMobileSidebar();
                 }
             }
 
@@ -4101,7 +4507,7 @@ function initUI() {
                 const clickOnToggle = (els.toggleKnowledgePanel && els.toggleKnowledgePanel.contains(target)) ||
                     (els.btnTogglePanel && els.btnTogglePanel.contains(target));
                 if (!clickInPanel && !clickOnToggle) {
-                    els.knowledgePanel.classList.remove('visible');
+                    closeKnowledgePanel();
                 }
             }
 
@@ -4110,7 +4516,7 @@ function initUI() {
                 const clickOnToggle = (els.toggleFilePanel && els.toggleFilePanel.contains(target)) ||
                     (els.btnToggleFilePanel && els.btnToggleFilePanel.contains(target));
                 if (!clickInPanel && !clickOnToggle) {
-                    els.filePanel.classList.remove('visible');
+                    closeCloudFilePanel();
                 }
             }
         }
@@ -4153,13 +4559,7 @@ function initUI() {
 // 说明
     const addUserModal = document.getElementById('addUserModal');
     if (addUserModal) {
-        addUserModal.addEventListener('click', (e) => {
-            if (e.target === addUserModal) {
-                e.preventDefault();
-                e.stopPropagation();
-                closeAddUserModal();
-            }
-        });
+        bindBackdropSafeClose(addUserModal, closeAddUserModal);
     }
     
 // 说明
@@ -4239,9 +4639,7 @@ function initUI() {
     }
     const avatarCropModal = document.getElementById('avatarCropModal');
     if (avatarCropModal) {
-        avatarCropModal.addEventListener('click', (e) => {
-            if (e.target === avatarCropModal) closeAvatarCropModal();
-        });
+        bindBackdropSafeClose(avatarCropModal, closeAvatarCropModal);
     }
 
     const addProviderBtn = document.getElementById('btnAddProvider');
@@ -4264,20 +4662,12 @@ function initUI() {
 
     const textConfirmModal = document.getElementById('adminTextConfirmModal');
     if (textConfirmModal) {
-        textConfirmModal.addEventListener('click', (e) => {
-            if (e.target === textConfirmModal) {
-                closeAdminTextConfirmModal();
-            }
-        });
+        bindBackdropSafeClose(textConfirmModal, closeAdminTextConfirmModal);
     }
 
     const configModal = document.getElementById('adminConfigModal');
     if (configModal) {
-        configModal.addEventListener('click', (e) => {
-            if (e.target === configModal) {
-                closeAdminConfigModal();
-            }
-        });
+        bindBackdropSafeClose(configModal, closeAdminConfigModal);
     }
     const configSaveBtn = document.getElementById('adminConfigSaveBtn');
     if (configSaveBtn) {
@@ -4292,6 +4682,105 @@ function safeTokenInt(v) {
     const n = Number(v || 0);
     if (!Number.isFinite(n)) return 0;
     return Math.max(0, Math.floor(n));
+}
+
+function normalizeContextWindow(v) {
+    const n = safeTokenInt(v);
+    if (n < 1024) return 0;
+    return Math.min(4000000, n);
+}
+
+function inferContextWindowByModelName(meta = {}) {
+    const merged = `${String(meta.id || '')} ${String(meta.name || '')}`.toLowerCase();
+    const kMatch = merged.match(/(?:^|[^0-9])(\d{2,4})k(?:[^0-9]|$)/);
+    if (kMatch && kMatch[1]) {
+        const k = safeTokenInt(kMatch[1]);
+        if (k >= 16) return k * 1000;
+    }
+    return TOKEN_BUDGET_DEFAULT_LIMIT;
+}
+
+function resolveContextWindowForModel(modelId) {
+    const meta = getModelMeta(modelId) || {};
+    const explicit = normalizeContextWindow(
+        meta.contextWindow != null ? meta.contextWindow
+            : (meta.context_window != null ? meta.context_window : 0)
+    );
+    if (explicit > 0) {
+        return { limit: explicit, estimated: false };
+    }
+    return { limit: inferContextWindowByModelName(meta), estimated: true };
+}
+
+function renderTokenBudgetUi() {
+    const ring = els.tokenBudgetRing || document.getElementById('tokenBudgetRing');
+    const usage = els.tokenBudgetUsage || document.getElementById('tokenBudgetUsage');
+    const mini = els.tokenBudgetMini || document.getElementById('tokenBudgetMini');
+    if (!ring || !usage || !mini) return;
+
+    const limit = Math.max(1, normalizeContextWindow(tokenBudgetState.contextWindow) || TOKEN_BUDGET_DEFAULT_LIMIT);
+    const used = safeTokenInt(tokenBudgetState.roundInput);
+    const ratioRaw = used / limit;
+    const ratio = Math.max(0, Math.min(1, ratioRaw));
+    const angle = Math.round(ratio * 360);
+
+    let color = '#22c55e';
+    if (ratioRaw >= 0.8) color = '#ef4444';
+    else if (ratioRaw >= 0.6) color = '#f59e0b';
+
+    mini.style.setProperty('--tb-color', color);
+    mini.style.setProperty('--tb-angle', `${angle}deg`);
+    usage.style.color = color;
+
+    const remain = Math.max(0, limit - used);
+    const prefix = tokenBudgetState.estimated ? '~' : '';
+    usage.textContent = `CTX ${prefix}${used.toLocaleString()}/${limit.toLocaleString()}`;
+    mini.title = `上下文窗口已用 ${Math.round(ratioRaw * 100)}% · 剩余 ${remain.toLocaleString()} tokens${tokenBudgetState.estimated ? '（估算上限）' : ''}`;
+}
+
+function updateTokenBudgetContextFromSelectedModel() {
+    const ctx = resolveContextWindowForModel(selectedModelId);
+    tokenBudgetState.contextWindow = ctx.limit;
+    tokenBudgetState.estimated = !!ctx.estimated;
+    renderTokenBudgetUi();
+}
+
+function updateTokenBudgetRoundInput(inputTokens) {
+    const n = safeTokenInt(inputTokens);
+    if (n <= 0) return;
+    if (n > tokenBudgetState.roundInput) {
+        tokenBudgetState.roundInput = n;
+        renderTokenBudgetUi();
+    }
+}
+
+function estimateTokenBudgetUsedFromConversationMessages(messages) {
+    const arr = Array.isArray(messages) ? messages : [];
+    if (!arr.length) return 0;
+    const assistantIo = [];
+    arr.forEach((msg) => {
+        if (!msg || typeof msg !== 'object') return;
+        if (String(msg.role || '').trim() !== 'assistant') return;
+        const md = (msg.metadata && typeof msg.metadata === 'object') ? msg.metadata : {};
+        const io = (md.io_tokens && typeof md.io_tokens === 'object') ? md.io_tokens : {};
+        const inTok = safeTokenInt(io.input);
+        const outTok = safeTokenInt(io.output);
+        if (inTok <= 0 && outTok <= 0) return;
+        assistantIo.push({ inTok, outTok });
+    });
+    if (!assistantIo.length) return 0;
+    const lastInput = safeTokenInt(assistantIo[assistantIo.length - 1].inTok);
+    let historyOutput = 0;
+    for (let i = 0; i < assistantIo.length - 1; i += 1) {
+        historyOutput += safeTokenInt(assistantIo[i].outTok);
+    }
+    return safeTokenInt(lastInput + historyOutput);
+}
+
+function applyTokenBudgetFromConversationMessages(messages) {
+    const est = estimateTokenBudgetUsedFromConversationMessages(messages);
+    tokenBudgetState.roundInput = est;
+    renderTokenBudgetUi();
 }
 
 function buildModelBadgeText(modelName, searchFlag, inputTokens, outputTokens) {
@@ -4346,11 +4835,15 @@ function applyUsageChunkToBadgeState(usageState, chunk) {
         usageState.snapshotInitialized = true;
         return;
     }
-    if (inTokens >= usageState.snapshotInput && outTokens >= usageState.snapshotOutput) {
+    // 输入与输出快照独立处理，避免某一项回退导致另一项被错误整段重加。
+    if (inTokens >= usageState.snapshotInput) {
         usageState.input += (inTokens - usageState.snapshotInput);
-        usageState.output += (outTokens - usageState.snapshotOutput);
     } else {
         usageState.input += inTokens;
+    }
+    if (outTokens >= usageState.snapshotOutput) {
+        usageState.output += (outTokens - usageState.snapshotOutput);
+    } else {
         usageState.output += outTokens;
     }
     usageState.snapshotInput = inTokens;
@@ -4375,6 +4868,7 @@ function renderTokenMiniFromState() {
     const outputStream = Math.max(tokenMiniState.streamOutput, tokenMiniState.estimatedStreamOutput);
     const outputNow = tokenMiniState.baseOutput + outputStream;
     applyTokenMiniDisplay(inputNow, outputNow);
+    renderTokenBudgetUi();
 }
 
 function resetTokenMiniStreamPart() {
@@ -4390,6 +4884,7 @@ function beginTokenMiniStreaming() {
     tokenMiniState.streaming = true;
     tokenMiniState.conversationId = currentConversationId || null;
     resetTokenMiniStreamPart();
+    tokenBudgetState.roundInput = 0;
     renderTokenMiniFromState();
 }
 
@@ -4425,6 +4920,7 @@ function onTokenStreamUsageChunk(chunk) {
     if (!tokenMiniState.streaming) return;
     const inTokens = safeTokenInt(chunk && chunk.input_tokens);
     const outTokens = safeTokenInt(chunk && chunk.output_tokens);
+    updateTokenBudgetRoundInput(inTokens);
 
     if (!tokenMiniState.usageSnapshotInitialized) {
         tokenMiniState.streamInput += inTokens;
@@ -4436,14 +4932,15 @@ function onTokenStreamUsageChunk(chunk) {
         return;
     }
 
-    // 大多数 provider 在流式中上报的是“当前轮快照”，不是“增量”。
-    // 这里把快照转成增量，避免重复累计导致数值暴涨。
-    if (inTokens >= tokenMiniState.usageSnapshotInput && outTokens >= tokenMiniState.usageSnapshotOutput) {
+    // 输入与输出快照独立处理，避免 output 回退时把 input 也误当成整段增量。
+    if (inTokens >= tokenMiniState.usageSnapshotInput) {
         tokenMiniState.streamInput += (inTokens - tokenMiniState.usageSnapshotInput);
+    } else {
+        tokenMiniState.streamInput += inTokens;
+    }
+    if (outTokens >= tokenMiniState.usageSnapshotOutput) {
         tokenMiniState.streamOutput += (outTokens - tokenMiniState.usageSnapshotOutput);
     } else {
-        // 快照回退通常表示进入了新的一轮（如工具调用后的下一轮）
-        tokenMiniState.streamInput += inTokens;
         tokenMiniState.streamOutput += outTokens;
     }
 
@@ -4462,6 +4959,7 @@ async function refreshTokenMiniForConversation(conversationId, options = {}) {
     if (!cid) {
         tokenMiniState.baseInput = 0;
         tokenMiniState.baseOutput = 0;
+        if (!keepStreamPart) tokenBudgetState.roundInput = 0;
         renderTokenMiniFromState();
         return;
     }
@@ -4539,6 +5037,7 @@ async function loadConversations() {
 // 说明
         // Let's assume list for now or adapt.
         const list = Array.isArray(data) ? data : (data.conversations || []);
+        conversationListCache = Array.isArray(list) ? [...list] : [];
         renderConversationList(list);
     } catch (e) {
         console.error("Failed to load conversations", e);
@@ -4548,19 +5047,36 @@ async function loadConversations() {
 function renderConversationList(conversations) {
     if(!els.conversationList) return;
     els.conversationList.innerHTML = '';
-    
-// 说明
-    // Assuming backend returns sorted or we just list them.
-    
-    conversations.forEach(c => {
+
+    const toUpdatedTs = (raw) => {
+        const t = Date.parse(String(raw || ''));
+        return Number.isFinite(t) ? t : 0;
+    };
+    const orderedConversations = Array.isArray(conversations) ? [...conversations] : [];
+    orderedConversations.sort((a, b) => {
+        const aPin = !!(a && a.pin);
+        const bPin = !!(b && b.pin);
+        if (aPin !== bPin) return aPin ? -1 : 1;
+        return toUpdatedTs((b && b.updated_at) || '') - toUpdatedTs((a && a.updated_at) || '');
+    });
+
+    orderedConversations.forEach(c => {
         const div = document.createElement('div');
         const cid = c.conversation_id || c.id; // Handle both
         div.className = `conversation-item ${cid === currentConversationId ? 'active' : ''}`;
         div.dataset.conversationId = String(cid || '');
+        const isPinned = !!(c && c.pin);
+        div.dataset.pin = isPinned ? '1' : '0';
         
         const titleSpan = document.createElement('span');
         titleSpan.className = 'title'; // Add class for CSS styling
-        titleSpan.textContent = c.title || c.preview || `Conversation ${cid}`;
+        if (isPinned) {
+            const pinIcon = document.createElement('i');
+            pinIcon.className = 'fa-solid fa-thumbtack conversation-pin-icon';
+            pinIcon.setAttribute('aria-hidden', 'true');
+            titleSpan.appendChild(pinIcon);
+        }
+        titleSpan.appendChild(document.createTextNode(c.title || c.preview || `Conversation ${cid}`));
         div.appendChild(titleSpan);
         
         div.onclick = () => {
@@ -4570,6 +5086,15 @@ function renderConversationList(conversations) {
             }
             loadConversation(cid);
         };
+        div.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            showPinContextMenu(e.clientX, e.clientY, {
+                targetType: 'conversation',
+                conversationId: String(cid || ''),
+                pinned: isPinned
+            });
+        });
         
         // Delete button
         const delBtn = document.createElement('button');
@@ -4605,7 +5130,9 @@ async function createNewConversation(silent = false) {
         tokenMiniState.baseInput = 0;
         tokenMiniState.baseOutput = 0;
         resetTokenMiniStreamPart();
+        tokenBudgetState.roundInput = 0;
         applyTokenMiniDisplay(0, 0);
+        renderTokenBudgetUi();
         if(window.history.pushState) window.history.pushState({}, '', '/chat');
         
         // Refresh list to remove active state
@@ -4633,6 +5160,7 @@ async function loadConversation(id) {
     tokenMiniState.baseInput = 0;
     tokenMiniState.baseOutput = 0;
     resetTokenMiniStreamPart();
+    tokenBudgetState.roundInput = 0;
     renderTokenMiniFromState();
     
     // Update URL
@@ -4647,6 +5175,7 @@ async function loadConversation(id) {
             refreshConversationImageHistoryFlag(data.conversation.messages || []);
             // Render
             renderMessages(data.conversation.messages, false, { instant: true });
+            applyTokenBudgetFromConversationMessages(data.conversation.messages || []);
             if(els.conversationTitle) els.conversationTitle.textContent = data.conversation.title || "Conversation " + id;
             await refreshTokenMiniForConversation(id);
         } else {
@@ -5084,18 +5613,18 @@ async function sendMessage() {
                                thinkingBlock = document.createElement('div');
                                thinkingBlock.className = 'thinking-block reasoning-thinking-block'; // 流式输出时默认展
 // 说明
-                               thinkingBlock.innerHTML = `
-                                <div class="thinking-header">
-                                    <svg class="thinking-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                        <circle cx="12" cy="12" r="10"></circle>
-                                        <path d="M12 6v6l4 2"></path>
-                                    </svg>
-// 说明
-                                    <svg class="chevron-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                        <polyline points="6 9 12 15 18 9"></polyline>
-                                    </svg>
-                                </div>
-                                <div class="thinking-content"></div>
+                                thinkingBlock.innerHTML = `
+                                 <div class="thinking-header">
+                                     <svg class="thinking-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                         <circle cx="12" cy="12" r="10"></circle>
+                                         <path d="M12 6v6l4 2"></path>
+                                     </svg>
+                                     <span class="thinking-title">思考</span>
+                                     <svg class="chevron-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                         <polyline points="6 9 12 15 18 9"></polyline>
+                                     </svg>
+                                 </div>
+                                 <div class="thinking-content"></div>
                                `;
                                
 // 说明
@@ -6087,9 +6616,13 @@ function appendMessage(msg, index) {
 
     } else {
         // AI Message
-        
-        // Render reasoning_content (thinking process) if exists
-        if (msg.metadata && msg.metadata.reasoning_content) {
+        const processSteps = (msg.metadata && Array.isArray(msg.metadata.process_steps))
+            ? msg.metadata.process_steps
+            : [];
+        const hasReasoningStep = processSteps.some((s) => s && s.type === 'reasoning_content');
+
+        // 兼容老数据：仅 metadata.reasoning_content（无分段 step）
+        if (msg.metadata && msg.metadata.reasoning_content && !hasReasoningStep) {
             const thinkingBlock = document.createElement('div');
             thinkingBlock.className = 'thinking-block reasoning-thinking-block collapsed'; // 默۵
             thinkingBlock.innerHTML = `
@@ -6098,7 +6631,7 @@ function appendMessage(msg, index) {
                         <circle cx="12" cy="12" r="10"></circle>
                         <path d="M12 6v6l4 2"></path>
                     </svg>
-// 说明
+                    <span class="thinking-title">思考</span>
                     <svg class="chevron-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <polyline points="6 9 12 15 18 9"></polyline>
                     </svg>
@@ -6118,10 +6651,34 @@ function appendMessage(msg, index) {
             content.appendChild(thinkingBlock);
         }
         
-// 说明
-        if (msg.metadata && msg.metadata.process_steps) {
-            msg.metadata.process_steps.forEach(step => {
-                if (step.type === 'web_search') {
+        if (processSteps.length > 0) {
+            processSteps.forEach(step => {
+                if (step.type === 'reasoning_content') {
+                    const thinkingBlock = document.createElement('div');
+                    thinkingBlock.className = 'thinking-block reasoning-thinking-block collapsed';
+                    thinkingBlock.innerHTML = `
+                        <div class="thinking-header">
+                            <svg class="thinking-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="12" cy="12" r="10"></circle>
+                                <path d="M12 6v6l4 2"></path>
+                            </svg>
+                            <span class="thinking-title">思考</span>
+                            <svg class="chevron-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polyline points="6 9 12 15 18 9"></polyline>
+                            </svg>
+                        </div>
+                        <div class="thinking-content"></div>
+                    `;
+                    const header = thinkingBlock.querySelector('.thinking-header');
+                    header.addEventListener('click', function() {
+                        thinkingBlock.classList.toggle('collapsed');
+                    });
+                    const thinkingContent = thinkingBlock.querySelector('.thinking-content');
+                    thinkingContent.textContent = String(step.content || '');
+                    renderMathSafe(thinkingContent);
+                    content.appendChild(thinkingBlock);
+                }
+                else if (step.type === 'web_search') {
                     updateWebSearchStatus(div, step.status || step.content, step.query, step.content, true);
                 }
                 else if (step.type === 'search_meta') {
@@ -6163,8 +6720,7 @@ function appendMessage(msg, index) {
         
         // Render main content (if not already handled by steps)
         // Note: For newer messages, content is often duplicated in steps as 'content' type
-        const hasContentStep = msg.metadata && msg.metadata.process_steps && 
-                               msg.metadata.process_steps.some(s => s.type === 'content');
+        const hasContentStep = processSteps.some((s) => s && s.type === 'content');
                                
         if(msg.content && !hasContentStep) {
             const body = document.createElement('div');
@@ -6523,7 +7079,7 @@ function updateMessageDivThinking(index, delta) {
                     <circle cx="12" cy="12" r="10"></circle>
                     <path d="M12 6v6l4 2"></path>
                 </svg>
-// 说明
+                <span class="thinking-title">思考</span>
                 <svg class="chevron-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <polyline points="6 9 12 15 18 9"></polyline>
                 </svg>
@@ -6603,26 +7159,15 @@ window.showConfirm = function(title, message, type, onOk, onCancel) {
         newOkBtn.className = "btn-confirm";
     }
     backdrop.__confirmOnCancel = (typeof onCancel === 'function') ? onCancel : null;
-    if (typeof backdrop.__confirmOutsideHandler === 'function') {
-        backdrop.removeEventListener('click', backdrop.__confirmOutsideHandler);
-    }
-    backdrop.__confirmOutsideHandler = (ev) => {
-        if (ev.target === backdrop) {
-            window.closeConfirmModal();
-        }
-    };
-    backdrop.addEventListener('click', backdrop.__confirmOutsideHandler);
+    bindBackdropSafeClose(backdrop, () => window.closeConfirmModal());
     
     backdrop.classList.add('active');
     
-    newOkBtn.addEventListener('click', () => {
+    newOkBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
         backdrop.classList.remove('active');
         const done = typeof onOk === 'function' ? onOk : null;
         backdrop.__confirmOnCancel = null;
-        if (typeof backdrop.__confirmOutsideHandler === 'function') {
-            backdrop.removeEventListener('click', backdrop.__confirmOutsideHandler);
-            backdrop.__confirmOutsideHandler = null;
-        }
         if (done) done();
     });
 };
@@ -6631,10 +7176,6 @@ window.closeConfirmModal = function() {
     const backdrop = document.getElementById('confirmBackdrop');
     if (!backdrop) return;
     backdrop.classList.remove('active');
-    if (typeof backdrop.__confirmOutsideHandler === 'function') {
-        backdrop.removeEventListener('click', backdrop.__confirmOutsideHandler);
-        backdrop.__confirmOutsideHandler = null;
-    }
     const onCancel = backdrop.__confirmOnCancel;
     backdrop.__confirmOnCancel = null;
     if (typeof onCancel === 'function') onCancel();
@@ -6687,8 +7228,11 @@ async function loadKnowledge(cid) {
         knowledgeMetaCache = (metaData && metaData.basis_knowledge) ? metaData.basis_knowledge : {};
 
         if (basisData.success) {
-            renderKnowledgeList(els.panelBasisList, basisData.knowledge || [], 'basis');
-            if(els.panelBasisCount) els.panelBasisCount.textContent = (basisData.knowledge || []).length;
+            basisKnowledgeListCache = Array.isArray(basisData.knowledge) ? [...basisData.knowledge] : [];
+            renderKnowledgeList(els.panelBasisList, basisKnowledgeListCache, 'basis');
+            if(els.panelBasisCount) els.panelBasisCount.textContent = basisKnowledgeListCache.length;
+        } else {
+            basisKnowledgeListCache = [];
         }
         if (shortData.success) {
             renderKnowledgeList(els.panelShortList, shortData.memories || [], 'short');
@@ -6759,15 +7303,41 @@ async function attachKnowledgeToComposer(title, type = 'basis', shortContent = '
 function renderKnowledgeList(container, items, type) {
     if(!container) return;
     container.innerHTML = '';
-    const orderedItems = Array.isArray(items) ? [...items].reverse() : [];
+
+    const sourceItems = Array.isArray(items) ? items : [];
+    const orderedItems = sourceItems
+        .map((item, index) => ({ item, index }))
+        .sort((a, b) => {
+            if (type === 'basis') {
+                const aTitle = String(typeof a.item === 'string' ? a.item : (a.item && a.item.title) || '').trim();
+                const bTitle = String(typeof b.item === 'string' ? b.item : (b.item && b.item.title) || '').trim();
+                const aMeta = (knowledgeMetaCache && aTitle) ? (knowledgeMetaCache[aTitle] || {}) : {};
+                const bMeta = (knowledgeMetaCache && bTitle) ? (knowledgeMetaCache[bTitle] || {}) : {};
+                const aHasPin = !!(a.item && typeof a.item === 'object' && Object.prototype.hasOwnProperty.call(a.item, 'pin'));
+                const bHasPin = !!(b.item && typeof b.item === 'object' && Object.prototype.hasOwnProperty.call(b.item, 'pin'));
+                const aPinned = aHasPin ? !!a.item.pin : !!aMeta.pin;
+                const bPinned = bHasPin ? !!b.item.pin : !!bMeta.pin;
+                if (aPinned !== bPinned) return aPinned ? -1 : 1;
+            }
+            // 保持历史行为：默认按最近在前（reverse）
+            return b.index - a.index;
+        })
+        .map((x) => x.item);
+
     orderedItems.forEach((item) => {
         const rawTitle = String(typeof item === 'string' ? item : (item && item.title) || '').trim();
         if (!rawTitle) return;
         const shortContent = String((item && item.content) || rawTitle).trim();
+        const itemMeta = knowledgeMetaCache[rawTitle] || {};
+        const hasPinField = !!(item && typeof item === 'object' && Object.prototype.hasOwnProperty.call(item, 'pin'));
+        const isPinned = type === 'basis' ? (hasPinField ? !!item.pin : !!itemMeta.pin) : false;
 
         const div = document.createElement('div');
         div.className = `knowledge-item ${type === 'short' ? 'knowledge-item-short' : 'knowledge-item-basis'}`;
         div.dataset.title = type === 'short' ? shortContent : rawTitle;
+        if (type === 'basis') {
+            div.dataset.pin = isPinned ? '1' : '0';
+        }
         if (type === 'short') {
             div.dataset.shortOriginal = shortContent;
         }
@@ -6777,7 +7347,13 @@ function renderKnowledgeList(container, items, type) {
 
         const label = document.createElement('span');
         label.className = 'knowledge-item-label';
-        label.textContent = type === 'short' ? shortContent : rawTitle;
+        if (type === 'basis' && isPinned) {
+            const pinIcon = document.createElement('i');
+            pinIcon.className = 'fa-solid fa-thumbtack knowledge-pin-icon';
+            pinIcon.setAttribute('aria-hidden', 'true');
+            label.appendChild(pinIcon);
+        }
+        label.appendChild(document.createTextNode(type === 'short' ? shortContent : rawTitle));
         row.appendChild(label);
 
         const actions = document.createElement('div');
@@ -6787,9 +7363,6 @@ function renderKnowledgeList(container, items, type) {
             const progress = document.createElement('div');
             progress.className = 'knowledge-progress';
             div.appendChild(progress);
-            const spinner = document.createElement('div');
-            spinner.className = 'vector-spinner';
-            div.appendChild(spinner);
 
             const meta = knowledgeMetaCache[rawTitle] || {};
             const updatedAt = Number(meta.updated_at || 0);
@@ -6797,19 +7370,37 @@ function renderKnowledgeList(container, items, type) {
             const vectorExists = (typeof meta.vector_exists === 'boolean') ? meta.vector_exists : true;
             const needVectorRefresh = (updatedAt > 0 && vectorUpdatedAt < updatedAt) || !vectorExists;
             if (needVectorRefresh) {
-                div.classList.add('vector-pending');
+                div.classList.add('needs-vector');
                 const vectorBtn = document.createElement('button');
                 vectorBtn.type = 'button';
                 vectorBtn.className = 'knowledge-item-btn vectorize';
+                vectorBtn.dataset.role = 'vectorize';
                 vectorBtn.title = !vectorExists ? '向量缺失，点击重新向量化' : '需要重新向量化';
                 vectorBtn.innerHTML = '<i class="fa-solid fa-rotate"></i>';
-                    vectorBtn.addEventListener('click', (e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        vectorizeKnowledgeTitle(rawTitle);
-                    });
-                    actions.appendChild(vectorBtn);
+                vectorBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (vectorBtn.classList.contains('is-loading')) return;
+                    vectorizeKnowledgeTitle(rawTitle);
+                });
+                actions.appendChild(vectorBtn);
+                if (vectorizeTasks[rawTitle] && vectorizeTasks[rawTitle].running) {
+                    vectorBtn.classList.add('is-loading');
+                    vectorBtn.innerHTML = '<i class="fa-solid fa-spinner"></i>';
+                    vectorBtn.title = '向量化中...';
+                    vectorBtn.disabled = true;
+                    div.classList.add('vector-uploading');
                 }
+            }
+            row.addEventListener('contextmenu', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                showPinContextMenu(ev.clientX, ev.clientY, {
+                    targetType: 'knowledge_basis',
+                    title: rawTitle,
+                    pinned: isPinned
+                });
+            });
             row.addEventListener('click', () => viewKnowledge(rawTitle));
         } else {
             const editBtn = document.createElement('button');
@@ -6970,6 +7561,7 @@ async function deleteKnowledge(title, type = 'basis') {
         const data = await response.json();
         if(!data.success) {
             console.error('删除失败:', data.message);
+            showToast((data && (data.error || data.message)) ? (data.error || data.message) : '删除失败');
             return;
         }
         
@@ -6980,8 +7572,10 @@ async function deleteKnowledge(title, type = 'basis') {
         
         // 刷新知识库列表
         loadKnowledge(currentConversationId);
+        showToast('删除成功');
     } catch(e) {
         console.error('删除知识点失败:', e);
+        showToast('删除失败');
     }
 }
 
@@ -7065,16 +7659,13 @@ function rebindHeaderActionButtons() {
     const toggleSidebar = els.toggleSidebar;
     if (toggleSidebar) {
         toggleSidebar.onclick = () => {
-            if (isChatMobileLayout()) els.sidebar.classList.toggle('mobile-open');
+            if (isChatMobileLayout()) toggleMobileSidebar();
             else els.sidebar.classList.toggle('collapsed');
         };
     }
     const toggleKP = els.toggleKnowledgePanel;
     if (toggleKP) {
-        toggleKP.onclick = () => {
-            if (els.filePanel) els.filePanel.classList.remove('visible');
-            if (els.knowledgePanel) els.knowledgePanel.classList.toggle('visible');
-        };
+        toggleKP.onclick = () => toggleKnowledgePanel();
     }
     const toggleFile = els.toggleFilePanel;
     if (toggleFile) {
@@ -7086,7 +7677,14 @@ function rebindHeaderActionButtons() {
     }
     const toggleNotes = els.toggleNotesPanel;
     if (toggleNotes) {
-        toggleNotes.onclick = () => toggleNotesPanel();
+        toggleNotes.onclick = async () => {
+            if (canOpenNotesCompanionWindow()) {
+                const ok = await openNotesCompanionWindow();
+                if (!ok) showToast('打开独立笔记窗口失败');
+                return;
+            }
+            toggleNotesPanel();
+        };
         renderNotesBadge();
     }
     const toggleMail = els.toggleMailView;
@@ -7491,7 +8089,7 @@ function closeKnowledgeView() {
 }
 
 window.openMailPlaceholderView = function() {
-    if (els.knowledgePanel) els.knowledgePanel.classList.remove('visible');
+    closeKnowledgePanel();
     closeCloudFilePanel();
     const viewer = document.getElementById('knowledgeViewer');
     const msgs = document.getElementById('messagesContainer');
@@ -7693,7 +8291,7 @@ window.openWorkflowDesigner = function(workflowId, workflowTitle = '', workflowS
 };
 
 window.openWorkflowPlaceholderView = function() {
-    if (els.knowledgePanel) els.knowledgePanel.classList.remove('visible');
+    closeKnowledgePanel();
     closeCloudFilePanel();
 
     const viewer = document.getElementById('knowledgeViewer');
@@ -9087,14 +9685,11 @@ function closeKnowledgeSearchResultView() {
         
         const toggleSidebar = document.getElementById('toggleSidebar');
         if(toggleSidebar) toggleSidebar.onclick = () => {
-            if (isChatMobileLayout()) els.sidebar.classList.toggle('mobile-open');
+            if (isChatMobileLayout()) toggleMobileSidebar();
             else els.sidebar.classList.toggle('collapsed');
         };
         const toggleKP = document.getElementById('toggleKnowledgePanel');
-        if(toggleKP) toggleKP.onclick = () => {
-            if (els.filePanel) els.filePanel.classList.remove('visible');
-            if (els.knowledgePanel) els.knowledgePanel.classList.toggle('visible');
-        };
+        if (toggleKP) toggleKP.onclick = () => toggleKnowledgePanel();
         const toggleFile = document.getElementById('toggleFilePanel');
         if(toggleFile) toggleFile.onclick = () => toggleCloudFilePanel();
         const toggleMail = document.getElementById('toggleMailView');
@@ -9396,10 +9991,17 @@ async function loadModels() {
                 modelMetaById.set(String(m.id), {
                     id: String(m.id),
                     name: String(m.name || m.id),
-                    provider: String(m.provider || '')
+                    provider: String(m.provider || ''),
+                    contextWindow: normalizeContextWindow(
+                        m.context_window != null ? m.context_window
+                            : (m.context_length != null ? m.context_length
+                                : (m.max_context_tokens != null ? m.max_context_tokens
+                                    : (m.max_input_tokens != null ? m.max_input_tokens : 0)))
+                    )
                 });
             });
             renderCustomModelSelect(modelCatalog, data.default_model);
+            updateTokenBudgetContextFromSelectedModel();
         }
     } catch(e) { console.error("Error loading models", e); }
 }
@@ -9663,6 +10265,7 @@ async function selectModel(id, name) {
     els.modelOptions.classList.add('select-hide');
     els.currentModelDisplay.classList.remove('select-arrow-active');
     undockModelOptionsForMobile();
+    updateTokenBudgetContextFromSelectedModel();
     await warnIfModelCannotUseHistoryImages(id);
 }
 
@@ -11304,6 +11907,7 @@ async function saveAdminConfigModal() {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
+                    original_model_id: (adminConfigState.originalKey || '').trim(),
                     model_id: modelId,
                     name: modelName || modelId,
                     provider,
@@ -12178,7 +12782,6 @@ async function bulkVectorizeAllBasis() {
             bulkVectorizeRunning = false;
             return;
         }
-        titles.forEach(t => setKnowledgeItemVectorState(t, 'pending'));
         for (const title of titles) {
             const meta = basisMeta[title] || {};
             const updatedAt = Number(meta.updated_at || 0);
@@ -12201,7 +12804,6 @@ async function bulkVectorizeAllBasis() {
     } catch (e) {
         showToast('批量向量化失败: ' + e.message);
     } finally {
-        titles.forEach(t => setKnowledgeItemVectorState(t, null));
         bulkVectorizeRunning = false;
         loadKnowledge(currentConversationId);
     }
@@ -12243,8 +12845,9 @@ async function vectorizeKnowledgeTitle(title, options = {}) {
             const safeTitle = escapeCssSelector(title);
             const item = list.querySelector(`.knowledge-item[data-title="${safeTitle}"]`);
             if (item) {
-                const icon = item.querySelector('.fa-rotate');
-                if (icon) icon.remove();
+                item.classList.remove('needs-vector');
+                const vectorBtn = item.querySelector('.knowledge-item-btn.vectorize');
+                if (vectorBtn) vectorBtn.remove();
             }
         }
         setKnowledgeItemProgress(title, 100, false, 'vectorizing');
@@ -12355,6 +12958,22 @@ async function deleteVectorChunk(vectorId, title) {
     }
 }
 
+function setKnowledgeItemVectorButtonState(item, mode = 'idle') {
+    if (!item) return;
+    const btn = item.querySelector('.knowledge-item-btn.vectorize');
+    if (!btn) return;
+    const isLoading = mode === 'loading';
+    btn.classList.toggle('is-loading', isLoading);
+    btn.disabled = isLoading;
+    if (isLoading) {
+        btn.title = '向量化中...';
+        btn.innerHTML = '<i class="fa-solid fa-spinner"></i>';
+    } else {
+        btn.title = '需要重新向量化';
+        btn.innerHTML = '<i class="fa-solid fa-rotate"></i>';
+    }
+}
+
 function setKnowledgeItemVectorState(title, state) {
     const container = els.panelBasisList;
     if (!container) return;
@@ -12362,8 +12981,18 @@ function setKnowledgeItemVectorState(title, state) {
     const item = container.querySelector(`.knowledge-item[data-title="${safeTitle}"]`);
     if (!item) return;
     item.classList.remove('vector-pending', 'vector-uploading');
-    if (state === 'pending') item.classList.add('vector-pending');
-    if (state === 'uploading') item.classList.add('vector-uploading');
+    if (state === 'pending') {
+        item.classList.add('vector-pending');
+        setKnowledgeItemVectorButtonState(item, 'idle');
+        return;
+    }
+    if (state === 'uploading') {
+        item.classList.add('vector-uploading');
+        item.classList.add('needs-vector');
+        setKnowledgeItemVectorButtonState(item, 'loading');
+        return;
+    }
+    setKnowledgeItemVectorButtonState(item, 'idle');
 }
 
 // 设置模态框相关函数

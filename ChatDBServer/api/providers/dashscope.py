@@ -47,11 +47,43 @@ class DashScopeProvider(ProviderInterface):
             yield from self._iter_openai_chat_stream_events(chunks)
             return
 
+        def _obj_get(obj: Any, key: str, default: str = "") -> str:
+            if obj is None:
+                return default
+            try:
+                if isinstance(obj, dict):
+                    return str(obj.get(key, default) or default)
+                extra = getattr(obj, "model_extra", None)
+                if isinstance(extra, dict) and key in extra:
+                    return str(extra.get(key, default) or default)
+            except Exception:
+                pass
+            try:
+                return str(getattr(obj, key, default) or default)
+            except Exception:
+                return default
+
+        def _extract_response_id(chunk_obj: Any, response_obj: Any) -> str:
+            candidates = [
+                _obj_get(response_obj, "id", ""),
+                _obj_get(chunk_obj, "response_id", ""),
+                _obj_get(chunk_obj, "id", ""),
+            ]
+            for c in candidates:
+                rid = str(c or "").strip()
+                if rid.startswith("resp_"):
+                    return rid
+            for c in candidates:
+                rid = str(c or "").strip()
+                if rid:
+                    return rid
+            return ""
+
         has_emitted_content_delta = False
         has_received_detail_reasoning = False
         for chunk in chunks:
             response_obj = getattr(chunk, "response", None)
-            response_id = str(getattr(response_obj, "id", "") or "").strip()
+            response_id = _extract_response_id(chunk, response_obj)
             if response_id:
                 yield {"type": "response_id", "response_id": response_id}
 

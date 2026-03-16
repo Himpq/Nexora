@@ -4,18 +4,18 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ title }} - 协作编辑</title>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/11.1.1/marked.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
+    <link rel="stylesheet" href="/static/vendor/fonts/fonts.css">
+    <link rel="stylesheet" href="/static/vendor/fontawesome/css/all.min.css">
+    <link rel="stylesheet" href="/static/vendor/easymde/easymde.min.css">
+    <script src="/static/vendor/marked/marked.min.js"></script>
+    <script src="/static/vendor/easymde/easymde.min.js"></script>
     <style>
         :root {
             --bg: #fdfdfd; --surface: #ffffff; --text: #1e293b; 
             --text-muted: #64748b; --border: #e2e8f0; --primary: #3b82f6;
         }
         body { 
-            font-family: 'Inter', sans-serif; background: var(--bg); color: var(--text);
+            font-family: var(--nc-font-sans); background: var(--bg); color: var(--text);
             margin: 0; padding: 20px; display: flex; flex-direction: column; height: 100vh;
         }
         .header { margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center; }

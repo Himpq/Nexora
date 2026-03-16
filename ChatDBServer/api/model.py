@@ -1534,7 +1534,8 @@ class Model:
             return
 
         if self._runtime_selector_enabled:
-            self._runtime_selected_tool_names = {"selectTools"}
+            # 预选择阶段：仅暴露 selectTools（由 _runtime_function_tool_names_for_request 控制）。
+            self._runtime_selected_tool_names = set()
             self._runtime_selected_tool_ids = []
             self._runtime_tool_selector_hint = self._build_runtime_tool_selector_hint()
         else:
@@ -1564,7 +1565,6 @@ class Model:
 
     def _runtime_has_user_tool_selection(self) -> bool:
         selected_names = set(getattr(self, "_runtime_selected_tool_names", set()) or set())
-        selected_names.discard("selectTools")
         return len(selected_names) > 0
 
     def _runtime_function_tool_names_for_request(self) -> Set[str]:
@@ -1572,7 +1572,7 @@ class Model:
         运行时工具白名单（用于本轮请求下发）：
         - 未启用 selector：返回全部函数工具
         - 启用 selector 且尚未完成选择：仅下发 selectTools
-        - 启用 selector 且已选择：下发 selectTools + 已选工具
+        - 启用 selector 且已选择：仅下发已选工具（不再重复下发 selectTools）
         """
         if str(getattr(self, "_runtime_tool_mode", "auto")).strip().lower() == "off":
             return set()
@@ -1586,9 +1586,86 @@ class Model:
         """
         仅在“尚未完成 selectTools 选择”阶段注入目录提示，避免后续轮次持续消耗 token。
         """
-        if not bool(getattr(self, "_runtime_selector_enabled", False)):
-            return False
-        return not self._runtime_has_user_tool_selection()
+        # 已弃用：工具选择目录改为写入 selectTools 的工具描述中，避免向 system message 注入长协议文本。
+        return False
+
+    def _build_runtime_select_tools_catalog_suffix(self, max_items: int = 128) -> str:
+        catalog = list(getattr(self, "_runtime_tool_catalog", []) or [])
+        names: List[str] = []
+        for item in catalog:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "") or "").strip()
+            if not name or name == "selectTools":
+                continue
+            names.append(name)
+        if not names:
+            return "当前没有可选工具目录。"
+        cap = max(1, int(max_items or 24))
+        shown = names[:cap]
+        extra = max(0, len(names) - len(shown))
+        joined = ", ".join(shown)
+        if extra > 0:
+            return (
+                f"当前可选工具名: {joined} 等 {len(names)} 个。"
+                "请仅按工具名调用 selectTools。"
+            )
+        return (
+            f"当前可选工具名: {joined}。"
+            "请仅按工具名调用 selectTools。"
+        )
+
+    def _decorate_select_tools_description(
+        self,
+        tools_payload: List[Dict[str, Any]],
+        selected_function_names: Set[str]
+    ) -> List[Dict[str, Any]]:
+        payload = list(tools_payload or [])
+        selected = {str(x).strip() for x in (selected_function_names or set()) if str(x).strip()}
+        if "selectTools" not in selected:
+            return payload
+
+        suffix = self._build_runtime_select_tools_catalog_suffix()
+        if not suffix:
+            return payload
+
+        out: List[Dict[str, Any]] = []
+        for tool in payload:
+            if not isinstance(tool, dict):
+                out.append(tool)
+                continue
+            t = dict(tool)
+            t_type = str(t.get("type", "") or "").strip()
+            if t_type == "function" and isinstance(t.get("function"), dict):
+                f = dict(t.get("function") or {})
+                name = str(f.get("name", "") or "").strip()
+                if name == "selectTools":
+                    desc = str(f.get("description", "") or "").strip()
+                    marker = "当前可选工具名:"
+                    if marker in desc:
+                        desc = desc.split(marker, 1)[0].rstrip(" \n。")
+                    if desc:
+                        desc = f"{desc}\n{suffix}"
+                    else:
+                        desc = suffix
+                    f["description"] = desc
+                    t["function"] = f
+                    out.append(t)
+                    continue
+            # 兼容非标准 function 格式
+            name = str(t.get("name", "") or "").strip()
+            if t_type == "function" and name == "selectTools":
+                desc = str(t.get("description", "") or "").strip()
+                marker = "当前可选工具名:"
+                if marker in desc:
+                    desc = desc.split(marker, 1)[0].rstrip(" \n。")
+                if desc:
+                    desc = f"{desc}\n{suffix}"
+                else:
+                    desc = suffix
+                t["description"] = desc
+            out.append(t)
+        return out
 
     def _is_runtime_function_call_allowed(self, function_name: str) -> bool:
         """
@@ -1605,6 +1682,9 @@ class Model:
             if selected:
                 return fn in selected
             return True
+        if fn == "selectTools":
+            # selector 模式下，selectTools 仅在预选择阶段可调用一次。
+            return not self._runtime_has_user_tool_selection()
         allowed = self._runtime_function_tool_names_for_request()
         return fn in allowed
 
@@ -1677,7 +1757,6 @@ class Model:
                 pass
 
         next_selected_set = set(selected_names)
-        next_selected_set.add("selectTools")
         changed = next_selected_set != set(self._runtime_selected_tool_names or set())
         self._runtime_selected_tool_names = next_selected_set
         self._runtime_selected_tool_ids = list(selected_ids)
@@ -1686,9 +1765,9 @@ class Model:
 
         return {
             "success": True,
-            "message": "工具选择已更新，将在下一轮生效",
+            "message": "工具选择已更新，当前回复后续轮次已生效",
             "selected_tool_names": selected_names,
-            "always_enabled": ["selectTools"],
+            "always_enabled": [],
             "invalid_tool_names": invalid_names,
         }
 
@@ -1734,7 +1813,14 @@ class Model:
         try:
             if not self._is_runtime_function_call_allowed(function_name):
                 allowed_names = sorted(list(self._runtime_function_tool_names_for_request()))
-                msg = prompts.build_runtime_tool_not_enabled_message(function_name, allowed_names)
+                if "selectTools" in allowed_names:
+                    msg = prompts.build_runtime_tool_not_enabled_message(function_name, allowed_names)
+                else:
+                    allowed_text = ", ".join(allowed_names) if allowed_names else "(none)"
+                    msg = (
+                        f"错误：工具 '{str(function_name or '').strip() or 'unknown'}' 当前未启用。"
+                        f"当前允许工具: {allowed_text}。"
+                    )
                 self._log_tool_usage(function_name, args, msg, False, start_ts)
                 return msg
 
@@ -2090,6 +2176,130 @@ class Model:
             # 确保对话已创建
             if not self.conversation_id:
                 self.conversation_id = self.conversation_manager.create_conversation()
+
+            def _safe_int_local(v, default=0):
+                try:
+                    if v is None:
+                        return default
+                    if isinstance(v, bool):
+                        return int(v)
+                    if isinstance(v, (int, float)):
+                        return int(v)
+                    s = str(v).strip()
+                    if not s:
+                        return default
+                    if s.isdigit() or (s.startswith('-') and s[1:].isdigit()):
+                        return int(s)
+                    return int(float(s))
+                except Exception:
+                    return default
+
+            def _usage_get(obj, key, default=0):
+                if isinstance(obj, dict):
+                    return obj.get(key, default)
+                # pydantic/openai typed objects may keep provider extra fields in model_extra
+                try:
+                    extra = getattr(obj, "model_extra", None)
+                    if isinstance(extra, dict) and key in extra:
+                        return extra.get(key, default)
+                except Exception:
+                    pass
+                # some typed objects only expose fields after dump
+                try:
+                    dump_fn = getattr(obj, "model_dump", None)
+                    if callable(dump_fn):
+                        dumped = dump_fn(mode="python")
+                        if isinstance(dumped, dict) and key in dumped:
+                            return dumped.get(key, default)
+                except Exception:
+                    pass
+                return getattr(obj, key, default)
+
+            def _extract_cached_tokens_from_details(details_obj):
+                d = details_obj if details_obj is not None else {}
+                candidate_keys = (
+                    "cached_tokens",
+                    "cache_read_input_tokens",
+                    "cache_read_tokens",
+                    "cached_input_tokens",
+                    "cache_tokens",
+                    "cache_read",
+                    "input_cached_tokens",
+                )
+                for k in candidate_keys:
+                    v = _safe_int_local(_usage_get(d, k, None), -1)
+                    if v >= 0:
+                        return v
+
+                # 兜底：扫描 details 中所有“cache*token*”类字段，取最大值
+                keys = []
+                if isinstance(d, dict):
+                    keys = list(d.keys())
+                else:
+                    try:
+                        keys = list(vars(d).keys())
+                    except Exception:
+                        keys = []
+                    try:
+                        extra = getattr(d, "model_extra", None)
+                        if isinstance(extra, dict):
+                            keys.extend(list(extra.keys()))
+                    except Exception:
+                        pass
+                    try:
+                        dump_fn = getattr(d, "model_dump", None)
+                        if callable(dump_fn):
+                            dumped = dump_fn(mode="python")
+                            if isinstance(dumped, dict):
+                                keys.extend(list(dumped.keys()))
+                    except Exception:
+                        pass
+                best = -1
+                for raw_key in keys:
+                    k = str(raw_key or "").strip().lower()
+                    if not k:
+                        continue
+                    if ("cache" not in k) or ("token" not in k):
+                        continue
+                    # exclude non-hit metrics like cache_creation_* to avoid false subtraction
+                    if ("creation" in k) or ("create" in k) or ("write" in k):
+                        continue
+                    if ("read" not in k) and ("cached" not in k):
+                        continue
+                    v = _safe_int_local(_usage_get(d, raw_key, None), -1)
+                    if v > best:
+                        best = v
+                return max(0, best) if best >= 0 else 0
+
+            def _extract_usage_io(raw_usage_obj):
+                u = raw_usage_obj if raw_usage_obj is not None else {}
+                raw_input = _safe_int_local(
+                    _usage_get(u, "prompt_tokens", _usage_get(u, "input_tokens", 0)),
+                    0
+                )
+                output = _safe_int_local(
+                    _usage_get(u, "completion_tokens", _usage_get(u, "output_tokens", 0)),
+                    0
+                )
+                # 兼容两套 usage 结构：
+                # - chat.completions: prompt_tokens_details.cached_tokens
+                # - responses API:   input_tokens_details.cached_tokens
+                prompt_details = _usage_get(u, "prompt_tokens_details", {}) or {}
+                input_details = _usage_get(u, "input_tokens_details", {}) or {}
+                cached = _extract_cached_tokens_from_details(prompt_details)
+                if cached <= 0:
+                    cached = _extract_cached_tokens_from_details(input_details)
+                if cached <= 0:
+                    cached = _extract_cached_tokens_from_details(u)
+                if cached < 0:
+                    cached = 0
+                effective_input = max(0, raw_input - cached)
+                return {
+                    "raw_input": raw_input,
+                    "cached_input": cached,
+                    "effective_input": effective_input,
+                    "output": output
+                }
             
             provider_req_opts = self._get_provider_request_options(self.provider)
             request_enable_search_cfg = self._as_bool(provider_req_opts.get("enable_search", True), default=True)
@@ -2201,33 +2411,48 @@ class Model:
 
             previous_response_id = None
             messages = []
+            full_context_messages = self._build_initial_messages(
+                user_msg=msg,
+                current_user_content=user_content,
+                use_responses_api=use_responses_api,
+                allow_history_images=allow_history_images
+            )
 
             if last_response_id:
                 # Cache Hit: 仅发送新消息
                 print(f"[CACHE] Hit! Resuming from: {last_response_id}")
                 previous_response_id = last_response_id
                 messages = [{"role": "user", "content": user_content}]
+                messages_has_full_context = False
             else:
                 # Cache Miss: 全量构建
                 print(f"[CACHE] Miss. Building full context.")
-                messages = self._build_initial_messages(
-                    user_msg=msg,
-                    current_user_content=user_content,
-                    use_responses_api=use_responses_api,
-                    allow_history_images=allow_history_images
-                )
+                messages = list(full_context_messages)
+                messages_has_full_context = True
+            request_resume_id_seed = str(previous_response_id or "")
+            request_started_with_resume_id = bool(previous_response_id)
+            request_promoted_to_full_context = False
+            first_round_input_count = 0
+            first_round_input_chars = 0
+            first_round_tools_count = 0
+            first_round_tools_chars = 0
+            response_id_seen_count = 0
+            response_id_changed_count = 0
 
             # 火山引擎特例：仅对本次请求载荷中的最后一条 user 内容补结尾换行
             if messages and isinstance(messages[-1], dict) and str(messages[-1].get("role", "") or "").strip() == "user":
                 messages[-1]["content"] = self._append_trailing_newline_for_user_content(messages[-1].get("content", ""))
+            if full_context_messages and isinstance(full_context_messages[-1], dict) and str(full_context_messages[-1].get("role", "") or "").strip() == "user":
+                full_context_messages[-1]["content"] = self._append_trailing_newline_for_user_content(full_context_messages[-1].get("content", ""))
             
             # 多轮对话循环
             accumulated_content = ""
             accumulated_reasoning = ""  # 累积思维链内容
             process_steps = []  # 记录完整的工具调用过程
-            dedupe_after_tool_round = False  # 工具调用后下一轮启用跨轮前缀去重
             request_input_tokens_total = 0
             request_output_tokens_total = 0
+            request_input_tokens_raw_total = 0
+            request_input_tokens_cached_total = 0
             
             # previous_response_id 已在上面初始化
             current_function_outputs = []  # 当前轮的function输出
@@ -2242,6 +2467,14 @@ class Model:
                         
                     print(f"\n[DEBUG] ===== 第 {round_num + 1} 轮 =====")
                     print(f"[DEBUG] Messages数量: {len(messages)} | Function消息: {len([m for m in messages if m.get('role')=='function'])}")
+
+                    # 关键修复：当 responses 续接ID失效/缺失时，必须提升到完整上下文，
+                    # 不能继续使用 cache-hit 的“仅当前用户消息”轻载荷，否则历史会丢失。
+                    if use_responses_api and (not previous_response_id) and (not messages_has_full_context):
+                        messages = list(full_context_messages)
+                        messages_has_full_context = True
+                        request_promoted_to_full_context = True
+                        print("[CACHE] previous_response_id missing; promoted to full context payload.")
                     
                     # 构建请求
                     print(f"[DEBUG_REQ] Pkg_ID: {previous_response_id} | Func_Outs: {len(current_function_outputs) if current_function_outputs else 0}")
@@ -2319,6 +2552,11 @@ class Model:
                             f"[ROUND_PAYLOAD] round={round_num + 1} tools_count={tools_count} "
                             f"tools_chars={tools_chars} input_count={input_count} input_chars={input_chars}"
                         )
+                        if round_num == 0:
+                            first_round_input_count = int(max(0, input_count))
+                            first_round_input_chars = int(max(0, input_chars))
+                            first_round_tools_count = int(max(0, tools_count))
+                            first_round_tools_chars = int(max(0, tools_chars))
                         if bool(getattr(self, "_runtime_selector_enabled", False)):
                             print(
                                 f"[ROUND_TOOLS] round={round_num + 1} selected_ids={list(getattr(self, '_runtime_selected_tool_ids', []) or [])} "
@@ -2427,10 +2665,12 @@ class Model:
                         ):
                              print(f"[ERROR] 捕获 Context Mismatch (400). Retrying with FULL context...")
                              # 关键修复：当 resumption 失败时，必须将 input 恢复为完整的 messages 历史，否则模型会丢失上下文
-                             request_params["input"] = messages
+                             request_params["input"] = list(full_context_messages)
                              if "previous_response_id" in request_params:
                                  del request_params["previous_response_id"]
                              previous_response_id = None
+                             messages = list(full_context_messages)
+                             messages_has_full_context = True
                              response_iterator = self.provider_adapter.create_stream_iterator(
                                  client=self.client,
                                  request_params=request_params,
@@ -2448,14 +2688,14 @@ class Model:
                     round_content = ""
                     raw_round_content = ""
                     emitted_round_content_len = 0
+                    round_reasoning = ""
                     function_calls = []
                     round_tool_args_delta = ""
                     has_web_search = bool(round_native_search_detected)
-                    enable_cross_round_dedupe = bool(round_num > 0 and dedupe_after_tool_round and accumulated_content)
-                    dedupe_base_text = accumulated_content if enable_cross_round_dedupe else ""
                     
                     # [FIX] 记录本轮最后一次出现的 usage，避免在流中多次记录导致日志爆炸
                     round_usage = None
+                    round_response_id_emitted = False
 
                     def _append_round_delta(delta_text):
                         nonlocal raw_round_content, round_content, emitted_round_content_len, accumulated_content
@@ -2466,10 +2706,6 @@ class Model:
                             return ""
                         raw_round_content += piece
                         effective_text = raw_round_content
-                        if enable_cross_round_dedupe:
-                            overlap = self._prefix_suffix_overlap(dedupe_base_text, raw_round_content)
-                            if overlap > 0:
-                                effective_text = raw_round_content[overlap:]
 
                         # rewrite citation refs based on native metadata (if any)
                         rewritten_text = self._rewrite_citation_refs(
@@ -2503,7 +2739,11 @@ class Model:
                             if ev_type == "response_id":
                                 rid = str(event.get("response_id", "") or "").strip()
                                 if rid:
+                                    if rid != str(previous_response_id or ""):
+                                        response_id_changed_count += 1
                                     previous_response_id = rid
+                                    response_id_seen_count += 1
+                                    round_response_id_emitted = True
                                 continue
 
                             if ev_type == "content_delta":
@@ -2516,6 +2756,7 @@ class Model:
                                 reasoning_piece = str(event.get("delta", "") or "")
                                 if reasoning_piece:
                                     accumulated_reasoning += reasoning_piece
+                                    round_reasoning += reasoning_piece
                                     yield {"type": "reasoning_content", "content": reasoning_piece}
                                 continue
 
@@ -2567,18 +2808,17 @@ class Model:
                             if ev_type == "usage":
                                 usage_obj = event.get("usage", None)
                                 round_usage = usage_obj if usage_obj is not None else event
-                                input_tokens = int(
-                                    event.get(
-                                        "input_tokens",
-                                        getattr(round_usage, "prompt_tokens", getattr(round_usage, "input_tokens", 0))
-                                    ) or 0
+                                usage_io = _extract_usage_io(round_usage)
+                                raw_input_tokens = max(
+                                    0,
+                                    int(event.get("input_tokens", usage_io["raw_input"]) or 0)
                                 )
-                                output_tokens = int(
-                                    event.get(
-                                        "output_tokens",
-                                        getattr(round_usage, "completion_tokens", getattr(round_usage, "output_tokens", 0))
-                                    ) or 0
+                                output_tokens = max(
+                                    0,
+                                    int(event.get("output_tokens", usage_io["output"]) or 0)
                                 )
+                                cached_input_tokens = usage_io["cached_input"]
+                                input_tokens = max(0, raw_input_tokens - cached_input_tokens)
                                 total_tokens = int(
                                     event.get(
                                         "total_tokens",
@@ -2589,7 +2829,9 @@ class Model:
                                     "type": "token_usage",
                                     "input_tokens": input_tokens,
                                     "output_tokens": output_tokens,
-                                    "total_tokens": total_tokens
+                                    "total_tokens": total_tokens,
+                                    "raw_input_tokens": raw_input_tokens,
+                                    "cached_input_tokens": cached_input_tokens
                                 }
                                 continue
                     
@@ -2608,26 +2850,27 @@ class Model:
                     # [FIX] 在 chunk 循环结束后，统一记录本轮的 Token 消耗
                     if round_usage:
                         try:
-                            if isinstance(round_usage, dict):
-                                prompt_tokens_dbg = int(round_usage.get("prompt_tokens", round_usage.get("input_tokens", 0)) or 0)
-                                output_tokens_dbg = int(round_usage.get("completion_tokens", round_usage.get("output_tokens", 0)) or 0)
-                                total_tokens_dbg = int(round_usage.get("total_tokens", 0) or 0)
-                            else:
-                                prompt_tokens_dbg = int(
-                                    getattr(round_usage, "prompt_tokens", getattr(round_usage, "input_tokens", 0)) or 0
-                                )
-                                output_tokens_dbg = int(
-                                    getattr(round_usage, "completion_tokens", getattr(round_usage, "output_tokens", 0)) or 0
-                                )
-                                total_tokens_dbg = int(getattr(round_usage, "total_tokens", 0) or 0)
+                            usage_io_dbg = _extract_usage_io(round_usage)
+                            prompt_tokens_dbg_raw = int(usage_io_dbg["raw_input"] or 0)
+                            prompt_tokens_dbg_cached = int(usage_io_dbg["cached_input"] or 0)
+                            prompt_tokens_dbg = int(usage_io_dbg["effective_input"] or 0)
+                            output_tokens_dbg = int(usage_io_dbg["output"] or 0)
+                            total_tokens_dbg = int(
+                                _usage_get(round_usage, "total_tokens", 0) or 0
+                            )
                         except Exception:
+                            prompt_tokens_dbg_raw = 0
+                            prompt_tokens_dbg_cached = 0
                             prompt_tokens_dbg = 0
                             output_tokens_dbg = 0
                             total_tokens_dbg = 0
                         request_input_tokens_total += max(0, int(prompt_tokens_dbg or 0))
                         request_output_tokens_total += max(0, int(output_tokens_dbg or 0))
+                        request_input_tokens_raw_total += max(0, int(prompt_tokens_dbg_raw or 0))
+                        request_input_tokens_cached_total += max(0, int(prompt_tokens_dbg_cached or 0))
                         print(
-                            f"[ROUND_USAGE] round={round_num + 1} prompt_tokens={prompt_tokens_dbg} "
+                            f"[ROUND_USAGE] round={round_num + 1} prompt_tokens_raw={prompt_tokens_dbg_raw} "
+                            f"cached={prompt_tokens_dbg_cached} prompt_tokens_effective={prompt_tokens_dbg} "
                             f"total_tokens={total_tokens_dbg}"
                         )
                         self._log_token_usage_safe(
@@ -2663,6 +2906,7 @@ class Model:
                         est_total = est_input + est_output
                         request_input_tokens_total += max(0, int(est_input or 0))
                         request_output_tokens_total += max(0, int(est_output or 0))
+                        request_input_tokens_raw_total += max(0, int(est_input or 0))
                         has_text_output = bool(str(round_content or "").strip())
                         est_action = "chat"
                         primary_tool = ""
@@ -2702,12 +2946,16 @@ class Model:
 
                     # 检查 previous_response_id 获取情况（Responses API）
                     if use_responses_api:
-                        if previous_response_id:
-                            print(f"[DEBUG] 已捕获 Response ID: {previous_response_id}")
+                        if round_response_id_emitted:
+                            print(f"[DEBUG] 已捕获本轮 Response ID: {previous_response_id}")
+                        elif previous_response_id:
+                            print(f"[WARNING] 本轮未捕获新 Response ID，沿用旧值: {previous_response_id}")
                         else:
                             print(f"[WARNING] 本轮未能捕获 Response ID，下轮将回退到全量上下文传输 (Token开销增加)")
 
                     # 本轮文本内容作为步骤加入
+                    if round_reasoning:
+                        process_steps.append({"type": "reasoning_content", "content": round_reasoning})
                     if round_content:
                         process_steps.append({"type": "content", "content": round_content})
                     
@@ -2715,11 +2963,16 @@ class Model:
                     if function_calls:
                         # Responses API 不接受 input 中的 assistant.tool_calls，
                         # 这里按协议分别写入历史。
-                        messages.extend(self._build_assistant_tool_messages_for_round(
+                        tool_trace_messages = self._build_assistant_tool_messages_for_round(
                             function_calls=function_calls,
                             round_content=round_content,
                             use_responses_api=use_responses_api
-                        ))
+                        )
+                        messages.extend(tool_trace_messages)
+                        full_context_messages.extend([
+                            dict(x) if isinstance(x, dict) else x
+                            for x in (tool_trace_messages or [])
+                        ])
                         
                         function_outputs = []
                         
@@ -2773,6 +3026,12 @@ class Model:
                         
                         # 继续下一轮（保持messages累积，但current_function_outputs已重置）
                         messages = self._append_function_outputs(messages, current_function_outputs)
+                        full_context_messages = self._append_function_outputs(
+                            full_context_messages,
+                            [dict(x) if isinstance(x, dict) else x for x in (current_function_outputs or [])]
+                        )
+                        if messages_has_full_context:
+                            messages = list(full_context_messages)
                         
                         # [DEBUG] 打印更新后的历史状态
                         print(f"[DEBUG_HIST] 更新历史后消息数: {len(messages)}")
@@ -2783,14 +3042,12 @@ class Model:
                         if bool(getattr(self, "_runtime_tool_selection_changed", False)):
                             print("[TOOLS] detect selectTools update, switch runtime tools from next round.")
                             self._runtime_tool_selection_changed = False
-                            # 当本轮 tools 集发生变化，Responses API 的 previous_response_id 续接可能不一致。
-                            # 直接清空让下一轮回到全量输入，稳定优先。
+                            # 不主动清空 previous_response_id，避免 cache-hit 场景丢失历史。
+                            # 若 provider 明确返回续接错误，将由重试分支自动切到 full context。
                             if use_responses_api:
-                                previous_response_id = None
-                                print("[TOOLS] cleared previous_response_id due to runtime tool-set change.")
+                                print("[TOOLS] runtime tool-set changed; keep previous_response_id and rely on retry fallback if mismatch.")
 
                         # 继续循环下一轮
-                        dedupe_after_tool_round = True
                         continue
 
                     # 没有函数调用，对话结束
@@ -2810,9 +3067,24 @@ class Model:
                         "process_steps": process_steps,
                         "model_name": self.model_name,
                         "search_enabled": badge_search_enabled,
+                        "request_debug": {
+                            "use_responses_api": bool(use_responses_api),
+                            "started_with_resume_id": bool(request_started_with_resume_id),
+                            "resume_id_seed": request_resume_id_seed,
+                            "promoted_to_full_context": bool(request_promoted_to_full_context),
+                            "response_id_seen_count": int(max(0, response_id_seen_count)),
+                            "response_id_changed_count": int(max(0, response_id_changed_count)),
+                            "first_round_input_count": int(max(0, first_round_input_count)),
+                            "first_round_input_chars": int(max(0, first_round_input_chars)),
+                            "first_round_tools_count": int(max(0, first_round_tools_count)),
+                            "first_round_tools_chars": int(max(0, first_round_tools_chars))
+                        },
                         "io_tokens": {
                             "input": int(max(0, request_input_tokens_total)),
-                            "output": int(max(0, request_output_tokens_total))
+                            "output": int(max(0, request_output_tokens_total)),
+                            "raw_input": int(max(0, request_input_tokens_raw_total)),
+                            "cached_input": int(max(0, request_input_tokens_cached_total)),
+                            "effective_input": int(max(0, request_input_tokens_total))
                         }
                     }
                     
@@ -2846,6 +3118,10 @@ class Model:
                     )
                 
                 # 保存 Context Cache ID
+                if use_responses_api and request_started_with_resume_id and response_id_changed_count <= 0:
+                    # 保护：本次请求没有拿到新的 response_id，避免把旧ID重复写回导致后续伪续接。
+                    print("[CACHE] No refreshed response_id in this request; drop stale resume id for safety.")
+                    previous_response_id = None
                 if previous_response_id:
                     try:
                         if self.provider_adapter.supports_response_resume(use_responses_api=self._provider_use_responses_api(self.provider)):
@@ -2912,7 +3188,80 @@ class Model:
             def _uv(obj, key, default=0):
                 if isinstance(obj, dict):
                     return obj.get(key, default)
+                try:
+                    extra = getattr(obj, "model_extra", None)
+                    if isinstance(extra, dict) and key in extra:
+                        return extra.get(key, default)
+                except Exception:
+                    pass
+                try:
+                    dump_fn = getattr(obj, "model_dump", None)
+                    if callable(dump_fn):
+                        dumped = dump_fn(mode="python")
+                        if isinstance(dumped, dict) and key in dumped:
+                            return dumped.get(key, default)
+                except Exception:
+                    pass
                 return getattr(obj, key, default)
+
+            def _extract_cached_tokens_from_details(details_obj):
+                d = details_obj if details_obj is not None else {}
+                candidate_keys = (
+                    "cached_tokens",
+                    "cache_read_input_tokens",
+                    "cache_read_tokens",
+                    "cached_input_tokens",
+                    "cache_tokens",
+                    "cache_read",
+                    "input_cached_tokens",
+                )
+                for k in candidate_keys:
+                    v = _safe_int(_uv(d, k, None), -1)
+                    if v >= 0:
+                        return v, k
+
+                keys = []
+                if isinstance(d, dict):
+                    keys = list(d.keys())
+                else:
+                    try:
+                        keys = list(vars(d).keys())
+                    except Exception:
+                        keys = []
+                    try:
+                        extra = getattr(d, "model_extra", None)
+                        if isinstance(extra, dict):
+                            keys.extend(list(extra.keys()))
+                    except Exception:
+                        pass
+                    try:
+                        dump_fn = getattr(d, "model_dump", None)
+                        if callable(dump_fn):
+                            dumped = dump_fn(mode="python")
+                            if isinstance(dumped, dict):
+                                keys.extend(list(dumped.keys()))
+                    except Exception:
+                        pass
+
+                best = -1
+                best_key = ""
+                for raw_key in keys:
+                    key_text = str(raw_key or "").strip().lower()
+                    if not key_text:
+                        continue
+                    if ("cache" not in key_text) or ("token" not in key_text):
+                        continue
+                    if ("creation" in key_text) or ("create" in key_text) or ("write" in key_text):
+                        continue
+                    if ("read" not in key_text) and ("cached" not in key_text):
+                        continue
+                    v = _safe_int(_uv(d, raw_key, None), -1)
+                    if v > best:
+                        best = v
+                        best_key = str(raw_key)
+                if best >= 0:
+                    return best, best_key or "cache*token*"
+                return 0, ""
 
             has_text_output = bool(str(round_content or "").strip())
             action_type = "chat"
@@ -2946,20 +3295,35 @@ class Model:
             output_tokens = _uv(usage, 'output_tokens', _uv(usage, 'completion_tokens', 0))
             usage_total = _uv(usage, 'total_tokens', 0)
             usage_total_int = _safe_int(usage_total, 0)
-            input_tokens_int = _safe_int(input_tokens, 0)
+            input_tokens_int_raw = _safe_int(input_tokens, 0)
             output_tokens_int = _safe_int(output_tokens, 0)
+
+            # 兼容 chat.completions / responses API 两套 usage 细节字段
+            prompt_details = _uv(usage, 'prompt_tokens_details', {}) or {}
+            input_details = _uv(usage, 'input_tokens_details', {}) or {}
+            completion_details = _uv(usage, 'completion_tokens_details', {}) or {}
+            output_details = _uv(usage, 'output_tokens_details', {}) or {}
+            cached_tokens_int, cached_from = _extract_cached_tokens_from_details(prompt_details)
+            if cached_tokens_int <= 0:
+                cached_tokens_int, cached_from = _extract_cached_tokens_from_details(input_details)
+            if cached_tokens_int <= 0:
+                cached_tokens_int, cached_from = _extract_cached_tokens_from_details(usage)
+            if cached_tokens_int < 0:
+                cached_tokens_int = 0
+            input_tokens_int = max(0, input_tokens_int_raw - max(0, cached_tokens_int))
             if usage_total_int > 0:
-                total_tokens = usage_total_int
+                total_tokens = input_tokens_int + output_tokens_int
             else:
                 total_tokens = input_tokens_int + output_tokens_int
 
-            prompt_details = _uv(usage, 'prompt_tokens_details', {}) or {}
-            completion_details = _uv(usage, 'completion_tokens_details', {}) or {}
             token_details = {
-                "cached_tokens": _safe_int(_uv(prompt_details, 'cached_tokens', 0), 0),
-                "reasoning_tokens": _safe_int(_uv(completion_details, 'reasoning_tokens', 0), 0),
-                "audio_input_tokens": _safe_int(_uv(prompt_details, 'audio_tokens', 0), 0),
-                "audio_output_tokens": _safe_int(_uv(completion_details, 'audio_tokens', 0), 0)
+                "cached_tokens": cached_tokens_int,
+                "cached_tokens_source": cached_from,
+                "raw_input_tokens": input_tokens_int_raw,
+                "effective_input_tokens": input_tokens_int,
+                "reasoning_tokens": _safe_int(_uv(completion_details, 'reasoning_tokens', _uv(output_details, 'reasoning_tokens', 0)), 0),
+                "audio_input_tokens": _safe_int(_uv(prompt_details, 'audio_tokens', _uv(input_details, 'audio_tokens', 0)), 0),
+                "audio_output_tokens": _safe_int(_uv(completion_details, 'audio_tokens', _uv(output_details, 'audio_tokens', 0)), 0)
             }
 
             log_status = CONFIG.get('log_status', 'silent')
@@ -2967,7 +3331,11 @@ class Model:
             if log_status == 'all' and not suppress_token_debug:
                 print(f"[TOKEN_DEBUG] ==================== Token Usage Info ====================")
                 print(f"[TOKEN_DEBUG] Model: {self.model_name} | Provider: {self.provider}")
-                print(f"[TOKEN_DEBUG] Action: {action_type} | Input: {input_tokens_int} | Output: {output_tokens_int}")
+                print(
+                    f"[TOKEN_DEBUG] Action: {action_type} | Input(raw): {input_tokens_int_raw} "
+                    f"| Cached: {cached_tokens_int} | Input(effective): {input_tokens_int} "
+                    f"| Output: {output_tokens_int}"
+                )
                 print(f"[TOKEN_DEBUG] Total: {total_tokens}")
                 print(f"[TOKEN_DEBUG] ==========================================================")
 
@@ -3151,7 +3519,6 @@ class Model:
         provider_adapter = self._get_provider_api_adapter(self.provider)
         provider_req_opts = self._get_provider_request_options(self.provider)
 
-        native_search_hint_text = str(getattr(prompts, "runtime_native_search_hint", "") or "").strip()
         runtime_native_tag = str(getattr(prompts, "RUNTIME_HINT_NATIVE_TAG", "[运行时能力提示]") or "[运行时能力提示]")
         runtime_tool_tag = str(getattr(prompts, "RUNTIME_HINT_TOOL_TAG", "[工具选择协议]") or "[工具选择协议]")
 
@@ -3177,59 +3544,12 @@ class Model:
                 out.append(m)
             return out
 
-        def _with_runtime_native_search_hint(msgs: List[Dict]):
-            out = list(msgs or [])
-            if not (enable_web_search and bool(getattr(self, "native_web_search_enabled", False))):
-                return out, False
-            # 已存在则不重复注入
-            for m in out:
-                if not isinstance(m, dict):
-                    continue
-                if str(m.get("role", "") or "").strip() != "system":
-                    continue
-                if runtime_native_tag in str(m.get("content", "") or ""):
-                    return out, False
-            hint = {"role": "system", "content": native_search_hint_text}
-            # 紧跟主系统提示插入，避免被后续历史消息稀释。
-            if out and str((out[0] or {}).get("role", "")) == "system":
-                return [out[0], hint] + out[1:], True
-            return [hint] + out, True
-
-        def _with_runtime_tool_selector_hint(msgs: List[Dict]):
-            out = list(msgs or [])
-            if not self._should_attach_runtime_tool_selector_hint():
-                return out, False
-            hint_text = str(getattr(self, "_runtime_tool_selector_hint", "") or "").strip()
-            if not hint_text:
-                return out, False
-            # 已存在则不重复注入
-            for m in out:
-                if not isinstance(m, dict):
-                    continue
-                if str(m.get("role", "") or "").strip() != "system":
-                    continue
-                if runtime_tool_tag in str(m.get("content", "") or ""):
-                    return out, False
-            hint = {"role": "system", "content": hint_text}
-            if out and str((out[0] or {}).get("role", "")) == "system":
-                return [out[0], hint] + out[1:], True
-            return [hint] + out, True
-
         runtime_tool_names = {
             str(x).strip() for x in (runtime_function_tool_names or set()) if str(x).strip()
         }
         runtime_messages = _strip_runtime_hint_system_messages(list(messages))
-        # 单次 sendMessage 请求中，运行时提示最多注入一次。
-        # 注意：工具选择协议提示不能依赖 previous_response_id，
-        # 否则 Auto 模式在缓存续接时会漏注入轻量工具目录。
-        should_inject_runtime_hints = not bool(getattr(self, "_runtime_hints_injected_in_request", False))
-        if should_inject_runtime_hints:
-            native_hint_injected = False
-            if previous_response_id is None:
-                runtime_messages, native_hint_injected = _with_runtime_native_search_hint(runtime_messages)
-            runtime_messages, tool_hint_injected = _with_runtime_tool_selector_hint(runtime_messages)
-            if native_hint_injected or tool_hint_injected:
-                self._runtime_hints_injected_in_request = True
+        # 已弃用“运行时能力 system 注入”，避免每轮附加协议文本导致输入 token 异常抬升。
+        should_inject_runtime_hints = False
         runtime_messages = self._strip_reasoning_content(runtime_messages)
 
         # --- Responses API 逻辑（由 provider adapter 判定） ---
@@ -3245,6 +3565,10 @@ class Model:
                         tools_payload,
                         runtime_tool_names
                     )
+                tools_payload = self._decorate_select_tools_description(
+                    tools_payload,
+                    runtime_tool_names
+                )
 
             # Responses API 下允许“仅联网搜索开关”生效（即使 enable_tools=false）
             if enable_web_search and bool(getattr(self, "native_web_search_enabled", False)):
@@ -3311,6 +3635,10 @@ class Model:
                             tools_payload,
                             runtime_tool_names
                         )
+                    tools_payload = self._decorate_select_tools_description(
+                        tools_payload,
+                        runtime_tool_names
+                    )
                     params["tools"] = tools_payload
                     # provider 级 native tools（来自 search_adapters）
                     native_tools = list(getattr(self, "native_search_tools", []) or [])

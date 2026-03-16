@@ -110,12 +110,45 @@ class VolcengineProvider(ProviderInterface):
             yield from self._iter_openai_chat_stream_events(chunks)
             return
 
+        def _obj_get(obj: Any, key: str, default: str = "") -> str:
+            if obj is None:
+                return default
+            try:
+                if isinstance(obj, dict):
+                    return str(obj.get(key, default) or default)
+                extra = getattr(obj, "model_extra", None)
+                if isinstance(extra, dict) and key in extra:
+                    return str(extra.get(key, default) or default)
+            except Exception:
+                pass
+            try:
+                return str(getattr(obj, key, default) or default)
+            except Exception:
+                return default
+
+        def _extract_response_id(chunk_obj: Any, response_obj: Any) -> str:
+            candidates = [
+                _obj_get(response_obj, "id", ""),
+                _obj_get(chunk_obj, "response_id", ""),
+                _obj_get(chunk_obj, "id", ""),
+            ]
+            for c in candidates:
+                rid = str(c or "").strip()
+                if rid.startswith("resp_"):
+                    return rid
+            # fallback: first non-empty candidate
+            for c in candidates:
+                rid = str(c or "").strip()
+                if rid:
+                    return rid
+            return ""
+
         has_emitted_content_delta = False
         has_received_detail_reasoning = False
 
         for chunk in chunks:
             response_obj = getattr(chunk, "response", None)
-            response_id = str(getattr(response_obj, "id", "") or "").strip()
+            response_id = _extract_response_id(chunk, response_obj)
             if response_id:
                 yield {"type": "response_id", "response_id": response_id}
 
@@ -452,8 +485,56 @@ class VolcengineProvider(ProviderInterface):
             if not model_id:
                 continue
             name = str(item.get("name") or item.get("display_name") or model_id).strip() or model_id
-            out.append({"id": model_id, "name": name, "raw": item})
+            row = {"id": model_id, "name": name, "raw": item}
+            ctx = self._extract_context_window_from_item(item)
+            if ctx > 0:
+                row["context_window"] = ctx
+            out.append(row)
         return out
+
+    def _extract_context_window_from_item(self, item: Dict[str, Any]) -> int:
+        if not isinstance(item, dict):
+            return 0
+
+        target_keys = {
+            "context_window",
+            "context_length",
+            "max_context_tokens",
+            "max_input_tokens",
+            "max_prompt_tokens",
+            "input_token_limit",
+            "prompt_token_limit",
+            "contextsize",
+            "context_size",
+        }
+
+        def _to_int(v: Any) -> int:
+            try:
+                n = int(v)
+            except Exception:
+                return 0
+            if n < 1024:
+                return 0
+            return min(n, 4_000_000)
+
+        # BFS search over nested dict/list payload
+        queue: List[Any] = [item]
+        visited = 0
+        while queue and visited < 200:
+            visited += 1
+            cur = queue.pop(0)
+            if isinstance(cur, dict):
+                for k, v in cur.items():
+                    key = str(k or "").strip().lower()
+                    if key in target_keys:
+                        n = _to_int(v)
+                        if n > 0:
+                            return n
+                    if isinstance(v, (dict, list)):
+                        queue.append(v)
+            elif isinstance(cur, list):
+                queue.extend(cur[:40])
+        return 0
 
     def _model_matches_capability(self, model: Dict[str, Any], capability: str) -> bool:
         cap = str(capability or "").strip().lower()

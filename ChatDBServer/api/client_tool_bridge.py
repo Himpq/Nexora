@@ -164,6 +164,34 @@ def submit_request_result(
     return True, ""
 
 
+def pull_local_tool_request(
+    username: str,
+    wait_ms: int = 10000,
+) -> Optional[Dict[str, Any]]:
+    """
+    跨 conversation 扫描：取出属于 username 的第一个 local_tool 类型 pending 请求。
+    供 NexoraCode 长轮询使用（不依赖特定 conversation_id）。
+    """
+    user_prefix = f"{str(username or '').strip()}::"
+    wait_sec = _clamp_pull_wait_ms(wait_ms) / 1000.0
+    deadline = time.time() + wait_sec
+    with _COND:
+        while True:
+            now_ts = time.time()
+            _prune_expired_locked(now_ts)
+            for key, queue in list(_PENDING.items()):
+                if not str(key).startswith(user_prefix):
+                    continue
+                for req in queue:
+                    if str(req.get("type", "") or "") == "local_tool":
+                        req["poll_count"] = int(req.get("poll_count", 0) or 0) + 1
+                        req["last_polled_at"] = now_ts
+                        return copy.deepcopy(req)
+            if now_ts >= deadline:
+                return None
+            _COND.wait(timeout=min(0.8, max(0.02, deadline - now_ts)))
+
+
 def request_client_js_execution(
     username: str,
     conversation_id: str,

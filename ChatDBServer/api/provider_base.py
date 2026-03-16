@@ -1,4 +1,5 @@
 import json
+import os
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
@@ -474,6 +475,8 @@ class ProviderInterface(ABC):
                 tool_names.append(name)
         if not tool_names:
             return None
+        
+        # volcengine很大概率忽略system提示词，无解，故先使用role: user
         return {
             "role": "user",
             "content": (
@@ -605,6 +608,64 @@ class ProviderInterface(ABC):
         Parse OpenAI-compatible chat.completions streaming chunks into unified events.
         """
         function_calls: List[Dict[str, Any]] = []
+        debug_unknown_stream =True
+        unknown_delta_key_logged: set = set()
+
+        def _extract_text_piece(val: Any) -> str:
+            if val is None:
+                return ""
+            if isinstance(val, str):
+                return val
+            if isinstance(val, list):
+                parts: List[str] = []
+                for item in val:
+                    piece = _extract_text_piece(item)
+                    if piece:
+                        parts.append(piece)
+                return "".join(parts)
+            if isinstance(val, dict):
+                for k in ("text", "content", "delta", "reasoning_text", "reasoning_content", "value"):
+                    if k in val:
+                        piece = _extract_text_piece(val.get(k))
+                        if piece:
+                            return piece
+                return ""
+            # pydantic / sdk typed object
+            for k in ("text", "content", "delta", "reasoning_text", "reasoning_content", "value"):
+                try:
+                    piece = _extract_text_piece(getattr(val, k, None))
+                    if piece:
+                        return piece
+                except Exception:
+                    pass
+            return str(val) if val is not None else ""
+
+        def _collect_obj_keys(obj: Any) -> List[str]:
+            keys: List[str] = []
+            if obj is None:
+                return keys
+            if isinstance(obj, dict):
+                keys.extend([str(k) for k in obj.keys()])
+                return sorted(set(keys))
+            try:
+                keys.extend([str(k) for k in vars(obj).keys()])
+            except Exception:
+                pass
+            try:
+                extra = getattr(obj, "model_extra", None)
+                if isinstance(extra, dict):
+                    keys.extend([str(k) for k in extra.keys()])
+            except Exception:
+                pass
+            try:
+                dump_fn = getattr(obj, "model_dump", None)
+                if callable(dump_fn):
+                    dumped = dump_fn(mode="python")
+                    if isinstance(dumped, dict):
+                        keys.extend([str(k) for k in dumped.keys()])
+            except Exception:
+                pass
+            return sorted(set(keys))
 
         for chunk in chunks:
             # Usage may come in an empty-choices tail chunk.
@@ -626,10 +687,17 @@ class ProviderInterface(ABC):
                 continue
 
             content_piece = getattr(delta, "content", None)
+            content_piece = _extract_text_piece(content_piece)
             if content_piece:
                 yield {"type": "content_delta", "delta": str(content_piece)}
 
-            reasoning_piece = getattr(delta, "reasoning_content", None)
+            # Different providers expose reasoning chunks with different field names.
+            reasoning_piece = (
+                getattr(delta, "reasoning_content", None)
+                or getattr(delta, "reasoning", None)
+                or getattr(delta, "reasoning_text", None)
+            )
+            reasoning_piece = _extract_text_piece(reasoning_piece)
             if reasoning_piece:
                 yield {"type": "reasoning_delta", "delta": str(reasoning_piece)}
 
@@ -667,6 +735,12 @@ class ProviderInterface(ABC):
                             "name_delta": name_delta,
                             "index": idx,
                         }
+
+            if debug_unknown_stream and (not content_piece) and (not reasoning_piece) and (not tool_calls):
+                key_sig = ",".join(_collect_obj_keys(delta))
+                if key_sig and key_sig not in unknown_delta_key_logged:
+                    unknown_delta_key_logged.add(key_sig)
+                    print(f"[STREAM_DEBUG] Unhandled delta keys: {key_sig}")
 
             usage_obj = getattr(chunk, "usage", None)
             if usage_obj:

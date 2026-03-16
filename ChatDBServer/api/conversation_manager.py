@@ -55,6 +55,7 @@ class ConversationManager:
             "title": title,
             "created_at": datetime.now().isoformat(),
             "updated_at": datetime.now().isoformat(),
+            "pin": False,
             "messages": []
         }
         
@@ -147,11 +148,16 @@ class ConversationManager:
             last_id = data.get("last_volc_response_id")
             last_model = data.get("last_model_used")
 
+            def _norm_model_name(v):
+                return str(v or "").strip().lower()
+            current_model_norm = _norm_model_name(current_model_name)
+            last_model_norm = _norm_model_name(last_model)
+
             # Check for model compatibility
             # logic: if current model is known, and (last_model is different OR missing), reset it.
             # (Assuming missing last_model implies it was the default/old model, 
             # so if we are using a specific new model, it's a mismatch).
-            if current_model_name and last_model != current_model_name:
+            if current_model_norm and last_model_norm and last_model_norm != current_model_norm:
                 print(f"[CACHE] Model mismatch. Last: {last_model}, Current: {current_model_name}. Resetting context ID.")
                 return None
             
@@ -397,12 +403,33 @@ class ConversationManager:
                         'title': data.get('title', '未命名对话'),
                         'created_at': data.get('created_at'),
                         'updated_at': data.get('updated_at'),
+                        'pin': bool(data.get('pin', False)),
                         'message_count': len(data.get('messages', []))
                     })
         
-        # 按更新时间倒序排列
-        conversations.sort(key=lambda x: x['updated_at'], reverse=True)
+        # 置顶优先，其次按更新时间倒序
+        conversations.sort(
+            key=lambda x: (
+                1 if bool(x.get('pin', False)) else 0,
+                str(x.get('updated_at') or "")
+            ),
+            reverse=True
+        )
         return conversations
+
+    def set_conversation_pin(self, conversation_id, pin=True):
+        """设置对话置顶状态"""
+        conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
+        if not os.path.exists(conversation_path):
+            raise ValueError(f"对话不存在: {conversation_id}")
+
+        with open(conversation_path, 'r', encoding='utf-8') as f:
+            conversation_data = json.load(f)
+
+        conversation_data["pin"] = bool(pin)
+
+        with open(conversation_path, 'w', encoding='utf-8') as f:
+            json.dump(conversation_data, f, ensure_ascii=False, indent=2)
     
     def delete_conversation(self, conversation_id):
         """

@@ -4,24 +4,22 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Nexora</title>
-    <!-- Fonts & Icons -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <!-- Local Fonts & Icons -->
+    <link rel="stylesheet" href="/static/vendor/fonts/fonts.css">
     
-    <!-- LaTeX & Highlight -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/11.1.1/marked.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
+    <!-- Local LaTeX & Highlight -->
+    <link rel="stylesheet" href="/static/vendor/highlightjs/styles/github.min.css">
+    <link rel="stylesheet" href="/static/vendor/katex/katex.min.css">
+    <link rel="stylesheet" href="/static/vendor/easymde/easymde.min.css">
+    <link rel="stylesheet" href="/static/vendor/fontawesome/css/all.min.css">
+    <script src="/static/vendor/marked/marked.min.js"></script>
+    <script src="/static/vendor/highlightjs/highlight.min.js"></script>
+    <script src="/static/vendor/katex/katex.min.js"></script>
+    <script src="/static/vendor/katex/contrib/auto-render.min.js"></script>
+    <script src="/static/vendor/easymde/easymde.min.js"></script>
 
     <!-- App Styles -->
-    <link rel="stylesheet" href="/static/css/style.css?v=20260311b"> 
+    <link rel="stylesheet" href="/static/css/style.css?v=20260311g"> 
     <link rel="stylesheet" href="/static/css/easymde_override.css">
 </head>
 <body>
@@ -214,8 +212,14 @@
                     <textarea id="messageInput" placeholder="Type a message..." rows="1"></textarea>
                     
                     <div class="input-footer">
-                        <div class="token-mini" id="tokenDisplay">
-                            TK <span id="totalInputTokens">0</span> / <span id="totalOutputTokens">0</span>
+                        <div class="token-footer-left">
+                            <div class="token-budget-mini" id="tokenBudgetMini" title="上下文窗口预算">
+                                <span class="token-budget-ring" id="tokenBudgetRing"></span>
+                            </div>
+                            <div class="token-budget-usage" id="tokenBudgetUsage">CTX --/--</div>
+                            <div class="token-mini" id="tokenDisplay">
+                                TK <span id="totalInputTokens">0</span> / <span id="totalOutputTokens">0</span>
+                            </div>
                         </div>
                         <button id="sendBtn" class="btn-send">
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
@@ -381,9 +385,14 @@
         <div id="notesPanel" class="notes-panel" aria-hidden="true">
             <div class="notes-panel-head">
                 <h3>笔记</h3>
-                <button class="notes-panel-close" id="closeNotesPanelBtn" type="button" title="关闭">
-                    <i class="fa-solid fa-xmark"></i>
-                </button>
+                <div class="notes-panel-head-actions">
+                    <button class="notes-panel-popout" id="openNotesCompanionBtn" type="button" title="独立窗口">
+                        <i class="fa-solid fa-up-right-from-square"></i>
+                    </button>
+                    <button class="notes-panel-close" id="closeNotesPanelBtn" type="button" title="关闭">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
             </div>
             <div class="notes-notebook-row">
                 <select id="notesNotebookSelect" class="notes-notebook-select"></select>
@@ -412,6 +421,14 @@
             </button>
         </div>
 
+        <!-- Pin Right-Click Menu -->
+        <div id="pinContextMenu" class="pin-context-menu" aria-hidden="true">
+            <button id="pinContextMenuAction" type="button">
+                <i class="fa-solid fa-thumbtack"></i>
+                <span>置顶</span>
+            </button>
+        </div>
+
         <!-- Mobile Selection Quick Add -->
         <button id="mobileSelectionAddBtn" class="mobile-selection-add-btn" type="button" aria-hidden="true">
             <i class="fa-solid fa-note-sticky"></i>
@@ -420,7 +437,7 @@
     </div>
 
     <!-- Scripts -->
-    <script src="/static/js/chat.js?v=20260311_02"></script>
+    <script src="/static/js/chat.js?v=20260312_03"></script>
 
     <!-- 添加用户表单 -->
     <div id="addUserModal" class="modal-backdrop" style="z-index: 2200;">

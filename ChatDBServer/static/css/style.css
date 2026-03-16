@@ -27,6 +27,16 @@ body {
   font-size: 14px;
 }
 
+::selection {
+  background: #5b3a21;
+  color: #ffe7bf;
+}
+
+::-moz-selection {
+  background: #5b3a21;
+  color: #ffe7bf;
+}
+
 .app-container { display: flex; height: 100%; width: 100%; position: relative; overflow: hidden; }
 
 /* --- SIDEBAR --- */
@@ -36,7 +46,7 @@ body {
   color: var(--text-sidebar);
   display: flex;
   flex-direction: column;
-  transition: width 0.3s ease;
+  transition: width 0.3s ease, transform 0.24s ease;
   flex-shrink: 0;
 }
 .sidebar-header {
@@ -209,6 +219,13 @@ body {
     text-overflow: ellipsis; 
     white-space: nowrap; 
     min-width: 0; /* Critical for flex child truncation */
+}
+.conversation-pin-icon {
+    margin-right: 6px;
+    font-size: 11px;
+    opacity: 0.9;
+    color: #2563eb;
+    vertical-align: -1px;
 }
 
 .sidebar-footer { padding: 15px; border-top: 1px solid #1a1a1a; display: flex; flex-direction: column; gap: 8px; }
@@ -532,7 +549,7 @@ body {
 }
 .message .msg-actions,
 .message .version-switcher,
-.message .thinking-block,
+.message .thinking-header,
 .message .tool-usage,
 .message .model-badge,
 .message .add-basis-view {
@@ -1419,6 +1436,31 @@ body {
     color: #0f172a;
 }
 
+.notes-panel-head-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.notes-panel-popout {
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    border: 1px solid #dbe4f1;
+    background: #fff;
+    color: #475569;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+}
+
+.notes-panel-popout:hover {
+    color: #0f172a;
+    border-color: #cbd5e1;
+    background: #f8fafc;
+}
+
 .notes-panel-close {
     width: 28px;
     height: 28px;
@@ -1704,6 +1746,51 @@ body {
     opacity: 0.68;
 }
 
+body.notes-companion-mode .sidebar,
+body.notes-companion-mode .chat-header,
+body.notes-companion-mode #messagesContainer,
+body.notes-companion-mode #knowledgeViewer,
+body.notes-companion-mode #inputWrapper,
+body.notes-companion-mode #knowledgePanel,
+body.notes-companion-mode #filePanel,
+body.notes-companion-mode #toggleNotesPanel,
+body.notes-companion-mode #mobileSelectionAddBtn {
+    display: none !important;
+}
+
+body.notes-companion-mode .main-content {
+    width: 100% !important;
+    height: 100% !important;
+    flex: 1 1 auto !important;
+}
+
+body.notes-companion-mode #notesPanel {
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    width: auto !important;
+    max-width: none !important;
+    height: 100vh !important;
+    max-height: none !important;
+    min-height: 0 !important;
+    border-radius: 0 !important;
+    border: none !important;
+    box-shadow: none !important;
+    display: flex !important;
+    z-index: 3600 !important;
+}
+
+body.notes-companion-mode #notesPanel .notes-panel-head {
+    display: none !important;
+}
+
+body.notes-companion-mode #notesPanel .notes-panel-popout,
+body.notes-companion-mode #notesPanel #notesResizeHandle {
+    display: none !important;
+}
+
 .notes-context-menu {
     position: fixed;
     left: 0;
@@ -1738,6 +1825,43 @@ body {
 }
 
 .notes-context-menu button:hover {
+    background: #f1f5f9;
+}
+
+.pin-context-menu {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: 3660;
+    display: none;
+    min-width: 136px;
+    border: 1px solid #dbe4f1;
+    border-radius: 10px;
+    background: #fff;
+    box-shadow: 0 10px 26px rgba(15, 23, 42, 0.15);
+    padding: 6px;
+}
+
+.pin-context-menu.active {
+    display: block;
+}
+
+.pin-context-menu button {
+    width: 100%;
+    height: 30px;
+    border: none;
+    border-radius: 8px;
+    background: #fff;
+    color: #0f172a;
+    font-size: 12px;
+    padding: 0 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+}
+
+.pin-context-menu button:hover {
     background: #f1f5f9;
 }
 
@@ -1823,6 +1947,9 @@ body {
         opacity: 1;
     }
     .notes-context-menu {
+        display: none !important;
+    }
+    .pin-context-menu {
         display: none !important;
     }
 }
@@ -1946,6 +2073,10 @@ body {
     user-select: none;
 }
 .thinking-header:hover { opacity: 0.8; }
+.thinking-title {
+    font-size: 12px;
+    color: inherit;
+}
 .thinking-icon {
     width: 14px;
     height: 14px;
@@ -2342,6 +2473,43 @@ textarea {
   align-items: center;
   margin-top: 8px;
 }
+.token-footer-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.token-budget-mini {
+  --tb-color: #22c55e;
+  --tb-angle: 0deg;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.token-budget-ring {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  position: relative;
+  background: conic-gradient(var(--tb-color) var(--tb-angle), #e5e7eb 0deg);
+  border: 1px solid #d4dce7;
+  box-sizing: border-box;
+}
+.token-budget-ring::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: #fff;
+}
+.token-budget-usage {
+  font-size: 11px;
+  color: #94a3b8;
+  font-family: 'JetBrains Mono', monospace;
+  white-space: nowrap;
+}
 .upload-progress-chip {
   position: relative;
   margin: 6px 0 8px;
@@ -2530,6 +2698,9 @@ textarea {
   opacity: 1;
   pointer-events: auto;
 }
+.knowledge-sidebar.panel-animating {
+  transition: transform 0.24s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.18s ease !important;
+}
 #knowledgePanel {
   z-index: 1201;
 }
@@ -2540,7 +2711,7 @@ textarea {
 .k-header h3 { font-size: 14px; font-weight: 600; margin: 0; }
 .k-actions { display: flex; gap: 5px; }
 
-.k-content { flex: 1; overflow-y: auto; padding: 20px; }
+.k-content { flex: 1; overflow-y: auto; padding: 20px; padding-right: 0; padding-left: 15px;}
 .k-section { margin-bottom: 25px; }
 .k-section-title { font-size: 11px; font-weight: 600; color: #999; margin-bottom: 10px; display: flex; justify-content: space-between; }
 .badge { background: #eee; padding: 2px 6px; border-radius: 10px; color: #000; }
@@ -2559,9 +2730,10 @@ textarea {
 }
 .knowledge-item-row {
   position: relative;
+  cursor: default;
   min-width: 0;
   min-height: 26px;
-  padding-right: 70px;
+  padding-right: 28px; /*70px*/
 }
 .knowledge-item-short .knowledge-item-row {
   padding-right: 66px;
@@ -2576,6 +2748,13 @@ textarea {
   font-size: 13px;
   line-height: 26px;
   padding-right: 2px;
+}
+.knowledge-pin-icon {
+  margin-right: 6px;
+  font-size: 11px;
+  color: #2563eb;
+  opacity: 0.9;
+  vertical-align: -1px;
 }
 .knowledge-item-short.expanded .knowledge-item-label {
   white-space: normal;
@@ -2593,14 +2772,15 @@ textarea {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding-left: 12px;
-  background: linear-gradient(270deg, #f8fafc 62%, rgba(248, 250, 252, 0));
+  padding-left: 8px;
+  background: transparent;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.14s ease;
 }
 .knowledge-item:hover .knowledge-item-actions,
-.knowledge-item.vector-uploading .knowledge-item-actions {
+.knowledge-item.vector-uploading .knowledge-item-actions,
+.knowledge-item.needs-vector .knowledge-item-actions {
   opacity: 1;
   pointer-events: auto;
 }
@@ -2623,26 +2803,34 @@ textarea {
 }
 .knowledge-item-btn:hover {
   color: #475569;
+  background: transparent;
 }
-.knowledge-item-btn.vectorize {
-  width: 18px;
-  height: 18px;
-  border-radius: 999px;
-  background: #2563eb;
-  color: #ffffff;
-}
-.knowledge-item-btn.vectorize i {
-  font-size: 10px;
-}
-.knowledge-item-btn.vectorize:hover {
-  background: #1d4ed8;
-  color: #ffffff;
+.knowledge-item-btn.vectorize { color: #2563eb; }
+.knowledge-item-btn.vectorize i,
+.knowledge-item-btn.delete i { font-size: 12px; line-height: 1; }
+.knowledge-item-btn.vectorize:hover { color: #1d4ed8; }
+.knowledge-item-btn.vectorize.is-loading i {
+  animation: vector-spin 0.9s linear infinite;
 }
 .knowledge-item-btn.edit:hover {
   color: #2563eb;
 }
 .knowledge-item-btn.delete:hover {
   color: #ef4444;
+}
+.knowledge-item.needs-vector .knowledge-item-btn.delete {
+  opacity: 0;
+  pointer-events: none;
+}
+.knowledge-item.needs-vector:hover .knowledge-item-btn.delete {
+  opacity: 1;
+  pointer-events: auto;
+}
+@media (max-width: 980px) {
+  .knowledge-item.needs-vector .knowledge-item-btn.delete {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 @media (max-width: 980px) {
   .knowledge-item-actions {
@@ -2689,30 +2877,11 @@ textarea {
   z-index: 0;
 }
 .knowledge-progress.vectorizing {
-  background: linear-gradient(90deg, #2563eb, #60a5fa, #2563eb);
-  background-size: 220% 100%;
-  animation: upload-progress-wave 1s linear infinite;
-}
-.knowledge-item .vector-spinner {
-  position: absolute;
-  right: 22px;
-  top: 50%;
-  width: 12px;
-  height: 12px;
-  margin-top: -6px;
-  border-radius: 50%;
-  border: 2px solid #bfdbfe;
-  border-top-color: #2563eb;
-  display: none;
-  z-index: 2;
-}
-.knowledge-item.vector-uploading .vector-spinner {
-  display: block;
-  animation: vector-spin 0.9s linear infinite;
+  background: linear-gradient(90deg, #16a34a, #22c55e);
 }
 .knowledge-item.vector-pending .knowledge-progress {
-  width: 18%;
-  opacity: 0.12;
+  width: 0%;
+  opacity: 0;
 }
 .short-term-toggle {
   cursor: pointer;
@@ -7070,6 +7239,15 @@ body.is-admin .menu-item.admin-only {
         overflow: hidden !important;
         text-overflow: ellipsis !important;
     }
+
+    .knowledge-item-short.expanded .knowledge-item-label {
+        white-space: normal !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+        word-break: break-word !important;
+        overflow-wrap: anywhere !important;
+        line-height: 1.42 !important;
+    }
 }
 
 /* ===== 2026-03-06 mobile sidebar overlay lock ===== */
@@ -7332,4 +7510,20 @@ body.is-admin .menu-item.admin-only {
 
 .toast-notification {
     z-index: 9100 !important;
+}
+
+/* Ensure second-level admin modals render above settings modal */
+#settingsModal {
+    z-index: 9000 !important;
+}
+
+#modelPermModal,
+#addUserModal,
+#adminConfigModal {
+    z-index: 9200 !important;
+}
+
+#confirmBackdrop,
+#adminTextConfirmModal {
+    z-index: 9300 !important;
 }
