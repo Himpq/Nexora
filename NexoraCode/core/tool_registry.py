@@ -14,6 +14,7 @@ try:
     from tools import shell as _tool_shell  # noqa: F401
     from tools import file_ops as _tool_file_ops  # noqa: F401
     from tools import renderer as _tool_renderer  # noqa: F401
+    from tools import long_context as _tool_long_context  # noqa: F401
 except Exception:
     pass
 
@@ -47,7 +48,7 @@ class ToolRegistry:
             pass
 
         # 3) Explicit fallback list (important when frozen import graph is trimmed).
-        for name in ("tools.shell", "tools.file_ops", "tools.renderer"):
+        for name in ("tools.shell", "tools.file_ops", "tools.renderer", "tools.long_context"):
             module_names.add(name)
 
         for mod_name in sorted(module_names):
@@ -91,6 +92,23 @@ class ToolRegistry:
             return {"success": False, "error": f"Unknown tool: {tool_name}"}
         try:
             result = self._tools[tool_name]["handler"](**params)
+            
+            # buffer long strings
+            try:
+                from tools.long_context import process_large_output
+                if isinstance(result, str) and len(result) > 10000:
+                    result = process_large_output(result)
+                elif isinstance(result, dict):
+                    # Check if any string value is very long, specifically 'content'
+                    if "content" in result and isinstance(result["content"], str) and len(result["content"]) > 10000:
+                        result["content"] = process_large_output(result["content"])
+                    else:
+                        for k, v in result.items():
+                            if isinstance(v, str) and len(v) > 40000:
+                                result[k] = process_large_output(v)
+            except Exception:
+                pass
+                
             return {"success": True, "result": result}
         except Exception as e:
             return {"success": False, "error": str(e), "traceback": traceback.format_exc()}

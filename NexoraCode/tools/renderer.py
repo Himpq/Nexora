@@ -23,13 +23,49 @@ TOOL_MANIFEST = [
                 },
                 "extract_mode": {
                     "type": "string",
-                    "enum": ["readability", "full_text", "html"],
+                    "enum": ["readability", "full_text", "html", "interactive"],
                     "default": "readability",
-                    "description": "提取模式：readability=正文、full_text=全文、html=原始HTML",
+                    "description": "提取模式：readability(正文), full_text(全文), html(源码), interactive(驻留坐标获取模式)",
                 },
             },
             "required": ["url"],
         },
+    },
+    {
+        "name": "web_click",
+        "handler": "handle_web_click",
+        "description": "在 interactive 模式下点击目标网页上的元素节点",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "node_id": {"type": "integer", "description": "要点击的元素的 data-nexora-id"}
+            },
+            "required": ["node_id"]
+        }
+    },
+    {
+        "name": "web_exec_js",
+        "handler": "handle_web_exec_js",
+        "description": "在 interactive 模式下向目标被代理网页注入、执行自定义纯 JS 代码。可用于设置输入框数值、处理下拉列表或自定义 DOM 追踪等更深度的操作。执行完毕会返回最新的交互 DOM",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "要注入执行的 JavaScript 代码内容。内部需要包含 return 或者直接进行 DOM 操作。"}
+            },
+            "required": ["code"]
+        }
+    },
+    {
+        "name": "web_scroll",
+        "handler": "handle_web_scroll",
+        "description": "在 interactive 模式下向下或向上滚动页面",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "direction": {"type": "string", "enum": ["down", "up", "bottom", "top"], "description": "滚动方向"}
+            },
+            "required": ["direction"]
+        }
     }
 ]
 
@@ -38,6 +74,7 @@ def _extract_readability(html: str, url: str) -> str:
     # 优先尝试利用 BeautifulSoup 对 HTML 节点进行修改：将 <a> 标签和 onclick 转为 [URL] Title 格式
     try:
         from bs4 import BeautifulSoup
+        import urllib.parse
         soup = BeautifulSoup(html, 'html.parser')
         
         # 处理普通 <a> 标签
@@ -45,7 +82,8 @@ def _extract_readability(html: str, url: str) -> str:
             href = a['href'].strip()
             text = a.get_text(strip=True)
             if href and not href.startswith('javascript:') and text:
-                a.string = f"[{href}] {text}"
+                full_href = urllib.parse.urljoin(url, href)
+                a.string = f"[{full_href}] {text}"
                 
         # 处理带有 onclick 类似 location.href 跳转的元素
         for el in soup.find_all(attrs={'onclick': True}):
@@ -55,7 +93,8 @@ def _extract_readability(html: str, url: str) -> str:
                 href = m.group(1).strip()
                 text = el.get_text(strip=True)
                 if href and not href.startswith('javascript:') and text:
-                    el.string = f"[{href}] {text}"
+                    full_href = urllib.parse.urljoin(url, href)
+                    el.string = f"[{full_href}] {text}"
                     
         # 用替换后的 HTML 送入 trafilatura 获取结构化干净文本
         html = str(soup)
@@ -65,8 +104,8 @@ def _extract_readability(html: str, url: str) -> str:
 
     try:
         import trafilatura
-        # trafilatura在处理自己生成的结果时有时会吞掉链接，所以提前使用bs4把带链接的文字重写上去。
-        result = trafilatura.extract(html, url=url, include_links=True, include_images=False)
+        # trafilatura在处理自己生成的结果时有时会吞掉链接，所以关闭 include_links，完全依赖上面 bs4 提前重写的文本。
+        result = trafilatura.extract(html, url=url, include_links=False, include_images=False)
         return result or "[No main content extracted]"
     except Exception as e:
         # trafilatura 未安装或执行失败（如缺少配置文件）时降级到全文
@@ -103,7 +142,143 @@ def _extract_title(html: str) -> str:
     return re.sub(r"\s+", " ", (m.group(1) or "").strip())
 
 
-def _render_webview(url: str, extract_mode: str) -> dict:
+import threading
+import time
+import uuid
+
+_INTERACTIVE_WIN = None
+_INTERACTIVE_READY = threading.Event()
+
+def _get_interactive_dom():
+    if not _INTERACTIVE_WIN:
+        return {"error": "Interactive window not initialized"}
+    
+    js_code = """
+    (function() {
+        let res = [];
+        let eid = 0;
+        let elements = document.querySelectorAll('a, button, input, select, textarea, [role="button"], summary');
+        for (let i = 0; i < elements.length; i++) {
+            let el = elements[i];
+            let rect = el.getBoundingClientRect();
+            if(rect.width > 0 && rect.height > 0 && rect.top < window.innerHeight * 2.5 && rect.bottom > -window.innerHeight) {
+                eid++;
+                el.setAttribute('data-nexora-id', eid);
+                let raw_text = el.innerText || el.value || el.name || el.id || el.tagName || "";
+                let text = String(raw_text).substring(0, 50).split(String.fromCharCode(10)).join(' ').trim();
+                res.push(`[ID:${eid} ${el.tagName} (${text}) pos:(${Math.round(rect.left)},${Math.round(rect.top)})]`);
+            }
+        }
+        return res.join(String.fromCharCode(10));
+    })();
+    """
+    try:
+        nodes = _INTERACTIVE_WIN.evaluate_js(js_code)
+        title = _INTERACTIVE_WIN.evaluate_js("document.title")
+        url = _INTERACTIVE_WIN.evaluate_js("window.location.href")
+        content = f"网页已准备：{title}\nURL：{url}\n\n【当前视窗节点分布】：\n{nodes}"
+        return {"title": title, "url": url, "content": content}
+    except Exception as e:
+        return {"error": f"Evaluate Error: {str(e)}"}
+
+def _init_interactive_window(url: str):
+    global _INTERACTIVE_WIN
+    import webview
+    
+    if _INTERACTIVE_WIN is not None:
+        try:
+            _INTERACTIVE_READY.clear()
+            _INTERACTIVE_WIN.load_url(url)
+            # _INTERACTIVE_READY.wait(timeout=10)
+            import time
+            time.sleep(1.5) # wait for DOM build
+            return _get_interactive_dom()
+        except:
+            _INTERACTIVE_WIN = None
+            
+    window_id = f"interactive_{uuid.uuid4().hex[:8]}"
+    _INTERACTIVE_READY.clear()
+    
+    # Needs to be a bit large
+    import webview
+    import time
+    w = webview.create_window(window_id, url, hidden=False, width=1280, height=800)
+    _INTERACTIVE_WIN = w
+    
+    def on_loaded():
+        _INTERACTIVE_READY.set()
+        
+    w.events.loaded += on_loaded
+    # _INTERACTIVE_READY.wait(timeout=20)
+    time.sleep(2)
+    return _get_interactive_dom()
+
+def handle_web_click(node_id: int) -> dict:
+    if not _INTERACTIVE_WIN:
+        return {"error": "驻留浏览器未启动，请先使用 local_web_render 并指定 extract_mode='interactive'"}
+    js = f"""
+    (function() {{
+        var el = document.querySelector('[data-nexora-id="{node_id}"]');
+        if (el) {{
+            // Remove target so new_window behavior is blocked
+            if (el.tagName && el.tagName.toLowerCase() === 'a') el.removeAttribute('target');
+            let parent = el.closest ? el.closest('a[target="_blank"]') : null;
+            if (parent) parent.removeAttribute('target');
+            
+            el.click(); 
+            return true; 
+        }}
+        return false;
+    }})();
+    """
+    try:
+        ok = _INTERACTIVE_WIN.evaluate_js(js)
+        if not ok:
+            return {"error": f"找不到 ID 为 {node_id} 的元素"}
+        import time
+        time.sleep(3) # Wait for page load or JS mutation
+        return _get_interactive_dom()
+    except Exception as e:
+        return {"error": f"Click Error: {str(e)}"}
+
+def handle_web_exec_js(code: str) -> dict:
+    if not _INTERACTIVE_WIN:
+        return {"error": "驻留浏览器未启动"}
+    try:
+        import time
+        # Ensure it is safely evaluated and returned
+        # Wrap the code in an IIFE to ensure variables are locally scoped and the return value escapes
+        if "return" in code and not "(function(" in code:
+            wrapped_code = f"(function() {{\n{code}\n}})();"
+        else:
+            wrapped_code = code
+        res = _INTERACTIVE_WIN.evaluate_js(wrapped_code)
+        time.sleep(1) # Short wait for DOM to settle
+        return {"result": str(res), "dom": _get_interactive_dom()}
+    except Exception as e:
+        return {"error": f"JS eval failed: {str(e)}"}
+
+def handle_web_scroll(direction: str) -> dict:
+    if not _INTERACTIVE_WIN:
+        return {"error": "驻留浏览器未启动"}
+    js_map = {
+        "down": "window.scrollBy(0, window.innerHeight * 0.8)",
+        "up": "window.scrollBy(0, -window.innerHeight * 0.8)",
+        "top": "window.scrollTo(0, 0)",
+        "bottom": "window.scrollTo(0, document.body.scrollHeight)"
+    }
+    js = js_map.get(direction, "window.scrollBy(0, window.innerHeight * 0.5)")
+    try:
+        _INTERACTIVE_WIN.evaluate_js(js)
+        import time
+        time.sleep(1)
+        return _get_interactive_dom()
+    except Exception as e:
+        return {"error": f"Scroll Error: {str(e)}"}
+
+def _render_webview(
+
+url: str, extract_mode: str) -> dict:
     import webview
     import threading
     import time
@@ -240,6 +415,9 @@ def web_render(url: str, wait_for: str = "networkidle", extract_mode: str = "rea
         import webview
         # 如果已经有活跃的 webview（通过 webview.windows 判断应用是否已经启动 GUI 循环）
         if len(webview.windows) > 0:
+            if extract_mode == "interactive":
+                return _init_interactive_window(url)
+            
             res = _render_webview(url, extract_mode)
             if "error" not in res:
                 return res
