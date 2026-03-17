@@ -22,12 +22,12 @@ import webview
 
 from core.server import start_local_server, LOCAL_PORT, set_shell_html, set_notes_shell_html
 from core.tray import run_tray
-from core.config import config
+from core.config import config, get_app_root
 from core.tool_registry import ToolRegistry
 from core import wintitle
 
-# WebView2 持久化存储路径（保留 cookie / localStorage，避免每次重新登录）
-_STORAGE_PATH = Path(__file__).parent / "webview_storage"
+# WebView2 持久化存储路径（保留 cookie / localStorage，避免每次重新登录）       
+_STORAGE_PATH = get_app_root() / "webview_storage"
 
 DEFAULT_NEXORA_URL = "https://chat.himpqblog.cn"
 _STOP_POLL = threading.Event()
@@ -39,7 +39,7 @@ _ASSET_WARM_STARTED = threading.Event()
 _FIRST_LAYOUT_NUDGED = threading.Event()
 _RUNTIME_STARTUP_ASSERTED = threading.Event()
 _RUNTIME_STARTUP_ASSERT_LOCK = threading.Lock()
-_ASSET_MANIFEST_PATH = Path(__file__).parent / "asset_manifest.json"
+_ASSET_MANIFEST_PATH = get_app_root() / "asset_manifest.json"
 _PENDING_TOAST_LOCK = threading.Lock()
 _PENDING_TOAST_MESSAGE = ""
 _NOTES_TRACE = str(config.get("notes_trace", True)).strip().lower() not in {"0", "false", "off", "no"}
@@ -2590,66 +2590,102 @@ def _build_notes_local_shell_html() -> str:
 """
 
 
-def _tool_poll_loop(registry: ToolRegistry, agent_token: str, session: requests.Session, base_url: str):
+def _agent_tunnel_loop(registry: ToolRegistry, agent_token: str, base_url: str):
     """
-    持续向 Nexora 服务器轮询 pending 工具请求，执行后提交结果。
-    使用 /api/local_agent/pull（wait_ms=10000 长轮询）和 /api/client-tools/submit。
+    通过 WebSocket 持续与服务器保持长连接，作为远端 LLM 的本地 Tool 计算节点
     """
-    pull_url = f"{str(base_url or '').rstrip('/')}/api/local_agent/pull"
-    submit_url = f"{str(base_url or '').rstrip('/')}/api/client-tools/submit"
+    import websocket
+    parsed = urlsplit(base_url)
+    ws_scheme = "wss" if parsed.scheme == "https" else "ws"
+    ws_url = f"{ws_scheme}://{parsed.netloc}/ws/agent"
 
     while not _STOP_POLL.is_set():
         try:
-            resp = session.post(
-                pull_url,
-                json={"wait_ms": 10000, "agent_token": agent_token},
-                headers={"X-NexoraCode-Agent": agent_token},
-                timeout=15,
-            )
-            if resp.status_code != 200:
-                time.sleep(2)
-                continue
-            data = resp.json()
-            if not data.get("success", False):
-                time.sleep(1.5)
-                continue
-            req = data.get("request")
-            if not req:
+            ws = websocket.WebSocket()
+            ws.connect(ws_url, timeout=10)
+
+            # 1. 认证
+            ws.send(json.dumps({
+                "type": "auth",
+                "agent_token": agent_token
+            }))
+            auth_msg = ws.recv()
+            if not auth_msg:
+                raise Exception("Empty auth response")
+            auth_resp = json.loads(auth_msg)
+            if auth_resp.get("type") != "auth_ok":
+                print(f"[NexoraCode WSS] Auth failed: {auth_resp}")
+                ws.close()
+                time.sleep(5)
                 continue
 
-            request_id = req.get("request_id", "")
-            payload = req.get("payload", {})
-            tool_name = payload.get("tool", "")
-            params = payload.get("params", {})
+            print("[NexoraCode WSS] Tunnel Connected and Authenticated!")
 
-            # 本地执行工具
-            exec_result = registry.execute(tool_name, params)
+            # 2. 注册工具
+            tools = registry.list_tools_llm_format()
+            ws.send(json.dumps({
+                "type": "sync_tools",
+                "tools": tools
+            }))
 
-            # 提交结果
-            submit_resp = session.post(
-                submit_url,
-                headers={"X-NexoraCode-Agent": agent_token},
-                json={
-                    "request_id": request_id,
-                    "conversation_id": req.get("conversation_id", ""),
-                    "agent_token": agent_token,
-                    "result": exec_result,
-                    "exec_success": exec_result.get("success", True) if isinstance(exec_result, dict) else True,
-                },
-                timeout=10,
-            )
-            if submit_resp.status_code != 200:
-                body_preview = (submit_resp.text or "")[:240]
-                if submit_resp.status_code == 404 and "request not found or expired" in body_preview:
-                    # 常见于重复轮询线程导致的重复提交；视作非致命并继续。
-                    print(f"[NexoraCode] submit skipped (already consumed): {request_id}")
-                else:
-                    print(f"[NexoraCode] submit failed: HTTP {submit_resp.status_code} {body_preview}")
-        except requests.exceptions.ConnectionError:
-            time.sleep(3)
+            # 3. 消息循环
+            ws.settimeout(2.0)
+            last_ping = time.time()
+
+            while not _STOP_POLL.is_set():
+                # 心跳保活
+                if time.time() - last_ping > 15:
+                    try:
+                        ws.send(json.dumps({"type": "ping"}))
+                    except Exception:
+                        break # 连接断开，触发重连
+                    last_ping = time.time()
+
+                try:
+                    msg = ws.recv()
+                    if not msg:
+                        continue
+                        
+                    payload = json.loads(msg)
+                    ctype = payload.get("type")
+                    
+                    if ctype == "pong":
+                        pass
+                    elif ctype == "call_tool":
+                        task_id = payload.get("task_id")
+                        tool_name = payload.get("tool_name")
+                        args = payload.get("args", {})
+
+                        print(f"[NexoraCode WSS] Executing tool {tool_name} (task={task_id})")
+                        try:
+                            result = registry.execute(tool_name, args)
+                        except Exception as e:
+                            print(f"[NexoraCode WSS] Tool Execution Exception: {e}")
+                            result = {"error": str(e), "success": False}
+
+                        # 回传结果
+                        ws.send(json.dumps({
+                            "type": "tool_result",
+                            "task_id": task_id,
+                            "result": result
+                        }))
+
+                except websocket.WebSocketTimeoutException:
+                    pass
+                except json.JSONDecodeError:
+                    pass
+                except websocket.WebSocketConnectionClosedException:
+                    print("[NexoraCode WSS] Connection closed by server")
+                    break
+                except Exception as loop_e:
+                    print(f"[NexoraCode WSS] Loop Error: {loop_e}")
+                    break
+
+            ws.close()
+
         except Exception as e:
-            print(f"[NexoraCode] poll error: {e}")
-            time.sleep(2)
+            print(f"[NexoraCode WSS] Disconnected or error: {e}")
+            time.sleep(3)
 
 
 def main():
@@ -4200,9 +4236,13 @@ def main():
                     print(f"[NexoraNav] bootstrap done in {dt}ms href={href} loaded_to_done={dt2}ms")
                 except Exception:
                     pass
+                # 这里的 base_url 必须是远端地址，不能经过本地 Flask 代理（requests模块无法代理 websocket）
+                remote_base_url = str(config.get("nexora_url", DEFAULT_NEXORA_URL) or DEFAULT_NEXORA_URL).strip()
+                if not remote_base_url: remote_base_url = DEFAULT_NEXORA_URL
+                
                 poll_thread = threading.Thread(
-                    target=_tool_poll_loop,
-                    args=(registry, agent_token, _poll_session, runtime_base_url),
+                    target=_agent_tunnel_loop,
+                    args=(registry, agent_token, remote_base_url),
                     daemon=True,
                 )
                 poll_thread.start()

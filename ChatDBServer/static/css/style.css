@@ -2474,10 +2474,13 @@ textarea {
   margin-top: 8px;
 }
 .token-footer-left {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 8px;
+  flex: 1;
   min-width: 0;
+  overflow: hidden;
+  flex-wrap: wrap;
 }
 .token-budget-mini {
   --tb-color: #22c55e;

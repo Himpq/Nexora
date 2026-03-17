@@ -4,19 +4,21 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Nexora</title>
-    <!-- Local Fonts & Icons -->
-    <link rel="stylesheet" href="/static/vendor/fonts/fonts.css">
+    <!-- Fonts & Icons -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     
-    <!-- Local LaTeX & Highlight -->
-    <link rel="stylesheet" href="/static/vendor/highlightjs/styles/github.min.css">
-    <link rel="stylesheet" href="/static/vendor/katex/katex.min.css">
-    <link rel="stylesheet" href="/static/vendor/easymde/easymde.min.css">
-    <link rel="stylesheet" href="/static/vendor/fontawesome/css/all.min.css">
-    <script src="/static/vendor/marked/marked.min.js"></script>
-    <script src="/static/vendor/highlightjs/highlight.min.js"></script>
-    <script src="/static/vendor/katex/katex.min.js"></script>
-    <script src="/static/vendor/katex/contrib/auto-render.min.js"></script>
-    <script src="/static/vendor/easymde/easymde.min.js"></script>
+    <!-- LaTeX & Highlight -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/11.1.1/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
 
     <!-- App Styles -->
     <link rel="stylesheet" href="/static/css/style.css?v=20260311g"> 
@@ -44,10 +46,10 @@
             </div>
 
             <div class="sidebar-footer">
-                <a href="/knowledge_graph" class="footer-link">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
-                    <span>知识图谱</span>
-                </a>
+                <!--<a href="/knowledge_graph" class="footer-link">-->
+                <!--    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>-->
+                <!--    <span>知识图谱</span>-->
+                <!--</a>-->
                 
                 <div class="user-profile-button" id="usernameBtn">
                     <div class="avatar-circle" id="sidebar-avatar">{{ username[0] | upper }}</div>
@@ -220,6 +222,7 @@
                             <div class="token-mini" id="tokenDisplay">
                                 TK <span id="totalInputTokens">0</span> / <span id="totalOutputTokens">0</span>
                             </div>
+                            <div id="desktopAgentIndicator" title="本地计算节点状态校验中..." style="display:inline-block; width:6px; height:6px; flex-shrink:0; background:#9e9e9e; border-radius:50%; margin-left:2px; box-shadow: 0 0 4px rgba(0,0,0,0.2);"></div>
                         </div>
                         <button id="sendBtn" class="btn-send">
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>

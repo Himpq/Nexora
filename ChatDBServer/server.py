@@ -30,11 +30,14 @@ from file_sandbox import UserFileSandbox
 from longterm.orchestrator import LongTermOrchestrator
 from provider_factory import create_provider_adapter
 from client_tool_bridge import pull_pending_request, submit_request_result, enqueue_request, wait_for_result, pull_local_tool_request
+from agent_tunnel import register_agent, unregister_agent, update_agent_tools, update_ping, is_agent_online
+from flask_sock import Sock
 
 app = Flask(__name__)
 app.secret_key = 'chatdb-secret-key-change-in-production'
 app.config['SESSION_TYPE'] = 'filesystem'
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)
+sock = Sock(app)
 CORS(app)
 
 # 切换到正确的工作目录
@@ -4481,12 +4484,20 @@ def chat_stream():
         print(f"Permission check error: {e}")
     # ------------------
 
-    # 检测 NexoraCode 本地 Agent（通过 Cookie 识别，注入本地工具）
-    _agent_token = request.cookies.get("nexoracode_agent", "").strip()
-    _agent_info = _LOCAL_AGENTS.get(_agent_token) if _agent_token else None
-    # 安全验证：agent 必须属于当前登录用户
-    if _agent_info and _agent_info.get("username") != username:
-        _agent_info = None
+    # 检测 NexoraCode 本地 Agent 状态，通过 WSS 长连接注入工具
+    from agent_tunnel import is_agent_online, get_agent_tools
+    _agent_info = None
+    if is_agent_online(username):
+        tools = get_agent_tools(username)
+        if tools:
+            _agent_info = {"username": username, "tools": tools}
+    
+    # 也可以兼容旧版本 Cookie 标识
+    if not _agent_info:
+        _agent_token = request.cookies.get("nexoracode_agent", "").strip()
+        _agent_info = _LOCAL_AGENTS.get(_agent_token) if _agent_token else None
+        if _agent_info and _agent_info.get("username") != username:
+            _agent_info = None
 
     # 如果是重新生成，处理版本保存逻辑
     if is_regenerate and conversation_id and regenerate_index is not None:
@@ -4681,9 +4692,23 @@ def _inject_local_agent_tools(model, agent_info: dict):
         else:
             model.tools = [formatted]
 
-        # 注入执行处理器：通过 client_tool_bridge 长轮询，NexoraCode 主动 pull 执行
+        # 注入执行处理器：尝试走 agent_tunnel_socket 执行，否则回退
         def _make_handler(name: str, uname: str):
             def _handler(args: dict) -> str:
+                from agent_tunnel import is_agent_online, call_local_tool_sync
+                
+                # WebSocket 优先
+                if is_agent_online(uname):
+                    try:
+                        result = call_local_tool_sync(uname, name, args, timeout_sec=120)
+                        if result and "error" in result and not result.get("success", True):
+                            return f"本地工具 WSS 执行失败: {result['error']}"
+                        r = result.get("result", result)
+                        return r if isinstance(r, str) else json.dumps(r, ensure_ascii=False)
+                    except Exception as e:
+                        return f"本地工具 WSS 通信异常: {e}"
+
+                # 回退：长轮询模式
                 conv_id = str(getattr(model, 'conversation_id', '') or '')
                 req_obj = enqueue_request(
                     username=uname,
@@ -6214,8 +6239,78 @@ def get_token_logs():
     logs = user.get_token_logs()
     return jsonify({'success': True, 'logs': logs})
 
+# ==================== Agent Tunnel Routes ====================
 
-# ==================== 启动服务器 ====================
+@app.route('/api/agent/status', methods=['GET'])
+def get_agent_status():
+    if 'username' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+    online = is_agent_online(session['username'])
+    return jsonify({'online': online})
+
+from agent_tunnel import handle_agent_result
+
+@sock.route('/ws/agent')
+def agent_tunnel_socket(ws):
+    import json
+    import traceback
+    username = None
+    try:
+        # First message must be auth
+        auth_msg = ws.receive(timeout=10)
+        if not auth_msg:
+            return
+        
+        data = json.loads(auth_msg)
+        if data.get('type') != 'auth' or 'agent_token' not in data:
+            ws.send(json.dumps({'error': 'Missing type or token'}))
+            return
+            
+        token = data['agent_token']
+        
+        # 从本地代理已注册表中查找凭据
+        agent_info = _LOCAL_AGENTS.get(token)
+        if agent_info:
+            username = agent_info.get("username")
+            
+        if not username:
+            ws.send(json.dumps({'error': 'Invalid or unregistered agent_token'}))
+            return
+            
+        # Auth ok
+        register_agent(username, ws)
+        ws.send(json.dumps({'type': 'auth_ok'}))
+        
+        # Ping loop and message handler
+        while True:
+            msg = ws.receive()
+            if msg is None:
+                break
+                
+            try:
+                update_ping(username)
+                payload = json.loads(msg)
+                ctype = payload.get('type')
+                
+                if ctype == 'ping':
+                    ws.send(json.dumps({'type': 'pong'}))
+                elif ctype == 'sync_tools':
+                    tools = payload.get('tools', [])
+                    update_agent_tools(username, tools)
+                    ws.send(json.dumps({'type': 'tools_synced', 'count': len(tools)}))
+                elif ctype == 'tool_result':
+                    task_id = payload.get('task_id')
+                    result = payload.get('result')
+                    if task_id:
+                        handle_agent_result(task_id, result)
+            except Exception as e:
+                print(f"[WSS] Error processing message from {username}: {e}")
+                
+    except Exception as e:
+        print(f"[WSS] Agent disconnected or error: {e}")
+    finally:
+        if username:
+            unregister_agent(username, ws)
 
 if __name__ == '__main__':
     # 确保必要的目录存在

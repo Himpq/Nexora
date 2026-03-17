@@ -1690,6 +1690,38 @@ async function pollMailNotifyOnly() {
     }
 }
 
+// === Agent Status Polling ===
+let agentStatusPollTimer = null;
+function startAgentStatusPolling() {
+    if (agentStatusPollTimer) clearInterval(agentStatusPollTimer);
+    
+    const checkStatus = () => {
+        fetch('/api/agent/status')
+            .then(res => res.json())
+            .then(data => {
+                const indicator = document.getElementById('desktopAgentIndicator');
+                if (indicator) {
+                    if (data.online) {
+                        indicator.style.backgroundColor = '#4caf50'; // green
+                        indicator.title = 'NexoraCode (本地计算节点) - 在线';
+                    } else {
+                        indicator.style.backgroundColor = '#9e9e9e'; // grey
+                        indicator.title = 'NexoraCode (本地计算节点) - 离线';
+                    }
+                }
+            }).catch(() => {
+                const indicator = document.getElementById('desktopAgentIndicator');
+                if (indicator) {
+                    indicator.style.backgroundColor = '#9e9e9e';
+                    indicator.title = 'NexoraCode (本地计算节点) - 离线 (拉取失败)';
+                }
+            });
+    };
+    
+    checkStatus(); // Initial fetch
+    agentStatusPollTimer = setInterval(checkStatus, 5000); // 5s interval
+}
+
 function stopMailPolling() {
     if (mailPollTimer) {
         clearInterval(mailPollTimer);
@@ -4388,9 +4420,11 @@ function initUI() {
         startMailPolling();
     }
     startClientToolPolling();
+    startAgentStatusPolling(); // Agent WSS
     window.addEventListener('beforeunload', () => {
         stopMailPolling();
         stopClientToolPolling();
+        if (agentStatusPollTimer) clearInterval(agentStatusPollTimer);
         if (notesCloudSyncTimer) {
             clearTimeout(notesCloudSyncTimer);
             notesCloudSyncTimer = null;
@@ -5750,7 +5784,7 @@ async function sendMessage() {
                             const sourceText = rewriteCitationRefsMarkdown(currentSegmentContent, aiMsgDiv.__citationUrlMap || {});
                             currentContentSpan.dataset.streamRaw = currentSegmentContent;
                             currentContentSpan.dataset.streamLive = '1';
-                            currentContentSpan.textContent = sourceText;
+                            currentContentSpan.innerHTML = renderMarkdownWithNewTabLinks(sourceText);
                         } 
                         else if (chunk.type === 'reasoning_content') { 
                            onTokenStreamReasoningChunk(chunk.content);

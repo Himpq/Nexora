@@ -23,11 +23,31 @@ registry = ToolRegistry()
 _NEXORA_SHELL_HTML = """<!doctype html><html><head><meta charset=\"utf-8\"><title>Nexora Shell</title></head><body>Shell not ready</body></html>"""
 _NEXORA_NOTES_SHELL_HTML = """<!doctype html><html><head><meta charset=\"utf-8\"><title>Nexora Notes Shell</title></head><body>Notes shell not ready</body></html>"""
 _PROXY_TIMEOUT = 30
-_WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
-_VENDOR_ROOTS = [
-    _WORKSPACE_ROOT / "ChatDBServer" / "static" / "vendor",
-    _WORKSPACE_ROOT / "NexoraCode" / "static" / "vendor",
-]
+import sys
+
+def _get_vendor_roots():
+    roots = []
+    
+    workspace = Path(__file__).resolve().parents[2]
+    roots.append(workspace / "ChatDBServer" / "static" / "vendor")
+    
+    if getattr(sys, 'frozen', False):
+        base = Path(sys._MEIPASS) if hasattr(sys, '_MEIPASS') else Path(sys.executable).parent
+
+        roots.extend([
+            base / "ChatDBServer" / "static" / "vendor",
+            base / "static" / "vendor",
+        ])
+
+        # 获取 .exe 所在目录
+        exe_dir = Path(sys.executable).parent
+        roots.extend([
+            exe_dir / "ChatDBServer" / "static" / "vendor",  
+        ])
+
+    return [r for r in roots if r.exists()]
+
+_VENDOR_ROOTS = _get_vendor_roots()
 _HOP_HEADERS = {
     "connection",
     "keep-alive",

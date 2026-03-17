@@ -4,21 +4,46 @@
 
 import json
 import secrets
+import sys
 from pathlib import Path
 
-_CONFIG_PATH = Path(__file__).parent.parent / "config.json"
+def get_app_root() -> Path:
+    if getattr(sys, 'frozen', False):
+        return Path(sys.executable).parent
+    else:
+        return Path(__file__).resolve().parent.parent
+
+_CONFIG_PATH = get_app_root() / "config.json"
 _DEFAULTS = {
     "nexora_url": "https://chat.himpqblog.cn",
-    "allowed_dirs": [],        # 文件操作白名单目录，空列表=需用户每次授权
-    "shell_whitelist": [],     # 允许执行的命令前缀，空列表=全部需确认
-    "renderer_timeout": 20,    # Playwright 渲染超时（秒）
-    "window_mode": "native",   # native=原生标题栏, custom=自绘标题栏+原生边框, frameless=全自绘
-    "window_frameless": False, # 默认使用原生窗口框，保留系统最大化/贴边能力
-    "window_width": 960,
+    "allowed_dirs": [],
+    "shell_whitelist": [],
+    "renderer_timeout": 20,
+    "window_mode": "custom",
+    "force_frameless_borderless": False,
+    "window_frameless": False,
+    "window_width": 1000,
     "window_height": 700,
-    "preferred_model_id": "",
+    "preferred_model_id": "deepseek-v3-2-251201",
+    "notes_window_width": 410,
+    "notes_window_height": 473,
+    "notes_window_pinned": False,
+    "message": {
+        "bootstrap": "加载中",
+        "login": "正在登陆"
+    },
+    "local_proxy_enabled": True,
+    "devtools_enabled": False,
+    "devtools_auto_open": False,
+    "devtools_port": 9222,
+    "iframe_shell_enabled": False,
+    "persistent_outer_shell": True,
+    "allow_iframe_third_party_cookies": True,
+    "unsafe_disable_web_security": True,
+    "relax_iframe_samesite": True,
+    "auto_escape_iframe_login_loop": False,
+    "auth_trace": True
 }
-
 
 class Config:
     def __init__(self):

@@ -2,8 +2,9 @@
 系统托盘（pystray）
 """
 
+import sys
 from pathlib import Path
-
+from core.config import get_app_root
 
 def run_tray():
     try:
@@ -13,7 +14,18 @@ def run_tray():
         print("[Tray] pystray/Pillow not installed, tray disabled.")
         return
 
-    icon_path = Path(__file__).parent.parent / "assets" / "icon.png"
+    icon_path = get_app_root() / "assets" / "icon.png"
+    if not icon_path.exists() and getattr(sys, 'frozen', False):
+        # Fallback for local testing without bundled assets
+        fallback = get_app_root().parents[2] / "ChatDBServer" / "static" / "img" / "icon.png"
+        if fallback.exists():
+            icon_path = fallback
+
+    if not getattr(sys, 'frozen', False) and not icon_path.exists():
+        fallback_dev = get_app_root().parent / "ChatDBServer" / "static" / "img" / "icon.png"
+        if fallback_dev.exists():
+            icon_path = fallback_dev
+
     if icon_path.exists():
         image = Image.open(icon_path)
     else:
