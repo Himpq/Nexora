@@ -479,7 +479,7 @@ _BOOTSTRAP_HTML = """<!doctype html>
 </style>
 </head>
 <body>
-<div id="nc-boot-bar"><div class="nc-btb-btns"><button class="nb" data-act="min" title="最小化"><svg width="10" height="10" viewBox="0 0 10 1"><rect width="10" height="1" y="0" fill="currentColor"/></svg></button><button class="nb" data-act="max" title="最大化" id="nc-boot-max-btn"><svg width="10" height="10" viewBox="0 0 10 10"><rect x=".5" y=".5" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1"/></svg></button><button class="nb close" data-act="close" title="关闭"><svg width="10" height="10" viewBox="0 0 10 10"><line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" stroke-width="1.2"/><line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" stroke-width="1.2"/></svg></button></div></div>
+<div id="nc-boot-bar"><div class="nc-btb-btns"><button class="nb" data-act="settings" title="\u8bbe\u7f6e"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06 .06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.8 1 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg></button><button class="nb" data-act="min" title="最小化"><svg width="10" height="10" viewBox="0 0 10 1"><rect width="10" height="1" y="0" fill="currentColor"/></svg></button><button class="nb" data-act="max" title="最大化" id="nc-boot-max-btn"><svg width="10" height="10" viewBox="0 0 10 10"><rect x=".5" y=".5" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1"/></svg></button><button class="nb close" data-act="close" title="关闭"><svg width="10" height="10" viewBox="0 0 10 10"><line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" stroke-width="1.2"/><line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" stroke-width="1.2"/></svg></button></div></div>
 <div id="nc-boot-resize-grips"><div class="nc-boot-rsz edge-top" data-edge="top"></div><div class="nc-boot-rsz edge-bottom" data-edge="bottom"></div><div class="nc-boot-rsz edge-left" data-edge="left"></div><div class="nc-boot-rsz edge-right" data-edge="right"></div><div class="nc-boot-rsz corner-tl" data-edge="top-left"></div><div class="nc-boot-rsz corner-tr" data-edge="top-right"></div><div class="nc-boot-rsz corner-bl" data-edge="bottom-left"></div><div class="nc-boot-rsz corner-br" data-edge="bottom-right"></div></div>
 <div id="nc-shell-frame"><iframe id="nc-shell-iframe" referrerpolicy="strict-origin-when-cross-origin" allow="clipboard-read; clipboard-write"></iframe></div>
 <div id="nc-boot-stage">
@@ -834,7 +834,8 @@ _BOOTSTRAP_HTML = """<!doctype html>
             const a = api();
             if (!a) return;
             const act = String(btn.getAttribute('data-act') || '');
-            if (act === 'min' && a.minimize_window) a.minimize_window();
+            if (act === 'settings' && a.open_settings) a.open_settings();
+            else if (act === 'min' && a.minimize_window) a.minimize_window();
             else if (act === 'max' && a.maximize_window) {
                 a.maximize_window();
                 setBootResource('应用窗口状态...');
@@ -1161,6 +1162,46 @@ class NexoraWindowApi:
     setTimeout(applyPrefill, 0);
     setTimeout(applyPrefill, 80);
 }})();"""
+
+
+    def open_settings(self):
+        import os
+        import subprocess
+        import sys
+        from core.config import get_app_root
+        config_path = str(get_app_root() / "config.json")
+        try:
+            if os.name == "nt":
+                # User's window hides, probably the "Open With..." dialog spawned BEHIND the app
+                # Force opening config using notepad guarantees a pop-up in front
+                subprocess.Popen(["notepad.exe", config_path])
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", "-t", config_path])
+            else:
+                subprocess.Popen(["xdg-open", config_path])
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+
+    def open_settings(self):
+        import os
+        import subprocess
+        import sys
+        from core.config import get_app_root
+        config_path = str(get_app_root() / "config.json")
+        try:
+            if os.name == "nt":
+                # User's window hides, probably the "Open With..." dialog spawned BEHIND the app
+                # Force opening config using notepad guarantees a pop-up in front
+                subprocess.Popen(["notepad.exe", config_path])
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", "-t", config_path])
+            else:
+                subprocess.Popen(["xdg-open", config_path])
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     def close_window(self):
         _STOP_POLL.set()
@@ -2220,7 +2261,8 @@ def _build_notes_titlebar_js() -> str:
   const ICON_MIN      = '<svg width="10" height="10" viewBox="0 0 10 1"><rect width="10" height="1" y="0" fill="currentColor"/></svg>';
   const ICON_MAX      = '<svg width="10" height="10" viewBox="0 0 10 10"><rect x=".5" y=".5" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1"/></svg>';
   const ICON_RESTORE  = '<svg width="10" height="10" viewBox="0 0 10 10"><rect x="2" y="0" width="8" height="8" fill="#050505" stroke="currentColor" stroke-width="1"/><rect x="0" y="2" width="8" height="8" fill="#050505" stroke="currentColor" stroke-width="1"/></svg>';
-  const ICON_CLOSE    = '<svg width="10" height="10" viewBox="0 0 10 10"><line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" stroke-width="1.2"/><line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" stroke-width="1.2"/></svg>';
+  const ICON_SETTINGS = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.8 1 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>';
+    const ICON_CLOSE    = '<svg width="10" height="10" viewBox="0 0 10 10"><line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" stroke-width="1.2"/><line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" stroke-width="1.2"/></svg>';
   const TB_H = 36;
     let bridgeReady = !!(window.pywebview && window.pywebview.api);
     function canCallApi() {
@@ -2362,7 +2404,8 @@ def _build_notes_titlebar_js() -> str:
         let skipNativeDbl = false;
     const clearDownState = () => { downState = null; };
     const pinBtn = bar.querySelector('.nc-pin');
-    const minBtn = bar.querySelector('.nc-min');
+    const settingsBtn = bar.querySelector('.nc-settings');
+      const minBtn = bar.querySelector('.nc-min');
     const maxBtn = bar.querySelector('.nc-max');
     const closeBtn = bar.querySelector('.nc-close');
     if (pinBtn) pinBtn.onclick = function(e) {
@@ -2373,7 +2416,8 @@ def _build_notes_titlebar_js() -> str:
         setPinIcon(!!(d && d.pinned));
       }).catch(function() {});
     };
-    if (minBtn) minBtn.onclick = e => { e.stopPropagation(); api() && api().minimize_notes_window && api().minimize_notes_window(); };
+    if (settingsBtn) settingsBtn.onclick = e => { e.stopPropagation(); api() && api().open_settings && api().open_settings(); };
+      if (minBtn) minBtn.onclick = e => { e.stopPropagation(); api() && api().minimize_notes_window && api().minimize_notes_window(); };
     if (maxBtn) maxBtn.onclick = e => { e.stopPropagation(); api() && api().maximize_notes_window && api().maximize_notes_window(); };
     if (closeBtn) closeBtn.onclick = e => { e.stopPropagation(); api() && api().close_notes_window && api().close_notes_window(); };
 
@@ -2417,7 +2461,8 @@ def _build_notes_titlebar_js() -> str:
       bar.innerHTML = `
         <div class="nc-notes-btns">
           <button class="nc-notes-btn nc-pin" id="nc-notes-pin-btn" title="\u7f6e\u9876">${ICON_PIN_OFF}</button>
-          <button class="nc-notes-btn nc-min" title="\u6700\u5c0f\u5316">${ICON_MIN}</button>
+          <button class="nc-notes-btn nc-settings" title="\u8bbe\u7f6e">${ICON_SETTINGS}</button>
+            <button class="nc-notes-btn nc-min" title="\u6700\u5c0f\u5316">${ICON_MIN}</button>
           <button class="nc-notes-btn nc-max" title="\u6700\u5927\u5316" id="nc-notes-max-btn">${ICON_MAX}</button>
           <button class="nc-notes-btn nc-close" title="\u5173\u95ed">${ICON_CLOSE}</button>
         </div>
@@ -2827,7 +2872,8 @@ def main():
   const ICON_MIN     = '<svg width="10" height="10" viewBox="0 0 10 1"><rect width="10" height="1" y="0" fill="currentColor"/></svg>';
   const ICON_MAX     = '<svg width="10" height="10" viewBox="0 0 10 10"><rect x=".5" y=".5" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1"/></svg>';
     const ICON_RESTORE = '<svg width="10" height="10" viewBox="0 0 10 10"><path d="M3 1.5h5.5v5.5H3zM1.5 3h5.5v5.5H1.5z" fill="none" stroke="currentColor" stroke-width="1"/></svg>';
-  const ICON_CLOSE   = '<svg width="10" height="10" viewBox="0 0 10 10"><line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" stroke-width="1.2"/><line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" stroke-width="1.2"/></svg>';
+  const ICON_SETTINGS = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.8 1 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>';
+    const ICON_CLOSE   = '<svg width="10" height="10" viewBox="0 0 10 10"><line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" stroke-width="1.2"/><line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" stroke-width="1.2"/></svg>';
 
     const api = () => window.pywebview && window.pywebview.api;
     const TB_H = 36;
@@ -3177,10 +3223,12 @@ def main():
         let skipNativeDbl = false;
     const clearDownState = () => { downState = null; };
 
-    const minBtn = bar.querySelector('.nc-min');
+    const settingsBtn = bar.querySelector('.nc-settings');
+      const minBtn = bar.querySelector('.nc-min');
     const maxBtn = bar.querySelector('.nc-max');
     const closeBtn = bar.querySelector('.nc-close');
-    if (minBtn) minBtn.onclick = e => { e.stopPropagation(); api() && api().minimize_window && api().minimize_window(); };
+    if (settingsBtn) settingsBtn.onclick = e => { e.stopPropagation(); api() && api().open_settings && api().open_settings(); };
+      if (minBtn) minBtn.onclick = e => { e.stopPropagation(); api() && api().minimize_window && api().minimize_window(); };
     if (maxBtn) maxBtn.onclick = e => { e.stopPropagation(); api() && api().maximize_window && api().maximize_window(); };
     if (closeBtn) closeBtn.onclick = e => { e.stopPropagation(); api() && api().close_window && api().close_window(); };
 
@@ -3250,7 +3298,8 @@ def main():
       bar.id = 'nc-titlebar';
       bar.innerHTML = `
         <div class="nc-tb-btns">
-          <button class="nc-tb-btn nc-min" title="\u6700\u5c0f\u5316">${ICON_MIN}</button>
+          <button class="nc-tb-btn nc-settings" title="\u8bbe\u7f6e">${ICON_SETTINGS}</button>
+            <button class="nc-tb-btn nc-min" title="\u6700\u5c0f\u5316">${ICON_MIN}</button>
           <button class="nc-tb-btn nc-max" title="\u6700\u5927\u5316" id="nc-max-btn">${ICON_MAX}</button>
           <button class="nc-tb-btn nc-close" title="\u5173\u95ed">${ICON_CLOSE}</button>
         </div>
