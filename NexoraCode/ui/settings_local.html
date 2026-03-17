@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nexora Settings</title>
+    <style>
+        :root {
+            --bg: #0c0c0f;
+            --panel: #15161b;
+            --panel-soft: #1b1d24;
+            --border: rgba(255,255,255,0.08);
+            --text: #f4f1ea;
+            --muted: #a7a09a;
+            --accent: #d5b079;
+            --accent-strong: #f1d4a6;
+            --danger: #cf6c5f;
+            --input: #111319;
+        }
+
+        * { box-sizing: border-box; }
+        html, body {
+            margin: 0;
+            height: 100%;
+            background: var(--bg);
+            color: var(--text);
+            font-family: "Segoe UI", "PingFang SC", sans-serif;
+            overflow: hidden;
+        }
+
+        body {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .titlebar {
+            height: 38px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 0 0 14px;
+            background: #070709;
+            border-bottom: 1px solid rgba(255,255,255,0.06);
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        .titlebar-title {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 13px;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+        }
+
+        .titlebar-dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 999px;
+            background: linear-gradient(135deg, var(--accent), #8f6c3f);
+            box-shadow: 0 0 18px rgba(213, 176, 121, 0.45);
+        }
+
+        .titlebar-actions {
+            display: flex;
+            align-items: stretch;
+            height: 100%;
+        }
+
+        .titlebar-btn {
+            width: 46px;
+            height: 100%;
+            border: none;
+            background: transparent;
+            color: #d8d0c8;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        .titlebar-btn:hover { background: rgba(255,255,255,0.08); }
+        .titlebar-btn.close:hover { background: #c42b1c; color: #fff; }
+
+        .shell {
+            flex: 1;
+            min-height: 0;
+            display: grid;
+            grid-template-columns: 220px minmax(0, 1fr);
+        }
+
+        .sidebar {
+            background: #0f1015;
+            border-right: 1px solid var(--border);
+            padding: 18px 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .brand {
+            font-size: 12px;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.14em;
+            margin-bottom: 6px;
+        }
+
+        .nav-btn {
+            border: 1px solid transparent;
+            background: transparent;
+            color: #d8d1ca;
+            text-align: left;
+            padding: 11px 12px;
+            border-radius: 12px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+
+        .nav-btn.active {
+            background: rgba(121, 78, 42, 0.42);
+            border-color: rgba(213, 176, 121, 0.22);
+            color: var(--accent-strong);
+        }
+
+        .content {
+            min-width: 0;
+            min-height: 0;
+            padding: 18px 20px 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        .toolbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .toolbar-title {
+            font-size: 20px;
+            font-weight: 700;
+            letter-spacing: 0.01em;
+        }
+
+        .toolbar-sub {
+            font-size: 12px;
+            color: var(--muted);
+            margin-top: 4px;
+        }
+
+        .toolbar-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            border: 1px solid rgba(213, 176, 121, 0.18);
+            background: linear-gradient(180deg, rgba(99, 69, 42, 0.38), rgba(61, 45, 30, 0.38));
+            color: var(--accent-strong);
+            border-radius: 10px;
+            padding: 9px 14px;
+            font-size: 13px;
+            cursor: pointer;
+        }
+
+        .btn.secondary {
+            background: #171920;
+            color: #ddd6ce;
+            border-color: var(--border);
+        }
+
+        .btn.danger {
+            background: rgba(122, 46, 41, 0.35);
+            color: #ffd9d5;
+            border-color: rgba(207, 108, 95, 0.25);
+        }
+
+        .panel {
+            flex: 1;
+            min-height: 0;
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .panel-body {
+            flex: 1;
+            min-height: 0;
+            overflow: auto;
+            padding: 18px;
+        }
+
+        .section {
+            display: none;
+        }
+
+        .section.active {
+            display: block;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 14px;
+        }
+
+        .full {
+            grid-column: 1 / -1;
+        }
+
+        .field {
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+        }
+
+        .field label {
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        .field input,
+        .field select,
+        .field textarea {
+            width: 100%;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: var(--input);
+            color: var(--text);
+            border-radius: 10px;
+            padding: 10px 12px;
+            font-size: 13px;
+            outline: none;
+        }
+
+        .field textarea {
+            min-height: 130px;
+            resize: vertical;
+            font-family: "JetBrains Mono", "Consolas", monospace;
+        }
+
+        .checkbox {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-height: 42px;
+            padding: 10px 12px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: var(--input);
+            border-radius: 10px;
+        }
+
+        .checkbox input {
+            width: 16px;
+            height: 16px;
+        }
+
+        .hint {
+            font-size: 11px;
+            color: var(--muted);
+            line-height: 1.45;
+        }
+
+        .status {
+            padding: 10px 12px;
+            border-top: 1px solid var(--border);
+            background: var(--panel-soft);
+            font-size: 12px;
+            color: var(--muted);
+            min-height: 40px;
+        }
+
+        .status.ok { color: #bfe0ab; }
+        .status.err { color: #ffc4bd; }
+
+        @media (max-width: 900px) {
+            .shell { grid-template-columns: 180px minmax(0, 1fr); }
+            .grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="titlebar" id="titlebar">
+        <div class="titlebar-title">
+            <span class="titlebar-dot"></span>
+            <span>Nexora Settings</span>
+        </div>
+        <div class="titlebar-actions">
+            <button class="titlebar-btn" id="minBtn" title="最小化">─</button>
+            <button class="titlebar-btn" id="maxBtn" title="最大化">□</button>
+            <button class="titlebar-btn close" id="closeBtn" title="关闭">✕</button>
+        </div>
+    </div>
+
+    <div class="shell">
+        <aside class="sidebar">
+            <div class="brand">Local Config</div>
+            <button class="nav-btn active" data-section="basic">基础</button>
+            <button class="nav-btn" data-section="window">窗口</button>
+            <button class="nav-btn" data-section="advanced">高级</button>
+            <button class="nav-btn" data-section="json">JSON</button>
+        </aside>
+        <main class="content">
+            <div class="toolbar">
+                <div>
+                    <div class="toolbar-title">本地设置</div>
+                    <div class="toolbar-sub">直接读写 `NexoraCode/config.json`，不依赖远端页面。</div>
+                </div>
+                <div class="toolbar-actions">
+                    <button class="btn secondary" id="reloadBtn">重新读取</button>
+                    <button class="btn" id="saveBasicBtn">保存当前页</button>
+                    <button class="btn danger" id="saveJsonBtn">保存 JSON</button>
+                </div>
+            </div>
+
+            <section class="panel">
+                <div class="panel-body">
+                    <div class="section active" id="section-basic">
+                        <div class="grid">
+                            <div class="field">
+                                <label for="nexora_url">Nexora URL</label>
+                                <input id="nexora_url" type="text">
+                            </div>
+                            <div class="field">
+                                <label for="preferred_model_id">默认模型 ID</label>
+                                <input id="preferred_model_id" type="text">
+                            </div>
+                            <div class="field full">
+                                <label for="allowed_dirs">Allowed Dirs</label>
+                                <textarea id="allowed_dirs" placeholder="每行一个目录"></textarea>
+                                <div class="hint">用于本地工具允许访问的目录白名单。</div>
+                            </div>
+                            <div class="field full">
+                                <label for="shell_whitelist">Shell Whitelist</label>
+                                <textarea id="shell_whitelist" placeholder="每行一个命令前缀"></textarea>
+                                <div class="hint">示例：`git status` 或 `python script.py`。</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="section" id="section-window">
+                        <div class="grid">
+                            <div class="field">
+                                <label for="window_mode">窗口模式</label>
+                                <select id="window_mode">
+                                    <option value="custom">custom</option>
+                                    <option value="native">native</option>
+                                    <option value="frameless">frameless</option>
+                                </select>
+                            </div>
+                            <div class="field">
+                                <label for="renderer_timeout">Renderer Timeout</label>
+                                <input id="renderer_timeout" type="number" min="1" max="120">
+                            </div>
+                            <div class="field">
+                                <label for="window_width">主窗口宽度</label>
+                                <input id="window_width" type="number" min="640" max="2200">
+                            </div>
+                            <div class="field">
+                                <label for="window_height">主窗口高度</label>
+                                <input id="window_height" type="number" min="480" max="1800">
+                            </div>
+                            <div class="field">
+                                <label for="notes_window_width">笔记窗口宽度</label>
+                                <input id="notes_window_width" type="number" min="320" max="1800">
+                            </div>
+                            <div class="field">
+                                <label for="notes_window_height">笔记窗口高度</label>
+                                <input id="notes_window_height" type="number" min="320" max="1800">
+                            </div>
+                            <div class="field">
+                                <label for="settings_window_width">设置窗口宽度</label>
+                                <input id="settings_window_width" type="number" min="700" max="1800">
+                            </div>
+                            <div class="field">
+                                <label for="settings_window_height">设置窗口高度</label>
+                                <input id="settings_window_height" type="number" min="520" max="1600">
+                            </div>
+                            <label class="checkbox"><input id="notes_window_pinned" type="checkbox"><span>笔记窗口默认置顶</span></label>
+                            <label class="checkbox"><input id="window_frameless" type="checkbox"><span>主窗口 Frameless</span></label>
+                            <label class="checkbox"><input id="force_frameless_borderless" type="checkbox"><span>强制 Borderless</span></label>
+                        </div>
+                    </div>
+
+                    <div class="section" id="section-advanced">
+                        <div class="grid">
+                            <label class="checkbox"><input id="local_proxy_enabled" type="checkbox"><span>启用本地代理</span></label>
+                            <label class="checkbox"><input id="persistent_outer_shell" type="checkbox"><span>启用 Persistent Outer Shell</span></label>
+                            <label class="checkbox"><input id="iframe_shell_enabled" type="checkbox"><span>启用 Iframe Shell</span></label>
+                            <label class="checkbox"><input id="allow_iframe_third_party_cookies" type="checkbox"><span>允许第三方 Cookie</span></label>
+                            <label class="checkbox"><input id="unsafe_disable_web_security" type="checkbox"><span>关闭 Web 安全限制</span></label>
+                            <label class="checkbox"><input id="relax_iframe_samesite" type="checkbox"><span>放宽 SameSite</span></label>
+                            <label class="checkbox"><input id="auto_escape_iframe_login_loop" type="checkbox"><span>自动跳出 Iframe 登录循环</span></label>
+                            <label class="checkbox"><input id="auth_trace" type="checkbox"><span>Auth Trace</span></label>
+                            <label class="checkbox"><input id="devtools_enabled" type="checkbox"><span>允许 DevTools</span></label>
+                            <label class="checkbox"><input id="devtools_auto_open" type="checkbox"><span>自动打开 DevTools</span></label>
+                            <div class="field">
+                                <label for="devtools_port">DevTools 端口</label>
+                                <input id="devtools_port" type="number" min="1000" max="65535">
+                            </div>
+                            <div class="field">
+                                <label for="message_bootstrap">Bootstrap 文案</label>
+                                <input id="message_bootstrap" type="text">
+                            </div>
+                            <div class="field">
+                                <label for="message_login">Login 文案</label>
+                                <input id="message_login" type="text">
+                            </div>
+                            <div class="field">
+                                <label for="agent_token">Agent Token</label>
+                                <input id="agent_token" type="text">
+                                <div class="hint">保留即可。留空时会自动重新生成。</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="section" id="section-json">
+                        <div class="field">
+                            <label for="jsonEditor">完整 JSON</label>
+                            <textarea id="jsonEditor" style="min-height: 420px;"></textarea>
+                            <div class="hint">这里是完整配置对象。保存 JSON 会覆盖当前配置并保留缺省字段。</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="status" id="status">等待加载配置...</div>
+            </section>
+        </main>
+    </div>
+
+    <script>
+        (function () {
+            let cfg = {};
+            let currentSection = 'basic';
+            let dragState = null;
+
+            function api() {
+                return (window.pywebview && window.pywebview.api) ? window.pywebview.api : null;
+            }
+
+            function setStatus(text, kind) {
+                const el = document.getElementById('status');
+                if (!el) return;
+                el.textContent = String(text || '');
+                el.className = 'status' + (kind ? (' ' + kind) : '');
+            }
+
+            function linesToArray(text) {
+                return String(text || '')
+                    .split(/\r?\n/)
+                    .map((s) => s.trim())
+                    .filter(Boolean);
+            }
+
+            function arrayToLines(arr) {
+                return Array.isArray(arr) ? arr.join('\n') : '';
+            }
+
+            function fillForm(data) {
+                cfg = JSON.parse(JSON.stringify(data || {}));
+                const pick = (id, fallback = '') => document.getElementById(id).value = String(fallback ?? '');
+                const check = (id, value) => document.getElementById(id).checked = !!value;
+
+                pick('nexora_url', cfg.nexora_url || '');
+                pick('preferred_model_id', cfg.preferred_model_id || '');
+                pick('allowed_dirs', arrayToLines(cfg.allowed_dirs));
+                pick('shell_whitelist', arrayToLines(cfg.shell_whitelist));
+                pick('window_mode', cfg.window_mode || 'custom');
+                pick('renderer_timeout', cfg.renderer_timeout ?? 20);
+                pick('window_width', cfg.window_width ?? 1000);
+                pick('window_height', cfg.window_height ?? 700);
+                pick('notes_window_width', cfg.notes_window_width ?? 410);
+                pick('notes_window_height', cfg.notes_window_height ?? 473);
+                pick('settings_window_width', cfg.settings_window_width ?? 900);
+                pick('settings_window_height', cfg.settings_window_height ?? 640);
+                pick('devtools_port', cfg.devtools_port ?? 9222);
+                pick('message_bootstrap', (cfg.message && cfg.message.bootstrap) || '');
+                pick('message_login', (cfg.message && cfg.message.login) || '');
+                pick('agent_token', cfg.agent_token || '');
+
+                check('notes_window_pinned', cfg.notes_window_pinned);
+                check('window_frameless', cfg.window_frameless);
+                check('force_frameless_borderless', cfg.force_frameless_borderless);
+                check('local_proxy_enabled', cfg.local_proxy_enabled);
+                check('persistent_outer_shell', cfg.persistent_outer_shell);
+                check('iframe_shell_enabled', cfg.iframe_shell_enabled);
+                check('allow_iframe_third_party_cookies', cfg.allow_iframe_third_party_cookies);
+                check('unsafe_disable_web_security', cfg.unsafe_disable_web_security);
+                check('relax_iframe_samesite', cfg.relax_iframe_samesite);
+                check('auto_escape_iframe_login_loop', cfg.auto_escape_iframe_login_loop);
+                check('auth_trace', cfg.auth_trace);
+                check('devtools_enabled', cfg.devtools_enabled);
+                check('devtools_auto_open', cfg.devtools_auto_open);
+
+                document.getElementById('jsonEditor').value = JSON.stringify(cfg, null, 2);
+            }
+
+            function collectBasic() {
+                const next = JSON.parse(JSON.stringify(cfg || {}));
+                const num = (id, fallback) => {
+                    const raw = Number(document.getElementById(id).value);
+                    return Number.isFinite(raw) ? Math.floor(raw) : fallback;
+                };
+
+                next.nexora_url = document.getElementById('nexora_url').value.trim();
+                next.preferred_model_id = document.getElementById('preferred_model_id').value.trim();
+                next.allowed_dirs = linesToArray(document.getElementById('allowed_dirs').value);
+                next.shell_whitelist = linesToArray(document.getElementById('shell_whitelist').value);
+                next.window_mode = document.getElementById('window_mode').value.trim() || 'custom';
+                next.renderer_timeout = num('renderer_timeout', 20);
+                next.window_width = num('window_width', 1000);
+                next.window_height = num('window_height', 700);
+                next.notes_window_width = num('notes_window_width', 410);
+                next.notes_window_height = num('notes_window_height', 473);
+                next.settings_window_width = num('settings_window_width', 900);
+                next.settings_window_height = num('settings_window_height', 640);
+                next.devtools_port = num('devtools_port', 9222);
+                next.agent_token = document.getElementById('agent_token').value.trim();
+
+                next.notes_window_pinned = document.getElementById('notes_window_pinned').checked;
+                next.window_frameless = document.getElementById('window_frameless').checked;
+                next.force_frameless_borderless = document.getElementById('force_frameless_borderless').checked;
+                next.local_proxy_enabled = document.getElementById('local_proxy_enabled').checked;
+                next.persistent_outer_shell = document.getElementById('persistent_outer_shell').checked;
+                next.iframe_shell_enabled = document.getElementById('iframe_shell_enabled').checked;
+                next.allow_iframe_third_party_cookies = document.getElementById('allow_iframe_third_party_cookies').checked;
+                next.unsafe_disable_web_security = document.getElementById('unsafe_disable_web_security').checked;
+                next.relax_iframe_samesite = document.getElementById('relax_iframe_samesite').checked;
+                next.auto_escape_iframe_login_loop = document.getElementById('auto_escape_iframe_login_loop').checked;
+                next.auth_trace = document.getElementById('auth_trace').checked;
+                next.devtools_enabled = document.getElementById('devtools_enabled').checked;
+                next.devtools_auto_open = document.getElementById('devtools_auto_open').checked;
+                next.message = next.message || {};
+                next.message.bootstrap = document.getElementById('message_bootstrap').value;
+                next.message.login = document.getElementById('message_login').value;
+                return next;
+            }
+
+            async function loadConfig() {
+                setStatus('读取配置中...', '');
+                try {
+                    const a = api();
+                    if (!a || typeof a.get_local_settings_snapshot !== 'function') {
+                        throw new Error('pywebview api unavailable');
+                    }
+                    const res = await a.get_local_settings_snapshot();
+                    if (!res || !res.success) {
+                        throw new Error((res && (res.message || res.error)) || 'load failed');
+                    }
+                    fillForm(res.data || {});
+                    setStatus('配置已加载', 'ok');
+                } catch (e) {
+                    setStatus('读取失败: ' + String((e && e.message) || e), 'err');
+                }
+            }
+
+            async function savePayload(payload, source) {
+                setStatus('保存中...', '');
+                try {
+                    const a = api();
+                    if (!a || typeof a.save_local_settings_snapshot !== 'function') {
+                        throw new Error('save api unavailable');
+                    }
+                    const res = await a.save_local_settings_snapshot(payload);
+                    if (!res || !res.success) {
+                        throw new Error((res && (res.message || res.error)) || 'save failed');
+                    }
+                    fillForm(res.data || payload || {});
+                    setStatus(source + ' 已保存。部分设置需重启 NexoraCode 才会生效。', 'ok');
+                } catch (e) {
+                    setStatus('保存失败: ' + String((e && e.message) || e), 'err');
+                }
+            }
+
+            function switchSection(name) {
+                currentSection = name;
+                document.querySelectorAll('.nav-btn').forEach((btn) => {
+                    btn.classList.toggle('active', btn.dataset.section === name);
+                });
+                document.querySelectorAll('.section').forEach((sec) => {
+                    sec.classList.toggle('active', sec.id === 'section-' + name);
+                });
+            }
+
+            function bindTitlebar() {
+                const bar = document.getElementById('titlebar');
+                const minBtn = document.getElementById('minBtn');
+                const maxBtn = document.getElementById('maxBtn');
+                const closeBtn = document.getElementById('closeBtn');
+
+                minBtn.addEventListener('click', () => api()?.minimize_settings_window?.());
+                maxBtn.addEventListener('click', async () => {
+                    await api()?.maximize_settings_window?.();
+                    syncMaxState();
+                });
+                closeBtn.addEventListener('click', () => api()?.close_settings_window?.());
+
+                bar.addEventListener('dblclick', (e) => {
+                    if (e.target.closest('.titlebar-actions')) return;
+                    api()?.maximize_settings_window?.().then(syncMaxState).catch(() => {});
+                });
+
+                bar.addEventListener('mousedown', (e) => {
+                    if (e.button !== 0) return;
+                    if (e.target.closest('.titlebar-actions')) return;
+                    dragState = { x: e.clientX, y: e.clientY, started: false };
+                });
+
+                window.addEventListener('mousemove', (e) => {
+                    if (!dragState || dragState.started) return;
+                    if (Math.abs(e.clientX - dragState.x) + Math.abs(e.clientY - dragState.y) < 4) return;
+                    dragState.started = true;
+                    api()?.start_settings_window_drag?.();
+                });
+                window.addEventListener('mouseup', () => { dragState = null; });
+            }
+
+            async function syncMaxState() {
+                try {
+                    const a = api();
+                    if (!a || typeof a.is_settings_window_maximized !== 'function') return;
+                    const res = await a.is_settings_window_maximized();
+                    const maxBtn = document.getElementById('maxBtn');
+                    if (maxBtn) {
+                        maxBtn.textContent = (res && res.maximized) ? '❐' : '□';
+                    }
+                    await a.sync_settings_window_state?.();
+                } catch (_) {}
+            }
+
+            let boundsTimer = null;
+            function bindBoundsSync() {
+                window.addEventListener('resize', () => {
+                    if (boundsTimer) clearTimeout(boundsTimer);
+                    boundsTimer = setTimeout(() => {
+                        api()?.set_settings_window_bounds?.(window.innerWidth, window.innerHeight);
+                    }, 140);
+                });
+            }
+
+            function bindUI() {
+                document.querySelectorAll('.nav-btn').forEach((btn) => {
+                    btn.addEventListener('click', () => switchSection(btn.dataset.section));
+                });
+                document.getElementById('reloadBtn').addEventListener('click', loadConfig);
+                document.getElementById('saveBasicBtn').addEventListener('click', () => savePayload(collectBasic(), '当前页配置'));
+                document.getElementById('saveJsonBtn').addEventListener('click', () => {
+                    try {
+                        const payload = JSON.parse(document.getElementById('jsonEditor').value);
+                        savePayload(payload, 'JSON 配置');
+                    } catch (e) {
+                        setStatus('JSON 解析失败: ' + String((e && e.message) || e), 'err');
+                    }
+                });
+            }
+
+            function ready(fn) {
+                if (window.pywebview && window.pywebview.api) {
+                    fn();
+                    return;
+                }
+                window.addEventListener('pywebviewready', fn, { once: true });
+            }
+
+            ready(() => {
+                bindTitlebar();
+                bindBoundsSync();
+                bindUI();
+                loadConfig();
+                syncMaxState();
+            });
+        })();
+    </script>
+</body>
+</html>

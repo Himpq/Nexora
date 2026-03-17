@@ -22,7 +22,9 @@ app = Flask(__name__, static_folder=None)
 registry = ToolRegistry()
 _NEXORA_SHELL_HTML = """<!doctype html><html><head><meta charset=\"utf-8\"><title>Nexora Shell</title></head><body>Shell not ready</body></html>"""
 _NEXORA_NOTES_SHELL_HTML = """<!doctype html><html><head><meta charset=\"utf-8\"><title>Nexora Notes Shell</title></head><body>Notes shell not ready</body></html>"""
+_NEXORA_SETTINGS_SHELL_HTML = """<!doctype html><html><head><meta charset=\"utf-8\"><title>Nexora Settings Shell</title></head><body>Settings shell not ready</body></html>"""
 _PROXY_TIMEOUT = 30
+_VERBOSE_PROXY_LOG = str(config.get("verbose_proxy_log", False)).strip().lower() in {"1", "true", "on", "yes"}
 import sys
 
 def _get_vendor_roots():
@@ -48,6 +50,9 @@ def _get_vendor_roots():
     return [r for r in roots if r.exists()]
 
 _VENDOR_ROOTS = _get_vendor_roots()
+_VENDOR_REMOTE_PREFIXES = {
+    "katex/": "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/",
+}
 _HOP_HEADERS = {
     "connection",
     "keep-alive",
@@ -157,6 +162,17 @@ def _resolve_vendor_asset(asset_path: str) -> Path | None:
     return None
 
 
+def _resolve_vendor_remote_url(asset_path: str) -> str:
+    rel = str(asset_path or "").strip().lstrip("/").replace("\\", "/")
+    if not rel or ".." in rel.split("/"):
+        return ""
+    for prefix, base in _VENDOR_REMOTE_PREFIXES.items():
+        if rel.startswith(prefix):
+            suffix = rel[len(prefix):]
+            return str(base or "") + suffix
+    return ""
+
+
 def set_shell_html(html: str) -> None:
     global _NEXORA_SHELL_HTML
     txt = str(html or "").strip()
@@ -169,6 +185,13 @@ def set_notes_shell_html(html: str) -> None:
     txt = str(html or "").strip()
     if txt:
         _NEXORA_NOTES_SHELL_HTML = txt
+
+
+def set_settings_shell_html(html: str) -> None:
+    global _NEXORA_SETTINGS_SHELL_HTML
+    txt = str(html or "").strip()
+    if txt:
+        _NEXORA_SETTINGS_SHELL_HTML = txt
 
 
 def _check_token() -> bool:
@@ -293,13 +316,14 @@ def _proxy_request(path: str):
         or path_likely_stream
     )
 
-    try:
-        print(
-            f"[NexoraProxy] stream_detect path=/{path_lower} accept_sse={'text/event-stream' in accept_lower} "
-            f"body_stream={body_indicates_stream} ct={ct_lower} result={is_streaming_response}"
-        )
-    except Exception:
-        pass
+    if _VERBOSE_PROXY_LOG:
+        try:
+            print(
+                f"[NexoraProxy] stream_detect path=/{path_lower} accept_sse={'text/event-stream' in accept_lower} "
+                f"body_stream={body_indicates_stream} ct={ct_lower} result={is_streaming_response}"
+            )
+        except Exception:
+            pass
 
     if is_streaming_response:
         # Preserve incremental token delivery for chat streaming responses.
@@ -396,12 +420,33 @@ def health():
 
 @app.route("/nc/shell")
 def nc_shell():
-    return Response(_NEXORA_SHELL_HTML, mimetype="text/html; charset=utf-8")
+    resp = Response(_NEXORA_SHELL_HTML, mimetype="text/html; charset=utf-8")
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
 
 
 @app.route("/nc/notes-shell")
 def nc_notes_shell():
-    return Response(_NEXORA_NOTES_SHELL_HTML, mimetype="text/html; charset=utf-8")
+    resp = Response(_NEXORA_NOTES_SHELL_HTML, mimetype="text/html; charset=utf-8")
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
+
+
+@app.route("/nc/settings-shell")
+def nc_settings_shell():
+    try:
+        print("[NexoraSettings] serve /nc/settings-shell")
+    except Exception:
+        pass
+    resp = Response(_NEXORA_SETTINGS_SHELL_HTML, mimetype="text/html; charset=utf-8")
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
 
 
 @app.route("/favicon.ico")
@@ -412,14 +457,30 @@ def favicon():
 @app.route("/nc/vendor/<path:asset_path>")
 def nc_vendor_asset(asset_path: str):
     target = _resolve_vendor_asset(asset_path)
-    if not target:
+    if target:
+        try:
+            data = target.read_bytes()
+            mime, _ = mimetypes.guess_type(str(target))
+            resp = Response(data, status=200, mimetype=(mime or "application/octet-stream"))
+            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            return resp
+        except Exception:
+            return Response(status=500)
+
+    remote_url = _resolve_vendor_remote_url(asset_path)
+    if not remote_url:
         return Response(status=404)
     try:
-        data = target.read_bytes()
-        mime, _ = mimetypes.guess_type(str(target))
-        return Response(data, status=200, mimetype=(mime or "application/octet-stream"))
+        upstream = requests.get(remote_url, timeout=_PROXY_TIMEOUT)
+        data = upstream.content
+        mime = str(upstream.headers.get("Content-Type") or "").strip() or None
+        if not mime:
+            mime, _ = mimetypes.guess_type(str(asset_path))
+        resp = Response(data, status=upstream.status_code, mimetype=(mime or "application/octet-stream"))
+        resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return resp
     except Exception:
-        return Response(status=500)
+        return Response(status=502)
 
 
 @app.route("/", defaults={"path": ""}, methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])

@@ -3,6 +3,8 @@ import os
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
+import prompts
+
 
 class ProviderInterface(ABC):
     """
@@ -479,10 +481,7 @@ class ProviderInterface(ABC):
         # volcengine很大概率忽略system提示词，无解，故先使用role: user
         return {
             "role": "user",
-            "content": (
-                f"[系统指令] 你（AI助手）已完成工具调用: {', '.join(tool_names)}。"
-                "请根据返回的工具结果，继续完成对用户的回答或做出最终总结。"
-            ),
+            "content": prompts.build_tool_completion_hint_text(tool_names),
         }
 
     def _as_bool(self, value: Any, default: bool = False) -> bool:

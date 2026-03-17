@@ -202,8 +202,9 @@ class Model:
             )
             _CLIENT_CACHE[cache_key] = self.client
         
-        # 系统提示词（支持 {{var}} 模板变量）
-        self.system_prompt = self._render_prompt_template(system_prompt) if system_prompt else self._get_default_system_prompt()
+        # 系统提示词模板（支持 {{var}} 模板变量），按请求期开关动态拼接。
+        self.system_prompt_template = str(system_prompt or "").strip() if system_prompt else self._get_default_system_prompt_template()
+        self.system_prompt = self._build_effective_system_prompt()
 
         # 搜索适配器（provider 级）配置
         self.search_adapter_config = self._load_search_adapter_runtime_config()
@@ -272,12 +273,29 @@ class Model:
         )
         return response.data[0].embedding
 
-    def _get_default_system_prompt(self) -> str:
-        """获取极简高效的系统提示词"""
+    def _get_default_system_prompt_template(self) -> str:
+        """获取系统提示词模板（未做变量渲染/能力片段拼接）"""
         # 检查是否有特定模型的自定义提示词
         if hasattr(prompts, 'others') and self.model_name in prompts.others:
-            return self._render_prompt_template(prompts.others[self.model_name])
-        return self._render_prompt_template(prompts.default)
+            return str(prompts.others[self.model_name] or "")
+        return str(prompts.default or "")
+
+    def _build_effective_system_prompt(
+        self,
+        enable_web_search: bool = False,
+        enable_tools: bool = False,
+        tool_mode: str = "auto"
+    ) -> str:
+        base_template = str(getattr(self, "system_prompt_template", "") or "").strip()
+        if not base_template:
+            base_template = self._get_default_system_prompt_template()
+        combined_template = prompts.build_main_system_prompt(
+            base_template,
+            enable_web_search=bool(enable_web_search),
+            enable_tools=bool(enable_tools),
+            tool_mode=str(tool_mode or "auto"),
+        )
+        return self._render_prompt_template(combined_template)
     
     def _get_default_web_search_prompt(self) -> str:
         """获取默认的联网搜索系统提示词"""
@@ -1599,21 +1617,7 @@ class Model:
             if not name or name == "selectTools":
                 continue
             names.append(name)
-        if not names:
-            return "当前没有可选工具目录。"
-        cap = max(1, int(max_items or 24))
-        shown = names[:cap]
-        extra = max(0, len(names) - len(shown))
-        joined = ", ".join(shown)
-        if extra > 0:
-            return (
-                f"当前可选工具名: {joined} 等 {len(names)} 个。"
-                "请仅按工具名调用 selectTools。"
-            )
-        return (
-            f"当前可选工具名: {joined}。"
-            "请仅按工具名调用 selectTools。"
-        )
+        return prompts.build_select_tools_catalog_suffix(names, max_items=max_items)
 
     def _decorate_select_tools_description(
         self,
@@ -1640,10 +1644,7 @@ class Model:
                 f = dict(t.get("function") or {})
                 name = str(f.get("name", "") or "").strip()
                 if name == "selectTools":
-                    desc = str(f.get("description", "") or "").strip()
-                    marker = "当前可选工具名:"
-                    if marker in desc:
-                        desc = desc.split(marker, 1)[0].rstrip(" \n。")
+                    desc = prompts.strip_select_tools_catalog_suffix(f.get("description", ""))
                     if desc:
                         desc = f"{desc}\n{suffix}"
                     else:
@@ -1655,10 +1656,7 @@ class Model:
             # 兼容非标准 function 格式
             name = str(t.get("name", "") or "").strip()
             if t_type == "function" and name == "selectTools":
-                desc = str(t.get("description", "") or "").strip()
-                marker = "当前可选工具名:"
-                if marker in desc:
-                    desc = desc.split(marker, 1)[0].rstrip(" \n。")
+                desc = prompts.strip_select_tools_catalog_suffix(t.get("description", ""))
                 if desc:
                     desc = f"{desc}\n{suffix}"
                 else:
@@ -2411,11 +2409,18 @@ class Model:
 
             previous_response_id = None
             messages = []
+            request_system_prompt = self._build_effective_system_prompt(
+                enable_web_search=enable_web_search,
+                enable_tools=effective_enable_tools,
+                tool_mode=getattr(self, "_runtime_tool_mode", "auto"),
+            )
+            self.system_prompt = request_system_prompt
             full_context_messages = self._build_initial_messages(
                 user_msg=msg,
                 current_user_content=user_content,
                 use_responses_api=use_responses_api,
-                allow_history_images=allow_history_images
+                allow_history_images=allow_history_images,
+                system_prompt_text=request_system_prompt,
             )
 
             if last_response_id:
@@ -2494,8 +2499,8 @@ class Model:
 
                     if round_num == 0:
                         try:
-                            system_chars = len(str(self.system_prompt or ""))
-                            system_tokens_est = self._estimate_token_count(self.system_prompt or "")
+                            system_chars = len(str(request_system_prompt or ""))
+                            system_tokens_est = self._estimate_token_count(request_system_prompt or "")
                             history_count = max(0, len(messages) - 2)  # system + current user
                             history_chars = 0
                             for m in messages:
@@ -3370,10 +3375,12 @@ class Model:
         user_msg: str,
         current_user_content: Any = None,
         use_responses_api: bool = False,
-        allow_history_images: bool = True
+        allow_history_images: bool = True,
+        system_prompt_text: Optional[str] = None
     ) -> List[Dict]:
         """构建初始消息列表（真实上下文模式）"""
-        messages = [{"role": "system", "content": self.system_prompt}]
+        effective_system_prompt = str(system_prompt_text or self.system_prompt or "").strip()
+        messages = [{"role": "system", "content": effective_system_prompt}]
 
         # 真实上下文：注入当前会话历史 user/assistant 消息
         history_messages: List[Dict[str, Any]] = []
@@ -3468,19 +3475,7 @@ class Model:
                 _CLIENT_CACHE[cache_key] = client
 
             # 构建prompt
-            prompt = f"""根据以下对话内容，生成一个简洁准确的标题（10-20字）。
-
-用户问题：{user_message[:100]}
-助手回答：{assistant_response[:100]}
-
-要求：
-1. 准确概括对话核心内容
-2. 简洁明了，10-20字
-3. 只输出标题，不要其他内容
-4. 避免使用"用户询问"、"提供信息"等冗余词汇
-5. 不使用 Markdown 和 LaTex
-
-你只用快速输出标题："""
+            prompt = prompts.build_conversation_title_prompt(user_message, assistant_response)
 
             # 调用API（当前统一走 chat.completions）
             response = adapter.create_chat_completion(

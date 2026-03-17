@@ -43,6 +43,7 @@ _ASSET_MANIFEST_PATH = get_app_root() / "asset_manifest.json"
 _PENDING_TOAST_LOCK = threading.Lock()
 _PENDING_TOAST_MESSAGE = ""
 _NOTES_TRACE = str(config.get("notes_trace", True)).strip().lower() not in {"0", "false", "off", "no"}
+_AUTH_TRACE_HEARTBEAT = str(config.get("auth_trace_heartbeat", False)).strip().lower() in {"1", "true", "on", "yes"}
 
 
 def _notes_log(msg: str):
@@ -72,6 +73,7 @@ _EARLY_PAGE_ACCEL_JS = r"""(function() {
     const IN_IFRAME = (window.top !== window.self);
     const AGENT_TOKEN = __NC_AGENT_TOKEN__;
     const AUTH_TRACE = __NC_AUTH_TRACE__;
+    const AUTH_TRACE_HEARTBEAT = __NC_AUTH_TRACE_HEARTBEAT__;
     const AUTH_BUFFER = [];
 
     function tryFlushAuthBuffer() {
@@ -204,13 +206,15 @@ _EARLY_PAGE_ACCEL_JS = r"""(function() {
             }
         } catch (_) {}
 
-        setInterval(function() {
-            try {
-                const href = String((location && location.href) || '');
-                const hasSession = /session|token|auth|nexoracode_agent/i.test(String(document.cookie || ''));
-                authLog('heartbeat href=' + href + ' cookieLen=' + String((document.cookie || '').length) + ' hasSession=' + String(hasSession));
-            } catch (_) {}
-        }, 2500);
+        if (AUTH_TRACE_HEARTBEAT) {
+            setInterval(function() {
+                try {
+                    const href = String((location && location.href) || '');
+                    const hasSession = /session|token|auth|nexoracode_agent/i.test(String(document.cookie || ''));
+                    authLog('heartbeat href=' + href + ' cookieLen=' + String((document.cookie || '').length) + ' hasSession=' + String(hasSession));
+                } catch (_) {}
+            }, 2500);
+        }
     }
 
     function ensureChildPywebviewBridge() {
@@ -495,6 +499,7 @@ _BOOTSTRAP_HTML = """<!doctype html>
     const WINDOW_MODE = "__NC_WINDOW_MODE__";
     const ENTRY_URL = __NC_ENTRY_URL__;
     const AUTO_ESCAPE_LOGIN_LOOP = __NC_AUTO_ESCAPE_IFRAME_LOGIN_LOOP__;
+    const AUTH_TRACE_HEARTBEAT = __NC_AUTH_TRACE_HEARTBEAT__;
     const RESIZE_ENABLED = WINDOW_MODE !== 'native';
     const EDGE_CURSOR = {
         'top': 'ns-resize',
@@ -721,27 +726,29 @@ _BOOTSTRAP_HTML = """<!doctype html>
 
                             traceAuth('iframe network monkeypatch disabled to avoid URL rebasing');
 
-                            setInterval(function() {
-                                try {
-                                    const href = String((cw.location && cw.location.href) || '');
-                                    const ck = String(cd.cookie || '');
-                                    traceAuth('iframe heartbeat href=' + href + ' cookieLen=' + String(ck.length));
-                                    if (/\\/chat([?#]|$)/i.test(href)) {
-                                        _ncSawChatOnce = true;
+                            if (AUTH_TRACE_HEARTBEAT) {
+                                setInterval(function() {
+                                    try {
+                                        const href = String((cw.location && cw.location.href) || '');
+                                        const ck = String(cd.cookie || '');
+                                        traceAuth('iframe heartbeat href=' + href + ' cookieLen=' + String(ck.length));
+                                        if (/\\/chat([?#]|$)/i.test(href)) {
+                                            _ncSawChatOnce = true;
+                                        }
+                                        if (_ncSawChatOnce && /\\/login([?#]|$)/i.test(href) && String(ck.length) === '0' && !_ncLoopDiagnosed) {
+                                            _ncLoopDiagnosed = true;
+                                            traceAuth('diagnose: chat->login redirect loop with cookieLen=0; likely third-party iframe auth cookie rejected by server SameSite policy');
+                                            traceAuth('action: set server auth/session cookie SameSite=None; Secure OR disable persistent_outer_shell for first-party login');
+                                        }
+                                        if (/\\/login([?#]|$)/i.test(href) && String(ck.length) === '0') {
+                                            _ncMaybeEscapeLoginLoop('heartbeat-cookie-zero', href);
+                                        }
+                                        stripGoogleFonts('heartbeat');
+                                    } catch (e) {
+                                        traceAuth('iframe heartbeat failed: ' + String(e || ''));
                                     }
-                                    if (_ncSawChatOnce && /\\/login([?#]|$)/i.test(href) && String(ck.length) === '0' && !_ncLoopDiagnosed) {
-                                        _ncLoopDiagnosed = true;
-                                        traceAuth('diagnose: chat->login redirect loop with cookieLen=0; likely third-party iframe auth cookie rejected by server SameSite policy');
-                                        traceAuth('action: set server auth/session cookie SameSite=None; Secure OR disable persistent_outer_shell for first-party login');
-                                    }
-                                    if (/\\/login([?#]|$)/i.test(href) && String(ck.length) === '0') {
-                                        _ncMaybeEscapeLoginLoop('heartbeat-cookie-zero', href);
-                                    }
-                                    stripGoogleFonts('heartbeat');
-                                } catch (e) {
-                                    traceAuth('iframe heartbeat failed: ' + String(e || ''));
-                                }
-                            }, 3000);
+                                }, 3000);
+                            }
                         } catch (e) {
                             traceAuth('iframe auth assist install failed: ' + String(e || ''));
                         }
@@ -757,13 +764,15 @@ _BOOTSTRAP_HTML = """<!doctype html>
         }, 2800);
     }
     setTimeout(initShellIframe, 200);
-    setInterval(function() {
-        try {
-            traceAuth('bootstrap heartbeat cookieLen=' + String((document.cookie || '').length));
-        } catch (e) {
-            traceAuth('bootstrap heartbeat cookie read failed: ' + String(e || ''));
-        }
-    }, 3000);
+    if (AUTH_TRACE_HEARTBEAT) {
+        setInterval(function() {
+            try {
+                traceAuth('bootstrap heartbeat cookieLen=' + String((document.cookie || '').length));
+            } catch (e) {
+                traceAuth('bootstrap heartbeat cookie read failed: ' + String(e || ''));
+            }
+        }, 3000);
+    }
     document.addEventListener('readystatechange', function() {
         const st = String(document.readyState || '');
         if (st === 'interactive') {
@@ -927,8 +936,17 @@ _NOTES_BOOTSTRAP_HTML_MODE = (
     .replace("close_window", "close_notes_window")
     .replace("__NC_AUTO_ESCAPE_IFRAME_LOGIN_LOOP__", "false")
 )
-
-
+_SETTINGS_BOOTSTRAP_HTML_MODE = (
+    _BOOTSTRAP_HTML_MODE
+    .replace("<title>NexoraCode</title>", "<title>Nexora Settings</title>")
+    .replace('data-act="settings"', 'data-act="noop" style="display:none" aria-hidden="true"')
+    .replace("start_window_resize", "start_settings_window_resize")
+    .replace("start_window_drag", "start_settings_window_drag")
+    .replace("minimize_window", "minimize_settings_window")
+    .replace("maximize_window", "maximize_settings_window")
+    .replace("close_window", "close_settings_window")
+    .replace("__NC_AUTO_ESCAPE_IFRAME_LOGIN_LOOP__", "false")
+)
 class NexoraWindowApi:
     """暴露给页面 JS 的本地窗口控制 API。"""
 
@@ -940,6 +958,8 @@ class NexoraWindowApi:
         self._notes_window_lock = threading.Lock()
         self._notes_pinned = bool(config.get("notes_window_pinned", False))
         self._notes_titlebar_js = ""
+        self._settings_window = None
+        self._settings_window_lock = threading.Lock()
 
     def bind(self, window, runtime_base_url: str | None = None):
         self._window = window
@@ -1164,42 +1184,127 @@ class NexoraWindowApi:
 }})();"""
 
 
-    def open_settings(self):
-        import os
-        import subprocess
-        import sys
-        from core.config import get_app_root
-        config_path = str(get_app_root() / "config.json")
-        try:
-            if os.name == "nt":
-                # User's window hides, probably the "Open With..." dialog spawned BEHIND the app
-                # Force opening config using notepad guarantees a pop-up in front
-                subprocess.Popen(["notepad.exe", config_path])
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", "-t", config_path])
-            else:
-                subprocess.Popen(["xdg-open", config_path])
-            return {"success": True}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
+    def _get_settings_window(self):
+        with self._settings_window_lock:
+            sw = self._settings_window
+        if sw and sw in webview.windows:
+            return sw
+        return None
 
     def open_settings(self):
-        import os
-        import subprocess
-        import sys
-        from core.config import get_app_root
-        config_path = str(get_app_root() / "config.json")
         try:
-            if os.name == "nt":
-                # User's window hides, probably the "Open With..." dialog spawned BEHIND the app
-                # Force opening config using notepad guarantees a pop-up in front
-                subprocess.Popen(["notepad.exe", config_path])
-            elif sys.platform == "darwin":
-                subprocess.Popen(["open", "-t", config_path])
-            else:
-                subprocess.Popen(["xdg-open", config_path])
-            return {"success": True}
+            with self._settings_window_lock:
+                sw = self._settings_window
+                if sw and sw in webview.windows:
+                    try:
+                        if hasattr(sw, "restore"):
+                            sw.restore()
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(sw, "show"):
+                            sw.show()
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(sw, "bring_to_front"):
+                            sw.bring_to_front()
+                    except Exception:
+                        pass
+                    return {"success": True, "reused": True}
+
+                settings_html_path = get_app_root() / "ui" / "settings_local.html"
+                settings_html = settings_html_path.read_text(encoding="utf-8")
+
+                try:
+                    settings_w = int(config.get("settings_window_width", 900) or 900)
+                    settings_h = int(config.get("settings_window_height", 640) or 640)
+                except Exception:
+                    settings_w, settings_h = 900, 640
+                settings_w = max(700, min(1600, settings_w))
+                settings_h = max(520, min(1400, settings_h))
+
+                settings_kwargs = {
+                    "title": "Nexora Settings",
+                    "html": settings_html,
+                    "width": settings_w,
+                    "height": settings_h,
+                    "min_size": (700, 520),
+                    "resizable": True,
+                    "frameless": _USE_FRAMELESS,
+                    "text_select": True,
+                    "js_api": self,
+                    "easy_drag": False,
+                    "background_color": "#0c0c0f",
+                }
+                try:
+                    settings_window = webview.create_window(**settings_kwargs)
+                except TypeError:
+                    fallback = dict(settings_kwargs)
+                    fallback.pop("frameless", None)
+                    try:
+                        settings_window = webview.create_window(**fallback)
+                    except TypeError:
+                        fallback.pop("js_api", None)
+                        settings_window = webview.create_window(**fallback)
+
+                self._settings_window = settings_window
+                _settings_shown_fired = [False]
+
+                def _settings_on_shown():
+                    if _settings_shown_fired[0]:
+                        return
+                    _settings_shown_fired[0] = True
+                    try:
+                        wintitle.install(settings_window, emulate_snap=_USE_FRAMELESS)
+                    except Exception:
+                        pass
+                    try:
+                        wintitle.ensure_resizable_frame(settings_window)
+                    except Exception:
+                        pass
+                    if _USE_FRAMELESS:
+                        def _apply_frameless():
+                            time.sleep(0.06)
+                            try:
+                                wintitle.enforce_borderless_chrome(settings_window)
+                                wintitle.force_frame_refresh(settings_window)
+                            except Exception:
+                                pass
+                        threading.Thread(target=_apply_frameless, daemon=True).start()
+
+                def _settings_on_loaded():
+                    if _USE_FRAMELESS:
+                        return
+
+                    def _apply_custom():
+                        for _ in range(30):
+                            try:
+                                if wintitle.enable_custom_chrome(settings_window):
+                                    wintitle.force_frame_refresh(settings_window)
+                                    break
+                            except Exception:
+                                pass
+                            time.sleep(0.03)
+                        try:
+                            wintitle.ensure_resizable_frame(settings_window)
+                            wintitle.force_frame_refresh(settings_window)
+                        except Exception:
+                            pass
+
+                    if _WINDOW_MODE == "custom":
+                        threading.Thread(target=_apply_custom, daemon=True).start()
+
+                def _settings_on_closed():
+                    with self._settings_window_lock:
+                        if self._settings_window is settings_window:
+                            self._settings_window = None
+
+                settings_window.events.shown += _settings_on_shown
+                settings_window.events.loaded += _settings_on_loaded
+                settings_window.events.closed += _settings_on_closed
+                threading.Thread(target=_settings_on_shown, daemon=True).start()
+                return {"success": True, "reused": False}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -1209,9 +1314,17 @@ class NexoraWindowApi:
             with self._notes_window_lock:
                 nw = self._notes_window
                 self._notes_window = None
+            with self._settings_window_lock:
+                sw = self._settings_window
+                self._settings_window = None
             if nw:
                 try:
                     nw.destroy()
+                except Exception:
+                    pass
+            if sw:
+                try:
+                    sw.destroy()
                 except Exception:
                     pass
             if self._window:
@@ -1432,6 +1545,114 @@ class NexoraWindowApi:
         config.set("notes_window_height", h)
         return {"success": True, "width": w, "height": h}
 
+    def close_settings_window(self):
+        try:
+            with self._settings_window_lock:
+                sw = self._settings_window
+                self._settings_window = None
+            if sw:
+                try:
+                    sw.destroy()
+                except Exception:
+                    pass
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    def minimize_settings_window(self):
+        sw = self._get_settings_window()
+        if not sw:
+            return {"success": False, "message": "settings window not found"}
+        try:
+            if not wintitle.minimize_window(sw):
+                sw.minimize()
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    def maximize_settings_window(self):
+        sw = self._get_settings_window()
+        if not sw:
+            return {"success": False, "message": "settings window not found"}
+        try:
+            if not wintitle.toggle_max_restore(sw):
+                try:
+                    st = str(sw.state).lower()
+                except Exception:
+                    st = ""
+                if st == "maximized":
+                    sw.restore()
+                else:
+                    sw.maximize()
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    def start_settings_window_drag(self):
+        sw = self._get_settings_window()
+        if not sw:
+            return {"success": False, "message": "settings window not found"}
+        try:
+            wintitle.start_window_drag(sw)
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    def start_settings_window_resize(self, edge="right"):
+        sw = self._get_settings_window()
+        if not sw:
+            return {"success": False, "message": "settings window not found"}
+        try:
+            ok = bool(wintitle.start_window_resize(sw, edge=edge))
+            return {"success": ok}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    def is_settings_window_maximized(self):
+        sw = self._get_settings_window()
+        if not sw:
+            return {"success": True, "maximized": False}
+        try:
+            return {"success": True, "maximized": bool(wintitle.is_window_maximized(sw))}
+        except Exception:
+            return {"success": True, "maximized": False}
+
+    def sync_settings_window_state(self):
+        sw = self._get_settings_window()
+        if not sw:
+            return {"success": False, "message": "settings window not found"}
+        try:
+            wintitle.sync_max_state(sw)
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    def set_settings_window_bounds(self, width=0, height=0):
+        try:
+            w = int(width or 0)
+            h = int(height or 0)
+        except Exception:
+            return {"success": False, "message": "invalid bounds"}
+        w = max(700, min(1600, w))
+        h = max(520, min(1400, h))
+        config.set("settings_window_width", w)
+        config.set("settings_window_height", h)
+        return {"success": True, "width": w, "height": h}
+
+    def get_local_settings_snapshot(self):
+        try:
+            return {"success": True, "data": config.snapshot()}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
+    def save_local_settings_snapshot(self, payload=None):
+        try:
+            data = payload if isinstance(payload, dict) else {}
+            config.replace_all(data)
+            return {"success": True, "data": config.snapshot()}
+        except Exception as e:
+            return {"success": False, "message": str(e)}
+
     def jump_note_source_external(self, payload=None):
         if not self._window:
             return {"success": False, "message": "main window not found"}
@@ -1595,17 +1816,73 @@ class NexoraWindowApi:
         try:
             out = self._window.evaluate_js("""(function() {
     try {
-        const iframe = document.getElementById('nc-app-iframe');
-        const doc = (iframe && iframe.contentDocument) ? iframe.contentDocument : document;
-        const panel = doc.querySelector('#notesPanel, .notes-panel, [id*="notes" i][class*="panel" i], [class*="notes" i]');
-        if (!panel) {
-            return { success: false, html: '', message: 'notes panel not found', href: String((doc.location && doc.location.href) || '') };
+        function resolveDoc() {
+            const ids = ['nc-app-iframe', 'nc-shell-iframe'];
+            for (const id of ids) {
+                const frame = document.getElementById(id);
+                if (frame && frame.contentDocument) {
+                    return { doc: frame.contentDocument, frameId: id };
+                }
+            }
+            const frames = Array.from(document.querySelectorAll('iframe'));
+            for (const frame of frames) {
+                try {
+                    const src = String(frame.getAttribute('src') || frame.src || '');
+                    if ((/nc_iframe_content=1/i.test(src) || /\\/chat([?#]|$)/i.test(src)) && frame.contentDocument) {
+                        return { doc: frame.contentDocument, frameId: String(frame.id || 'iframe') };
+                    }
+                } catch (_) {}
+            }
+            return { doc: document, frameId: 'document' };
         }
+        const ctx = resolveDoc();
+        const doc = ctx.doc || document;
+        const view = doc.defaultView || null;
+        let panel = doc.querySelector('#notesPanel, .notes-panel, aside.notes-panel, div.notes-panel');
+        try {
+            if (view && typeof view.renderNotesList === 'function') {
+                view.renderNotesList();
+            }
+        } catch (_) {}
+        panel = doc.querySelector('#notesPanel, .notes-panel, aside.notes-panel, div.notes-panel');
+        if (!panel) {
+            const hint = doc.querySelector('[id*="notes" i], [class*="notes" i]');
+            return {
+                success: false,
+                html: '',
+                message: 'notes panel not found',
+                hint: hint ? {
+                    id: String(hint.id || ''),
+                    className: String(hint.className || ''),
+                    tagName: String(hint.tagName || '')
+                } : null,
+                frame: String(ctx.frameId || ''),
+                href: String((doc.location && doc.location.href) || '')
+            };
+        }
+        let htmlOut = String(panel.outerHTML || '');
+        let itemsCount = -1;
+        try {
+            const cloned = panel.cloneNode(true);
+            if (cloned && cloned.classList) {
+                cloned.classList.add('active');
+                cloned.classList.remove('closed');
+                cloned.classList.remove('collapsed');
+            }
+            if (cloned && cloned.setAttribute) {
+                cloned.setAttribute('aria-hidden', 'false');
+            }
+            const list = cloned && cloned.querySelector ? cloned.querySelector('#notesList, .notes-list') : null;
+            itemsCount = list && list.children ? Number(list.children.length || 0) : -1;
+            htmlOut = String((cloned && cloned.outerHTML) || htmlOut || '');
+        } catch (_) {}
         return {
             success: true,
-            html: String(panel.outerHTML || ''),
+            html: htmlOut,
             href: String((doc.location && doc.location.href) || ''),
             title: String((doc.title || '') || ''),
+            frame: String(ctx.frameId || ''),
+            items_count: itemsCount,
             ts: Date.now(),
         };
     } catch (e) {
@@ -1624,8 +1901,26 @@ class NexoraWindowApi:
         try:
             out = self._window.evaluate_js("""(function() {
     try {
-        const iframe = document.getElementById('nc-app-iframe');
-        const doc = (iframe && iframe.contentDocument) ? iframe.contentDocument : document;
+        function resolveDoc() {
+            const ids = ['nc-app-iframe', 'nc-shell-iframe'];
+            for (const id of ids) {
+                const frame = document.getElementById(id);
+                if (frame && frame.contentDocument) {
+                    return frame.contentDocument;
+                }
+            }
+            const frames = Array.from(document.querySelectorAll('iframe'));
+            for (const frame of frames) {
+                try {
+                    const src = String(frame.getAttribute('src') || frame.src || '');
+                    if ((/nc_iframe_content=1/i.test(src) || /\\/chat([?#]|$)/i.test(src)) && frame.contentDocument) {
+                        return frame.contentDocument;
+                    }
+                } catch (_) {}
+            }
+            return document;
+        }
+        const doc = resolveDoc();
         const origin = String((location && location.origin) || '');
         const ret = { styles: [], links: [] };
 
@@ -1716,10 +2011,7 @@ class NexoraWindowApi:
         base = str(self._runtime_base_url or DEFAULT_NEXORA_URL).strip() or DEFAULT_NEXORA_URL
         url = _build_entry_url(base, {"notes_companion": "1"})
         notes_use_custom = True
-        notes_local_mode = str(config.get("notes_local_mode", True)).strip().lower() not in {"0", "false", "off", "no"}
-        if _PERSISTENT_OUTER_SHELL and notes_local_mode:
-            notes_local_mode = False
-            _notes_log("force notes_local_mode disabled under persistent outer shell")
+        notes_shell_url = f"http://127.0.0.1:{LOCAL_PORT}/nc/notes-shell?_nc_ts={int(time.time() * 1000)}"
         _notes_log(f"open request url={url} mode={_WINDOW_MODE} frameless={_USE_FRAMELESS}")
         try:
             with self._notes_window_lock:
@@ -1770,15 +2062,14 @@ class NexoraWindowApi:
                 }
                 # For notes companion, always render bootstrap shell first in custom titlebar mode
                 # to avoid first-frame black flash before page CSS is ready.
-                if notes_local_mode:
-                    set_notes_shell_html(_build_notes_local_shell_html())
-                    notes_kwargs["url"] = f"http://127.0.0.1:{LOCAL_PORT}/nc/notes-shell"
-                    notes_kwargs.pop("html", None)
-                    notes_kwargs["background_color"] = "#050505"
-                    _notes_log("notes_local_mode enabled: use local notes shell via localhost")
-                elif notes_use_custom:
-                    set_notes_shell_html(_NOTES_BOOTSTRAP_HTML_MODE.replace("__NC_ENTRY_URL__", json.dumps(url, ensure_ascii=False)))
-                    notes_kwargs["url"] = f"http://127.0.0.1:{LOCAL_PORT}/nc/notes-shell"
+                if notes_use_custom:
+                    _notes_bootstrap_html = _NOTES_BOOTSTRAP_HTML_MODE.replace("__NC_ENTRY_URL__", json.dumps(url, ensure_ascii=False))
+                    _notes_bootstrap_html = _notes_bootstrap_html.replace(
+                        "__NC_AUTH_TRACE_HEARTBEAT__",
+                        "true" if _AUTH_TRACE_HEARTBEAT else "false",
+                    )
+                    set_notes_shell_html(_notes_bootstrap_html)
+                    notes_kwargs["url"] = notes_shell_url
                     notes_kwargs.pop("html", None)
                     notes_kwargs["easy_drag"] = False
                     notes_kwargs["background_color"] = "#050505"
@@ -1816,7 +2107,6 @@ class NexoraWindowApi:
                         _notes_log("prefill builder not found; fallback noop")
                 except Exception as ex:
                     _notes_log(f"prefill builder failed: {ex}; fallback noop")
-                notes_nav_started = threading.Event()
                 _notes_shown_fired = [False]
 
                 def _notes_on_shown():
@@ -1843,23 +2133,6 @@ class NexoraWindowApi:
                             args=(notes_window, notes_titlebar_js, 0.35, "nc-notes-titlebar"),
                             daemon=True,
                         ).start()
-                        if not notes_local_mode:
-                            def _navigate_notes_once():
-                                time.sleep(0.22)
-                                if notes_nav_started.is_set():
-                                    return
-                                notes_nav_started.set()
-                                try:
-                                    wintitle.force_frame_refresh(notes_window)
-                                except Exception:
-                                    pass
-                                try:
-                                    notes_window.load_url(url)
-                                    _notes_log(f"load_url dispatched url={url}")
-                                except Exception:
-                                    _notes_log("load_url failed")
-                                    pass
-                            threading.Thread(target=_navigate_notes_once, daemon=True).start()
                     try:
                         wintitle.set_window_topmost(notes_window, bool(config.get("notes_window_pinned", self._notes_pinned)))
                     except Exception:
@@ -2404,7 +2677,6 @@ def _build_notes_titlebar_js() -> str:
         let skipNativeDbl = false;
     const clearDownState = () => { downState = null; };
     const pinBtn = bar.querySelector('.nc-pin');
-    const settingsBtn = bar.querySelector('.nc-settings');
       const minBtn = bar.querySelector('.nc-min');
     const maxBtn = bar.querySelector('.nc-max');
     const closeBtn = bar.querySelector('.nc-close');
@@ -2416,7 +2688,6 @@ def _build_notes_titlebar_js() -> str:
         setPinIcon(!!(d && d.pinned));
       }).catch(function() {});
     };
-    if (settingsBtn) settingsBtn.onclick = e => { e.stopPropagation(); api() && api().open_settings && api().open_settings(); };
       if (minBtn) minBtn.onclick = e => { e.stopPropagation(); api() && api().minimize_notes_window && api().minimize_notes_window(); };
     if (maxBtn) maxBtn.onclick = e => { e.stopPropagation(); api() && api().maximize_notes_window && api().maximize_notes_window(); };
     if (closeBtn) closeBtn.onclick = e => { e.stopPropagation(); api() && api().close_notes_window && api().close_notes_window(); };
@@ -2461,7 +2732,6 @@ def _build_notes_titlebar_js() -> str:
       bar.innerHTML = `
         <div class="nc-notes-btns">
           <button class="nc-notes-btn nc-pin" id="nc-notes-pin-btn" title="\u7f6e\u9876">${ICON_PIN_OFF}</button>
-          <button class="nc-notes-btn nc-settings" title="\u8bbe\u7f6e">${ICON_SETTINGS}</button>
             <button class="nc-notes-btn nc-min" title="\u6700\u5c0f\u5316">${ICON_MIN}</button>
           <button class="nc-notes-btn nc-max" title="\u6700\u5927\u5316" id="nc-notes-max-btn">${ICON_MAX}</button>
           <button class="nc-notes-btn nc-close" title="\u5173\u95ed">${ICON_CLOSE}</button>
@@ -2561,9 +2831,36 @@ def _build_notes_local_shell_html() -> str:
 <meta charset=\"utf-8\"/>
 <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"/>
 <title>Nexora Notes</title>
+<link rel=\"stylesheet\" href=\"https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css\"/>
+<link rel=\"stylesheet\" href=\"/static/css/style.css\"/>
+<link rel=\"stylesheet\" href=\"/static/css/easymde_override.css\"/>
 <style>
     html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#050505;color:#ddd;font-family:'Segoe UI','Microsoft YaHei',sans-serif;}
-    #notes-shell{position:fixed;top:36px;left:0;right:0;bottom:0;overflow:auto;padding:10px;box-sizing:border-box;}
+    #notes-shell{position:fixed;top:36px;left:0;right:0;bottom:0;overflow:hidden;padding:0;box-sizing:border-box;background:#fff;}
+    #notes-shell #notesPanel, #notes-shell .notes-panel{
+        position: relative !important;
+        top: auto !important;
+        right: auto !important;
+        bottom: auto !important;
+        left: auto !important;
+        width: 100% !important;
+        max-width: none !important;
+        height: 100% !important;
+        max-height: none !important;
+        min-height: 0 !important;
+        border: none !important;
+        border-radius: 0 !important;
+        box-shadow: none !important;
+        display: flex !important;
+        z-index: 1 !important;
+    }
+    #notes-shell #notesPanel .notes-panel-head,
+    #notes-shell .notes-panel .notes-panel-head{display:none !important;}
+    #notes-shell #notesPanel .notes-panel-popout,
+    #notes-shell #notesPanel #notesResizeHandle,
+    #notes-shell .notes-panel .notes-panel-popout,
+    #notes-shell .notes-panel #notesResizeHandle{display:none !important;}
+    #notes-shell #notesPanel .notes-list, #notes-shell .notes-panel .notes-list{padding:10px !important;}
     #notes-state{position:fixed;left:10px;right:10px;bottom:8px;color:rgba(255,255,255,.52);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
     #notes-empty{position:fixed;inset:36px 0 0 0;display:flex;align-items:center;justify-content:center;color:rgba(255,255,255,.5);font-size:13px;}
 </style>
@@ -2577,11 +2874,49 @@ def _build_notes_local_shell_html() -> str:
     let lastHtml = '';
     let syncing = false;
     let bridgeChecks = 0;
+    let missCount = 0;
+    let hadSuccess = false;
+    let lastState = '';
     const shell = document.getElementById('notes-shell');
     const empty = document.getElementById('notes-empty');
     const state = document.getElementById('notes-state');
+    try {
+        if (document.body && !document.body.classList.contains('notes-companion-mode')) {
+            document.body.classList.add('notes-companion-mode');
+        }
+    } catch (_) {}
 
-    function setState(txt){ if (state) state.textContent = String(txt||''); }
+    function hydrateFallbackIcons(root) {
+        const host = root || document;
+        if (!host || !host.querySelectorAll) return;
+        const icons = {
+            'fa-plus': '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14"></path><path d="M5 12h14"></path></svg>',
+            'fa-eraser': '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 20H7"></path><path d="M14.5 4.5l5 5L9 20H4v-5z"></path></svg>',
+            'fa-trash': '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M19 6l-1 14H6L5 6"></path></svg>',
+            'fa-download': '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"></path><path d="M7 10l5 5 5-5"></path><path d="M5 21h14"></path></svg>',
+            'fa-xmark': '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18"></path><path d="M6 6l12 12"></path></svg>'
+        };
+        host.querySelectorAll('i[class*="fa-"]').forEach((node) => {
+            if (!node || node.dataset.ncSvgHydrated === '1') return;
+            const classList = Array.from(node.classList || []);
+            const key = classList.find((cls) => Object.prototype.hasOwnProperty.call(icons, cls));
+            if (!key) return;
+            node.dataset.ncSvgHydrated = '1';
+            node.innerHTML = icons[key];
+            node.classList.add('nc-inline-svg-icon');
+            node.style.display = 'inline-flex';
+            node.style.alignItems = 'center';
+            node.style.justifyContent = 'center';
+            node.style.lineHeight = '1';
+        });
+    }
+
+    function setState(txt){
+        const t = String(txt||'');
+        if (t === lastState) return;
+        lastState = t;
+        if (state) state.textContent = t;
+    }
 
     async function syncOnce(){
         if (syncing) return;
@@ -2600,20 +2935,59 @@ def _build_notes_local_shell_html() -> str:
             }
             const d = await api.get_notes_snapshot();
             if (!d || !d.success) {
-                setState('未检测到笔记面板，保持等待...');
+                missCount += 1;
+                if (!hadSuccess) {
+                    if (missCount >= 3) {
+                        setState('未检测到笔记面板，保持等待...');
+                    } else {
+                        setState('正在同步笔记...');
+                    }
+                } else {
+                    setState('笔记源暂不可用，等待恢复...');
+                }
                 return;
             }
+            missCount = 0;
+            hadSuccess = true;
             const html = String(d.html || '');
             if (!html) {
-                setState('笔记面板为空');
+                setState(hadSuccess ? '笔记内容为空' : '笔记面板为空');
+                return;
+            }
+            const panelLike = /id\\s*=\\s*["']notesPanel["']|class\\s*=\\s*["'][^"']*notes-panel/i.test(html);
+            if (!panelLike) {
+                missCount += 1;
+                const hint = (d && d.hint && typeof d.hint === 'object') ? d.hint : null;
+                const hintText = hint ? (' hint=' + [hint.tagName || '', hint.id || '', hint.className || ''].filter(Boolean).join('#')) : '';
+                setState('检测到非面板节点，等待真实笔记面板...' + hintText);
                 return;
             }
             if (html !== lastHtml) {
-                lastHtml = html;
-                shell.innerHTML = html;
+                const wrap = document.createElement('div');
+                wrap.innerHTML = html;
+                const panelNode = wrap.querySelector('#notesPanel, .notes-panel');
+                const rendered = panelNode ? String(panelNode.outerHTML || '') : html;
+                lastHtml = rendered;
+                shell.innerHTML = rendered;
+                hydrateFallbackIcons(shell);
+                try {
+                    const panel = shell.querySelector('#notesPanel, .notes-panel');
+                    if (panel) {
+                        panel.style.display = 'flex';
+                        panel.style.visibility = 'visible';
+                        panel.style.opacity = '1';
+                        panel.setAttribute('aria-hidden', 'false');
+                        panel.classList.add('active');
+                        panel.classList.remove('closed');
+                        panel.classList.remove('collapsed');
+                    }
+                } catch (_) {}
             }
             if (empty) empty.style.display = 'none';
-            setState('已同步：' + String(d.href || '') + ' @ ' + new Date().toLocaleTimeString());
+            const frame = String((d && d.frame) || '').trim();
+            const count = Number((d && d.items_count) || -1);
+            const countText = Number.isFinite(count) && count >= 0 ? (' items=' + String(count)) : '';
+            setState('已同步：' + String(d.href || '') + (frame ? (' [' + frame + ']') : '') + countText);
         } catch (e) {
             setState('同步失败：' + String(e || 'unknown'));
         } finally {
@@ -2791,6 +3165,8 @@ def main():
         _EARLY_PAGE_ACCEL_JS = _EARLY_PAGE_ACCEL_JS.replace("__NC_AGENT_TOKEN__", json.dumps(str(agent_token or ""), ensure_ascii=False))
     if "__NC_AUTH_TRACE__" in _EARLY_PAGE_ACCEL_JS:
         _EARLY_PAGE_ACCEL_JS = _EARLY_PAGE_ACCEL_JS.replace("__NC_AUTH_TRACE__", "true" if auth_trace else "false")
+    if "__NC_AUTH_TRACE_HEARTBEAT__" in _EARLY_PAGE_ACCEL_JS:
+        _EARLY_PAGE_ACCEL_JS = _EARLY_PAGE_ACCEL_JS.replace("__NC_AUTH_TRACE_HEARTBEAT__", "true" if _AUTH_TRACE_HEARTBEAT else "false")
     tools = registry.list_tools_llm_format()
     entry_url = _build_entry_url(runtime_base_url)
 
@@ -2814,6 +3190,7 @@ def main():
         _bootstrap_entry = _build_entry_url(runtime_base_url, {"nc_iframe_content": "1"} if _PERSISTENT_OUTER_SHELL else None)
         _bootstrap_html = _BOOTSTRAP_HTML_MODE.replace("__NC_ENTRY_URL__", json.dumps(_bootstrap_entry, ensure_ascii=False))
         _bootstrap_html = _bootstrap_html.replace("__NC_AUTO_ESCAPE_IFRAME_LOGIN_LOOP__", "true" if _auto_escape_iframe_login_loop else "false")
+        _bootstrap_html = _bootstrap_html.replace("__NC_AUTH_TRACE_HEARTBEAT__", "true" if _AUTH_TRACE_HEARTBEAT else "false")
         if _PERSISTENT_OUTER_SHELL:
             set_shell_html(_bootstrap_html)
             window_kwargs["url"] = f"http://127.0.0.1:{LOCAL_PORT}/nc/shell"
@@ -4223,24 +4600,7 @@ def main():
         try:
             win.evaluate_js(f"""(function() {{
     document.cookie = 'nexoracode_agent={agent_token}; path=/; SameSite=Lax';
-    function registerLocalAgent() {{
-        fetch('/api/local_agent/register', {{
-            method: 'POST',
-            credentials: 'include',
-            headers: {{'Content-Type': 'application/json', 'X-NexoraCode-Agent': '{agent_token}'}},
-            body: {payload_js_literal}
-        }}).then(async r => {{
-            if (r.status === 401) {{
-                setTimeout(registerLocalAgent, 3000);
-                return {{status: r.status}};
-            }}
-            let d = null;
-            try {{ d = await r.json(); }} catch (_) {{ d = null; }}
-            console.log('[NexoraCode]', r.status, d);
-            return {{ status: r.status, body: d }};
-        }}).catch(e => console.error('[NexoraCode] error:', e));
-    }}
-    registerLocalAgent();
+    try {{ console.log('[NexoraCode] legacy local_agent/register disabled; using WSS tunnel only'); }} catch (_) {{}}
 }})();
 """)
         except Exception:

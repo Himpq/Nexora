@@ -1,1 +1,0 @@
-﻿content = open('f:/Code/AI/ChatDB/NexoraCode/main.py', 'r', encoding='utf-8').read(); lines = content.splitlines(); start=next(i for i, l in enumerate(lines) if 'elif (_WINDOW_MODE == ' in l and 'not _USE_FRAMELESS' in l); print('\n'.join(lines[start:start+4]))

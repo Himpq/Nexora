@@ -1791,6 +1791,60 @@ body.notes-companion-mode #notesPanel #notesResizeHandle {
     display: none !important;
 }
 
+body.settings-companion-mode .app-container,
+body.settings-companion-mode #tokenModal,
+body.settings-companion-mode #imageViewerBackdrop,
+body.settings-companion-mode #notesPanel,
+body.settings-companion-mode #notesContextMenu,
+body.settings-companion-mode #pinContextMenu,
+body.settings-companion-mode #mobileSelectionAddBtn {
+    display: none !important;
+}
+
+body.settings-companion-mode #settingsModal {
+    position: fixed !important;
+    inset: 0 !important;
+    display: flex !important;
+    align-items: stretch !important;
+    justify-content: stretch !important;
+    background: #050505 !important;
+    z-index: 3800 !important;
+}
+
+body.settings-companion-mode #settingsModal .settings-modal-custom {
+    width: 100vw !important;
+    max-width: none !important;
+    height: 100vh !important;
+    max-height: none !important;
+    margin: 0 !important;
+    border-radius: 0 !important;
+    border: none !important;
+    box-shadow: none !important;
+}
+
+body.settings-companion-mode #settingsModal .modal-head {
+    display: none !important;
+}
+
+body.settings-companion-mode #settingsModal .modal-body {
+    height: 100vh !important;
+    padding: 0 !important;
+}
+
+body.settings-companion-mode #settingsModal .settings-shell {
+    min-height: 100vh !important;
+    height: 100vh !important;
+}
+
+body.settings-companion-mode #confirmBackdrop,
+body.settings-companion-mode #addUserModal,
+body.settings-companion-mode #modelPermModal,
+body.settings-companion-mode #avatarCropModal,
+body.settings-companion-mode #adminTextConfirmModal,
+body.settings-companion-mode #adminConfigModal {
+    z-index: 4300 !important;
+}
+
 .notes-context-menu {
     position: fixed;
     left: 0;

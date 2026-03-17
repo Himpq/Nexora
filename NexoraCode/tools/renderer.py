@@ -6,68 +6,8 @@ import asyncio
 import re
 from core.config import config
 
-TOOL_MANIFEST = [
-    {
-        "name": "local_web_render",
-        "handler": "web_render",
-        "description": "使用用户本地浏览器渲染指定 URL，提取正文文本内容，支持 JS 渲染的动态页面（NexoraCode 本地工具）。可以进行搜索、爬取网页等操作。",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "url": {"type": "string", "description": "目标页面 URL"},
-                "wait_for": {
-                    "type": "string",
-                    "enum": ["load", "networkidle", "domcontentloaded"],
-                    "default": "networkidle",
-                    "description": "等待策略",
-                },
-                "extract_mode": {
-                    "type": "string",
-                    "enum": ["readability", "full_text", "html", "interactive"],
-                    "default": "readability",
-                    "description": "提取模式：readability(正文), full_text(全文), html(源码), interactive(驻留坐标获取模式)",
-                },
-            },
-            "required": ["url"],
-        },
-    },
-    {
-        "name": "web_click",
-        "handler": "handle_web_click",
-        "description": "在 interactive 模式下点击目标网页上的元素节点",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "node_id": {"type": "integer", "description": "要点击的元素的 data-nexora-id"}
-            },
-            "required": ["node_id"]
-        }
-    },
-    {
-        "name": "web_exec_js",
-        "handler": "handle_web_exec_js",
-        "description": "在 interactive 模式下向目标被代理网页注入、执行自定义纯 JS 代码。可用于设置输入框数值、处理下拉列表或自定义 DOM 追踪等更深度的操作。执行完毕会返回最新的交互 DOM",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "code": {"type": "string", "description": "要注入执行的 JavaScript 代码内容。内部需要包含 return 或者直接进行 DOM 操作。"}
-            },
-            "required": ["code"]
-        }
-    },
-    {
-        "name": "web_scroll",
-        "handler": "handle_web_scroll",
-        "description": "在 interactive 模式下向下或向上滚动页面",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "direction": {"type": "string", "enum": ["down", "up", "bottom", "top"], "description": "滚动方向"}
-            },
-            "required": ["direction"]
-        }
-    }
-]
+# Tool definitions are centralized in tools/catalog.py.
+TOOL_MANIFEST = []
 
 # Readability.js 的 Python 移植（使用 trafilatura 库）
 def _extract_readability(html: str, url: str) -> str:
@@ -149,35 +89,209 @@ import uuid
 _INTERACTIVE_WIN = None
 _INTERACTIVE_READY = threading.Event()
 
+
+def _interactive_dom_js() -> str:
+    return """
+    (function() {
+        function splitWords(v) {
+            var s = String(v || '').trim();
+            if (!s) return [];
+            var out = [];
+            var cur = '';
+            for (var i = 0; i < s.length; i++) {
+                var ch = s.charAt(i);
+                var isWs = (ch === ' ' || ch === '\\n' || ch === '\\r' || ch === '\\t' || ch === '\\f' || ch === '\\v');
+                if (isWs) {
+                    if (cur) out.push(cur);
+                    cur = '';
+                } else {
+                    cur += ch;
+                }
+            }
+            if (cur) out.push(cur);
+            return out;
+        }
+        function escCss(v) {
+            var s = String(v || '');
+            if (!s) return '';
+            if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(s);
+            var specials = " !\\\"#$%&'()*+,./:;<=>?@[\\\\]^`{|}~";
+            var out = '';
+            for (var i = 0; i < s.length; i++) {
+                var ch = s.charAt(i);
+                if (specials.indexOf(ch) >= 0) out += '\\\\';
+                out += ch;
+            }
+            return out;
+        }
+        function escAttr(v) {
+            var s = String(v || '');
+            return s.split('\\\\').join('\\\\\\\\').split('"').join('\\\\\"');
+        }
+        function normText(v) {
+            var parts = splitWords(v);
+            return parts.join(' ').trim();
+        }
+        function nthOfType(el) {
+            var idx = 1;
+            var cur = el;
+            while (cur && cur.previousElementSibling) {
+                cur = cur.previousElementSibling;
+                if (cur.tagName === el.tagName) idx += 1;
+            }
+            return idx;
+        }
+        function cssPath(el) {
+            var parts = [];
+            var cur = el;
+            var depth = 0;
+            while (cur && cur.nodeType === 1 && depth < 6) {
+                var tag = String(cur.tagName || '').toLowerCase();
+                if (!tag) break;
+                var seg = tag;
+                if (cur.id) {
+                    seg += '#' + escCss(cur.id);
+                    parts.unshift(seg);
+                    break;
+                }
+                var cls = splitWords(cur.className || '').slice(0, 2);
+                if (cls.length) seg += '.' + cls.map(escCss).join('.');
+                else seg += ':nth-of-type(' + nthOfType(cur) + ')';
+                parts.unshift(seg);
+                cur = cur.parentElement;
+                depth += 1;
+            }
+            return parts.join(' > ');
+        }
+        function buildNode(el, nodeId, rect) {
+            var tag = String(el.tagName || '').toLowerCase();
+            var classes = splitWords(el.className || '').slice(0, 4);
+            var text = normText(el.innerText || el.textContent || el.value || el.placeholder || el.name || el.id || tag).slice(0, 80);
+            var selectors = [];
+            function pushSel(v) {
+                if (!v) return;
+                if (selectors.indexOf(v) < 0) selectors.push(v);
+            }
+            var dataSel = '[data-nexora-id="' + nodeId + '"]';
+            var byId = el.id ? ('#' + escCss(el.id)) : '';
+            var byClass = classes.length ? (tag + '.' + classes.map(escCss).join('.')) : '';
+            var byName = el.name ? (tag + '[name="' + escAttr(el.name) + '"]') : '';
+            var byPlaceholder = el.placeholder ? (tag + '[placeholder="' + escAttr(el.placeholder) + '"]') : '';
+            var byType = el.type ? (tag + '[type="' + escAttr(el.type) + '"]') : '';
+            var path = cssPath(el);
+            pushSel(byId);
+            pushSel(byName);
+            pushSel(byPlaceholder);
+            pushSel(byClass);
+            pushSel(byType);
+            pushSel(path);
+            pushSel(dataSel);
+            return {
+                node_id: nodeId,
+                tag: tag,
+                text: text,
+                rect: [
+                    Math.round(rect.left),
+                    Math.round(rect.top),
+                    Math.round(rect.width),
+                    Math.round(rect.height)
+                ],
+                id: String(el.id || ''),
+                class_name: classes.join(' '),
+                name: String(el.name || ''),
+                type: String(el.type || ''),
+                placeholder: String(el.placeholder || ''),
+                role: String(el.getAttribute('role') || ''),
+                aria_label: String(el.getAttribute('aria-label') || ''),
+                locator: {
+                    preferred: selectors[0] || dataSel,
+                    css: {
+                        data_nexora: dataSel,
+                        by_id: byId,
+                        by_name: byName,
+                        by_placeholder: byPlaceholder,
+                        by_class: byClass,
+                        by_type: byType,
+                        path: path
+                    },
+                    alternatives: selectors
+                }
+            };
+        }
+
+        var out = [];
+        var seen = 0;
+        var elements = document.querySelectorAll('a, button, input, select, textarea, [role="button"], summary, [contenteditable=""], [contenteditable="true"]');
+        for (var i = 0; i < elements.length; i++) {
+            var el = elements[i];
+            var rect = el.getBoundingClientRect();
+            if (!(rect.width > 0 && rect.height > 0)) continue;
+            if (!(rect.top < window.innerHeight * 2.5 && rect.bottom > -window.innerHeight)) continue;
+            seen += 1;
+            el.setAttribute('data-nexora-id', String(seen));
+            out.push(buildNode(el, seen, rect));
+        }
+        return {
+            title: String(document.title || ''),
+            url: String(window.location.href || ''),
+            viewport: {
+                width: Math.round(window.innerWidth || 0),
+                height: Math.round(window.innerHeight || 0),
+                scroll_x: Math.round(window.scrollX || 0),
+                scroll_y: Math.round(window.scrollY || 0)
+            },
+            nodes: out
+        };
+    })();
+    """
+
+
+def _format_interactive_node_line(node: dict) -> str:
+    tag = str(node.get("tag", "") or "").upper()
+    node_id = int(node.get("node_id", 0) or 0)
+    text = str(node.get("text", "") or "").strip()
+    rect = node.get("rect", []) if isinstance(node.get("rect", []), list) else []
+    rect_text = f"[{', '.join(str(int(x)) for x in rect[:4])}]" if rect else "[]"
+    locator = node.get("locator", {}) if isinstance(node.get("locator"), dict) else {}
+    preferred = str(locator.get("preferred", "") or "")
+    extras = []
+    if node.get("id"):
+        extras.append(f"id={node.get('id')}")
+    if node.get("class_name"):
+        extras.append(f"class={node.get('class_name')}")
+    if preferred:
+        extras.append(f"selector={preferred}")
+    meta = " | ".join(extras)
+    if meta:
+        meta = " | " + meta
+    return f"[ID:{node_id} {tag} ({text}) rect:{rect_text}{meta}]"
+
+
+def _build_interactive_snapshot(payload) -> dict:
+    if not isinstance(payload, dict):
+        return {"error": "Interactive snapshot payload invalid"}
+    title = str(payload.get("title", "") or "")
+    url = str(payload.get("url", "") or "")
+    nodes = payload.get("nodes", [])
+    if not isinstance(nodes, list):
+        nodes = []
+    lines = [_format_interactive_node_line(node) for node in nodes if isinstance(node, dict)]
+    content = f"网页已准备：{title}\nURL：{url}\n\n【当前视窗节点分布】\n" + ("\n".join(lines) if lines else "(none)")
+    return {
+        "title": title,
+        "url": url,
+        "viewport": payload.get("viewport", {}),
+        "nodes": nodes,
+        "content": content,
+    }
+
+
 def _get_interactive_dom():
     if not _INTERACTIVE_WIN:
         return {"error": "Interactive window not initialized"}
-    
-    js_code = """
-    (function() {
-        let res = [];
-        let eid = 0;
-        let elements = document.querySelectorAll('a, button, input, select, textarea, [role="button"], summary');
-        for (let i = 0; i < elements.length; i++) {
-            let el = elements[i];
-            let rect = el.getBoundingClientRect();
-            if(rect.width > 0 && rect.height > 0 && rect.top < window.innerHeight * 2.5 && rect.bottom > -window.innerHeight) {
-                eid++;
-                el.setAttribute('data-nexora-id', eid);
-                let raw_text = el.innerText || el.value || el.name || el.id || el.tagName || "";
-                let text = String(raw_text).substring(0, 50).split(String.fromCharCode(10)).join(' ').trim();
-                res.push(`[ID:${eid} ${el.tagName} (${text}) pos:(${Math.round(rect.left)},${Math.round(rect.top)})]`);
-            }
-        }
-        return res.join(String.fromCharCode(10));
-    })();
-    """
     try:
-        nodes = _INTERACTIVE_WIN.evaluate_js(js_code)
-        title = _INTERACTIVE_WIN.evaluate_js("document.title")
-        url = _INTERACTIVE_WIN.evaluate_js("window.location.href")
-        content = f"网页已准备：{title}\nURL：{url}\n\n【当前视窗节点分布】：\n{nodes}"
-        return {"title": title, "url": url, "content": content}
+        payload = _INTERACTIVE_WIN.evaluate_js(_interactive_dom_js())
+        return _build_interactive_snapshot(payload)
     except Exception as e:
         return {"error": f"Evaluate Error: {str(e)}"}
 
@@ -257,6 +371,70 @@ def handle_web_exec_js(code: str) -> dict:
         return {"result": str(res), "dom": _get_interactive_dom()}
     except Exception as e:
         return {"error": f"JS eval failed: {str(e)}"}
+
+
+def handle_web_input(selector: str, text: str, submit: bool = False) -> dict:
+    if not _INTERACTIVE_WIN:
+        return {"error": "驻留浏览器未启动，请先使用 local_web_render 并指定 extract_mode='interactive'"}
+    safe_selector = str(selector or "").strip()
+    if not safe_selector:
+        return {"error": "selector 不能为空"}
+    import json
+    js = f"""
+    (function() {{
+        var selector = {json.dumps(safe_selector, ensure_ascii=False)};
+        var text = {json.dumps(str(text or ""), ensure_ascii=False)};
+        var submit = {str(bool(submit)).lower()};
+        var el = document.querySelector(selector);
+        if (!el) {{
+            return {{ ok: false, error: 'element_not_found', selector: selector }};
+        }}
+        function setValue(node, value) {{
+            var tag = String(node.tagName || '').toUpperCase();
+            var proto = null;
+            if (tag === 'TEXTAREA') proto = window.HTMLTextAreaElement && window.HTMLTextAreaElement.prototype;
+            else if (tag === 'SELECT') proto = window.HTMLSelectElement && window.HTMLSelectElement.prototype;
+            else proto = window.HTMLInputElement && window.HTMLInputElement.prototype;
+            var desc = proto ? Object.getOwnPropertyDescriptor(proto, 'value') : null;
+            if (desc && typeof desc.set === 'function') desc.set.call(node, value);
+            else node.value = value;
+        }}
+        el.focus();
+        if (el.isContentEditable) {{
+            el.innerText = text;
+            el.dispatchEvent(new InputEvent('input', {{ bubbles: true, data: text }}));
+        }} else {{
+            setValue(el, text);
+            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+        }}
+        if (submit) {{
+            try {{
+                el.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter', bubbles: true }}));
+                el.dispatchEvent(new KeyboardEvent('keypress', {{ key: 'Enter', code: 'Enter', bubbles: true }}));
+                el.dispatchEvent(new KeyboardEvent('keyup', {{ key: 'Enter', code: 'Enter', bubbles: true }}));
+            }} catch (_) {{}}
+            var form = el.form || (el.closest ? el.closest('form') : null);
+            if (form) {{
+                if (typeof form.requestSubmit === 'function') form.requestSubmit();
+                else if (typeof form.submit === 'function') form.submit();
+            }}
+        }}
+        return {{
+            ok: true,
+            selector: selector,
+            tag: String(el.tagName || '').toLowerCase(),
+            value: el.isContentEditable ? String(el.innerText || '') : String(el.value || '')
+        }};
+    }})();
+    """
+    try:
+        import time
+        result = _INTERACTIVE_WIN.evaluate_js(js)
+        time.sleep(1)
+        return {"result": result, "dom": _get_interactive_dom()}
+    except Exception as e:
+        return {"error": f"Input Error: {str(e)}"}
 
 def handle_web_scroll(direction: str) -> dict:
     if not _INTERACTIVE_WIN:

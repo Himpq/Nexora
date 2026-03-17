@@ -2,6 +2,7 @@
 配置管理：读写 config.json
 """
 
+import copy
 import json
 import secrets
 import sys
@@ -71,6 +72,35 @@ class Config:
 
     def set(self, key: str, value):
         self._data[key] = value
+        self._save()
+
+    def snapshot(self) -> dict:
+        base = copy.deepcopy(_DEFAULTS)
+        for key, value in self._data.items():
+            if isinstance(value, dict) and isinstance(base.get(key), dict):
+                merged = dict(base.get(key) or {})
+                merged.update(copy.deepcopy(value))
+                base[key] = merged
+            else:
+                base[key] = copy.deepcopy(value)
+        if not base.get("agent_token"):
+            base["agent_token"] = secrets.token_hex(24)
+        return base
+
+    def replace_all(self, data: dict):
+        if not isinstance(data, dict):
+            raise TypeError("config payload must be an object")
+        merged = copy.deepcopy(_DEFAULTS)
+        for key, value in data.items():
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                nested = dict(merged.get(key) or {})
+                nested.update(copy.deepcopy(value))
+                merged[key] = nested
+            else:
+                merged[key] = copy.deepcopy(value)
+        if not merged.get("agent_token"):
+            merged["agent_token"] = secrets.token_hex(24)
+        self._data = merged
         self._save()
 
 

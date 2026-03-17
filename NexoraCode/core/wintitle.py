@@ -993,6 +993,19 @@ else:
             return False
 
     def _make_wndproc(hwnd, old_ptr, win, emulate_snap=True):
+        def _call_old_safe(h, msg, wp, lp):
+            try:
+                return _CallWindowProcW(old_ptr, h, msg, wp, lp)
+            except OSError as e:
+                try:
+                    _trace(
+                        f"CallWindowProcW failed hwnd={int(hwnd):#x} msg={int(msg)} "
+                        f"wp={int(wp)} lp={int(lp)} err={e}"
+                    )
+                except Exception:
+                    pass
+                return 0
+
         def _proc(h, msg, wp, lp):
             is_custom = _custom_chrome_enabled(hwnd)
 
@@ -1001,7 +1014,7 @@ else:
                 # Returning 0 on the non-calc phase can cause first-frame
                 # offset/jump on some WebView2 + DWM combinations.
                 if not wp:
-                    return _CallWindowProcW(old_ptr, h, msg, wp, lp)
+                    return _call_old_safe(h, msg, wp, lp)
                 if _dbg_allow(hwnd, "nccalc_enter", limit=32):
                     rc0 = None
                     try:
@@ -1056,7 +1069,7 @@ else:
                 if hit is not None:
                     return hit
 
-                ret = _CallWindowProcW(old_ptr, h, msg, wp, lp)
+                ret = _call_old_safe(h, msg, wp, lp)
                 try:
                     if _is_maximized(hwnd) and int(ret) in _RESIZE_HITS and _trace_allow(hwnd, "top_resize_hit_when_max", limit=400):
                         mx, my = _signed_lo(lp), _signed_hi(lp)
@@ -1149,7 +1162,7 @@ else:
                 if emulate_snap:
                     threading.Thread(target=_apply_snap_from_rect, args=(win, hwnd), daemon=True).start()
 
-            return _CallWindowProcW(old_ptr, h, msg, wp, lp)
+            return _call_old_safe(h, msg, wp, lp)
 
         return _WndProcType(_proc)
 

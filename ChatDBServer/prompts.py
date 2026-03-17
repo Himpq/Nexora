@@ -1,6 +1,6 @@
 
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List
 
 
 default_verbose = """
@@ -10,7 +10,7 @@ default_verbose = """
 """
 
 
-default = """
+default_base = """
 你是 Nexora 的 AI 助手。
 当前模型：{{model_name}}（provider={{provider_name}}），当前用户：{{user}}，权限：{{permission}}。
 
@@ -33,6 +33,50 @@ default = """
 """
 
 
+system_web_search_enabled = """
+当前会话能力：
+- 用户已启用 Web Search。
+- 当问题具有时效性、需要外部事实核验、需要来源链接或明显依赖联网信息时，优先使用当前会话可用的搜索能力。
+- 若无需联网即可稳定回答，不要为了调用搜索而调用搜索。
+"""
+
+
+system_tools_enabled_auto = """
+当前会话能力：
+- 用户已启用工具调用，模式为 Auto。
+- 仅在确实需要读取外部状态、执行操作或补充关键事实时调用工具。
+"""
+
+
+system_tools_enabled_force = """
+当前会话能力：
+- 用户已启用工具调用，模式为 Force。
+- 如需完成任务，可优先考虑当前会话可用工具；但仍应避免无意义或重复调用。
+"""
+
+
+SYSTEM_PROMPT_SEP = "\n\n"
+
+
+def build_main_system_prompt(
+    base_prompt: str,
+    *,
+    enable_web_search: bool = False,
+    enable_tools: bool = False,
+    tool_mode: str = "auto"
+) -> str:
+    parts = [str(base_prompt or "").strip()]
+    if enable_web_search:
+        parts.append(system_web_search_enabled.strip())
+    if enable_tools:
+        mode = str(tool_mode or "").strip().lower()
+        if mode == "force":
+            parts.append(system_tools_enabled_force.strip())
+        else:
+            parts.append(system_tools_enabled_auto.strip())
+    return SYSTEM_PROMPT_SEP.join([p for p in parts if p]).strip()
+
+
 RUNTIME_HINT_NATIVE_TAG = "[运行时能力提示]"
 RUNTIME_HINT_TOOL_TAG = "[工具选择协议]"
 
@@ -52,12 +96,42 @@ runtime_tool_selector_template = f"""{RUNTIME_HINT_TOOL_TAG}
 {{catalog}}
 """
 
+select_tools_catalog_empty = "当前没有可选工具目录。"
+select_tools_catalog_marker = "当前可选工具名:"
+select_tools_catalog_suffix = "当前可选工具名: {{names}}。请仅按工具名调用 selectTools。"
+select_tools_catalog_suffix_more = "当前可选工具名: {{names}} 等 {{total}} 个。请仅按工具名调用 selectTools。"
+
+runtime_tool_not_enabled_template = (
+    "错误：工具 '{{function_name}}' 当前未启用。"
+    "当前允许工具: {{allowed_names}}。"
+    "请先调用 selectTools 选择工具名（例如 {\"tools\":[\"js_execute\",\"vectorSearch\"]}），"
+    "随后在当前回复的后续轮次生效。"
+)
+
+tool_completion_hint_template = (
+    "[系统指令] 你（AI助手）已完成工具调用: {{tool_names}}。"
+    "请根据返回的工具结果，继续完成对用户的回答或做出最终总结。"
+)
+
+conversation_title_prompt_template = """根据以下对话内容，生成一个简洁准确的标题（10-20字）。
+
+用户问题：{{user_message}}
+助手回答：{{assistant_response}}
+
+要求：
+1. 准确概括对话核心内容
+2. 简洁明了，10-20字
+3. 只输出标题，不要其他内容
+4. 避免使用"用户询问"、"提供信息"等冗余词汇
+5. 不使用 Markdown 和 LaTex
+
+你只用快速输出标题："""
+
 
 def build_runtime_tool_selector_hint(catalog_prompt: str) -> str:
     catalog = str(catalog_prompt or "").strip()
     if not catalog:
         return runtime_tool_selector_empty.strip()
-    # f-string 中 "{{catalog}}" 会被展开为 "{catalog}"，这里兼容两种写法。
     out = runtime_tool_selector_template.replace("{{catalog}}", catalog)
     out = out.replace("{catalog}", catalog)
     return out.strip()
@@ -67,11 +141,21 @@ def build_runtime_tool_not_enabled_message(function_name: str, allowed_names) ->
     fn = str(function_name or "").strip() or "unknown"
     allowed = [str(x).strip() for x in (allowed_names or []) if str(x).strip()]
     allowed_text = ", ".join(allowed) if allowed else "(none)"
-    return (
-        f"错误：工具 '{fn}' 当前未启用。"
-        f"当前允许工具: {allowed_text}。"
-        "请先调用 selectTools 选择工具名（例如 {\"tools\":[\"js_execute\",\"vectorSearch\"]}），随后在当前回复的后续轮次生效。"
-    )
+    out = runtime_tool_not_enabled_template.replace("{{function_name}}", fn)
+    out = out.replace("{{allowed_names}}", allowed_text)
+    return out
+
+
+def build_tool_completion_hint_text(tool_names: Iterable[str]) -> str:
+    names = [str(x).strip() for x in (tool_names or []) if str(x).strip()]
+    joined = ", ".join(names)
+    return tool_completion_hint_template.replace("{{tool_names}}", joined)
+
+
+def build_conversation_title_prompt(user_message: str, assistant_response: str) -> str:
+    out = conversation_title_prompt_template.replace("{{user_message}}", str(user_message or "")[:100])
+    out = out.replace("{{assistant_response}}", str(assistant_response or "")[:100])
+    return out
 
 
 def _lightweight_tool_overview(desc: Any, max_len: int = 42) -> str:
@@ -97,6 +181,27 @@ def build_select_tools_catalog_prompt(catalog: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def build_select_tools_catalog_suffix(names: Iterable[str], max_items: int = 128) -> str:
+    clean_names = [str(x).strip() for x in (names or []) if str(x).strip()]
+    if not clean_names:
+        return select_tools_catalog_empty
+    cap = max(1, int(max_items or 24))
+    shown = clean_names[:cap]
+    joined = ", ".join(shown)
+    if len(clean_names) > len(shown):
+        out = select_tools_catalog_suffix_more.replace("{{names}}", joined)
+        out = out.replace("{{total}}", str(len(clean_names)))
+        return out
+    return select_tools_catalog_suffix.replace("{{names}}", joined)
+
+
+def strip_select_tools_catalog_suffix(desc: Any) -> str:
+    text = str(desc or "").strip()
+    marker = select_tools_catalog_marker
+    if marker in text:
+        text = text.split(marker, 1)[0].rstrip(" \n。")
+    return text
+
 
 web_search_default = """
 你是联网搜索执行器。目标是返回“可验证”的检索结果，而非自由发挥。
@@ -110,8 +215,8 @@ web_search_default = """
 """
 
 
+default = default_base
 
-### ADD TO OTHER MODELS
 
 others = {
 }
