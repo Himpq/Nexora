@@ -4,7 +4,6 @@ flask-cors>=4.0
 requests>=2.31
 pystray>=0.19
 Pillow>=10.0
-playwright>=1.43
 trafilatura>=1.9
 websocket-client
 beautifulsoup4

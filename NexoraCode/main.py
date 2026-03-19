@@ -530,6 +530,28 @@ _BOOTSTRAP_HTML = """<!doctype html>
         } catch (_) {}
     }
 
+    function requestLocalAgentRegister(reason) {
+        try {
+            const seen = [];
+            const fns = [
+                window.__ncAttemptLocalAgentRegister,
+                window.parent && window.parent.__ncAttemptLocalAgentRegister,
+                window.top && window.top.__ncAttemptLocalAgentRegister
+            ];
+            for (let i = 0; i < fns.length; i += 1) {
+                const fn = fns[i];
+                if (typeof fn !== 'function') continue;
+                if (seen.indexOf(fn) >= 0) continue;
+                seen.push(fn);
+                try {
+                    fn(String(reason || ''));
+                    return true;
+                } catch (_) {}
+            }
+        } catch (_) {}
+        return false;
+    }
+
     let _ncLoginLoopHits = 0;
     let _ncLoginFallbackSent = false;
     let _ncSawChatOnce = false;
@@ -620,6 +642,7 @@ _BOOTSTRAP_HTML = """<!doctype html>
             setTimeout(function() {
                 hideBootStage('页面已就绪');
             }, 600);
+            requestLocalAgentRegister('iframe-load');
             traceAuth('iframe load event fired');
             try {
                 const href = String((shellIframe.contentWindow && shellIframe.contentWindow.location && shellIframe.contentWindow.location.href) || '');
@@ -663,6 +686,9 @@ _BOOTSTRAP_HTML = """<!doctype html>
                                     cd.cookie = k + '=1; path=/';
                                     const ok = String(cd.cookie || '').indexOf(k + '=1') >= 0;
                                     traceAuth('iframe cookie probe(' + tag + ') ok=' + String(ok) + ' len=' + String((cd.cookie || '').length));
+                                    if (ok) {
+                                        requestLocalAgentRegister('cookie-probe-' + tag);
+                                    }
                                     if (!ok) {
                                         let hrefNow = '';
                                         try { hrefNow = String((cw.location && cw.location.href) || ''); } catch (_) {}
@@ -694,6 +720,7 @@ _BOOTSTRAP_HTML = """<!doctype html>
                                     }
                                     cd.requestStorageAccess().then(function() {
                                         traceAuth('requestStorageAccess granted tag=' + tag);
+                                        requestLocalAgentRegister('storage-access-' + tag);
                                         probeCookie('after-storage-access-' + tag);
                                     }).catch(function(err) {
                                         traceAuth('requestStorageAccess denied tag=' + tag + ' err=' + String(err || ''));
@@ -1664,7 +1691,35 @@ class NexoraWindowApi:
         try:
             js_payload = json.dumps(req, ensure_ascii=False)
             ok = self._window.evaluate_js(
-                f"(function(){{if(window.__nexoraJumpToNoteAnchor){{window.__nexoraJumpToNoteAnchor({js_payload});return true;}}return false;}})();"
+                f"""(function(){{
+    function resolveView() {{
+        const ids = ['nc-app-iframe', 'nc-shell-iframe'];
+        for (const id of ids) {{
+            const frame = document.getElementById(id);
+            if (frame && frame.contentWindow) {{
+                return frame.contentWindow;
+            }}
+        }}
+        const frames = Array.from(document.querySelectorAll('iframe'));
+        for (const frame of frames) {{
+            try {{
+                const src = String(frame.getAttribute('src') || frame.src || '');
+                if ((/nc_iframe_content=1/i.test(src) || /\\/chat([?#]|$)/i.test(src)) && frame.contentWindow) {{
+                    return frame.contentWindow;
+                }}
+            }} catch (_) {{}}
+        }}
+        return window;
+    }}
+    try {{
+        const view = resolveView();
+        if (view && typeof view.__nexoraJumpToNoteAnchor === 'function') {{
+            view.__nexoraJumpToNoteAnchor({js_payload});
+            return true;
+        }}
+    }} catch (_) {{}}
+    return false;
+}})();"""
             )
             if str(ok).lower() not in {"true", "1"}:
                 return {"success": False, "message": "main jump handler not ready"}
@@ -1838,6 +1893,17 @@ class NexoraWindowApi:
         const ctx = resolveDoc();
         const doc = ctx.doc || document;
         const view = doc.defaultView || null;
+        try {
+            if (view && typeof view.__nexoraGetNotesSnapshotHtml === 'function') {
+                const helperOut = view.__nexoraGetNotesSnapshotHtml();
+                if (helperOut && typeof helperOut === 'object') {
+                    helperOut.frame = String(ctx.frameId || '');
+                    helperOut.href = String((doc.location && doc.location.href) || '');
+                    helperOut.title = String((doc.title || '') || '');
+                    return helperOut;
+                }
+            }
+        } catch (_) {}
         let panel = doc.querySelector('#notesPanel, .notes-panel, aside.notes-panel, div.notes-panel');
         try {
             if (view && typeof view.renderNotesList === 'function') {
@@ -2877,6 +2943,7 @@ def _build_notes_local_shell_html() -> str:
     let missCount = 0;
     let hadSuccess = false;
     let lastState = '';
+    let notesIndex = {};
     const shell = document.getElementById('notes-shell');
     const empty = document.getElementById('notes-empty');
     const state = document.getElementById('notes-state');
@@ -2917,6 +2984,39 @@ def _build_notes_local_shell_html() -> str:
         lastState = t;
         if (state) state.textContent = t;
     }
+
+    document.addEventListener('click', async function(e) {
+        const target = e && e.target;
+        const sourceBtn = target && target.closest ? target.closest('[data-action="jump-note-source"]') : null;
+        if (!sourceBtn) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const noteId = String((sourceBtn.dataset && sourceBtn.dataset.noteId) || '').trim();
+        if (!noteId) {
+            setState('跳转失败：缺少 noteId');
+            return;
+        }
+        const payload = (notesIndex && typeof notesIndex === 'object') ? notesIndex[noteId] : null;
+        if (!payload || typeof payload !== 'object') {
+            setState('跳转失败：缺少来源定位信息');
+            return;
+        }
+        try {
+            const api = window.pywebview && window.pywebview.api;
+            if (!api || !api.jump_note_source_external) {
+                setState('跳转失败：pywebview 跳转桥未就绪');
+                return;
+            }
+            const res = await api.jump_note_source_external(payload);
+            if (!res || !res.success) {
+                setState('跳转失败：' + String((res && res.message) || 'unknown'));
+                return;
+            }
+            setState('已跳转到笔记来源');
+        } catch (err) {
+            setState('跳转失败：' + String(err || 'unknown'));
+        }
+    }, true);
 
     async function syncOnce(){
         if (syncing) return;
@@ -2983,6 +3083,7 @@ def _build_notes_local_shell_html() -> str:
                     }
                 } catch (_) {}
             }
+            notesIndex = (d && d.note_index && typeof d.note_index === 'object') ? d.note_index : {};
             if (empty) empty.style.display = 'none';
             const frame = String((d && d.frame) || '').trim();
             const count = Number((d && d.items_count) || -1);
@@ -4595,12 +4696,77 @@ def main():
             "callback_url": f"http://localhost:{LOCAL_PORT}",
             "tools": tools,
         }
-        payload_js_literal = json.dumps(json.dumps(payload, ensure_ascii=False), ensure_ascii=False)
+        payload_js_literal = json.dumps(payload, ensure_ascii=False)
 
         try:
             win.evaluate_js(f"""(function() {{
     document.cookie = 'nexoracode_agent={agent_token}; path=/; SameSite=Lax';
-    try {{ console.log('[NexoraCode] legacy local_agent/register disabled; using WSS tunnel only'); }} catch (_) {{}}
+    try {{
+        const payload = {payload_js_literal};
+        const state = window.__ncLocalAgentRegisterState || (window.__ncLocalAgentRegisterState = {{
+            ok: false,
+            inFlight: false,
+            lastAttemptTs: 0,
+            retryTimer: null,
+            failCount: 0
+        }});
+        const scheduleRetry = function() {{
+            if (state.ok || state.retryTimer) return;
+            state.retryTimer = setInterval(function() {{
+                try {{
+                    if (state.ok || state.inFlight || !window.__ncAttemptLocalAgentRegister) return;
+                    window.__ncAttemptLocalAgentRegister('retry-timer');
+                }} catch (_) {{}}
+            }}, 3000);
+        }};
+        window.__ncAttemptLocalAgentRegister = function(reason) {{
+            const why = String(reason || 'unknown');
+            if (state.ok) return Promise.resolve({{ ok: true, status: 200, skipped: true, reason: why }});
+            if (state.inFlight) return Promise.resolve({{ ok: false, skipped: true, reason: why }});
+            const now = Date.now();
+            if ((now - Number(state.lastAttemptTs || 0)) < 1200) {{
+                return Promise.resolve({{ ok: false, skipped: true, throttled: true, reason: why }});
+            }}
+            state.inFlight = true;
+            state.lastAttemptTs = now;
+            return fetch('/api/local_agent/register', {{
+                method: 'POST',
+                credentials: 'include',
+                headers: {{ 'Content-Type': 'application/json' }},
+                body: JSON.stringify(payload)
+            }})
+            .then(function(resp) {{
+                return resp.text().then(function(t) {{
+                    return {{ ok: resp.ok, status: resp.status, body: t, reason: why }};
+                }});
+            }})
+            .then(function(info) {{
+                state.inFlight = false;
+                if (info.ok) {{
+                    state.ok = true;
+                    state.failCount = 0;
+                    if (state.retryTimer) {{
+                        clearInterval(state.retryTimer);
+                        state.retryTimer = null;
+                    }}
+                }} else {{
+                    state.failCount = Number(state.failCount || 0) + 1;
+                    scheduleRetry();
+                }}
+                try {{ console.log('[NexoraCode] local_agent/register(' + why + ') -> status=' + String(info.status) + ' ok=' + String(info.ok)); }} catch (_) {{}}
+                return info;
+            }})
+            .catch(function(err) {{
+                state.inFlight = false;
+                state.failCount = Number(state.failCount || 0) + 1;
+                scheduleRetry();
+                try {{ console.log('[NexoraCode] local_agent/register(' + why + ') failed: ' + String(err || 'unknown')); }} catch (_) {{}}
+                return {{ ok: false, status: 0, error: String(err || 'unknown'), reason: why }};
+            }});
+        }};
+        scheduleRetry();
+        window.__ncAttemptLocalAgentRegister('bootstrap');
+    }} catch (_) {{}}
 }})();
 """)
         except Exception:

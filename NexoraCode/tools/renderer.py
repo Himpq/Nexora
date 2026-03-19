@@ -1,10 +1,9 @@
 """
-工具：Playwright 网页渲染 + Readability 正文提取
+工具：网页渲染 + Readability 正文提取
 """
 
-import asyncio
 import re
-from core.config import config
+from core.config import config, get_app_root
 
 # Tool definitions are centralized in tools/catalog.py.
 TOOL_MANIFEST = []
@@ -85,9 +84,139 @@ def _extract_title(html: str) -> str:
 import threading
 import time
 import uuid
+from pathlib import Path
 
 _INTERACTIVE_WIN = None
 _INTERACTIVE_READY = threading.Event()
+_STATIC_COOKIE_LOCK = threading.Lock()
+_STATIC_REQUESTS_SESSION = None
+_STATIC_COOKIE_JAR_PATH = Path(get_app_root()) / "renderer_cookies.lwp"
+
+
+def _get_static_requests_session():
+    global _STATIC_REQUESTS_SESSION
+    if _STATIC_REQUESTS_SESSION is not None:
+        return _STATIC_REQUESTS_SESSION
+    import requests
+    from http.cookiejar import LWPCookieJar
+
+    session = requests.Session()
+    jar = LWPCookieJar(str(_STATIC_COOKIE_JAR_PATH))
+    try:
+        if _STATIC_COOKIE_JAR_PATH.exists():
+            jar.load(ignore_discard=True, ignore_expires=True)
+    except Exception:
+        pass
+    session.cookies = jar
+    _STATIC_REQUESTS_SESSION = session
+    return session
+
+
+def _save_static_requests_cookies(session=None):
+    sess = session or _STATIC_REQUESTS_SESSION
+    if not sess:
+        return
+    jar = getattr(sess, "cookies", None)
+    if not jar or not hasattr(jar, "save"):
+        return
+    with _STATIC_COOKIE_LOCK:
+        try:
+            _STATIC_COOKIE_JAR_PATH.parent.mkdir(parents=True, exist_ok=True)
+            jar.save(ignore_discard=True, ignore_expires=True)
+        except Exception:
+            pass
+
+
+def _merge_document_cookies_into_static_session(url: str, cookie_text: str):
+    from http.cookies import SimpleCookie
+    from urllib.parse import urlsplit
+    from requests.cookies import create_cookie
+
+    target_url = str(url or "").strip()
+    raw_cookie = str(cookie_text or "").strip()
+    if not target_url or not raw_cookie:
+        return
+
+    host = str(urlsplit(target_url).hostname or "").strip()
+    if not host:
+        return
+
+    parsed = SimpleCookie()
+    try:
+        parsed.load(raw_cookie)
+    except Exception:
+        return
+
+    session = _get_static_requests_session()
+    changed = False
+    for key, morsel in parsed.items():
+        name = str(key or "").strip()
+        if not name:
+            continue
+        try:
+            cookie = create_cookie(
+                name=name,
+                value=str(morsel.value or ""),
+                domain=host,
+                path="/",
+                secure=target_url.lower().startswith("https://"),
+            )
+            session.cookies.set_cookie(cookie)
+            changed = True
+        except Exception:
+            continue
+    if changed:
+        _save_static_requests_cookies(session)
+
+
+def _sync_interactive_cookies_to_static_session():
+    if not _INTERACTIVE_WIN:
+        return
+    payload, err = _interactive_eval_js_safe(
+        "(function(){return {url:String(window.location.href||''), cookie:String(document.cookie||'')};})();",
+        timeout_sec=2.5,
+    )
+    if err or not isinstance(payload, dict):
+        return
+    _merge_document_cookies_into_static_session(payload.get("url"), payload.get("cookie"))
+
+
+def _run_with_timeout(func, timeout_sec: float = 4.0):
+    done = threading.Event()
+    box = {}
+
+    def _runner():
+        try:
+            box["value"] = func()
+        except Exception as e:
+            box["error"] = e
+        finally:
+            done.set()
+
+    t = threading.Thread(target=_runner, daemon=True)
+    t.start()
+    if not done.wait(timeout=max(0.2, float(timeout_sec or 0))):
+        return False, {"error": f"Interactive call timeout ({timeout_sec}s)"}
+    if "error" in box:
+        return False, {"error": str(box["error"])}
+    return True, box.get("value")
+
+
+def _interactive_eval_js_safe(js_code: str, timeout_sec: float = 4.0):
+    global _INTERACTIVE_WIN
+    if not _INTERACTIVE_WIN:
+        return None, {"error": "Interactive window not initialized"}
+    ok, res = _run_with_timeout(lambda: _INTERACTIVE_WIN.evaluate_js(js_code), timeout_sec)
+    if not ok:
+        # Window may have been closed manually; force re-init on next call.
+        _INTERACTIVE_WIN = None
+        return None, res
+    return res, None
+
+
+def _interactive_window_alive() -> bool:
+    value, err = _interactive_eval_js_safe("(function(){return true;})();", timeout_sec=1.2)
+    return (err is None) and bool(value)
 
 
 def _interactive_dom_js() -> str:
@@ -268,8 +397,26 @@ def _format_interactive_node_line(node: dict) -> str:
 
 
 def _build_interactive_snapshot(payload) -> dict:
+    import json
+    import ast
+    if payload is None:
+        payload = {}
+    if isinstance(payload, bool):
+        payload = {}
+    if isinstance(payload, str):
+        txt = payload.strip()
+        if txt:
+            try:
+                payload = json.loads(txt)
+            except Exception:
+                try:
+                    payload = ast.literal_eval(txt)
+                except Exception:
+                    payload = {}
+    if isinstance(payload, list) and len(payload) == 1 and isinstance(payload[0], dict):
+        payload = payload[0]
     if not isinstance(payload, dict):
-        return {"error": "Interactive snapshot payload invalid"}
+        payload = {}
     title = str(payload.get("title", "") or "")
     url = str(payload.get("url", "") or "")
     nodes = payload.get("nodes", [])
@@ -286,12 +433,43 @@ def _build_interactive_snapshot(payload) -> dict:
     }
 
 
+def _interactive_basic_snapshot() -> dict:
+    title, err1 = _interactive_eval_js_safe("(function(){return String(document.title || '');})();", timeout_sec=2.0)
+    if err1:
+        return err1
+    url, err2 = _interactive_eval_js_safe("(function(){return String(window.location.href || '');})();", timeout_sec=2.0)
+    if err2:
+        return err2
+    payload = {
+        "title": str(title or ""),
+        "url": str(url or ""),
+        "viewport": {},
+        "nodes": []
+    }
+    _sync_interactive_cookies_to_static_session()
+    return _build_interactive_snapshot(payload)
+
+
 def _get_interactive_dom():
     if not _INTERACTIVE_WIN:
         return {"error": "Interactive window not initialized"}
     try:
-        payload = _INTERACTIVE_WIN.evaluate_js(_interactive_dom_js())
-        return _build_interactive_snapshot(payload)
+        last_err = None
+        for _ in range(3):
+            payload, err = _interactive_eval_js_safe(_interactive_dom_js(), timeout_sec=5.0)
+            if err:
+                last_err = err
+                time.sleep(0.25)
+                continue
+            _sync_interactive_cookies_to_static_session()
+            snap = _build_interactive_snapshot(payload)
+            # During navigation transition, payload may be empty/non-structured; retry briefly.
+            if snap.get("title") or snap.get("url") or snap.get("nodes"):
+                return snap
+            time.sleep(0.25)
+        if last_err:
+            return last_err
+        return _interactive_basic_snapshot()
     except Exception as e:
         return {"error": f"Evaluate Error: {str(e)}"}
 
@@ -301,31 +479,51 @@ def _init_interactive_window(url: str):
     
     if _INTERACTIVE_WIN is not None:
         try:
-            _INTERACTIVE_READY.clear()
-            _INTERACTIVE_WIN.load_url(url)
-            # _INTERACTIVE_READY.wait(timeout=10)
-            import time
-            time.sleep(1.5) # wait for DOM build
-            return _get_interactive_dom()
+            if not _interactive_window_alive():
+                _INTERACTIVE_WIN = None
+            else:
+                _INTERACTIVE_READY.clear()
+                ok, res = _run_with_timeout(lambda: _INTERACTIVE_WIN.load_url(url), timeout_sec=2.5)
+                if not ok:
+                    _INTERACTIVE_WIN = None
+                else:
+                    import time
+                    time.sleep(1.5) # wait for DOM build
+                    return _get_interactive_dom()
         except:
             _INTERACTIVE_WIN = None
-            
-    window_id = f"interactive_{uuid.uuid4().hex[:8]}"
-    _INTERACTIVE_READY.clear()
-    
-    # Needs to be a bit large
-    import webview
-    import time
-    w = webview.create_window(window_id, url, hidden=False, width=1280, height=800)
-    _INTERACTIVE_WIN = w
-    
-    def on_loaded():
-        _INTERACTIVE_READY.set()
-        
-    w.events.loaded += on_loaded
-    # _INTERACTIVE_READY.wait(timeout=20)
-    time.sleep(2)
-    return _get_interactive_dom()
+
+    if _INTERACTIVE_WIN is not None:
+        return _get_interactive_dom()
+
+    try:
+        window_id = f"interactive_{uuid.uuid4().hex[:8]}"
+        _INTERACTIVE_READY.clear()
+
+        # Needs to be a bit large
+        import webview
+        import time
+        w = webview.create_window(window_id, url, hidden=False, width=1280, height=800)
+        _INTERACTIVE_WIN = w
+
+        def on_loaded():
+            _INTERACTIVE_READY.set()
+
+        def on_closed():
+            global _INTERACTIVE_WIN
+            if _INTERACTIVE_WIN is w:
+                _INTERACTIVE_WIN = None
+                _INTERACTIVE_READY.clear()
+
+        w.events.loaded += on_loaded
+        if hasattr(w.events, "closed"):
+            w.events.closed += on_closed
+        # _INTERACTIVE_READY.wait(timeout=20)
+        time.sleep(2)
+        return _get_interactive_dom()
+    except Exception as e:
+        _INTERACTIVE_WIN = None
+        return {"error": f"Interactive window create failed: {e}"}
 
 def handle_web_click(node_id: int) -> dict:
     if not _INTERACTIVE_WIN:
@@ -346,7 +544,9 @@ def handle_web_click(node_id: int) -> dict:
     }})();
     """
     try:
-        ok = _INTERACTIVE_WIN.evaluate_js(js)
+        ok, err = _interactive_eval_js_safe(js, timeout_sec=4.5)
+        if err:
+            return err
         if not ok:
             return {"error": f"找不到 ID 为 {node_id} 的元素"}
         import time
@@ -366,7 +566,9 @@ def handle_web_exec_js(code: str) -> dict:
             wrapped_code = f"(function() {{\n{code}\n}})();"
         else:
             wrapped_code = code
-        res = _INTERACTIVE_WIN.evaluate_js(wrapped_code)
+        res, err = _interactive_eval_js_safe(wrapped_code, timeout_sec=6.0)
+        if err:
+            return err
         time.sleep(1) # Short wait for DOM to settle
         return {"result": str(res), "dom": _get_interactive_dom()}
     except Exception as e:
@@ -430,7 +632,9 @@ def handle_web_input(selector: str, text: str, submit: bool = False) -> dict:
     """
     try:
         import time
-        result = _INTERACTIVE_WIN.evaluate_js(js)
+        result, err = _interactive_eval_js_safe(js, timeout_sec=6.0)
+        if err:
+            return err
         time.sleep(1)
         return {"result": result, "dom": _get_interactive_dom()}
     except Exception as e:
@@ -447,7 +651,9 @@ def handle_web_scroll(direction: str) -> dict:
     }
     js = js_map.get(direction, "window.scrollBy(0, window.innerHeight * 0.5)")
     try:
-        _INTERACTIVE_WIN.evaluate_js(js)
+        _, err = _interactive_eval_js_safe(js, timeout_sec=4.5)
+        if err:
+            return err
         import time
         time.sleep(1)
         return _get_interactive_dom()
@@ -518,8 +724,6 @@ url: str, extract_mode: str) -> dict:
 
 
 def _render_static(url: str, extract_mode: str) -> dict:
-    import requests
-
     timeout_sec = int(config.get("renderer_timeout", 20))
     headers = {
         "User-Agent": (
@@ -528,8 +732,10 @@ def _render_static(url: str, extract_mode: str) -> dict:
             "Chrome/122.0.0.0 Safari/537.36"
         )
     }
-    resp = requests.get(url, headers=headers, timeout=timeout_sec, allow_redirects=True)
+    session = _get_static_requests_session()
+    resp = session.get(url, headers=headers, timeout=timeout_sec, allow_redirects=True)
     resp.raise_for_status()
+    _save_static_requests_cookies(session)
     html = resp.text or ""
     title = _extract_title(html) or (resp.url or url)
     if extract_mode == "html":
@@ -544,42 +750,6 @@ def _render_static(url: str, extract_mode: str) -> dict:
     }
 
 
-async def _render_async(url: str, wait_for: str, extract_mode: str) -> dict:
-    from playwright.async_api import async_playwright
-
-    timeout_ms = config.get("renderer_timeout", 20) * 1000
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/122.0.0.0 Safari/537.36"
-            )
-        )
-        page = await context.new_page()
-
-        try:
-            await page.goto(url, wait_until=wait_for, timeout=timeout_ms)
-        except Exception as e:
-            await browser.close()
-            return {"error": f"Navigation failed: {e}"}
-
-        title = await page.title()
-        html = await page.content()
-        await browser.close()
-
-    if extract_mode == "html":
-        return {"title": title, "content": html, "url": url}
-    elif extract_mode == "full_text":
-        content = _extract_readability(html, url)
-        return {"title": title, "content": content, "url": url}
-    else:  # readability
-        content = _extract_readability(html, url)
-        return {"title": title, "content": content, "url": url}
-
-
 def web_render(url: str, wait_for: str = "networkidle", extract_mode: str = "readability") -> dict:
     engine = str(config.get("renderer_engine", "auto") or "auto").strip().lower()
     if engine == "requests":
@@ -588,7 +758,7 @@ def web_render(url: str, wait_for: str = "networkidle", extract_mode: str = "rea
         except Exception as e:
             return {"error": str(e)}
 
-    # 优先尝试 WebView 后台无头渲染（无需安装庞大的 Playwright）
+    # 优先尝试 WebView 后台无头渲染
     try:
         import webview
         # 如果已经有活跃的 webview（通过 webview.windows 判断应用是否已经启动 GUI 循环）
@@ -607,22 +777,8 @@ def web_render(url: str, wait_for: str = "networkidle", extract_mode: str = "rea
         logging.warning(f"WebView initialization skipped: {e}")
 
     try:
-        return asyncio.run(_render_async(url, wait_for, extract_mode))
-    except ModuleNotFoundError:
-        try:
-            data = _render_static(url, extract_mode)
-            data["warning"] = "后台 WebView 与 Playwright 均不可用，已降级为纯静态抓取"
-            return data
-        except Exception as e:
-            return {"error": f"网页渲染器与静态抓取全部失败: {e}"}
+        data = _render_static(url, extract_mode)
+        data["warning"] = "后台 WebView 不可用，已降级为纯静态抓取"
+        return data
     except Exception as e:
-        msg = str(e)
-        lower = msg.lower()
-        if "playwright" in lower and ("install" in lower or "executable doesn't exist" in lower):
-            try:
-                data = _render_static(url, extract_mode)
-                data["warning"] = "后台 WebView 与 Playwright 均不可用，已降级为纯静态抓取"
-                return data
-            except Exception as fallback_err:
-                return {"error": f"{msg}; 静态抓取也失败: {fallback_err}"}
-        return {"error": msg}
+        return {"error": f"网页渲染器与静态抓取全部失败: {e}"}

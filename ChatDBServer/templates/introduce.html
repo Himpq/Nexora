@@ -699,6 +699,61 @@
       }
     }
 
+    .download-button {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 24px;
+      padding: 12px 20px 12px 16px;
+      background: #0f172a;
+      color: #fff;
+      border-radius: 14px;
+      text-decoration: none;
+      transition: background 0.18s ease, transform 0.15s ease;
+      cursor: pointer;
+      user-select: none;
+    }
+    .download-button:hover {
+      background: #1e293b;
+      transform: translateY(-1px);
+    }
+    .download-button:active {
+      transform: translateY(0);
+    }
+    .download-icon {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 36px;
+      height: 36px;
+      background: rgba(255,255,255,0.1);
+      border-radius: 8px;
+      flex-shrink: 0;
+    }
+    .download-text {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .download-label {
+      font-size: 15px;
+      font-weight: 700;
+      line-height: 1.2;
+      letter-spacing: -0.01em;
+    }
+    .download-sub {
+      font-size: 11px;
+      color: rgba(255,255,255,0.55);
+      font-weight: 500;
+      letter-spacing: 0.02em;
+    }
+    .download-arrow {
+      display: flex;
+      align-items: center;
+      margin-left: 4px;
+      opacity: 0.6;
+    }
+
     @media (max-width: 520px) {
       h1 {
         font-size: clamp(36px, 12vw, 56px);
@@ -714,6 +769,7 @@
         margin-left: 0;
       }
     }
+    
   </style>
 </head>
 <body>
@@ -736,13 +792,12 @@
           <p class="desc">面向个人开发者与小型团队的本地公共模型平台。</p>
         </div>
         <div class="placeholder" aria-label="能力清单">
+          <span class="placeholder-chip">Nexora"Claw"</span>
           <span class="placeholder-chip">NexoraMail 邮件</span>
           <span class="placeholder-chip">网盘文件管理</span>
           <span class="placeholder-chip">知识库 / 记忆</span>
           <span class="placeholder-chip">RAG 检索</span>
           <span class="placeholder-chip">文件向量化</span>
-          <span class="placeholder-chip">图片上传</span>
-          <span class="placeholder-chip">代码执行</span>
         </div>
         <section class="intro" aria-label="简介">
           <!-- <h2 class="intro-title">简介</h2> -->
@@ -769,6 +824,39 @@
       </div>
       <div class="hero-side-media" aria-hidden="true">
         <img src="/static/img/w.png" alt="">
+      </div>
+    </section><br><br><br><br>
+
+    <section class="hero hero-media-band" aria-label="首页主栏目">
+      <div class="hero-inner">
+        <h1 class="hero-title-secondary">NexoraCode</h1>
+        <p class="desc">同一账号登陆设备可随时访问，执行远程任务。<br>仅需电脑端下载 NexoraCode 应用后登陆同一账号即可在手机端网页端远程执行命令。</p>
+        <br><br>
+        <span class="placeholder-chip">远程执行Shell</span>
+        <span class="placeholder-chip">计划任务</span>
+        <span class="placeholder-chip">本地渲染页面</span>
+
+        <br><br>
+        <a class="download-button" href="./static/nexoracode_versions/NexoraCode.7z" download>
+          <span class="download-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+              <path d="M3 3h8.5v8.5H3V3zm0 9.5h8.5V21H3v-8.5zm9.5-9.5H21v8.5h-8.5V3zm0 9.5H21V21h-8.5v-8.5z"/>
+            </svg>
+          </span>
+          <span class="download-text">
+            <span class="download-label">下载 NexoraCode v2.0</span>
+            <span class="download-sub">Windows x64 - 110 MB</span>
+          </span>
+          <span class="download-arrow">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 5v14M5 12l7 7 7-7"/>
+            </svg>
+          </span>
+        </a>
+
+      </div>
+      <div class="hero-side-media" aria-hidden="true">
+        <img src="/static/img/nexora_claw.png" alt="">
       </div>
     </section>
 
@@ -852,29 +940,17 @@
       </div>
     </section>
 
-    <section class="hero" aria-label="首页主栏目">
-      <div class="hero-inner">
-        <h1 class="hero-title-secondary">本地部署</h1>
-        <p class="desc">仅需提供大模型平台API Key和URL即可快速接入。</p>
-      </div>
-    </section>
-
-    <section class="hero hero-media-band" aria-label="人员管理">
-      <div class="hero-inner">
-        <h1 class="hero-title-secondary">人员管理</h1>
-        <p class="desc">将 NexoraMail 账号和 Nexora 用户统一绑定，按成员身份分配可见能力与操作权限。</p>
-        <p class="desc">管理员可以集中维护账号映射、组织结构与权限策略，降低跨系统维护成本。</p>
-      </div>
-      <div class="hero-side-media" aria-hidden="true">
-        <img src="/static/img/member_manage.png" alt="">
-      </div>
-    </section>
+    
 
     <section class="hero hero-media-band" aria-label="人员管理">
       <div class="hero-inner">
         <h1 class="hero-title-secondary">笔记</h1>
-        <p class="desc">选中文本随时记录笔记到云端。</p>
-        <p class="desc">可随时调出笔记窗口、多笔记本管理、随时导出。</p>
+        <p class="desc">选中聊天对话、知识库等文本随时记录笔记到云端。</p>
+        <p class="desc">多设备同步、多笔记本切换，随时导出。</p>
+        <br><br>
+        <span class="placeholder-chip">云存储</span>
+        <span class="placeholder-chip">选中文本即添加</span>
+        <span class="placeholder-chip">多端适用</span>
       </div>
       <div class="hero-side-media" aria-hidden="true">
         <img src="/static/img/note.png" alt="">
@@ -886,9 +962,13 @@
         <h1 class="hero-title-secondary">知识共享</h1>
         <p class="desc">知识库支持共享与协作编辑，可面向团队开放指定知识内容，减少重复沟通与重复建设。</p>
         <p class="desc">在共享页中可快速检索、复用和持续更新沉淀内容，让知识沉淀真正服务多人协作。</p>
+        <br><br>
+        <span class="placeholder-chip">知识分享</span>
+        <span class="placeholder-chip">在线文档任务</span>
+        <span class="placeholder-chip">即时同步</span>
       </div>
       <div class="hero-side-media" aria-hidden="true">
-        <img src="/static/img/knwoledge_share_page.png" alt="">
+        <img src="/static/img/knowledge_share_setting2.png" alt="">
       </div>
     </section>
 
@@ -900,6 +980,17 @@
       </div>
       <div class="hero-side-media" aria-hidden="true">
         <img src="/static/img/model_manage.png" alt="">
+      </div>
+    </section>
+
+    <section class="hero hero-media-band" aria-label="人员管理">
+      <div class="hero-inner">
+        <h1 class="hero-title-secondary">人员管理</h1>
+        <p class="desc">将 NexoraMail 账号和 Nexora 用户统一绑定，按成员身份分配可见能力与操作权限。</p>
+        <p class="desc">管理员可以集中维护账号映射、组织结构与权限策略，降低跨系统维护成本。</p>
+      </div>
+      <div class="hero-side-media" aria-hidden="true">
+        <img src="/static/img/member_manage.png" alt="">
       </div>
     </section>
 

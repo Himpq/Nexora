@@ -1,0 +1,808 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nexora Status</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --panel: #ffffff;
+      --panel-soft: #f8fafc;
+      --ink: #111319;
+      --muted: #606b7a;
+      --line: #e8ebf1;
+      --accent: #0f172a;
+      --accent-soft: #334155;
+      --good: #16a34a;
+      --warn: #d97706;
+      --bad: #dc2626;
+      --radius: 20px;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; overflow-x: hidden; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", "Helvetica Neue", Arial, sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+    }
+    .topbar {
+      height: 64px;
+      border-bottom: 1px solid var(--line);
+      background: var(--bg);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 28px;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    .brand {
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      line-height: 1;
+      color: #0f172a;
+      display: inline-flex;
+      align-items: baseline;
+      gap: 2px;
+      text-decoration: none;
+    }
+    .brand .dot {
+      color: #8c98ab;
+      display: inline-flex;
+      min-width: 16px;
+    }
+    .brand .dot::after {
+      content: ".";
+      animation: multiPhaseDots 4.5s infinite;
+      display: inline-block;
+    }
+    @keyframes multiPhaseDots {
+      0% { content: "."; opacity: 1; }
+      33% { content: ".."; opacity: 1; }
+      44% { content: "..."; opacity: 1; }
+      55% { content: "...?"; opacity: 1; }
+      77% { content: "...?"; opacity: 1; }
+      100% { content: "."; opacity: 1; }
+    }
+    .topbar-meta {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .meta-pill {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 34px;
+      padding: 0 14px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      white-space: nowrap;
+    }
+    .page {
+      width: min(1180px, calc(100vw - 48px));
+      margin: 0 auto;
+      padding: 28px 0 72px;
+    }
+    .hero {
+      padding: 18px 4px 34px;
+      border-bottom: 1px solid var(--line);
+    }
+    .kicker {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid #dbe3ef;
+      background: #ffffff;
+      color: #475569;
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+    }
+    h1 {
+      margin: 14px 0 0;
+      font-size: clamp(42px, 7vw, 78px);
+      line-height: 0.96;
+      letter-spacing: -0.05em;
+      font-weight: 800;
+      max-width: 820px;
+    }
+    .hero-desc {
+      margin: 18px 0 0;
+      max-width: 720px;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.7;
+    }
+    .summary-grid {
+      margin-top: 28px;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .summary-card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      padding: 18px 18px 16px;
+    }
+    .summary-label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .summary-value {
+      margin-top: 10px;
+      font-size: 34px;
+      font-weight: 800;
+      letter-spacing: -0.05em;
+      line-height: 1;
+    }
+    .summary-hint {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .section {
+      padding: 32px 4px 0;
+    }
+    .section-head {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+    .section-head h2 {
+      margin: 0;
+      font-size: 28px;
+      letter-spacing: -0.03em;
+    }
+    .section-head p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+      max-width: 720px;
+      line-height: 1.6;
+    }
+    .grid-two {
+      display: grid;
+      grid-template-columns: 1.16fr 0.84fr;
+      gap: 18px;
+    }
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      padding: 22px;
+    }
+    .panel-title {
+      margin: 0 0 18px;
+      font-size: 18px;
+      letter-spacing: -0.02em;
+    }
+    .empty-hint {
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.6;
+      padding: 6px 0;
+    }
+    .rank-list {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .rank-item {
+      display: grid;
+      grid-template-columns: 34px minmax(0, 1fr) 76px;
+      gap: 14px;
+      align-items: center;
+    }
+    .rank-num {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      border: 1px solid var(--line);
+      background: var(--panel-soft);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      font-weight: 800;
+      color: var(--accent);
+    }
+    .rank-main {
+      min-width: 0;
+    }
+    .rank-name {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .rank-name img {
+      width: 22px;
+      height: 22px;
+      object-fit: contain;
+      flex: 0 0 auto;
+    }
+    .rank-name span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .rank-meta {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .rank-bar {
+      margin-top: 8px;
+      width: 100%;
+      height: 8px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: #eff3f8;
+    }
+    .rank-bar > span {
+      display: block;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--accent) 0%, var(--accent-soft) 100%);
+    }
+    .rank-score {
+      text-align: right;
+      font-size: 26px;
+      font-weight: 800;
+      letter-spacing: -0.04em;
+    }
+    .mini-cards {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
+    }
+    .mini-card {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--panel-soft);
+      padding: 16px;
+    }
+    .mini-card .label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .mini-card .value {
+      margin-top: 8px;
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: -0.04em;
+    }
+    .mini-card .hint {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .chart-list {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .chart-row {
+      display: grid;
+      grid-template-columns: minmax(0, 260px) minmax(0, 1fr) 88px;
+      gap: 14px;
+      align-items: center;
+    }
+    .chart-label {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .chart-label img {
+      width: 22px;
+      height: 22px;
+      object-fit: contain;
+      flex: 0 0 auto;
+    }
+    .chart-label span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .chart-bar {
+      height: 12px;
+      border-radius: 999px;
+      background: #eff3f8;
+      overflow: hidden;
+    }
+    .chart-bar > span {
+      display: block;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #111827 0%, #64748b 100%);
+    }
+    .chart-value {
+      text-align: right;
+      font-size: 14px;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .complexity-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+    .complexity-summary {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 16px;
+      background: var(--panel-soft);
+    }
+    .complexity-summary .label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .complexity-summary .value {
+      margin-top: 8px;
+      font-size: 26px;
+      font-weight: 800;
+      letter-spacing: -0.04em;
+    }
+    .complexity-summary .hint {
+      margin-top: 6px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .complexity-list {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .complexity-item {
+      display: grid;
+      grid-template-columns: minmax(0, 220px) minmax(0, 1fr);
+      gap: 14px;
+      align-items: center;
+    }
+    .complexity-name {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .complexity-name img {
+      width: 22px;
+      height: 22px;
+      object-fit: contain;
+      flex: 0 0 auto;
+    }
+    .complexity-name span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .complexity-track {
+      height: 14px;
+      border-radius: 999px;
+      background: #eff3f8;
+      overflow: hidden;
+      display: flex;
+    }
+    .complexity-seg {
+      height: 100%;
+    }
+    .complexity-seg.simple { background: #84cc16; }
+    .complexity-seg.medium { background: #f59e0b; }
+    .complexity-seg.complex { background: #dc2626; }
+    .fail-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .fail-item {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: center;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    .fail-item:last-child {
+      border-bottom: none;
+      padding-bottom: 0;
+    }
+    .fail-name {
+      font-size: 14px;
+      font-weight: 700;
+      word-break: break-word;
+    }
+    .fail-meta {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .fail-count {
+      font-size: 24px;
+      font-weight: 800;
+      color: var(--bad);
+      letter-spacing: -0.04em;
+      white-space: nowrap;
+    }
+    .footnote {
+      margin-top: 28px;
+      padding-top: 18px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+    @media (max-width: 1080px) {
+      .summary-grid,
+      .complexity-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .grid-two {
+        grid-template-columns: 1fr;
+      }
+    }
+    @media (max-width: 760px) {
+      .page {
+        width: min(100vw, calc(100vw - 28px));
+        padding-top: 20px;
+      }
+      .topbar {
+        padding: 0 14px;
+      }
+      .topbar-meta {
+        display: none;
+      }
+      h1 {
+        font-size: 44px;
+      }
+      .summary-grid,
+      .complexity-grid {
+        grid-template-columns: 1fr;
+      }
+      .chart-row,
+      .rank-item,
+      .complexity-item {
+        grid-template-columns: 1fr;
+      }
+      .rank-score,
+      .chart-value {
+        text-align: left;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">
+      <span>Nexora</span><span class="dot"></span>
+    </a>
+    <div class="topbar-meta">
+      <span class="meta-pill">Status Preview</span>
+      <span class="meta-pill" id="snapshotMeta">--</span>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="hero">
+      <span class="kicker">System / Status / Placeholder</span>
+      <h1>模型表现、Token 消耗与工具稳定性，放在一个干净的状态页里。</h1>
+      <p class="hero-desc" id="heroDesc"></p>
+      <div class="summary-grid" id="summaryGrid"></div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2>综合榜单</h2>
+          <p>综合分不是单纯按 Token 大小排序，而是把调用次数、工具成功率和复杂任务承受度合并成一个更接近真实体验的分数。</p>
+        </div>
+      </div>
+      <div class="grid-two">
+        <div class="panel">
+          <h3 class="panel-title">模型排名</h3>
+          <div class="rank-list" id="rankList"></div>
+        </div>
+        <div class="panel">
+          <h3 class="panel-title">状态摘要</h3>
+          <div class="mini-cards" id="statusHighlights"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2>Token 用量概览</h2>
+          <p>保持图表简洁，只看总量和相对关系，不做仪表盘堆砌。</p>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="chart-list" id="tokenChart"></div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2>任务复杂度承受度</h2>
+          <p>按工具调用数把任务分成简单、中等、复杂三档，用来观察模型在真实执行任务时的负载结构。</p>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="complexity-grid" id="complexitySummary"></div>
+        <div class="complexity-list" id="complexityList"></div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2>工具失误榜</h2>
+          <p>这里只展示最容易出问题的工具，不混入太多无意义统计。</p>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="fail-list" id="toolFailList"></div>
+      </div>
+      <div class="footnote" id="statusFootnote"></div>
+    </section>
+  </main>
+
+  <script>
+    let statusData = null;
+
+    function createEmptyStatusData() {
+      return {
+        snapshotAt: '-',
+        source: 'ChatDBServer/data/users/*/{token_usage,tool_usage,conversations}',
+        totals: {
+          tokens: 0,
+          modelCalls: 0,
+          toolCalls: 0,
+          toolFailures: 0
+        },
+        complexity: {
+          simple: 0,
+          medium: 0,
+          complex: 0
+        },
+        models: [],
+        toolFailures: []
+      };
+    }
+
+    function normalizeStatusData(raw) {
+      const src = (raw && typeof raw === 'object') ? raw : {};
+      return {
+        snapshotAt: String(src.snapshotAt || '-'),
+        source: String(src.source || 'ChatDBServer/data/users/*/{token_usage,tool_usage,conversations}'),
+        totals: {
+          tokens: Number((src.totals && src.totals.tokens) || 0),
+          modelCalls: Number((src.totals && src.totals.modelCalls) || 0),
+          toolCalls: Number((src.totals && src.totals.toolCalls) || 0),
+          toolFailures: Number((src.totals && src.totals.toolFailures) || 0)
+        },
+        complexity: {
+          simple: Number((src.complexity && src.complexity.simple) || 0),
+          medium: Number((src.complexity && src.complexity.medium) || 0),
+          complex: Number((src.complexity && src.complexity.complex) || 0)
+        },
+        models: Array.isArray(src.models) ? src.models : [],
+        toolFailures: Array.isArray(src.toolFailures) ? src.toolFailures : []
+      };
+    }
+
+    const formatNum = (n) => Number(n || 0).toLocaleString('en-US');
+    const providerIconMarkup = (item) => {
+      const src = String((item && item.icon) || '').trim();
+      const provider = String((item && item.provider) || 'unknown');
+      if (!src) return '';
+      return `<img src="${src}" alt="${provider}">`;
+    };
+
+    function renderSummary() {
+      const root = document.getElementById('summaryGrid');
+      const t = statusData.totals;
+      root.innerHTML = [
+        ['总 Token', formatNum(t.tokens), '样本内所有模型累计 I/O。'],
+        ['模型调用', formatNum(t.modelCalls), '按单轮模型响应计数。'],
+        ['工具调用', formatNum(t.toolCalls), '用于衡量任务执行强度。'],
+        ['工具失误', formatNum(t.toolFailures), '用于观察工具链稳定性。']
+      ].map(([label, value, hint]) => `
+        <div class="summary-card">
+          <div class="summary-label">${label}</div>
+          <div class="summary-value">${value}</div>
+          <div class="summary-hint">${hint}</div>
+        </div>
+      `).join('');
+    }
+
+    function renderHeroText() {
+      document.getElementById('snapshotMeta').textContent = statusData.snapshotAt;
+      document.getElementById('heroDesc').textContent =
+        '当前页面已接入后端聚合数据。目标不是做一个拥挤的监控面板，而是做一个和 Nexora 现有页面语言一致、能快速看出模型表现差异的状态页。';
+    }
+
+    function renderRankList() {
+      const root = document.getElementById('rankList');
+      if (!statusData.models.length) {
+        root.innerHTML = '<div class="empty-hint">暂无模型统计数据</div>';
+        return;
+      }
+      const maxScore = Math.max(...statusData.models.map(item => item.score), 1);
+      root.innerHTML = statusData.models.map((item, index) => `
+        <div class="rank-item">
+          <div class="rank-num">#${index + 1}</div>
+          <div class="rank-main">
+            <div class="rank-name">
+              ${providerIconMarkup(item)}
+              <span>${item.name}</span>
+            </div>
+            <div class="rank-meta">${item.provider} · ${formatNum(item.callCount)} calls · ${item.successRate}% success</div>
+            <div class="rank-bar"><span style="width:${(item.score / maxScore) * 100}%"></span></div>
+          </div>
+          <div class="rank-score">${item.score}</div>
+        </div>
+      `).join('');
+    }
+
+    function renderHighlights() {
+      const root = document.getElementById('statusHighlights');
+      if (!statusData.models.length) {
+        root.innerHTML = '<div class="mini-card"><div class="label">当前状态</div><div class="value">No Data</div><div class="hint">后端尚未产出有效模型统计。</div></div>';
+        return;
+      }
+      const leader = statusData.models[0];
+      const mostStable = [...statusData.models].sort((a, b) => b.successRate - a.successRate)[0];
+      const highestLoad = [...statusData.models].sort((a, b) => b.toolCalls - a.toolCalls)[0];
+      const tokenLeader = [...statusData.models].sort((a, b) => b.totalTokens - a.totalTokens)[0];
+      const cards = [
+        ['当前榜首', leader.name, `${leader.score} 分，综合表现最强。`],
+        ['最稳定工具链', mostStable.name, `${mostStable.successRate}% 成功率。`],
+        ['最高任务负载', highestLoad.name, `${formatNum(highestLoad.toolCalls)} 次工具调用。`],
+        ['最高 Token 消耗', tokenLeader.name, `${formatNum(tokenLeader.totalTokens)} total tokens。`]
+      ];
+      root.innerHTML = cards.map(([label, value, hint]) => `
+        <div class="mini-card">
+          <div class="label">${label}</div>
+          <div class="value">${value}</div>
+          <div class="hint">${hint}</div>
+        </div>
+      `).join('');
+    }
+
+    function renderTokenChart() {
+      const root = document.getElementById('tokenChart');
+      if (!statusData.models.length) {
+        root.innerHTML = '<div class="empty-hint">暂无 Token 统计数据</div>';
+        return;
+      }
+      const maxToken = Math.max(...statusData.models.map(item => item.totalTokens), 1);
+      root.innerHTML = statusData.models.map((item) => `
+        <div class="chart-row">
+          <div class="chart-label">
+            ${providerIconMarkup(item)}
+            <span>${item.name}</span>
+          </div>
+          <div class="chart-bar"><span style="width:${(item.totalTokens / maxToken) * 100}%"></span></div>
+          <div class="chart-value">${formatNum(item.totalTokens)}</div>
+        </div>
+      `).join('');
+    }
+
+    function renderComplexity() {
+      const total = statusData.complexity;
+      document.getElementById('complexitySummary').innerHTML = [
+        ['简单任务', total.simple, '0~2 tools'],
+        ['中等任务', total.medium, '3~7 tools'],
+        ['复杂任务', total.complex, '8+ tools']
+      ].map(([label, value, hint]) => `
+        <div class="complexity-summary">
+          <div class="label">${label}</div>
+          <div class="value">${formatNum(value)}</div>
+          <div class="hint">${hint}</div>
+        </div>
+      `).join('');
+
+      const root = document.getElementById('complexityList');
+      if (!statusData.models.length) {
+        root.innerHTML = '<div class="empty-hint">暂无复杂度分布数据</div>';
+        return;
+      }
+      root.innerHTML = statusData.models.slice(0, 5).map((item) => {
+        const sum = item.complexityLoad.simple + item.complexityLoad.medium + item.complexityLoad.complex;
+        const simpleW = sum ? (item.complexityLoad.simple / sum) * 100 : 0;
+        const mediumW = sum ? (item.complexityLoad.medium / sum) * 100 : 0;
+        const complexW = sum ? (item.complexityLoad.complex / sum) * 100 : 0;
+        return `
+          <div class="complexity-item">
+            <div class="complexity-name">
+              <img src="${item.icon}" alt="${item.provider}">
+              <span>${item.name}</span>
+            </div>
+            <div class="complexity-track" title="simple ${item.complexityLoad.simple}, medium ${item.complexityLoad.medium}, complex ${item.complexityLoad.complex}">
+              <div class="complexity-seg simple" style="width:${simpleW}%"></div>
+              <div class="complexity-seg medium" style="width:${mediumW}%"></div>
+              <div class="complexity-seg complex" style="width:${complexW}%"></div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function renderToolFailures() {
+      const root = document.getElementById('toolFailList');
+      if (!statusData.toolFailures.length) {
+        root.innerHTML = '<div class="empty-hint">暂无工具失败记录</div>';
+      } else {
+        root.innerHTML = statusData.toolFailures.map((item) => `
+        <div class="fail-item">
+          <div>
+            <div class="fail-name">${item.name}</div>
+            <div class="fail-meta">${item.note}</div>
+          </div>
+          <div class="fail-count">${item.count}</div>
+        </div>
+      `).join('');
+      }
+      document.getElementById('statusFootnote').textContent =
+        `说明：当前页面使用后端聚合数据。样本来源为 ${statusData.source}。当前口径：会话消息统计模型调用，token 日志统计 Token，总工具日志统计工具表现；模型名按 OpenRouter 模型清单通用归一化后合并。`;
+    }
+
+    function renderAll() {
+      renderHeroText();
+      renderSummary();
+      renderRankList();
+      renderHighlights();
+      renderTokenChart();
+      renderComplexity();
+      renderToolFailures();
+    }
+
+    async function loadStatusData() {
+      statusData = createEmptyStatusData();
+      try {
+        const res = await fetch('/api/status/overview', { credentials: 'include' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.success || !data.status) {
+          throw new Error(data.message || `HTTP ${res.status}`);
+        }
+        statusData = normalizeStatusData(data.status);
+      } catch (err) {
+        statusData = createEmptyStatusData();
+        document.getElementById('heroDesc').textContent =
+          `状态数据加载失败：${String(err && err.message ? err.message : err || 'unknown error')}`;
+      }
+      renderAll();
+    }
+
+    loadStatusData();
+  </script>
+</body>
+</html>

@@ -245,7 +245,7 @@ class Model:
         self._runtime_selected_tool_ids = []
         self._runtime_tool_selection_changed = False
         self._runtime_hints_injected_in_request = False
-        self._runtime_tool_mode = "auto"
+        self._runtime_tool_mode = "force"
     
     def get_embedding(self, text: str) -> List[float]:
         """获取文本向量（通过 provider adapter 创建 embedding client）"""
@@ -284,7 +284,7 @@ class Model:
         self,
         enable_web_search: bool = False,
         enable_tools: bool = False,
-        tool_mode: str = "auto"
+        tool_mode: str = "force"
     ) -> str:
         base_template = str(getattr(self, "system_prompt_template", "") or "").strip()
         if not base_template:
@@ -293,7 +293,7 @@ class Model:
             base_template,
             enable_web_search=bool(enable_web_search),
             enable_tools=bool(enable_tools),
-            tool_mode=str(tool_mode or "auto"),
+            tool_mode=str(tool_mode or "force"),
         )
         return self._render_prompt_template(combined_template)
     
@@ -1511,7 +1511,7 @@ class Model:
         catalog_prompt = prompts.build_select_tools_catalog_prompt(self._runtime_tool_catalog)
         return prompts.build_runtime_tool_selector_hint(catalog_prompt)
 
-    def _init_runtime_tool_selection(self, enable_tools: bool, tool_mode: str = "auto") -> None:
+    def _init_runtime_tool_selection(self, enable_tools: bool, tool_mode: str = "force") -> None:
         normalized_mode = self._normalize_tool_mode(tool_mode, enable_tools)
         self._runtime_tool_mode = normalized_mode
         self._runtime_selector_enabled = False
@@ -1569,7 +1569,7 @@ class Model:
         self._runtime_selected_tool_names = set()
         self._runtime_selected_tool_ids = []
         self._runtime_tool_selection_changed = False
-        self._runtime_tool_mode = "auto"
+        self._runtime_tool_mode = "force"
 
     def _current_runtime_function_tool_names(self) -> Set[str]:
         if self._runtime_selected_tool_names:
@@ -1592,7 +1592,7 @@ class Model:
         - 启用 selector 且尚未完成选择：仅下发 selectTools
         - 启用 selector 且已选择：仅下发已选工具（不再重复下发 selectTools）
         """
-        if str(getattr(self, "_runtime_tool_mode", "auto")).strip().lower() == "off":
+        if str(getattr(self, "_runtime_tool_mode", "force")).strip().lower() == "off":
             return set()
         if not bool(getattr(self, "_runtime_selector_enabled", False)):
             return self._current_runtime_function_tool_names()
@@ -1673,7 +1673,7 @@ class Model:
         fn = str(function_name or "").strip()
         if not fn:
             return False
-        if str(getattr(self, "_runtime_tool_mode", "auto")).strip().lower() == "off":
+        if str(getattr(self, "_runtime_tool_mode", "force")).strip().lower() == "off":
             return False
         if not bool(getattr(self, "_runtime_selector_enabled", False)):
             selected = set(getattr(self, "_runtime_selected_tool_names", set()) or set())
@@ -1681,9 +1681,8 @@ class Model:
                 return fn in selected
             return True
         if fn == "selectTools":
-            # selector 模式下，selectTools 仅在预选择阶段可调用一次。
-            return not self._runtime_has_user_tool_selection()
-        allowed = self._runtime_function_tool_names_for_request()
+            return True
+        allowed = self._current_runtime_function_tool_names()
         return fn in allowed
 
     def _filter_tools_by_runtime_selection(
@@ -2153,7 +2152,8 @@ class Model:
         enable_thinking: bool = True,
         enable_web_search: bool = True,
         enable_tools: bool = True,
-        tool_mode: str = "auto",
+        tool_mode: str = "force",
+        debug_mode: bool = False,
         show_token_usage: bool = False,
         file_ids: List[Any] = None,
         is_regenerate: bool = False,
@@ -2298,6 +2298,161 @@ class Model:
                     "effective_input": effective_input,
                     "output": output
                 }
+
+            debug_mode = self._as_bool(debug_mode, default=False)
+
+            def _debug_preview_text(value, max_len=12000):
+                text = str(value or "")
+                if text.startswith("data:image/"):
+                    return f"[data-url omitted len={len(text)}]"
+                if len(text) <= max_len:
+                    return text
+                head_len = max(0, max_len // 2)
+                tail_len = max(0, max_len - head_len - 32)
+                omitted = max(0, len(text) - head_len - tail_len)
+                return f"{text[:head_len]}\n...[truncated {omitted} chars]...\n{text[-tail_len:]}"
+
+            def _debug_sanitize(value, key_path=""):
+                lowered_path = str(key_path or "").lower()
+                if any(token in lowered_path for token in ("api_key", "authorization", "cookie", "password", "secret")):
+                    return "<redacted>"
+                if value is None or isinstance(value, (bool, int, float)):
+                    return value
+                if isinstance(value, str):
+                    return _debug_preview_text(value)
+                if isinstance(value, list):
+                    limit = 48
+                    items = [
+                        _debug_sanitize(item, f"{key_path}[{idx}]")
+                        for idx, item in enumerate(value[:limit])
+                    ]
+                    if len(value) > limit:
+                        items.append({"__truncated_items__": len(value) - limit})
+                    return items
+                if isinstance(value, dict):
+                    limit = 80
+                    out = {}
+                    for idx, (k, v) in enumerate(value.items()):
+                        if idx >= limit:
+                            out["__truncated_keys__"] = len(value) - limit
+                            break
+                        key_str = str(k or "")
+                        if any(token in key_str.lower() for token in ("api_key", "authorization", "cookie", "password", "secret")):
+                            out[key_str] = "<redacted>"
+                        else:
+                            next_path = f"{key_path}.{key_str}" if key_path else key_str
+                            out[key_str] = _debug_sanitize(v, next_path)
+                    return out
+                try:
+                    dump_fn = getattr(value, "model_dump", None)
+                    if callable(dump_fn):
+                        dumped = dump_fn(mode="python")
+                        return _debug_sanitize(dumped, key_path)
+                except Exception:
+                    pass
+                try:
+                    if hasattr(value, "__dict__"):
+                        return _debug_sanitize(vars(value), key_path)
+                except Exception:
+                    pass
+                return _debug_preview_text(repr(value))
+
+            def _debug_render_content_text(content) -> str:
+                if content is None:
+                    return ""
+                if isinstance(content, str):
+                    return _debug_preview_text(content, max_len=24000)
+                if isinstance(content, list):
+                    parts: List[str] = []
+                    for item in content:
+                        if isinstance(item, dict):
+                            item_type = str(item.get("type", "") or "").strip().lower()
+                            if item_type in {"text", "input_text"}:
+                                parts.append(str(item.get("text", "") or ""))
+                                continue
+                            if item_type in {"image_url", "input_image"}:
+                                img_url = item.get("image_url")
+                                if isinstance(img_url, dict):
+                                    img_url = img_url.get("url")
+                                parts.append(f"[image] {_debug_preview_text(img_url or '', max_len=256)}")
+                                continue
+                            if item_type in {"input_file", "file"}:
+                                parts.append(f"[file] {str(item.get('file_id', '') or item.get('id', '') or '').strip()}")
+                                continue
+                        parts.append(json.dumps(_debug_sanitize(item), ensure_ascii=False, default=str))
+                    return "\n".join([str(p) for p in parts if str(p or "").strip()]).strip()
+                if isinstance(content, dict):
+                    if "text" in content:
+                        return _debug_preview_text(content.get("text", ""), max_len=24000)
+                    return json.dumps(_debug_sanitize(content), ensure_ascii=False, default=str)
+                return _debug_preview_text(content, max_len=24000)
+
+            def _debug_render_messages_text(messages) -> str:
+                if not isinstance(messages, list):
+                    return _debug_render_content_text(messages)
+                blocks: List[str] = []
+                for msg_item in messages:
+                    if isinstance(msg_item, dict) and "role" in msg_item:
+                        role = str(msg_item.get("role", "message") or "message").strip().upper()
+                        blocks.append(f"[{role}]")
+                        content_text = _debug_render_content_text(msg_item.get("content", ""))
+                        if content_text:
+                            blocks.append(content_text)
+                        tool_calls = msg_item.get("tool_calls")
+                        if tool_calls:
+                            blocks.append(json.dumps(_debug_sanitize(tool_calls), ensure_ascii=False, default=str))
+                        blocks.append("")
+                        continue
+                    blocks.append(_debug_render_content_text(msg_item))
+                    blocks.append("")
+                return "\n".join(blocks).strip()
+
+            def _build_debug_trace(direction: str, stage: str, payload, title: str = "", round_index: Optional[int] = None):
+                trace = {
+                    "type": "debug_trace",
+                    "direction": str(direction or "").strip() or "server->model",
+                    "stage": str(stage or "").strip() or "trace",
+                    "payload": _debug_sanitize(payload)
+                }
+                if title:
+                    trace["title"] = str(title)
+                if round_index is not None:
+                    trace["round"] = int(round_index) + 1
+                return trace
+
+            def _debug_render_tools_text(tools_payload, tool_mode: str = "", selected_names=None):
+                lines: List[str] = []
+                mode_value = str(tool_mode or "").strip() or "off"
+                lines.append(f"mode: {mode_value}")
+                if selected_names:
+                    selected_sorted = [str(x).strip() for x in selected_names if str(x).strip()]
+                    if selected_sorted:
+                        lines.append("selected: " + ", ".join(sorted(selected_sorted)))
+                if not isinstance(tools_payload, list) or not tools_payload:
+                    lines.append("count: 0")
+                    return "\n".join(lines).strip()
+
+                lines.append(f"count: {len(tools_payload)}")
+                for tool in tools_payload:
+                    if not isinstance(tool, dict):
+                        continue
+                    tool_type = str(tool.get("type", "") or "").strip() or "unknown"
+                    if tool_type == "function":
+                        spec = self._extract_function_tool_spec(tool) or {}
+                        name = str(spec.get("name", "") or "").strip() or "unnamed"
+                        desc = str(spec.get("description", "") or "").strip()
+                        if desc:
+                            lines.append(f"- {name}: {desc}")
+                        else:
+                            lines.append(f"- {name}")
+                    else:
+                        desc = str(tool.get("description", "") or "").strip()
+                        label = str(tool.get("name", "") or tool.get("label", "") or tool_type).strip()
+                        if desc:
+                            lines.append(f"- {label} [{tool_type}]: {desc}")
+                        else:
+                            lines.append(f"- {label} [{tool_type}]")
+                return "\n".join(lines).strip()
             
             provider_req_opts = self._get_provider_request_options(self.provider)
             request_enable_search_cfg = self._as_bool(provider_req_opts.get("enable_search", True), default=True)
@@ -2412,7 +2567,7 @@ class Model:
             request_system_prompt = self._build_effective_system_prompt(
                 enable_web_search=enable_web_search,
                 enable_tools=effective_enable_tools,
-                tool_mode=getattr(self, "_runtime_tool_mode", "auto"),
+                tool_mode=getattr(self, "_runtime_tool_mode", "force"),
             )
             self.system_prompt = request_system_prompt
             full_context_messages = self._build_initial_messages(
@@ -2449,6 +2604,14 @@ class Model:
                 messages[-1]["content"] = self._append_trailing_newline_for_user_content(messages[-1].get("content", ""))
             if full_context_messages and isinstance(full_context_messages[-1], dict) and str(full_context_messages[-1].get("role", "") or "").strip() == "user":
                 full_context_messages[-1]["content"] = self._append_trailing_newline_for_user_content(full_context_messages[-1].get("content", ""))
+
+            if debug_mode:
+                yield _build_debug_trace(
+                    "server->model",
+                    "system_prompt",
+                    request_system_prompt,
+                    title="Server Prompt"
+                )
             
             # 多轮对话循环
             accumulated_content = ""
@@ -2568,6 +2731,27 @@ class Model:
                             )
                     except Exception:
                         pass
+
+                    if debug_mode:
+                        debug_tools_payload = request_params.get("tools", [])
+                        yield _build_debug_trace(
+                            "server->model",
+                            "tool_injection",
+                            _debug_render_tools_text(
+                                debug_tools_payload,
+                                tool_mode=getattr(self, "_runtime_tool_mode", "off"),
+                                selected_names=sorted(list(getattr(self, "_runtime_selected_tool_names", set()) or []))
+                            ),
+                            title="Tool Injection",
+                            round_index=round_num
+                        )
+                        yield _build_debug_trace(
+                            "server->model",
+                            "current_context",
+                            _debug_render_messages_text(full_context_messages),
+                            title="Current Context",
+                            round_index=round_num
+                        )
 
                     round_native_search_detected = False
                     if (
@@ -3559,7 +3743,7 @@ class Model:
                 tools_payload = list(self.tools)
                 if (
                     bool(getattr(self, "_runtime_selector_enabled", False))
-                    or str(getattr(self, "_runtime_tool_mode", "auto")).strip().lower() == "force"
+                    or str(getattr(self, "_runtime_tool_mode", "force")).strip().lower() == "force"
                 ):
                     tools_payload = self._filter_tools_by_runtime_selection(
                         tools_payload,
@@ -3629,7 +3813,7 @@ class Model:
                     tools_payload = list(self.tools) if isinstance(self.tools, list) else []
                     if (
                         bool(getattr(self, "_runtime_selector_enabled", False))
-                        or str(getattr(self, "_runtime_tool_mode", "auto")).strip().lower() == "force"
+                        or str(getattr(self, "_runtime_tool_mode", "force")).strip().lower() == "force"
                     ):
                         tools_payload = self._filter_tools_by_runtime_selection(
                             tools_payload,

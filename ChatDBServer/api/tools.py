@@ -4,23 +4,23 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "selectTools",
-            "description": "根据工具名称选择使用的工具，默认除web_search以外的所有工具不可用，务必通过工具列表选择使用的工具，然后调用本函数启用。调用此函数后工具立即生效，且仅在本轮生效，下一轮自动失效。示例：selectTools(js_execute,vectorSearch)。",
+            "description": "可选：在 Auto 模式下按工具名请求当前轮更具体的工具子集。调用后立即生效，仅影响当前回复。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "tools": {
                         "type": "array",
-                        "description": "要启用的工具名数组，例如 [\"js_execute\",\"vectorSearch\"]。",
+                        "description": "要启用的工具名数组，例如 [\"client_js_exec\",\"vectorSearch\"]。",
                         "items": {"type": "string"}
                     },
                     "tool_names": {
                         "type": "array",
-                        "description": "可选，和 tools 等价的别名字段。",
+                        "description": "可选，和 tools 等价。",
                         "items": {"type": "string"}
                     },
                     "name_text": {
                         "type": "string",
-                        "description": "可选，逗号分隔的工具名字符串，例如 \"js_execute,vectorSearch\"。"
+                        "description": "可选，逗号分隔的工具名字符串，例如 \"client_js_exec,vectorSearch\"。"
                     },
                     "reason": {
                         "type": "string",
@@ -35,7 +35,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "vectorSearch",
-            "description": "在向量数据库中搜索内容，返回最相关的结果（含标题与相似度分数）。默认搜索 knowledge 库。优先使用，优先级比searchKeyword高。",
+            "description": "在向量库中做语义检索，默认检索 knowledge 库。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -60,7 +60,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "file_semantic_search",
-            "description": "在临时文件向量库（temp_file）中做语义检索。默认检索当前用户全部临时文件；仅在需要限定单文件时再传 file_alias。",
+            "description": "在临时文件向量库 temp_file 中做语义检索；不传 file_alias 时检索当前用户全部临时文件。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -85,7 +85,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "arxivSearch",
-            "description": "在 arXiv 论文库中检索学术论文，返回标题、作者、摘要、发布时间和 PDF 链接。",
+            "description": "在 arXiv 中搜索论文，返回标题、作者、摘要、时间和 PDF 链接。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -117,18 +117,18 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "js_execute",
-            "description": """在当前用户浏览器的隔离 Worker 中执行 JavaScript 并返回结果。适合轻量计算和文本处理，不可访问 DOM/网络。注意：code 必须是可直接执行的纯 JS（不要包含 Markdown 代码块或解释文本），并显式 return 结果。可以使用 const canvas = context.canvas; 来访问内置的 canvas 对象进行绘图而无需createElement。""",
+            "name": "client_js_exec",
+            "description": """在当前聊天页的隔离 JS Worker 中执行纯 JavaScript。适合轻量计算、文本处理和 Canvas；不能访问 DOM、页面状态或网络。若要操作真实网页 DOM，请用 local_web_render / web_exec_js。""",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "code": {
                         "type": "string",
-                        "description": "待执行的 JavaScript 代码。应显式 return 结果。可使用 context 变量。"
+                        "description": "可直接执行的纯 JS 代码；建议显式 return 结果。"
                     },
                     "context": {
                         "type": "object",
-                        "description": "可选，传入执行上下文对象（在代码中通过 context 读取）。"
+                        "description": "可选，传入上下文对象，在代码中通过 context 读取。"
                     },
                     "timeout_ms": {
                         "type": "integer",
@@ -202,7 +202,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "addBasis",
-            "description": "向用户知识库添加基础知识（长期记忆）- 学术报告级别要求。\n\n必须满足以下标准：\n1. 字数要求：最低3000字，推荐5000-10000字\n2. 结构完整：背景-核心概念-详细分析-数据支撑-对比总结-结论展望\n3. 数据精确：所有数据必须标注来源、时间、样本量，使用表格对比\n4. 引用规范：文中标注[来源](链接)，文末列出完整参考资料\n5. 格式严谨：Markdown格式，多级标题，表格对比，代码块标注\n6. 内容深度：横向对比覆盖所有关键维度，技术说明包含原理/实现/优缺点/场景/实践\n\n禁止简短概述，必须像撰写技术白皮书或学术论文那样全面、严谨、数据翔实。",
+            "description": "向长期知识库写入结构化基础知识。适合稳定、可复用、带来源的完整内容，不适合简短备注。",
 
             "parameters": {
                 "type": "object",

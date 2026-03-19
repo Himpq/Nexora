@@ -11,7 +11,7 @@ import re
 import threading
 import uuid
 from copy import deepcopy
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib import request as urllib_request, error as urllib_error, parse as urllib_parse
 from email.header import Header
 from email.utils import formatdate, make_msgid
@@ -50,6 +50,7 @@ CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.j
 MODELS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models.json')
 MODELS_CONTEXT_WINDOW_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models_context_window.json')
 USERS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'user.json')
+OPENROUTER_MODELS_SNAPSHOT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'openrouter_models_snapshot.json')
 _MODELS_CTX_CACHE_LOCK = threading.Lock()
 
 # NexoraCode 本地 Agent 注册表: {agent_token: {callback_url, tools, username, registered_at}}
@@ -1784,6 +1785,11 @@ def index():
     if 'username' in session:
         return redirect(url_for('chat', **request.args))
     return render_template('introduce.html')
+
+@app.route('/status')
+def status_page():
+    """公开状态页"""
+    return render_template('status.html')
     
 @app.route('/favicon.ico')
 def favicon():
@@ -2448,6 +2454,495 @@ def get_user_stats(username, user_path):
         print(f"Error getting user stats for {username}: {e}")
     
     return stats
+
+
+STATUS_PROVIDER_ICON_MAP = {
+    'github': '',
+    'alibabacloud': '/static/img/Index/static/icons/aliyun.png',
+    'aliyun': '/static/img/icons/tongyi_single_icon.png',
+    'bytedance': '/static/img/icons/volcengine_single_icon.svg',
+    'volcengine': '/static/img/icons/volcengine_single_icon.svg',
+    'qq': '/static/img/icons/tencent_cloud_single_icon.svg',
+    'wechat': '/static/img/icons/tencent_cloud_single_icon.svg',
+    'tencent': '/static/img/icons/tencent_cloud_single_icon.svg',
+    'deepseek': '/static/img/icons/deepseek_single_icon.svg',
+    'openai': '/static/img/icons/openai_single_icon.svg',
+    'stepfun': '/static/img/icons/stepfun_single_icon.png',
+    'moonshot': '/static/img/icons/kimi_single_icon.png',
+    'kimi': '/static/img/icons/kimi_single_icon.png',
+    'minimax': '/static/img/icons/minimax_single_icon.png',
+    'siliconflow': '/static/img/icons/siliconflow_single_icon.svg',
+    'openrouter': '/static/img/icons/openrouter_single_icon.svg',
+    'xunfei': '/static/img/icons/xunfei_spark_single_icon.svg',
+    'spark': '/static/img/icons/xunfei_spark_single_icon.svg',
+    'hunyuan': '/static/img/icons/hunyuan_single_icon.png',
+    'ollama': '/static/img/icons/ollama_single_icon.svg',
+    'nvidia': '/static/img/icons/nvidia.svg'
+}
+
+
+def _status_provider_icon(provider: str) -> str:
+    p = str(provider or '').strip().lower()
+    return STATUS_PROVIDER_ICON_MAP.get(p, '')
+
+
+def _safe_int_status(value: Any, default: int = 0) -> int:
+    try:
+        return int(value or 0)
+    except Exception:
+        return int(default or 0)
+
+
+def _read_json_list_safe(path: str) -> List[Dict[str, Any]]:
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+_STATUS_OPENROUTER_MODEL_CACHE: Dict[str, Any] = {
+    'mtime': None,
+    'alias_to_canonical': {},
+    'canonical_meta': {}
+}
+_STATUS_PROVIDER_ALIAS_MAP = {
+    'bytedance-seed': 'volcengine',
+    'byte': 'volcengine',
+    'siliconflow': 'siliconflow',
+    'azure': 'openai'
+}
+
+
+def _status_normalize_provider(provider: str) -> str:
+    p = str(provider or '').strip().lower()
+    if not p:
+        return 'unknown'
+    return _STATUS_PROVIDER_ALIAS_MAP.get(p, p)
+
+
+def _status_extract_model_leaf(raw_model: str) -> str:
+    src = str(raw_model or '').strip()
+    if not src:
+        return ''
+    out = src.split('?', 1)[0].strip()
+    if '/' in out and not out.startswith('http'):
+        out = out.split('/', 1)[1].strip()
+    if ':' in out:
+        head, tail = out.rsplit(':', 1)
+        if str(tail or '').strip().lower() in {'free', 'beta', 'alpha', 'preview', 'latest'}:
+            out = head.strip()
+    return out.strip()
+
+
+def _status_normalize_model_key(raw_model: str) -> str:
+    leaf = _status_extract_model_leaf(raw_model)
+    s = str(leaf or '').strip().lower()
+    if not s:
+        return 'unknown'
+    s = s.replace('（', '(').replace('）', ')')
+    s = re.sub(r'[\[\]{}()]+', '-', s)
+    s = re.sub(r'[_.\s/]+', '-', s)
+    # qwen3.5 / gpt5 这类前缀+版本号，补齐分隔符；保留 v3.2 这种写法。
+    s = re.sub(r'^(qwen|gpt|gemini|claude|mistral|deepseek|kimi|glm|step|doubao)(?=\d)', r'\1-', s)
+    # 去掉常见日期后缀，例如 -251201 / -20251201。
+    s = re.sub(r'-(?:\d{6}|\d{8})$', '', s)
+    s = re.sub(r'-+', '-', s).strip('-')
+    if s.startswith('bytedance-seed-'):
+        s = f"doubao-seed-{s[len('bytedance-seed-'):]}"
+    elif s.startswith('seed-'):
+        s = f"doubao-seed-{s[len('seed-'):]}"
+    return s or 'unknown'
+
+
+def _status_release_stem(key: str) -> str:
+    s = str(key or '').strip().lower()
+    if not s:
+        return ''
+    patterns = [
+        r'-(?:\d{4}-\d{2}-\d{2})$',
+        r'-(?:\d{2}-\d{2})$',
+        r'-(?:\d{8}|\d{6})$',
+        r'-(?:\d{4}|\d{3})$',
+        r'-(?:preview|beta|alpha|latest)$'
+    ]
+    while True:
+        changed = False
+        for pat in patterns:
+            nxt = re.sub(pat, '', s, flags=re.IGNORECASE).strip('-')
+            if nxt and nxt != s:
+                s = nxt
+                changed = True
+                break
+        if not changed:
+            break
+    return s
+
+
+def _status_strip_release_suffix_for_display(name: str) -> str:
+    s = str(name or '').strip()
+    if not s:
+        return ''
+    patterns = [
+        r'[-_.](?:\d{4}[-_.]\d{2}[-_.]\d{2})$',
+        r'[-_.](?:\d{2}[-_.]\d{2})$',
+        r'[-_.](?:\d{8}|\d{6})$',
+        r'[-_.](?:\d{4}|\d{3})$',
+        r'[-_.](?:preview|beta|alpha|latest)$'
+    ]
+    while True:
+        changed = False
+        for pat in patterns:
+            nxt = re.sub(pat, '', s, flags=re.IGNORECASE).strip('-_.')
+            if nxt and nxt != s:
+                s = nxt
+                changed = True
+                break
+        if not changed:
+            break
+    return s or str(name or '').strip()
+
+
+def _load_status_openrouter_model_index() -> Tuple[Dict[str, str], Dict[str, Dict[str, str]]]:
+    path = OPENROUTER_MODELS_SNAPSHOT_PATH
+    try:
+        mtime = os.path.getmtime(path)
+    except Exception:
+        mtime = None
+    if _STATUS_OPENROUTER_MODEL_CACHE.get('mtime') == mtime:
+        alias_to_canonical = _STATUS_OPENROUTER_MODEL_CACHE.get('alias_to_canonical') or {}
+        canonical_meta = _STATUS_OPENROUTER_MODEL_CACHE.get('canonical_meta') or {}
+        if isinstance(alias_to_canonical, dict) and isinstance(canonical_meta, dict):
+            return alias_to_canonical, canonical_meta
+
+    alias_to_canonical: Dict[str, str] = {}
+    canonical_meta: Dict[str, Dict[str, str]] = {}
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            payload = json.load(f)
+        rows = payload.get('data', []) if isinstance(payload, dict) else []
+        if isinstance(rows, list):
+            for item in rows:
+                if not isinstance(item, dict):
+                    continue
+                model_id = str(item.get('id') or '').strip()
+                if not model_id:
+                    continue
+                leaf = _status_extract_model_leaf(model_id)
+                if not leaf:
+                    continue
+                normalized = _status_normalize_model_key(leaf)
+                if normalized == 'unknown':
+                    continue
+                canonical = _status_release_stem(normalized) or normalized
+                vendor = ''
+                if '/' in model_id:
+                    vendor = str(model_id.split('/', 1)[0] or '').strip().lower()
+                display = _status_strip_release_suffix_for_display(leaf)
+                if not display:
+                    display = leaf
+
+                prev_meta = canonical_meta.get(canonical)
+                if not prev_meta:
+                    canonical_meta[canonical] = {
+                        'display': display,
+                        'vendor': vendor
+                    }
+                else:
+                    prev_display = str(prev_meta.get('display') or '').strip()
+                    if (not prev_display) or (len(display) < len(prev_display)):
+                        prev_meta['display'] = display
+                    if not prev_meta.get('vendor') and vendor:
+                        prev_meta['vendor'] = vendor
+
+                alias_to_canonical[normalized] = canonical
+                alias_to_canonical[canonical] = canonical
+    except Exception:
+        alias_to_canonical = {}
+        canonical_meta = {}
+
+    _STATUS_OPENROUTER_MODEL_CACHE['mtime'] = mtime
+    _STATUS_OPENROUTER_MODEL_CACHE['alias_to_canonical'] = alias_to_canonical
+    _STATUS_OPENROUTER_MODEL_CACHE['canonical_meta'] = canonical_meta
+    return alias_to_canonical, canonical_meta
+
+
+def _status_canonicalize_model(raw_model: str) -> Tuple[str, str]:
+    normalized = _status_normalize_model_key(raw_model)
+    if normalized == 'unknown':
+        return 'unknown', 'unknown'
+    alias_to_canonical, canonical_meta = _load_status_openrouter_model_index()
+    canonical = alias_to_canonical.get(normalized, '')
+    if not canonical:
+        stem = _status_release_stem(normalized)
+        canonical = alias_to_canonical.get(stem, stem or normalized)
+    meta = canonical_meta.get(canonical, {})
+    display = str(meta.get('display') or '').strip() or canonical
+    if canonical.startswith('doubao-seed-') and display.startswith('seed-'):
+        display = f"doubao-{display}"
+    return canonical, display
+
+
+def _status_icon_provider_for_model(model_name: str, fallback_provider: str = 'unknown') -> str:
+    key = str(model_name or '').strip().lower()
+    if not key or key == 'unknown':
+        return _status_normalize_provider(fallback_provider)
+    if key.startswith('gpt') or key.startswith('chatgpt') or key.startswith('o1') or key.startswith('o3') or key.startswith('o4'):
+        return 'openai'
+    if key.startswith('deepseek'):
+        return 'deepseek'
+    if key.startswith('doubao-seed') or key.startswith('seed'):
+        return 'volcengine'
+    if key.startswith('qwen'):
+        return 'aliyun'
+    if key.startswith('kimi') or key.startswith('moonshot'):
+        return 'kimi'
+    if key.startswith('step'):
+        return 'stepfun'
+    return _status_normalize_provider(fallback_provider)
+
+
+def _status_add_provider_count(row: Dict[str, Any], provider: str, weight: int = 1) -> None:
+    if not isinstance(row, dict):
+        return
+    p = _status_normalize_provider(provider)
+    if not p or p == 'unknown':
+        return
+    counts = row.setdefault('_providerCounts', {})
+    if not isinstance(counts, dict):
+        counts = {}
+        row['_providerCounts'] = counts
+    counts[p] = _safe_int_status(counts.get(p, 0)) + max(1, _safe_int_status(weight, 1))
+
+
+def _ensure_status_model_row(model_map: Dict[str, Dict[str, Any]], model_name: str, display_name: str = '') -> Dict[str, Any]:
+    key = str(model_name or 'unknown').strip() or 'unknown'
+    if key not in model_map:
+        model_map[key] = {
+            'id': key,
+            'name': str(display_name or key).strip() or key,
+            'provider': 'unknown',
+            'icon': '',
+            'score': 0,
+            'totalTokens': 0,
+            'callCount': 0,
+            'toolCalls': 0,
+            'successRate': 100.0,
+            'failureCount': 0,
+            '_providerCounts': {},
+            'complexityLoad': {
+                'simple': 0,
+                'medium': 0,
+                'complex': 0
+            }
+        }
+    elif display_name:
+        prev = str(model_map[key].get('name') or '').strip()
+        if not prev or prev == key:
+            model_map[key]['name'] = str(display_name).strip() or key
+    return model_map[key]
+
+
+def _tool_call_count_from_steps(steps: Any) -> int:
+    arr = steps if isinstance(steps, list) else []
+    return sum(1 for step in arr if isinstance(step, dict) and str(step.get('type') or '') == 'function_call')
+
+
+def build_status_overview() -> Dict[str, Any]:
+    users_root = os.path.join(os.path.dirname(__file__), 'data', 'users')
+    model_map: Dict[str, Dict[str, Any]] = {}
+    tool_failure_map: Dict[str, Dict[str, Any]] = {}
+    complexity = {'simple': 0, 'medium': 0, 'complex': 0}
+    total_tokens = 0
+    total_tool_calls = 0
+    total_tool_failures = 0
+
+    if not os.path.exists(users_root):
+        return {
+            'snapshotAt': datetime.now().strftime('%Y-%m-%d %H:%M:%S CST'),
+            'source': 'ChatDBServer/data/users/*/{token_usage,tool_usage,conversations}',
+            'totals': {'tokens': 0, 'modelCalls': 0, 'toolCalls': 0, 'toolFailures': 0},
+            'complexity': complexity,
+            'models': [],
+            'toolFailures': []
+        }
+
+    for username in os.listdir(users_root):
+        user_path = os.path.join(users_root, username)
+        if not os.path.isdir(user_path):
+            continue
+
+        token_logs = _read_json_list_safe(os.path.join(user_path, 'token_usage.json'))
+        deduped_token_logs: Dict[str, Dict[str, Any]] = {}
+        for log in token_logs:
+            if not isinstance(log, dict):
+                continue
+            conversation_id = str(log.get('conversation_id') or '').strip()
+            timestamp = str(log.get('timestamp') or '').strip()
+            action = str(log.get('action') or 'chat').strip() or 'chat'
+            provider = str(log.get('provider') or 'unknown').strip() or 'unknown'
+            model = str(log.get('model') or 'unknown').strip() or 'unknown'
+            key = '|'.join([str(username), conversation_id, timestamp, action, provider, model])
+            total = log.get('total_tokens', None)
+            if total is None:
+                total = _safe_int_status(log.get('input_tokens', 0)) + _safe_int_status(log.get('output_tokens', 0))
+            total = _safe_int_status(total)
+            prev = deduped_token_logs.get(key)
+            if prev is None or total >= _safe_int_status(prev.get('total_tokens', 0)):
+                deduped_token_logs[key] = {
+                    'provider': provider,
+                    'model': model,
+                    'total_tokens': total
+                }
+
+        for item in deduped_token_logs.values():
+            total = _safe_int_status(item.get('total_tokens', 0))
+            total_tokens += total
+            model_raw = str(item.get('model') or 'unknown').strip() or 'unknown'
+            provider = _status_normalize_provider(str(item.get('provider') or 'unknown').strip() or 'unknown')
+            model_name, display_name = _status_canonicalize_model(model_raw)
+            row = _ensure_status_model_row(model_map, model_name, display_name)
+            row['totalTokens'] += total
+            _status_add_provider_count(row, provider)
+
+        tool_logs = _read_json_list_safe(os.path.join(user_path, 'tool_usage.json'))
+        for log in tool_logs:
+            if not isinstance(log, dict):
+                continue
+            total_tool_calls += 1
+            success = bool(log.get('success', True))
+            if not success:
+                total_tool_failures += 1
+            tool_name = str(log.get('tool_name') or 'unknown').strip() or 'unknown'
+            provider = _status_normalize_provider(str(log.get('provider') or 'unknown').strip() or 'unknown')
+            model_raw = str(log.get('model') or 'unknown').strip() or 'unknown'
+            model_name, display_name = _status_canonicalize_model(model_raw)
+            row = _ensure_status_model_row(model_map, model_name, display_name)
+            row['toolCalls'] += 1
+            if not success:
+                row['failureCount'] += 1
+            _status_add_provider_count(row, provider)
+
+            fail_row = tool_failure_map.setdefault(tool_name, {
+                'name': tool_name,
+                'count': 0,
+                'note': ''
+            })
+            if not success:
+                fail_row['count'] += 1
+                err_text = str(log.get('error_message') or '').strip()
+                if err_text:
+                    fail_row['note'] = err_text[:120]
+
+        conv_dir = os.path.join(user_path, 'conversations')
+        if os.path.exists(conv_dir):
+            for filename in os.listdir(conv_dir):
+                if not filename.endswith('.json'):
+                    continue
+                conv_path = os.path.join(conv_dir, filename)
+                try:
+                    with open(conv_path, 'r', encoding='utf-8') as f:
+                        convo = json.load(f)
+                except Exception:
+                    continue
+                messages = convo.get('messages', []) if isinstance(convo, dict) else []
+                if not isinstance(messages, list):
+                    continue
+                for msg in messages:
+                    if not isinstance(msg, dict) or str(msg.get('role') or '') != 'assistant':
+                        continue
+                    md = msg.get('metadata', {}) if isinstance(msg.get('metadata'), dict) else {}
+                    model_raw = str(md.get('model_name') or msg.get('model_name') or '').strip() or 'unknown'
+                    model_name, display_name = _status_canonicalize_model(model_raw)
+                    row = _ensure_status_model_row(model_map, model_name, display_name)
+                    row['callCount'] += 1
+                    provider = _status_normalize_provider(str(md.get('provider') or msg.get('provider') or '').strip() or 'unknown')
+                    _status_add_provider_count(row, provider)
+                    tool_call_count = _tool_call_count_from_steps(md.get('process_steps', []))
+                    if tool_call_count <= 2:
+                        bucket = 'simple'
+                    elif tool_call_count <= 7:
+                        bucket = 'medium'
+                    else:
+                        bucket = 'complex'
+                    row['complexityLoad'][bucket] += 1
+                    complexity[bucket] += 1
+
+    for _, row in model_map.items():
+        counts = row.get('_providerCounts', {}) if isinstance(row.get('_providerCounts'), dict) else {}
+        known = [(name, _safe_int_status(v, 0)) for name, v in counts.items() if str(name or '') and str(name) != 'unknown']
+        known = [item for item in known if item[1] > 0]
+        if len(known) >= 2:
+            provider = 'multi'
+        elif len(known) == 1:
+            provider = known[0][0]
+        else:
+            provider = str(row.get('provider') or 'unknown').strip() or 'unknown'
+        row['provider'] = provider
+        icon_provider = _status_icon_provider_for_model(str(row.get('id') or ''), provider)
+        row['icon'] = _status_provider_icon(icon_provider)
+        row.pop('_providerCounts', None)
+        tool_calls = _safe_int_status(row.get('toolCalls', 0))
+        failures = _safe_int_status(row.get('failureCount', 0))
+        if tool_calls > 0:
+            row['successRate'] = round(max(0.0, (tool_calls - failures) / tool_calls * 100.0), 1)
+        else:
+            row['successRate'] = 100.0
+
+    max_calls = max((_safe_int_status(item.get('callCount', 0)) for item in model_map.values()), default=0)
+    max_tokens = max((_safe_int_status(item.get('totalTokens', 0)) for item in model_map.values()), default=0)
+    max_tools = max((_safe_int_status(item.get('toolCalls', 0)) for item in model_map.values()), default=0)
+
+    for row in model_map.values():
+        call_factor = (_safe_int_status(row.get('callCount', 0)) / max_calls * 22.0) if max_calls else 0.0
+        token_factor = (_safe_int_status(row.get('totalTokens', 0)) / max_tokens * 10.0) if max_tokens else 0.0
+        tool_factor = (_safe_int_status(row.get('toolCalls', 0)) / max_tools * 8.0) if max_tools else 0.0
+        score = round(min(100.0, row['successRate'] * 0.6 + call_factor + token_factor + tool_factor))
+        if str(row.get('id') or '') == 'unknown':
+            score = 0
+        row['score'] = int(score)
+
+    models = sorted(
+        model_map.values(),
+        key=lambda item: (
+            _safe_int_status(item.get('score', 0)),
+            _safe_int_status(item.get('callCount', 0)),
+            _safe_int_status(item.get('totalTokens', 0))
+        ),
+        reverse=True
+    )
+
+    tool_failures = sorted(
+        [item for item in tool_failure_map.values() if _safe_int_status(item.get('count', 0)) > 0],
+        key=lambda item: _safe_int_status(item.get('count', 0)),
+        reverse=True
+    )[:8]
+
+    total_model_calls = sum(_safe_int_status(item.get('callCount', 0)) for item in models)
+    return {
+        'snapshotAt': datetime.now().strftime('%Y-%m-%d %H:%M:%S CST'),
+        'source': 'ChatDBServer/data/users/*/{token_usage,tool_usage,conversations}',
+        'totals': {
+            'tokens': total_tokens,
+            'modelCalls': total_model_calls,
+            'toolCalls': total_tool_calls,
+            'toolFailures': total_tool_failures
+        },
+        'complexity': complexity,
+        'models': models[:12],
+        'toolFailures': tool_failures
+    }
+
+
+@app.route('/api/status/overview', methods=['GET'])
+def status_overview_api():
+    try:
+        return jsonify({'success': True, 'status': build_status_overview()})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 
 @app.route('/api/user/stats', methods=['GET'])
@@ -4423,17 +4918,18 @@ def chat_stream():
     enable_tools = data.get('enable_tools', True)
     raw_tool_mode = data.get('tool_mode')
     allow_history_images = _as_bool(data.get('allow_history_images', True), True)
+    debug_mode = _as_bool(data.get('debug_mode', False), False)
     show_token_usage = data.get('show_token_usage', False)
     raw_file_ids = data.get('file_ids', [])
     file_ids = raw_file_ids if isinstance(raw_file_ids, list) else []
 
     enable_tools = bool(enable_tools)
     if raw_tool_mode is None:
-        tool_mode = 'auto' if enable_tools else 'off'
+        tool_mode = 'force' if enable_tools else 'off'
     else:
         tool_mode = str(raw_tool_mode or '').strip().lower()
         if tool_mode not in {'off', 'auto', 'force'}:
-            tool_mode = 'auto' if enable_tools else 'off'
+            tool_mode = 'force' if enable_tools else 'off'
     if tool_mode == 'off':
         enable_tools = False
     else:
@@ -4543,6 +5039,7 @@ def chat_stream():
                 enable_web_search=enable_web_search,
                 enable_tools=enable_tools,
                 tool_mode=tool_mode,
+                debug_mode=debug_mode,
                 allow_history_images=allow_history_images,
                 show_token_usage=show_token_usage,
                 file_ids=prepared_file_ids,
@@ -4730,6 +5227,121 @@ def _inject_local_agent_tools(model, agent_info: dict):
             return _handler
 
         model.tool_executor.handlers[tool_name] = _make_handler(tool_name, username)
+
+
+def _resolve_agent_info_for_user(username: str):
+    from agent_tunnel import is_agent_online, get_agent_tools
+
+    agent_info = None
+    if is_agent_online(username):
+        tools = get_agent_tools(username)
+        if tools:
+            agent_info = {"username": username, "tools": tools}
+
+    if not agent_info:
+        agent_token = request.cookies.get("nexoracode_agent", "").strip()
+        agent_info = _LOCAL_AGENTS.get(agent_token) if agent_token else None
+        if agent_info and agent_info.get("username") != username:
+            agent_info = None
+    return agent_info
+
+
+def _flatten_model_function_tools(model) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    seen = set()
+    for item in (getattr(model, 'tools', None) or []):
+        if not isinstance(item, dict):
+            continue
+        func = item.get("function") if isinstance(item.get("function"), dict) else None
+        name = str((func or {}).get("name") or item.get("name") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        description = str((func or {}).get("description") or item.get("description") or "").strip()
+        parameters = (func or {}).get("parameters") if func else item.get("parameters")
+        if not isinstance(parameters, dict):
+            parameters = {}
+        out.append({
+            "name": name,
+            "description": description,
+            "parameters": parameters,
+        })
+    return out
+
+
+@app.route('/api/debug/tools/catalog', methods=['GET'])
+@require_login
+def debug_tools_catalog():
+    username = session['username']
+    model_name = (request.args.get('model_name') or '').strip() or None
+    conversation_id = (request.args.get('conversation_id') or '').strip() or None
+    try:
+        model = Model(
+            username,
+            model_name=model_name,
+            conversation_id=conversation_id,
+            auto_create=False
+        )
+        agent_info = _resolve_agent_info_for_user(username)
+        if agent_info:
+            _inject_local_agent_tools(model, agent_info)
+        tools = _flatten_model_function_tools(model)
+        return jsonify({
+            'success': True,
+            'tools': tools,
+            'model_name': model.model_name,
+            'conversation_id': conversation_id,
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/debug/tools/execute', methods=['POST'])
+@require_login
+def debug_tools_execute():
+    username = session['username']
+    data = request.get_json(silent=True) or {}
+    model_name = str(data.get('model_name') or '').strip() or None
+    conversation_id = str(data.get('conversation_id') or '').strip() or None
+    tool_name = str(data.get('tool_name') or '').strip()
+    args = data.get('args')
+    if not tool_name:
+        return jsonify({'success': False, 'message': 'tool_name 不能为空'}), 400
+    if args is None:
+        args = {}
+    if not isinstance(args, dict):
+        return jsonify({'success': False, 'message': 'args 必须是 JSON object'}), 400
+    try:
+        model = Model(
+            username,
+            model_name=model_name,
+            conversation_id=conversation_id,
+            auto_create=False
+        )
+        agent_info = _resolve_agent_info_for_user(username)
+        if agent_info:
+            _inject_local_agent_tools(model, agent_info)
+        if tool_name not in (model.tool_executor.handlers or {}):
+            return jsonify({'success': False, 'message': f'工具不存在: {tool_name}'}), 404
+        raw_result = model._execute_function_impl(tool_name, args)
+        parsed_result = None
+        if isinstance(raw_result, str):
+            try:
+                parsed_result = json.loads(raw_result)
+            except Exception:
+                parsed_result = None
+        else:
+            parsed_result = raw_result
+        return jsonify({
+            'success': True,
+            'tool_name': tool_name,
+            'model_name': model.model_name,
+            'conversation_id': conversation_id,
+            'result': raw_result,
+            'parsed_result': parsed_result,
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 
 @app.route('/api/local_agent/register', methods=['POST'])

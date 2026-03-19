@@ -38,6 +38,7 @@ class ToolExecutor:
             "searchKeyword": self._search_keyword,
             "arxivSearch": self._arxiv_search,
             "js_execute": self._js_execute,
+            "client_js_exec": self._js_execute,
             "vectorSearch": self._vector_search,
             "file_semantic_search": self._file_semantic_search,
             "linkKnowledge": self._link_knowledge,

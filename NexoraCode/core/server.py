@@ -24,6 +24,7 @@ _NEXORA_SHELL_HTML = """<!doctype html><html><head><meta charset=\"utf-8\"><titl
 _NEXORA_NOTES_SHELL_HTML = """<!doctype html><html><head><meta charset=\"utf-8\"><title>Nexora Notes Shell</title></head><body>Notes shell not ready</body></html>"""
 _NEXORA_SETTINGS_SHELL_HTML = """<!doctype html><html><head><meta charset=\"utf-8\"><title>Nexora Settings Shell</title></head><body>Settings shell not ready</body></html>"""
 _PROXY_TIMEOUT = 30
+_PROXY_STREAM_CONNECT_TIMEOUT = 10
 _VERBOSE_PROXY_LOG = str(config.get("verbose_proxy_log", False)).strip().lower() in {"1", "true", "on", "yes"}
 import sys
 
@@ -272,6 +273,25 @@ def _proxy_request(path: str):
             body_text = body.decode("utf-8", errors="ignore")
         except Exception:
             body_text = ""
+    accept_lower_pre = str(request.headers.get("Accept", "") or "").lower()
+    path_lower_pre = str(path or "").lower()
+    body_indicates_stream_pre = bool(re.search(r'"stream"\s*:\s*true', body_text, flags=re.IGNORECASE))
+    path_likely_stream_pre = any(k in path_lower_pre for k in (
+        "chat/completions",
+        "/responses",
+        "/api/chat",
+        "/v1/chat",
+    ))
+    request_wants_stream = (
+        "text/event-stream" in accept_lower_pre
+        or str(request.args.get("stream", "")).strip().lower() in {"1", "true", "yes", "on"}
+        or body_indicates_stream_pre
+        or path_likely_stream_pre
+    )
+
+    # For SSE/chat streaming, disable read timeout; otherwise default timeout is fine.
+    req_timeout = (_PROXY_STREAM_CONNECT_TIMEOUT, None) if request_wants_stream else _PROXY_TIMEOUT
+
     try:
         upstream = requests.request(
             method=method,
@@ -281,7 +301,7 @@ def _proxy_request(path: str):
             data=body,
             cookies=request.cookies,
             allow_redirects=False,
-            timeout=_PROXY_TIMEOUT,
+            timeout=req_timeout,
             stream=True,
         )
     except Exception as e:
@@ -332,13 +352,26 @@ def _proxy_request(path: str):
                 chunk_size = 1 if "text/event-stream" in ct_lower else 64
                 raw = getattr(upstream, "raw", None)
                 if raw is not None and hasattr(raw, "stream"):
-                    for chunk in raw.stream(amt=chunk_size, decode_content=False):
-                        if chunk:
-                            yield chunk
+                    try:
+                        for chunk in raw.stream(amt=chunk_size, decode_content=False):
+                            if chunk:
+                                yield chunk
+                    except Exception as stream_err:
+                        # Avoid crashing Flask response generator on upstream read timeout/reset.
+                        try:
+                            print(f"[NexoraProxy] stream read interrupted: {stream_err}")
+                        except Exception:
+                            pass
                 else:
-                    for chunk in upstream.iter_content(chunk_size=chunk_size):
-                        if chunk:
-                            yield chunk
+                    try:
+                        for chunk in upstream.iter_content(chunk_size=chunk_size):
+                            if chunk:
+                                yield chunk
+                    except Exception as stream_err:
+                        try:
+                            print(f"[NexoraProxy] stream iter interrupted: {stream_err}")
+                        except Exception:
+                            pass
             finally:
                 try:
                     upstream.close()

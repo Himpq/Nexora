@@ -68,7 +68,7 @@ TOOL_CATALOG = [
         "module": "renderer",
         "name": "local_web_render",
         "handler": "web_render",
-        "description": "使用用户本地浏览器渲染指定 URL，提取正文文本内容，支持 JS 渲染的动态页面（NexoraCode 本地工具）。可以进行搜索、爬取网页等操作。",
+        "description": "用本地真实浏览器打开并渲染网页。interactive 模式会保留页面会话与 Cookie；返回当前视窗的交互节点概览。建立会话后，优先使用 web_exec_js 或 web_input 做精确操作。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -83,7 +83,7 @@ TOOL_CATALOG = [
                     "type": "string",
                     "enum": ["readability", "full_text", "html", "interactive"],
                     "default": "readability",
-                    "description": "提取模式：readability(正文), full_text(全文), html(源码), interactive(驻留交互模式)",
+                    "description": "提取模式：readability(正文), full_text(全文), html(源码), interactive(驻留交互模式；后续优先配合 web_exec_js / web_input 使用)",
                 },
             },
             "required": ["url"],
@@ -93,7 +93,7 @@ TOOL_CATALOG = [
         "module": "renderer",
         "name": "web_click",
         "handler": "handle_web_click",
-        "description": "在 interactive 模式下点击目标网页上的元素节点。",
+        "description": "在 interactive 页面会话中点击网页元素。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -106,7 +106,7 @@ TOOL_CATALOG = [
         "module": "renderer",
         "name": "web_input",
         "handler": "handle_web_input",
-        "description": "在 interactive 模式下向目标输入框注入文本。优先使用 local_web_render(interactive) 返回的 selector 信息来定位元素。",
+        "description": "在 interactive 页面会话中向 input/textarea 等元素写入文本。适合登录、搜索、表单填写。优先使用 local_web_render(interactive) 返回的 selector。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -121,7 +121,7 @@ TOOL_CATALOG = [
         "module": "renderer",
         "name": "web_exec_js",
         "handler": "handle_web_exec_js",
-        "description": "在 interactive 模式下向目标被代理网页注入、执行自定义纯 JS 代码。执行完毕会返回最新的交互 DOM。",
+        "description": "在 interactive 页面会话的真实网页 DOM 中执行 JS。网页交互时优先用它读取状态、筛选元素、触发站内脚本；这不同于 client_js_exec。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -134,7 +134,7 @@ TOOL_CATALOG = [
         "module": "renderer",
         "name": "web_scroll",
         "handler": "handle_web_scroll",
-        "description": "在 interactive 模式下向下或向上滚动页面。",
+        "description": "在 interactive 模式下滚动页面。仅在必须暴露新内容、触发懒加载或翻到目标区域时使用；默认优先 web_exec_js / web_input。",
         "parameters": {
             "type": "object",
             "properties": {

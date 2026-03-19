@@ -108,7 +108,6 @@ const NOTES_LEGACY_PREFIX = 'nexora_notes_conv_';
 const NOTES_MOBILE_PANEL_POS_KEY = 'nexora_notes_mobile_panel_pos_v1';
 const NOTES_PANEL_LAYOUT_KEY = 'nexora_notes_panel_layout_v2';
 const NOTES_CLOUD_SYNC_DEBOUNCE_MS = 240;
-const DEBUG_CONSOLE_ENABLED_KEY = 'nexora_debug_console_enabled_v1';
 let notesState = {
     open: false,
     notebooks: [],
@@ -136,45 +135,10 @@ let notesMobilePanelState = {
 let notesCloudSyncTimer = null;
 let notesCloudSyncPendingStore = null;
 let notesCloudSyncInFlight = false;
-let notesMutationSeq = 0;
-let debugConsoleState = {
-    enabled: false,
-    open: false,
-    activeTab: 'prompt',
-    entries: [],
-    maxEntries: 400,
-    toolCatalog: [],
-    toolCatalogLoaded: false,
-    toolCatalogModelName: '',
-    toolCatalogConversationId: '',
-    selectedToolName: '',
-    toolResultText: '尚未执行工具',
-    bound: false,
-    dragging: false,
-    resizing: false,
-    pointerId: null,
-    startClientX: 0,
-    startClientY: 0,
-    startLeft: 0,
-    startTop: 0,
-    startWidth: 0,
-    startHeight: 0
-};
-let mobileMessageInputViewportBaseline = 0;
-let lastMessageInputGestureTs = 0;
 const NOTES_COMPANION_MODE = (() => {
     try {
         const p = new URLSearchParams(window.location.search || '');
         const raw = String(p.get('notes_companion') || '').trim().toLowerCase();
-        return raw === '1' || raw === 'true' || raw === 'yes';
-    } catch (_) {
-        return false;
-    }
-})();
-const SETTINGS_COMPANION_MODE = (() => {
-    try {
-        const p = new URLSearchParams(window.location.search || '');
-        const raw = String(p.get('settings_companion') || '').trim().toLowerCase();
         return raw === '1' || raw === 'true' || raw === 'yes';
     } catch (_) {
         return false;
@@ -375,63 +339,6 @@ function collapseDisplayMathForMarkdown(text) {
     return out;
 }
 
-function normalizeFencedLatexBlocks(text) {
-    let src = String(text || '');
-    if (!src) return src;
-    src = src.replace(/```([^\n`]*)\n?([\s\S]*?)```/g, (_, langRaw, body) => {
-        const lang = String(langRaw || '').trim().toLowerCase();
-        const content = String(body || '').replace(/\r\n/g, '\n').trim();
-        if (!content) return '';
-
-        if (/(^|[\s,])(latex|tex|math)([\s,]|$)/.test(lang)) {
-            return content;
-        }
-        if (lang) {
-            return `\`\`\`${langRaw}\n${body}\`\`\``;
-        }
-
-        const hasMath = /\\begin\{(?:equation\*?|align\*?|alignat\*?|gather\*?|CD|center)\}|\\\[|\\\(|\$\$|\$(?:\\.|[^$\n\\])+\$/.test(content);
-        const hasProgrammingSignals = /\b(function|const|let|var|class|if|return|import|export|from|public|private|def)\b|=>|<\/?[a-z][^>]*>|^\s*[{}[\];]+\s*$/m.test(content);
-        if (hasMath && !hasProgrammingSignals) {
-            return content;
-        }
-        return `\`\`\`${langRaw}\n${body}\`\`\``;
-    });
-    return src;
-}
-
-function normalizeCenterLikeMathBlocks(text) {
-    let src = String(text || '');
-    if (!src) return src;
-
-    const hasDisplayDelimiters = (body) => {
-        const t = String(body || '').trim();
-        if (!t) return false;
-        if (/^\\\[[\s\S]*\\\]$/.test(t)) return true;
-        if (/^\$\$[\s\S]*\$\$$/.test(t)) return true;
-        if (/^\\begin\{(?:equation\*?|align\*?|alignat\*?|gather\*?|CD)\}[\s\S]*\\end\{(?:equation\*?|align\*?|alignat\*?|gather\*?|CD)\}$/.test(t)) return true;
-        return false;
-    };
-
-    const normalizeBody = (body) => String(body || '')
-        .replace(/\r\n/g, '\n')
-        .replace(/[ \t]*\n[ \t]*/g, '\n')
-        .trim();
-
-    src = src.replace(/\\begin\{center\}([\s\S]*?)\\end\{center\}/g, (_, body) => {
-        const inner = normalizeBody(body);
-        if (!inner) return '';
-        if (hasDisplayDelimiters(inner)) return inner;
-        if (!isLikelyPureMathSpan(inner)) return inner;
-        return `\\[${inner.replace(/\n+/g, ' ')}\\]`;
-    });
-
-    // `\centering` is layout command from LaTeX document mode; drop it in chat markdown mode.
-    src = src.replace(/(^|\n)\s*\\centering\b\s*(?=\n|$)/g, '$1');
-
-    return src;
-}
-
 function normalizeIndentedGfmTables(text) {
     const src = String(text || '');
     if (!src) return src;
@@ -511,39 +418,14 @@ function normalizeMixedDollarDelimiters(text) {
     src = src.replace(/\$\$([^\n$]{1,160})\$/g, '$$$1$');
     src = src.replace(/\$([^\n$]{1,160})\$\$/g, '$$$1$');
 
+    // 短 inline 内容误用了 display math，降级成行内，减少大段误吞。
+    src = src.replace(/\$\$([^\n$]{1,120})\$\$/g, '$$$1$');
+
     // `$$` 分隔符数量为奇数时，优先补齐闭合符，尽量保留公式显示。
     if (countUnescapedDoubleDollar(src) % 2 !== 0) {
         src = `${src}$$`;
     }
 
-    return src;
-}
-
-function normalizeBrokenDisplayDelimiters(text) {
-    let src = String(text || '');
-    if (!src) return src;
-    const normalizeBody = (body) => String(body || '')
-        .replace(/\r\n/g, '\n')
-        .replace(/[ \t]*\n[ \t]*/g, '\n')
-        .trim()
-        .replace(/\n+/g, ' ');
-
-    // `$$\[ ... \]$$` => `$$ ... $$`
-    src = src.replace(/\$\$\s*\\\[([\s\S]*?)\\\]\s*\$\$/g, (_, body) => {
-        return `$$${normalizeBody(body)}$$`;
-    });
-    // `$\[ ... \]$` => `$$ ... $$`
-    src = src.replace(/\$\s*\\\[([\s\S]*?)\\\]\s*\$/g, (_, body) => {
-        return `$$${normalizeBody(body)}$$`;
-    });
-    // `$$\[ ... $$ ]` => `$$ ... $$` (common broken copy)
-    src = src.replace(/\$\$\s*\\\[([\s\S]*?)\$\$\s*\]/g, (_, body) => {
-        return `$$${normalizeBody(body)}$$`;
-    });
-    // `$\[ ... $ ```]` => `$$ ... $$` (broken mixed delimiters from copied content)
-    src = src.replace(/\$\s*\\\[([\s\S]*?)\$\s*`{3}\s*\]?/g, (_, body) => {
-        return `$$${normalizeBody(body)}$$`;
-    });
     return src;
 }
 
@@ -566,13 +448,9 @@ function normalizeLatexSyntax(text) {
         .replace(/@@NEXORA_MATH_SEG_\d+@@/g, '')
         .replace(/NEXORAMATHSEGTOKEN\d+X/g, '');
 
-    // Assistant often returns fenced latex blocks; unwrap first so markdown won't lock them in <pre><code>.
-    src = normalizeFencedLatexBlocks(src);
-
     // 连续美元符常见于模型输出抖动（如 $$$ / $$$$），先归一化。
     src = src.replace(/\${3,}/g, '$$');
     src = normalizeMixedDollarDelimiters(src);
-    src = normalizeBrokenDisplayDelimiters(src);
 
     // 清理零宽字符、软换行等不可见符，避免污染数学解析。
     src = src
@@ -585,7 +463,6 @@ function normalizeLatexSyntax(text) {
     // 这两类是安全修复：不依赖脏数据判定，始终执行。
     src = normalizeVectorTextSuffixes(src);
     src = normalizeMathBlockLineBreaks(src);
-    src = normalizeCenterLikeMathBlocks(src);
     src = collapseDisplayMathForMarkdown(src);
 
     // 正常输出不做激进修复，避免误改合法 markdown/LaTeX。
@@ -641,7 +518,7 @@ function splitMathAwareSegments(text) {
     if (!src) return [];
 
     const segments = [];
-    const pattern = /(\\begin\{(?:equation\*?|align\*?|alignat\*?|gather\*?|CD)\}[\s\S]*?\\end\{(?:equation\*?|align\*?|alignat\*?|gather\*?|CD)\}|\\\[[\s\S]*?\\\]|\$\$[\s\S]*?\$\$|\\\([\s\S]*?\\\)|\$(?:\\.|[^$\n\\])+\$)/g;
+    const pattern = /(\\\[[\s\S]*?\\\]|\$\$[\s\S]*?\$\$|\\\([\s\S]*?\\\)|\$(?:\\.|[^$\n\\])+\$)/g;
     let last = 0;
     let m;
     while ((m = pattern.exec(src)) !== null) {
@@ -656,43 +533,6 @@ function splitMathAwareSegments(text) {
         segments.push({ isMath: false, text: src.slice(last) });
     }
     return segments;
-}
-
-function shouldCaptureLatexRenderDebug(text) {
-    const src = String(text || '');
-    if (!src) return false;
-    return /\\begin\{|\\\(|\\\[|\$\$|\$(?:\\.|[^$\n\\])+\$|nx-mseg-placeholder|NX_MSEG|NEXORAMATHSEG/i.test(src);
-}
-
-function captureLatexRenderDebug(stage, raw, normalized, html) {
-    const source = String(raw || '');
-    if (!shouldCaptureLatexRenderDebug(source)) return;
-    try {
-        const entry = {
-            stage: String(stage || 'render'),
-            ts: Date.now(),
-            raw: source,
-            normalized: String(normalized || ''),
-            html: String(html || '')
-        };
-        const store = Array.isArray(window.__nexoraLatexDebug) ? window.__nexoraLatexDebug : [];
-        store.push(entry);
-        while (store.length > 24) store.shift();
-        window.__nexoraLatexDebug = store;
-        window.__nexoraLatexDebugLast = entry;
-        window.__nexoraDumpLatexDebug = function() {
-            try {
-                const arr = Array.isArray(window.__nexoraLatexDebug) ? window.__nexoraLatexDebug : [];
-                console.log('[NexoraLaTeXDump]', arr);
-                return arr;
-            } catch (_) {
-                return [];
-            }
-        };
-        console.log('[NexoraLaTeX]', entry);
-    } catch (_) {
-        // ignore debug failures
-    }
 }
 
 function protectMathSegmentsForMarkdown(text) {
@@ -719,39 +559,11 @@ function restoreMathSegmentsFromHtml(html, map) {
     const arr = Array.isArray(map) ? map : [];
     for (const item of arr) {
         if (!item || !item.token) continue;
-        out = out.split(String(item.token)).join(String(item.math || ''));
+        const token = String(item.token);
+        const math = String(item.math || '');
+        out = out.split(token).join(math);
     }
     return out;
-}
-
-function looksLikeLatexRenderableCodeBlock(text, className = '') {
-    const src = String(text || '').trim();
-    if (!src) return false;
-    const lang = String(className || '').toLowerCase();
-    if (/\blanguage-(latex|tex|math)\b|\blatex\b|\btex\b/.test(lang)) return true;
-    const hasMath = /\\begin\{(?:equation\*?|align\*?|alignat\*?|gather\*?|CD)\}|\\\[|\\\(|\$\$|\$(?:\\.|[^$\n\\])+\$/.test(src);
-    if (!hasMath) return false;
-    const hasProgrammingSignals = /\b(function|const|let|var|class|if|return|import|export|from|public|private|def)\b|=>|<\/?[a-z][^>]*>|^\s*[{}[\];]+\s*$/m.test(src);
-    if (hasProgrammingSignals) return false;
-    return true;
-}
-
-function promoteLatexCodeBlocks(root) {
-    if (!root || typeof root.querySelectorAll !== 'function') return;
-    const codeNodes = Array.from(root.querySelectorAll('pre > code'));
-    codeNodes.forEach((codeEl) => {
-        const preEl = codeEl && codeEl.parentElement;
-        if (!preEl || preEl.dataset.latexPromoted === '1') return;
-        const raw = String(codeEl.textContent || '');
-        const cls = String(codeEl.className || '');
-        if (!looksLikeLatexRenderableCodeBlock(raw, cls)) return;
-        const holder = document.createElement('div');
-        holder.className = 'latex-code-render';
-        holder.innerHTML = renderMarkdownWithNewTabLinks(raw, { breaks: false });
-        bindSourceMarkdown(holder, raw);
-        preEl.dataset.latexPromoted = '1';
-        preEl.replaceWith(holder);
-    });
 }
 
 function wrapBareLatexFragmentsOutsideMath(text) {
@@ -763,17 +575,15 @@ function wrapBareLatexFragmentsOutsideMath(text) {
     }).join('');
 }
 
-function renderMarkdownWithNewTabLinks(text, options = {}) {
+function renderMarkdownWithNewTabLinks(text) {
     const raw = String(text || '');
-    const opts = (options && typeof options === 'object') ? options : {};
     const normalizedText = normalizeLatexSyntax(raw);
     const withBareLatexWrapped = needsAggressiveLatexRecovery(raw)
         ? wrapBareLatexFragmentsOutsideMath(normalizedText)
         : normalizedText;
     const shielded = protectMathSegmentsForMarkdown(withBareLatexWrapped);
-    const html = marked.parse(String(shielded.text || ''), { gfm: true, breaks: opts.breaks !== false });
+    const html = marked.parse(String(shielded.text || ''), { gfm: true, breaks: true });
     const restoredHtml = restoreMathSegmentsFromHtml(html, shielded.map);
-    captureLatexRenderDebug('chat_markdown', raw, withBareLatexWrapped, restoredHtml);
     return rewriteHtmlFragmentLinksToNewTab(restoredHtml);
 }
 
@@ -783,63 +593,29 @@ function renderMarkdownForNotes(text) {
     const withBareLatexWrapped = needsAggressiveLatexRecovery(raw)
         ? wrapBareLatexFragmentsOutsideMath(normalizedText)
         : normalizedText;
-    // Notes 专用：不把单换行渲染成 <br>，避免选中 LaTeX 文本时出现逐字换行。
     const shielded = protectMathSegmentsForMarkdown(withBareLatexWrapped);
+    // Notes 专用：不把单换行渲染成 <br>，避免选中 LaTeX 文本时出现逐字换行。
     const html = marked.parse(String(shielded.text || ''), { gfm: true, breaks: false });
     const restoredHtml = restoreMathSegmentsFromHtml(html, shielded.map);
-    captureLatexRenderDebug('notes_markdown', raw, withBareLatexWrapped, restoredHtml);
     return rewriteHtmlFragmentLinksToNewTab(restoredHtml);
 }
 
-const __mathRenderTimerMap = new WeakMap();
-const __mathRenderRetryMap = new WeakMap();
-
 function renderMathSafe(root) {
-    if (!root) return;
-    const prevTimer = __mathRenderTimerMap.get(root);
-    if (prevTimer) clearTimeout(prevTimer);
-
-    const timer = setTimeout(() => {
-        try {
-            if (typeof renderMathInElement !== 'function') {
-                const retries = (__mathRenderRetryMap.get(root) || 0) + 1;
-                __mathRenderRetryMap.set(root, retries);
-                if (retries <= 20) {
-                    renderMathSafe(root);
-                }
-                return;
-            }
-
-            __mathRenderRetryMap.set(root, 0);
-            if (String(root.innerHTML || '').includes('nx-mseg-placeholder')) {
-                console.warn('LaTeX placeholder leaked into render root', root);
-            }
-            promoteLatexCodeBlocks(root);
-            renderMathInElement(root, {
-                delimiters: [
-                    { left: '$$', right: '$$', display: true },
-                    { left: '\\[', right: '\\]', display: true },
-                    { left: '\\begin{equation}', right: '\\end{equation}', display: true },
-                    { left: '\\begin{equation*}', right: '\\end{equation*}', display: true },
-                    { left: '\\begin{align}', right: '\\end{align}', display: true },
-                    { left: '\\begin{align*}', right: '\\end{align*}', display: true },
-                    { left: '\\begin{alignat}', right: '\\end{alignat}', display: true },
-                    { left: '\\begin{alignat*}', right: '\\end{alignat*}', display: true },
-                    { left: '\\begin{gather}', right: '\\end{gather}', display: true },
-                    { left: '\\begin{gather*}', right: '\\end{gather*}', display: true },
-                    { left: '\\begin{CD}', right: '\\end{CD}', display: true },
-                    { left: '$', right: '$', display: false },
-                    { left: '\\(', right: '\\)', display: false }
-                ],
-                ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
-                throwOnError: false
-            });
-        } catch (e) {
-            console.warn('LaTeX render failed:', e);
-        }
-    }, 80);
-
-    __mathRenderTimerMap.set(root, timer);
+    if (!root || typeof renderMathInElement !== 'function') return;
+    try {
+        renderMathInElement(root, {
+            delimiters: [
+                { left: '$$', right: '$$', display: true },
+                { left: '\\[', right: '\\]', display: true },
+                { left: '$', right: '$', display: false },
+                { left: '\\(', right: '\\)', display: false }
+            ],
+            ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
+            throwOnError: false
+        });
+    } catch (e) {
+        console.warn('LaTeX render failed:', e);
+    }
 }
 
 function rewriteCitationRefsMarkdown(text, citationMap) {
@@ -1044,14 +820,9 @@ function buildCanvasLookupKeys(callId, toolIndex) {
     return keys;
 }
 
-function isClientJsExecToolName(toolName) {
-    const name = String(toolName || '').trim();
-    return name === 'js_execute' || name === 'client_js_exec';
-}
-
 function rememberJsExecuteCanvasCall(messageDiv, toolName, callId, toolIndex, argumentsText) {
     if (!messageDiv) return;
-    if (!isClientJsExecToolName(toolName)) return;
+    if (String(toolName || '').trim() !== 'js_execute') return;
     const meta = parseJsExecuteArgumentsMeta(argumentsText);
     if (!meta || !meta.usedCanvas) return;
     const state = ensureMessageCanvasState(messageDiv);
@@ -1213,7 +984,7 @@ async function runCanvasCodeInCard(card, code, context = {}, timeoutMs = 5000) {
 
 function maybeRenderCanvasFromJsExecuteResult(messageDiv, toolName, result, callId, toolIndex) {
     if (!messageDiv) return;
-    if (!isClientJsExecToolName(toolName)) return;
+    if (String(toolName || '').trim() !== 'js_execute') return;
     const state = ensureMessageCanvasState(messageDiv);
     if (!state) return;
 
@@ -1724,664 +1495,6 @@ function bindBackdropSafeClose(backdrop, onClose) {
     modal.addEventListener('click', swallowBackdropClick, true);
 }
 
-function loadDebugConsoleEnabled() {
-    try {
-        return localStorage.getItem(DEBUG_CONSOLE_ENABLED_KEY) === '1';
-    } catch (_) {
-        return false;
-    }
-}
-
-function saveDebugConsoleEnabled(enabled) {
-    try {
-        localStorage.setItem(DEBUG_CONSOLE_ENABLED_KEY, enabled ? '1' : '0');
-    } catch (_) {}
-}
-
-function isDebugConsoleEnabled() {
-    return !!debugConsoleState.enabled;
-}
-
-function isDebugConsoleNearBottom() {
-    const body = els.debugConsoleBody;
-    if (!body) return true;
-    return (body.scrollHeight - body.scrollTop - body.clientHeight) < 40;
-}
-
-function formatDebugConsoleTime(ts) {
-    try {
-        const d = (ts instanceof Date) ? ts : new Date(ts || Date.now());
-        const hh = String(d.getHours()).padStart(2, '0');
-        const mm = String(d.getMinutes()).padStart(2, '0');
-        const ss = String(d.getSeconds()).padStart(2, '0');
-        const ms = String(d.getMilliseconds()).padStart(3, '0');
-        return `${hh}:${mm}:${ss}.${ms}`;
-    } catch (_) {
-        return '--:--:--.---';
-    }
-}
-
-function formatDebugConsolePayload(payload) {
-    if (payload === null || payload === undefined) return '';
-    if (typeof payload === 'string') return payload;
-    try {
-        return JSON.stringify(payload, null, 2);
-    } catch (_) {
-        return String(payload);
-    }
-}
-
-function getDebugDirectionLabel(direction) {
-    const value = String(direction || '').trim();
-    if (value === 'server->model') return 'S->M';
-    if (value === 'model->server') return 'M->S';
-    if (value === 'client->local') return 'LOCAL';
-    return value || 'TRACE';
-}
-
-function getDebugDirectionClass(direction) {
-    const value = String(direction || '').trim();
-    if (value === 'server->model') return 'server-model';
-    if (value === 'model->server') return 'model-server';
-    return 'client-local';
-}
-
-function updateDebugConsoleStatus() {
-    const panel = els.debugConsolePanel;
-    const status = els.debugConsoleStatus;
-    if (!panel || !status) return;
-    panel.classList.toggle('active', !!debugConsoleState.open);
-    panel.setAttribute('aria-hidden', debugConsoleState.open ? 'false' : 'true');
-    if (!debugConsoleState.enabled) {
-        status.textContent = 'OFF';
-    } else if (debugConsoleState.activeTab === 'function') {
-        status.textContent = `FUNC ${debugConsoleState.toolCatalog.length}`;
-    } else {
-        status.textContent = `ON ${debugConsoleState.entries.length}`;
-    }
-}
-
-function ensureDebugConsoleEmptyState() {
-    const body = els.debugConsoleBody;
-    if (!body) return;
-    if (debugConsoleState.entries.length > 0) {
-        const empty = body.querySelector('.debug-console-empty');
-        if (empty) empty.remove();
-        return;
-    }
-    body.innerHTML = '<div class="debug-console-empty">按 Ctrl+D 开启模型调试</div>';
-}
-
-function buildDebugConsoleEntryElement(entry) {
-    const item = document.createElement('div');
-    item.className = `debug-console-entry ${getDebugDirectionClass(entry.direction)}`;
-    item.dataset.entryId = String(entry.id || '');
-    item.innerHTML = `
-        <div class="debug-console-entry-head">
-            <div class="debug-console-entry-meta">
-                <span class="debug-console-entry-dir">${escapeHtml(getDebugDirectionLabel(entry.direction))}</span>
-                <span class="debug-console-entry-title">${escapeHtml(entry.title || entry.stage || 'trace')}</span>
-            </div>
-            <span class="debug-console-entry-stage">${escapeHtml(formatDebugConsoleTime(entry.ts))} · ${escapeHtml(entry.stage || '-')}</span>
-        </div>
-        <pre class="debug-console-entry-payload"></pre>
-    `;
-    const pre = item.querySelector('.debug-console-entry-payload');
-    if (pre) pre.textContent = formatDebugConsolePayload(entry.payload);
-    return item;
-}
-
-function updateDebugConsoleEntryElement(entry) {
-    const body = els.debugConsoleBody;
-    if (!body) return;
-    const item = body.querySelector(`.debug-console-entry[data-entry-id="${String(entry.id || '')}"]`);
-    if (!item) return;
-    const pre = item.querySelector('.debug-console-entry-payload');
-    if (pre) pre.textContent = formatDebugConsolePayload(entry.payload);
-    const stage = item.querySelector('.debug-console-entry-stage');
-    if (stage) stage.textContent = `${formatDebugConsoleTime(entry.ts)} · ${entry.stage || '-'}`;
-}
-
-function getDebugConsoleMergeKey(entry) {
-    return '';
-}
-
-function appendDebugConsoleEntry(rawEntry) {
-    if (!rawEntry || typeof rawEntry !== 'object') return;
-    const body = els.debugConsoleBody;
-    if (!body) return;
-    const entry = {
-        id: `${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
-        ts: Date.now(),
-        direction: String(rawEntry.direction || 'client->local'),
-        stage: String(rawEntry.stage || 'trace'),
-        title: String(rawEntry.title || rawEntry.stage || 'trace'),
-        payload: rawEntry.payload,
-        round: Number.isFinite(Number(rawEntry.round)) ? Number(rawEntry.round) : null,
-        replaceKey: String(rawEntry.replaceKey || '').trim()
-    };
-    const mergeKey = getDebugConsoleMergeKey(entry);
-    const nearBottom = isDebugConsoleNearBottom();
-    if (entry.replaceKey) {
-        const existing = debugConsoleState.entries.find((item) => item && item.replaceKey === entry.replaceKey);
-        if (existing) {
-            existing.ts = entry.ts;
-            existing.direction = entry.direction;
-            existing.stage = entry.stage;
-            existing.title = entry.title;
-            existing.payload = entry.payload;
-            updateDebugConsoleEntryElement(existing);
-            updateDebugConsoleStatus();
-            if (nearBottom) requestAnimationFrame(() => { body.scrollTop = body.scrollHeight; });
-            return;
-        }
-    }
-    const last = debugConsoleState.entries[debugConsoleState.entries.length - 1];
-    if (mergeKey && last && last.__mergeKey === mergeKey) {
-        const lastPayload = (last.payload && typeof last.payload === 'object') ? last.payload : {};
-        const nextPayload = (entry.payload && typeof entry.payload === 'object') ? entry.payload : {};
-        if (entry.stage === 'model_content_delta') {
-            lastPayload.delta = String(lastPayload.delta || '') + String(nextPayload.delta || '');
-        } else if (entry.stage === 'model_reasoning_delta') {
-            lastPayload.delta = String(lastPayload.delta || '') + String(nextPayload.delta || '');
-        } else if (entry.stage === 'model_function_call_delta') {
-            lastPayload.arguments_delta = String(lastPayload.arguments_delta || '') + String(nextPayload.arguments_delta || '');
-        } else {
-            return;
-        }
-        last.payload = lastPayload;
-        last.ts = entry.ts;
-        updateDebugConsoleEntryElement(last);
-        updateDebugConsoleStatus();
-        if (nearBottom) requestAnimationFrame(() => { body.scrollTop = body.scrollHeight; });
-        return;
-    }
-
-    entry.__mergeKey = mergeKey;
-    debugConsoleState.entries.push(entry);
-    while (debugConsoleState.entries.length > debugConsoleState.maxEntries) {
-        const removed = debugConsoleState.entries.shift();
-        if (removed && removed.id) {
-            const oldEl = body.querySelector(`.debug-console-entry[data-entry-id="${String(removed.id)}"]`);
-            if (oldEl) oldEl.remove();
-        }
-    }
-    ensureDebugConsoleEmptyState();
-    body.appendChild(buildDebugConsoleEntryElement(entry));
-    updateDebugConsoleStatus();
-    if (nearBottom) requestAnimationFrame(() => { body.scrollTop = body.scrollHeight; });
-}
-
-function clearDebugConsoleEntries() {
-    debugConsoleState.entries = [];
-    if (els.debugConsoleBody) {
-        els.debugConsoleBody.innerHTML = '';
-    }
-    ensureDebugConsoleEmptyState();
-    updateDebugConsoleStatus();
-}
-
-function getDebugConsoleActivePageText() {
-    if (debugConsoleState.activeTab === 'function') {
-        const tool = String(els.debugToolSelect?.value || debugConsoleState.selectedToolName || '').trim();
-        const args = String(els.debugToolArgsInput?.value || '').trim();
-        const result = String(els.debugToolResult?.textContent || '').trim();
-        return [
-            `[Function Call] ${tool || '(未选择工具)'}`,
-            args ? `Args:\n${args}` : '',
-            result ? `Result:\n${result}` : ''
-        ].filter(Boolean).join('\n\n');
-    }
-    return debugConsoleState.entries.map((entry) => {
-        const header = `[${formatDebugConsoleTime(entry.ts)}] ${getDebugDirectionLabel(entry.direction)} ${entry.title || entry.stage || 'trace'} (${entry.stage || '-'})`;
-        const payload = formatDebugConsolePayload(entry.payload);
-        return `${header}\n${payload}`;
-    }).join('\n\n');
-}
-
-async function copyDebugConsoleEntries() {
-    const text = getDebugConsoleActivePageText();
-    if (!text.trim()) {
-        showToast('没有可复制的调试日志');
-        return;
-    }
-    try {
-        await navigator.clipboard.writeText(text);
-        showToast('调试日志已复制');
-    } catch (_) {
-        showToast('复制失败');
-    }
-}
-
-function openDebugConsole() {
-    debugConsoleState.enabled = true;
-    debugConsoleState.open = true;
-    saveDebugConsoleEnabled(true);
-    ensureDebugConsoleEmptyState();
-    updateDebugConsoleTabUi();
-    updateDebugConsoleStatus();
-}
-
-function closeDebugConsole() {
-    debugConsoleState.enabled = false;
-    debugConsoleState.open = false;
-    saveDebugConsoleEnabled(false);
-    updateDebugConsoleStatus();
-}
-
-function toggleDebugConsole() {
-    if (debugConsoleState.open) {
-        closeDebugConsole();
-    } else {
-        openDebugConsole();
-    }
-}
-
-function normalizeDebugSchemaMeta(meta) {
-    if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return {};
-    if (Array.isArray(meta.anyOf) && meta.anyOf.length) return normalizeDebugSchemaMeta(meta.anyOf[0]);
-    if (Array.isArray(meta.oneOf) && meta.oneOf.length) return normalizeDebugSchemaMeta(meta.oneOf[0]);
-    if (Array.isArray(meta.allOf) && meta.allOf.length) {
-        return Object.assign({}, ...meta.allOf.map((item) => normalizeDebugSchemaMeta(item)));
-    }
-    return meta;
-}
-
-function getDebugSchemaType(meta) {
-    const schema = normalizeDebugSchemaMeta(meta);
-    const rawType = schema.type;
-    if (Array.isArray(rawType)) {
-        const picked = rawType.find((item) => item && item !== 'null');
-        if (picked) return String(picked).trim().toLowerCase();
-    }
-    if (typeof rawType === 'string' && rawType.trim()) {
-        return rawType.trim().toLowerCase();
-    }
-    if (schema.properties && typeof schema.properties === 'object') return 'object';
-    if (schema.items) return 'array';
-    if (Array.isArray(schema.enum) && schema.enum.length) return typeof schema.enum[0];
-    return 'string';
-}
-
-function buildDebugToolDefaultValue(meta) {
-    const schema = normalizeDebugSchemaMeta(meta);
-    if (Object.prototype.hasOwnProperty.call(schema, 'default')) {
-        return schema.default;
-    }
-    if (Array.isArray(schema.enum) && schema.enum.length) {
-        return schema.enum[0];
-    }
-    const type = getDebugSchemaType(schema);
-    if (type === 'object') {
-        const props = (schema.properties && typeof schema.properties === 'object') ? schema.properties : {};
-        const out = {};
-        Object.keys(props).forEach((key) => {
-            out[key] = buildDebugToolDefaultValue(props[key]);
-        });
-        return out;
-    }
-    if (type === 'array') {
-        return [];
-    }
-    if (type === 'integer' || type === 'number') {
-        return 0;
-    }
-    if (type === 'boolean') {
-        return false;
-    }
-    return '';
-}
-
-function buildDebugToolArgsTemplate(tool) {
-    const params = (tool && tool.parameters && typeof tool.parameters === 'object') ? tool.parameters : {};
-    const props = (params.properties && typeof params.properties === 'object') ? params.properties : {};
-    const out = {};
-    Object.keys(props).forEach((key) => {
-        out[key] = buildDebugToolDefaultValue(props[key]);
-    });
-    return JSON.stringify(out, null, 2);
-}
-
-function findDebugToolByName(name) {
-    const target = String(name || '').trim();
-    if (!target) return null;
-    return debugConsoleState.toolCatalog.find((item) => item && String(item.name || '').trim() === target) || null;
-}
-
-function renderDebugToolArgsInput(tool) {
-    const inputEl = els.debugToolArgsInput;
-    if (!inputEl) return;
-    if (!tool) {
-        inputEl.value = '';
-        inputEl.placeholder = '选择工具后自动生成参数模板';
-        return;
-    }
-    inputEl.value = buildDebugToolArgsTemplate(tool);
-    inputEl.placeholder = '请输入 JSON 参数';
-}
-
-function collectDebugToolArgsFromInput() {
-    const raw = String(els.debugToolArgsInput?.value || '').trim();
-    return raw ? JSON.parse(raw) : {};
-}
-
-function updateDebugToolMeta() {
-    const metaEl = els.debugToolMeta;
-    if (!metaEl) return;
-    const tool = findDebugToolByName(debugConsoleState.selectedToolName);
-    if (!tool) {
-        metaEl.textContent = debugConsoleState.toolCatalogLoaded ? '当前没有可用工具' : '载入工具中...';
-        renderDebugToolArgsInput(null);
-        return;
-    }
-    const desc = String(tool.description || '').trim() || '无描述';
-    metaEl.textContent = `${tool.name}\n${desc}`;
-    renderDebugToolArgsInput(tool);
-}
-
-function syncDebugToolSelect() {
-    const select = els.debugToolSelect;
-    if (!select) return;
-    const tools = Array.isArray(debugConsoleState.toolCatalog) ? debugConsoleState.toolCatalog : [];
-    const current = String(debugConsoleState.selectedToolName || '').trim();
-    select.innerHTML = '';
-    if (!tools.length) {
-        const opt = document.createElement('option');
-        opt.value = '';
-        opt.textContent = '无可用工具';
-        select.appendChild(opt);
-        debugConsoleState.selectedToolName = '';
-        updateDebugToolMeta();
-        return;
-    }
-    tools.forEach((tool) => {
-        const opt = document.createElement('option');
-        opt.value = String(tool.name || '');
-        opt.textContent = String(tool.name || '');
-        select.appendChild(opt);
-    });
-    let next = current;
-    if (!findDebugToolByName(next)) {
-        next = String(tools[0].name || '');
-    }
-    debugConsoleState.selectedToolName = next;
-    select.value = next;
-    updateDebugToolMeta();
-}
-
-function updateDebugConsoleTabUi() {
-    const active = debugConsoleState.activeTab === 'function' ? 'function' : 'prompt';
-    const promptTab = els.debugConsolePromptTab;
-    const functionTab = els.debugConsoleFunctionTab;
-    const promptPage = els.debugConsolePromptPage;
-    const functionPage = els.debugConsoleFunctionPage;
-    if (promptTab) promptTab.classList.toggle('active', active === 'prompt');
-    if (functionTab) functionTab.classList.toggle('active', active === 'function');
-    if (promptPage) promptPage.classList.toggle('active', active === 'prompt');
-    if (functionPage) functionPage.classList.toggle('active', active === 'function');
-    if (active === 'function') {
-        void loadDebugToolCatalog();
-    }
-    updateDebugConsoleStatus();
-}
-
-async function loadDebugToolCatalog(force = false) {
-    if (!els.debugToolSelect || !els.debugToolMeta) return;
-    const currentModelName = String(selectedModelId || '');
-    const currentConvId = String(currentConversationId || '');
-    const sameContext = debugConsoleState.toolCatalogLoaded
-        && debugConsoleState.toolCatalogModelName === currentModelName
-        && debugConsoleState.toolCatalogConversationId === currentConvId;
-    if (sameContext && !force) {
-        syncDebugToolSelect();
-        return;
-    }
-    els.debugToolMeta.textContent = '载入工具中...';
-    try {
-        const params = new URLSearchParams();
-        if (currentConversationId) params.set('conversation_id', String(currentConversationId));
-        if (selectedModelId) params.set('model_name', String(selectedModelId));
-        const res = await fetch(`/api/debug/tools/catalog${params.toString() ? `?${params.toString()}` : ''}`, {
-            credentials: 'include'
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data.success) {
-            throw new Error(data.message || `HTTP ${res.status}`);
-        }
-        debugConsoleState.toolCatalog = Array.isArray(data.tools) ? data.tools : [];
-        debugConsoleState.toolCatalogLoaded = true;
-        debugConsoleState.toolCatalogModelName = currentModelName;
-        debugConsoleState.toolCatalogConversationId = currentConvId;
-        syncDebugToolSelect();
-    } catch (err) {
-        debugConsoleState.toolCatalog = [];
-        debugConsoleState.toolCatalogLoaded = false;
-        debugConsoleState.toolCatalogModelName = '';
-        debugConsoleState.toolCatalogConversationId = '';
-        if (els.debugToolSelect) {
-            els.debugToolSelect.innerHTML = '<option value="">加载失败</option>';
-        }
-        if (els.debugToolMeta) {
-            els.debugToolMeta.textContent = `工具列表加载失败: ${String(err && err.message ? err.message : err || 'unknown')}`;
-        }
-        renderDebugToolArgsInput(null);
-    }
-}
-
-async function executeDebugToolCall() {
-    const toolName = String(els.debugToolSelect?.value || debugConsoleState.selectedToolName || '').trim();
-    if (!toolName) {
-        showToast('请先选择工具');
-        return;
-    }
-    let args = {};
-    try {
-        args = collectDebugToolArgsFromInput();
-    } catch (err) {
-        showToast('参数 JSON 格式错误');
-        return;
-    }
-    if (!args || typeof args !== 'object' || Array.isArray(args)) {
-        showToast('args 必须是 JSON object');
-        return;
-    }
-    if (els.executeDebugToolBtn) els.executeDebugToolBtn.disabled = true;
-    if (els.debugToolResult) els.debugToolResult.textContent = '执行中...';
-    try {
-        const res = await fetch('/api/debug/tools/execute', {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                conversation_id: currentConversationId || '',
-                model_name: selectedModelId || '',
-                tool_name: toolName,
-                args
-            })
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data.success) {
-            throw new Error(data.message || `HTTP ${res.status}`);
-        }
-        const payload = (data.parsed_result !== undefined && data.parsed_result !== null) ? data.parsed_result : data.result;
-        debugConsoleState.toolResultText = formatDebugConsolePayload(payload);
-        if (els.debugToolResult) els.debugToolResult.textContent = debugConsoleState.toolResultText;
-        showToast(`工具 ${toolName} 执行完成`);
-    } catch (err) {
-        const msg = `执行失败: ${String(err && err.message ? err.message : err || 'unknown')}`;
-        debugConsoleState.toolResultText = msg;
-        if (els.debugToolResult) els.debugToolResult.textContent = msg;
-        showToast('工具执行失败');
-    } finally {
-        if (els.executeDebugToolBtn) els.executeDebugToolBtn.disabled = false;
-    }
-}
-
-function clearDebugToolResult() {
-    debugConsoleState.toolResultText = '尚未执行工具';
-    if (els.debugToolResult) els.debugToolResult.textContent = debugConsoleState.toolResultText;
-}
-
-function bindDebugConsoleDrag() {
-    if (debugConsoleState.bound) return;
-    const panel = els.debugConsolePanel;
-    const head = els.debugConsoleHead || document.querySelector('#debugConsolePanel .debug-console-head');
-    const resizeHandle = els.debugConsoleResizeHandle;
-    if (!panel || !head) return;
-    debugConsoleState.bound = true;
-
-    const stopDrag = () => {
-        if (!debugConsoleState.dragging && !debugConsoleState.resizing) return;
-        debugConsoleState.dragging = false;
-        debugConsoleState.resizing = false;
-        debugConsoleState.pointerId = null;
-        panel.classList.remove('dragging');
-        panel.classList.remove('resizing');
-    };
-
-    const onMove = (e) => {
-        if (!debugConsoleState.dragging && !debugConsoleState.resizing) return;
-        if (debugConsoleState.pointerId != null && e.pointerId !== debugConsoleState.pointerId) return;
-        const dx = Number(e.clientX || 0) - debugConsoleState.startClientX;
-        const dy = Number(e.clientY || 0) - debugConsoleState.startClientY;
-        const margin = 8;
-        const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
-        const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
-        if (debugConsoleState.dragging) {
-            const width = Math.max(320, Number(panel.offsetWidth || panel.getBoundingClientRect().width || 460));
-            const height = Math.max(260, Number(panel.offsetHeight || panel.getBoundingClientRect().height || 320));
-            const maxLeft = Math.max(margin, viewportWidth - width - margin);
-            const maxTop = Math.max(margin, viewportHeight - height - margin);
-            const nextLeft = Math.max(margin, Math.min(maxLeft, debugConsoleState.startLeft + dx));
-            const nextTop = Math.max(margin, Math.min(maxTop, debugConsoleState.startTop + dy));
-            panel.style.left = `${nextLeft}px`;
-            panel.style.top = `${nextTop}px`;
-            panel.style.right = 'auto';
-            return;
-        }
-        if (debugConsoleState.resizing) {
-            const minWidth = 360;
-            const minHeight = 280;
-            const maxWidth = Math.max(minWidth, viewportWidth - debugConsoleState.startLeft - margin);
-            const maxHeight = Math.max(minHeight, viewportHeight - debugConsoleState.startTop - margin);
-            const nextWidth = Math.max(minWidth, Math.min(maxWidth, debugConsoleState.startWidth + dx));
-            const nextHeight = Math.max(minHeight, Math.min(maxHeight, debugConsoleState.startHeight + dy));
-            panel.style.width = `${nextWidth}px`;
-            panel.style.height = `${nextHeight}px`;
-            panel.style.maxWidth = `${Math.max(minWidth, viewportWidth - margin * 2)}px`;
-        }
-    };
-
-    head.addEventListener('pointerdown', (e) => {
-        const target = e.target;
-        if (target && target.closest('button, a, input, select, textarea, label')) return;
-        if (!debugConsoleState.open) return;
-        const rect = panel.getBoundingClientRect();
-        debugConsoleState.dragging = true;
-        debugConsoleState.pointerId = e.pointerId;
-        debugConsoleState.startClientX = Number(e.clientX || 0);
-        debugConsoleState.startClientY = Number(e.clientY || 0);
-        debugConsoleState.startLeft = Number(rect.left || 0);
-        debugConsoleState.startTop = Number(rect.top || 0);
-        panel.classList.add('dragging');
-        e.preventDefault();
-    });
-
-    if (resizeHandle) {
-        resizeHandle.addEventListener('pointerdown', (e) => {
-            if (!debugConsoleState.open) return;
-            const rect = panel.getBoundingClientRect();
-            debugConsoleState.resizing = true;
-            debugConsoleState.pointerId = e.pointerId;
-            debugConsoleState.startClientX = Number(e.clientX || 0);
-            debugConsoleState.startClientY = Number(e.clientY || 0);
-            debugConsoleState.startLeft = Number(rect.left || 0);
-            debugConsoleState.startTop = Number(rect.top || 0);
-            debugConsoleState.startWidth = Number(rect.width || panel.offsetWidth || 460);
-            debugConsoleState.startHeight = Number(rect.height || panel.offsetHeight || 320);
-            panel.style.left = `${debugConsoleState.startLeft}px`;
-            panel.style.top = `${debugConsoleState.startTop}px`;
-            panel.style.right = 'auto';
-            panel.classList.add('resizing');
-            e.preventDefault();
-            e.stopPropagation();
-        });
-    }
-
-    window.addEventListener('pointermove', onMove, { passive: true });
-    window.addEventListener('pointerup', stopDrag);
-    window.addEventListener('pointercancel', stopDrag);
-}
-
-function bindDebugConsoleUi() {
-    if (els.debugConsolePanel && els.debugConsolePanel.dataset.bindDone === '1') return;
-    if (!els.debugConsolePanel) return;
-    els.debugConsolePanel.dataset.bindDone = '1';
-    debugConsoleState.enabled = loadDebugConsoleEnabled();
-    debugConsoleState.open = debugConsoleState.enabled;
-    debugConsoleState.activeTab = 'prompt';
-    updateDebugConsoleStatus();
-    ensureDebugConsoleEmptyState();
-    updateDebugConsoleTabUi();
-
-    if (els.copyDebugConsoleBtn) {
-        els.copyDebugConsoleBtn.addEventListener('click', () => {
-            void copyDebugConsoleEntries();
-        });
-    }
-    if (els.clearDebugConsoleBtn) {
-        els.clearDebugConsoleBtn.addEventListener('click', () => {
-            if (debugConsoleState.activeTab === 'function') clearDebugToolResult();
-            else clearDebugConsoleEntries();
-        });
-    }
-    if (els.closeDebugConsoleBtn) {
-        els.closeDebugConsoleBtn.addEventListener('click', () => {
-            closeDebugConsole();
-        });
-    }
-
-    bindDebugConsoleDrag();
-
-    if (els.debugConsolePromptTab) {
-        els.debugConsolePromptTab.addEventListener('click', () => {
-            debugConsoleState.activeTab = 'prompt';
-            updateDebugConsoleTabUi();
-        });
-    }
-    if (els.debugConsoleFunctionTab) {
-        els.debugConsoleFunctionTab.addEventListener('click', () => {
-            debugConsoleState.activeTab = 'function';
-            updateDebugConsoleTabUi();
-        });
-    }
-    if (els.refreshDebugToolsBtn) {
-        els.refreshDebugToolsBtn.addEventListener('click', () => {
-            void loadDebugToolCatalog(true);
-        });
-    }
-    if (els.debugToolSelect) {
-        els.debugToolSelect.addEventListener('change', () => {
-            debugConsoleState.selectedToolName = String(els.debugToolSelect.value || '').trim();
-            updateDebugToolMeta();
-        });
-    }
-    if (els.executeDebugToolBtn) {
-        els.executeDebugToolBtn.addEventListener('click', () => {
-            void executeDebugToolCall();
-        });
-    }
-
-    document.addEventListener('keydown', (e) => {
-        const key = String(e.key || '').toLowerCase();
-        if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && key === 'd') {
-            e.preventDefault();
-            e.stopPropagation();
-            toggleDebugConsole();
-        }
-    });
-}
-
 function bindMobileHeaderMenu() {
     els.mobileHeaderMenu = document.getElementById('mobileHeaderMenu');
     els.mobileHeaderMenuTrigger = document.getElementById('mobileHeaderMenuTrigger');
@@ -2467,57 +1580,6 @@ function ensureMessageInputFocus(options = {}) {
         }
     };
     requestAnimationFrame(() => setTimeout(focusNow, 0));
-}
-
-function updateMobileMessageInputViewportBaseline() {
-    if (!isChatMobileLayout()) return;
-    const vv = window.visualViewport;
-    const height = Number(vv && vv.height ? vv.height : (window.innerHeight || document.documentElement.clientHeight || 0));
-    if (!Number.isFinite(height) || height <= 0) return;
-    if (height > mobileMessageInputViewportBaseline) {
-        mobileMessageInputViewportBaseline = height;
-    }
-}
-
-function isMobileKeyboardLikelyOpen() {
-    if (!isChatMobileLayout()) return false;
-    updateMobileMessageInputViewportBaseline();
-    const vv = window.visualViewport;
-    const current = Number(vv && vv.height ? vv.height : (window.innerHeight || document.documentElement.clientHeight || 0));
-    if (!Number.isFinite(current) || current <= 0) return false;
-    const baseline = Number(mobileMessageInputViewportBaseline || current);
-    return (baseline - current) > 110;
-}
-
-function focusMessageInputFromGesture(options = {}) {
-    if (!els.messageInput) return;
-    const input = els.messageInput;
-    const opts = (options && typeof options === 'object') ? options : {};
-    const preserveSelection = opts.preserveSelection !== false;
-    const forceReset = !!opts.forceReset;
-    const prevStart = preserveSelection ? input.selectionStart : null;
-    const prevEnd = preserveSelection ? input.selectionEnd : null;
-    const prevDirection = preserveSelection ? input.selectionDirection : null;
-    if (forceReset) {
-        try {
-            input.blur();
-        } catch (_) {
-            // ignore
-        }
-    }
-    try {
-        input.focus({ preventScroll: true });
-    } catch (_) {
-        input.focus();
-    }
-    if (!preserveSelection) return;
-    if (document.activeElement !== input) return;
-    if (!Number.isInteger(prevStart) || !Number.isInteger(prevEnd)) return;
-    try {
-        input.setSelectionRange(prevStart, prevEnd, prevDirection || 'none');
-    } catch (_) {
-        // ignore
-    }
 }
 
 function setMailMobileDetailMode(showDetail) {
@@ -3110,24 +2172,6 @@ const els = {
     notesResizeHandle: document.getElementById('notesResizeHandle'),
     notesList: document.getElementById('notesList'),
     notesCountBadge: document.getElementById('notesCountBadge'),
-    debugConsolePanel: document.getElementById('debugConsolePanel'),
-    debugConsoleHead: document.querySelector('#debugConsolePanel .debug-console-head'),
-    debugConsolePromptTab: document.getElementById('debugConsolePromptTab'),
-    debugConsoleFunctionTab: document.getElementById('debugConsoleFunctionTab'),
-    debugConsolePromptPage: document.getElementById('debugConsolePromptPage'),
-    debugConsoleFunctionPage: document.getElementById('debugConsoleFunctionPage'),
-    debugConsoleBody: document.getElementById('debugConsoleBody'),
-    debugConsoleStatus: document.getElementById('debugConsoleStatus'),
-    copyDebugConsoleBtn: document.getElementById('copyDebugConsoleBtn'),
-    clearDebugConsoleBtn: document.getElementById('clearDebugConsoleBtn'),
-    closeDebugConsoleBtn: document.getElementById('closeDebugConsoleBtn'),
-    refreshDebugToolsBtn: document.getElementById('refreshDebugToolsBtn'),
-    debugToolSelect: document.getElementById('debugToolSelect'),
-    debugToolMeta: document.getElementById('debugToolMeta'),
-    debugToolArgsInput: document.getElementById('debugToolArgsInput'),
-    executeDebugToolBtn: document.getElementById('executeDebugToolBtn'),
-    debugToolResult: document.getElementById('debugToolResult'),
-    debugConsoleResizeHandle: document.getElementById('debugConsoleResizeHandle'),
     notesContextMenu: document.getElementById('notesContextMenu'),
     notesAddSelectionBtn: document.getElementById('notesAddSelectionBtn'),
     pinContextMenu: document.getElementById('pinContextMenu'),
@@ -3358,13 +2402,8 @@ async function flushNotesCloudSync() {
     }
 }
 
-function hasPendingLocalNotesChanges() {
-    return !!notesCloudSyncPendingStore || !!notesCloudSyncTimer || !!notesCloudSyncInFlight;
-}
-
 function saveNotesToStorage(options = {}) {
     const immediate = !!(options && options.immediate);
-    notesMutationSeq += 1;
     notesCloudSyncPendingStore = buildNotesStorePayload();
     try {
         localStorage.setItem('nc_sync_notes_data_payload', JSON.stringify(notesCloudSyncPendingStore));
@@ -3413,18 +2452,8 @@ const notesSyncChannel = new BroadcastChannel('nc_notes_sync');
 async function hydrateNotesState() {
     const localStore = loadNotesStore();
     applyNotesStoreToState(localStore);
-    const requestSeq = notesMutationSeq;
     const cloudStore = await fetchNotesStoreFromCloud();
     if (cloudStore) {
-        if (requestSeq !== notesMutationSeq) {
-            renderNotesList();
-            return;
-        }
-        if (hasPendingLocalNotesChanges()) {
-            applyNotesStoreToState(notesCloudSyncPendingStore || localStore);
-            renderNotesList();
-            return;
-        }
         const cloudNotes = Array.isArray(cloudStore.notes) ? cloudStore.notes : [];
         const cloudBooks = Array.isArray(cloudStore.notebooks) ? cloudStore.notebooks : [];
         const cloudHasUserData = cloudNotes.length > 0 || cloudBooks.some((b) => String((b && b.id) || '') !== NOTES_DEFAULT_NOTEBOOK_ID);
@@ -3861,13 +2890,12 @@ async function jumpToNoteSource(noteId) {
 
     if (
         NOTES_COMPANION_MODE
-        && getNotesCompanionApiInfo().api
-        && typeof getNotesCompanionApiInfo().api.jump_note_source_external === 'function'
+        && window.pywebview
+        && window.pywebview.api
+        && typeof window.pywebview.api.jump_note_source_external === 'function'
     ) {
         try {
-            const notesApiInfo = getNotesCompanionApiInfo();
-            const companionApi = notesApiInfo && notesApiInfo.api;
-            const res = await companionApi.jump_note_source_external({
+            const res = await window.pywebview.api.jump_note_source_external({
                 anchor,
                 sourceTitle: String(note.sourceTitle || '')
             });
@@ -4156,77 +3184,6 @@ function renderNotesList() {
     }, 50);
 }
 
-window.__nexoraGetNotesSnapshotHtml = function() {
-    try {
-        let payload = null;
-        try {
-            const raw = localStorage.getItem('nc_sync_notes_data_payload');
-            if (raw) {
-                const parsed = JSON.parse(raw);
-                if (parsed && typeof parsed === 'object') {
-                    payload = parsed;
-                }
-            }
-        } catch (_) {}
-
-        if (payload) {
-            applyNotesStoreToState(payload);
-        } else if (!Array.isArray(notesState.notebooks) || notesState.notebooks.length === 0) {
-            applyNotesStoreToState(createDefaultNotesStore());
-        }
-
-        renderNotesList();
-
-        const panel = document.querySelector('#notesPanel, .notes-panel, aside.notes-panel, div.notes-panel');
-        if (!panel) {
-            return {
-                success: false,
-                html: '',
-                message: 'notes panel not found in helper'
-            };
-        }
-
-        const cloned = panel.cloneNode(true);
-        if (cloned && cloned.classList) {
-            cloned.classList.add('active');
-            cloned.classList.remove('closed');
-            cloned.classList.remove('collapsed');
-        }
-        if (cloned && cloned.setAttribute) {
-            cloned.setAttribute('aria-hidden', 'false');
-        }
-        const list = cloned && cloned.querySelector ? cloned.querySelector('#notesList, .notes-list') : null;
-        const itemsCount = list && list.children ? Number(list.children.length || 0) : -1;
-        const activeNotebookId = String(notesState.activeNotebookId || '').trim();
-        const noteIndex = {};
-        (Array.isArray(notesState.items) ? notesState.items : []).forEach((note) => {
-            const item = (note && typeof note === 'object') ? note : null;
-            if (!item) return;
-            if (String(item.notebookId || '').trim() !== activeNotebookId) return;
-            const noteId = String(item.id || '').trim();
-            if (!noteId) return;
-            noteIndex[noteId] = {
-                sourceTitle: String(item.sourceTitle || '').trim(),
-                anchor: normalizeNoteAnchor(item.anchor) || buildFallbackAnchorFromNote(item)
-            };
-        });
-        const htmlOut = String((cloned && cloned.outerHTML) || panel.outerHTML || '');
-        return {
-            success: true,
-            html: htmlOut,
-            items_count: itemsCount,
-            note_index: noteIndex,
-            ts: Date.now()
-        };
-    } catch (e) {
-        return {
-            success: false,
-            html: '',
-            message: String(e || 'notes snapshot helper error')
-        };
-    }
-};
-
 function syncNotesForConversation(_conversationId = currentConversationId) {
     // 兼容旧调用：当前改为全局笔记本模型，不再按会话分仓。
     if (!Array.isArray(notesState.notebooks) || notesState.notebooks.length === 0) {
@@ -4244,17 +3201,8 @@ function openNotesPanel() {
     bindNotesPanelMobileDrag();
     requestAnimationFrame(() => applyNotesMobilePanelPosition());
     renderNotesList();
-    const requestSeq = notesMutationSeq;
     void fetchNotesStoreFromCloud().then((store) => {
         if (!store) return;
-        if (requestSeq !== notesMutationSeq) {
-            renderNotesList();
-            return;
-        }
-        if (hasPendingLocalNotesChanges()) {
-            renderNotesList();
-            return;
-        }
         applyNotesStoreToState(store);
         renderNotesList();
     });
@@ -4356,11 +3304,7 @@ async function openNotesCompanionWindow() {
         logNotesBridge('openNotesCompanionWindow call source=' + String(info.source || 'unknown'));
         const res = await api.open_notes_companion();
         logNotesBridge('openNotesCompanionWindow result=' + JSON.stringify(res || {}));
-        const ok = !!(res && res.success);
-        if (ok && notesState.open) {
-            closeNotesPanel();
-        }
-        return ok;
+        return !!(res && res.success);
     } catch (e) {
         logNotesBridge('openNotesCompanionWindow error=' + String(e || 'unknown'));
         return false;
@@ -4711,35 +3655,6 @@ function getKatexAnnotationTex(el) {
     return ann ? String(ann.textContent || '').trim() : '';
 }
 
-function normalizeExtractedKatexTex(rawTex, displayMode = false) {
-    let src = normalizeSelectionTextForNotes(String(rawTex || ''));
-    if (!src) return '';
-
-    const stripWrapped = (text, left, right) => {
-        const s = String(text || '').trim();
-        if (!s.startsWith(left) || !s.endsWith(right)) return s;
-        return s.slice(left.length, s.length - right.length).trim();
-    };
-
-    for (let i = 0; i < 3; i += 1) {
-        const prev = src;
-        if (displayMode) {
-            src = stripWrapped(src, '$$', '$$');
-            src = stripWrapped(src, '\\[', '\\]');
-            src = stripWrapped(src, '\\(', '\\)');
-            src = stripWrapped(src, '$', '$');
-        } else {
-            src = stripWrapped(src, '\\(', '\\)');
-            src = stripWrapped(src, '$', '$');
-            src = stripWrapped(src, '\\[', '\\]');
-            src = stripWrapped(src, '$$', '$$');
-        }
-        if (src === prev) break;
-    }
-
-    return src;
-}
-
 function escapeMarkdownTableCell(text) {
     return String(text || '')
         .replace(/\r\n/g, '\n')
@@ -4805,27 +3720,14 @@ function extractSelectionTextFromNode(node, inPre = false) {
     if (el) {
         if (tag === 'SCRIPT' || tag === 'STYLE') return '';
         if (tag === 'BR') return '\n';
-        const cls = el.classList;
-        if (
-            cls && (
-                cls.contains('avatar') ||
-                cls.contains('model-badge') ||
-                cls.contains('msg-actions') ||
-                cls.contains('thinking-header') ||
-                cls.contains('tool-usage') ||
-                cls.contains('add-basis-view')
-            )
-        ) {
-            return '';
-        }
 
         if (el.classList && el.classList.contains('katex-display')) {
-            const tex = normalizeExtractedKatexTex(getKatexAnnotationTex(el), true);
+            const tex = getKatexAnnotationTex(el);
             return tex ? `\n$$${tex}$$\n` : '';
         }
         if (el.classList && el.classList.contains('katex')) {
             if (el.closest('.katex-display')) return '';
-            const tex = normalizeExtractedKatexTex(getKatexAnnotationTex(el), false);
+            const tex = getKatexAnnotationTex(el);
             return tex ? `$${tex}$` : '';
         }
         if (el.classList && (el.classList.contains('katex-html') || el.classList.contains('katex-mathml'))) {
@@ -4942,7 +3844,7 @@ function addNoteItemFromSelection(selectionText, sourceMeta = {}) {
         ts: Math.floor(Date.now() / 1000)
     };
     notesState.items = [item, ...(Array.isArray(notesState.items) ? notesState.items : [])];
-    saveNotesToStorage({ immediate: true });
+    saveNotesToStorage();
     renderNotesList();
     showToast('已添加到笔记');
 }
@@ -4959,26 +3861,6 @@ function getCurrentSelectionForNotes() {
         text,
         sourceMeta: resolveSelectionSource(node, text, plainText)
     };
-}
-
-function bindStructuredCopyForSelectableArea() {
-    if (!document.body || document.body.dataset.structuredCopyBound === '1') return;
-    document.body.dataset.structuredCopyBound = '1';
-
-    document.addEventListener('copy', (e) => {
-        const clipboard = e && e.clipboardData;
-        if (!clipboard) return;
-        const sel = window.getSelection ? window.getSelection() : null;
-        if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
-        const anchor = sel.anchorNode || sel.focusNode;
-        if (!isTargetInsideSelectableArea(anchor) || isEditableTarget(anchor)) return;
-
-        const text = getSelectionTextForNotes(sel);
-        if (!text) return;
-
-        e.preventDefault();
-        clipboard.setData('text/plain', text);
-    }, true);
 }
 
 function loadNotesMobilePanelPosition() {
@@ -5373,30 +4255,6 @@ function initNotesUi() {
         if (els.closeNotesPanelBtn) els.closeNotesPanelBtn.style.display = 'none';
         openNotesPanel();
     }
-    if (SETTINGS_COMPANION_MODE) {
-        if (document.body) document.body.classList.add('settings-companion-mode');
-        void openSettingsModal();
-        const syncBounds = () => {
-            try {
-                const api = window.pywebview && window.pywebview.api;
-                if (!api || !api.set_settings_window_bounds) return;
-                const w = Number(window.outerWidth || window.innerWidth || 0);
-                const h = Number(window.outerHeight || window.innerHeight || 0);
-                api.set_settings_window_bounds(w, h);
-            } catch (_) {
-                // ignore
-            }
-        };
-        let settingsBoundsTimer = null;
-        window.addEventListener('resize', () => {
-            if (settingsBoundsTimer) clearTimeout(settingsBoundsTimer);
-            settingsBoundsTimer = setTimeout(() => {
-                settingsBoundsTimer = null;
-                syncBounds();
-            }, 180);
-        });
-        syncBounds();
-    }
 }
 
 function clampImageViewerScale(v) {
@@ -5522,9 +4380,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (NOTES_COMPANION_MODE) {
         return;
     }
-    if (SETTINGS_COMPANION_MODE) {
-        return;
-    }
     loadModels();
     loadConversations();
     
@@ -5550,9 +4405,7 @@ function initUI() {
     bindImageViewerEvents();
     bindToolsModeDropdown();
     bindMobileHeaderMenu();
-    bindDebugConsoleUi();
     initNotesUi();
-    bindStructuredCopyForSelectableArea();
     renderTokenBudgetUi();
     if (NOTES_COMPANION_MODE) {
         return;
@@ -5616,13 +4469,6 @@ function initUI() {
     bindGlobalFileDropUpload();
     
     if(els.messageInput) {
-        updateMobileMessageInputViewportBaseline();
-        if (window.visualViewport) {
-            window.visualViewport.addEventListener('resize', updateMobileMessageInputViewportBaseline, { passive: true });
-        } else {
-            window.addEventListener('resize', updateMobileMessageInputViewportBaseline, { passive: true });
-        }
-
         els.messageInput.addEventListener('compositionstart', () => {
             isMessageInputComposing = true;
         });
@@ -5636,32 +4482,12 @@ function initUI() {
             await handleFileUploadFiles(pastedFiles, { source: 'paste', clearInput: false });
         });
 
-        const recoverFocusFromGesture = () => {
-            if (!isChatMobileLayout()) return;
-            lastMessageInputGestureTs = Date.now();
-            const ghostFocused = document.activeElement === els.messageInput && !isMobileKeyboardLikelyOpen();
-            focusMessageInputFromGesture({ preserveSelection: true, forceReset: ghostFocused });
-        };
-
-        els.messageInput.addEventListener('touchstart', recoverFocusFromGesture, { passive: true });
-        els.messageInput.addEventListener('pointerdown', (e) => {
-            if (e.pointerType && e.pointerType !== 'touch') return;
-            recoverFocusFromGesture();
-        }, { passive: true });
-
-        // Last-resort mobile recovery: if browser left textarea in a ghost-focused state,
-        // re-arm focus only when keyboard still did not open after the tap.
+        // Mobile fallback: if tap failed to focus textarea, recover once without moving caret.
         els.messageInput.addEventListener('touchend', () => {
             if (!isChatMobileLayout()) return;
             setTimeout(() => {
-                const justTapped = (Date.now() - lastMessageInputGestureTs) < 600;
-                const ghostFocused = document.activeElement === els.messageInput && !isMobileKeyboardLikelyOpen();
-                if (ghostFocused && justTapped) {
-                    focusMessageInputFromGesture({ preserveSelection: true, forceReset: true });
-                    return;
-                }
                 ensureMessageInputFocus({ onlyIfBlurred: true, preserveSelection: true });
-            }, 40);
+            }, 30);
         }, { passive: true });
 
         els.messageInput.addEventListener('keydown', (e) => {
@@ -5679,17 +4505,6 @@ function initUI() {
             this.style.height = (this.scrollHeight) + 'px';
             if(this.value === '') this.style.height = 'auto'; // Reset
         });
-
-        const inputContainer = document.querySelector('#inputWrapper .input-container');
-        if (inputContainer && inputContainer.dataset.mobileFocusBound !== '1') {
-            inputContainer.dataset.mobileFocusBound = '1';
-            inputContainer.addEventListener('touchstart', (e) => {
-                if (!isChatMobileLayout()) return;
-                const target = e.target;
-                if (target && target.closest && target.closest('button, a, input[type=\"checkbox\"], input[type=\"file\"], select, label')) return;
-                recoverFocusFromGesture();
-            }, { passive: true });
-        }
     }
 
     if (els.knowledgeSearchInput) {
@@ -6629,7 +5444,7 @@ function stopGeneration() {
 function normalizeToolsMode(raw) {
     const m = String(raw || '').trim().toLowerCase();
     if (m === 'off' || m === 'force' || m === 'auto') return m;
-    return 'force';
+    return 'auto';
 }
 
 function formatToolsModeLabel(mode) {
@@ -6662,7 +5477,7 @@ function bindToolsModeDropdown() {
     if (!els.toolsModeDropdown || !els.toolsModeTrigger || !els.toolsModeMenu) return;
     if (els.toolsModeDropdown.dataset.bindDone === '1') return;
     els.toolsModeDropdown.dataset.bindDone = '1';
-    setToolsMode(els.toolsMode ? els.toolsMode.value : 'force');
+    setToolsMode(els.toolsMode ? els.toolsMode.value : 'auto');
 
     els.toolsModeTrigger.addEventListener('click', (e) => {
         e.preventDefault();
@@ -6679,7 +5494,7 @@ function bindToolsModeDropdown() {
         btn.addEventListener('click', (e) => {
             e.preventDefault();
             e.stopPropagation();
-            setToolsMode(btn.dataset.mode || 'force');
+            setToolsMode(btn.dataset.mode || 'auto');
             closeToolsModeDropdown();
         });
     });
@@ -6692,7 +5507,7 @@ function bindToolsModeDropdown() {
 }
 
 function getToolsMode() {
-    return normalizeToolsMode(els.toolsMode ? els.toolsMode.value : 'force');
+    return normalizeToolsMode(els.toolsMode ? els.toolsMode.value : 'auto');
 }
 
 async function sendMessage() {
@@ -6831,7 +5646,6 @@ async function sendMessage() {
         enable_web_search: enableSearch,
         enable_tools: enableTools,
         tool_mode: toolsMode,
-        debug_mode: isDebugConsoleEnabled(),
         file_ids: fileInputs,
         allow_history_images: allowHistoryImages
     };
@@ -6852,8 +5666,6 @@ async function sendMessage() {
     let currentContentSpan = null;
     let streamRenderFinalized = false;
     const toolArgsDeltaSeenByCallId = new Set();
-    const debugScopeKey = `chat:${aiMsgId}`;
-    let debugReplyText = '';
     const modelBadgeState = {
         modelName: String(model || ''),
         searchFlag: 'unknown',
@@ -6867,277 +5679,6 @@ async function sendMessage() {
         snapshotOutput: 0,
         snapshotInitialized: false
     };
-    const streamRenderStateByBlock = new WeakMap();
-    const hasLikelyMathDelimiter = (text) => /(\$\$|\\\(|\\\[|\\begin\{(?:equation\*?|align\*?|alignat\*?|gather\*?|CD)\}|(^|[^\\])\$[^$\s])/m.test(String(text || ''));
-
-    function isEscapedAt(text, index) {
-        const src = String(text || '');
-        let slashCount = 0;
-        for (let i = Number(index) - 1; i >= 0 && src[i] === '\\'; i -= 1) {
-            slashCount += 1;
-        }
-        return slashCount % 2 === 1;
-    }
-
-    function countEscapedMathDelimiter(text, delimiter) {
-        const src = String(text || '');
-        const target = String(delimiter || '');
-        if (!src || !target) return 0;
-        let count = 0;
-        for (let i = 0; i <= src.length - target.length; i += 1) {
-            if (src.slice(i, i + target.length) !== target) continue;
-            if (isEscapedAt(src, i)) continue;
-            count += 1;
-            i += target.length - 1;
-        }
-        return count;
-    }
-
-    function countLatexEnvironmentBoundary(text, envName, kind = 'begin') {
-        const src = String(text || '');
-        const env = String(envName || '').trim();
-        const token = kind === 'end' ? `\\end{${env}}` : `\\begin{${env}}`;
-        if (!src || !env) return 0;
-        let count = 0;
-        for (let i = 0; i <= src.length - token.length; i += 1) {
-            if (src.slice(i, i + token.length) !== token) continue;
-            if (isEscapedAt(src, i)) continue;
-            count += 1;
-            i += token.length - 1;
-        }
-        return count;
-    }
-
-    function hasOpenMathDelimiters(text) {
-        const src = String(text || '');
-        if (!src) return false;
-        const envNames = ['equation', 'equation*', 'align', 'align*', 'alignat', 'alignat*', 'gather', 'gather*', 'CD'];
-        if (countUnescapedDoubleDollar(src) % 2 !== 0) return true;
-        if (countEscapedMathDelimiter(src, '\\[') !== countEscapedMathDelimiter(src, '\\]')) return true;
-        if (countEscapedMathDelimiter(src, '\\(') !== countEscapedMathDelimiter(src, '\\)')) return true;
-        for (const envName of envNames) {
-            if (countLatexEnvironmentBoundary(src, envName, 'begin') !== countLatexEnvironmentBoundary(src, envName, 'end')) {
-                return true;
-            }
-        }
-        return countUnescapedSingleDollars(src) % 2 !== 0;
-    }
-
-    function findOpenMathTailStart(text) {
-        const src = String(text || '');
-        if (!src) return -1;
-        const envNames = ['equation', 'equation*', 'align', 'align*', 'alignat', 'alignat*', 'gather', 'gather*', 'CD'];
-
-        let activeType = '';
-        let activeIndex = -1;
-
-        for (let i = 0; i < src.length; i += 1) {
-            if (!activeType) {
-                let openedEnv = '';
-                for (const envName of envNames) {
-                    const token = `\\begin{${envName}}`;
-                    if (src.slice(i, i + token.length) === token && !isEscapedAt(src, i)) {
-                        openedEnv = envName;
-                        break;
-                    }
-                }
-                if (openedEnv) {
-                    activeType = `env:${openedEnv}`;
-                    activeIndex = i;
-                    i += (`\\begin{${openedEnv}}`.length - 1);
-                    continue;
-                }
-                if (src.slice(i, i + 2) === '$$' && !isEscapedAt(src, i)) {
-                    activeType = '$$';
-                    activeIndex = i;
-                    i += 1;
-                    continue;
-                }
-                if (src.slice(i, i + 2) === '\\[' && !isEscapedAt(src, i)) {
-                    activeType = '\\[';
-                    activeIndex = i;
-                    i += 1;
-                    continue;
-                }
-                if (src.slice(i, i + 2) === '\\(' && !isEscapedAt(src, i)) {
-                    activeType = '\\(';
-                    activeIndex = i;
-                    i += 1;
-                    continue;
-                }
-                if (
-                    src[i] === '$' &&
-                    !isEscapedAt(src, i) &&
-                    src[i - 1] !== '$' &&
-                    src[i + 1] !== '$'
-                ) {
-                    activeType = '$';
-                    activeIndex = i;
-                }
-                continue;
-            }
-
-            if (activeType.startsWith('env:')) {
-                const envName = activeType.slice(4);
-                const closeToken = `\\end{${envName}}`;
-                if (src.slice(i, i + closeToken.length) === closeToken && !isEscapedAt(src, i)) {
-                    activeType = '';
-                    activeIndex = -1;
-                    i += closeToken.length - 1;
-                }
-                continue;
-            }
-
-            if (activeType === '$$') {
-                if (src.slice(i, i + 2) === '$$' && !isEscapedAt(src, i)) {
-                    activeType = '';
-                    activeIndex = -1;
-                    i += 1;
-                }
-                continue;
-            }
-
-            if (activeType === '\\[') {
-                if (src.slice(i, i + 2) === '\\]' && !isEscapedAt(src, i)) {
-                    activeType = '';
-                    activeIndex = -1;
-                    i += 1;
-                }
-                continue;
-            }
-
-            if (activeType === '\\(') {
-                if (src.slice(i, i + 2) === '\\)' && !isEscapedAt(src, i)) {
-                    activeType = '';
-                    activeIndex = -1;
-                    i += 1;
-                }
-                continue;
-            }
-
-            if (
-                activeType === '$' &&
-                src[i] === '$' &&
-                !isEscapedAt(src, i) &&
-                src[i - 1] !== '$' &&
-                src[i + 1] !== '$'
-            ) {
-                activeType = '';
-                activeIndex = -1;
-            }
-        }
-
-        return activeType ? activeIndex : -1;
-    }
-
-    function ensureStreamBlockState(block) {
-        if (!block) return null;
-        let state = streamRenderStateByBlock.get(block);
-        if (!state || typeof state !== 'object') {
-            const renderedEl = document.createElement('div');
-            renderedEl.className = 'stream-rendered';
-            const liveEl = document.createElement('div');
-            liveEl.className = 'stream-live-tail';
-            block.innerHTML = '';
-            block.appendChild(renderedEl);
-            block.appendChild(liveEl);
-            state = {
-                renderedEl,
-                liveEl,
-                liveRaw: ''
-            };
-            streamRenderStateByBlock.set(block, state);
-        }
-        return state;
-    }
-
-    function renderStreamFragment(rawText, citationMap) {
-        const sourceText = rewriteCitationRefsMarkdown(String(rawText || ''), citationMap || {});
-        const frag = document.createElement('div');
-        frag.className = 'stream-fragment';
-        frag.innerHTML = renderMarkdownWithNewTabLinks(sourceText, { breaks: false });
-        bindSourceMarkdown(frag, sourceText);
-        highlightCode(frag);
-        return frag;
-    }
-
-    function renderLiveStreamTail(block, citationMap) {
-        const state = ensureStreamBlockState(block);
-        if (!state) return;
-        const raw = String(state.liveRaw || '');
-        if (!raw) {
-            state.liveEl.innerHTML = '';
-            state.liveEl.classList.remove('stream-live-raw');
-            return;
-        }
-
-        const sourceText = rewriteCitationRefsMarkdown(raw, citationMap || {});
-        const hasMath = hasLikelyMathDelimiter(sourceText);
-        const openTailStart = hasMath ? findOpenMathTailStart(sourceText) : -1;
-        const hasOpenMath = openTailStart >= 0;
-        block.__streamSourceMarkdown = rewriteCitationRefsMarkdown(String(block.dataset.streamRaw || ''), citationMap || {});
-
-        if (hasOpenMath) {
-            const stablePrefix = sourceText.slice(0, openTailStart);
-            const unstableTail = sourceText.slice(openTailStart);
-            if (!stablePrefix.trim()) {
-                state.liveEl.classList.add('stream-live-raw');
-                state.liveEl.textContent = sourceText;
-                bindSourceMarkdown(state.liveEl, sourceText);
-                return;
-            }
-
-            state.liveEl.classList.remove('stream-live-raw');
-            state.liveEl.innerHTML = renderMarkdownWithNewTabLinks(stablePrefix, { breaks: false });
-            bindSourceMarkdown(state.liveEl, sourceText);
-            highlightCode(state.liveEl);
-            if (hasLikelyMathDelimiter(stablePrefix) && !hasOpenMathDelimiters(stablePrefix)) {
-                try { renderMathSafe(state.liveEl); } catch (_) {}
-            }
-
-            const rawTailEl = document.createElement('span');
-            rawTailEl.className = 'stream-live-tail-raw-segment';
-            rawTailEl.textContent = unstableTail;
-            state.liveEl.appendChild(rawTailEl);
-            return;
-        }
-
-        state.liveEl.classList.remove('stream-live-raw');
-        state.liveEl.innerHTML = renderMarkdownWithNewTabLinks(sourceText, { breaks: false });
-        bindSourceMarkdown(state.liveEl, sourceText);
-        highlightCode(state.liveEl);
-
-        if (hasMath) {
-            try { renderMathSafe(state.liveEl); } catch (_) {}
-        }
-    }
-
-    function flushStableStreamTail(block, citationMap, force = false) {
-        const state = ensureStreamBlockState(block);
-        if (!state) return;
-        const raw = String(state.liveRaw || '');
-        if (!raw) {
-            renderLiveStreamTail(block, citationMap);
-            return;
-        }
-        const hasMath = hasLikelyMathDelimiter(raw);
-        if (!force && hasMath && hasOpenMathDelimiters(raw)) {
-            renderLiveStreamTail(block, citationMap);
-            return;
-        }
-        if (!force && !hasMath) {
-            renderLiveStreamTail(block, citationMap);
-            return;
-        }
-
-        // Streaming stage: avoid per-token/per-fragment KaTeX reflow flicker.
-        // Render math only on finalize (force=true).
-        const fragment = renderStreamFragment(raw, citationMap);
-        state.renderedEl.appendChild(fragment);
-        try { renderMathSafe(fragment); } catch (_) {}
-        state.liveRaw = '';
-        renderLiveStreamTail(block, citationMap);
-    }
 
     function finalizeStreamingContentRender() {
         if (streamRenderFinalized) return;
@@ -7223,49 +5764,14 @@ async function sendMessage() {
                             modelBadgeState.searchFlag = (typeof chunk.search_enabled === 'boolean') ? chunk.search_enabled : modelBadgeState.searchFlag;
                             updateMessageModelBadge(aiMsgDiv, modelBadgeState);
                         }
-                        else if (chunk.type === 'debug_trace') {
-                            if (chunk.stage === 'system_prompt') {
-                                appendDebugConsoleEntry({
-                                    ...chunk,
-                                    title: 'System Prompt',
-                                    replaceKey: `${debugScopeKey}:system`
-                                });
-                            } else if (chunk.stage === 'tool_injection') {
-                                appendDebugConsoleEntry({
-                                    ...chunk,
-                                    title: 'Tool Injection',
-                                    replaceKey: `${debugScopeKey}:tools`
-                                });
-                            } else if (chunk.stage === 'current_context') {
-                                appendDebugConsoleEntry({
-                                    ...chunk,
-                                    title: 'Current Context',
-                                    replaceKey: `${debugScopeKey}:context`
-                                });
-                            }
-                        }
                         
                         else if (chunk.type === 'content') {
                             currentFullContent += chunk.content;
                             onTokenStreamTextChunk(chunk.content);
-                            if (isDebugConsoleEnabled()) {
-                                debugReplyText += String(chunk.content || '');
-                                appendDebugConsoleEntry({
-                                    direction: 'model->server',
-                                    stage: 'model_reply',
-                                    title: 'Model Reply',
-                                    payload: debugReplyText,
-                                    replaceKey: `${debugScopeKey}:reply`
-                                });
-                            }
                             
                             // 如果当前没有正在渲染的内容Span，或者它不是消息气泡的最后一丅素（说明丗插入了工具）
                             const msgContentContainer = aiMsgDiv.querySelector('.message-content');
                             if (!currentContentSpan || msgContentContainer.lastElementChild !== currentContentSpan) {
-                                if (currentContentSpan) {
-                                    flushStableStreamTail(currentContentSpan, aiMsgDiv.__citationUrlMap || {}, true);
-                                    currentContentSpan.dataset.streamLive = '0';
-                                }
                                 currentContentSpan = createContentSpan(aiMsgDiv);
                                 currentSegmentContent = '';
 // 说明
@@ -7275,13 +5781,10 @@ async function sendMessage() {
                             // 注意：为了保持Markdown上下文一致，我们通常倾向于在同一个Block显示
                             // 但用户求在工具链下方显示，以必须开吖Block
                             currentSegmentContent += chunk.content;
+                            const sourceText = rewriteCitationRefsMarkdown(currentSegmentContent, aiMsgDiv.__citationUrlMap || {});
                             currentContentSpan.dataset.streamRaw = currentSegmentContent;
                             currentContentSpan.dataset.streamLive = '1';
-                            const streamState = ensureStreamBlockState(currentContentSpan);
-                            if (streamState) {
-                                streamState.liveRaw += String(chunk.content || '');
-                                flushStableStreamTail(currentContentSpan, aiMsgDiv.__citationUrlMap || {}, false);
-                            }
+                            currentContentSpan.innerHTML = renderMarkdownWithNewTabLinks(sourceText);
                         } 
                         else if (chunk.type === 'reasoning_content') { 
                            onTokenStreamReasoningChunk(chunk.content);
@@ -7318,14 +5821,10 @@ async function sendMessage() {
 // 说明
                                msgContentContainer.appendChild(thinkingBlock);
                            }
-                            
-                            const contentDiv = thinkingBlock.querySelector('.thinking-content');
-                            let raw = contentDiv.dataset.rawText || '';
-                            raw += chunk.content;
-                            contentDiv.dataset.rawText = raw;
-                            contentDiv.textContent = raw;
-                            try { renderMathSafe(contentDiv); } catch (_) {}
-                            thinkingBlock.dataset.streamLive = '1';
+                           
+                           const contentDiv = thinkingBlock.querySelector('.thinking-content');
+                           contentDiv.textContent += chunk.content;
+                                    thinkingBlock.dataset.streamLive = '1';
                         }
                         // --- New Chunk Types Support ---
                         else if (chunk.type === 'web_search') {
@@ -7387,12 +5886,6 @@ async function sendMessage() {
                             if(els.conversationTitle) els.conversationTitle.textContent = chunk.title;
                         }
                         else if (chunk.type === 'error') {
-                            appendDebugConsoleEntry({
-                                direction: 'model->server',
-                                stage: 'error',
-                                title: 'Error',
-                                payload: { content: chunk.content || 'Unknown error' }
-                            });
                             appendErrorEvent(aiMsgDiv, chunk.content || 'Unknown error');
                         }
                         
@@ -7412,20 +5905,8 @@ async function sendMessage() {
         }
     } catch (e) {
         if (e.name === 'AbortError') {
-            appendDebugConsoleEntry({
-                direction: 'client->local',
-                stage: 'abort',
-                title: 'Generation Aborted',
-                payload: { content: '[Generation Terminated by User]' }
-            });
             appendErrorEvent(aiMsgDiv, '[Generation Terminated by User]');
         } else {
-            appendDebugConsoleEntry({
-                direction: 'client->local',
-                stage: 'exception',
-                title: 'Client Exception',
-                payload: { message: e.message || 'Unknown error' }
-            });
             appendErrorEvent(aiMsgDiv, e.message || 'Unknown error');
         }
         isGenerating = false;
@@ -8661,18 +7142,17 @@ async function startRegenerate(index) {
         const response = await fetch('/api/chat/stream', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    conversation_id: currentConversationId,
-                    model_name: modelName,
-                    is_regenerate: true,
-                    regenerate_index: index,
-                    enable_thinking: els.checkThinking.checked,
-                    enable_web_search: els.checkSearch.checked,
-                    enable_tools: enableTools,
-                    tool_mode: toolsMode,
-                    debug_mode: isDebugConsoleEnabled(),
-                    show_token_usage: true
-                }),
+            body: JSON.stringify({
+                conversation_id: currentConversationId,
+                model_name: modelName,
+                is_regenerate: true,
+                regenerate_index: index,
+                enable_thinking: els.checkThinking.checked,
+                enable_web_search: els.checkSearch.checked,
+                enable_tools: enableTools,
+                tool_mode: toolsMode,
+                show_token_usage: true
+            }),
             signal: currentAbortController.signal
         });
 
@@ -8703,7 +7183,6 @@ async function startRegenerate(index) {
         const decoder = new TextDecoder();
         
         let accumulatedContent = "";
-        const debugScopeKey = `regen:${currentConversationId || 'new'}:${index}:${Date.now()}`;
 
         while (true) {
             const { value, done } = await reader.read();
@@ -8718,37 +7197,8 @@ async function startRegenerate(index) {
                     const data = jsonParseSafe(line.substring(6));
                     if(!data) continue;
                     
-                    if (data.type === 'debug_trace') {
-                        if (data.stage === 'system_prompt') {
-                            appendDebugConsoleEntry({
-                                ...data,
-                                title: 'System Prompt',
-                                replaceKey: `${debugScopeKey}:system`
-                            });
-                        } else if (data.stage === 'tool_injection') {
-                            appendDebugConsoleEntry({
-                                ...data,
-                                title: 'Tool Injection',
-                                replaceKey: `${debugScopeKey}:tools`
-                            });
-                        } else if (data.stage === 'current_context') {
-                            appendDebugConsoleEntry({
-                                ...data,
-                                title: 'Current Context',
-                                replaceKey: `${debugScopeKey}:context`
-                            });
-                        }
-                    } else if (data.type === 'content') {
+                    if (data.type === 'content') {
                         accumulatedContent += data.content;
-                        if (isDebugConsoleEnabled()) {
-                            appendDebugConsoleEntry({
-                                direction: 'model->server',
-                                stage: 'model_reply',
-                                title: 'Model Reply',
-                                payload: accumulatedContent,
-                                replaceKey: `${debugScopeKey}:reply`
-                            });
-                        }
                         updateMessageDivContent(index, accumulatedContent);
                     } else if (data.type === 'reasoning_content') {
                         updateMessageDivThinking(index, data.content);
@@ -8828,10 +7278,7 @@ function updateMessageDivThinking(index, delta) {
     }
     
     const textTarget = thinkingBlock.querySelector('.thinking-content');
-    let raw = textTarget.dataset.rawText || '';
-    raw += delta;
-    textTarget.dataset.rawText = raw;
-    textTarget.textContent = raw;
+    textTarget.textContent += delta;
     renderMathSafe(textTarget);
 }
 
@@ -11647,26 +10094,7 @@ function showToast(msg) {
     setTimeout(() => toast.classList.remove('show'), 3000);
 }
 
-const LOCAL_PROVIDER_ICON_MAP = {
-    github: '',
-    alibabacloud: '/static/img/Index/static/icons/aliyun.png',
-    bytedance: '/static/img/icons/volcengine_single_icon.svg',
-    qq: '/static/img/icons/tencent_cloud_single_icon.svg',
-    wechat: '/static/img/icons/tencent_cloud_single_icon.svg',
-    deepseek: '/static/img/icons/deepseek_single_icon.svg',
-    openai: '/static/img/icons/openai_single_icon.svg',
-    stepfun: '/static/img/icons/stepfun_single_icon.png',
-    moonshot: '/static/img/icons/kimi_single_icon.png',
-    kimi: '/static/img/icons/kimi_single_icon.png',
-    minimax: '/static/img/icons/minimax_single_icon.png',
-    siliconflow: '/static/img/icons/siliconflow_single_icon.svg',
-    openrouter: '/static/img/icons/openrouter_single_icon.svg',
-    xunfei: '/static/img/icons/xunfei_spark_single_icon.svg',
-    spark: '/static/img/icons/xunfei_spark_single_icon.svg',
-    hunyuan: '/static/img/icons/hunyuan_single_icon.png',
-    ollama: '/static/img/icons/ollama_single_icon.svg',
-    nvidia: '/static/img/icons/nvidia.svg'
-};
+const SIMPLE_ICON_CDN_BASE = 'https://cdn.simpleicons.org';
 
 function resolveProviderSimpleIconSlug(provider) {
     const p = String(provider || '').trim().toLowerCase();
@@ -11713,10 +10141,10 @@ function renderProviderIconHtml(provider, options = {}) {
     const fallback = providerIconFallbackText(label);
     const fallbackHtml = `<span class="provider-logo-fallback">${escapeHtml(fallback)}</span>`;
     const slug = resolveProviderSimpleIconSlug(provider);
-    const iconSrc = slug ? (LOCAL_PROVIDER_ICON_MAP[slug] || '') : '';
-    if (!slug || !iconSrc) {
+    if (!slug) {
         return `<span class="${cls} icon-fallback" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">${fallbackHtml}</span>`;
     }
+    const iconSrc = `${SIMPLE_ICON_CDN_BASE}/${encodeURIComponent(slug)}`;
     return `
         <span class="${cls}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">
             <img src="${iconSrc}" alt="${escapeHtml(label)}" loading="lazy" referrerpolicy="no-referrer"
@@ -12098,136 +10526,11 @@ function positionMobileModelOptions() {
     els.modelOptions.style.zIndex = '5200';
 }
 
-const MERMAID_SCRIPT_CANDIDATES = [
-    '/static/vendor/mermaid/mermaid.min.js',
-    'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js',
-    'https://unpkg.com/mermaid@11/dist/mermaid.min.js'
-];
-let __mermaidLoadPromise = null;
-let __mermaidInitialized = false;
-
-function looksLikeMermaidDefinition(text) {
-    const src = String(text || '').trim();
-    if (!src) return false;
-    return /^(?:graph|flowchart|sequenceDiagram|classDiagram|stateDiagram(?:-v2)?|erDiagram|journey|gantt|pie|gitGraph|mindmap|timeline|quadrantChart|requirementDiagram)\b/m.test(src);
-}
-
-function loadScriptOnce(url) {
-    return new Promise((resolve, reject) => {
-        const existing = Array.from(document.querySelectorAll('script[src]'))
-            .find((s) => String(s.src || '').includes(String(url)));
-        if (existing) {
-            if (existing.dataset.loaded === '1') {
-                resolve();
-                return;
-            }
-            existing.addEventListener('load', () => resolve(), { once: true });
-            existing.addEventListener('error', () => reject(new Error(`load failed: ${url}`)), { once: true });
-            return;
-        }
-
-        const s = document.createElement('script');
-        s.src = url;
-        s.async = true;
-        s.dataset.mermaidLoader = '1';
-        s.addEventListener('load', () => {
-            s.dataset.loaded = '1';
-            resolve();
-        }, { once: true });
-        s.addEventListener('error', () => reject(new Error(`load failed: ${url}`)), { once: true });
-        document.head.appendChild(s);
-    });
-}
-
-async function ensureMermaidReady() {
-    if (window.mermaid) {
-        if (!__mermaidInitialized && typeof window.mermaid.initialize === 'function') {
-            window.mermaid.initialize({
-                startOnLoad: false,
-                securityLevel: 'loose',
-                theme: 'default'
-            });
-            __mermaidInitialized = true;
-        }
-        return true;
-    }
-    if (__mermaidLoadPromise) return __mermaidLoadPromise;
-
-    __mermaidLoadPromise = (async () => {
-        for (const url of MERMAID_SCRIPT_CANDIDATES) {
-            try {
-                await loadScriptOnce(url);
-                if (window.mermaid) break;
-            } catch (_) {
-                // try next source
-            }
-        }
-        if (!window.mermaid) return false;
-        if (!__mermaidInitialized && typeof window.mermaid.initialize === 'function') {
-            window.mermaid.initialize({
-                startOnLoad: false,
-                securityLevel: 'loose',
-                theme: 'default'
-            });
-            __mermaidInitialized = true;
-        }
-        return true;
-    })();
-    return __mermaidLoadPromise;
-}
-
-function promoteMermaidCodeBlocks(root) {
-    if (!root || typeof root.querySelectorAll !== 'function') return;
-    const nodes = Array.from(root.querySelectorAll('pre > code'));
-    nodes.forEach((codeEl) => {
-        const preEl = codeEl && codeEl.parentElement;
-        if (!preEl || preEl.dataset.mermaidPromoted === '1') return;
-        const raw = String(codeEl.textContent || '').trim();
-        if (!raw) return;
-        const cls = String(codeEl.className || '').toLowerCase();
-        const markedAsMermaid = /\blanguage-mermaid\b|\bmermaid\b/.test(cls);
-        if (!markedAsMermaid && !looksLikeMermaidDefinition(raw)) return;
-        const holder = document.createElement('div');
-        holder.className = 'mermaid';
-        holder.textContent = raw;
-        holder.dataset.mermaidSource = '1';
-        preEl.dataset.mermaidPromoted = '1';
-        preEl.replaceWith(holder);
-    });
-}
-
-async function renderMermaidSafe(root) {
-    if (!root) return;
-    promoteMermaidCodeBlocks(root);
-    const targets = Array.from(root.querySelectorAll('.mermaid'))
-        .filter((el) => String(el.dataset.mermaidDone || '') !== '1');
-    if (!targets.length) return;
-
-    const ready = await ensureMermaidReady();
-    if (!ready || !window.mermaid) return;
-
-    try {
-        if (typeof window.mermaid.run === 'function') {
-            await window.mermaid.run({ nodes: targets });
-        } else if (typeof window.mermaid.init === 'function') {
-            window.mermaid.init(undefined, targets);
-        }
-        targets.forEach((el) => {
-            el.dataset.mermaidDone = '1';
-        });
-    } catch (e) {
-        console.warn('Mermaid render failed:', e);
-    }
-}
-
 
 // --- Utils ---
 function highlightCode(element) {
-    void renderMermaidSafe(element);
     if(window.hljs) {
         element.querySelectorAll('pre code').forEach((block) => {
-            const cls = String(block.className || '').toLowerCase();
-            if (/\bmermaid\b/.test(cls)) return;
             hljs.highlightElement(block);
         });
     }
@@ -14886,7 +13189,6 @@ async function openSettingsModal() {
             showToast('设置界面未加载');
             return;
         }
-        settingsModal.classList.add('active');
         // 确保有用户名
         if (!currentUsername) await checkUserRole();
 
@@ -14899,6 +13201,9 @@ async function openSettingsModal() {
 
         // 加载用户数据
         await loadUserSettings();
+
+        // 显示模态框
+        settingsModal.classList.add('active');
     } catch (e) {
         console.error('打开设置模态框失败:', e);
         showToast('加载设置失败');
@@ -14906,17 +13211,6 @@ async function openSettingsModal() {
 }
 
 function closeSettingsModal() {
-    if (SETTINGS_COMPANION_MODE) {
-        try {
-            const api = window.pywebview && window.pywebview.api;
-            if (api && api.close_settings_window) {
-                void api.close_settings_window();
-                return;
-            }
-        } catch (_) {
-            // ignore
-        }
-    }
     const settingsModal = document.getElementById('settingsModal');
     if (settingsModal) settingsModal.classList.remove('active');
 }

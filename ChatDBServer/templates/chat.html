@@ -4,24 +4,20 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Nexora</title>
-    <!-- Fonts & Icons -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    
-    <!-- LaTeX & Highlight -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/11.1.1/marked.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/easymde/dist/easymde.min.js"></script>
+    <!-- Fonts & Vendor Assets -->
+    <link rel="stylesheet" href="/static/vendor/fonts/fonts.css">
+    <link rel="stylesheet" href="/static/vendor/highlightjs/styles/github.min.css">
+    <link rel="stylesheet" href="/static/vendor/katex/katex.min.css">
+    <link rel="stylesheet" href="/static/vendor/easymde/easymde.min.css">
+    <link rel="stylesheet" href="/static/vendor/fontawesome/css/all.min.css">
+    <script src="/static/vendor/marked/marked.min.js"></script>
+    <script src="/static/vendor/highlightjs/highlight.min.js"></script>
+    <script src="/static/vendor/katex/katex.min.js"></script>
+    <script src="/static/vendor/katex/contrib/auto-render.min.js"></script>
+    <script src="/static/vendor/easymde/easymde.min.js"></script>
 
     <!-- App Styles -->
-    <link rel="stylesheet" href="/static/css/style.css?v=20260311g"> 
+    <link rel="stylesheet" href="/static/css/style.css?v=20260319_14"> 
     <link rel="stylesheet" href="/static/css/easymde_override.css">
 </head>
 <body>
@@ -190,15 +186,15 @@
                                 <span class="check-label check-label-text">Tools</span>
                             </span>
                             <div class="tool-mode-dropdown" id="toolsModeDropdown">
-                                <input type="hidden" id="toolsMode" value="auto">
+                                <input type="hidden" id="toolsMode" value="force">
                                 <button type="button" class="tool-mode-trigger" id="toolsModeTrigger" aria-haspopup="listbox" aria-expanded="false">
-                                    <span id="toolsModeLabel">Auto</span>
+                                    <span id="toolsModeLabel">Force</span>
                                     <i class="fa-solid fa-chevron-up"></i>
                                 </button>
                                 <div class="tool-mode-menu" id="toolsModeMenu" role="listbox" aria-label="Tools mode">
                                     <button type="button" class="tool-mode-item" data-mode="off" role="option">Off</button>
-                                    <button type="button" class="tool-mode-item active" data-mode="auto" role="option" aria-selected="true">Auto</button>
-                                    <button type="button" class="tool-mode-item" data-mode="force" role="option">Force</button>
+                                    <button type="button" class="tool-mode-item" data-mode="auto" role="option">Auto</button>
+                                    <button type="button" class="tool-mode-item active" data-mode="force" role="option" aria-selected="true">Force</button>
                                 </div>
                             </div>
                         </label>
@@ -416,6 +412,54 @@
             <div id="notesResizeHandle" class="notes-resize-handle" aria-hidden="true"></div>
         </div>
 
+        <div id="debugConsolePanel" class="debug-console-panel" aria-hidden="true">
+            <div class="debug-console-head">
+                <div class="debug-console-head-main">
+                    <h3>模型调试</h3>
+                    <div class="debug-console-tabs" id="debugConsoleTabs">
+                        <button id="debugConsolePromptTab" class="debug-console-tab active" type="button" data-tab="prompt">Prompt Debug</button>
+                        <button id="debugConsoleFunctionTab" class="debug-console-tab" type="button" data-tab="function">Function Call</button>
+                    </div>
+                    <span id="debugConsoleStatus" class="debug-console-status">OFF</span>
+                </div>
+                <div class="debug-console-head-actions">
+                    <button id="copyDebugConsoleBtn" class="debug-console-action" type="button" title="复制日志">
+                        <i class="fa-solid fa-copy"></i>
+                    </button>
+                    <button id="clearDebugConsoleBtn" class="debug-console-action" type="button" title="清空日志">
+                        <i class="fa-solid fa-broom"></i>
+                    </button>
+                    <button id="closeDebugConsoleBtn" class="debug-console-action" type="button" title="关闭">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+            </div>
+            <div id="debugConsolePages" class="debug-console-pages">
+                <div id="debugConsolePromptPage" class="debug-console-page active" data-tab="prompt">
+                    <div id="debugConsoleBody" class="debug-console-body">
+                        <div class="debug-console-empty">按 Ctrl+D 开启模型调试</div>
+                    </div>
+                </div>
+                <div id="debugConsoleFunctionPage" class="debug-console-page" data-tab="function">
+                    <div class="debug-tool-panel">
+                        <div class="debug-tool-toolbar">
+                            <select id="debugToolSelect" class="input-modern debug-tool-select"></select>
+                            <button id="refreshDebugToolsBtn" class="debug-console-action debug-tool-refresh" type="button" title="刷新工具列表">
+                                <i class="fa-solid fa-rotate"></i>
+                            </button>
+                        </div>
+                        <div id="debugToolMeta" class="debug-tool-meta">载入工具中...</div>
+                        <textarea id="debugToolArgsInput" class="input-modern debug-tool-args-input" spellcheck="false"></textarea>
+                        <div class="debug-tool-actions">
+                            <button id="executeDebugToolBtn" class="btn-primary" type="button">Execute</button>
+                        </div>
+                        <pre id="debugToolResult" class="debug-tool-result">尚未执行工具</pre>
+                    </div>
+                </div>
+            </div>
+            <div id="debugConsoleResizeHandle" class="debug-console-resize-handle" aria-hidden="true"></div>
+        </div>
+
         <!-- Notes Right-Click Menu -->
         <div id="notesContextMenu" class="notes-context-menu" aria-hidden="true">
             <button id="notesAddSelectionBtn" type="button">
@@ -438,9 +482,9 @@
             <span>添加到笔记</span>
         </button>
     </div>
-
+    
     <!-- Scripts -->
-    <script src="/static/js/chat.js?v=20260312_03"></script>
+    <script src="/static/js/chat.js?v=20260319_14"></script>
 
     <!-- 添加用户表单 -->
     <div id="addUserModal" class="modal-backdrop" style="z-index: 2200;">

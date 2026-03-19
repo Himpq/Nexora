@@ -1,0 +1,193 @@
+﻿diff --git a/ChatDBServer/static/js/chat.js b/ChatDBServer/static/js/chat.js
+index 64d876e..a93525d 100644
+--- a/ChatDBServer/static/js/chat.js
++++ b/ChatDBServer/static/js/chat.js
+@@ -144,6 +144,15 @@ const NOTES_COMPANION_MODE = (() => {
+         return false;
+     }
+ })();
++const SETTINGS_COMPANION_MODE = (() => {
++    try {
++        const p = new URLSearchParams(window.location.search || '');
++        const raw = String(p.get('settings_companion') || '').trim().toLowerCase();
++        return raw === '1' || raw === 'true' || raw === 'yes';
++    } catch (_) {
++        return false;
++    }
++})();
+ let pinContextMenuState = null;
+ let pinContextMenuBusy = false;
+ let conversationListCache = [];
+@@ -600,22 +609,43 @@ function renderMarkdownForNotes(text) {
+     return rewriteHtmlFragmentLinksToNewTab(restoredHtml);
+ }
+ 
++const __mathRenderTimerMap = new WeakMap();
++const __mathRenderRetryMap = new WeakMap();
++
+ function renderMathSafe(root) {
+-    if (!root || typeof renderMathInElement !== 'function') return;
+-    try {
+-        renderMathInElement(root, {
+-            delimiters: [
+-                { left: '$$', right: '$$', display: true },
+-                { left: '\\[', right: '\\]', display: true },
+-                { left: '$', right: '$', display: false },
+-                { left: '\\(', right: '\\)', display: false }
+-            ],
+-            ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
+-            throwOnError: false
+-        });
+-    } catch (e) {
+-        console.warn('LaTeX render failed:', e);
+-    }
++    if (!root) return;
++
++    const prevTimer = __mathRenderTimerMap.get(root);
++    if (prevTimer) clearTimeout(prevTimer);
++
++    const timer = setTimeout(() => {
++        try {
++            if (typeof renderMathInElement !== 'function') {
++                const retries = (__mathRenderRetryMap.get(root) || 0) + 1;
++                __mathRenderRetryMap.set(root, retries);
++                if (retries <= 20) {
++                    renderMathSafe(root);
++                }
++                return;
++            }
++
++            __mathRenderRetryMap.set(root, 0);
++            renderMathInElement(root, {
++                delimiters: [
++                    { left: '$$', right: '$$', display: true },
++                    { left: '\\[', right: '\\]', display: true },
++                    { left: '$', right: '$', display: false },
++                    { left: '\\(', right: '\\)', display: false }
++                ],
++                ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
++                throwOnError: false
++            });
++        } catch (e) {
++            console.warn('LaTeX render failed:', e);
++        }
++    }, 80);
++
++    __mathRenderTimerMap.set(root, timer);
+ }
+ 
+ function rewriteCitationRefsMarkdown(text, citationMap) {
+@@ -3304,7 +3334,11 @@ async function openNotesCompanionWindow() {
+         logNotesBridge('openNotesCompanionWindow call source=' + String(info.source || 'unknown'));
+         const res = await api.open_notes_companion();
+         logNotesBridge('openNotesCompanionWindow result=' + JSON.stringify(res || {}));
+-        return !!(res && res.success);
++        const ok = !!(res && res.success);
++        if (ok && notesState.open) {
++            closeNotesPanel();
++        }
++        return ok;
+     } catch (e) {
+         logNotesBridge('openNotesCompanionWindow error=' + String(e || 'unknown'));
+         return false;
+@@ -4255,6 +4289,30 @@ function initNotesUi() {
+         if (els.closeNotesPanelBtn) els.closeNotesPanelBtn.style.display = 'none';
+         openNotesPanel();
+     }
++    if (SETTINGS_COMPANION_MODE) {
++        if (document.body) document.body.classList.add('settings-companion-mode');
++        void openSettingsModal();
++        const syncBounds = () => {
++            try {
++                const api = window.pywebview && window.pywebview.api;
++                if (!api || !api.set_settings_window_bounds) return;
++                const w = Number(window.outerWidth || window.innerWidth || 0);
++                const h = Number(window.outerHeight || window.innerHeight || 0);
++                api.set_settings_window_bounds(w, h);
++            } catch (_) {
++                // ignore
++            }
++        };
++        let settingsBoundsTimer = null;
++        window.addEventListener('resize', () => {
++            if (settingsBoundsTimer) clearTimeout(settingsBoundsTimer);
++            settingsBoundsTimer = setTimeout(() => {
++                settingsBoundsTimer = null;
++                syncBounds();
++            }, 180);
++        });
++        syncBounds();
++    }
+ }
+ 
+ function clampImageViewerScale(v) {
+@@ -4380,6 +4438,9 @@ document.addEventListener('DOMContentLoaded', () => {
+     if (NOTES_COMPANION_MODE) {
+         return;
+     }
++    if (SETTINGS_COMPANION_MODE) {
++        return;
++    }
+     loadModels();
+     loadConversations();
+     
+@@ -5785,6 +5846,9 @@ async function sendMessage() {
+                             currentContentSpan.dataset.streamRaw = currentSegmentContent;
+                             currentContentSpan.dataset.streamLive = '1';
+                             currentContentSpan.innerHTML = renderMarkdownWithNewTabLinks(sourceText);
++                            bindSourceMarkdown(currentContentSpan, sourceText);
++                            renderMathSafe(currentContentSpan);
++                            highlightCode(currentContentSpan);
+                         } 
+                         else if (chunk.type === 'reasoning_content') { 
+                            onTokenStreamReasoningChunk(chunk.content);
+@@ -5821,10 +5885,11 @@ async function sendMessage() {
+ // 说明
+                                msgContentContainer.appendChild(thinkingBlock);
+                            }
+-                           
++                            
+                            const contentDiv = thinkingBlock.querySelector('.thinking-content');
+                            contentDiv.textContent += chunk.content;
+-                                    thinkingBlock.dataset.streamLive = '1';
++                           renderMathSafe(contentDiv);
++                           thinkingBlock.dataset.streamLive = '1';
+                         }
+                         // --- New Chunk Types Support ---
+                         else if (chunk.type === 'web_search') {
+@@ -13189,6 +13254,7 @@ async function openSettingsModal() {
+             showToast('设置界面未加载');
+             return;
+         }
++        settingsModal.classList.add('active');
+         // 确保有用户名
+         if (!currentUsername) await checkUserRole();
+ 
+@@ -13201,9 +13267,6 @@ async function openSettingsModal() {
+ 
+         // 加载用户数据
+         await loadUserSettings();
+-
+-        // 显示模态框
+-        settingsModal.classList.add('active');
+     } catch (e) {
+         console.error('打开设置模态框失败:', e);
+         showToast('加载设置失败');
+@@ -13211,6 +13274,17 @@ async function openSettingsModal() {
+ }
+ 
+ function closeSettingsModal() {
++    if (SETTINGS_COMPANION_MODE) {
++        try {
++            const api = window.pywebview && window.pywebview.api;
++            if (api && api.close_settings_window) {
++                void api.close_settings_window();
++                return;
++            }
++        } catch (_) {
++            // ignore
++        }
++    }
+     const settingsModal = document.getElementById('settingsModal');
+     if (settingsModal) settingsModal.classList.remove('active');
+ }
