@@ -766,19 +766,124 @@ body {
 }
 
 .content-body pre,
-.thinking-content pre,
-.content-body code,
-.thinking-content code {
+.thinking-content pre {
     max-width: 100%;
-    white-space: pre-wrap !important;
-    word-break: break-word !important;
-    overflow-wrap: anywhere !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
 }
 
-.content-body pre,
-.thinking-content pre {
-    overflow-x: auto !important;
-    overflow-y: visible !important;
+.content-body pre code,
+.thinking-content pre code {
+    display: block;
+    white-space: pre !important;
+    word-break: normal !important;
+    overflow-wrap: normal !important;
+}
+
+.content-body :not(pre) > code,
+.thinking-content :not(pre) > code {
+    font-family: var(--nc-font-mono);
+    background: #f3f4f6;
+    border: 1px solid #e5e7eb;
+    color: #374151;
+    border-radius: 6px;
+    padding: 0.08em 0.38em;
+    font-size: 0.92em;
+}
+
+.content-body pre.nc-code-block,
+.thinking-content pre.nc-code-block,
+.editor-preview pre.nc-code-block {
+    position: relative;
+    margin: 0.9em 0;
+    border: 1px solid #d9e0ea;
+    border-radius: 12px;
+    background: linear-gradient(180deg, #f8fafc 0%, #f4f7fb 100%);
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
+    overflow: hidden !important;
+}
+
+.content-body pre.nc-code-block code,
+.thinking-content pre.nc-code-block code,
+.editor-preview pre.nc-code-block code {
+    margin: 0;
+    padding: 12px 14px 14px 14px;
+    max-height: min(56vh, 680px);
+    overflow: auto !important;
+    background: transparent !important;
+    color: #0f172a;
+    border: 0;
+    font-family: var(--nc-font-mono);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.content-body pre.nc-code-block code.hljs,
+.thinking-content pre.nc-code-block code.hljs,
+.editor-preview pre.nc-code-block code.hljs {
+    background: transparent !important;
+}
+
+.nc-code-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-height: 34px;
+    padding: 6px 10px;
+    border-bottom: 1px solid #e4e9f1;
+    background: linear-gradient(180deg, #eef2f7 0%, #e7edf5 100%);
+}
+
+.nc-code-lang {
+    font-family: var(--nc-font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: #4b5563;
+    text-transform: uppercase;
+}
+
+.nc-code-copy-btn {
+    border: 1px solid #cfd8e3;
+    background: #ffffff;
+    color: #334155;
+    border-radius: 8px;
+    padding: 4px 9px;
+    font-size: 12px;
+    line-height: 1.1;
+    cursor: pointer;
+    transition: all 0.16s ease;
+}
+
+.nc-code-copy-btn:hover {
+    border-color: #9fb3cf;
+    background: #f8fbff;
+}
+
+.nc-code-copy-btn:active {
+    transform: translateY(1px);
+}
+
+.content-body pre.nc-code-block code::-webkit-scrollbar,
+.thinking-content pre.nc-code-block code::-webkit-scrollbar,
+.editor-preview pre.nc-code-block code::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+.content-body pre.nc-code-block code::-webkit-scrollbar-thumb,
+.thinking-content pre.nc-code-block code::-webkit-scrollbar-thumb,
+.editor-preview pre.nc-code-block code::-webkit-scrollbar-thumb {
+    background: #c7d2e2;
+    border-radius: 99px;
+    border: 2px solid #f4f7fb;
+}
+
+.content-body pre.nc-code-block code::-webkit-scrollbar-track,
+.thinking-content pre.nc-code-block code::-webkit-scrollbar-track,
+.editor-preview pre.nc-code-block code::-webkit-scrollbar-track {
+    background: #edf2f7;
 }
 
 .message-bubble .mermaid,

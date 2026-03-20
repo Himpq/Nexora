@@ -227,8 +227,9 @@ class ConversationManager:
 
     def delete_message(self, conversation_id, message_index):
         """
-        从对话中删除指定索引的消息
-        如果删除的是user消息，通常也会连带删除后面紧随的assistant消息
+        删除指定索引所属的“单轮消息”
+        - 点击 user：删除该 user 以及其后紧邻的 assistant（若存在）
+        - 点击 assistant：删除该 assistant 以及其前紧邻的 user（若存在）
         """
         conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
         if not os.path.exists(conversation_path):
@@ -239,16 +240,25 @@ class ConversationManager:
             
         messages = conversation_data.get("messages", [])
         if 0 <= message_index < len(messages):
-            # 记录要删除的消息
-            msg_to_delete = messages[message_index]
-            
-            # 如果删除的是 user，且后面跟着 assistant，则一并删除这个“回合”
-            if msg_to_delete.get('role') == 'user' and message_index + 1 < len(messages):
-                if messages[message_index + 1].get('role') == 'assistant':
-                    messages.pop(message_index + 1)
-            
-            # 删除目标消息
-            messages.pop(message_index)
+            start = message_index
+            end = message_index
+            role = str(messages[message_index].get('role') or '').strip()
+
+            if role == 'user':
+                # user + next assistant
+                if message_index + 1 < len(messages):
+                    next_role = str(messages[message_index + 1].get('role') or '').strip()
+                    if next_role == 'assistant':
+                        end = message_index + 1
+            elif role == 'assistant':
+                # prev user + assistant
+                if message_index - 1 >= 0:
+                    prev_role = str(messages[message_index - 1].get('role') or '').strip()
+                    if prev_role == 'user':
+                        start = message_index - 1
+
+            del messages[start:end + 1]
+            conversation_data["messages"] = messages
             
             conversation_data["updated_at"] = datetime.now().isoformat()
             

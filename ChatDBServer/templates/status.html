@@ -316,16 +316,32 @@
       font-size: 14px;
       font-weight: 700;
     }
+    .chart-name-wrap {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      flex: 1 1 auto;
+    }
     .chart-label img {
       width: 22px;
       height: 22px;
       object-fit: contain;
       flex: 0 0 auto;
     }
-    .chart-label span {
+    .chart-name-text {
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+    .chart-value-inline {
+      display: none;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+      white-space: nowrap;
+      margin-left: 8px;
+      flex: 0 0 auto;
     }
     .chart-bar {
       height: 12px;
@@ -380,7 +396,7 @@
     }
     .complexity-item {
       display: grid;
-      grid-template-columns: minmax(0, 220px) minmax(0, 1fr);
+      grid-template-columns: minmax(0, 220px) minmax(0, 1fr) auto;
       gap: 14px;
       align-items: center;
     }
@@ -416,6 +432,41 @@
     .complexity-seg.simple { background: #84cc16; }
     .complexity-seg.medium { background: #f59e0b; }
     .complexity-seg.complex { background: #dc2626; }
+    .complexity-metrics {
+      text-align: right;
+      font-size: 12px;
+      color: var(--muted);
+      white-space: nowrap;
+      font-weight: 700;
+    }
+    .complexity-metrics .load {
+      display: block;
+      font-size: 14px;
+      color: var(--ink);
+      font-weight: 800;
+    }
+    .recent-list {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .recent-item {
+      display: grid;
+      grid-template-columns: minmax(0, 240px) minmax(0, 1fr) 96px;
+      gap: 14px;
+      align-items: center;
+    }
+    .recent-meta {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .recent-score {
+      text-align: right;
+      font-size: 26px;
+      font-weight: 800;
+      letter-spacing: -0.04em;
+    }
     .fail-list {
       display: flex;
       flex-direction: column;
@@ -469,31 +520,216 @@
     }
     @media (max-width: 760px) {
       .page {
-        width: min(100vw, calc(100vw - 28px));
-        padding-top: 20px;
+        width: min(100vw, calc(100vw - 20px));
+        padding-top: 14px;
+        padding-bottom: 44px;
       }
       .topbar {
-        padding: 0 14px;
+        height: 56px;
+        padding: 0 10px;
+      }
+      .brand {
+        font-size: 22px;
       }
       .topbar-meta {
         display: none;
       }
+      .hero {
+        padding: 12px 2px 20px;
+      }
+      .kicker {
+        padding: 5px 10px;
+        font-size: 11px;
+      }
       h1 {
-        font-size: 44px;
+        font-size: clamp(32px, 12vw, 42px);
+        letter-spacing: -0.04em;
+      }
+      .hero-desc {
+        margin-top: 12px;
+        font-size: 14px;
+        line-height: 1.65;
+      }
+      .summary-grid {
+        margin-top: 16px;
       }
       .summary-grid,
       .complexity-grid {
         grid-template-columns: 1fr;
       }
+      .summary-card {
+        border-radius: 16px;
+        padding: 14px;
+      }
+      .summary-value {
+        font-size: 30px;
+      }
+      .section {
+        padding: 22px 2px 0;
+      }
+      .section-head {
+        margin-bottom: 12px;
+      }
+      .section-head h2 {
+        font-size: 22px;
+      }
+      .section-head p {
+        font-size: 13px;
+        line-height: 1.55;
+      }
+      .panel {
+        border-radius: 16px;
+        padding: 14px;
+      }
+      .panel-title {
+        margin-bottom: 14px;
+        font-size: 16px;
+      }
       .chart-row,
-      .rank-item,
-      .complexity-item {
+      .complexity-item,
+      .recent-item,
+      .fail-item {
         grid-template-columns: 1fr;
+        gap: 10px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: var(--panel-soft);
+        padding: 12px;
+      }
+      .rank-item {
+        grid-template-columns: 28px minmax(0, 1fr) auto;
+        gap: 8px;
+        align-items: center;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: var(--panel-soft);
+        padding: 10px 12px;
+      }
+      .rank-num {
+        width: 28px;
+        height: 28px;
+        font-size: 11px;
+      }
+      .rank-main {
+        min-width: 0;
+      }
+      .rank-name {
+        font-size: 13px;
+        gap: 8px;
+      }
+      .rank-name img {
+        width: 18px;
+        height: 18px;
+      }
+      .rank-meta {
+        margin-top: 2px;
+        font-size: 11px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .rank-bar {
+        margin-top: 5px;
+        height: 6px;
+        display: none;
+      }
+      .rank-score {
+        font-size: 18px;
+        text-align: right;
+        align-self: center;
+      }
+      .chart-row {
+        grid-template-columns: 1fr;
+        gap: 8px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: var(--panel-soft);
+        padding: 10px 12px;
+      }
+      .chart-label {
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .chart-value-inline {
+        display: inline-block;
+      }
+      .chart-value {
+        display: none;
       }
       .rank-score,
-      .chart-value {
+      .recent-score {
+        font-size: 22px;
+      }
+      .chart-bar {
+        height: 10px;
+      }
+      .complexity-track {
+        height: 12px;
+      }
+      .recent-score,
+      .complexity-metrics {
         text-align: left;
       }
+      .rank-score {
+        text-align: right;
+      }
+      .fail-item {
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 12px;
+      }
+      .fail-count {
+        font-size: 20px;
+      }
+      .footnote {
+        margin-top: 20px;
+        padding-top: 14px;
+        font-size: 12px;
+      }
+    }
+
+    @media (max-width: 420px) {
+      .page {
+        width: min(100vw, calc(100vw - 16px));
+      }
+      .brand {
+        font-size: 20px;
+      }
+      h1 {
+        font-size: 30px;
+      }
+      .summary-value,
+      .recent-score,
+      .rank-score {
+        font-size: 20px;
+      }
+      .rank-name,
+      .chart-label,
+      .complexity-name,
+      .fail-name {
+        font-size: 13px;
+      }
+    }
+    
+    .menu-login {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 34px;
+      padding: 0 14px;
+      border: 1px solid #dbe3ef;
+      border-radius: 10px;
+      background: #fff;
+      color: #334155;
+      font-size: 14px;
+      font-weight: 700;
+      text-decoration: none;
+      transition: all 0.18s ease;
+      white-space: nowrap;
+    }
+    .menu-login:hover {
+      border-color: #4f46e5;
+      color: #4f46e5;
+      background: #f8faff;
     }
   </style>
 </head>
@@ -503,15 +739,15 @@
       <span>Nexora</span><span class="dot"></span>
     </a>
     <div class="topbar-meta">
-      <span class="meta-pill">Status Preview</span>
+      <a class="menu-login" href="/">首页</a>
       <span class="meta-pill" id="snapshotMeta">--</span>
     </div>
   </header>
 
   <main class="page">
     <section class="hero">
-      <span class="kicker">System / Status / Placeholder</span>
-      <h1>模型表现、Token 消耗与工具稳定性，放在一个干净的状态页里。</h1>
+      <span class="kicker">Nexora</span>
+      <h1>模型榜单</h1>
       <p class="hero-desc" id="heroDesc"></p>
       <div class="summary-grid" id="summaryGrid"></div>
     </section>
@@ -539,7 +775,7 @@
       <div class="section-head">
         <div>
           <h2>Token 用量概览</h2>
-          <p>保持图表简洁，只看总量和相对关系，不做仪表盘堆砌。</p>
+          <p>站内 Token 消耗量排行榜</p>
         </div>
       </div>
       <div class="panel">
@@ -557,6 +793,18 @@
       <div class="panel">
         <div class="complexity-grid" id="complexitySummary"></div>
         <div class="complexity-list" id="complexityList"></div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2>近24h调用榜</h2>
+          <p>融合近24小时调用次数与 Token 消耗，避免“高频低负载”和“低频高负载”模型被单一指标误判。</p>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="recent-list" id="recent24hList"></div>
       </div>
     </section>
 
@@ -593,7 +841,9 @@
           complex: 0
         },
         models: [],
-        toolFailures: []
+        toolFailures: [],
+        recent24h: [],
+        recent24hWindowHours: 24
       };
     }
 
@@ -614,7 +864,9 @@
           complex: Number((src.complexity && src.complexity.complex) || 0)
         },
         models: Array.isArray(src.models) ? src.models : [],
-        toolFailures: Array.isArray(src.toolFailures) ? src.toolFailures : []
+        toolFailures: Array.isArray(src.toolFailures) ? src.toolFailures : [],
+        recent24h: Array.isArray(src.recent24h) ? src.recent24h : [],
+        recent24hWindowHours: Number(src.recent24hWindowHours || 24) || 24
       };
     }
 
@@ -646,7 +898,7 @@
     function renderHeroText() {
       document.getElementById('snapshotMeta').textContent = statusData.snapshotAt;
       document.getElementById('heroDesc').textContent =
-        '当前页面已接入后端聚合数据。目标不是做一个拥挤的监控面板，而是做一个和 Nexora 现有页面语言一致、能快速看出模型表现差异的状态页。';
+        '接入后端聚合数据';
     }
 
     function renderRankList() {
@@ -707,8 +959,11 @@
       root.innerHTML = statusData.models.map((item) => `
         <div class="chart-row">
           <div class="chart-label">
-            ${providerIconMarkup(item)}
-            <span>${item.name}</span>
+            <span class="chart-name-wrap">
+              ${providerIconMarkup(item)}
+              <span class="chart-name-text">${item.name}</span>
+            </span>
+            <span class="chart-value-inline">${formatNum(item.totalTokens)}</span>
           </div>
           <div class="chart-bar"><span style="width:${(item.totalTokens / maxToken) * 100}%"></span></div>
           <div class="chart-value">${formatNum(item.totalTokens)}</div>
@@ -735,11 +990,18 @@
         root.innerHTML = '<div class="empty-hint">暂无复杂度分布数据</div>';
         return;
       }
-      root.innerHTML = statusData.models.slice(0, 5).map((item) => {
+      const top = statusData.models.slice(0, 5);
+      const maxLoad = Math.max(...top.map((item) => {
+        const c = item.complexityLoad || {};
+        return Number(c.simple || 0) + Number(c.medium || 0) + Number(c.complex || 0);
+      }), 1);
+      root.innerHTML = top.map((item) => {
         const sum = item.complexityLoad.simple + item.complexityLoad.medium + item.complexityLoad.complex;
-        const simpleW = sum ? (item.complexityLoad.simple / sum) * 100 : 0;
-        const mediumW = sum ? (item.complexityLoad.medium / sum) * 100 : 0;
-        const complexW = sum ? (item.complexityLoad.complex / sum) * 100 : 0;
+        const loadScale = sum > 0 ? (sum / maxLoad) : 0;
+        const totalW = loadScale * 100;
+        const simpleW = sum ? totalW * (item.complexityLoad.simple / sum) : 0;
+        const mediumW = sum ? totalW * (item.complexityLoad.medium / sum) : 0;
+        const complexW = sum ? totalW * (item.complexityLoad.complex / sum) : 0;
         return `
           <div class="complexity-item">
             <div class="complexity-name">
@@ -751,9 +1013,38 @@
               <div class="complexity-seg medium" style="width:${mediumW}%"></div>
               <div class="complexity-seg complex" style="width:${complexW}%"></div>
             </div>
+            <div class="complexity-metrics">
+              <span class="load">${formatNum(sum)}</span>
+              tasks · ${Math.round(loadScale * 100)}%
+            </div>
           </div>
         `;
       }).join('');
+    }
+
+    function renderRecent24h() {
+      const root = document.getElementById('recent24hList');
+      const rows = Array.isArray(statusData.recent24h) ? statusData.recent24h : [];
+      if (!rows.length) {
+        root.innerHTML = '<div class="empty-hint">近24小时暂无调用数据</div>';
+        return;
+      }
+      const maxScore = Math.max(...rows.map(item => Number(item.score || 0)), 1);
+      root.innerHTML = rows.map((item, index) => `
+        <div class="recent-item">
+          <div class="chart-label">
+            <span class="chart-name-wrap">
+              ${providerIconMarkup(item)}
+              <span class="chart-name-text">#${index + 1} ${item.name}</span>
+            </span>
+          </div>
+          <div>
+            <div class="rank-bar"><span style="width:${(Number(item.score || 0) / maxScore) * 100}%"></span></div>
+            <div class="recent-meta">${item.provider} · ${formatNum(item.recentCalls)} calls · ${formatNum(item.recentTokens)} tokens</div>
+          </div>
+          <div class="recent-score">${Number(item.score || 0)}</div>
+        </div>
+      `).join('');
     }
 
     function renderToolFailures() {
@@ -772,7 +1063,7 @@
       `).join('');
       }
       document.getElementById('statusFootnote').textContent =
-        `说明：当前页面使用后端聚合数据。样本来源为 ${statusData.source}。当前口径：会话消息统计模型调用，token 日志统计 Token，总工具日志统计工具表现；模型名按 OpenRouter 模型清单通用归一化后合并。`;
+        `说明：当前页面使用后端聚合数据。样本来源为 ${statusData.source}。当前口径：会话消息统计模型调用，token 日志统计 Token，总工具日志统计工具表现；模型名按 OpenRouter 模型清单通用归一化后合并。近${statusData.recent24hWindowHours}h榜单融合了调用次数(45%)与Token(55%)。`;
     }
 
     function renderAll() {
@@ -782,6 +1073,7 @@
       renderHighlights();
       renderTokenChart();
       renderComplexity();
+      renderRecent24h();
       renderToolFailures();
     }
 

@@ -40,6 +40,9 @@ const MAIL_SIDEBAR_COLLAPSED_KEY = 'nexora_mail_sidebar_collapsed';
 const MAIL_SELECTED_ID_KEY = 'nexora_mail_selected_id';
 const MAIL_LIST_SCROLL_KEY = 'nexora_mail_list_scroll';
 const MAIL_LAST_OPEN_TS_KEY = 'nexora_mail_last_open_ts';
+const CHAT_COMPOSER_PREFS_KEY = 'nexora_chat_composer_prefs_v1';
+const CHAT_INPUT_DRAFT_KEY = 'nexora_chat_input_draft_v1';
+const CHAT_INPUT_DRAFT_MAX_LEN = 12000;
 const MAIL_POLL_INTERVAL_MS = 5000;
 let mailPollTimer = null;
 let mailPollInFlight = false;
@@ -341,6 +344,17 @@ function normalizeTableLineMathNoise(text) {
     return cleaned.join('\n');
 }
 
+function escapeLikelyCurrencyDollars(text) {
+    const src = String(text || '');
+    if (!src) return src;
+    // 将“$1,000 / -$500,000”这类金额标记转义为普通文本，避免被 KaTeX 当作数学分隔符。
+    // 仅在数字后不是数学运算符/变量时触发，不影响 `$x$`、`$2x+1$` 等正常公式。
+    return src.replace(
+        /(^|[^\w\\])\$([+-]?\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)(?=($|[\s，,。；;：:、%\])）】>]|[\u3400-\u9fff]))/g,
+        (_, pre, num) => `${pre}\\$${num}`
+    );
+}
+
 function isLikelyPureMathSpan(body) {
     const src = String(body || '').trim();
     if (!src) return false;
@@ -578,6 +592,9 @@ function normalizeLatexSyntax(text) {
     src = src
         .replace(/[\u200B-\u200F\u2060\uFEFF\u00AD]/g, '')
         .replace(/[\uE000-\uF8FF]/g, ''); // Private Use Area（常见于复制后的脏符号）
+
+    // 先处理金额符号，防止 `$1,000` 触发 LaTeX 分隔符并吞掉后续 Markdown。
+    src = escapeLikelyCurrencyDollars(src);
 
     // 先做 markdown 层表格规范化，避免合法表格因缩进丢失渲染。
     src = normalizeIndentedGfmTables(src);
@@ -5549,6 +5566,7 @@ function initUI() {
     captureChatHeaderBaseState();
     bindImageViewerEvents();
     bindToolsModeDropdown();
+    applyComposerPrefsFromStorage();
     bindMobileHeaderMenu();
     bindDebugConsoleUi();
     initNotesUi();
@@ -5605,6 +5623,12 @@ function initUI() {
     });
     // Event Listeners
     if(els.sendBtn) els.sendBtn.addEventListener('click', sendMessage);
+    if (els.checkThinking) {
+        els.checkThinking.addEventListener('change', () => saveComposerPrefsToStorage());
+    }
+    if (els.checkSearch) {
+        els.checkSearch.addEventListener('change', () => saveComposerPrefsToStorage());
+    }
     
     // File Input
     if(els.fileInput) els.fileInput.addEventListener('change', handleFileUpload);
@@ -5616,6 +5640,12 @@ function initUI() {
     bindGlobalFileDropUpload();
     
     if(els.messageInput) {
+        const restoredDraft = loadMessageDraftFromStorage();
+        if (restoredDraft) {
+            els.messageInput.value = restoredDraft;
+            els.messageInput.style.height = 'auto';
+            els.messageInput.style.height = `${els.messageInput.scrollHeight}px`;
+        }
         updateMobileMessageInputViewportBaseline();
         if (window.visualViewport) {
             window.visualViewport.addEventListener('resize', updateMobileMessageInputViewportBaseline, { passive: true });
@@ -5678,6 +5708,7 @@ function initUI() {
             this.style.height = 'auto';
             this.style.height = (this.scrollHeight) + 'px';
             if(this.value === '') this.style.height = 'auto'; // Reset
+            saveMessageDraftToStorage(this.value);
         });
 
         const inputContainer = document.querySelector('#inputWrapper .input-container');
@@ -6639,13 +6670,74 @@ function formatToolsModeLabel(mode) {
     return 'Auto';
 }
 
+function saveComposerPrefsToStorage() {
+    try {
+        const payload = {
+            thinking: !!(els.checkThinking && els.checkThinking.checked),
+            search: !!(els.checkSearch && els.checkSearch.checked),
+            toolsMode: getToolsMode()
+        };
+        localStorage.setItem(CHAT_COMPOSER_PREFS_KEY, JSON.stringify(payload));
+    } catch (_) {
+        // ignore
+    }
+}
+
+function loadComposerPrefsFromStorage() {
+    try {
+        const raw = localStorage.getItem(CHAT_COMPOSER_PREFS_KEY);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        return (parsed && typeof parsed === 'object') ? parsed : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+function applyComposerPrefsFromStorage() {
+    const prefs = loadComposerPrefsFromStorage();
+    if (!prefs) return;
+    if (els.checkThinking && typeof prefs.thinking === 'boolean') {
+        els.checkThinking.checked = prefs.thinking;
+    }
+    if (els.checkSearch && typeof prefs.search === 'boolean') {
+        els.checkSearch.checked = prefs.search;
+    }
+    if (prefs.toolsMode !== undefined && prefs.toolsMode !== null) {
+        setToolsMode(String(prefs.toolsMode || 'force'), { persist: false });
+    }
+}
+
+function saveMessageDraftToStorage(text) {
+    try {
+        const raw = String(text || '');
+        const next = raw.slice(0, CHAT_INPUT_DRAFT_MAX_LEN);
+        if (!next) {
+            localStorage.removeItem(CHAT_INPUT_DRAFT_KEY);
+            return;
+        }
+        localStorage.setItem(CHAT_INPUT_DRAFT_KEY, next);
+    } catch (_) {
+        // ignore
+    }
+}
+
+function loadMessageDraftFromStorage() {
+    try {
+        return String(localStorage.getItem(CHAT_INPUT_DRAFT_KEY) || '');
+    } catch (_) {
+        return '';
+    }
+}
+
 function closeToolsModeDropdown() {
     if (!els.toolsModeDropdown) return;
     els.toolsModeDropdown.classList.remove('open');
     if (els.toolsModeTrigger) els.toolsModeTrigger.setAttribute('aria-expanded', 'false');
 }
 
-function setToolsMode(mode) {
+function setToolsMode(mode, options = {}) {
+    const opts = (options && typeof options === 'object') ? options : {};
     const normalized = normalizeToolsMode(mode);
     if (els.toolsMode) els.toolsMode.value = normalized;
     if (els.toolsModeLabel) els.toolsModeLabel.textContent = formatToolsModeLabel(normalized);
@@ -6656,13 +6748,16 @@ function setToolsMode(mode) {
             btn.setAttribute('aria-selected', active ? 'true' : 'false');
         });
     }
+    if (opts.persist !== false) {
+        saveComposerPrefsToStorage();
+    }
 }
 
 function bindToolsModeDropdown() {
     if (!els.toolsModeDropdown || !els.toolsModeTrigger || !els.toolsModeMenu) return;
     if (els.toolsModeDropdown.dataset.bindDone === '1') return;
     els.toolsModeDropdown.dataset.bindDone = '1';
-    setToolsMode(els.toolsMode ? els.toolsMode.value : 'force');
+    setToolsMode(els.toolsMode ? els.toolsMode.value : 'force', { persist: false });
 
     els.toolsModeTrigger.addEventListener('click', (e) => {
         e.preventDefault();
@@ -6736,6 +6831,7 @@ async function sendMessage() {
     // UI Updates
     els.messageInput.value = '';
     els.messageInput.style.height = 'auto';
+    saveMessageDraftToStorage('');
 
     // Prepare display content
     let displayContent = text;
@@ -7179,23 +7275,15 @@ async function sendMessage() {
         
         while (true) {
             const { done, value } = await reader.read();
-            if (done) {
-                finalizeStreamingContentRender();
-// 说明
-                const thinkingBlocks = aiMsgDiv.querySelectorAll('.thinking-block');
-                thinkingBlocks.forEach(thinkingBlock => {
-                    if (thinkingBlock.dataset.userToggled !== 'true') {
-                        setTimeout(() => {
-                            thinkingBlock.classList.add('collapsed');
-                        }, 500);
-                    }
-                });
-                break;
+            if (value) {
+                buffer += decoder.decode(value, { stream: !done });
             }
-            
-            buffer += decoder.decode(value, { stream: true });
+            if (done) {
+                // Flush decoder internal buffer, then parse tail buffer as complete lines.
+                buffer += decoder.decode();
+            }
             const lines = buffer.split('\n');
-            buffer = lines.pop(); // Keep last incomplete line
+            buffer = done ? '' : (lines.pop() || ''); // Keep last incomplete line only while streaming
 
             for (const line of lines) {
                 if (line.startsWith('data: ')) {
@@ -7408,6 +7496,20 @@ async function sendMessage() {
                 requestAnimationFrame(() => {
                     els.messagesContainer.scrollTop = els.messagesContainer.scrollHeight;
                 });
+             }
+
+             if (done) {
+                finalizeStreamingContentRender();
+// 说明
+                const thinkingBlocks = aiMsgDiv.querySelectorAll('.thinking-block');
+                thinkingBlocks.forEach(thinkingBlock => {
+                    if (thinkingBlock.dataset.userToggled !== 'true') {
+                        setTimeout(() => {
+                            thinkingBlock.classList.add('collapsed');
+                        }, 500);
+                    }
+                });
+                break;
              }
         }
     } catch (e) {
@@ -8308,10 +8410,16 @@ function appendMessage(msg, index) {
             content.appendChild(bubble);
         }
         
-        // User Message Actions (only delete)
+        // User Message Actions
         const actions = document.createElement('div');
         actions.className = 'msg-actions';
         actions.innerHTML = `
+            <button class="btn-action" onclick="copyUserMessage(${index})" title="复制消息">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                </svg>
+            </button>
             <button class="btn-action btn-del" onclick="confirmDelete(${index})" title="删除">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"></path></svg>
             </button>
@@ -8566,7 +8674,16 @@ function buildVersionNavigation(msg) {
 function renderMessages(messages, noScroll, options = {}) {
     // preserve welcome if empty
     refreshConversationImageHistoryFlag(Array.isArray(messages) ? messages : []);
-    if(!messages || messages.length === 0) return;
+    if(!messages || messages.length === 0) {
+        clearHoverProxyMessage();
+        els.messagesContainer.innerHTML = `
+            <div class="welcome-screen">
+                <h1>Hello.</h1>
+                <p>Start a new conversation.</p>
+            </div>
+        `;
+        return;
+    }
     clearHoverProxyMessage();
     const opts = (options && typeof options === 'object') ? options : {};
     const instant = !!opts.instant;
@@ -8609,7 +8726,7 @@ window.confirmDelete = function(index) {
 // 说明
         return;
     }
-    showConfirm("删除确认", "确定要删除这条消息及其后的所有内容吗？此操作不可撤销。", "danger", async () => {
+    showConfirm("删除确认", "确定要删除这轮消息（本次提问和回答）吗？此操作不可撤销。", "danger", async () => {
         try {
             const res = await fetch('/api/delete_message', {
                 method: 'POST',
@@ -8627,6 +8744,8 @@ window.confirmDelete = function(index) {
                 if (convData.success) {
                     renderMessages(convData.conversation.messages, true);
                 }
+                await loadConversations();
+                await loadKnowledge(currentConversationId);
             } else {
                 showToast("删除失败: " + data.message);
             }
@@ -8651,11 +8770,13 @@ async function startRegenerate(index) {
     const modelName = selectedModelId;
     const toolsMode = getToolsMode();
     const enableTools = toolsMode !== 'off';
+    const regenMessageDiv = document.querySelector(`.message[data-index="${index}"]`);
     
     // Setup UI for generation
     isGenerating = true;
     updateSendButtonState();
     currentAbortController = new AbortController();
+    if (regenMessageDiv) regenMessageDiv.classList.add('pending');
     
     try {
         const response = await fetch('/api/chat/stream', {
@@ -8679,18 +8800,17 @@ async function startRegenerate(index) {
         if (!response.ok) throw new Error("HTTP " + response.status);
         
         // Target specific message index for regeneration
-        const messageDiv = document.querySelector(`.message[data-index="${index}"]`);
-        if (messageDiv) {
-            const content = messageDiv.querySelector('.message-content');
+        if (regenMessageDiv) {
+            const content = regenMessageDiv.querySelector('.message-content');
             // 清理旧内容/工具链，避免重新生成时复用历史展示节点
             if (content) {
                 content.querySelectorAll('.content-body,.thinking-block,.tool-usage,.add-basis-view,.msg-actions').forEach(el => el.remove());
             } else {
                 // fallback
-                messageDiv.querySelectorAll('.content-body,.thinking-block,.tool-usage,.add-basis-view,.msg-actions').forEach(el => el.remove());
+                regenMessageDiv.querySelectorAll('.content-body,.thinking-block,.tool-usage,.add-basis-view,.msg-actions').forEach(el => el.remove());
             }
-            messageDiv.__citationUrlMap = {};
-            messageDiv.__toolCallState = {
+            regenMessageDiv.__citationUrlMap = {};
+            regenMessageDiv.__toolCallState = {
                 seq: 0,
                 pendingByName: {},
                 callIdByIndex: {},
@@ -8765,6 +8885,7 @@ async function startRegenerate(index) {
     } finally {
         isGenerating = false;
         updateSendButtonState();
+        if (regenMessageDiv) regenMessageDiv.classList.remove('pending');
         
         // Final refresh to ensure all metadata/indices are locked
         const convRes = await fetch(`/api/conversations/${currentConversationId}`);
@@ -10353,19 +10474,46 @@ window.copyGeneratedInfo = async function(index) {
             showToast('没有可复制的生成信息');
             return;
         }
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-            await navigator.clipboard.writeText(text);
-        } else {
-            const ta = document.createElement('textarea');
-            ta.value = text;
-            document.body.appendChild(ta);
-            ta.select();
-            document.execCommand('copy');
-            ta.remove();
-        }
+        await copyTextToClipboardSafe(text);
         showToast('已复制生成信息');
     } catch (e) {
         console.error('copyGeneratedInfo failed', e);
+        showToast('复制失败');
+    }
+};
+
+async function copyTextToClipboardSafe(text) {
+    const payload = String(text || '');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(payload);
+        return;
+    }
+    const ta = document.createElement('textarea');
+    ta.value = payload;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+}
+
+window.copyUserMessage = async function(index) {
+    try {
+        const messageDiv = document.querySelector(`.message.user[data-index="${index}"]`) || document.querySelector(`.message[data-index="${index}"]`);
+        if (!messageDiv) {
+            showToast('未找到消息');
+            return;
+        }
+        const bubble = messageDiv.querySelector('.message-bubble');
+        const markdown = bubble && typeof bubble.__sourceMarkdown === 'string' ? String(bubble.__sourceMarkdown || '') : '';
+        const text = String(markdown || (bubble ? bubble.innerText : messageDiv.innerText) || '').trim();
+        if (!text) {
+            showToast('没有可复制内容');
+            return;
+        }
+        await copyTextToClipboardSafe(text);
+        showToast('已复制消息');
+    } catch (e) {
+        console.error('copyUserMessage failed', e);
         showToast('复制失败');
     }
 };
@@ -12222,6 +12370,68 @@ async function renderMermaidSafe(root) {
 
 
 // --- Utils ---
+function detectCodeLanguageFromBlock(block) {
+    if (!block) return '';
+    const cls = String(block.className || '');
+    const m = cls.match(/\blanguage-([a-z0-9_+-]+)\b/i);
+    if (m && m[1]) return String(m[1]).toLowerCase();
+    const m2 = cls.match(/\blang(?:uage)?-([a-z0-9_+-]+)\b/i);
+    if (m2 && m2[1]) return String(m2[1]).toLowerCase();
+    return '';
+}
+
+function normalizeCodeLanguageLabel(lang) {
+    const raw = String(lang || '').trim().toLowerCase();
+    if (!raw) return 'TEXT';
+    if (raw === 'js') return 'JavaScript';
+    if (raw === 'ts') return 'TypeScript';
+    if (raw === 'py') return 'Python';
+    if (raw === 'sh' || raw === 'bash' || raw === 'zsh' || raw === 'shell') return 'Shell';
+    if (raw === 'yml') return 'YAML';
+    if (raw === 'md') return 'Markdown';
+    if (raw === 'plaintext' || raw === 'text') return 'TEXT';
+    return raw.toUpperCase();
+}
+
+function decorateCodeBlock(pre, block) {
+    if (!pre || !block) return;
+    if (pre.classList.contains('nc-code-block')) return;
+
+    // Keep note cards compact; decorate chat/thinking/editor only.
+    if (!pre.closest('.content-body, .thinking-content, .editor-preview')) return;
+
+    const langRaw = detectCodeLanguageFromBlock(block);
+    const langLabel = normalizeCodeLanguageLabel(langRaw);
+
+    pre.classList.add('nc-code-block');
+    pre.dataset.codeLang = langRaw || 'text';
+
+    const toolbar = document.createElement('div');
+    toolbar.className = 'nc-code-toolbar';
+    toolbar.innerHTML = `
+        <span class="nc-code-lang">${escapeHtml(langLabel)}</span>
+        <button type="button" class="nc-code-copy-btn" title="复制代码">复制</button>
+    `;
+
+    const btn = toolbar.querySelector('.nc-code-copy-btn');
+    if (btn) {
+        btn.addEventListener('click', async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const text = String(block.textContent || '').replace(/\n+$/, '');
+            if (!text) return;
+            try {
+                await navigator.clipboard.writeText(text);
+                showToast('代码已复制');
+            } catch (_) {
+                showToast('复制失败');
+            }
+        });
+    }
+
+    pre.insertBefore(toolbar, pre.firstChild);
+}
+
 function highlightCode(element) {
     void renderMermaidSafe(element);
     if(window.hljs) {
@@ -12229,8 +12439,17 @@ function highlightCode(element) {
             const cls = String(block.className || '').toLowerCase();
             if (/\bmermaid\b/.test(cls)) return;
             hljs.highlightElement(block);
+            const pre = block.parentElement;
+            decorateCodeBlock(pre, block);
         });
+        return;
     }
+    element.querySelectorAll('pre code').forEach((block) => {
+        const cls = String(block.className || '').toLowerCase();
+        if (/\bmermaid\b/.test(cls)) return;
+        const pre = block.parentElement;
+        decorateCodeBlock(pre, block);
+    });
 }
 
 

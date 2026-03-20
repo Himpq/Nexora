@@ -2477,7 +2477,11 @@ STATUS_PROVIDER_ICON_MAP = {
     'spark': '/static/img/icons/xunfei_spark_single_icon.svg',
     'hunyuan': '/static/img/icons/hunyuan_single_icon.png',
     'ollama': '/static/img/icons/ollama_single_icon.svg',
-    'nvidia': '/static/img/icons/nvidia.svg'
+    'nvidia': '/static/img/icons/nvidia.svg',
+    'zhipu': '/static/img/icons/zhipu_single_icon.svg',
+    'zhipuai': '/static/img/icons/zhipu_single_icon.svg',
+    'zai': '/static/img/icons/zhipu_single_icon.svg',
+    'bigmodel': '/static/img/icons/zhipu_single_icon.svg'
 }
 
 
@@ -2513,7 +2517,10 @@ _STATUS_PROVIDER_ALIAS_MAP = {
     'bytedance-seed': 'volcengine',
     'byte': 'volcengine',
     'siliconflow': 'siliconflow',
-    'azure': 'openai'
+    'azure': 'openai',
+    'zhipuai': 'zhipu',
+    'zai': 'zhipu',
+    'bigmodel': 'zhipu'
 }
 
 
@@ -2690,6 +2697,8 @@ def _status_icon_provider_for_model(model_name: str, fallback_provider: str = 'u
     key = str(model_name or '').strip().lower()
     if not key or key == 'unknown':
         return _status_normalize_provider(fallback_provider)
+    if key.startswith('glm') or key.startswith('chatglm'):
+        return 'zhipu'
     if key.startswith('gpt') or key.startswith('chatgpt') or key.startswith('o1') or key.startswith('o3') or key.startswith('o4'):
         return 'openai'
     if key.startswith('deepseek'):
@@ -2751,14 +2760,63 @@ def _tool_call_count_from_steps(steps: Any) -> int:
     return sum(1 for step in arr if isinstance(step, dict) and str(step.get('type') or '') == 'function_call')
 
 
+def _status_parse_timestamp(raw: Any) -> Optional[datetime]:
+    text = str(raw or '').strip()
+    if not text:
+        return None
+    # token_usage.json may use "YYYY-mm-dd HH:MM:SS" or ISO strings.
+    formats = [
+        '%Y-%m-%d %H:%M:%S',
+        '%Y-%m-%d %H:%M:%S.%f',
+        '%Y-%m-%d %H:%M',
+        '%Y-%m-%dT%H:%M:%S',
+        '%Y-%m-%dT%H:%M:%S.%f'
+    ]
+    for fmt in formats:
+        try:
+            return datetime.strptime(text, fmt)
+        except Exception:
+            continue
+    try:
+        iso_text = text[:-1] + '+00:00' if text.endswith('Z') else text
+        dt = datetime.fromisoformat(iso_text)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone().replace(tzinfo=None)
+        return dt
+    except Exception:
+        return None
+
+
+def _ensure_status_recent_row(recent_map: Dict[str, Dict[str, Any]], model_name: str, display_name: str = '') -> Dict[str, Any]:
+    key = str(model_name or 'unknown').strip() or 'unknown'
+    if key not in recent_map:
+        recent_map[key] = {
+            'id': key,
+            'name': str(display_name or key).strip() or key,
+            'provider': 'unknown',
+            'icon': '',
+            'score': 0,
+            'recentCalls': 0,
+            'recentTokens': 0,
+            '_providerCounts': {}
+        }
+    elif display_name:
+        prev = str(recent_map[key].get('name') or '').strip()
+        if not prev or prev == key:
+            recent_map[key]['name'] = str(display_name).strip() or key
+    return recent_map[key]
+
+
 def build_status_overview() -> Dict[str, Any]:
     users_root = os.path.join(os.path.dirname(__file__), 'data', 'users')
     model_map: Dict[str, Dict[str, Any]] = {}
+    recent_24h_map: Dict[str, Dict[str, Any]] = {}
     tool_failure_map: Dict[str, Dict[str, Any]] = {}
     complexity = {'simple': 0, 'medium': 0, 'complex': 0}
     total_tokens = 0
     total_tool_calls = 0
     total_tool_failures = 0
+    cutoff_24h = datetime.now() - timedelta(hours=24)
 
     if not os.path.exists(users_root):
         return {
@@ -2767,7 +2825,9 @@ def build_status_overview() -> Dict[str, Any]:
             'totals': {'tokens': 0, 'modelCalls': 0, 'toolCalls': 0, 'toolFailures': 0},
             'complexity': complexity,
             'models': [],
-            'toolFailures': []
+            'toolFailures': [],
+            'recent24h': [],
+            'recent24hWindowHours': 24
         }
 
     for username in os.listdir(users_root):
@@ -2790,12 +2850,14 @@ def build_status_overview() -> Dict[str, Any]:
             if total is None:
                 total = _safe_int_status(log.get('input_tokens', 0)) + _safe_int_status(log.get('output_tokens', 0))
             total = _safe_int_status(total)
+            ts_dt = _status_parse_timestamp(timestamp)
             prev = deduped_token_logs.get(key)
             if prev is None or total >= _safe_int_status(prev.get('total_tokens', 0)):
                 deduped_token_logs[key] = {
                     'provider': provider,
                     'model': model,
-                    'total_tokens': total
+                    'total_tokens': total,
+                    'timestamp_dt': ts_dt
                 }
 
         for item in deduped_token_logs.values():
@@ -2807,6 +2869,12 @@ def build_status_overview() -> Dict[str, Any]:
             row = _ensure_status_model_row(model_map, model_name, display_name)
             row['totalTokens'] += total
             _status_add_provider_count(row, provider)
+            ts_dt = item.get('timestamp_dt')
+            if isinstance(ts_dt, datetime) and ts_dt >= cutoff_24h:
+                recent = _ensure_status_recent_row(recent_24h_map, model_name, display_name)
+                recent['recentCalls'] += 1
+                recent['recentTokens'] += total
+                _status_add_provider_count(recent, provider)
 
         tool_logs = _read_json_list_safe(os.path.join(user_path, 'tool_usage.json'))
         for log in tool_logs:
@@ -2892,15 +2960,40 @@ def build_status_overview() -> Dict[str, Any]:
         else:
             row['successRate'] = 100.0
 
+    for _, row in recent_24h_map.items():
+        counts = row.get('_providerCounts', {}) if isinstance(row.get('_providerCounts'), dict) else {}
+        known = [(name, _safe_int_status(v, 0)) for name, v in counts.items() if str(name or '') and str(name) != 'unknown']
+        known = [item for item in known if item[1] > 0]
+        if len(known) >= 2:
+            provider = 'multi'
+        elif len(known) == 1:
+            provider = known[0][0]
+        else:
+            provider = str(row.get('provider') or 'unknown').strip() or 'unknown'
+        row['provider'] = provider
+        icon_provider = _status_icon_provider_for_model(str(row.get('id') or ''), provider)
+        row['icon'] = _status_provider_icon(icon_provider)
+        row.pop('_providerCounts', None)
+
     max_calls = max((_safe_int_status(item.get('callCount', 0)) for item in model_map.values()), default=0)
     max_tokens = max((_safe_int_status(item.get('totalTokens', 0)) for item in model_map.values()), default=0)
     max_tools = max((_safe_int_status(item.get('toolCalls', 0)) for item in model_map.values()), default=0)
+    max_recent_calls = max((_safe_int_status(item.get('recentCalls', 0)) for item in recent_24h_map.values()), default=0)
+    max_recent_tokens = max((_safe_int_status(item.get('recentTokens', 0)) for item in recent_24h_map.values()), default=0)
 
     for row in model_map.values():
         call_factor = (_safe_int_status(row.get('callCount', 0)) / max_calls * 22.0) if max_calls else 0.0
         token_factor = (_safe_int_status(row.get('totalTokens', 0)) / max_tokens * 10.0) if max_tokens else 0.0
         tool_factor = (_safe_int_status(row.get('toolCalls', 0)) / max_tools * 8.0) if max_tools else 0.0
         score = round(min(100.0, row['successRate'] * 0.6 + call_factor + token_factor + tool_factor))
+        if str(row.get('id') or '') == 'unknown':
+            score = 0
+        row['score'] = int(score)
+
+    for row in recent_24h_map.values():
+        call_factor = (_safe_int_status(row.get('recentCalls', 0)) / max_recent_calls * 45.0) if max_recent_calls else 0.0
+        token_factor = (_safe_int_status(row.get('recentTokens', 0)) / max_recent_tokens * 55.0) if max_recent_tokens else 0.0
+        score = round(min(100.0, call_factor + token_factor))
         if str(row.get('id') or '') == 'unknown':
             score = 0
         row['score'] = int(score)
@@ -2914,6 +3007,15 @@ def build_status_overview() -> Dict[str, Any]:
         ),
         reverse=True
     )
+    recent_24h = sorted(
+        recent_24h_map.values(),
+        key=lambda item: (
+            _safe_int_status(item.get('score', 0)),
+            _safe_int_status(item.get('recentTokens', 0)),
+            _safe_int_status(item.get('recentCalls', 0))
+        ),
+        reverse=True
+    )[:12]
 
     tool_failures = sorted(
         [item for item in tool_failure_map.values() if _safe_int_status(item.get('count', 0)) > 0],
@@ -2933,7 +3035,9 @@ def build_status_overview() -> Dict[str, Any]:
         },
         'complexity': complexity,
         'models': models[:12],
-        'toolFailures': tool_failures
+        'toolFailures': tool_failures,
+        'recent24h': recent_24h,
+        'recent24hWindowHours': 24
     }
 
 
