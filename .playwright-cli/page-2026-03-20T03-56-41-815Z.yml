@@ -1,0 +1,473 @@
+- generic [ref=e1]:
+  - generic [ref=e2]:
+    - navigation [ref=e3]:
+      - generic [ref=e5]:
+        - text: Nexora
+        - generic [ref=e6]: .
+      - button "+ New Chat" [ref=e8] [cursor=pointer]:
+        - generic [ref=e9]: +
+        - text: New Chat
+      - generic [ref=e10]:
+        - generic [ref=e12] [cursor=pointer]:
+          - generic [ref=e13]: 
+          - text: 抛物面z=(x-1)²+(y-2)²-1的横截面示意图
+        - generic [ref=e15] [cursor=pointer]:
+          - generic [ref=e16]: 
+          - text: 优先考虑购买平板与镜头
+        - generic [ref=e18] [cursor=pointer]:
+          - generic [ref=e19]: 
+          - text: 同伴相遇与误会
+        - generic [ref=e21] [cursor=pointer]:
+          - generic [ref=e22]: 
+          - text: 杠杆原理及背后的数学原理
+        - generic [ref=e24] [cursor=pointer]:
+          - generic [ref=e25]: 
+          - text: 能量守恒定律在电路中的应用
+        - generic [ref=e27] [cursor=pointer]:
+          - generic [ref=e28]: 
+          - text: 求解两平面交线的参数方程与对称方程
+        - generic [ref=e30] [cursor=pointer]:
+          - generic [ref=e31]: 
+          - text: 两平面距离计算需先判断平行性
+        - generic [ref=e33] [cursor=pointer]:
+          - generic [ref=e34]: 
+          - text: VerSE数据集标注内容概述
+        - generic [ref=e36] [cursor=pointer]:
+          - generic [ref=e37]: 
+          - text: 二阶常系数线性非齐次微分方程的通解
+        - generic [ref=e39] [cursor=pointer]: 积分公式：\sin(ax)的不定积分
+        - generic [ref=e41] [cursor=pointer]: 成像技术发展梳理与思考
+        - generic [ref=e43] [cursor=pointer]: 52%湿度理想范围
+        - generic [ref=e45] [cursor=pointer]: PowerShell修改DNS方法
+        - generic [ref=e47] [cursor=pointer]: 索尼DSC-W80数码相机参数信息录入
+        - generic [ref=e49] [cursor=pointer]: 夏至凌晨，高温台风，爬楼梯挑战
+        - generic [ref=e51] [cursor=pointer]: 打开网站并搜索"适马 30
+        - generic [ref=e53] [cursor=pointer]: Himpqblog.cn网站搜索与浏览总结
+        - generic [ref=e55] [cursor=pointer]: 无法找到关于web_input和web_click的信息
+        - generic [ref=e57] [cursor=pointer]: 无法直视但执行成功的RMRF指令
+        - generic [ref=e59] [cursor=pointer]: 触发selectTools异常bug复现方法
+        - generic [ref=e61] [cursor=pointer]: 现在是否需要洗澡取决于你的个人需求和计划。
+        - generic [ref=e63] [cursor=pointer]: Brython：浏览器中的Python实现
+        - generic [ref=e65] [cursor=pointer]: 陈靖斌GitHub个人主页
+        - generic [ref=e67] [cursor=pointer]: 新对话
+        - generic [ref=e69] [cursor=pointer]: 腾龙11-20mm f/2.8与索尼E PZ 10-20mm f/4 G对比
+        - generic [ref=e71] [cursor=pointer]: GFW信息在知识库中的查找结果
+        - generic [ref=e73] [cursor=pointer]: Flask-CORS：处理跨域资源共享
+        - generic [ref=e75] [cursor=pointer]: 中国财政政策与区域平衡机制报告
+        - generic [ref=e77] [cursor=pointer]: 内存占用进程排名
+        - generic [ref=e79] [cursor=pointer]: C盘Downloads迁至G盘，562文件共34GB
+        - generic [ref=e81] [cursor=pointer]: Token开销累积正常，可优化控制
+        - generic [ref=e83] [cursor=pointer]: G盘占用大头文件夹分析
+        - generic [ref=e85] [cursor=pointer]: Pad副屏：提升工作效率的理想选择
+        - generic [ref=e87] [cursor=pointer]: 遗传算法结合梯度下降优化
+      - generic [ref=e89] [cursor=pointer]:
+        - generic "mujica" [ref=e90]
+        - generic [ref=e92]: mujica
+        - generic [ref=e93]: 
+        - text:  
+    - main [ref=e94]:
+      - generic [ref=e95]:
+        - generic [ref=e96]:
+          - button "Toggle Sidebar" [ref=e97] [cursor=pointer]:
+            - img [ref=e98]
+          - generic [ref=e102] [cursor=pointer]: 混元Lite
+        - generic [ref=e103]: Untitled Conversation
+        - generic [ref=e104]:
+          - button "13" [ref=e105] [cursor=pointer]:
+            - img [ref=e106]
+            - generic [ref=e111]: "13"
+          - button "AI 自动流程" [ref=e112] [cursor=pointer]:
+            - img [ref=e113]
+          - text:   
+          - button "邮件" [ref=e120] [cursor=pointer]:
+            - img [ref=e121]
+          - button "云端文件" [ref=e124] [cursor=pointer]:
+            - img [ref=e125]
+          - button "Knowledge Base" [ref=e128] [cursor=pointer]:
+            - img [ref=e129]
+      - generic [ref=e133]:
+        - heading "Hello, mujica." [level=1] [ref=e134]
+        - paragraph [ref=e135]: How can I assist you today?
+      - generic [ref=e137]:
+        - generic [ref=e138]:
+          - generic "Upload File / Image" [ref=e139] [cursor=pointer]:
+            - img [ref=e140]
+          - generic "Deep Thinking" [ref=e142] [cursor=pointer]:
+            - checkbox "Thinking" [ref=e143]
+            - generic [ref=e144]:
+              - generic [ref=e145]: 
+              - generic [ref=e146]: Thinking
+          - generic "Web Search" [ref=e147] [cursor=pointer]:
+            - checkbox "Search" [checked] [ref=e148]
+            - generic [ref=e149]:
+              - generic [ref=e150]: 
+              - generic [ref=e151]: Search
+          - generic "Tool Use Mode" [ref=e152] [cursor=pointer]:
+            - generic [ref=e153]:
+              - generic [ref=e154]: 
+              - generic [ref=e155]: Tools
+            - button "Tools" [ref=e157]:
+              - generic [ref=e158]: Force
+              - generic [ref=e159]: 
+        - textbox "Type a message..." [active] [ref=e160]: 请分步骤推导并输出拉格朗日恒等式，要求每一步都用LaTeX公式，至少输出20行公式。
+        - generic [ref=e161]:
+          - generic [ref=e162]:
+            - generic "上下文窗口已用 0% · 剩余 32,768 tokens（估算上限）" [ref=e163]
+            - generic [ref=e165]: CTX ~0/32,768
+            - generic [ref=e166] [cursor=pointer]: TK 0 / 0
+            - generic "NexoraCode (本地计算节点) - 离线" [ref=e167]
+          - button [ref=e168] [cursor=pointer]:
+            - img [ref=e169]
+    - complementary:
+      - generic:
+        - generic:
+          - heading "Knowledge" [level=3]
+          - generic:
+            - textbox "搜索向量库..."
+            - button "搜索"
+        - generic:
+          - button "Refresh":
+            - img
+          - button "Close":
+            - img
+      - generic:
+        - generic:
+          - generic:
+            - generic:
+              - generic:
+                - generic: BASIS
+                - generic: "25"
+              - button "":
+                - generic: 
+          - generic:
+            - generic:
+              - generic:
+                - generic:
+                  - generic: 
+                  - text: NexoraDB API
+                - generic:
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 索尼DSC-W80数码相机参数信息
+                - generic:
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 中国财政政策、政府债务与区域平衡机制深度分析
+                - generic:
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 美国长臂管辖权（Long-arm Jurisdiction）全面解析：机制、案例、争议与应对
+                - generic:
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 腾龙70-180mm F2.8 Di III VXD (A056) 与 索尼FE 70-200mm F4 G OSS（一代）全面对比分析报告（2026年更新）
+                - generic:
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 腾龙70-180mm F/2.8 Di III VXD (A056) 与 G2 (A065S) 全画幅微单镜头全面技术分析与对比报告
+                - generic:
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: CMOS图像传感器动态范围理论与技术研究：从物理极限到先进扩展方案
+                - generic:
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 中国防火墙（GFW）技术原理与实现机制深度解析
+                - generic:
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: Frutiger Aero设计美学：从Y2K到电子垃圾的时空演变与技术反思
+                - generic:
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: MyGO（BanG Dream! It's MyGO!!!!!）2.5次元少女乐队企划全面解析
+                - generic:
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 尼康Z50与Z50 II APS-C微单相机全面对比与技术分析报告
+                - generic:
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 尼康Z7全画幅微单相机全面技术分析与市场研究报告
+                - generic:
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 脊柱AI健康项目会议纪要（2026年2月21日）
+                - generic:
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 适马E卡口镜头全系列汇总及技术分析报告
+                - generic:
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 索尼APS-C半画幅相机系列完整技术参数与横向对比分析
+                - generic:
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 佳能R系列全画幅无反相机2026年详细参数横向对比分析
+                - generic:
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: EOS R7 详细介绍
+                - generic:
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 腾龙11-20mm F2.8 vs 索尼10-20mm F4 G 对比分析
+                - generic:
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 腾龙11-20mm F2.8 Di III-A RXD超广角镜头深度测评与技术分析
+                - generic:
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 索尼E 18-135mm F3.5-5.6 OSS vs E PZ 18-105mm F4 G OSS镜头深度对比分析
+                - generic:
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 索尼 E-mount 10-20mm F4 G 与 10-18mm F4 镜头对比分析
+                - generic:
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 腾龙70-300mm F4.5-6.3 Di III RXD与索尼E70-350mm F4.5-6.3 G OSS镜头核心对比分析（基于索尼A6700使用场景）
+                - generic:
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 适马10-18mm F2.8、索尼E10-20mm F4 G与腾龙11-20mm F2.8核心对比分析
+                - generic:
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 索尼A6700与佳能R7深度对比总结（含详尽参数、评测数据及用户体验）
+                - generic:
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: Ave Mujica
+                - generic:
+                  - button "":
+                    - generic: 
+        - generic:
+          - generic:
+            - generic:
+              - generic:
+                - generic: SHORT-TERM
+                - generic: "19"
+          - generic:
+            - generic:
+              - generic:
+                - generic: 用户对炮弹发射相对速度/位移的参考系存在疑问，需要明确相对运动的参考系转换
+                - generic:
+                  - button "":
+                    - generic: 
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 趴桌睡觉容易引发头晕，需通过颈部拉伸、补水和少量补能快速缓解
+                - generic:
+                  - button "":
+                    - generic: 
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 用户拍照居多，想体验高像素机器，考虑A7R3（二手5500单机）、尼康Z7（约6000），同时考虑买腾龙70180F2.8（2800元）搭配A6700使用，需权衡是否放弃A6700新菜单和视频功能上全画幅
+                - generic:
+                  - button "":
+                    - generic: 
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 用户当前相机资产：A6700二手约6400元，现金3000元，仅存E50F1.8镜头，考虑灭门换R7套机或A7C2单机身
+                - generic:
+                  - button "":
+                    - generic: 
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 用户需要一份本地部署型AI协作与知识库管理平台的项目计划书，已整合多模型、邮件/网盘服务，面向中小企业和个人团队开发者，当前开发进度在融合统一token和API阶段
+                - generic:
+                  - button "":
+                    - generic: 
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 用户倾向选择腾龙70300镜头，认为其更贴合自身使用习惯和拍照场景
+                - generic:
+                  - button "":
+                    - generic: 
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 用户当前更倾向腾龙70300，认为其贴合使用习惯（随手拍）和拍照场景（建筑局部、远处细节、漫展人像等），需分析该镜头是否匹配需求及对比超广角的差异
+                - generic:
+                  - button "":
+                    - generic: 
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 用户曾使用适马16F1.4定焦镜头（等效24mm）一个月后卖掉，认为无特殊感觉；当前担心腾龙11-20F2.8超广角变焦镜头会重蹈覆辙，顾虑焦段与手机重叠、缺乏独特性，但拍摄习惯为随手拍，需要灵活焦段覆盖建筑/人文等场景
+                - generic:
+                  - button "":
+                    - generic: 
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 用户喜欢拍摄建筑（需要超广角）、偶尔人像，暑假计划旅游（西藏风光、日本人文），预算有限（卖适马19后约2900元），当前纠结腾龙1120F2.8、索尼1020F4G、腾龙70300、腾龙18300镜头，优先考虑超广角需求
+                - generic:
+                  - button "":
+                    - generic: 
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: A6700用户预算2500元，纠结镜头选择：18300(2500元)、70300(1900元)、1120F2.8(1900元)、索尼1020F4G(2100元)，主要用于建筑和人像拍摄
+                - generic:
+                  - button "":
+                    - generic: 
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: A6700用户，摄影需求：建筑+人像。之前使用18-135，认为"广角不够广，长焦不够长"。预算敏感，倾向于分步购买：先买70-300长焦（~1900元），暑假后补充广角镜头（考虑11-20 F2.8）。对18-300超预算且担心重蹈18-135覆辙。
+                - generic:
+                  - button "":
+                    - generic: 
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 用户使用A6700相机，喜欢建筑摄影，偶尔拍人像。现有适马19F2.8（准备卖）和索尼E50F1.8（拍建筑但嫌不够广或不够长）。常居南宁和上海，觉得城市平淡，需抬头拍摄建筑剥离感。想体验超广角拍西藏风光和日本城市人文。在腾龙70-300、腾龙11-20F2.8、腾龙18-300、索尼10-20F4G中纠结。
+                - generic:
+                  - button "":
+                    - generic: 
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 用户是大一学生，熬夜党，作息时间晚，早睡困难，高数成绩不好，专业排名中等偏下。
+                - generic:
+                  - button "":
+                    - generic: 
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 用户对摄影、自带设备和想法的总结
+                - generic:
+                  - button "":
+                    - generic: 
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 用户喜欢旅游，向往出国（欧洲、日本），但对安全与政治环境担忧
+                - generic:
+                  - button "":
+                    - generic: 
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 用户摄影爱好翻倍增长，从小米10Ultra到A6700经历
+                - generic:
+                  - button "":
+                    - generic: 
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 用户在考虑索尼10-20F4G和腾龙11-20 2.8镜头选择
+                - generic:
+                  - button "":
+                    - generic: 
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: 用户实用党倾向：优先焦段全覆盖（10-300mm+微距），1850/1770不符合核心需求
+                - generic:
+                  - button "":
+                    - generic: 
+                  - button "":
+                    - generic: 
+            - generic:
+              - generic:
+                - generic: "[System] 用户 mujica 是 Nexora 站长。"
+                - generic:
+                  - button "":
+                    - generic: 
+                  - button "":
+                    - generic: 
+    - complementary:
+      - generic:
+        - generic:
+          - heading "Cloud Files" [level=3]
+          - generic:
+            - textbox "搜索文件..."
+            - button "搜索"
+        - generic:
+          - button "Refresh":
+            - img
+          - button "Close":
+            - img
+      - generic:
+        - generic:
+          - generic:
+            - generic:
+              - generic: FILES
+              - generic: "0"
+    - text:    +                       
+  - text:        

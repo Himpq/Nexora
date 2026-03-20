@@ -727,7 +727,8 @@ body {
     overflow-wrap: normal !important;
 }
 
-.content-body .stream-live-tail.stream-live-raw {
+.content-body .stream-live-tail.stream-live-raw,
+.thinking-content .stream-live-tail.stream-live-raw {
     white-space: pre-wrap;
 }
 
@@ -2566,7 +2567,7 @@ body.settings-companion-mode #adminConfigModal {
     top: 0;
     z-index: 3650;
     display: none;
-    min-width: 146px;
+    min-width: 172px;
     border: 1px solid #dbe4f1;
     border-radius: 10px;
     background: #fff;
@@ -2580,7 +2581,7 @@ body.settings-companion-mode #adminConfigModal {
 
 .notes-context-menu button {
     width: 100%;
-    height: 30px;
+    min-height: 30px;
     border: none;
     border-radius: 8px;
     background: #fff;
@@ -2589,8 +2590,13 @@ body.settings-companion-mode #adminConfigModal {
     padding: 0 8px;
     display: flex;
     align-items: center;
+    justify-content: flex-start;
     gap: 8px;
     cursor: pointer;
+}
+
+.notes-context-menu button + button {
+    margin-top: 2px;
 }
 
 .notes-context-menu button:hover {

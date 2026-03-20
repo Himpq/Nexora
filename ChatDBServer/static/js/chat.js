@@ -781,8 +781,17 @@ function wrapBareLatexFragmentsOutsideMath(text) {
 }
 
 function renderMarkdownWithNewTabLinks(text, options = {}) {
-    const raw = String(text || '');
+    let raw = String(text || '');
     const opts = (options && typeof options === 'object') ? options : {};
+    if (opts.streamingMathProvisional) {
+        const openInfo = streamMathFindOpenTailInfo(raw);
+        if (openInfo && Number(openInfo.index) >= 0) {
+            const i = Number(openInfo.index);
+            const stable = raw.slice(0, i);
+            const tail = raw.slice(i);
+            raw = `${stable}${streamMathBuildProvisionalClosedTail(tail, openInfo.type)}`;
+        }
+    }
     const normalizedText = normalizeLatexSyntax(raw);
     const withBareLatexWrapped = needsAggressiveLatexRecovery(raw)
         ? wrapBareLatexFragmentsOutsideMath(normalizedText)
@@ -811,18 +820,31 @@ function renderMarkdownForNotes(text) {
 const __mathRenderTimerMap = new WeakMap();
 const __mathRenderRetryMap = new WeakMap();
 
+function isLiveStreamMathRenderRoot(root) {
+    if (!root) return false;
+    if (root.classList && root.classList.contains('stream-live-tail')) return true;
+    if (root.dataset && String(root.dataset.streamLive || '') === '1') return true;
+    if (typeof root.closest === 'function') {
+        if (root.closest('.stream-live-tail')) return true;
+        if (root.closest('[data-stream-live="1"]')) return true;
+    }
+    return false;
+}
+
 function renderMathSafe(root) {
     if (!root) return;
     const prevTimer = __mathRenderTimerMap.get(root);
     if (prevTimer) clearTimeout(prevTimer);
-
-    const timer = setTimeout(() => {
+    const immediateForStream = isLiveStreamMathRenderRoot(root);
+    const runRender = () => {
         try {
             if (typeof renderMathInElement !== 'function') {
                 const retries = (__mathRenderRetryMap.get(root) || 0) + 1;
                 __mathRenderRetryMap.set(root, retries);
                 if (retries <= 20) {
-                    renderMathSafe(root);
+                    const retryDelay = immediateForStream ? 26 : 80;
+                    const retryTimer = setTimeout(() => renderMathSafe(root), retryDelay);
+                    __mathRenderTimerMap.set(root, retryTimer);
                 }
                 return;
             }
@@ -851,11 +873,21 @@ function renderMathSafe(root) {
                 ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
                 throwOnError: false
             });
+            if (Date.now() <= __messagesBottomPinUntilTs && shouldAutoScroll) {
+                pinMessagesToBottomFor(900);
+            }
         } catch (e) {
             console.warn('LaTeX render failed:', e);
         }
-    }, 80);
+    };
 
+    if (immediateForStream) {
+        __mathRenderTimerMap.set(root, null);
+        runRender();
+        return;
+    }
+
+    const timer = setTimeout(runRender, 80);
     __mathRenderTimerMap.set(root, timer);
 }
 
@@ -3147,6 +3179,8 @@ const els = {
     debugConsoleResizeHandle: document.getElementById('debugConsoleResizeHandle'),
     notesContextMenu: document.getElementById('notesContextMenu'),
     notesAddSelectionBtn: document.getElementById('notesAddSelectionBtn'),
+    notesCopySelectionBtn: document.getElementById('notesCopySelectionBtn'),
+    notesExplainSelectionBtn: document.getElementById('notesExplainSelectionBtn'),
     pinContextMenu: document.getElementById('pinContextMenu'),
     pinContextMenuAction: document.getElementById('pinContextMenuAction'),
     mobileSelectionAddBtn: document.getElementById('mobileSelectionAddBtn'),
@@ -4460,6 +4494,24 @@ function resolveSelectionSource(target, selectionText = '', plainText = '') {
     };
 }
 
+function fillMessageInputWithExplainText(rawText) {
+    const input = els.messageInput;
+    if (!input) return false;
+    const text = normalizeSelectionTextForNotes(rawText);
+    if (!text) return false;
+    const prompt = `解释 ${text}`;
+    input.value = prompt;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    try {
+        const n = prompt.length;
+        input.setSelectionRange(n, n, 'none');
+    } catch (_) {
+        // ignore selection API failures
+    }
+    ensureMessageInputFocus({ onlyIfBlurred: false, preserveSelection: true });
+    return true;
+}
+
 function hideNotesContextMenu() {
     const menu = els.notesContextMenu || document.getElementById('notesContextMenu');
     if (!menu) return;
@@ -5367,6 +5419,36 @@ function initNotesUi() {
             }
         });
     }
+    if (els.notesCopySelectionBtn) {
+        els.notesCopySelectionBtn.addEventListener('click', async (e) => {
+            e.preventDefault();
+            const text = notesState.pendingSelectionText || '';
+            hideNotesContextMenu();
+            if (!text) {
+                showToast('请先选中文本');
+                return;
+            }
+            try {
+                await copyTextToClipboardSafe(text);
+                showToast('已复制选中文本');
+            } catch (_) {
+                showToast('复制失败');
+            }
+        });
+    }
+    if (els.notesExplainSelectionBtn) {
+        els.notesExplainSelectionBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            const text = notesState.pendingSelectionText || '';
+            hideNotesContextMenu();
+            if (!text) {
+                showToast('请先选中文本');
+                return;
+            }
+            const ok = fillMessageInputWithExplainText(text);
+            showToast(ok ? '已填入解释指令' : '输入框不可用');
+        });
+    }
     if (els.mobileSelectionAddBtn) {
         els.mobileSelectionAddBtn.addEventListener('click', (e) => {
             e.preventDefault();
@@ -5764,7 +5846,22 @@ function initUI() {
         // [Optimization] Immediate manual override listeners
         // This ensures that any user interaction immediately disables auto-scroll
         // providing a "crisp" detachment feeling like standard native apps.
-        const breakAutoScroll = () => { shouldAutoScroll = false; };
+        const breakAutoScroll = () => {
+            shouldAutoScroll = false;
+            __messagesBottomPinUntilTs = 0;
+            if (__messagesBottomPinRaf) {
+                cancelAnimationFrame(__messagesBottomPinRaf);
+                __messagesBottomPinRaf = null;
+            }
+            const restoreBehavior = __messagesBottomPinPendingRestoreBehavior !== null
+                ? __messagesBottomPinPendingRestoreBehavior
+                : __messagesBottomPinPrevInlineBehavior;
+            if (restoreBehavior !== null && els.messagesContainer) {
+                els.messagesContainer.style.scrollBehavior = String(restoreBehavior || '');
+            }
+            __messagesBottomPinPrevInlineBehavior = null;
+            __messagesBottomPinPendingRestoreBehavior = null;
+        };
         
         els.messagesContainer.addEventListener('wheel', (e) => {
             if (e.deltaY < 0) breakAutoScroll(); // Only on scroll up
@@ -5773,6 +5870,10 @@ function initUI() {
         els.messagesContainer.addEventListener('touchmove', breakAutoScroll, { passive: true });
 
         els.messagesContainer.addEventListener('scroll', () => {
+            if (Date.now() <= __messagesBottomPinUntilTs) {
+                shouldAutoScroll = true;
+                return;
+            }
             const { scrollTop, scrollHeight, clientHeight } = els.messagesContainer;
             const distance = scrollHeight - scrollTop - clientHeight;
             
@@ -6670,6 +6771,166 @@ function formatToolsModeLabel(mode) {
     return 'Auto';
 }
 
+function hasLikelyMathForThinkingStream(text) {
+    return /(\$\$|\\\(|\\\[|\\begin\{(?:equation\*?|align\*?|alignat\*?|gather\*?|CD)\}|(^|[^\\])\$[^$\s])/m.test(String(text || ''));
+}
+
+function streamMathIsEscapedAt(text, index) {
+    const src = String(text || '');
+    let slashCount = 0;
+    for (let i = Number(index) - 1; i >= 0 && src[i] === '\\'; i -= 1) {
+        slashCount += 1;
+    }
+    return slashCount % 2 === 1;
+}
+
+function streamMathFindOpenTailInfo(text) {
+    const src = String(text || '');
+    if (!src) return { index: -1, type: '' };
+    const envNames = ['equation', 'equation*', 'align', 'align*', 'alignat', 'alignat*', 'gather', 'gather*', 'CD'];
+    let activeType = '';
+    let activeIndex = -1;
+
+    for (let i = 0; i < src.length; i += 1) {
+        if (!activeType) {
+            let openedEnv = '';
+            for (const envName of envNames) {
+                const token = `\\begin{${envName}}`;
+                if (src.slice(i, i + token.length) === token && !streamMathIsEscapedAt(src, i)) {
+                    openedEnv = envName;
+                    break;
+                }
+            }
+            if (openedEnv) {
+                activeType = `env:${openedEnv}`;
+                activeIndex = i;
+                i += (`\\begin{${openedEnv}}`.length - 1);
+                continue;
+            }
+            if (src.slice(i, i + 2) === '$$' && !streamMathIsEscapedAt(src, i)) {
+                activeType = '$$';
+                activeIndex = i;
+                i += 1;
+                continue;
+            }
+            if (src.slice(i, i + 2) === '\\[' && !streamMathIsEscapedAt(src, i)) {
+                activeType = '\\[';
+                activeIndex = i;
+                i += 1;
+                continue;
+            }
+            if (src.slice(i, i + 2) === '\\(' && !streamMathIsEscapedAt(src, i)) {
+                activeType = '\\(';
+                activeIndex = i;
+                i += 1;
+                continue;
+            }
+            if (
+                src[i] === '$' &&
+                !streamMathIsEscapedAt(src, i) &&
+                src[i - 1] !== '$' &&
+                src[i + 1] !== '$'
+            ) {
+                activeType = '$';
+                activeIndex = i;
+            }
+            continue;
+        }
+
+        if (activeType.startsWith('env:')) {
+            const envName = activeType.slice(4);
+            const closeToken = `\\end{${envName}}`;
+            if (src.slice(i, i + closeToken.length) === closeToken && !streamMathIsEscapedAt(src, i)) {
+                activeType = '';
+                activeIndex = -1;
+                i += closeToken.length - 1;
+            }
+            continue;
+        }
+        if (activeType === '$$') {
+            if (src.slice(i, i + 2) === '$$' && !streamMathIsEscapedAt(src, i)) {
+                activeType = '';
+                activeIndex = -1;
+                i += 1;
+            }
+            continue;
+        }
+        if (activeType === '\\[') {
+            if (src.slice(i, i + 2) === '\\]' && !streamMathIsEscapedAt(src, i)) {
+                activeType = '';
+                activeIndex = -1;
+                i += 1;
+            }
+            continue;
+        }
+        if (activeType === '\\(') {
+            if (src.slice(i, i + 2) === '\\)' && !streamMathIsEscapedAt(src, i)) {
+                activeType = '';
+                activeIndex = -1;
+                i += 1;
+            }
+            continue;
+        }
+        if (
+            activeType === '$' &&
+            src[i] === '$' &&
+            !streamMathIsEscapedAt(src, i) &&
+            src[i - 1] !== '$' &&
+            src[i + 1] !== '$'
+        ) {
+            activeType = '';
+            activeIndex = -1;
+        }
+    }
+
+    return activeType ? { index: activeIndex, type: activeType } : { index: -1, type: '' };
+}
+
+function streamMathBuildProvisionalClosedTail(rawTail, openType) {
+    const tail = String(rawTail || '');
+    const type = String(openType || '');
+    if (!tail || !type) return tail;
+    if (type.startsWith('env:')) {
+        const envName = type.slice(4).trim();
+        if (!envName) return tail;
+        return `${tail}\\end{${envName}}`;
+    }
+    if (type === '$$') return `${tail}$$`;
+    if (type === '\\[') return `${tail}\\]`;
+    if (type === '\\(') return `${tail}\\)`;
+    if (type === '$') return `${tail}$`;
+    return tail;
+}
+
+function renderMathInElementSyncPreferred(root) {
+    if (!root || typeof renderMathInElement !== 'function') return false;
+    try {
+        promoteLatexCodeBlocks(root);
+        renderMathInElement(root, {
+            delimiters: [
+                { left: '$$', right: '$$', display: true },
+                { left: '\\[', right: '\\]', display: true },
+                { left: '\\begin{equation}', right: '\\end{equation}', display: true },
+                { left: '\\begin{equation*}', right: '\\end{equation*}', display: true },
+                { left: '\\begin{align}', right: '\\end{align}', display: true },
+                { left: '\\begin{align*}', right: '\\end{align*}', display: true },
+                { left: '\\begin{alignat}', right: '\\end{alignat}', display: true },
+                { left: '\\begin{alignat*}', right: '\\end{alignat*}', display: true },
+                { left: '\\begin{gather}', right: '\\end{gather}', display: true },
+                { left: '\\begin{gather*}', right: '\\end{gather*}', display: true },
+                { left: '\\begin{CD}', right: '\\end{CD}', display: true },
+                { left: '$', right: '$', display: false },
+                { left: '\\(', right: '\\)', display: false }
+            ],
+            ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
+            throwOnError: false
+        });
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
 function saveComposerPrefsToStorage() {
     try {
         const payload = {
@@ -6964,7 +7225,113 @@ async function sendMessage() {
         snapshotInitialized: false
     };
     const streamRenderStateByBlock = new WeakMap();
+    let streamRenderDebugSeq = 0;
+    const STREAM_RENDER_DEBUG_KEY = 'nexora_stream_render_debug_v1';
     const hasLikelyMathDelimiter = (text) => /(\$\$|\\\(|\\\[|\\begin\{(?:equation\*?|align\*?|alignat\*?|gather\*?|CD)\}|(^|[^\\])\$[^$\s])/m.test(String(text || ''));
+    const hasLikelyUnbalancedMarkdownInline = (text) => {
+        const src = String(text || '');
+        if (!src) return false;
+        const countUnescapedToken = (token) => {
+            const t = String(token || '');
+            if (!t) return 0;
+            const len = t.length;
+            let count = 0;
+            for (let i = 0; i <= src.length - len; i += 1) {
+                if (src.slice(i, i + len) !== t) continue;
+                if (i > 0 && src[i - 1] === '\\') continue;
+                count += 1;
+                i += (len - 1);
+            }
+            return count;
+        };
+        const countUnescapedChar = (ch) => {
+            const c = String(ch || '');
+            if (!c) return 0;
+            let count = 0;
+            for (let i = 0; i < src.length; i += 1) {
+                if (src[i] !== c) continue;
+                if (i > 0 && src[i - 1] === '\\') continue;
+                count += 1;
+            }
+            return count;
+        };
+        if (countUnescapedChar('`') % 2 !== 0) return true;
+        if (countUnescapedToken('**') % 2 !== 0) return true;
+        if (countUnescapedToken('__') % 2 !== 0) return true;
+        if (countUnescapedToken('~~') % 2 !== 0) return true;
+        return false;
+    };
+
+    function isStreamRenderDebugEnabled() {
+        try {
+            if (window.__nexoraStreamRenderDebug === true) return true;
+            return localStorage.getItem(STREAM_RENDER_DEBUG_KEY) === '1';
+        } catch (_) {
+            return window.__nexoraStreamRenderDebug === true;
+        }
+    }
+
+    try {
+        if (typeof window.__nexoraSetStreamRenderDebug !== 'function') {
+            window.__nexoraSetStreamRenderDebug = function(enabled) {
+                const on = !!enabled;
+                window.__nexoraStreamRenderDebug = on;
+                try {
+                    localStorage.setItem(STREAM_RENDER_DEBUG_KEY, on ? '1' : '0');
+                } catch (_) {
+                    // ignore
+                }
+                return on;
+            };
+        }
+        if (typeof window.__nexoraIsStreamRenderDebugEnabled !== 'function') {
+            window.__nexoraIsStreamRenderDebugEnabled = function() {
+                return isStreamRenderDebugEnabled();
+            };
+        }
+    } catch (_) {
+        // ignore global helper setup errors
+    }
+
+    function toStreamRenderDebugSnippet(text, limit = 120) {
+        const src = String(text || '').replace(/\r\n/g, '\n').replace(/\n/g, '↩');
+        if (src.length <= limit) return src;
+        return `${src.slice(0, limit)}...`;
+    }
+
+    function pushStreamRenderDebug(stage, state, payload = {}) {
+        if (!isStreamRenderDebugEnabled()) return;
+        try {
+            const extra = (payload && typeof payload === 'object') ? payload : {};
+            const entry = {
+                ts: Date.now(),
+                stage: String(stage || 'trace'),
+                conversationId: String(currentConversationId || ''),
+                msgId: String(aiMsgId || ''),
+                blockId: String((state && state.debugId) || (extra && extra.blockId) || ''),
+                ...extra
+            };
+            const store = Array.isArray(window.__nexoraStreamRenderDebugLog) ? window.__nexoraStreamRenderDebugLog : [];
+            store.push(entry);
+            while (store.length > 600) store.shift();
+            window.__nexoraStreamRenderDebugLog = store;
+            window.__nexoraStreamRenderDebugLast = entry;
+            if (typeof window.__nexoraDumpStreamRenderDebug !== 'function') {
+                window.__nexoraDumpStreamRenderDebug = function() {
+                    try {
+                        const arr = Array.isArray(window.__nexoraStreamRenderDebugLog) ? window.__nexoraStreamRenderDebugLog : [];
+                        console.log('[NexoraStreamRenderDump]', arr);
+                        return arr;
+                    } catch (_) {
+                        return [];
+                    }
+                };
+            }
+            console.log('[NexoraStreamRender]', entry);
+        } catch (_) {
+            // ignore debug log errors
+        }
+    }
 
     function isEscapedAt(text, index) {
         const src = String(text || '');
@@ -7019,9 +7386,9 @@ async function sendMessage() {
         return countUnescapedSingleDollars(src) % 2 !== 0;
     }
 
-    function findOpenMathTailStart(text) {
+    function findOpenMathTailInfo(text) {
         const src = String(text || '');
-        if (!src) return -1;
+        if (!src) return { index: -1, type: '' };
         const envNames = ['equation', 'equation*', 'align', 'align*', 'alignat', 'alignat*', 'gather', 'gather*', 'CD'];
 
         let activeType = '';
@@ -7123,7 +7490,27 @@ async function sendMessage() {
             }
         }
 
-        return activeType ? activeIndex : -1;
+        return activeType ? { index: activeIndex, type: activeType } : { index: -1, type: '' };
+    }
+
+    function findOpenMathTailStart(text) {
+        return findOpenMathTailInfo(text).index;
+    }
+
+    function buildProvisionalClosedMathTail(rawTail, openType) {
+        const tail = String(rawTail || '');
+        const type = String(openType || '');
+        if (!tail || !type) return tail;
+        if (type.startsWith('env:')) {
+            const envName = type.slice(4).trim();
+            if (!envName) return tail;
+            return `${tail}\\end{${envName}}`;
+        }
+        if (type === '$$') return `${tail}$$`;
+        if (type === '\\[') return `${tail}\\]`;
+        if (type === '\\(') return `${tail}\\)`;
+        if (type === '$') return `${tail}$`;
+        return tail;
     }
 
     function ensureStreamBlockState(block) {
@@ -7140,11 +7527,167 @@ async function sendMessage() {
             state = {
                 renderedEl,
                 liveEl,
-                liveRaw: ''
+                liveRaw: '',
+                mathRenderRaf: null,
+                mathRenderTimer: null,
+                mathRenderPending: null,
+                lastRenderedSource: '',
+                lastRenderedMode: '',
+                lastStablePrefix: '',
+                liveRawTailEl: null,
+                lastMathRenderTs: 0,
+                debugId: ''
             };
+            streamRenderDebugSeq += 1;
+            state.debugId = `sr_${Date.now().toString(36)}_${streamRenderDebugSeq}`;
+            if (block.dataset) block.dataset.streamDebugId = state.debugId;
             streamRenderStateByBlock.set(block, state);
+            pushStreamRenderDebug('state_init', state, {
+                blockTag: String((block && block.tagName) || '').toLowerCase()
+            });
         }
         return state;
+    }
+
+    function clearLiveMathRenderSchedule(state) {
+        if (!state || typeof state !== 'object') return;
+        if (state.mathRenderRaf) {
+            cancelAnimationFrame(state.mathRenderRaf);
+            state.mathRenderRaf = null;
+        }
+        if (state.mathRenderTimer) {
+            clearTimeout(state.mathRenderTimer);
+            state.mathRenderTimer = null;
+        }
+        state.mathRenderPending = null;
+    }
+
+    function renderMathInElementSyncSafe(root) {
+        if (!root || typeof renderMathInElement !== 'function') return false;
+        try {
+            promoteLatexCodeBlocks(root);
+            renderMathInElement(root, {
+                delimiters: [
+                    { left: '$$', right: '$$', display: true },
+                    { left: '\\[', right: '\\]', display: true },
+                    { left: '\\begin{equation}', right: '\\end{equation}', display: true },
+                    { left: '\\begin{equation*}', right: '\\end{equation*}', display: true },
+                    { left: '\\begin{align}', right: '\\end{align}', display: true },
+                    { left: '\\begin{align*}', right: '\\end{align*}', display: true },
+                    { left: '\\begin{alignat}', right: '\\end{alignat}', display: true },
+                    { left: '\\begin{alignat*}', right: '\\end{alignat*}', display: true },
+                    { left: '\\begin{gather}', right: '\\end{gather}', display: true },
+                    { left: '\\begin{gather*}', right: '\\end{gather*}', display: true },
+                    { left: '\\begin{CD}', right: '\\end{CD}', display: true },
+                    { left: '$', right: '$', display: false },
+                    { left: '\\(', right: '\\)', display: false }
+                ],
+                ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
+                throwOnError: false
+            });
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function applyScratchIntoLiveEl(liveEl, scratch) {
+        if (!liveEl || !scratch) return;
+        liveEl.innerHTML = '';
+        while (scratch.firstChild) {
+            liveEl.appendChild(scratch.firstChild);
+        }
+    }
+
+    function scheduleLiveMathRender(state, payload) {
+        if (!state || !state.liveEl || !payload) return;
+        state.mathRenderPending = payload;
+        if (state.mathRenderRaf || state.mathRenderTimer) return;
+        const now = Date.now();
+        const mode = String(payload.mode || '');
+        const minGapMs = mode === 'math_closed' ? 80 : (mode === 'math_open' ? 50 : 34);
+        const waitMs = Math.max(0, minGapMs - (now - Number(state.lastMathRenderTs || 0)));
+        pushStreamRenderDebug('math_schedule', state, {
+            mode,
+            waitMs,
+            srcLen: String(payload.sourceText || '').length,
+            hasOpenMath: !!payload.hasOpenMath
+        });
+        state.mathRenderTimer = setTimeout(() => {
+            state.mathRenderTimer = null;
+            state.mathRenderRaf = requestAnimationFrame(() => {
+            state.mathRenderRaf = null;
+            const job = state.mathRenderPending;
+            state.mathRenderPending = null;
+            if (!job || !state.liveEl) return;
+
+            const sourceText = String(job.sourceText || '');
+            const scratch = document.createElement('div');
+            scratch.className = 'stream-live-tail';
+
+            if (job.hasOpenMath) {
+                const stablePrefix = String(job.stablePrefix || '');
+                const provisionalTail = String(job.provisionalTail || '');
+                const composed = `${stablePrefix}${provisionalTail}`;
+                let rendered = false;
+                if (composed.trim()) {
+                    scratch.innerHTML = renderMarkdownWithNewTabLinks(composed, { breaks: false });
+                    rendered = renderMathInElementSyncSafe(scratch);
+                }
+                if (!rendered) {
+                    const hasPreviousRenderedView = !!(state.liveEl && state.liveEl.childNodes && state.liveEl.childNodes.length > 0);
+                    const prevMode = String(state.lastRenderedMode || '');
+                    const canHoldPrevRendered = hasPreviousRenderedView && prevMode !== 'raw' && prevMode !== 'raw_open_head';
+                    if (canHoldPrevRendered) {
+                        bindSourceMarkdown(state.liveEl, sourceText);
+                        state.lastRenderedSource = sourceText;
+                        state.lastRenderedMode = 'hold_math_open_render_fail';
+                        state.lastStablePrefix = stablePrefix;
+                        state.liveRawTailEl = null;
+                        state.lastMathRenderTs = Date.now();
+                        pushStreamRenderDebug('math_open_hold_prev', state, {
+                            prevMode,
+                            stableLen: stablePrefix.length,
+                            tailLen: String(job.unstableTail || '').length
+                        });
+                        return;
+                    }
+                    scratch.innerHTML = renderMarkdownWithNewTabLinks(stablePrefix, { breaks: false });
+                    if (hasLikelyMathDelimiter(stablePrefix) && !hasOpenMathDelimiters(stablePrefix)) {
+                        renderMathInElementSyncSafe(scratch);
+                    }
+                    const rawTailEl = document.createElement('span');
+                    rawTailEl.className = 'stream-live-tail-raw-segment';
+                    rawTailEl.textContent = String(job.unstableTail || '');
+                    scratch.appendChild(rawTailEl);
+                    pushStreamRenderDebug('math_open_fallback_raw_tail', state, {
+                        stableLen: stablePrefix.length,
+                        tailLen: String(job.unstableTail || '').length
+                    });
+                }
+            } else {
+                scratch.innerHTML = renderMarkdownWithNewTabLinks(sourceText, { breaks: false });
+                if (job.hasMath) {
+                    renderMathInElementSyncSafe(scratch);
+                }
+            }
+
+            bindSourceMarkdown(state.liveEl, sourceText);
+            state.liveEl.classList.remove('stream-live-raw');
+            applyScratchIntoLiveEl(state.liveEl, scratch);
+            state.lastRenderedSource = sourceText;
+            state.lastRenderedMode = String(job.mode || '');
+            state.lastStablePrefix = job.hasOpenMath ? String(job.stablePrefix || '') : '';
+            state.liveRawTailEl = job.hasOpenMath ? state.liveEl.querySelector('.stream-live-tail-raw-segment') : null;
+            state.lastMathRenderTs = Date.now();
+            pushStreamRenderDebug('math_applied', state, {
+                mode: state.lastRenderedMode,
+                srcLen: sourceText.length,
+                katexCount: state.liveEl.querySelectorAll ? state.liveEl.querySelectorAll('.katex').length : 0,
+                hasRawTailNode: !!state.liveRawTailEl
+            });
+            });
+        }, waitMs);
     }
 
     function renderStreamFragment(rawText, citationMap) {
@@ -7162,57 +7705,174 @@ async function sendMessage() {
         if (!state) return;
         const raw = String(state.liveRaw || '');
         if (!raw) {
+            clearLiveMathRenderSchedule(state);
             state.liveEl.innerHTML = '';
             state.liveEl.classList.remove('stream-live-raw');
+            state.lastRenderedSource = '';
+            state.lastRenderedMode = '';
+            state.lastStablePrefix = '';
+            state.liveRawTailEl = null;
+            pushStreamRenderDebug('tail_empty', state);
             return;
         }
 
         const sourceText = rewriteCitationRefsMarkdown(raw, citationMap || {});
+        const hasUnbalancedInlineMd = hasLikelyUnbalancedMarkdownInline(sourceText);
         const hasMath = hasLikelyMathDelimiter(sourceText);
-        const openTailStart = hasMath ? findOpenMathTailStart(sourceText) : -1;
+        const openTailInfo = hasMath ? findOpenMathTailInfo(sourceText) : { index: -1, type: '' };
+        const openTailStart = Number(openTailInfo.index);
         const hasOpenMath = openTailStart >= 0;
+        const canHoldRenderedView = () => {
+            const mode = String(state.lastRenderedMode || '');
+            if (!mode) return false;
+            return mode !== 'raw' && mode !== 'raw_open_head';
+        };
         block.__streamSourceMarkdown = rewriteCitationRefsMarkdown(String(block.dataset.streamRaw || ''), citationMap || {});
+
+        if (hasUnbalancedInlineMd) {
+            clearLiveMathRenderSchedule(state);
+            if (canHoldRenderedView()) {
+                // Keep last rendered DOM to avoid raw<->render flicker when markdown tokens are mid-stream.
+                state.liveEl.classList.remove('stream-live-raw');
+                bindSourceMarkdown(state.liveEl, sourceText);
+                state.lastRenderedSource = sourceText;
+                state.lastRenderedMode = 'hold_unbalanced_md';
+                pushStreamRenderDebug('tail_hold_unbalanced_md', state, {
+                    srcLen: sourceText.length,
+                    srcHead: toStreamRenderDebugSnippet(sourceText)
+                });
+                return;
+            }
+            state.liveEl.classList.add('stream-live-raw');
+            state.liveEl.textContent = sourceText;
+            bindSourceMarkdown(state.liveEl, sourceText);
+            state.lastRenderedSource = sourceText;
+            state.lastRenderedMode = 'raw';
+            state.lastStablePrefix = '';
+            state.liveRawTailEl = null;
+            pushStreamRenderDebug('tail_raw_unbalanced_md', state, {
+                srcLen: sourceText.length,
+                srcHead: toStreamRenderDebugSnippet(sourceText)
+            });
+            return;
+        }
 
         if (hasOpenMath) {
             const stablePrefix = sourceText.slice(0, openTailStart);
             const unstableTail = sourceText.slice(openTailStart);
             if (!stablePrefix.trim()) {
+                clearLiveMathRenderSchedule(state);
+                if (canHoldRenderedView()) {
+                    // Avoid flashing back to raw text when formula head is still incomplete.
+                    state.liveEl.classList.remove('stream-live-raw');
+                    bindSourceMarkdown(state.liveEl, sourceText);
+                    state.lastRenderedSource = sourceText;
+                    state.lastRenderedMode = 'hold_math_open_head';
+                    state.liveRawTailEl = null;
+                    pushStreamRenderDebug('tail_hold_math_open_head', state, {
+                        openType: String(openTailInfo.type || ''),
+                        tailLen: unstableTail.length
+                    });
+                    return;
+                }
                 state.liveEl.classList.add('stream-live-raw');
                 state.liveEl.textContent = sourceText;
                 bindSourceMarkdown(state.liveEl, sourceText);
+                state.lastRenderedSource = sourceText;
+                state.lastRenderedMode = 'raw_open_head';
+                state.lastStablePrefix = '';
+                state.liveRawTailEl = null;
+                pushStreamRenderDebug('tail_raw_math_open_head', state, {
+                    openType: String(openTailInfo.type || ''),
+                    tailLen: unstableTail.length
+                });
                 return;
             }
-
-            state.liveEl.classList.remove('stream-live-raw');
-            state.liveEl.innerHTML = renderMarkdownWithNewTabLinks(stablePrefix, { breaks: false });
-            bindSourceMarkdown(state.liveEl, sourceText);
-            highlightCode(state.liveEl);
-            if (hasLikelyMathDelimiter(stablePrefix) && !hasOpenMathDelimiters(stablePrefix)) {
-                try { renderMathSafe(state.liveEl); } catch (_) {}
+            if (
+                state.lastRenderedMode === 'math_open' &&
+                state.lastStablePrefix === stablePrefix &&
+                state.liveRawTailEl &&
+                state.liveRawTailEl.isConnected
+            ) {
+                clearLiveMathRenderSchedule(state);
+                state.liveRawTailEl.textContent = unstableTail;
+                bindSourceMarkdown(state.liveEl, sourceText);
+                state.lastRenderedSource = sourceText;
+                pushStreamRenderDebug('tail_update_raw_tail_only', state, {
+                    stableLen: stablePrefix.length,
+                    tailLen: unstableTail.length
+                });
+                return;
             }
-
-            const rawTailEl = document.createElement('span');
-            rawTailEl.className = 'stream-live-tail-raw-segment';
-            rawTailEl.textContent = unstableTail;
-            state.liveEl.appendChild(rawTailEl);
+            const mode = 'math_open';
+            if (state.lastRenderedSource === sourceText && state.lastRenderedMode === mode) return;
+            scheduleLiveMathRender(state, {
+                mode,
+                sourceText,
+                hasMath: true,
+                hasOpenMath: true,
+                stablePrefix,
+                unstableTail,
+                openMathType: String(openTailInfo.type || ''),
+                provisionalTail: buildProvisionalClosedMathTail(unstableTail, openTailInfo.type)
+            });
+            pushStreamRenderDebug('tail_schedule_math_open', state, {
+                stableLen: stablePrefix.length,
+                tailLen: unstableTail.length,
+                openType: String(openTailInfo.type || '')
+            });
             return;
         }
 
+        if (hasMath) {
+            const mode = 'math_closed';
+            if (state.lastRenderedSource === sourceText && state.lastRenderedMode === mode) return;
+            scheduleLiveMathRender(state, {
+                mode,
+                sourceText,
+                hasMath: true,
+                hasOpenMath: false,
+                stablePrefix: '',
+                unstableTail: ''
+            });
+            pushStreamRenderDebug('tail_schedule_math_closed', state, {
+                srcLen: sourceText.length,
+                srcHead: toStreamRenderDebugSnippet(sourceText)
+            });
+            return;
+        }
+
+        clearLiveMathRenderSchedule(state);
         state.liveEl.classList.remove('stream-live-raw');
         state.liveEl.innerHTML = renderMarkdownWithNewTabLinks(sourceText, { breaks: false });
         bindSourceMarkdown(state.liveEl, sourceText);
         highlightCode(state.liveEl);
-
-        if (hasMath) {
-            try { renderMathSafe(state.liveEl); } catch (_) {}
-        }
+        state.lastRenderedSource = sourceText;
+        state.lastRenderedMode = 'plain';
+        state.lastStablePrefix = '';
+        state.liveRawTailEl = null;
+        pushStreamRenderDebug('tail_plain', state, {
+            srcLen: sourceText.length,
+            srcHead: toStreamRenderDebugSnippet(sourceText)
+        });
     }
 
     function flushStableStreamTail(block, citationMap, force = false) {
         const state = ensureStreamBlockState(block);
         if (!state) return;
         const raw = String(state.liveRaw || '');
+        pushStreamRenderDebug('flush_enter', state, {
+            force: !!force,
+            rawLen: raw.length,
+            hasMath: hasLikelyMathDelimiter(raw),
+            hasOpenMath: hasOpenMathDelimiters(raw)
+        });
         if (!raw) {
+            renderLiveStreamTail(block, citationMap);
+            return;
+        }
+        const hasUnbalancedInlineMd = hasLikelyUnbalancedMarkdownInline(raw);
+        if (!force && hasUnbalancedInlineMd) {
             renderLiveStreamTail(block, citationMap);
             return;
         }
@@ -7221,16 +7881,25 @@ async function sendMessage() {
             renderLiveStreamTail(block, citationMap);
             return;
         }
-        if (!force && !hasMath) {
+        if (!force) {
             renderLiveStreamTail(block, citationMap);
             return;
         }
 
-        // Streaming stage: avoid per-token/per-fragment KaTeX reflow flicker.
-        // Render math only on finalize (force=true).
+        // force=true is used when closing current stream block (e.g. tool row inserted).
+        // Commit once and avoid showing raw latex before KaTeX by rendering sync first.
         const fragment = renderStreamFragment(raw, citationMap);
+        if (hasLikelyMathDelimiter(raw)) {
+            const syncOk = renderMathInElementSyncSafe(fragment);
+            pushStreamRenderDebug('flush_force_math_sync', state, {
+                rawLen: raw.length,
+                syncOk
+            });
+            if (!syncOk) {
+                try { renderMathSafe(fragment); } catch (_) {}
+            }
+        }
         state.renderedEl.appendChild(fragment);
-        try { renderMathSafe(fragment); } catch (_) {}
         state.liveRaw = '';
         renderLiveStreamTail(block, citationMap);
     }
@@ -7241,6 +7910,8 @@ async function sendMessage() {
         try {
             const blocks = aiMsgDiv.querySelectorAll('.content-body[data-stream-live="1"]');
             blocks.forEach((block) => {
+                const state = ensureStreamBlockState(block);
+                clearLiveMathRenderSchedule(state);
                 const raw = String(block.dataset.streamRaw || '');
                 const sourceText = rewriteCitationRefsMarkdown(raw, aiMsgDiv.__citationUrlMap || {});
                 block.innerHTML = renderMarkdownWithNewTabLinks(sourceText);
@@ -7251,7 +7922,18 @@ async function sendMessage() {
             });
             const thinkingBlocks = aiMsgDiv.querySelectorAll('.thinking-block.reasoning-thinking-block[data-stream-live="1"] .thinking-content');
             thinkingBlocks.forEach((contentDiv) => {
-                try { renderMathSafe(contentDiv); } catch (_) {}
+                const state = ensureStreamBlockState(contentDiv);
+                clearLiveMathRenderSchedule(state);
+                const raw = String(contentDiv.dataset.streamRaw || '');
+                if (raw) {
+                    const sourceText = rewriteCitationRefsMarkdown(raw, aiMsgDiv.__citationUrlMap || {});
+                    contentDiv.innerHTML = renderMarkdownWithNewTabLinks(sourceText, { breaks: false });
+                    bindSourceMarkdown(contentDiv, sourceText);
+                    highlightCode(contentDiv);
+                    try { renderMathSafe(contentDiv); } catch (_) {}
+                } else {
+                    try { renderMathSafe(contentDiv); } catch (_) {}
+                }
                 const host = contentDiv.closest('.thinking-block.reasoning-thinking-block');
                 if (host) host.dataset.streamLive = '0';
             });
@@ -7408,11 +8090,15 @@ async function sendMessage() {
                            }
                             
                             const contentDiv = thinkingBlock.querySelector('.thinking-content');
-                            let raw = contentDiv.dataset.rawText || '';
-                            raw += chunk.content;
-                            contentDiv.dataset.rawText = raw;
-                            contentDiv.textContent = raw;
-                            try { renderMathSafe(contentDiv); } catch (_) {}
+                            const nextRaw = `${String(contentDiv.dataset.streamRaw || '')}${String(chunk.content || '')}`;
+                            contentDiv.dataset.streamRaw = nextRaw;
+                            const streamState = ensureStreamBlockState(contentDiv);
+                            if (streamState) {
+                                streamState.liveRaw += String(chunk.content || '');
+                                flushStableStreamTail(contentDiv, aiMsgDiv.__citationUrlMap || {}, false);
+                            } else {
+                                contentDiv.textContent = nextRaw;
+                            }
                             thinkingBlock.dataset.streamLive = '1';
                         }
                         // --- New Chunk Types Support ---
@@ -8624,6 +9310,52 @@ function normalizeVariantTimestamp(v) {
     return Number.isFinite(t) ? t : 0;
 }
 
+let __messagesBottomPinRaf = null;
+let __messagesBottomPinUntilTs = 0;
+let __messagesBottomPinPrevInlineBehavior = null;
+let __messagesBottomPinPendingRestoreBehavior = null;
+
+function pinMessagesToBottomFor(durationMs = 900) {
+    const container = els.messagesContainer;
+    if (!container) return;
+    shouldAutoScroll = true;
+    const now = Date.now();
+    const dur = Math.max(120, Math.min(5000, Number(durationMs) || 900));
+    __messagesBottomPinUntilTs = Math.max(__messagesBottomPinUntilTs, now + dur);
+    if (__messagesBottomPinPrevInlineBehavior === null) {
+        __messagesBottomPinPrevInlineBehavior = String(container.style.scrollBehavior || '');
+    }
+    container.style.scrollBehavior = 'auto';
+
+    if (__messagesBottomPinRaf) return;
+    const tick = () => {
+        const c = els.messagesContainer;
+        if (!c) {
+            __messagesBottomPinRaf = null;
+            __messagesBottomPinUntilTs = 0;
+            __messagesBottomPinPrevInlineBehavior = null;
+            __messagesBottomPinPendingRestoreBehavior = null;
+            return;
+        }
+        if (!shouldAutoScroll || Date.now() > __messagesBottomPinUntilTs) {
+            __messagesBottomPinRaf = null;
+            __messagesBottomPinUntilTs = 0;
+            const restoreBehavior = __messagesBottomPinPendingRestoreBehavior !== null
+                ? __messagesBottomPinPendingRestoreBehavior
+                : __messagesBottomPinPrevInlineBehavior;
+            if (restoreBehavior !== null) {
+                c.style.scrollBehavior = String(restoreBehavior || '');
+            }
+            __messagesBottomPinPrevInlineBehavior = null;
+            __messagesBottomPinPendingRestoreBehavior = null;
+            return;
+        }
+        c.scrollTop = c.scrollHeight;
+        __messagesBottomPinRaf = requestAnimationFrame(tick);
+    };
+    __messagesBottomPinRaf = requestAnimationFrame(tick);
+}
+
 function variantSignature(v) {
     const ts = String((v && v.timestamp) || '');
     const content = String((v && v.content) || '');
@@ -8690,6 +9422,9 @@ function renderMessages(messages, noScroll, options = {}) {
     
     // Save current scroll position
     const oldScrollTop = els.messagesContainer.scrollTop;
+    const oldScrollHeight = els.messagesContainer.scrollHeight;
+    const oldClientHeight = els.messagesContainer.clientHeight;
+    const wasNearBottom = (oldScrollHeight - oldScrollTop - oldClientHeight) <= 40;
     const prevInlineScrollBehavior = els.messagesContainer.style.scrollBehavior;
     if (instant) {
         els.messagesContainer.style.scrollBehavior = 'auto';
@@ -8704,19 +9439,35 @@ function renderMessages(messages, noScroll, options = {}) {
     }
     
     // Restore or scroll
+    let shouldPinBottom = false;
     if (noScroll) {
         // Try to maintain the relative scroll position if desired, 
         // but usually for delete/version-switch we just want to stay where we are
-        els.messagesContainer.scrollTop = oldScrollTop;
-    } else if (shouldAutoScroll) {
+        if (wasNearBottom || shouldAutoScroll) {
+            els.messagesContainer.scrollTop = els.messagesContainer.scrollHeight;
+            shouldPinBottom = true;
+        } else {
+            els.messagesContainer.scrollTop = oldScrollTop;
+        }
+    } else if (shouldAutoScroll || wasNearBottom) {
         els.messagesContainer.scrollTop = els.messagesContainer.scrollHeight;
+        shouldPinBottom = true;
+    }
+
+    // LaTeX/Katex may expand layout asynchronously after initial paint; keep bottom anchored briefly.
+    if (shouldPinBottom) {
+        pinMessagesToBottomFor(4200);
     }
 
     if (instant) {
-        // 恢复原来的滚动行为（通常是 CSS 中的 smooth）
-        requestAnimationFrame(() => {
-            els.messagesContainer.style.scrollBehavior = prevInlineScrollBehavior || '';
-        });
+        // Instant render should stay `auto` while bottom-pin is active.
+        if (shouldPinBottom && Date.now() <= __messagesBottomPinUntilTs) {
+            __messagesBottomPinPendingRestoreBehavior = String(prevInlineScrollBehavior || '');
+        } else {
+            requestAnimationFrame(() => {
+                els.messagesContainer.style.scrollBehavior = prevInlineScrollBehavior || '';
+            });
+        }
     }
 }
 
@@ -8804,10 +9555,10 @@ async function startRegenerate(index) {
             const content = regenMessageDiv.querySelector('.message-content');
             // 清理旧内容/工具链，避免重新生成时复用历史展示节点
             if (content) {
-                content.querySelectorAll('.content-body,.thinking-block,.tool-usage,.add-basis-view,.msg-actions').forEach(el => el.remove());
+                content.querySelectorAll('.content-body,.thinking-block,.tool-usage,.add-basis-view').forEach(el => el.remove());
             } else {
                 // fallback
-                regenMessageDiv.querySelectorAll('.content-body,.thinking-block,.tool-usage,.add-basis-view,.msg-actions').forEach(el => el.remove());
+                regenMessageDiv.querySelectorAll('.content-body,.thinking-block,.tool-usage,.add-basis-view').forEach(el => el.remove());
             }
             regenMessageDiv.__citationUrlMap = {};
             regenMessageDiv.__toolCallState = {
@@ -8886,13 +9637,8 @@ async function startRegenerate(index) {
         isGenerating = false;
         updateSendButtonState();
         if (regenMessageDiv) regenMessageDiv.classList.remove('pending');
-        
-        // Final refresh to ensure all metadata/indices are locked
-        const convRes = await fetch(`/api/conversations/${currentConversationId}`);
-        const convData = await convRes.json();
-        if (convData.success) {
-            renderMessages(convData.conversation.messages, true);
-        }
+        // Keep current message DOM to avoid delayed full re-render/flash.
+        loadConversations();
     }
 }
 
@@ -8911,9 +9657,15 @@ function updateMessageDivContent(index, fullText) {
         messageDiv.querySelector('.message-content').appendChild(body);
     }
     
-    body.innerHTML = renderMarkdownWithNewTabLinks(fullText);
+    body.dataset.streamLive = '1';
+    body.innerHTML = renderMarkdownWithNewTabLinks(fullText, { streamingMathProvisional: true });
     bindSourceMarkdown(body, fullText);
-    renderMathSafe(body);
+    const syncRendered = hasLikelyMathForThinkingStream(fullText)
+        ? renderMathInElementSyncPreferred(body)
+        : false;
+    if (!syncRendered) {
+        renderMathSafe(body);
+    }
     highlightCode(body);
     
     if (shouldAutoScroll) els.messagesContainer.scrollTop = els.messagesContainer.scrollHeight;
@@ -8952,8 +9704,19 @@ function updateMessageDivThinking(index, delta) {
     let raw = textTarget.dataset.rawText || '';
     raw += delta;
     textTarget.dataset.rawText = raw;
-    textTarget.textContent = raw;
-    renderMathSafe(textTarget);
+    textTarget.dataset.streamLive = '1';
+    textTarget.innerHTML = renderMarkdownWithNewTabLinks(raw, {
+        breaks: false,
+        streamingMathProvisional: true
+    });
+    bindSourceMarkdown(textTarget, raw);
+    const syncRendered = hasLikelyMathForThinkingStream(raw)
+        ? renderMathInElementSyncPreferred(textTarget)
+        : false;
+    if (!syncRendered) {
+        renderMathSafe(textTarget);
+    }
+    highlightCode(textTarget);
 }
 
 function updateMessageDivTools(index, data) {
@@ -12805,11 +13568,19 @@ function uploadSingleFileWithProgress(file, index, total) {
 
 function appendUploadedFileEntry(data, fallbackFileName) {
     if (!data || !data.success) return;
+    const parsedSize = Number(
+        data.size != null ? data.size
+            : (data.file_size != null ? data.file_size : 0)
+    );
+    const normalizedSize = Number.isFinite(parsedSize) ? Math.max(0, Math.floor(parsedSize)) : 0;
     if (data.type === 'text') {
+        const textContent = String(data.content || '');
+        const textSize = normalizedSize > 0 ? normalizedSize : Number(new Blob([textContent]).size || 0);
         uploadedFileIds.push({
             type: 'text',
-            content: data.content,
-            name: data.filename || fallbackFileName
+            content: textContent,
+            name: data.filename || fallbackFileName,
+            size: textSize
         });
     } else if (data.type === 'sandbox_file') {
         uploadedFileIds.push({
@@ -12817,7 +13588,8 @@ function appendUploadedFileEntry(data, fallbackFileName) {
             name: data.update_file_name || data.filename || fallbackFileName,
             original_name: data.filename || fallbackFileName,
             sandbox_path: data.sandbox_path,
-            stored_path: data.stored_path
+            stored_path: data.stored_path,
+            size: normalizedSize
         });
         if (data.vectorized === false && data.vector_message) {
             showToast(`文件已上传，临时向量化失败: ${data.vector_message}`);
@@ -12826,7 +13598,8 @@ function appendUploadedFileEntry(data, fallbackFileName) {
         uploadedFileIds.push({
             type: 'file',
             id: data.file_id,
-            name: data.filename || fallbackFileName
+            name: data.filename || fallbackFileName,
+            size: normalizedSize
         });
     }
 }

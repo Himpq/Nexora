@@ -118,7 +118,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "client_js_exec",
-            "description": """在当前聊天页的隔离 JS Worker 中执行纯 JavaScript。适合轻量计算、文本处理和 Canvas；不能访问 DOM、页面状态或网络。若要操作真实网页 DOM，请用 local_web_render / web_exec_js。""",
+            "description": """在当前聊天页的隔离 JS Worker 中执行纯 JavaScript。适合轻量计算、文本处理和 Canvas；不能访问 DOM、页面状态或网络。若要操作真实网页 DOM，请用 local_web_render / web_exec_js。可以使用 const canvas = context.canvas来访问内置的canvas对象。""",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -202,7 +202,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "addBasis",
-            "description": "向长期知识库写入结构化基础知识。适合稳定、可复用、带来源的完整内容，不适合简短备注。",
+            "description": "向用户知识库添加基础知识（长期记忆）- 学术报告级别要求。\n\n必须满足以下标准：\n1. 字数要求：最低3000字，推荐5000-10000字\n2. 结构完整：背景-核心概念-详细分析-数据支撑-对比总结-结论展望\n3. 数据精确：所有数据必须标注来源、时间、样本量，使用表格对比\n4. 引用规范：文中标注[来源](链接)，文末列出完整参考资料\n5. 格式严谨：Markdown格式，多级标题，表格对比，代码块标注\n6. 内容深度：横向对比覆盖所有关键维度，技术说明包含原理/实现/优缺点/场景/实践\n\n禁止简短概述，必须像撰写技术白皮书或学术论文那样全面、严谨、数据翔实。",
 
             "parameters": {
                 "type": "object",
@@ -679,7 +679,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "file_read",
-            "description": "读取用户文件沙箱中的文本文件。支持全文读取、按行范围读取、按字符索引范围读取。单次调用最多返回500行且10000字符，超出部分会自动截断并返回截断位置(line, column)。",
+            "description": "读取用户文件沙箱中的文本文件，自动解析为纯文本。支持全文读取、按行范围读取、按字符索引范围读取。单次调用最多返回500行且10000字符，超出部分会自动截断并返回截断位置(line, column)。",
             "parameters": {
                 "type": "object",
                 "properties": {
