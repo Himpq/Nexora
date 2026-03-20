@@ -17,7 +17,7 @@
     <script src="/static/vendor/easymde/easymde.min.js"></script>
 
     <!-- App Styles -->
-    <link rel="stylesheet" href="/static/css/style.css?v=20260319_14"> 
+    <link rel="stylesheet" href="/static/css/style.css?v=20260320_01"> 
     <link rel="stylesheet" href="/static/css/easymde_override.css">
 </head>
 <body>
@@ -60,7 +60,7 @@
                             <span>设置</span>
                         </a>
                         <div class="menu-divider"></div>
-                        <a href="/logout" class="menu-item logout">
+                        <a href="/logout" id="logoutLink" class="menu-item logout">
                             <i class="fa-solid fa-right-from-bracket"></i>
                             <span>退出</span>
                         </a>
@@ -186,15 +186,16 @@
                                 <span class="check-label check-label-text">Tools</span>
                             </span>
                             <div class="tool-mode-dropdown" id="toolsModeDropdown">
-                                <input type="hidden" id="toolsMode" value="force">
+                                <input type="hidden" id="toolsMode" value="auto_off">
                                 <button type="button" class="tool-mode-trigger" id="toolsModeTrigger" aria-haspopup="listbox" aria-expanded="false">
-                                    <span id="toolsModeLabel">Force</span>
+                                    <span id="toolsModeLabel">Auto(OFF)</span>
                                     <i class="fa-solid fa-chevron-up"></i>
                                 </button>
                                 <div class="tool-mode-menu" id="toolsModeMenu" role="listbox" aria-label="Tools mode">
                                     <button type="button" class="tool-mode-item" data-mode="off" role="option">Off</button>
-                                    <button type="button" class="tool-mode-item" data-mode="auto" role="option">Auto</button>
-                                    <button type="button" class="tool-mode-item active" data-mode="force" role="option" aria-selected="true">Force</button>
+                                    <button type="button" class="tool-mode-item active" data-mode="auto_off" role="option" aria-selected="true">Auto(OFF)</button>
+                                    <button type="button" class="tool-mode-item" data-mode="auto_select" role="option">Auto(Select tools)</button>
+                                    <button type="button" class="tool-mode-item" data-mode="force" role="option">Force</button>
                                 </div>
                             </div>
                         </label>
@@ -211,8 +212,15 @@
                     
                     <div class="input-footer">
                         <div class="token-footer-left">
-                            <div class="token-budget-mini" id="tokenBudgetMini" title="上下文窗口预算">
+                            <div class="token-budget-mini" id="tokenBudgetMini">
                                 <span class="token-budget-ring" id="tokenBudgetRing"></span>
+                                <button
+                                    type="button"
+                                    class="token-budget-context-toggle"
+                                    id="tokenBudgetContextToggle"
+                                    aria-label="切换是否传入历史上下文"
+                                    aria-pressed="true"
+                                ></button>
                             </div>
                             <div class="token-budget-usage" id="tokenBudgetUsage">CTX --/--</div>
                             <div class="token-mini" id="tokenDisplay">
@@ -482,17 +490,50 @@
                 <i class="fa-solid fa-thumbtack"></i>
                 <span>置顶</span>
             </button>
+            <button id="pinContextMenuRename" type="button">
+                <i class="fa-solid fa-pen"></i>
+                <span>修改标题</span>
+            </button>
         </div>
 
-        <!-- Mobile Selection Quick Add -->
-        <button id="mobileSelectionAddBtn" class="mobile-selection-add-btn" type="button" aria-hidden="true">
-            <i class="fa-solid fa-note-sticky"></i>
-            <span>添加到笔记</span>
-        </button>
+        <div id="conversationRenameModal" class="modal-backdrop" aria-hidden="true">
+            <div class="modal" style="max-width: 420px;">
+                <div class="modal-head">
+                    <h3>修改会话标题</h3>
+                    <button id="closeConversationRenameModalBtn" class="btn-modal-close" type="button">×</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label for="conversationRenameInput">标题</label>
+                        <input id="conversationRenameInput" type="text" class="input-modern" maxlength="120" placeholder="输入新标题...">
+                    </div>
+                    <div class="modal-actions">
+                        <button id="cancelConversationRenameBtn" type="button" class="btn-secondary">取消</button>
+                        <button id="confirmConversationRenameBtn" type="button" class="btn-primary">保存</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Mobile Selection Quick Actions -->
+        <div id="mobileSelectionActionsBar" class="mobile-selection-actions" aria-hidden="true">
+            <button id="mobileSelectionAddBtn" class="mobile-selection-action-btn" type="button">
+                <i class="fa-solid fa-note-sticky"></i>
+                <span>添加到笔记</span> 
+            </button>
+            <button id="mobileSelectionCopyBtn" class="mobile-selection-action-btn" type="button">
+                <i class="fa-regular fa-copy"></i>
+                <span>复制</span>
+            </button>
+            <button id="mobileSelectionExplainBtn" class="mobile-selection-action-btn" type="button">
+                <i class="fa-solid fa-lightbulb"></i>
+                <span>解释</span>
+            </button>
+        </div>
     </div>
     
     <!-- Scripts -->
-    <script src="/static/js/chat.js?v=20260319_14"></script>
+    <script src="/static/js/chat.js?v=20260320_01"></script>
 
     <!-- 添加用户表单 -->
     <div id="addUserModal" class="modal-backdrop" style="z-index: 2200;">

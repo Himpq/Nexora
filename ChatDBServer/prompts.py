@@ -37,12 +37,19 @@ system_web_search_enabled = """
 """
 
 
-system_tools_enabled_auto = """
+system_tools_enabled_auto_select = """
 当前会话能力：
-- 用户已启用工具调用，模式为 Auto。
+- 用户已启用工具调用，模式为 Auto(Select)。
 - 若你已明确知道要调用的工具，可直接调用。
-- 如需查看当前轮更完整的工具目录，再调用 selectTools。
+- 如需查看当前轮更完整的工具目录，再调用 select_tools。
 - 对真实网页交互：先用 local_web_render(interactive) 建立会话，再优先用 web_exec_js / web_input；仅在需要加载新区域时才用 web_scroll。
+"""
+
+system_tools_enabled_auto_off = """
+当前会话能力：
+- 用户已启用工具调用，模式为 Auto(OFF)。
+- 当前默认不开放业务工具；先调用 enable_tools，再继续执行。
+- enable_tools 一旦调用成功，当前回复后续轮次立即切到 Force（开放全部业务工具）。
 """
 
 
@@ -71,8 +78,10 @@ def build_main_system_prompt(
         mode = str(tool_mode or "").strip().lower()
         if mode == "force":
             parts.append(system_tools_enabled_force.strip())
+        elif mode == "auto_off":
+            parts.append(system_tools_enabled_auto_off.strip())
         else:
-            parts.append(system_tools_enabled_auto.strip())
+            parts.append(system_tools_enabled_auto_select.strip())
     return SYSTEM_PROMPT_SEP.join([p for p in parts if p]).strip()
 
 
@@ -82,25 +91,25 @@ RUNTIME_HINT_TOOL_TAG = "[工具选择协议]"
 runtime_native_search_hint = f"""{RUNTIME_HINT_NATIVE_TAG} 当前会话已启用原生联网搜索能力。"""
 
 runtime_tool_selector_empty = f"""{RUNTIME_HINT_TOOL_TAG}
-本轮可调用工具仅有 selectTools，但当前可选目录为空。
+本轮可调用工具仅有 select_tools，但当前可选目录为空。
 """
 
 runtime_tool_selector_template = f"""{RUNTIME_HINT_TOOL_TAG}
-Auto 模式下可调用 selectTools 请求当前轮更具体的工具子集；调用后立即生效，仅影响当前回复。
-示例：{{"tools":["client_js_exec","vectorSearch"]}}
+Auto 模式下可调用 select_tools 请求当前轮更具体的工具子集；调用后立即生效，仅影响当前回复。
+示例：{{"tools":["client_js_exec","vector_search"]}}
 可选工具目录（工具名 - 工具概览）：
 {{catalog}}
 """
 
 select_tools_catalog_empty = "当前没有可选工具目录。"
 select_tools_catalog_marker = "当前可选工具名:"
-select_tools_catalog_suffix = "当前可选工具名: {{names}}。请仅按工具名调用 selectTools。"
-select_tools_catalog_suffix_more = "当前可选工具名: {{names}} 等 {{total}} 个。请仅按工具名调用 selectTools。"
+select_tools_catalog_suffix = "当前可选工具名: {{names}}。请仅按工具名调用 {{selector_tool}}。"
+select_tools_catalog_suffix_more = "当前可选工具名: {{names}} 等 {{total}} 个。请仅按工具名调用 {{selector_tool}}。"
 
 runtime_tool_not_enabled_template = (
     "错误：工具 '{{function_name}}' 当前未启用。"
     "当前允许工具: {{allowed_names}}。"
-    "如需补充工具目录，可调用 selectTools（例如 {\"tools\":[\"client_js_exec\",\"vectorSearch\"]}），"
+    "如需继续启用/切换工具，请调用 {{selector_tool}}，"
     "随后在当前回复的后续轮次生效。"
 )
 
@@ -133,12 +142,14 @@ def build_runtime_tool_selector_hint(catalog_prompt: str) -> str:
     return out.strip()
 
 
-def build_runtime_tool_not_enabled_message(function_name: str, allowed_names) -> str:
+def build_runtime_tool_not_enabled_message(function_name: str, allowed_names, selector_tool: str = "select_tools") -> str:
     fn = str(function_name or "").strip() or "unknown"
     allowed = [str(x).strip() for x in (allowed_names or []) if str(x).strip()]
     allowed_text = ", ".join(allowed) if allowed else "(none)"
+    selector = str(selector_tool or "select_tools").strip() or "select_tools"
     out = runtime_tool_not_enabled_template.replace("{{function_name}}", fn)
     out = out.replace("{{allowed_names}}", allowed_text)
+    out = out.replace("{{selector_tool}}", selector)
     return out
 
 
@@ -177,18 +188,26 @@ def build_select_tools_catalog_prompt(catalog: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def build_select_tools_catalog_suffix(names: Iterable[str], max_items: int = 128) -> str:
+def build_select_tools_catalog_suffix(
+    names: Iterable[str],
+    max_items: int = 128,
+    selector_tool: str = "select_tools"
+) -> str:
     clean_names = [str(x).strip() for x in (names or []) if str(x).strip()]
     if not clean_names:
         return select_tools_catalog_empty
     cap = max(1, int(max_items or 24))
     shown = clean_names[:cap]
     joined = ", ".join(shown)
+    selector = str(selector_tool or "select_tools").strip() or "select_tools"
     if len(clean_names) > len(shown):
         out = select_tools_catalog_suffix_more.replace("{{names}}", joined)
         out = out.replace("{{total}}", str(len(clean_names)))
+        out = out.replace("{{selector_tool}}", selector)
         return out
-    return select_tools_catalog_suffix.replace("{{names}}", joined)
+    out = select_tools_catalog_suffix.replace("{{names}}", joined)
+    out = out.replace("{{selector_tool}}", selector)
+    return out
 
 
 def strip_select_tools_catalog_suffix(desc: Any) -> str:

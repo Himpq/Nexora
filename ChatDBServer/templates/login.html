@@ -305,6 +305,15 @@
         const loginBtn = document.getElementById('loginBtn');
         const btnText = document.getElementById('btnText');
         const loading = document.getElementById('loading');
+        const loginSearch = new URLSearchParams(window.location.search || '');
+
+        function resolveNextPath() {
+            const raw = String(loginSearch.get('next') || '').trim();
+            if (!raw) return '/chat';
+            if (!raw.startsWith('/')) return '/chat';
+            if (raw.startsWith('//')) return '/chat';
+            return raw;
+        }
 
         loginForm.addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -335,7 +344,7 @@
                 const data = await response.json();
 
                 if (data.success) {
-                    window.location.href = '/chat';
+                    window.location.href = resolveNextPath();
                 } else {
                     showError(data.message || '登录失败');
                     resetButton();

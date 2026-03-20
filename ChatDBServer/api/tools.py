@@ -1,16 +1,53 @@
+TOOL_NAME_ALIASES = {
+    "selectTools": "select_tools",
+    "EnableTools": "enable_tools",
+    "vectorSearch": "vector_search",
+    "arxivSearch": "arxiv_search",
+    "getKnowledgeList": "get_knowledge_list",
+    "addBasis": "add_basis",
+    "removeBasis": "remove_basis",
+    "updateBasis": "update_basis",
+    "getBasisContent": "get_basis_content",
+    "searchKeyword": "search_keyword",
+    "linkKnowledge": "link_knowledge",
+    "categorizeKnowledge": "categorize_knowledge",
+    "createCategory": "create_category",
+    "analyzeConnections": "analyze_connections",
+    "getKnowledgeGraphStructure": "get_knowledge_graph_structure",
+    "getKnowledgeConnections": "get_knowledge_connections",
+    "findPathBetweenKnowledge": "find_path_between_knowledge",
+    "getContextLength": "get_context_length",
+    "getContext": "get_context",
+    "getContext_findKeyword": "get_context_find_keyword",
+    "getMainTitle": "get_main_title",
+    "sendEMail": "send_email",
+    "getEMail": "get_email",
+    "getEMailList": "get_email_list",
+    "queryShortMemory": "query_short_memory",
+    "addShort": "add_short",
+    "removeShort": "remove_short",
+}
+
+
+def canonicalize_tool_name(name):
+    raw = str(name or "").strip()
+    if not raw:
+        return ""
+    return TOOL_NAME_ALIASES.get(raw, raw)
+
 
 TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "selectTools",
+            "name": "select_tools",
             "description": "可选：在 Auto 模式下按工具名请求当前轮更具体的工具子集。调用后立即生效，仅影响当前回复。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "tools": {
                         "type": "array",
-                        "description": "要启用的工具名数组，例如 [\"client_js_exec\",\"vectorSearch\"]。",
+                        "description": "要启用的工具名数组，例如 [\"client_js_exec\",\"vector_search\"]。",
                         "items": {"type": "string"}
                     },
                     "tool_names": {
@@ -20,7 +57,7 @@ TOOLS = [
                     },
                     "name_text": {
                         "type": "string",
-                        "description": "可选，逗号分隔的工具名字符串，例如 \"client_js_exec,vectorSearch\"。"
+                        "description": "可选，逗号分隔的工具名字符串，例如 \"client_js_exec,vector_search\"。"
                     },
                     "reason": {
                         "type": "string",
@@ -34,7 +71,38 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "vectorSearch",
+            "name": "enable_tools",
+            "description": "仅用于 Auto(OFF) 模式：调用后当前回复后续轮次立即进入 Force（开放全部业务工具）。本工具不做精确工具选择。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tools": {
+                        "type": "array",
+                        "description": "可选，占位参数。enable_tools 会忽略精确列表并直接切换到 Force。",
+                        "items": {"type": "string"}
+                    },
+                    "tool_names": {
+                        "type": "array",
+                        "description": "可选，占位参数。enable_tools 会忽略精确列表并直接切换到 Force。",
+                        "items": {"type": "string"}
+                    },
+                    "name_text": {
+                        "type": "string",
+                        "description": "可选，占位参数。enable_tools 会忽略精确列表并直接切换到 Force。"
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "可选，简要说明启用理由。"
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "vector_search",
             "description": "在向量库中做语义检索，默认检索 knowledge 库。",
             "parameters": {
                 "type": "object",
@@ -84,7 +152,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "arxivSearch",
+            "name": "arxiv_search",
             "description": "在 arXiv 中搜索论文，返回标题、作者、摘要、时间和 PDF 链接。",
             "parameters": {
                 "type": "object",
@@ -142,7 +210,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "getKnowledgeList",
+            "name": "get_knowledge_list",
             "description": "获取用户知识库的标题列表，分为短期记忆和基础知识库两种，请优先使用本函数查阅知识库内容。",
 
             "parameters": {
@@ -158,50 +226,51 @@ TOOLS = [
             }
         }
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "queryShortMemory",
-            "description": "查询用户短期记忆。支持按关键词过滤，返回短期记忆的ID与标题列表。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "keyword": {
-                        "type": "string",
-                        "description": "可选，按关键词匹配短期记忆标题。为空时返回全部。"
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "返回条数上限，默认20，范围1-200。"
-                    }
-                },
-                "required": []
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "addShort",
-            "description": "向用户知识库添加短期记忆，短期记忆用于记录用户的喜好偏向、最近在做的事，这个需要频繁主动记录。",
+    # 短期记忆工具已停用（保留定义仅用于回溯）。
+    # {
+    #     "type": "function",
+    #     "function": {
+    #         "name": "queryShortMemory",
+    #         "description": "查询用户短期记忆。支持按关键词过滤，返回短期记忆的ID与标题列表。",
+    #         "parameters": {
+    #             "type": "object",
+    #             "properties": {
+    #                 "keyword": {
+    #                     "type": "string",
+    #                     "description": "可选，按关键词匹配短期记忆标题。为空时返回全部。"
+    #                 },
+    #                 "limit": {
+    #                     "type": "integer",
+    #                     "description": "返回条数上限，默认20，范围1-200。"
+    #                 }
+    #             },
+    #             "required": []
+    #         }
+    #     }
+    # },
+    # {
+    #     "type": "function",
+    #     "function": {
+    #         "name": "addShort",
+    #         "description": "向用户知识库添加短期记忆，短期记忆用于记录用户的喜好偏向、最近在做的事，这个需要频繁主动记录。",
+    #
+    #         "parameters": {
+    #             "type": "object",
+    #             "properties": {
+    #                 "title": {
+    #                     "type": "string",
+    #                     "description": "添加的短期记忆内容，简短总结。"
+    #                 }
+    #             },
+    #             "required": ["title"]
+    #         }
+    #     }
+    # },
 
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "title": {
-                        "type": "string",
-                        "description": "添加的短期记忆内容，简短总结。"
-                    }
-                },
-                "required": ["title"]
-            }
-        }
-    },
-
     {
         "type": "function",
         "function": {
-            "name": "addBasis",
+            "name": "add_basis",
             "description": "向用户知识库添加基础知识（长期记忆）- 学术报告级别要求。\n\n必须满足以下标准：\n1. 字数要求：最低3000字，推荐5000-10000字\n2. 结构完整：背景-核心概念-详细分析-数据支撑-对比总结-结论展望\n3. 数据精确：所有数据必须标注来源、时间、样本量，使用表格对比\n4. 引用规范：文中标注[来源](链接)，文末列出完整参考资料\n5. 格式严谨：Markdown格式，多级标题，表格对比，代码块标注\n6. 内容深度：横向对比覆盖所有关键维度，技术说明包含原理/实现/优缺点/场景/实践\n\n禁止简短概述，必须像撰写技术白皮书或学术论文那样全面、严谨、数据翔实。",
 
             "parameters": {
@@ -225,29 +294,29 @@ TOOLS = [
         }
     },
 
+    # {
+    #     "type": "function",
+    #     "function": {
+    #         "name": "removeShort",
+    #         "description": "删除用户知识库中的短期记忆。",
+    #
+    #         "parameters": {
+    #             "type": "object",
+    #             "properties": {
+    #                 "ID": {
+    #                     "type": "integer",
+    #                     "description": "删除的短期记忆内容。"
+    #                 }
+    #             },
+    #             "required": ["ID"]
+    #         }
+    #     }
+    # },
+
     {
         "type": "function",
         "function": {
-            "name": "removeShort",
-            "description": "删除用户知识库中的短期记忆。",
-
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "ID": {
-                        "type": "integer",
-                        "description": "删除的短期记忆内容。"
-                    }
-                },
-                "required": ["ID"]
-            }
-        }
-    },
-
-    {
-        "type": "function",
-        "function": {
-            "name": "removeBasis",
+            "name": "remove_basis",
             "description": "删除用户知识库中的基础知识。",
 
             "parameters": {
@@ -266,7 +335,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "updateBasis",
+            "name": "update_basis",
             "description": "更新基础知识。支持重命名、整段覆盖、URL更新、公开/协作设置，以及按字符索引区间替换（单次或批量）。",
 
             "parameters": {
@@ -336,7 +405,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "getBasisContent",
+            "name": "get_basis_content",
             "description": "读取基础知识内容。支持全文读取、按字符索引区间读取、按关键词邻域读取，以及 regex（rg风格）匹配读取。",
 
             "parameters": {
@@ -496,7 +565,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "getKnowledgeGraphStructure",
+            "name": "get_knowledge_graph_structure",
             "description": "获取当前知识图谱的整体结构，包括所有分类及其包含的知识点列表。用于了解知识库的宏观组织结构。",
             "parameters": {
                 "type": "object",
@@ -621,7 +690,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "searchKeyword",
+            "name": "search_keyword",
             "description": "在知识库（短期记忆和基础知识）中搜索关键词，返回包含关键词的标题和内容片段。用于快速查找知识库中的相关信息。",
 
             "parameters": {
@@ -766,7 +835,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "sendEMail",
+            "name": "send_email",
             "description": "使用用户绑定邮箱发送邮件。",
             "parameters": {
                 "type": "object",
@@ -784,7 +853,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "getEMail",
+            "name": "get_email",
             "description": "获取用户绑定邮箱中的指定邮件。",
             "parameters": {
                 "type": "object",
@@ -811,7 +880,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "getEMailList",
+            "name": "get_email_list",
             "description": "获取用户绑定邮箱中的邮件列表。",
             "parameters": {
                 "type": "object",

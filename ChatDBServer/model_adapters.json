@@ -12,6 +12,7 @@
             "native_enabled": true,
             "relay_enabled": false,
             "allow_models": 1,
+            "request_options": {},
             "tools": [
                 {
                     "type": "web_search"
@@ -51,7 +52,6 @@
                 "Moonshot-Kimi-K2-Instruct",
                 "MiniMax-M2.1"
             ],
-
             "request_options": {
                 "search_api": "chat_completions",
                 "enable_search": true,
