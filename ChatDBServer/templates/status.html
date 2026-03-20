@@ -452,7 +452,7 @@
     }
     .recent-item {
       display: grid;
-      grid-template-columns: minmax(0, 240px) minmax(0, 1fr) 96px;
+      grid-template-columns: 34px minmax(0, 220px) minmax(0, 1fr) 96px;
       gap: 14px;
       align-items: center;
     }
@@ -774,6 +774,18 @@
     <section class="section">
       <div class="section-head">
         <div>
+          <h2>近24h调用榜</h2>
+          <p>融合近24小时调用次数与 Token 消耗，避免“高频低负载”和“低频高负载”模型被单一指标误判。</p>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="recent-list" id="recent24hList"></div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
           <h2>Token 用量概览</h2>
           <p>站内 Token 消耗量排行榜</p>
         </div>
@@ -793,18 +805,6 @@
       <div class="panel">
         <div class="complexity-grid" id="complexitySummary"></div>
         <div class="complexity-list" id="complexityList"></div>
-      </div>
-    </section>
-
-    <section class="section">
-      <div class="section-head">
-        <div>
-          <h2>近24h调用榜</h2>
-          <p>融合近24小时调用次数与 Token 消耗，避免“高频低负载”和“低频高负载”模型被单一指标误判。</p>
-        </div>
-      </div>
-      <div class="panel">
-        <div class="recent-list" id="recent24hList"></div>
       </div>
     </section>
 
@@ -955,8 +955,11 @@
         root.innerHTML = '<div class="empty-hint">暂无 Token 统计数据</div>';
         return;
       }
-      const maxToken = Math.max(...statusData.models.map(item => item.totalTokens), 1);
-      root.innerHTML = statusData.models.map((item) => `
+      const rows = [...statusData.models]
+        .sort((a, b) => Number(b.totalTokens || 0) - Number(a.totalTokens || 0));
+      const maxToken = Math.max(...rows.map(item => Number(item.totalTokens || 0)), 1);
+      const missingTokenCount = rows.filter(item => Number(item.totalTokens || 0) <= 0).length;
+      const chartRows = rows.map((item) => `
         <div class="chart-row">
           <div class="chart-label">
             <span class="chart-name-wrap">
@@ -969,6 +972,10 @@
           <div class="chart-value">${formatNum(item.totalTokens)}</div>
         </div>
       `).join('');
+      const hint = missingTokenCount > 0
+        ? `<div class="empty-hint">注：${missingTokenCount} 个模型调用存在历史 token 日志缺失（显示为 0）。</div>`
+        : '';
+      root.innerHTML = `${chartRows}${hint}`;
     }
 
     function renderComplexity() {
@@ -1032,10 +1039,11 @@
       const maxScore = Math.max(...rows.map(item => Number(item.score || 0)), 1);
       root.innerHTML = rows.map((item, index) => `
         <div class="recent-item">
+          <div class="rank-num">#${index + 1}</div>
           <div class="chart-label">
             <span class="chart-name-wrap">
               ${providerIconMarkup(item)}
-              <span class="chart-name-text">#${index + 1} ${item.name}</span>
+              <span class="chart-name-text">${item.name}</span>
             </span>
           </div>
           <div>
