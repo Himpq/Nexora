@@ -12,6 +12,7 @@ import ssl
 from chroma_client import ChromaStore
 from file_sandbox import UserFileSandbox
 from client_tool_bridge import request_client_js_execution
+from tools import TOOL_NAME_ALIASES, canonicalize_tool_name
 
 
 class ToolExecutor:
@@ -26,36 +27,37 @@ class ToolExecutor:
         self._template_max_chunk_chars = 20000
         self._template_total_budget_chars = 80000
         self.handlers: Dict[str, Callable[[Dict[str, Any]], str]] = {
-            "selectTools": self._select_tools,
-            "getKnowledgeList": self._get_knowledge_list,
-            "addShort": self._add_short,
-            "queryShortMemory": self._query_short_memory,
-            "addBasis": self._add_basis,
-            "removeShort": self._remove_short,
-            "removeBasis": self._remove_basis,
-            "updateBasis": self._update_basis,
-            "getBasisContent": self._get_basis_content,
-            "searchKeyword": self._search_keyword,
-            "arxivSearch": self._arxiv_search,
+            "select_tools": self._select_tools,
+            "enable_tools": self._enable_tools,
+            "get_knowledge_list": self._get_knowledge_list,
+            # "addShort": self._add_short,  # short-memory tools disabled
+            # "queryShortMemory": self._query_short_memory,  # short-memory tools disabled
+            "add_basis": self._add_basis,
+            # "removeShort": self._remove_short,  # short-memory tools disabled
+            "remove_basis": self._remove_basis,
+            "update_basis": self._update_basis,
+            "get_basis_content": self._get_basis_content,
+            "search_keyword": self._search_keyword,
+            "arxiv_search": self._arxiv_search,
             "js_execute": self._js_execute,
             "client_js_exec": self._js_execute,
-            "vectorSearch": self._vector_search,
+            "vector_search": self._vector_search,
             "file_semantic_search": self._file_semantic_search,
-            "linkKnowledge": self._link_knowledge,
-            "categorizeKnowledge": self._categorize_knowledge,
-            "createCategory": self._create_category,
-            "analyzeConnections": self._analyze_connections,
-            "getKnowledgeGraphStructure": self._get_knowledge_graph_structure,
-            "getKnowledgeConnections": self._get_knowledge_connections,
-            "findPathBetweenKnowledge": self._find_path_between_knowledge,
-            "getContextLength": self._get_context_length,
-            "getContext": self._get_context,
-            "getContext_findKeyword": self._get_context_find_keyword,
-            "getMainTitle": self._get_main_title,
+            "link_knowledge": self._link_knowledge,
+            "categorize_knowledge": self._categorize_knowledge,
+            "create_category": self._create_category,
+            "analyze_connections": self._analyze_connections,
+            "get_knowledge_graph_structure": self._get_knowledge_graph_structure,
+            "get_knowledge_connections": self._get_knowledge_connections,
+            "find_path_between_knowledge": self._find_path_between_knowledge,
+            "get_context_length": self._get_context_length,
+            "get_context": self._get_context,
+            "get_context_find_keyword": self._get_context_find_keyword,
+            "get_main_title": self._get_main_title,
             "relay_web_search": self._relay_web_search,
-            "sendEMail": self._send_email,
-            "getEMailList": self._get_email_list,
-            "getEMail": self._get_email,
+            "send_email": self._send_email,
+            "get_email_list": self._get_email_list,
+            "get_email": self._get_email,
             "file_create": self._file_create,
             "file_read": self._file_read,
             "file_write": self._file_write,
@@ -63,6 +65,11 @@ class ToolExecutor:
             "file_list": self._file_list,
             "file_remove": self._file_remove,
         }
+        # Backward compatibility for old camelCase tool names.
+        for legacy_name, canonical_name in TOOL_NAME_ALIASES.items():
+            handler = self.handlers.get(canonical_name)
+            if handler:
+                self.handlers.setdefault(legacy_name, handler)
         self._file_sandbox = UserFileSandbox(self.model.username)
 
     def _safe_int(self, v, default=None):
@@ -346,7 +353,8 @@ class ToolExecutor:
         return base_url
 
     def execute(self, function_name: str, args: Dict[str, Any]) -> str:
-        handler = self.handlers.get(function_name)
+        canonical_name = canonicalize_tool_name(function_name)
+        handler = self.handlers.get(canonical_name) or self.handlers.get(function_name)
         if not handler:
             return f"错误：未知函数 {function_name}"
         try:
@@ -358,21 +366,21 @@ class ToolExecutor:
         return handler(resolved_args)
 
     def _get_knowledge_list(self, args: Dict[str, Any]) -> str:
-        result = self.model.user.getKnowledgeList(args.get("_type", 0))
+        k_type = args.get("_type", 0)
+        try:
+            k_type = int(k_type)
+        except Exception:
+            k_type = 0
+        if k_type == 0:
+            return "(短期记忆已停用)"
+        result = self.model.user.getKnowledgeList(k_type)
         if isinstance(result, dict):
-            if args.get("_type", 0) == 0:
+            if k_type == 0:
                 return "\n".join([f"{k}: {v}" for k, v in result.items()]) or "(空)"
             return "\n".join(result.keys()) or "(空)"
         return str(result)
 
-    def _select_tools(self, args: Dict[str, Any]) -> str:
-        applier_by_names = getattr(self.model, "_apply_runtime_tool_selection_by_names", None)
-        if not callable(applier_by_names):
-            return json.dumps(
-                {"success": False, "message": "runtime tool selection is unavailable"},
-                ensure_ascii=False
-            )
-
+    def _collect_runtime_tool_names_from_args(self, args: Dict[str, Any]):
         names = []
         for key in ("tools", "tool_names", "toolNames", "selected_tools", "selectedTools", "names", "name_text"):
             if key in args:
@@ -380,11 +388,10 @@ class ToolExecutor:
         if not names and "selection" in args:
             names.extend(self._normalize_tool_names(args.get("selection")))
 
-        # unique by insertion order
         uniq_names = []
         seen_names = set()
         for name in names:
-            token = str(name or "").strip()
+            token = canonicalize_tool_name(name)
             if not token:
                 continue
             key = token.lower()
@@ -392,8 +399,39 @@ class ToolExecutor:
                 continue
             seen_names.add(key)
             uniq_names.append(token)
+        return uniq_names
 
-        if uniq_names and callable(applier_by_names):
+    def _runtime_catalog_names(self):
+        catalog = list(getattr(self.model, "_runtime_tool_catalog", []) or [])
+        out = []
+        seen = set()
+        for item in catalog:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "") or "").strip()
+            cname = canonicalize_tool_name(name)
+            if not name or cname in {"select_tools", "enable_tools"}:
+                continue
+            key = (cname or name).lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(cname or name)
+        return out
+
+    def _apply_runtime_tool_selection(self, args: Dict[str, Any], *, allow_enable_all: bool = False) -> str:
+        applier_by_names = getattr(self.model, "_apply_runtime_tool_selection_by_names", None)
+        if not callable(applier_by_names):
+            return json.dumps(
+                {"success": False, "message": "runtime tool selection is unavailable"},
+                ensure_ascii=False
+            )
+
+        uniq_names = self._collect_runtime_tool_names_from_args(args if isinstance(args, dict) else {})
+        if (not uniq_names) and allow_enable_all:
+            uniq_names = self._runtime_catalog_names()
+
+        if uniq_names:
             result = applier_by_names(uniq_names)
             if not isinstance(result, dict):
                 result = {"success": False, "message": "invalid runtime selection result"}
@@ -403,6 +441,26 @@ class ToolExecutor:
             {"success": False, "message": "未提供有效工具名（请传入 tools/tool_names/name_text）"},
             ensure_ascii=False
         )
+
+    def _select_tools(self, args: Dict[str, Any]) -> str:
+        return self._apply_runtime_tool_selection(args, allow_enable_all=False)
+
+    def _enable_tools(self, args: Dict[str, Any]) -> str:
+        enabler = getattr(self.model, "_enable_runtime_tools_for_current_reply", None)
+        if not callable(enabler):
+            return json.dumps(
+                {"success": False, "message": "runtime enable-tools is unavailable"},
+                ensure_ascii=False
+            )
+        result = enabler()
+        if not isinstance(result, dict):
+            result = {"success": False, "message": "invalid enable-tools result"}
+
+        requested_names = self._collect_runtime_tool_names_from_args(args if isinstance(args, dict) else {})
+        if requested_names:
+            result["requested_tool_names"] = requested_names
+            result["note"] = "enable_tools 在 Auto(OFF) 中会切换到 Force（忽略精确工具列表）"
+        return json.dumps(result, ensure_ascii=False)
 
     def _add_short(self, args: Dict[str, Any]) -> str:
         self.model.user.addShort(args.get("title", ""))
@@ -871,7 +929,7 @@ class ToolExecutor:
                 payload.append({"id": vid, "title": meta.get("title"), "score": score})
             return json.dumps(payload, ensure_ascii=False)
         except Exception as e:
-            return f"vector search error: {str(e)}, fall back to searchKeyword immediately."
+            return f"vector search error: {str(e)}, fall back to search_keyword immediately."
 
     def _file_semantic_search(self, args: Dict[str, Any]) -> str:
         query = str(args.get("query") or "").strip()

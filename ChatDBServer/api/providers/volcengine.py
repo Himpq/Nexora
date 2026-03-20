@@ -278,8 +278,84 @@ class VolcengineProvider(ProviderInterface):
         request_options=None,
         model_name="",
     ):
+        req_opts = request_options if isinstance(request_options, dict) else {}
+
+        extra_body = params.get("extra_body", {})
+        if not isinstance(extra_body, dict):
+            extra_body = {}
+        mode_key = "responses_extra_body" if use_responses_api else "chat_extra_body"
+        base_extra = req_opts.get("extra_body")
+        if isinstance(base_extra, dict):
+            extra_body.update(json.loads(json.dumps(base_extra)))
+        mode_extra = req_opts.get(mode_key)
+        if isinstance(mode_extra, dict):
+            extra_body.update(json.loads(json.dumps(mode_extra)))
+        if extra_body:
+            params["extra_body"] = extra_body
+
+        extra_headers = self._get_req_opt_headers(req_opts)
+        if extra_headers:
+            params["extra_headers"] = extra_headers
+
         if use_responses_api:
             params["thinking"] = {"type": "enabled" if enable_thinking else "disabled"}
+
+            # Ark Responses API cache controls:
+            # request_options:
+            # - responses_caching: {"type":"enabled|disabled","prefix":true|false}
+            # - caching: same as responses_caching
+            # - cache_enabled/cache_prefix: shorthand
+            cache_cfg_raw = req_opts.get("responses_caching", req_opts.get("caching"))
+            cache_cfg = {}
+            if isinstance(cache_cfg_raw, dict):
+                c_type = str(cache_cfg_raw.get("type", "") or "").strip().lower()
+                if c_type in {"enabled", "disabled"}:
+                    cache_cfg["type"] = c_type
+                if "prefix" in cache_cfg_raw:
+                    cache_cfg["prefix"] = bool(cache_cfg_raw.get("prefix"))
+            if "cache_enabled" in req_opts and "type" not in cache_cfg:
+                cache_cfg["type"] = "enabled" if self._as_bool(req_opts.get("cache_enabled"), default=False) else "disabled"
+            if "cache_prefix" in req_opts and "prefix" not in cache_cfg:
+                cache_cfg["prefix"] = self._as_bool(req_opts.get("cache_prefix"), default=True)
+
+            # Guard 1: Ark rejects `caching` when built-in tools are present.
+            # Built-in tools are non-function tool specs (e.g. web_search/web_extractor/...).
+            tools_payload = params.get("tools", [])
+            has_builtin_tools = (
+                isinstance(tools_payload, list)
+                and any(
+                    isinstance(t, dict) and str(t.get("type", "")).strip() and str(t.get("type", "")).strip() != "function"
+                    for t in tools_payload
+                )
+            )
+
+            # Guard 2: Ark rejects `caching.prefix` when max_output_tokens is provided.
+            if (
+                "prefix" in cache_cfg
+                and "max_output_tokens" in params
+                and params.get("max_output_tokens") is not None
+            ):
+                cache_cfg.pop("prefix", None)
+
+            if cache_cfg and (not has_builtin_tools):
+                params["caching"] = cache_cfg
+            else:
+                params.pop("caching", None)
+
+            if "store" in req_opts and "store" not in params:
+                params["store"] = self._as_bool(req_opts.get("store"), default=False)
+            if "responses_store" in req_opts and "store" not in params:
+                params["store"] = self._as_bool(req_opts.get("responses_store"), default=False)
+            if "expire_at" in req_opts and "expire_at" not in params:
+                try:
+                    params["expire_at"] = int(req_opts.get("expire_at"))
+                except Exception:
+                    pass
+            if "responses_expire_at" in req_opts and "expire_at" not in params:
+                try:
+                    params["expire_at"] = int(req_opts.get("responses_expire_at"))
+                except Exception:
+                    pass
         return params
 
     def relay_web_search(

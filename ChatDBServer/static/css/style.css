@@ -958,6 +958,35 @@ body {
     color: #ff4d4f;
     background: #fff1f0;
 }
+.btn-action.is-editing {
+    color: #0f172a;
+    background: #e6f4ff;
+}
+.user-prompt-inline-editor {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
+    min-height: 40px;
+    resize: none;
+    border: 1px solid #d0d7e2;
+    border-radius: 20px 20px 4px 20px;
+    padding: 10px 16px;
+    font-size: 15px;
+    line-height: 1.5;
+    color: #0f172a;
+    background: #f4f4f4;
+    outline: none;
+}
+.user-prompt-inline-editor:focus {
+    border-color: #4a90e2;
+    box-shadow: 0 0 0 2px rgba(74, 144, 226, 0.12);
+}
+.user-prompt-inline-hint {
+    margin-top: 6px;
+    font-size: 11px;
+    color: #64748b;
+    text-align: right;
+}
 .version-switcher {
     display: inline-flex;
     align-items: center;
@@ -2469,7 +2498,8 @@ body.notes-companion-mode #knowledgePanel,
 body.notes-companion-mode #filePanel,
 body.notes-companion-mode #debugConsolePanel,
 body.notes-companion-mode #toggleNotesPanel,
-body.notes-companion-mode #mobileSelectionAddBtn {
+body.notes-companion-mode #mobileSelectionAddBtn,
+body.notes-companion-mode #mobileSelectionActionsBar {
     display: none !important;
 }
 
@@ -2513,7 +2543,8 @@ body.settings-companion-mode #debugConsolePanel,
 body.settings-companion-mode #notesPanel,
 body.settings-companion-mode #notesContextMenu,
 body.settings-companion-mode #pinContextMenu,
-body.settings-companion-mode #mobileSelectionAddBtn {
+body.settings-companion-mode #mobileSelectionAddBtn,
+body.settings-companion-mode #mobileSelectionActionsBar {
     display: none !important;
 }
 
@@ -2581,7 +2612,7 @@ body.settings-companion-mode #adminConfigModal {
 
 .notes-context-menu button {
     width: 100%;
-    min-height: 30px;
+    height: 30px;
     border: none;
     border-radius: 8px;
     background: #fff;
@@ -2602,6 +2633,14 @@ body.settings-companion-mode #adminConfigModal {
 .notes-context-menu button:hover {
     background: #f1f5f9;
 }
+.notes-context-menu button i {
+    width: 14px;
+    flex: 0 0 14px;
+    text-align: center;
+}
+.notes-context-menu button span {
+    flex: 1;
+}
 
 .pin-context-menu {
     position: fixed;
@@ -2609,7 +2648,7 @@ body.settings-companion-mode #adminConfigModal {
     top: 0;
     z-index: 3660;
     display: none;
-    min-width: 136px;
+    min-width: 148px;
     border: 1px solid #dbe4f1;
     border-radius: 10px;
     background: #fff;
@@ -2636,8 +2675,56 @@ body.settings-companion-mode #adminConfigModal {
     cursor: pointer;
 }
 
+.pin-context-menu button + button {
+    margin-top: 2px;
+}
+
 .pin-context-menu button:hover {
     background: #f1f5f9;
+}
+.pin-context-menu button i {
+    width: 14px;
+    flex: 0 0 14px;
+    text-align: center;
+}
+.pin-context-menu button span {
+    flex: 1;
+}
+
+.mobile-selection-actions {
+    position: fixed;
+    right: 12px;
+    bottom: calc(86px + env(safe-area-inset-bottom));
+    display: none;
+    align-items: center;
+    gap: 8px;
+    z-index: 4700;
+}
+
+.mobile-selection-actions.active {
+    display: flex;
+}
+
+.mobile-selection-action-btn {
+    height: 34px;
+    border-radius: 999px;
+    border: 1px solid #0f172a;
+    background: #0f172a;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 0 12px;
+    box-shadow: 0 10px 22px rgba(15, 23, 42, 0.28);
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.mobile-selection-action-btn:active {
+    transform: translateY(1px);
 }
 
 .mobile-selection-add-btn {
@@ -2735,11 +2822,31 @@ body.settings-companion-mode #adminConfigModal {
         display: none !important;
     }
     .pin-context-menu {
-        display: none !important;
+        z-index: 8600 !important;
+        min-width: 182px;
+        border-radius: 12px;
+        padding: 8px;
+        user-select: none;
+    }
+    .pin-context-menu button {
+        height: 40px;
+        border-radius: 10px;
+        font-size: 14px;
+        padding: 0 12px;
+        gap: 10px;
+    }
+    .pin-context-menu button i {
+        width: 18px;
+        flex: 0 0 18px;
+        font-size: 14px;
+        user-select: none;
     }
 }
 
 @media (min-width: 981px) {
+    .mobile-selection-actions {
+        display: none !important;
+    }
     .mobile-selection-add-btn {
         display: none !important;
     }
@@ -3207,7 +3314,7 @@ body.settings-companion-mode #adminConfigModal {
   bottom: calc(100% + 8px);
   right: 0;
   left: auto;
-  min-width: 92px;
+  min-width: 148px;
   background: #fff;
   border: 1px solid #d6dbe4;
   border-radius: 10px;
@@ -3229,6 +3336,7 @@ body.settings-companion-mode #adminConfigModal {
   font-size: 12px;
   font-weight: 600;
   text-align: left;
+  white-space: nowrap;
   padding: 0 10px;
   cursor: pointer;
   transition: all 0.14s ease;
@@ -3272,6 +3380,7 @@ textarea {
   --tb-angle: 0deg;
   width: 18px;
   height: 18px;
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -3292,11 +3401,62 @@ textarea {
   border-radius: 50%;
   background: #fff;
 }
+.token-budget-context-toggle {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin-left: -3px;
+  margin-top: -3px;
+  border-radius: 50%;
+  border: 1px solid #94a3b8;
+  background: #fff;
+  padding: 0;
+  cursor: pointer;
+  z-index: 2;
+  transition: background-color 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
+}
+.token-budget-mini.context-enabled .token-budget-context-toggle {
+  background: var(--tb-color);
+  border-color: var(--tb-color);
+}
+.token-budget-mini.context-disabled .token-budget-context-toggle {
+  background: #fff;
+  border-color: #9ca3af;
+}
+.token-budget-context-toggle:hover {
+  transform: scale(1.08);
+}
 .token-budget-usage {
   font-size: 11px;
   color: #94a3b8;
   font-family: 'JetBrains Mono', monospace;
   white-space: nowrap;
+}
+.token-budget-tooltip {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 9800;
+  max-width: min(360px, calc(100vw - 24px));
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(15, 23, 42, 0.96);
+  color: #e2e8f0;
+  font-size: 11px;
+  line-height: 1.5;
+  box-shadow: 0 12px 26px rgba(2, 6, 23, 0.42);
+  white-space: pre-line;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate3d(0, 0, 0) scale(0.98);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+.token-budget-tooltip.visible {
+  opacity: 1;
+  transform: translate3d(0, 0, 0) scale(1);
 }
 .upload-progress-chip {
   position: relative;
@@ -6335,6 +6495,30 @@ body.is-admin .menu-item.admin-only {
     background: #333333;
 }
 
+.btn-secondary {
+    padding: 8px 14px;
+    background: #f8fafc;
+    color: #334155;
+    border: 1px solid #d6dbe4;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
+    transition: all 0.15s;
+}
+
+.btn-secondary:hover {
+    background: #eef2f7;
+    border-color: #c2c9d4;
+}
+
+.modal-actions {
+    margin-top: 16px;
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
 /* Token Modal 样式 */
 .token-modal-custom {
     width: 800px !important;
@@ -8006,6 +8190,7 @@ body.is-admin .menu-item.admin-only {
         overflow-wrap: normal !important;
         writing-mode: horizontal-tb !important;
         text-orientation: mixed !important;
+        user-select: none;
     }
 
     .k-header > div:first-child,
@@ -8238,7 +8423,7 @@ body.is-admin .menu-item.admin-only {
     }
 
     .tool-mode-menu {
-        min-width: 92px !important;
+        min-width: 148px !important;
         right: 0 !important;
         left: auto !important;
         bottom: calc(100% + 8px) !important;

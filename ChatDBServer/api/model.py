@@ -11,7 +11,7 @@ from typing import List, Dict, Any, Optional, Generator, Set
 from urllib import request as urllib_request, error as urllib_error, parse as urllib_parse
 from email.header import Header
 from email.utils import parsedate_to_datetime
-from tools import TOOLS
+from tools import TOOLS, canonicalize_tool_name
 from tool_executor import ToolExecutor
 from database import User
 from conversation_manager import ConversationManager
@@ -21,9 +21,9 @@ import prompts
 # 配置文件路径
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.json')
 MODELS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models.json')
-SEARCH_ADAPTERS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'search_adapters.json')
+MODEL_ADAPTERS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'model_adapters.json')
 
-DEFAULT_SEARCH_ADAPTER_CONFIG = {
+DEFAULT_MODEL_ADAPTER_CONFIG = {
     "version": 1,
     "providers": {},
     "relay_order": []
@@ -44,25 +44,27 @@ def load_config():
     return config
 
 
-def load_search_adapter_config() -> Dict[str, Any]:
-    """加载搜索适配器配置（providers / relay_order）"""
-    cfg = json.loads(json.dumps(DEFAULT_SEARCH_ADAPTER_CONFIG))
+def load_model_adapter_config() -> Dict[str, Any]:
+    """加载模型适配器配置（providers / relay_order）。"""
+    cfg = json.loads(json.dumps(DEFAULT_MODEL_ADAPTER_CONFIG))
     try:
-        if os.path.exists(SEARCH_ADAPTERS_PATH):
-            with open(SEARCH_ADAPTERS_PATH, 'r', encoding='utf-8') as f:
+        if os.path.exists(MODEL_ADAPTERS_PATH):
+            with open(MODEL_ADAPTERS_PATH, 'r', encoding='utf-8') as f:
                 file_cfg = json.load(f)
-            if isinstance(file_cfg, dict):
-                providers_cfg = file_cfg.get("providers")
-                if isinstance(providers_cfg, dict):
-                    cfg["providers"].update(providers_cfg)
-                relay_order = file_cfg.get("relay_order")
-                if isinstance(relay_order, list):
-                    cfg["relay_order"] = [str(x).strip() for x in relay_order if str(x).strip()]
-                elif isinstance(file_cfg.get("adapters"), dict):
-                    # 兼容旧格式：adapters 下键即 provider 名
-                    cfg["providers"].update(file_cfg.get("adapters", {}))
+        else:
+            file_cfg = {}
+        if isinstance(file_cfg, dict):
+            providers_cfg = file_cfg.get("providers")
+            if isinstance(providers_cfg, dict):
+                cfg["providers"].update(providers_cfg)
+            relay_order = file_cfg.get("relay_order")
+            if isinstance(relay_order, list):
+                cfg["relay_order"] = [str(x).strip() for x in relay_order if str(x).strip()]
+            elif isinstance(file_cfg.get("adapters"), dict):
+                # 兼容旧格式：adapters 下键即 provider 名
+                cfg["providers"].update(file_cfg.get("adapters", {}))
     except Exception as e:
-        print(f"[SEARCH_ADAPTER] 配置加载失败，使用默认配置: {e}")
+        print(f"[MODEL_ADAPTER] 配置加载失败，使用默认配置: {e}")
     return cfg
 
 CONFIG = load_config()
@@ -206,9 +208,9 @@ class Model:
         self.system_prompt_template = str(system_prompt or "").strip() if system_prompt else self._get_default_system_prompt_template()
         self.system_prompt = self._build_effective_system_prompt()
 
-        # 搜索适配器（provider 级）配置
-        self.search_adapter_config = self._load_search_adapter_runtime_config()
-        self.provider_search_adapter = self._get_provider_search_adapter(self.provider)
+        # 模型适配器（provider 级）配置
+        self.model_adapter_config = self._load_model_adapter_runtime_config()
+        self.provider_model_adapter = self._get_provider_model_adapter(self.provider)
         self.native_search_tools = self._get_provider_native_tools(self.provider)
         self.native_web_search_enabled = any(
             str(t.get("type", "")).strip() == "web_search"
@@ -218,14 +220,14 @@ class Model:
             log_status = str(CONFIG.get("log_status", "silent") or "silent").strip().lower()
             if log_status in {"all", "debug", "verbose"}:
                 native_flag = self._adapter_flag(
-                    self.provider_search_adapter, "native_enabled", fallback_key="enabled", default=False
+                    self.provider_model_adapter, "native_enabled", fallback_key="enabled", default=False
                 )
                 relay_flag = self._adapter_flag(
-                    self.provider_search_adapter, "relay_enabled", fallback_key="enabled", default=False
+                    self.provider_model_adapter, "relay_enabled", fallback_key="enabled", default=False
                 )
-                allowed = self._is_model_allowed_by_adapter(self.provider_search_adapter)
+                allowed = self._is_model_allowed_by_adapter(self.provider_model_adapter)
                 print(
-                    f"[SEARCH_ADAPTER] provider={self.provider} model={self.model_name} "
+                    f"[MODEL_ADAPTER] provider={self.provider} model={self.model_name} "
                     f"native_enabled={native_flag} relay_enabled={relay_flag} "
                     f"allowed={allowed} native_web_search_enabled={self.native_web_search_enabled} "
                     f"native_tools={[str(t.get('type','')) for t in self.native_search_tools]}"
@@ -246,6 +248,7 @@ class Model:
         self._runtime_tool_selection_changed = False
         self._runtime_hints_injected_in_request = False
         self._runtime_tool_mode = "force"
+        self._runtime_bootstrap_tool_name = "select_tools"
     
     def get_embedding(self, text: str) -> List[float]:
         """获取文本向量（通过 provider adapter 创建 embedding client）"""
@@ -301,12 +304,12 @@ class Model:
         """获取默认的联网搜索系统提示词"""
         return self._render_prompt_template(prompts.web_search_default)
 
-    def _load_search_adapter_runtime_config(self) -> Dict[str, Any]:
-        """读取搜索适配器配置（支持运行时热更新）"""
-        return load_search_adapter_config()
+    def _load_model_adapter_runtime_config(self) -> Dict[str, Any]:
+        """读取模型适配器配置（支持运行时热更新）。"""
+        return load_model_adapter_config()
 
-    def _get_provider_search_adapter(self, provider_name: Optional[str] = None) -> Dict[str, Any]:
-        cfg = self._load_search_adapter_runtime_config()
+    def _get_provider_model_adapter(self, provider_name: Optional[str] = None) -> Dict[str, Any]:
+        cfg = self._load_model_adapter_runtime_config()
         providers_cfg = cfg.get("providers", {}) if isinstance(cfg, dict) else {}
         if not isinstance(providers_cfg, dict):
             providers_cfg = {}
@@ -331,9 +334,11 @@ class Model:
             return "off"
         if mode in {"force", "all", "full"}:
             return "force"
-        if mode in {"auto", "selector", "select"}:
-            return "auto"
-        return "auto" if bool(enable_tools) else "off"
+        if mode in {"auto", "selector", "select", "auto_select", "auto-select", "autoselect"}:
+            return "auto_select"
+        if mode in {"auto_off", "auto-off", "autooff"}:
+            return "auto_off"
+        return "auto_select" if bool(enable_tools) else "off"
 
     def _adapter_flag(
         self,
@@ -381,6 +386,27 @@ class Model:
         opts = self._get_provider_request_options(p)
         adapter = self._get_provider_api_adapter(p)
         return bool(adapter.use_responses_api(opts))
+
+    def _provider_supports_response_resume(self, provider_name: Optional[str] = None) -> bool:
+        """
+        是否启用 previous_response_id 续接。
+        为了上下文稳定性，volcengine 默认关闭续接，除非显式配置开启。
+        可在 model_adapters.json 的 request_options 中设置：
+        - response_resume / responses_resume / resume_response_id / enable_response_resume
+        """
+        p = str(provider_name or self.provider or "").strip()
+        adapter = self._get_provider_api_adapter(p)
+        use_responses_api = self._provider_use_responses_api(p)
+        if not adapter.supports_response_resume(use_responses_api=use_responses_api):
+            return False
+
+        req_opts = self._get_provider_request_options(p)
+        req_opts = req_opts if isinstance(req_opts, dict) else {}
+        default_enabled = False if p.lower() == "volcengine" else True
+        for key in ("response_resume", "responses_resume", "resume_response_id", "enable_response_resume"):
+            if key in req_opts:
+                return self._as_bool(req_opts.get(key), default=default_enabled)
+        return default_enabled
 
     def _normalize_model_keys(self) -> List[str]:
         keys = []
@@ -515,15 +541,85 @@ class Model:
 
         return bool(allow_models)
 
+    def _get_current_model_tokens(self) -> List[str]:
+        model_keys = self._normalize_model_keys()
+        expanded_model_tokens: List[str] = []
+        model_token_seen = set()
+        for m in model_keys:
+            for tk in self._expand_model_aliases(m):
+                if tk in model_token_seen:
+                    continue
+                model_token_seen.add(tk)
+                expanded_model_tokens.append(tk)
+        return expanded_model_tokens
+
+    def _is_model_matched_by_rules(self, rules: Any, *, empty_list_allows: bool) -> bool:
+        model_tokens = self._get_current_model_tokens()
+        if not model_tokens:
+            return False
+
+        if rules is True or rules == 1:
+            return True
+
+        if isinstance(rules, str):
+            token = rules.strip().lower()
+            if token in {"1", "all", "*", "true"}:
+                return True
+            parts = [p.strip() for p in str(rules).split(",") if p.strip()]
+            if not parts:
+                return bool(empty_list_allows)
+            allow_tokens: List[str] = []
+            for p in parts:
+                allow_tokens.extend(self._expand_model_aliases(p))
+            return any(self._model_rule_match(m, a) for m in model_tokens for a in allow_tokens)
+
+        if isinstance(rules, list):
+            allow_tokens: List[str] = []
+            for x in rules:
+                allow_tokens.extend(self._expand_model_aliases(x))
+            if not allow_tokens:
+                return bool(empty_list_allows)
+            return any(self._model_rule_match(m, a) for m in model_tokens for a in allow_tokens)
+
+        return bool(rules)
+
+    def _is_provider_cache_enabled_for_model(self, provider_info: Dict[str, Any]) -> bool:
+        """
+        统一缓存开关：
+        - providers.<name>.cache_enabled: 总开关（默认 false）
+        - providers.<name>.cache_models:
+            1 / true / "all" / "*" => 全模型开启
+            [] => 全模型关闭
+            [..] => 命中列表才开启
+        """
+        info = provider_info if isinstance(provider_info, dict) else {}
+        if not self._as_bool(info.get("cache_enabled"), default=False):
+            return False
+        return self._is_model_matched_by_rules(
+            info.get("cache_models", []),
+            empty_list_allows=False
+        )
+
     def _get_provider_request_options(self, provider_name: Optional[str] = None) -> Dict[str, Any]:
-        adapter = self._get_provider_search_adapter(provider_name)
-        if not adapter:
-            return {}
-        opts = adapter.get("request_options", {})
-        return opts if isinstance(opts, dict) else {}
+        p = str(provider_name or self.provider or "").strip()
+        adapter = self._get_provider_model_adapter(provider_name)
+        opts = adapter.get("request_options", {}) if isinstance(adapter, dict) else {}
+        opts = json.loads(json.dumps(opts)) if isinstance(opts, dict) else {}
+
+        # 统一缓存管控从 providers 读取，避免散落在 model/search adapter 配置。
+        provider_info = self._get_provider_info(p)
+        cache_enabled_for_model = self._is_provider_cache_enabled_for_model(provider_info)
+        opts["cache_enabled"] = bool(cache_enabled_for_model)
+        if "cache_prefix" in provider_info:
+            opts["cache_prefix"] = self._as_bool(provider_info.get("cache_prefix"), default=True)
+        if not cache_enabled_for_model:
+            # 防止历史 request_options 中残留的 caching 配置意外生效。
+            opts.pop("responses_caching", None)
+            opts.pop("caching", None)
+        return opts
 
     def _get_provider_native_tools(self, provider_name: Optional[str] = None) -> List[Dict[str, Any]]:
-        adapter = self._get_provider_search_adapter(provider_name)
+        adapter = self._get_provider_model_adapter(provider_name)
         if not adapter or not self._adapter_flag(adapter, "native_enabled", fallback_key="enabled", default=False):
             return []
         if not self._is_model_allowed_by_adapter(adapter):
@@ -569,14 +665,14 @@ class Model:
     def _execute_local_web_search_relay(self, query: str, args: Dict[str, Any]) -> str:
         """
         本地 web_search 中转：
-        - 优先当前模型 provider（若 search_adapters 已启用且允许当前模型）
+        - 优先当前模型 provider（若 model_adapters 已启用且允许当前模型）
         - 否则回落到其它已启用且允许的 provider
         """
         models_map = CONFIG.get('models', {}) if isinstance(CONFIG.get('models', {}), dict) else {}
         websearch_model = str(CONFIG.get("websearch_model", "") or "").strip()
 
         def _adapter_relay_enabled_with_web_search(provider_name: str) -> bool:
-            adapter = self._get_provider_search_adapter(provider_name)
+            adapter = self._get_provider_model_adapter(provider_name)
             if not adapter or not self._adapter_flag(adapter, "relay_enabled", fallback_key="enabled", default=False):
                 return False
             tools = adapter.get("tools", [])
@@ -586,7 +682,7 @@ class Model:
 
         def _pick_model_for_provider(provider_name: str) -> str:
             if provider_name == self.provider:
-                adapter = self._get_provider_search_adapter(provider_name)
+                adapter = self._get_provider_model_adapter(provider_name)
                 if (
                     self.model_name in models_map
                     and str(models_map.get(self.model_name, {}).get("provider", "") or "").strip() == provider_name
@@ -599,7 +695,7 @@ class Model:
                 and websearch_model in models_map
                 and str(models_map.get(websearch_model, {}).get("provider", "") or "").strip() == provider_name
             ):
-                adapter = self._get_provider_search_adapter(provider_name)
+                adapter = self._get_provider_model_adapter(provider_name)
                 model_backup = self.model_name
                 display_backup = self.model_display_name
                 try:
@@ -611,7 +707,7 @@ class Model:
                     self.model_name = model_backup
                     self.model_display_name = display_backup
 
-            adapter = self._get_provider_search_adapter(provider_name)
+            adapter = self._get_provider_model_adapter(provider_name)
             for m_id, m_info in models_map.items():
                 if str(m_info.get("provider", "") or "").strip() != provider_name:
                     continue
@@ -631,7 +727,7 @@ class Model:
         if _adapter_relay_enabled_with_web_search(self.provider):
             provider_candidates.append(self.provider)
 
-        runtime_cfg = self._load_search_adapter_runtime_config()
+        runtime_cfg = self._load_model_adapter_runtime_config()
         relay_order = runtime_cfg.get("relay_order", []) if isinstance(runtime_cfg, dict) else []
         if isinstance(relay_order, list):
             for p_name in relay_order:
@@ -667,7 +763,7 @@ class Model:
                 provider_adapter = self._get_provider_api_adapter(provider_name)
                 client = self._get_provider_client_for_search(provider_name)
                 req_opts = self._get_provider_request_options(provider_name)
-                adapter_cfg = self._get_provider_search_adapter(provider_name)
+                adapter_cfg = self._get_provider_model_adapter(provider_name)
                 adapter_tools = adapter_cfg.get("tools", []) if isinstance(adapter_cfg, dict) else []
 
                 payload = provider_adapter.relay_web_search(
@@ -689,7 +785,7 @@ class Model:
         if not payload:
             if last_err:
                 raise ValueError(f"未找到可用的联网搜索 provider，最后一次错误: {last_err}")
-            raise ValueError("未找到可用的联网搜索 provider（请检查 search_adapters 与模型映射）")
+            raise ValueError("未找到可用的联网搜索 provider（请检查 model_adapters 与模型映射）")
 
         search_result = str(payload.get("text", "") or "").strip()
         references = payload.get("references", [])
@@ -1421,7 +1517,7 @@ class Model:
         provider = getattr(self, 'provider', 'volcengine')
         use_responses_api = self._provider_use_responses_api(provider)
 
-        # 1) 优先注入 provider 级 native tools（由 search_adapters.json 驱动）
+        # 1) 优先注入 provider 级 native tools（由 model_adapters.json 驱动）
         if getattr(self, "native_search_tools", None):
             for native_tool in self.native_search_tools:
                 if use_responses_api:
@@ -1436,9 +1532,9 @@ class Model:
         for tool in tools_config:
             if tool["type"] == "function":
                 func_def = tool["function"]
-                if func_def.get("name") in ["vectorSearch", "file_semantic_search"] and not rag_enabled:
+                if func_def.get("name") in ["vector_search", "file_semantic_search"] and not rag_enabled:
                     continue
-                if func_def.get("name") in ["sendEMail", "getEMail", "getEMailList"] and not mail_enabled:
+                if func_def.get("name") in ["send_email", "get_email", "get_email_list"] and not mail_enabled:
                     continue
                                 
                 # provider 已具备可直连的 native 搜索能力时，隐藏本地中转 relay_web_search/searchOnline。
@@ -1481,6 +1577,7 @@ class Model:
         else:
             name = str(tool.get("name", "") or "").strip()
             desc = str(tool.get("description", "") or "").strip()
+        name = canonicalize_tool_name(name)
         if not name:
             return None
         return {"name": name, "description": desc}
@@ -1493,7 +1590,7 @@ class Model:
             if not spec:
                 continue
             name = spec["name"]
-            if not name or name == "selectTools" or name in seen:
+            if (not name) or (name in self._runtime_control_tool_names()) or (name in seen):
                 continue
             seen.add(name)
             catalog.append({
@@ -1511,9 +1608,13 @@ class Model:
         catalog_prompt = prompts.build_select_tools_catalog_prompt(self._runtime_tool_catalog)
         return prompts.build_runtime_tool_selector_hint(catalog_prompt)
 
+    def _runtime_control_tool_names(self) -> Set[str]:
+        return {"select_tools", "enable_tools"}
+
     def _init_runtime_tool_selection(self, enable_tools: bool, tool_mode: str = "force") -> None:
         normalized_mode = self._normalize_tool_mode(tool_mode, enable_tools)
         self._runtime_tool_mode = normalized_mode
+        self._runtime_bootstrap_tool_name = "select_tools"
         self._runtime_selector_enabled = False
         self._runtime_tool_catalog = []
         self._runtime_tool_catalog_by_id = {}
@@ -1532,11 +1633,17 @@ class Model:
             if spec and spec.get("name"):
                 all_function_names.add(spec["name"])
 
-        self._runtime_selector_enabled = "selectTools" in all_function_names
+        if normalized_mode == "auto_off":
+            self._runtime_bootstrap_tool_name = "enable_tools"
+        else:
+            self._runtime_bootstrap_tool_name = "select_tools"
+
+        self._runtime_selector_enabled = self._runtime_bootstrap_tool_name in all_function_names
         self._build_runtime_tool_catalog()
 
         if normalized_mode == "force":
-            forced_names = {name for name in all_function_names if name and name != "selectTools"}
+            control_names = self._runtime_control_tool_names()
+            forced_names = {name for name in all_function_names if name and name not in control_names}
             forced_ids = []
             for item in (self._runtime_tool_catalog or []):
                 name = str(item.get("name", "") or "").strip()
@@ -1552,12 +1659,13 @@ class Model:
             return
 
         if self._runtime_selector_enabled:
-            # 预选择阶段：仅暴露 selectTools（由 _runtime_function_tool_names_for_request 控制）。
+            # 预选择阶段：仅暴露控制工具（由 _runtime_function_tool_names_for_request 控制）。
             self._runtime_selected_tool_names = set()
             self._runtime_selected_tool_ids = []
             self._runtime_tool_selector_hint = self._build_runtime_tool_selector_hint()
         else:
-            self._runtime_selected_tool_names = set(all_function_names)
+            control_names = self._runtime_control_tool_names()
+            self._runtime_selected_tool_names = {name for name in all_function_names if name not in control_names}
             self._runtime_tool_selector_hint = ""
 
     def _clear_runtime_tool_selection(self) -> None:
@@ -1570,6 +1678,7 @@ class Model:
         self._runtime_selected_tool_ids = []
         self._runtime_tool_selection_changed = False
         self._runtime_tool_mode = "force"
+        self._runtime_bootstrap_tool_name = "select_tools"
 
     def _current_runtime_function_tool_names(self) -> Set[str]:
         if self._runtime_selected_tool_names:
@@ -1578,7 +1687,9 @@ class Model:
         for tool in (self.tools or []):
             spec = self._extract_function_tool_spec(tool)
             if spec and spec.get("name"):
-                out.add(spec["name"])
+                name = str(spec["name"] or "").strip()
+                if name and name not in self._runtime_control_tool_names():
+                    out.add(name)
         return out
 
     def _runtime_has_user_tool_selection(self) -> bool:
@@ -1589,35 +1700,41 @@ class Model:
         """
         运行时工具白名单（用于本轮请求下发）：
         - 未启用 selector：返回全部函数工具
-        - 启用 selector 且尚未完成选择：仅下发 selectTools
-        - 启用 selector 且已选择：仅下发已选工具（不再重复下发 selectTools）
+        - 启用 selector 且尚未完成选择：仅下发控制工具
+        - 启用 selector 且已选择：仅下发已选工具（不再重复下发控制工具）
         """
         if str(getattr(self, "_runtime_tool_mode", "force")).strip().lower() == "off":
             return set()
         if not bool(getattr(self, "_runtime_selector_enabled", False)):
             return self._current_runtime_function_tool_names()
         if not self._runtime_has_user_tool_selection():
-            return {"selectTools"}
+            return {str(getattr(self, "_runtime_bootstrap_tool_name", "select_tools") or "select_tools")}
         return self._current_runtime_function_tool_names()
 
     def _should_attach_runtime_tool_selector_hint(self) -> bool:
         """
-        仅在“尚未完成 selectTools 选择”阶段注入目录提示，避免后续轮次持续消耗 token。
+        仅在“尚未完成 select_tools 选择”阶段注入目录提示，避免后续轮次持续消耗 token。
         """
-        # 已弃用：工具选择目录改为写入 selectTools 的工具描述中，避免向 system message 注入长协议文本。
+        # 已弃用：工具选择目录改为写入 select_tools 的工具描述中，避免向 system message 注入长协议文本。
         return False
 
     def _build_runtime_select_tools_catalog_suffix(self, max_items: int = 128) -> str:
         catalog = list(getattr(self, "_runtime_tool_catalog", []) or [])
+        control_names = self._runtime_control_tool_names()
         names: List[str] = []
         for item in catalog:
             if not isinstance(item, dict):
                 continue
             name = str(item.get("name", "") or "").strip()
-            if not name or name == "selectTools":
+            if not name or name in control_names:
                 continue
             names.append(name)
-        return prompts.build_select_tools_catalog_suffix(names, max_items=max_items)
+        bootstrap = str(getattr(self, "_runtime_bootstrap_tool_name", "select_tools") or "select_tools")
+        return prompts.build_select_tools_catalog_suffix(
+            names,
+            max_items=max_items,
+            selector_tool=bootstrap
+        )
 
     def _decorate_select_tools_description(
         self,
@@ -1626,7 +1743,9 @@ class Model:
     ) -> List[Dict[str, Any]]:
         payload = list(tools_payload or [])
         selected = {str(x).strip() for x in (selected_function_names or set()) if str(x).strip()}
-        if "selectTools" not in selected:
+        # 目录后缀仅用于 select_tools；enable_tools 语义是“直接切 force”，不做精确选择。
+        target_controls = {"select_tools"} if "select_tools" in selected else set()
+        if not target_controls:
             return payload
 
         suffix = self._build_runtime_select_tools_catalog_suffix()
@@ -1643,7 +1762,7 @@ class Model:
             if t_type == "function" and isinstance(t.get("function"), dict):
                 f = dict(t.get("function") or {})
                 name = str(f.get("name", "") or "").strip()
-                if name == "selectTools":
+                if name in target_controls:
                     desc = prompts.strip_select_tools_catalog_suffix(f.get("description", ""))
                     if desc:
                         desc = f"{desc}\n{suffix}"
@@ -1655,7 +1774,7 @@ class Model:
                     continue
             # 兼容非标准 function 格式
             name = str(t.get("name", "") or "").strip()
-            if t_type == "function" and name == "selectTools":
+            if t_type == "function" and name in target_controls:
                 desc = prompts.strip_select_tools_catalog_suffix(t.get("description", ""))
                 if desc:
                     desc = f"{desc}\n{suffix}"
@@ -1670,17 +1789,18 @@ class Model:
         运行时函数执行白名单校验。
         目的：即使模型在未下发工具的情况下“硬调用”函数，也不执行未授权工具。
         """
-        fn = str(function_name or "").strip()
+        fn = canonicalize_tool_name(function_name)
         if not fn:
             return False
         if str(getattr(self, "_runtime_tool_mode", "force")).strip().lower() == "off":
             return False
         if not bool(getattr(self, "_runtime_selector_enabled", False)):
-            selected = set(getattr(self, "_runtime_selected_tool_names", set()) or set())
+            selected = {canonicalize_tool_name(x) for x in (getattr(self, "_runtime_selected_tool_names", set()) or set()) if str(x).strip()}
             if selected:
                 return fn in selected
             return True
-        if fn == "selectTools":
+        bootstrap = str(getattr(self, "_runtime_bootstrap_tool_name", "select_tools") or "select_tools")
+        if fn == bootstrap:
             return True
         allowed = self._current_runtime_function_tool_names()
         return fn in allowed
@@ -1704,16 +1824,17 @@ class Model:
 
     def _apply_runtime_tool_selection_by_names(self, names: List[Any]) -> Dict[str, Any]:
         if not self._runtime_selector_enabled:
+            bootstrap = str(getattr(self, "_runtime_bootstrap_tool_name", "select_tools") or "select_tools")
             return {
                 "success": False,
-                "message": "selectTools 未启用或当前模型不支持运行时工具切换"
+                "message": f"{bootstrap} 未启用或当前模型不支持运行时工具切换"
             }
 
         normalized_names = []
         invalid_names = []
         seen_keys = set()
         for raw in (names or []):
-            token = str(raw or "").strip()
+            token = canonicalize_tool_name(raw)
             if not token:
                 continue
             key = token.lower()
@@ -1764,7 +1885,7 @@ class Model:
             "success": True,
             "message": "工具选择已更新，当前回复后续轮次已生效",
             "selected_tool_names": selected_names,
-            "always_enabled": [],
+            "always_enabled": [str(getattr(self, "_runtime_bootstrap_tool_name", "select_tools") or "select_tools")],
             "invalid_tool_names": invalid_names,
         }
 
@@ -1793,6 +1914,56 @@ class Model:
         if isinstance(result, dict):
             result["invalid_ids"] = invalid_ids
         return result
+
+    def _enable_runtime_tools_for_current_reply(self) -> Dict[str, Any]:
+        """
+        Auto(OFF) 下由 enable_tools 调用：
+        立即将当前回复后续轮次切到 force（全部业务工具可用）。
+        """
+        if str(getattr(self, "_runtime_tool_mode", "force")).strip().lower() == "off":
+            return {
+                "success": False,
+                "message": "当前工具模式为 Off，无法启用工具"
+            }
+
+        all_function_names = set()
+        for tool in (self.tools or []):
+            spec = self._extract_function_tool_spec(tool)
+            if spec and spec.get("name"):
+                all_function_names.add(str(spec["name"]).strip())
+
+        control_names = self._runtime_control_tool_names()
+        enabled_names = sorted([n for n in all_function_names if n and n not in control_names])
+        enabled_set = set(enabled_names)
+
+        selected_ids = []
+        for item in (self._runtime_tool_catalog or []):
+            name = str((item or {}).get("name", "") or "").strip()
+            if name in enabled_set:
+                try:
+                    selected_ids.append(int((item or {}).get("id")))
+                except Exception:
+                    pass
+
+        changed = (
+            str(getattr(self, "_runtime_tool_mode", "force")).strip().lower() != "force"
+            or bool(getattr(self, "_runtime_selector_enabled", False))
+            or set(getattr(self, "_runtime_selected_tool_names", set()) or set()) != enabled_set
+        )
+        self._runtime_tool_mode = "force"
+        self._runtime_selector_enabled = False
+        self._runtime_selected_tool_names = enabled_set
+        self._runtime_selected_tool_ids = list(selected_ids)
+        if changed:
+            self._runtime_tool_selection_changed = True
+
+        return {
+            "success": True,
+            "message": "enable_tools 已启用：当前回复后续轮次进入 Force 模式",
+            "effective_mode": "force",
+            "enabled_tool_names": enabled_names,
+            "enabled_count": len(enabled_names),
+        }
     
     def _execute_function(self, function_name: str, arguments: str) -> str:
         """
@@ -1806,19 +1977,26 @@ class Model:
             函数执行结果字符串
         """
         start_ts = time.time()
+        original_function_name = str(function_name or "").strip()
+        function_name = canonicalize_tool_name(function_name)
         args = {}
         try:
             if not self._is_runtime_function_call_allowed(function_name):
                 allowed_names = sorted(list(self._runtime_function_tool_names_for_request()))
-                if "selectTools" in allowed_names:
-                    msg = prompts.build_runtime_tool_not_enabled_message(function_name, allowed_names)
+                control_tool = str(getattr(self, "_runtime_bootstrap_tool_name", "select_tools") or "select_tools")
+                if control_tool in allowed_names:
+                    msg = prompts.build_runtime_tool_not_enabled_message(
+                        function_name or original_function_name,
+                        allowed_names,
+                        selector_tool=control_tool
+                    )
                 else:
                     allowed_text = ", ".join(allowed_names) if allowed_names else "(none)"
                     msg = (
-                        f"错误：工具 '{str(function_name or '').strip() or 'unknown'}' 当前未启用。"
+                        f"错误：工具 '{function_name or original_function_name or 'unknown'}' 当前未启用。"
                         f"当前允许工具: {allowed_text}。"
                     )
-                self._log_tool_usage(function_name, args, msg, False, start_ts)
+                self._log_tool_usage(function_name or original_function_name, args, msg, False, start_ts)
                 return msg
 
             # 解析参数
@@ -1838,7 +2016,7 @@ class Model:
                         # 进一步检查：如果包含中文或大量文本，很可能是正常内容
                         if len(value) < 100 and not re.search(r'[\u4e00-\u9fff]', value):
                             msg = f"错误：参数 '{key}' 的值似乎是嵌套函数调用 '{value[:50]}'。请先单独调用该函数获取结果。"
-                            self._log_tool_usage(function_name, args, msg, False, start_ts)
+                            self._log_tool_usage(function_name or original_function_name, args, msg, False, start_ts)
                             return msg
             
             # 执行函数
@@ -1847,16 +2025,16 @@ class Model:
             # [TOKEN 优化] 智能脱水处理
             result = self._sanitize_function_result(raw_result, function_name)
             success = self._infer_tool_success(result)
-            self._log_tool_usage(function_name, args, result, success, start_ts)
+            self._log_tool_usage(function_name or original_function_name, args, result, success, start_ts)
             return result
             
         except json.JSONDecodeError as e:
             msg = f"错误：参数JSON解析失败 - {str(e)}"
-            self._log_tool_usage(function_name, args, msg, False, start_ts)
+            self._log_tool_usage(function_name or original_function_name, args, msg, False, start_ts)
             return msg
         except Exception as e:
             msg = f"错误：{str(e)}"
-            self._log_tool_usage(function_name, args, msg, False, start_ts)
+            self._log_tool_usage(function_name or original_function_name, args, msg, False, start_ts)
             return msg
 
     def _infer_tool_success(self, result: Any) -> bool:
@@ -1934,14 +2112,14 @@ class Model:
 
         # 读取类工具必须返回完整内容，不能自动缩水
         no_truncate_tools = {
-            "getBasisContent",
-            "getContext",
-            "getContext_findKeyword",
-            "getEMail",
-            "getEMailList",
-            "getKnowledgeGraphStructure",
-            "getKnowledgeConnections",
-            "findPathBetweenKnowledge",
+            "get_basis_content",
+            "get_context",
+            "get_context_find_keyword",
+            "get_email",
+            "get_email_list",
+            "get_knowledge_graph_structure",
+            "get_knowledge_connections",
+            "find_path_between_knowledge",
             "file_read",
             "file_find",
             "file_list",
@@ -2119,6 +2297,61 @@ class Model:
                 payload.append({"type": "image_url", "image_url": {"url": url}})
         return payload
 
+    def _append_text_to_user_content_payload(self, user_content: Any, extra_text: str, use_responses_api: bool) -> Any:
+        addon = str(extra_text or "")
+        if not addon:
+            return user_content
+        if isinstance(user_content, str):
+            return f"{user_content}{addon}"
+        if isinstance(user_content, list):
+            out = []
+            appended = False
+            for item in user_content:
+                if isinstance(item, dict):
+                    item_copy = dict(item)
+                    item_type = str(item_copy.get("type", "") or "").strip().lower()
+                    if (not appended) and item_type in {"text", "input_text"}:
+                        item_copy["text"] = f"{str(item_copy.get('text', '') or '')}{addon}"
+                        appended = True
+                    out.append(item_copy)
+                else:
+                    out.append(item)
+            if not appended:
+                seed = {"type": "input_text", "text": addon.strip()} if use_responses_api else {"type": "text", "text": addon.strip()}
+                out.insert(0, seed)
+            return out
+        return f"{str(user_content or '')}{addon}"
+
+    def _normalize_non_image_user_attachments(self, raw_items: Any) -> List[Dict[str, Any]]:
+        if not isinstance(raw_items, list):
+            return []
+        out: List[Dict[str, Any]] = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            att_type = str(item.get("type", "") or "").strip().lower()
+            if not att_type or att_type == "image":
+                continue
+            normalized: Dict[str, Any] = {"type": att_type}
+            name = str(item.get("name", "") or "").strip()
+            if name:
+                normalized["name"] = name
+            try:
+                size = int(item.get("size", 0) or 0)
+            except Exception:
+                size = 0
+            normalized["size"] = max(0, size)
+            sandbox_path = str(item.get("sandbox_path", "") or "").strip().replace("\\", "/")
+            if sandbox_path:
+                normalized["sandbox_path"] = sandbox_path
+            stored_path = str(item.get("stored_path", "") or "").strip().replace("\\", "/")
+            if stored_path:
+                normalized["stored_path"] = stored_path
+            out.append(normalized)
+            if len(out) >= 64:
+                break
+        return out
+
     def _content_signature_for_dedupe(self, content: Any) -> str:
         try:
             return json.dumps(content, ensure_ascii=False, sort_keys=True, default=str)
@@ -2156,9 +2389,12 @@ class Model:
         debug_mode: bool = False,
         show_token_usage: bool = False,
         file_ids: List[Any] = None,
+        sandbox_paths: List[str] = None,
+        user_attachments: List[Dict[str, Any]] = None,
         is_regenerate: bool = False,
         regenerate_index: int = None,
-        allow_history_images: bool = True
+        allow_history_images: bool = True,
+        include_context: bool = True
     ) -> Generator[Dict[str, Any], None, None]:
         """
         发送消息（支持多轮对话、流式输出、文件和Context Caching）
@@ -2513,6 +2749,7 @@ class Model:
 
             # 暂存附件摘要到 metadata，避免写入超长 base64
             metadata = {}
+            attachment_summary = self._normalize_non_image_user_attachments(user_attachments)
             if image_inputs:
                 summary = []
                 for idx, img in enumerate(image_inputs):
@@ -2536,19 +2773,44 @@ class Model:
                     else:
                         item["url"] = url
                     summary.append(item)
-                metadata["attachments"] = summary
-            
+                attachment_summary = summary + attachment_summary
+            if attachment_summary:
+                metadata["attachments"] = attachment_summary
+             
             # 重新生成逻辑：不添加新消息，而是使用历史消息
             if not is_regenerate:
                 self.conversation_manager.add_message(self.conversation_id, "user", msg, metadata=metadata)
-            
+             
             # 构造本次用户消息内容 (多模态)
             user_content = self._build_user_content_payload(msg, image_urls, use_responses_api)
+            sandbox_path_list: List[str] = []
+            if isinstance(sandbox_paths, list):
+                seen_paths = set()
+                for p in sandbox_paths:
+                    v = str(p or "").strip().replace("\\", "/")
+                    if (not v) or (v in seen_paths):
+                        continue
+                    seen_paths.add(v)
+                    sandbox_path_list.append(v)
+                    if len(sandbox_path_list) >= 64:
+                        break
+            if sandbox_path_list:
+                sandbox_hint = (
+                    "\n\n[系统注入] 已上传文件到用户沙箱，请优先使用 "
+                    "file_list/file_create/file_read/file_find/file_write/file_remove 工具操作以下路径：\n"
+                    + "\n".join([f"- {p}" for p in sandbox_path_list])
+                    + "\n"
+                )
+                user_content = self._append_text_to_user_content_payload(
+                    user_content,
+                    sandbox_hint,
+                    use_responses_api
+                )
 
             # Check Context Cache (provider-decided)
             last_response_id = None
             try:
-                if self.provider_adapter.supports_response_resume(use_responses_api=use_responses_api):
+                if self._provider_supports_response_resume(self.provider):
                     last_response_id = self.provider_adapter.get_resume_response_id(
                         conversation_manager=self.conversation_manager,
                         conversation_id=self.conversation_id,
@@ -2557,9 +2819,9 @@ class Model:
             except Exception as e:
                 print(f"[CACHE] 读取续接ID失败: {e}")
             
-            # 如果是重新生成，必须清除 last_response_id，因为上下文已经改变（分支了）
-            if is_regenerate:
-                print(f"[REGENERATE] Cleared Context Cache for branching.")
+            # 重新生成或显式关闭上下文时，必须清除续接缓存，避免隐式带入历史。
+            if is_regenerate or (not include_context):
+                print(f"[CONTEXT] Cleared Context Cache for branching/no-context mode.")
                 last_response_id = None
 
             previous_response_id = None
@@ -2575,6 +2837,7 @@ class Model:
                 current_user_content=user_content,
                 use_responses_api=use_responses_api,
                 allow_history_images=allow_history_images,
+                include_context=include_context,
                 system_prompt_text=request_system_prompt,
             )
 
@@ -3234,7 +3497,7 @@ class Model:
                             print(f"[DEBUG_HIST] 最后一条: {messages[-1].get('role')} (Type: {messages[-1].get('type', 'text')})")
 
                         if bool(getattr(self, "_runtime_tool_selection_changed", False)):
-                            print("[TOOLS] detect selectTools update, switch runtime tools from next round.")
+                            print("[TOOLS] detect runtime selector update, switch runtime tools from next round.")
                             self._runtime_tool_selection_changed = False
                             # 不主动清空 previous_response_id，避免 cache-hit 场景丢失历史。
                             # 若 provider 明确返回续接错误，将由重试分支自动切到 full context。
@@ -3318,7 +3581,7 @@ class Model:
                     previous_response_id = None
                 if previous_response_id:
                     try:
-                        if self.provider_adapter.supports_response_resume(use_responses_api=self._provider_use_responses_api(self.provider)):
+                        if self._provider_supports_response_resume(self.provider):
                             self.provider_adapter.save_resume_response_id(
                                 conversation_manager=self.conversation_manager,
                                 conversation_id=self.conversation_id,
@@ -3560,6 +3823,7 @@ class Model:
         current_user_content: Any = None,
         use_responses_api: bool = False,
         allow_history_images: bool = True,
+        include_context: bool = True,
         system_prompt_text: Optional[str] = None
     ) -> List[Dict]:
         """构建初始消息列表（真实上下文模式）"""
@@ -3568,7 +3832,7 @@ class Model:
 
         # 真实上下文：注入当前会话历史 user/assistant 消息
         history_messages: List[Dict[str, Any]] = []
-        if self.conversation_id:
+        if include_context and self.conversation_id:
             try:
                 history_messages = self.conversation_manager.get_messages(self.conversation_id)
             except Exception:
@@ -3824,7 +4088,7 @@ class Model:
                         runtime_tool_names
                     )
                     params["tools"] = tools_payload
-                    # provider 级 native tools（来自 search_adapters）
+                    # provider 级 native tools（来自 model_adapters）
                     native_tools = list(getattr(self, "native_search_tools", []) or [])
                     if native_tools and provider_adapter.should_attach_native_tools_to_chat_tools():
                         existing = params.get("tools", []) if isinstance(params.get("tools"), list) else []

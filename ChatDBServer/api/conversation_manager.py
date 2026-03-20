@@ -389,6 +389,70 @@ class ConversationManager:
             return len(conversation.get('messages', []))
         except:
             return 0
+
+    def get_last_user_message_index(self, conversation_id):
+        """
+        获取最后一条 user 消息索引，不存在返回 -1
+        """
+        try:
+            messages = self.get_messages(conversation_id)
+        except Exception:
+            return -1
+        for i in range(len(messages) - 1, -1, -1):
+            role = str((messages[i] or {}).get("role") or "").strip()
+            if role == "user":
+                return i
+        return -1
+
+    def update_user_message_content(self, conversation_id, message_index, new_content, only_last=True):
+        """
+        更新一条 user 消息内容。
+        - only_last=True 时仅允许修改最后一条 user 消息。
+        """
+        conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
+        if not os.path.exists(conversation_path):
+            return False, "对话不存在"
+
+        try:
+            idx = int(message_index)
+        except Exception:
+            return False, "消息索引无效"
+
+        text = str(new_content or "").strip()
+        if not text:
+            return False, "消息内容不能为空"
+
+        with open(conversation_path, 'r', encoding='utf-8') as f:
+            conversation_data = json.load(f)
+
+        messages = conversation_data.get("messages", [])
+        if not (0 <= idx < len(messages)):
+            return False, "消息不存在"
+
+        msg = messages[idx] if isinstance(messages[idx], dict) else {}
+        role = str(msg.get("role") or "").strip()
+        if role != "user":
+            return False, "仅支持修改用户消息"
+
+        if only_last:
+            last_user_index = -1
+            for i in range(len(messages) - 1, -1, -1):
+                m = messages[i] if isinstance(messages[i], dict) else {}
+                if str(m.get("role") or "").strip() == "user":
+                    last_user_index = i
+                    break
+            if idx != last_user_index:
+                return False, "仅支持修改最后一条用户消息"
+
+        msg["content"] = text
+        msg["timestamp"] = datetime.now().isoformat()
+        messages[idx] = msg
+        conversation_data["messages"] = messages
+        conversation_data["updated_at"] = datetime.now().isoformat()
+
+        with open(conversation_path, 'w', encoding='utf-8') as f:
+            json.dump(conversation_data, f, ensure_ascii=False, indent=2)
+        return True, "ok"
     
     def list_conversations(self):
         """

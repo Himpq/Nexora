@@ -8,6 +8,7 @@ import json
 import base64
 import binascii
 import re
+import shutil
 import threading
 import uuid
 from copy import deepcopy
@@ -19,6 +20,7 @@ from flask import Flask, render_template, request, jsonify, session, redirect, u
 from flask_cors import CORS
 from datetime import timedelta, datetime
 import time
+import httpx
 
 # 添加api目录到路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'api'))
@@ -31,12 +33,15 @@ from longterm.orchestrator import LongTermOrchestrator
 from provider_factory import create_provider_adapter
 from client_tool_bridge import pull_pending_request, submit_request_result, enqueue_request, wait_for_result, pull_local_tool_request
 from agent_tunnel import register_agent, unregister_agent, update_agent_tools, update_ping, is_agent_online
+from stream_runtime import start_session as start_stream_session, iter_session_chunks as iter_stream_session_chunks, get_session_meta as get_stream_session_meta
 from flask_sock import Sock
 
 app = Flask(__name__)
 app.secret_key = 'chatdb-secret-key-change-in-production'
 app.config['SESSION_TYPE'] = 'filesystem'
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)
+app.config.setdefault('SESSION_COOKIE_HTTPONLY', True)
+app.config.setdefault('SESSION_COOKIE_SAMESITE', 'Lax')
 sock = Sock(app)
 CORS(app)
 
@@ -46,15 +51,102 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 # ==================== 配置与全局变量 ====================
 
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
-MODELS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models.json')
-MODELS_CONTEXT_WINDOW_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models_context_window.json')
-USERS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'user.json')
-OPENROUTER_MODELS_SNAPSHOT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'openrouter_models_snapshot.json')
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, 'data')
+DATA_RES_DIR = os.path.join(DATA_DIR, 'res')
+
+CONFIG_PATH = os.path.join(BASE_DIR, 'config.json')
+MODELS_PATH = os.path.join(BASE_DIR, 'models.json')
+MODELS_CONTEXT_WINDOW_CACHE_LEGACY_PATH = os.path.join(BASE_DIR, 'models_context_window.json')
+MODELS_CONTEXT_WINDOW_CACHE_PATH = os.path.join(DATA_RES_DIR, 'models_context_window.json')
+USERS_PATH = os.path.join(DATA_DIR, 'user.json')
+OPENROUTER_MODELS_SNAPSHOT_LEGACY_PATH = os.path.join(DATA_DIR, 'openrouter_models_snapshot.json')
+OPENROUTER_MODELS_SNAPSHOT_PATH = os.path.join(DATA_RES_DIR, 'openrouter_models_snapshot.json')
+OPENROUTER_MODEL_ALIAS_LIST_LEGACY_PATH = os.path.join(DATA_DIR, 'openrouter_model_alias_list.json')
+OPENROUTER_MODEL_ALIAS_LIST_PATH = os.path.join(DATA_RES_DIR, 'openrouter_model_alias_list.json')
+STATUS_MODEL_RULES_LEGACY_PATH = os.path.join(DATA_DIR, 'status_model_rules.json')
+STATUS_MODEL_RULES_PATH = os.path.join(DATA_RES_DIR, 'status_model_rules.json')
+STATUS_PROVIDER_ICON_MAP_PATH = os.path.join(DATA_RES_DIR, 'provider_icon_map.json')
 _MODELS_CTX_CACHE_LOCK = threading.Lock()
+_PROVIDER_CTX_BG_REFRESH_LOCK = threading.Lock()
+_PROVIDER_CTX_BG_REFRESHING: Dict[str, bool] = {}
+_PROVIDER_CTX_BG_LAST_TS: Dict[str, float] = {}
+
+
+def _move_resource_file_if_needed(old_path: str, new_path: str):
+    old_p = str(old_path or '').strip()
+    new_p = str(new_path or '').strip()
+    if not old_p or not new_p or old_p == new_p:
+        return
+    if os.path.exists(new_p) or (not os.path.exists(old_p)):
+        return
+    try:
+        os.makedirs(os.path.dirname(new_p), exist_ok=True)
+        os.replace(old_p, new_p)
+    except Exception:
+        try:
+            shutil.copy2(old_p, new_p)
+            os.remove(old_p)
+        except Exception:
+            pass
+
+
+def _bootstrap_resource_layout():
+    try:
+        os.makedirs(DATA_RES_DIR, exist_ok=True)
+    except Exception:
+        return
+    _move_resource_file_if_needed(MODELS_CONTEXT_WINDOW_CACHE_LEGACY_PATH, MODELS_CONTEXT_WINDOW_CACHE_PATH)
+    _move_resource_file_if_needed(OPENROUTER_MODELS_SNAPSHOT_LEGACY_PATH, OPENROUTER_MODELS_SNAPSHOT_PATH)
+    _move_resource_file_if_needed(OPENROUTER_MODEL_ALIAS_LIST_LEGACY_PATH, OPENROUTER_MODEL_ALIAS_LIST_PATH)
+    _move_resource_file_if_needed(STATUS_MODEL_RULES_LEGACY_PATH, STATUS_MODEL_RULES_PATH)
+
+
+_bootstrap_resource_layout()
 
 # NexoraCode 本地 Agent 注册表: {agent_token: {callback_url, tools, username, registered_at}}
 _LOCAL_AGENTS: Dict[str, Dict] = {}
+SHORT_MEMORY_DISABLED = True
+
+
+def _set_no_store_headers(resp: Response) -> Response:
+    """Prevent browser/proxy cache for auth-sensitive pages and redirects."""
+    resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    resp.headers['Pragma'] = 'no-cache'
+    resp.headers['Expires'] = '0'
+    return resp
+
+
+def _clear_session_cookie(resp: Response) -> Response:
+    """Force-remove Flask session cookie from client."""
+    cookie_name = str(app.config.get('SESSION_COOKIE_NAME', 'session') or 'session')
+    cookie_path = str(app.config.get('SESSION_COOKIE_PATH', '/') or '/')
+    cookie_domain = app.config.get('SESSION_COOKIE_DOMAIN')
+    try:
+        if cookie_domain:
+            resp.delete_cookie(cookie_name, path=cookie_path, domain=cookie_domain)
+        resp.delete_cookie(cookie_name, path=cookie_path)
+    except Exception:
+        # Best-effort cookie cleanup; session.clear() is still applied.
+        pass
+    return resp
+
+
+@app.after_request
+def apply_auth_response_cache_policy(resp: Response):
+    """
+    Avoid BFCache / history-cache surprises after logout for auth-sensitive pages.
+    """
+    try:
+        path = (request.path or '').strip() or '/'
+        content_type = str(resp.headers.get('Content-Type', '') or '').lower()
+        is_html = 'text/html' in content_type
+        protected_paths = {'/chat', '/knowledge', '/knowledge_graph', '/token_logs', '/login', '/logout'}
+        if path in protected_paths or (is_html and ('username' in session)):
+            _set_no_store_headers(resp)
+    except Exception:
+        pass
+    return resp
 
 DEFAULT_MAIN_CONFIG = {
     "public_base_url": "",
@@ -940,10 +1032,13 @@ def _trim_model_id_last_hyphen_number(raw):
 
 
 def _load_models_context_window_cache():
-    if not os.path.exists(MODELS_CONTEXT_WINDOW_CACHE_PATH):
+    path = MODELS_CONTEXT_WINDOW_CACHE_PATH
+    if (not os.path.exists(path)) and os.path.exists(MODELS_CONTEXT_WINDOW_CACHE_LEGACY_PATH):
+        path = MODELS_CONTEXT_WINDOW_CACHE_LEGACY_PATH
+    if not os.path.exists(path):
         return {"providers": {}, "updated_at": 0}
     try:
-        with open(MODELS_CONTEXT_WINDOW_CACHE_PATH, 'r', encoding='utf-8') as f:
+        with open(path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         if not isinstance(data, dict):
             return {"providers": {}, "updated_at": 0}
@@ -966,8 +1061,15 @@ def _save_models_context_window_cache(cache_obj):
     payload["providers"] = providers
     payload["updated_at"] = int(time.time())
     try:
+        os.makedirs(os.path.dirname(MODELS_CONTEXT_WINDOW_CACHE_PATH), exist_ok=True)
         with open(MODELS_CONTEXT_WINDOW_CACHE_PATH, 'w', encoding='utf-8') as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
+        # 兼容旧路径：保留一份镜像，避免仍读取旧文件的脚本/工具误判未刷新。
+        try:
+            with open(MODELS_CONTEXT_WINDOW_CACHE_LEGACY_PATH, 'w', encoding='utf-8') as f_legacy:
+                json.dump(payload, f_legacy, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
     except Exception:
         pass
 
@@ -983,15 +1085,29 @@ def _extract_context_window_from_provider_row(row_obj):
         n = _safe_context_window_int(raw.get(key))
         if n > 0:
             return n
+    # DashScope / 百炼模型目录常把上下文信息放在 model_info 节点
+    model_info = row.get("model_info") if isinstance(row.get("model_info"), dict) else {}
+    for key in ('context_window', 'context_length', 'max_context_tokens', 'max_input_tokens', 'max_prompt_tokens'):
+        n = _safe_context_window_int(model_info.get(key))
+        if n > 0:
+            return n
     return 0
 
 
-def _read_cached_volc_context_window_map():
+def _read_cached_provider_context_window_map_with_meta(provider_key):
+    provider = str(provider_key or '').strip().lower()
+    if not provider:
+        return {}, 0
     with _MODELS_CTX_CACHE_LOCK:
         cache = _load_models_context_window_cache()
     providers = cache.get("providers", {}) if isinstance(cache, dict) else {}
-    volc = providers.get("volcengine", {}) if isinstance(providers, dict) else {}
-    models_map = volc.get("models", {}) if isinstance(volc, dict) else {}
+    node = providers.get(provider, {}) if isinstance(providers, dict) else {}
+    models_map = node.get("models", {}) if isinstance(node, dict) else {}
+    updated_at = 0
+    try:
+        updated_at = int(node.get("updated_at") or 0) if isinstance(node, dict) else 0
+    except Exception:
+        updated_at = 0
     out = {}
     if isinstance(models_map, dict):
         for k, v in models_map.items():
@@ -1004,10 +1120,18 @@ def _read_cached_volc_context_window_map():
                 n = _safe_context_window_int(v)
             if n > 0:
                 out[key] = n
-    return out
+    return out, updated_at
 
 
-def _write_cached_volc_context_window_map(models_map):
+def _read_cached_provider_context_window_map(provider_key):
+    models_map, _ = _read_cached_provider_context_window_map_with_meta(provider_key)
+    return models_map
+
+
+def _write_cached_provider_context_window_map(provider_key, models_map):
+    provider = str(provider_key or '').strip().lower()
+    if not provider:
+        return
     src = models_map if isinstance(models_map, dict) else {}
     normalized = {}
     for k, v in src.items():
@@ -1018,12 +1142,57 @@ def _write_cached_volc_context_window_map(models_map):
     with _MODELS_CTX_CACHE_LOCK:
         cache = _load_models_context_window_cache()
         providers = cache.get("providers", {}) if isinstance(cache.get("providers"), dict) else {}
-        providers["volcengine"] = {
+        providers[provider] = {
             "models": normalized,
             "updated_at": int(time.time())
         }
         cache["providers"] = providers
         _save_models_context_window_cache(cache)
+
+
+def _read_cached_volc_context_window_map():
+    return _read_cached_provider_context_window_map('volcengine')
+
+
+def _write_cached_volc_context_window_map(models_map):
+    _write_cached_provider_context_window_map('volcengine', models_map)
+
+
+def _read_cached_aliyun_context_window_map():
+    return _read_cached_provider_context_window_map('aliyun')
+
+
+def _write_cached_aliyun_context_window_map(models_map):
+    _write_cached_provider_context_window_map('aliyun', models_map)
+
+
+def _launch_provider_context_refresh_bg(provider_key, refresh_fn, min_interval_sec=45.0):
+    provider = str(provider_key or '').strip().lower()
+    if not provider or not callable(refresh_fn):
+        return False
+    now = time.time()
+    with _PROVIDER_CTX_BG_REFRESH_LOCK:
+        if _PROVIDER_CTX_BG_REFRESHING.get(provider):
+            return False
+        last = float(_PROVIDER_CTX_BG_LAST_TS.get(provider) or 0.0)
+        if (now - last) < max(5.0, float(min_interval_sec or 45.0)):
+            return False
+        _PROVIDER_CTX_BG_REFRESHING[provider] = True
+        _PROVIDER_CTX_BG_LAST_TS[provider] = now
+
+    def _runner():
+        try:
+            refresh_fn()
+        except Exception:
+            pass
+        finally:
+            with _PROVIDER_CTX_BG_REFRESH_LOCK:
+                _PROVIDER_CTX_BG_REFRESHING[provider] = False
+                _PROVIDER_CTX_BG_LAST_TS[provider] = time.time()
+
+    t = threading.Thread(target=_runner, daemon=True, name=f'ctx-refresh-{provider}')
+    t.start()
+    return True
 
 
 def _refresh_volc_context_window_map(config_obj, timeout=8.0):
@@ -1079,7 +1248,182 @@ def _refresh_volc_context_window_map(config_obj, timeout=8.0):
         return cached
 
 
-def _resolve_volc_context_window_by_model_id(model_id, models_map):
+def _extract_aliyun_models_from_payload(payload):
+    src = payload if isinstance(payload, dict) else {}
+    out_node = src.get('output') if isinstance(src.get('output'), dict) else {}
+    rows = []
+    for key in ('models', 'data', 'items'):
+        v = out_node.get(key)
+        if isinstance(v, list):
+            rows = v
+            break
+    total = 0
+    page_no = 1
+    page_size = len(rows) if rows else 0
+    try:
+        total = int(out_node.get('total') or 0)
+    except Exception:
+        total = 0
+    try:
+        page_no = int(out_node.get('page_no') or 1)
+    except Exception:
+        page_no = 1
+    try:
+        page_size = int(out_node.get('page_size') or page_size or 0)
+    except Exception:
+        page_size = page_size or 0
+    return rows if isinstance(rows, list) else [], total, page_no, page_size
+
+
+def _fetch_aliyun_models_page(provider_cfg, *, page_no=1, page_size=100, timeout=8.0):
+    cfg = provider_cfg if isinstance(provider_cfg, dict) else {}
+    api_key = str(cfg.get('api_key', '') or '').strip()
+    if not api_key:
+        return {}
+    base = str(cfg.get('models_catalog_url', '') or '').strip() or 'https://dashscope.aliyuncs.com/api/v1/models'
+    req_page_no = max(1, int(page_no or 1))
+    req_page_size = max(1, min(500, int(page_size or 100)))
+    try:
+        resp = httpx.get(
+            base,
+            params={'page_no': req_page_no, 'page_size': req_page_size},
+            headers={
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json'
+            },
+            timeout=max(2.0, float(timeout or 8.0)),
+            follow_redirects=True
+        )
+        if int(resp.status_code or 0) >= 400:
+            return {}
+        return resp.json() if str(resp.text or '').strip() else {}
+    except Exception:
+        return {}
+
+
+def _refresh_aliyun_context_window_map(config_obj, timeout=8.0, force_remote=False):
+    cfg = config_obj if isinstance(config_obj, dict) else {}
+    providers = cfg.get("providers", {}) if isinstance(cfg.get("providers"), dict) else {}
+    provider_cfg = providers.get("aliyun")
+    if not isinstance(provider_cfg, dict):
+        provider_cfg = providers.get("dashscope")
+    cached, cached_updated_at = _read_cached_provider_context_window_map_with_meta('aliyun')
+    if not isinstance(provider_cfg, dict):
+        return cached
+    api_key = str(provider_cfg.get('api_key', '') or '').strip()
+    if not api_key:
+        return cached
+
+    cache_ttl_sec = 1800
+    try:
+        cache_ttl_sec = max(0, int(provider_cfg.get('models_catalog_cache_ttl_sec', 1800) or 1800))
+    except Exception:
+        cache_ttl_sec = 1800
+
+    bg_refresh_enabled = bool(provider_cfg.get('models_catalog_async_refresh', True))
+    bg_min_interval = 45
+    try:
+        bg_min_interval = max(5, int(provider_cfg.get('models_catalog_async_min_interval_sec', 45) or 45))
+    except Exception:
+        bg_min_interval = 45
+
+    if cached and not force_remote:
+        age = max(0, int(time.time()) - int(cached_updated_at or 0))
+        if cache_ttl_sec > 0 and age <= cache_ttl_sec:
+            return cached
+        if bg_refresh_enabled:
+            cfg_snapshot = json.loads(json.dumps(cfg))
+            _launch_provider_context_refresh_bg(
+                'aliyun',
+                lambda: _refresh_aliyun_context_window_map(cfg_snapshot, timeout=timeout, force_remote=True),
+                min_interval_sec=bg_min_interval
+            )
+            return cached
+
+    max_pages = 6
+    try:
+        max_pages = max(1, min(30, int(provider_cfg.get('models_catalog_max_pages', 6) or 6)))
+    except Exception:
+        max_pages = 6
+    page_size = 100
+    try:
+        page_size = max(1, min(500, int(provider_cfg.get('models_catalog_page_size', 100) or 100)))
+    except Exception:
+        page_size = 100
+
+    target_model_ids = []
+    try:
+        all_models = cfg.get('models', {}) if isinstance(cfg.get('models'), dict) else {}
+        for mid, info in all_models.items():
+            if not isinstance(info, dict):
+                continue
+            p = str(info.get('provider', '') or '').strip().lower()
+            if p in {'aliyun', 'dashscope'}:
+                target_model_ids.append(str(mid or '').strip())
+    except Exception:
+        target_model_ids = []
+
+    def _all_targets_hit(cur_map):
+        if not target_model_ids:
+            return False
+        for mid in target_model_ids:
+            if _resolve_context_window_by_model_id(mid, cur_map) <= 0:
+                return False
+        return True
+
+    fresh_map = {}
+    first_payload = _fetch_aliyun_models_page(provider_cfg, page_no=1, page_size=page_size, timeout=timeout)
+    rows, total, _, remote_page_size = _extract_aliyun_models_from_payload(first_payload)
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        model_id = _normalize_model_id_for_ctx(
+            item.get('model') or item.get('id') or item.get('model_id') or item.get('name') or ''
+        )
+        if not model_id:
+            continue
+        ctx = _extract_context_window_from_provider_row(item)
+        if ctx > 0:
+            fresh_map[model_id] = ctx
+    if _all_targets_hit(fresh_map):
+        total = 0
+
+    total_pages = 1
+    if total and remote_page_size:
+        try:
+            total_pages = max(1, (int(total) + int(remote_page_size) - 1) // int(remote_page_size))
+        except Exception:
+            total_pages = 1
+    total_pages = min(total_pages, max_pages)
+
+    for p in range(2, total_pages + 1):
+        payload = _fetch_aliyun_models_page(provider_cfg, page_no=p, page_size=page_size, timeout=timeout)
+        rows, _, _, _ = _extract_aliyun_models_from_payload(payload)
+        if not rows:
+            break
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            model_id = _normalize_model_id_for_ctx(
+                item.get('model') or item.get('id') or item.get('model_id') or item.get('name') or ''
+            )
+            if not model_id:
+                continue
+            ctx = _extract_context_window_from_provider_row(item)
+            if ctx > 0:
+                fresh_map[model_id] = ctx
+        if _all_targets_hit(fresh_map):
+            break
+
+    if not fresh_map:
+        return cached
+    merged = dict(cached)
+    merged.update(fresh_map)
+    _write_cached_aliyun_context_window_map(merged)
+    return merged
+
+
+def _resolve_context_window_by_model_id(model_id, models_map):
     sid = _normalize_model_id_for_ctx(model_id)
     if not sid or not isinstance(models_map, dict):
         return 0
@@ -1094,6 +1438,14 @@ def _resolve_volc_context_window_by_model_id(model_id, models_map):
     if n > 0:
         return n
     return 0
+
+
+def _resolve_volc_context_window_by_model_id(model_id, models_map):
+    return _resolve_context_window_by_model_id(model_id, models_map)
+
+
+def _resolve_aliyun_context_window_by_model_id(model_id, models_map):
+    return _resolve_context_window_by_model_id(model_id, models_map)
 
 
 def _fetch_volc_foundation_models_context_map(provider_cfg, timeout=8.0):
@@ -1806,7 +2158,13 @@ def login():
     """登录页面"""
     if request.method == 'GET':
         if 'username' in session:
-            return redirect(url_for('chat'))
+            try:
+                users = load_users()
+                if session.get('username') in users:
+                    return redirect(url_for('chat'))
+            except Exception:
+                pass
+            session.clear()
         return render_template('login.html')
     
     # POST - 处理登录
@@ -1842,11 +2200,17 @@ def login():
         return jsonify({'success': False, 'message': f'登录失败: {str(e)}'})
 
 
-@app.route('/logout')
+@app.route('/logout', methods=['GET', 'POST'])
 def logout():
     """登出"""
     session.clear()
-    return redirect(url_for('index'))
+    if request.method == 'POST':
+        resp = jsonify({'success': True, 'message': '已登出'})
+    else:
+        resp = redirect(url_for('login'))
+    _clear_session_cookie(resp)
+    _set_no_store_headers(resp)
+    return resp
 
 
 def require_login(f):
@@ -2456,7 +2820,7 @@ def get_user_stats(username, user_path):
     return stats
 
 
-STATUS_PROVIDER_ICON_MAP = {
+DEFAULT_STATUS_PROVIDER_ICON_MAP = {
     'github': '',
     'alibabacloud': '/static/img/Index/static/icons/aliyun.png',
     'aliyun': '/static/img/icons/tongyi_single_icon.png',
@@ -2483,6 +2847,40 @@ STATUS_PROVIDER_ICON_MAP = {
     'zai': '/static/img/icons/zhipu_single_icon.svg',
     'bigmodel': '/static/img/icons/zhipu_single_icon.svg'
 }
+
+
+def _load_status_provider_icon_map() -> Dict[str, str]:
+    file_map: Dict[str, str] = {}
+    try:
+        if os.path.exists(STATUS_PROVIDER_ICON_MAP_PATH):
+            with open(STATUS_PROVIDER_ICON_MAP_PATH, 'r', encoding='utf-8') as f:
+                payload = json.load(f)
+            if isinstance(payload, dict) and isinstance(payload.get('icons'), dict):
+                payload = payload.get('icons')
+            if isinstance(payload, dict):
+                for k, v in payload.items():
+                    key = str(k or '').strip().lower()
+                    if not key:
+                        continue
+                    file_map[key] = str(v or '').strip()
+    except Exception:
+        file_map = {}
+
+    merged = dict(DEFAULT_STATUS_PROVIDER_ICON_MAP)
+    merged.update(file_map)
+
+    # 首次启动自动落盘，便于统一在 data/res 管理。
+    try:
+        os.makedirs(os.path.dirname(STATUS_PROVIDER_ICON_MAP_PATH), exist_ok=True)
+        if not os.path.exists(STATUS_PROVIDER_ICON_MAP_PATH):
+            with open(STATUS_PROVIDER_ICON_MAP_PATH, 'w', encoding='utf-8') as f:
+                json.dump({"icons": merged}, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+    return merged
+
+
+STATUS_PROVIDER_ICON_MAP = _load_status_provider_icon_map()
 
 
 def _status_provider_icon(provider: str) -> str:
@@ -2615,6 +3013,8 @@ def _status_strip_release_suffix_for_display(name: str) -> str:
 
 def _load_status_openrouter_model_index() -> Tuple[Dict[str, str], Dict[str, Dict[str, str]]]:
     path = OPENROUTER_MODELS_SNAPSHOT_PATH
+    if (not os.path.exists(path)) and os.path.exists(OPENROUTER_MODELS_SNAPSHOT_LEGACY_PATH):
+        path = OPENROUTER_MODELS_SNAPSHOT_LEGACY_PATH
     try:
         mtime = os.path.getmtime(path)
     except Exception:
@@ -4505,6 +4905,25 @@ def set_conversation_pin(conv_id):
         return jsonify({'success': False, 'message': str(e)}), 400
 
 
+@app.route('/api/conversations/<conv_id>/title', methods=['PUT'])
+@require_login
+def update_conversation_title(conv_id):
+    """更新对话标题"""
+    username = session['username']
+    manager = ConversationManager(username)
+    data = request.get_json(silent=True) or {}
+    title = str(data.get('title') or '').strip()
+    if not title:
+        return jsonify({'success': False, 'message': 'title is required'}), 400
+    if len(title) > 120:
+        return jsonify({'success': False, 'message': 'title too long'}), 400
+    try:
+        manager.update_conversation_title(conv_id, title)
+        return jsonify({'success': True, 'conversation_id': conv_id, 'title': title})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+
+
 @app.route('/api/conversations/<conv_id>', methods=['GET'])
 @require_login
 def get_conversation(conv_id):
@@ -4556,6 +4975,37 @@ def delete_message():
             print(f"[ASSET] cleanup after delete_message failed: {e}")
         return jsonify({"success": True})
     return jsonify({"success": False, "message": "Failed to delete"}), 500
+
+
+@app.route('/api/conversations/<conv_id>/messages/<int:msg_index>/content', methods=['PUT'])
+@require_login
+def update_user_message_content(conv_id, msg_index):
+    data = request.json or {}
+    content = str(data.get('content') or '').strip()
+    if not content:
+        return jsonify({'success': False, 'message': '消息内容不能为空'}), 400
+    if len(content) > 12000:
+        return jsonify({'success': False, 'message': '消息长度不能超过 12000'}), 400
+
+    username = session['username']
+    manager = ConversationManager(username)
+    try:
+        ok, message = manager.update_user_message_content(
+            conv_id,
+            msg_index,
+            content,
+            only_last=True
+        )
+        if not ok:
+            return jsonify({'success': False, 'message': str(message or '修改失败')}), 400
+        return jsonify({
+            'success': True,
+            'conversation_id': conv_id,
+            'index': int(msg_index),
+            'content': content
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 
 @app.route('/api/conversations/<conv_id>/assets/<asset_id>', methods=['GET'])
@@ -4636,7 +5086,12 @@ def get_config():
             isinstance(info, dict) and str(info.get('provider', 'volcengine')).strip().lower() == 'volcengine'
             for info in (config.get('models', {}) or {}).values()
         )
+        has_aliyun_model = any(
+            isinstance(info, dict) and str(info.get('provider', '')).strip().lower() in {'aliyun', 'dashscope'}
+            for info in (config.get('models', {}) or {}).values()
+        )
         volc_context_map = _refresh_volc_context_window_map(config, timeout=8.0) if has_volcengine_model else {}
+        aliyun_context_map = _refresh_aliyun_context_window_map(config, timeout=8.0) if has_aliyun_model else {}
 
         models_info = []
         for model_id, info in config.get('models', {}).items():
@@ -4652,6 +5107,8 @@ def get_config():
             context_window = _to_context_window(info)
             if not context_window and provider_name == 'volcengine':
                 context_window = _resolve_volc_context_window_by_model_id(model_id, volc_context_map)
+            if not context_window and provider_name in {'aliyun', 'dashscope'}:
+                context_window = _resolve_aliyun_context_window_by_model_id(model_id, aliyun_context_map)
             if context_window:
                 item['context_window'] = context_window
             models_info.append(item)
@@ -5250,6 +5707,39 @@ def admin_delete_model():
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 
+def _iter_sse_from_runtime_stream(stream_id: str, username: str, from_seq: int = 0):
+    try:
+        safe_from_seq = int(from_seq or 0)
+    except Exception:
+        safe_from_seq = 0
+    meta = get_stream_session_meta(stream_id, username=username)
+    if not meta:
+        return
+
+    session_info = {
+        "type": "stream_session",
+        "stream_id": str(stream_id or ""),
+        "conversation_id": str(meta.get("conversation_id") or ""),
+        "status": str(meta.get("status") or "running"),
+        "from_seq": max(0, safe_from_seq),
+    }
+    yield f"data: {json.dumps(session_info, ensure_ascii=False, default=str)}\n\n"
+
+    for _, payload in iter_stream_session_chunks(
+        stream_id,
+        username=username,
+        from_seq=max(0, safe_from_seq),
+        heartbeat_sec=12
+    ):
+        if not isinstance(payload, dict):
+            continue
+        if str(payload.get("type") or "").strip() == "ping":
+            yield ": ping\n\n"
+            continue
+        chunk_data = json.dumps(payload, ensure_ascii=False, default=str)
+        yield f"data: {chunk_data}\n\n"
+    yield "data: [DONE]\n\n"
+
 
 @app.route('/api/chat/stream', methods=['POST'])
 @require_login
@@ -5267,18 +5757,49 @@ def chat_stream():
     enable_tools = data.get('enable_tools', True)
     raw_tool_mode = data.get('tool_mode')
     allow_history_images = _as_bool(data.get('allow_history_images', True), True)
+    include_context = _as_bool(data.get('include_context', True), True)
     debug_mode = _as_bool(data.get('debug_mode', False), False)
     show_token_usage = data.get('show_token_usage', False)
     raw_file_ids = data.get('file_ids', [])
     file_ids = raw_file_ids if isinstance(raw_file_ids, list) else []
+    raw_sandbox_paths = data.get('sandbox_paths', [])
+    sandbox_paths = raw_sandbox_paths if isinstance(raw_sandbox_paths, list) else []
+    raw_user_attachments = data.get('user_attachments', [])
+    user_attachments = raw_user_attachments if isinstance(raw_user_attachments, list) else []
+
+    # Sanitize client-provided sandbox path hints / attachment summaries.
+    sanitized_sandbox_paths = []
+    seen_sandbox_paths = set()
+    for p in sandbox_paths:
+        s = str(p or '').strip().replace('\\', '/')
+        if not s or s in seen_sandbox_paths:
+            continue
+        seen_sandbox_paths.add(s)
+        sanitized_sandbox_paths.append(s)
+        if len(sanitized_sandbox_paths) >= 64:
+            break
+
+    sanitized_user_attachments = []
+    for item in user_attachments:
+        if not isinstance(item, dict):
+            continue
+        sanitized_user_attachments.append(item)
+        if len(sanitized_user_attachments) >= 64:
+            break
 
     enable_tools = bool(enable_tools)
     if raw_tool_mode is None:
-        tool_mode = 'force' if enable_tools else 'off'
+        tool_mode = 'auto_off' if enable_tools else 'off'
     else:
         tool_mode = str(raw_tool_mode or '').strip().lower()
-        if tool_mode not in {'off', 'auto', 'force'}:
-            tool_mode = 'force' if enable_tools else 'off'
+        if tool_mode == 'auto':
+            tool_mode = 'auto_select'
+        elif tool_mode in {'auto-off', 'autooff'}:
+            tool_mode = 'auto_off'
+        elif tool_mode in {'auto-select', 'autoselect'}:
+            tool_mode = 'auto_select'
+        if tool_mode not in {'off', 'auto_off', 'auto_select', 'force'}:
+            tool_mode = 'auto_off' if enable_tools else 'off'
     if tool_mode == 'off':
         enable_tools = False
     else:
@@ -5355,18 +5876,15 @@ def chat_stream():
             if convo and regenerate_index > 0:
                 message = convo['messages'][regenerate_index - 1].get('content', "")
 
-    def generate():
-        """生成流式响应"""
+    def _stream_worker(push_chunk, set_conversation_id):
         try:
-            # 创建模型实例
             model = Model(
-                username, 
+                username,
                 model_name=model_name,
                 conversation_id=conversation_id,
                 auto_create=(conversation_id is None)
             )
 
-            # 若存在 NexoraCode 本地 Agent，注入其本地工具
             if _agent_info:
                 _inject_local_agent_tools(model, _agent_info)
 
@@ -5375,14 +5893,15 @@ def chat_stream():
                 conversation_id=model.conversation_id,
                 file_ids=file_ids
             )
-            
-            # 发送对话ID
+
+            if model.conversation_id:
+                set_conversation_id(model.conversation_id)
+
             if not conversation_id:
-                yield f"data: {json.dumps({'type': 'conversation_id', 'conversation_id': model.conversation_id})}\n\n"
-            
-            # 流式处理消息
+                push_chunk({'type': 'conversation_id', 'conversation_id': model.conversation_id})
+
             for chunk in model.sendMessage(
-                message, 
+                message,
                 stream=True,
                 enable_thinking=enable_thinking,
                 enable_web_search=enable_web_search,
@@ -5390,26 +5909,62 @@ def chat_stream():
                 tool_mode=tool_mode,
                 debug_mode=debug_mode,
                 allow_history_images=allow_history_images,
+                include_context=include_context,
                 show_token_usage=show_token_usage,
                 file_ids=prepared_file_ids,
+                sandbox_paths=sanitized_sandbox_paths,
+                user_attachments=sanitized_user_attachments,
                 is_regenerate=is_regenerate,
                 regenerate_index=regenerate_index
             ):
                 if log_all_chunks:
                     _log_stream_chunk(chunk, model_name=model_name or model.model_name)
-                # 关键修复：添加 default=str 作为最后的保险，防止任何遗漏的 SDK 对象导致 JSON 序列化失败
-                chunk_data = json.dumps(chunk, ensure_ascii=False, default=str)
-                yield f"data: {chunk_data}\n\n"
-            
+                push_chunk(chunk if isinstance(chunk, dict) else {'type': 'content', 'content': str(chunk)})
         except Exception as e:
-            error_data = json.dumps({
+            push_chunk({
                 'type': 'error',
                 'content': f'处理消息时出错: {str(e)}'
-            }, ensure_ascii=False)
-            yield f"data: {error_data}\n\n"
-    
+            })
+
+    stream_id = start_stream_session(
+        username=username,
+        conversation_id=str(conversation_id or '').strip(),
+        worker=_stream_worker
+    )
+
     from flask import stream_with_context
-    resp = Response(stream_with_context(generate()), mimetype='text/event-stream')
+    resp = Response(
+        stream_with_context(_iter_sse_from_runtime_stream(stream_id, username=username, from_seq=0)),
+        mimetype='text/event-stream'
+    )
+    resp.headers['Cache-Control'] = 'no-cache, no-transform'
+    resp.headers['X-Accel-Buffering'] = 'no'
+    resp.headers['Connection'] = 'keep-alive'
+    return resp
+
+
+@app.route('/api/chat/stream/reconnect', methods=['POST'])
+@require_login
+def chat_stream_reconnect():
+    data = request.get_json(silent=True) or {}
+    stream_id = str(data.get('stream_id') or '').strip()
+    if not stream_id:
+        return jsonify({'success': False, 'message': 'stream_id is required'}), 400
+    try:
+        from_seq = int(data.get('from_seq') or 0)
+    except Exception:
+        from_seq = 0
+
+    username = session['username']
+    meta = get_stream_session_meta(stream_id, username=username)
+    if not meta:
+        return jsonify({'success': False, 'message': 'stream session not found'}), 404
+
+    from flask import stream_with_context
+    resp = Response(
+        stream_with_context(_iter_sse_from_runtime_stream(stream_id, username=username, from_seq=from_seq)),
+        mimetype='text/event-stream'
+    )
     resp.headers['Cache-Control'] = 'no-cache, no-transform'
     resp.headers['X-Accel-Buffering'] = 'no'
     resp.headers['Connection'] = 'keep-alive'
@@ -5904,7 +6459,10 @@ def list_knowledge():
     
     try:
         # 获取短期记忆和基础知识
-        short_memory = user.getKnowledgeList(0)  # 短期记忆
+        if SHORT_MEMORY_DISABLED:
+            short_memory = {}
+        else:
+            short_memory = user.getKnowledgeList(0)  # 短期记忆
         basis_knowledge_raw = user.getKnowledgeList(1)  # 基础知识
 
         # 兼容旧数据：统一为 {title: meta_dict}
@@ -5942,6 +6500,7 @@ def list_knowledge():
         return jsonify({
             'success': True,
             'short_memory': short_memory,
+            'short_memory_disabled': bool(SHORT_MEMORY_DISABLED),
             'basis_knowledge': basis_knowledge
         })
     except Exception as e:
@@ -6350,6 +6909,29 @@ def delete_short(title):
             return jsonify({'success': True, 'message': '删除成功'})
 
         return jsonify({'success': False, 'error': '短期记忆数据格式异常'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/knowledge/short/clear', methods=['POST'])
+@require_login
+def clear_short_memory():
+    """清空全部短期记忆"""
+    username = session['username']
+    user = User(username)
+    try:
+        short_data = user.getKnowledgeList(0)
+        if isinstance(short_data, dict):
+            count = len(short_data)
+            for idx in range(count - 1, -1, -1):
+                user.removeShort(idx)
+            return jsonify({'success': True, 'cleared': count})
+        if isinstance(short_data, list):
+            count = len(short_data)
+            for idx in range(count - 1, -1, -1):
+                user.removeShort(idx)
+            return jsonify({'success': True, 'cleared': count})
+        return jsonify({'success': True, 'cleared': 0})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 

@@ -68,7 +68,15 @@ const TOKEN_BUDGET_DEFAULT_LIMIT = 32768;
 let tokenBudgetState = {
     contextWindow: TOKEN_BUDGET_DEFAULT_LIMIT,
     estimated: true,
-    roundInput: 0
+    roundInput: 0,
+    includeContext: true,
+    latestInputTokens: 0,
+    toolInputEstimate: 0
+};
+let tokenBudgetTooltipState = {
+    visible: false,
+    target: null,
+    lastText: ''
 };
 let clientToolPollTimer = null;
 let clientToolPollInFlight = false;
@@ -84,6 +92,19 @@ let clientToolPollDelayMs = CLIENT_TOOL_POLL_MIN_MS;
 let modelOptionsDockState = null;
 let modelSelectListenersBound = false;
 let isBatchRenderingMessages = false;
+let renderLastUserMessageIndexHint = -1;
+let userPromptEditState = {
+    index: null,
+    messageDiv: null,
+    bubbleEl: null,
+    editorEl: null,
+    hintEl: null,
+    editBtn: null,
+    originalText: '',
+    saving: false
+};
+const STREAM_RESUME_STATE_KEY = 'nexora_stream_resume_v1';
+let streamResumeRestoredOnce = false;
 let hoverProxyMessageEl = null;
 let isMessageInputComposing = false;
 let selectedModelId = null;
@@ -185,8 +206,15 @@ const SETTINGS_COMPANION_MODE = (() => {
 })();
 let pinContextMenuState = null;
 let pinContextMenuBusy = false;
+let conversationRenameState = {
+    conversationId: '',
+    initialTitle: '',
+    saving: false
+};
 let conversationListCache = [];
 let basisKnowledgeListCache = [];
+let authRedirectInProgress = false;
+let logoutRequestInFlight = false;
 
 function setHoverProxyMessage(target) {
     if (hoverProxyMessageEl === target) return;
@@ -3133,6 +3161,7 @@ const els = {
     cloudFileList: document.getElementById('cloudFileList'),
     tokenBudgetMini: document.getElementById('tokenBudgetMini'),
     tokenBudgetRing: document.getElementById('tokenBudgetRing'),
+    tokenBudgetContextToggle: document.getElementById('tokenBudgetContextToggle'),
     tokenBudgetUsage: document.getElementById('tokenBudgetUsage'),
     tokenDisplay: document.getElementById('tokenDisplay'),
     modalTotalTokens: document.getElementById('modalTotalTokens'),
@@ -3183,7 +3212,16 @@ const els = {
     notesExplainSelectionBtn: document.getElementById('notesExplainSelectionBtn'),
     pinContextMenu: document.getElementById('pinContextMenu'),
     pinContextMenuAction: document.getElementById('pinContextMenuAction'),
+    pinContextMenuRename: document.getElementById('pinContextMenuRename'),
+    conversationRenameModal: document.getElementById('conversationRenameModal'),
+    conversationRenameInput: document.getElementById('conversationRenameInput'),
+    closeConversationRenameModalBtn: document.getElementById('closeConversationRenameModalBtn'),
+    cancelConversationRenameBtn: document.getElementById('cancelConversationRenameBtn'),
+    confirmConversationRenameBtn: document.getElementById('confirmConversationRenameBtn'),
+    mobileSelectionActionsBar: document.getElementById('mobileSelectionActionsBar'),
     mobileSelectionAddBtn: document.getElementById('mobileSelectionAddBtn'),
+    mobileSelectionCopyBtn: document.getElementById('mobileSelectionCopyBtn'),
+    mobileSelectionExplainBtn: document.getElementById('mobileSelectionExplainBtn'),
     totalInputTokens: document.getElementById('totalInputTokens'),
     totalOutputTokens: document.getElementById('totalOutputTokens'),
     // Options
@@ -3197,6 +3235,7 @@ const els = {
     // Admin & User Menu
     userMenu: document.getElementById('userMenu'),
     usernameBtn: document.getElementById('usernameBtn'),
+    logoutLink: document.getElementById('logoutLink'),
     adminLink: document.getElementById('adminBackendBtn'),
     adminModal: document.getElementById('adminModal'),
     closeAdminBtn: document.getElementById('closeAdminBtn'),
@@ -4543,12 +4582,16 @@ function hidePinContextMenu() {
     pinContextMenuState = null;
     pinContextMenuBusy = false;
     const actionBtn = els.pinContextMenuAction || document.getElementById('pinContextMenuAction');
+    const renameBtn = els.pinContextMenuRename || document.getElementById('pinContextMenuRename');
     if (actionBtn) actionBtn.disabled = false;
+    if (renameBtn) renameBtn.disabled = false;
 }
 
 function updatePinContextMenuAction(state) {
     const actionBtn = els.pinContextMenuAction || document.getElementById('pinContextMenuAction');
+    const renameBtn = els.pinContextMenuRename || document.getElementById('pinContextMenuRename');
     if (!actionBtn) return;
+    const targetType = String((state && state.targetType) || '').trim();
     const pinned = !!(state && state.pinned);
     const label = pinned ? '解除置顶' : '置顶';
     actionBtn.title = label;
@@ -4556,6 +4599,112 @@ function updatePinContextMenuAction(state) {
     if (span) span.textContent = label;
     const icon = actionBtn.querySelector('i');
     if (icon) icon.className = 'fa-solid fa-thumbtack';
+    if (renameBtn) {
+        renameBtn.style.display = targetType === 'conversation' ? '' : 'none';
+    }
+}
+
+function buildSafeNextPathForAuthRedirect() {
+    const path = String(window.location.pathname || '/').trim() || '/';
+    const search = String(window.location.search || '');
+    let next = `${path}${search}`;
+    if (!next.startsWith('/')) next = '/chat';
+    if (next.startsWith('//')) next = '/chat';
+    return next;
+}
+
+function redirectToLogin(reason = 'expired') {
+    if (authRedirectInProgress) return;
+    authRedirectInProgress = true;
+    const next = encodeURIComponent(buildSafeNextPathForAuthRedirect());
+    const why = encodeURIComponent(String(reason || 'expired'));
+    window.location.replace(`/login?next=${next}&reason=${why}&t=${Date.now()}`);
+}
+
+function getFetchTargetPath(input) {
+    try {
+        if (input instanceof Request) {
+            const u = new URL(String(input.url || ''), window.location.origin);
+            if (u.origin !== window.location.origin) return '';
+            return String(u.pathname || '').trim();
+        }
+        const u = new URL(String(input || ''), window.location.origin);
+        if (u.origin !== window.location.origin) return '';
+        return String(u.pathname || '').trim();
+    } catch (_) {
+        return '';
+    }
+}
+
+function shouldRedirectOnUnauthorized(input) {
+    const path = getFetchTargetPath(input);
+    if (!path) return false;
+    return path.startsWith('/api/') || path === '/chat' || path === '/knowledge';
+}
+
+function installAuthFetchGuard() {
+    if (window.__nexoraAuthFetchGuardInstalled) return;
+    if (typeof window.fetch !== 'function') return;
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = async (...args) => {
+        const res = await nativeFetch(...args);
+        try {
+            const target = args && args.length ? args[0] : '';
+            if (res && res.status === 401 && shouldRedirectOnUnauthorized(target)) {
+                redirectToLogin('expired');
+            }
+        } catch (_) {
+            // ignore guard errors
+        }
+        return res;
+    };
+    window.__nexoraAuthFetchGuardInstalled = true;
+}
+
+async function ensureAuthenticatedSession() {
+    try {
+        const res = await fetch('/api/user/info', {
+            method: 'GET',
+            credentials: 'include',
+            cache: 'no-store'
+        });
+        if (res.status === 401) {
+            redirectToLogin('expired');
+            return false;
+        }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data || !data.success) {
+            const msg = String((data && data.message) || '').trim();
+            if (res.status === 401 || /未登录|请先登录|unauthorized/i.test(msg)) {
+                redirectToLogin('expired');
+                return false;
+            }
+        }
+        return true;
+    } catch (_) {
+        // Network errors should not force-logout.
+        return true;
+    }
+}
+
+async function requestLogoutAndRedirect() {
+    if (logoutRequestInFlight) return;
+    logoutRequestInFlight = true;
+    try {
+        await fetch('/logout', {
+            method: 'POST',
+            credentials: 'include',
+            cache: 'no-store',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        });
+    } catch (_) {
+        // ignore and continue redirect flow
+    } finally {
+        try { clearActiveStreamResumeState(); } catch (_) {}
+        redirectToLogin('logout');
+    }
 }
 
 function showPinContextMenu(x, y, payload) {
@@ -4569,7 +4718,7 @@ function showPinContextMenu(x, y, payload) {
     menu.classList.add('active');
     menu.setAttribute('aria-hidden', 'false');
     const menuWidth = menu.offsetWidth || 136;
-    const menuHeight = menu.offsetHeight || 44;
+    const menuHeight = menu.offsetHeight || 76;
     const left = Math.min(Math.max(8, Number(x || 0)), Math.max(8, window.innerWidth - menuWidth - 12));
     const top = Math.min(Math.max(8, Number(y || 0)), Math.max(8, window.innerHeight - menuHeight - 12));
     menu.style.left = `${left}px`;
@@ -4616,6 +4765,184 @@ function setConversationPinLocal(conversationId, pin) {
         renderConversationList(conversationListCache);
     }
     return found;
+}
+
+function getConversationTitleFromCache(conversationId) {
+    const cid = String(conversationId || '').trim();
+    if (!cid) return '';
+    const source = Array.isArray(conversationListCache) ? conversationListCache : [];
+    for (const item of source) {
+        const src = (item && typeof item === 'object') ? item : {};
+        const itemId = String(src.conversation_id || src.id || '').trim();
+        if (itemId !== cid) continue;
+        return String(src.title || src.preview || '').trim();
+    }
+    return '';
+}
+
+function setConversationTitleLocal(conversationId, title) {
+    const cid = String(conversationId || '').trim();
+    const safeTitle = String(title || '').trim();
+    if (!cid || !safeTitle) return false;
+    let found = false;
+    const source = Array.isArray(conversationListCache) ? conversationListCache : [];
+    conversationListCache = source.map((item) => {
+        const src = (item && typeof item === 'object') ? item : {};
+        const itemId = String(src.conversation_id || src.id || '').trim();
+        if (itemId !== cid) return src;
+        found = true;
+        return {
+            ...src,
+            title: safeTitle
+        };
+    });
+    if (found) {
+        renderConversationList(conversationListCache);
+        if (String(currentConversationId || '').trim() === cid && els.conversationTitle) {
+            els.conversationTitle.textContent = safeTitle;
+        }
+    }
+    return found;
+}
+
+async function setConversationTitle(conversationId, title) {
+    const cid = String(conversationId || '').trim();
+    const safeTitle = String(title || '').trim();
+    if (!cid || !safeTitle) return false;
+    const res = await fetch(`/api/conversations/${encodeURIComponent(cid)}/title`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: safeTitle })
+    });
+    const data = await res.json();
+    return !!(data && data.success);
+}
+
+function closeConversationRenameModal(force = false) {
+    if (conversationRenameState.saving && !force) return;
+    const modal = els.conversationRenameModal || document.getElementById('conversationRenameModal');
+    if (!modal) return;
+    modal.classList.remove('active');
+    modal.setAttribute('aria-hidden', 'true');
+    conversationRenameState = {
+        conversationId: '',
+        initialTitle: '',
+        saving: false
+    };
+}
+
+function openConversationRenameModal(conversationId, title) {
+    const cid = String(conversationId || '').trim();
+    if (!cid) return;
+    const modal = els.conversationRenameModal || document.getElementById('conversationRenameModal');
+    const input = els.conversationRenameInput || document.getElementById('conversationRenameInput');
+    if (!modal || !input) return;
+    const safeTitle = String(title || getConversationTitleFromCache(cid) || '').trim();
+    conversationRenameState = {
+        conversationId: cid,
+        initialTitle: safeTitle,
+        saving: false
+    };
+    input.value = safeTitle;
+    modal.classList.add('active');
+    modal.setAttribute('aria-hidden', 'false');
+    requestAnimationFrame(() => {
+        try {
+            input.focus({ preventScroll: true });
+            input.select();
+        } catch (_) {
+            input.focus();
+        }
+    });
+}
+
+async function submitConversationRename() {
+    if (conversationRenameState.saving) return;
+    const cid = String(conversationRenameState.conversationId || '').trim();
+    const oldTitle = String(conversationRenameState.initialTitle || '').trim();
+    const input = els.conversationRenameInput || document.getElementById('conversationRenameInput');
+    const saveBtn = els.confirmConversationRenameBtn || document.getElementById('confirmConversationRenameBtn');
+    if (!cid || !input) return;
+
+    const nextTitle = String(input.value || '').trim();
+    if (!nextTitle) {
+        showToast('标题不能为空');
+        input.focus();
+        return;
+    }
+    if (nextTitle.length > 120) {
+        showToast('标题长度不能超过120');
+        input.focus();
+        return;
+    }
+    if (nextTitle === oldTitle) {
+        closeConversationRenameModal(true);
+        return;
+    }
+
+    const patched = setConversationTitleLocal(cid, nextTitle);
+    conversationRenameState.saving = true;
+    if (saveBtn) saveBtn.disabled = true;
+    try {
+        const ok = await setConversationTitle(cid, nextTitle);
+        if (!ok) {
+            if (patched) setConversationTitleLocal(cid, oldTitle);
+            showToast('修改标题失败');
+            return;
+        }
+        await loadConversations();
+        closeConversationRenameModal(true);
+        showToast('标题已更新');
+    } catch (_) {
+        if (patched) setConversationTitleLocal(cid, oldTitle);
+        showToast('修改标题失败');
+    } finally {
+        conversationRenameState.saving = false;
+        if (saveBtn) saveBtn.disabled = false;
+    }
+}
+
+function bindConversationRenameModal() {
+    const modal = els.conversationRenameModal || document.getElementById('conversationRenameModal');
+    if (!modal || modal.dataset.bindDone === '1') return;
+    modal.dataset.bindDone = '1';
+    bindBackdropSafeClose(modal, () => closeConversationRenameModal());
+
+    const closeBtn = els.closeConversationRenameModalBtn || document.getElementById('closeConversationRenameModalBtn');
+    const cancelBtn = els.cancelConversationRenameBtn || document.getElementById('cancelConversationRenameBtn');
+    const saveBtn = els.confirmConversationRenameBtn || document.getElementById('confirmConversationRenameBtn');
+    const input = els.conversationRenameInput || document.getElementById('conversationRenameInput');
+
+    if (closeBtn) {
+        closeBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            closeConversationRenameModal();
+        });
+    }
+    if (cancelBtn) {
+        cancelBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            closeConversationRenameModal();
+        });
+    }
+    if (saveBtn) {
+        saveBtn.addEventListener('click', async (e) => {
+            e.preventDefault();
+            await submitConversationRename();
+        });
+    }
+    if (input) {
+        input.addEventListener('keydown', async (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                await submitConversationRename();
+            }
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                closeConversationRenameModal();
+            }
+        });
+    }
 }
 
 function setBasisPinLocal(title, pin) {
@@ -4706,15 +5033,30 @@ async function applyPinContextMenuAction() {
 function bindPinContextMenu() {
     const menu = els.pinContextMenu || document.getElementById('pinContextMenu');
     const actionBtn = els.pinContextMenuAction || document.getElementById('pinContextMenuAction');
+    const renameBtn = els.pinContextMenuRename || document.getElementById('pinContextMenuRename');
     if (!menu || !actionBtn) return;
     if (menu.dataset.bindDone === '1') return;
     menu.dataset.bindDone = '1';
+    bindConversationRenameModal();
 
     actionBtn.addEventListener('click', async (e) => {
         e.preventDefault();
         e.stopPropagation();
         await applyPinContextMenuAction();
     });
+    if (renameBtn) {
+        renameBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const state = { ...(pinContextMenuState || {}) };
+            hidePinContextMenu();
+            if (String(state.targetType || '').trim() !== 'conversation') return;
+            const cid = String(state.conversationId || '').trim();
+            if (!cid) return;
+            const title = String(state.conversationTitle || getConversationTitleFromCache(cid) || '').trim();
+            openConversationRenameModal(cid, title);
+        });
+    }
 
     document.addEventListener('click', (e) => {
         if (!menu.classList.contains('active')) return;
@@ -5276,14 +5618,16 @@ function bindNotesPanelMobileDrag() {
 }
 
 function setMobileSelectionAddVisible(visible) {
-    const btn = els.mobileSelectionAddBtn || document.getElementById('mobileSelectionAddBtn');
-    if (!btn) return;
+    const bar = els.mobileSelectionActionsBar || document.getElementById('mobileSelectionActionsBar');
+    const addBtn = els.mobileSelectionAddBtn || document.getElementById('mobileSelectionAddBtn');
+    const target = bar || addBtn;
+    if (!target) return;
     if (isChatMobileLayout() && visible) {
-        btn.classList.add('active');
-        btn.setAttribute('aria-hidden', 'false');
+        target.classList.add('active');
+        target.setAttribute('aria-hidden', 'false');
     } else {
-        btn.classList.remove('active');
-        btn.setAttribute('aria-hidden', 'true');
+        target.classList.remove('active');
+        target.setAttribute('aria-hidden', 'true');
     }
 }
 
@@ -5449,18 +5793,55 @@ function initNotesUi() {
             showToast(ok ? '已填入解释指令' : '输入框不可用');
         });
     }
+    const resolveMobileSelectionPayload = () => {
+        const cur = getCurrentSelectionForNotes();
+        return {
+            text: cur.text || notesState.pendingSelectionText || '',
+            sourceMeta: cur.sourceMeta || notesState.pendingSelectionSource || {}
+        };
+    };
     if (els.mobileSelectionAddBtn) {
         els.mobileSelectionAddBtn.addEventListener('click', (e) => {
             e.preventDefault();
-            const cur = getCurrentSelectionForNotes();
-            const text = cur.text || notesState.pendingSelectionText || '';
-            const sourceMeta = cur.sourceMeta || notesState.pendingSelectionSource || {};
+            const { text, sourceMeta } = resolveMobileSelectionPayload();
             if (!text) {
                 showToast('请先选中文本');
                 setMobileSelectionAddVisible(false);
                 return;
             }
             addNoteItemFromSelection(text, sourceMeta);
+            setMobileSelectionAddVisible(false);
+        });
+    }
+    if (els.mobileSelectionCopyBtn) {
+        els.mobileSelectionCopyBtn.addEventListener('click', async (e) => {
+            e.preventDefault();
+            const { text } = resolveMobileSelectionPayload();
+            if (!text) {
+                showToast('请先选中文本');
+                setMobileSelectionAddVisible(false);
+                return;
+            }
+            try {
+                await copyTextToClipboardSafe(text);
+                showToast('已复制选中文本');
+            } catch (_) {
+                showToast('复制失败');
+            }
+            setMobileSelectionAddVisible(false);
+        });
+    }
+    if (els.mobileSelectionExplainBtn) {
+        els.mobileSelectionExplainBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            const { text } = resolveMobileSelectionPayload();
+            if (!text) {
+                showToast('请先选中文本');
+                setMobileSelectionAddVisible(false);
+                return;
+            }
+            const ok = fillMessageInputWithExplainText(text);
+            showToast(ok ? '已填入解释指令' : '输入框不可用');
             setMobileSelectionAddVisible(false);
         });
     }
@@ -5616,7 +5997,10 @@ function bindImageViewerEvents() {
 }
 
 // --- Initialization ---
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+    installAuthFetchGuard();
+    const authed = await ensureAuthenticatedSession();
+    if (!authed) return;
     initUI();
     if (NOTES_COMPANION_MODE) {
         return;
@@ -5634,14 +6018,16 @@ document.addEventListener('DOMContentLoaded', () => {
     if (shouldRestoreMailView) {
         setTimeout(() => openMailPlaceholderView(), 0);
     } else if (cid) {
-        loadConversation(cid);
+        await loadConversation(cid);
     } else {
         applyTokenMiniDisplay(0, 0);
         tokenBudgetState.roundInput = 0;
+        resetTokenBudgetBreakdown();
         renderTokenBudgetUi();
         // Init load knowledge even without conversation
-        loadKnowledge(null);
+        await loadKnowledge(null);
     }
+    await resumeActiveStreamAfterReload();
 });
 
 function initUI() {
@@ -5681,6 +6067,11 @@ function initUI() {
             void flushNotesCloudSync();
         }
     });
+    window.addEventListener('pageshow', async (e) => {
+        if (e && e.persisted) {
+            await ensureAuthenticatedSession();
+        }
+    });
     window.addEventListener('resize', () => {
         if (!isChatMobileLayout()) {
             closeMobileHeaderMenu();
@@ -5710,6 +6101,13 @@ function initUI() {
     }
     if (els.checkSearch) {
         els.checkSearch.addEventListener('change', () => saveComposerPrefsToStorage());
+    }
+    if (els.tokenBudgetContextToggle) {
+        els.tokenBudgetContextToggle.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            toggleContextIncludeMode();
+        });
     }
     
     // File Input
@@ -6014,6 +6412,16 @@ function initUI() {
         });
     }
 
+    const logoutLink = els.logoutLink || document.getElementById('logoutLink');
+    if (logoutLink) {
+        logoutLink.addEventListener('click', async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (els.userMenu) els.userMenu.classList.remove('active');
+            await requestLogoutAndRedirect();
+        });
+    }
+
     // 添加用户 Modal 相馆
     const openAddUserBtn = document.getElementById('openAddUserForm'); 
     if (openAddUserBtn) {
@@ -6189,10 +6597,172 @@ function resolveContextWindowForModel(modelId) {
     return { limit: inferContextWindowByModelName(meta), estimated: true };
 }
 
+function estimateTokenCountFromCharCount(chars) {
+    const n = safeTokenInt(chars);
+    if (n <= 0) return 0;
+    return Math.max(1, Math.ceil(n / 4));
+}
+
+function applyTokenBudgetPromptBreakdownFromConversationMessages(messages) {
+    const arr = Array.isArray(messages) ? messages : [];
+    let latestInput = 0;
+    let toolChars = 0;
+    for (let i = arr.length - 1; i >= 0; i -= 1) {
+        const msg = arr[i];
+        if (!msg || typeof msg !== 'object') continue;
+        if (String(msg.role || '').trim() !== 'assistant') continue;
+        const md = (msg.metadata && typeof msg.metadata === 'object') ? msg.metadata : {};
+        const io = (md.io_tokens && typeof md.io_tokens === 'object') ? md.io_tokens : {};
+        const debug = (md.request_debug && typeof md.request_debug === 'object') ? md.request_debug : {};
+        latestInput = safeTokenInt(io.input);
+        toolChars = safeTokenInt(debug.first_round_tools_chars);
+        break;
+    }
+    tokenBudgetState.latestInputTokens = latestInput;
+    tokenBudgetState.toolInputEstimate = estimateTokenCountFromCharCount(toolChars);
+}
+
+function setContextIncludeEnabled(enabled, options = {}) {
+    const next = !!enabled;
+    tokenBudgetState.includeContext = next;
+    renderTokenBudgetUi();
+    if (!options || options.persist !== false) {
+        saveComposerPrefsToStorage();
+    }
+}
+
+function toggleContextIncludeMode() {
+    setContextIncludeEnabled(!tokenBudgetState.includeContext);
+    showToast(tokenBudgetState.includeContext ? '已开启历史上下文传入' : '已关闭历史上下文传入');
+}
+
+function buildTokenBudgetHoverText(limit, used, ratioRaw, remain) {
+    const contextOn = !!tokenBudgetState.includeContext;
+    const contextForPrompt = contextOn ? used : 0;
+    const totalInput = safeTokenInt(tokenBudgetState.latestInputTokens);
+    const toolEstimate = safeTokenInt(tokenBudgetState.toolInputEstimate);
+    const systemEstimate = totalInput > 0 ? Math.max(0, totalInput - contextForPrompt) : 0;
+    const rows = [
+        `上下文传入: ${contextOn ? '开启' : '关闭'}`,
+        `上下文占用: ${used.toLocaleString()} / ${limit.toLocaleString()} (${Math.round(ratioRaw * 100)}%)`,
+        `本次请求上下文计入: ${contextForPrompt.toLocaleString()}`,
+        `系统占用估算: ${systemEstimate.toLocaleString()}`
+    ];
+    if (toolEstimate > 0) {
+        rows.push(`工具占用估算: ${toolEstimate.toLocaleString()}`);
+    }
+    rows.push(`剩余窗口: ${remain.toLocaleString()}${tokenBudgetState.estimated ? '（上限估算）' : ''}`);
+    return rows.join('\n');
+}
+
+function ensureTokenBudgetTooltipEl() {
+    let el = document.getElementById('tokenBudgetTooltip');
+    if (el) return el;
+    el = document.createElement('div');
+    el.id = 'tokenBudgetTooltip';
+    el.className = 'token-budget-tooltip';
+    el.setAttribute('role', 'tooltip');
+    el.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(el);
+    return el;
+}
+
+function positionTokenBudgetTooltipFromPoint(clientX, clientY) {
+    const el = ensureTokenBudgetTooltipEl();
+    if (!el) return;
+    const pad = 12;
+    const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+    const vh = window.innerHeight || document.documentElement.clientHeight || 0;
+    const w = el.offsetWidth || 220;
+    const h = el.offsetHeight || 80;
+    let left = Math.round(Number(clientX || 0) + 12);
+    let top = Math.round(Number(clientY || 0) + 14);
+    if (left + w + pad > vw) left = Math.max(pad, vw - w - pad);
+    if (top + h + pad > vh) top = Math.max(pad, Number(clientY || 0) - h - 14);
+    if (top < pad) top = pad;
+    el.style.left = `${left}px`;
+    el.style.top = `${top}px`;
+}
+
+function positionTokenBudgetTooltipByElement(target) {
+    const el = ensureTokenBudgetTooltipEl();
+    if (!el || !target || typeof target.getBoundingClientRect !== 'function') return;
+    const rect = target.getBoundingClientRect();
+    const cx = rect.left + (rect.width / 2);
+    const cy = rect.top + rect.height;
+    positionTokenBudgetTooltipFromPoint(cx, cy);
+}
+
+function hideTokenBudgetTooltip() {
+    const el = ensureTokenBudgetTooltipEl();
+    if (!el) return;
+    tokenBudgetTooltipState.visible = false;
+    tokenBudgetTooltipState.target = null;
+    el.classList.remove('visible');
+    el.setAttribute('aria-hidden', 'true');
+}
+
+function showTokenBudgetTooltip(target, text, clientX = null, clientY = null) {
+    const el = ensureTokenBudgetTooltipEl();
+    const nextText = String(text || '').trim();
+    if (!el || !nextText) return;
+    el.textContent = nextText;
+    tokenBudgetTooltipState.visible = true;
+    tokenBudgetTooltipState.target = target || null;
+    tokenBudgetTooltipState.lastText = nextText;
+    el.classList.add('visible');
+    el.setAttribute('aria-hidden', 'false');
+    if (clientX !== null && clientY !== null) {
+        positionTokenBudgetTooltipFromPoint(clientX, clientY);
+    } else {
+        positionTokenBudgetTooltipByElement(target || els.tokenBudgetMini || els.tokenBudgetUsage);
+    }
+}
+
+function bindTokenBudgetTooltipTriggers() {
+    const mini = els.tokenBudgetMini || document.getElementById('tokenBudgetMini');
+    const usage = els.tokenBudgetUsage || document.getElementById('tokenBudgetUsage');
+    const ring = els.tokenBudgetRing || document.getElementById('tokenBudgetRing');
+    const targets = [mini, usage, ring].filter(Boolean);
+    if (!targets.length) return;
+    targets.forEach((t) => {
+        if (!t || t.dataset.tokenBudgetTooltipBound === '1') return;
+        t.dataset.tokenBudgetTooltipBound = '1';
+        t.addEventListener('mouseenter', (e) => {
+            const tip = String((t.dataset.tokenBudgetTip || '')).trim();
+            if (!tip) return;
+            showTokenBudgetTooltip(t, tip, e.clientX, e.clientY);
+        });
+        t.addEventListener('mousemove', (e) => {
+            if (!tokenBudgetTooltipState.visible) return;
+            positionTokenBudgetTooltipFromPoint(e.clientX, e.clientY);
+        });
+        t.addEventListener('mouseleave', () => hideTokenBudgetTooltip());
+        t.addEventListener('focus', () => {
+            const tip = String((t.dataset.tokenBudgetTip || '')).trim();
+            if (!tip) return;
+            showTokenBudgetTooltip(t, tip);
+        });
+        t.addEventListener('blur', () => hideTokenBudgetTooltip());
+    });
+    if (!window.__tokenBudgetTooltipDocBound) {
+        window.__tokenBudgetTooltipDocBound = true;
+        document.addEventListener('scroll', () => {
+            if (!tokenBudgetTooltipState.visible) return;
+            if (!tokenBudgetTooltipState.target) {
+                hideTokenBudgetTooltip();
+                return;
+            }
+            positionTokenBudgetTooltipByElement(tokenBudgetTooltipState.target);
+        }, true);
+    }
+}
+
 function renderTokenBudgetUi() {
     const ring = els.tokenBudgetRing || document.getElementById('tokenBudgetRing');
     const usage = els.tokenBudgetUsage || document.getElementById('tokenBudgetUsage');
     const mini = els.tokenBudgetMini || document.getElementById('tokenBudgetMini');
+    const toggle = els.tokenBudgetContextToggle || document.getElementById('tokenBudgetContextToggle');
     if (!ring || !usage || !mini) return;
 
     const limit = Math.max(1, normalizeContextWindow(tokenBudgetState.contextWindow) || TOKEN_BUDGET_DEFAULT_LIMIT);
@@ -6207,12 +6777,25 @@ function renderTokenBudgetUi() {
 
     mini.style.setProperty('--tb-color', color);
     mini.style.setProperty('--tb-angle', `${angle}deg`);
+    mini.classList.toggle('context-enabled', !!tokenBudgetState.includeContext);
+    mini.classList.toggle('context-disabled', !tokenBudgetState.includeContext);
     usage.style.color = color;
+    if (toggle) {
+        toggle.setAttribute('aria-pressed', tokenBudgetState.includeContext ? 'true' : 'false');
+        toggle.setAttribute('aria-label', tokenBudgetState.includeContext ? '关闭历史上下文传入' : '开启历史上下文传入');
+    }
 
     const remain = Math.max(0, limit - used);
     const prefix = tokenBudgetState.estimated ? '~' : '';
     usage.textContent = `CTX ${prefix}${used.toLocaleString()}/${limit.toLocaleString()}`;
-    mini.title = `上下文窗口已用 ${Math.round(ratioRaw * 100)}% · 剩余 ${remain.toLocaleString()} tokens${tokenBudgetState.estimated ? '（估算上限）' : ''}`;
+    const hoverText = buildTokenBudgetHoverText(limit, used, ratioRaw, remain);
+    mini.dataset.tokenBudgetTip = hoverText;
+    usage.dataset.tokenBudgetTip = hoverText;
+    ring.dataset.tokenBudgetTip = hoverText;
+    bindTokenBudgetTooltipTriggers();
+    if (tokenBudgetTooltipState.visible && tokenBudgetTooltipState.target) {
+        showTokenBudgetTooltip(tokenBudgetTooltipState.target, hoverText);
+    }
 }
 
 function updateTokenBudgetContextFromSelectedModel() {
@@ -6229,6 +6812,11 @@ function updateTokenBudgetRoundInput(inputTokens) {
         tokenBudgetState.roundInput = n;
         renderTokenBudgetUi();
     }
+}
+
+function resetTokenBudgetBreakdown() {
+    tokenBudgetState.latestInputTokens = 0;
+    tokenBudgetState.toolInputEstimate = 0;
 }
 
 function estimateTokenBudgetUsedFromConversationMessages(messages) {
@@ -6257,6 +6845,7 @@ function estimateTokenBudgetUsedFromConversationMessages(messages) {
 function applyTokenBudgetFromConversationMessages(messages) {
     const est = estimateTokenBudgetUsedFromConversationMessages(messages);
     tokenBudgetState.roundInput = est;
+    applyTokenBudgetPromptBreakdownFromConversationMessages(messages);
     renderTokenBudgetUi();
 }
 
@@ -6362,6 +6951,7 @@ function beginTokenMiniStreaming() {
     tokenMiniState.conversationId = currentConversationId || null;
     resetTokenMiniStreamPart();
     tokenBudgetState.roundInput = 0;
+    resetTokenBudgetBreakdown();
     renderTokenMiniFromState();
 }
 
@@ -6397,7 +6987,11 @@ function onTokenStreamUsageChunk(chunk) {
     if (!tokenMiniState.streaming) return;
     const inTokens = safeTokenInt(chunk && chunk.input_tokens);
     const outTokens = safeTokenInt(chunk && chunk.output_tokens);
+    if (inTokens > 0) {
+        tokenBudgetState.latestInputTokens = inTokens;
+    }
     updateTokenBudgetRoundInput(inTokens);
+    renderTokenBudgetUi();
 
     if (!tokenMiniState.usageSnapshotInitialized) {
         tokenMiniState.streamInput += inTokens;
@@ -6436,7 +7030,10 @@ async function refreshTokenMiniForConversation(conversationId, options = {}) {
     if (!cid) {
         tokenMiniState.baseInput = 0;
         tokenMiniState.baseOutput = 0;
-        if (!keepStreamPart) tokenBudgetState.roundInput = 0;
+        if (!keepStreamPart) {
+            tokenBudgetState.roundInput = 0;
+            resetTokenBudgetBreakdown();
+        }
         renderTokenMiniFromState();
         return;
     }
@@ -6537,6 +7134,66 @@ function renderConversationList(conversations) {
         return toUpdatedTs((b && b.updated_at) || '') - toUpdatedTs((a && a.updated_at) || '');
     });
 
+    const bindConversationItemMobileLongPress = (itemEl, getPayload) => {
+        if (!itemEl || typeof getPayload !== 'function') return;
+        let timer = null;
+        let startX = 0;
+        let startY = 0;
+        let lastX = 0;
+        let lastY = 0;
+        let longPressed = false;
+        const HOLD_MS = 460;
+        const MOVE_TOLERANCE = 12;
+        const clearTimer = () => {
+            if (timer) {
+                clearTimeout(timer);
+                timer = null;
+            }
+        };
+
+        itemEl.addEventListener('touchstart', (e) => {
+            if (!isChatMobileLayout()) return;
+            if (!e.touches || e.touches.length !== 1) return;
+            if (e.target && e.target.closest && e.target.closest('.delete-chat')) return;
+            const t = e.touches[0];
+            startX = Number(t.clientX || 0);
+            startY = Number(t.clientY || 0);
+            lastX = startX;
+            lastY = startY;
+            longPressed = false;
+            clearTimer();
+            timer = setTimeout(() => {
+                longPressed = true;
+                itemEl.dataset.longPressOpen = '1';
+                showPinContextMenu(lastX, lastY, getPayload());
+            }, HOLD_MS);
+        }, { passive: true });
+
+        itemEl.addEventListener('touchmove', (e) => {
+            if (!timer || !e.touches || !e.touches.length) return;
+            const t = e.touches[0];
+            lastX = Number(t.clientX || 0);
+            lastY = Number(t.clientY || 0);
+            const dx = Math.abs(lastX - startX);
+            const dy = Math.abs(lastY - startY);
+            if (dx > MOVE_TOLERANCE || dy > MOVE_TOLERANCE) {
+                clearTimer();
+            }
+        }, { passive: true });
+
+        itemEl.addEventListener('touchend', (e) => {
+            clearTimer();
+            if (!longPressed) return;
+            longPressed = false;
+            e.preventDefault();
+            e.stopPropagation();
+        });
+        itemEl.addEventListener('touchcancel', () => {
+            clearTimer();
+            longPressed = false;
+        }, { passive: true });
+    };
+
     orderedConversations.forEach(c => {
         const div = document.createElement('div');
         const cid = c.conversation_id || c.id; // Handle both
@@ -6557,6 +7214,10 @@ function renderConversationList(conversations) {
         div.appendChild(titleSpan);
         
         div.onclick = () => {
+            if (div.dataset.longPressOpen === '1') {
+                div.dataset.longPressOpen = '0';
+                return;
+            }
             // 如果当前正在查看知识库详情，先关闭
             if (currentViewingKnowledge) {
                 closeKnowledgeView();
@@ -6569,9 +7230,16 @@ function renderConversationList(conversations) {
             showPinContextMenu(e.clientX, e.clientY, {
                 targetType: 'conversation',
                 conversationId: String(cid || ''),
+                conversationTitle: String(c.title || c.preview || `Conversation ${cid}`),
                 pinned: isPinned
             });
         });
+        bindConversationItemMobileLongPress(div, () => ({
+            targetType: 'conversation',
+            conversationId: String(cid || ''),
+            conversationTitle: String(c.title || c.preview || `Conversation ${cid}`),
+            pinned: !!(div.dataset.pin === '1')
+        }));
         
         // Delete button
         const delBtn = document.createElement('button');
@@ -6608,6 +7276,7 @@ async function createNewConversation(silent = false) {
         tokenMiniState.baseOutput = 0;
         resetTokenMiniStreamPart();
         tokenBudgetState.roundInput = 0;
+        resetTokenBudgetBreakdown();
         applyTokenMiniDisplay(0, 0);
         renderTokenBudgetUi();
         if(window.history.pushState) window.history.pushState({}, '', '/chat');
@@ -6638,6 +7307,7 @@ async function loadConversation(id) {
     tokenMiniState.baseOutput = 0;
     resetTokenMiniStreamPart();
     tokenBudgetState.roundInput = 0;
+    resetTokenBudgetBreakdown();
     renderTokenMiniFromState();
     
     // Update URL
@@ -6756,19 +7426,119 @@ function stopGeneration() {
         isGenerating = false;
         updateSendButtonState();
     }
+    clearActiveStreamResumeState();
+}
+
+function loadActiveStreamResumeState() {
+    try {
+        const raw = localStorage.getItem(STREAM_RESUME_STATE_KEY);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return null;
+        const streamId = String(parsed.stream_id || '').trim();
+        if (!streamId) return null;
+        return {
+            stream_id: streamId,
+            conversation_id: String(parsed.conversation_id || '').trim(),
+            assistant_index: Number.isFinite(Number(parsed.assistant_index)) ? Number(parsed.assistant_index) : null,
+            started_at: Number.isFinite(Number(parsed.started_at)) ? Number(parsed.started_at) : Date.now(),
+            updated_at: Number.isFinite(Number(parsed.updated_at)) ? Number(parsed.updated_at) : Date.now(),
+            last_seq: Number.isFinite(Number(parsed.last_seq)) ? Number(parsed.last_seq) : 0
+        };
+    } catch (_) {
+        return null;
+    }
+}
+
+function saveActiveStreamResumeState(nextState) {
+    const incoming = (nextState && typeof nextState === 'object') ? nextState : {};
+    const streamId = String(incoming.stream_id || '').trim();
+    if (!streamId) return;
+    const now = Date.now();
+    const payload = {
+        stream_id: streamId,
+        conversation_id: String(incoming.conversation_id || currentConversationId || '').trim(),
+        assistant_index: Number.isFinite(Number(incoming.assistant_index)) ? Number(incoming.assistant_index) : null,
+        started_at: Number.isFinite(Number(incoming.started_at)) ? Number(incoming.started_at) : now,
+        updated_at: now,
+        last_seq: Number.isFinite(Number(incoming.last_seq)) ? Number(incoming.last_seq) : 0
+    };
+    try {
+        localStorage.setItem(STREAM_RESUME_STATE_KEY, JSON.stringify(payload));
+    } catch (_) {
+        // ignore localStorage quota / privacy mode errors
+    }
+}
+
+function patchActiveStreamResumeState(patch) {
+    const extra = (patch && typeof patch === 'object') ? patch : {};
+    const prev = loadActiveStreamResumeState() || {};
+    const merged = { ...prev, ...extra };
+    saveActiveStreamResumeState(merged);
+}
+
+function clearActiveStreamResumeState() {
+    try {
+        localStorage.removeItem(STREAM_RESUME_STATE_KEY);
+    } catch (_) {
+        // ignore
+    }
+}
+
+function findAssistantIndexAfterUserMessage(userIndex) {
+    const idx = Number(userIndex);
+    if (!Number.isFinite(idx)) return -1;
+    const direct = document.querySelector(`.message.assistant[data-index="${idx + 1}"]`);
+    if (direct) return idx + 1;
+    if (!els.messagesContainer) return -1;
+    const rows = Array.from(els.messagesContainer.querySelectorAll('.message.assistant'));
+    let best = Number.POSITIVE_INFINITY;
+    rows.forEach((row) => {
+        const n = Number(row.dataset.index);
+        if (!Number.isFinite(n) || n <= idx) return;
+        if (n < best) best = n;
+    });
+    return Number.isFinite(best) ? best : -1;
+}
+
+async function findAssistantIndexAfterUserMessageFromServer(conversationId, userIndex) {
+    const cid = String(conversationId || '').trim();
+    const idx = Number(userIndex);
+    if (!cid || !Number.isFinite(idx) || idx < 0) return { index: -1, messages: [] };
+    try {
+        const res = await fetch(`/api/conversations/${encodeURIComponent(cid)}`);
+        const data = await res.json().catch(() => ({}));
+        const messages = (data && data.success && data.conversation && Array.isArray(data.conversation.messages))
+            ? data.conversation.messages
+            : [];
+        if (!messages.length) return { index: -1, messages };
+        for (let i = Math.max(0, idx + 1); i < messages.length; i += 1) {
+            const role = String((messages[i] && messages[i].role) || '').trim().toLowerCase();
+            if (role === 'assistant') {
+                return { index: i, messages };
+            }
+        }
+        return { index: -1, messages };
+    } catch (_) {
+        return { index: -1, messages: [] };
+    }
 }
 
 function normalizeToolsMode(raw) {
     const m = String(raw || '').trim().toLowerCase();
-    if (m === 'off' || m === 'force' || m === 'auto') return m;
-    return 'force';
+    if (m === 'off' || m === 'force') return m;
+    if (m === 'auto') return 'auto_select';
+    if (m === 'auto_select' || m === 'auto-select' || m === 'autoselect') return 'auto_select';
+    if (m === 'auto_off' || m === 'auto-off' || m === 'autooff') return 'auto_off';
+    return 'auto_off';
 }
 
 function formatToolsModeLabel(mode) {
     const m = normalizeToolsMode(mode);
     if (m === 'off') return 'Off';
     if (m === 'force') return 'Force';
-    return 'Auto';
+    if (m === 'auto_select') return 'Auto(Select tools)';
+    return 'Auto(OFF)';
 }
 
 function hasLikelyMathForThinkingStream(text) {
@@ -6936,7 +7706,8 @@ function saveComposerPrefsToStorage() {
         const payload = {
             thinking: !!(els.checkThinking && els.checkThinking.checked),
             search: !!(els.checkSearch && els.checkSearch.checked),
-            toolsMode: getToolsMode()
+            toolsMode: getToolsMode(),
+            includeContext: !!tokenBudgetState.includeContext
         };
         localStorage.setItem(CHAT_COMPOSER_PREFS_KEY, JSON.stringify(payload));
     } catch (_) {
@@ -6965,7 +7736,11 @@ function applyComposerPrefsFromStorage() {
         els.checkSearch.checked = prefs.search;
     }
     if (prefs.toolsMode !== undefined && prefs.toolsMode !== null) {
-        setToolsMode(String(prefs.toolsMode || 'force'), { persist: false });
+        setToolsMode(String(prefs.toolsMode || 'auto_off'), { persist: false });
+    }
+    if (typeof prefs.includeContext === 'boolean') {
+        tokenBudgetState.includeContext = !!prefs.includeContext;
+        renderTokenBudgetUi();
     }
 }
 
@@ -7018,7 +7793,7 @@ function bindToolsModeDropdown() {
     if (!els.toolsModeDropdown || !els.toolsModeTrigger || !els.toolsModeMenu) return;
     if (els.toolsModeDropdown.dataset.bindDone === '1') return;
     els.toolsModeDropdown.dataset.bindDone = '1';
-    setToolsMode(els.toolsMode ? els.toolsMode.value : 'force', { persist: false });
+    setToolsMode(els.toolsMode ? els.toolsMode.value : 'auto_off', { persist: false });
 
     els.toolsModeTrigger.addEventListener('click', (e) => {
         e.preventDefault();
@@ -7035,7 +7810,7 @@ function bindToolsModeDropdown() {
         btn.addEventListener('click', (e) => {
             e.preventDefault();
             e.stopPropagation();
-            setToolsMode(btn.dataset.mode || 'force');
+            setToolsMode(btn.dataset.mode || 'auto_off');
             closeToolsModeDropdown();
         });
     });
@@ -7048,7 +7823,7 @@ function bindToolsModeDropdown() {
 }
 
 function getToolsMode() {
-    return normalizeToolsMode(els.toolsMode ? els.toolsMode.value : 'force');
+    return normalizeToolsMode(els.toolsMode ? els.toolsMode.value : 'auto_off');
 }
 
 async function sendMessage() {
@@ -7151,7 +7926,7 @@ async function sendMessage() {
     // Reset auto-scroll
     shouldAutoScroll = true;
 
-    // Separate text files from Volc files
+    // Separate text files from provider payloads
     let finalMessage = text;
     const fileInputs = [];
     const sandboxPaths = [];
@@ -7175,10 +7950,6 @@ async function sendMessage() {
         }
     });
 
-    if (sandboxPaths.length > 0) {
-        finalMessage += `\n\n[系统注入] 已上传文件到用户沙箱，请优先使用 file_list/file_create/file_read/file_find/file_write/file_remove 工具操作以下路径：\n${sandboxPaths.map(p => `- ${p}`).join('\n')}\n`;
-    }
-
     // Prepare API Payload
     const payload = {
         message: finalMessage,
@@ -7190,7 +7961,10 @@ async function sendMessage() {
         tool_mode: toolsMode,
         debug_mode: isDebugConsoleEnabled(),
         file_ids: fileInputs,
-        allow_history_images: allowHistoryImages
+        sandbox_paths: sandboxPaths,
+        user_attachments: pendingUserAttachments,
+        allow_history_images: allowHistoryImages,
+        include_context: !!tokenBudgetState.includeContext
     };
     
     // Reset files
@@ -7204,6 +7978,9 @@ async function sendMessage() {
     // Create Placeholder for AI Response
     const aiMsgId = Date.now().toString(); // Temporary ID
     const aiMsgDiv = appendMessage({ role: 'assistant', content: '', id: aiMsgId, pending: true });
+    const aiMsgIndex = Number(aiMsgDiv && aiMsgDiv.dataset ? aiMsgDiv.dataset.index : NaN);
+    let streamCompleted = false;
+    let streamAbortedByUser = false;
     let currentFullContent = '';
     let currentSegmentContent = '';
     let currentContentSpan = null;
@@ -7942,6 +8719,7 @@ async function sendMessage() {
     
     // Create new abort controller
     currentAbortController = new AbortController();
+    clearActiveStreamResumeState();
 
     try {
         const res = await fetch('/api/chat/stream', {
@@ -7971,6 +8749,7 @@ async function sendMessage() {
                 if (line.startsWith('data: ')) {
                     const jsonStr = line.slice(6);
                     if (jsonStr === '[DONE]') {
+                        streamCompleted = true;
                         isGenerating = false;
                         updateSendButtonState();
                         continue;
@@ -7978,10 +8757,30 @@ async function sendMessage() {
                     try {
                         const chunk = JSON.parse(jsonStr);
                         
+                        if (chunk.type === 'stream_session') {
+                            const sid = String(chunk.stream_id || '').trim();
+                            if (sid) {
+                                saveActiveStreamResumeState({
+                                    stream_id: sid,
+                                    conversation_id: String(chunk.conversation_id || currentConversationId || '').trim(),
+                                    assistant_index: Number.isFinite(aiMsgIndex) ? aiMsgIndex : null,
+                                    started_at: Date.now(),
+                                    last_seq: 0
+                                });
+                            }
+                        }
+
+                        if (Number.isFinite(Number(chunk._stream_seq))) {
+                            patchActiveStreamResumeState({
+                                last_seq: Number(chunk._stream_seq)
+                            });
+                        }
+
                         if (chunk.conversation_id) {
                             const incomingCid = String(chunk.conversation_id || '').trim();
                             const oldCid = String(currentConversationId || '').trim();
                             currentConversationId = chunk.conversation_id;
+                            patchActiveStreamResumeState({ conversation_id: incomingCid });
                             if (incomingCid && incomingCid !== oldCid) {
                                 syncNotesForConversation(incomingCid);
                             }
@@ -8134,7 +8933,7 @@ async function sendMessage() {
                                 onTokenStreamToolArgsChunk(chunk.arguments || '');
                             }
                             // Special handling for addBasis to show content
-                            if (toolName === 'addBasis') {
+                            if (toolName === 'add_basis' || toolName === 'addBasis') {
                                 try {
                                     const args = JSON.parse(chunk.arguments);
                                     appendAddBasisView(aiMsgDiv, args);
@@ -8185,6 +8984,7 @@ async function sendMessage() {
              }
 
              if (done) {
+                streamCompleted = true;
                 finalizeStreamingContentRender();
 // 说明
                 const thinkingBlocks = aiMsgDiv.querySelectorAll('.thinking-block');
@@ -8200,6 +9000,7 @@ async function sendMessage() {
         }
     } catch (e) {
         if (e.name === 'AbortError') {
+            streamAbortedByUser = true;
             appendDebugConsoleEntry({
                 direction: 'client->local',
                 stage: 'abort',
@@ -8222,7 +9023,12 @@ async function sendMessage() {
         isGenerating = false;
         currentAbortController = null;
         updateSendButtonState();
-        aiMsgDiv.classList.remove('pending');
+        if (streamCompleted || streamAbortedByUser) {
+            clearActiveStreamResumeState();
+            aiMsgDiv.classList.remove('pending');
+        } else {
+            showToast('连接中断：刷新页面后将自动续传该条回复');
+        }
         await finishTokenMiniStreaming();
         loadConversations(); // Update list preview
         loadKnowledge(currentConversationId); // Refresh knowledge
@@ -8439,7 +9245,7 @@ function appendToolEvent(aiMsgDiv, name, details, isFunction = false, options = 
 
     // Icon selection
     let iconSvg = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path></svg>'; // default toolbox
-    if(toolName === 'Web Search' || toolName === 'searchKeyword' || toolName === 'web_search') {
+    if(toolName === 'Web Search' || toolName === 'search_keyword' || toolName === 'searchKeyword' || toolName === 'web_search') {
         iconSvg = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>';
     }
 
@@ -9051,6 +9857,261 @@ function appendUserAttachments(contentEl, msg) {
     }
 }
 
+function getLastUserMessageIndexFromMessages(messages) {
+    const arr = Array.isArray(messages) ? messages : [];
+    for (let i = arr.length - 1; i >= 0; i -= 1) {
+        const role = String((arr[i] && arr[i].role) || '').trim();
+        if (role === 'user') return i;
+    }
+    return -1;
+}
+
+function getLastUserMessageIndexFromDom() {
+    if (!els.messagesContainer) return -1;
+    let last = -1;
+    const rows = Array.from(els.messagesContainer.querySelectorAll('.message.user'));
+    rows.forEach((row) => {
+        const idx = Number(row.dataset.index);
+        if (Number.isFinite(idx) && idx > last) last = idx;
+    });
+    return last;
+}
+
+function resetUserPromptInlineEditor(options = {}) {
+    const opts = (options && typeof options === 'object') ? options : {};
+    const keepEditedContent = !!opts.keepEditedContent;
+    const state = userPromptEditState || {};
+    const bubble = state.bubbleEl;
+    const editor = state.editorEl;
+    const hint = state.hintEl;
+    const btn = state.editBtn;
+
+    if (editor && editor.parentNode) editor.remove();
+    if (hint && hint.parentNode) hint.remove();
+    if (bubble) {
+        bubble.style.display = '';
+        if (keepEditedContent && typeof opts.editedText === 'string') {
+            const text = String(opts.editedText || '').trim();
+            if (text) {
+                bubble.innerHTML = renderMarkdownWithNewTabLinks(text);
+                bindSourceMarkdown(bubble, text);
+                renderMathSafe(bubble);
+                highlightCode(bubble);
+            }
+        }
+    }
+    if (btn) {
+        btn.classList.remove('is-editing');
+        btn.title = '编辑提示词';
+        btn.innerHTML = `
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 20h9"></path>
+                <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"></path>
+            </svg>
+        `;
+    }
+
+    userPromptEditState = {
+        index: null,
+        messageDiv: null,
+        bubbleEl: null,
+        editorEl: null,
+        hintEl: null,
+        editBtn: null,
+        originalText: '',
+        saving: false
+    };
+}
+
+function refreshLastUserPromptEditButtons() {
+    if (!els.messagesContainer) return;
+    const userRows = Array.from(els.messagesContainer.querySelectorAll('.message.user'));
+    if (!userRows.length) return;
+    let lastRow = null;
+    let lastIdx = -1;
+    userRows.forEach((row) => {
+        const idx = Number(row.dataset.index);
+        if (Number.isFinite(idx) && idx >= lastIdx) {
+            lastIdx = idx;
+            lastRow = row;
+        }
+    });
+    userRows.forEach((row) => {
+        const editBtn = row.querySelector('.btn-action[data-action="edit-user-prompt"]');
+        if (!editBtn) return;
+        const isLast = row === lastRow;
+        editBtn.style.display = isLast ? '' : 'none';
+        editBtn.disabled = !isLast;
+        if (!isLast && Number(userPromptEditState.index) === Number(row.dataset.index)) {
+            resetUserPromptInlineEditor();
+        }
+    });
+}
+
+async function saveEditedUserPrompt(index, options = {}) {
+    const idx = Number(index);
+    const opts = (options && typeof options === 'object') ? options : {};
+    const regenerateAfterSave = !!opts.regenerateAfterSave;
+    const state = userPromptEditState;
+    if (!Number.isFinite(idx) || !state || Number(state.index) !== idx || !state.editorEl) return;
+    if (state.saving) return;
+    if (idx !== getLastUserMessageIndexFromDom()) {
+        showToast('仅支持修改最后一条用户消息');
+        resetUserPromptInlineEditor();
+        return;
+    }
+
+    const nextText = String(state.editorEl.value || '').trim();
+    if (!nextText) {
+        showToast('提示词不能为空');
+        state.editorEl.focus();
+        return;
+    }
+    if (nextText.length > CHAT_INPUT_DRAFT_MAX_LEN) {
+        showToast(`提示词不能超过 ${CHAT_INPUT_DRAFT_MAX_LEN} 字符`);
+        state.editorEl.focus();
+        return;
+    }
+    if (nextText === String(state.originalText || '').trim()) {
+        resetUserPromptInlineEditor();
+        return;
+    }
+    if (!currentConversationId) {
+        showToast('当前会话无效');
+        return;
+    }
+
+    state.saving = true;
+    if (state.editBtn) state.editBtn.disabled = true;
+    try {
+        const res = await fetch(`/api/conversations/${encodeURIComponent(String(currentConversationId))}/messages/${idx}/content`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: nextText })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.success) {
+            showToast((data && data.message) ? data.message : '保存失败');
+            return;
+        }
+        resetUserPromptInlineEditor({ keepEditedContent: true, editedText: nextText });
+        if (!regenerateAfterSave) {
+            showToast('提示词已更新');
+            return;
+        }
+        let assistantIndex = findAssistantIndexAfterUserMessage(idx);
+        if (assistantIndex < 0) {
+            const fallback = await findAssistantIndexAfterUserMessageFromServer(currentConversationId, idx);
+            assistantIndex = Number(fallback.index);
+            if (
+                Number.isFinite(assistantIndex)
+                && assistantIndex >= 0
+                && Array.isArray(fallback.messages)
+                && fallback.messages.length
+            ) {
+                renderMessages(fallback.messages, true, { instant: true });
+            }
+        }
+        if (assistantIndex < 0) {
+            showToast('提示词已更新，但未找到可重答的模型回复');
+            return;
+        }
+        showToast('提示词已更新，正在重新回答');
+        await startRegenerate(assistantIndex);
+    } catch (_) {
+        showToast('保存失败');
+    } finally {
+        if (state.editBtn) state.editBtn.disabled = false;
+        if (userPromptEditState) userPromptEditState.saving = false;
+    }
+}
+
+window.toggleEditUserPrompt = async function(index) {
+    const idx = Number(index);
+    if (!Number.isFinite(idx)) return;
+    const messageDiv = document.querySelector(`.message.user[data-index="${idx}"]`);
+    if (!messageDiv) return;
+    if (idx !== getLastUserMessageIndexFromDom()) {
+        showToast('仅支持修改最后一条用户消息');
+        return;
+    }
+
+    if (Number(userPromptEditState.index) === idx && userPromptEditState.editorEl) {
+        await saveEditedUserPrompt(idx, { regenerateAfterSave: true });
+        return;
+    }
+    if (userPromptEditState.editorEl) {
+        resetUserPromptInlineEditor();
+    }
+
+    const bubble = messageDiv.querySelector('.message-bubble');
+    if (!bubble) {
+        showToast('未找到可编辑内容');
+        return;
+    }
+    const editBtn = messageDiv.querySelector('.btn-action[data-action="edit-user-prompt"]');
+    if (!editBtn) return;
+
+    const sourceText = String((typeof bubble.__sourceMarkdown === 'string') ? bubble.__sourceMarkdown : (bubble.innerText || '')).trim();
+    const editor = document.createElement('textarea');
+    editor.className = 'user-prompt-inline-editor';
+    editor.value = sourceText;
+    editor.setAttribute('aria-label', '编辑用户提示词');
+    const hint = document.createElement('div');
+    hint.className = 'user-prompt-inline-hint';
+    hint.textContent = 'Enter 保存并重答，Shift+Enter 换行，Esc 取消';
+
+    const bubbleRect = bubble.getBoundingClientRect();
+    const targetWidth = Math.max(120, Math.round(bubbleRect.width || bubble.offsetWidth || 120));
+    const targetHeight = Math.max(44, Math.round(bubbleRect.height || bubble.offsetHeight || 44));
+    editor.style.width = `${targetWidth}px`;
+    editor.style.height = `${targetHeight}px`;
+
+    bubble.style.display = 'none';
+    bubble.insertAdjacentElement('afterend', editor);
+    editor.insertAdjacentElement('afterend', hint);
+
+    editBtn.classList.add('is-editing');
+    editBtn.title = '保存修改';
+    editBtn.innerHTML = `
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="20 6 9 17 4 12"></polyline>
+        </svg>
+    `;
+
+    userPromptEditState = {
+        index: idx,
+        messageDiv,
+        bubbleEl: bubble,
+        editorEl: editor,
+        hintEl: hint,
+        editBtn,
+        originalText: sourceText,
+        saving: false
+    };
+
+    editor.addEventListener('keydown', async (e) => {
+        if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+            e.preventDefault();
+            await saveEditedUserPrompt(idx, { regenerateAfterSave: true });
+            return;
+        }
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            resetUserPromptInlineEditor();
+        }
+    });
+
+    requestAnimationFrame(() => {
+        try {
+            editor.focus({ preventScroll: true });
+            editor.setSelectionRange(editor.value.length, editor.value.length);
+        } catch (_) {
+            editor.focus();
+        }
+    });
+};
+
 function appendMessage(msg, index) {
     // If index is not provided (live message), calculate it based on current message count
     if (index === undefined || index === null) {
@@ -9095,11 +10156,24 @@ function appendMessage(msg, index) {
             renderMathSafe(bubble);
             content.appendChild(bubble);
         }
-        
+
+        const canRenderEditBtn = !msg.pending && !!textContent && (
+            (renderLastUserMessageIndexHint >= 0 && Number(index) === Number(renderLastUserMessageIndexHint))
+            || (!isBatchRenderingMessages)
+        );
+
         // User Message Actions
         const actions = document.createElement('div');
         actions.className = 'msg-actions';
         actions.innerHTML = `
+            ${canRenderEditBtn ? `
+            <button class="btn-action" data-action="edit-user-prompt" onclick="toggleEditUserPrompt(${index})" title="编辑提示词">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 20h9"></path>
+                    <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"></path>
+                </svg>
+            </button>
+            ` : ''}
             <button class="btn-action" onclick="copyUserMessage(${index})" title="复制消息">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
@@ -9184,7 +10258,7 @@ function appendMessage(msg, index) {
                 }
                 else if (step.type === 'function_call') {
                     const toolName = resolveToolNameFromEvent(step, step.name);
-                    if (toolName === 'addBasis') {
+                    if (toolName === 'add_basis' || toolName === 'addBasis') {
                         try {
                             const args = JSON.parse(step.arguments);
                             appendAddBasisView(div, args);
@@ -9295,6 +10369,10 @@ function appendMessage(msg, index) {
     const welcome = els.messagesContainer.querySelector('.welcome-screen');
     if(welcome) welcome.remove();
 
+    if (!isBatchRenderingMessages) {
+        refreshLastUserPromptEditButtons();
+    }
+
     // Scroll
     if (shouldAutoScroll && !isBatchRenderingMessages) {
         els.messagesContainer.scrollTop = els.messagesContainer.scrollHeight;
@@ -9404,6 +10482,7 @@ function buildVersionNavigation(msg) {
 }
 
 function renderMessages(messages, noScroll, options = {}) {
+    resetUserPromptInlineEditor();
     // preserve welcome if empty
     refreshConversationImageHistoryFlag(Array.isArray(messages) ? messages : []);
     if(!messages || messages.length === 0) {
@@ -9430,13 +10509,16 @@ function renderMessages(messages, noScroll, options = {}) {
         els.messagesContainer.style.scrollBehavior = 'auto';
     }
 
+    renderLastUserMessageIndexHint = getLastUserMessageIndexFromMessages(messages);
     isBatchRenderingMessages = true;
     try {
         els.messagesContainer.innerHTML = '';
         messages.forEach((m, i) => appendMessage(m, i));
     } finally {
         isBatchRenderingMessages = false;
+        renderLastUserMessageIndexHint = -1;
     }
+    refreshLastUserPromptEditButtons();
     
     // Restore or scroll
     let shouldPinBottom = false;
@@ -9521,13 +10603,33 @@ async function startRegenerate(index) {
     const modelName = selectedModelId;
     const toolsMode = getToolsMode();
     const enableTools = toolsMode !== 'off';
-    const regenMessageDiv = document.querySelector(`.message[data-index="${index}"]`);
+    let regenMessageDiv = document.querySelector(`.message.assistant[data-index="${index}"]`);
+    if (!regenMessageDiv && currentConversationId) {
+        try {
+            const convRes = await fetch(`/api/conversations/${encodeURIComponent(String(currentConversationId))}`);
+            const convData = await convRes.json().catch(() => ({}));
+            if (convData && convData.success && convData.conversation && Array.isArray(convData.conversation.messages)) {
+                renderMessages(convData.conversation.messages, true, { instant: true });
+                regenMessageDiv = document.querySelector(`.message.assistant[data-index="${index}"]`);
+            }
+        } catch (_) {
+            // ignore sync errors; fallback to below guard
+        }
+    }
+    if (!regenMessageDiv) {
+        showToast('未找到可重答消息，请刷新后重试');
+        return;
+    }
+    let accumulatedContent = "";
     
     // Setup UI for generation
     isGenerating = true;
     updateSendButtonState();
     currentAbortController = new AbortController();
+    clearActiveStreamResumeState();
     if (regenMessageDiv) regenMessageDiv.classList.add('pending');
+    let streamCompleted = false;
+    let streamAbortedByUser = false;
     
     try {
         const response = await fetch('/api/chat/stream', {
@@ -9543,12 +10645,21 @@ async function startRegenerate(index) {
                     enable_tools: enableTools,
                     tool_mode: toolsMode,
                     debug_mode: isDebugConsoleEnabled(),
-                    show_token_usage: true
+                    show_token_usage: true,
+                    include_context: !!tokenBudgetState.includeContext
                 }),
             signal: currentAbortController.signal
         });
 
-        if (!response.ok) throw new Error("HTTP " + response.status);
+        if (!response.ok) {
+            let errMsg = `HTTP ${response.status}`;
+            try {
+                const errData = await response.json();
+                if (errData && errData.message) errMsg = String(errData.message);
+            } catch (_) {}
+            throw new Error(errMsg);
+        }
+        if (!response.body) throw new Error('stream body is empty');
         
         // Target specific message index for regeneration
         if (regenMessageDiv) {
@@ -9572,23 +10683,46 @@ async function startRegenerate(index) {
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
-        
-        let accumulatedContent = "";
+        let buffer = '';
         const debugScopeKey = `regen:${currentConversationId || 'new'}:${index}:${Date.now()}`;
 
         while (true) {
             const { value, done } = await reader.read();
-            if (done) break;
-            
-            const chunk = decoder.decode(value);
-            const lines = chunk.split('\n');
+            if (value) {
+                buffer += decoder.decode(value, { stream: !done });
+            }
+            if (done) {
+                buffer += decoder.decode();
+            }
+            const lines = buffer.split('\n');
+            buffer = done ? '' : (lines.pop() || '');
             
             for (const line of lines) {
                 if (!line.startsWith('data: ')) continue;
                 try {
-                    const data = jsonParseSafe(line.substring(6));
+                    const dataText = line.substring(6);
+                    if (dataText === '[DONE]') {
+                        streamCompleted = true;
+                        continue;
+                    }
+                    const data = jsonParseSafe(dataText);
                     if(!data) continue;
                     
+                    if (data.type === 'stream_session') {
+                        const sid = String(data.stream_id || '').trim();
+                        if (sid) {
+                            saveActiveStreamResumeState({
+                                stream_id: sid,
+                                conversation_id: String(data.conversation_id || currentConversationId || '').trim(),
+                                assistant_index: Number(index),
+                                started_at: Date.now()
+                            });
+                        }
+                    }
+                    if (Number.isFinite(Number(data._stream_seq))) {
+                        patchActiveStreamResumeState({ last_seq: Number(data._stream_seq) });
+                    }
+
                     if (data.type === 'debug_trace') {
                         if (data.stage === 'system_prompt') {
                             appendDebugConsoleEntry({
@@ -9620,23 +10754,77 @@ async function startRegenerate(index) {
                                 replaceKey: `${debugScopeKey}:reply`
                             });
                         }
-                        updateMessageDivContent(index, accumulatedContent);
+                        updateMessageDivContent(index, accumulatedContent, regenMessageDiv);
+                    } else if (data.type === 'done') {
+                        const doneContent = String(data.content || '');
+                        if (doneContent) {
+                            accumulatedContent = doneContent;
+                            updateMessageDivContent(index, accumulatedContent, regenMessageDiv);
+                        }
                     } else if (data.type === 'reasoning_content') {
-                        updateMessageDivThinking(index, data.content);
+                        updateMessageDivThinking(index, data.content, regenMessageDiv);
                     } else if (data.type === 'web_search' || data.type === 'search_meta' || data.type === 'function_call_delta' || data.type === 'function_call' || data.type === 'function_result') {
-                        updateMessageDivTools(index, data);
+                        updateMessageDivTools(index, data, regenMessageDiv);
                     }
                 } catch (e) { }
+            }
+            if (done) {
+                streamCompleted = true;
+                break;
             }
         }
         
     } catch (e) {
-        if (e.name === 'AbortError') console.log("Generation stopped.");
-        else console.error(e);
+        if (e.name === 'AbortError') {
+            streamAbortedByUser = true;
+            console.log("Generation stopped.");
+        } else {
+            console.error(e);
+            showToast(`重新回答失败: ${String((e && e.message) || e || 'unknown')}`);
+        }
     } finally {
         isGenerating = false;
         updateSendButtonState();
         if (regenMessageDiv) regenMessageDiv.classList.remove('pending');
+        if (streamCompleted) {
+            finalizeMessageRenderForIndex(index, regenMessageDiv);
+            const targetAfterStream = resolveAssistantStreamMessageDiv(index, regenMessageDiv);
+            const hasRenderedContent = !!(targetAfterStream && (() => {
+                const body = targetAfterStream.querySelector('.content-body');
+                if (body) {
+                    const source = String(
+                        (typeof body.__sourceMarkdown === 'string')
+                            ? body.__sourceMarkdown
+                            : (body.textContent || '')
+                    ).trim();
+                    if (source) return true;
+                }
+                const tools = targetAfterStream.querySelector('.tool-usage, .add-basis-view');
+                if (tools) return true;
+                const thinking = targetAfterStream.querySelector('.thinking-content');
+                if (thinking && String(thinking.textContent || '').trim()) return true;
+                return false;
+            })());
+            const shouldSyncFromServer = (
+                !targetAfterStream
+                || !targetAfterStream.isConnected
+                || !hasRenderedContent
+            );
+            if (shouldSyncFromServer && currentConversationId) {
+                try {
+                    const convRes = await fetch(`/api/conversations/${encodeURIComponent(String(currentConversationId))}`);
+                    const convData = await convRes.json().catch(() => ({}));
+                    if (convData && convData.success && convData.conversation && Array.isArray(convData.conversation.messages)) {
+                        renderMessages(convData.conversation.messages, true, { instant: true });
+                    }
+                } catch (_) {
+                    // ignore fallback refresh errors
+                }
+            }
+        }
+        if (streamCompleted || streamAbortedByUser) {
+            clearActiveStreamResumeState();
+        }
         // Keep current message DOM to avoid delayed full re-render/flash.
         loadConversations();
     }
@@ -9646,8 +10834,19 @@ function jsonParseSafe(str) {
     try { return JSON.parse(str); } catch(e) { return null; }
 }
 
-function updateMessageDivContent(index, fullText) {
-    const messageDiv = document.querySelector(`.message[data-index="${index}"]`);
+function resolveAssistantStreamMessageDiv(index, preferredMessageDiv = null) {
+    const preferred = preferredMessageDiv || null;
+    if (preferred) {
+        if (!preferred.isConnected || !preferred.classList || !preferred.classList.contains('assistant')) {
+            return null;
+        }
+        return preferred;
+    }
+    return document.querySelector(`.message.assistant[data-index="${index}"]`);
+}
+
+function updateMessageDivContent(index, fullText, preferredMessageDiv = null) {
+    const messageDiv = resolveAssistantStreamMessageDiv(index, preferredMessageDiv);
     if (!messageDiv) return;
     
     let body = messageDiv.querySelector('.content-body');
@@ -9671,8 +10870,8 @@ function updateMessageDivContent(index, fullText) {
     if (shouldAutoScroll) els.messagesContainer.scrollTop = els.messagesContainer.scrollHeight;
 }
 
-function updateMessageDivThinking(index, delta) {
-    const messageDiv = document.querySelector(`.message[data-index="${index}"]`);
+function updateMessageDivThinking(index, delta, preferredMessageDiv = null) {
+    const messageDiv = resolveAssistantStreamMessageDiv(index, preferredMessageDiv);
     if (!messageDiv) return;
     
     const content = messageDiv.querySelector('.message-content');
@@ -9719,8 +10918,49 @@ function updateMessageDivThinking(index, delta) {
     highlightCode(textTarget);
 }
 
-function updateMessageDivTools(index, data) {
-    const messageDiv = document.querySelector(`.message[data-index="${index}"]`);
+function finalizeMessageRenderForIndex(index, preferredMessageDiv = null) {
+    const messageDiv = resolveAssistantStreamMessageDiv(index, preferredMessageDiv);
+    if (!messageDiv) return;
+
+    const bodies = Array.from(messageDiv.querySelectorAll('.content-body'));
+    bodies.forEach((body) => {
+        const isLive = String(body.dataset.streamLive || '') === '1';
+        if (!isLive) return;
+        const sourceText = String(
+            (typeof body.__sourceMarkdown === 'string')
+                ? body.__sourceMarkdown
+                : (body.dataset.streamRaw || body.textContent || '')
+        );
+        body.innerHTML = renderMarkdownWithNewTabLinks(sourceText);
+        bindSourceMarkdown(body, sourceText);
+        renderMathSafe(body);
+        highlightCode(body);
+        body.dataset.streamLive = '0';
+    });
+
+    const thinkingBlocks = Array.from(messageDiv.querySelectorAll('.thinking-block.reasoning-thinking-block'));
+    thinkingBlocks.forEach((block) => {
+        const contentDiv = block.querySelector('.thinking-content');
+        if (!contentDiv) return;
+        const isLive = String(contentDiv.dataset.streamLive || '') === '1'
+            || String(block.dataset.streamLive || '') === '1';
+        if (!isLive) return;
+        const sourceText = String(
+            (typeof contentDiv.__sourceMarkdown === 'string')
+                ? contentDiv.__sourceMarkdown
+                : (contentDiv.dataset.rawText || contentDiv.dataset.streamRaw || contentDiv.textContent || '')
+        );
+        contentDiv.innerHTML = renderMarkdownWithNewTabLinks(sourceText, { breaks: false });
+        bindSourceMarkdown(contentDiv, sourceText);
+        renderMathSafe(contentDiv);
+        highlightCode(contentDiv);
+        contentDiv.dataset.streamLive = '0';
+        block.dataset.streamLive = '0';
+    });
+}
+
+function updateMessageDivTools(index, data, preferredMessageDiv = null) {
+    const messageDiv = resolveAssistantStreamMessageDiv(index, preferredMessageDiv);
     if (!messageDiv) return;
     
     if (data.type === 'web_search') {
@@ -9753,6 +10993,186 @@ function updateMessageDivTools(index, data) {
         const callId = allocateToolCallId(messageDiv, toolName, 'result', rawCallId, toolIndex);
         updateLastToolResult(messageDiv, toolName, data.result, callId, { toolIndex });
         maybeRenderCanvasFromJsExecuteResult(messageDiv, toolName, data.result, callId, toolIndex);
+    }
+}
+
+async function resumeActiveStreamAfterReload() {
+    if (streamResumeRestoredOnce) return;
+    streamResumeRestoredOnce = true;
+    const state = loadActiveStreamResumeState();
+    if (!state || !state.stream_id) return;
+    if (isGenerating) return;
+
+    const updatedAt = Number(state.updated_at || 0);
+    if (updatedAt > 0 && (Date.now() - updatedAt) > (2 * 60 * 60 * 1000)) {
+        clearActiveStreamResumeState();
+        return;
+    }
+
+    const targetConversationId = String(state.conversation_id || '').trim();
+    if (targetConversationId && String(currentConversationId || '').trim() !== targetConversationId) {
+        await loadConversation(targetConversationId);
+    }
+    const reconnectBoundConversationId = String(targetConversationId || currentConversationId || '').trim();
+
+    let assistantIndex = Number(state.assistant_index);
+    if (!Number.isFinite(assistantIndex) || assistantIndex < 0) {
+        assistantIndex = els.messagesContainer
+            ? els.messagesContainer.querySelectorAll('.message').length
+            : 0;
+    }
+
+    let assistantDiv = document.querySelector(`.message.assistant[data-index="${assistantIndex}"]`);
+    if (!assistantDiv) {
+        assistantDiv = appendMessage({ role: 'assistant', content: '', pending: true }, assistantIndex);
+    }
+    if (!assistantDiv) {
+        clearActiveStreamResumeState();
+        return;
+    }
+
+    const content = assistantDiv.querySelector('.message-content');
+    if (content) {
+        content.querySelectorAll('.content-body,.thinking-block,.tool-usage,.add-basis-view').forEach((el) => el.remove());
+    }
+    assistantDiv.__citationUrlMap = {};
+    assistantDiv.__toolCallState = {
+        seq: 0,
+        pendingByName: {},
+        callIdByIndex: {},
+        pendingQueue: [],
+        activeAnonCallId: ''
+    };
+    assistantDiv.classList.add('pending');
+
+    showToast('检测到未完成回复，正在重连...');
+    isGenerating = true;
+    updateSendButtonState();
+    beginTokenMiniStreaming();
+    currentAbortController = new AbortController();
+
+    let streamCompleted = false;
+    let streamAbortedByUser = false;
+    let accumulatedContent = '';
+    let accumulatedReasoning = '';
+    let buffer = '';
+    const decoder = new TextDecoder();
+
+    try {
+        const response = await fetch('/api/chat/stream/reconnect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                stream_id: state.stream_id,
+                from_seq: 0
+            }),
+            signal: currentAbortController.signal
+        });
+        if (!response.ok || !response.body) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+
+        const reader = response.body.getReader();
+        while (true) {
+            const { value, done } = await reader.read();
+            if (value) buffer += decoder.decode(value, { stream: !done });
+            if (done) buffer += decoder.decode();
+            const lines = buffer.split('\n');
+            buffer = done ? '' : (lines.pop() || '');
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                const jsonStr = line.slice(6);
+                if (jsonStr === '[DONE]') {
+                    streamCompleted = true;
+                    continue;
+                }
+                let chunk = null;
+                try {
+                    chunk = JSON.parse(jsonStr);
+                } catch (_) {
+                    continue;
+                }
+                if (!chunk || typeof chunk !== 'object') continue;
+
+                if (chunk.type === 'stream_session') {
+                    const sid = String(chunk.stream_id || '').trim();
+                    if (sid) {
+                        patchActiveStreamResumeState({
+                            stream_id: sid,
+                            conversation_id: String(chunk.conversation_id || targetConversationId || currentConversationId || '').trim()
+                        });
+                    }
+                }
+                if (Number.isFinite(Number(chunk._stream_seq))) {
+                    patchActiveStreamResumeState({ last_seq: Number(chunk._stream_seq) });
+                }
+                if (chunk.conversation_id) {
+                    const incomingCid = String(chunk.conversation_id || '').trim();
+                    patchActiveStreamResumeState({ conversation_id: incomingCid });
+                    if (incomingCid && incomingCid === reconnectBoundConversationId) {
+                        const activeCid = String(currentConversationId || '').trim();
+                        if (!activeCid) {
+                            currentConversationId = incomingCid;
+                            syncNotesForConversation(incomingCid);
+                        } else if (activeCid === reconnectBoundConversationId) {
+                            noteTokenMiniConversationId(incomingCid);
+                        }
+                    }
+                }
+
+                if (chunk.type === 'content') {
+                    accumulatedContent += String(chunk.content || '');
+                    updateMessageDivContent(assistantIndex, accumulatedContent, assistantDiv);
+                } else if (chunk.type === 'reasoning_content') {
+                    accumulatedReasoning += String(chunk.content || '');
+                    updateMessageDivThinking(assistantIndex, String(chunk.content || ''), assistantDiv);
+                } else if (
+                    chunk.type === 'web_search' ||
+                    chunk.type === 'search_meta' ||
+                    chunk.type === 'function_call_delta' ||
+                    chunk.type === 'function_call' ||
+                    chunk.type === 'function_result'
+                ) {
+                    updateMessageDivTools(assistantIndex, chunk, assistantDiv);
+                } else if (chunk.type === 'token_usage') {
+                    onTokenStreamUsageChunk(chunk);
+                } else if (chunk.type === 'title') {
+                    if (els.conversationTitle) els.conversationTitle.textContent = String(chunk.title || '');
+                } else if (chunk.type === 'error') {
+                    appendErrorEvent(assistantDiv, chunk.content || 'Unknown error');
+                }
+            }
+
+            if (done) {
+                streamCompleted = true;
+                break;
+            }
+        }
+    } catch (e) {
+        if (e && e.name === 'AbortError') {
+            streamAbortedByUser = true;
+        } else {
+            showToast('重连失败，请稍后刷新重试');
+        }
+    } finally {
+        isGenerating = false;
+        currentAbortController = null;
+        updateSendButtonState();
+        if (streamCompleted) {
+            finalizeMessageRenderForIndex(assistantIndex, assistantDiv);
+        }
+        assistantDiv.classList.remove('pending');
+        await finishTokenMiniStreaming();
+        if (streamCompleted || streamAbortedByUser) {
+            clearActiveStreamResumeState();
+        }
+        if (streamCompleted) {
+            loadConversations();
+            if (String(currentConversationId || '').trim() === reconnectBoundConversationId) {
+                loadKnowledge(currentConversationId);
+            }
+        }
     }
 }
 

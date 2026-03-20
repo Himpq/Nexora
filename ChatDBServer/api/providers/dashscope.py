@@ -1,3 +1,4 @@
+import json
 import re
 from typing import Any, Dict, List
 
@@ -31,6 +32,281 @@ class DashScopeProvider(ProviderInterface):
             base_url=base_url,
             timeout=timeout,
         )
+
+    def list_models(
+        self,
+        *,
+        client: Any,
+        capability: str = "",
+        request_options: Dict[str, Any] = None,
+    ) -> Dict[str, Any]:
+        req_opts = request_options if isinstance(request_options, dict) else {}
+        cap = str(capability or "").strip().lower()
+        api_key = str(getattr(client, "api_key", "") or self.provider_config.get("api_key", "") or "").strip()
+        if not api_key:
+            return {
+                "ok": False,
+                "provider": self.provider_name,
+                "api_type": self.api_type,
+                "capability": cap,
+                "error": "missing_api_key",
+                "models": [],
+            }
+
+        catalog_url = str(
+            req_opts.get("models_catalog_url")
+            or self.provider_config.get("models_catalog_url")
+            or "https://dashscope.aliyuncs.com/api/v1/models"
+        ).strip()
+        page_size = self._safe_int(
+            req_opts.get("models_catalog_page_size", self.provider_config.get("models_catalog_page_size", 100)),
+            default=100
+        )
+        page_size = max(1, min(500, page_size))
+        max_pages = self._safe_int(
+            req_opts.get("models_catalog_max_pages", self.provider_config.get("models_catalog_max_pages", 6)),
+            default=6
+        )
+        max_pages = max(1, min(30, max_pages))
+        timeout = float(req_opts.get("models_catalog_timeout", self.provider_config.get("models_catalog_timeout", 20.0)) or 20.0)
+        timeout = max(2.0, min(timeout, 60.0))
+
+        tried_urls: List[str] = []
+        last_error = ""
+        rows: List[Dict[str, Any]] = []
+        total = 0
+        remote_page_size = page_size
+
+        for page_no in range(1, max_pages + 1):
+            ok, payload, url_used, err = self._fetch_catalog_page(
+                catalog_url,
+                api_key=api_key,
+                page_no=page_no,
+                page_size=page_size,
+                timeout=timeout
+            )
+            tried_urls.append(url_used)
+            if not ok:
+                last_error = err or last_error
+                if page_no == 1:
+                    rows = []
+                break
+            page_rows, total, _, remote_page_size = self._extract_catalog_rows(payload)
+            if not page_rows:
+                break
+            rows.extend(page_rows)
+            if total > 0 and len(rows) >= total:
+                break
+            if len(page_rows) < max(1, remote_page_size):
+                break
+
+        normalized = self._normalize_catalog_items(rows)
+        if cap:
+            normalized = [m for m in normalized if self._model_matches_capability(m, cap)]
+        if normalized:
+            return {
+                "ok": True,
+                "provider": self.provider_name,
+                "api_type": self.api_type,
+                "capability": cap,
+                "source": "dashscope_models_api",
+                "tried_urls": tried_urls,
+                "count": len(normalized),
+                "models": normalized,
+            }
+
+        # Fallback: compatible-mode /models
+        fallback = self._list_models_from_compatible_api(api_key=api_key, timeout=timeout)
+        if cap:
+            fallback = [m for m in fallback if self._model_matches_capability(m, cap)]
+        if fallback:
+            return {
+                "ok": True,
+                "provider": self.provider_name,
+                "api_type": self.api_type,
+                "capability": cap,
+                "source": "compatible_mode_models_api",
+                "tried_urls": tried_urls,
+                "count": len(fallback),
+                "models": fallback,
+            }
+
+        return {
+            "ok": False,
+            "provider": self.provider_name,
+            "api_type": self.api_type,
+            "capability": cap,
+            "error": last_error or "fetch_models_failed",
+            "tried_urls": tried_urls,
+            "models": [],
+        }
+
+    def _safe_int(self, value: Any, default: int = 0) -> int:
+        try:
+            return int(value or 0)
+        except Exception:
+            return int(default or 0)
+
+    def _fetch_catalog_page(
+        self,
+        catalog_url: str,
+        *,
+        api_key: str,
+        page_no: int,
+        page_size: int,
+        timeout: float
+    ):
+        url = str(catalog_url or "").strip()
+        if not url:
+            return False, {}, "", "missing_catalog_url"
+        try:
+            resp = httpx.get(
+                url,
+                params={"page_no": int(page_no), "page_size": int(page_size)},
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=timeout,
+            )
+            url_used = str(resp.request.url)
+            if resp.status_code >= 400:
+                return False, {}, url_used, f"http_{resp.status_code}"
+            payload = resp.json() if resp.text else {}
+            return True, payload, url_used, ""
+        except Exception as e:
+            return False, {}, url, str(e)
+
+    def _extract_catalog_rows(self, payload: Any):
+        src = payload if isinstance(payload, dict) else {}
+        out = src.get("output") if isinstance(src.get("output"), dict) else {}
+        rows: List[Dict[str, Any]] = []
+        for key in ("models", "data", "items"):
+            v = out.get(key)
+            if isinstance(v, list):
+                rows = [x for x in v if isinstance(x, dict)]
+                break
+        total = self._safe_int(out.get("total"), default=0)
+        page_no = self._safe_int(out.get("page_no"), default=1)
+        page_size = self._safe_int(out.get("page_size"), default=len(rows) if rows else 0)
+        return rows, total, page_no, page_size
+
+    def _extract_context_window_from_item(self, item: Dict[str, Any]) -> int:
+        if not isinstance(item, dict):
+            return 0
+        target_keys = {
+            "context_window",
+            "context_length",
+            "max_context_tokens",
+            "max_input_tokens",
+            "max_prompt_tokens",
+            "input_token_limit",
+            "prompt_token_limit",
+            "contextsize",
+            "context_size",
+        }
+
+        def _to_int(v: Any) -> int:
+            try:
+                n = int(v)
+            except Exception:
+                return 0
+            if n < 1024:
+                return 0
+            return min(n, 4_000_000)
+
+        queue: List[Any] = [item]
+        visited = 0
+        while queue and visited < 200:
+            visited += 1
+            cur = queue.pop(0)
+            if isinstance(cur, dict):
+                for k, v in cur.items():
+                    key = str(k or "").strip().lower()
+                    if key in target_keys:
+                        n = _to_int(v)
+                        if n > 0:
+                            return n
+                    if isinstance(v, (dict, list)):
+                        queue.append(v)
+            elif isinstance(cur, list):
+                queue.extend(cur[:40])
+        return 0
+
+    def _normalize_catalog_items(self, items: List[Any]) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            model_id = str(
+                item.get("model")
+                or item.get("id")
+                or item.get("model_id")
+                or item.get("name")
+                or item.get("model_name")
+                or ""
+            ).strip()
+            if not model_id:
+                continue
+            name = str(item.get("name") or item.get("model_name") or model_id).strip() or model_id
+            row = {"id": model_id, "name": name, "raw": item}
+            ctx = self._extract_context_window_from_item(item)
+            if ctx > 0:
+                row["context_window"] = ctx
+            out.append(row)
+        return out
+
+    def _list_models_from_compatible_api(self, *, api_key: str, timeout: float) -> List[Dict[str, Any]]:
+        base_url = str(self.provider_config.get("base_url", "") or "").strip() or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        url = f"{base_url.rstrip('/')}/models"
+        try:
+            resp = httpx.get(
+                url,
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                timeout=timeout
+            )
+            if resp.status_code >= 400:
+                return []
+            payload = resp.json() if resp.text else {}
+            rows = payload.get("data", []) if isinstance(payload, dict) else []
+            out: List[Dict[str, Any]] = []
+            if isinstance(rows, list):
+                for item in rows:
+                    if not isinstance(item, dict):
+                        continue
+                    model_id = str(item.get("id") or item.get("model") or "").strip()
+                    if not model_id:
+                        continue
+                    out.append({
+                        "id": model_id,
+                        "name": str(item.get("name") or model_id).strip() or model_id,
+                        "raw": item
+                    })
+            return out
+        except Exception:
+            return []
+
+    def _model_matches_capability(self, model: Dict[str, Any], capability: str) -> bool:
+        cap = str(capability or "").strip().lower()
+        if not cap:
+            return True
+        raw = model.get("raw", {}) if isinstance(model.get("raw"), dict) else {}
+        model_id = str(model.get("id", "") or "").lower()
+        model_name = str(model.get("name", "") or "").lower()
+
+        if cap == "vision":
+            keywords = ("vision", "image", "multimodal", "vl")
+            if any(k in model_id or k in model_name for k in keywords):
+                return True
+            for key in ("inference_metadata", "modalities", "input_modalities", "capabilities", "features", "task_types"):
+                val = raw.get(key)
+                text = json.dumps(val, ensure_ascii=False).lower() if val is not None else ""
+                if any(k in text for k in ("vision", "image", "multimodal", "visual")):
+                    return True
+            return False
+
+        merged = f"{model_id} {model_name} {json.dumps(raw, ensure_ascii=False).lower()}"
+        return cap in merged
 
     def use_responses_api(self, request_options=None) -> bool:
         opts = request_options if isinstance(request_options, dict) else {}
