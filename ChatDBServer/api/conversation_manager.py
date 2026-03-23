@@ -196,16 +196,54 @@ class ConversationManager:
             "timestamp": datetime.now().isoformat()
         }
         
+        if index is not None and 0 <= index < len(conversation_data["messages"]):
+            old_msg = conversation_data["messages"][index]
+            old_metadata = old_msg.get("metadata", {}) if isinstance(old_msg.get("metadata", {}), dict) else {}
+            old_versions = old_metadata.get("versions", [])
+            if not isinstance(old_versions, list):
+                old_versions = []
+
+            if "metadata" not in message:
+                message["metadata"] = {}
+            # 覆盖写入时先继承既有版本链，避免重答过程中丢失版本历史
+            message["metadata"]["versions"] = list(old_versions)
+
+            # assistant 覆盖 assistant：把被覆盖的当前消息快照并入历史版本（原子保存）
+            if role == "assistant" and str(old_msg.get("role", "")).strip() == "assistant":
+                prev_content = old_msg.get("content", "")
+                prev_ts = old_msg.get("timestamp", "")
+                prev_meta_without_versions = {
+                    k: v for k, v in old_metadata.items() if k != "versions"
+                }
+                prev_variant = {
+                    "content": prev_content,
+                    "timestamp": prev_ts,
+                    "metadata": prev_meta_without_versions
+                }
+                if "exchange_summary" in old_msg:
+                    prev_variant["exchange_summary"] = old_msg["exchange_summary"]
+
+                has_meaningful_content = bool(str(prev_content or "").strip())
+                has_meaningful_steps = bool(
+                    isinstance(prev_meta_without_versions.get("process_steps"), list)
+                    and len(prev_meta_without_versions.get("process_steps")) > 0
+                )
+                if has_meaningful_content or has_meaningful_steps:
+                    existed = False
+                    for v in message["metadata"]["versions"]:
+                        if not isinstance(v, dict):
+                            continue
+                        if (
+                            str(v.get("timestamp", "")) == str(prev_variant.get("timestamp", ""))
+                            and str(v.get("content", "")) == str(prev_variant.get("content", ""))
+                        ):
+                            existed = True
+                            break
+                    if not existed:
+                        message["metadata"]["versions"].append(prev_variant)
+
+        # 合并新传入的 metadata
         if metadata:
-            # 如果是覆盖现有消息（重新回答），保留原有的 versions 历史
-            if index is not None and 0 <= index < len(conversation_data["messages"]):
-                old_msg = conversation_data["messages"][index]
-                if "metadata" in old_msg and "versions" in old_msg["metadata"]:
-                    if "metadata" not in message:
-                        message["metadata"] = {}
-                    message["metadata"]["versions"] = old_msg["metadata"]["versions"]
-            
-            # 合并新传入的 metadata
             if "metadata" not in message:
                 message["metadata"] = {}
             message["metadata"].update(metadata)
@@ -213,6 +251,14 @@ class ConversationManager:
         # 如果是assistant消息，且有exchange_summary，记录这次交流的总结
         if role == "assistant" and metadata and "exchange_summary" in metadata:
             message["exchange_summary"] = metadata["exchange_summary"]
+        if role == "assistant":
+            model_name = ""
+            if isinstance(message.get("metadata"), dict):
+                model_name = str(message["metadata"].get("model_name", "") or "").strip()
+            if model_name:
+                message["model_name"] = model_name
+            elif "model_name" in message:
+                del message["model_name"]
         
         if index is not None and 0 <= index < len(conversation_data["messages"]):
             conversation_data["messages"][index] = message
@@ -299,13 +345,25 @@ class ConversationManager:
             }
             if "exchange_summary" in msg:
                 version_data["exchange_summary"] = msg["exchange_summary"]
-                
-            msg["metadata"]["versions"].append(version_data)
-            
-            # 清空当前内容以便重新生成填充
-            msg["content"] = ""
-            # 保留除了 versions 以外的元数据作为骨架，或者视情况重置
-            # 这里我们重置 content，流式输出会更新它
+
+            has_meaningful_content = bool(str(version_data.get("content", "")).strip())
+            has_meaningful_steps = bool(
+                isinstance(version_data.get("metadata", {}).get("process_steps"), list)
+                and len(version_data.get("metadata", {}).get("process_steps")) > 0
+            )
+            if has_meaningful_content or has_meaningful_steps:
+                existed = False
+                for v in msg["metadata"]["versions"]:
+                    if not isinstance(v, dict):
+                        continue
+                    if (
+                        str(v.get("timestamp", "")) == str(version_data.get("timestamp", ""))
+                        and str(v.get("content", "")) == str(version_data.get("content", ""))
+                    ):
+                        existed = True
+                        break
+                if not existed:
+                    msg["metadata"]["versions"].append(version_data)
             
             conversation_data["updated_at"] = datetime.now().isoformat()
             with open(conversation_path, 'w', encoding='utf-8') as f:
@@ -355,6 +413,11 @@ class ConversationManager:
                 # 更新元数据（保留 versions 列表）
                 msg["metadata"] = target.get("metadata", {})
                 msg["metadata"]["versions"] = [v for i, v in enumerate(all_variants) if i != version_index]
+                model_name = str(msg.get("metadata", {}).get("model_name", "") or "").strip()
+                if model_name:
+                    msg["model_name"] = model_name
+                elif "model_name" in msg:
+                    del msg["model_name"]
                 
                 conversation_data["updated_at"] = datetime.now().isoformat()
                 with open(conversation_path, 'w', encoding='utf-8') as f:
@@ -541,6 +604,67 @@ class ConversationManager:
             messages = messages[-limit:]
         
         return messages
+
+    def get_latest_context_compression(self, conversation_id):
+        """
+        获取最近一次上下文压缩标记。
+        返回结构示例：
+        {
+          "summary": "...",
+          "history_cut_index": 42,
+          "created_at": "...",
+          "model": "...",
+          "provider": "..."
+        }
+        """
+        conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
+        if not os.path.exists(conversation_path):
+            return None
+        try:
+            with open(conversation_path, 'r', encoding='utf-8') as f:
+                conversation_data = json.load(f)
+            arr = conversation_data.get("context_compressions", [])
+            if not isinstance(arr, list) or not arr:
+                return None
+            last = arr[-1]
+            return last if isinstance(last, dict) else None
+        except Exception:
+            return None
+
+    def append_context_compression(self, conversation_id, marker):
+        """
+        追加一条上下文压缩标记。
+        """
+        conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
+        if not os.path.exists(conversation_path):
+            return False
+        if not isinstance(marker, dict):
+            return False
+        try:
+            with open(conversation_path, 'r', encoding='utf-8') as f:
+                conversation_data = json.load(f)
+            arr = conversation_data.get("context_compressions", [])
+            if not isinstance(arr, list):
+                arr = []
+            item = {
+                "summary": str(marker.get("summary", "") or "").strip(),
+                "history_cut_index": int(marker.get("history_cut_index", -1) or -1),
+                "created_at": str(marker.get("created_at", datetime.now().isoformat()) or datetime.now().isoformat()),
+                "model": str(marker.get("model", "") or "").strip(),
+                "provider": str(marker.get("provider", "") or "").strip(),
+                "trigger_raw_input_tokens": int(marker.get("trigger_raw_input_tokens", 0) or 0),
+                "context_window": int(marker.get("context_window", 0) or 0),
+            }
+            arr.append(item)
+            if len(arr) > 40:
+                arr = arr[-40:]
+            conversation_data["context_compressions"] = arr
+            conversation_data["updated_at"] = datetime.now().isoformat()
+            with open(conversation_path, 'w', encoding='utf-8') as f:
+                json.dump(conversation_data, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception:
+            return False
     
     def set_main_title(self, conversation_id, main_title):
         """

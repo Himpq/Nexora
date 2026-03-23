@@ -71,7 +71,12 @@ let tokenBudgetState = {
     roundInput: 0,
     includeContext: true,
     latestInputTokens: 0,
-    toolInputEstimate: 0
+    latestRawInputTokens: 0,
+    latestCachedInputTokens: 0,
+    toolInputEstimate: 0,
+    toolInputTokens: 0,
+    systemPromptTokens: 0,
+    tokenBreakdownExact: false
 };
 let tokenBudgetTooltipState = {
     visible: false,
@@ -184,8 +189,19 @@ let debugConsoleState = {
     startWidth: 0,
     startHeight: 0
 };
+let forceContextCompressionOnce = false;
 let mobileMessageInputViewportBaseline = 0;
 let lastMessageInputGestureTs = 0;
+let mobileSelectionScrollGuard = {
+    tracking: false,
+    startX: 0,
+    startY: 0,
+    locked: false,
+    stabilizeStart: false,
+    snapshotRange: null,
+    restoreRaf: 0,
+    sourceContainer: null
+};
 const NOTES_COMPANION_MODE = (() => {
     try {
         const p = new URLSearchParams(window.location.search || '');
@@ -213,6 +229,10 @@ let conversationRenameState = {
 };
 let conversationListCache = [];
 let basisKnowledgeListCache = [];
+let trashViewState = {
+    loading: false,
+    items: []
+};
 let authRedirectInProgress = false;
 let logoutRequestInFlight = false;
 
@@ -982,15 +1002,235 @@ function parseJsonObjectMaybe(raw) {
     }
 }
 
+const CLIENT_JS_THREE_CDN_URLS = [
+    'https://cdnjs.cloudflare.com/ajax/libs/three.js/r152/three.min.js',
+    'https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js',
+    'https://unpkg.com/three@0.152.2/build/three.min.js'
+];
+let clientJsThreeLoadPromise = null;
+
+function detectThreeUsageInJsCode(code) {
+    const src = String(code || '');
+    if (!src.trim()) return false;
+    if (/\bTHREE\b/.test(src)) return true;
+    if (/\bWebGLRenderer\b/.test(src)) return true;
+    if (/\bPerspectiveCamera\b|\bOrthographicCamera\b/.test(src)) return true;
+    if (/\bScene\b|\bBufferGeometry\b|\bMesh\b/.test(src)) return true;
+    return false;
+}
+
+function detectPlot3DUsageInJsCode(code) {
+    const src = String(code || '');
+    if (!src.trim()) return false;
+    if (/\bPlot3D\b/.test(src)) return true;
+    if (/\bsurface3d\b/i.test(src)) return true;
+    if (/\bline3d\b/i.test(src)) return true;
+    return false;
+}
+
+function extractRequestedJsLibs(context) {
+    const ctx = (context && typeof context === 'object') ? context : {};
+    const raw = (ctx.libs != null) ? ctx.libs : (ctx.libraries != null ? ctx.libraries : ctx.lib);
+    const out = new Set();
+    if (Array.isArray(raw)) {
+        raw.forEach((item) => {
+            const v = String(item || '').trim().toLowerCase();
+            if (v) out.add(v);
+        });
+        return out;
+    }
+    if (typeof raw === 'string') {
+        raw.split(/[,\s|]+/g).forEach((item) => {
+            const v = String(item || '').trim().toLowerCase();
+            if (v) out.add(v);
+        });
+        return out;
+    }
+    if (raw && typeof raw === 'object') {
+        Object.keys(raw).forEach((k) => {
+            if (!raw[k]) return;
+            const v = String(k || '').trim().toLowerCase();
+            if (v) out.add(v);
+        });
+    }
+    return out;
+}
+
+function needsThreeJsForCanvas(code, context = {}) {
+    const libs = extractRequestedJsLibs(context);
+    if (libs.has('three') || libs.has('threejs') || libs.has('three.js')) return true;
+    return detectThreeUsageInJsCode(code);
+}
+
+function needsPlot3DHelper(code, context = {}) {
+    const libs = extractRequestedJsLibs(context);
+    if (libs.has('plot3d') || libs.has('matplot3d') || libs.has('matplotlib3d') || libs.has('mini3d')) return true;
+    return detectPlot3DUsageInJsCode(code);
+}
+
+function loadScriptByUrl(url) {
+    return new Promise((resolve, reject) => {
+        const u = String(url || '').trim();
+        if (!u) {
+            reject(new Error('empty script url'));
+            return;
+        }
+        const existing = Array.from(document.querySelectorAll('script[src]'))
+            .find((node) => String(node.getAttribute('src') || '').includes(u));
+        if (existing) {
+            if (window.THREE) {
+                resolve(window.THREE);
+                return;
+            }
+            existing.addEventListener('load', () => resolve(window.THREE), { once: true });
+            existing.addEventListener('error', () => reject(new Error(`script load failed: ${u}`)), { once: true });
+            return;
+        }
+
+        const script = document.createElement('script');
+        script.src = u;
+        script.async = true;
+        script.onload = () => resolve(window.THREE);
+        script.onerror = () => reject(new Error(`script load failed: ${u}`));
+        document.head.appendChild(script);
+    });
+}
+
+async function ensureClientJsThreeLoaded() {
+    if (window.THREE) return window.THREE;
+    if (clientJsThreeLoadPromise) return clientJsThreeLoadPromise;
+    clientJsThreeLoadPromise = (async () => {
+        let lastErr = null;
+        for (const url of CLIENT_JS_THREE_CDN_URLS) {
+            try {
+                await loadScriptByUrl(url);
+                if (window.THREE) return window.THREE;
+            } catch (e) {
+                lastErr = e;
+            }
+        }
+        throw (lastErr || new Error('Three.js load failed'));
+    })();
+    try {
+        return await clientJsThreeLoadPromise;
+    } finally {
+        if (!window.THREE) clientJsThreeLoadPromise = null;
+    }
+}
+
+function createPlot3DHelper(canvas, ctx) {
+    const width = Number((canvas && canvas.width) || 640);
+    const height = Number((canvas && canvas.height) || 360);
+    const project = (x, y, z, opts = {}) => {
+        const yaw = Number(opts.yaw != null ? opts.yaw : -0.78);
+        const pitch = Number(opts.pitch != null ? opts.pitch : 0.62);
+        const scale = Number(opts.scale != null ? opts.scale : Math.min(width, height) * 0.22);
+        const ox = Number(opts.ox != null ? opts.ox : width * 0.5);
+        const oy = Number(opts.oy != null ? opts.oy : height * 0.56);
+        const cy = Math.cos(yaw);
+        const sy = Math.sin(yaw);
+        const cp = Math.cos(pitch);
+        const sp = Math.sin(pitch);
+        const xr = x * cy - z * sy;
+        const zr = x * sy + z * cy;
+        const yr = y * cp - zr * sp;
+        return {
+            x: ox + xr * scale,
+            y: oy - yr * scale
+        };
+    };
+    const clear = (bg = '#ffffff') => {
+        ctx.save();
+        ctx.fillStyle = String(bg || '#ffffff');
+        ctx.fillRect(0, 0, width, height);
+        ctx.restore();
+    };
+    const line3d = (points = [], opts = {}) => {
+        const arr = Array.isArray(points) ? points : [];
+        if (arr.length < 2) return;
+        ctx.save();
+        ctx.strokeStyle = String(opts.color || '#0f172a');
+        ctx.lineWidth = Number(opts.width || 1.15);
+        ctx.beginPath();
+        arr.forEach((p, i) => {
+            const item = Array.isArray(p) ? p : [0, 0, 0];
+            const pt = project(Number(item[0] || 0), Number(item[1] || 0), Number(item[2] || 0), opts);
+            if (i === 0) ctx.moveTo(pt.x, pt.y);
+            else ctx.lineTo(pt.x, pt.y);
+        });
+        ctx.stroke();
+        ctx.restore();
+    };
+    const axes = (opts = {}) => {
+        const size = Number(opts.size || 1.6);
+        line3d([[-size, 0, 0], [size, 0, 0]], { ...opts, color: opts.xColor || '#e11d48' });
+        line3d([[0, -size, 0], [0, size, 0]], { ...opts, color: opts.yColor || '#2563eb' });
+        line3d([[0, 0, -size], [0, 0, size]], { ...opts, color: opts.zColor || '#16a34a' });
+    };
+    const surface = (fn, opts = {}) => {
+        if (typeof fn !== 'function') return;
+        const xMin = Number(opts.xMin != null ? opts.xMin : -2);
+        const xMax = Number(opts.xMax != null ? opts.xMax : 2);
+        const zMin = Number(opts.zMin != null ? opts.zMin : -2);
+        const zMax = Number(opts.zMax != null ? opts.zMax : 2);
+        const xSteps = Math.max(2, Math.min(120, Math.floor(Number(opts.xSteps != null ? opts.xSteps : 30))));
+        const zSteps = Math.max(2, Math.min(120, Math.floor(Number(opts.zSteps != null ? opts.zSteps : 30))));
+        const color = String(opts.color || '#334155');
+        const widthPx = Number(opts.width || 0.9);
+
+        const grid = [];
+        for (let i = 0; i <= xSteps; i += 1) {
+            const x = xMin + ((xMax - xMin) * (i / xSteps));
+            const row = [];
+            for (let j = 0; j <= zSteps; j += 1) {
+                const z = zMin + ((zMax - zMin) * (j / zSteps));
+                let y = 0;
+                try { y = Number(fn(x, z)); } catch (_) { y = 0; }
+                if (!Number.isFinite(y)) y = 0;
+                row.push([x, y, z]);
+            }
+            grid.push(row);
+        }
+
+        for (let i = 0; i <= xSteps; i += 1) {
+            line3d(grid[i], { ...opts, color, width: widthPx });
+        }
+        for (let j = 0; j <= zSteps; j += 1) {
+            const col = [];
+            for (let i = 0; i <= xSteps; i += 1) col.push(grid[i][j]);
+            line3d(col, { ...opts, color, width: widthPx });
+        }
+    };
+    return {
+        clear,
+        project,
+        line3d,
+        axes,
+        surface
+    };
+}
+
 function detectCanvasUsageInJsCode(code) {
     const src = String(code || '');
     if (!src.trim()) return false;
+    if (detectThreeUsageInJsCode(src)) return true;
+    if (detectPlot3DUsageInJsCode(src)) return true;
     if (/getContext\s*\(\s*['"`]2d['"`]\s*\)/i.test(src)) return true;
     if (/createElement\s*\(\s*['"`]canvas['"`]\s*\)/i.test(src)) return true;
     if (/querySelector\s*\(\s*['"`][^'"`]*canvas/i.test(src)) return true;
     if (/getElementById\s*\(\s*['"`][^'"`]*canvas/i.test(src)) return true;
     if (/\bcanvas\s*\./i.test(src)) return true;
     if (/\bctx\s*\./i.test(src)) return true;
+    return false;
+}
+
+function detect2DContextUsageInJsCode(code) {
+    const src = String(code || '');
+    if (!src.trim()) return false;
+    if (detectPlot3DUsageInJsCode(src)) return true;
+    if (/getContext\s*\(\s*['"`]2d['"`]\s*\)/i.test(src)) return true;
+    if (/\bcontext\.ctx\b/.test(src)) return true;
+    if (/\bctx\.(?:fillRect|strokeRect|clearRect|beginPath|moveTo|lineTo|arc|fillText|strokeText|drawImage|save|restore|translate|rotate|scale|setTransform)\b/.test(src)) return true;
     return false;
 }
 
@@ -1186,17 +1426,34 @@ async function runCanvasCodeInCard(card, code, context = {}, timeoutMs = 5000) {
         card.classList.add('error');
         return;
     }
-    const ctx = canvas.getContext('2d');
-    if (!ctx) {
-        if (statusEl) statusEl.textContent = '无法获取 2D 上下文';
-        card.classList.add('error');
-        return;
-    }
     const runtimeCode = normalizeClientJsCode(code);
     if (!runtimeCode) {
         if (statusEl) statusEl.textContent = '空绘图代码';
         card.classList.add('error');
         return;
+    }
+    const ctxObj = (context && typeof context === 'object') ? context : {};
+    const useThree = needsThreeJsForCanvas(runtimeCode, ctxObj);
+    const usePlot3D = needsPlot3DHelper(runtimeCode, ctxObj);
+    const need2dContext = !useThree && (usePlot3D || detect2DContextUsageInJsCode(runtimeCode));
+    let ctx = null;
+    if (need2dContext) {
+        ctx = canvas.getContext('2d');
+        if (!ctx) {
+            if (statusEl) statusEl.textContent = '无法获取 2D 上下文';
+            card.classList.add('error');
+            return;
+        }
+    }
+    let threeRef = null;
+    let threeLoadErr = '';
+    if (useThree) {
+        try {
+            if (statusEl) statusEl.textContent = '加载 Three.js...';
+            threeRef = await ensureClientJsThreeLoaded();
+        } catch (e) {
+            threeLoadErr = `Three.js 加载失败: ${String((e && e.message) || e || '')}`;
+        }
     }
 
     const logs = [];
@@ -1212,11 +1469,30 @@ async function runCanvasCodeInCard(card, code, context = {}, timeoutMs = 5000) {
         error: (...args) => pushLog('error', args)
     };
 
-    const localContext = (context && typeof context === 'object') ? { ...context } : {};
+    const localContext = (ctxObj && typeof ctxObj === 'object') ? { ...ctxObj } : {};
     localContext.canvas = canvas;
     localContext.ctx = ctx;
     localContext.width = canvas.width;
     localContext.height = canvas.height;
+    const plot3d = (!useThree && usePlot3D && ctx) ? createPlot3DHelper(canvas, ctx) : null;
+    const importScriptsProxy = (...urls) => {
+        const list = Array.isArray(urls) ? urls : [];
+        if (!list.length) return true;
+        let handled = 0;
+        for (const rawUrl of list) {
+            const u = String(rawUrl || '').trim().toLowerCase();
+            if (!u) continue;
+            if (u.includes('three') && threeRef) {
+                handled += 1;
+                continue;
+            }
+            throw new Error('importScripts 在当前运行环境不可用；请直接使用 THREE / Plot3D');
+        }
+        return handled === list.length;
+    };
+    if (threeRef) localContext.THREE = threeRef;
+    if (plot3d) localContext.Plot3D = plot3d;
+    localContext.importScripts = importScriptsProxy;
 
     const safeDocument = {
         getElementById: () => canvas,
@@ -1232,6 +1508,9 @@ async function runCanvasCodeInCard(card, code, context = {}, timeoutMs = 5000) {
         innerWidth: canvas.width,
         innerHeight: canvas.height
     };
+    if (threeRef) safeWindow.THREE = threeRef;
+    if (plot3d) safeWindow.Plot3D = plot3d;
+    safeWindow.importScripts = importScriptsProxy;
     const raf = (fn) => setTimeout(() => fn(Date.now()), 16);
     const caf = (id) => clearTimeout(id);
     localContext.document = safeDocument;
@@ -1240,7 +1519,12 @@ async function runCanvasCodeInCard(card, code, context = {}, timeoutMs = 5000) {
     localContext.cancelAnimationFrame = caf;
 
     card.classList.remove('error');
-    if (statusEl) statusEl.textContent = '绘制中...';
+    if (statusEl) {
+        statusEl.textContent = threeLoadErr ? 'Three.js加载失败，尝试继续绘制...' : '绘制中...';
+    }
+    if (threeLoadErr) {
+        pushLog('warn', [threeLoadErr]);
+    }
 
     try {
         const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
@@ -1256,10 +1540,10 @@ async function runCanvasCodeInCard(card, code, context = {}, timeoutMs = 5000) {
             if (maybeExpr && !/\breturn\b/.test(maybeExpr) && !/[;\n]/.test(maybeExpr)) {
                 try {
                     const exprFn = new AsyncFunction(
-                        'context', 'console',
+                        'context', 'console', 'THREE', 'Plot3D', 'importScripts',
                         `${prelude}\nreturn (${maybeExpr});`
                     );
-                    await exprFn(localContext, consoleProxy);
+                    await exprFn(localContext, consoleProxy, threeRef, plot3d, importScriptsProxy);
                     handledByExpr = true;
                 } catch (_) {
                     handledByExpr = false;
@@ -1267,10 +1551,10 @@ async function runCanvasCodeInCard(card, code, context = {}, timeoutMs = 5000) {
             }
             if (!handledByExpr) {
                 const fn = new AsyncFunction(
-                    'context', 'console',
+                    'context', 'console', 'THREE', 'Plot3D', 'importScripts',
                     `${prelude}\n${runtimeCode}`
                 );
-                await fn(localContext, consoleProxy);
+                await fn(localContext, consoleProxy, threeRef, plot3d, importScriptsProxy);
             }
         })();
 
@@ -1891,7 +2175,9 @@ function ensureDebugConsoleEmptyState() {
 
 function buildDebugConsoleEntryElement(entry) {
     const item = document.createElement('div');
-    item.className = `debug-console-entry ${getDebugDirectionClass(entry.direction)}`;
+    const stageText = String((entry && entry.stage) || '').trim();
+    const isCompressionTrace = stageText.startsWith('context_compression');
+    item.className = `debug-console-entry ${getDebugDirectionClass(entry.direction)}${isCompressionTrace ? ' compression-trace' : ''}`;
     item.dataset.entryId = String(entry.id || '');
     item.innerHTML = `
         <div class="debug-console-entry-head">
@@ -2397,6 +2683,7 @@ function bindDebugConsoleUi() {
     debugConsoleState.enabled = loadDebugConsoleEnabled();
     debugConsoleState.open = debugConsoleState.enabled;
     debugConsoleState.activeTab = 'prompt';
+    setForceContextCompressionOnce(false);
     updateDebugConsoleStatus();
     ensureDebugConsoleEmptyState();
     updateDebugConsoleTabUi();
@@ -2415,6 +2702,21 @@ function bindDebugConsoleUi() {
     if (els.closeDebugConsoleBtn) {
         els.closeDebugConsoleBtn.addEventListener('click', () => {
             closeDebugConsole();
+        });
+    }
+    if (els.forceContextCompressionBtn) {
+        els.forceContextCompressionBtn.addEventListener('click', () => {
+            const next = !forceContextCompressionOnce;
+            setForceContextCompressionOnce(next);
+            showToast(next ? '已启用：下次请求强制触发上下文压缩' : '已取消强制压缩');
+            if (next) {
+                appendDebugConsoleEntry({
+                    direction: 'client->local',
+                    stage: 'force_context_compression_armed',
+                    title: 'Force Compression',
+                    payload: { armed: true, applies_to_next_request_only: true }
+                });
+            }
         });
     }
 
@@ -3196,6 +3498,7 @@ const els = {
     debugConsoleFunctionPage: document.getElementById('debugConsoleFunctionPage'),
     debugConsoleBody: document.getElementById('debugConsoleBody'),
     debugConsoleStatus: document.getElementById('debugConsoleStatus'),
+    forceContextCompressionBtn: document.getElementById('forceContextCompressionBtn'),
     copyDebugConsoleBtn: document.getElementById('copyDebugConsoleBtn'),
     clearDebugConsoleBtn: document.getElementById('clearDebugConsoleBtn'),
     closeDebugConsoleBtn: document.getElementById('closeDebugConsoleBtn'),
@@ -3235,6 +3538,12 @@ const els = {
     // Admin & User Menu
     userMenu: document.getElementById('userMenu'),
     usernameBtn: document.getElementById('usernameBtn'),
+    trashMenuBtn: document.getElementById('trashMenuBtn'),
+    trashModal: document.getElementById('trashModal'),
+    closeTrashModalBtn: document.getElementById('closeTrashModalBtn'),
+    refreshTrashBtn: document.getElementById('refreshTrashBtn'),
+    clearTrashBtn: document.getElementById('clearTrashBtn'),
+    trashList: document.getElementById('trashList'),
     logoutLink: document.getElementById('logoutLink'),
     adminLink: document.getElementById('adminBackendBtn'),
     adminModal: document.getElementById('adminModal'),
@@ -3396,6 +3705,15 @@ function buildNotesStorePayload() {
         notebooks: Array.isArray(notesState.notebooks) ? notesState.notebooks : [createDefaultNotebook()],
         notes: Array.isArray(notesState.items) ? notesState.items : []
     };
+}
+
+function getNotesStoreSignature(store) {
+    const src = (store && typeof store === 'object') ? store : {};
+    try {
+        return JSON.stringify(src);
+    } catch (_) {
+        return '';
+    }
 }
 
 async function fetchNotesStoreFromCloud() {
@@ -4090,7 +4408,8 @@ function renderNotesList() {
         const textDiv = document.createElement('div');
         textDiv.className = 'note-text';
         textDiv.innerHTML = renderMarkdownForNotes(String(n.text || ''));
-        renderMathSafe(textDiv);
+        const syncRendered = renderMathInElementSyncPreferred(textDiv);
+        if (!syncRendered) renderMathSafe(textDiv);
         highlightCode(textDiv);
 
         const metaDiv = document.createElement('div');
@@ -4334,17 +4653,14 @@ function openNotesPanel() {
     bindNotesPanelMobileDrag();
     requestAnimationFrame(() => applyNotesMobilePanelPosition());
     renderNotesList();
+    const localSigBeforeFetch = getNotesStoreSignature(buildNotesStorePayload());
     const requestSeq = notesMutationSeq;
     void fetchNotesStoreFromCloud().then((store) => {
         if (!store) return;
-        if (requestSeq !== notesMutationSeq) {
-            renderNotesList();
-            return;
-        }
-        if (hasPendingLocalNotesChanges()) {
-            renderNotesList();
-            return;
-        }
+        if (requestSeq !== notesMutationSeq) return;
+        if (hasPendingLocalNotesChanges()) return;
+        const cloudSig = getNotesStoreSignature(store);
+        if (cloudSig && cloudSig === localSigBeforeFetch) return;
         applyNotesStoreToState(store);
         renderNotesList();
     });
@@ -4531,6 +4847,63 @@ function resolveSelectionSource(target, selectionText = '', plainText = '') {
         sourceTitle: els.conversationTitle ? String(els.conversationTitle.textContent || '').trim() : '',
         anchor: buildSelectionAnchorFromChatTarget(t, selectionText, plainText)
     };
+}
+
+function setForceContextCompressionOnce(enabled) {
+    forceContextCompressionOnce = !!enabled;
+    const btn = els.forceContextCompressionBtn || document.getElementById('forceContextCompressionBtn');
+    if (!btn) return;
+    btn.classList.toggle('armed', !!forceContextCompressionOnce);
+    btn.setAttribute('aria-pressed', forceContextCompressionOnce ? 'true' : 'false');
+}
+
+function consumeForceContextCompressionOnce() {
+    const armed = !!forceContextCompressionOnce;
+    if (armed) setForceContextCompressionOnce(false);
+    return armed;
+}
+
+function getDebugTraceTitle(stage, fallbackTitle = '') {
+    const s = String(stage || '').trim();
+    if (fallbackTitle) return String(fallbackTitle);
+    if (s === 'context_compression_trigger') return 'Compression Trigger';
+    if (s === 'system_prompt') return 'System Prompt';
+    if (s === 'tool_injection') return 'Tool Injection';
+    if (s === 'current_context') return 'Current Context';
+    if (s === 'context_compression_source') return 'Compression Source';
+    if (s === 'context_compression_prompt') return 'Compression Prompt';
+    if (s === 'context_compression_model_reply_stream') return 'Compression Model Reply Stream';
+    if (s === 'context_compression_model_reply_stream_error') return 'Compression Stream Error';
+    if (s === 'context_compression_model_reply') return 'Compression Model Reply';
+    if (s === 'context_compression_summary') return 'Compression Summary';
+    if (s === 'round_token_usage') return 'Round Token Usage';
+    if (s === 'context_compression_compare') return 'Compression Compare';
+    return s || 'trace';
+}
+
+function appendDebugTraceChunk(chunk, debugScopeKey = '') {
+    const c = (chunk && typeof chunk === 'object') ? chunk : {};
+    const stage = String(c.stage || '').trim();
+    if (!stage) return;
+    let replaceKey = String(c.replaceKey || '').trim();
+    if (!replaceKey) {
+        if (stage === 'system_prompt') replaceKey = `${debugScopeKey}:system`;
+        else if (stage === 'tool_injection') replaceKey = `${debugScopeKey}:tools`;
+        else if (stage === 'current_context') replaceKey = `${debugScopeKey}:context`;
+        else if (stage === 'context_compression_trigger') replaceKey = `${debugScopeKey}:compression_trigger`;
+        else if (stage === 'context_compression_model_reply_stream') {
+            const round = Number.isFinite(Number(c.round)) ? Number(c.round) : 0;
+            replaceKey = `${debugScopeKey}:compression_reply_stream:${round}`;
+        } else if (stage === 'context_compression_model_reply_stream_error') {
+            const round = Number.isFinite(Number(c.round)) ? Number(c.round) : 0;
+            replaceKey = `${debugScopeKey}:compression_reply_stream_error:${round}`;
+        }
+    }
+    appendDebugConsoleEntry({
+        ...c,
+        title: getDebugTraceTitle(stage, c.title),
+        replaceKey
+    });
 }
 
 function fillMessageInputWithExplainText(rawText) {
@@ -4941,6 +5314,182 @@ function bindConversationRenameModal() {
                 e.preventDefault();
                 closeConversationRenameModal();
             }
+        });
+    }
+}
+
+function formatTrashTypeLabel(type) {
+    const t = String(type || '').trim();
+    if (t === 'conversation') return '对话';
+    if (t === 'knowledge_basis') return '知识库';
+    return t || '未知';
+}
+
+function formatTrashDate(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '-';
+    try {
+        return new Date(raw).toLocaleString();
+    } catch (_) {
+        return raw;
+    }
+}
+
+function renderTrashList(items) {
+    const listEl = els.trashList || document.getElementById('trashList');
+    if (!listEl) return;
+    const arr = Array.isArray(items) ? items : [];
+    if (!arr.length) {
+        listEl.innerHTML = '<div class="trash-empty">暂无回收站内容</div>';
+        return;
+    }
+    listEl.innerHTML = arr.map((item) => {
+        const src = (item && typeof item === 'object') ? item : {};
+        const typeLabel = formatTrashTypeLabel(src.type);
+        const title = String(src.title || '').trim() || '(无标题)';
+        const preview = String(src.preview || '').trim() || '（无预览）';
+        const changedAt = formatTrashDate(src.changed_at || src.deleted_at || '');
+        const deletedAt = formatTrashDate(src.deleted_at || '');
+        const rowId = String(src.id || '').trim();
+        return `
+            <article class="trash-item">
+                <div class="trash-item-head">
+                    <span class="trash-item-type">${escapeHtml(typeLabel)}</span>
+                    <span class="trash-item-time">删除时间：${escapeHtml(deletedAt)}</span>
+                </div>
+                <div class="trash-item-title">${escapeHtml(title)}</div>
+                <div class="trash-item-preview">${escapeHtml(preview)}</div>
+                <div class="trash-item-meta">删改日期：${escapeHtml(changedAt)}</div>
+                <div class="trash-item-actions">
+                    <button class="trash-action-btn" type="button" data-action="restore-trash" data-trash-id="${escapeHtml(rowId)}">恢复</button>
+                </div>
+            </article>
+        `;
+    }).join('');
+
+    listEl.querySelectorAll('[data-action="restore-trash"]').forEach((btn) => {
+        btn.addEventListener('click', async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const id = String((e.currentTarget && e.currentTarget.dataset && e.currentTarget.dataset.trashId) || '').trim();
+            if (!id) return;
+            await restoreTrashItem(id);
+        });
+    });
+}
+
+async function loadTrashList() {
+    const listEl = els.trashList || document.getElementById('trashList');
+    if (!listEl || trashViewState.loading) return;
+    trashViewState.loading = true;
+    listEl.innerHTML = '<div class="trash-empty">加载中...</div>';
+    try {
+        const res = await fetch('/api/trash/list?limit=200');
+        const data = await res.json();
+        if (!res.ok || !data || !data.success) {
+            const msg = (data && data.message) ? data.message : '读取回收站失败';
+            listEl.innerHTML = `<div class="trash-empty">${escapeHtml(msg)}</div>`;
+            trashViewState.items = [];
+            return;
+        }
+        trashViewState.items = Array.isArray(data.items) ? data.items : [];
+        renderTrashList(trashViewState.items);
+    } catch (_) {
+        listEl.innerHTML = '<div class="trash-empty">读取回收站失败</div>';
+        trashViewState.items = [];
+    } finally {
+        trashViewState.loading = false;
+    }
+}
+
+async function restoreTrashItem(trashId) {
+    const id = String(trashId || '').trim();
+    if (!id) return;
+    if (trashViewState.loading) return;
+    try {
+        const res = await fetch('/api/trash/restore', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data || !data.success) {
+            showToast((data && data.message) ? data.message : '恢复失败');
+            return;
+        }
+        showToast('已恢复');
+        await loadTrashList();
+        await loadConversations();
+        await loadKnowledge(currentConversationId);
+    } catch (_) {
+        showToast('恢复失败');
+    }
+}
+
+async function clearTrashItemsWithConfirm() {
+    const ok = await confirmModalAsync('清空回收站', '确定清空回收站吗？该操作不可撤销。', 'danger');
+    if (!ok) return;
+    if (trashViewState.loading) return;
+    try {
+        const res = await fetch('/api/trash/clear', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data || !data.success) {
+            showToast((data && data.message) ? data.message : '清空失败');
+            return;
+        }
+        showToast(`已清空 ${Number(data.removed || 0)} 项`);
+        await loadTrashList();
+    } catch (_) {
+        showToast('清空失败');
+    }
+}
+
+function closeTrashModal() {
+    const modal = els.trashModal || document.getElementById('trashModal');
+    if (!modal) return;
+    modal.classList.remove('active');
+    modal.setAttribute('aria-hidden', 'true');
+}
+
+function openTrashModal() {
+    const modal = els.trashModal || document.getElementById('trashModal');
+    if (!modal) {
+        showToast('回收站窗口未加载');
+        return;
+    }
+    modal.classList.add('active');
+    modal.setAttribute('aria-hidden', 'false');
+    void loadTrashList();
+}
+
+function bindTrashModal() {
+    const modal = els.trashModal || document.getElementById('trashModal');
+    if (!modal || modal.dataset.bindDone === '1') return;
+    modal.dataset.bindDone = '1';
+    bindBackdropSafeClose(modal, closeTrashModal);
+
+    const closeBtn = els.closeTrashModalBtn || document.getElementById('closeTrashModalBtn');
+    if (closeBtn) {
+        closeBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            closeTrashModal();
+        });
+    }
+    const refreshBtn = els.refreshTrashBtn || document.getElementById('refreshTrashBtn');
+    if (refreshBtn) {
+        refreshBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            void loadTrashList();
+        });
+    }
+    const clearBtn = els.clearTrashBtn || document.getElementById('clearTrashBtn');
+    if (clearBtn) {
+        clearBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            void clearTrashItemsWithConfirm();
         });
     }
 }
@@ -5631,15 +6180,163 @@ function setMobileSelectionAddVisible(visible) {
     }
 }
 
+function resetMobileSelectionScrollGuard() {
+    if (mobileSelectionScrollGuard.restoreRaf) {
+        cancelAnimationFrame(mobileSelectionScrollGuard.restoreRaf);
+    }
+    mobileSelectionScrollGuard.tracking = false;
+    mobileSelectionScrollGuard.startX = 0;
+    mobileSelectionScrollGuard.startY = 0;
+    mobileSelectionScrollGuard.locked = false;
+    mobileSelectionScrollGuard.stabilizeStart = false;
+    mobileSelectionScrollGuard.snapshotRange = null;
+    mobileSelectionScrollGuard.restoreRaf = 0;
+    mobileSelectionScrollGuard.sourceContainer = null;
+}
+
+function stopMobileSelectionScrollTracking() {
+    if (mobileSelectionScrollGuard.restoreRaf) {
+        cancelAnimationFrame(mobileSelectionScrollGuard.restoreRaf);
+    }
+    mobileSelectionScrollGuard.tracking = false;
+    mobileSelectionScrollGuard.startX = 0;
+    mobileSelectionScrollGuard.startY = 0;
+    mobileSelectionScrollGuard.restoreRaf = 0;
+    mobileSelectionScrollGuard.stabilizeStart = false;
+    if (!isChatMobileLayout()) return;
+    const hasSelection = captureActiveSelectionForMobileScrollLock();
+    if (!hasSelection) {
+        mobileSelectionScrollGuard.locked = false;
+        mobileSelectionScrollGuard.snapshotRange = null;
+        mobileSelectionScrollGuard.sourceContainer = null;
+    }
+}
+
+function isSelectionNodeInsideContainer(node, container) {
+    if (!node || !container) return false;
+    const el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+    return !!(el && typeof container.contains === 'function' && container.contains(el));
+}
+
+function captureActiveSelectionForMobileScrollLock() {
+    const sel = window.getSelection ? window.getSelection() : null;
+    if (!sel || sel.rangeCount <= 0 || sel.isCollapsed) return false;
+    try {
+        const range = sel.getRangeAt(0);
+        if (!range || range.collapsed) return false;
+        const startNode = range.startContainer || sel.anchorNode || sel.focusNode;
+        const endNode = range.endContainer || sel.focusNode || sel.anchorNode;
+        const insideStart = isTargetInsideSelectableArea(startNode);
+        const insideEnd = isTargetInsideSelectableArea(endNode);
+        if (!insideStart && !insideEnd) return false;
+        if (isEditableTarget(startNode) || isEditableTarget(endNode)) return false;
+        mobileSelectionScrollGuard.snapshotRange = range.cloneRange();
+        const startEl = startNode && startNode.nodeType === Node.TEXT_NODE ? startNode.parentElement : startNode;
+        const endEl = endNode && endNode.nodeType === Node.TEXT_NODE ? endNode.parentElement : endNode;
+        const startContainer = startEl && startEl.closest ? startEl.closest('#messagesContainer, #knowledgeViewer') : null;
+        const endContainer = endEl && endEl.closest ? endEl.closest('#messagesContainer, #knowledgeViewer') : null;
+        mobileSelectionScrollGuard.sourceContainer = startContainer || endContainer || null;
+        mobileSelectionScrollGuard.locked = true;
+        return true;
+    } catch (_) {
+        mobileSelectionScrollGuard.snapshotRange = null;
+        mobileSelectionScrollGuard.sourceContainer = null;
+        mobileSelectionScrollGuard.locked = false;
+        return false;
+    }
+}
+
+function clampSelectionStartToLockedRange() {
+    if (!mobileSelectionScrollGuard.locked || !mobileSelectionScrollGuard.snapshotRange) return false;
+    const sel = window.getSelection ? window.getSelection() : null;
+    if (!sel || sel.rangeCount <= 0) return false;
+    try {
+        const current = sel.getRangeAt(0);
+        if (!current || current.collapsed) return false;
+        const locked = mobileSelectionScrollGuard.snapshotRange;
+        const lockContainer = mobileSelectionScrollGuard.sourceContainer || null;
+        const currentStartInside = !lockContainer || isSelectionNodeInsideContainer(current.startContainer, lockContainer);
+        const currentEndInside = !lockContainer || isSelectionNodeInsideContainer(current.endContainer, lockContainer);
+        let shouldClampStart = !currentStartInside;
+        if (!shouldClampStart) {
+            let cmp = 0;
+            try {
+                cmp = locked.comparePoint(current.startContainer, current.startOffset);
+            } catch (_) {
+                try {
+                    const currentStartRange = document.createRange();
+                    currentStartRange.setStart(current.startContainer, current.startOffset);
+                    currentStartRange.collapse(true);
+                    const lockedStartRange = locked.cloneRange();
+                    lockedStartRange.collapse(true);
+                    cmp = currentStartRange.compareBoundaryPoints(Range.START_TO_START, lockedStartRange) < 0 ? -1 : 0;
+                } catch (_) {
+                    cmp = 0;
+                }
+            }
+            // cmp === -1 means current start is before locked start.
+            shouldClampStart = (cmp === -1);
+        }
+        if (!shouldClampStart) return false;
+        const next = document.createRange();
+        next.setStart(locked.startContainer, locked.startOffset);
+        try {
+            if (currentEndInside) next.setEnd(current.endContainer, current.endOffset);
+            else next.setEnd(locked.endContainer, locked.endOffset);
+        } catch (_) {
+            next.setEnd(locked.endContainer, locked.endOffset);
+        }
+        if (next.collapsed) {
+            next.setEnd(locked.endContainer, locked.endOffset);
+        }
+        sel.removeAllRanges();
+        sel.addRange(next);
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
+function keepSelectionStableOnMobileScroll(touch) {
+    if (!mobileSelectionScrollGuard.tracking || !mobileSelectionScrollGuard.locked) return;
+    const point = (touch && typeof touch === 'object') ? touch : null;
+    if (!point) return;
+    const dx = Math.abs(Number(point.clientX || 0) - Number(mobileSelectionScrollGuard.startX || 0));
+    const dy = Math.abs(Number(point.clientY || 0) - Number(mobileSelectionScrollGuard.startY || 0));
+    if (dy < 10 || dy <= (dx + 3)) return;
+    mobileSelectionScrollGuard.stabilizeStart = true;
+    if (mobileSelectionScrollGuard.restoreRaf) return;
+    mobileSelectionScrollGuard.restoreRaf = requestAnimationFrame(() => {
+        mobileSelectionScrollGuard.restoreRaf = 0;
+        clampSelectionStartToLockedRange();
+    });
+}
+
 function updateMobileSelectionQuickAdd() {
     if (!isChatMobileLayout()) {
         setMobileSelectionAddVisible(false);
         return;
     }
-    const cur = getCurrentSelectionForNotes();
-    if (cur.text) {
-        notesState.pendingSelectionText = cur.text;
-        notesState.pendingSelectionSource = cur.sourceMeta;
+
+    // Fast path: on scroll we call this very frequently.
+    // Avoid cloning selection DOM unless there is an expanded selection
+    // inside chat/knowledge area.
+    const sel = window.getSelection ? window.getSelection() : null;
+    if (!sel || sel.rangeCount <= 0 || sel.isCollapsed) {
+        setMobileSelectionAddVisible(false);
+        return;
+    }
+    const anchor = sel.anchorNode || sel.focusNode;
+    if (!isTargetInsideSelectableArea(anchor) || isEditableTarget(anchor)) {
+        setMobileSelectionAddVisible(false);
+        return;
+    }
+
+    const text = getSelectionTextForNotes(sel);
+    if (text) {
+        const plainText = getSelectionPlainTextForNotes(sel);
+        notesState.pendingSelectionText = text;
+        notesState.pendingSelectionSource = resolveSelectionSource(anchor, text, plainText);
         setMobileSelectionAddVisible(true);
         return;
     }
@@ -5680,21 +6377,66 @@ function bindNotesContextCapture() {
         updateMobileSelectionQuickAdd();
     }, true);
 
+    let notesCtxScrollRaf = null;
     document.addEventListener('scroll', () => {
-        hideNotesContextMenu();
-        updateMobileSelectionQuickAdd();
+        const menu = els.notesContextMenu || document.getElementById('notesContextMenu');
+        const needsMenuClose = !!(menu && menu.classList && menu.classList.contains('active'));
+        const needsMobileQuickAddUpdate = isChatMobileLayout();
+        const needsMobileSelectionClamp = !!(needsMobileQuickAddUpdate && mobileSelectionScrollGuard.locked);
+        if (!needsMenuClose && !needsMobileQuickAddUpdate && !needsMobileSelectionClamp) return;
+        if (notesCtxScrollRaf) return;
+        notesCtxScrollRaf = requestAnimationFrame(() => {
+            notesCtxScrollRaf = null;
+            if (needsMenuClose) hideNotesContextMenu();
+            if (needsMobileSelectionClamp) clampSelectionStartToLockedRange();
+            if (needsMobileQuickAddUpdate) updateMobileSelectionQuickAdd();
+        });
     }, true);
     document.addEventListener('selectionchange', () => {
         const cur = getCurrentSelectionForNotes();
         if (cur.text) {
             notesState.pendingSelectionText = cur.text;
             notesState.pendingSelectionSource = cur.sourceMeta;
+            if (isChatMobileLayout() && !mobileSelectionScrollGuard.tracking) {
+                captureActiveSelectionForMobileScrollLock();
+            }
+            if (isChatMobileLayout() && mobileSelectionScrollGuard.stabilizeStart) {
+                clampSelectionStartToLockedRange();
+            }
+        } else if (isChatMobileLayout() && !mobileSelectionScrollGuard.tracking) {
+            mobileSelectionScrollGuard.locked = false;
+            mobileSelectionScrollGuard.stabilizeStart = false;
+            mobileSelectionScrollGuard.snapshotRange = null;
+            mobileSelectionScrollGuard.sourceContainer = null;
         }
         updateMobileSelectionQuickAdd();
     });
+    document.addEventListener('touchstart', (e) => {
+        if (!isChatMobileLayout()) return;
+        const touch = (e.touches && e.touches[0]) ? e.touches[0] : null;
+        if (!touch) return;
+        const hasSelection = captureActiveSelectionForMobileScrollLock();
+        if (!hasSelection) {
+            resetMobileSelectionScrollGuard();
+            return;
+        }
+        mobileSelectionScrollGuard.tracking = true;
+        mobileSelectionScrollGuard.startX = Number(touch.clientX || 0);
+        mobileSelectionScrollGuard.startY = Number(touch.clientY || 0);
+    }, true);
+    document.addEventListener('touchmove', (e) => {
+        if (!isChatMobileLayout()) return;
+        const touch = (e.touches && e.touches[0]) ? e.touches[0] : null;
+        keepSelectionStableOnMobileScroll(touch);
+    }, true);
     document.addEventListener('touchend', () => {
         if (!isChatMobileLayout()) return;
         setTimeout(() => updateMobileSelectionQuickAdd(), 60);
+        stopMobileSelectionScrollTracking();
+    }, true);
+    document.addEventListener('touchcancel', () => {
+        if (!isChatMobileLayout()) return;
+        stopMobileSelectionScrollTracking();
     }, true);
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') {
@@ -6264,8 +7006,27 @@ function initUI() {
         els.messagesContainer.addEventListener('wheel', (e) => {
             if (e.deltaY < 0) breakAutoScroll(); // Only on scroll up
         }, { passive: true });
-        
-        els.messagesContainer.addEventListener('touchmove', breakAutoScroll, { passive: true });
+
+        els.messagesContainer.addEventListener('touchstart', (e) => {
+            if (!isChatMobileLayout()) return;
+            const touch = (e.touches && e.touches[0]) ? e.touches[0] : null;
+            stopMobileSelectionScrollTracking();
+            mobileSelectionScrollGuard.tracking = !!touch;
+            mobileSelectionScrollGuard.startX = touch ? Number(touch.clientX || 0) : 0;
+            mobileSelectionScrollGuard.startY = touch ? Number(touch.clientY || 0) : 0;
+            captureActiveSelectionForMobileScrollLock();
+        }, { passive: true });
+
+        els.messagesContainer.addEventListener('touchmove', (e) => {
+            breakAutoScroll();
+            if (!isChatMobileLayout()) return;
+            const touch = (e.touches && e.touches[0]) ? e.touches[0] : null;
+            keepSelectionStableOnMobileScroll(touch);
+        }, { passive: true });
+
+        const stopMobileSelectionScrollGuard = () => stopMobileSelectionScrollTracking();
+        els.messagesContainer.addEventListener('touchend', stopMobileSelectionScrollGuard, { passive: true });
+        els.messagesContainer.addEventListener('touchcancel', stopMobileSelectionScrollGuard, { passive: true });
 
         els.messagesContainer.addEventListener('scroll', () => {
             if (Date.now() <= __messagesBottomPinUntilTs) {
@@ -6399,6 +7160,7 @@ function initUI() {
 
     // Check user role and show admin menu if needed
     checkUserRole();
+    bindTrashModal();
     rebindHeaderActionButtons();
 
     // Settings button click
@@ -6409,6 +7171,15 @@ function initUI() {
             e.stopPropagation();
             if (els.userMenu) els.userMenu.classList.remove('active');
             openSettingsModal();
+        });
+    }
+    const trashMenuBtn = els.trashMenuBtn || document.getElementById('trashMenuBtn');
+    if (trashMenuBtn) {
+        trashMenuBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (els.userMenu) els.userMenu.classList.remove('active');
+            openTrashModal();
         });
     }
 
@@ -6606,6 +7377,11 @@ function estimateTokenCountFromCharCount(chars) {
 function applyTokenBudgetPromptBreakdownFromConversationMessages(messages) {
     const arr = Array.isArray(messages) ? messages : [];
     let latestInput = 0;
+    let latestRawInput = 0;
+    let latestCachedInput = 0;
+    let systemTokens = 0;
+    let toolTokens = 0;
+    let tokenBreakdownExact = false;
     let toolChars = 0;
     for (let i = arr.length - 1; i >= 0; i -= 1) {
         const msg = arr[i];
@@ -6615,11 +7391,38 @@ function applyTokenBudgetPromptBreakdownFromConversationMessages(messages) {
         const io = (md.io_tokens && typeof md.io_tokens === 'object') ? md.io_tokens : {};
         const debug = (md.request_debug && typeof md.request_debug === 'object') ? md.request_debug : {};
         latestInput = safeTokenInt(io.input);
+        latestRawInput = safeTokenInt(io.raw_input != null ? io.raw_input : io.input);
+        latestCachedInput = safeTokenInt(io.cached_input);
+        if (latestCachedInput <= 0 && latestRawInput >= latestInput) {
+            latestCachedInput = Math.max(0, latestRawInput - latestInput);
+        }
+        systemTokens = safeTokenInt(debug.first_round_system_tokens);
+        toolTokens = safeTokenInt(debug.first_round_tools_tokens);
+        tokenBreakdownExact = !!debug.first_round_tokenization_exact;
         toolChars = safeTokenInt(debug.first_round_tools_chars);
         break;
     }
     tokenBudgetState.latestInputTokens = latestInput;
+    tokenBudgetState.latestRawInputTokens = Math.max(latestInput, latestRawInput);
+    tokenBudgetState.latestCachedInputTokens = Math.max(0, latestCachedInput);
+    tokenBudgetState.systemPromptTokens = Math.max(0, systemTokens);
+    tokenBudgetState.toolInputTokens = Math.max(0, toolTokens);
+    tokenBudgetState.tokenBreakdownExact = tokenBreakdownExact && (systemTokens > 0 || toolTokens > 0);
     tokenBudgetState.toolInputEstimate = estimateTokenCountFromCharCount(toolChars);
+}
+
+function applyPromptTokenProfileChunk(chunk) {
+    const c = (chunk && typeof chunk === 'object') ? chunk : {};
+    const systemExact = safeTokenInt(c.system_tokens);
+    const systemEst = safeTokenInt(c.system_tokens_est);
+    const toolsExact = safeTokenInt(c.tools_tokens);
+    const toolsEst = safeTokenInt(c.tools_tokens_est);
+    const exact = !!c.tokenization_exact;
+    tokenBudgetState.systemPromptTokens = systemExact > 0 ? systemExact : systemEst;
+    tokenBudgetState.toolInputTokens = toolsExact;
+    tokenBudgetState.toolInputEstimate = toolsExact > 0 ? toolsExact : toolsEst;
+    tokenBudgetState.tokenBreakdownExact = exact && (systemExact > 0 || toolsExact > 0);
+    renderTokenBudgetUi();
 }
 
 function setContextIncludeEnabled(enabled, options = {}) {
@@ -6638,19 +7441,33 @@ function toggleContextIncludeMode() {
 
 function buildTokenBudgetHoverText(limit, used, ratioRaw, remain) {
     const contextOn = !!tokenBudgetState.includeContext;
-    const contextForPrompt = contextOn ? used : 0;
     const totalInput = safeTokenInt(tokenBudgetState.latestInputTokens);
+    const rawInput = Math.max(
+        totalInput,
+        safeTokenInt(tokenBudgetState.latestRawInputTokens),
+        safeTokenInt(used)
+    );
+    const cachedInput = Math.max(
+        0,
+        safeTokenInt(tokenBudgetState.latestCachedInputTokens),
+        Math.max(0, rawInput - totalInput)
+    );
+    const systemTokens = safeTokenInt(tokenBudgetState.systemPromptTokens);
+    const toolExact = safeTokenInt(tokenBudgetState.toolInputTokens);
     const toolEstimate = safeTokenInt(tokenBudgetState.toolInputEstimate);
-    const systemEstimate = totalInput > 0 ? Math.max(0, totalInput - contextForPrompt) : 0;
+    const toolTokens = toolExact > 0 ? toolExact : toolEstimate;
+    const contextForPrompt = contextOn ? Math.max(0, rawInput - systemTokens - toolTokens) : 0;
+    const exactBreakdown = !!tokenBudgetState.tokenBreakdownExact;
     const rows = [
         `上下文传入: ${contextOn ? '开启' : '关闭'}`,
         `上下文占用: ${used.toLocaleString()} / ${limit.toLocaleString()} (${Math.round(ratioRaw * 100)}%)`,
-        `本次请求上下文计入: ${contextForPrompt.toLocaleString()}`,
-        `系统占用估算: ${systemEstimate.toLocaleString()}`
+        `本轮原始输入: ${rawInput.toLocaleString()}`,
+        `本轮缓存命中: ${cachedInput.toLocaleString()}`,
+        `本轮计费输入: ${totalInput.toLocaleString()}`,
+        `系统提示词占用: ${systemTokens.toLocaleString()}${exactBreakdown ? '' : '（估算）'}`,
+        `工具占用: ${toolTokens.toLocaleString()}${toolExact > 0 ? '' : (toolEstimate > 0 ? '（估算）' : '')}`,
+        `本次请求上下文计入: ${contextForPrompt.toLocaleString()}${exactBreakdown ? '' : '（近似）'}`
     ];
-    if (toolEstimate > 0) {
-        rows.push(`工具占用估算: ${toolEstimate.toLocaleString()}`);
-    }
     rows.push(`剩余窗口: ${remain.toLocaleString()}${tokenBudgetState.estimated ? '（上限估算）' : ''}`);
     return rows.join('\n');
 }
@@ -6805,41 +7622,55 @@ function updateTokenBudgetContextFromSelectedModel() {
     renderTokenBudgetUi();
 }
 
-function updateTokenBudgetRoundInput(inputTokens) {
-    const n = safeTokenInt(inputTokens);
-    if (n <= 0) return;
-    if (n > tokenBudgetState.roundInput) {
-        tokenBudgetState.roundInput = n;
-        renderTokenBudgetUi();
+function updateTokenBudgetRoundInput(rawInputTokens, effectiveInputTokens = null, cachedInputTokens = null, options = {}) {
+    const rawN = safeTokenInt(rawInputTokens);
+    const effectiveN = safeTokenInt(effectiveInputTokens);
+    const cachedN = safeTokenInt(cachedInputTokens);
+    const forceReplace = !!(options && options.forceReplace);
+    let changed = false;
+    if (rawN > 0 && (forceReplace || rawN > tokenBudgetState.roundInput)) {
+        tokenBudgetState.roundInput = rawN;
+        changed = true;
     }
+    if (effectiveN > 0) {
+        tokenBudgetState.latestInputTokens = effectiveN;
+    }
+    if (rawN > 0) {
+        tokenBudgetState.latestRawInputTokens = rawN;
+    }
+    if (cachedN > 0) {
+        tokenBudgetState.latestCachedInputTokens = cachedN;
+    } else if (rawN > 0 && effectiveN >= 0) {
+        tokenBudgetState.latestCachedInputTokens = Math.max(0, rawN - effectiveN);
+    }
+    if (changed) renderTokenBudgetUi();
 }
 
 function resetTokenBudgetBreakdown() {
     tokenBudgetState.latestInputTokens = 0;
+    tokenBudgetState.latestRawInputTokens = 0;
+    tokenBudgetState.latestCachedInputTokens = 0;
     tokenBudgetState.toolInputEstimate = 0;
+    tokenBudgetState.toolInputTokens = 0;
+    tokenBudgetState.systemPromptTokens = 0;
+    tokenBudgetState.tokenBreakdownExact = false;
 }
 
 function estimateTokenBudgetUsedFromConversationMessages(messages) {
     const arr = Array.isArray(messages) ? messages : [];
     if (!arr.length) return 0;
-    const assistantIo = [];
-    arr.forEach((msg) => {
-        if (!msg || typeof msg !== 'object') return;
-        if (String(msg.role || '').trim() !== 'assistant') return;
+    for (let i = arr.length - 1; i >= 0; i -= 1) {
+        const msg = arr[i];
+        if (!msg || typeof msg !== 'object') continue;
+        if (String(msg.role || '').trim() !== 'assistant') continue;
         const md = (msg.metadata && typeof msg.metadata === 'object') ? msg.metadata : {};
         const io = (md.io_tokens && typeof md.io_tokens === 'object') ? md.io_tokens : {};
         const inTok = safeTokenInt(io.input);
-        const outTok = safeTokenInt(io.output);
-        if (inTok <= 0 && outTok <= 0) return;
-        assistantIo.push({ inTok, outTok });
-    });
-    if (!assistantIo.length) return 0;
-    const lastInput = safeTokenInt(assistantIo[assistantIo.length - 1].inTok);
-    let historyOutput = 0;
-    for (let i = 0; i < assistantIo.length - 1; i += 1) {
-        historyOutput += safeTokenInt(assistantIo[i].outTok);
+        const rawTok = safeTokenInt(io.raw_input != null ? io.raw_input : io.input);
+        if (rawTok > 0) return rawTok;
+        if (inTok > 0) return inTok;
     }
-    return safeTokenInt(lastInput + historyOutput);
+    return 0;
 }
 
 function applyTokenBudgetFromConversationMessages(messages) {
@@ -6867,13 +7698,53 @@ function ensureMessageModelBadge(messageDiv) {
         badge.className = 'model-badge';
         content.appendChild(badge);
     }
+    if (badge.dataset.boundToggle !== '1') {
+        badge.dataset.boundToggle = '1';
+        badge.addEventListener('click', () => {
+            const expanded = badge.dataset.expanded === '1';
+            badge.dataset.expanded = expanded ? '0' : '1';
+            renderMessageModelBadgeText(messageDiv);
+        });
+    }
     return badge;
+}
+
+function renderMessageModelBadgeText(messageDiv) {
+    if (!messageDiv) return;
+    const badge = ensureMessageModelBadge(messageDiv);
+    if (!badge) return;
+    const state = (messageDiv.__modelBadgeState && typeof messageDiv.__modelBadgeState === 'object')
+        ? messageDiv.__modelBadgeState
+        : {
+            modelName: '',
+            searchFlag: 'unknown',
+            inputTokens: 0,
+            outputTokens: 0
+        };
+    const expanded = badge.dataset.expanded === '1';
+    const compactText = String(state.modelName || '-').trim() || '-';
+    const fullText = buildModelBadgeText(
+        state.modelName,
+        state.searchFlag,
+        state.inputTokens,
+        state.outputTokens
+    );
+    badge.textContent = expanded ? fullText : compactText;
+    badge.title = expanded ? '点击折叠模型信息' : fullText;
+    badge.classList.toggle('collapsed', !expanded);
+}
+
+function collapseModelBadgeForMessage(messageDiv) {
+    const badge = ensureMessageModelBadge(messageDiv);
+    if (!badge) return;
+    if (badge.dataset.userPinned === '1') return;
+    badge.dataset.expanded = '0';
+    renderMessageModelBadgeText(messageDiv);
 }
 
 function updateMessageModelBadge(messageDiv, state = {}) {
     if (!messageDiv) return;
-    const badge = ensureMessageModelBadge(messageDiv);
-    if (!badge) return;
+    if (!ensureMessageModelBadge(messageDiv)) return;
     const nextState = {
         modelName: String((state && state.modelName) || ''),
         searchFlag: (state && Object.prototype.hasOwnProperty.call(state, 'searchFlag')) ? state.searchFlag : 'unknown',
@@ -6881,12 +7752,7 @@ function updateMessageModelBadge(messageDiv, state = {}) {
         outputTokens: safeTokenInt(state && state.outputTokens)
     };
     messageDiv.__modelBadgeState = nextState;
-    badge.textContent = buildModelBadgeText(
-        nextState.modelName,
-        nextState.searchFlag,
-        nextState.inputTokens,
-        nextState.outputTokens
-    );
+    renderMessageModelBadgeText(messageDiv);
 }
 
 function applyUsageChunkToBadgeState(usageState, chunk) {
@@ -6950,8 +7816,7 @@ function beginTokenMiniStreaming() {
     tokenMiniState.streaming = true;
     tokenMiniState.conversationId = currentConversationId || null;
     resetTokenMiniStreamPart();
-    tokenBudgetState.roundInput = 0;
-    resetTokenBudgetBreakdown();
+    // 保留上一轮 CTX 展示，直到本轮返回 usage 再覆盖，避免“发送即清零”的跳变。
     renderTokenMiniFromState();
 }
 
@@ -6987,10 +7852,13 @@ function onTokenStreamUsageChunk(chunk) {
     if (!tokenMiniState.streaming) return;
     const inTokens = safeTokenInt(chunk && chunk.input_tokens);
     const outTokens = safeTokenInt(chunk && chunk.output_tokens);
-    if (inTokens > 0) {
-        tokenBudgetState.latestInputTokens = inTokens;
-    }
-    updateTokenBudgetRoundInput(inTokens);
+    const rawInTokens = safeTokenInt(chunk && chunk.raw_input_tokens);
+    const cachedInTokens = safeTokenInt(chunk && chunk.cached_input_tokens);
+    const normalizedRawInput = rawInTokens > 0 ? rawInTokens : (inTokens + Math.max(0, cachedInTokens));
+    const forceReplaceRoundInput = !tokenMiniState.usageSnapshotInitialized;
+    updateTokenBudgetRoundInput(normalizedRawInput, inTokens, cachedInTokens, {
+        forceReplace: forceReplaceRoundInput
+    });
     renderTokenBudgetUi();
 
     if (!tokenMiniState.usageSnapshotInitialized) {
@@ -7537,7 +8405,7 @@ function formatToolsModeLabel(mode) {
     const m = normalizeToolsMode(mode);
     if (m === 'off') return 'Off';
     if (m === 'force') return 'Force';
-    if (m === 'auto_select') return 'Auto(Select tools)';
+    if (m === 'auto_select') return isChatMobileLayout() ? 'Auto(Sel)' : 'Auto(Select tools)';
     return 'Auto(OFF)';
 }
 
@@ -7770,6 +8638,48 @@ function closeToolsModeDropdown() {
     if (!els.toolsModeDropdown) return;
     els.toolsModeDropdown.classList.remove('open');
     if (els.toolsModeTrigger) els.toolsModeTrigger.setAttribute('aria-expanded', 'false');
+    if (els.toolsModeMenu) {
+        els.toolsModeMenu.style.position = '';
+        els.toolsModeMenu.style.left = '';
+        els.toolsModeMenu.style.top = '';
+        els.toolsModeMenu.style.right = '';
+        els.toolsModeMenu.style.bottom = '';
+        els.toolsModeMenu.style.zIndex = '';
+    }
+}
+
+function positionToolsModeMenuForMobile() {
+    if (!els.toolsModeMenu || !els.toolsModeTrigger) return;
+    if (!isChatMobileLayout()) {
+        els.toolsModeMenu.style.position = '';
+        els.toolsModeMenu.style.left = '';
+        els.toolsModeMenu.style.top = '';
+        els.toolsModeMenu.style.right = '';
+        els.toolsModeMenu.style.bottom = '';
+        els.toolsModeMenu.style.zIndex = '';
+        return;
+    }
+    const triggerRect = els.toolsModeTrigger.getBoundingClientRect();
+    const menu = els.toolsModeMenu;
+    const vw = Math.max(0, window.innerWidth || document.documentElement.clientWidth || 0);
+    const vh = Math.max(0, window.innerHeight || document.documentElement.clientHeight || 0);
+    const menuW = Math.max(148, Number(menu.offsetWidth || 148));
+    const menuH = Math.max(124, Number(menu.offsetHeight || 124));
+
+    let left = Math.round(triggerRect.right - menuW);
+    left = Math.max(8, Math.min(left, Math.max(8, vw - menuW - 8)));
+    let top = Math.round(triggerRect.top - menuH - 8);
+    if (top < 8) {
+        top = Math.round(triggerRect.bottom + 8);
+        top = Math.max(8, Math.min(top, Math.max(8, vh - menuH - 8)));
+    }
+
+    menu.style.position = 'fixed';
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+    menu.style.right = 'auto';
+    menu.style.bottom = 'auto';
+    menu.style.zIndex = '9200';
 }
 
 function setToolsMode(mode, options = {}) {
@@ -7803,6 +8713,7 @@ function bindToolsModeDropdown() {
         if (willOpen) {
             els.toolsModeDropdown.classList.add('open');
             els.toolsModeTrigger.setAttribute('aria-expanded', 'true');
+            requestAnimationFrame(() => positionToolsModeMenuForMobile());
         }
     });
 
@@ -7820,10 +8731,63 @@ function bindToolsModeDropdown() {
             closeToolsModeDropdown();
         }
     });
+    window.addEventListener('resize', () => {
+        if (!els.toolsModeDropdown || !els.toolsModeDropdown.classList.contains('open')) return;
+        positionToolsModeMenuForMobile();
+    });
+    window.addEventListener('scroll', () => {
+        if (!els.toolsModeDropdown || !els.toolsModeDropdown.classList.contains('open')) return;
+        positionToolsModeMenuForMobile();
+    }, true);
 }
 
 function getToolsMode() {
     return normalizeToolsMode(els.toolsMode ? els.toolsMode.value : 'auto_off');
+}
+
+function buildContextCompressionPreflightInfo(modelId, forceRequested = false) {
+    const ctx = resolveContextWindowForModel(modelId);
+    const contextWindow = Math.max(1, normalizeContextWindow(ctx.limit) || TOKEN_BUDGET_DEFAULT_LIMIT);
+    const rawInput = Math.max(
+        0,
+        safeTokenInt(tokenBudgetState.roundInput),
+        safeTokenInt(tokenBudgetState.latestRawInputTokens),
+        safeTokenInt(tokenBudgetState.latestInputTokens)
+    );
+    const threshold = Math.max(1, Math.floor(contextWindow * 0.9));
+    const overload = rawInput > 0 && rawInput >= threshold;
+    const reliableWindow = !ctx.estimated;
+    const triggerMode = forceRequested ? 'force' : (overload ? 'overload' : '');
+    const needConfirm = !!forceRequested || (!!tokenBudgetState.includeContext && reliableWindow && overload);
+    return {
+        needConfirm,
+        triggerMode,
+        rawInput,
+        threshold,
+        contextWindow,
+        contextWindowEstimated: !!ctx.estimated
+    };
+}
+
+async function maybeConfirmContextCompressionBeforeSend(modelId, forceRequested = false) {
+    const info = buildContextCompressionPreflightInfo(modelId, forceRequested);
+    if (!info.needConfirm) {
+        return { ok: true, forceCompression: !!forceRequested };
+    }
+
+    const title = '上下文压缩提示';
+    const reasonText = (info.triggerMode === 'force')
+        ? '触发原因：强制触发'
+        : `触发原因：上下文过载（${info.rawInput.toLocaleString()} / ${info.contextWindow.toLocaleString()}，阈值 ${info.threshold.toLocaleString()}）`;
+    const body = `${reasonText}\n\n继续：立即发送并执行上下文压缩。\n取消：不发送，你可以先切换模型后再试。`;
+    const confirmed = await confirmModalAsync(title, body, 'primary');
+    if (!confirmed) {
+        if (forceRequested) setForceContextCompressionOnce(true);
+        showToast('已取消发送，请切换模型后重试');
+        return { ok: false, forceCompression: false };
+    }
+
+    return { ok: true, forceCompression: true };
 }
 
 async function sendMessage() {
@@ -7863,6 +8827,13 @@ async function sendMessage() {
         }
     }
     const allowHistoryImages = currentConversationHasImageHistory ? await ensureModelVisionCapable() : true;
+    const forceContextCompressionRequested = consumeForceContextCompressionOnce();
+    const compressionDecision = await maybeConfirmContextCompressionBeforeSend(
+        model,
+        forceContextCompressionRequested
+    );
+    if (!compressionDecision.ok) return;
+    const forceContextCompression = !!compressionDecision.forceCompression;
 
     // UI Updates
     els.messageInput.value = '';
@@ -7966,6 +8937,9 @@ async function sendMessage() {
         allow_history_images: allowHistoryImages,
         include_context: !!tokenBudgetState.includeContext
     };
+    if (forceContextCompression) {
+        payload.force_context_compression = true;
+    }
     
     // Reset files
     uploadedFileIds = [];
@@ -7988,6 +8962,18 @@ async function sendMessage() {
     const toolArgsDeltaSeenByCallId = new Set();
     const debugScopeKey = `chat:${aiMsgId}`;
     let debugReplyText = '';
+    if (forceContextCompression && isDebugConsoleEnabled()) {
+        appendDebugConsoleEntry({
+            direction: 'client->local',
+            stage: 'force_context_compression_request',
+            title: 'Force Compression',
+            payload: {
+                applied: true,
+                conversation_id: String(currentConversationId || ''),
+                model_name: String(model || '')
+            }
+        });
+    }
     const modelBadgeState = {
         modelName: String(model || ''),
         searchFlag: 'unknown',
@@ -8792,26 +9778,11 @@ async function sendMessage() {
                             modelBadgeState.searchFlag = (typeof chunk.search_enabled === 'boolean') ? chunk.search_enabled : modelBadgeState.searchFlag;
                             updateMessageModelBadge(aiMsgDiv, modelBadgeState);
                         }
+                        else if (chunk.type === 'prompt_token_profile') {
+                            applyPromptTokenProfileChunk(chunk);
+                        }
                         else if (chunk.type === 'debug_trace') {
-                            if (chunk.stage === 'system_prompt') {
-                                appendDebugConsoleEntry({
-                                    ...chunk,
-                                    title: 'System Prompt',
-                                    replaceKey: `${debugScopeKey}:system`
-                                });
-                            } else if (chunk.stage === 'tool_injection') {
-                                appendDebugConsoleEntry({
-                                    ...chunk,
-                                    title: 'Tool Injection',
-                                    replaceKey: `${debugScopeKey}:tools`
-                                });
-                            } else if (chunk.stage === 'current_context') {
-                                appendDebugConsoleEntry({
-                                    ...chunk,
-                                    title: 'Current Context',
-                                    replaceKey: `${debugScopeKey}:context`
-                                });
-                            }
+                            appendDebugTraceChunk(chunk, debugScopeKey);
                         }
                         
                         else if (chunk.type === 'content') {
@@ -8900,6 +9871,9 @@ async function sendMessage() {
                             }
                             thinkingBlock.dataset.streamLive = '1';
                         }
+                        else if (chunk.type === 'context_compression_status') {
+                            updateMessageDivTools(aiMsgIndex, chunk, aiMsgDiv);
+                        }
                         // --- New Chunk Types Support ---
                         else if (chunk.type === 'web_search') {
                             updateWebSearchStatus(aiMsgDiv, chunk.status, chunk.query, chunk.content);
@@ -8986,15 +9960,8 @@ async function sendMessage() {
              if (done) {
                 streamCompleted = true;
                 finalizeStreamingContentRender();
-// 说明
-                const thinkingBlocks = aiMsgDiv.querySelectorAll('.thinking-block');
-                thinkingBlocks.forEach(thinkingBlock => {
-                    if (thinkingBlock.dataset.userToggled !== 'true') {
-                        setTimeout(() => {
-                            thinkingBlock.classList.add('collapsed');
-                        }, 500);
-                    }
-                });
+                setTimeout(() => collapseReasoningBlocksForMessage(aiMsgDiv), 420);
+                setTimeout(() => collapseModelBadgeForMessage(aiMsgDiv), 520);
                 break;
              }
         }
@@ -10274,6 +11241,9 @@ function appendMessage(msg, index) {
                     updateLastToolResult(div, toolName, step.result, callId, { toolIndex: step.index });
                     maybeRenderCanvasFromJsExecuteResult(div, toolName, step.result, callId, step.index);
                 }
+                else if (step.type === 'context_compression_status') {
+                    updateMessageDivTools(index, step, div);
+                }
                 else if (step.type === 'error') {
                     appendErrorEvent(div, step.content || step.message || 'Unknown error', true);
                 }
@@ -10305,7 +11275,7 @@ function appendMessage(msg, index) {
         }
 
         // Add model badge/hint
-        const modelName = msg.model_name || (msg.metadata && msg.metadata.model_name);
+        const modelName = (msg.metadata && msg.metadata.model_name) || msg.model_name;
         if (modelName) {
             const ioMeta = (msg.metadata && msg.metadata.io_tokens && typeof msg.metadata.io_tokens === 'object')
                 ? msg.metadata.io_tokens
@@ -10325,9 +11295,8 @@ function appendMessage(msg, index) {
         actions.className = 'msg-actions';
         
         // Branching (Versions)
-        const versions = (msg.metadata && msg.metadata.versions) ? msg.metadata.versions : [];
-        if (versions.length > 0) {
-            const nav = buildVersionNavigation(msg);
+        const nav = buildVersionNavigation(msg);
+        if (nav.total > 1) {
             const totalVersions = nav.total;
             const currentVerNum = nav.current;
             const prevIdx = nav.prevIndex;
@@ -10440,21 +11409,46 @@ function variantSignature(v) {
     return `${ts}::${content.slice(0, 120)}`;
 }
 
+function isMeaningfulVersionVariant(v) {
+    const item = (v && typeof v === 'object') ? v : {};
+    const content = String(item.content || '').trim();
+    if (content) return true;
+    const metadata = (item.metadata && typeof item.metadata === 'object') ? item.metadata : {};
+    if (Array.isArray(metadata.process_steps) && metadata.process_steps.length > 0) return true;
+    const reasoning = String(metadata.reasoning_content || '').trim();
+    if (reasoning) return true;
+    return false;
+}
+
 function buildVersionNavigation(msg) {
-    const versions = (msg && msg.metadata && Array.isArray(msg.metadata.versions)) ? msg.metadata.versions : [];
+    const rawVersions = (msg && msg.metadata && Array.isArray(msg.metadata.versions)) ? msg.metadata.versions : [];
+    const versions = rawVersions
+        .map((v, i) => {
+            const src = (v && typeof v === 'object') ? v : {};
+            return { ...src, __serverIndex: i };
+        })
+        .filter((v) => isMeaningfulVersionVariant(v));
     const currentVariant = {
         content: msg ? msg.content : '',
         timestamp: msg ? msg.timestamp : '',
-        __serverIndex: versions.length,
+        __serverIndex: rawVersions.length,
         __isCurrent: true
     };
-    const pool = versions.map((v, i) => ({
+    const pool = versions.map((v) => ({
         content: v.content || '',
         timestamp: v.timestamp || '',
-        __serverIndex: i,
+        __serverIndex: Number(v.__serverIndex),
         __isCurrent: false
     }));
     pool.push(currentVariant);
+    if (pool.length <= 1) {
+        return {
+            total: 1,
+            current: 1,
+            prevIndex: null,
+            nextIndex: null
+        };
+    }
 
     // 按时间升序；无时间时保持原顺序（serverIndex）
     const sorted = pool
@@ -10601,6 +11595,26 @@ async function startRegenerate(index) {
     if (isGenerating) return;
     
     const modelName = selectedModelId;
+    let modelVisionCapableCache = null;
+    const ensureModelVisionCapable = async () => {
+        if (!modelName) return true;
+        if (modelVisionCapableCache === null) {
+            modelVisionCapableCache = await isModelVisionCapable(modelName);
+        }
+        return !!modelVisionCapableCache;
+    };
+    const allowHistoryImages = currentConversationHasImageHistory ? await ensureModelVisionCapable() : true;
+    if (!allowHistoryImages) {
+        showToast(`当前模型不支持历史图片上下文：${modelName || '-'}`);
+        return;
+    }
+    const forceContextCompressionRequested = consumeForceContextCompressionOnce();
+    const compressionDecision = await maybeConfirmContextCompressionBeforeSend(
+        modelName,
+        forceContextCompressionRequested
+    );
+    if (!compressionDecision.ok) return;
+    const forceContextCompression = !!compressionDecision.forceCompression;
     const toolsMode = getToolsMode();
     const enableTools = toolsMode !== 'off';
     let regenMessageDiv = document.querySelector(`.message.assistant[data-index="${index}"]`);
@@ -10621,6 +11635,19 @@ async function startRegenerate(index) {
         return;
     }
     let accumulatedContent = "";
+    const modelBadgeState = {
+        modelName: String(modelName || ''),
+        searchFlag: 'unknown',
+        inputTokens: 0,
+        outputTokens: 0
+    };
+    const modelBadgeUsageState = {
+        input: 0,
+        output: 0,
+        snapshotInput: 0,
+        snapshotOutput: 0,
+        snapshotInitialized: false
+    };
     
     // Setup UI for generation
     isGenerating = true;
@@ -10630,6 +11657,7 @@ async function startRegenerate(index) {
     if (regenMessageDiv) regenMessageDiv.classList.add('pending');
     let streamCompleted = false;
     let streamAbortedByUser = false;
+    let streamServerError = '';
     
     try {
         const response = await fetch('/api/chat/stream', {
@@ -10646,7 +11674,9 @@ async function startRegenerate(index) {
                     tool_mode: toolsMode,
                     debug_mode: isDebugConsoleEnabled(),
                     show_token_usage: true,
-                    include_context: !!tokenBudgetState.includeContext
+                    allow_history_images: allowHistoryImages,
+                    include_context: !!tokenBudgetState.includeContext,
+                    force_context_compression: !!forceContextCompression
                 }),
             signal: currentAbortController.signal
         });
@@ -10666,10 +11696,10 @@ async function startRegenerate(index) {
             const content = regenMessageDiv.querySelector('.message-content');
             // 清理旧内容/工具链，避免重新生成时复用历史展示节点
             if (content) {
-                content.querySelectorAll('.content-body,.thinking-block,.tool-usage,.add-basis-view').forEach(el => el.remove());
+                content.querySelectorAll('.content-body,.thinking-block,.tool-usage,.add-basis-view,.model-badge').forEach(el => el.remove());
             } else {
                 // fallback
-                regenMessageDiv.querySelectorAll('.content-body,.thinking-block,.tool-usage,.add-basis-view').forEach(el => el.remove());
+                regenMessageDiv.querySelectorAll('.content-body,.thinking-block,.tool-usage,.add-basis-view,.model-badge').forEach(el => el.remove());
             }
             regenMessageDiv.__citationUrlMap = {};
             regenMessageDiv.__toolCallState = {
@@ -10679,12 +11709,25 @@ async function startRegenerate(index) {
                 pendingQueue: [],
                 activeAnonCallId: ''
             };
+            updateMessageModelBadge(regenMessageDiv, modelBadgeState);
         }
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
         const debugScopeKey = `regen:${currentConversationId || 'new'}:${index}:${Date.now()}`;
+        if (forceContextCompression && isDebugConsoleEnabled()) {
+            appendDebugConsoleEntry({
+                direction: 'client->local',
+                stage: 'force_context_compression_request',
+                title: 'Force Compression',
+                payload: {
+                    applied: true,
+                    conversation_id: String(currentConversationId || ''),
+                    model_name: String(modelName || '')
+                }
+            });
+        }
 
         while (true) {
             const { value, done } = await reader.read();
@@ -10723,26 +11766,16 @@ async function startRegenerate(index) {
                         patchActiveStreamResumeState({ last_seq: Number(data._stream_seq) });
                     }
 
-                    if (data.type === 'debug_trace') {
-                        if (data.stage === 'system_prompt') {
-                            appendDebugConsoleEntry({
-                                ...data,
-                                title: 'System Prompt',
-                                replaceKey: `${debugScopeKey}:system`
-                            });
-                        } else if (data.stage === 'tool_injection') {
-                            appendDebugConsoleEntry({
-                                ...data,
-                                title: 'Tool Injection',
-                                replaceKey: `${debugScopeKey}:tools`
-                            });
-                        } else if (data.stage === 'current_context') {
-                            appendDebugConsoleEntry({
-                                ...data,
-                                title: 'Current Context',
-                                replaceKey: `${debugScopeKey}:context`
-                            });
-                        }
+                    if (data.type === 'model_info') {
+                        modelBadgeState.modelName = String(data.model_name || modelBadgeState.modelName || '');
+                        modelBadgeState.searchFlag = (typeof data.search_enabled === 'boolean')
+                            ? data.search_enabled
+                            : modelBadgeState.searchFlag;
+                        updateMessageModelBadge(regenMessageDiv, modelBadgeState);
+                    } else if (data.type === 'prompt_token_profile') {
+                        applyPromptTokenProfileChunk(data);
+                    } else if (data.type === 'debug_trace') {
+                        appendDebugTraceChunk(data, debugScopeKey);
                     } else if (data.type === 'content') {
                         accumulatedContent += data.content;
                         if (isDebugConsoleEnabled()) {
@@ -10763,8 +11796,31 @@ async function startRegenerate(index) {
                         }
                     } else if (data.type === 'reasoning_content') {
                         updateMessageDivThinking(index, data.content, regenMessageDiv);
-                    } else if (data.type === 'web_search' || data.type === 'search_meta' || data.type === 'function_call_delta' || data.type === 'function_call' || data.type === 'function_result') {
+                    } else if (
+                        data.type === 'web_search' ||
+                        data.type === 'search_meta' ||
+                        data.type === 'function_call_delta' ||
+                        data.type === 'function_call' ||
+                        data.type === 'function_result' ||
+                        data.type === 'context_compression_status'
+                    ) {
                         updateMessageDivTools(index, data, regenMessageDiv);
+                    } else if (data.type === 'token_usage') {
+                        onTokenStreamUsageChunk(data);
+                        applyUsageChunkToBadgeState(modelBadgeUsageState, data);
+                        modelBadgeState.inputTokens = modelBadgeUsageState.input;
+                        modelBadgeState.outputTokens = modelBadgeUsageState.output;
+                        updateMessageModelBadge(regenMessageDiv, modelBadgeState);
+                    } else if (data.type === 'error') {
+                        streamServerError = String(data.content || '').trim() || '重新回答失败';
+                        appendDebugConsoleEntry({
+                            direction: 'model->server',
+                            stage: 'error',
+                            title: 'Error',
+                            payload: { content: streamServerError }
+                        });
+                        appendErrorEvent(regenMessageDiv, streamServerError);
+                        showToast(streamServerError);
                     }
                 } catch (e) { }
             }
@@ -10959,6 +12015,119 @@ function finalizeMessageRenderForIndex(index, preferredMessageDiv = null) {
     });
 }
 
+function collapseReasoningBlocksForMessage(messageDiv) {
+    if (!messageDiv) return;
+    const blocks = messageDiv.querySelectorAll('.thinking-block.reasoning-thinking-block');
+    blocks.forEach((thinkingBlock) => {
+        if (thinkingBlock.dataset.userToggled === 'true') return;
+        thinkingBlock.classList.add('collapsed');
+    });
+}
+
+function buildContextCompressionTriggerHint(status = 'start', meta = {}) {
+    const s = String(status || '').trim().toLowerCase();
+    const m = (meta && typeof meta === 'object') ? meta : {};
+    const mode = String(m.trigger_mode || '').trim().toLowerCase();
+    const maskedImg = Number(m.masked_image_data_urls || 0);
+    let hint = '';
+    if (mode === 'force') {
+        hint = '触发原因：强制触发';
+    } else if (mode === 'overload') {
+        const raw = Number(m.raw_input_tokens || 0);
+        const win = Number(m.context_window || 0);
+        const threshold = Number(m.compression_threshold || 0);
+        if (raw > 0 && win > 0) {
+            hint = `触发原因：上下文过载（${raw.toLocaleString()} / ${win.toLocaleString()}）`;
+            if (threshold > 0) hint += `，阈值 ${threshold.toLocaleString()}`;
+        }
+        else hint = '触发原因：上下文过载';
+    } else if (s === 'skipped') {
+        hint = '触发原因：条件不满足';
+    }
+    if (hint && maskedImg > 0) {
+        hint += ` · 图片脱敏 ${Math.max(0, Math.floor(maskedImg))} 张`;
+    }
+    return hint;
+}
+
+function buildContextCompressionOutputText(status = 'start', meta = {}) {
+    const s = String(status || '').trim().toLowerCase();
+    const m = (meta && typeof meta === 'object') ? meta : {};
+    const lines = [];
+    const hint = buildContextCompressionTriggerHint(s, m);
+    if (hint) lines.push(hint);
+    const raw = safeTokenInt(m.raw_input_tokens);
+    const post = safeTokenInt(m.post_raw_input_tokens);
+    const saved = safeTokenInt(m.saved_tokens);
+    const ratio = Number(m.saved_ratio || 0);
+    const windowN = safeTokenInt(m.context_window);
+    const threshold = safeTokenInt(m.compression_threshold);
+    const cutIdx = Number.isFinite(Number(m.history_cut_index)) ? Math.floor(Number(m.history_cut_index)) : -1;
+    const chars = safeTokenInt(m.summary_chars);
+    const summary = String(m.summary_text || '').trim();
+    if (raw > 0) lines.push(`压缩前输入: ${raw.toLocaleString()} tokens`);
+    if (windowN > 0) lines.push(`上下文窗口: ${windowN.toLocaleString()}`);
+    if (threshold > 0) lines.push(`触发阈值: ${threshold.toLocaleString()}`);
+    if (post > 0) lines.push(`压缩后输入: ${post.toLocaleString()} tokens`);
+    if (saved > 0) lines.push(`节省: ${saved.toLocaleString()} tokens (${Math.round(Math.max(0, ratio) * 100)}%)`);
+    if (cutIdx >= 0) lines.push(`历史截断索引: ${cutIdx}`);
+    if (chars > 0) lines.push(`摘要长度: ${chars} 字符`);
+    if (summary) {
+        lines.push('');
+        lines.push('压缩摘要:');
+        lines.push(summary);
+    } else if (s === 'start') {
+        lines.push('');
+        lines.push('压缩任务已开始，等待模型生成摘要...');
+    }
+    return lines.join('\n').trim();
+}
+
+function upsertContextCompressionCard(messageDiv, status = 'start', text = '上下文压缩中', meta = {}) {
+    if (!messageDiv) return;
+    const parent = messageDiv.querySelector('.message-content') || messageDiv;
+    if (!parent) return;
+    let row = null;
+    const rows = parent.querySelectorAll('.tool-usage.context-compression-card');
+    for (let i = rows.length - 1; i >= 0; i -= 1) {
+        const node = rows[i];
+        if (String(node.dataset.pending || '') === 'true') {
+            row = node;
+            break;
+        }
+    }
+    if (!row) {
+        row = appendToolEvent(messageDiv, 'Context Compression', text || '上下文压缩中', false, {
+            reuseIfExists: false,
+            pending: true
+        });
+        if (!row) return;
+        row.classList.add('context-compression-card');
+    } else {
+        row.classList.add('context-compression-card');
+        const statusEl = row.querySelector('.tool-status');
+        if (statusEl) statusEl.textContent = String(text || '').trim() || '上下文压缩中';
+    }
+
+    const outDiv = row.querySelector('.tool-output');
+    if (!outDiv) return;
+    const body = buildContextCompressionOutputText(status, meta);
+    outDiv.textContent = body || '压缩信息暂无';
+    row.classList.add('has-output');
+
+    const s = String(status || '').trim().toLowerCase();
+    if (s === 'start') {
+        row.dataset.pending = 'true';
+        row.dataset.resolved = 'false';
+        row.classList.remove('done');
+    } else {
+        row.dataset.pending = 'false';
+        row.dataset.resolved = 'true';
+        row.classList.add('done');
+        row.classList.remove('expanded');
+    }
+}
+
 function updateMessageDivTools(index, data, preferredMessageDiv = null) {
     const messageDiv = resolveAssistantStreamMessageDiv(index, preferredMessageDiv);
     if (!messageDiv) return;
@@ -10993,6 +12162,13 @@ function updateMessageDivTools(index, data, preferredMessageDiv = null) {
         const callId = allocateToolCallId(messageDiv, toolName, 'result', rawCallId, toolIndex);
         updateLastToolResult(messageDiv, toolName, data.result, callId, { toolIndex });
         maybeRenderCanvasFromJsExecuteResult(messageDiv, toolName, data.result, callId, toolIndex);
+    } else if (data.type === 'context_compression_status') {
+        upsertContextCompressionCard(
+            messageDiv,
+            String(data.status || 'start'),
+            String(data.content || '上下文压缩中'),
+            data
+        );
     }
 }
 
@@ -11121,15 +12297,20 @@ async function resumeActiveStreamAfterReload() {
                     }
                 }
 
-                if (chunk.type === 'content') {
+                if (chunk.type === 'debug_trace') {
+                    appendDebugTraceChunk(chunk, `resume:${String(state.stream_id || '')}`);
+                } else if (chunk.type === 'content') {
                     accumulatedContent += String(chunk.content || '');
                     updateMessageDivContent(assistantIndex, accumulatedContent, assistantDiv);
                 } else if (chunk.type === 'reasoning_content') {
                     accumulatedReasoning += String(chunk.content || '');
                     updateMessageDivThinking(assistantIndex, String(chunk.content || ''), assistantDiv);
+                } else if (chunk.type === 'prompt_token_profile') {
+                    applyPromptTokenProfileChunk(chunk);
                 } else if (
                     chunk.type === 'web_search' ||
                     chunk.type === 'search_meta' ||
+                    chunk.type === 'context_compression_status' ||
                     chunk.type === 'function_call_delta' ||
                     chunk.type === 'function_call' ||
                     chunk.type === 'function_result'
@@ -11161,6 +12342,8 @@ async function resumeActiveStreamAfterReload() {
         updateSendButtonState();
         if (streamCompleted) {
             finalizeMessageRenderForIndex(assistantIndex, assistantDiv);
+            collapseReasoningBlocksForMessage(assistantDiv);
+            collapseModelBadgeForMessage(assistantDiv);
         }
         assistantDiv.classList.remove('pending');
         await finishTokenMiniStreaming();
@@ -14160,9 +15343,6 @@ function renderCustomModelSelect(models, defaultModel) {
     });
 
     sortedProviders.forEach((providerKey) => {
-        // 预热 vision 能力缓存，避免首次上传图片时等待
-        ensureProviderVisionModelSet(providerKey).catch(() => {});
-
         const section = document.createElement('div');
         section.className = 'model-group';
 
@@ -14277,8 +15457,15 @@ async function ensureProviderVisionModelSet(provider) {
     }
 
     const req = (async () => {
+        const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        const timer = controller ? setTimeout(() => {
+            try { controller.abort(); } catch (_) {}
+        }, 5000) : null;
         try {
-            const res = await fetch(`/api/provider/models?provider=${encodeURIComponent(p)}&capability=vision`);
+            const res = await fetch(
+                `/api/provider/models?provider=${encodeURIComponent(p)}&capability=vision&cache_ttl=900`,
+                controller ? { signal: controller.signal } : undefined
+            );
             const data = await res.json();
             if (!data || !data.success || !Array.isArray(data.models)) {
                 providerVisionModelSetCache.set(p, null);
@@ -14296,6 +15483,7 @@ async function ensureProviderVisionModelSet(provider) {
             providerVisionModelSetCache.set(p, null);
             return null;
         } finally {
+            if (timer) clearTimeout(timer);
             providerVisionPendingFetch.delete(p);
         }
     })();
@@ -17299,6 +18487,7 @@ async function openSettingsModal() {
             return;
         }
         settingsModal.classList.add('active');
+        settingsModal.classList.add('perf-mode');
         // 确保有用户名
         if (!currentUsername) await checkUserRole();
 
@@ -17330,7 +18519,10 @@ function closeSettingsModal() {
         }
     }
     const settingsModal = document.getElementById('settingsModal');
-    if (settingsModal) settingsModal.classList.remove('active');
+    if (settingsModal) {
+        settingsModal.classList.remove('active');
+        settingsModal.classList.remove('perf-mode');
+    }
 }
 
 function initSettingsTabs() {

@@ -1,7 +1,7 @@
 import json
 import ssl
 from typing import Any, Dict, List, Optional
-from urllib import request as urllib_request, error as urllib_error
+from urllib import request as urllib_request, error as urllib_error, parse as urllib_parse
 
 from openai import OpenAI
 from volcenginesdkarkruntime import Ark
@@ -94,6 +94,122 @@ class VolcengineProvider(ProviderInterface):
             "tried_urls": tried_urls,
             "count": len(normalized),
             "models": normalized,
+        }
+
+    def supports_tokenization(self) -> bool:
+        return True
+
+    def tokenize_texts(
+        self,
+        *,
+        api_key: str,
+        base_url: str,
+        model: str,
+        texts: List[str],
+        timeout: float = 20.0,
+    ) -> Dict[str, Any]:
+        model_id = str(model or "").strip()
+        clean_texts = [str(x or "") for x in (texts or [])]
+        if not api_key:
+            return {
+                "ok": False,
+                "provider": self.provider_name,
+                "model": model_id,
+                "totals": [],
+                "raw": None,
+                "error": "missing_api_key",
+            }
+        if not model_id:
+            return {
+                "ok": False,
+                "provider": self.provider_name,
+                "model": model_id,
+                "totals": [],
+                "raw": None,
+                "error": "missing_model",
+            }
+        if not clean_texts:
+            return {
+                "ok": True,
+                "provider": self.provider_name,
+                "model": model_id,
+                "totals": [],
+                "raw": {"data": []},
+                "error": "",
+            }
+
+        endpoint = self._resolve_tokenization_endpoint(base_url)
+        ctx = self._build_ssl_context()
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": model_id,
+            "text": clean_texts if len(clean_texts) > 1 else clean_texts[0],
+        }
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = urllib_request.Request(endpoint, method="POST", headers=headers, data=body)
+
+        try:
+            with urllib_request.urlopen(req, timeout=float(timeout or 20.0), context=ctx) as resp:
+                raw_text = resp.read().decode("utf-8", errors="replace")
+                payload_obj = json.loads(raw_text) if raw_text.strip() else {}
+        except urllib_error.HTTPError as e:
+            try:
+                err_body = e.read().decode("utf-8", errors="replace")
+            except Exception:
+                err_body = ""
+            return {
+                "ok": False,
+                "provider": self.provider_name,
+                "model": model_id,
+                "totals": [],
+                "raw": None,
+                "error": f"http_{int(getattr(e, 'code', 500) or 500)}: {err_body[:240]}",
+            }
+        except urllib_error.URLError as e:
+            reason = getattr(e, "reason", e)
+            if isinstance(reason, ssl.SSLCertVerificationError):
+                return {
+                    "ok": False,
+                    "provider": self.provider_name,
+                    "model": model_id,
+                    "totals": [],
+                    "raw": None,
+                    "error": (
+                        f"ssl_verify_failed: {reason}. "
+                        "可在 models.json 的 provider 下配置 ca_bundle，"
+                        "或临时设置 tls_verify=false（仅测试环境）"
+                    ),
+                }
+            return {
+                "ok": False,
+                "provider": self.provider_name,
+                "model": model_id,
+                "totals": [],
+                "raw": None,
+                "error": str(e),
+            }
+        except Exception as e:
+            return {
+                "ok": False,
+                "provider": self.provider_name,
+                "model": model_id,
+                "totals": [],
+                "raw": None,
+                "error": str(e),
+            }
+
+        totals = self._extract_tokenization_totals(payload_obj, expected_count=len(clean_texts))
+        return {
+            "ok": len(totals) == len(clean_texts),
+            "provider": self.provider_name,
+            "model": str(payload_obj.get("model", model_id) if isinstance(payload_obj, dict) else model_id),
+            "totals": totals,
+            "raw": payload_obj,
+            "error": "" if len(totals) == len(clean_texts) else "invalid_tokenization_response",
         }
 
     def use_responses_api(self, request_options=None) -> bool:
@@ -504,6 +620,42 @@ class VolcengineProvider(ProviderInterface):
             return False, None, str(e)
         except Exception as e:
             return False, None, str(e)
+
+    def _resolve_tokenization_endpoint(self, base_url: str) -> str:
+        default_url = "https://ark.cn-beijing.volces.com/api/v3/tokenization"
+        raw = str(base_url or "").strip()
+        if not raw:
+            return default_url
+        try:
+            parsed = urllib_parse.urlparse(raw)
+            if not parsed.scheme or not parsed.netloc:
+                return default_url
+            return f"{parsed.scheme}://{parsed.netloc}/api/v3/tokenization"
+        except Exception:
+            return default_url
+
+    def _extract_tokenization_totals(self, payload_obj: Any, expected_count: int) -> List[int]:
+        out: List[int] = []
+        if isinstance(payload_obj, dict):
+            data = payload_obj.get("data")
+        else:
+            data = None
+
+        if isinstance(data, dict):
+            data = [data]
+        if not isinstance(data, list):
+            return [0 for _ in range(max(0, int(expected_count or 0)))]
+
+        for idx in range(max(0, int(expected_count or 0))):
+            item = data[idx] if idx < len(data) else {}
+            if not isinstance(item, dict):
+                out.append(0)
+                continue
+            try:
+                out.append(max(0, int(item.get("total_tokens", 0) or 0)))
+            except Exception:
+                out.append(0)
+        return out
 
     def _build_ssl_context(self):
         verify = self._as_bool(self.provider_config.get("tls_verify", True), default=True)

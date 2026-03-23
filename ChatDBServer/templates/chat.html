@@ -55,9 +55,17 @@
                     <i class="fa-solid fa-ellipsis"></i>
                     
                     <div class="user-menu" id="userMenu">
+                        <a href="./status" class="menu-item" id="">
+                            <i class="fa-solid fa-gear"></i>
+                            <span>状态</span>
+                        </a>
                         <a href="#" class="menu-item" id="settingsBtn">
                             <i class="fa-solid fa-gear"></i>
                             <span>设置</span>
+                        </a>
+                        <a href="#" class="menu-item" id="trashMenuBtn">
+                            <i class="fa-regular fa-trash-can"></i>
+                            <span>回收站</span>
                         </a>
                         <div class="menu-divider"></div>
                         <a href="/logout" id="logoutLink" class="menu-item logout">
@@ -370,6 +378,30 @@
             </div>
         </div>
 
+        <div id="trashModal" class="modal-backdrop" aria-hidden="true">
+            <div class="modal trash-modal-custom">
+                <div class="modal-head">
+                    <h3>回收站</h3>
+                    <div class="trash-modal-head-actions">
+                        <button id="clearTrashBtn" class="trash-head-btn trash-head-btn-danger" type="button" title="清空回收站">
+                            <i class="fa-regular fa-trash-can"></i>
+                            <span>清空</span>
+                        </button>
+                        <button id="refreshTrashBtn" class="trash-head-btn" type="button" title="刷新">
+                            <i class="fa-solid fa-rotate"></i>
+                            <span>刷新</span>
+                        </button>
+                        <button id="closeTrashModalBtn" class="btn-modal-close" type="button">×</button>
+                    </div>
+                </div>
+                <div class="modal-body trash-modal-body">
+                    <div id="trashList" class="trash-list">
+                        <div class="trash-empty">暂无回收站内容</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Fullscreen Image Viewer -->
         <div id="imageViewerBackdrop" class="image-viewer-backdrop" aria-hidden="true">
             <div class="image-viewer-shell" role="dialog" aria-modal="true" aria-label="Image Viewer">
@@ -431,6 +463,9 @@
                     <span id="debugConsoleStatus" class="debug-console-status">OFF</span>
                 </div>
                 <div class="debug-console-head-actions">
+                    <button id="forceContextCompressionBtn" class="debug-console-action" type="button" title="下次请求强制触发上下文压缩（一次）">
+                        <i class="fa-solid fa-compress"></i>
+                    </button>
                     <button id="copyDebugConsoleBtn" class="debug-console-action" type="button" title="复制日志">
                         <i class="fa-solid fa-copy"></i>
                     </button>

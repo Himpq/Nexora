@@ -74,6 +74,42 @@ class ProviderInterface(ABC):
             "models": []
         }
 
+    def supports_tokenization(self) -> bool:
+        """
+        Whether provider exposes an external tokenization/count API.
+        """
+        return False
+
+    def tokenize_texts(
+        self,
+        *,
+        api_key: str,
+        base_url: str,
+        model: str,
+        texts: List[str],
+        timeout: float = 20.0,
+    ) -> Dict[str, Any]:
+        """
+        Provider tokenization endpoint wrapper.
+        Return shape:
+        {
+          "ok": bool,
+          "provider": str,
+          "model": str,
+          "totals": List[int],   # aligned with input texts
+          "raw": Any,
+          "error": str
+        }
+        """
+        return {
+            "ok": False,
+            "provider": self.provider_name,
+            "model": str(model or "").strip(),
+            "totals": [],
+            "raw": None,
+            "error": "tokenization_not_supported",
+        }
+
     def analyze_image(
         self,
         *,

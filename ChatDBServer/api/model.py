@@ -7,7 +7,7 @@ import base64
 import textwrap
 import threading
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Generator, Set
+from typing import List, Dict, Any, Optional, Generator, Set, Tuple
 from urllib import request as urllib_request, error as urllib_error, parse as urllib_parse
 from email.header import Header
 from email.utils import parsedate_to_datetime
@@ -19,9 +19,12 @@ from provider_factory import create_provider_adapter
 import prompts
 
 # 配置文件路径
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.json')
-MODELS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models.json')
-MODEL_ADAPTERS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'model_adapters.json')
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CONFIG_PATH = os.path.join(BASE_DIR, 'config.json')
+MODELS_PATH = os.path.join(BASE_DIR, 'models.json')
+MODEL_ADAPTERS_PATH = os.path.join(BASE_DIR, 'model_adapters.json')
+MODELS_CONTEXT_WINDOW_CACHE_LEGACY_PATH = os.path.join(BASE_DIR, 'models_context_window.json')
+MODELS_CONTEXT_WINDOW_CACHE_PATH = os.path.join(BASE_DIR, 'data', 'res', 'models_context_window.json')
 
 DEFAULT_MODEL_ADAPTER_CONFIG = {
     "version": 1,
@@ -179,6 +182,8 @@ class Model:
         self.provider = model_info.get('provider', 'volcengine')
         provider_info = CONFIG.get('providers', {}).get(self.provider, {})
         self.provider_display_name = provider_info.get('name', self.provider)
+        self._context_window_limit_source = "unknown"
+        self._context_window_limit_from_fallback_default = False
 
         self._provider_adapter_cache = {}
         self.provider_adapter = create_provider_adapter(self.provider, provider_info)
@@ -298,7 +303,33 @@ class Model:
             enable_tools=bool(enable_tools),
             tool_mode=str(tool_mode or "force"),
         )
-        return self._render_prompt_template(combined_template)
+        rendered = self._render_prompt_template(combined_template)
+        profile_block = self._build_user_profile_memory_prompt_block()
+        if profile_block:
+            rendered = f"{rendered}\n\n{profile_block}"
+        return rendered
+
+    def _get_user_profile_memory_text(self) -> str:
+        permission_hint = self._get_user_permission_hint()
+        try:
+            return str(
+                self.user.get_user_profile_memory(
+                    user_permission=permission_hint,
+                    max_chars=400
+                ) or ""
+            ).strip()
+        except Exception:
+            return f"用户权限:{permission_hint}，还没有写入其他信息。"
+
+    def _build_user_profile_memory_prompt_block(self) -> str:
+        profile_text = self._get_user_profile_memory_text()
+        if not profile_text:
+            return ""
+        return (
+            "[短期记忆-用户画像]\n"
+            "以下信息用于理解用户偏好与背景，回答时可参考但不要逐字复述：\n"
+            f"{profile_text}"
+        )
     
     def _get_default_web_search_prompt(self) -> str:
         """获取默认的联网搜索系统提示词"""
@@ -906,6 +937,435 @@ class Model:
             return max(1, est)
         except Exception:
             return max(1, len(str(text)) // 4)
+
+    def _resolve_model_context_window_limit(self) -> int:
+        """
+        Resolve model context window from config/model metadata.
+        Fallback to a conservative default.
+        """
+        def _ret(limit: int, source: str, fallback_default: bool = False) -> int:
+            self._context_window_limit_source = str(source or "unknown").strip() or "unknown"
+            self._context_window_limit_from_fallback_default = bool(fallback_default)
+            return int(max(1, limit))
+
+        def _safe_ctx_int(v) -> int:
+            try:
+                n = int(v or 0)
+            except Exception:
+                n = 0
+            if n < 1024:
+                return 0
+            return min(n, 4_000_000)
+
+        def _normalize_model_id(raw: Any) -> str:
+            return str(raw or "").strip().lower()
+
+        def _trim_model_id_last_hyphen_number(raw: Any) -> str:
+            return re.sub(r"-\d+$", "", _normalize_model_id(raw)).strip()
+
+        # 0) 先读实时 context-window 缓存（data/res/models_context_window.json）。
+        provider_key = str(self.provider or "").strip().lower()
+        if provider_key:
+            cache_obj: Dict[str, Any] = {}
+            for path in (MODELS_CONTEXT_WINDOW_CACHE_PATH, MODELS_CONTEXT_WINDOW_CACHE_LEGACY_PATH):
+                if not path or (not os.path.exists(path)):
+                    continue
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        cache_obj = loaded
+                        break
+                except Exception:
+                    continue
+            providers = cache_obj.get("providers", {}) if isinstance(cache_obj, dict) else {}
+            provider_node = providers.get(provider_key, {}) if isinstance(providers, dict) else {}
+            models_map = provider_node.get("models", {}) if isinstance(provider_node, dict) else {}
+            if isinstance(models_map, dict) and models_map:
+                candidates: List[str] = []
+                for raw in (
+                    self.model_name,
+                    self.model_display_name,
+                    _trim_model_id_last_hyphen_number(self.model_name),
+                    _trim_model_id_last_hyphen_number(self.model_display_name),
+                ):
+                    key = _normalize_model_id(raw)
+                    if key and key not in candidates:
+                        candidates.append(key)
+                for key in candidates:
+                    row = models_map.get(key, None)
+                    if isinstance(row, dict):
+                        n = _safe_ctx_int(
+                            row.get("context_window")
+                            or row.get("context_length")
+                            or row.get("max_context_tokens")
+                            or row.get("max_input_tokens")
+                            or row.get("max_prompt_tokens")
+                        )
+                    else:
+                        n = _safe_ctx_int(row)
+                    if n > 0:
+                        return _ret(n, "provider_cache", fallback_default=False)
+
+        info = {}
+        try:
+            info = CONFIG.get("models", {}).get(self.model_name, {})
+            if not isinstance(info, dict):
+                info = {}
+        except Exception:
+            info = {}
+
+        for key in ("context_window", "context_length", "max_context_tokens", "max_input_tokens", "max_prompt_tokens"):
+            try:
+                n = int(info.get(key, 0) or 0)
+            except Exception:
+                n = 0
+            if n >= 1024:
+                return _ret(min(n, 4_000_000), "model_config", fallback_default=False)
+
+        merged = f"{str(self.model_name or '')} {str(self.model_display_name or '')}".lower()
+        m = re.search(r"(?:^|[^0-9])(\d{2,4})k(?:[^0-9]|$)", merged)
+        if m:
+            try:
+                k = int(m.group(1))
+            except Exception:
+                k = 0
+            if k >= 16:
+                return _ret(min(k * 1000, 4_000_000), "model_name_heuristic", fallback_default=False)
+        return _ret(32768, "fallback_default", fallback_default=True)
+
+    def _extract_completion_text(self, response_obj: Any) -> str:
+        """
+        Extract plain text from a non-stream response object across providers.
+        """
+        if response_obj is None:
+            return ""
+
+        if isinstance(response_obj, dict):
+            if isinstance(response_obj.get("output_text"), str):
+                return str(response_obj.get("output_text") or "").strip()
+            choices = response_obj.get("choices")
+            if isinstance(choices, list) and choices:
+                c0 = choices[0] if isinstance(choices[0], dict) else {}
+                msg = c0.get("message", {}) if isinstance(c0, dict) else {}
+                if isinstance(msg, dict):
+                    return str(msg.get("content", "") or "").strip()
+            output_items = response_obj.get("output")
+            if isinstance(output_items, list):
+                parts = []
+                for item in output_items:
+                    if not isinstance(item, dict):
+                        continue
+                    if str(item.get("type", "") or "").strip() == "message":
+                        content = item.get("content", [])
+                        if isinstance(content, list):
+                            for c in content:
+                                if isinstance(c, dict) and str(c.get("type", "") or "").strip() in {"text", "output_text"}:
+                                    parts.append(str(c.get("text", "") or ""))
+                        elif isinstance(content, str):
+                            parts.append(content)
+                return "\n".join([p for p in parts if str(p).strip()]).strip()
+
+        try:
+            output_text = getattr(response_obj, "output_text", None)
+            if isinstance(output_text, str) and output_text.strip():
+                return output_text.strip()
+        except Exception:
+            pass
+
+        try:
+            choices = getattr(response_obj, "choices", None)
+            if isinstance(choices, list) and choices:
+                c0 = choices[0]
+                msg_obj = getattr(c0, "message", None)
+                if msg_obj is not None:
+                    content = getattr(msg_obj, "content", "")
+                    if isinstance(content, str):
+                        return content.strip()
+        except Exception:
+            pass
+
+        try:
+            output_items = getattr(response_obj, "output", None)
+            if isinstance(output_items, list):
+                parts = []
+                for item in output_items:
+                    item_type = str(getattr(item, "type", "") or "").strip()
+                    if item_type != "message":
+                        continue
+                    content = getattr(item, "content", None)
+                    if isinstance(content, list):
+                        for c in content:
+                            c_type = str(getattr(c, "type", "") or "").strip()
+                            if c_type in {"text", "output_text"}:
+                                parts.append(str(getattr(c, "text", "") or ""))
+                    elif isinstance(content, str):
+                        parts.append(content)
+                out = "\n".join([p for p in parts if str(p).strip()]).strip()
+                if out:
+                    return out
+        except Exception:
+            pass
+
+        return str(response_obj or "").strip()
+
+    def _provider_tokenize_totals(
+        self,
+        texts: List[str],
+        *,
+        provider_name: Optional[str] = None,
+        model_name: Optional[str] = None,
+        timeout: float = 20.0
+    ) -> Optional[List[int]]:
+        """
+        Call provider tokenization endpoint when available.
+        Returns aligned totals list on success, otherwise None.
+        """
+        p = str(provider_name or self.provider or "").strip()
+        adapter = self._get_provider_api_adapter(p)
+        try:
+            if not bool(adapter.supports_tokenization()):
+                return None
+        except Exception:
+            return None
+
+        info = self._get_provider_info(p)
+        api_key = str(info.get("api_key", "") or "").strip()
+        base_url = str(info.get("base_url", "") or "").strip()
+        target_model = str(model_name or self.model_name or "").strip()
+        clean_texts = [str(x or "") for x in (texts or [])]
+        if (not api_key) or (not target_model) or (not clean_texts):
+            return None
+
+        try:
+            res = adapter.tokenize_texts(
+                api_key=api_key,
+                base_url=base_url,
+                model=target_model,
+                texts=clean_texts,
+                timeout=timeout,
+            )
+        except Exception:
+            return None
+        if not isinstance(res, dict) or (not res.get("ok")):
+            return None
+        totals = res.get("totals", [])
+        if not isinstance(totals, list) or len(totals) != len(clean_texts):
+            return None
+        out: List[int] = []
+        for x in totals:
+            try:
+                out.append(max(0, int(x or 0)))
+            except Exception:
+                out.append(0)
+        return out
+
+    def _count_text_tokens_exact(
+        self,
+        text: str,
+        *,
+        provider_name: Optional[str] = None,
+        model_name: Optional[str] = None,
+        timeout: float = 20.0
+    ) -> Optional[int]:
+        src = str(text or "")
+        if not src:
+            return 0
+        totals = self._provider_tokenize_totals(
+            [src],
+            provider_name=provider_name,
+            model_name=model_name,
+            timeout=timeout
+        )
+        if not totals:
+            return None
+        return max(0, int(totals[0] or 0))
+
+    def _mask_data_image_urls_for_token_estimation(self, text: str) -> Tuple[str, int]:
+        """
+        Replace inline data:image base64 payload with a short placeholder before
+        token estimation. This avoids false-positive context overflow caused by
+        image raw bytes being counted as plain text.
+        """
+        src = str(text or "")
+        if not src:
+            return "", 0
+        pattern = re.compile(r"data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\r\n]+")
+        replaced_count = 0
+
+        def _repl(match: re.Match) -> str:
+            nonlocal replaced_count
+            replaced_count += 1
+            raw = str(match.group(0) or "")
+            payload_len = 0
+            comma_idx = raw.find(",")
+            if comma_idx >= 0:
+                payload_len = max(0, len(raw) - comma_idx - 1)
+            return f"data:image/*;base64,[omitted:{payload_len}]"
+
+        masked = pattern.sub(_repl, src)
+        return masked, int(max(0, replaced_count))
+
+    def _build_context_compression_memory_block(self, summary_text: str) -> str:
+        summary = str(summary_text or "").strip()
+        if not summary:
+            return ""
+        return (
+            "[历史上下文压缩摘要]\n"
+            "以下为已压缩历史的稳定记忆，请将其视为更早对话的替代上下文：\n"
+            f"{summary}"
+        )
+
+    def _format_messages_for_context_compression(self, messages: List[Dict[str, Any]]) -> str:
+        lines: List[str] = []
+        for item in (messages or []):
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role", "") or "").strip().upper()
+            if role not in {"USER", "ASSISTANT"}:
+                continue
+            text = str(item.get("content", "") or "").strip()
+            if not text:
+                continue
+            lines.append(f"[{role}] {text}")
+        text = "\n".join(lines).strip()
+        if len(text) <= 180000:
+            return text
+        head = text[:60000]
+        tail = text[-110000:]
+        return f"{head}\n...[历史过长，已截断中段]...\n{tail}"
+
+    def _fallback_context_compression_summary(self, messages: List[Dict[str, Any]], max_chars: int = 1400) -> str:
+        snippets: List[str] = []
+        for item in (messages or [])[-24:]:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role", "") or "").strip()
+            if role not in {"user", "assistant"}:
+                continue
+            text = str(item.get("content", "") or "").strip()
+            if not text:
+                continue
+            snippets.append(f"{role}: {text[:180]}")
+        merged = " | ".join(snippets).strip()
+        if not merged:
+            return "暂无可压缩的稳定上下文"
+        return merged[:max(300, int(max_chars or 1400))]
+
+    def _run_context_compression_round(
+        self,
+        history_messages: List[Dict[str, Any]],
+        max_chars: int = 1400
+    ) -> Generator[Dict[str, Any], None, Dict[str, Any]]:
+        """
+        Run a dedicated compression completion with current model.
+
+        Yields optional debug stream events during compression round:
+        - {"type":"model_reply_delta","delta":str,"model_reply":str,"chars":int,"from_stream":bool}
+        - {"type":"error","error":str}
+
+        Returns debug-friendly payload:
+        {
+            summary, prompt_text, system_prompt, model_reply, fallback_used, error, history_chars
+        }
+        """
+        system_prompt = "你是对话上下文压缩器，只输出压缩后的上下文摘要。"
+        history_text = self._format_messages_for_context_compression(history_messages)
+        prompt_text = prompts.build_context_compression_prompt(history_text, max_chars=max_chars)
+        out: Dict[str, Any] = {
+            "summary": "",
+            "prompt_text": str(prompt_text or ""),
+            "system_prompt": system_prompt,
+            "model_reply": "",
+            "fallback_used": False,
+            "error": "",
+            "history_chars": int(len(str(history_text or "")))
+        }
+
+        if not history_text:
+            out["fallback_used"] = True
+            out["error"] = "empty_history"
+            return out
+
+        req_messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt_text},
+        ]
+
+        stream_text = ""
+        stream_error = ""
+        stream_emitted = False
+        try:
+            stream_response = self.provider_adapter.create_chat_completion(
+                client=self.client,
+                model=self.model_name,
+                messages=req_messages,
+                stream=True
+            )
+            stream_events = self.provider_adapter.iter_stream_events(
+                stream_response,
+                use_responses_api=False,
+                native_web_search_enabled=False
+            )
+            for event in stream_events:
+                if not isinstance(event, dict):
+                    continue
+                ev_type = str(event.get("type", "") or "").strip()
+                if ev_type != "content_delta":
+                    continue
+                delta = str(event.get("delta", "") or "")
+                if not delta:
+                    continue
+                stream_emitted = True
+                stream_text += delta
+                yield {
+                    "type": "model_reply_delta",
+                    "delta": delta,
+                    "model_reply": stream_text,
+                    "chars": int(len(stream_text)),
+                    "from_stream": True
+                }
+        except Exception as e:
+            stream_error = str(e or "")
+            out["error"] = stream_error
+            print(f"[CTX_COMPRESS] stream compression round failed: {e}")
+            yield {"type": "error", "error": stream_error, "from_stream": True}
+
+        final_stream_text = str(stream_text or "").strip()
+        if final_stream_text:
+            out["model_reply"] = final_stream_text
+            out["summary"] = final_stream_text[:max(300, min(6000, int(max_chars or 1400)))]
+            return out
+
+        try:
+            response = self.provider_adapter.create_chat_completion(
+                client=self.client,
+                model=self.model_name,
+                messages=req_messages,
+                stream=False
+            )
+            text = self._extract_completion_text(response)
+            text = str(text or "").strip()
+            out["model_reply"] = text
+            if text:
+                if not stream_emitted:
+                    yield {
+                        "type": "model_reply_delta",
+                        "delta": text,
+                        "model_reply": text,
+                        "chars": int(len(text)),
+                        "from_stream": False
+                    }
+                out["summary"] = text[:max(300, min(6000, int(max_chars or 1400)))]
+                return out
+        except Exception as e:
+            print(f"[CTX_COMPRESS] model compression round failed: {e}")
+            out["error"] = str(e or "") or stream_error
+            yield {"type": "error", "error": out["error"], "from_stream": False}
+
+        out["fallback_used"] = True
+        out["summary"] = self._fallback_context_compression_summary(history_messages, max_chars=max_chars)
+        return out
 
     def _prefix_suffix_overlap(self, previous: str, current: str, max_window: int = 12000) -> int:
         """计算 previous 后缀与 current 前缀的最大重叠长度，用于跨轮去重。"""
@@ -2394,7 +2854,8 @@ class Model:
         is_regenerate: bool = False,
         regenerate_index: int = None,
         allow_history_images: bool = True,
-        include_context: bool = True
+        include_context: bool = True,
+        force_context_compression: bool = False
     ) -> Generator[Dict[str, Any], None, None]:
         """
         发送消息（支持多轮对话、流式输出、文件和Context Caching）
@@ -2536,6 +2997,7 @@ class Model:
                 }
 
             debug_mode = self._as_bool(debug_mode, default=False)
+            force_context_compression = self._as_bool(force_context_compression, default=False)
 
             def _debug_preview_text(value, max_len=12000):
                 text = str(value or "")
@@ -2655,6 +3117,90 @@ class Model:
                 if round_index is not None:
                     trace["round"] = int(round_index) + 1
                 return trace
+
+            def _build_round_token_debug_payload(
+                round_index: int,
+                *,
+                estimated: bool,
+                raw_input_tokens: int,
+                cached_input_tokens: int,
+                effective_input_tokens: int,
+                output_tokens: int,
+                total_tokens: int,
+                usage_total_reported: int = 0,
+                usage_obj=None,
+                round_content_text: str = "",
+                has_web_search_flag: bool = False,
+                function_calls_list=None,
+                prompt_chars: int = 0,
+                output_chars: int = 0,
+                reasoning_chars: int = 0,
+                tool_args_chars: int = 0
+            ) -> Dict[str, Any]:
+                function_calls_local = function_calls_list if isinstance(function_calls_list, list) else []
+                has_text_output = bool(str(round_content_text or "").strip())
+                primary_tool = ""
+                if function_calls_local:
+                    primary_tool = str(function_calls_local[0].get("name", "") or "")
+                elif has_web_search_flag:
+                    primary_tool = "web_search"
+
+                token_details = {
+                    "cached_tokens": int(max(0, cached_input_tokens)),
+                    "raw_input_tokens": int(max(0, raw_input_tokens)),
+                    "effective_input_tokens": int(max(0, effective_input_tokens))
+                }
+
+                if estimated:
+                    token_details.update({
+                        "estimated": True,
+                        "estimate_method": "cjk0.8+ascii/4",
+                        "prompt_chars": int(max(0, prompt_chars)),
+                        "output_chars": int(max(0, output_chars)),
+                        "reasoning_chars": int(max(0, reasoning_chars)),
+                        "tool_args_chars": int(max(0, tool_args_chars))
+                    })
+                else:
+                    prompt_details = _usage_get(usage_obj, 'prompt_tokens_details', {}) or {}
+                    input_details = _usage_get(usage_obj, 'input_tokens_details', {}) or {}
+                    completion_details = _usage_get(usage_obj, 'completion_tokens_details', {}) or {}
+                    output_details = _usage_get(usage_obj, 'output_tokens_details', {}) or {}
+                    token_details.update({
+                        "reasoning_tokens": _safe_int_local(
+                            _usage_get(completion_details, 'reasoning_tokens', _usage_get(output_details, 'reasoning_tokens', 0)),
+                            0
+                        ),
+                        "audio_input_tokens": _safe_int_local(
+                            _usage_get(prompt_details, 'audio_tokens', _usage_get(input_details, 'audio_tokens', 0)),
+                            0
+                        ),
+                        "audio_output_tokens": _safe_int_local(
+                            _usage_get(completion_details, 'audio_tokens', _usage_get(output_details, 'audio_tokens', 0)),
+                            0
+                        )
+                    })
+
+                payload = {
+                    "round": int(max(1, round_index)),
+                    "provider": str(self.provider or ""),
+                    "model": str(self.model_name or ""),
+                    "estimated": bool(estimated),
+                    "raw_input": int(max(0, raw_input_tokens)),
+                    "cached_input": int(max(0, cached_input_tokens)),
+                    "effective_input": int(max(0, effective_input_tokens)),
+                    "output": int(max(0, output_tokens)),
+                    "total": int(max(0, total_tokens)),
+                    "usage_total_reported": int(max(0, usage_total_reported)),
+                    "has_web_search": bool(has_web_search_flag),
+                    "tool_call_count": int(max(0, len(function_calls_local))),
+                    "round_kind": "chat" if has_text_output else "tool_assisted",
+                    "primary_tool": primary_tool,
+                    "has_text_output": bool(has_text_output),
+                    "token_details": token_details
+                }
+                if usage_obj is not None:
+                    payload["token_usage"] = _ensure_json_serializable(usage_obj)
+                return payload
 
             def _debug_render_tools_text(tools_payload, tool_mode: str = "", selected_names=None):
                 lines: List[str] = []
@@ -2832,6 +3378,16 @@ class Model:
                 tool_mode=getattr(self, "_runtime_tool_mode", "force"),
             )
             self.system_prompt = request_system_prompt
+            history_end_index_exclusive = None
+            if is_regenerate and regenerate_index is not None:
+                try:
+                    parsed_regen_index = int(regenerate_index)
+                    if parsed_regen_index >= 0:
+                        # Regenerate should branch from the user turn before target assistant,
+                        # excluding the target assistant and any later messages.
+                        history_end_index_exclusive = parsed_regen_index
+                except Exception:
+                    history_end_index_exclusive = None
             full_context_messages = self._build_initial_messages(
                 user_msg=msg,
                 current_user_content=user_content,
@@ -2839,6 +3395,7 @@ class Model:
                 allow_history_images=allow_history_images,
                 include_context=include_context,
                 system_prompt_text=request_system_prompt,
+                history_end_index_exclusive=history_end_index_exclusive
             )
 
             if last_response_id:
@@ -2859,8 +3416,26 @@ class Model:
             first_round_input_chars = 0
             first_round_tools_count = 0
             first_round_tools_chars = 0
+            first_round_system_tokens = 0
+            first_round_system_tokens_est = self._estimate_token_count(request_system_prompt or "")
+            first_round_tools_tokens = 0
+            first_round_tools_tokens_est = 0
+            first_round_tokenization_exact = False
             response_id_seen_count = 0
             response_id_changed_count = 0
+            context_window_limit = int(max(1, self._resolve_model_context_window_limit()))
+            context_window_source = str(getattr(self, "_context_window_limit_source", "unknown") or "unknown").strip() or "unknown"
+            context_window_fallback_default = bool(getattr(self, "_context_window_limit_from_fallback_default", False))
+            context_compression_checked = False
+            context_compression_triggered = False
+            context_compression_cut_index = -1
+            context_compression_summary_chars = 0
+            context_compression_trigger_raw_input = 0
+            context_compression_post_raw_input = 0
+            context_compression_saved_tokens = 0
+            context_compression_saved_ratio = 0.0
+            context_compression_trigger_mode = ""
+            context_compression_masked_image_count = 0
 
             # 火山引擎特例：仅对本次请求载荷中的最后一条 user 内容补结尾换行
             if messages and isinstance(messages[-1], dict) and str(messages[-1].get("role", "") or "").strip() == "user":
@@ -2875,6 +3450,17 @@ class Model:
                     request_system_prompt,
                     title="Server Prompt"
                 )
+                if is_regenerate:
+                    yield _build_debug_trace(
+                        "server->model",
+                        "regenerate_context_branch",
+                        {
+                            "enabled": True,
+                            "regenerate_index": int(regenerate_index) if regenerate_index is not None else None,
+                            "history_end_index_exclusive": int(history_end_index_exclusive) if history_end_index_exclusive is not None else None
+                        },
+                        title="Regenerate Context Branch"
+                    )
             
             # 多轮对话循环
             accumulated_content = ""
@@ -2924,9 +3510,415 @@ class Model:
                     )
 
                     if round_num == 0:
+                        if context_window_fallback_default and include_context and messages_has_full_context:
+                            context_compression_checked = True
+                            context_compression_trigger_mode = "force" if force_context_compression else "overload"
+                            ctx_status = {
+                                "type": "context_compression_status",
+                                "status": "skipped",
+                                "content": "上下文压缩跳过（上下文窗口未加载，当前默认 32768）",
+                                "forced": bool(force_context_compression),
+                                "trigger_mode": context_compression_trigger_mode,
+                                "context_window_source": context_window_source,
+                                "context_window_is_fallback_default": True
+                            }
+                            process_steps.append(dict(ctx_status))
+                            yield ctx_status
+                            if debug_mode:
+                                yield _build_debug_trace(
+                                    "server->model",
+                                    "context_compression_trigger",
+                                    {
+                                        "trigger_mode": context_compression_trigger_mode,
+                                        "trigger_label": "强制触发" if force_context_compression else "上下文过载触发",
+                                        "forced": bool(force_context_compression),
+                                        "skipped": True,
+                                        "reason": "context_window_fallback_default",
+                                        "context_window": int(max(1, context_window_limit)),
+                                        "context_window_source": context_window_source
+                                    },
+                                    title="Compression Trigger",
+                                    round_index=round_num
+                                )
+                                yield _build_debug_trace(
+                                    "model->server",
+                                    "context_compression_compare",
+                                    {
+                                        "forced": bool(force_context_compression),
+                                        "trigger_mode": context_compression_trigger_mode,
+                                        "skipped": True,
+                                        "reason": "context_window_fallback_default",
+                                        "context_window": int(max(1, context_window_limit)),
+                                        "context_window_source": context_window_source
+                                    },
+                                    title="Compression Compare",
+                                    round_index=round_num
+                                )
+                        if force_context_compression and (not include_context or not messages_has_full_context):
+                            context_compression_trigger_mode = "force"
+                            ctx_status = {
+                                "type": "context_compression_status",
+                                "status": "skipped",
+                                "content": "上下文压缩跳过（上下文传入关闭或不可用）",
+                                "forced": True,
+                                "trigger_mode": "force"
+                            }
+                            process_steps.append(dict(ctx_status))
+                            yield ctx_status
+                            if debug_mode:
+                                yield _build_debug_trace(
+                                    "server->model",
+                                    "context_compression_trigger",
+                                    {
+                                        "trigger_mode": "force",
+                                        "trigger_label": "强制触发",
+                                        "forced": True,
+                                        "skipped": True,
+                                        "reason": "context_disabled_or_unavailable"
+                                    },
+                                    title="Compression Trigger",
+                                    round_index=round_num
+                                )
+                                yield _build_debug_trace(
+                                    "model->server",
+                                    "context_compression_compare",
+                                    {
+                                        "forced": True,
+                                        "trigger_mode": "force",
+                                        "skipped": True,
+                                        "reason": "context_disabled_or_unavailable"
+                                    },
+                                    title="Compression Compare",
+                                    round_index=round_num
+                                )
+                        # 0) 首轮先判断是否需要自动上下文压缩（仅检查一次）。
+                        if (not context_compression_checked) and include_context and messages_has_full_context:
+                            context_compression_checked = True
+                            try:
+                                runtime_input_pre = request_params.get("input", request_params.get("messages", []))
+                                runtime_input_text_pre_raw = json.dumps(runtime_input_pre, ensure_ascii=False, default=str)
+                            except Exception:
+                                runtime_input_text_pre_raw = str(request_params.get("input", request_params.get("messages", "")))
+                            runtime_input_text_pre, masked_image_count_pre = self._mask_data_image_urls_for_token_estimation(
+                                runtime_input_text_pre_raw
+                            )
+                            context_compression_masked_image_count = int(max(0, masked_image_count_pre))
+                            preflight_raw_input_tokens = self._estimate_token_count(runtime_input_text_pre)
+                            if len(runtime_input_text_pre) <= 120000:
+                                exact_input_pre = self._count_text_tokens_exact(
+                                    runtime_input_text_pre,
+                                    provider_name=self.provider,
+                                    model_name=self.model_name,
+                                    timeout=15.0
+                                )
+                                if exact_input_pre is not None and exact_input_pre > 0:
+                                    preflight_raw_input_tokens = int(exact_input_pre)
+                            compression_threshold = int(max(1, context_window_limit) * 0.9)
+                            force_compression_trigger = bool(force_context_compression)
+                            if force_compression_trigger or preflight_raw_input_tokens >= compression_threshold:
+                                context_compression_triggered = True
+                                context_compression_trigger_raw_input = int(max(0, preflight_raw_input_tokens))
+                                context_compression_trigger_mode = "force" if force_compression_trigger else "overload"
+                                ctx_status = {
+                                    "type": "context_compression_status",
+                                    "status": "start",
+                                    "content": "上下文压缩中（强制）" if force_compression_trigger else "上下文压缩中",
+                                    "raw_input_tokens": int(max(0, preflight_raw_input_tokens)),
+                                    "context_window": int(max(1, context_window_limit)),
+                                    "context_window_source": context_window_source,
+                                    "compression_threshold": int(max(1, compression_threshold)),
+                                    "forced": bool(force_compression_trigger),
+                                    "trigger_mode": context_compression_trigger_mode,
+                                    "masked_image_data_urls": int(max(0, context_compression_masked_image_count))
+                                }
+                                process_steps.append(dict(ctx_status))
+                                yield ctx_status
+                                if debug_mode:
+                                    yield _build_debug_trace(
+                                        "server->model",
+                                        "context_compression_trigger",
+                                        {
+                                            "trigger_mode": context_compression_trigger_mode,
+                                            "trigger_label": "强制触发" if force_compression_trigger else "上下文过载触发",
+                                            "forced": bool(force_compression_trigger),
+                                            "trigger_raw_input_tokens": int(max(0, preflight_raw_input_tokens)),
+                                            "compression_threshold": int(max(1, compression_threshold)),
+                                            "context_window": int(max(1, context_window_limit)),
+                                            "context_window_source": context_window_source,
+                                            "masked_image_data_urls": int(max(0, context_compression_masked_image_count))
+                                        },
+                                        title="Compression Trigger",
+                                        round_index=round_num
+                                    )
+
+                                try:
+                                    conv_msgs = self.conversation_manager.get_messages(self.conversation_id) if self.conversation_id else []
+                                except Exception:
+                                    conv_msgs = []
+                                last_user_idx = -1
+                                for i in range(len(conv_msgs) - 1, -1, -1):
+                                    role_i = str((conv_msgs[i] or {}).get("role", "") or "").strip()
+                                    if role_i == "user":
+                                        last_user_idx = i
+                                        break
+                                if last_user_idx >= 0:
+                                    cut_index = last_user_idx - 1
+                                else:
+                                    cut_index = len(conv_msgs) - 1
+                                if cut_index >= 1:
+                                    compress_source = conv_msgs[:cut_index + 1]
+                                    if debug_mode:
+                                        yield _build_debug_trace(
+                                            "server->model",
+                                            "context_compression_source",
+                                            {
+                                                "history_count": int(len(compress_source)),
+                                                "cut_index": int(cut_index),
+                                                "trigger_raw_input_tokens": int(max(0, preflight_raw_input_tokens)),
+                                                "context_window": int(max(1, context_window_limit)),
+                                                "context_window_source": context_window_source,
+                                                "trigger_mode": context_compression_trigger_mode,
+                                                "masked_image_data_urls": int(max(0, context_compression_masked_image_count))
+                                            },
+                                            title="Compression Source",
+                                            round_index=round_num
+                                        )
+                                    compression_run = {}
+                                    compression_run_iter = self._run_context_compression_round(compress_source, max_chars=1400)
+                                    try:
+                                        while True:
+                                            try:
+                                                compression_event = next(compression_run_iter)
+                                            except StopIteration as stop:
+                                                if isinstance(stop.value, dict):
+                                                    compression_run = stop.value
+                                                break
+                                            if (not debug_mode) or (not isinstance(compression_event, dict)):
+                                                continue
+                                            ev_type = str(compression_event.get("type", "") or "").strip()
+                                            if ev_type == "model_reply_delta":
+                                                yield _build_debug_trace(
+                                                    "model->server",
+                                                    "context_compression_model_reply_stream",
+                                                    {
+                                                        "delta": str(compression_event.get("delta", "") or ""),
+                                                        "model_reply": str(compression_event.get("model_reply", "") or ""),
+                                                        "chars": int(max(0, int(compression_event.get("chars", 0) or 0))),
+                                                        "from_stream": bool(compression_event.get("from_stream", False))
+                                                    },
+                                                    title="Compression Model Reply Stream",
+                                                    round_index=round_num
+                                                )
+                                            elif ev_type == "error":
+                                                yield _build_debug_trace(
+                                                    "model->server",
+                                                    "context_compression_model_reply_stream_error",
+                                                    {
+                                                        "error": str(compression_event.get("error", "") or ""),
+                                                        "from_stream": bool(compression_event.get("from_stream", False))
+                                                    },
+                                                    title="Compression Stream Error",
+                                                    round_index=round_num
+                                                )
+                                    except Exception as e:
+                                        print(f"[CTX_COMPRESS] consume compression stream failed: {e}")
+                                        compression_run = {}
+                                    if not isinstance(compression_run, dict):
+                                        compression_run = {}
+                                    compressed_summary = str(compression_run.get("summary", "") or "").strip()
+                                    if debug_mode:
+                                        yield _build_debug_trace(
+                                            "server->model",
+                                            "context_compression_prompt",
+                                            {
+                                                "system_prompt": str(compression_run.get("system_prompt", "") or ""),
+                                                "prompt_text": str(compression_run.get("prompt_text", "") or ""),
+                                                "history_chars": int(max(0, int(compression_run.get("history_chars", 0) or 0))),
+                                                "trigger_mode": context_compression_trigger_mode
+                                            },
+                                            title="Compression Prompt",
+                                            round_index=round_num
+                                        )
+                                        yield _build_debug_trace(
+                                            "model->server",
+                                            "context_compression_model_reply",
+                                            {
+                                                "model_reply": str(compression_run.get("model_reply", "") or ""),
+                                                "fallback_used": bool(compression_run.get("fallback_used", False)),
+                                                "error": str(compression_run.get("error", "") or ""),
+                                                "trigger_mode": context_compression_trigger_mode
+                                            },
+                                            title="Compression Model Reply",
+                                            round_index=round_num
+                                        )
+                                else:
+                                    compressed_summary = ""
+                                if compressed_summary:
+                                    context_compression_cut_index = int(cut_index)
+                                    context_compression_summary_chars = len(compressed_summary)
+                                    try:
+                                        self.conversation_manager.append_context_compression(
+                                            self.conversation_id,
+                                            {
+                                                "summary": compressed_summary,
+                                                "history_cut_index": int(cut_index),
+                                                "created_at": datetime.now().isoformat(),
+                                                "model": self.model_name,
+                                                "provider": self.provider,
+                                                "trigger_raw_input_tokens": int(max(0, preflight_raw_input_tokens)),
+                                                "context_window": int(max(1, context_window_limit)),
+                                                "forced": bool(force_compression_trigger),
+                                                "trigger_mode": context_compression_trigger_mode,
+                                                "masked_image_data_urls": int(max(0, context_compression_masked_image_count))
+                                            }
+                                        )
+                                    except Exception as e:
+                                        print(f"[CTX_COMPRESS] save marker failed: {e}")
+                                    # 压缩后重建上下文；续接ID必须清空，避免“轻载荷 + 压缩摘要”错配。
+                                    full_context_messages = self._build_initial_messages(
+                                        user_msg=msg,
+                                        current_user_content=user_content,
+                                        use_responses_api=use_responses_api,
+                                        allow_history_images=allow_history_images,
+                                        include_context=include_context,
+                                        system_prompt_text=request_system_prompt,
+                                    )
+                                    previous_response_id = None
+                                    messages = list(full_context_messages)
+                                    messages_has_full_context = True
+                                    request_promoted_to_full_context = True
+                                    request_resume_id_seed = ""
+                                    request_started_with_resume_id = False
+                                    request_params = self._build_request_params(
+                                        messages=messages,
+                                        previous_response_id=previous_response_id,
+                                        enable_thinking=enable_thinking,
+                                        enable_web_search=enable_web_search,
+                                        enable_tools=effective_enable_tools,
+                                        current_function_outputs=current_function_outputs,
+                                        runtime_function_tool_names=self._runtime_function_tool_names_for_request()
+                                    )
+                                    try:
+                                        runtime_input_post = request_params.get("input", request_params.get("messages", []))
+                                        runtime_input_text_post_raw = json.dumps(runtime_input_post, ensure_ascii=False, default=str)
+                                    except Exception:
+                                        runtime_input_text_post_raw = str(request_params.get("input", request_params.get("messages", "")))
+                                    runtime_input_text_post, _ = self._mask_data_image_urls_for_token_estimation(
+                                        runtime_input_text_post_raw
+                                    )
+                                    postflight_raw_input_tokens = self._estimate_token_count(runtime_input_text_post)
+                                    if len(runtime_input_text_post) <= 120000:
+                                        exact_input_post = self._count_text_tokens_exact(
+                                            runtime_input_text_post,
+                                            provider_name=self.provider,
+                                            model_name=self.model_name,
+                                            timeout=15.0
+                                        )
+                                        if exact_input_post is not None and exact_input_post > 0:
+                                            postflight_raw_input_tokens = int(exact_input_post)
+                                    context_compression_post_raw_input = int(max(0, postflight_raw_input_tokens))
+                                    context_compression_saved_tokens = int(
+                                        max(0, context_compression_trigger_raw_input - context_compression_post_raw_input)
+                                    )
+                                    if context_compression_trigger_raw_input > 0:
+                                        context_compression_saved_ratio = float(
+                                            context_compression_saved_tokens / float(context_compression_trigger_raw_input)
+                                        )
+                                    else:
+                                        context_compression_saved_ratio = 0.0
+                                    ctx_done_status = {
+                                        "type": "context_compression_status",
+                                        "status": "done",
+                                        "content": "上下文压缩完成",
+                                        "summary_chars": int(max(0, len(compressed_summary))),
+                                        "summary_text": str(compressed_summary),
+                                        "history_cut_index": int(cut_index),
+                                        "raw_input_tokens": int(max(0, context_compression_trigger_raw_input)),
+                                        "post_raw_input_tokens": int(max(0, context_compression_post_raw_input)),
+                                        "saved_tokens": int(max(0, context_compression_saved_tokens)),
+                                        "saved_ratio": float(max(0.0, context_compression_saved_ratio)),
+                                        "context_window": int(max(1, context_window_limit)),
+                                        "trigger_mode": context_compression_trigger_mode
+                                    }
+                                    process_steps.append(dict(ctx_done_status))
+                                    yield ctx_done_status
+                                    if debug_mode:
+                                        yield _build_debug_trace(
+                                            "model->server",
+                                            "context_compression_summary",
+                                            {
+                                                "summary_chars": int(max(0, len(compressed_summary))),
+                                                "summary_text": str(compressed_summary),
+                                                "history_cut_index": int(cut_index),
+                                                "forced": bool(force_compression_trigger),
+                                                "trigger_mode": context_compression_trigger_mode
+                                            },
+                                            title="Compression Summary",
+                                            round_index=round_num
+                                        )
+                                    compression_compare_payload = {
+                                        "pre_raw_input_tokens": int(max(0, context_compression_trigger_raw_input)),
+                                        "post_raw_input_tokens": int(max(0, context_compression_post_raw_input)),
+                                        "saved_tokens": int(max(0, context_compression_saved_tokens)),
+                                        "saved_ratio": float(max(0.0, context_compression_saved_ratio)),
+                                        "context_window": int(max(1, context_window_limit)),
+                                        "context_window_source": context_window_source,
+                                        "forced": bool(force_compression_trigger),
+                                        "trigger_mode": context_compression_trigger_mode,
+                                        "masked_image_data_urls": int(max(0, context_compression_masked_image_count))
+                                    }
+                                    yield {
+                                        "type": "context_compression_compare",
+                                        **compression_compare_payload
+                                    }
+                                    if debug_mode:
+                                        yield _build_debug_trace(
+                                            "model->server",
+                                            "context_compression_compare",
+                                            compression_compare_payload,
+                                            title="Compression Compare",
+                                            round_index=round_num
+                                        )
+                                else:
+                                    ctx_status = {
+                                        "type": "context_compression_status",
+                                        "status": "skipped",
+                                        "content": "上下文压缩跳过（无可压缩历史）",
+                                        "raw_input_tokens": int(max(0, preflight_raw_input_tokens)),
+                                        "context_window": int(max(1, context_window_limit)),
+                                        "context_window_source": context_window_source,
+                                        "compression_threshold": int(max(1, compression_threshold)),
+                                        "forced": bool(force_compression_trigger),
+                                        "trigger_mode": context_compression_trigger_mode
+                                    }
+                                    process_steps.append(dict(ctx_status))
+                                    yield ctx_status
+
+                        # 1) 首轮 prompt profile 与 token 预估/精算（仅 volcengine 可精算）。
                         try:
+                            tools_payload_first = request_params.get("tools", [])
+                            tools_json_text = ""
+                            if isinstance(tools_payload_first, list) and tools_payload_first:
+                                tools_json_text = json.dumps(tools_payload_first, ensure_ascii=False, default=str)
+
+                            first_round_tools_tokens_est = (
+                                self._estimate_token_count(tools_json_text) if tools_json_text else 0
+                            )
+                            first_round_tools_tokens = int(max(0, first_round_tools_tokens_est))
+                            first_round_system_tokens = int(max(0, first_round_system_tokens_est))
+
+                            exact_pair = self._provider_tokenize_totals(
+                                [str(request_system_prompt or ""), str(tools_json_text or "")],
+                                provider_name=self.provider,
+                                model_name=self.model_name,
+                                timeout=15.0
+                            )
+                            if exact_pair and len(exact_pair) == 2:
+                                first_round_system_tokens = int(max(0, exact_pair[0]))
+                                first_round_tools_tokens = int(max(0, exact_pair[1]))
+                                first_round_tokenization_exact = True
+
                             system_chars = len(str(request_system_prompt or ""))
-                            system_tokens_est = self._estimate_token_count(request_system_prompt or "")
                             history_count = max(0, len(messages) - 2)  # system + current user
                             history_chars = 0
                             for m in messages:
@@ -2939,9 +3931,19 @@ class Model:
                                     history_chars += len(str(content))
                             print(
                                 f"[PROMPT_PROFILE] system_chars={system_chars} "
-                                f"system_tokens_est={system_tokens_est} history_msgs={history_count} "
-                                f"history_chars={history_chars}"
+                                f"system_tokens={first_round_system_tokens} "
+                                f"tools_tokens={first_round_tools_tokens} "
+                                f"tokenization_exact={first_round_tokenization_exact} "
+                                f"history_msgs={history_count} history_chars={history_chars}"
                             )
+                            yield {
+                                "type": "prompt_token_profile",
+                                "system_tokens": int(max(0, first_round_system_tokens)),
+                                "system_tokens_est": int(max(0, first_round_system_tokens_est)),
+                                "tools_tokens": int(max(0, first_round_tools_tokens)),
+                                "tools_tokens_est": int(max(0, first_round_tools_tokens_est)),
+                                "tokenization_exact": bool(first_round_tokenization_exact),
+                            }
                         except Exception:
                             pass
 
@@ -3305,6 +4307,7 @@ class Model:
                         raise e
 
                     # [FIX] 在 chunk 循环结束后，统一记录本轮的 Token 消耗
+                    round_token_debug_payload = None
                     if round_usage:
                         try:
                             usage_io_dbg = _extract_usage_io(round_usage)
@@ -3329,6 +4332,20 @@ class Model:
                             f"[ROUND_USAGE] round={round_num + 1} prompt_tokens_raw={prompt_tokens_dbg_raw} "
                             f"cached={prompt_tokens_dbg_cached} prompt_tokens_effective={prompt_tokens_dbg} "
                             f"total_tokens={total_tokens_dbg}"
+                        )
+                        round_token_debug_payload = _build_round_token_debug_payload(
+                            round_num + 1,
+                            estimated=False,
+                            raw_input_tokens=prompt_tokens_dbg_raw,
+                            cached_input_tokens=prompt_tokens_dbg_cached,
+                            effective_input_tokens=prompt_tokens_dbg,
+                            output_tokens=output_tokens_dbg,
+                            total_tokens=total_tokens_dbg,
+                            usage_total_reported=total_tokens_dbg,
+                            usage_obj=round_usage,
+                            round_content_text=round_content,
+                            has_web_search_flag=has_web_search,
+                            function_calls_list=function_calls
                         )
                         self._log_token_usage_safe(
                             round_usage,
@@ -3399,6 +4416,33 @@ class Model:
                         print(
                             f"[ROUND_USAGE_EST] round={round_num + 1} input_est={est_input} "
                             f"output_est={est_output} reasoning_chars={len(accumulated_reasoning or '')}"
+                        )
+                        round_token_debug_payload = _build_round_token_debug_payload(
+                            round_num + 1,
+                            estimated=True,
+                            raw_input_tokens=est_input,
+                            cached_input_tokens=0,
+                            effective_input_tokens=est_input,
+                            output_tokens=est_output,
+                            total_tokens=est_total,
+                            usage_total_reported=est_total,
+                            usage_obj=None,
+                            round_content_text=round_content,
+                            has_web_search_flag=has_web_search,
+                            function_calls_list=function_calls,
+                            prompt_chars=len(prompt_snapshot),
+                            output_chars=len(round_content or accumulated_content or ""),
+                            reasoning_chars=len(accumulated_reasoning or ""),
+                            tool_args_chars=len(tool_args_text or "")
+                        )
+
+                    if debug_mode and round_token_debug_payload:
+                        yield _build_debug_trace(
+                            "model->server",
+                            "round_token_usage",
+                            round_token_debug_payload,
+                            title="Round Token Usage",
+                            round_index=round_num
                         )
 
                     # 检查 previous_response_id 获取情况（Responses API）
@@ -3534,7 +4578,25 @@ class Model:
                             "first_round_input_count": int(max(0, first_round_input_count)),
                             "first_round_input_chars": int(max(0, first_round_input_chars)),
                             "first_round_tools_count": int(max(0, first_round_tools_count)),
-                            "first_round_tools_chars": int(max(0, first_round_tools_chars))
+                            "first_round_tools_chars": int(max(0, first_round_tools_chars)),
+                            "first_round_system_tokens": int(max(0, first_round_system_tokens)),
+                            "first_round_system_tokens_est": int(max(0, first_round_system_tokens_est)),
+                            "first_round_tools_tokens": int(max(0, first_round_tools_tokens)),
+                            "first_round_tools_tokens_est": int(max(0, first_round_tools_tokens_est)),
+                            "first_round_tokenization_exact": bool(first_round_tokenization_exact),
+                            "context_window_limit": int(max(1, context_window_limit)),
+                            "context_window_source": context_window_source,
+                            "context_window_is_fallback_default": bool(context_window_fallback_default),
+                            "context_compression_triggered": bool(context_compression_triggered),
+                            "context_compression_trigger_mode": str(context_compression_trigger_mode or ""),
+                            "context_compression_cut_index": int(context_compression_cut_index),
+                            "context_compression_summary_chars": int(max(0, context_compression_summary_chars)),
+                            "context_compression_trigger_raw_input": int(max(0, context_compression_trigger_raw_input)),
+                            "context_compression_masked_image_data_urls": int(max(0, context_compression_masked_image_count)),
+                            "context_compression_post_raw_input": int(max(0, context_compression_post_raw_input)),
+                            "context_compression_saved_tokens": int(max(0, context_compression_saved_tokens)),
+                            "context_compression_saved_ratio": float(max(0.0, context_compression_saved_ratio)),
+                            "context_compression_forced": bool(force_context_compression)
                         },
                         "io_tokens": {
                             "input": int(max(0, request_input_tokens_total)),
@@ -3824,7 +4886,8 @@ class Model:
         use_responses_api: bool = False,
         allow_history_images: bool = True,
         include_context: bool = True,
-        system_prompt_text: Optional[str] = None
+        system_prompt_text: Optional[str] = None,
+        history_end_index_exclusive: Optional[int] = None
     ) -> List[Dict]:
         """构建初始消息列表（真实上下文模式）"""
         effective_system_prompt = str(system_prompt_text or self.system_prompt or "").strip()
@@ -3832,11 +4895,45 @@ class Model:
 
         # 真实上下文：注入当前会话历史 user/assistant 消息
         history_messages: List[Dict[str, Any]] = []
+        compression_marker: Optional[Dict[str, Any]] = None
         if include_context and self.conversation_id:
             try:
                 history_messages = self.conversation_manager.get_messages(self.conversation_id)
             except Exception:
                 history_messages = []
+            try:
+                compression_marker = self.conversation_manager.get_latest_context_compression(self.conversation_id)
+            except Exception:
+                compression_marker = None
+
+        if history_messages and history_end_index_exclusive is not None:
+            try:
+                cut_end = int(history_end_index_exclusive)
+            except Exception:
+                cut_end = None
+            if cut_end is not None:
+                if cut_end <= 0:
+                    history_messages = []
+                else:
+                    history_messages = history_messages[:cut_end]
+
+        if compression_marker and isinstance(compression_marker, dict):
+            try:
+                summary_text = str(compression_marker.get("summary", "") or "").strip()
+                cut_index = int(compression_marker.get("history_cut_index", -1) or -1)
+            except Exception:
+                summary_text = ""
+                cut_index = -1
+            if summary_text and cut_index >= 0 and history_messages:
+                if cut_index < len(history_messages):
+                    history_messages = history_messages[cut_index + 1:]
+                    memory_block = self._build_context_compression_memory_block(summary_text)
+                    if memory_block:
+                        messages.append({"role": "system", "content": memory_block})
+                else:
+                    # Regenerate/history-branch case: compression marker belongs to later timeline.
+                    # Ignore marker instead of clearing all remaining prefix history.
+                    pass
 
         for item in history_messages:
             role = str(item.get("role", "") or "").strip()

@@ -20,6 +20,8 @@ def get_user_lock(username):
 
 SHORT_TIME = 0
 BASIS = 1
+USER_PROFILE_MAX_CHARS = 400
+USER_PROFILE_DEFAULT_TEMPLATE = "用户权限:{user_permission}，还没有写入其他信息。"
 
 
 class User:
@@ -28,6 +30,64 @@ class User:
         self.user = username
         os.makedirs(self.path, exist_ok=True)
         self._ensure_knowledge_graph()
+
+    def _profile_memory_file(self):
+        return os.path.join(self.path, "profile", "user_profile.txt")
+
+    def _default_user_profile_text(self, user_permission=""):
+        perm = str(user_permission or "").strip() or "member"
+        return USER_PROFILE_DEFAULT_TEMPLATE.replace("{user_permission}", perm)
+
+    def _normalize_user_profile_text(self, text, user_permission="", max_chars=USER_PROFILE_MAX_CHARS):
+        try:
+            max_len = int(max_chars or USER_PROFILE_MAX_CHARS)
+        except Exception:
+            max_len = USER_PROFILE_MAX_CHARS
+        max_len = max(60, min(max_len, 2000))
+
+        normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        if not normalized:
+            normalized = self._default_user_profile_text(user_permission=user_permission)
+        if len(normalized) > max_len:
+            normalized = normalized[:max_len].rstrip()
+        return normalized
+
+    def get_user_profile_memory(self, user_permission="", max_chars=USER_PROFILE_MAX_CHARS):
+        lock = get_user_lock(self.user)
+        with lock:
+            file_path = self._profile_memory_file()
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            raw = ""
+            if os.path.exists(file_path):
+                try:
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        raw = str(f.read() or "")
+                except Exception:
+                    raw = ""
+            normalized = self._normalize_user_profile_text(
+                raw,
+                user_permission=user_permission,
+                max_chars=max_chars
+            )
+            if (not os.path.exists(file_path)) or (normalized != raw.strip()):
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(normalized)
+            return normalized
+
+    def set_user_profile_memory(self, profile_text, user_permission="", max_chars=USER_PROFILE_MAX_CHARS):
+        normalized = self._normalize_user_profile_text(
+            profile_text,
+            user_permission=user_permission,
+            max_chars=max_chars
+        )
+        lock = get_user_lock(self.user)
+        with lock:
+            file_path = self._profile_memory_file()
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(normalized)
+        return normalized
 
     def _ensure_knowledge_graph(self):
         """确保知识图谱文件存在"""

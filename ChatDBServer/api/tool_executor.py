@@ -41,6 +41,8 @@ class ToolExecutor:
             "arxiv_search": self._arxiv_search,
             "js_execute": self._js_execute,
             "client_js_exec": self._js_execute,
+            "get_user_profile_memory": self._get_user_profile_memory,
+            "set_user_profile_memory": self._set_user_profile_memory,
             "vector_search": self._vector_search,
             "file_semantic_search": self._file_semantic_search,
             "link_knowledge": self._link_knowledge,
@@ -372,13 +374,61 @@ class ToolExecutor:
         except Exception:
             k_type = 0
         if k_type == 0:
-            return "(短期记忆已停用)"
+            permission_hint = self._resolve_user_permission_hint()
+            profile = self.model.user.get_user_profile_memory(
+                user_permission=permission_hint,
+                max_chars=400
+            )
+            return f"[用户画像短期记忆]\n{str(profile or '').strip()}"
         result = self.model.user.getKnowledgeList(k_type)
         if isinstance(result, dict):
             if k_type == 0:
                 return "\n".join([f"{k}: {v}" for k, v in result.items()]) or "(空)"
             return "\n".join(result.keys()) or "(空)"
         return str(result)
+
+    def _resolve_user_permission_hint(self) -> str:
+        getter = getattr(self.model, "_get_user_permission_hint", None)
+        if callable(getter):
+            try:
+                return str(getter() or "").strip()
+            except Exception:
+                pass
+        return "member"
+
+    def _get_user_profile_memory(self, args: Dict[str, Any]) -> str:
+        _ = args if isinstance(args, dict) else {}
+        permission_hint = self._resolve_user_permission_hint()
+        profile = self.model.user.get_user_profile_memory(
+            user_permission=permission_hint,
+            max_chars=400
+        )
+        payload = {
+            "success": True,
+            "profile": str(profile or ""),
+            "length": len(str(profile or "")),
+            "max_length": 400
+        }
+        return json.dumps(payload, ensure_ascii=False)
+
+    def _set_user_profile_memory(self, args: Dict[str, Any]) -> str:
+        safe_args = args if isinstance(args, dict) else {}
+        permission_hint = self._resolve_user_permission_hint()
+        reset = bool(safe_args.get("reset", False))
+        profile_input = "" if reset else safe_args.get("profile", "")
+        profile = self.model.user.set_user_profile_memory(
+            profile_text=profile_input,
+            user_permission=permission_hint,
+            max_chars=400
+        )
+        payload = {
+            "success": True,
+            "profile": str(profile or ""),
+            "length": len(str(profile or "")),
+            "max_length": 400,
+            "reset": reset
+        }
+        return json.dumps(payload, ensure_ascii=False)
 
     def _collect_runtime_tool_names_from_args(self, args: Dict[str, Any]):
         names = []

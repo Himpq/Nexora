@@ -26,6 +26,9 @@ TOOL_NAME_ALIASES = {
     "queryShortMemory": "query_short_memory",
     "addShort": "add_short",
     "removeShort": "remove_short",
+    "getUserProfileMemory": "get_user_profile_memory",
+    "setUserProfileMemory": "set_user_profile_memory",
+    "updateUserProfileMemory": "set_user_profile_memory",
 }
 
 
@@ -186,7 +189,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "client_js_exec",
-            "description": """在当前聊天页的隔离 JS Worker 中执行纯 JavaScript。适合轻量计算、文本处理和 Canvas；不能访问 DOM、页面状态或网络。若要操作真实网页 DOM，请用 local_web_render / web_exec_js。可以使用 const canvas = context.canvas来访问内置的canvas对象。""",
+            "description": """在当前聊天页的隔离 JS Worker 中执行纯 JavaScript。适合轻量计算、文本处理和 Canvas；不能访问 DOM、页面状态或网络。若要操作真实网页 DOM，请用 local_web_render / web_exec_js。可用 const canvas = context.canvas 访问内置 canvas。Three.js 入口示例：const renderer = new THREE.WebGLRenderer({ canvas, antialias: true }); const scene = new THREE.Scene(); const camera = new THREE.PerspectiveCamera(60, canvas.width / canvas.height, 0.1, 1000); camera.position.z = 3; renderer.render(scene, camera);""",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -211,18 +214,51 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_knowledge_list",
-            "description": "获取用户知识库的标题列表，分为短期记忆和基础知识库两种，请优先使用本函数查阅知识库内容。",
+            "description": "读取知识信息：_type=0 返回当前用户画像短期记忆，_type=1 返回基础知识库标题列表。",
 
             "parameters": {
                 "type": "object",
                 "properties": {
                     "_type": {
                         "type": "integer",
-                        "description": "知识库的类型，例如短期记忆为0，基础知识库为1",
+                        "description": "知识类型：0=用户画像短期记忆，1=基础知识库。",
                         "enum": [0, 1]
                     }
                 },
                 "required": ["_type"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_user_profile_memory",
+            "description": "读取当前用户短期记忆中的用户画像（约400字）。",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_user_profile_memory",
+            "description": "覆盖更新当前用户短期记忆画像（建议控制在400字以内）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "profile": {
+                        "type": "string",
+                        "description": "新的用户画像文本。"
+                    },
+                    "reset": {
+                        "type": "boolean",
+                        "description": "是否重置为默认画像。true 时忽略 profile。"
+                    }
+                },
+                "required": []
             }
         }
     },
