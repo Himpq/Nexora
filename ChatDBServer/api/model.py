@@ -2996,6 +2996,72 @@ class Model:
                     "output": output
                 }
 
+            def _estimate_input_tokens_from_request_payload(request_params_obj):
+                params = request_params_obj if isinstance(request_params_obj, dict) else {}
+                runtime_input = params.get("input", params.get("messages", []))
+                input_count = len(runtime_input) if isinstance(runtime_input, list) else 0
+                try:
+                    runtime_input_text = json.dumps(runtime_input, ensure_ascii=False, default=str)
+                except Exception:
+                    runtime_input_text = str(runtime_input)
+                input_chars = int(max(0, len(runtime_input_text or "")))
+                est_tokens = int(max(0, self._estimate_token_count(runtime_input_text)))
+                return {
+                    "input_count": int(max(0, input_count)),
+                    "input_chars": input_chars,
+                    "est_tokens": est_tokens
+                }
+
+            def _sanitize_round_usage_tokens(
+                raw_input_tokens: int,
+                cached_input_tokens: int,
+                *,
+                round_input_est_tokens: int,
+                context_window: int,
+                compression_triggered: bool,
+                round_index: int,
+                stage: str
+            ):
+                raw = int(max(0, _safe_int_local(raw_input_tokens, 0)))
+                cached = int(max(0, _safe_int_local(cached_input_tokens, 0)))
+                if cached > raw:
+                    cached = raw
+
+                corrected = False
+                reason = ""
+
+                # 后端护栏：未触发压缩时，若 usage 输入远大于本轮 payload 估算，
+                # 视为口径漂移/重复累计，按估算上限截断，避免写入脏值导致假爆窗。
+                est = int(max(0, _safe_int_local(round_input_est_tokens, 0)))
+                if (
+                    est > 0
+                    and not bool(compression_triggered)
+                    and raw > max(int(est * 1.75), est + 16384)
+                ):
+                    cap = int(max(est, est + max(2048, int(est * 0.12))))
+                    if context_window > 0:
+                        cap = int(min(cap, max(1, int(context_window * 1.05))))
+                    if raw > cap:
+                        old_raw = raw
+                        raw = cap
+                        if cached > raw:
+                            cached = raw
+                        corrected = True
+                        reason = (
+                            f"usage_suspect raw={old_raw} est={est} "
+                            f"cap={cap} stage={stage} round={int(round_index) + 1}"
+                        )
+                        print(f"[TOKEN_GUARD] {reason}")
+
+                effective = int(max(0, raw - cached))
+                return {
+                    "raw_input": raw,
+                    "cached_input": cached,
+                    "effective_input": effective,
+                    "corrected": bool(corrected),
+                    "reason": reason
+                }
+
             debug_mode = self._as_bool(debug_mode, default=False)
             force_context_compression = self._as_bool(force_context_compression, default=False)
 
@@ -3470,6 +3536,11 @@ class Model:
             request_output_tokens_total = 0
             request_input_tokens_raw_total = 0
             request_input_tokens_cached_total = 0
+            # 双口径：window=最后一轮（用于上下文窗口/压缩判定），cumulative=整次请求累计（用于计费统计）
+            request_last_round_input_tokens = 0
+            request_last_round_output_tokens = 0
+            request_last_round_input_tokens_raw = 0
+            request_last_round_input_tokens_cached = 0
             
             # previous_response_id 已在上面初始化
             current_function_outputs = []  # 当前轮的function输出
@@ -3482,6 +3553,9 @@ class Model:
                         
                     print(f"\n[DEBUG] ===== 第 {round_num + 1} 轮 =====")
                     print(f"[DEBUG] Messages数量: {len(messages)} | Function消息: {len([m for m in messages if m.get('role')=='function'])}")
+                    round_input_count = 0
+                    round_input_chars = 0
+                    round_input_est_tokens = 0
 
                     # 关键修复：当 responses 续接ID失效/缺失时，必须提升到完整上下文，
                     # 不能继续使用 cache-hit 的“仅当前用户消息”轻载荷，否则历史会丢失。
@@ -3970,22 +4044,24 @@ class Model:
                         tools_payload = request_params.get("tools", [])
                         tools_count = len(tools_payload) if isinstance(tools_payload, list) else 0
                         tools_chars = len(json.dumps(tools_payload, ensure_ascii=False, default=str)) if tools_count > 0 else 0
+                        input_profile = _estimate_input_tokens_from_request_payload(request_params)
+                        round_input_count = int(max(0, input_profile.get("input_count", 0)))
+                        round_input_chars = int(max(0, input_profile.get("input_chars", 0)))
+                        round_input_est_tokens = int(max(0, input_profile.get("est_tokens", 0)))
                         tools_fn_names = []
                         if isinstance(tools_payload, list):
                             for t in tools_payload:
                                 spec = self._extract_function_tool_spec(t if isinstance(t, dict) else {})
                                 if spec and spec.get("name"):
                                     tools_fn_names.append(spec["name"])
-                        runtime_input = request_params.get("input", request_params.get("messages", []))
-                        input_count = len(runtime_input) if isinstance(runtime_input, list) else 0
-                        input_chars = len(json.dumps(runtime_input, ensure_ascii=False, default=str)) if runtime_input is not None else 0
                         print(
                             f"[ROUND_PAYLOAD] round={round_num + 1} tools_count={tools_count} "
-                            f"tools_chars={tools_chars} input_count={input_count} input_chars={input_chars}"
+                            f"tools_chars={tools_chars} input_count={round_input_count} "
+                            f"input_chars={round_input_chars} input_est_tokens={round_input_est_tokens}"
                         )
                         if round_num == 0:
-                            first_round_input_count = int(max(0, input_count))
-                            first_round_input_chars = int(max(0, input_chars))
+                            first_round_input_count = int(max(0, round_input_count))
+                            first_round_input_chars = int(max(0, round_input_chars))
                             first_round_tools_count = int(max(0, tools_count))
                             first_round_tools_chars = int(max(0, tools_chars))
                         if bool(getattr(self, "_runtime_selector_enabled", False)):
@@ -4123,6 +4199,14 @@ class Model:
                              previous_response_id = None
                              messages = list(full_context_messages)
                              messages_has_full_context = True
+                             retry_input_profile = _estimate_input_tokens_from_request_payload(request_params)
+                             round_input_count = int(max(0, retry_input_profile.get("input_count", 0)))
+                             round_input_chars = int(max(0, retry_input_profile.get("input_chars", 0)))
+                             round_input_est_tokens = int(max(0, retry_input_profile.get("est_tokens", 0)))
+                             print(
+                                 f"[ROUND_PAYLOAD_RETRY] round={round_num + 1} input_count={round_input_count} "
+                                 f"input_chars={round_input_chars} input_est_tokens={round_input_est_tokens}"
+                             )
                              response_iterator = self.provider_adapter.create_stream_iterator(
                                  client=self.client,
                                  request_params=request_params,
@@ -4268,7 +4352,7 @@ class Model:
                                 usage_obj = event.get("usage", None)
                                 round_usage = usage_obj if usage_obj is not None else event
                                 usage_io = _extract_usage_io(round_usage)
-                                raw_input_tokens = max(
+                                raw_input_tokens_raw = max(
                                     0,
                                     int(event.get("input_tokens", usage_io["raw_input"]) or 0)
                                 )
@@ -4276,8 +4360,19 @@ class Model:
                                     0,
                                     int(event.get("output_tokens", usage_io["output"]) or 0)
                                 )
-                                cached_input_tokens = usage_io["cached_input"]
-                                input_tokens = max(0, raw_input_tokens - cached_input_tokens)
+                                cached_input_tokens_raw = int(max(0, usage_io["cached_input"]))
+                                sanitized_stream_usage = _sanitize_round_usage_tokens(
+                                    raw_input_tokens_raw,
+                                    cached_input_tokens_raw,
+                                    round_input_est_tokens=round_input_est_tokens,
+                                    context_window=int(max(0, context_window_limit)),
+                                    compression_triggered=bool(context_compression_triggered),
+                                    round_index=round_num,
+                                    stage="stream"
+                                )
+                                raw_input_tokens = int(max(0, sanitized_stream_usage["raw_input"]))
+                                cached_input_tokens = int(max(0, sanitized_stream_usage["cached_input"]))
+                                input_tokens = int(max(0, sanitized_stream_usage["effective_input"]))
                                 total_tokens = int(
                                     event.get(
                                         "total_tokens",
@@ -4311,9 +4406,18 @@ class Model:
                     if round_usage:
                         try:
                             usage_io_dbg = _extract_usage_io(round_usage)
-                            prompt_tokens_dbg_raw = int(usage_io_dbg["raw_input"] or 0)
-                            prompt_tokens_dbg_cached = int(usage_io_dbg["cached_input"] or 0)
-                            prompt_tokens_dbg = int(usage_io_dbg["effective_input"] or 0)
+                            usage_guarded = _sanitize_round_usage_tokens(
+                                int(usage_io_dbg["raw_input"] or 0),
+                                int(usage_io_dbg["cached_input"] or 0),
+                                round_input_est_tokens=round_input_est_tokens,
+                                context_window=int(max(0, context_window_limit)),
+                                compression_triggered=bool(context_compression_triggered),
+                                round_index=round_num,
+                                stage="round_final"
+                            )
+                            prompt_tokens_dbg_raw = int(max(0, usage_guarded["raw_input"]))
+                            prompt_tokens_dbg_cached = int(max(0, usage_guarded["cached_input"]))
+                            prompt_tokens_dbg = int(max(0, usage_guarded["effective_input"]))
                             output_tokens_dbg = int(usage_io_dbg["output"] or 0)
                             total_tokens_dbg = int(
                                 _usage_get(round_usage, "total_tokens", 0) or 0
@@ -4328,6 +4432,10 @@ class Model:
                         request_output_tokens_total += max(0, int(output_tokens_dbg or 0))
                         request_input_tokens_raw_total += max(0, int(prompt_tokens_dbg_raw or 0))
                         request_input_tokens_cached_total += max(0, int(prompt_tokens_dbg_cached or 0))
+                        request_last_round_input_tokens = max(0, int(prompt_tokens_dbg or 0))
+                        request_last_round_output_tokens = max(0, int(output_tokens_dbg or 0))
+                        request_last_round_input_tokens_raw = max(0, int(prompt_tokens_dbg_raw or 0))
+                        request_last_round_input_tokens_cached = max(0, int(prompt_tokens_dbg_cached or 0))
                         print(
                             f"[ROUND_USAGE] round={round_num + 1} prompt_tokens_raw={prompt_tokens_dbg_raw} "
                             f"cached={prompt_tokens_dbg_cached} prompt_tokens_effective={prompt_tokens_dbg} "
@@ -4381,6 +4489,10 @@ class Model:
                         request_input_tokens_total += max(0, int(est_input or 0))
                         request_output_tokens_total += max(0, int(est_output or 0))
                         request_input_tokens_raw_total += max(0, int(est_input or 0))
+                        request_last_round_input_tokens = max(0, int(est_input or 0))
+                        request_last_round_output_tokens = max(0, int(est_output or 0))
+                        request_last_round_input_tokens_raw = max(0, int(est_input or 0))
+                        request_last_round_input_tokens_cached = 0
                         has_text_output = bool(str(round_content or "").strip())
                         est_action = "chat"
                         primary_tool = ""
@@ -4604,6 +4716,13 @@ class Model:
                             "raw_input": int(max(0, request_input_tokens_raw_total)),
                             "cached_input": int(max(0, request_input_tokens_cached_total)),
                             "effective_input": int(max(0, request_input_tokens_total))
+                        },
+                        "io_tokens_window": {
+                            "input": int(max(0, request_last_round_input_tokens)),
+                            "output": int(max(0, request_last_round_output_tokens)),
+                            "raw_input": int(max(0, request_last_round_input_tokens_raw)),
+                            "cached_input": int(max(0, request_last_round_input_tokens_cached)),
+                            "effective_input": int(max(0, request_last_round_input_tokens))
                         }
                     }
                     
@@ -4890,6 +5009,7 @@ class Model:
         history_end_index_exclusive: Optional[int] = None
     ) -> List[Dict]:
         """构建初始消息列表（真实上下文模式）"""
+        context_compact_mode = self._resolve_context_compact_mode()
         effective_system_prompt = str(system_prompt_text or self.system_prompt or "").strip()
         messages = [{"role": "system", "content": effective_system_prompt}]
 
@@ -4962,6 +5082,7 @@ class Model:
                     normalized = str(content)
                     if not normalized.strip():
                         continue
+            normalized = self._compact_context_content(normalized, context_compact_mode)
             messages.append({"role": role, "content": normalized})
 
         # 去重：sendMessage 在非 regenerate 路径已经先写入了当前 user 消息
@@ -4978,6 +5099,174 @@ class Model:
         # 重要：剔除历史对话中的 reasoning_content 字段
         # 根据文档：模型版本在251228之前需要剔除，避免影响推理逻辑
         return self._strip_reasoning_content(messages)
+
+    def _resolve_context_compact_mode(self) -> str:
+        """
+        解析上下文轻量化模式：
+        - off: 不处理
+        - markdown_plain: 去掉 Markdown 外壳，保留可读纯文本
+        - markdown_latex_plain: 同上 + LaTeX 转符号/文本
+        """
+        model_cfg = (CONFIG.get("models", {}) or {}).get(self.model_name, {}) if isinstance(CONFIG, dict) else {}
+        raw_mode = (
+            model_cfg.get("context_compact_mode")
+            if isinstance(model_cfg, dict) and model_cfg.get("context_compact_mode") is not None
+            else self.config.get("context_compact_mode", CONFIG.get("context_compact_mode", "markdown_latex_plain"))
+        )
+        token = str(raw_mode or "").strip().lower()
+        alias = {
+            "0": "off",
+            "false": "off",
+            "none": "off",
+            "raw": "off",
+            "1": "markdown_plain",
+            "true": "markdown_plain",
+            "on": "markdown_plain",
+            "plain": "markdown_plain",
+            "markdown": "markdown_plain",
+            "markdown_plain": "markdown_plain",
+            "markdown_latex_plain": "markdown_latex_plain",
+            "latex_plain": "markdown_latex_plain",
+            "plain_latex": "markdown_latex_plain",
+            "full": "markdown_latex_plain"
+        }
+        mode = alias.get(token, "markdown_latex_plain")
+        if mode not in {"off", "markdown_plain", "markdown_latex_plain"}:
+            return "markdown_latex_plain"
+        return mode
+
+    def _compact_context_content(self, content: Any, mode: str) -> Any:
+        if str(mode or "off") == "off":
+            return content
+        if isinstance(content, str):
+            return self._compact_context_text(content, mode)
+        if isinstance(content, dict):
+            cloned = dict(content)
+            text_val = cloned.get("text")
+            if isinstance(text_val, str):
+                cloned["text"] = self._compact_context_text(text_val, mode)
+            return cloned
+        if isinstance(content, list):
+            out: List[Any] = []
+            for item in content:
+                if isinstance(item, dict):
+                    cloned = dict(item)
+                    item_type = str(cloned.get("type", "") or "").strip().lower()
+                    if item_type in {"text", "input_text", "output_text"}:
+                        text_val = cloned.get("text")
+                        if isinstance(text_val, str):
+                            cloned["text"] = self._compact_context_text(text_val, mode)
+                    out.append(cloned)
+                else:
+                    out.append(item)
+            return out
+        return content
+
+    def _compact_context_text(self, text: Any, mode: str) -> str:
+        src = str(text or "")
+        if not src.strip():
+            return src
+        out = src
+        if mode in {"markdown_plain", "markdown_latex_plain"}:
+            out = self._flatten_markdown_for_context(out)
+        if mode in {"markdown_latex_plain"}:
+            out = self._latex_to_plain_text_for_context(out)
+        if not out.strip():
+            return src
+        return out
+
+    def _flatten_markdown_for_context(self, text: str) -> str:
+        s = str(text or "")
+        if not s:
+            return s
+        s = s.replace("\r\n", "\n").replace("\r", "\n")
+        s = re.sub(r"```[^\n]*\n([\s\S]*?)```", lambda m: str(m.group(1) or ""), s)
+        s = re.sub(r"`([^`]+)`", r"\1", s)
+        s = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", lambda m: f"[image {str(m.group(1) or '').strip()}]".strip(), s)
+        s = re.sub(
+            r"\[([^\]]+)\]\(([^)]+)\)",
+            lambda m: f"{str(m.group(1) or '').strip()} ({str(m.group(2) or '').strip()})",
+            s
+        )
+        s = re.sub(r"^\s{0,3}#{1,6}\s*", "", s, flags=re.MULTILINE)
+        s = re.sub(r"^\s{0,3}>\s?", "", s, flags=re.MULTILINE)
+        s = re.sub(r"^\s*[-*+]\s+", "- ", s, flags=re.MULTILINE)
+        s = re.sub(r"^\s*\d+\.\s+", "", s, flags=re.MULTILINE)
+        s = re.sub(r"^\s*([-*_]\s*){3,}$", "", s, flags=re.MULTILINE)
+        s = re.sub(r"^\s*\|?[\s:-]+\|[\s|:-]*$", "", s, flags=re.MULTILINE)
+
+        def _normalize_table_row(match: re.Match) -> str:
+            line = str(match.group(0) or "")
+            if line.count("|") < 2:
+                return line
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            cells = [c for c in cells if c]
+            if not cells:
+                return ""
+            return " | ".join(cells)
+
+        s = re.sub(r"^.*\|.*\|.*$", _normalize_table_row, s, flags=re.MULTILINE)
+        s = s.replace("**", "").replace("__", "").replace("~~", "")
+        s = re.sub(r"(?<!\*)\*(?!\*)([^*\n]+)(?<!\*)\*(?!\*)", r"\1", s)
+        s = re.sub(r"(?<!_)_([^_\n]+)_", r"\1", s)
+        s = re.sub(r"[ \t]+", " ", s)
+        s = re.sub(r"\n{3,}", "\n\n", s)
+        return s.strip()
+
+    def _latex_to_plain_text_for_context(self, text: str) -> str:
+        s = str(text or "")
+        if not s:
+            return s
+
+        command_map = {
+            "times": "×",
+            "cdot": "·",
+            "neq": "≠",
+            "ne": "≠",
+            "leq": "≤",
+            "geq": "≥",
+            "pm": "±",
+            "to": "→",
+            "rightarrow": "→",
+            "leftarrow": "←",
+            "infty": "∞",
+            "approx": "≈",
+            "alpha": "α",
+            "beta": "β",
+            "gamma": "γ",
+            "delta": "δ",
+            "theta": "θ",
+            "lambda": "λ",
+            "mu": "μ",
+            "pi": "π",
+            "sigma": "σ",
+            "phi": "φ",
+            "omega": "ω"
+        }
+        for cmd, sym in command_map.items():
+            s = re.sub(rf"\\{cmd}\b", sym, s)
+
+        for _ in range(6):
+            prev = s
+            s = re.sub(r"\\(?:d|t)?frac\s*\{([^{}]{1,180})\}\s*\{([^{}]{1,180})\}", r"(\1)/(\2)", s)
+            if s == prev:
+                break
+        for _ in range(6):
+            prev = s
+            s = re.sub(r"\\sqrt\s*\{([^{}]{1,240})\}", r"sqrt(\1)", s)
+            if s == prev:
+                break
+
+        s = re.sub(r"\\(?:text|mathrm|mathbf|boldsymbol)\s*\{([^{}]{0,320})\}", r"\1", s)
+        s = s.replace("\\left", "").replace("\\right", "")
+        s = s.replace("\\,", " ").replace("\\;", " ").replace("\\!", "")
+        s = s.replace("\\[", "").replace("\\]", "").replace("\\(", "").replace("\\)", "")
+        s = s.replace("$$", " ").replace("$", " ")
+        s = s.replace("{", "").replace("}", "")
+        s = re.sub(r"\\([A-Za-z]+)", r"\1", s)
+        s = re.sub(r"[ \t]+", " ", s)
+        s = re.sub(r"\n{3,}", "\n\n", s)
+        return s.strip()
     
     def _strip_reasoning_content(self, messages: List[Dict]) -> List[Dict]:
         """剔除消息中的reasoning_content字段（符合文档要求）"""

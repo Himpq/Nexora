@@ -189,7 +189,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "client_js_exec",
-            "description": """在当前聊天页的隔离 JS Worker 中执行纯 JavaScript。适合轻量计算、文本处理和 Canvas；不能访问 DOM、页面状态或网络。若要操作真实网页 DOM，请用 local_web_render / web_exec_js。可用 const canvas = context.canvas 访问内置 canvas。Three.js 入口示例：const renderer = new THREE.WebGLRenderer({ canvas, antialias: true }); const scene = new THREE.Scene(); const camera = new THREE.PerspectiveCamera(60, canvas.width / canvas.height, 0.1, 1000); camera.position.z = 3; renderer.render(scene, camera);""",
+            "description": """在当前聊天页的隔离 JS Worker 中执行纯 JavaScript。适合轻量计算、文本处理和 Canvas；不能访问 DOM、页面状态或网络。若要操作真实网页 DOM，请用 local_web_render / web_exec_js。可用 const canvas = context.canvas 访问内置 canvas。Three.js 入口示例：const renderer = new THREE.WebGLRenderer({ canvas, antialias: true }); const scene = new THREE.Scene(); const camera = new THREE.PerspectiveCamera(60, canvas.width / canvas.height, 0.1, 1000); camera.position.z = 3; renderer.render(scene, camera); 如需拖拽/触摸绕原点旋转，可调用：const orbit = context.enableThreeOrbit({ camera, renderer, scene, target:[0,0,0] });""",
             "parameters": {
                 "type": "object",
                 "properties": {

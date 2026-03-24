@@ -1031,6 +1031,10 @@ body {
     color: #0f172a;
     background: #f4f4f4;
     outline: none;
+    user-select: text;
+    -webkit-user-select: text;
+    -webkit-touch-callout: default;
+    touch-action: manipulation;
 }
 .user-prompt-inline-editor:focus {
     border-color: #4a90e2;
@@ -8784,4 +8788,76 @@ body.is-admin .menu-item.admin-only {
 #settingsModal.perf-mode .btn-primary-outline,
 #settingsModal.perf-mode .btn-cancel {
     transition: none !important;
+}
+
+/* ===== 2026-03-23 mobile selection surface lock + tool canvas aspect lock ===== */
+@media (max-width: 980px) {
+    /* 仅允许消息正文层被选中，避免选区拖拽时串到顶部布局区域 */
+    .chat-header,
+    .chat-header *,
+    .input-wrapper,
+    .input-wrapper *,
+    .mobile-selection-actions,
+    .mobile-selection-actions *,
+    #messagesContainer .message .avatar,
+    #messagesContainer .message .msg-actions,
+    #messagesContainer .message .version-switcher,
+    #messagesContainer .message .thinking-header,
+    #messagesContainer .message .tool-usage,
+    #messagesContainer .message .model-badge,
+    #messagesContainer .message .add-basis-view,
+    #messagesContainer .message .tool-canvas-head,
+    #messagesContainer .message .tool-canvas-status {
+        user-select: none !important;
+        -webkit-user-select: none !important;
+        -webkit-touch-callout: none !important;
+    }
+
+    #messagesContainer {
+        isolation: isolate;
+        overscroll-behavior-y: contain;
+    }
+
+    #messagesContainer .message-bubble,
+    #messagesContainer .message-bubble *,
+    #messagesContainer .content-body,
+    #messagesContainer .content-body *,
+    #messagesContainer .thinking-content,
+    #messagesContainer .thinking-content *,
+    #messagesContainer .tool-output,
+    #messagesContainer .tool-output * {
+        user-select: text !important;
+        -webkit-user-select: text !important;
+        -webkit-touch-callout: default !important;
+    }
+
+    /* 输入控件必须保持可选中/可输入，避免 mobile 下出现无法输入或光标异常。 */
+    #inputWrapper textarea,
+    #inputWrapper input,
+    #inputWrapper select,
+    #messagesContainer textarea,
+    #messagesContainer input,
+    #messagesContainer select,
+    #messagesContainer [contenteditable=""],
+    #messagesContainer [contenteditable="true"] {
+        user-select: text !important;
+        -webkit-user-select: text !important;
+        -webkit-touch-callout: default !important;
+        touch-action: manipulation;
+    }
+
+    /* 锁定 mobile 下 tool canvas 显示比例，避免 three 图像纵向压缩 */
+    #messagesContainer .tool-canvas-wrap {
+        width: 100% !important;
+        line-height: 0;
+        overflow: hidden;
+    }
+
+    #messagesContainer .tool-canvas {
+        display: block;
+        width: 100% !important;
+        height: auto !important;
+        max-width: 100% !important;
+        image-rendering: auto;
+    }
 }

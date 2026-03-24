@@ -134,6 +134,20 @@ class ConversationManager:
         更新可续接的 last response id（通用命名，兼容历史 volc 命名字段）
         """
         self.update_volc_response_id(conversation_id, response_id, model_name=model_name)
+
+    def _invalidate_resume_cache_fields(self, conversation_data):
+        """
+        会话分支被本地改写（删消息/切版本）后，必须清理远端续接ID，
+        否则下次请求会沿用旧 remote context，导致与当前可见历史不一致。
+        """
+        if not isinstance(conversation_data, dict):
+            return
+        for key in ("last_volc_response_id", "last_model_used"):
+            if key in conversation_data:
+                try:
+                    del conversation_data[key]
+                except Exception:
+                    conversation_data[key] = None
             
     def get_last_volc_response_id(self, conversation_id, current_model_name=None):
         """
@@ -305,6 +319,7 @@ class ConversationManager:
 
             del messages[start:end + 1]
             conversation_data["messages"] = messages
+            self._invalidate_resume_cache_fields(conversation_data)
             
             conversation_data["updated_at"] = datetime.now().isoformat()
             
@@ -418,6 +433,7 @@ class ConversationManager:
                     msg["model_name"] = model_name
                 elif "model_name" in msg:
                     del msg["model_name"]
+                self._invalidate_resume_cache_fields(conversation_data)
                 
                 conversation_data["updated_at"] = datetime.now().isoformat()
                 with open(conversation_path, 'w', encoding='utf-8') as f:

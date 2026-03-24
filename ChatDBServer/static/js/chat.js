@@ -73,6 +73,9 @@ let tokenBudgetState = {
     latestInputTokens: 0,
     latestRawInputTokens: 0,
     latestCachedInputTokens: 0,
+    cumulativeInputTokens: 0,
+    cumulativeRawInputTokens: 0,
+    cumulativeCachedInputTokens: 0,
     toolInputEstimate: 0,
     toolInputTokens: 0,
     systemPromptTokens: 0,
@@ -1013,6 +1016,7 @@ function detectThreeUsageInJsCode(code) {
     const src = String(code || '');
     if (!src.trim()) return false;
     if (/\bTHREE\b/.test(src)) return true;
+    if (/\benableThreeOrbit\b|\battachOrbitControl\b/.test(src)) return true;
     if (/\bWebGLRenderer\b/.test(src)) return true;
     if (/\bPerspectiveCamera\b|\bOrthographicCamera\b/.test(src)) return true;
     if (/\bScene\b|\bBufferGeometry\b|\bMesh\b/.test(src)) return true;
@@ -1207,6 +1211,179 @@ function createPlot3DHelper(canvas, ctx) {
         line3d,
         axes,
         surface
+    };
+}
+
+function enforceCanvasDisplayAspect(canvas) {
+    if (!canvas) return;
+    const w = Math.max(1, Number(canvas.width || 0) || 1);
+    const h = Math.max(1, Number(canvas.height || 0) || 1);
+    canvas.style.width = '100%';
+    canvas.style.maxWidth = '100%';
+    canvas.style.height = 'auto';
+    canvas.style.aspectRatio = `${w} / ${h}`;
+}
+
+function clampNumber(v, min, max) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return min;
+    return Math.max(Number(min), Math.min(Number(max), n));
+}
+
+function normalizeThreeTargetVector(threeRef, rawTarget) {
+    const fallback = new threeRef.Vector3(0, 0, 0);
+    if (!rawTarget) return fallback;
+    if (rawTarget instanceof threeRef.Vector3) return rawTarget.clone();
+    if (Array.isArray(rawTarget) && rawTarget.length >= 3) {
+        const x = Number(rawTarget[0] || 0);
+        const y = Number(rawTarget[1] || 0);
+        const z = Number(rawTarget[2] || 0);
+        return new threeRef.Vector3(x, y, z);
+    }
+    if (typeof rawTarget === 'object') {
+        const x = Number(rawTarget.x || 0);
+        const y = Number(rawTarget.y || 0);
+        const z = Number(rawTarget.z || 0);
+        return new threeRef.Vector3(x, y, z);
+    }
+    return fallback;
+}
+
+function createThreeOrbitController(canvas, threeRef, options = {}) {
+    if (!canvas || !threeRef) {
+        throw new Error('enableThreeOrbit requires canvas and THREE');
+    }
+    const opts = (options && typeof options === 'object') ? options : {};
+    const camera = opts.camera;
+    if (!camera || !camera.position || typeof camera.lookAt !== 'function') {
+        throw new Error('enableThreeOrbit requires a valid THREE camera');
+    }
+    const scene = opts.scene || null;
+    const renderer = opts.renderer || null;
+    const target = normalizeThreeTargetVector(threeRef, opts.target);
+    const rotateSpeed = clampNumber(opts.rotateSpeed != null ? opts.rotateSpeed : 1.25, 0.2, 6);
+    const minPhi = clampNumber(opts.minPhi != null ? opts.minPhi : 0.08, 0.02, Math.PI * 0.48);
+    const maxPhi = clampNumber(opts.maxPhi != null ? opts.maxPhi : (Math.PI - 0.08), Math.PI * 0.52, Math.PI - 0.02);
+    const minRadius = clampNumber(opts.minRadius != null ? opts.minRadius : 0.2, 0.001, 1e7);
+    const maxRadius = clampNumber(opts.maxRadius != null ? opts.maxRadius : 5000, minRadius, 1e9);
+
+    const toSphericalFromCamera = () => {
+        const offset = new threeRef.Vector3().copy(camera.position).sub(target);
+        const radiusRaw = Number(offset.length());
+        const radius = clampNumber(Number.isFinite(radiusRaw) && radiusRaw > 0 ? radiusRaw : 3, minRadius, maxRadius);
+        const theta = Math.atan2(offset.x, offset.z);
+        const phiRaw = Math.acos(clampNumber(offset.y / radius, -1, 1));
+        const phi = clampNumber(phiRaw, minPhi, maxPhi);
+        return { radius, theta, phi };
+    };
+
+    let spherical = toSphericalFromCamera();
+    if (Number.isFinite(Number(opts.radius))) {
+        spherical.radius = clampNumber(Number(opts.radius), minRadius, maxRadius);
+    }
+    if (Number.isFinite(Number(opts.theta))) {
+        spherical.theta = Number(opts.theta);
+    }
+    if (Number.isFinite(Number(opts.phi))) {
+        spherical.phi = clampNumber(Number(opts.phi), minPhi, maxPhi);
+    }
+
+    const renderFn = (typeof opts.render === 'function')
+        ? opts.render
+        : (() => {
+            if (renderer && scene && typeof renderer.render === 'function') {
+                renderer.render(scene, camera);
+            }
+        });
+
+    const applyPose = () => {
+        const sinPhi = Math.sin(spherical.phi);
+        const x = target.x + spherical.radius * sinPhi * Math.sin(spherical.theta);
+        const y = target.y + spherical.radius * Math.cos(spherical.phi);
+        const z = target.z + spherical.radius * sinPhi * Math.cos(spherical.theta);
+        camera.position.set(x, y, z);
+        camera.lookAt(target);
+        try {
+            renderFn();
+        } catch (_) {
+            // ignore render callback errors
+        }
+    };
+
+    const state = {
+        pointerId: null,
+        dragging: false,
+        startX: 0,
+        startY: 0,
+        startTheta: spherical.theta,
+        startPhi: spherical.phi
+    };
+    const prevTouchAction = String(canvas.style.touchAction || '');
+    canvas.style.touchAction = 'none';
+
+    const onPointerDown = (ev) => {
+        if (!ev) return;
+        if (ev.pointerType === 'mouse' && Number(ev.button) !== 0) return;
+        state.dragging = true;
+        state.pointerId = ev.pointerId;
+        state.startX = Number(ev.clientX || 0);
+        state.startY = Number(ev.clientY || 0);
+        state.startTheta = spherical.theta;
+        state.startPhi = spherical.phi;
+        try { canvas.setPointerCapture(ev.pointerId); } catch (_) {}
+        ev.preventDefault();
+    };
+
+    const onPointerMove = (ev) => {
+        if (!state.dragging || !ev) return;
+        if (state.pointerId != null && ev.pointerId !== state.pointerId) return;
+        const dx = Number(ev.clientX || 0) - state.startX;
+        const dy = Number(ev.clientY || 0) - state.startY;
+        const refWidth = Math.max(180, Number(canvas.clientWidth || canvas.width || 360));
+        const refHeight = Math.max(180, Number(canvas.clientHeight || canvas.height || 220));
+        const thetaDelta = (dx / refWidth) * Math.PI * rotateSpeed;
+        const phiDelta = (dy / refHeight) * Math.PI * rotateSpeed;
+        spherical.theta = state.startTheta + thetaDelta;
+        spherical.phi = clampNumber(state.startPhi + phiDelta, minPhi, maxPhi);
+        applyPose();
+        ev.preventDefault();
+    };
+
+    const stopPointer = (ev) => {
+        if (!state.dragging) return;
+        if (ev && state.pointerId != null && ev.pointerId !== state.pointerId) return;
+        state.dragging = false;
+        if (ev && state.pointerId != null) {
+            try { canvas.releasePointerCapture(state.pointerId); } catch (_) {}
+        }
+        state.pointerId = null;
+    };
+
+    canvas.addEventListener('pointerdown', onPointerDown, { passive: false });
+    window.addEventListener('pointermove', onPointerMove, { passive: false });
+    window.addEventListener('pointerup', stopPointer, { passive: true });
+    window.addEventListener('pointercancel', stopPointer, { passive: true });
+
+    applyPose();
+
+    return {
+        dispose() {
+            canvas.removeEventListener('pointerdown', onPointerDown);
+            window.removeEventListener('pointermove', onPointerMove);
+            window.removeEventListener('pointerup', stopPointer);
+            window.removeEventListener('pointercancel', stopPointer);
+            canvas.style.touchAction = prevTouchAction;
+        },
+        render: applyPose,
+        setRadius(nextRadius) {
+            spherical.radius = clampNumber(nextRadius, minRadius, maxRadius);
+            applyPose();
+        },
+        setTarget(nextTarget) {
+            const v = normalizeThreeTargetVector(threeRef, nextTarget);
+            target.set(v.x, v.y, v.z);
+            applyPose();
+        }
     };
 }
 
@@ -1426,6 +1603,7 @@ async function runCanvasCodeInCard(card, code, context = {}, timeoutMs = 5000) {
         card.classList.add('error');
         return;
     }
+    enforceCanvasDisplayAspect(canvas);
     const runtimeCode = normalizeClientJsCode(code);
     if (!runtimeCode) {
         if (statusEl) statusEl.textContent = '空绘图代码';
@@ -1474,6 +1652,31 @@ async function runCanvasCodeInCard(card, code, context = {}, timeoutMs = 5000) {
     localContext.ctx = ctx;
     localContext.width = canvas.width;
     localContext.height = canvas.height;
+    const ensure2DContext = () => {
+        if (ctx) return ctx;
+        try {
+            const next = canvas.getContext('2d');
+            if (next) {
+                ctx = next;
+                localContext.ctx = next;
+            }
+            return next || null;
+        } catch (_) {
+            return null;
+        }
+    };
+    localContext.ensure2DContext = ensure2DContext;
+    localContext.getContext = (kind = '2d', opts = undefined) => {
+        const type = String(kind || '2d').toLowerCase();
+        if (type === '2d') {
+            return ensure2DContext();
+        }
+        try {
+            return canvas.getContext(type, opts);
+        } catch (_) {
+            return null;
+        }
+    };
     const plot3d = (!useThree && usePlot3D && ctx) ? createPlot3DHelper(canvas, ctx) : null;
     const importScriptsProxy = (...urls) => {
         const list = Array.isArray(urls) ? urls : [];
@@ -1492,6 +1695,9 @@ async function runCanvasCodeInCard(card, code, context = {}, timeoutMs = 5000) {
     };
     if (threeRef) localContext.THREE = threeRef;
     if (plot3d) localContext.Plot3D = plot3d;
+    if (threeRef) {
+        localContext.enableThreeOrbit = (opts = {}) => createThreeOrbitController(canvas, threeRef, opts);
+    }
     localContext.importScripts = importScriptsProxy;
 
     const safeDocument = {
@@ -1510,7 +1716,10 @@ async function runCanvasCodeInCard(card, code, context = {}, timeoutMs = 5000) {
     };
     if (threeRef) safeWindow.THREE = threeRef;
     if (plot3d) safeWindow.Plot3D = plot3d;
+    if (threeRef) safeWindow.enableThreeOrbit = (opts = {}) => createThreeOrbitController(canvas, threeRef, opts);
     safeWindow.importScripts = importScriptsProxy;
+    safeWindow.getContext = localContext.getContext;
+    safeWindow.ensure2DContext = ensure2DContext;
     const raf = (fn) => setTimeout(() => fn(Date.now()), 16);
     const caf = (id) => clearTimeout(id);
     localContext.document = safeDocument;
@@ -1564,9 +1773,11 @@ async function runCanvasCodeInCard(card, code, context = {}, timeoutMs = 5000) {
             new Promise((_, reject) => setTimeout(() => reject(new Error(`canvas execution timeout after ${timeout}ms`)), timeout))
         ]);
 
+        enforceCanvasDisplayAspect(canvas);
         if (statusEl) statusEl.textContent = logs.length ? `绘制完成 · ${logs.length} 条日志` : '绘制完成';
     } catch (err) {
         const msg = String((err && err.message) || err || 'canvas execute failed');
+        enforceCanvasDisplayAspect(canvas);
         if (statusEl) statusEl.textContent = msg;
         card.classList.add('error');
     }
@@ -6247,69 +6458,13 @@ function captureActiveSelectionForMobileScrollLock() {
 }
 
 function clampSelectionStartToLockedRange() {
-    if (!mobileSelectionScrollGuard.locked || !mobileSelectionScrollGuard.snapshotRange) return false;
-    const sel = window.getSelection ? window.getSelection() : null;
-    if (!sel || sel.rangeCount <= 0) return false;
-    try {
-        const current = sel.getRangeAt(0);
-        if (!current || current.collapsed) return false;
-        const locked = mobileSelectionScrollGuard.snapshotRange;
-        const lockContainer = mobileSelectionScrollGuard.sourceContainer || null;
-        const currentStartInside = !lockContainer || isSelectionNodeInsideContainer(current.startContainer, lockContainer);
-        const currentEndInside = !lockContainer || isSelectionNodeInsideContainer(current.endContainer, lockContainer);
-        let shouldClampStart = !currentStartInside;
-        if (!shouldClampStart) {
-            let cmp = 0;
-            try {
-                cmp = locked.comparePoint(current.startContainer, current.startOffset);
-            } catch (_) {
-                try {
-                    const currentStartRange = document.createRange();
-                    currentStartRange.setStart(current.startContainer, current.startOffset);
-                    currentStartRange.collapse(true);
-                    const lockedStartRange = locked.cloneRange();
-                    lockedStartRange.collapse(true);
-                    cmp = currentStartRange.compareBoundaryPoints(Range.START_TO_START, lockedStartRange) < 0 ? -1 : 0;
-                } catch (_) {
-                    cmp = 0;
-                }
-            }
-            // cmp === -1 means current start is before locked start.
-            shouldClampStart = (cmp === -1);
-        }
-        if (!shouldClampStart) return false;
-        const next = document.createRange();
-        next.setStart(locked.startContainer, locked.startOffset);
-        try {
-            if (currentEndInside) next.setEnd(current.endContainer, current.endOffset);
-            else next.setEnd(locked.endContainer, locked.endOffset);
-        } catch (_) {
-            next.setEnd(locked.endContainer, locked.endOffset);
-        }
-        if (next.collapsed) {
-            next.setEnd(locked.endContainer, locked.endOffset);
-        }
-        sel.removeAllRanges();
-        sel.addRange(next);
-        return true;
-    } catch (_) {
-        return false;
-    }
+    // 根据需求：不再使用 JS 对选区进行纠偏，避免和系统原生选区行为冲突。
+    return false;
 }
 
 function keepSelectionStableOnMobileScroll(touch) {
-    if (!mobileSelectionScrollGuard.tracking || !mobileSelectionScrollGuard.locked) return;
-    const point = (touch && typeof touch === 'object') ? touch : null;
-    if (!point) return;
-    const dx = Math.abs(Number(point.clientX || 0) - Number(mobileSelectionScrollGuard.startX || 0));
-    const dy = Math.abs(Number(point.clientY || 0) - Number(mobileSelectionScrollGuard.startY || 0));
-    if (dy < 10 || dy <= (dx + 3)) return;
-    mobileSelectionScrollGuard.stabilizeStart = true;
-    if (mobileSelectionScrollGuard.restoreRaf) return;
-    mobileSelectionScrollGuard.restoreRaf = requestAnimationFrame(() => {
-        mobileSelectionScrollGuard.restoreRaf = 0;
-        clampSelectionStartToLockedRange();
-    });
+    // 根据需求：不再使用 JS 干预选区。
+    void touch;
 }
 
 function updateMobileSelectionQuickAdd() {
@@ -7374,11 +7529,115 @@ function estimateTokenCountFromCharCount(chars) {
     return Math.max(1, Math.ceil(n / 4));
 }
 
+function normalizeIoTokensPayload(ioObj) {
+    const io = (ioObj && typeof ioObj === 'object') ? ioObj : {};
+    const input = safeTokenInt(io.input);
+    const rawInput = safeTokenInt(io.raw_input != null ? io.raw_input : io.input);
+    const cachedInput = safeTokenInt(io.cached_input);
+    const output = safeTokenInt(io.output);
+    return {
+        input,
+        rawInput: Math.max(input, rawInput),
+        cachedInput: Math.max(0, cachedInput),
+        output
+    };
+}
+
+function hasNonZeroIoTokens(tokens) {
+    const t = (tokens && typeof tokens === 'object') ? tokens : {};
+    return safeTokenInt(t.input) > 0
+        || safeTokenInt(t.rawInput) > 0
+        || safeTokenInt(t.cachedInput) > 0
+        || safeTokenInt(t.output) > 0;
+}
+
+function readMessageIoTokens(metadata, preferWindow = true) {
+    const md = (metadata && typeof metadata === 'object') ? metadata : {};
+    const cumulative = normalizeIoTokensPayload(md.io_tokens);
+    const windowTokens = normalizeIoTokensPayload(md.io_tokens_window);
+    const sanitizeWindowTokens = (tokens) => {
+        const t = (tokens && typeof tokens === 'object') ? tokens : { input: 0, rawInput: 0, cachedInput: 0, output: 0 };
+        const debug = (md.request_debug && typeof md.request_debug === 'object') ? md.request_debug : {};
+        const limit = safeTokenInt(debug.context_window_limit);
+        if (limit <= 0) return t;
+        const compressed = !!debug.context_compression_triggered;
+        const raw = safeTokenInt(t.rawInput);
+        const inp = safeTokenInt(t.input);
+        const overflow = Math.max(raw, inp) > limit;
+        if (!overflow || compressed) return t;
+
+        // 旧脏数据/口径漂移保护：未触发压缩却出现超窗，优先回退到累计口径（若其更小且非零）。
+        if (hasNonZeroIoTokens(cumulative)) {
+            const cumRaw = safeTokenInt(cumulative.rawInput);
+            const cumIn = safeTokenInt(cumulative.input);
+            const cumMax = Math.max(cumRaw, cumIn);
+            if (cumMax > 0 && cumMax < Math.max(raw, inp)) {
+                return cumulative;
+            }
+        }
+
+        // 再退一步：用请求首轮 payload 字符数做上限近似，避免 UI/预判被异常大值卡住。
+        const firstRoundChars = safeTokenInt(debug.first_round_input_chars);
+        const sysTok = safeTokenInt(
+            (debug.first_round_system_tokens != null) ? debug.first_round_system_tokens : debug.first_round_system_tokens_est
+        );
+        const toolsTok = safeTokenInt(
+            (debug.first_round_tools_tokens != null) ? debug.first_round_tools_tokens : debug.first_round_tools_tokens_est
+        );
+        if (firstRoundChars > 0) {
+            const cap = Math.max(1, Math.min(Math.max(1, limit - 64), firstRoundChars + sysTok + toolsTok));
+            const nextInput = Math.min(safeTokenInt(t.input), cap);
+            const nextRaw = Math.min(safeTokenInt(t.rawInput), cap);
+            const nextCached = Math.max(0, Math.min(safeTokenInt(t.cachedInput), nextRaw));
+            return {
+                ...t,
+                input: nextInput,
+                rawInput: nextRaw,
+                cachedInput: nextCached
+            };
+        }
+        return t;
+    };
+    if (preferWindow) {
+        if (hasNonZeroIoTokens(windowTokens)) {
+            return sanitizeWindowTokens(windowTokens);
+        }
+        // 旧数据通常只有 io_tokens，优先直接使用真实 usage，避免被 chars 估算低估。
+        if (hasNonZeroIoTokens(cumulative)) {
+            return sanitizeWindowTokens(cumulative);
+        }
+        const debug = (md.request_debug && typeof md.request_debug === 'object') ? md.request_debug : {};
+        const debugRawInput = safeTokenInt(debug.context_compression_post_raw_input);
+        if (debugRawInput > 0) {
+            return sanitizeWindowTokens({
+                input: debugRawInput,
+                rawInput: debugRawInput,
+                cachedInput: 0,
+                output: safeTokenInt(cumulative.output)
+            });
+        }
+        const debugFirstRoundChars = safeTokenInt(debug.first_round_input_chars);
+        if (debugFirstRoundChars > 0) {
+            const est = estimateTokenCountFromCharCount(debugFirstRoundChars);
+            return sanitizeWindowTokens({
+                input: est,
+                rawInput: est,
+                cachedInput: 0,
+                output: safeTokenInt(cumulative.output)
+            });
+        }
+    }
+    return cumulative;
+}
+
 function applyTokenBudgetPromptBreakdownFromConversationMessages(messages) {
     const arr = Array.isArray(messages) ? messages : [];
     let latestInput = 0;
     let latestRawInput = 0;
     let latestCachedInput = 0;
+    let cumulativeInput = 0;
+    let cumulativeRawInput = 0;
+    let cumulativeCachedInput = 0;
     let systemTokens = 0;
     let toolTokens = 0;
     let tokenBreakdownExact = false;
@@ -7388,13 +7647,20 @@ function applyTokenBudgetPromptBreakdownFromConversationMessages(messages) {
         if (!msg || typeof msg !== 'object') continue;
         if (String(msg.role || '').trim() !== 'assistant') continue;
         const md = (msg.metadata && typeof msg.metadata === 'object') ? msg.metadata : {};
-        const io = (md.io_tokens && typeof md.io_tokens === 'object') ? md.io_tokens : {};
+        const ioWindow = readMessageIoTokens(md, true);
+        const ioCumulative = readMessageIoTokens(md, false);
         const debug = (md.request_debug && typeof md.request_debug === 'object') ? md.request_debug : {};
-        latestInput = safeTokenInt(io.input);
-        latestRawInput = safeTokenInt(io.raw_input != null ? io.raw_input : io.input);
-        latestCachedInput = safeTokenInt(io.cached_input);
+        latestInput = safeTokenInt(ioWindow.input);
+        latestRawInput = safeTokenInt(ioWindow.rawInput);
+        latestCachedInput = safeTokenInt(ioWindow.cachedInput);
         if (latestCachedInput <= 0 && latestRawInput >= latestInput) {
             latestCachedInput = Math.max(0, latestRawInput - latestInput);
+        }
+        cumulativeInput = safeTokenInt(ioCumulative.input);
+        cumulativeRawInput = safeTokenInt(ioCumulative.rawInput);
+        cumulativeCachedInput = safeTokenInt(ioCumulative.cachedInput);
+        if (cumulativeCachedInput <= 0 && cumulativeRawInput >= cumulativeInput) {
+            cumulativeCachedInput = Math.max(0, cumulativeRawInput - cumulativeInput);
         }
         systemTokens = safeTokenInt(debug.first_round_system_tokens);
         toolTokens = safeTokenInt(debug.first_round_tools_tokens);
@@ -7405,6 +7671,9 @@ function applyTokenBudgetPromptBreakdownFromConversationMessages(messages) {
     tokenBudgetState.latestInputTokens = latestInput;
     tokenBudgetState.latestRawInputTokens = Math.max(latestInput, latestRawInput);
     tokenBudgetState.latestCachedInputTokens = Math.max(0, latestCachedInput);
+    tokenBudgetState.cumulativeInputTokens = cumulativeInput;
+    tokenBudgetState.cumulativeRawInputTokens = Math.max(cumulativeInput, cumulativeRawInput);
+    tokenBudgetState.cumulativeCachedInputTokens = Math.max(0, cumulativeCachedInput);
     tokenBudgetState.systemPromptTokens = Math.max(0, systemTokens);
     tokenBudgetState.toolInputTokens = Math.max(0, toolTokens);
     tokenBudgetState.tokenBreakdownExact = tokenBreakdownExact && (systemTokens > 0 || toolTokens > 0);
@@ -7452,6 +7721,16 @@ function buildTokenBudgetHoverText(limit, used, ratioRaw, remain) {
         safeTokenInt(tokenBudgetState.latestCachedInputTokens),
         Math.max(0, rawInput - totalInput)
     );
+    const cumulativeInput = safeTokenInt(tokenBudgetState.cumulativeInputTokens);
+    const cumulativeRawInput = Math.max(
+        cumulativeInput,
+        safeTokenInt(tokenBudgetState.cumulativeRawInputTokens)
+    );
+    const cumulativeCachedInput = Math.max(
+        0,
+        safeTokenInt(tokenBudgetState.cumulativeCachedInputTokens),
+        Math.max(0, cumulativeRawInput - cumulativeInput)
+    );
     const systemTokens = safeTokenInt(tokenBudgetState.systemPromptTokens);
     const toolExact = safeTokenInt(tokenBudgetState.toolInputTokens);
     const toolEstimate = safeTokenInt(tokenBudgetState.toolInputEstimate);
@@ -7463,7 +7742,10 @@ function buildTokenBudgetHoverText(limit, used, ratioRaw, remain) {
         `上下文占用: ${used.toLocaleString()} / ${limit.toLocaleString()} (${Math.round(ratioRaw * 100)}%)`,
         `本轮原始输入: ${rawInput.toLocaleString()}`,
         `本轮缓存命中: ${cachedInput.toLocaleString()}`,
-        `本轮计费输入: ${totalInput.toLocaleString()}`,
+        `窗口计费输入: ${totalInput.toLocaleString()}`,
+        `累计原始输入: ${cumulativeRawInput.toLocaleString()}`,
+        `累计缓存命中: ${cumulativeCachedInput.toLocaleString()}`,
+        `请求累计计费输入: ${cumulativeInput.toLocaleString()}`,
         `系统提示词占用: ${systemTokens.toLocaleString()}${exactBreakdown ? '' : '（估算）'}`,
         `工具占用: ${toolTokens.toLocaleString()}${toolExact > 0 ? '' : (toolEstimate > 0 ? '（估算）' : '')}`,
         `本次请求上下文计入: ${contextForPrompt.toLocaleString()}${exactBreakdown ? '' : '（近似）'}`
@@ -7650,6 +7932,9 @@ function resetTokenBudgetBreakdown() {
     tokenBudgetState.latestInputTokens = 0;
     tokenBudgetState.latestRawInputTokens = 0;
     tokenBudgetState.latestCachedInputTokens = 0;
+    tokenBudgetState.cumulativeInputTokens = 0;
+    tokenBudgetState.cumulativeRawInputTokens = 0;
+    tokenBudgetState.cumulativeCachedInputTokens = 0;
     tokenBudgetState.toolInputEstimate = 0;
     tokenBudgetState.toolInputTokens = 0;
     tokenBudgetState.systemPromptTokens = 0;
@@ -7664,9 +7949,9 @@ function estimateTokenBudgetUsedFromConversationMessages(messages) {
         if (!msg || typeof msg !== 'object') continue;
         if (String(msg.role || '').trim() !== 'assistant') continue;
         const md = (msg.metadata && typeof msg.metadata === 'object') ? msg.metadata : {};
-        const io = (md.io_tokens && typeof md.io_tokens === 'object') ? md.io_tokens : {};
+        const io = readMessageIoTokens(md, true);
         const inTok = safeTokenInt(io.input);
-        const rawTok = safeTokenInt(io.raw_input != null ? io.raw_input : io.input);
+        const rawTok = safeTokenInt(io.rawInput);
         if (rawTok > 0) return rawTok;
         if (inTok > 0) return inTok;
     }
@@ -11069,6 +11354,20 @@ window.toggleEditUserPrompt = async function(index) {
         }
     });
 
+    const focusEditorFromGesture = () => {
+        if (!isChatMobileLayout()) return;
+        try {
+            editor.focus({ preventScroll: true });
+        } catch (_) {
+            editor.focus();
+        }
+    };
+    editor.addEventListener('touchstart', focusEditorFromGesture, { passive: true });
+    editor.addEventListener('pointerdown', (e) => {
+        if (e.pointerType && e.pointerType !== 'touch') return;
+        focusEditorFromGesture();
+    }, { passive: true });
+
     requestAnimationFrame(() => {
         try {
             editor.focus({ preventScroll: true });
@@ -11277,9 +11576,7 @@ function appendMessage(msg, index) {
         // Add model badge/hint
         const modelName = (msg.metadata && msg.metadata.model_name) || msg.model_name;
         if (modelName) {
-            const ioMeta = (msg.metadata && msg.metadata.io_tokens && typeof msg.metadata.io_tokens === 'object')
-                ? msg.metadata.io_tokens
-                : {};
+            const ioMeta = readMessageIoTokens(msg.metadata || {}, false);
             updateMessageModelBadge(div, {
                 modelName,
                 searchFlag: (msg.metadata && typeof msg.metadata.search_enabled === 'boolean')
@@ -11569,7 +11866,9 @@ window.confirmDelete = function(index) {
                 const convRes = await fetch(`/api/conversations/${currentConversationId}`);
                 const convData = await convRes.json();
                 if (convData.success) {
-                    renderMessages(convData.conversation.messages, true);
+                    const msgs = convData.conversation.messages || [];
+                    renderMessages(msgs, true);
+                    applyTokenBudgetFromConversationMessages(msgs);
                 }
                 await loadConversations();
                 await loadKnowledge(currentConversationId);
@@ -12430,7 +12729,9 @@ window.switchVersion = async function(msgIndex, verIndex) {
             const convRes = await fetch(`/api/conversations/${currentConversationId}`);
             const convData = await convRes.json();
             if (convData.success) {
-                renderMessages(convData.conversation.messages, true);
+                const msgs = convData.conversation.messages || [];
+                renderMessages(msgs, true);
+                applyTokenBudgetFromConversationMessages(msgs);
             }
         }
     } catch(e) { console.error(e); }
