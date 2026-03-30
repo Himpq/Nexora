@@ -22,6 +22,32 @@ TOOL_CATALOG = [
             "required": ["command"],
         },
     },
+
+    {
+        "module": "shell",
+        "name": "local_shell_session",
+        "handler": "handle_shell_session",
+        "description": (
+            "创建持久化交互式终端会话，支持连续交互、cd 保持目录、长任务、分段输出。"
+            "action 取值：create | exec | status | close"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "动作：create(创建) | exec(执行命令) | status(查询状态) | close(关闭)",
+                    "enum": ["create", "exec", "status", "close"]
+                },
+                "session_id": {"type": "string", "description": "会话ID（exec/status/close必须传）"},
+                "command": {"type": "string", "description": "要执行的命令（仅exec）"},
+                "cwd": {"type": "string", "description": "工作目录（仅create）"},
+            },
+            "required": ["action"],
+        },
+    },
+
+
     {
         "module": "file_ops",
         "name": "local_file_read",

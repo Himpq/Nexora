@@ -17,7 +17,7 @@
     <script src="/static/vendor/easymde/easymde.min.js"></script>
 
     <!-- App Styles -->
-    <link rel="stylesheet" href="/static/css/style.css?v=20260324_01"> 
+    <link rel="stylesheet" href="/static/css/style.css?v=20260324_03"> 
     <link rel="stylesheet" href="/static/css/easymde_override.css">
 </head>
 <body>
@@ -568,7 +568,7 @@
     </div>
     
     <!-- Scripts -->
-    <script src="/static/js/chat.js?v=20260324_01"></script>
+    <script src="/static/js/chat.js?v=20260324_03"></script>
 
     <!-- 添加用户表单 -->
     <div id="addUserModal" class="modal-backdrop" style="z-index: 2200;">
@@ -826,17 +826,18 @@
             <div class="modal-body">
                 <div class="admin-shell settings-shell">
                     <aside class="admin-nav settings-nav">
-                        <button class="admin-tab active" data-tab="profile">个人资料</button>
-                        <button class="admin-tab" data-tab="preferences">偏好设置</button>
-                        <button class="admin-tab" data-tab="statistics">使用统计</button>
+                        <button type="button" class="admin-tab active" data-tab="profile">个人资料</button>
+                        <button type="button" class="admin-tab" data-tab="preferences">偏好设置</button>
+                        <button type="button" class="admin-tab" data-tab="skills">Skill</button>
+                        <button type="button" class="admin-tab" data-tab="statistics">使用统计</button>
                         <div id="settingsAdminGap" class="settings-nav-gap" style="display:none;"></div>
-                        <button id="settingsAdminUsersBtn" class="admin-tab settings-admin-entry" data-tab="admin-users" style="display:none;">用户管理</button>
+                        <button type="button" id="settingsAdminUsersBtn" class="admin-tab settings-admin-entry" data-tab="admin-users" style="display:none;">用户管理</button>
                         {% if nexora_mail_enabled %}
-                        <button id="settingsAdminMailBtn" class="admin-tab settings-admin-entry" data-tab="admin-mail" style="display:none;">邮箱管理</button>
+                        <button type="button" id="settingsAdminMailBtn" class="admin-tab settings-admin-entry" data-tab="admin-mail" style="display:none;">邮箱管理</button>
                         {% endif %}
-                        <button id="settingsAdminStatsBtn" class="admin-tab settings-admin-entry" data-tab="admin-stats" style="display:none;">统计信息</button>
-                        <button id="settingsAdminModelsBtn" class="admin-tab settings-admin-entry" data-tab="admin-models" style="display:none;">模型管理</button>
-                        <button id="settingsAdminChromaBtn" class="admin-tab settings-admin-entry" data-tab="admin-chroma" style="display:none;">向量库</button>
+                        <button type="button" id="settingsAdminStatsBtn" class="admin-tab settings-admin-entry" data-tab="admin-stats" style="display:none;">统计信息</button>
+                        <button type="button" id="settingsAdminModelsBtn" class="admin-tab settings-admin-entry" data-tab="admin-models" style="display:none;">模型管理</button>
+                        <button type="button" id="settingsAdminChromaBtn" class="admin-tab settings-admin-entry" data-tab="admin-chroma" style="display:none;">向量库</button>
                     </aside>
                     <section class="admin-content settings-content">
                         <div id="settings-profile-tab" class="admin-tab-content active">
@@ -872,6 +873,15 @@
                                 <div class="form-group"><label>主题</label><div id="set-theme" class="settings-field">-</div></div>
                                 <div class="form-group"><label>流式输出</label><div id="set-stream" class="settings-field">-</div></div>
                                 <div class="form-group"><label>语言</label><div id="set-lang" class="settings-field">-</div></div>
+                            </div>
+                        </div>
+                        <div id="settings-skills-tab" class="admin-tab-content">
+                            <div class="settings-placeholder">Skill</div>
+                            <div class="form-group">
+                                <label>Skill 列表（每条独立 Mode）</label>
+                                <div id="settingsSkillList" class="settings-skill-list">
+                                    <div class="settings-skill-empty">加载中...</div>
+                                </div>
                             </div>
                         </div>
                         <div id="settings-statistics-tab" class="admin-tab-content">
@@ -1008,6 +1018,28 @@
                         </div>
                     </section>
                 </div>
+            </div>
+        </div>
+    </div>
+    <div id="skillEditorModal" class="modal-backdrop">
+        <div class="modal" style="width: 820px; max-width: 94vw; padding: 0;">
+            <div class="modal-head">
+                <h3 id="skillEditorTitle">编辑 Skill</h3>
+                <button class="btn-close-circle" id="closeSkillEditorBtn" type="button" onclick="closeSkillEditorModal()">×</button>
+            </div>
+            <div class="modal-body" style="padding: 16px 20px;">
+                <div class="form-group" style="margin-bottom: 10px;">
+                    <label>适用工具</label>
+                    <div id="skillEditorTools" class="settings-field">-</div>
+                </div>
+                <div class="form-group" style="margin-bottom: 10px;">
+                    <label>内容</label>
+                    <textarea id="skillEditorContent" class="settings-skill-editor-input" placeholder="输入 Skill 内容"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer" style="padding: 12px 20px; display:flex; justify-content:flex-end; gap:10px;">
+                <button class="btn-cancel" id="cancelSkillEditorBtn" type="button" onclick="closeSkillEditorModal()">取消</button>
+                <button class="btn-confirm" id="saveSkillEditorBtn" type="button" onclick="saveSkillEditorModal()">保存</button>
             </div>
         </div>
     </div>

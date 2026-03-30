@@ -34,6 +34,7 @@ from provider_factory import create_provider_adapter
 from client_tool_bridge import pull_pending_request, submit_request_result, enqueue_request, wait_for_result, pull_local_tool_request
 from agent_tunnel import register_agent, unregister_agent, update_agent_tools, update_ping, is_agent_online
 from stream_runtime import start_session as start_stream_session, iter_session_chunks as iter_stream_session_chunks, get_session_meta as get_stream_session_meta
+from tools import canonicalize_tool_name
 from flask_sock import Sock
 
 app = Flask(__name__)
@@ -54,6 +55,8 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 DATA_RES_DIR = os.path.join(DATA_DIR, 'res')
+SKILLS_DIR = os.path.join(DATA_DIR, 'skills')
+SKILLS_CATALOG_PATH = os.path.join(SKILLS_DIR, 'catalog.json')
 
 CONFIG_PATH = os.path.join(BASE_DIR, 'config.json')
 MODELS_PATH = os.path.join(BASE_DIR, 'models.json')
@@ -236,6 +239,378 @@ def load_users():
 def save_users(users):
     with open(USERS_PATH, 'w', encoding='utf-8') as f:
         json.dump(users, f, indent=4, ensure_ascii=False)
+
+
+def _normalize_skill_mode(raw: Any) -> str:
+    token = str(raw or '').strip().lower()
+    if token in {'force', 'always', 'on', '1', 'true'}:
+        return 'force'
+    if token in {'auto', 'auto_tools', 'auto(tools)', 'auto-tools', 'auto_tool', 'tools'}:
+        return 'auto'
+    return 'off'
+
+
+def _skill_slug(raw: Any, fallback: str = 'skill') -> str:
+    src = str(raw or '').strip().lower()
+    if not src:
+        src = str(fallback or '').strip().lower()
+    if not src:
+        src = 'skill'
+    src = re.sub(r'[\s/\\]+', '-', src)
+    src = re.sub(r'[^a-z0-9._-]+', '-', src)
+    src = re.sub(r'-{2,}', '-', src).strip('-')
+    if src:
+        return src
+    fb = str(fallback or '').strip().lower()
+    return fb or 'skill'
+
+
+def _normalize_skill_required_tools(raw: Any) -> List[str]:
+    out: List[str] = []
+    seen: Set[str] = set()
+    if isinstance(raw, list):
+        values = raw
+    elif isinstance(raw, str):
+        values = [seg.strip() for seg in raw.replace('，', ',').split(',') if seg.strip()]
+    else:
+        values = []
+    for item in values:
+        token = canonicalize_tool_name(str(item or '').strip())
+        if not token:
+            continue
+        key = token.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(token)
+    return out
+
+
+def _normalize_skill_catalog_item(raw: Any, index: int = 0) -> Optional[Dict[str, Any]]:
+    item = raw if isinstance(raw, dict) else {}
+    title = str(item.get('title') or '').strip()
+    if not title:
+        return None
+    skill_id = _skill_slug(item.get('id') or title, fallback=f"skill_{index + 1}")
+    content = str(item.get('main_content') or item.get('content') or '')
+    now_date = datetime.now().strftime('%Y-%m-%d')
+    release_date = str(item.get('release_date') or '').strip() or now_date
+    update_date = str(item.get('update_date') or '').strip() or now_date
+    return {
+        'id': skill_id,
+        'title': title,
+        'required_tools': _normalize_skill_required_tools(item.get('required_tools', [])),
+        'mode': _normalize_skill_mode(item.get('mode', 'off')),
+        'author': str(item.get('author') or '').strip(),
+        'release_date': release_date,
+        'version': str(item.get('version') or '').strip(),
+        'update_date': update_date,
+        'main_content': content.rstrip('\r\n')
+    }
+
+
+def _skill_file_path(skill_id: str) -> str:
+    sid = _skill_slug(skill_id, fallback='skill')
+    return os.path.join(SKILLS_DIR, f'{sid}.skill')
+
+
+def _serialize_skill_text(skill: Dict[str, Any]) -> str:
+    item = _normalize_skill_catalog_item(skill, index=0) or {}
+    required_tools = list(item.get('required_tools', []) or [])
+    lines = [
+        f"id: {str(item.get('id') or '').strip()}",
+        f"title: {str(item.get('title') or '').strip()}",
+        f"required_tools: {', '.join(required_tools)}",
+        f"mode: {str(item.get('mode') or 'off').strip()}",
+        f"author: {str(item.get('author') or '').strip()}",
+        f"release_date: {str(item.get('release_date') or '').strip()}",
+        f"version: {str(item.get('version') or '').strip()}",
+        f"update_date: {str(item.get('update_date') or '').strip()}",
+        "",
+        "---content---",
+        str(item.get('main_content') or '')
+    ]
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def _parse_skill_text(raw_text: Any, source: str = '') -> Optional[Dict[str, Any]]:
+    text = str(raw_text or '')
+    if not text.strip():
+        return None
+    lines = text.splitlines()
+    marker_index = -1
+    for idx, line in enumerate(lines):
+        if str(line or '').strip().lower() == '---content---':
+            marker_index = idx
+            break
+    header_lines = lines if marker_index < 0 else lines[:marker_index]
+    content_lines = [] if marker_index < 0 else lines[marker_index + 1:]
+    header: Dict[str, str] = {}
+    for raw_line in header_lines:
+        line = str(raw_line or '').strip()
+        if not line or line.startswith('#'):
+            continue
+        sep = ':' if ':' in line else ('=' if '=' in line else '')
+        if not sep:
+            continue
+        key, value = line.split(sep, 1)
+        k = str(key or '').strip().lower()
+        v = str(value or '').strip()
+        if not k:
+            continue
+        header[k] = v
+
+    src_name = os.path.basename(str(source or ''))
+    default_title = src_name[:-6] if src_name.lower().endswith('.skill') else src_name
+    payload = {
+        'id': header.get('id') or default_title or '',
+        'title': header.get('title') or default_title or '',
+        'required_tools': header.get('required_tools', ''),
+        'mode': header.get('mode', 'off'),
+        'author': header.get('author', ''),
+        'release_date': header.get('release_date', ''),
+        'version': header.get('version', ''),
+        'update_date': header.get('update_date', ''),
+        'main_content': "\n".join(content_lines).rstrip('\r\n')
+    }
+    return _normalize_skill_catalog_item(payload, index=0)
+
+
+def _write_skill_file(skill: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    item = _normalize_skill_catalog_item(skill, index=0)
+    if not item:
+        return None
+    os.makedirs(SKILLS_DIR, exist_ok=True)
+    path = _skill_file_path(str(item.get('id') or ''))
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(_serialize_skill_text(item))
+    return item
+
+
+def _load_legacy_skill_catalog_json() -> List[Dict[str, Any]]:
+    payload: Dict[str, Any] = {}
+    if not os.path.exists(SKILLS_CATALOG_PATH):
+        return []
+    try:
+        with open(SKILLS_CATALOG_PATH, 'r', encoding='utf-8') as f:
+            payload = json.load(f)
+    except Exception:
+        return []
+    rows = payload.get('skills', []) if isinstance(payload, dict) else []
+    if not isinstance(rows, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    seen: Set[str] = set()
+    for idx, row in enumerate(rows):
+        item = _normalize_skill_catalog_item(row, index=idx)
+        if not item:
+            continue
+        sid = str(item.get('id') or '').strip()
+        if not sid or sid in seen:
+            continue
+        seen.add(sid)
+        out.append(item)
+    return out
+
+
+def _load_skill_catalog() -> List[Dict[str, Any]]:
+    os.makedirs(SKILLS_DIR, exist_ok=True)
+    normalized: List[Dict[str, Any]] = []
+    seen_ids: Set[str] = set()
+    skill_files = sorted([
+        os.path.join(SKILLS_DIR, fn)
+        for fn in os.listdir(SKILLS_DIR)
+        if str(fn or '').lower().endswith('.skill')
+    ])
+
+    # 兼容迁移：如果没有 .skill 文件但存在旧 catalog.json，则自动转换。
+    if not skill_files:
+        legacy_items = _load_legacy_skill_catalog_json()
+        for row in legacy_items:
+            _write_skill_file(row)
+        skill_files = sorted([
+            os.path.join(SKILLS_DIR, fn)
+            for fn in os.listdir(SKILLS_DIR)
+            if str(fn or '').lower().endswith('.skill')
+        ])
+
+    for idx, path in enumerate(skill_files):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                raw_text = f.read()
+        except Exception:
+            continue
+        skill = _parse_skill_text(raw_text, source=path)
+        if not skill:
+            continue
+        sid = str(skill.get('id') or '').strip()
+        if (not sid) or (sid in seen_ids):
+            continue
+        seen_ids.add(sid)
+        normalized.append(skill)
+    return normalized
+
+
+def _save_skill_catalog(skills: List[Dict[str, Any]]) -> None:
+    os.makedirs(SKILLS_DIR, exist_ok=True)
+    normalized: List[Dict[str, Any]] = []
+    seen_ids: Set[str] = set()
+    for idx, row in enumerate(skills or []):
+        skill = _normalize_skill_catalog_item(row, index=idx)
+        if not skill:
+            continue
+        sid = str(skill.get('id') or '').strip()
+        if (not sid) or (sid in seen_ids):
+            continue
+        seen_ids.add(sid)
+        normalized.append(skill)
+    wanted_files = set()
+    for item in normalized:
+        saved = _write_skill_file(item)
+        if not saved:
+            continue
+        wanted_files.add(os.path.normpath(_skill_file_path(str(saved.get('id') or ''))))
+    for fn in os.listdir(SKILLS_DIR):
+        if not str(fn or '').lower().endswith('.skill'):
+            continue
+        full_path = os.path.normpath(os.path.join(SKILLS_DIR, fn))
+        if full_path in wanted_files:
+            continue
+        try:
+            os.remove(full_path)
+        except Exception:
+            pass
+
+
+def _resolve_user_base_path(username: str) -> str:
+    uname = str(username or '').strip()
+    if not uname:
+        return os.path.join(DATA_DIR, 'users', '')
+    try:
+        users_meta = load_users()
+    except Exception:
+        users_meta = {}
+    if isinstance(users_meta, dict):
+        user_data = users_meta.get(uname, {})
+    else:
+        user_data = {}
+    raw_path = str(user_data.get('path') or '').strip() if isinstance(user_data, dict) else ''
+    if not raw_path:
+        return os.path.join(DATA_DIR, 'users', uname)
+    if os.path.isabs(raw_path):
+        return raw_path
+    return os.path.normpath(os.path.join(BASE_DIR, raw_path))
+
+
+def _user_skill_settings_path(username: str) -> str:
+    return os.path.join(_resolve_user_base_path(username), 'skill_settings.json')
+
+
+def _load_user_skill_settings(username: str) -> Dict[str, Any]:
+    path = _user_skill_settings_path(username)
+    defaults = {'skill_modes': {}}
+    if not os.path.exists(path):
+        return defaults
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception:
+        return defaults
+    if not isinstance(data, dict):
+        return defaults
+    out_modes: Dict[str, str] = {}
+    modes_raw = data.get('skill_modes', {})
+    if isinstance(modes_raw, dict):
+        for k, v in modes_raw.items():
+            sid = _skill_slug(k, fallback='').strip()
+            if sid == 'skill' and str(k or '').strip() == '':
+                sid = ''
+            if not sid:
+                continue
+            out_modes[sid] = _normalize_skill_mode(v)
+
+    # 兼容旧格式：{mode, enabled_skill_ids}
+    if not out_modes:
+        legacy_mode = _normalize_skill_mode(data.get('mode', 'off'))
+        enabled_raw = data.get('enabled_skill_ids', [])
+        if isinstance(enabled_raw, list):
+            for item in enabled_raw:
+                sid = _skill_slug(item, fallback='').strip()
+                if sid == 'skill' and str(item or '').strip() == '':
+                    sid = ''
+                if not sid:
+                    continue
+                out_modes[sid] = legacy_mode
+
+    return {'skill_modes': out_modes}
+
+
+def _save_user_skill_settings(username: str, settings: Dict[str, Any]) -> Dict[str, Any]:
+    path = _user_skill_settings_path(username)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    skill_modes_raw = (settings or {}).get('skill_modes', {})
+    skill_modes: Dict[str, str] = {}
+    if isinstance(skill_modes_raw, dict):
+        for k, v in skill_modes_raw.items():
+            sid = _skill_slug(k, fallback='').strip()
+            if sid == 'skill' and str(k or '').strip() == '':
+                sid = ''
+            if not sid:
+                continue
+            skill_modes[sid] = _normalize_skill_mode(v)
+    payload = {'skill_modes': skill_modes}
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return payload
+
+
+def _build_user_skill_runtime(username: str) -> Dict[str, Any]:
+    catalog = _load_skill_catalog()
+    settings = _load_user_skill_settings(username)
+    skill_modes = settings.get('skill_modes', {}) if isinstance(settings.get('skill_modes', {}), dict) else {}
+    normalized_modes: Dict[str, str] = {}
+    for k, v in skill_modes.items():
+        sid = _skill_slug(k, fallback='').strip()
+        if sid == 'skill' and str(k or '').strip() == '':
+            sid = ''
+        if not sid:
+            continue
+        normalized_modes[sid] = _normalize_skill_mode(v)
+
+    enabled_ids: Set[str] = set()
+    skills_with_state: List[Dict[str, Any]] = []
+    active_skills: List[Dict[str, Any]] = []
+    for item in catalog:
+        sid = str(item.get('id') or '').strip()
+        item_mode = _normalize_skill_mode(
+            normalized_modes.get(sid, item.get('mode', 'off'))
+        )
+        enabled = item_mode != 'off'
+        if enabled:
+            enabled_ids.add(sid)
+        row = dict(item)
+        row['mode'] = item_mode
+        row['enabled'] = enabled
+        skills_with_state.append(row)
+        if enabled:
+            active_skills.append({
+                'id': sid,
+                'title': str(item.get('title') or '').strip(),
+                'required_tools': list(item.get('required_tools', []) or []),
+                'mode': item_mode,
+                'author': str(item.get('author') or '').strip(),
+                'release_date': str(item.get('release_date') or '').strip(),
+                'version': str(item.get('version') or '').strip(),
+                'update_date': str(item.get('update_date') or '').strip(),
+                'main_content': str(item.get('main_content') or '').strip()
+            })
+    return {
+        'mode': 'per_skill',
+        'skill_modes': normalized_modes,
+        'enabled_skill_ids': sorted(list(enabled_ids)),
+        'skills': skills_with_state,
+        'active_skills': active_skills
+    }
 
 
 def build_permission_hint_by_role(role: str) -> str:
@@ -4155,6 +4530,135 @@ def get_user_preferences():
         return jsonify({'success': False, 'message': '获取偏好设置失败'}), 500
 
 
+@app.route('/api/skills/list', methods=['GET'])
+@require_login
+def get_skill_catalog_api():
+    username = session.get('username')
+    if not username:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+    try:
+        runtime = _build_user_skill_runtime(username)
+        return jsonify({
+            'success': True,
+            'mode': runtime.get('mode', 'per_skill'),
+            'skill_modes': runtime.get('skill_modes', {}),
+            'enabled_skill_ids': runtime.get('enabled_skill_ids', []),
+            'skills': runtime.get('skills', []),
+            'active_skills': runtime.get('active_skills', [])
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/skills/settings', methods=['PUT'])
+@require_login
+def update_skill_settings_api():
+    username = session.get('username')
+    if not username:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+    data = request.get_json(silent=True) or {}
+    try:
+        runtime = _build_user_skill_runtime(username)
+        known_ids = {
+            str(item.get('id') or '').strip()
+            for item in (runtime.get('skills', []) or [])
+            if isinstance(item, dict)
+        }
+        skill_modes_payload: Dict[str, str] = {}
+        raw_modes = data.get('skill_modes')
+        if isinstance(raw_modes, dict):
+            for k, v in raw_modes.items():
+                sid = _skill_slug(k, fallback='').strip()
+                if sid == 'skill' and str(k or '').strip() == '':
+                    sid = ''
+                if (not sid) or (sid not in known_ids):
+                    continue
+                skill_modes_payload[sid] = _normalize_skill_mode(v)
+        else:
+            # backward compatibility: old payload { mode, enabled_skill_ids }
+            compat_mode = _normalize_skill_mode(data.get('mode', 'off'))
+            compat_enabled = data.get('enabled_skill_ids', [])
+            if isinstance(compat_enabled, list):
+                for item in compat_enabled:
+                    sid = _skill_slug(item, fallback='').strip()
+                    if sid == 'skill' and str(item or '').strip() == '':
+                        sid = ''
+                    if (not sid) or (sid not in known_ids):
+                        continue
+                    skill_modes_payload[sid] = compat_mode
+
+        saved = _save_user_skill_settings(username, {
+            'skill_modes': skill_modes_payload
+        })
+        next_runtime = _build_user_skill_runtime(username)
+        return jsonify({
+            'success': True,
+            'mode': 'per_skill',
+            'skill_modes': saved.get('skill_modes', {}),
+            'enabled_skill_ids': next_runtime.get('enabled_skill_ids', []),
+            'skills': next_runtime.get('skills', []),
+            'active_skills': next_runtime.get('active_skills', [])
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/skills/upsert', methods=['PUT'])
+@require_admin
+def upsert_skill_catalog_item_api():
+    data = request.get_json(silent=True) or {}
+    skill_raw = data.get('skill')
+    if skill_raw is None:
+        # Backward compatibility: accept direct skill object at root.
+        if any(k in data for k in ('title', 'id', 'main_content', 'required_tools', 'mode')):
+            skill_raw = data
+    if not isinstance(skill_raw, dict):
+        text_payload = str(data.get('skill_text') or data.get('text') or '').strip()
+        if not text_payload:
+            return jsonify({'success': False, 'message': 'skill 参数无效'}), 400
+        parsed = _parse_skill_text(text_payload, source='api')
+        if not parsed:
+            return jsonify({'success': False, 'message': 'skill_text 解析失败'}), 400
+        skill_raw = parsed
+        custom_id = str(data.get('skill_id') or data.get('id') or '').strip()
+        if custom_id:
+            skill_raw['id'] = custom_id
+    has_mode_field = 'mode' in skill_raw
+    try:
+        catalog = _load_skill_catalog()
+        incoming = _normalize_skill_catalog_item(skill_raw, index=len(catalog))
+        if not incoming:
+            return jsonify({'success': False, 'message': 'title 不能为空'}), 400
+        incoming['update_date'] = datetime.now().strftime('%Y-%m-%d')
+
+        target_id = str(incoming.get('id') or '').strip()
+        replaced = False
+        next_catalog: List[Dict[str, Any]] = []
+        for row in catalog:
+            if not isinstance(row, dict):
+                continue
+            rid = str(row.get('id') or '').strip()
+            if rid == target_id:
+                merged = dict(row)
+                merged.update(incoming)
+                if not has_mode_field:
+                    merged['mode'] = _normalize_skill_mode(row.get('mode', 'off'))
+                if not str(merged.get('release_date') or '').strip():
+                    merged['release_date'] = datetime.now().strftime('%Y-%m-%d')
+                next_catalog.append(merged)
+                replaced = True
+            else:
+                next_catalog.append(row)
+        if not replaced:
+            if not str(incoming.get('release_date') or '').strip():
+                incoming['release_date'] = datetime.now().strftime('%Y-%m-%d')
+            next_catalog.append(incoming)
+        _save_skill_catalog(next_catalog)
+        return jsonify({'success': True, 'skill': incoming})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
 # ==================== 管理后台 API ====================
 
 @app.route('/api/admin/users', methods=['GET'])
@@ -6347,6 +6851,9 @@ def chat_stream():
     enable_web_search = data.get('enable_web_search', True)
     enable_tools = data.get('enable_tools', True)
     raw_tool_mode = data.get('tool_mode')
+    raw_skill_mode = data.get('skill_mode')
+    raw_skill_modes = data.get('skill_modes')
+    raw_active_tool_skills = data.get('active_tool_skills')
     allow_history_images = _as_bool(data.get('allow_history_images', True), True)
     include_context = _as_bool(data.get('include_context', True), True)
     force_context_compression = _as_bool(data.get('force_context_compression', False), False)
@@ -6411,6 +6918,41 @@ def chat_stream():
         return jsonify({'success': False, 'message': '消息不能为空'})
     
     username = session['username']
+    skill_mode = 'force'
+    skill_runtime: Dict[str, Any] = {}
+    active_tool_skills = []
+    try:
+        skill_runtime = _build_user_skill_runtime(username)
+        active_tool_skills = skill_runtime.get('active_skills', [])
+    except Exception:
+        skill_mode = 'force'
+        active_tool_skills = []
+    if isinstance(raw_active_tool_skills, list):
+        active_tool_skills = raw_active_tool_skills
+        if raw_skill_mode is not None:
+            skill_mode = _normalize_skill_mode(raw_skill_mode)
+    elif isinstance(raw_skill_modes, dict):
+        # Optional request-level override by per-skill mode map.
+        runtime_skills = skill_runtime.get('skills', []) if isinstance(skill_runtime, dict) else []
+        next_active: List[Dict[str, Any]] = []
+        for row in (runtime_skills or []):
+            if not isinstance(row, dict):
+                continue
+            sid = str(row.get('id') or '').strip()
+            if not sid:
+                continue
+            override_mode = raw_skill_modes.get(sid, row.get('mode', 'off'))
+            mode = _normalize_skill_mode(override_mode)
+            if mode == 'off':
+                continue
+            merged = dict(row)
+            merged['mode'] = mode
+            next_active.append(merged)
+        active_tool_skills = next_active
+        skill_mode = 'force'
+    elif raw_skill_mode is not None:
+        # Legacy global override fallback.
+        skill_mode = _normalize_skill_mode(raw_skill_mode)
     
     # --- 模型权限校验 ---
     try:
@@ -6514,7 +7056,9 @@ def chat_stream():
                 sandbox_paths=sanitized_sandbox_paths,
                 user_attachments=sanitized_user_attachments,
                 is_regenerate=is_regenerate,
-                regenerate_index=regenerate_index
+                regenerate_index=regenerate_index,
+                skill_mode=skill_mode,
+                active_tool_skills=active_tool_skills
             ):
                 if log_all_chunks:
                     _log_stream_chunk(chunk, model_name=model_name or model.model_name)
@@ -6962,6 +7506,8 @@ def get_token_stats():
                 messages = convo.get('messages', []) if isinstance(convo, dict) else []
                 io_input_total = 0
                 io_output_total = 0
+                io_today_input = 0
+                io_today_output = 0
                 io_today_total = 0
                 io_found = False
                 today_str = time.strftime("%Y-%m-%d", time.localtime())
@@ -6987,6 +7533,8 @@ def get_token_stats():
 
                     ts = str(msg.get('timestamp', '') or '')
                     if ts.startswith(today_str):
+                        io_today_input += in_tok
+                        io_today_output += out_tok
                         io_today_total += (in_tok + out_tok)
 
                 if io_found:
@@ -6997,6 +7545,8 @@ def get_token_stats():
                         'input_total': io_input_total,
                         'output_total': io_output_total,
                         'total': io_input_total + io_output_total,
+                        'today_input': io_today_input,
+                        'today_output': io_today_output,
                         'today': io_today_total,
                         'history': logs[:20]
                     })
@@ -7007,6 +7557,8 @@ def get_token_stats():
         input_total = 0
         output_total = 0
         total_tokens = 0
+        today_input_tokens = 0
+        today_output_tokens = 0
         today_tokens = 0
         
         # Calculate stats
@@ -7024,6 +7576,8 @@ def get_token_stats():
             total_tokens += log_total
 
             if log.get('timestamp', '').startswith(today_str):
+                today_input_tokens += in_tokens
+                today_output_tokens += out_tokens
                 today_tokens += log_total
                 
         return jsonify({
@@ -7032,6 +7586,8 @@ def get_token_stats():
             'input_total': input_total,
             'output_total': output_total,
             'total': total_tokens,
+            'today_input': today_input_tokens,
+            'today_output': today_output_tokens,
             'today': today_tokens,
             'history': logs[:20]  # Optional: return recent logs if needed
         })

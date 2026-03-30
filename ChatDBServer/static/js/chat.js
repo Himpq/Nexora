@@ -238,6 +238,28 @@ let trashViewState = {
 };
 let authRedirectInProgress = false;
 let logoutRequestInFlight = false;
+let skillSettingsState = {
+    skillModes: {},
+    skills: [],
+    activeSkills: [],
+    loaded: false,
+    loading: false
+};
+let skillEditorState = {
+    skillId: '',
+    saving: false
+};
+let skillModeFloatingMenuEl = null;
+let skillModeFloatingAnchorEl = null;
+let skillModeFloatingDocHandler = null;
+let skillModeFloatingViewportHandler = null;
+
+function normalizeSkillModeValue(raw) {
+    const token = String(raw || '').trim().toLowerCase();
+    if (token === 'force') return 'force';
+    if (token === 'auto' || token === 'auto_tools' || token === 'auto(tools)') return 'auto';
+    return 'off';
+}
 
 function setHoverProxyMessage(target) {
     if (hoverProxyMessageEl === target) return;
@@ -3757,6 +3779,14 @@ const els = {
     trashList: document.getElementById('trashList'),
     logoutLink: document.getElementById('logoutLink'),
     adminLink: document.getElementById('adminBackendBtn'),
+    settingsSkillList: document.getElementById('settingsSkillList'),
+    skillEditorModal: document.getElementById('skillEditorModal'),
+    skillEditorTitle: document.getElementById('skillEditorTitle'),
+    skillEditorTools: document.getElementById('skillEditorTools'),
+    skillEditorContent: document.getElementById('skillEditorContent'),
+    closeSkillEditorBtn: document.getElementById('closeSkillEditorBtn'),
+    cancelSkillEditorBtn: document.getElementById('cancelSkillEditorBtn'),
+    saveSkillEditorBtn: document.getElementById('saveSkillEditorBtn'),
     adminModal: document.getElementById('adminModal'),
     closeAdminBtn: document.getElementById('closeAdminBtn'),
     userTableBody: document.getElementById('userTableBody'),
@@ -7487,6 +7517,21 @@ function initUI() {
             await saveAdminConfigModal();
         });
     }
+
+    if (els.closeSkillEditorBtn) {
+        els.closeSkillEditorBtn.addEventListener('click', closeSkillEditorModal);
+    }
+    if (els.cancelSkillEditorBtn) {
+        els.cancelSkillEditorBtn.addEventListener('click', closeSkillEditorModal);
+    }
+    if (els.saveSkillEditorBtn) {
+        els.saveSkillEditorBtn.addEventListener('click', () => {
+            void saveSkillEditorModal();
+        });
+    }
+    if (els.skillEditorModal) {
+        bindBackdropSafeClose(els.skillEditorModal, closeSkillEditorModal);
+    }
 }
 
 function safeTokenInt(v) {
@@ -8197,8 +8242,8 @@ async function refreshTokenMiniForConversation(conversationId, options = {}) {
         const data = await res.json();
         if (reqId !== tokenMiniState.requestSeq) return;
         if (!data || !data.success) return;
-        tokenMiniState.baseInput = safeTokenInt(data.input_total);
-        tokenMiniState.baseOutput = safeTokenInt(data.output_total);
+        tokenMiniState.baseInput = safeTokenInt(data.today_input ?? data.input_today ?? data.input_total);
+        tokenMiniState.baseOutput = safeTokenInt(data.today_output ?? data.output_today ?? data.output_total);
         renderTokenMiniFromState();
     } catch (e) {
         console.error('Error loading conversation token stats', e);
@@ -8934,7 +8979,7 @@ function closeToolsModeDropdown() {
 }
 
 function positionToolsModeMenuForMobile() {
-    if (!els.toolsModeMenu || !els.toolsModeTrigger) return;
+    if (!els.toolsModeMenu || !els.toolsModeTrigger || !els.toolsModeDropdown) return;
     if (!isChatMobileLayout()) {
         els.toolsModeMenu.style.position = '';
         els.toolsModeMenu.style.left = '';
@@ -8944,26 +8989,12 @@ function positionToolsModeMenuForMobile() {
         els.toolsModeMenu.style.zIndex = '';
         return;
     }
-    const triggerRect = els.toolsModeTrigger.getBoundingClientRect();
     const menu = els.toolsModeMenu;
-    const vw = Math.max(0, window.innerWidth || document.documentElement.clientWidth || 0);
-    const vh = Math.max(0, window.innerHeight || document.documentElement.clientHeight || 0);
-    const menuW = Math.max(148, Number(menu.offsetWidth || 148));
-    const menuH = Math.max(124, Number(menu.offsetHeight || 124));
-
-    let left = Math.round(triggerRect.right - menuW);
-    left = Math.max(8, Math.min(left, Math.max(8, vw - menuW - 8)));
-    let top = Math.round(triggerRect.top - menuH - 8);
-    if (top < 8) {
-        top = Math.round(triggerRect.bottom + 8);
-        top = Math.max(8, Math.min(top, Math.max(8, vh - menuH - 8)));
-    }
-
-    menu.style.position = 'fixed';
-    menu.style.left = `${left}px`;
-    menu.style.top = `${top}px`;
-    menu.style.right = 'auto';
-    menu.style.bottom = 'auto';
+    menu.style.position = 'absolute';
+    menu.style.left = 'auto';
+    menu.style.right = '0';
+    menu.style.top = 'auto';
+    menu.style.bottom = 'calc(100% + 8px)';
     menu.style.zIndex = '9200';
 }
 
@@ -18801,6 +18832,7 @@ async function openSettingsModal() {
 
         // 加载用户数据
         await loadUserSettings();
+        await loadSkillSettings(true);
     } catch (e) {
         console.error('打开设置模态框失败:', e);
         showToast('加载设置失败');
@@ -18824,6 +18856,7 @@ function closeSettingsModal() {
         settingsModal.classList.remove('active');
         settingsModal.classList.remove('perf-mode');
     }
+    closeSkillEditorModal();
 }
 
 function initSettingsTabs() {
@@ -18882,6 +18915,455 @@ function switchSettingsTab(tabName) {
     }
     if (tabName === 'admin-chroma') {
         loadAdminChromaStats();
+    }
+    if (tabName === 'skills') {
+        void loadSkillSettings(true);
+    }
+}
+
+function getSettingsSkillListEl() {
+    return els.settingsSkillList || document.getElementById('settingsSkillList');
+}
+
+function getSkillModeMapFromState() {
+    const src = (skillSettingsState && typeof skillSettingsState.skillModes === 'object')
+        ? skillSettingsState.skillModes
+        : {};
+    const out = {};
+    Object.keys(src).forEach((key) => {
+        const sid = String(key || '').trim();
+        if (!sid) return;
+        out[sid] = normalizeSkillModeValue(src[key]);
+    });
+    return out;
+}
+
+function buildSkillPreviewText(raw, limit = 180) {
+    const src = String(raw || '').replace(/\r\n/g, '\n').replace(/\s+/g, ' ').trim();
+    if (!src) return '（暂无内容）';
+    if (src.length <= limit) return src;
+    return `${src.slice(0, limit)}...`;
+}
+
+function formatSkillModeShortLabel(mode) {
+    const normalized = normalizeSkillModeValue(mode);
+    if (normalized === 'force') return 'Force';
+    if (normalized === 'auto') return 'Auto';
+    return 'Off';
+}
+
+function resolveSkillCardIcon(item) {
+    const title = String(item && item.title ? item.title : '').toLowerCase();
+    const tools = Array.isArray(item && item.required_tools)
+        ? item.required_tools.map((x) => String(x || '').toLowerCase())
+        : [];
+    const merged = `${title} ${tools.join(' ')}`;
+    if (/mail|email|smtp|imap/.test(merged)) return '✉️';
+    if (/web|search|crawl|browser/.test(merged)) return '🔎';
+    if (/file|upload|sandbox|document/.test(merged)) return '🧩';
+    if (/code|python|js|tool/.test(merged)) return '🛠️';
+    return '✨';
+}
+
+function closeSkillModeDropdowns(targetList = null) {
+    const listEl = targetList || getSettingsSkillListEl();
+    if (listEl) {
+        listEl.querySelectorAll('.settings-skill-mode-dropdown.open').forEach((node) => {
+            node.classList.remove('open');
+            const trigger = node.querySelector('.settings-skill-mode-trigger');
+            if (trigger) trigger.setAttribute('aria-expanded', 'false');
+        });
+    }
+    if (skillModeFloatingDocHandler) {
+        document.removeEventListener('pointerdown', skillModeFloatingDocHandler, true);
+        skillModeFloatingDocHandler = null;
+    }
+    if (skillModeFloatingViewportHandler) {
+        window.removeEventListener('resize', skillModeFloatingViewportHandler);
+        window.removeEventListener('scroll', skillModeFloatingViewportHandler, true);
+        skillModeFloatingViewportHandler = null;
+    }
+    if (skillModeFloatingMenuEl && skillModeFloatingMenuEl.parentNode) {
+        skillModeFloatingMenuEl.parentNode.removeChild(skillModeFloatingMenuEl);
+    }
+    skillModeFloatingMenuEl = null;
+    skillModeFloatingAnchorEl = null;
+}
+
+function positionSkillModeFloatingMenu(triggerEl, menuEl) {
+    if (!triggerEl || !menuEl) return;
+    const rect = triggerEl.getBoundingClientRect();
+    const vw = Math.max(0, window.innerWidth || document.documentElement.clientWidth || 0);
+    const vh = Math.max(0, window.innerHeight || document.documentElement.clientHeight || 0);
+    const menuW = Math.max(120, Number(menuEl.offsetWidth || 120));
+    const menuH = Math.max(110, Number(menuEl.offsetHeight || 110));
+
+    const minLeft = 8;
+    const maxLeft = Math.max(8, vw - menuW - 8);
+    let left = Math.round(rect.right - menuW);
+    left = Math.max(minLeft, Math.min(left, maxLeft));
+
+    const minTop = 8;
+    const maxTop = Math.max(8, vh - menuH - 8);
+    const preferredTop = Math.round(rect.bottom + 8);
+    let top = preferredTop;
+    if (top > maxTop) {
+        const aboveTop = Math.round(rect.top - menuH - 8);
+        const canPlaceAboveNearTrigger = aboveTop >= minTop && rect.top > (menuH + 18);
+        top = canPlaceAboveNearTrigger ? aboveTop : maxTop;
+    }
+    top = Math.max(minTop, Math.min(top, maxTop));
+
+    menuEl.style.left = `${left}px`;
+    menuEl.style.top = `${top}px`;
+}
+
+function openSkillModeFloatingMenu(skillId, triggerEl, listEl) {
+    const sid = String(skillId || '').trim();
+    if (!sid || !triggerEl) return;
+    const modeMap = getSkillModeMapFromState();
+    const mode = normalizeSkillModeValue(modeMap[sid] || 'off');
+
+    const shouldToggleOff = skillModeFloatingAnchorEl === triggerEl && !!skillModeFloatingMenuEl;
+    closeSkillModeDropdowns(listEl);
+    if (shouldToggleOff) return;
+
+    const dropdown = triggerEl.closest('.settings-skill-mode-dropdown');
+    if (dropdown) dropdown.classList.add('open');
+    triggerEl.setAttribute('aria-expanded', 'true');
+
+    const menu = document.createElement('div');
+    menu.className = 'tool-mode-menu settings-skill-mode-floating';
+    menu.setAttribute('role', 'listbox');
+    menu.setAttribute('aria-label', 'Skill mode');
+    menu.innerHTML = `
+        <button type="button" class="tool-mode-item settings-skill-mode-item ${mode === 'force' ? 'active' : ''}" data-mode="force" role="option" aria-selected="${mode === 'force' ? 'true' : 'false'}">Force</button>
+        <button type="button" class="tool-mode-item settings-skill-mode-item ${mode === 'auto' ? 'active' : ''}" data-mode="auto" role="option" aria-selected="${mode === 'auto' ? 'true' : 'false'}">Auto</button>
+        <button type="button" class="tool-mode-item settings-skill-mode-item ${mode === 'off' ? 'active' : ''}" data-mode="off" role="option" aria-selected="${mode === 'off' ? 'true' : 'false'}">Off</button>
+    `;
+    menu.style.position = 'fixed';
+    menu.style.right = 'auto';
+    menu.style.bottom = 'auto';
+    menu.style.zIndex = '9600';
+    menu.style.display = 'grid';
+    menu.style.gap = '6px';
+    document.body.appendChild(menu);
+    positionSkillModeFloatingMenu(triggerEl, menu);
+
+    menu.querySelectorAll('.settings-skill-mode-item').forEach((btn) => {
+        btn.addEventListener('click', async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const nextMode = normalizeSkillModeValue(btn.dataset.mode || 'off');
+            const nextMap = getSkillModeMapFromState();
+            nextMap[sid] = nextMode;
+            await saveSkillModesState(nextMap);
+            closeSkillModeDropdowns(listEl);
+        });
+    });
+
+    skillModeFloatingMenuEl = menu;
+    skillModeFloatingAnchorEl = triggerEl;
+
+    skillModeFloatingDocHandler = (evt) => {
+        const t = evt && evt.target;
+        if (t && (menu.contains(t) || triggerEl.contains(t))) return;
+        closeSkillModeDropdowns(listEl);
+    };
+    document.addEventListener('pointerdown', skillModeFloatingDocHandler, true);
+
+    skillModeFloatingViewportHandler = () => {
+        if (!skillModeFloatingMenuEl || !skillModeFloatingAnchorEl) return;
+        positionSkillModeFloatingMenu(skillModeFloatingAnchorEl, skillModeFloatingMenuEl);
+    };
+    window.addEventListener('resize', skillModeFloatingViewportHandler);
+    window.addEventListener('scroll', skillModeFloatingViewportHandler, true);
+}
+
+function findSkillById(skillId) {
+    const sid = String(skillId || '').trim();
+    if (!sid) return null;
+    const arr = Array.isArray(skillSettingsState.skills) ? skillSettingsState.skills : [];
+    return arr.find((item) => String(item && item.id ? item.id : '').trim() === sid) || null;
+}
+
+function closeSkillEditorModal() {
+    const modal = els.skillEditorModal || document.getElementById('skillEditorModal');
+    if (modal) modal.classList.remove('active');
+    skillEditorState.skillId = '';
+    skillEditorState.saving = false;
+    if (els.saveSkillEditorBtn) {
+        els.saveSkillEditorBtn.disabled = false;
+        els.saveSkillEditorBtn.style.display = '';
+    }
+}
+
+function openSkillEditorModal(skillId) {
+    const sid = String(skillId || '').trim();
+    if (!sid) return;
+    const skill = findSkillById(sid);
+    if (!skill) {
+        showToast('Skill 不存在');
+        return;
+    }
+    const modal = els.skillEditorModal || document.getElementById('skillEditorModal');
+    if (!modal) return;
+    const titleEl = els.skillEditorTitle || document.getElementById('skillEditorTitle');
+    const toolsEl = els.skillEditorTools || document.getElementById('skillEditorTools');
+    const contentEl = els.skillEditorContent || document.getElementById('skillEditorContent');
+    const saveBtn = els.saveSkillEditorBtn || document.getElementById('saveSkillEditorBtn');
+    const canEditCatalog = String(currentUserRole || 'member').toLowerCase() === 'admin';
+    if (titleEl) {
+        titleEl.textContent = `${canEditCatalog ? '编辑' : '查看'} Skill · ${String(skill.title || sid)}`;
+    }
+    if (toolsEl) {
+        const tools = Array.isArray(skill.required_tools)
+            ? skill.required_tools.map((x) => String(x || '').trim()).filter(Boolean)
+            : [];
+        toolsEl.textContent = tools.length ? tools.join(', ') : '-';
+    }
+    if (contentEl) {
+        contentEl.value = String(skill.main_content || '');
+        contentEl.readOnly = !canEditCatalog;
+        contentEl.placeholder = canEditCatalog ? '输入 Skill 内容' : '仅管理员可编辑 Skill 内容';
+    }
+    skillEditorState.skillId = sid;
+    skillEditorState.saving = false;
+    if (saveBtn) {
+        saveBtn.disabled = !canEditCatalog;
+        saveBtn.style.display = canEditCatalog ? '' : 'none';
+    }
+    modal.classList.add('active');
+}
+
+async function saveSkillEditorModal() {
+    if (skillEditorState.saving) return;
+    const canEditCatalog = String(currentUserRole || 'member').toLowerCase() === 'admin';
+    if (!canEditCatalog) {
+        showToast('仅管理员可编辑 Skill 内容');
+        return;
+    }
+    const sid = String(skillEditorState.skillId || '').trim();
+    if (!sid) return;
+    const contentEl = els.skillEditorContent || document.getElementById('skillEditorContent');
+    const content = String(contentEl && contentEl.value ? contentEl.value : '');
+    skillEditorState.saving = true;
+    if (els.saveSkillEditorBtn) els.saveSkillEditorBtn.disabled = true;
+    try {
+        await saveSkillContentById(sid, content, null);
+        closeSkillEditorModal();
+    } finally {
+        skillEditorState.saving = false;
+        if (els.saveSkillEditorBtn) els.saveSkillEditorBtn.disabled = false;
+    }
+}
+
+function renderSkillList() {
+    const listEl = getSettingsSkillListEl();
+    if (!listEl) return;
+    closeSkillModeDropdowns(listEl);
+    const skills = Array.isArray(skillSettingsState.skills) ? skillSettingsState.skills : [];
+    if (!skills.length) {
+        listEl.innerHTML = '<div class="settings-skill-empty">暂无 Skill</div>';
+        return;
+    }
+    const canEditCatalog = String(currentUserRole || 'member').toLowerCase() === 'admin';
+    const modeMap = getSkillModeMapFromState();
+
+    listEl.innerHTML = skills.map((item) => {
+        const sid = String(item && item.id ? item.id : '').trim();
+        const title = String(item && item.title ? item.title : sid).trim();
+        const preview = buildSkillPreviewText(item && item.main_content ? item.main_content : '');
+        const mode = normalizeSkillModeValue(modeMap[sid] || item.mode || 'off');
+        const icon = resolveSkillCardIcon(item);
+        const requiredTools = Array.isArray(item && item.required_tools)
+            ? item.required_tools.map((x) => String(x || '').trim()).filter(Boolean)
+            : [];
+        const badgeText = requiredTools.length
+            ? (requiredTools.length > 1 ? `${requiredTools[0]} +${requiredTools.length - 1}` : requiredTools[0])
+            : '无工具约束';
+        const modeText = formatSkillModeShortLabel(mode);
+        return `
+            <div class="settings-skill-card" data-skill-id="${escapeHtml(sid)}">
+                <div class="settings-skill-top">
+                    <div class="settings-skill-icon" aria-hidden="true">${escapeHtml(icon)}</div>
+                    <div class="settings-skill-main" data-action="open-skill-editor" data-skill-id="${escapeHtml(sid)}" role="button" tabindex="0">
+                        <div class="settings-skill-title">${escapeHtml(title)}</div>
+                        <div class="settings-skill-preview">${escapeHtml(preview)}</div>
+                    </div>
+                    <div class="settings-skill-controls">
+                        <span class="settings-skill-mode-label">Mode</span>
+                        <div class="tool-mode-dropdown settings-skill-mode-dropdown" data-skill-id="${escapeHtml(sid)}">
+                            <button
+                                type="button"
+                                class="tool-mode-trigger settings-skill-mode-trigger"
+                                data-action="toggle-skill-mode-menu"
+                                data-skill-id="${escapeHtml(sid)}"
+                                aria-haspopup="listbox"
+                                aria-expanded="false"
+                            >
+                                <span class="settings-skill-mode-text">${escapeHtml(modeText)}</span>
+                                <i class="fa-solid fa-chevron-up"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="settings-skill-divider"></div>
+                <div class="settings-skill-footer">
+                    <span class="settings-skill-badge" title="${escapeHtml(requiredTools.join(', '))}">${escapeHtml(badgeText)}</span>
+                    <button type="button" class="settings-skill-edit-dot" data-action="open-skill-editor" data-skill-id="${escapeHtml(sid)}" title="${canEditCatalog ? '编辑 Skill' : '查看 Skill'}">⋯</button>
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    listEl.querySelectorAll('[data-action="toggle-skill-mode-menu"]').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const sid = String(btn.dataset.skillId || '').trim();
+            if (!sid) return;
+            openSkillModeFloatingMenu(sid, btn, listEl);
+        });
+    });
+
+    listEl.querySelectorAll('[data-action="open-skill-editor"]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+            const sid = String(btn.dataset.skillId || '').trim();
+            if (!sid) return;
+            openSkillEditorModal(sid);
+        });
+        btn.addEventListener('keydown', (e) => {
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            e.preventDefault();
+            const sid = String(btn.dataset.skillId || '').trim();
+            if (!sid) return;
+            openSkillEditorModal(sid);
+        });
+    });
+
+    if (listEl.dataset.skillModeDocBound !== '1') {
+        listEl.dataset.skillModeDocBound = '1';
+        document.addEventListener('click', (e) => {
+            if (!listEl.contains(e.target)) {
+                closeSkillModeDropdowns(listEl);
+            }
+        });
+    }
+}
+
+function applySkillSettingsPayload(data) {
+    const payload = (data && typeof data === 'object') ? data : {};
+    skillSettingsState.skills = Array.isArray(payload.skills) ? payload.skills : [];
+    skillSettingsState.activeSkills = Array.isArray(payload.active_skills) ? payload.active_skills : [];
+    const nextModes = {};
+    const rawMap = (payload.skill_modes && typeof payload.skill_modes === 'object') ? payload.skill_modes : {};
+    Object.keys(rawMap).forEach((key) => {
+        const sid = String(key || '').trim();
+        if (!sid) return;
+        nextModes[sid] = normalizeSkillModeValue(rawMap[key]);
+    });
+    if (!Object.keys(nextModes).length) {
+        skillSettingsState.skills.forEach((item) => {
+            if (!item || typeof item !== 'object') return;
+            const sid = String(item.id || '').trim();
+            if (!sid) return;
+            nextModes[sid] = normalizeSkillModeValue(item.mode || 'off');
+        });
+    }
+    skillSettingsState.skillModes = nextModes;
+    skillSettingsState.loaded = true;
+    renderSkillList();
+}
+
+async function loadSkillSettings(force = false) {
+    if (skillSettingsState.loading && !force) return;
+    skillSettingsState.loading = true;
+    try {
+        const res = await fetch('/api/skills/list', { credentials: 'include', cache: 'no-store' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.success) {
+            throw new Error(data.message || `HTTP ${res.status}`);
+        }
+        applySkillSettingsPayload(data);
+    } catch (e) {
+        const listEl = getSettingsSkillListEl();
+        if (listEl) {
+            listEl.innerHTML = `<div class="settings-skill-empty">加载失败：${escapeHtml(String((e && e.message) || e || 'unknown'))}</div>`;
+        }
+    } finally {
+        skillSettingsState.loading = false;
+    }
+}
+
+async function saveSkillModesState(skillModes) {
+    const src = (skillModes && typeof skillModes === 'object') ? skillModes : {};
+    const map = {};
+    Object.keys(src).forEach((key) => {
+        const sid = String(key || '').trim();
+        if (!sid) return;
+        map[sid] = normalizeSkillModeValue(src[key]);
+    });
+    try {
+        const res = await fetch('/api/skills/settings', {
+            method: 'PUT',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                skill_modes: map
+            })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.success) {
+            throw new Error(data.message || `HTTP ${res.status}`);
+        }
+        applySkillSettingsPayload(data);
+        showToast('Skill Mode 已更新');
+    } catch (e) {
+        showToast(`Skill Mode 保存失败: ${String((e && e.message) || e || 'unknown')}`);
+        await loadSkillSettings(true);
+    }
+}
+
+async function saveSkillContentById(skillId, content, actionBtn = null) {
+    const sid = String(skillId || '').trim();
+    if (!sid) return;
+    const btn = actionBtn || null;
+    if (btn) btn.disabled = true;
+    try {
+        const skill = (Array.isArray(skillSettingsState.skills) ? skillSettingsState.skills : [])
+            .find((item) => String(item && item.id ? item.id : '').trim() === sid);
+        if (!skill) {
+            showToast('Skill 不存在');
+            return;
+        }
+        const payload = {
+            id: sid,
+            title: String(skill.title || '').trim(),
+            required_tools: Array.isArray(skill.required_tools) ? skill.required_tools : [],
+            mode: normalizeSkillModeValue((getSkillModeMapFromState()[sid]) || skill.mode || 'off'),
+            author: String(skill.author || '').trim(),
+            release_date: String(skill.release_date || '').trim(),
+            version: String(skill.version || '').trim(),
+            update_date: String(skill.update_date || '').trim(),
+            main_content: String(content || '')
+        };
+        const res = await fetch('/api/skills/upsert', {
+            method: 'PUT',
+            credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ skill: payload })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.success) {
+            throw new Error(data.message || `HTTP ${res.status}`);
+        }
+        showToast('Skill 内容已保存');
+        await loadSkillSettings(true);
+    } catch (e) {
+        showToast(`Skill 保存失败: ${String((e && e.message) || e || 'unknown')}`);
+    } finally {
+        if (btn) btn.disabled = false;
     }
 }
 

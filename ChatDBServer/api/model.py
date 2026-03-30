@@ -81,6 +81,12 @@ if 'HTTPS_PROXY' in os.environ:
 # 全局客户端缓存，实现连接池复用 (Keep-Alive)
 _CLIENT_CACHE = {}
 _TOOL_USAGE_LOG_LOCK = threading.Lock()
+CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT = 60000
+CONTEXT_COMPRESSION_MAX_CHARS_MIN = 600
+CONTEXT_COMPRESSION_MAX_CHARS_MAX = 120000
+CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_DEFAULT = 1500000
+CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MIN = 50000
+CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MAX = 4000000
 
 def _ensure_json_serializable(obj):
     """
@@ -184,6 +190,33 @@ class Model:
         self.provider_display_name = provider_info.get('name', self.provider)
         self._context_window_limit_source = "unknown"
         self._context_window_limit_from_fallback_default = False
+        cfg_compress_chars = self.config.get("context_compression_max_chars", CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT)
+        env_compress_chars = os.environ.get("NEXORA_CONTEXT_COMPRESSION_MAX_CHARS", "").strip()
+        if env_compress_chars:
+            cfg_compress_chars = env_compress_chars
+        try:
+            cfg_compress_chars = int(cfg_compress_chars or CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT)
+        except Exception:
+            cfg_compress_chars = CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT
+        self._context_compression_max_chars = int(max(
+            CONTEXT_COMPRESSION_MAX_CHARS_MIN,
+            min(CONTEXT_COMPRESSION_MAX_CHARS_MAX, cfg_compress_chars)
+        ))
+        cfg_compress_history_chars = self.config.get(
+            "context_compression_history_max_chars",
+            CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_DEFAULT
+        )
+        env_compress_history_chars = os.environ.get("NEXORA_CONTEXT_COMPRESSION_HISTORY_MAX_CHARS", "").strip()
+        if env_compress_history_chars:
+            cfg_compress_history_chars = env_compress_history_chars
+        try:
+            cfg_compress_history_chars = int(cfg_compress_history_chars or CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_DEFAULT)
+        except Exception:
+            cfg_compress_history_chars = CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_DEFAULT
+        self._context_compression_history_max_chars = int(max(
+            CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MIN,
+            min(CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MAX, cfg_compress_history_chars)
+        ))
 
         self._provider_adapter_cache = {}
         self.provider_adapter = create_provider_adapter(self.provider, provider_info)
@@ -330,6 +363,100 @@ class Model:
             "以下信息用于理解用户偏好与背景，回答时可参考但不要逐字复述：\n"
             f"{profile_text}"
         )
+
+    def _normalize_skill_injection_mode(self, mode: Any) -> str:
+        token = str(mode or "").strip().lower()
+        if token in {"force", "always", "on", "1", "true"}:
+            return "force"
+        if token in {"auto", "auto_tools", "auto(tools)", "auto-tools", "auto_tool", "tools"}:
+            return "auto"
+        return "off"
+
+    def _normalize_active_tool_skills(self, items: Any) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        if not isinstance(items, list):
+            return out
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title", "") or "").strip()
+            content = str(item.get("main_content", "") or "").strip()
+            if not title or not content:
+                continue
+            required_tools_raw = item.get("required_tools", [])
+            if isinstance(required_tools_raw, list):
+                required_tools = [str(x).strip() for x in required_tools_raw if str(x).strip()]
+            else:
+                required_tools = [seg.strip() for seg in str(required_tools_raw or "").split(",") if seg.strip()]
+            out.append({
+                "title": title,
+                "required_tools": required_tools,
+                "main_content": content,
+                "mode": self._normalize_skill_injection_mode(item.get("mode", "force")),
+                "version": str(item.get("version", "") or "").strip(),
+                "author": str(item.get("author", "") or "").strip(),
+            })
+        return out
+
+    def _normalize_required_tool_names(self, raw_tools: Any) -> List[str]:
+        out: List[str] = []
+        seen: Set[str] = set()
+        values = raw_tools if isinstance(raw_tools, list) else []
+        for item in values:
+            token = canonicalize_tool_name(str(item or "").strip())
+            if not token:
+                continue
+            key = token.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(token)
+        return out
+
+    def _select_tool_skills_for_injection(
+        self,
+        mode: str,
+        active_skills: List[Dict[str, Any]]
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        global_mode = self._normalize_skill_injection_mode(mode)
+        skills = list(active_skills or [])
+        if global_mode == "off":
+            return [], {
+                "mode": "off",
+                "runtime_tools": [],
+                "total_active": len(skills),
+                "selected_count": 0
+            }
+
+        runtime_tools = set(self._runtime_function_tool_names_for_request() or set())
+        runtime_tools = {canonicalize_tool_name(x) for x in runtime_tools if canonicalize_tool_name(x)}
+        selected: List[Dict[str, Any]] = []
+
+        # Per-skill mode:
+        # - force: always inject
+        # - auto: inject only when required_tools intersects runtime enabled tools
+        # - off: never inject
+        for item in skills:
+            if not isinstance(item, dict):
+                continue
+            skill_mode = self._normalize_skill_injection_mode(item.get("mode") or global_mode)
+            if skill_mode == "off":
+                continue
+            if skill_mode == "force":
+                selected.append(item)
+                continue
+            required_tools = self._normalize_required_tool_names(item.get("required_tools", []))
+            if not required_tools:
+                continue
+            if any(name in runtime_tools for name in required_tools):
+                selected.append(item)
+
+        return selected, {
+            "mode": global_mode,
+            "runtime_tools": sorted(list(runtime_tools)),
+            "total_active": len(skills),
+            "selected_count": len(selected)
+        }
     
     def _get_default_web_search_prompt(self) -> str:
         """获取默认的联网搜索系统提示词"""
@@ -1206,6 +1333,55 @@ class Model:
         masked = pattern.sub(_repl, src)
         return masked, int(max(0, replaced_count))
 
+    def _content_to_text_for_context_compression(self, content: Any) -> str:
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: List[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    if item.strip():
+                        parts.append(item)
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                item_type = str(item.get("type", "") or "").strip().lower()
+                if item_type in {"text", "input_text", "output_text"}:
+                    text_val = item.get("text")
+                    if text_val is not None and str(text_val).strip():
+                        parts.append(str(text_val))
+                    continue
+                if item_type in {"image_url", "input_image"}:
+                    parts.append("[image]")
+                    continue
+                if item_type in {"input_file", "file"}:
+                    file_id = str(item.get("file_id", "") or item.get("id", "") or "").strip()
+                    parts.append(f"[file]{':' + file_id if file_id else ''}")
+                    continue
+                if isinstance(item.get("text"), str) and str(item.get("text")).strip():
+                    parts.append(str(item.get("text")))
+                    continue
+                if isinstance(item.get("content"), str) and str(item.get("content")).strip():
+                    parts.append(str(item.get("content")))
+            if parts:
+                return "\n".join(parts).strip()
+            try:
+                return json.dumps(content, ensure_ascii=False, default=str)
+            except Exception:
+                return str(content)
+        if isinstance(content, dict):
+            if isinstance(content.get("text"), str):
+                return str(content.get("text") or "")
+            if isinstance(content.get("content"), str):
+                return str(content.get("content") or "")
+            try:
+                return json.dumps(content, ensure_ascii=False, default=str)
+            except Exception:
+                return str(content)
+        return str(content)
+
     def _build_context_compression_memory_block(self, summary_text: str) -> str:
         summary = str(summary_text or "").strip()
         if not summary:
@@ -1217,6 +1393,7 @@ class Model:
         )
 
     def _format_messages_for_context_compression(self, messages: List[Dict[str, Any]]) -> str:
+        compact_mode = self._resolve_context_compact_mode()
         lines: List[str] = []
         for item in (messages or []):
             if not isinstance(item, dict):
@@ -1224,18 +1401,34 @@ class Model:
             role = str(item.get("role", "") or "").strip().upper()
             if role not in {"USER", "ASSISTANT"}:
                 continue
-            text = str(item.get("content", "") or "").strip()
+            compacted = self._compact_context_content(item.get("content", ""), compact_mode)
+            text = self._content_to_text_for_context_compression(compacted).strip()
             if not text:
                 continue
             lines.append(f"[{role}] {text}")
         text = "\n".join(lines).strip()
-        if len(text) <= 180000:
+        history_limit = int(max(
+            CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MIN,
+            min(
+                CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MAX,
+                int(getattr(self, "_context_compression_history_max_chars", CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_DEFAULT))
+            )
+        ))
+        if len(text) <= history_limit:
             return text
-        head = text[:60000]
-        tail = text[-110000:]
+        head_len = int(max(20000, min(history_limit - 5000, int(history_limit * 0.35))))
+        tail_len = int(max(30000, history_limit - head_len - 80))
+        if head_len + tail_len > history_limit:
+            tail_len = max(12000, history_limit - head_len - 80)
+        head = text[:head_len]
+        tail = text[-tail_len:]
         return f"{head}\n...[历史过长，已截断中段]...\n{tail}"
 
-    def _fallback_context_compression_summary(self, messages: List[Dict[str, Any]], max_chars: int = 1400) -> str:
+    def _fallback_context_compression_summary(self, messages: List[Dict[str, Any]], max_chars: int = CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT) -> str:
+        safe_max_chars = max(
+            CONTEXT_COMPRESSION_MAX_CHARS_MIN,
+            min(CONTEXT_COMPRESSION_MAX_CHARS_MAX, int(max_chars or CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT))
+        )
         snippets: List[str] = []
         for item in (messages or [])[-24:]:
             if not isinstance(item, dict):
@@ -1250,12 +1443,12 @@ class Model:
         merged = " | ".join(snippets).strip()
         if not merged:
             return "暂无可压缩的稳定上下文"
-        return merged[:max(300, int(max_chars or 1400))]
+        return merged[:safe_max_chars]
 
     def _run_context_compression_round(
         self,
         history_messages: List[Dict[str, Any]],
-        max_chars: int = 1400
+        max_chars: int = CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT
     ) -> Generator[Dict[str, Any], None, Dict[str, Any]]:
         """
         Run a dedicated compression completion with current model.
@@ -1270,16 +1463,26 @@ class Model:
         }
         """
         system_prompt = "你是对话上下文压缩器，只输出压缩后的上下文摘要。"
+        safe_max_chars = max(
+            CONTEXT_COMPRESSION_MAX_CHARS_MIN,
+            min(CONTEXT_COMPRESSION_MAX_CHARS_MAX, int(max_chars or CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT))
+        )
         history_text = self._format_messages_for_context_compression(history_messages)
-        prompt_text = prompts.build_context_compression_prompt(history_text, max_chars=max_chars)
+        prompt_text = prompts.build_context_compression_prompt(history_text, max_chars=safe_max_chars)
+        history_truncated = ("...[历史过长，已截断中段]..." in history_text)
         out: Dict[str, Any] = {
             "summary": "",
             "prompt_text": str(prompt_text or ""),
             "system_prompt": system_prompt,
+            "prompt_template": str(getattr(prompts, "context_compression_prompt_template", "") or ""),
+            "history_text": str(history_text or ""),
             "model_reply": "",
             "fallback_used": False,
             "error": "",
-            "history_chars": int(len(str(history_text or "")))
+            "history_chars": int(len(str(history_text or ""))),
+            "history_truncated": bool(history_truncated),
+            "history_limit_chars": int(getattr(self, "_context_compression_history_max_chars", CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_DEFAULT)),
+            "summary_max_chars": int(safe_max_chars)
         }
 
         if not history_text:
@@ -1334,7 +1537,7 @@ class Model:
         final_stream_text = str(stream_text or "").strip()
         if final_stream_text:
             out["model_reply"] = final_stream_text
-            out["summary"] = final_stream_text[:max(300, min(6000, int(max_chars or 1400)))]
+            out["summary"] = final_stream_text[:safe_max_chars]
             return out
 
         try:
@@ -1356,7 +1559,7 @@ class Model:
                         "chars": int(len(text)),
                         "from_stream": False
                     }
-                out["summary"] = text[:max(300, min(6000, int(max_chars or 1400)))]
+                out["summary"] = text[:safe_max_chars]
                 return out
         except Exception as e:
             print(f"[CTX_COMPRESS] model compression round failed: {e}")
@@ -1364,7 +1567,7 @@ class Model:
             yield {"type": "error", "error": out["error"], "from_stream": False}
 
         out["fallback_used"] = True
-        out["summary"] = self._fallback_context_compression_summary(history_messages, max_chars=max_chars)
+        out["summary"] = self._fallback_context_compression_summary(history_messages, max_chars=safe_max_chars)
         return out
 
     def _prefix_suffix_overlap(self, previous: str, current: str, max_window: int = 12000) -> int:
@@ -2855,7 +3058,10 @@ class Model:
         regenerate_index: int = None,
         allow_history_images: bool = True,
         include_context: bool = True,
-        force_context_compression: bool = False
+        force_context_compression: bool = False,
+        skill_mode: str = "off",
+        active_tool_skills: Optional[List[Dict[str, Any]]] = None,
+        disable_thinking_after_tool_call: bool = True
     ) -> Generator[Dict[str, Any], None, None]:
         """
         发送消息（支持多轮对话、流式输出、文件和Context Caching）
@@ -3063,7 +3269,9 @@ class Model:
                 }
 
             debug_mode = self._as_bool(debug_mode, default=False)
+            enable_thinking = self._as_bool(enable_thinking, default=True)
             force_context_compression = self._as_bool(force_context_compression, default=False)
+            disable_thinking_after_tool_call = self._as_bool(disable_thinking_after_tool_call, default=True)
 
             def _debug_preview_text(value, max_len=12000):
                 text = str(value or "")
@@ -3083,7 +3291,10 @@ class Model:
                 if value is None or isinstance(value, (bool, int, float)):
                     return value
                 if isinstance(value, str):
-                    return _debug_preview_text(value)
+                    preview_cap = 12000
+                    if any(token in lowered_path for token in ("prompt_text", "history_text", "messages_text", "current_context")):
+                        preview_cap = 220000
+                    return _debug_preview_text(value, max_len=preview_cap)
                 if isinstance(value, list):
                     limit = 48
                     items = [
@@ -3326,6 +3537,8 @@ class Model:
             use_responses_api = self._provider_use_responses_api(self.provider)
             allow_history_images = self._as_bool(allow_history_images, default=True)
             normalized_tool_mode = self._normalize_tool_mode(tool_mode, enable_tools)
+            normalized_skill_mode = self._normalize_skill_injection_mode(skill_mode)
+            normalized_active_tool_skills = self._normalize_active_tool_skills(active_tool_skills)
             effective_enable_tools = normalized_tool_mode != "off"
             self._init_runtime_tool_selection(
                 enable_tools=effective_enable_tools,
@@ -3443,6 +3656,17 @@ class Model:
                 enable_tools=effective_enable_tools,
                 tool_mode=getattr(self, "_runtime_tool_mode", "force"),
             )
+            tool_skill_prompt_block = ""
+            selected_tool_skills, skill_selection_debug = self._select_tool_skills_for_injection(
+                normalized_skill_mode,
+                normalized_active_tool_skills
+            )
+            if selected_tool_skills:
+                tool_skill_prompt_block = str(
+                    prompts.build_tool_skills_prompt(selected_tool_skills) or ""
+                ).strip()
+                if tool_skill_prompt_block:
+                    request_system_prompt = f"{request_system_prompt}\n\n{tool_skill_prompt_block}".strip()
             self.system_prompt = request_system_prompt
             history_end_index_exclusive = None
             if is_regenerate and regenerate_index is not None:
@@ -3527,6 +3751,29 @@ class Model:
                         },
                         title="Regenerate Context Branch"
                     )
+                if tool_skill_prompt_block:
+                    yield _build_debug_trace(
+                        "server->model",
+                        "tool_skill_injection",
+                        {
+                            "mode": normalized_skill_mode,
+                            "count": len(selected_tool_skills),
+                            "active_skill_count": len(normalized_active_tool_skills),
+                            "runtime_tools": skill_selection_debug.get("runtime_tools", []),
+                            "skills": [
+                                {
+                                    "title": str(s.get("title", "") or ""),
+                                    "mode": str(s.get("mode", "") or ""),
+                                    "required_tools": list(s.get("required_tools", []) or []),
+                                    "author": str(s.get("author", "") or ""),
+                                    "version": str(s.get("version", "") or "")
+                                }
+                                for s in selected_tool_skills
+                            ],
+                            "prompt": tool_skill_prompt_block
+                        },
+                        title="Tool Skill Injection"
+                    )
             
             # 多轮对话循环
             accumulated_content = ""
@@ -3546,10 +3793,18 @@ class Model:
             current_function_outputs = []  # 当前轮的function输出
             native_search_meta_emitted = False
             citation_url_map: Dict[int, str] = {}
+            thinking_disabled_for_followup_rounds = False
             
             try:
                 for round_num in range(max_rounds):
                     # Keep follow-up rounds immediate to avoid perceptible stream stalls.
+                    round_enable_thinking = bool(
+                        enable_thinking
+                        and (
+                            (not disable_thinking_after_tool_call)
+                            or (not thinking_disabled_for_followup_rounds)
+                        )
+                    )
                         
                     print(f"\n[DEBUG] ===== 第 {round_num + 1} 轮 =====")
                     print(f"[DEBUG] Messages数量: {len(messages)} | Function消息: {len([m for m in messages if m.get('role')=='function'])}")
@@ -3576,7 +3831,7 @@ class Model:
                     request_params = self._build_request_params(
                         messages=messages,
                         previous_response_id=previous_response_id,
-                        enable_thinking=enable_thinking,
+                        enable_thinking=round_enable_thinking,
                         enable_web_search=enable_web_search,
                         enable_tools=effective_enable_tools,
                         current_function_outputs=current_function_outputs,
@@ -3758,7 +4013,10 @@ class Model:
                                             round_index=round_num
                                         )
                                     compression_run = {}
-                                    compression_run_iter = self._run_context_compression_round(compress_source, max_chars=1400)
+                                    compression_run_iter = self._run_context_compression_round(
+                                        compress_source,
+                                        max_chars=self._context_compression_max_chars
+                                    )
                                     try:
                                         while True:
                                             try:
@@ -3806,8 +4064,13 @@ class Model:
                                             "context_compression_prompt",
                                             {
                                                 "system_prompt": str(compression_run.get("system_prompt", "") or ""),
+                                                "prompt_template": str(compression_run.get("prompt_template", "") or ""),
                                                 "prompt_text": str(compression_run.get("prompt_text", "") or ""),
+                                                "history_text": str(compression_run.get("history_text", "") or ""),
                                                 "history_chars": int(max(0, int(compression_run.get("history_chars", 0) or 0))),
+                                                "history_truncated": bool(compression_run.get("history_truncated", False)),
+                                                "history_limit_chars": int(max(0, int(compression_run.get("history_limit_chars", 0) or 0))),
+                                                "max_chars": int(self._context_compression_max_chars),
                                                 "trigger_mode": context_compression_trigger_mode
                                             },
                                             title="Compression Prompt",
@@ -3866,7 +4129,7 @@ class Model:
                                     request_params = self._build_request_params(
                                         messages=messages,
                                         previous_response_id=previous_response_id,
-                                        enable_thinking=enable_thinking,
+                                        enable_thinking=round_enable_thinking,
                                         enable_web_search=enable_web_search,
                                         enable_tools=effective_enable_tools,
                                         current_function_outputs=current_function_outputs,
@@ -4574,6 +4837,9 @@ class Model:
                     
                     # 处理函数调用
                     if function_calls:
+                        if disable_thinking_after_tool_call and (not thinking_disabled_for_followup_rounds):
+                            thinking_disabled_for_followup_rounds = True
+                            print("[THINKING] tool call detected; disable thinking for follow-up rounds.")
                         # Responses API 不接受 input 中的 assistant.tool_calls，
                         # 这里按协议分别写入历史。
                         tool_trace_messages = self._build_assistant_tool_messages_for_round(

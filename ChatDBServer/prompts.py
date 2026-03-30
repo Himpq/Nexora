@@ -62,6 +62,10 @@ system_tools_enabled_force = """
 
 
 SYSTEM_PROMPT_SEP = "\n\n"
+TOOL_SKILL_BLOCK_TEMPLATE = """<TOOL-SKILL>
+[{{title}} 生效于 {{tools}}的工具]
+{{content}}
+<END>"""
 
 
 def build_main_system_prompt(
@@ -83,6 +87,38 @@ def build_main_system_prompt(
         else:
             parts.append(system_tools_enabled_auto_select.strip())
     return SYSTEM_PROMPT_SEP.join([p for p in parts if p]).strip()
+
+
+def build_tool_skill_block(title: Any, tools, content: Any) -> str:
+    title_text = str(title or "").strip() or "Unnamed Skill"
+    if isinstance(tools, (list, tuple, set)):
+        tool_list = [str(x).strip() for x in tools if str(x).strip()]
+    else:
+        raw = str(tools or "")
+        tool_list = [seg.strip() for seg in raw.replace("，", ",").split(",") if seg.strip()]
+    tools_text = ", ".join(tool_list) if tool_list else "any"
+    content_text = str(content or "").strip()
+    if not content_text:
+        return ""
+    out = TOOL_SKILL_BLOCK_TEMPLATE.replace("{{title}}", title_text)
+    out = out.replace("{{tools}}", tools_text)
+    out = out.replace("{{content}}", content_text)
+    return out.strip()
+
+
+def build_tool_skills_prompt(skills: List[Dict[str, Any]]) -> str:
+    blocks: List[str] = []
+    for item in (skills or []):
+        if not isinstance(item, dict):
+            continue
+        block = build_tool_skill_block(
+            item.get("title", ""),
+            item.get("required_tools", []),
+            item.get("main_content", "")
+        )
+        if block:
+            blocks.append(block)
+    return "\n\n".join(blocks).strip()
 
 
 RUNTIME_HINT_NATIVE_TAG = "[运行时能力提示]"
@@ -114,8 +150,8 @@ runtime_tool_not_enabled_template = (
 )
 
 tool_completion_hint_template = (
-    "[系统指令] 你（AI助手）已完成工具调用: {{tool_names}}。"
-    "请根据返回的工具结果，继续完成对用户的回答或做出最终总结。"
+    # "[系统指令] 你（AI助手）已完成工具调用: {{tool_names}}。"
+    # "请根据返回的工具结果，继续完成对用户的回答或做出最终总结。"
 )
 
 conversation_title_prompt_template = """根据以下对话内容，生成一个简洁准确的标题（10-20字）。
@@ -186,10 +222,13 @@ def build_conversation_title_prompt(user_message: str, assistant_response: str) 
     return out
 
 
-def build_context_compression_prompt(history_text: str, max_chars: int = 1400) -> str:
-    limit = max(300, min(6000, int(max_chars or 1400)))
+def build_context_compression_prompt(history_text: str, max_chars: int = 6000) -> str:
+    limit = max(600, min(12000, int(max_chars or 6000)))
     out = context_compression_prompt_template.replace("{{history_text}}", str(history_text or ""))
-    out = out.replace("{{max_chars}}", str(limit))
+    if "{{max_chars}}" in out:
+        out = out.replace("{{max_chars}}", str(limit))
+    else:
+        out = f"{out}\n\n目标输出长度参考：约 {limit} 字符（可根据信息密度略有浮动）。"
     return out
 
 
