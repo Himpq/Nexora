@@ -1,4 +1,4 @@
-import os
+﻿import os
 import json
 import re
 import unicodedata
@@ -38,6 +38,10 @@ class ToolExecutor:
             "update_basis": self._update_basis,
             "get_basis_content": self._get_basis_content,
             "search_keyword": self._search_keyword,
+            "readtmp": self._readtmp,
+            "searchtmp": self._searchtmp,
+            "listtmp": self._listtmp,
+            "cleartmp": self._cleartmp,
             "arxiv_search": self._arxiv_search,
             "js_execute": self._js_execute,
             "client_js_exec": self._js_execute,
@@ -366,7 +370,6 @@ class ToolExecutor:
         except Exception as e:
             return f"错误：参数模板解析失败: {str(e)}"
         return handler(resolved_args)
-
     def _get_knowledge_list(self, args: Dict[str, Any]) -> str:
         k_type = args.get("_type", 0)
         try:
@@ -384,7 +387,26 @@ class ToolExecutor:
         if isinstance(result, dict):
             if k_type == 0:
                 return "\n".join([f"{k}: {v}" for k, v in result.items()]) or "(空)"
-            return "\n".join(result.keys()) or "(空)"
+            items = []
+            for title, meta in result.items():
+                safe_meta = meta if isinstance(meta, dict) else {}
+                items.append({
+                    "title": str(title or ""),
+                    "basis_id": str(safe_meta.get("basis_id") or "").strip() or None,
+                    "public": bool(safe_meta.get("public", False)),
+                    "collaborative": bool(safe_meta.get("collaborative", False)),
+                    "pin": bool(safe_meta.get("pin", False)),
+                    "created_at": safe_meta.get("created_at"),
+                    "updated_at": safe_meta.get("updated_at"),
+                })
+            items.sort(key=lambda x: (not bool(x.get("pin")), str(x.get("title") or "")))
+            payload = {
+                "success": True,
+                "type": "basis",
+                "total": len(items),
+                "items": items
+            }
+            return json.dumps(payload, ensure_ascii=False)
         return str(result)
 
     def _resolve_user_permission_hint(self) -> str:
@@ -626,6 +648,7 @@ class ToolExecutor:
 
         return self.model.user.getBasisContent(
             title=args.get("title", ""),
+            basis_id=args.get("basis_id"),
             keyword=args.get("keyword"),
             range_size=args.get("range"),
             from_pos=args.get("from_pos"),
@@ -636,11 +659,42 @@ class ToolExecutor:
         )
 
     def _search_keyword(self, args: Dict[str, Any]) -> str:
-        result = self.model.user.search_keyword(args.get("keyword", ""), args.get("range", 10))
-        if result.startswith("未找到关键词"):
-            keyword = args.get("keyword", "")
-            return f"{result}"
-        return result
+        return self.model.user.search_keyword(args.get("keyword", ""), args.get("range", 10))
+
+    def _readtmp(self, args: Dict[str, Any]) -> str:
+        rid = str(args.get("resource_id") or "").strip()
+        if not rid:
+            return json.dumps({"success": False, "message": "resource_id is required"}, ensure_ascii=False)
+        return self.model.temp_cache_read(
+            resource_id=rid,
+            start=args.get("start", 0),
+            count=args.get("count", 2000),
+        )
+
+    def _searchtmp(self, args: Dict[str, Any]) -> str:
+        raw_case = args.get("case_sensitive", False)
+        if isinstance(raw_case, bool):
+            case_sensitive = raw_case
+        elif isinstance(raw_case, str):
+            case_sensitive = raw_case.strip().lower() in {"1", "true", "yes", "y", "on"}
+        else:
+            case_sensitive = bool(raw_case)
+        return self.model.temp_cache_search(
+            resource_id=args.get("resource_id"),
+            keyword=args.get("keyword"),
+            regex=args.get("regex"),
+            case_sensitive=case_sensitive,
+            range_size=args.get("range", 80),
+            max_matches=args.get("max_matches", 20),
+        )
+
+    def _listtmp(self, args: Dict[str, Any]) -> str:
+        _ = args
+        return self.model.temp_cache_list()
+
+    def _cleartmp(self, args: Dict[str, Any]) -> str:
+        _ = args
+        return self.model.temp_cache_clear()
 
     def _build_ssl_context_with_certifi(self):
         """Build SSL context using certifi bundle when available."""
@@ -969,14 +1023,56 @@ class ToolExecutor:
             )
             ids = result.get("ids", [[]])[0] if isinstance(result.get("ids"), list) else []
             metas = result.get("metadatas", [[]])[0] if isinstance(result.get("metadatas"), list) else []
+            docs = result.get("documents", [[]])[0] if isinstance(result.get("documents"), list) else []
             dists = result.get("distances", [[]])[0] if isinstance(result.get("distances"), list) else []
             payload = []
+            q = str(query or "")
+            q_lower = q.lower()
+            title_to_basis_id = {}
+            if library == "knowledge":
+                try:
+                    kb_map = self.model.user.getKnowledgeList(1)
+                    if isinstance(kb_map, dict):
+                        for t, m in kb_map.items():
+                            if not isinstance(m, dict):
+                                continue
+                            bid = str(m.get("basis_id") or "").strip()
+                            if bid:
+                                title_to_basis_id[str(t)] = bid
+                except Exception:
+                    title_to_basis_id = {}
             for i, vid in enumerate(ids):
                 meta = metas[i] if i < len(metas) else {}
+                doc = str(docs[i] if i < len(docs) else "")
                 score = None
                 if i < len(dists) and dists[i] is not None:
                     score = 1 - dists[i]
-                payload.append({"id": vid, "title": meta.get("title"), "score": score})
+                title_val = str(meta.get("title") or "").strip()
+                basis_id = str(meta.get("basis_id") or "").strip() or str(title_to_basis_id.get(title_val) or "").strip()
+                chunk_start = meta.get("chunk_start")
+                chunk_end = meta.get("chunk_end")
+                query_pos = None
+                query_pos_abs = None
+                if doc and q_lower:
+                    rel = doc.lower().find(q_lower)
+                    if rel >= 0:
+                        query_pos = int(rel)
+                        if isinstance(chunk_start, int):
+                            query_pos_abs = int(chunk_start) + int(rel)
+                payload.append({
+                    "id": vid,
+                    "article": title_val,
+                    "title": title_val,
+                    "basis_id": basis_id or None,
+                    "library": library,
+                    "chunk_id": meta.get("chunk_id"),
+                    "chunk_start": chunk_start,
+                    "chunk_end": chunk_end,
+                    "score": score,
+                    "query_position_in_chunk": query_pos,
+                    "query_position_abs": query_pos_abs,
+                    "preview": doc[:300]
+                })
             return json.dumps(payload, ensure_ascii=False)
         except Exception as e:
             return f"vector search error: {str(e)}, fall back to search_keyword immediately."
@@ -1104,10 +1200,23 @@ class ToolExecutor:
                     score = 1 - dists[i]
                 payload.append({
                     "id": vid,
+                    "article": (meta.get("file_alias") or meta.get("title")),
                     "file_alias": meta.get("file_alias"),
                     "title": meta.get("title"),
                     "chunk_id": meta.get("chunk_id"),
+                    "chunk_start": meta.get("chunk_start"),
+                    "chunk_end": meta.get("chunk_end"),
                     "score": score,
+                    "query_position_in_chunk": (
+                        doc.lower().find(query.lower())
+                        if query and doc and doc.lower().find(query.lower()) >= 0
+                        else None
+                    ),
+                    "query_position_abs": (
+                        (int(meta.get("chunk_start")) + int(doc.lower().find(query.lower())))
+                        if query and doc and isinstance(meta.get("chunk_start"), int) and doc.lower().find(query.lower()) >= 0
+                        else None
+                    ),
                     "preview": doc[:300]
                 })
             return json.dumps(payload, ensure_ascii=False)
@@ -1334,3 +1443,4 @@ class ToolExecutor:
             return json.dumps(payload, ensure_ascii=False)
         except Exception as e:
             return json.dumps({"success": False, "message": str(e)}, ensure_ascii=False)
+

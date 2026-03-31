@@ -3,6 +3,7 @@ import json
 import time
 import re
 import threading
+import hashlib
 
 # 全局文件锁，防止多用户并发写入 user.json 导致数据“串”或丢失
 _global_file_lock = threading.Lock()
@@ -108,6 +109,69 @@ class User:
             with open(graph_file, "w", encoding="utf-8") as f:
                 json.dump(initial_graph, f, indent=4, ensure_ascii=False)
 
+    def _build_basis_id(self, title, meta):
+        m = meta if isinstance(meta, dict) else {}
+        seed = "|".join([
+            str(title or "").strip(),
+            str(m.get("src") or "").strip(),
+            str(m.get("created_at") or ""),
+            str(m.get("share_id") or "").strip(),
+        ])
+        digest = hashlib.md5(seed.encode("utf-8")).hexdigest()[:12]
+        return f"kb_{digest}"
+
+    def _ensure_basis_ids_in_db(self, db):
+        changed = False
+        data_basis = db.get("data_basis", {})
+        if not isinstance(data_basis, dict):
+            return False
+        for title, meta in data_basis.items():
+            if not isinstance(meta, dict):
+                continue
+            basis_id = str(meta.get("basis_id") or "").strip()
+            if basis_id:
+                continue
+            meta["basis_id"] = self._build_basis_id(title, meta)
+            changed = True
+        return changed
+
+    def _char_to_line_col(self, content, pos):
+        idx = max(0, min(int(pos or 0), len(content)))
+        line = content.count("\n", 0, idx) + 1
+        last_nl = content.rfind("\n", 0, idx)
+        col = idx + 1 if last_nl < 0 else (idx - last_nl)
+        return line, col
+
+    def _resolve_basis_title_and_meta(self, db, title=None, basis_id=None):
+        data_basis = db.get("data_basis", {})
+        if not isinstance(data_basis, dict):
+            return None, None, "data_basis missing"
+
+        t = str(title or "").strip()
+        bid = str(basis_id or "").strip()
+
+        if t:
+            meta = data_basis.get(t)
+            if isinstance(meta, dict):
+                if not str(meta.get("basis_id") or "").strip():
+                    meta["basis_id"] = self._build_basis_id(t, meta)
+                return t, meta, ""
+            return None, None, f"Title not found: {t}"
+
+        if bid:
+            for k, meta in data_basis.items():
+                if not isinstance(meta, dict):
+                    continue
+                now_bid = str(meta.get("basis_id") or "").strip()
+                if not now_bid:
+                    now_bid = self._build_basis_id(k, meta)
+                    meta["basis_id"] = now_bid
+                if now_bid == bid:
+                    return k, meta, ""
+            return None, None, f"basis_id not found: {bid}"
+
+        return None, None, "title or basis_id is required"
+
     def getPassword(self):
         with open("./data/user.json", "r", encoding="utf-8") as f:
             users = json.load(f)
@@ -124,7 +188,6 @@ class User:
             # 自动迁移：为旧数据添加 share_id 和 collaborative
             migrated = False
             if "data_basis" in db:
-                import hashlib
                 for title, meta in db["data_basis"].items():
                     if not isinstance(meta, dict):
                         continue
@@ -142,6 +205,8 @@ class User:
                         if meta.get("pin") is not normalized_pin:
                             meta["pin"] = normalized_pin
                             migrated = True
+                if self._ensure_basis_ids_in_db(db):
+                    migrated = True
             if migrated:
                 with open(self.path + "database.json", "w", encoding="utf-8") as f:
                     json.dump(db, f, indent=4, ensure_ascii=False)
@@ -157,6 +222,10 @@ class User:
         """通过 share_id 查找知识点"""
         with open(self.path + "database.json", "r", encoding="utf-8") as f:
             db = json.load(f)
+        changed = self._ensure_basis_ids_in_db(db)
+        if changed:
+            with open(self.path + "database.json", "w", encoding="utf-8") as f:
+                json.dump(db, f, indent=4, ensure_ascii=False)
         for title, meta in db["data_basis"].items():
             if meta.get("share_id") == share_id:
                 return title, meta
@@ -260,8 +329,12 @@ class User:
                         pass
 
             ID = max_id + 1
-            import hashlib
             share_id = hashlib.md5(f"{title}{time.time()}".encode()).hexdigest()[:8]
+            basis_id = self._build_basis_id(title, {
+                "src": f"./data/users/{self.user}/database/{ID}.txt",
+                "created_at": time.time(),
+                "share_id": share_id,
+            })
             db["data_basis"][title] = {
                 "src": f"./data/users/{self.user}/database/{ID}.txt",
                 "url": url,
@@ -269,6 +342,7 @@ class User:
                 "collaborative": False, # 默认不开启协同编辑
                 "pin": False,
                 "share_id": share_id,
+                "basis_id": basis_id,
                 "created_at": time.time(),
                 "updated_at": time.time(),
                 "vector_updated_at": 0
@@ -445,7 +519,8 @@ class User:
     
     def getBasisContent(
         self,
-        title,
+        title=None,
+        basis_id=None,
         keyword=None,
         range_size=None,
         from_pos=None,
@@ -454,13 +529,24 @@ class User:
         max_matches=5,
         case_sensitive=True
     ):
-        with open(self.path + "database.json", "r", encoding="utf-8") as f:
-            db = json.load(f)
+        lock = get_user_lock(self.user)
+        with lock:
+            with open(self.path + "database.json", "r", encoding="utf-8") as f:
+                db = json.load(f)
+            changed = self._ensure_basis_ids_in_db(db)
+            resolved_title, basis_meta, err = self._resolve_basis_title_and_meta(
+                db, title=title, basis_id=basis_id
+            )
+            if changed:
+                with open(self.path + "database.json", "w", encoding="utf-8") as f:
+                    json.dump(db, f, indent=4, ensure_ascii=False)
 
-        if title not in db["data_basis"]:
-            raise KeyError(f"Title not found: {title}")
+        if not resolved_title or not isinstance(basis_meta, dict):
+            raise KeyError(err or "basis not found")
 
-        src = db["data_basis"][title]["src"]
+        title = resolved_title
+        resolved_basis_id = str(basis_meta.get("basis_id") or "").strip()
+        src = basis_meta["src"]
         with open(src, "r", encoding="utf-8") as f:
             content = f.read()
 
@@ -508,6 +594,7 @@ class User:
                 "success": True,
                 "mode": "slice",
                 "title": title,
+                "basis_id": resolved_basis_id,
                 "from_pos": start,
                 "to_pos": end,
                 "total_length": total_len,
@@ -549,8 +636,11 @@ class User:
                 right = min(total_len, e + window)
                 matches.append({
                     "index": idx,
+                    "article": title,
                     "start": s,
                     "end": e,
+                    "start_line": self._char_to_line_col(content, s)[0],
+                    "start_col": self._char_to_line_col(content, s)[1],
                     "match": m.group(0),
                     "snippet": content[left:right]
                 })
@@ -572,8 +662,11 @@ class User:
                 right = min(total_len, e + window)
                 matches.append({
                     "index": idx,
+                    "article": title,
                     "start": s,
                     "end": e,
+                    "start_line": self._char_to_line_col(content, s)[0],
+                    "start_col": self._char_to_line_col(content, s)[1],
                     "match": content[s:e],
                     "snippet": content[left:right]
                 })
@@ -583,6 +676,7 @@ class User:
             "success": True,
             "mode": "regex" if regex_mode else "keyword",
             "title": title,
+            "basis_id": resolved_basis_id,
             "keyword": key,
             "range": window,
             "max_matches": max_n,
@@ -1264,84 +1358,128 @@ class User:
         
         graph["categories"][category_name]["position"] = position
         self.save_knowledge_graph(graph)
-        return True, "更新成功"
-    
-    def search_keyword(self, keyword, range_size=10):
+        return True, "更新成功"    def search_keyword(self, keyword, range_size=10):
         """
-        在短期记忆和基础知识库中搜索关键词
-        
-        Args:
-            keyword: 搜索关键词
-            range_size: 关键词前后返回的字符数
-            
-        Returns:
-            str: 格式化的搜索结果
+        在短期记忆和基础知识库中搜索关键词并返回结构化命中信息。
         """
-        with open(self.path + "database.json", "r", encoding="utf-8") as f:
-            db = json.load(f)
-        
-        results = []
-        
-        # 搜索短期记忆（标题）
-        for short_id, short_title in db["data_short"].items():
-            if keyword in short_title:
-                # 提取关键词前后的文本
-                pos = short_title.find(keyword)
-                context_start = max(0, pos - range_size)
-                context_end = min(len(short_title), pos + len(keyword) + range_size)
-                
-                before = short_title[context_start:pos]
-                match = keyword
-                after = short_title[pos+len(keyword):context_end]
-                
-                results.append(f"[短期记忆 {short_id}]: ...{before}【{match}】{after}...")
-        
-        # 搜索基础知识库（标题和内容）
-        for basis_title, basis_info in db["data_basis"].items():
-            # 搜索标题
-            if keyword in basis_title:
-                pos = basis_title.find(keyword)
-                context_start = max(0, pos - range_size)
-                context_end = min(len(basis_title), pos + len(keyword) + range_size)
-                
-                before = basis_title[context_start:pos]
-                match = keyword
-                after = basis_title[pos+len(keyword):context_end]
-                
-                results.append(f"{basis_title}: (标题) ...{before}【{match}】{after}...")
-            
-            # 搜索内容
+        key = str(keyword or "").strip()
+        if not key:
+            return json.dumps({"success": False, "message": "keyword is required"}, ensure_ascii=False)
+
+        try:
+            win = int(range_size)
+        except Exception:
+            win = 10
+        win = max(0, min(win, 10000))
+
+        lock = get_user_lock(self.user)
+        with lock:
+            with open(self.path + "database.json", "r", encoding="utf-8") as f:
+                db = json.load(f)
+            changed = self._ensure_basis_ids_in_db(db)
+            if changed:
+                with open(self.path + "database.json", "w", encoding="utf-8") as f:
+                    json.dump(db, f, indent=4, ensure_ascii=False)
+
+        matches = []
+        article_stats = {}
+
+        for short_id, short_title in db.get("data_short", {}).items():
+            text = str(short_title or "")
+            pos = text.find(key)
+            while pos != -1:
+                s = pos
+                e = pos + len(key)
+                left = max(0, s - win)
+                right = min(len(text), e + win)
+                line, col = self._char_to_line_col(text, s)
+                article_name = f"short_memory:{short_id}"
+                matches.append({
+                    "source_type": "short_memory_title",
+                    "article": article_name,
+                    "short_id": str(short_id),
+                    "start": s,
+                    "end": e,
+                    "line": line,
+                    "col": col,
+                    "match": text[s:e],
+                    "snippet": text[left:right],
+                })
+                article_stats[article_name] = article_stats.get(article_name, 0) + 1
+                pos = text.find(key, pos + max(1, len(key)))
+
+        for basis_title, basis_info in db.get("data_basis", {}).items():
+            meta = basis_info if isinstance(basis_info, dict) else {}
+            basis_id = str(meta.get("basis_id") or "").strip()
+
+            title_text = str(basis_title or "")
+            title_pos = title_text.find(key)
+            while title_pos != -1:
+                s = title_pos
+                e = s + len(key)
+                left = max(0, s - win)
+                right = min(len(title_text), e + win)
+                line, col = self._char_to_line_col(title_text, s)
+                matches.append({
+                    "source_type": "knowledge_title",
+                    "article": str(basis_title),
+                    "title": str(basis_title),
+                    "basis_id": basis_id,
+                    "start": s,
+                    "end": e,
+                    "line": line,
+                    "col": col,
+                    "match": title_text[s:e],
+                    "snippet": title_text[left:right],
+                })
+                article_stats[str(basis_title)] = article_stats.get(str(basis_title), 0) + 1
+                title_pos = title_text.find(key, title_pos + max(1, len(key)))
+
             try:
-                with open(basis_info["src"], "r", encoding="utf-8") as f:
+                with open(meta.get("src", ""), "r", encoding="utf-8") as f:
                     content = f.read()
-                
-                # 查找关键词的所有出现位置（最多3个）
-                start = 0
-                count = 0
-                while count < 3:
-                    pos = content.find(keyword, start)
-                    if pos == -1:
-                        break
-                    
-                    context_start = max(0, pos - range_size)
-                    context_end = min(len(content), pos + len(keyword) + range_size)
-                    
-                    before = content[context_start:pos]
-                    match = keyword
-                    after = content[pos+len(keyword):context_end]
-                    
-                    results.append(f"{basis_title}: ...{before}【{match}】{after}...")
-                    start = pos + 1
-                    count += 1
-                    
-            except Exception as e:
-                pass
-        
-        if not results:
-            return f"未找到关键词: {keyword}"
-        
-        return "\n".join(results)
-        
+            except Exception:
+                continue
+
+            start = 0
+            count = 0
+            while count < 20:
+                pos = content.find(key, start)
+                if pos == -1:
+                    break
+                s = pos
+                e = pos + len(key)
+                left = max(0, s - win)
+                right = min(len(content), e + win)
+                line, col = self._char_to_line_col(content, s)
+                matches.append({
+                    "source_type": "knowledge_content",
+                    "article": str(basis_title),
+                    "title": str(basis_title),
+                    "basis_id": basis_id,
+                    "start": s,
+                    "end": e,
+                    "line": line,
+                    "col": col,
+                    "match": content[s:e],
+                    "snippet": content[left:right],
+                })
+                article_stats[str(basis_title)] = article_stats.get(str(basis_title), 0) + 1
+                start = pos + max(1, len(key))
+                count += 1
+
+        grouped_articles = [{"article": k, "hits": v} for k, v in article_stats.items()]
+        grouped_articles.sort(key=lambda x: (-int(x.get("hits") or 0), str(x.get("article") or "")))
+
+        return json.dumps({
+            "success": True,
+            "keyword": key,
+            "range": win,
+            "matched": len(matches),
+            "articles": grouped_articles,
+            "matches": matches
+        }, ensure_ascii=False)
+
 if __name__ == "__main__":
     os.chdir("../")
     user = User("test_user")

@@ -33,7 +33,7 @@ from longterm.orchestrator import LongTermOrchestrator
 from provider_factory import create_provider_adapter
 from client_tool_bridge import pull_pending_request, submit_request_result, enqueue_request, wait_for_result, pull_local_tool_request
 from agent_tunnel import register_agent, unregister_agent, update_agent_tools, update_ping, is_agent_online
-from stream_runtime import start_session as start_stream_session, iter_session_chunks as iter_stream_session_chunks, get_session_meta as get_stream_session_meta
+from stream_runtime import start_session as start_stream_session, iter_session_chunks as iter_stream_session_chunks, get_session_meta as get_stream_session_meta, request_cancel as request_stream_cancel
 from tools import canonicalize_tool_name
 from flask_sock import Sock
 
@@ -5946,9 +5946,27 @@ def delete_message():
         return jsonify({"success": False, "message": "Missing conversation_id"}), 400
     if index is None:
         return jsonify({"success": False, "message": "Missing index"}), 400
+    try:
+        index = int(index)
+    except Exception:
+        return jsonify({"success": False, "message": "Invalid index"}), 400
         
     manager = ConversationManager(username)
-    if manager.delete_message(conv_id, int(index)):
+    try:
+        conversation = manager.get_conversation(conv_id)
+    except Exception:
+        conversation = None
+    if not isinstance(conversation, dict):
+        return jsonify({"success": False, "message": "Conversation not found"}), 404
+    messages = conversation.get('messages', []) if isinstance(conversation.get('messages', []), list) else []
+    if index < 0 or index >= len(messages):
+        return jsonify({
+            "success": False,
+            "message": "消息索引已过期，请刷新后重试",
+            "server_message_count": len(messages)
+        }), 409
+
+    if manager.delete_message(conv_id, index):
         try:
             conversation = manager.get_conversation(conv_id)
             keep_ids = _collect_referenced_asset_ids(conversation)
@@ -5956,7 +5974,7 @@ def delete_message():
         except Exception as e:
             print(f"[ASSET] cleanup after delete_message failed: {e}")
         return jsonify({"success": True})
-    return jsonify({"success": False, "message": "Failed to delete"}), 500
+    return jsonify({"success": False, "message": "删除失败，请稍后重试"}), 500
 
 
 @app.route('/api/conversations/<conv_id>/messages/<int:msg_index>/content', methods=['PUT'])
@@ -5985,6 +6003,66 @@ def update_user_message_content(conv_id, msg_index):
             'conversation_id': conv_id,
             'index': int(msg_index),
             'content': content
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/conversations/<conv_id>/assistant_partial', methods=['POST'])
+@require_login
+def save_assistant_partial(conv_id):
+    data = request.get_json(silent=True) or {}
+    content = str(data.get('content') or '')
+    if not content.strip():
+        return jsonify({'success': False, 'message': 'content 不能为空'}), 400
+
+    username = session['username']
+    manager = ConversationManager(username)
+    try:
+        conversation = manager.get_conversation(conv_id)
+    except Exception:
+        conversation = None
+    if not isinstance(conversation, dict):
+        return jsonify({'success': False, 'message': '对话不存在'}), 404
+
+    metadata_raw = data.get('metadata')
+    metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
+    metadata = dict(metadata)
+    metadata['aborted'] = True
+    metadata['partial'] = True
+    model_name = str(data.get('model_name') or '').strip()
+    if model_name and not str(metadata.get('model_name') or '').strip():
+        metadata['model_name'] = model_name
+
+    raw_index = data.get('index', None)
+    index = None
+    if raw_index is not None:
+        try:
+            parsed = int(raw_index)
+        except Exception:
+            parsed = None
+        messages = conversation.get('messages', []) if isinstance(conversation.get('messages', []), list) else []
+        if parsed is not None and 0 <= parsed < len(messages):
+            index = parsed
+
+    try:
+        manager.add_message(
+            conv_id,
+            'assistant',
+            content,
+            metadata=metadata,
+            index=index
+        )
+        # 手动写入中断内容后，清理续接ID，确保后续上下文与本地对话一致
+        try:
+            manager.update_last_response_id(conv_id, None, model_name=None)
+        except Exception:
+            pass
+        return jsonify({
+            'success': True,
+            'conversation_id': conv_id,
+            'index': index,
+            'saved_chars': len(content)
         })
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
@@ -6840,7 +6918,7 @@ def _iter_sse_from_runtime_stream(stream_id: str, username: str, from_seq: int =
 @require_login
 def chat_stream():
     """流式聊天接口"""
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     sys_config = get_config_all()
     log_status = str(sys_config.get('log_status', 'silent')).lower()
     log_all_chunks = (log_status == 'all')
@@ -6915,7 +6993,7 @@ def chat_stream():
             regenerate_index = None
     
     if not message and not is_regenerate and len(file_ids) == 0:
-        return jsonify({'success': False, 'message': '消息不能为空'})
+        return jsonify({'success': False, 'message': '消息不能为空'}), 400
     
     username = session['username']
     skill_mode = 'force'
@@ -6983,7 +7061,7 @@ def chat_stream():
                 # 寻找第一个不在黑名单的模型
                 available_models = [m for m in all_models if m not in blacklist]
                 if not available_models:
-                    return jsonify({'success': False, 'message': '当前账号无可用模型，请联系管理员'})
+                    return jsonify({'success': False, 'message': '当前账号无可用模型，请联系管理员'}), 403
                 model_name = available_models[0]
                 
     except Exception as e:
@@ -7084,6 +7162,20 @@ def chat_stream():
     resp.headers['X-Accel-Buffering'] = 'no'
     resp.headers['Connection'] = 'keep-alive'
     return resp
+
+
+@app.route('/api/chat/stream/cancel', methods=['POST'])
+@require_login
+def chat_stream_cancel():
+    data = request.get_json(silent=True) or {}
+    stream_id = str(data.get('stream_id') or '').strip()
+    if not stream_id:
+        return jsonify({'success': False, 'message': 'stream_id is required'}), 400
+    username = session['username']
+    ok = request_stream_cancel(stream_id, username=username, reason='user_abort')
+    if not ok:
+        return jsonify({'success': False, 'message': 'stream session not found'}), 404
+    return jsonify({'success': True, 'stream_id': stream_id, 'cancel_requested': True})
 
 
 @app.route('/api/chat/stream/reconnect', methods=['POST'])

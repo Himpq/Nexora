@@ -11,6 +11,7 @@ _SESSIONS: Dict[str, Dict[str, Any]] = {}
 _MAX_CHUNKS_PER_SESSION = 12000
 _DONE_TTL_SEC = 900
 _STALE_RUNNING_TTL_SEC = 7200
+_CANCEL_SENTINEL = "__STREAM_CANCELLED__"
 
 
 def _new_session(username: str, conversation_id: str = "") -> Dict[str, Any]:
@@ -25,6 +26,8 @@ def _new_session(username: str, conversation_id: str = "") -> Dict[str, Any]:
         "last_seq": 0,
         "chunks": [],  # list[dict]
         "error": "",
+        "cancel_requested": False,
+        "cancel_reason": "",
         "cond": threading.Condition(threading.Lock()),
     }
 
@@ -73,6 +76,8 @@ def start_session(
         cid = str(payload.get("conversation_id") or "").strip()
         cond = session["cond"]
         with cond:
+            if bool(session.get("cancel_requested", False)):
+                raise RuntimeError(_CANCEL_SENTINEL)
             if cid:
                 session["conversation_id"] = cid
             session["last_seq"] = int(session["last_seq"]) + 1
@@ -96,6 +101,18 @@ def start_session(
         try:
             worker(_push_chunk, _set_conversation_id)
             _finish("done", "")
+        except RuntimeError as e:
+            if _CANCEL_SENTINEL in str(e):
+                _finish("done", "cancelled")
+                return
+            try:
+                _push_chunk({
+                    "type": "error",
+                    "content": f"stream runtime worker error: {str(e)}"
+                })
+            except Exception:
+                pass
+            _finish("done", str(e))
         except Exception as e:
             try:
                 _push_chunk({
@@ -133,7 +150,42 @@ def get_session_meta(stream_id: str, username: Optional[str] = None) -> Optional
             "created_at": float(s.get("created_at") or 0),
             "updated_at": float(s.get("updated_at") or 0),
             "error": str(s.get("error") or ""),
+            "cancel_requested": bool(s.get("cancel_requested", False)),
+            "cancel_reason": str(s.get("cancel_reason") or ""),
         }
+
+
+def request_cancel(stream_id: str, username: Optional[str] = None, reason: str = "user_abort") -> bool:
+    sid = str(stream_id or "").strip()
+    if not sid:
+        return False
+    with _SESSIONS_LOCK:
+        s = _SESSIONS.get(sid)
+    if not s:
+        return False
+    if username is not None and str(s.get("username") or "").strip() != str(username or "").strip():
+        return False
+    cond = s["cond"]
+    with cond:
+        s["cancel_requested"] = True
+        s["cancel_reason"] = str(reason or "user_abort")
+        s["status"] = "done"
+        s["updated_at"] = time.time()
+        cond.notify_all()
+    return True
+
+
+def is_cancel_requested(stream_id: str) -> bool:
+    sid = str(stream_id or "").strip()
+    if not sid:
+        return False
+    with _SESSIONS_LOCK:
+        s = _SESSIONS.get(sid)
+    if not s:
+        return False
+    cond = s["cond"]
+    with cond:
+        return bool(s.get("cancel_requested", False))
 
 
 def iter_session_chunks(
@@ -202,4 +254,3 @@ def iter_session_chunks(
         if time.time() - last_ping_ts >= heartbeat:
             last_ping_ts = time.time()
             yield None, {"type": "ping"}
-

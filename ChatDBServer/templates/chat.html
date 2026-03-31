@@ -861,14 +861,14 @@
                                     </div>
                                 </div>
                             </div>
-                            <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px;">
+                            <div class="settings-profile-stats-grid">
                                 <div class="form-group"><label>创建时间</label><div id="set-created" class="settings-field">-</div></div>
                                 <div class="form-group"><label>最后登录</label><div id="set-lastlogin" class="settings-field">-</div></div>
                             </div>
                         </div>
                         <div id="settings-preferences-tab" class="admin-tab-content">
                             <div class="settings-placeholder">偏好设置</div>
-                            <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 14px;">
+                            <div class="settings-preferences-grid">
                                 <div class="form-group"><label>默认模型</label><div id="set-defmodel" class="settings-field">-</div></div>
                                 <div class="form-group"><label>主题</label><div id="set-theme" class="settings-field">-</div></div>
                                 <div class="form-group"><label>流式输出</label><div id="set-stream" class="settings-field">-</div></div>
@@ -886,7 +886,7 @@
                         </div>
                         <div id="settings-statistics-tab" class="admin-tab-content">
                             <div class="settings-placeholder">使用统计</div>
-                            <div style="display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 14px;">
+                            <div class="settings-stat-summary-grid">
                                 <div class="form-group"><label>对话数</label><div id="set-stat-convs" class="settings-stat">-</div></div>
                                 <div class="form-group"><label>Token 消耗</label><div id="set-stat-tokens" class="settings-stat">-</div></div>
                                 <div class="form-group"><label>知识点数</label><div id="set-stat-knowledge" class="settings-stat">-</div></div>

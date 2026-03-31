@@ -1,4 +1,4 @@
-TOOL_NAME_ALIASES = {
+﻿TOOL_NAME_ALIASES = {
     "selectTools": "select_tools",
     "EnableTools": "enable_tools",
     "vectorSearch": "vector_search",
@@ -9,6 +9,10 @@ TOOL_NAME_ALIASES = {
     "updateBasis": "update_basis",
     "getBasisContent": "get_basis_content",
     "searchKeyword": "search_keyword",
+    "readTmp": "readtmp",
+    "searchTmp": "searchtmp",
+    "listTmp": "listtmp",
+    "clearTmp": "cleartmp",
     "linkKnowledge": "link_knowledge",
     "categorizeKnowledge": "categorize_knowledge",
     "createCategory": "create_category",
@@ -214,7 +218,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_knowledge_list",
-            "description": "读取知识信息：_type=0 返回当前用户画像短期记忆，_type=1 返回基础知识库标题列表。",
+            "description": "Read knowledge info: _type=0 returns current user profile short-memory; _type=1 returns basis entries with title and basis_id.",
 
             "parameters": {
                 "type": "object",
@@ -451,6 +455,10 @@ TOOLS = [
                         "type": "string",
                         "description": "根据标题获取基础知识的内容。"
                     },
+                    "basis_id": {
+                        "type": "string",
+                        "description": "knowledge entry id (choose one of title or basis_id)"
+                    },
                     "keyword": {
                         "type": "string",
                         "description": "关键词或正则表达式（match_mode=regex/rg 时）。"
@@ -481,7 +489,7 @@ TOOLS = [
                         "description": "关键词/regex 是否区分大小写，默认 true。"
                     }
                 },
-                "required": ["title"]
+                "required": []
             }
         }
     },
@@ -742,6 +750,96 @@ TOOLS = [
                     }
                 },
                 "required": ["keyword"]
+            }
+        }
+    },
+
+    {
+        "type": "function",
+        "function": {
+            "name": "readtmp",
+            "description": "Read long text from temporary cache by resource_id in ranged chunks.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "resource_id": {
+                        "type": "string",
+                        "description": "temporary resource id returned by previous long tool output"
+                    },
+                    "start": {
+                        "type": "integer",
+                        "description": "start offset (inclusive), default 0"
+                    },
+                    "count": {
+                        "type": "integer",
+                        "description": "number of chars to read, default 2000"
+                    }
+                },
+                "required": ["resource_id"]
+            }
+        }
+    },
+
+    {
+        "type": "function",
+        "function": {
+            "name": "searchtmp",
+            "description": "Search temporary long-text cache by keyword or regex, scoped to current reply and user.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "resource_id": {
+                        "type": "string",
+                        "description": "optional, when absent search all cached resources in current reply"
+                    },
+                    "keyword": {
+                        "type": "string",
+                        "description": "keyword search text"
+                    },
+                    "regex": {
+                        "type": "string",
+                        "description": "regex pattern; use either keyword or regex"
+                    },
+                    "case_sensitive": {
+                        "type": "boolean",
+                        "description": "default false"
+                    },
+                    "range": {
+                        "type": "integer",
+                        "description": "snippet context chars around match, default 80"
+                    },
+                    "max_matches": {
+                        "type": "integer",
+                        "description": "max returned matches, default 20"
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+
+    {
+        "type": "function",
+        "function": {
+            "name": "listtmp",
+            "description": "List cached temporary resources for current reply scope.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+
+    {
+        "type": "function",
+        "function": {
+            "name": "cleartmp",
+            "description": "Clear cached temporary resources for current reply scope.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
             }
         }
     },

@@ -253,6 +253,7 @@ let skillModeFloatingMenuEl = null;
 let skillModeFloatingAnchorEl = null;
 let skillModeFloatingDocHandler = null;
 let skillModeFloatingViewportHandler = null;
+let settingsModalEscapeHandlerBound = false;
 
 function normalizeSkillModeValue(raw) {
     const token = String(raw || '').trim().toLowerCase();
@@ -279,9 +280,53 @@ function clearHoverProxyMessage() {
     }
 }
 
-function updateHoverProxyFromClientY(clientY) {
+function isHoverProxySuppressedBySelection() {
+    if (isChatMobileLayout()) return true;
+    try {
+        const sel = (typeof window.getSelection === 'function') ? window.getSelection() : null;
+        if (!sel) return false;
+        if (sel.isCollapsed) return false;
+        return String(sel.toString() || '').trim().length > 0;
+    } catch (_) {
+        return false;
+    }
+}
+
+function pointDistanceToRect(clientX, clientY, rect) {
+    const x = Number(clientX);
+    const y = Number(clientY);
+    const dx = (x < rect.left) ? (rect.left - x) : ((x > rect.right) ? (x - rect.right) : 0);
+    const dy = (y < rect.top) ? (rect.top - y) : ((y > rect.bottom) ? (y - rect.bottom) : 0);
+    return Math.hypot(dx, dy);
+}
+
+function updateHoverProxyFromClientY(clientY, clientX = Number.NaN) {
     const container = els.messagesContainer;
     if (!container) return;
+    const y = Number(clientY);
+    if (!Number.isFinite(y)) {
+        clearHoverProxyMessage();
+        return;
+    }
+    if (isHoverProxySuppressedBySelection()) {
+        clearHoverProxyMessage();
+        return;
+    }
+    const containerRect = container.getBoundingClientRect();
+    const x = Number.isFinite(Number(clientX))
+        ? Number(clientX)
+        : Math.round((containerRect.left + containerRect.right) / 2);
+    const outsideMargin = 16;
+    if (
+        x < (containerRect.left - outsideMargin)
+        || x > (containerRect.right + outsideMargin)
+        || y < (containerRect.top - outsideMargin)
+        || y > (containerRect.bottom + outsideMargin)
+    ) {
+        clearHoverProxyMessage();
+        return;
+    }
+
     const rows = Array.from(container.querySelectorAll('.message'));
     if (!rows.length) {
         clearHoverProxyMessage();
@@ -292,11 +337,7 @@ function updateHoverProxyFromClientY(clientY) {
     let bestDistance = Number.POSITIVE_INFINITY;
     for (const row of rows) {
         const rect = row.getBoundingClientRect();
-        let dist = 0;
-        if (clientY < rect.top) dist = rect.top - clientY;
-        else if (clientY > rect.bottom) dist = clientY - rect.bottom;
-        else dist = 0; // inside row
-
+        const dist = pointDistanceToRect(x, y, rect);
         if (dist < bestDistance) {
             bestDistance = dist;
             best = row;
@@ -304,7 +345,8 @@ function updateHoverProxyFromClientY(clientY) {
         }
     }
 
-    if (best) {
+    const maxDistance = 42;
+    if (best && bestDistance <= maxDistance) {
         container.classList.add('has-proxy-hover');
         setHoverProxyMessage(best);
     } else {
@@ -7233,13 +7275,18 @@ function initUI() {
 
         // Hover proxy: 鼠标在容器内时，按纵向位置匹配最近消息，显示该条操作栏
         els.messagesContainer.addEventListener('mousemove', (e) => {
-            updateHoverProxyFromClientY(e.clientY);
+            updateHoverProxyFromClientY(e.clientY, e.clientX);
         });
         els.messagesContainer.addEventListener('mouseenter', (e) => {
-            updateHoverProxyFromClientY(e.clientY);
+            updateHoverProxyFromClientY(e.clientY, e.clientX);
         });
         els.messagesContainer.addEventListener('mouseleave', () => {
             clearHoverProxyMessage();
+        });
+        document.addEventListener('selectionchange', () => {
+            if (isHoverProxySuppressedBySelection()) {
+                clearHoverProxyMessage();
+            }
         });
     }
 
@@ -7349,6 +7396,30 @@ function initUI() {
     rebindHeaderActionButtons();
 
     // Settings button click
+    if (!settingsModalEscapeHandlerBound) {
+        document.addEventListener('keydown', (e) => {
+            if (!e || e.key !== 'Escape') return;
+            const settingsModal = document.getElementById('settingsModal');
+            if (!settingsModal || !settingsModal.classList.contains('active')) return;
+            const blockerIds = [
+                'confirmBackdrop',
+                'addUserModal',
+                'modelPermModal',
+                'avatarCropModal',
+                'adminTextConfirmModal',
+                'adminConfigModal',
+                'skillEditorModal'
+            ];
+            for (const bid of blockerIds) {
+                const node = document.getElementById(bid);
+                if (node && node.classList && node.classList.contains('active')) return;
+            }
+            e.preventDefault();
+            closeSettingsModal();
+        });
+        settingsModalEscapeHandlerBound = true;
+    }
+
     const settingsBtn = document.getElementById('settingsBtn');
     if (settingsBtn) {
         settingsBtn.addEventListener('click', (e) => {
@@ -7695,9 +7766,9 @@ function applyTokenBudgetPromptBreakdownFromConversationMessages(messages) {
         const ioWindow = readMessageIoTokens(md, true);
         const ioCumulative = readMessageIoTokens(md, false);
         const debug = (md.request_debug && typeof md.request_debug === 'object') ? md.request_debug : {};
-        latestInput = safeTokenInt(ioWindow.input);
-        latestRawInput = safeTokenInt(ioWindow.rawInput);
-        latestCachedInput = safeTokenInt(ioWindow.cachedInput);
+        latestInput = Math.max(safeTokenInt(ioWindow.input), safeTokenInt(ioCumulative.input));
+        latestRawInput = Math.max(safeTokenInt(ioWindow.rawInput), safeTokenInt(ioCumulative.rawInput));
+        latestCachedInput = Math.max(safeTokenInt(ioWindow.cachedInput), safeTokenInt(ioCumulative.cachedInput));
         if (latestCachedInput <= 0 && latestRawInput >= latestInput) {
             latestCachedInput = Math.max(0, latestRawInput - latestInput);
         }
@@ -7767,35 +7838,22 @@ function buildTokenBudgetHoverText(limit, used, ratioRaw, remain) {
         Math.max(0, rawInput - totalInput)
     );
     const cumulativeInput = safeTokenInt(tokenBudgetState.cumulativeInputTokens);
-    const cumulativeRawInput = Math.max(
-        cumulativeInput,
-        safeTokenInt(tokenBudgetState.cumulativeRawInputTokens)
-    );
-    const cumulativeCachedInput = Math.max(
-        0,
-        safeTokenInt(tokenBudgetState.cumulativeCachedInputTokens),
-        Math.max(0, cumulativeRawInput - cumulativeInput)
-    );
     const systemTokens = safeTokenInt(tokenBudgetState.systemPromptTokens);
     const toolExact = safeTokenInt(tokenBudgetState.toolInputTokens);
     const toolEstimate = safeTokenInt(tokenBudgetState.toolInputEstimate);
     const toolTokens = toolExact > 0 ? toolExact : toolEstimate;
     const contextForPrompt = contextOn ? Math.max(0, rawInput - systemTokens - toolTokens) : 0;
     const exactBreakdown = !!tokenBudgetState.tokenBreakdownExact;
+
     const rows = [
         `上下文传入: ${contextOn ? '开启' : '关闭'}`,
-        `上下文占用: ${used.toLocaleString()} / ${limit.toLocaleString()} (${Math.round(ratioRaw * 100)}%)`,
+        `CTX 占用: ${used.toLocaleString()} / ${limit.toLocaleString()} (${Math.round(ratioRaw * 100)}%)`,
         `本轮原始输入: ${rawInput.toLocaleString()}`,
-        `本轮缓存命中: ${cachedInput.toLocaleString()}`,
-        `窗口计费输入: ${totalInput.toLocaleString()}`,
-        `累计原始输入: ${cumulativeRawInput.toLocaleString()}`,
-        `累计缓存命中: ${cumulativeCachedInput.toLocaleString()}`,
-        `请求累计计费输入: ${cumulativeInput.toLocaleString()}`,
-        `系统提示词占用: ${systemTokens.toLocaleString()}${exactBreakdown ? '' : '（估算）'}`,
-        `工具占用: ${toolTokens.toLocaleString()}${toolExact > 0 ? '' : (toolEstimate > 0 ? '（估算）' : '')}`,
-        `本次请求上下文计入: ${contextForPrompt.toLocaleString()}${exactBreakdown ? '' : '（近似）'}`
+        `缓存命中: ${cachedInput.toLocaleString()}`,
+        `系统/工具/上下文: ${systemTokens.toLocaleString()} / ${toolTokens.toLocaleString()} / ${contextForPrompt.toLocaleString()}${exactBreakdown ? '' : '（近似）'}`,
+        `计费输入(本轮/累计): ${totalInput.toLocaleString()} / ${cumulativeInput.toLocaleString()}`,
+        `剩余窗口: ${remain.toLocaleString()}${tokenBudgetState.estimated ? '（上限估算）' : ''}`
     ];
-    rows.push(`剩余窗口: ${remain.toLocaleString()}${tokenBudgetState.estimated ? '（上限估算）' : ''}`);
     return rows.join('\n');
 }
 
@@ -7931,7 +7989,15 @@ function renderTokenBudgetUi() {
 
     const remain = Math.max(0, limit - used);
     const prefix = tokenBudgetState.estimated ? '~' : '';
-    usage.textContent = `CTX ${prefix}${used.toLocaleString()}/${limit.toLocaleString()}`;
+    const systemTokens = safeTokenInt(tokenBudgetState.systemPromptTokens);
+    const toolExact = safeTokenInt(tokenBudgetState.toolInputTokens);
+    const toolEstimate = safeTokenInt(tokenBudgetState.toolInputEstimate);
+    const toolTokens = toolExact > 0 ? toolExact : toolEstimate;
+    const rawForBreakdown = Math.max(safeTokenInt(tokenBudgetState.latestRawInputTokens), safeTokenInt(used));
+    const contextTokens = tokenBudgetState.includeContext
+        ? Math.max(0, rawForBreakdown - systemTokens - toolTokens)
+        : 0;
+    usage.textContent = `CTX ${prefix}${used.toLocaleString()}/${limit.toLocaleString()}`;// | S/T/C ${systemTokens}/${toolTokens}/${contextTokens}`;
     const hoverText = buildTokenBudgetHoverText(limit, used, ratioRaw, remain);
     mini.dataset.tokenBudgetTip = hoverText;
     usage.dataset.tokenBudgetTip = hoverText;
@@ -7994,9 +8060,10 @@ function estimateTokenBudgetUsedFromConversationMessages(messages) {
         if (!msg || typeof msg !== 'object') continue;
         if (String(msg.role || '').trim() !== 'assistant') continue;
         const md = (msg.metadata && typeof msg.metadata === 'object') ? msg.metadata : {};
-        const io = readMessageIoTokens(md, true);
-        const inTok = safeTokenInt(io.input);
-        const rawTok = safeTokenInt(io.rawInput);
+        const ioWindow = readMessageIoTokens(md, true);
+        const ioCumulative = readMessageIoTokens(md, false);
+        const inTok = Math.max(safeTokenInt(ioWindow.input), safeTokenInt(ioCumulative.input));
+        const rawTok = Math.max(safeTokenInt(ioWindow.rawInput), safeTokenInt(ioCumulative.rawInput));
         if (rawTok > 0) return rawTok;
         if (inTok > 0) return inTok;
     }
@@ -8618,8 +8685,182 @@ async function warnIfModelCannotUseHistoryImages(modelId) {
     }
 }
 
+async function ensureSelectedModelReady() {
+    const current = String(selectedModelId || '').trim();
+    if (current) return current;
+    try {
+        await loadModels();
+    } catch (_) {
+        // ignore and use best effort below
+    }
+    const next = String(selectedModelId || '').trim();
+    if (next) return next;
+    const fallbackModel = Array.isArray(modelCatalog)
+        ? modelCatalog.find((m) => m && String(m.id || '').trim())
+        : null;
+    if (fallbackModel) {
+        const fallbackId = String(fallbackModel.id || '').trim();
+        if (fallbackId) {
+            selectedModelId = fallbackId;
+            try { localStorage.setItem('selectedModel', fallbackId); } catch (_) {}
+            if (els.currentModelDisplay) {
+                els.currentModelDisplay.textContent = String(fallbackModel.name || fallbackId);
+            }
+            return fallbackId;
+        }
+    }
+    return '';
+}
+
+async function readErrorMessageFromResponse(response, fallback = '') {
+    let errMsg = String(fallback || `HTTP ${response ? response.status : ''}`).trim() || '请求失败';
+    if (!response) return errMsg;
+    try {
+        const data = await response.clone().json();
+        if (data && typeof data === 'object') {
+            const m = String(data.message || data.error || '').trim();
+            if (m) return m;
+        }
+    } catch (_) {}
+    try {
+        const text = String(await response.clone().text() || '').trim();
+        if (text) {
+            errMsg = text.length > 180 ? `${text.slice(0, 180)}...` : text;
+        }
+    } catch (_) {}
+    return errMsg;
+}
+
+function isSseResponse(response) {
+    const contentType = String((response && response.headers && response.headers.get('content-type')) || '').toLowerCase();
+    return contentType.includes('text/event-stream');
+}
+
+async function syncConversationMessagesFromServer(conversationId, options = {}) {
+    const { instant = true, silent = true } = options;
+    const cid = String(conversationId || currentConversationId || '').trim();
+    if (!cid) return false;
+    try {
+        const convRes = await fetch(`/api/conversations/${encodeURIComponent(cid)}`);
+        const convData = await convRes.json().catch(() => ({}));
+        if (!(convData && convData.success && convData.conversation && Array.isArray(convData.conversation.messages))) {
+            return false;
+        }
+        const msgs = convData.conversation.messages || [];
+        renderMessages(msgs, !!silent, { instant: !!instant });
+        refreshConversationImageHistoryFlag(msgs);
+        applyTokenBudgetFromConversationMessages(msgs);
+        await refreshTokenMiniForConversation(cid, { keepStreamPart: false });
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
+function getMessageRowByIndex(index) {
+    const idx = Number(index);
+    if (!Number.isFinite(idx)) return null;
+    return document.querySelector(`.message[data-index="${idx}"]`);
+}
+
+function getDeleteRoundRangeFromDom(index) {
+    const idx = Number(index);
+    if (!Number.isFinite(idx)) return { start: -1, end: -1, role: '' };
+    const row = getMessageRowByIndex(idx);
+    if (!row) return { start: idx, end: idx, role: '' };
+    const isUser = row.classList.contains('user');
+    const isAssistant = row.classList.contains('assistant');
+    let start = idx;
+    let end = idx;
+    if (isUser) {
+        const next = getMessageRowByIndex(idx + 1);
+        if (next && next.classList.contains('assistant')) end = idx + 1;
+        return { start, end, role: 'user' };
+    }
+    if (isAssistant) {
+        const prev = getMessageRowByIndex(idx - 1);
+        if (prev && prev.classList.contains('user')) start = idx - 1;
+        return { start, end, role: 'assistant' };
+    }
+    return { start, end, role: '' };
+}
+
+function optimisticHideDeleteRound(index) {
+    const range = getDeleteRoundRangeFromDom(index);
+    const hiddenRows = [];
+    if (range.start < 0 || range.end < range.start) {
+        return { ...range, hiddenRows };
+    }
+    for (let i = range.start; i <= range.end; i += 1) {
+        const row = getMessageRowByIndex(i);
+        if (!row) continue;
+        row.dataset.optimisticHidden = '1';
+        row.style.display = 'none';
+        hiddenRows.push(row);
+    }
+    return { ...range, hiddenRows };
+}
+
+function rollbackOptimisticHide(state) {
+    const rows = (state && Array.isArray(state.hiddenRows)) ? state.hiddenRows : [];
+    rows.forEach((row) => {
+        if (!row || !row.isConnected) return;
+        if (row.dataset && row.dataset.optimisticHidden === '1') {
+            delete row.dataset.optimisticHidden;
+        }
+        row.style.display = '';
+    });
+}
+
+async function requestServerCancelForActiveStream() {
+    const state = loadActiveStreamResumeState();
+    const streamId = String((state && state.stream_id) || '').trim();
+    if (!streamId) return false;
+    try {
+        const res = await fetch('/api/chat/stream/cancel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ stream_id: streamId })
+        });
+        const data = await res.json().catch(() => ({}));
+        return !!(res.ok && data && data.success);
+    } catch (_) {
+        return false;
+    }
+}
+
+async function persistAbortedAssistantPartial(conversationId, content, options = {}) {
+    const cid = String(conversationId || '').trim();
+    const text = String(content || '');
+    if (!cid || !text.trim()) return false;
+    const opts = (options && typeof options === 'object') ? options : {};
+    const payload = {
+        content: text,
+        model_name: String(opts.modelName || '').trim(),
+        metadata: {
+            source: String(opts.source || 'chat').trim() || 'chat',
+            aborted_by_user: true
+        }
+    };
+    if (Number.isFinite(Number(opts.index))) {
+        payload.index = Number(opts.index);
+    }
+    try {
+        const res = await fetch(`/api/conversations/${encodeURIComponent(cid)}/assistant_partial`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json().catch(() => ({}));
+        return !!(res.ok && data && data.success);
+    } catch (_) {
+        return false;
+    }
+}
+
 function stopGeneration() {
     if (currentAbortController) {
+        void requestServerCancelForActiveStream();
         currentAbortController.abort();
         isGenerating = false;
         updateSendButtonState();
@@ -8722,6 +8963,50 @@ async function findAssistantIndexAfterUserMessageFromServer(conversationId, user
     }
 }
 
+async function findAssistantIndexAfterEditedUserFromServer(conversationId, preferredUserIndex, editedText) {
+    const cid = String(conversationId || '').trim();
+    const idx = Number(preferredUserIndex);
+    const target = String(editedText || '').trim();
+    if (!cid) return { index: -1, userIndex: -1, reason: 'invalid_conversation', messages: [] };
+    try {
+        const res = await fetch(`/api/conversations/${encodeURIComponent(cid)}`);
+        const data = await res.json().catch(() => ({}));
+        const messages = (data && data.success && data.conversation && Array.isArray(data.conversation.messages))
+            ? data.conversation.messages
+            : [];
+        if (!messages.length) return { index: -1, userIndex: -1, reason: 'empty_messages', messages };
+
+        let userPos = -1;
+        if (Number.isFinite(idx) && idx >= 0 && idx < messages.length) {
+            const m = messages[idx] || {};
+            if (String(m.role || '').trim().toLowerCase() === 'user') {
+                userPos = idx;
+            }
+        }
+        if (userPos < 0 && target) {
+            for (let i = messages.length - 1; i >= 0; i -= 1) {
+                const m = messages[i] || {};
+                if (String(m.role || '').trim().toLowerCase() !== 'user') continue;
+                if (String(m.content || '').trim() === target) {
+                    userPos = i;
+                    break;
+                }
+            }
+        }
+        if (userPos < 0) {
+            return { index: -1, userIndex: -1, reason: 'user_turn_not_found', messages };
+        }
+        for (let i = userPos + 1; i < messages.length; i += 1) {
+            const role = String((messages[i] && messages[i].role) || '').trim().toLowerCase();
+            if (role === 'assistant') {
+                return { index: i, userIndex: userPos, reason: 'ok', messages };
+            }
+        }
+        return { index: -1, userIndex: userPos, reason: 'no_assistant_after_user', messages };
+    } catch (_) {
+        return { index: -1, userIndex: -1, reason: 'fetch_failed', messages: [] };
+    }
+}
 function normalizeToolsMode(raw) {
     const m = String(raw || '').trim().toLowerCase();
     if (m === 'off' || m === 'force') return m;
@@ -9121,7 +9406,11 @@ async function sendMessage() {
     }
 
     // Configs
-    const model = selectedModelId;
+    const model = await ensureSelectedModelReady();
+    if (!model) {
+        showToast('当前账号无可用模型，请联系管理员');
+        return;
+    }
     const enableThinking = els.checkThinking ? els.checkThinking.checked : true;
     const enableSearch = els.checkSearch ? els.checkSearch.checked : true;
     const toolsMode = getToolsMode();
@@ -9143,6 +9432,9 @@ async function sendMessage() {
         }
     }
     const allowHistoryImages = currentConversationHasImageHistory ? await ensureModelVisionCapable() : true;
+    if (!allowHistoryImages && currentConversationHasImageHistory) {
+        showToast(`当前模型不支持历史图片上下文，将自动忽略历史图片：${model || '-'}`);
+    }
     const forceContextCompressionRequested = consumeForceContextCompressionOnce();
     const compressionDecision = await maybeConfirmContextCompressionBeforeSend(
         model,
@@ -10030,6 +10322,17 @@ async function sendMessage() {
             body: JSON.stringify(payload),
             signal: currentAbortController.signal
         });
+        if (!res.ok) {
+            const errMsg = await readErrorMessageFromResponse(res, `HTTP ${res.status}`);
+            throw new Error(errMsg);
+        }
+        if (!isSseResponse(res)) {
+            const errMsg = await readErrorMessageFromResponse(res, '服务端未返回流式响应');
+            throw new Error(errMsg);
+        }
+        if (!res.body) {
+            throw new Error('stream body is empty');
+        }
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -10275,6 +10578,7 @@ async function sendMessage() {
 
              if (done) {
                 streamCompleted = true;
+                aiMsgDiv.dataset.localOnly = '0';
                 finalizeStreamingContentRender();
                 setTimeout(() => collapseReasoningBlocksForMessage(aiMsgDiv), 420);
                 setTimeout(() => collapseModelBadgeForMessage(aiMsgDiv), 520);
@@ -10290,7 +10594,6 @@ async function sendMessage() {
                 title: 'Generation Aborted',
                 payload: { content: '[Generation Terminated by User]' }
             });
-            appendErrorEvent(aiMsgDiv, '[Generation Terminated by User]');
         } else {
             appendDebugConsoleEntry({
                 direction: 'client->local',
@@ -10299,6 +10602,7 @@ async function sendMessage() {
                 payload: { message: e.message || 'Unknown error' }
             });
             appendErrorEvent(aiMsgDiv, e.message || 'Unknown error');
+            showToast(String((e && e.message) || '发送失败'));
         }
         isGenerating = false;
     } finally {
@@ -10306,6 +10610,21 @@ async function sendMessage() {
         isGenerating = false;
         currentAbortController = null;
         updateSendButtonState();
+        if (streamAbortedByUser && !streamCompleted) {
+            const saved = await persistAbortedAssistantPartial(currentConversationId, currentFullContent, {
+                modelName: model,
+                source: 'send',
+                index: null
+            });
+            aiMsgDiv.dataset.localOnly = saved ? '0' : '1';
+            if (saved) {
+                showToast('已中断，已保留当前回答');
+            } else if (String(currentFullContent || '').trim()) {
+                showToast('已中断，但保存当前回答失败');
+            } else {
+                showToast('已中断');
+            }
+        }
         if (streamCompleted || streamAbortedByUser) {
             clearActiveStreamResumeState();
             aiMsgDiv.classList.remove('pending');
@@ -11294,6 +11613,32 @@ async function saveEditedUserPrompt(index, options = {}) {
             ) {
                 renderMessages(fallback.messages, true, { instant: true });
             }
+            if (assistantIndex < 0) {
+                const fallbackByEditedUser = await findAssistantIndexAfterEditedUserFromServer(currentConversationId, idx, nextText);
+                assistantIndex = Number(fallbackByEditedUser.index);
+                if (
+                    Number.isFinite(assistantIndex)
+                    && assistantIndex >= 0
+                    && Array.isArray(fallbackByEditedUser.messages)
+                    && fallbackByEditedUser.messages.length
+                ) {
+                    renderMessages(fallbackByEditedUser.messages, true, { instant: true });
+                }
+                if (isDebugConsoleEnabled()) {
+                    appendDebugConsoleEntry({
+                        direction: 'client->local',
+                        stage: 'regenerate_target_resolve',
+                        title: 'Regenerate Resolve',
+                        payload: {
+                            source: 'edit_user_prompt',
+                            preferred_user_index: idx,
+                            assistant_index: assistantIndex,
+                            fallback_reason: fallbackByEditedUser.reason,
+                            server_message_count: Array.isArray(fallbackByEditedUser.messages) ? fallbackByEditedUser.messages.length : 0
+                        }
+                    });
+                }
+            }
         }
         if (assistantIndex < 0) {
             showToast('提示词已更新，但未找到可重答的模型回复');
@@ -11420,6 +11765,9 @@ function appendMessage(msg, index) {
     if (msg.pending) div.classList.add('pending');
     div.dataset.index = index;
     div.dataset.conversationId = String(currentConversationId || '');
+    if (msg.role === 'assistant') {
+        div.dataset.localOnly = msg.pending ? '1' : '0';
+    }
     
     // Avatar for AI
     if (msg.role === 'assistant') {
@@ -11882,31 +12230,63 @@ window.confirmDelete = function(index) {
         return;
     }
     showConfirm("删除确认", "确定要删除这轮消息（本次提问和回答）吗？此操作不可撤销。", "danger", async () => {
+        const cid = String(currentConversationId || '').trim();
+        const idx = Number(index);
+        if (!cid || !Number.isFinite(idx) || idx < 0) {
+            showToast("删除失败: 参数无效");
+            return;
+        }
+
+        const clickedRow = getMessageRowByIndex(idx);
+        const isLocalOnlyAssistant = !!(
+            clickedRow
+            && clickedRow.classList.contains('assistant')
+            && String(clickedRow.dataset.localOnly || '') === '1'
+        );
+        const optimisticState = optimisticHideDeleteRound(idx);
+
+        // 本地未落库 assistant：服务端按该轮 user 索引删除，避免 assistant 越界导致 failed。
+        let requestIndex = idx;
+        if (isLocalOnlyAssistant) {
+            requestIndex = (Number.isFinite(Number(optimisticState.start)) && optimisticState.start < idx)
+                ? Number(optimisticState.start)
+                : -1;
+        }
+
+        // 本地残留且无法映射到服务端消息时，仅做本地删除。
+        if (isLocalOnlyAssistant && requestIndex < 0) {
+            showToast("已删除本地未保存消息");
+            return;
+        }
+
         try {
             const res = await fetch('/api/delete_message', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({
-                    conversation_id: currentConversationId,
-                    index: index
+                    conversation_id: cid,
+                    index: requestIndex
                 })
             });
-            const data = await res.json();
-            if(data.success) {
-                // Silent reload: fetch data and render without triggering initial animation effects
-                const convRes = await fetch(`/api/conversations/${currentConversationId}`);
-                const convData = await convRes.json();
-                if (convData.success) {
-                    const msgs = convData.conversation.messages || [];
-                    renderMessages(msgs, true);
-                    applyTokenBudgetFromConversationMessages(msgs);
-                }
-                await loadConversations();
-                await loadKnowledge(currentConversationId);
-            } else {
-                showToast("删除失败: " + data.message);
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data.success) {
+                rollbackOptimisticHide(optimisticState);
+                const msg = String((data && (data.message || data.error)) || `HTTP ${res.status}`).trim() || '未知错误';
+                showToast("删除失败: " + msg);
+                await syncConversationMessagesFromServer(cid, { instant: true, silent: true });
+                return;
             }
-        } catch(e) { console.error(e); }
+
+            showToast("已删除");
+            await syncConversationMessagesFromServer(cid, { instant: true, silent: true });
+            void loadConversations();
+            void loadKnowledge(cid);
+        } catch(e) {
+            rollbackOptimisticHide(optimisticState);
+            console.error(e);
+            showToast("删除失败: 网络或服务异常");
+            await syncConversationMessagesFromServer(cid, { instant: true, silent: true });
+        }
     });
 };
 
@@ -11924,7 +12304,11 @@ window.confirmRegenerate = function(index) {
 async function startRegenerate(index) {
     if (isGenerating) return;
     
-    const modelName = selectedModelId;
+    const modelName = await ensureSelectedModelReady();
+    if (!modelName) {
+        showToast('当前账号无可用模型，请联系管理员');
+        return;
+    }
     let modelVisionCapableCache = null;
     const ensureModelVisionCapable = async () => {
         if (!modelName) return true;
@@ -11935,8 +12319,7 @@ async function startRegenerate(index) {
     };
     const allowHistoryImages = currentConversationHasImageHistory ? await ensureModelVisionCapable() : true;
     if (!allowHistoryImages) {
-        showToast(`当前模型不支持历史图片上下文：${modelName || '-'}`);
-        return;
+        showToast(`当前模型不支持历史图片上下文，将自动忽略历史图片：${modelName || '-'}`);
     }
     const forceContextCompressionRequested = consumeForceContextCompressionOnce();
     const compressionDecision = await maybeConfirmContextCompressionBeforeSend(
@@ -11961,6 +12344,18 @@ async function startRegenerate(index) {
         }
     }
     if (!regenMessageDiv) {
+        if (isDebugConsoleEnabled()) {
+            appendDebugConsoleEntry({
+                direction: 'client->local',
+                stage: 'regenerate_target_missing',
+                title: 'Regenerate Target Missing',
+                payload: {
+                    conversation_id: String(currentConversationId || ''),
+                    regenerate_index: Number(index),
+                    reason: 'assistant_dom_not_found_after_sync'
+                }
+            });
+        }
         showToast('未找到可重答消息，请刷新后重试');
         return;
     }
@@ -11984,7 +12379,10 @@ async function startRegenerate(index) {
     updateSendButtonState();
     currentAbortController = new AbortController();
     clearActiveStreamResumeState();
-    if (regenMessageDiv) regenMessageDiv.classList.add('pending');
+    if (regenMessageDiv) {
+        regenMessageDiv.classList.add('pending');
+        regenMessageDiv.dataset.localOnly = '1';
+    }
     let streamCompleted = false;
     let streamAbortedByUser = false;
     let streamServerError = '';
@@ -12012,11 +12410,11 @@ async function startRegenerate(index) {
         });
 
         if (!response.ok) {
-            let errMsg = `HTTP ${response.status}`;
-            try {
-                const errData = await response.json();
-                if (errData && errData.message) errMsg = String(errData.message);
-            } catch (_) {}
+            const errMsg = await readErrorMessageFromResponse(response, `HTTP ${response.status}`);
+            throw new Error(errMsg);
+        }
+        if (!isSseResponse(response)) {
+            const errMsg = await readErrorMessageFromResponse(response, '服务端未返回流式响应');
             throw new Error(errMsg);
         }
         if (!response.body) throw new Error('stream body is empty');
@@ -12173,6 +12571,7 @@ async function startRegenerate(index) {
         updateSendButtonState();
         if (regenMessageDiv) regenMessageDiv.classList.remove('pending');
         if (streamCompleted) {
+            if (regenMessageDiv) regenMessageDiv.dataset.localOnly = '0';
             finalizeMessageRenderForIndex(index, regenMessageDiv);
             const targetAfterStream = resolveAssistantStreamMessageDiv(index, regenMessageDiv);
             const hasRenderedContent = !!(targetAfterStream && (() => {
@@ -12206,6 +12605,21 @@ async function startRegenerate(index) {
                 } catch (_) {
                     // ignore fallback refresh errors
                 }
+            }
+        }
+        if (streamAbortedByUser && !streamCompleted) {
+            const saved = await persistAbortedAssistantPartial(currentConversationId, accumulatedContent, {
+                modelName: modelName,
+                source: 'regenerate',
+                index
+            });
+            if (regenMessageDiv) regenMessageDiv.dataset.localOnly = saved ? '0' : '1';
+            if (saved) {
+                showToast('已中断，已保留当前回答');
+            } else if (String(accumulatedContent || '').trim()) {
+                showToast('已中断，但保存当前回答失败');
+            } else {
+                showToast('已中断');
             }
         }
         if (streamCompleted || streamAbortedByUser) {
@@ -18818,6 +19232,8 @@ async function openSettingsModal() {
             showToast('设置界面未加载');
             return;
         }
+        if (document.body) document.body.classList.add('settings-modal-open');
+        if (els.userMenu) els.userMenu.classList.remove('active');
         settingsModal.classList.add('active');
         settingsModal.classList.add('perf-mode');
         // 确保有用户名
@@ -18836,10 +19252,12 @@ async function openSettingsModal() {
     } catch (e) {
         console.error('打开设置模态框失败:', e);
         showToast('加载设置失败');
+        if (document.body) document.body.classList.remove('settings-modal-open');
     }
 }
 
 function closeSettingsModal() {
+    if (document.body) document.body.classList.remove('settings-modal-open');
     if (SETTINGS_COMPANION_MODE) {
         try {
             const api = window.pywebview && window.pywebview.api;
@@ -18874,6 +19292,10 @@ function initSettingsTabs() {
 }
 
 function switchSettingsTab(tabName) {
+    const modal = document.getElementById('settingsModal');
+    if (modal && modal.dataset) {
+        modal.dataset.activeSettingsTab = String(tabName || '');
+    }
     // 隐藏所有标签页
     document.querySelectorAll('#settingsModal .admin-tab-content').forEach(tab => {
         tab.classList.remove('active');
@@ -18888,11 +19310,14 @@ function switchSettingsTab(tabName) {
     const selectedTab = document.getElementById('settings-' + tabName + '-tab');
     if (selectedTab) {
         selectedTab.classList.add('active');
+        selectedTab.scrollTop = 0;
     }
 
     // 激活选中的按钮
     const selectedBtn = document.querySelector(`#settingsModal .admin-tab[data-tab="${tabName}"]`);
     if (selectedBtn) selectedBtn.classList.add('active');
+    const settingsContent = modal ? modal.querySelector('.admin-content.settings-content') : null;
+    if (settingsContent) settingsContent.scrollTop = 0;
 
     if (tabName === 'admin-users') {
         adminUserFilterKeyword = '';
@@ -19690,3 +20115,6 @@ function applyAvatarCropAndPreview() {
     closeAvatarCropModal();
     showToast('头像已裁切，点击“保存资料”后生效');
 }
+
+
+

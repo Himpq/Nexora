@@ -6,6 +6,7 @@ import re
 import base64
 import textwrap
 import threading
+import uuid
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Generator, Set, Tuple
 from urllib import request as urllib_request, error as urllib_error, parse as urllib_parse
@@ -16,6 +17,7 @@ from tool_executor import ToolExecutor
 from database import User
 from conversation_manager import ConversationManager
 from provider_factory import create_provider_adapter
+from temp_context_store import TempContextStore
 import prompts
 
 # 配置文件路径
@@ -287,6 +289,9 @@ class Model:
         self._runtime_hints_injected_in_request = False
         self._runtime_tool_mode = "force"
         self._runtime_bootstrap_tool_name = "select_tools"
+        self._temp_context_store = None
+        self._temp_context_scope_id = ""
+        self._temp_context_settings = {}
     
     def get_embedding(self, text: str) -> List[float]:
         """获取文本向量（通过 provider adapter 创建 embedding client）"""
@@ -2768,12 +2773,140 @@ class Model:
         except Exception as log_err:
             print(f"[TOOL_LOG] failed: {log_err}")
 
+    def _init_temp_context_store_for_reply(self) -> None:
+        cfg = self.config if isinstance(getattr(self, "config", None), dict) else {}
+        raw = cfg.get("temp_context_cache", {}) if isinstance(cfg, dict) else {}
+        if not isinstance(raw, dict):
+            raw = {}
+        enabled = bool(raw.get("enabled", True))
+        trigger_chars = max(128, int(raw.get("trigger_chars", 1000) or 1000))
+        expire_seconds = max(0, int(raw.get("expire_seconds", 0) or 0))
+        storage = str(raw.get("storage", "memory") or "memory").strip().lower()
+        if storage not in {"memory", "file"}:
+            storage = "memory"
+        file_path = str(raw.get("file_path", "./temp/ContextTemp.tmp") or "./temp/ContextTemp.tmp").strip()
+        if not os.path.isabs(file_path):
+            file_path = os.path.abspath(os.path.join(BASE_DIR, file_path))
+        self._temp_context_scope_id = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
+        self._temp_context_settings = {
+            "enabled": enabled,
+            "trigger_chars": trigger_chars,
+            "expire_seconds": expire_seconds,
+            "storage": storage,
+            "file_path": file_path,
+        }
+        if not enabled:
+            self._temp_context_store = None
+            return
+        try:
+            self._temp_context_store = TempContextStore(
+                username=self.username,
+                scope_id=self._temp_context_scope_id,
+                storage_mode=storage,
+                file_path=file_path,
+                expire_seconds=expire_seconds,
+            )
+        except Exception as e:
+            print(f"[TMP_CACHE] init failed: {e}")
+            self._temp_context_store = None
+
+    def _clear_temp_context_store_for_reply(self) -> None:
+        store = self._temp_context_store
+        try:
+            if store is not None:
+                store.clear_scope()
+        except Exception as e:
+            print(f"[TMP_CACHE] clear failed: {e}")
+        finally:
+            self._temp_context_store = None
+            self._temp_context_scope_id = ""
+
+    def _cache_tool_result_if_needed(self, result: str, func_name: str) -> Optional[str]:
+        no_cache_tools = {"readtmp", "searchtmp", "listtmp", "cleartmp"}
+        if func_name in no_cache_tools:
+            return None
+        settings = self._temp_context_settings if isinstance(self._temp_context_settings, dict) else {}
+        if not bool(settings.get("enabled", False)):
+            return None
+        text = str(result or "")
+        trigger_chars = max(128, int(settings.get("trigger_chars", 1000) or 1000))
+        if len(text) < trigger_chars:
+            return None
+        store = self._temp_context_store
+        if store is None:
+            return None
+        try:
+            cached = store.cache_text(
+                text,
+                source_tool=func_name,
+                meta={"conversation_id": str(self.conversation_id or "")}
+            )
+            resource_id = str(cached.get("resource_id") or "").strip()
+            if not resource_id:
+                return None
+            payload = {
+                "tmp_cached": True,
+                "resource_id": resource_id,
+                "source_tool": func_name,
+                "total_chars": int(cached.get("length") or len(text)),
+                "trigger_chars": trigger_chars,
+                "scope": "single_reply",
+                "hint": "Use readtmp(resource_id,start,count) or searchtmp(resource_id,keyword/regex).",
+                "preview": text[:400]
+            }
+            return json.dumps(payload, ensure_ascii=False)
+        except Exception as e:
+            print(f"[TMP_CACHE] cache failed: {e}")
+            return None
+
+    def temp_cache_read(self, resource_id: str, start: int = 0, count: int = 2000) -> str:
+        store = self._temp_context_store
+        if store is None:
+            return json.dumps({"success": False, "message": "tmp cache is unavailable for this reply"}, ensure_ascii=False)
+        return json.dumps(store.read(resource_id=resource_id, start=start, count=count), ensure_ascii=False)
+
+    def temp_cache_search(
+        self,
+        resource_id: Optional[str] = None,
+        keyword: Optional[str] = None,
+        regex: Optional[str] = None,
+        case_sensitive: bool = False,
+        range_size: int = 80,
+        max_matches: int = 20,
+    ) -> str:
+        store = self._temp_context_store
+        if store is None:
+            return json.dumps({"success": False, "message": "tmp cache is unavailable for this reply"}, ensure_ascii=False)
+        payload = store.search(
+            resource_id=resource_id,
+            keyword=keyword,
+            regex=regex,
+            case_sensitive=case_sensitive,
+            range_size=range_size,
+            max_matches=max_matches,
+        )
+        return json.dumps(payload, ensure_ascii=False)
+
+    def temp_cache_list(self) -> str:
+        store = self._temp_context_store
+        if store is None:
+            return json.dumps({"success": True, "count": 0, "items": []}, ensure_ascii=False)
+        return json.dumps(store.list_resources(), ensure_ascii=False)
+
+    def temp_cache_clear(self) -> str:
+        store = self._temp_context_store
+        if store is None:
+            return json.dumps({"success": True, "removed": 0}, ensure_ascii=False)
+        return json.dumps(store.clear_scope(), ensure_ascii=False)
     def _sanitize_function_result(self, result: Any, func_name: str) -> str:
-        """对函数输出进行'脱水'处理，防止 Context 溢出"""
+        """Tool result sanitization for context safety."""
         if not isinstance(result, str):
             result = str(result)
 
-        # 读取类工具必须返回完整内容，不能自动缩水
+        cached_payload = self._cache_tool_result_if_needed(result, func_name)
+        if isinstance(cached_payload, str) and cached_payload:
+            return cached_payload
+
         no_truncate_tools = {
             "get_basis_content",
             "get_context",
@@ -2786,17 +2919,18 @@ class Model:
             "file_read",
             "file_find",
             "file_list",
+            "readtmp",
+            "searchtmp",
+            "listtmp",
+            "cleartmp",
         }
         if func_name in no_truncate_tools:
             return result
 
-        # 其他工具保留兜底截断，但阈值提高，减少误伤
         limit = 12000
         if len(result) <= limit:
             return result
 
-        # 超过限制，保留头部和尾部，避免单次响应极端膨胀
-        print(f"[TOKEN_OPT] 对工具 {func_name} 的结果进行了脱水 (原长度: {len(result)})")
         keep_head = 6000
         keep_tail = 3000
         prefix = result[:keep_head]
@@ -2805,11 +2939,11 @@ class Model:
 
         return (
             f"{prefix}\n\n"
-            f"... [数据过长，已自动省略 {omitted_len} 字符。"
-            f"如需完整结果，请缩小查询范围或使用分页参数重试] ...\n\n"
+            f"... [data too long, omitted {omitted_len} chars. "
+            f"Use smaller ranges or paging parameters for full output] ...\n\n"
             f"{suffix}"
         )
-    
+
     def _execute_function_impl(self, function_name: str, args: Dict) -> str:
         """函数执行实现（委托给统一工具执行器）"""
         return self.tool_executor.execute(function_name, args)
@@ -3077,6 +3211,7 @@ class Model:
             # 确保对话已创建
             if not self.conversation_id:
                 self.conversation_id = self.conversation_manager.create_conversation()
+            self._init_temp_context_store_for_reply()
 
             def _safe_int_local(v, default=0):
                 try:
@@ -5068,6 +5203,7 @@ class Model:
         finally:
             self._clear_runtime_tool_selection()
             self._runtime_hints_injected_in_request = False
+            self._clear_temp_context_store_for_reply()
 
     def _log_token_usage_safe(self, usage, has_web_search, function_calls, process_steps, user_message=None, round_content=None):
         """安全记录Token日志（不影响主流程）"""
@@ -5831,3 +5967,6 @@ class Model:
     def analyzeConnections(self, title: str) -> str:
         """分析知识连接（简化实现）"""
         return f"知识 '{title}' 的连接分析功能尚未完整实现"
+
+
+
