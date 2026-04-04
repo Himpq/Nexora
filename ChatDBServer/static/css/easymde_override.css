@@ -1,0 +1,168 @@
+/* EasyMDE Fixes */
+#knowledgeViewer {
+    display: flex;
+    flex-direction: column;
+}
+
+.EasyMDEContainer {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.EasyMDEContainer .editor-toolbar {
+    border-radius: 0;
+    border: none;
+    border-bottom: 1px solid #ddd;
+    flex-shrink: 0;
+}
+
+.EasyMDEContainer .CodeMirror {
+    border: none;
+    border-radius: 0;
+    overflow: hidden !important;
+}
+
+.CodeMirror-scroll {
+    overflow-y: auto !important;
+    overflow-x: auto !important;
+    min-height: 100% !important;
+    max-height: 100% !important;
+}
+
+.EasyMDEContainer .editor-preview {
+    background: #fff;
+}
+/* Preview Mode Styling */
+.EasyMDEContainer .editor-preview-side,
+.EasyMDEContainer .editor-preview {
+    padding: 20px;
+    font-family: 'Inter', -apple-system, sans-serif;
+    font-size: 15px;
+    line-height: 1.7;
+    color: #24292e;
+}
+
+/* Table Styling */
+.editor-preview table,
+.editor-preview-side table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+    overflow-x: auto;
+    display: block;
+}
+
+.editor-preview table thead,
+.editor-preview-side table thead {
+    background-color: #f6f8fa;
+}
+
+.editor-preview table th,
+.editor-preview table td,
+.editor-preview-side table th,
+.editor-preview-side table td {
+    border: 1px solid #d0d7de;
+    padding: 8px 13px;
+    text-align: left;
+}
+
+.editor-preview table th,
+.editor-preview-side table th {
+    font-weight: 600;
+}
+
+.editor-preview table tr:nth-child(even),
+.editor-preview-side table tr:nth-child(even) {
+    background-color: #f6f8fa;
+}
+
+/* Headings */
+.editor-preview h1, .editor-preview-side h1 {
+    font-size: 2em;
+    font-weight: 600;
+    margin: 24px 0 16px;
+    padding-bottom: 0.3em;
+    border-bottom: 1px solid #eaecef;
+}
+
+.editor-preview h2, .editor-preview-side h2 {
+    font-size: 1.5em;
+    font-weight: 600;
+    margin: 24px 0 16px;
+    padding-bottom: 0.3em;
+    border-bottom: 1px solid #eaecef;
+}
+
+.editor-preview h3, .editor-preview-side h3 {
+    font-size: 1.25em;
+    font-weight: 600;
+    margin: 24px 0 16px;
+}
+
+/* Code Blocks */
+.editor-preview pre,
+.editor-preview-side pre {
+    background-color: #f6f8fa;
+    border-radius: 6px;
+    padding: 16px;
+    overflow-x: auto;
+    margin: 16px 0;
+}
+
+.editor-preview code,
+.editor-preview-side code {
+    background-color: rgba(175,184,193,0.2);
+    padding: 0.2em 0.4em;
+    border-radius: 3px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 85%;
+}
+
+.editor-preview pre code,
+.editor-preview-side pre code {
+    background-color: transparent;
+    padding: 0;
+}
+
+/* Lists */
+.editor-preview ul, .editor-preview ol,
+.editor-preview-side ul, .editor-preview-side ol {
+    padding-left: 2em;
+    margin: 16px 0;
+}
+
+.editor-preview li,
+.editor-preview-side li {
+    margin: 4px 0;
+}
+
+/* Blockquotes */
+.editor-preview blockquote,
+.editor-preview-side blockquote {
+    padding: 0 1em;
+    color: #57606a;
+    border-left: 0.25em solid #d0d7de;
+    margin: 16px 0;
+}
+
+/* Links */
+.editor-preview a,
+.editor-preview-side a {
+    color: #0969da;
+    text-decoration: none;
+}
+
+.editor-preview a:hover,
+.editor-preview-side a:hover {
+    text-decoration: underline;
+}
+
+/* Images */
+.editor-preview img,
+.editor-preview-side img {
+    max-width: 100%;
+    height: auto;
+    margin: 16px 0;
+}
