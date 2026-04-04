@@ -1,0 +1,2 @@
+"""NexoraMail core package."""
+

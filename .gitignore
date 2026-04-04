@@ -1,0 +1,8 @@
+Rubbish
+__pycache__/
+webview_storage/
+ChatDBServer/temp/
+ChatDBServer/data/
+NexoraNetdisk/data
+NexoraDB/chroma_data
+NexoraDB/model_cache
