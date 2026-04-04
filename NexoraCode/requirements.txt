@@ -1,9 +1,0 @@
-pywebview>=5.0
-flask>=3.0
-flask-cors>=4.0
-requests>=2.31
-pystray>=0.19
-Pillow>=10.0
-trafilatura>=1.9
-websocket-client
-beautifulsoup4

@@ -1,2 +1,0 @@
-"""NexoraMail API package."""
-
