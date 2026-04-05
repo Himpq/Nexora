@@ -22,7 +22,7 @@ def _get_lock(username: str) -> threading.Lock:
 class UserFileSandbox:
     """
     用户文件沙箱：
-    - 实体文件存储在 ChatDBServer/temp 下（随机命名）
+    - 实体文件存储在 ChatDBServer/data/temp 下（随机命名）
     - 用户索引存储在 data/users/<username>/file_sandbox.json
     - 对外统一暴露 {username}/files/{alias}
     """
@@ -43,7 +43,7 @@ class UserFileSandbox:
         self.username = str(username or "").strip()
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.base_dir = base_dir
-        self.temp_dir = os.path.join(base_dir, "temp")
+        self.temp_dir = os.path.join(base_dir, "data", "temp")
         self.user_dir = os.path.join(base_dir, "data", "users", self.username)
         self.index_path = os.path.join(self.user_dir, "file_sandbox.json")
         self._lock = _get_lock(self.username)

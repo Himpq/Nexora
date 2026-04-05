@@ -48,8 +48,8 @@ system_tools_enabled_auto_select = """
 system_tools_enabled_auto_off = """
 当前会话能力：
 - 用户已启用工具调用，模式为 Auto(OFF)。
-- 当前默认不开放业务工具；先调用 enable_tools，再继续执行。
-- enable_tools 一旦调用成功，当前回复后续轮次立即切到 Force（开放全部业务工具）。
+- 当前默认不开放业务工具；先调用 enable_tools，启用工具后会自动注入工具内容。
+- 请务必必要时先启用工具，然后获取足够多的信息再回答问题，而不是一味的根据上下文回答问题。
 """
 
 
@@ -150,8 +150,8 @@ runtime_tool_not_enabled_template = (
 )
 
 tool_completion_hint_template = (
-    # "[系统指令] 你（AI助手）已完成工具调用: {{tool_names}}。"
-    # "请根据返回的工具结果，继续完成对用户的回答或做出最终总结。"
+    "[系统指令] 你（AI助手）已完成工具调用: {{tool_names}}。"
+    "请根据返回的工具结果，继续完成对用户的回答或做出最终总结。"
 )
 
 conversation_title_prompt_template = """根据以下对话内容，生成一个简洁准确的标题（10-20字）。
@@ -181,6 +181,8 @@ context_compression_prompt_template = """历史对话：
 5. 建议：保留更多的情感倾向、用户纠结和烦恼的细节、用户需求、近期工作详细和你觉得需要放更多注意力的地方。
 6. 可以考虑以下模板回答(不强制限定,不要有重复的地方)：
 近期决策（原因与细节）
+近期对话时间线
+重要事件（情感、项目等的交流中的发生在用户身上的重要事件，需要详细保留）
 情感倾向（导致情感的原因与细节等）
 事项（未完成与已完成的细节）
 回复细节（模型回答问题的细节）
@@ -213,7 +215,8 @@ def build_runtime_tool_not_enabled_message(function_name: str, allowed_names, se
 def build_tool_completion_hint_text(tool_names: Iterable[str]) -> str:
     names = [str(x).strip() for x in (tool_names or []) if str(x).strip()]
     joined = ", ".join(names)
-    return tool_completion_hint_template.replace("{{tool_names}}", joined)
+    template = str(tool_completion_hint_template or "")
+    return template.replace("{{tool_names}}", joined)
 
 
 def build_conversation_title_prompt(user_message: str, assistant_response: str) -> str:
@@ -225,10 +228,7 @@ def build_conversation_title_prompt(user_message: str, assistant_response: str) 
 def build_context_compression_prompt(history_text: str, max_chars: int = 6000) -> str:
     limit = max(600, min(12000, int(max_chars or 6000)))
     out = context_compression_prompt_template.replace("{{history_text}}", str(history_text or ""))
-    if "{{max_chars}}" in out:
-        out = out.replace("{{max_chars}}", str(limit))
-    else:
-        out = f"{out}\n\n目标输出长度参考：约 {limit} 字符（可根据信息密度略有浮动）。"
+    out = out.replace("{{max_chars}}", str(limit))
     return out
 
 

@@ -58,8 +58,12 @@ DATA_RES_DIR = os.path.join(DATA_DIR, 'res')
 SKILLS_DIR = os.path.join(DATA_DIR, 'skills')
 SKILLS_CATALOG_PATH = os.path.join(SKILLS_DIR, 'catalog.json')
 
-CONFIG_PATH = os.path.join(BASE_DIR, 'config.json')
-MODELS_PATH = os.path.join(BASE_DIR, 'models.json')
+ROOT_CONFIG_PATH = os.path.join(BASE_DIR, 'config.json')
+ROOT_MODELS_PATH = os.path.join(BASE_DIR, 'models.json')
+ROOT_MODEL_ADAPTERS_PATH = os.path.join(BASE_DIR, 'model_adapters.json')
+CONFIG_PATH = os.path.join(DATA_DIR, 'config.json')
+MODELS_PATH = os.path.join(DATA_DIR, 'models.json')
+MODEL_ADAPTERS_PATH = os.path.join(DATA_DIR, 'model_adapters.json')
 MODELS_CONTEXT_WINDOW_CACHE_LEGACY_PATH = os.path.join(BASE_DIR, 'models_context_window.json')
 MODELS_CONTEXT_WINDOW_CACHE_PATH = os.path.join(DATA_RES_DIR, 'models_context_window.json')
 USERS_PATH = os.path.join(DATA_DIR, 'user.json')
@@ -194,7 +198,25 @@ DEFAULT_MAIN_CONFIG = {
         "cache_detail_ttl": 3600,
         "cache_max_entries": 800,
         "default_group": "default"
+    },
+    "temp_context_cache": {
+        "enabled": True,
+        "trigger_chars": 1000,
+        "expire_seconds": 0,
+        "storage": "memory",
+        "file_path": "./data/temp/ContextTemp.tmp"
     }
+}
+
+DEFAULT_MODELS_CONFIG = {
+    "models": {},
+    "providers": {}
+}
+
+DEFAULT_MODEL_ADAPTER_CONFIG = {
+    "version": 1,
+    "providers": {},
+    "relay_order": []
 }
 
 
@@ -222,10 +244,64 @@ def ensure_main_config_defaults():
             cfg = {}
 
     changed = _merge_defaults(cfg, json.loads(json.dumps(DEFAULT_MAIN_CONFIG, ensure_ascii=False)))
+    temp_cache = cfg.get('temp_context_cache')
+    if isinstance(temp_cache, dict):
+        old_temp_path = str(temp_cache.get('file_path', '') or '').strip()
+        if old_temp_path in {'./temp/ContextTemp.tmp', 'temp/ContextTemp.tmp'}:
+            temp_cache['file_path'] = './data/temp/ContextTemp.tmp'
+            changed = True
     if changed or not os.path.exists(CONFIG_PATH):
+        os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
         with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
             json.dump(cfg, f, indent=4, ensure_ascii=False)
     return cfg
+
+
+def _ensure_server_bootstrap_files():
+    """
+    Ensure empty deployment can boot without manual pre-created files.
+    """
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        os.makedirs(os.path.join(DATA_DIR, 'temp'), exist_ok=True)
+    except Exception:
+        pass
+
+    try:
+        _move_resource_file_if_needed(ROOT_CONFIG_PATH, CONFIG_PATH)
+        _move_resource_file_if_needed(ROOT_MODELS_PATH, MODELS_PATH)
+        _move_resource_file_if_needed(ROOT_MODEL_ADAPTERS_PATH, MODEL_ADAPTERS_PATH)
+    except Exception:
+        pass
+
+    try:
+        ensure_main_config_defaults()
+    except Exception:
+        pass
+
+    try:
+        if not os.path.exists(USERS_PATH):
+            with open(USERS_PATH, 'w', encoding='utf-8') as f:
+                json.dump({}, f, indent=4, ensure_ascii=False)
+    except Exception:
+        pass
+
+    try:
+        if not os.path.exists(MODEL_ADAPTERS_PATH):
+            with open(MODEL_ADAPTERS_PATH, 'w', encoding='utf-8') as f:
+                json.dump(DEFAULT_MODEL_ADAPTER_CONFIG, f, indent=4, ensure_ascii=False)
+    except Exception:
+        pass
+
+    try:
+        if not os.path.exists(MODELS_PATH):
+            with open(MODELS_PATH, 'w', encoding='utf-8') as f:
+                json.dump(DEFAULT_MODELS_CONFIG, f, indent=4, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+_ensure_server_bootstrap_files()
 
 
 def load_users():
@@ -1775,12 +1851,6 @@ def _save_models_context_window_cache(cache_obj):
         os.makedirs(os.path.dirname(MODELS_CONTEXT_WINDOW_CACHE_PATH), exist_ok=True)
         with open(MODELS_CONTEXT_WINDOW_CACHE_PATH, 'w', encoding='utf-8') as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
-        # 兼容旧路径：保留一份镜像，避免仍读取旧文件的脚本/工具误判未刷新。
-        try:
-            with open(MODELS_CONTEXT_WINDOW_CACHE_LEGACY_PATH, 'w', encoding='utf-8') as f_legacy:
-                json.dump(payload, f_legacy, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
     except Exception:
         pass
 

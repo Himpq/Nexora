@@ -8793,6 +8793,89 @@ function conversationHasImageHistory(messages) {
     return messages.some((msg) => messageHasImageAttachments(msg));
 }
 
+function getMessageElementByIndex(index, role = '') {
+    const idx = Number(index);
+    if (!Number.isFinite(idx) || idx < 0) return null;
+    const safeRole = String(role || '').trim();
+    const roleSelector = safeRole ? `.${safeRole}` : '';
+    return document.querySelector(`.message${roleSelector}[data-index="${Math.floor(idx)}"]`);
+}
+
+function buildAttachmentsPayloadFromMessage(msg) {
+    const result = {
+        file_ids: [],
+        sandbox_paths: [],
+        user_attachments: [],
+        has_image: false
+    };
+    const metadata = (msg && msg.metadata && typeof msg.metadata === 'object') ? msg.metadata : null;
+    const attachments = metadata && Array.isArray(metadata.attachments) ? metadata.attachments : [];
+    const seenFileUrls = new Set();
+    const seenSandboxPaths = new Set();
+
+    for (const att of attachments) {
+        if (!att || typeof att !== 'object') continue;
+        const type = String(att.type || '').trim().toLowerCase();
+        const name = String(att.name || 'attachment').trim();
+        const size = Number(att.size || 0);
+        const mime = String(att.mime || '').trim();
+
+        if (type === 'image' || type === 'image_url') {
+            const url = String(att.asset_url || att.url || '').trim();
+            if (!url) continue;
+            const key = `${name}|${mime}|${url}`;
+            if (!seenFileUrls.has(key)) {
+                seenFileUrls.add(key);
+                result.file_ids.push({
+                    type: 'image_url',
+                    url,
+                    name,
+                    mime
+                });
+            }
+            result.has_image = true;
+            continue;
+        }
+
+        if (type === 'sandbox_file') {
+            const sandboxPath = String(att.sandbox_path || '').trim();
+            if (sandboxPath && !seenSandboxPaths.has(sandboxPath)) {
+                seenSandboxPaths.add(sandboxPath);
+                result.sandbox_paths.push(sandboxPath);
+            }
+            result.user_attachments.push({
+                type: 'sandbox_file',
+                name,
+                sandbox_path: sandboxPath,
+                size: Number.isFinite(size) ? Math.max(0, Math.floor(size)) : 0
+            });
+            continue;
+        }
+
+        if (type === 'text') {
+            result.user_attachments.push({
+                type: 'text',
+                name,
+                size: Number.isFinite(size) ? Math.max(0, Math.floor(size)) : 0
+            });
+            continue;
+        }
+
+        const storedPath = String(att.stored_path || '').trim();
+        const sandboxPath = String(att.sandbox_path || '').trim();
+        const nextItem = {
+            type: type || 'file',
+            name,
+            size: Number.isFinite(size) ? Math.max(0, Math.floor(size)) : 0
+        };
+        if (sandboxPath) nextItem.sandbox_path = sandboxPath;
+        if (storedPath) nextItem.stored_path = storedPath;
+        result.user_attachments.push(nextItem);
+    }
+
+    return result;
+}
+
 function refreshConversationImageHistoryFlag(messages) {
     currentConversationHasImageHistory = conversationHasImageHistory(messages);
 }
@@ -9622,7 +9705,7 @@ async function sendMessage() {
         content: displayContent,
         metadata: pendingUserAttachments.length > 0 ? { attachments: pendingUserAttachments } : {}
     });
-    if (pendingUserAttachments.length > 0) {
+    if (messageHasImageAttachments({ metadata: { attachments: pendingUserAttachments } })) {
         currentConversationHasImageHistory = true;
     }
     
@@ -11904,6 +11987,7 @@ function appendMessage(msg, index) {
     const content = document.createElement('div');
     content.className = 'message-content';
     div.appendChild(content); // Append content container early so sub-renderers can find it
+    div.__messageData = (msg && typeof msg === 'object') ? msg : null;
     div.__toolCallState = {
         seq: 0,
         pendingByName: {},
@@ -12441,10 +12525,6 @@ async function startRegenerate(index) {
         }
         return !!modelVisionCapableCache;
     };
-    const allowHistoryImages = currentConversationHasImageHistory ? await ensureModelVisionCapable() : true;
-    if (!allowHistoryImages) {
-        showToast(`当前模型不支持历史图片上下文，将自动忽略历史图片：${modelName || '-'}`);
-    }
     const forceContextCompressionRequested = consumeForceContextCompressionOnce();
     const compressionDecision = await maybeConfirmContextCompressionBeforeSend(
         modelName,
@@ -12483,6 +12563,17 @@ async function startRegenerate(index) {
         showToast('未找到可重答消息，请刷新后重试');
         return;
     }
+    const regenUserMessageIndex = Math.max(0, Math.floor(Number(index) - 1));
+    const regenUserMessageDiv = getMessageElementByIndex(regenUserMessageIndex, 'user');
+    const regenAttachmentPayload = buildAttachmentsPayloadFromMessage(
+        regenUserMessageDiv && regenUserMessageDiv.__messageData ? regenUserMessageDiv.__messageData : null
+    );
+    const allowHistoryImages = (currentConversationHasImageHistory || regenAttachmentPayload.has_image)
+        ? await ensureModelVisionCapable()
+        : true;
+    if (!allowHistoryImages) {
+        showToast(`当前模型不支持历史图片上下文，将自动忽略历史图片：${modelName || '-'}`);
+    }
     let accumulatedContent = "";
     const modelBadgeState = {
         modelName: String(modelName || ''),
@@ -12515,21 +12606,24 @@ async function startRegenerate(index) {
         const response = await fetch('/api/chat/stream', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    conversation_id: currentConversationId,
-                    model_name: modelName,
-                    is_regenerate: true,
-                    regenerate_index: index,
-                    enable_thinking: els.checkThinking.checked,
-                    enable_web_search: els.checkSearch.checked,
-                    enable_tools: enableTools,
-                    tool_mode: toolsMode,
-                    debug_mode: isDebugConsoleEnabled(),
-                    show_token_usage: true,
-                    allow_history_images: allowHistoryImages,
-                    include_context: !!tokenBudgetState.includeContext,
-                    force_context_compression: !!forceContextCompression
-                }),
+        body: JSON.stringify({
+            conversation_id: currentConversationId,
+            model_name: modelName,
+            is_regenerate: true,
+            regenerate_index: index,
+            enable_thinking: els.checkThinking.checked,
+            enable_web_search: els.checkSearch.checked,
+            enable_tools: enableTools,
+            tool_mode: toolsMode,
+            debug_mode: isDebugConsoleEnabled(),
+            show_token_usage: true,
+            file_ids: regenAttachmentPayload.file_ids,
+            sandbox_paths: regenAttachmentPayload.sandbox_paths,
+            user_attachments: regenAttachmentPayload.user_attachments,
+            allow_history_images: allowHistoryImages,
+            include_context: !!tokenBudgetState.includeContext,
+            force_context_compression: !!forceContextCompression
+        }),
             signal: currentAbortController.signal
         });
 

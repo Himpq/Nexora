@@ -8,3 +8,5 @@ NexoraDB/chroma_data
 NexoraDB/model_cache
 ChatDBServer/config.json
 ChatDBServer/models.json
+ChatDBServer/data/config.json
+ChatDBServer/data/models.json

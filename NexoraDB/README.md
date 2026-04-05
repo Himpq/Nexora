@@ -26,7 +26,7 @@ Configure in `config.json`.
 All endpoints require `X-API-Key` header unless `api_key` is empty in config.
 
 ## Nexora config (client side)
-Set these in `ChatDBServer/config.json`:
+Set these in `ChatDBServer/data/config.json`:
 ```json
 "rag_database": {
   "mode": "service",

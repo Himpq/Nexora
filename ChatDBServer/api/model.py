@@ -4,6 +4,7 @@ import json
 import time
 import re
 import base64
+import shutil
 import textwrap
 import threading
 import uuid
@@ -22,17 +23,54 @@ import prompts
 
 # 配置文件路径
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CONFIG_PATH = os.path.join(BASE_DIR, 'config.json')
-MODELS_PATH = os.path.join(BASE_DIR, 'models.json')
-MODEL_ADAPTERS_PATH = os.path.join(BASE_DIR, 'model_adapters.json')
+DATA_DIR = os.path.join(BASE_DIR, 'data')
+ROOT_CONFIG_PATH = os.path.join(BASE_DIR, 'config.json')
+ROOT_MODELS_PATH = os.path.join(BASE_DIR, 'models.json')
+ROOT_MODEL_ADAPTERS_PATH = os.path.join(BASE_DIR, 'model_adapters.json')
+CONFIG_PATH = os.path.join(DATA_DIR, 'config.json')
+MODELS_PATH = os.path.join(DATA_DIR, 'models.json')
+MODEL_ADAPTERS_PATH = os.path.join(DATA_DIR, 'model_adapters.json')
+MODEL_PERMISSIONS_PATH = os.path.join(DATA_DIR, 'model_permissions.json')
 MODELS_CONTEXT_WINDOW_CACHE_LEGACY_PATH = os.path.join(BASE_DIR, 'models_context_window.json')
-MODELS_CONTEXT_WINDOW_CACHE_PATH = os.path.join(BASE_DIR, 'data', 'res', 'models_context_window.json')
+MODELS_CONTEXT_WINDOW_CACHE_PATH = os.path.join(DATA_DIR, 'res', 'models_context_window.json')
 
 DEFAULT_MODEL_ADAPTER_CONFIG = {
     "version": 1,
     "providers": {},
     "relay_order": []
 }
+
+
+def _move_resource_file_if_needed(old_path: str, new_path: str):
+    old_p = str(old_path or '').strip()
+    new_p = str(new_path or '').strip()
+    if not old_p or not new_p or old_p == new_p:
+        return
+    if os.path.exists(new_p) or (not os.path.exists(old_p)):
+        return
+    try:
+        os.makedirs(os.path.dirname(new_p), exist_ok=True)
+        os.replace(old_p, new_p)
+    except Exception:
+        try:
+            shutil.copy2(old_p, new_p)
+            os.remove(old_p)
+        except Exception:
+            pass
+
+
+def _bootstrap_model_layout():
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        os.makedirs(os.path.join(DATA_DIR, 'temp'), exist_ok=True)
+    except Exception:
+        pass
+    _move_resource_file_if_needed(ROOT_CONFIG_PATH, CONFIG_PATH)
+    _move_resource_file_if_needed(ROOT_MODELS_PATH, MODELS_PATH)
+    _move_resource_file_if_needed(ROOT_MODEL_ADAPTERS_PATH, MODEL_ADAPTERS_PATH)
+
+
+_bootstrap_model_layout()
 
 # 加载配置
 def load_config():
@@ -140,7 +178,7 @@ class Model:
         # 加载权限配置
         blacklist = []
         try:
-            perm_path = os.path.join(os.path.dirname(CONFIG_PATH), 'data', 'model_permissions.json')
+            perm_path = MODEL_PERMISSIONS_PATH
             if os.path.exists(perm_path):
                 with open(perm_path, 'r', encoding='utf-8') as f:
                     perm_data = json.load(f)
@@ -1035,7 +1073,7 @@ class Model:
         """
         role = "member"
         try:
-            user_file = os.path.join(os.path.dirname(CONFIG_PATH), "data", "user.json")
+            user_file = os.path.join(DATA_DIR, "user.json")
             if os.path.exists(user_file):
                 with open(user_file, "r", encoding="utf-8") as f:
                     users = json.load(f)
@@ -1725,7 +1763,7 @@ class Model:
 
     def _resolve_local_mail_binding(self):
         """解析当前用户绑定的本地邮箱账号"""
-        users_path = os.path.join(os.path.dirname(CONFIG_PATH), "data", "user.json")
+        users_path = os.path.join(DATA_DIR, "user.json")
         if not os.path.exists(users_path):
             return None, "user database not found"
 
@@ -2785,7 +2823,7 @@ class Model:
         storage = str(raw.get("storage", "memory") or "memory").strip().lower()
         if storage not in {"memory", "file"}:
             storage = "memory"
-        file_path = str(raw.get("file_path", "./temp/ContextTemp.tmp") or "./temp/ContextTemp.tmp").strip()
+        file_path = str(raw.get("file_path", "./data/temp/ContextTemp.tmp") or "./data/temp/ContextTemp.tmp").strip()
         if not os.path.isabs(file_path):
             file_path = os.path.abspath(os.path.join(BASE_DIR, file_path))
         self._temp_context_scope_id = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
