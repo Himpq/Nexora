@@ -6,3 +6,5 @@ ChatDBServer/data/
 NexoraNetdisk/data
 NexoraDB/chroma_data
 NexoraDB/model_cache
+ChatDBServer/config.json
+ChatDBServer/models.json

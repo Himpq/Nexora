@@ -21,7 +21,8 @@ https://chat.himpqblog.cn
 ![alt text](image-5.png)
 
 ## Components
-### NexoraMail
+### NexoraMail 
+(https://github.com/Himpq/wMailServer)
 NexoraMail is an email service that supports sending and receiving emails. It can be used for user registration, password recovery, and other email-related functions.
 It's providing function tools for LLM to send emails, check inbox, and read email content.
 To build the NexoraMail component, you may need a 25 port and domain (for Worldwide deployment).
