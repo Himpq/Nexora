@@ -27,9 +27,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'api'))
 from model import Model
 from database import User
 from conversation_manager import ConversationManager
+from longterm.longterm_api import normalize_longterm_request
 from chroma_client import ChromaStore
 from file_sandbox import UserFileSandbox
-from longterm.orchestrator import LongTermOrchestrator
 from provider_factory import create_provider_adapter
 from client_tool_bridge import pull_pending_request, submit_request_result, enqueue_request, wait_for_result, pull_local_tool_request
 from agent_tunnel import register_agent, unregister_agent, update_agent_tools, update_ping, is_agent_online
@@ -112,6 +112,36 @@ def _bootstrap_resource_layout():
     _move_resource_file_if_needed(OPENROUTER_MODELS_SNAPSHOT_LEGACY_PATH, OPENROUTER_MODELS_SNAPSHOT_PATH)
     _move_resource_file_if_needed(OPENROUTER_MODEL_ALIAS_LIST_LEGACY_PATH, OPENROUTER_MODEL_ALIAS_LIST_PATH)
     _move_resource_file_if_needed(STATUS_MODEL_RULES_LEGACY_PATH, STATUS_MODEL_RULES_PATH)
+
+
+def _format_exception_details(exc: Exception) -> str:
+    import traceback
+
+    tb = traceback.extract_tb(exc.__traceback__) if exc.__traceback__ else []
+    lines = [f"{type(exc).__name__}: {exc}"]
+    if tb:
+        last_frame = tb[-1]
+        lines.append(f"Location: {last_frame.filename}:{last_frame.lineno} in {last_frame.name}")
+        if last_frame.line:
+            lines.append(f"Code: {last_frame.line.strip()}")
+    lines.append("Traceback:")
+    lines.extend(line.rstrip("\n") for line in traceback.format_exception(type(exc), exc, exc.__traceback__))
+    return "\n".join(lines)
+
+
+def _resolve_provider_api_type(provider_label: Any) -> str:
+    provider_key = str(provider_label or '').strip()
+    config = get_config_all()
+    providers_cfg = config.get('providers', {}) if isinstance(config.get('providers'), dict) else {}
+    provider_cfg = providers_cfg.get(provider_key, {}) if isinstance(providers_cfg, dict) else {}
+    if isinstance(provider_cfg, dict):
+        api_type = str(provider_cfg.get('api_type', '') or '').strip().lower()
+        if api_type:
+            return api_type
+    fallback = provider_key.strip().lower()
+    if fallback in {'aliyun', 'dashscope'}:
+        return 'dashscope'
+    return fallback
 
 
 _bootstrap_resource_layout()
@@ -2245,6 +2275,68 @@ def _refresh_aliyun_context_window_map(config_obj, timeout=8.0, force_remote=Fal
     merged = dict(cached)
     merged.update(fresh_map)
     _write_cached_aliyun_context_window_map(merged)
+    return merged
+
+
+def _refresh_ollama_context_window_map(config_obj, timeout=8.0, force_remote=False):
+    cfg = config_obj if isinstance(config_obj, dict) else {}
+    providers = cfg.get("providers", {}) if isinstance(cfg.get("providers"), dict) else {}
+    merged: Dict[str, int] = {}
+
+    for provider_name, provider_cfg in providers.items():
+        if not isinstance(provider_cfg, dict):
+            continue
+        if str(provider_cfg.get("api_type", "") or "").strip().lower() != "ollama":
+            continue
+
+        cached, cached_updated_at = _read_cached_provider_context_window_map_with_meta(provider_name)
+        cache_ttl_sec = 900
+        try:
+            cache_ttl_sec = max(0, int(provider_cfg.get("models_catalog_cache_ttl_sec", 900) or 900))
+        except Exception:
+            cache_ttl_sec = 900
+        bg_refresh_enabled = bool(provider_cfg.get("models_catalog_async_refresh", True))
+        wait_on_miss = bool(provider_cfg.get("models_catalog_wait_on_miss", False))
+        bg_min_interval = 30
+        try:
+            bg_min_interval = max(5, int(provider_cfg.get("models_catalog_async_min_interval_sec", 30) or 30))
+        except Exception:
+            bg_min_interval = 30
+
+        age = max(0, int(time.time()) - int(cached_updated_at or 0))
+        if cached and (not force_remote):
+            merged.update(cached)
+            if cache_ttl_sec <= 0 or age > cache_ttl_sec:
+                if bg_refresh_enabled:
+                    cfg_snapshot = json.loads(json.dumps(cfg))
+                    _launch_provider_context_refresh_bg(
+                        provider_name,
+                        lambda: _refresh_ollama_context_window_map(cfg_snapshot, timeout=timeout, force_remote=True),
+                        min_interval_sec=bg_min_interval
+                    )
+            continue
+
+        if (not cached) and (not force_remote) and bg_refresh_enabled and (not wait_on_miss):
+            cfg_snapshot = json.loads(json.dumps(cfg))
+            _launch_provider_context_refresh_bg(
+                provider_name,
+                lambda: _refresh_ollama_context_window_map(cfg_snapshot, timeout=timeout, force_remote=True),
+                min_interval_sec=bg_min_interval
+            )
+            continue
+
+        try:
+            adapter = create_provider_adapter(provider_name, provider_cfg)
+            adapter.list_models(client=None, capability="", request_options={})
+            refreshed, _ = _read_cached_provider_context_window_map_with_meta(provider_name)
+            if isinstance(refreshed, dict) and refreshed:
+                merged.update(refreshed)
+                continue
+        except Exception:
+            pass
+
+        merged.update(cached)
+
     return merged
 
 
@@ -5746,292 +5838,6 @@ def _as_bool(value, default=False):
     return bool(value)
 
 
-# ==================== Long-term Task API ====================
-
-@app.route('/api/longterm/tasks', methods=['GET'])
-@require_login
-def longterm_list_tasks():
-    username = session['username']
-    orchestrator = LongTermOrchestrator(username)
-    try:
-        limit_raw = request.args.get('limit', 100)
-        try:
-            limit = int(limit_raw)
-        except Exception:
-            limit = 100
-        status = (request.args.get('status') or '').strip() or None
-        items = orchestrator.list_tasks(limit=limit, status=status)
-        return jsonify({'success': True, 'tasks': items})
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-
-@app.route('/api/longterm/tasks', methods=['POST'])
-@require_login
-def longterm_create_task():
-    username = session['username']
-    orchestrator = LongTermOrchestrator(username)
-    data = request.get_json() or {}
-    goal = str(data.get('goal') or '').strip()
-    if not goal:
-        return jsonify({'success': False, 'message': 'goal 不能为空'}), 400
-
-    title = str(data.get('title') or '').strip() or None
-    auto_plan = _as_bool(data.get('auto_plan', True), True)
-    step_count = data.get('step_count', 5)
-    system_prompt = str(data.get('system_prompt') or '')
-
-    try:
-        task = orchestrator.create_task(
-            goal=goal,
-            title=title,
-            auto_plan=auto_plan,
-            step_count=step_count,
-            system_prompt=system_prompt,
-        )
-        return jsonify({'success': True, 'task': task})
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-
-@app.route('/api/longterm/tasks/<task_id>', methods=['GET'])
-@require_login
-def longterm_get_task(task_id):
-    username = session['username']
-    orchestrator = LongTermOrchestrator(username)
-    try:
-        task = orchestrator.get_task(task_id)
-        return jsonify({'success': True, 'task': task})
-    except FileNotFoundError:
-        return jsonify({'success': False, 'message': 'task not found'}), 404
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-
-@app.route('/api/longterm/tasks/<task_id>/plan', methods=['POST'])
-@require_login
-def longterm_regenerate_plan(task_id):
-    username = session['username']
-    orchestrator = LongTermOrchestrator(username)
-    data = request.get_json() or {}
-    step_count = data.get('step_count', 5)
-    try:
-        task = orchestrator.regenerate_plan(task_id, step_count=step_count)
-        return jsonify({'success': True, 'task': task})
-    except FileNotFoundError:
-        return jsonify({'success': False, 'message': 'task not found'}), 404
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-
-@app.route('/api/longterm/tasks/<task_id>/start', methods=['POST'])
-@require_login
-def longterm_start_task(task_id):
-    username = session['username']
-    orchestrator = LongTermOrchestrator(username)
-    try:
-        task = orchestrator.start(task_id)
-        return jsonify({'success': True, 'task': task})
-    except FileNotFoundError:
-        return jsonify({'success': False, 'message': 'task not found'}), 404
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-
-@app.route('/api/longterm/tasks/<task_id>/step', methods=['POST'])
-@require_login
-def longterm_submit_step(task_id):
-    username = session['username']
-    orchestrator = LongTermOrchestrator(username)
-    data = request.get_json() or {}
-    try:
-        task = orchestrator.submit_step_result(task_id, data)
-        return jsonify({'success': True, 'task': task})
-    except FileNotFoundError:
-        return jsonify({'success': False, 'message': 'task not found'}), 404
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-
-@app.route('/api/longterm/tasks/<task_id>/rework', methods=['POST'])
-@require_login
-def longterm_rework_task(task_id):
-    username = session['username']
-    orchestrator = LongTermOrchestrator(username)
-    data = request.get_json() or {}
-    step_ref = data.get('step_id')
-    if step_ref is None:
-        step_ref = data.get('step_index')
-    if step_ref is None:
-        return jsonify({'success': False, 'message': '需要 step_id 或 step_index'}), 400
-    reason = str(data.get('reason') or '')
-    try:
-        task = orchestrator.rework(task_id, step_ref=step_ref, reason=reason)
-        return jsonify({'success': True, 'task': task})
-    except FileNotFoundError:
-        return jsonify({'success': False, 'message': 'task not found'}), 404
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-
-@app.route('/api/longterm/tasks/<task_id>/end-review', methods=['POST'])
-@require_login
-def longterm_end_review(task_id):
-    username = session['username']
-    orchestrator = LongTermOrchestrator(username)
-    data = request.get_json() or {}
-    passed = _as_bool(data.get('passed', False), False)
-    rework_step = data.get('rework_step_id')
-    if rework_step is None:
-        rework_step = data.get('rework_step_index')
-    comments = str(data.get('comments') or '')
-    try:
-        task = orchestrator.end_review(task_id, passed=passed, rework_step=rework_step, comments=comments)
-        return jsonify({'success': True, 'task': task})
-    except FileNotFoundError:
-        return jsonify({'success': False, 'message': 'task not found'}), 404
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-
-@app.route('/api/longterm/tasks/<task_id>/status', methods=['POST'])
-@require_login
-def longterm_update_status(task_id):
-    username = session['username']
-    orchestrator = LongTermOrchestrator(username)
-    data = request.get_json() or {}
-    status = str(data.get('status') or '').strip().lower()
-    if not status:
-        return jsonify({'success': False, 'message': 'status 不能为空'}), 400
-    reason = str(data.get('reason') or '')
-    try:
-        task = orchestrator.set_status(task_id, status=status, reason=reason)
-        return jsonify({'success': True, 'task': task})
-    except FileNotFoundError:
-        return jsonify({'success': False, 'message': 'task not found'}), 404
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-
-@app.route('/api/longterm/tasks/<task_id>/transit', methods=['GET'])
-@require_login
-def longterm_transit_summary(task_id):
-    username = session['username']
-    orchestrator = LongTermOrchestrator(username)
-    try:
-        payload = orchestrator.summarize_for_transit(task_id)
-        return jsonify({'success': True, 'transit': payload})
-    except FileNotFoundError:
-        return jsonify({'success': False, 'message': 'task not found'}), 404
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-
-@app.route('/api/longterm/tasks/<task_id>/ai-plan', methods=['POST'])
-@require_login
-def longterm_ai_plan(task_id):
-    username = session['username']
-    orchestrator = LongTermOrchestrator(username)
-    data = request.get_json() or {}
-    model_name = data.get('model_name')
-    max_steps = data.get('max_steps', 6)
-    try:
-        task = orchestrator.ai_generate_plan(
-            task_id=task_id,
-            model_name=model_name,
-            max_steps=max_steps,
-            event_callback=None
-        )
-        return jsonify({'success': True, 'task': task})
-    except FileNotFoundError:
-        return jsonify({'success': False, 'message': 'task not found'}), 404
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-
-@app.route('/api/longterm/tasks/<task_id>/ai-step', methods=['POST'])
-@require_login
-def longterm_ai_step(task_id):
-    username = session['username']
-    orchestrator = LongTermOrchestrator(username)
-    data = request.get_json() or {}
-    model_name = data.get('model_name')
-    try:
-        task, payload = orchestrator.ai_execute_current_step(
-            task_id=task_id,
-            model_name=model_name,
-            event_callback=None
-        )
-        return jsonify({'success': True, 'task': task, 'step_payload': payload})
-    except FileNotFoundError:
-        return jsonify({'success': False, 'message': 'task not found'}), 404
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-
-@app.route('/api/longterm/tasks/<task_id>/ai-end-review', methods=['POST'])
-@require_login
-def longterm_ai_end_review(task_id):
-    username = session['username']
-    orchestrator = LongTermOrchestrator(username)
-    data = request.get_json() or {}
-    model_name = data.get('model_name')
-    try:
-        task, payload = orchestrator.ai_end_review(
-            task_id=task_id,
-            model_name=model_name,
-            event_callback=None
-        )
-        return jsonify({'success': True, 'task': task, 'review_payload': payload})
-    except FileNotFoundError:
-        return jsonify({'success': False, 'message': 'task not found'}), 404
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-
-@app.route('/api/longterm/tasks/<task_id>/run-auto', methods=['POST'])
-@require_login
-def longterm_run_auto(task_id):
-    username = session['username']
-    orchestrator = LongTermOrchestrator(username)
-    data = request.get_json() or {}
-    model_name = data.get('model_name')
-    max_cycles = data.get('max_cycles', 20)
-    try:
-        task = orchestrator.run_auto(
-            task_id=task_id,
-            model_name=model_name,
-            max_cycles=max_cycles,
-            event_callback=None
-        )
-        return jsonify({'success': True, 'task': task})
-    except FileNotFoundError:
-        return jsonify({'success': False, 'message': 'task not found'}), 404
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-
-@app.route('/api/longterm/route', methods=['POST'])
-@require_login
-def longterm_route_message():
-    username = session['username']
-    orchestrator = LongTermOrchestrator(username)
-    data = request.get_json() or {}
-    message = str(data.get('message') or '').strip()
-    model_name = data.get('model_name')
-    if not message:
-        return jsonify({'success': False, 'message': 'message 不能为空'}), 400
-    try:
-        decision = orchestrator.route_message(
-            user_message=message,
-            model_name=model_name,
-            event_callback=None
-        )
-        return jsonify({'success': True, 'decision': decision})
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
-
-
 @app.route('/api/conversations', methods=['GET'])
 @require_login
 def list_conversations():
@@ -6040,6 +5846,29 @@ def list_conversations():
     manager = ConversationManager(username)
     conversations = manager.list_conversations()
     return jsonify({'success': True, 'conversations': conversations})
+
+
+@app.route('/api/conversations', methods=['POST'])
+@require_login
+def create_conversation_api():
+    """创建一个空对话，供前端预创建使用"""
+    username = session['username']
+    manager = ConversationManager(username)
+    data = request.get_json(silent=True) or {}
+    title = str(data.get('title') or '新对话').strip() or '新对话'
+    conversation_id = data.get('conversation_id')
+    conversation_id = str(conversation_id or '').strip() or None
+    try:
+        if conversation_id:
+            try:
+                manager.get_conversation(conversation_id)
+                return jsonify({'success': True, 'conversation_id': conversation_id, 'title': title, 'existed': True})
+            except Exception:
+                pass
+        conv_id = manager.create_conversation(conversation_id=conversation_id, title=title)
+        return jsonify({'success': True, 'conversation_id': conv_id, 'title': title})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 
 @app.route('/api/conversations/<conv_id>/pin', methods=['POST'])
@@ -6396,14 +6225,21 @@ def get_config():
             isinstance(info, dict) and str(info.get('provider', '')).strip().lower() in {'aliyun', 'dashscope'}
             for info in (config.get('models', {}) or {}).values()
         )
+        has_ollama_model = any(
+            isinstance(provider_cfg, dict) and str(provider_cfg.get('api_type', '')).strip().lower() == 'ollama'
+            for provider_cfg in (config.get('providers', {}) or {}).values()
+        )
         volc_context_map = _refresh_volc_context_window_map(config, timeout=8.0) if has_volcengine_model else {}
         aliyun_context_map = _refresh_aliyun_context_window_map(config, timeout=8.0) if has_aliyun_model else {}
+        ollama_context_map = _refresh_ollama_context_window_map(config, timeout=8.0) if has_ollama_model else {}
 
         models_info = []
         for model_id, info in config.get('models', {}).items():
             if model_id in blacklist:
                 continue
-            provider_name = str(info.get('provider', 'volcengine') or 'volcengine').strip().lower()
+            provider_label = str(info.get('provider', 'volcengine') or 'volcengine').strip()
+            provider_name = provider_label.lower()
+            provider_api_type = _resolve_provider_api_type(provider_label)
             item = {
                 'id': model_id,
                 'name': info.get('name', model_id),
@@ -6415,6 +6251,8 @@ def get_config():
                 context_window = _resolve_volc_context_window_by_model_id(model_id, volc_context_map)
             if not context_window and provider_name in {'aliyun', 'dashscope'}:
                 context_window = _resolve_aliyun_context_window_by_model_id(model_id, aliyun_context_map)
+            if not context_window and provider_api_type == 'ollama':
+                context_window = _resolve_context_window_by_model_id(model_id, ollama_context_map)
             if context_window:
                 item['context_window'] = context_window
             models_info.append(item)
@@ -6591,7 +6429,8 @@ def _fetch_provider_models_live(provider_name: str, capability: str, timeout: fl
     adapter = create_provider_adapter(provider_name, provider_cfg)
     api_key = str(provider_cfg.get('api_key', '') or '').strip()
     base_url = str(provider_cfg.get('base_url', '') or '').strip()
-    if not api_key:
+    api_type = str(getattr(adapter, 'api_type', '') or '').strip().lower()
+    if api_type != 'ollama' and not api_key:
         return False, 400, {
             'success': False,
             'message': f'provider {provider_name} 未配置 api_key',
@@ -6599,12 +6438,19 @@ def _fetch_provider_models_live(provider_name: str, capability: str, timeout: fl
             'capability': capability
         }
 
-    client = adapter.create_client(api_key=api_key, base_url=base_url, timeout=timeout)
-    result = adapter.list_models(
-        client=client,
-        capability=capability,
-        request_options={}
-    )
+    if api_type == 'ollama':
+        result = adapter.list_models(
+            client=None,
+            capability=capability,
+            request_options={}
+        )
+    else:
+        client = adapter.create_client(api_key=api_key, base_url=base_url, timeout=timeout)
+        result = adapter.list_models(
+            client=client,
+            capability=capability,
+            request_options={}
+        )
     if not isinstance(result, dict):
         result = {
             'ok': False,
@@ -6645,7 +6491,61 @@ def api_provider_models():
         cache_ttl = 600
     cache_ttl = max(0, min(cache_ttl, 3600))
     cache_key = _provider_models_cache_key(provider_name, capability)
+    config = get_config_all()
+    providers = config.get('providers', {}) if isinstance(config, dict) else {}
+    provider_cfg = providers.get(provider_name)
+    if not isinstance(provider_cfg, dict):
+        provider_cfg = {}
     cache_entry = _provider_models_cache_get(cache_key)
+    adapter = create_provider_adapter(provider_name, provider_cfg)
+    api_type = str(getattr(adapter, 'api_type', '') or '').strip().lower()
+
+    if api_type == 'ollama' and isinstance(cache_entry, dict):
+        cached_payload = cache_entry.get('payload') if isinstance(cache_entry.get('payload'), dict) else {}
+        cached_age = max(0, int(time.time() - float(cache_entry.get('ts') or 0.0)))
+        if cached_payload and (cache_ttl <= 0 or cached_age <= cache_ttl):
+            return jsonify({
+                **cached_payload,
+                'from_cache': True,
+                'cache_age_sec': cached_age
+            }), 200
+        if cached_payload:
+            _launch_provider_models_refresh_bg(
+                cache_key,
+                lambda: (
+                    (lambda ok, status, payload: _provider_models_cache_set(cache_key, payload) if ok else None)(
+                        *_fetch_provider_models_live(provider_name, capability, timeout=timeout)
+                    )
+                ),
+                min_interval_sec=20.0
+            )
+            return jsonify({
+                **cached_payload,
+                'from_cache': True,
+                'cache_age_sec': cached_age,
+                'stale': True
+            }), 200
+
+    if api_type == 'ollama' and not isinstance(cache_entry, dict):
+        _launch_provider_models_refresh_bg(
+            cache_key,
+            lambda: (
+                (lambda ok, status, payload: _provider_models_cache_set(cache_key, payload) if ok else None)(
+                    *_fetch_provider_models_live(provider_name, capability, timeout=timeout)
+                )
+            ),
+            min_interval_sec=20.0
+        )
+        return jsonify({
+            'success': True,
+            'provider': provider_name,
+            'capability': capability,
+            'api_type': api_type,
+            'models': [],
+            'from_cache': False,
+            'stale': True,
+        }), 200
+
     if isinstance(cache_entry, dict):
         cached_payload = cache_entry.get('payload') if isinstance(cache_entry.get('payload'), dict) else {}
         cached_age = max(0, int(time.time() - float(cache_entry.get('ts') or 0.0)))
@@ -7507,6 +7407,22 @@ def chat_stream():
 
     def _stream_worker(push_chunk, set_conversation_id):
         try:
+            request_meta = normalize_longterm_request(
+                message=message,
+                conversation_mode=data.get('conversation_mode'),
+                conversation_mode_payload=data.get('conversation_mode_payload')
+            )
+            raw_conversation_mode = str(request_meta.get('conversation_mode') or '').strip()
+            effective_message = str(request_meta.get('message') or '')
+            raw_conversation_mode_payload = request_meta.get('conversation_mode_payload')
+            if not isinstance(raw_conversation_mode_payload, dict):
+                raw_conversation_mode_payload = {}
+            skip_user_message = bool(data.get('skip_user_message', False))
+            effective_enable_tools = bool(enable_tools)
+            effective_tool_mode = tool_mode
+            if raw_conversation_mode == 'longterm':
+                effective_enable_tools = True
+                effective_tool_mode = 'force'
             model = Model(
                 username,
                 model_name=model_name,
@@ -7530,12 +7446,12 @@ def chat_stream():
                 push_chunk({'type': 'conversation_id', 'conversation_id': model.conversation_id})
 
             for chunk in model.sendMessage(
-                message,
+                effective_message,
                 stream=True,
                 enable_thinking=enable_thinking,
                 enable_web_search=enable_web_search,
-                enable_tools=enable_tools,
-                tool_mode=tool_mode,
+                enable_tools=effective_enable_tools,
+                tool_mode=effective_tool_mode,
                 debug_mode=debug_mode,
                 allow_history_images=allow_history_images,
                 include_context=include_context,
@@ -7547,15 +7463,20 @@ def chat_stream():
                 is_regenerate=is_regenerate,
                 regenerate_index=regenerate_index,
                 skill_mode=skill_mode,
-                active_tool_skills=active_tool_skills
+                active_tool_skills=active_tool_skills,
+                conversation_mode=raw_conversation_mode,
+                conversation_mode_payload=raw_conversation_mode_payload,
+                skip_user_message=skip_user_message
             ):
                 if log_all_chunks:
                     _log_stream_chunk(chunk, model_name=model_name or model.model_name)
                 push_chunk(chunk if isinstance(chunk, dict) else {'type': 'content', 'content': str(chunk)})
         except Exception as e:
+            error_details = _format_exception_details(e)
+            print(f"[STREAM_ERROR]\n{error_details}")
             push_chunk({
                 'type': 'error',
-                'content': f'处理消息时出错: {str(e)}'
+                'content': f'处理消息时出错:\n{error_details}'
             })
 
     stream_id = start_stream_session(

@@ -67,6 +67,63 @@ TOOL_SKILL_BLOCK_TEMPLATE = """<TOOL-SKILL>
 {{content}}
 <END>"""
 
+longterm_system_prompt = """
+现在是长程任务模式，你必须严格遵守：
+1. 调用 longterm_plan 工具来规划任务
+2. 在同一次对话中持续跟进任务进展，必须更新 longterm_update 的内容
+3. 在所有任务完成前严禁终止对话
+4. 你必须严格按照下面的例子进行回复，如
+<SAMPLE>
+[USER] 帮我查阅近期局势
+[AI] 好的，我先规划一下任务。
+call longterm_plan
+web search
+伊朗局势...
+call longterm_update, annotation first step completed
+web search
+美国局势...
+call longterm_update, annotation second step completed
+...
+
+总结...
+</SAMPLE>
+5. 你必须边输出边调用工具
+"""
+
+
+def build_longterm_system_prompt(
+    task_text: Any = "",
+    plan_text: Any = "",
+    context_text: Any = "",
+    current_plan_text: Any = "",
+    confirmation_round: bool = False
+) -> str:
+    base = str(longterm_system_prompt or "").strip()
+    if not base:
+        base = "现在是 Longterm 模式，请使用 longterm_plan 做一次性规划，并在任务完成时使用 longterm_update 标记完成。"
+
+    task = str(task_text or "").strip()
+    plan = str(plan_text or "").strip()
+    context = str(context_text or "").strip()
+    current_plan = str(current_plan_text or "").strip()
+
+    parts = [base]
+    if task:
+        parts.append(f"任务：{task}")
+    if plan:
+        parts.append(f"计划：{plan}")
+    if current_plan:
+        parts.append(f"当前计划项：{current_plan}")
+    if context:
+        parts.append(f"上下文：{context}")
+
+    if confirmation_round:
+        parts.append(
+            "确认提示：若你已经完成任务，请直接调用 longterm_update；不要输出任何旧式标记或步骤确认文本。"
+        )
+
+    return SYSTEM_PROMPT_SEP.join([part for part in parts if str(part or "").strip()]).strip()
+
 
 def build_main_system_prompt(
     base_prompt: str,

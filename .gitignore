@@ -1,4 +1,5 @@
 Rubbish
+.gitignore
 __pycache__/
 webview_storage/
 ChatDBServer/temp/
@@ -10,3 +11,4 @@ ChatDBServer/config.json
 ChatDBServer/models.json
 ChatDBServer/data/config.json
 ChatDBServer/data/models.json
+ChatDBServer/api/localsearch

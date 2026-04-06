@@ -33,6 +33,8 @@
     "getUserProfileMemory": "get_user_profile_memory",
     "setUserProfileMemory": "set_user_profile_memory",
     "updateUserProfileMemory": "set_user_profile_memory",
+    "longtermPlan": "longterm_plan",
+    "longtermUpdate": "longterm_update",
 }
 
 
@@ -44,6 +46,74 @@ def canonicalize_tool_name(name):
 
 
 TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "longterm_plan",
+            "description": "Longterm 模式专用工具，用于任务开始时的一次性规划。必须且只能在开始时调用一次。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "description": "任务摘要。"
+                    },
+                    "plan": {
+                        "type": "array",
+                        "description": "规划项列表，例如 ['分析需求', '编写代码', '测试', '总结']。",
+                        "items": {"type": "string"}
+                    }
+                },
+                "required": ["plan"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "longterm_update",
+            "description": "Longterm 模式专用工具，用于提交当前步骤完成态或任务完成态。若只是某个 step 完成，请填写 step_index/step_no/step_id，并将 step_status 设为 done；只有整个 longterm 任务结束时才把 done 设为 true。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "summary": {
+                        "type": "string",
+                        "description": "任务完成摘要。"
+                    },
+                    "step_index": {
+                        "type": "integer",
+                        "description": "当前完成的步骤索引，0-based。"
+                    },
+                    "step_no": {
+                        "type": "integer",
+                        "description": "当前完成的步骤编号，1-based。可与 step_index 二选一。"
+                    },
+                    "step_id": {
+                        "type": "string",
+                        "description": "当前完成的步骤 ID。"
+                    },
+                    "step_title": {
+                        "type": "string",
+                        "description": "当前完成的步骤标题。"
+                    },
+                    "step_status": {
+                        "type": "string",
+                        "enum": ["done", "active", "pending"],
+                        "description": "步骤状态。标记步骤完成时通常填 done。"
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "可选，最终上下文。"
+                    },
+                    "done": {
+                        "type": "boolean",
+                        "description": "是否完成任务，默认 true。"
+                    }
+                },
+                "required": ["summary"]
+            }
+        }
+    },
     {
         "type": "function",
         "function": {

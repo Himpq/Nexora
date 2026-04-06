@@ -167,8 +167,24 @@
             </div>
 
             <!-- Input Area -->
-            <div id="inputWrapper" class="input-wrapper">
-                <div class="input-container">
+            <div class="input-dock">
+                <div id="longtermPlanPanel" class="longterm-plan-panel" style="display:none;" data-collapsed="1">
+                    <button type="button" class="longterm-plan-head" id="longtermPlanToggle">
+                        <span class="longterm-plan-head-left">
+                            <i class="fa-solid fa-diagram-project"></i>
+                            <span class="longterm-plan-title">Plan</span>
+                        </span>
+                        <span class="longterm-plan-status" id="longtermPlanStatus">已启用</span>
+                        <i class="fa-solid fa-chevron-up longterm-plan-chevron"></i>
+                    </button>
+                    <div class="longterm-plan-meta">
+                        <div class="longterm-plan-task" id="longtermPlanTask">等待任务说明</div>
+                    </div>
+                    <div class="longterm-plan-body" id="longtermPlanBody"></div>
+                </div>
+
+                <div id="inputWrapper" class="input-wrapper">
+                    <div class="input-container">
                     <div class="input-options">
                         <label class="btn-icon-small" title="Upload File / Image" style="cursor: pointer; display: inline-flex; align-items: center; justify-content: center; margin-right: 8px; color: var(--text-secondary);">
                             <input type="file" id="fileInput" style="display:none" multiple>
@@ -239,6 +255,7 @@
                         <button id="sendBtn" class="btn-send">
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
                         </button>
+                    </div>
                     </div>
                 </div>
             </div>

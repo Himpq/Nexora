@@ -37,6 +37,8 @@ class ToolExecutor:
             "remove_basis": self._remove_basis,
             "update_basis": self._update_basis,
             "get_basis_content": self._get_basis_content,
+            "longterm_plan": self._longterm_plan,
+            "longterm_update": self._longterm_update,
             "search_keyword": self._search_keyword,
             "readtmp": self._readtmp,
             "searchtmp": self._searchtmp,
@@ -370,6 +372,54 @@ class ToolExecutor:
         except Exception as e:
             return f"错误：参数模板解析失败: {str(e)}"
         return handler(resolved_args)
+
+    def _longterm_plan(self, args: Dict[str, Any]) -> str:
+        safe_args = args if isinstance(args, dict) else {}
+        plan_items = safe_args.get("plan", []) or []
+        steps = [str(item or "").strip() for item in plan_items if str(item or "").strip()]
+        if not steps:
+            return "错误：未提供规划内容"
+        task_text = str(safe_args.get("task", "") or "").strip()
+        plan_json = {
+            "kind": "longterm_plan",
+            "task": task_text,
+            "plan": steps,
+        }
+        return json.dumps(plan_json, ensure_ascii=False)
+
+    def _longterm_update(self, args: Dict[str, Any]) -> str:
+        safe_args = args if isinstance(args, dict) else {}
+        summary = str(safe_args.get("summary", "") or "").strip()
+        step_index = safe_args.get("step_index", safe_args.get("stepIndex", None))
+        step_no = safe_args.get("step_no", safe_args.get("stepNo", None))
+        step_id = str(safe_args.get("step_id", safe_args.get("stepId", "")) or "").strip()
+        step_title = str(safe_args.get("step_title", safe_args.get("stepTitle", "")) or "").strip()
+        step_status = str(safe_args.get("step_status", safe_args.get("stepStatus", "")) or "").strip().lower()
+        context = str(safe_args.get("context", "") or "").strip()
+        has_done = "done" in safe_args
+        done = bool(safe_args.get("done", True))
+        has_step_mark = any([
+            step_index is not None,
+            step_no is not None,
+            bool(step_id),
+            bool(step_title),
+            bool(step_status),
+        ])
+        if has_step_mark and not has_done:
+            done = False
+        plan_json = {
+            "kind": "longterm_update",
+            "summary": summary,
+            "step_index": step_index,
+            "step_no": step_no,
+            "step_id": step_id,
+            "step_title": step_title,
+            "step_status": step_status,
+            "context": context,
+            "done": done,
+        }
+        return json.dumps(plan_json, ensure_ascii=False)
+
     def _get_knowledge_list(self, args: Dict[str, Any]) -> str:
         k_type = args.get("_type", 0)
         try:

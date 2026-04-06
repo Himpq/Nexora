@@ -5,6 +5,8 @@ import os
 import json
 from datetime import datetime
 
+from longterm.longterm_api import conversation_longterm_root_state, normalize_longterm_state
+
 
 class ConversationManager:
     """对话记录管理类"""
@@ -56,7 +58,9 @@ class ConversationManager:
             "created_at": datetime.now().isoformat(),
             "updated_at": datetime.now().isoformat(),
             "pin": False,
-            "messages": []
+            "messages": [],
+            "conversation_mode": "chat",
+            "longterm": conversation_longterm_root_state()
         }
         
         with open(conversation_path, 'w', encoding='utf-8') as f:
@@ -126,6 +130,31 @@ class ConversationManager:
         if model_name:
              conversation_data["last_model_used"] = model_name
         
+        with open(conversation_path, 'w', encoding='utf-8') as f:
+            json.dump(conversation_data, f, ensure_ascii=False, indent=2)
+
+    def update_conversation_fields(self, conversation_id, fields):
+        """
+        批量更新会话根字段，遇到字典值时做浅合并。
+        """
+        conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
+        if not os.path.exists(conversation_path):
+            raise ValueError(f"对话不存在: {conversation_id}")
+        if not isinstance(fields, dict):
+            raise ValueError("fields 必须是字典")
+
+        with open(conversation_path, 'r', encoding='utf-8') as f:
+            conversation_data = json.load(f)
+
+        for key, value in fields.items():
+            if isinstance(value, dict) and isinstance(conversation_data.get(key), dict):
+                merged = dict(conversation_data.get(key) or {})
+                merged.update(value)
+                conversation_data[key] = merged
+            else:
+                conversation_data[key] = value
+
+        conversation_data["updated_at"] = datetime.now().isoformat()
         with open(conversation_path, 'w', encoding='utf-8') as f:
             json.dump(conversation_data, f, ensure_ascii=False, indent=2)
 
@@ -551,13 +580,18 @@ class ConversationManager:
                 
                 with open(conversation_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
+                    longterm = normalize_longterm_state(data.get('longterm', {}))
                     conversations.append({
                         'conversation_id': conversation_id,
                         'title': data.get('title', '未命名对话'),
                         'created_at': data.get('created_at'),
                         'updated_at': data.get('updated_at'),
                         'pin': bool(data.get('pin', False)),
-                        'message_count': len(data.get('messages', []))
+                        'message_count': len(data.get('messages', [])),
+                        'conversation_mode': str(data.get('conversation_mode', 'chat') or 'chat'),
+                        'longterm_active': bool(longterm.get('active', False)),
+                        'longterm_task': str(longterm.get('task', '') or ''),
+                        'longterm_step': str(longterm.get('step', '') or '')
                     })
         
         # 置顶优先，其次按更新时间倒序

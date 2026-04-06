@@ -118,6 +118,16 @@ let isMessageInputComposing = false;
 let selectedModelId = null;
 let modelCatalog = [];
 let currentConversationHasImageHistory = false;
+let currentConversationMode = 'chat';
+let currentConversationLongtermState = {
+    active: false,
+    task: '',
+    plan: [],
+    context: '',
+    hook: {}
+};
+let currentConversationLongtermAutoContinueKind = '';
+let currentConversationLongtermConfirmationInFlight = false;
 const modelMetaById = new Map();
 const providerVisionModelSetCache = new Map();
 const providerVisionPendingFetch = new Map();
@@ -3819,6 +3829,11 @@ const els = {
     sidebar: document.getElementById('sidebar'),
     messagesContainer: document.getElementById('messagesContainer'),
     messageInput: document.getElementById('messageInput'),
+    longtermPlanPanel: document.getElementById('longtermPlanPanel'),
+    longtermPlanToggle: document.getElementById('longtermPlanToggle'),
+    longtermPlanStatus: document.getElementById('longtermPlanStatus'),
+    longtermPlanTask: document.getElementById('longtermPlanTask'),
+    longtermPlanBody: document.getElementById('longtermPlanBody'),
     fileInput: document.getElementById('fileInput'),
     filePreviewArea: document.getElementById('filePreviewArea'),
     fileUploadProgressWrap: document.getElementById('fileUploadProgressWrap'),
@@ -7189,6 +7204,17 @@ function initUI() {
     });
     // Event Listeners
     if(els.sendBtn) els.sendBtn.addEventListener('click', sendMessage);
+    if (els.longtermPlanToggle) {
+        els.longtermPlanToggle.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const panel = els.longtermPlanPanel;
+            if (!panel) return;
+            const collapsed = panel.dataset.collapsed === '1';
+            panel.dataset.collapsed = collapsed ? '0' : '1';
+            panel.classList.toggle('collapsed', !collapsed);
+        });
+    }
     if (els.checkThinking) {
         els.checkThinking.addEventListener('change', () => saveComposerPrefsToStorage());
     }
@@ -7324,6 +7350,7 @@ function initUI() {
             loadCloudFiles();
         });
     }
+
     const bulkBtn = document.getElementById('bulkVectorizeBtn');
     if (bulkBtn) {
         bulkBtn.addEventListener('click', (e) => {
@@ -8590,9 +8617,18 @@ function renderConversationList(conversations) {
         div.dataset.conversationId = String(cid || '');
         const isPinned = !!(c && c.pin);
         div.dataset.pin = isPinned ? '1' : '0';
+        const isLongterm = String(c && c.conversation_mode || '').trim() === 'longterm' || !!(c && c.longterm_active);
+        const isLongtermActive = !!(c && c.longterm_active);
         
         const titleSpan = document.createElement('span');
         titleSpan.className = 'title'; // Add class for CSS styling
+        if (isLongterm) {
+            const modeIcon = document.createElement('i');
+            modeIcon.className = `fa-solid fa-diagram-project conversation-mode-icon${isLongtermActive ? ' active' : ''}`;
+            modeIcon.setAttribute('aria-hidden', 'true');
+            modeIcon.title = isLongtermActive ? 'Longterm 执行中' : 'Longterm 模式';
+            titleSpan.appendChild(modeIcon);
+        }
         if (isPinned) {
             const pinIcon = document.createElement('i');
             pinIcon.className = 'fa-solid fa-thumbtack conversation-pin-icon';
@@ -8644,12 +8680,431 @@ function renderConversationList(conversations) {
     });
 }
 
+function normalizeLongtermState(raw) {
+    const src = (raw && typeof raw === 'object') ? raw : {};
+    const plan = Array.isArray(src.plan) ? src.plan.map((item) => String(item || '').trim()).filter(Boolean) : [];
+    const hook = (src.hook && typeof src.hook === 'object') ? src.hook : {};
+    const doneIndices = coerceLongtermIndexList(src.done_indices || src.doneIndices || []);
+    const currentIndex = coerceLongtermIndex(src.current_index != null ? src.current_index : src.currentIndex, -1);
+    const state = {
+        active: !!src.active,
+        task: String(src.task || '').trim(),
+        plan,
+        context: String(src.context || src.context_text || '').trim(),
+        step: String(src.step || src.step_title || src.current_step || src.currentStep || '').trim(),
+        current_index: currentIndex,
+        done_indices: doneIndices,
+        hook
+    };
+    return state;
+}
+
+function coerceLongtermIndex(value, fallback = -1) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? Math.max(-1, Math.floor(parsed)) : fallback;
+}
+
+function coerceLongtermIndexList(value) {
+    if (!Array.isArray(value)) return [];
+    return value
+        .map((item) => Number(item))
+        .filter((item) => Number.isFinite(item) && item >= 0)
+        .filter((item, index, self) => self.indexOf(item) === index);
+}
+
+function normalizeLongtermPlanItemText(item) {
+    if (item && typeof item === 'object') {
+        return String(item.text || item.title || item.label || item.content || item.step || '').trim();
+    }
+    return String(item || '').trim();
+}
+
+function normalizeLongtermPlanStatus(itemText, state = {}) {
+    const text = String(itemText || '').trim();
+    const currentIndex = coerceLongtermIndex(state.current_index != null ? state.current_index : state.currentIndex, -1);
+    const doneIndices = coerceLongtermIndexList(state.done_indices || state.doneIndices || []);
+    const index = Number.isFinite(Number(state.__index)) ? Number(state.__index) : -1;
+
+    const doneText = /^(?:\[[xX]\]|[✓✔☑]|done\b|completed\b)/i.test(text);
+    const activeText = /^(?:\[>\]|[▶➤➜]|active\b|current\b|doing\b|running\b|in progress\b)/i.test(text);
+
+    if (doneIndices.includes(index)) return 'done';
+    if (currentIndex >= 0 && index === currentIndex) return 'active';
+    if (doneText) return 'done';
+    if (activeText) return 'active';
+    return 'pending';
+}
+
+function getNextPendingLongtermStepIndex(plan, doneIndices, startIndex = 0) {
+    const arr = Array.isArray(plan) ? plan : [];
+    const doneSet = new Set(coerceLongtermIndexList(doneIndices || []));
+    const begin = Math.max(0, Number(startIndex) || 0);
+    for (let index = begin; index < arr.length; index += 1) {
+        if (!doneSet.has(index)) return index;
+    }
+    return -1;
+}
+
+function sanitizeLongtermPlanText(itemText) {
+    return String(itemText || '')
+        .replace(/^\s*(?:[-*+]|\d+[.)]|[>▶➤➜])\s*/u, '')
+        .replace(/^\s*\[[xX\s]\]\s*/u, '')
+        .trim();
+}
+
+function renderLongtermPlanItemStatusIcon(status) {
+    if (status === 'done') {
+        return '<i class="fa-solid fa-circle-check longterm-plan-item-icon"></i>';
+    }
+    if (status === 'active') {
+        return '<i class="fa-solid fa-circle-dot longterm-plan-item-icon"></i>';
+    }
+    return '<i class="fa-regular fa-circle longterm-plan-item-icon"></i>';
+}
+
+function extractLongtermPlanFromText(rawText) {
+    const src = rawText && typeof rawText === 'object' ? rawText : jsonParseSafe(String(rawText || ''));
+    if (!src || typeof src !== 'object') {
+        return { found: false, kind: '', text: String(rawText || '').trim(), plan: [], task: '', context: '', summary: '', done: false, step_index: -1, step_no: -1, step_id: '', step_title: '', step_status: '', raw: rawText };
+    }
+    const kind = String(src.kind || src.type || '').trim().toLowerCase();
+    const planSource = Array.isArray(src.plan)
+        ? src.plan
+        : Array.isArray(src.steps)
+            ? src.steps
+            : [];
+    const plan = planSource.map((item) => normalizeLongtermPlanItemText(item)).filter(Boolean);
+    const context = String(src.context || src.context_text || '').trim();
+    const summary = String(src.summary || src.text || src.message || '').trim();
+    const task = String(src.task || src.task_text || '').trim();
+    const stepIndexRaw = src.step_index != null ? src.step_index : src.stepIndex;
+    const stepNoRaw = src.step_no != null ? src.step_no : src.stepNo;
+    const stepIndex = Number.isFinite(Number(stepIndexRaw)) ? Math.max(-1, Math.floor(Number(stepIndexRaw))) : -1;
+    const stepNo = Number.isFinite(Number(stepNoRaw)) ? Math.max(-1, Math.floor(Number(stepNoRaw))) : -1;
+    const resolvedStepIndex = stepIndex >= 0 ? stepIndex : (stepNo > 0 ? stepNo - 1 : -1);
+    const stepId = String(src.step_id || src.stepId || '').trim();
+    const stepTitle = String(src.step_title || src.stepTitle || '').trim();
+    const stepStatus = String(src.step_status || src.stepStatus || '').trim().toLowerCase();
+    const done = kind === 'longterm_update' ? (src.done !== false) : (kind === 'longterm_plan' ? false : !!src.done);
+    return {
+        found: !!kind || plan.length > 0 || !!context || !!summary,
+        kind,
+        plan,
+        task,
+        context,
+        summary,
+        done,
+        step_index: resolvedStepIndex,
+        step_no: stepNo,
+        step_id: stepId,
+        step_title: stepTitle,
+        step_status: stepStatus,
+        raw: src
+    };
+}
+
+function applyLongtermPlanFromText(rawText, source = {}) {
+    const parsed = extractLongtermPlanFromText(rawText);
+    if (!parsed.found) {
+        return parsed;
+    }
+    const nextState = normalizeLongtermState(currentConversationLongtermState);
+    const plan = Array.isArray(parsed.plan) ? parsed.plan.map((item) => normalizeLongtermPlanItemText(item)).filter(Boolean) : [];
+    if (plan.length) {
+        nextState.plan = plan;
+    }
+    if (parsed.task) {
+        nextState.task = parsed.task;
+    }
+    if (parsed.context) {
+        nextState.context = String(parsed.context || '').trim();
+    }
+    if (parsed.summary) {
+        nextState.context = [nextState.context, String(parsed.summary || '').trim()].filter(Boolean).join('\n\n').trim();
+    }
+    const hasStepIndex = Number.isFinite(Number(parsed.step_index)) && Number(parsed.step_index) >= 0;
+    const stepIndex = hasStepIndex ? Math.floor(Number(parsed.step_index)) : -1;
+    if (parsed.step_title) {
+        nextState.step = parsed.step_title;
+    } else if (parsed.step_id) {
+        nextState.step = parsed.step_id;
+    }
+    if (parsed.kind === 'longterm_update' && hasStepIndex) {
+        const doneIndices = coerceLongtermIndexList(nextState.done_indices || []);
+        const status = String(parsed.step_status || '').toLowerCase() || 'done';
+        if (status === 'done' || parsed.done) {
+            if (!doneIndices.includes(stepIndex)) doneIndices.push(stepIndex);
+            nextState.done_indices = doneIndices;
+            nextState.current_index = parsed.done
+                ? -1
+                : getNextPendingLongtermStepIndex(nextState.plan, doneIndices, stepIndex + 1);
+        } else if (status === 'active') {
+            nextState.current_index = stepIndex;
+        } else if (status === 'pending') {
+            nextState.current_index = stepIndex;
+        }
+        const visibleIndex = Number.isFinite(Number(nextState.current_index)) && Number(nextState.current_index) >= 0
+            ? Math.floor(Number(nextState.current_index))
+            : stepIndex;
+        const visibleStep = String(nextState.plan[visibleIndex] || nextState.plan[stepIndex] || '').trim();
+        if (visibleStep) {
+            nextState.step = visibleStep;
+        }
+    }
+    if (!nextState.step && hasStepIndex) {
+        nextState.step = String(nextState.plan[stepIndex] || '').trim();
+    }
+    if (!nextState.step && Number.isFinite(Number(nextState.current_index)) && nextState.current_index >= 0) {
+        nextState.step = String(nextState.plan[Math.floor(Number(nextState.current_index))] || '').trim();
+    }
+    if (parsed.done) {
+        nextState.active = false;
+        if (hasStepIndex) {
+            const doneIndices = coerceLongtermIndexList(nextState.done_indices || []);
+            if (!doneIndices.includes(stepIndex)) doneIndices.push(stepIndex);
+            nextState.done_indices = doneIndices;
+        }
+    } else {
+        nextState.active = currentConversationMode === 'longterm' || nextState.active;
+    }
+    currentConversationLongtermAutoContinueKind = '';
+    currentConversationLongtermState = normalizeLongtermState(nextState);
+    renderLongtermPlanPanel();
+    if (currentConversationId) {
+        syncLocalConversationModeFlags(currentConversationId, {
+            conversation_mode: 'longterm',
+            longterm_active: currentConversationLongtermState.active,
+            longterm_current_index: currentConversationLongtermState.current_index,
+            longterm_done_indices: currentConversationLongtermState.done_indices,
+            longterm: currentConversationLongtermState
+        });
+    }
+    const messageDiv = source && source.messageDiv && source.messageDiv.isConnected ? source.messageDiv : null;
+    if (messageDiv) {
+        upsertLongtermPlanHookBlock(messageDiv, parsed, source);
+    }
+    return parsed;
+}
+
+function syncConversationModeFromConversation(conversation) {
+    const conv = (conversation && typeof conversation === 'object') ? conversation : {};
+    const mode = String(conv.conversation_mode || 'chat').trim().toLowerCase();
+    currentConversationMode = mode === 'longterm' ? 'longterm' : 'chat';
+    currentConversationLongtermState = normalizeLongtermState(conv.longterm);
+    currentConversationLongtermAutoContinueKind = '';
+    currentConversationLongtermConfirmationInFlight = false;
+    if (currentConversationMode !== 'longterm') {
+        currentConversationLongtermState.active = false;
+    } else if (els.longtermPlanPanel) {
+        els.longtermPlanPanel.dataset.collapsed = '1';
+        els.longtermPlanPanel.classList.add('collapsed');
+    }
+    renderLongtermPlanPanel();
+    return currentConversationMode;
+}
+
+function syncLocalConversationModeFlags(conversationId, fields = {}) {
+    const cid = String(conversationId || '').trim();
+    if (!cid || !Array.isArray(conversationListCache)) return;
+    const mode = String(fields.conversation_mode || '').trim().toLowerCase();
+    const longterm = normalizeLongtermState(fields.longterm);
+    conversationListCache = conversationListCache.map((item) => {
+        const src = (item && typeof item === 'object') ? item : {};
+        const itemId = String(src.conversation_id || src.id || '').trim();
+        if (itemId !== cid) return src;
+        const next = { ...src };
+        if (mode) next.conversation_mode = mode;
+        if (Object.keys(fields).includes('longterm_active')) {
+            next.longterm_active = !!fields.longterm_active;
+        }
+        if (longterm.task) next.longterm_task = longterm.task;
+        if (longterm.step) next.longterm_step = longterm.step;
+        if (Object.keys(fields).includes('longterm_done_indices')) next.longterm_done_indices = longterm.done_indices;
+        if (Object.keys(fields).includes('longterm_current_index')) next.longterm_current_index = longterm.current_index;
+        return next;
+    });
+    renderConversationList(conversationListCache);
+}
+
+function formatLongtermPlanList(plan, state = {}) {
+    const arr = Array.isArray(plan) ? plan : [];
+    if (!arr.length) return '<div class="longterm-plan-empty">暂无计划，等待模型生成。</div>';
+    const items = arr.map((item, index) => {
+        const text = sanitizeLongtermPlanText(item);
+        const status = normalizeLongtermPlanStatus(item, { ...state, __index: index });
+        return `<li class="longterm-plan-item longterm-plan-item-${status}" data-status="${status}"><span class="longterm-plan-item-status longterm-plan-item-status-${status}">${renderLongtermPlanItemStatusIcon(status)}</span><span class="longterm-plan-item-text">${escapeHtml(text)}</span></li>`;
+    }).join('');
+    return `<ul class="longterm-plan-list">${items}</ul>`;
+}
+
+function formatLongtermPlanSummary(plan, maxItems = 3) {
+    const arr = Array.isArray(plan) ? plan.map((item) => String(item || '').trim()).filter(Boolean) : [];
+    if (!arr.length) return '<span class="longterm-plan-summary-empty">等待规划点</span>';
+    const shown = arr.slice(0, Math.max(1, Number(maxItems) || 3));
+    const chips = shown.map((item) => `<span class="longterm-plan-summary-chip">${escapeHtml(item)}</span>`).join('');
+    const more = arr.length > shown.length ? `<span class="longterm-plan-summary-more">+${arr.length - shown.length}</span>` : '';
+    return `<div class="longterm-plan-summary-row">${chips}${more}</div>`;
+}
+
+function upsertLongtermPlanHookBlock(messageDiv, parsed, source = {}) {
+    const target = messageDiv && messageDiv.isConnected ? messageDiv : null;
+    if (!target) return null;
+    const content = target.querySelector('.message-content');
+    if (!content) return null;
+    const sourceTag = String(source && source.source ? source.source : 'stream').trim().toLowerCase();
+    const isLiveSource = /(^|[-_])(live|stream)([-_]|$)/.test(sourceTag) || sourceTag === 'stream';
+
+    const planItems = Array.isArray(parsed && parsed.plan)
+        ? parsed.plan.map((item) => String(item || '').trim()).filter(Boolean)
+        : [];
+    const title = String((parsed && parsed.kind) === 'longterm_update' ? '模型已完成 longterm 任务' : '模型已生成 longterm 计划').trim();
+    const hookPayload = {
+        mode: 'longterm',
+        title,
+        kind: String(parsed && parsed.kind ? parsed.kind : 'longterm_plan').trim(),
+        step_index: Number.isFinite(Number(parsed && parsed.step_index)) ? Number(parsed.step_index) : -1,
+        step_no: Number.isFinite(Number(parsed && parsed.step_no)) ? Number(parsed.step_no) : -1,
+        step_id: String(parsed && parsed.step_id ? parsed.step_id : '').trim(),
+        step_title: String(parsed && parsed.step_title ? parsed.step_title : '').trim(),
+        step_status: String(parsed && parsed.step_status ? parsed.step_status : '').trim(),
+        prompt: {
+            plan: planItems,
+            text: String((parsed && parsed.summary) || (parsed && parsed.context) || '')
+        },
+        details: {
+            plan: planItems,
+            task: String(parsed && parsed.task ? parsed.task : '').trim(),
+            context: String(parsed && parsed.context ? parsed.context : '').trim(),
+            step_index: Number.isFinite(Number(parsed && parsed.step_index)) ? Number(parsed.step_index) : -1,
+            step_no: Number.isFinite(Number(parsed && parsed.step_no)) ? Number(parsed.step_no) : -1,
+            step_id: String(parsed && parsed.step_id ? parsed.step_id : '').trim(),
+            step_title: String(parsed && parsed.step_title ? parsed.step_title : '').trim(),
+            step_status: String(parsed && parsed.step_status ? parsed.step_status : '').trim(),
+            source: String(source && source.source ? source.source : 'stream')
+        }
+    };
+
+    const freshBlock = renderLongtermHookBlock(hookPayload);
+    freshBlock.dataset.longtermPlan = '1';
+    freshBlock.dataset.longtermPlanSource = String(source && source.source ? source.source : 'stream');
+    freshBlock.dataset.streamLive = isLiveSource ? '1' : '0';
+
+    const existing = target.__longtermPlanHookBlock || target.querySelector('.longterm-hook-block[data-longterm-plan="1"]');
+    if (existing && existing.isConnected) {
+        existing.replaceWith(freshBlock);
+    } else {
+        const body = content.querySelector('.content-body');
+        if (body && body.parentNode === content) {
+            if (body.nextSibling) content.insertBefore(freshBlock, body.nextSibling);
+            else body.insertAdjacentElement('afterend', freshBlock);
+        } else {
+            content.appendChild(freshBlock);
+        }
+    }
+    target.__longtermPlanHookBlock = freshBlock;
+
+    if (isLiveSource && parsed) {
+        const cleanedText = String((parsed.summary || parsed.context || parsed.task || '') || '');
+        const liveBodies = content.querySelectorAll('.content-body[data-stream-live="1"]');
+        liveBodies.forEach((body) => {
+            body.innerHTML = renderMarkdownWithNewTabLinks(cleanedText, { streamingMathProvisional: true });
+            bindSourceMarkdown(body, cleanedText);
+            highlightCode(body);
+            body.dataset.streamLive = '1';
+            body.dataset.streamRaw = cleanedText;
+        });
+    }
+
+    return freshBlock;
+}
+
+function renderLongtermPlanPanel() {
+    const panel = els.longtermPlanPanel;
+    if (!panel) return;
+    const state = normalizeLongtermState(currentConversationLongtermState);
+    const completedAll = Array.isArray(state.plan) && state.plan.length > 0 && coerceLongtermIndexList(state.done_indices || []).length >= state.plan.length;
+    const hasLongtermState = currentConversationMode === 'longterm'
+        || state.active
+        || !!state.task
+        || (Array.isArray(state.plan) && state.plan.length > 0)
+        || !!(state.hook && Object.keys(state.hook).length);
+    panel.classList.toggle('visible', hasLongtermState);
+    panel.style.display = hasLongtermState ? '' : 'none';
+    panel.dataset.mode = hasLongtermState ? 'longterm' : 'chat';
+    panel.dataset.active = state.active ? '1' : '0';
+    panel.dataset.tempExpanded = '0';
+    panel.classList.toggle('collapsed', panel.dataset.collapsed === '1' ? true : false);
+    const statusEl = els.longtermPlanStatus;
+    const taskEl = els.longtermPlanTask;
+    const bodyEl = els.longtermPlanBody;
+    if (statusEl) {
+        statusEl.textContent = completedAll ? '已完成' : (state.active ? '执行中' : '已启用');
+    }
+    if (taskEl) {
+        const taskText = state.task || '等待任务说明';
+        const collapsedSummary = formatLongtermPlanSummary(state.plan);
+        if (panel.classList.contains('collapsed')) {
+            taskEl.innerHTML = collapsedSummary;
+            taskEl.title = state.plan.length ? state.plan.join(' · ') : taskText;
+        } else {
+            taskEl.textContent = taskText;
+            taskEl.title = taskText;
+        }
+    }
+    if (bodyEl) {
+        const planHtml = formatLongtermPlanList(state.plan, state);
+        const hookJson = state.hook && Object.keys(state.hook).length ? JSON.stringify(state.hook, null, 2) : '';
+        const contextHtml = state.context
+            ? `<div class="longterm-plan-context"><div class="longterm-panel-section-title">Context</div><div class="longterm-plan-context-text">${escapeHtml(state.context)}</div></div>`
+            : '';
+        bodyEl.innerHTML = `
+            ${planHtml}
+            ${state.step ? `<div class="longterm-plan-current"><span class="longterm-plan-current-label">当前步骤</span><span class="longterm-plan-current-text">${escapeHtml(state.step)}</span></div>` : ''}
+            ${contextHtml}
+            <div class="longterm-panel-section">
+                <div class="longterm-panel-section-title">Hook</div>
+                <div class="longterm-hook-summary">${escapeHtml((state.hook && state.hook.title) || '模型等待生成计划')}</div>
+                ${hookJson ? `<pre class="longterm-hook-json">${escapeHtml(hookJson)}</pre>` : '<div class="longterm-plan-empty">暂无 Hook 记录。</div>'}
+            </div>
+        `;
+    }
+}
+
+function setLongtermMode(active, state = {}) {
+    currentConversationMode = active ? 'longterm' : 'chat';
+    currentConversationLongtermState = normalizeLongtermState({
+        ...currentConversationLongtermState,
+        ...(state || {}),
+        active: !!active
+    });
+    if (!active) {
+        currentConversationLongtermAutoContinueKind = '';
+        currentConversationLongtermConfirmationInFlight = false;
+    }
+    if (active && els.longtermPlanPanel) {
+        els.longtermPlanPanel.dataset.collapsed = '1';
+        els.longtermPlanPanel.classList.add('collapsed');
+    }
+    renderLongtermPlanPanel();
+}
+
 async function createNewConversation(silent = false) {
     const viewer = document.getElementById('knowledgeViewer');
     if (viewer && viewer.style.display !== 'none') {
         closeKnowledgeView();
     }
     currentConversationHasImageHistory = false;
+    currentConversationMode = 'chat';
+    currentConversationLongtermState = {
+        active: false,
+        task: '',
+        plan: [],
+        context: '',
+        hook: {}
+    };
+    currentConversationLongtermAutoContinueKind = '';
+    currentConversationLongtermConfirmationInFlight = false;
+    renderLongtermPlanPanel();
     if(!silent) {
         // Clear UI
         currentConversationId = null;
@@ -8709,6 +9164,7 @@ async function loadConversation(id) {
         
         if (data.success && data.conversation) {
             refreshConversationImageHistoryFlag(data.conversation.messages || []);
+            syncConversationModeFromConversation(data.conversation);
             // Render
             renderMessages(data.conversation.messages, false, { instant: true });
             applyTokenBudgetFromConversationMessages(data.conversation.messages || []);
@@ -8716,6 +9172,17 @@ async function loadConversation(id) {
             await refreshTokenMiniForConversation(id);
         } else {
             currentConversationHasImageHistory = false;
+            currentConversationMode = 'chat';
+            currentConversationLongtermState = {
+                active: false,
+                task: '',
+                plan: [],
+                context: '',
+                hook: {}
+            };
+            currentConversationLongtermAutoContinueKind = '';
+            currentConversationLongtermConfirmationInFlight = false;
+            renderLongtermPlanPanel();
             console.error("Failed to load conversation:", data.message);
             await refreshTokenMiniForConversation(null);
         }
@@ -8730,6 +9197,17 @@ async function loadConversation(id) {
         
     } catch (e) {
         currentConversationHasImageHistory = false;
+        currentConversationMode = 'chat';
+        currentConversationLongtermState = {
+            active: false,
+            task: '',
+            plan: [],
+            context: '',
+            hook: {}
+        };
+        currentConversationLongtermAutoContinueKind = '';
+        currentConversationLongtermConfirmationInFlight = false;
+        renderLongtermPlanPanel();
         console.error("Error loading chat", e);
         await refreshTokenMiniForConversation(null);
     }
@@ -9598,9 +10076,38 @@ async function maybeConfirmContextCompressionBeforeSend(modelId, forceRequested 
     return { ok: true, forceCompression: true };
 }
 
-async function sendMessage() {
-    const text = els.messageInput.value.trim();
-    if (!text && !isGenerating && uploadedFileIds.length === 0) return;
+async function sendMessage(options = {}) {
+    const isAutoContinue = !!(options && options.autoContinue);
+    const autoContinueKind = String(options && options.autoContinueKind ? options.autoContinueKind : '').trim();
+    const isConfirmationAutoContinue = autoContinueKind === 'confirm';
+    const rawText = isAutoContinue ? '' : els.messageInput.value.trim();
+    const longtermTriggered = !isAutoContinue && /^\s*\/longterm(?:\s+|$)/i.test(rawText);
+    let text = rawText;
+    let nextConversationMode = (currentConversationMode === 'longterm' || isAutoContinue) ? 'longterm' : 'chat';
+    let longtermTaskText = '';
+    if (isAutoContinue && !text) {
+        text = isConfirmationAutoContinue
+            ? '请确认上一轮输出对应的步骤是否已经完成。如果已经完成，请明确输出<done></done>，并补充<context>...</context>。如果尚未完成，请继续完成当前步骤，不要进入下一步。'
+            : '继续执行下一步';
+    }
+    if (longtermTriggered) {
+        text = rawText.replace(/^\s*\/longterm(?:\s+)?/i, '').trim();
+        nextConversationMode = 'longterm';
+        longtermTaskText = text;
+        currentConversationMode = 'longterm';
+        if (!text && uploadedFileIds.length === 0 && !isGenerating) {
+            currentConversationLongtermState = normalizeLongtermState({
+                ...currentConversationLongtermState,
+                active: false,
+                task: '',
+                plan: currentConversationLongtermState.plan || []
+            });
+            renderLongtermPlanPanel();
+            showToast('Longterm 模式已启用');
+            return;
+        }
+    }
+    if (!text && !isGenerating && uploadedFileIds.length === 0 && !isAutoContinue) return;
     if (isUploadingFiles && !isGenerating) {
         showToast('文件上传或向量化处理中，请稍候或手动中断后再发送');
         return;
@@ -9700,13 +10207,15 @@ async function sendMessage() {
     }
 
     // Add User Message to UI
-    appendMessage({
-        role: 'user',
-        content: displayContent,
-        metadata: pendingUserAttachments.length > 0 ? { attachments: pendingUserAttachments } : {}
-    });
-    if (messageHasImageAttachments({ metadata: { attachments: pendingUserAttachments } })) {
-        currentConversationHasImageHistory = true;
+    if (!isAutoContinue) {
+        appendMessage({
+            role: 'user',
+            content: displayContent,
+            metadata: pendingUserAttachments.length > 0 ? { attachments: pendingUserAttachments } : {}
+        });
+        if (messageHasImageAttachments({ metadata: { attachments: pendingUserAttachments } })) {
+            currentConversationHasImageHistory = true;
+        }
     }
     
     // Reset auto-scroll
@@ -9737,24 +10246,58 @@ async function sendMessage() {
     });
 
     // Prepare API Payload
+    const longtermPlanList = Array.isArray(currentConversationLongtermState.plan)
+        ? currentConversationLongtermState.plan.map((item) => normalizeLongtermPlanItemText(item)).filter(Boolean)
+        : [];
+    const longtermContextText = String(currentConversationLongtermState.context || '').trim();
     const payload = {
         message: finalMessage,
         model_name: model,
         conversation_id: currentConversationId,
+        conversation_mode: nextConversationMode,
+        conversation_mode_payload: nextConversationMode === 'longterm' ? {
+            task: longtermTaskText || currentConversationLongtermState.task || rawText,
+            plan: longtermTriggered && text ? [] : longtermPlanList,
+            context: longtermContextText,
+            step: String(currentConversationLongtermState.step || '').trim(),
+            current_index: Number.isFinite(Number(currentConversationLongtermState.current_index)) ? Number(currentConversationLongtermState.current_index) : -1,
+            done_indices: Array.isArray(currentConversationLongtermState.done_indices) ? currentConversationLongtermState.done_indices : [],
+        } : {},
         enable_thinking: enableThinking,
         enable_web_search: enableSearch,
         enable_tools: enableTools,
-        tool_mode: toolsMode,
+        tool_mode: nextConversationMode === 'longterm' ? 'force' : toolsMode,
         debug_mode: isDebugConsoleEnabled(),
         file_ids: fileInputs,
         sandbox_paths: sandboxPaths,
         user_attachments: pendingUserAttachments,
         allow_history_images: allowHistoryImages,
-        include_context: !!tokenBudgetState.includeContext
+        include_context: !!tokenBudgetState.includeContext,
+        skip_user_message: isAutoContinue
     };
     if (forceContextCompression) {
         payload.force_context_compression = true;
     }
+
+    if (nextConversationMode === 'longterm') {
+        currentConversationLongtermState = normalizeLongtermState({
+            ...currentConversationLongtermState,
+            active: true,
+            task: longtermTaskText || currentConversationLongtermState.task || rawText,
+            plan: longtermTriggered && text ? [] : longtermPlanList,
+            context: longtermContextText,
+            step: String(currentConversationLongtermState.step || '').trim(),
+        });
+        renderLongtermPlanPanel();
+        syncLocalConversationModeFlags(currentConversationId, {
+            conversation_mode: 'longterm',
+            longterm_active: true,
+            longterm_current_index: currentConversationLongtermState.current_index,
+            longterm_done_indices: currentConversationLongtermState.done_indices,
+            longterm: currentConversationLongtermState
+        });
+    }
+    currentConversationLongtermConfirmationInFlight = false;
     
     // Reset files
     uploadedFileIds = [];
@@ -10321,11 +10864,11 @@ async function sendMessage() {
                 });
                 return;
             }
-            state.liveEl.classList.add('stream-live-raw');
-            state.liveEl.textContent = sourceText;
+            state.liveEl.classList.remove('stream-live-raw');
+            state.liveEl.innerHTML = renderMarkdownWithNewTabLinks(sourceText, { breaks: false });
             bindSourceMarkdown(state.liveEl, sourceText);
             state.lastRenderedSource = sourceText;
-            state.lastRenderedMode = 'raw';
+            state.lastRenderedMode = 'markdown_unbalanced';
             state.lastStablePrefix = '';
             state.liveRawTailEl = null;
             pushStreamRenderDebug('tail_raw_unbalanced_md', state, {
@@ -10353,11 +10896,11 @@ async function sendMessage() {
                     });
                     return;
                 }
-                state.liveEl.classList.add('stream-live-raw');
-                state.liveEl.textContent = sourceText;
+                state.liveEl.classList.remove('stream-live-raw');
+                state.liveEl.innerHTML = renderMarkdownWithNewTabLinks(sourceText, { breaks: false });
                 bindSourceMarkdown(state.liveEl, sourceText);
                 state.lastRenderedSource = sourceText;
-                state.lastRenderedMode = 'raw_open_head';
+                state.lastRenderedMode = 'markdown_open_head';
                 state.lastStablePrefix = '';
                 state.liveRawTailEl = null;
                 pushStreamRenderDebug('tail_raw_math_open_head', state, {
@@ -10515,6 +11058,10 @@ async function sendMessage() {
                 const host = contentDiv.closest('.thinking-block.reasoning-thinking-block');
                 if (host) host.dataset.streamLive = '0';
             });
+            const longtermBlocks = aiMsgDiv.querySelectorAll('.thinking-block.longterm-hook-block[data-longterm-plan="1"]');
+            longtermBlocks.forEach((block) => {
+                block.dataset.streamLive = '0';
+            });
         } catch (_) {}
     }
     
@@ -10614,8 +11161,13 @@ async function sendMessage() {
                         else if (chunk.type === 'content') {
                             currentFullContent += chunk.content;
                             onTokenStreamTextChunk(chunk.content);
+                            const planInfo = applyLongtermPlanFromText(currentFullContent, { source: 'live-stream', messageDiv: aiMsgDiv });
+                            const displayFullContent = String(planInfo && planInfo.text !== undefined ? planInfo.text : currentFullContent || '');
+                            if (displayFullContent !== currentFullContent) {
+                                currentFullContent = displayFullContent;
+                            }
                             if (isDebugConsoleEnabled()) {
-                                debugReplyText += String(chunk.content || '');
+                                debugReplyText = currentFullContent;
                                 appendDebugConsoleEntry({
                                     direction: 'model->server',
                                     stage: 'model_reply',
@@ -10641,11 +11193,16 @@ async function sendMessage() {
                             // 注意：为了保持Markdown上下文一致，我们通常倾向于在同一个Block显示
                             // 但用户求在工具链下方显示，以必须开吖Block
                             currentSegmentContent += chunk.content;
+                            const segmentPlanInfo = applyLongtermPlanFromText(currentSegmentContent, { source: 'live-segment', messageDiv: aiMsgDiv });
+                            const displaySegmentContent = String(segmentPlanInfo && segmentPlanInfo.text !== undefined ? segmentPlanInfo.text : currentSegmentContent || '');
+                            if (displaySegmentContent !== currentSegmentContent) {
+                                currentSegmentContent = displaySegmentContent;
+                            }
                             currentContentSpan.dataset.streamRaw = currentSegmentContent;
                             currentContentSpan.dataset.streamLive = '1';
                             const streamState = ensureStreamBlockState(currentContentSpan);
                             if (streamState) {
-                                streamState.liveRaw += String(chunk.content || '');
+                                streamState.liveRaw = currentSegmentContent;
                                 flushStableStreamTail(currentContentSpan, aiMsgDiv.__citationUrlMap || {}, false);
                             }
                         } 
@@ -10747,6 +11304,9 @@ async function sendMessage() {
                             const toolIndex = (chunk.index === undefined || chunk.index === null) ? null : Number(chunk.index);
                             const callId = allocateToolCallId(aiMsgDiv, toolName, 'result', rawCallId, toolIndex);
                             updateLastToolResult(aiMsgDiv, toolName, chunk.result, callId, { toolIndex });
+                            if (toolName === 'longterm_plan' || toolName === 'longterm_update') {
+                                applyLongtermPlanFromText(chunk.result, { source: 'function_result', messageDiv: aiMsgDiv });
+                            }
                             maybeRenderCanvasFromJsExecuteResult(aiMsgDiv, toolName, chunk.result, callId, toolIndex);
                         }
                         else if (chunk.type === 'token_usage') {
@@ -10784,6 +11344,14 @@ async function sendMessage() {
              }
 
              if (done) {
+                            const finalPlanInfo = applyLongtermPlanFromText(currentFullContent, { source: 'done', messageDiv: aiMsgDiv });
+                            const finalDisplayContent = String(finalPlanInfo && finalPlanInfo.text !== undefined ? finalPlanInfo.text : currentFullContent || '');
+                            if (finalDisplayContent !== currentFullContent) {
+                                currentFullContent = finalDisplayContent;
+                                if (currentContentSpan) {
+                                    currentContentSpan.dataset.streamRaw = finalDisplayContent;
+                                }
+                            }
                 streamCompleted = true;
                 aiMsgDiv.dataset.localOnly = '0';
                 finalizeStreamingContentRender();
@@ -10838,9 +11406,25 @@ async function sendMessage() {
         } else {
             showToast('连接中断：刷新页面后将自动续传该条回复');
         }
+        if (nextConversationMode === 'longterm') {
+            currentConversationLongtermState = normalizeLongtermState({
+                ...currentConversationLongtermState,
+                active: false,
+                task: longtermTaskText || currentConversationLongtermState.task || rawText,
+                plan: currentConversationLongtermState.plan || []
+            });
+            renderLongtermPlanPanel();
+            syncLocalConversationModeFlags(currentConversationId, {
+                conversation_mode: 'longterm',
+                longterm_active: false,
+                longterm: currentConversationLongtermState
+            });
+        }
+        currentConversationLongtermAutoContinueKind = '';
         await finishTokenMiniStreaming();
         loadConversations(); // Update list preview
         loadKnowledge(currentConversationId); // Refresh knowledge
+        currentConversationLongtermConfirmationInFlight = false;
     }
 }
 
@@ -12045,6 +12629,13 @@ function appendMessage(msg, index) {
             ? msg.metadata.process_steps
             : [];
         const hasReasoningStep = processSteps.some((s) => s && s.type === 'reasoning_content');
+        const longtermHook = (msg.metadata && msg.metadata.longterm_hook && typeof msg.metadata.longterm_hook === 'object')
+            ? msg.metadata.longterm_hook
+            : null;
+
+        if (longtermHook) {
+            content.appendChild(renderLongtermHookBlock(longtermHook));
+        }
 
         // 兼容老数据：仅 metadata.reasoning_content（无分段 step）
         if (msg.metadata && msg.metadata.reasoning_content && !hasReasoningStep) {
@@ -12125,6 +12716,9 @@ function appendMessage(msg, index) {
                     const toolName = resolveToolNameFromEvent(step, step.name);
                     const callId = allocateToolCallId(div, toolName, 'result', step.call_id || '', step.index);
                     updateLastToolResult(div, toolName, step.result, callId, { toolIndex: step.index });
+                    if (toolName === 'longterm_plan' || toolName === 'longterm_update') {
+                        applyLongtermPlanFromText(step.result, { source: 'history-tool-result', messageDiv: div });
+                    }
                     maybeRenderCanvasFromJsExecuteResult(div, toolName, step.result, callId, step.index);
                 }
                 else if (step.type === 'context_compression_status') {
@@ -12135,10 +12729,12 @@ function appendMessage(msg, index) {
                 }
                 else if (step.type === 'content') {
                     // 对于历史记录补插的文本内容
+                    const planInfo = applyLongtermPlanFromText(step.content, { source: 'history-step', messageDiv: div });
+                    const cleanedStepContent = String(planInfo && planInfo.text !== undefined ? planInfo.text : step.content || '');
                     const body = document.createElement('div');
                     body.className = 'content-body';
-                    body.innerHTML = renderMarkdownWithNewTabLinks(step.content);
-                    bindSourceMarkdown(body, step.content);
+                    body.innerHTML = renderMarkdownWithNewTabLinks(cleanedStepContent);
+                    bindSourceMarkdown(body, cleanedStepContent);
                     renderMathSafe(body);
                     highlightCode(body);
                     content.appendChild(body);
@@ -12151,10 +12747,12 @@ function appendMessage(msg, index) {
         const hasContentStep = processSteps.some((s) => s && s.type === 'content');
                                
         if(msg.content && !hasContentStep) {
+            const planInfo = applyLongtermPlanFromText(msg.content, { source: 'history-main', messageDiv: div });
+            const cleanedMsgContent = String(planInfo && planInfo.text !== undefined ? planInfo.text : msg.content || '');
             const body = document.createElement('div');
             body.className = 'content-body';
-            body.innerHTML = renderMarkdownWithNewTabLinks(msg.content);
-            bindSourceMarkdown(body, msg.content);
+            body.innerHTML = renderMarkdownWithNewTabLinks(cleanedMsgContent);
+            bindSourceMarkdown(body, cleanedMsgContent);
             renderMathSafe(body);
             highlightCode(body);
             content.appendChild(body);
@@ -12357,6 +12955,67 @@ function buildVersionNavigation(msg) {
         prevIndex: prev ? Number(prev.__serverIndex) : null,
         nextIndex: next ? Number(next.__serverIndex) : null
     };
+}
+
+function renderLongtermHookBlock(hook) {
+    const src = (hook && typeof hook === 'object') ? hook : {};
+    const step = String(src.step || src.title || 'Longterm').trim();
+    const title = String(src.title || `模型已完成 ${step || '规划'}`).trim();
+    const prompt = (src.prompt && typeof src.prompt === 'object')
+        ? src.prompt
+        : ((src.details && typeof src.details === 'object')
+            ? src.details
+            : ((src.payload && typeof src.payload === 'object')
+                ? src.payload
+                : ((Array.isArray(src.plan) || typeof src.plan === 'string')
+                    ? { steps: src.plan }
+                    : {})));
+    if (prompt && typeof prompt === 'object') {
+        if (prompt.raw) delete prompt.raw;
+        if (prompt.raw_plan) delete prompt.raw_plan;
+        if (prompt.plan && typeof prompt.plan === 'object') {
+            if (prompt.plan.raw) delete prompt.plan.raw;
+            if (prompt.plan.raw_plan) delete prompt.plan.raw_plan;
+        }
+    }
+    const pretty = (() => {
+        try {
+            return JSON.stringify(prompt, null, 2);
+        } catch (_) {
+            return String(prompt || '');
+        }
+    })();
+    const block = document.createElement('div');
+    block.className = 'thinking-block longterm-hook-block collapsed';
+    block.dataset.streamLive = String(src.streamLive || src.dataStreamLive || '0');
+    block.innerHTML = `
+        <div class="thinking-header">
+            <svg class="thinking-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M4 19h16"></path>
+                <path d="M6 4h12l-1 11H7z"></path>
+            </svg>
+            <span class="thinking-title">${escapeHtml(title)}</span>
+            <span class="longterm-hook-step">${escapeHtml(step ? `已完成 ${step}` : 'Longterm Hook')}</span>
+            <svg class="chevron-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+        </div>
+        <div class="longterm-hook-content">
+            <div class="longterm-hook-summary">${escapeHtml(String(title || 'Longterm Hook'))}</div>
+            <pre class="longterm-hook-json"></pre>
+        </div>
+    `;
+    const header = block.querySelector('.thinking-header');
+    if (header) {
+        header.addEventListener('click', () => {
+            block.classList.toggle('collapsed');
+        });
+    }
+    const jsonEl = block.querySelector('.longterm-hook-json');
+    if (jsonEl) {
+        jsonEl.textContent = pretty;
+    }
+    return block;
 }
 
 function renderMessages(messages, noScroll, options = {}) {
@@ -12866,6 +13525,8 @@ function resolveAssistantStreamMessageDiv(index, preferredMessageDiv = null) {
 function updateMessageDivContent(index, fullText, preferredMessageDiv = null) {
     const messageDiv = resolveAssistantStreamMessageDiv(index, preferredMessageDiv);
     if (!messageDiv) return;
+    const planInfo = applyLongtermPlanFromText(fullText, { source: 'stream', messageDiv });
+    const displayText = String(planInfo && planInfo.text !== undefined ? planInfo.text : fullText || '');
     
     let body = messageDiv.querySelector('.content-body');
     if (!body) {
@@ -12875,14 +13536,8 @@ function updateMessageDivContent(index, fullText, preferredMessageDiv = null) {
     }
     
     body.dataset.streamLive = '1';
-    body.innerHTML = renderMarkdownWithNewTabLinks(fullText, { streamingMathProvisional: true });
-    bindSourceMarkdown(body, fullText);
-    const syncRendered = hasLikelyMathForThinkingStream(fullText)
-        ? renderMathInElementSyncPreferred(body)
-        : false;
-    if (!syncRendered) {
-        renderMathSafe(body);
-    }
+    body.innerHTML = renderMarkdownWithNewTabLinks(displayText, { streamingMathProvisional: true });
+    bindSourceMarkdown(body, displayText);
     highlightCode(body);
     
     if (shouldAutoScroll) els.messagesContainer.scrollTop = els.messagesContainer.scrollHeight;
@@ -12927,12 +13582,6 @@ function updateMessageDivThinking(index, delta, preferredMessageDiv = null) {
         streamingMathProvisional: true
     });
     bindSourceMarkdown(textTarget, raw);
-    const syncRendered = hasLikelyMathForThinkingStream(raw)
-        ? renderMathInElementSyncPreferred(textTarget)
-        : false;
-    if (!syncRendered) {
-        renderMathSafe(textTarget);
-    }
     highlightCode(textTarget);
 }
 
@@ -12949,11 +13598,11 @@ function finalizeMessageRenderForIndex(index, preferredMessageDiv = null) {
                 ? body.__sourceMarkdown
                 : (body.dataset.streamRaw || body.textContent || '')
         );
+        body.dataset.streamLive = '0';
         body.innerHTML = renderMarkdownWithNewTabLinks(sourceText);
         bindSourceMarkdown(body, sourceText);
         renderMathSafe(body);
         highlightCode(body);
-        body.dataset.streamLive = '0';
     });
 
     const thinkingBlocks = Array.from(messageDiv.querySelectorAll('.thinking-block.reasoning-thinking-block'));
@@ -12968,12 +13617,12 @@ function finalizeMessageRenderForIndex(index, preferredMessageDiv = null) {
                 ? contentDiv.__sourceMarkdown
                 : (contentDiv.dataset.rawText || contentDiv.dataset.streamRaw || contentDiv.textContent || '')
         );
+        contentDiv.dataset.streamLive = '0';
+        block.dataset.streamLive = '0';
         contentDiv.innerHTML = renderMarkdownWithNewTabLinks(sourceText, { breaks: false });
         bindSourceMarkdown(contentDiv, sourceText);
         renderMathSafe(contentDiv);
         highlightCode(contentDiv);
-        contentDiv.dataset.streamLive = '0';
-        block.dataset.streamLive = '0';
     });
 }
 
@@ -13123,6 +13772,9 @@ function updateMessageDivTools(index, data, preferredMessageDiv = null) {
         const toolIndex = (data.index === undefined || data.index === null) ? null : Number(data.index);
         const callId = allocateToolCallId(messageDiv, toolName, 'result', rawCallId, toolIndex);
         updateLastToolResult(messageDiv, toolName, data.result, callId, { toolIndex });
+        if (toolName === 'longterm_plan' || toolName === 'longterm_update') {
+            applyLongtermPlanFromText(data.result, { source: 'tool-update', messageDiv });
+        }
         maybeRenderCanvasFromJsExecuteResult(messageDiv, toolName, data.result, callId, toolIndex);
     } else if (data.type === 'context_compression_status') {
         upsertContextCompressionCard(
@@ -13308,6 +13960,18 @@ async function resumeActiveStreamAfterReload() {
             collapseModelBadgeForMessage(assistantDiv);
         }
         assistantDiv.classList.remove('pending');
+        if (currentConversationMode === 'longterm') {
+            currentConversationLongtermState = normalizeLongtermState({
+                ...currentConversationLongtermState,
+                active: false
+            });
+            renderLongtermPlanPanel();
+            syncLocalConversationModeFlags(currentConversationId, {
+                conversation_mode: 'longterm',
+                longterm_active: false,
+                longterm: currentConversationLongtermState
+            });
+        }
         await finishTokenMiniStreaming();
         if (streamCompleted || streamAbortedByUser) {
             clearActiveStreamResumeState();

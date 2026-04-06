@@ -19,6 +19,13 @@ from database import User
 from conversation_manager import ConversationManager
 from provider_factory import create_provider_adapter
 from temp_context_store import TempContextStore
+from longterm.longterm_api import (
+    build_longterm_hook_payload,
+    build_longterm_prompt_block,
+    normalize_conversation_mode,
+    normalize_longterm_payload,
+    conversation_longterm_root_state,
+)
 import prompts
 
 # 配置文件路径
@@ -152,7 +159,8 @@ class Model:
         model_name: str = None,
         system_prompt: Optional[str] = None,
         conversation_id: Optional[str] = None,
-        auto_create: bool = True
+        auto_create: bool = True,
+        persist_conversation: bool = True
     ):
         """
         初始化Model
@@ -166,6 +174,15 @@ class Model:
         """
         self.username = username
         self.user = User(username)
+        self.persist_conversation = bool(persist_conversation)
+        self._runtime_conversation_mode = "chat"
+        self._runtime_conversation_mode_payload = {}
+        self._runtime_longterm_prompt_block = ""
+        self._runtime_longterm_hook_payload = {}
+        self._runtime_longterm_task_text = ""
+        self._runtime_longterm_plan_text = ""
+        self._runtime_longterm_context_text = ""
+        self._runtime_longterm_current_plan_text = ""
         
         # 加载配置
         global CONFIG
@@ -217,7 +234,7 @@ class Model:
         # 对话ID管理
         if conversation_id:
             self.conversation_id = conversation_id
-        elif auto_create:
+        elif auto_create and self.persist_conversation:
             self.conversation_id = self.conversation_manager.create_conversation()
         else:
             self.conversation_id = None
@@ -368,7 +385,9 @@ class Model:
         self,
         enable_web_search: bool = False,
         enable_tools: bool = False,
-        tool_mode: str = "force"
+        tool_mode: str = "force",
+        conversation_mode: str = "chat",
+        conversation_mode_payload: Optional[Dict[str, Any]] = None
     ) -> str:
         base_template = str(getattr(self, "system_prompt_template", "") or "").strip()
         if not base_template:
@@ -379,6 +398,42 @@ class Model:
             enable_tools=bool(enable_tools),
             tool_mode=str(tool_mode or "force"),
         )
+        normalized_mode = normalize_conversation_mode(conversation_mode)
+        mode_payload = normalize_longterm_payload(conversation_mode_payload)
+        confirmation_round = bool(mode_payload.get("confirmation_round", False))
+        force_full_history = bool(mode_payload.get("force_full_history", False)) or confirmation_round
+        self._runtime_longterm_prompt_block = ""
+        if normalized_mode == "longterm":
+            task_text = str(mode_payload.get("task") or "").strip()
+            plan_items = [str(item or "").strip() for item in (mode_payload.get("plan") or []) if str(item or "").strip()]
+            plan_text = "\n".join([f"{index + 1}. {item}" for index, item in enumerate(plan_items)]) if plan_items else ""
+            context_text = str(mode_payload.get("context") or "").strip()
+            current_index = int(mode_payload.get("current_index", -1) or -1)
+            done_indices = [int(item) for item in (mode_payload.get("done_indices") or []) if str(item).strip().isdigit()]
+            if current_index < 0 and plan_items and done_indices:
+                done_set = set(done_indices)
+                for index in range(len(plan_items)):
+                    if index not in done_set:
+                        current_index = index
+                        break
+            current_plan_text = ""
+            if 0 <= current_index < len(plan_items):
+                current_plan_text = plan_items[current_index]
+            elif str(mode_payload.get("step") or "").strip():
+                current_plan_text = str(mode_payload.get("step") or "").strip()
+            self._runtime_longterm_task_text = task_text
+            self._runtime_longterm_plan_text = plan_text
+            self._runtime_longterm_context_text = context_text
+            self._runtime_longterm_current_plan_text = current_plan_text
+            self._runtime_longterm_prompt_block = build_longterm_prompt_block(
+                task_text=task_text,
+                plan_text=plan_text,
+                context_text=context_text,
+                current_plan_text=current_plan_text,
+                confirmation_round=confirmation_round
+            )
+            if self._runtime_longterm_prompt_block:
+                combined_template = f"{combined_template}\n\n{self._runtime_longterm_prompt_block}".strip()
         rendered = self._render_prompt_template(combined_template)
         profile_block = self._build_user_profile_memory_prompt_block()
         if profile_block:
@@ -414,6 +469,9 @@ class Model:
         if token in {"auto", "auto_tools", "auto(tools)", "auto-tools", "auto_tool", "tools"}:
             return "auto"
         return "off"
+
+    def _normalize_conversation_mode(self, mode: Any) -> str:
+        return normalize_conversation_mode(mode)
 
     def _normalize_active_tool_skills(self, items: Any) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
@@ -3234,7 +3292,10 @@ class Model:
         force_context_compression: bool = False,
         skill_mode: str = "off",
         active_tool_skills: Optional[List[Dict[str, Any]]] = None,
-        disable_thinking_after_tool_call: bool = True
+        disable_thinking_after_tool_call: bool = True,
+        conversation_mode: str = "chat",
+        conversation_mode_payload: Optional[Dict[str, Any]] = None,
+        skip_user_message: bool = False
     ) -> Generator[Dict[str, Any], None, None]:
         """
         发送消息（支持多轮对话、流式输出、文件和Context Caching）
@@ -3248,7 +3309,7 @@ class Model:
 
         try:
             # 确保对话已创建
-            if not self.conversation_id:
+            if not self.conversation_id and self.persist_conversation:
                 self.conversation_id = self.conversation_manager.create_conversation()
             self._init_temp_context_store_for_reply()
 
@@ -3446,6 +3507,11 @@ class Model:
             enable_thinking = self._as_bool(enable_thinking, default=True)
             force_context_compression = self._as_bool(force_context_compression, default=False)
             disable_thinking_after_tool_call = self._as_bool(disable_thinking_after_tool_call, default=True)
+            skip_user_message = self._as_bool(skip_user_message, default=False)
+            normalized_conversation_mode = normalize_conversation_mode(conversation_mode)
+            normalized_conversation_mode_payload = normalize_longterm_payload(conversation_mode_payload)
+            self._runtime_conversation_mode = normalized_conversation_mode
+            self._runtime_conversation_mode_payload = dict(normalized_conversation_mode_payload)
 
             def _debug_preview_text(value, max_len=12000):
                 text = str(value or "")
@@ -3713,6 +3779,8 @@ class Model:
             normalized_tool_mode = self._normalize_tool_mode(tool_mode, enable_tools)
             normalized_skill_mode = self._normalize_skill_injection_mode(skill_mode)
             normalized_active_tool_skills = self._normalize_active_tool_skills(active_tool_skills)
+            if normalized_conversation_mode == "longterm":
+                normalized_tool_mode = "force"
             effective_enable_tools = normalized_tool_mode != "off"
             self._init_runtime_tool_selection(
                 enable_tools=effective_enable_tools,
@@ -3777,8 +3845,26 @@ class Model:
                 metadata["attachments"] = attachment_summary
              
             # 重新生成逻辑：不添加新消息，而是使用历史消息
-            if not is_regenerate:
+            if self.persist_conversation and not is_regenerate and self.conversation_id and not skip_user_message:
                 self.conversation_manager.add_message(self.conversation_id, "user", msg, metadata=metadata)
+            if self.persist_conversation and self.conversation_id and normalized_conversation_mode == "longterm":
+                try:
+                    self.conversation_manager.update_conversation_fields(self.conversation_id, {
+                        "conversation_mode": "longterm",
+                        "longterm": conversation_longterm_root_state(
+                            {
+                                "task": str(normalized_conversation_mode_payload.get("task") or msg or "").strip(),
+                                "plan": normalized_conversation_mode_payload.get("plan", []),
+                                "context": str(normalized_conversation_mode_payload.get("context") or "").strip(),
+                                "step": str(normalized_conversation_mode_payload.get("step") or "").strip(),
+                                "current_index": int(normalized_conversation_mode_payload.get("current_index", -1) or -1),
+                                "done_indices": normalized_conversation_mode_payload.get("done_indices", []),
+                            },
+                            active=True,
+                        )
+                    })
+                except Exception as e:
+                    print(f"[LONGTERM] 进入模式状态写入失败: {e}")
              
             # 构造本次用户消息内容 (多模态)
             user_content = self._build_user_content_payload(msg, image_urls, use_responses_api)
@@ -3817,9 +3903,16 @@ class Model:
                     )
             except Exception as e:
                 print(f"[CACHE] 读取续接ID失败: {e}")
+
+            longterm_no_history = False
+            if normalized_conversation_mode == "longterm":
+                force_full_history = bool(normalized_conversation_mode_payload.get("force_full_history", False))
+                longterm_no_history = False
+            else:
+                force_full_history = False
             
             # 重新生成或显式关闭上下文时，必须清除续接缓存，避免隐式带入历史。
-            if is_regenerate or (not include_context):
+            if is_regenerate or ((not include_context) and (not force_full_history)) or (longterm_no_history and (not force_full_history)):
                 print(f"[CONTEXT] Cleared Context Cache for branching/no-context mode.")
                 last_response_id = None
 
@@ -3829,7 +3922,13 @@ class Model:
                 enable_web_search=enable_web_search,
                 enable_tools=effective_enable_tools,
                 tool_mode=getattr(self, "_runtime_tool_mode", "force"),
+                conversation_mode=normalized_conversation_mode,
+                conversation_mode_payload=normalized_conversation_mode_payload
             )
+            if force_full_history:
+                effective_include_context = True
+            else:
+                effective_include_context = bool(include_context) and (not longterm_no_history)
             tool_skill_prompt_block = ""
             selected_tool_skills, skill_selection_debug = self._select_tool_skills_for_injection(
                 normalized_skill_mode,
@@ -3857,7 +3956,7 @@ class Model:
                 current_user_content=user_content,
                 use_responses_api=use_responses_api,
                 allow_history_images=allow_history_images,
-                include_context=include_context,
+                include_context=effective_include_context,
                 system_prompt_text=request_system_prompt,
                 history_end_index_exclusive=history_end_index_exclusive
             )
@@ -3914,6 +4013,22 @@ class Model:
                     request_system_prompt,
                     title="Server Prompt"
                 )
+                if normalized_conversation_mode == "longterm":
+                    yield _build_debug_trace(
+                        "server->model",
+                        "longterm_mode",
+                        build_longterm_hook_payload(
+                            task_text=self._runtime_longterm_task_text,
+                            plan_text=self._runtime_longterm_plan_text,
+                            context_text=self._runtime_longterm_context_text,
+                            current_plan_text=self._runtime_longterm_current_plan_text,
+                            step_text=normalized_conversation_mode_payload.get("step", ""),
+                            current_index=normalized_conversation_mode_payload.get("current_index", -1),
+                            done_indices=normalized_conversation_mode_payload.get("done_indices", []),
+                            prompt_fragment=self._runtime_longterm_prompt_block,
+                        ),
+                        title="Longterm Mode"
+                    )
                 if is_regenerate:
                     yield _build_debug_trace(
                         "server->model",
@@ -3948,6 +4063,12 @@ class Model:
                         },
                         title="Tool Skill Injection"
                     )
+
+            def _format_longterm_plan_text(plan_items: Any) -> str:
+                items = [str(item or "").strip() for item in (plan_items or []) if str(item or "").strip()]
+                if not items:
+                    return ""
+                return "\n".join([f"{index + 1}. {item}" for index, item in enumerate(items)])
             
             # 多轮对话循环
             accumulated_content = ""
@@ -4267,31 +4388,32 @@ class Model:
                                 if compressed_summary:
                                     context_compression_cut_index = int(cut_index)
                                     context_compression_summary_chars = len(compressed_summary)
-                                    try:
-                                        self.conversation_manager.append_context_compression(
-                                            self.conversation_id,
-                                            {
-                                                "summary": compressed_summary,
-                                                "history_cut_index": int(cut_index),
-                                                "created_at": datetime.now().isoformat(),
-                                                "model": self.model_name,
-                                                "provider": self.provider,
-                                                "trigger_raw_input_tokens": int(max(0, preflight_raw_input_tokens)),
-                                                "context_window": int(max(1, context_window_limit)),
-                                                "forced": bool(force_compression_trigger),
-                                                "trigger_mode": context_compression_trigger_mode,
-                                                "masked_image_data_urls": int(max(0, context_compression_masked_image_count))
-                                            }
-                                        )
-                                    except Exception as e:
-                                        print(f"[CTX_COMPRESS] save marker failed: {e}")
+                                    if self.persist_conversation and self.conversation_id:
+                                        try:
+                                            self.conversation_manager.append_context_compression(
+                                                self.conversation_id,
+                                                {
+                                                    "summary": compressed_summary,
+                                                    "history_cut_index": int(cut_index),
+                                                    "created_at": datetime.now().isoformat(),
+                                                    "model": self.model_name,
+                                                    "provider": self.provider,
+                                                    "trigger_raw_input_tokens": int(max(0, preflight_raw_input_tokens)),
+                                                    "context_window": int(max(1, context_window_limit)),
+                                                    "forced": bool(force_compression_trigger),
+                                                    "trigger_mode": context_compression_trigger_mode,
+                                                    "masked_image_data_urls": int(max(0, context_compression_masked_image_count))
+                                                }
+                                            )
+                                        except Exception as e:
+                                            print(f"[CTX_COMPRESS] save marker failed: {e}")
                                     # 压缩后重建上下文；续接ID必须清空，避免“轻载荷 + 压缩摘要”错配。
                                     full_context_messages = self._build_initial_messages(
                                         user_msg=msg,
                                         current_user_content=user_content,
                                         use_responses_api=use_responses_api,
                                         allow_history_images=allow_history_images,
-                                        include_context=include_context,
+                                        include_context=effective_include_context,
                                         system_prompt_text=request_system_prompt,
                                     )
                                     previous_response_id = None
@@ -4844,11 +4966,21 @@ class Model:
                         # 额外调试：尝试找出哪个变量包含不可序列化的对象
                         import traceback
                         traceback.print_exc()
-                        # 如果是上下文错误，在这里其实很难直接retry，因为已经yield了部分内容
-                        # 但至少我们捕获它，防止整个Server崩掉
-                        if "previous response" in str(e):
-                             print("[CRITICAL] Context consistency error detected.")
-                        raise e
+                        # 如果是上游流提前断开，但我们已经拿到部分输出，则把它当作流式提前结束处理。
+                        error_text = str(e).lower()
+                        eof_like_error = (
+                            "peer closed connection" in error_text
+                            or "incomplete chunked read" in error_text
+                            or type(e).__name__ in {"RemoteProtocolError", "ReadError"}
+                        )
+                        if eof_like_error and (round_content or accumulated_content or round_reasoning or function_calls):
+                            print("[WARN] 上游流提前断开，已收到部分内容，按正常结束处理以便继续 longterm 续跑。")
+                        else:
+                            # 如果是上下文错误，在这里其实很难直接retry，因为已经yield了部分内容
+                            # 但至少我们捕获它，防止整个Server崩掉
+                            if "previous response" in str(e):
+                                 print("[CRITICAL] Context consistency error detected.")
+                            raise e
 
                     # [FIX] 在 chunk 循环结束后，统一记录本轮的 Token 消耗
                     round_token_debug_payload = None
@@ -5144,9 +5276,23 @@ class Model:
                 # 只有当有内容或有步骤时才保存
                 if accumulated_content or process_steps:
                     print(f"[DEBUG] 保存助手消息，Steps: {len(process_steps)}")
+                    saved_assistant_content = accumulated_content
+                    longterm_hook_payload = {}
+                    if normalized_conversation_mode == "longterm":
+                        longterm_hook_payload = build_longterm_hook_payload(
+                            task_text=self._runtime_longterm_task_text,
+                            plan_text=self._runtime_longterm_plan_text,
+                            context_text=self._runtime_longterm_context_text,
+                            current_plan_text=self._runtime_longterm_current_plan_text,
+                            step_text=normalized_conversation_mode_payload.get("step", ""),
+                            current_index=normalized_conversation_mode_payload.get("current_index", -1),
+                            done_indices=normalized_conversation_mode_payload.get("done_indices", []),
+                            prompt_fragment=self._runtime_longterm_prompt_block
+                        )
                     metadata = {
                         "process_steps": process_steps,
                         "model_name": self.model_name,
+                        "conversation_mode": normalized_conversation_mode,
                         "search_enabled": badge_search_enabled,
                         "request_debug": {
                             "use_responses_api": bool(use_responses_api),
@@ -5193,6 +5339,8 @@ class Model:
                             "effective_input": int(max(0, request_last_round_input_tokens))
                         }
                     }
+                    if longterm_hook_payload:
+                        metadata["longterm_hook"] = longterm_hook_payload
                     
                     # 自动生成对话标题（根据配置决定是否每轮都总结）
                     if accumulated_content:
@@ -5202,9 +5350,12 @@ class Model:
                             if not CONFIG.get("continuous_summary", False):
                                 is_first_round = self.conversation_manager.get_message_count(self.conversation_id) <= 2 # user + assistant=2
                                 should_generate = is_first_round
+
+                            if skip_user_message:
+                                should_generate = False
                             
-                            if should_generate:
-                                title = self._generate_conversation_title(msg, accumulated_content)
+                            if should_generate and self.persist_conversation and self.conversation_id:
+                                title = self._generate_conversation_title(msg, saved_assistant_content)
                                 metadata["exchange_summary"] = title
                                 # 更新对话标题
                                 self.conversation_manager.update_conversation_title(self.conversation_id, title)
@@ -5215,20 +5366,59 @@ class Model:
                     if accumulated_reasoning:
                         metadata["reasoning_content"] = accumulated_reasoning
                     
-                    self.conversation_manager.add_message(
-                        self.conversation_id,
-                        "assistant",
-                        accumulated_content,
-                        metadata=metadata,
-                        index=regenerate_index if is_regenerate else None
-                    )
+                    if self.persist_conversation and self.conversation_id:
+                        self.conversation_manager.add_message(
+                            self.conversation_id,
+                            "assistant",
+                            saved_assistant_content,
+                            metadata=metadata,
+                            index=regenerate_index if is_regenerate else None
+                        )
+                    if self.persist_conversation and self.conversation_id and normalized_conversation_mode == "longterm":
+                        try:
+                            self.conversation_manager.update_conversation_fields(self.conversation_id, {
+                                "conversation_mode": "longterm",
+                                "longterm": conversation_longterm_root_state(
+                                    {
+                                        "task": self._runtime_longterm_task_text,
+                                        "plan": normalized_conversation_mode_payload.get("plan", []),
+                                        "context": self._runtime_longterm_context_text,
+                                        "step": self._runtime_longterm_current_plan_text,
+                                        "current_index": int(normalized_conversation_mode_payload.get("current_index", -1) or -1),
+                                        "done_indices": normalized_conversation_mode_payload.get("done_indices", []),
+                                    },
+                                    active=False,
+                                    hook=longterm_hook_payload
+                                )
+                            })
+                        except Exception as e:
+                            print(f"[LONGTERM] 完成状态写入失败: {e}")
+
+                if self.persist_conversation and self.conversation_id and normalized_conversation_mode == "longterm":
+                    try:
+                        self.conversation_manager.update_conversation_fields(self.conversation_id, {
+                            "conversation_mode": "longterm",
+                            "longterm": conversation_longterm_root_state(
+                                {
+                                    "task": self._runtime_longterm_task_text,
+                                    "plan": normalized_conversation_mode_payload.get("plan", []),
+                                    "context": self._runtime_longterm_context_text,
+                                    "step": self._runtime_longterm_current_plan_text,
+                                    "current_index": int(normalized_conversation_mode_payload.get("current_index", -1) or -1),
+                                    "done_indices": normalized_conversation_mode_payload.get("done_indices", []),
+                                },
+                                active=False
+                            )
+                        })
+                    except Exception:
+                        pass
                 
                 # 保存 Context Cache ID
                 if use_responses_api and request_started_with_resume_id and response_id_changed_count <= 0:
                     # 保护：本次请求没有拿到新的 response_id，避免把旧ID重复写回导致后续伪续接。
                     print("[CACHE] No refreshed response_id in this request; drop stale resume id for safety.")
                     previous_response_id = None
-                if previous_response_id:
+                if previous_response_id and self.persist_conversation and self.conversation_id:
                     try:
                         if self._provider_supports_response_resume(self.provider):
                             self.provider_adapter.save_resume_response_id(
@@ -5400,7 +5590,7 @@ class Model:
                 conv_title = clean_msg[:30] + "..." if len(clean_msg) > 30 else clean_msg
             else:
                 conv_title = "新对话"
-                if self.conversation_id:
+                if self.persist_conversation and self.conversation_id:
                     try:
                         conv_data = self.conversation_manager.get_conversation(self.conversation_id)
                         conv_title = conv_data.get("title", conv_title)
@@ -5461,7 +5651,7 @@ class Model:
             output_tps = float(timing.get("output_tps", 0.0) or 0.0)
 
             self.user.log_token_usage(
-                self.conversation_id or "unknown",
+                self.conversation_id or ("transient" if not self.persist_conversation else "unknown"),
                 conv_title,
                 action_type,
                 input_tokens_int,
@@ -5877,6 +6067,9 @@ class Model:
             tools_payload = []
             if enable_tools and isinstance(self.tools, list):
                 tools_payload = list(self.tools)
+                is_longterm = str(getattr(self, "_runtime_conversation_mode", "")).lower() == "longterm"
+                tools_payload = [t for t in tools_payload if (t.get("function", {}).get("name", "") not in {"longterm_plan", "longterm_update"}) or is_longterm]
+                
                 if (
                     bool(getattr(self, "_runtime_selector_enabled", False))
                     or str(getattr(self, "_runtime_tool_mode", "force")).strip().lower() == "force"
@@ -5947,6 +6140,21 @@ class Model:
                      )
                 else:
                     tools_payload = list(self.tools) if isinstance(self.tools, list) else []
+                    
+                    # Filter longterm tools
+                    is_longterm = str(getattr(self, "_runtime_conversation_mode", "")).lower() == "longterm"
+                    filtered_tools = []
+                    for t in tools_payload:
+                        name = "unknown"
+                        if isinstance(t, dict) and "function" in t:
+                            name = t["function"].get("name", "")
+                        
+                        if name in {"longterm_plan", "longterm_update"}:
+                            if is_longterm:
+                                filtered_tools.append(t)
+                        else:
+                            filtered_tools.append(t)
+                    tools_payload = filtered_tools
                     if (
                         bool(getattr(self, "_runtime_selector_enabled", False))
                         or str(getattr(self, "_runtime_tool_mode", "force")).strip().lower() == "force"
