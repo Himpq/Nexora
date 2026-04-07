@@ -1,0 +1,16 @@
+{
+    "auth": {
+        "required": true,
+        "token": "sPD0aYMyfce0UjyIqrB4n4KDzm15IaEU"
+    },
+    "render": {
+        "max_concurrency": 3,
+        "default_timeout_ms": 15000,
+        "fallback_on_fail": true
+    },
+    "server": {
+        "host": "127.0.0.1",
+        "port": 8080,
+        "debug": false
+    }
+}
