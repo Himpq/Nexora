@@ -1,3 +1,13 @@
+
+// --- Helper: Create Thinking Block ---
+function createThinkingBlock(isCollapsed = false) {
+    const block = createThinkingBlock(true);
+    block.querySelector('.thinking-header').addEventListener('click', () => {
+        block.classList.toggle('collapsed');
+    });
+    return block;
+}
+
 // Global State
 let currentConversationId = null;
 let currentAbortController = null;
@@ -831,7 +841,6 @@ function captureLatexRenderDebug(stage, raw, normalized, html) {
                 return [];
             }
         };
-        console.log('[NexoraLaTeX]', entry);
     } catch (_) {
         // ignore debug failures
     }
@@ -927,6 +936,8 @@ function renderMarkdownWithNewTabLinks(text, options = {}) {
     captureLatexRenderDebug('chat_markdown', raw, withBareLatexWrapped, restoredHtml);
     return rewriteHtmlFragmentLinksToNewTab(restoredHtml);
 }
+
+
 
 function renderMarkdownForNotes(text) {
     const raw = String(text || '');
@@ -8282,6 +8293,28 @@ function renderMessageModelBadgeText(messageDiv) {
     badge.classList.toggle('collapsed', !expanded);
 }
 
+function getStreamingModelBadgeName(fallbackName = '') {
+    const direct = String(fallbackName || '').trim();
+    if (direct) return direct;
+    const meta = typeof getSelectedModelMeta === 'function' ? getSelectedModelMeta() : null;
+    return String((meta && (meta.name || meta.id)) || selectedModelId || '').trim();
+}
+
+function syncStreamingModelBadgeEstimate(messageDiv, state = {}, fallbackName = '') {
+    if (!messageDiv) return;
+    const nextState = {
+        modelName: String((state && state.modelName) || getStreamingModelBadgeName(fallbackName)),
+        searchFlag: (state && Object.prototype.hasOwnProperty.call(state, 'searchFlag')) ? state.searchFlag : 'unknown',
+        inputTokens: safeTokenInt(state && state.inputTokens),
+        outputTokens: Math.max(
+            safeTokenInt(state && state.outputTokens),
+            safeTokenInt(tokenMiniState.streamOutput),
+            safeTokenInt(tokenMiniState.estimatedStreamOutput)
+        )
+    };
+    updateMessageModelBadge(messageDiv, nextState);
+}
+
 function collapseModelBadgeForMessage(messageDiv) {
     const badge = ensureMessageModelBadge(messageDiv);
     if (!badge) return;
@@ -8765,7 +8798,7 @@ function renderLongtermPlanItemStatusIcon(status) {
 function extractLongtermPlanFromText(rawText) {
     const src = rawText && typeof rawText === 'object' ? rawText : jsonParseSafe(String(rawText || ''));
     if (!src || typeof src !== 'object') {
-        return { found: false, kind: '', text: String(rawText || '').trim(), plan: [], task: '', context: '', summary: '', done: false, step_index: -1, step_no: -1, step_id: '', step_title: '', step_status: '', raw: rawText };
+        return { found: false, kind: '', text: String(rawText || ''), plan: [], task: '', context: '', summary: '', done: false, step_index: -1, step_no: -1, step_id: '', step_title: '', step_status: '', raw: rawText };
     }
     const kind = String(src.kind || src.type || '').trim().toLowerCase();
     const planSource = Array.isArray(src.plan)
@@ -10345,6 +10378,7 @@ async function sendMessage(options = {}) {
         snapshotOutput: 0,
         snapshotInitialized: false
     };
+    syncStreamingModelBadgeEstimate(aiMsgDiv, modelBadgeState, model);
     const streamRenderStateByBlock = new WeakMap();
     let streamRenderDebugSeq = 0;
     const STREAM_RENDER_DEBUG_KEY = 'nexora_stream_render_debug_v1';
@@ -10448,7 +10482,6 @@ async function sendMessage(options = {}) {
                     }
                 };
             }
-            console.log('[NexoraStreamRender]', entry);
         } catch (_) {
             // ignore debug log errors
         }
@@ -11177,22 +11210,13 @@ async function sendMessage(options = {}) {
                                 });
                             }
                             
-                            // 如果当前没有正在渲染的内容Span，或者它不是消息气泡的最后一丅素（说明丗插入了工具）
-                            const msgContentContainer = aiMsgDiv.querySelector('.message-content');
-                            if (!currentContentSpan || msgContentContainer.lastElementChild !== currentContentSpan) {
-                                if (currentContentSpan) {
-                                    flushStableStreamTail(currentContentSpan, aiMsgDiv.__citationUrlMap || {}, true);
-                                    currentContentSpan.dataset.streamLive = '0';
-                                }
+                            if (!currentContentSpan || !currentContentSpan.isConnected) {
                                 currentContentSpan = createContentSpan(aiMsgDiv);
-                                currentSegmentContent = '';
-// 说明
                             }
-                            
-// 说明
-                            // 注意：为了保持Markdown上下文一致，我们通常倾向于在同一个Block显示
-                            // 但用户求在工具链下方显示，以必须开吖Block
-                            currentSegmentContent += chunk.content;
+
+                            // Keep the assistant reply in a single markdown block so block-level structure
+                            // survives tool inserts and the live render matches the refresh render.
+                            currentSegmentContent = currentFullContent;
                             const segmentPlanInfo = applyLongtermPlanFromText(currentSegmentContent, { source: 'live-segment', messageDiv: aiMsgDiv });
                             const displaySegmentContent = String(segmentPlanInfo && segmentPlanInfo.text !== undefined ? segmentPlanInfo.text : currentSegmentContent || '');
                             if (displaySegmentContent !== currentSegmentContent) {
@@ -11205,6 +11229,7 @@ async function sendMessage(options = {}) {
                                 streamState.liveRaw = currentSegmentContent;
                                 flushStableStreamTail(currentContentSpan, aiMsgDiv.__citationUrlMap || {}, false);
                             }
+                            syncStreamingModelBadgeEstimate(aiMsgDiv, modelBadgeState, model);
                         } 
                         else if (chunk.type === 'reasoning_content') { 
                            onTokenStreamReasoningChunk(chunk.content);
@@ -11214,22 +11239,7 @@ async function sendMessage(options = {}) {
                            let thinkingBlock = msgContentContainer.lastElementChild;
                            
                            if(!thinkingBlock || !thinkingBlock.classList.contains('reasoning-thinking-block')) {
-                               thinkingBlock = document.createElement('div');
-                               thinkingBlock.className = 'thinking-block reasoning-thinking-block'; // 流式输出时默认展
-// 说明
-                                thinkingBlock.innerHTML = `
-                                 <div class="thinking-header">
-                                     <svg class="thinking-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                         <circle cx="12" cy="12" r="10"></circle>
-                                         <path d="M12 6v6l4 2"></path>
-                                     </svg>
-                                     <span class="thinking-title">思考</span>
-                                     <svg class="chevron-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                         <polyline points="6 9 12 15 18 9"></polyline>
-                                     </svg>
-                                 </div>
-                                 <div class="thinking-content"></div>
-                               `;
+                               thinkingBlock = createThinkingBlock(false);
                                
 // 说明
                                const header = thinkingBlock.querySelector('.thinking-header');
@@ -11253,6 +11263,7 @@ async function sendMessage(options = {}) {
                                 contentDiv.textContent = nextRaw;
                             }
                             thinkingBlock.dataset.streamLive = '1';
+                               syncStreamingModelBadgeEstimate(aiMsgDiv, modelBadgeState, model);
                         }
                         else if (chunk.type === 'context_compression_status') {
                             updateMessageDivTools(aiMsgIndex, chunk, aiMsgDiv);
@@ -11297,6 +11308,7 @@ async function sendMessage(options = {}) {
                                 } catch(e) { console.error("Error parsing addBasis args", e); }
                             }
                             finalizeToolCallBadge(aiMsgDiv, toolName, callId, chunk.arguments, { toolIndex });
+                            syncStreamingModelBadgeEstimate(aiMsgDiv, modelBadgeState, model);
                         }
                         else if (chunk.type === 'function_result') {
                             const toolName = resolveToolNameFromEvent(chunk, chunk.name);
@@ -12639,21 +12651,7 @@ function appendMessage(msg, index) {
 
         // 兼容老数据：仅 metadata.reasoning_content（无分段 step）
         if (msg.metadata && msg.metadata.reasoning_content && !hasReasoningStep) {
-            const thinkingBlock = document.createElement('div');
-            thinkingBlock.className = 'thinking-block reasoning-thinking-block collapsed'; // 默۵
-            thinkingBlock.innerHTML = `
-                <div class="thinking-header">
-                    <svg class="thinking-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="12" cy="12" r="10"></circle>
-                        <path d="M12 6v6l4 2"></path>
-                    </svg>
-                    <span class="thinking-title">思考</span>
-                    <svg class="chevron-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <polyline points="6 9 12 15 18 9"></polyline>
-                    </svg>
-                </div>
-                <div class="thinking-content"></div>
-            `;
+            const thinkingBlock = createThinkingBlock(true);
             
             // 添加点击事件监听
             const header = thinkingBlock.querySelector('.thinking-header');
@@ -12670,25 +12668,7 @@ function appendMessage(msg, index) {
         if (processSteps.length > 0) {
             processSteps.forEach(step => {
                 if (step.type === 'reasoning_content') {
-                    const thinkingBlock = document.createElement('div');
-                    thinkingBlock.className = 'thinking-block reasoning-thinking-block collapsed';
-                    thinkingBlock.innerHTML = `
-                        <div class="thinking-header">
-                            <svg class="thinking-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <circle cx="12" cy="12" r="10"></circle>
-                                <path d="M12 6v6l4 2"></path>
-                            </svg>
-                            <span class="thinking-title">思考</span>
-                            <svg class="chevron-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <polyline points="6 9 12 15 18 9"></polyline>
-                            </svg>
-                        </div>
-                        <div class="thinking-content"></div>
-                    `;
-                    const header = thinkingBlock.querySelector('.thinking-header');
-                    header.addEventListener('click', function() {
-                        thinkingBlock.classList.toggle('collapsed');
-                    });
+                    const thinkingBlock = createThinkingBlock(true);
                     const thinkingContent = thinkingBlock.querySelector('.thinking-content');
                     thinkingContent.textContent = String(step.content || '');
                     renderMathSafe(thinkingContent);
@@ -13551,21 +13531,7 @@ function updateMessageDivThinking(index, delta, preferredMessageDiv = null) {
     let thinkingBlock = messageDiv.querySelector('.thinking-block.reasoning-thinking-block');
     
     if (!thinkingBlock) {
-        thinkingBlock = document.createElement('div');
-        thinkingBlock.className = 'thinking-block reasoning-thinking-block'; // No collapsed by default during live gen
-        thinkingBlock.innerHTML = `
-            <div class="thinking-header">
-                <svg class="thinking-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <circle cx="12" cy="12" r="10"></circle>
-                    <path d="M12 6v6l4 2"></path>
-                </svg>
-                <span class="thinking-title">思考</span>
-                <svg class="chevron-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="6 9 12 15 18 9"></polyline>
-                </svg>
-            </div>
-            <div class="thinking-content"></div>
-        `;
+        thinkingBlock = createThinkingBlock(true);
         content.prepend(thinkingBlock); 
         
         const header = thinkingBlock.querySelector('.thinking-header');
@@ -13821,6 +13787,13 @@ async function resumeActiveStreamAfterReload() {
         return;
     }
 
+    updateMessageModelBadge(assistantDiv, {
+        modelName: getStreamingModelBadgeName(),
+        searchFlag: 'unknown',
+        inputTokens: 0,
+        outputTokens: 0
+    });
+
     const content = assistantDiv.querySelector('.message-content');
     if (content) {
         content.querySelectorAll('.content-body,.thinking-block,.tool-usage,.add-basis-view').forEach((el) => el.remove());
@@ -13913,12 +13886,33 @@ async function resumeActiveStreamAfterReload() {
 
                 if (chunk.type === 'debug_trace') {
                     appendDebugTraceChunk(chunk, `resume:${String(state.stream_id || '')}`);
+                } else if (chunk.type === 'model_info') {
+                    updateMessageModelBadge(assistantDiv, {
+                        modelName: String(chunk.model_name || getStreamingModelBadgeName()),
+                        searchFlag: (typeof chunk.search_enabled === 'boolean') ? chunk.search_enabled : 'unknown',
+                        inputTokens: 0,
+                        outputTokens: Math.max(safeTokenInt(tokenMiniState.streamOutput), safeTokenInt(tokenMiniState.estimatedStreamOutput))
+                    });
                 } else if (chunk.type === 'content') {
                     accumulatedContent += String(chunk.content || '');
+                    onTokenStreamTextChunk(chunk.content);
                     updateMessageDivContent(assistantIndex, accumulatedContent, assistantDiv);
+                    syncStreamingModelBadgeEstimate(assistantDiv, {
+                        modelName: getStreamingModelBadgeName(),
+                        searchFlag: 'unknown',
+                        inputTokens: 0,
+                        outputTokens: 0
+                    });
                 } else if (chunk.type === 'reasoning_content') {
                     accumulatedReasoning += String(chunk.content || '');
+                    onTokenStreamReasoningChunk(chunk.content);
                     updateMessageDivThinking(assistantIndex, String(chunk.content || ''), assistantDiv);
+                    syncStreamingModelBadgeEstimate(assistantDiv, {
+                        modelName: getStreamingModelBadgeName(),
+                        searchFlag: 'unknown',
+                        inputTokens: 0,
+                        outputTokens: 0
+                    });
                 } else if (chunk.type === 'prompt_token_profile') {
                     applyPromptTokenProfileChunk(chunk);
                 } else if (
@@ -13929,9 +13923,26 @@ async function resumeActiveStreamAfterReload() {
                     chunk.type === 'function_call' ||
                     chunk.type === 'function_result'
                 ) {
+                    if (chunk.type === 'function_call_delta') {
+                        onTokenStreamToolArgsChunk(chunk.arguments_delta || chunk.delta || '');
+                    } else if (chunk.type === 'function_call') {
+                        onTokenStreamToolArgsChunk(chunk.arguments || '');
+                    }
                     updateMessageDivTools(assistantIndex, chunk, assistantDiv);
+                    syncStreamingModelBadgeEstimate(assistantDiv, {
+                        modelName: getStreamingModelBadgeName(),
+                        searchFlag: 'unknown',
+                        inputTokens: 0,
+                        outputTokens: 0
+                    });
                 } else if (chunk.type === 'token_usage') {
                     onTokenStreamUsageChunk(chunk);
+                    updateMessageModelBadge(assistantDiv, {
+                        modelName: getStreamingModelBadgeName(),
+                        searchFlag: 'unknown',
+                        inputTokens: safeTokenInt(chunk.input_tokens),
+                        outputTokens: Math.max(safeTokenInt(chunk.output_tokens), safeTokenInt(tokenMiniState.streamOutput), safeTokenInt(tokenMiniState.estimatedStreamOutput))
+                    });
                 } else if (chunk.type === 'title') {
                     if (els.conversationTitle) els.conversationTitle.textContent = String(chunk.title || '');
                 } else if (chunk.type === 'error') {
@@ -18098,8 +18109,6 @@ async function checkUserRole() {
             currentUserRole = data.user.role;
             const displayName = data.user.username || data.user.id;
             currentUserAvatarUrl = data.user.avatar_url || '';
-            
-            console.log('[DEBUG] checkUserRole - username:', currentUsername, 'role:', currentUserRole);
             updateSidebarUserProfile(displayName, currentUserAvatarUrl);
 
             // 处理管理员入口显示（迁移到设置页面）

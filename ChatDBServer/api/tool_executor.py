@@ -39,6 +39,8 @@ class ToolExecutor:
             "get_basis_content": self._get_basis_content,
             "longterm_plan": self._longterm_plan,
             "longterm_update": self._longterm_update,
+            "server_web_search": self._server_web_search,
+            "server_render_page": self._server_render_page,
             "search_keyword": self._search_keyword,
             "readtmp": self._readtmp,
             "searchtmp": self._searchtmp,
@@ -1494,3 +1496,133 @@ class ToolExecutor:
         except Exception as e:
             return json.dumps({"success": False, "message": str(e)}, ensure_ascii=False)
 
+
+
+    def _server_web_search(self, args: Dict[str, Any]) -> str:
+        query = str(args.get("query", "")).strip()
+        if not query:
+            return "Error: Missing query parameter."
+            
+        cfg = self.model.config if isinstance(getattr(self.model, "config", None), dict) else {}
+        search_cfg = cfg.get("nexora_search", {}) if isinstance(cfg, dict) else {}
+        
+        if not search_cfg.get("nexora_search_enabled", False):
+            return "NexoraSearch is currently disabled."
+            
+        url = str(search_cfg.get("service_url", "http://127.0.0.1:8080")).strip('/')
+        api_key = str(search_cfg.get("api_key", ""))
+        timeout = search_cfg.get("timeout", 15)
+        
+        target_url = f"{url}/api/search/render?query={urllib_parse.quote(query)}"
+        req = urllib_request.Request(target_url, headers={
+            "Authorization": f"Bearer {api_key}" if api_key else ""
+        })
+        
+        try:
+            with urllib_request.urlopen(req, timeout=timeout) as resp:
+                data = resp.read().decode('utf-8')
+                result = json.loads(data)
+                
+                if result.get("success"):
+                    payload = result.get("results", {})
+                    if isinstance(payload, dict) and "results" in payload and isinstance(payload.get("results"), dict):
+                        items = payload.get("results", {})
+                        meta = payload.get("meta", {}) if isinstance(payload.get("meta", {}), dict) else {}
+                    else:
+                        items = payload if isinstance(payload, dict) else {}
+                        meta = {}
+
+                    engines_meta = meta.get("engines", {}) if isinstance(meta.get("engines", {}), dict) else {}
+                    total_results = meta.get("total_results", None)
+
+                    output = [f"Search Results for '{query}':"]
+                    if total_results is not None:
+                        output.append(f"Summary: total_results={total_results}, engines={len(items)}")
+                    else:
+                        output.append(f"Summary: engines={len(items)}")
+
+                    # Render all search engine results with counts and errors.
+                    for engine in ("bing", "baidu", "sogou"):
+                        engine_results = items.get(engine, []) if isinstance(items, dict) else []
+                        engine_meta = engines_meta.get(engine, {}) if isinstance(engines_meta, dict) else {}
+                        result_count = engine_meta.get("result_count", len(engine_results))
+                        status = engine_meta.get("status", "ok" if engine_results else "empty")
+                        output.append(f"--- {engine.upper()} ---")
+                        output.append(f"count: {result_count}, status: {status}")
+                        if engine_meta.get("error"):
+                            output.append(f"error: {engine_meta.get('error')}")
+                        if engine_results:
+                            for idx, item in enumerate(engine_results[:5], 1): # Max 5 per engine
+                                output.append(f"{idx}. [{item.get('title', '')}]({item.get('url', '')})\n   {item.get('snippet', '')}")
+                        else:
+                            output.append("(no parsed results)")
+                    
+                    final_text = "\n".join(output)
+                    return final_text[:12000] # Safeguard context
+                else:
+                    return f"Search Request Failed: {result.get('error', 'Unknown Error')}"
+        except urllib_error.HTTPError as e:
+            msg = e.read().decode('utf-8') if e.fp else str(e)
+            return f"HTTP Error {e.code}: {msg}"
+        except Exception as e:
+            return f"Search Internal Error: {str(e)}"
+
+    def _server_render_page(self, args: Dict[str, Any]) -> str:
+        url = str(args.get("url", "")).strip()
+        if not url:
+            return "Error: Missing url parameter."
+
+        cfg = self.model.config if isinstance(getattr(self.model, "config", None), dict) else {}
+        search_cfg = cfg.get("nexora_search", {}) if isinstance(cfg, dict) else {}
+
+        if not search_cfg.get("nexora_search_enabled", False):
+            return "NexoraSearch is currently disabled."
+
+        service_url = str(search_cfg.get("service_url", "http://127.0.0.1:8080")).strip().rstrip("/")
+        api_key = str(search_cfg.get("api_key", ""))
+        timeout = args.get("timeout_ms", search_cfg.get("timeout", 15))
+        try:
+            timeout = int(timeout)
+        except Exception:
+            timeout = 15
+
+        target_url = f"{service_url}/api/render/webview?url={urllib_parse.quote(url)}&timeout={timeout}"
+        req = urllib_request.Request(target_url, headers={
+            "Authorization": f"Bearer {api_key}" if api_key else ""
+        })
+
+        try:
+            with urllib_request.urlopen(req, timeout=timeout) as resp:
+                data = resp.read().decode('utf-8')
+                result = json.loads(data)
+
+                if not result.get("success"):
+                    return f"Render Request Failed: {result.get('error', 'Unknown Error')}"
+
+                final_url = str(result.get("url", url) or url).strip()
+                title = str(result.get("title", "") or "").strip()
+                content = str(result.get("content", "") or "")
+                mode = str(result.get("mode", result.get("warning", "unknown")) or "unknown").strip()
+                original_url = str(result.get("original_url", url) or url).strip()
+
+                output = [f"Render Result for '{url}':"]
+                output.append(f"original_url: {original_url}")
+                output.append(f"final_url: {final_url}")
+                output.append(f"title: {title or '(empty)'}")
+                output.append(f"mode: {mode}")
+                output.append(f"content_length: {len(content)}")
+                warning = str(result.get("warning", "") or "").strip()
+                if warning:
+                    output.append(f"warning: {warning}")
+                if content:
+                    output.append("content:")
+                    output.append(content[:12000])
+                else:
+                    output.append("content: (empty)")
+
+                return "\n".join(output)[:12000]
+        except urllib_error.HTTPError as e:
+            msg = e.read().decode('utf-8') if e.fp else str(e)
+            return f"HTTP Error {e.code}: {msg}"
+        except Exception as e:
+            return f"Render Internal Error: {str(e)}"

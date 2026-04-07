@@ -2278,6 +2278,8 @@ class Model:
         rag_enabled = bool(rag_cfg.get("rag_database_enabled", False))
         mail_cfg = CONFIG.get("nexora_mail", {}) if isinstance(CONFIG, dict) else {}
         mail_enabled = bool(mail_cfg.get("nexora_mail_enabled", False))
+        nexora_search_cfg = CONFIG.get("nexora_search", {}) if isinstance(CONFIG, dict) else {}
+        nexora_search_enabled = bool(nexora_search_cfg.get("nexora_search_enabled", False))
 
         provider = getattr(self, 'provider', 'volcengine')
         use_responses_api = self._provider_use_responses_api(provider)
@@ -2300,6 +2302,8 @@ class Model:
                 if func_def.get("name") in ["vector_search", "file_semantic_search"] and not rag_enabled:
                     continue
                 if func_def.get("name") in ["send_email", "get_email", "get_email_list"] and not mail_enabled:
+                    continue
+                if func_def.get("name") in ["server_web_search", "server_render_page"] and not nexora_search_enabled:
                     continue
                                 
                 # provider 已具备可直连的 native 搜索能力时，隐藏本地中转 relay_web_search/searchOnline。

@@ -1,0 +1,6 @@
+flask>=3.0.0
+ddgs
+playwright>=1.40.0
+beautifulsoup4>=4.12.0
+requests>=2.31.0
+lxml>=4.9.4

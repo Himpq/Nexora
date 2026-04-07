@@ -35,6 +35,8 @@
     "updateUserProfileMemory": "set_user_profile_memory",
     "longtermPlan": "longterm_plan",
     "longtermUpdate": "longterm_update",
+    "serverWebSearch": "server_web_search",
+    "serverRenderPage": "server_render_page",
 }
 
 
@@ -46,6 +48,44 @@ def canonicalize_tool_name(name):
 
 
 TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "server_web_search",
+            "description": "进行系统级互联网搜索引擎实时检索。当你需要搜集网络资讯（如国内某物近况等）或者用户要求联网查询时使用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "搜索关键词"
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "server_render_page",
+            "description": "使用 NexoraSearch 渲染指定网页 URL，返回最终页面地址、标题和正文文本。当你需要抓取网页原文、动态渲染后的内容或页面可见文本时使用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "要渲染的网页 URL"
+                    },
+                    "timeout_ms": {
+                        "type": "integer",
+                        "description": "可选，渲染超时毫秒数，默认15000"
+                    }
+                },
+                "required": ["url"]
+            }
+        }
+    },
     {
         "type": "function",
         "function": {
