@@ -162,7 +162,7 @@
             </div>
 
             <!-- Knowledge Viewer -->
-            <div id="knowledgeViewer" style="display:none; flex:1; overflow: hidden; height: calc(100vh - 60px);">
+            <div id="knowledgeViewer" style="display:none; flex:1; flex-direction: column; overflow: hidden; min-height: 0;">
                 <textarea id="knowledgeEditor"></textarea>
             </div>
 
@@ -708,8 +708,13 @@
             <div class="modal-body" style="padding: 16px 20px;">
                 <div id="adminConfigProviderFields">
                     <div class="form-group" style="margin-bottom: 10px;">
-                        <label>Provider 名称</label>
-                        <input id="adminProviderNameInput" class="input-modern" placeholder="provider name">
+                        <label>Provider 标识名</label>
+                        <input id="adminProviderNameInput" class="input-modern" placeholder="provider key">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 10px;">
+                        <label>api_type</label>
+                        <input id="adminProviderApiTypeInput" class="input-modern" placeholder="openai / openai_compatible / dashscope / volcengine / ollama" value="openai">
+                        <div style="margin-top: 6px; font-size: 11px; color: #64748b; line-height: 1.45;">这是 provider_factory 的分流键；默认值为 openai。</div>
                     </div>
                     <div class="form-group" style="margin-bottom: 10px;">
                         <label>API Key</label>
@@ -718,6 +723,11 @@
                     <div class="form-group" style="margin-bottom: 0;">
                         <label>Base URL</label>
                         <input id="adminProviderBaseUrlInput" class="input-modern" placeholder="https://...">
+                    </div>
+                    <div id="adminProviderOllamaSettings" class="form-group" style="margin-top: 10px; margin-bottom: 0; display: none;">
+                        <label>Ollama keep_alive</label>
+                        <input id="adminProviderKeepAliveInput" class="input-modern" placeholder="5m">
+                        <div style="margin-top: 6px; font-size: 11px; color: #64748b; line-height: 1.45;">仅 ollama 使用，保存到 settings.keep_alive；下线时会发送 keep_alive=0。</div>
                     </div>
                 </div>
                 <div id="adminConfigModelFields" style="display:none;">
@@ -741,6 +751,27 @@
                 <div class="modal-footer" style="margin-top: 14px;">
                     <button class="btn-cancel" onclick="closeAdminConfigModal()">取消</button>
                     <button id="adminConfigSaveBtn" class="btn-confirm">保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="ollamaModelStatusModal" class="modal-backdrop" style="z-index: 9950;">
+        <div class="modal ollama-status-modal" style="width: min(640px, 94vw); padding: 0;">
+            <div class="modal-head">
+                <h3>Ollama 模型状态</h3>
+                <button id="ollamaModelStatusCloseBtn" class="btn-modal-close" title="Close"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body" style="padding: 16px 20px;">
+                <div class="ollama-status-summary">
+                    <div class="ollama-status-summary-item"><span>Provider</span><strong id="ollamaModelStatusProvider">-</strong></div>
+                    <div class="ollama-status-summary-item"><span>模型</span><strong id="ollamaModelStatusModel">-</strong></div>
+                    <div class="ollama-status-summary-item"><span>状态</span><strong id="ollamaModelStatusState">-</strong></div>
+                </div>
+                <div id="ollamaModelStatusDetail" style="margin-top: 14px;"></div>
+                <div class="modal-footer" style="margin-top: 14px; gap: 8px;">
+                    <button id="ollamaModelStatusRefreshBtn" class="btn-cancel">刷新</button>
+                    <button id="ollamaModelStatusActionBtn" class="btn-confirm">Load</button>
                 </div>
             </div>
         </div>
@@ -893,12 +924,8 @@
                             </div>
                         </div>
                         <div id="settings-skills-tab" class="admin-tab-content">
-                            <div class="settings-placeholder">Skill</div>
-                            <div class="form-group">
-                                <label>Skill 列表（每条独立 Mode）</label>
-                                <div id="settingsSkillList" class="settings-skill-list">
-                                    <div class="settings-skill-empty">加载中...</div>
-                                </div>
+                            <div id="settingsSkillList" class="settings-skill-list">
+                                <div class="settings-skill-empty">加载中...</div>
                             </div>
                         </div>
                         <div id="settings-statistics-tab" class="admin-tab-content">
