@@ -8,6 +8,10 @@ from providers.volcengine import VolcengineProvider
 def _infer_api_type(provider_name: str, provider_config: Dict[str, Any]) -> str:
     api_type = str(provider_config.get("api_type", "") or "").strip().lower()
     if api_type:
+        if api_type in {"openaiapi", "openai-api", "openai_compatibleapi"}:
+            return "openai"
+        if api_type in {"openai-compatible", "openai compatible"}:
+            return "openai_compatible"
         return api_type
     p = str(provider_name or "").strip().lower()
     if p == "volcengine":

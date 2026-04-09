@@ -187,7 +187,8 @@ if __name__ == "__main__":
     # 测试搜狗搜索（稳定）
     # test_query = "嘉豪"
     # test_url = f"https://www.sogou.com/web?query={test_query}"
-    test_url = input()
+    test_url = f"https://baike.baidu.com/item/%E8%BE%B9%E5%A2%83%E7%AE%A1%E7%90%86%E5%8C%BA%E9%80%9A%E8%A1%8C%E8%AF%81/22995337?fromModule=home_hotspot"
+
     logger.info(f"Testing Sogou: {test_url}")
     res = rm.render_webview(test_url, use_sogou_fix=True)
     
@@ -200,5 +201,13 @@ if __name__ == "__main__":
     print(res.get('content', '')[:800])
     print("="*60)
     
-    # 如果还需要 Bing，可增加重试和间隔
-    # 但不建议高频使用
+    import trafilatura as tf
+
+    result = tf.extract(
+        res.get('full_html', ''), 
+        include_comments=False,     # 是否包含注释
+        include_tables=True,       # 是否提取表格
+        no_fallback=False          # 如果提取失败，是否尝试备选算法
+    )
+
+    print(result)
