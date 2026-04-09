@@ -9,6 +9,7 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    min-height: 0;
 }
 
 .EasyMDEContainer .editor-toolbar {
@@ -22,6 +23,9 @@
     border: none;
     border-radius: 0;
     overflow: hidden !important;
+    flex: 1;
+    height: 0 !important;
+    min-height: 0;
 }
 
 .CodeMirror-scroll {
@@ -29,6 +33,7 @@
     overflow-x: auto !important;
     min-height: 100% !important;
     max-height: 100% !important;
+    overscroll-behavior-y: contain !important;
 }
 
 .EasyMDEContainer .editor-preview {
@@ -42,6 +47,7 @@
     font-size: 15px;
     line-height: 1.7;
     color: #24292e;
+    overscroll-behavior-y: contain !important;
 }
 
 /* Table Styling */

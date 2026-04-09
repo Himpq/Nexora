@@ -277,6 +277,7 @@ body {
   min-width: 0;
   height: 100vh; /* Ensure full height */
   overflow-x: hidden;
+  overflow-y: clip;
 }
 
 .chat-header {
@@ -339,7 +340,6 @@ body {
   overflow-y: auto;
   overflow-x: hidden;
   padding: 40px 20px;
-  scroll-behavior: smooth;
   display: flex;
   flex-direction: column;
   margin-bottom: 20px;
@@ -3864,22 +3864,29 @@ textarea {
   color: #94a3b8;
   font-family: 'JetBrains Mono', monospace;
   white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.16s ease, opacity 0.16s ease;
+}
+.token-budget-usage:hover {
+  color: #111;
+}
+.token-budget-mini {
+  cursor: default;
 }
 .token-budget-tooltip {
   position: fixed;
   left: 0;
   top: 0;
   z-index: 9800;
-  max-width: min(360px, calc(100vw - 24px));
-  padding: 8px 10px;
-  border-radius: 10px;
-  border: 1px solid rgba(148, 163, 184, 0.35);
-  background: rgba(15, 23, 42, 0.96);
-  color: #e2e8f0;
+  width: min(286px, calc(100vw - 20px));
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid #111;
+  background: #f8f8f8;
+  color: #111;
   font-size: 11px;
-  line-height: 1.5;
-  box-shadow: 0 12px 26px rgba(2, 6, 23, 0.42);
-  white-space: pre-line;
+  line-height: 1.45;
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
   pointer-events: none;
   opacity: 0;
   transform: translate3d(0, 0, 0) scale(0.98);
@@ -3888,6 +3895,59 @@ textarea {
 .token-budget-tooltip.visible {
   opacity: 1;
   transform: translate3d(0, 0, 0) scale(1);
+}
+.token-budget-tip-head {
+  display: grid;
+  gap: 2px;
+}
+.token-budget-tip-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #111;
+}
+.token-budget-tip-pct {
+  font-size: 18px;
+  font-weight: 700;
+  color: #111;
+}
+.token-budget-tip-sub {
+  margin-top: 2px;
+  color: #222;
+  font-size: 12px;
+}
+.token-budget-tip-bar {
+  margin-top: 8px;
+  width: 100%;
+  height: 6px;
+  border-radius: 4px;
+  background: #d5d5d5;
+  overflow: hidden;
+}
+.token-budget-tip-bar > span {
+  display: block;
+  height: 100%;
+  width: 0%;
+  border-radius: inherit;
+  background: #111;
+}
+.token-budget-tip-grid {
+  margin-top: 8px;
+  display: grid;
+  gap: 4px;
+}
+.token-budget-tip-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: #111;
+}
+.token-budget-tip-row span {
+  color: #222;
+}
+.token-budget-tip-row em {
+  font-style: normal;
+  color: #111;
+  white-space: nowrap;
 }
 .upload-progress-chip {
   position: relative;
@@ -4521,6 +4581,7 @@ textarea {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+    max-width: 100%;
   border: 1px solid #f3f4f6;
   background: #f9fafb;
   color: #4b5563;
@@ -4544,12 +4605,15 @@ textarea {
   font-weight: 600;
 }
 .select-items .model-chip-name {
-  max-width: 260px;
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 260px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .select-items .model-chip-status {
+    flex: 0 0 auto;
   border-radius: 6px;
   padding: 2px 6px;
   font-size: 9px;
@@ -4557,6 +4621,7 @@ textarea {
   line-height: 1.1;
   letter-spacing: 0.02em;
   border: 1px solid transparent;
+    white-space: nowrap;
 }
 .select-items .model-status-good {
   background: #f0fdf4;
@@ -4587,6 +4652,53 @@ textarea {
   background: rgba(255,255,255,0.2);
   color: #fff;
   border-color: transparent;
+}
+.current-model-content {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+.current-model-label {
+    min-width: 0;
+}
+.current-model-ollama-dot,
+.model-chip-ollama-dot {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+    flex: 0 0 auto;
+}
+
+.current-model-ollama-dot {
+    border: 1px solid transparent;
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.7) inset;
+}
+
+.model-chip-ollama-dot {
+    border: none;
+    box-shadow: none;
+}
+.current-model-ollama-dot.status-loading,
+.model-chip-ollama-dot.status-loading {
+    background: #94a3b8;
+    border-color: #cbd5e1;
+}
+.current-model-ollama-dot.status-warn,
+.model-chip-ollama-dot.status-warn {
+    background: #facc15;
+    border-color: #fde68a;
+}
+.current-model-ollama-dot.status-success,
+.model-chip-ollama-dot.status-success {
+    background: #22c55e;
+    border-color: #86efac;
+}
+.current-model-ollama-dot.status-danger,
+.model-chip-ollama-dot.status-danger {
+    background: #ef4444;
+    border-color: #fca5a5;
 }
 .provider-logo {
     width: 22px;
@@ -7402,6 +7514,21 @@ body.is-admin .menu-item.admin-only {
     word-break: break-all;
 }
 
+.model-admin-item-name-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.model-admin-item-name-row .model-status-btn {
+    flex: 0 0 auto;
+}
+
+.model-admin-item-name-row .model-admin-item-name {
+    min-width: 0;
+}
+
 .model-admin-item-meta {
     margin-top: 4px;
     font-size: 11px;
@@ -7528,6 +7655,39 @@ body.is-admin .menu-item.admin-only {
 
 .model-icon-btn:hover {
     background: #f3f4f6;
+}
+
+.model-status-btn {
+    color: #94a3b8;
+}
+.model-status-btn.model-status-btn-loading {
+    color: #94a3b8;
+    background: #f8fafc;
+    border-color: #e2e8f0;
+}
+.model-status-btn.model-status-btn-warn {
+    color: #ca8a04;
+    background: #fffbeb;
+    border-color: #fde68a;
+}
+.model-status-btn.model-status-btn-success {
+    color: #16a34a;
+    background: #f0fdf4;
+    border-color: #bbf7d0;
+}
+.model-status-btn.model-status-btn-danger {
+    color: #dc2626;
+    background: #fef2f2;
+    border-color: #fecaca;
+}
+.model-status-btn.model-status-btn-success:hover {
+    background: #dcfce7;
+}
+.model-status-btn.model-status-btn-warn:hover {
+    background: #fef3c7;
+}
+.model-status-btn.model-status-btn-danger:hover {
+    background: #fee2e2;
 }
 
 .model-icon-btn-dark {
@@ -8930,6 +9090,15 @@ body.is-admin .menu-item.admin-only {
     z-index: 9000 !important;
 }
 
+#ollamaModelStatusModal {
+    z-index: 9950 !important;
+}
+
+#ollamaModelStatusModal .modal {
+    position: relative;
+    z-index: 1;
+}
+
 .toast-notification {
     z-index: 9100 !important;
 }
@@ -9160,7 +9329,9 @@ body.is-admin .menu-item.admin-only {
 }
 
 .settings-skill-list {
-    max-height: 560px;
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none;
     overflow-y: auto;
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -9370,7 +9541,14 @@ body.is-admin .menu-item.admin-only {
 }
 
 #settings-skills-tab.admin-tab-content.active {
-    overflow: visible !important;
+    overflow: hidden !important;
+    padding-right: 0 !important;
+}
+
+#settingsModal #settings-skills-tab.admin-tab-content.active {
+    display: flex !important;
+    flex-direction: column !important;
+    min-height: 0 !important;
 }
 
 #skillEditorModal {

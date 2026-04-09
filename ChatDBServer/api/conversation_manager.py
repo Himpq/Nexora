@@ -23,6 +23,60 @@ class ConversationManager:
         
         # 确保对话目录存在
         os.makedirs(self.base_path, exist_ok=True)
+
+    def _load_json_data(self, file_path, default=None):
+        """尽量兼容损坏或非 UTF-8 的历史对话文件。"""
+        try:
+            with open(file_path, 'rb') as f:
+                raw = f.read()
+        except FileNotFoundError:
+            return default
+        except Exception:
+            return default
+
+        for encoding in ('utf-8', 'utf-8-sig'):
+            try:
+                return json.loads(raw.decode(encoding))
+            except UnicodeDecodeError:
+                continue
+            except Exception:
+                break
+
+        try:
+            return json.loads(raw.decode('utf-8', errors='replace'))
+        except Exception:
+            return default
+
+    def _load_conversation_data_for_update(self, conversation_id):
+        """仅在会话文件可正常解析时返回数据，避免把坏文件回写成空对象。"""
+        conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
+        if not os.path.exists(conversation_path):
+            raise ValueError(f"对话不存在: {conversation_id}")
+
+        conversation_data = self._load_json_data(conversation_path, default=None)
+        if not isinstance(conversation_data, dict):
+            raise ValueError(f"无法读取或解析对话文件: {conversation_id}")
+        return conversation_path, conversation_data
+
+    def _save_json_atomic(self, file_path, payload):
+        """原子写入，避免进程被终止时把原文件写坏。"""
+        directory = os.path.dirname(file_path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        temp_path = f"{file_path}.tmp"
+        try:
+            with open(temp_path, 'w', encoding='utf-8') as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, file_path)
+        except Exception:
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except Exception:
+                pass
+            raise
     
     def create_conversation(self, conversation_id=None, title="新对话"):
         """
@@ -62,9 +116,8 @@ class ConversationManager:
             "conversation_mode": "chat",
             "longterm": conversation_longterm_root_state()
         }
-        
-        with open(conversation_path, 'w', encoding='utf-8') as f:
-            json.dump(conversation_data, f, ensure_ascii=False, indent=2)
+
+        self._save_json_atomic(conversation_path, conversation_data)
         
         return conversation_id
     
@@ -76,19 +129,12 @@ class ConversationManager:
             conversation_id: 对话ID
             title: 新标题
         """
-        conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
-        
-        if not os.path.exists(conversation_path):
-            raise ValueError(f"对话不存在: {conversation_id}")
-        
-        with open(conversation_path, 'r', encoding='utf-8') as f:
-            conversation_data = json.load(f)
+        conversation_path, conversation_data = self._load_conversation_data_for_update(conversation_id)
         
         conversation_data["title"] = title
         conversation_data["updated_at"] = datetime.now().isoformat()
         
-        with open(conversation_path, 'w', encoding='utf-8') as f:
-            json.dump(conversation_data, f, ensure_ascii=False, indent=2)
+        self._save_json_atomic(conversation_path, conversation_data)
     
     def update_conversation_title(self, conversation_id, title):
         """
@@ -98,53 +144,38 @@ class ConversationManager:
             conversation_id: 对话ID
             title: 新标题
         """
-        conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
-        
-        if not os.path.exists(conversation_path):
-            raise ValueError(f"对话不存在: {conversation_id}")
-        
-        # 读取对话
-        with open(conversation_path, 'r', encoding='utf-8') as f:
-            conversation_data = json.load(f)
+        conversation_path, conversation_data = self._load_conversation_data_for_update(conversation_id)
         
         # 更新标题
         conversation_data["title"] = title
         conversation_data["updated_at"] = datetime.now().isoformat()
         
         # 保存对话
-        with open(conversation_path, 'w', encoding='utf-8') as f:
-            json.dump(conversation_data, f, ensure_ascii=False, indent=2)
+        self._save_json_atomic(conversation_path, conversation_data)
 
     def update_volc_response_id(self, conversation_id, response_id, model_name=None):
         """
         更新VolcEngine的Response ID，用于上下文续接
         """
-        conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
-        if not os.path.exists(conversation_path):
+        try:
+            conversation_path, conversation_data = self._load_conversation_data_for_update(conversation_id)
+        except ValueError:
             return
-        
-        with open(conversation_path, 'r', encoding='utf-8') as f:
-            conversation_data = json.load(f)
         
         conversation_data["last_volc_response_id"] = response_id
         if model_name:
              conversation_data["last_model_used"] = model_name
         
-        with open(conversation_path, 'w', encoding='utf-8') as f:
-            json.dump(conversation_data, f, ensure_ascii=False, indent=2)
+        self._save_json_atomic(conversation_path, conversation_data)
 
     def update_conversation_fields(self, conversation_id, fields):
         """
         批量更新会话根字段，遇到字典值时做浅合并。
         """
-        conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
-        if not os.path.exists(conversation_path):
-            raise ValueError(f"对话不存在: {conversation_id}")
         if not isinstance(fields, dict):
             raise ValueError("fields 必须是字典")
 
-        with open(conversation_path, 'r', encoding='utf-8') as f:
-            conversation_data = json.load(f)
+        conversation_path, conversation_data = self._load_conversation_data_for_update(conversation_id)
 
         for key, value in fields.items():
             if isinstance(value, dict) and isinstance(conversation_data.get(key), dict):
@@ -155,8 +186,7 @@ class ConversationManager:
                 conversation_data[key] = value
 
         conversation_data["updated_at"] = datetime.now().isoformat()
-        with open(conversation_path, 'w', encoding='utf-8') as f:
-            json.dump(conversation_data, f, ensure_ascii=False, indent=2)
+        self._save_json_atomic(conversation_path, conversation_data)
 
     def update_last_response_id(self, conversation_id, response_id, model_name=None):
         """
@@ -185,26 +215,26 @@ class ConversationManager:
         conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
         if not os.path.exists(conversation_path):
             return None
-            
-        with open(conversation_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            last_id = data.get("last_volc_response_id")
-            last_model = data.get("last_model_used")
 
-            def _norm_model_name(v):
-                return str(v or "").strip().lower()
-            current_model_norm = _norm_model_name(current_model_name)
-            last_model_norm = _norm_model_name(last_model)
+        data = self._load_json_data(conversation_path, default={}) or {}
+        last_id = data.get("last_volc_response_id")
+        last_model = data.get("last_model_used")
 
-            # Check for model compatibility
-            # logic: if current model is known, and (last_model is different OR missing), reset it.
-            # (Assuming missing last_model implies it was the default/old model, 
-            # so if we are using a specific new model, it's a mismatch).
-            if current_model_norm and last_model_norm and last_model_norm != current_model_norm:
-                print(f"[CACHE] Model mismatch. Last: {last_model}, Current: {current_model_name}. Resetting context ID.")
-                return None
-            
-            return last_id
+        def _norm_model_name(v):
+            return str(v or "").strip().lower()
+
+        current_model_norm = _norm_model_name(current_model_name)
+        last_model_norm = _norm_model_name(last_model)
+
+        # Check for model compatibility
+        # logic: if current model is known, and (last_model is different OR missing), reset it.
+        # (Assuming missing last_model implies it was the default/old model,
+        # so if we are using a specific new model, it's a mismatch).
+        if current_model_norm and last_model_norm and last_model_norm != current_model_norm:
+            print(f"[CACHE] Model mismatch. Last: {last_model}, Current: {current_model_name}. Resetting context ID.")
+            return None
+
+        return last_id
 
     def get_last_response_id(self, conversation_id, current_model_name=None):
         """
@@ -223,14 +253,10 @@ class ConversationManager:
             metadata: 额外元数据（如函数调用信息、交流总结等）
             index: 如果提供且有效，则覆盖该索引处的消息（用于重新生成覆盖旧回答）
         """
-        conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
-        
-        if not os.path.exists(conversation_path):
-            raise ValueError(f"对话不存在: {conversation_id}")
-        
-        # 读取对话
-        with open(conversation_path, 'r', encoding='utf-8') as f:
-            conversation_data = json.load(f)
+        conversation_path, conversation_data = self._load_conversation_data_for_update(conversation_id)
+        messages = conversation_data.get("messages", [])
+        if not isinstance(messages, list):
+            raise ValueError(f"对话内容格式无效: {conversation_id}")
         
         # 准备消息
         message = {
@@ -303,16 +329,16 @@ class ConversationManager:
             elif "model_name" in message:
                 del message["model_name"]
         
-        if index is not None and 0 <= index < len(conversation_data["messages"]):
-            conversation_data["messages"][index] = message
+        if index is not None and 0 <= index < len(messages):
+            messages[index] = message
         else:
-            conversation_data["messages"].append(message)
+            messages.append(message)
+        conversation_data["messages"] = messages
             
         conversation_data["updated_at"] = datetime.now().isoformat()
         
         # 保存对话
-        with open(conversation_path, 'w', encoding='utf-8') as f:
-            json.dump(conversation_data, f, ensure_ascii=False, indent=2)
+        self._save_json_atomic(conversation_path, conversation_data)
 
     def delete_message(self, conversation_id, message_index):
         """
@@ -320,14 +346,14 @@ class ConversationManager:
         - 点击 user：删除该 user 以及其后紧邻的 assistant（若存在）
         - 点击 assistant：删除该 assistant 以及其前紧邻的 user（若存在）
         """
-        conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
-        if not os.path.exists(conversation_path):
+        try:
+            conversation_path, conversation_data = self._load_conversation_data_for_update(conversation_id)
+        except ValueError:
             return False
-            
-        with open(conversation_path, 'r', encoding='utf-8') as f:
-            conversation_data = json.load(f)
-            
+
         messages = conversation_data.get("messages", [])
+        if not isinstance(messages, list):
+            return False
         if 0 <= message_index < len(messages):
             start = message_index
             end = message_index
@@ -352,8 +378,7 @@ class ConversationManager:
             
             conversation_data["updated_at"] = datetime.now().isoformat()
             
-            with open(conversation_path, 'w', encoding='utf-8') as f:
-                json.dump(conversation_data, f, ensure_ascii=False, indent=2)
+            self._save_json_atomic(conversation_path, conversation_data)
             return True
         return False
 
@@ -362,14 +387,14 @@ class ConversationManager:
         为指定消息保存一个历史版本（用于重新回答切换）
         将当前内容移入元数据的 versions 列表中
         """
-        conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
-        if not os.path.exists(conversation_path):
+        try:
+            conversation_path, conversation_data = self._load_conversation_data_for_update(conversation_id)
+        except ValueError:
             return False
-            
-        with open(conversation_path, 'r', encoding='utf-8') as f:
-            conversation_data = json.load(f)
-            
+
         messages = conversation_data.get("messages", [])
+        if not isinstance(messages, list):
+            return False
         if 0 <= message_index < len(messages):
             msg = messages[message_index]
             if msg.get('role') != 'assistant':
@@ -410,8 +435,7 @@ class ConversationManager:
                     msg["metadata"]["versions"].append(version_data)
             
             conversation_data["updated_at"] = datetime.now().isoformat()
-            with open(conversation_path, 'w', encoding='utf-8') as f:
-                json.dump(conversation_data, f, ensure_ascii=False, indent=2)
+            self._save_json_atomic(conversation_path, conversation_data)
             return True
         return False
 
@@ -419,14 +443,14 @@ class ConversationManager:
         """
         切换到指定的历史版本
         """
-        conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
-        if not os.path.exists(conversation_path):
+        try:
+            conversation_path, conversation_data = self._load_conversation_data_for_update(conversation_id)
+        except ValueError:
             return False
-            
-        with open(conversation_path, 'r', encoding='utf-8') as f:
-            conversation_data = json.load(f)
-            
+
         messages = conversation_data.get("messages", [])
+        if not isinstance(messages, list):
+            return False
         if 0 <= message_index < len(messages):
             msg = messages[message_index]
             versions = msg.get("metadata", {}).get("versions", [])
@@ -465,8 +489,7 @@ class ConversationManager:
                 self._invalidate_resume_cache_fields(conversation_data)
                 
                 conversation_data["updated_at"] = datetime.now().isoformat()
-                with open(conversation_path, 'w', encoding='utf-8') as f:
-                    json.dump(conversation_data, f, ensure_ascii=False, indent=2)
+                self._save_json_atomic(conversation_path, conversation_data)
                 return True
         return False
 
@@ -485,8 +508,10 @@ class ConversationManager:
         if not os.path.exists(conversation_path):
             raise ValueError(f"对话不存在: {conversation_id}")
         
-        with open(conversation_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        data = self._load_json_data(conversation_path, default=None)
+        if data is None:
+            raise ValueError(f"无法读取或解析对话文件: {conversation_id}")
+        return data
 
     def get_message_count(self, conversation_id):
         """
@@ -517,9 +542,10 @@ class ConversationManager:
         更新一条 user 消息内容。
         - only_last=True 时仅允许修改最后一条 user 消息。
         """
-        conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
-        if not os.path.exists(conversation_path):
-            return False, "对话不存在"
+        try:
+            conversation_path, conversation_data = self._load_conversation_data_for_update(conversation_id)
+        except ValueError as e:
+            return False, str(e)
 
         try:
             idx = int(message_index)
@@ -530,10 +556,11 @@ class ConversationManager:
         if not text:
             return False, "消息内容不能为空"
 
-        with open(conversation_path, 'r', encoding='utf-8') as f:
-            conversation_data = json.load(f)
+            self._save_json_atomic(conversation_path, conversation_data)
 
         messages = conversation_data.get("messages", [])
+        if not isinstance(messages, list):
+            return False, "对话内容格式无效"
         if not (0 <= idx < len(messages)):
             return False, "消息不存在"
 
@@ -558,8 +585,7 @@ class ConversationManager:
         conversation_data["messages"] = messages
         conversation_data["updated_at"] = datetime.now().isoformat()
 
-        with open(conversation_path, 'w', encoding='utf-8') as f:
-            json.dump(conversation_data, f, ensure_ascii=False, indent=2)
+        self._save_json_atomic(conversation_path, conversation_data)
         return True, "ok"
     
     def list_conversations(self):
@@ -578,21 +604,22 @@ class ConversationManager:
                 conversation_id = filename[:-5]  # 去掉.json后缀
                 conversation_path = os.path.join(self.base_path, filename)
                 
-                with open(conversation_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    longterm = normalize_longterm_state(data.get('longterm', {}))
-                    conversations.append({
-                        'conversation_id': conversation_id,
-                        'title': data.get('title', '未命名对话'),
-                        'created_at': data.get('created_at'),
-                        'updated_at': data.get('updated_at'),
-                        'pin': bool(data.get('pin', False)),
-                        'message_count': len(data.get('messages', [])),
-                        'conversation_mode': str(data.get('conversation_mode', 'chat') or 'chat'),
-                        'longterm_active': bool(longterm.get('active', False)),
-                        'longterm_task': str(longterm.get('task', '') or ''),
-                        'longterm_step': str(longterm.get('step', '') or '')
-                    })
+                data = self._load_json_data(conversation_path, default=None)
+                if not isinstance(data, dict):
+                    continue
+                longterm = normalize_longterm_state(data.get('longterm', {}))
+                conversations.append({
+                    'conversation_id': conversation_id,
+                    'title': data.get('title', '未命名对话'),
+                    'created_at': data.get('created_at'),
+                    'updated_at': data.get('updated_at'),
+                    'pin': bool(data.get('pin', False)),
+                    'message_count': len(data.get('messages', [])),
+                    'conversation_mode': str(data.get('conversation_mode', 'chat') or 'chat'),
+                    'longterm_active': bool(longterm.get('active', False)),
+                    'longterm_task': str(longterm.get('task', '') or ''),
+                    'longterm_step': str(longterm.get('step', '') or '')
+                })
         
         # 置顶优先，其次按更新时间倒序
         conversations.sort(
@@ -606,17 +633,11 @@ class ConversationManager:
 
     def set_conversation_pin(self, conversation_id, pin=True):
         """设置对话置顶状态"""
-        conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
-        if not os.path.exists(conversation_path):
-            raise ValueError(f"对话不存在: {conversation_id}")
-
-        with open(conversation_path, 'r', encoding='utf-8') as f:
-            conversation_data = json.load(f)
+        conversation_path, conversation_data = self._load_conversation_data_for_update(conversation_id)
 
         conversation_data["pin"] = bool(pin)
 
-        with open(conversation_path, 'w', encoding='utf-8') as f:
-            json.dump(conversation_data, f, ensure_ascii=False, indent=2)
+        self._save_json_atomic(conversation_path, conversation_data)
     
     def delete_conversation(self, conversation_id):
         """
@@ -671,8 +692,7 @@ class ConversationManager:
         if not os.path.exists(conversation_path):
             return None
         try:
-            with open(conversation_path, 'r', encoding='utf-8') as f:
-                conversation_data = json.load(f)
+            conversation_data = self._load_json_data(conversation_path, default={}) or {}
             arr = conversation_data.get("context_compressions", [])
             if not isinstance(arr, list) or not arr:
                 return None
@@ -691,8 +711,9 @@ class ConversationManager:
         if not isinstance(marker, dict):
             return False
         try:
-            with open(conversation_path, 'r', encoding='utf-8') as f:
-                conversation_data = json.load(f)
+            conversation_data = self._load_json_data(conversation_path, default=None)
+            if not isinstance(conversation_data, dict):
+                return False
             arr = conversation_data.get("context_compressions", [])
             if not isinstance(arr, list):
                 arr = []
@@ -710,8 +731,7 @@ class ConversationManager:
                 arr = arr[-40:]
             conversation_data["context_compressions"] = arr
             conversation_data["updated_at"] = datetime.now().isoformat()
-            with open(conversation_path, 'w', encoding='utf-8') as f:
-                json.dump(conversation_data, f, ensure_ascii=False, indent=2)
+            self._save_json_atomic(conversation_path, conversation_data)
             return True
         except Exception:
             return False
@@ -724,24 +744,21 @@ class ConversationManager:
             conversation_id: 对话ID
             main_title: 这次交流的总结
         """
-        conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
-        
-        if not os.path.exists(conversation_path):
-            raise ValueError(f"对话不存在: {conversation_id}")
-        
-        with open(conversation_path, 'r', encoding='utf-8') as f:
-            conversation_data = json.load(f)
-        
+        conversation_path, conversation_data = self._load_conversation_data_for_update(conversation_id)
+
+        messages = conversation_data.get("messages", [])
+        if not isinstance(messages, list):
+            raise ValueError(f"对话内容格式无效: {conversation_id}")
+
         # 找到最后一条assistant消息，添加exchange_summary
-        for msg in reversed(conversation_data["messages"]):
+        for msg in reversed(messages):
             if msg["role"] == "assistant":
                 msg["exchange_summary"] = main_title
                 break
         
         conversation_data["updated_at"] = datetime.now().isoformat()
         
-        with open(conversation_path, 'w', encoding='utf-8') as f:
-            json.dump(conversation_data, f, ensure_ascii=False, indent=2)
+        self._save_json_atomic(conversation_path, conversation_data)
     
     def get_recent_exchange_summaries(self, conversation_id, limit=5):
         """

@@ -446,7 +446,7 @@ class Model:
             return str(
                 self.user.get_user_profile_memory(
                     user_permission=permission_hint,
-                    max_chars=400
+                    max_chars=0
                 ) or ""
             ).strip()
         except Exception:
@@ -454,13 +454,8 @@ class Model:
 
     def _build_user_profile_memory_prompt_block(self) -> str:
         profile_text = self._get_user_profile_memory_text()
-        if not profile_text:
-            return ""
-        return (
-            "[短期记忆-用户画像]\n"
-            "以下信息用于理解用户偏好与背景，回答时可参考但不要逐字复述：\n"
-            f"{profile_text}"
-        )
+        from prompts import build_user_profile_memory_prompt
+        return build_user_profile_memory_prompt(profile_text)
 
     def _normalize_skill_injection_mode(self, mode: Any) -> str:
         token = str(mode or "").strip().lower()

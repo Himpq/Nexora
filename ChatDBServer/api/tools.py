@@ -31,8 +31,8 @@
     "addShort": "add_short",
     "removeShort": "remove_short",
     "getUserProfileMemory": "get_user_profile_memory",
-    "setUserProfileMemory": "set_user_profile_memory",
-    "updateUserProfileMemory": "set_user_profile_memory",
+    "setUserProfileMemory": "updateShort",
+    "updateUserProfileMemory": "updateShort",
     "longtermPlan": "longterm_plan",
     "longtermUpdate": "longterm_update",
     "serverWebSearch": "server_web_search",
@@ -358,8 +358,8 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "set_user_profile_memory",
-            "description": "覆盖更新当前用户短期记忆画像（建议控制在400字以内）。",
+            "name": "updateShort",
+            "description": "覆盖更新当前用户短期记忆画像（无文本长度限制）",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1144,3 +1144,5 @@ TOOLS = [
         }
     }
 ]
+
+

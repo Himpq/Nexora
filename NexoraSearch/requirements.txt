@@ -4,3 +4,4 @@ playwright>=1.40.0
 beautifulsoup4>=4.12.0
 requests>=2.31.0
 lxml>=4.9.4
+trafilatura>=2.0.0

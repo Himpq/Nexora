@@ -1,6 +1,6 @@
 # Nexora
 
-Nexora is a self-hosted AI chat platform with knowledge graph visualization and conversation memory.
+Nexora is AI platform supporting email, RAG, and cloud storage functions. It is designed to be decouplable and supports multiple providers, including Volcengine, DashScope, OpenAI, and more. The platform also includes knowledge base management with vector databases and file storage, as well as multiple user support with role-based access control.
   
 ## ![alt text](https://github.com/user-attachments/assets/5355d979-e2b3-4613-a6ab-52c9f029a565)
 
@@ -35,6 +35,8 @@ NexoraNetdisk is a file storage service that supports uploading and downloading 
 NexoraCode is a Openclaw-liked software that provides code execution, file modifying, local web rendering and other tools for LLM. You can interact with LLM and operate your computers.
 
 It needs a sandbox environment, we haven't planned to do it for now, so please use it with caution and make sure to backup your data regularly.
+### NexoraSearch
+NexoraSearch is a lite search service that provides basic search capabilities. It is powered by Playwright, which allows it to render web pages and extract information from them. But it requires IP with good access and may not work due to anti-crawling measures. 
 ### ChatDBServer (Nexora)
 ChatDBServer is the main chat service. It handles chat UI, tool routing, model access, memory, knowledge integration, and most runtime config.
 It is the first component to bring up.

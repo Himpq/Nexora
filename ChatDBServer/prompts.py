@@ -1,10 +1,12 @@
 
 import re
+from datetime import datetime
 from typing import Any, Dict, Iterable, List
 
 
 default_verbose = """
 你是Nexora接入的大模型，是知识库的AI助手，能够高效、精准地回答用户的问题。
+现在是{{time}}。
 你是由{{provider_name}}提供的{{model_name}}模型，与你对话的用户为{{user}}，权限为{{permission}}。
 请使用 Markdown 回答。
 """
@@ -26,6 +28,7 @@ default_base = """
 - 短期记忆记录近期事项、偏好、情绪；长期记忆/知识库记录稳定知识。
 - 系统可能自动注入时间；除非用户明确问时间，否则忽略该注入。
 - 回答风格：准确、直接、可执行。使用 Markdown。
+- 当你觉得需要更新用户画像的时候调用 updateShort 进行更新。
 """
 
 
@@ -67,6 +70,22 @@ TOOL_SKILL_BLOCK_TEMPLATE = """<TOOL-SKILL>
 {{content}}
 <END>"""
 
+USER_PROFILE_MEMORY_TEMPLATE = """[短期记忆-用户画像]
+以下信息用于理解用户偏好与背景，回答时可参考但不要逐字复述：
+{{profile_text}}"""
+
+def _current_time_text() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def render_prompt_template(template: Any, **values: Any) -> str:
+    text = str(template or "")
+    replacements = dict(values or {})
+    replacements.setdefault("time", _current_time_text())
+    for key, value in replacements.items():
+        text = text.replace(f"{{{{{key}}}}}", str(value))
+    return text
+
 longterm_system_prompt = """
 现在是长程任务模式，你必须严格遵守：
 1. 调用 longterm_plan 工具来规划任务
@@ -98,7 +117,7 @@ def build_longterm_system_prompt(
     current_plan_text: Any = "",
     confirmation_round: bool = False
 ) -> str:
-    base = str(longterm_system_prompt or "").strip()
+    base = render_prompt_template(longterm_system_prompt or "").strip()
     if not base:
         base = "现在是 Longterm 模式，请使用 longterm_plan 做一次性规划，并在任务完成时使用 longterm_update 标记完成。"
 
@@ -122,7 +141,9 @@ def build_longterm_system_prompt(
             "确认提示：若你已经完成任务，请直接调用 longterm_update；不要输出任何旧式标记或步骤确认文本。"
         )
 
-    return SYSTEM_PROMPT_SEP.join([part for part in parts if str(part or "").strip()]).strip()
+    return render_prompt_template(
+        SYSTEM_PROMPT_SEP.join([part for part in parts if str(part or "").strip()]).strip()
+    )
 
 
 def build_main_system_prompt(
@@ -143,7 +164,7 @@ def build_main_system_prompt(
             parts.append(system_tools_enabled_auto_off.strip())
         else:
             parts.append(system_tools_enabled_auto_select.strip())
-    return SYSTEM_PROMPT_SEP.join([p for p in parts if p]).strip()
+    return render_prompt_template(SYSTEM_PROMPT_SEP.join([p for p in parts if p]).strip())
 
 
 def build_tool_skill_block(title: Any, tools, content: Any) -> str:
@@ -281,6 +302,11 @@ def build_conversation_title_prompt(user_message: str, assistant_response: str) 
     out = out.replace("{{assistant_response}}", str(assistant_response or "")[:100])
     return out
 
+def build_user_profile_memory_prompt(profile_text: str) -> str:
+    template = str(USER_PROFILE_MEMORY_TEMPLATE or "")
+    if not profile_text:
+        return ""
+    return template.replace("{{profile_text}}", str(profile_text or "").strip())
 
 def build_context_compression_prompt(history_text: str, max_chars: int = 6000) -> str:
     limit = max(600, min(12000, int(max_chars or 6000)))

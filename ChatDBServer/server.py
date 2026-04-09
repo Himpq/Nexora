@@ -1827,6 +1827,20 @@ def save_models_config(models_cfg):
         json.dump(payload, f, indent=4, ensure_ascii=False)
 
 
+def _normalize_provider_api_type(raw_api_type):
+    api_type = str(raw_api_type or '').strip().lower()
+    if api_type in {'', 'openaiapi'}:
+        return 'openai'
+    if api_type in {'openai-compatible', 'openai compatible'}:
+        return 'openai_compatible'
+    return api_type
+
+
+def _normalize_keep_alive_value(raw_keep_alive, default='5m'):
+    keep_alive = str(raw_keep_alive or '').strip()
+    return keep_alive or str(default or '5m').strip() or '5m'
+
+
 def _safe_context_window_int(raw):
     try:
         n = int(raw)
@@ -6233,6 +6247,14 @@ def get_config():
         aliyun_context_map = _refresh_aliyun_context_window_map(config, timeout=8.0) if has_aliyun_model else {}
         ollama_context_map = _refresh_ollama_context_window_map(config, timeout=8.0) if has_ollama_model else {}
 
+        providers_info = {}
+        for provider_name, provider_cfg in (config.get('providers', {}) or {}).items():
+            if not isinstance(provider_cfg, dict):
+                continue
+            providers_info[provider_name] = {
+                'api_type': provider_cfg.get('api_type', 'openai')
+            }
+
         models_info = []
         for model_id, info in config.get('models', {}).items():
             if model_id in blacklist:
@@ -6264,6 +6286,7 @@ def get_config():
         return jsonify({
             'success': True,
             'models': models_info,
+            'providers': providers_info,
             'default_model': default_model
         })
     except Exception as e:
@@ -6354,6 +6377,122 @@ def admin_get_models_config():
         })
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
+
+
+def _get_admin_provider_runtime(provider_name: str):
+    provider = str(provider_name or '').strip()
+    if not provider:
+        return {}, None, 'provider 不能为空'
+    config = get_config_all()
+    providers = config.get('providers', {}) if isinstance(config, dict) else {}
+    provider_cfg = providers.get(provider)
+    if not isinstance(provider_cfg, dict):
+        return {}, None, f'provider 不存在: {provider}'
+    adapter = create_provider_adapter(provider, provider_cfg)
+    return provider_cfg, adapter, ''
+
+
+@app.route('/api/provider/ollama/list', methods=['GET'])
+@require_login
+def api_provider_ollama_list():
+    provider_name = str(request.args.get('provider', 'ollama') or 'ollama').strip()
+    timeout = request.args.get('timeout', 8)
+    try:
+        timeout = float(timeout or 8)
+    except Exception:
+        timeout = 8.0
+    provider_cfg, adapter, err = _get_admin_provider_runtime(provider_name)
+    if err:
+        return jsonify({'success': False, 'provider': provider_name, 'message': err, 'models': []}), 404
+    api_type = str(getattr(adapter, 'api_type', '') or '').strip().lower()
+    if api_type != 'ollama':
+        return jsonify({'success': False, 'provider': provider_name, 'message': f'provider {provider_name} 不是 ollama', 'models': []}), 400
+    result = adapter.list_models(client=None, capability='', request_options={'models_catalog_timeout': timeout})
+    status_code = 200 if bool(result.get('ok', False)) else 502
+    return jsonify({'success': bool(result.get('ok', False)), **result}), status_code
+
+
+@app.route('/api/provider/ollama/ps', methods=['GET'])
+@require_login
+def api_provider_ollama_ps():
+    provider_name = str(request.args.get('provider', 'ollama') or 'ollama').strip()
+    timeout = request.args.get('timeout', 8)
+    try:
+        timeout = float(timeout or 8)
+    except Exception:
+        timeout = 8.0
+    provider_cfg, adapter, err = _get_admin_provider_runtime(provider_name)
+    if err:
+        return jsonify({'success': False, 'provider': provider_name, 'message': err, 'models': []}), 404
+    api_type = str(getattr(adapter, 'api_type', '') or '').strip().lower()
+    if api_type != 'ollama':
+        return jsonify({'success': False, 'provider': provider_name, 'message': f'provider {provider_name} 不是 ollama', 'models': []}), 400
+    if hasattr(adapter, 'list_running_models'):
+        result = adapter.list_running_models(timeout=timeout)
+    else:
+        result = {'ok': False, 'provider': provider_name, 'api_type': api_type, 'models': [], 'error': 'list_running_models_not_supported'}
+    status_code = 200 if bool(result.get('ok', False)) else 502
+    return jsonify({'success': bool(result.get('ok', False)), **result}), status_code
+
+
+@app.route('/api/admin/models/ollama/status', methods=['GET'])
+@require_admin
+def admin_ollama_model_status():
+    provider_name = str(request.args.get('provider', '') or '').strip()
+    model_name = str(request.args.get('model_id', '') or request.args.get('model', '') or '').strip()
+    try:
+        timeout = float(request.args.get('timeout', 8) or 8)
+    except Exception:
+        timeout = 8.0
+    if not provider_name:
+        return jsonify({'success': False, 'message': 'provider 不能为空', 'status': 'missing'}), 400
+    if not model_name:
+        return jsonify({'success': False, 'message': 'model_id 不能为空', 'status': 'missing'}), 400
+    provider_cfg, adapter, err = _get_admin_provider_runtime(provider_name)
+    if err:
+        return jsonify({'success': False, 'message': err, 'status': 'missing'}), 404
+    api_type = str(getattr(adapter, 'api_type', '') or '').strip().lower()
+    if api_type != 'ollama':
+        return jsonify({'success': False, 'message': f'provider {provider_name} 不是 ollama', 'status': 'missing'}), 400
+    if not hasattr(adapter, 'inspect_model_status'):
+        return jsonify({'success': False, 'message': 'ollama status helper not supported', 'status': 'missing'}), 500
+    result = adapter.inspect_model_status(model_name, timeout=timeout)
+    status_code = 200 if result.get('status') != 'missing' else 404
+    return jsonify({'success': bool(result.get('ok', False)), **result}), status_code
+
+
+@app.route('/api/admin/models/ollama/toggle', methods=['POST'])
+@require_admin
+def admin_ollama_model_toggle():
+    data = request.get_json() or {}
+    provider_name = str(data.get('provider') or '').strip()
+    model_name = str(data.get('model_id') or data.get('model') or '').strip()
+    action = str(data.get('action') or 'toggle').strip().lower()
+    keep_alive = data.get('keep_alive')
+    try:
+        timeout = float(data.get('timeout') or 12)
+    except Exception:
+        timeout = 12.0
+    if not provider_name:
+        return jsonify({'success': False, 'message': 'provider 不能为空'}), 400
+    if not model_name:
+        return jsonify({'success': False, 'message': 'model_id 不能为空'}), 400
+    provider_cfg, adapter, err = _get_admin_provider_runtime(provider_name)
+    if err:
+        return jsonify({'success': False, 'message': err}), 404
+    api_type = str(getattr(adapter, 'api_type', '') or '').strip().lower()
+    if api_type != 'ollama':
+        return jsonify({'success': False, 'message': f'provider {provider_name} 不是 ollama'}), 400
+    if not hasattr(adapter, 'toggle_model_keep_alive'):
+        return jsonify({'success': False, 'message': 'ollama toggle helper not supported'}), 500
+    result = adapter.toggle_model_keep_alive(
+        model_name=model_name,
+        action=action,
+        keep_alive=keep_alive,
+        timeout=timeout,
+    )
+    status_code = 200 if bool(result.get('ok', False)) else 502
+    return jsonify({'success': bool(result.get('ok', False)), **result}), status_code
 
 
 def _provider_models_cache_key(provider_name: str, capability: str) -> str:
@@ -7064,8 +7203,11 @@ def admin_upsert_provider():
     """新增或更新 Provider"""
     data = request.get_json() or {}
     provider = (data.get('provider') or '').strip()
+    original_provider = (data.get('original_provider') or provider).strip()
     api_key = data.get('api_key')
     base_url = data.get('base_url')
+    api_type = _normalize_provider_api_type(data.get('api_type'))
+    settings = data.get('settings')
 
     if not provider:
         return jsonify({'success': False, 'message': 'provider 不能为空'}), 400
@@ -7073,14 +7215,46 @@ def admin_upsert_provider():
         api_key = ''
     if base_url is None:
         base_url = ''
+    if not isinstance(settings, dict):
+        settings = {}
+    keep_alive = _normalize_keep_alive_value(settings.get('keep_alive', '5m'), default='5m')
 
     try:
         cfg = load_models_config()
         providers = cfg.setdefault('providers', {})
-        providers[provider] = {
-            'api_key': str(api_key),
-            'base_url': str(base_url)
-        }
+        models = cfg.setdefault('models', {})
+
+        if original_provider and original_provider != provider:
+            if original_provider not in providers:
+                return jsonify({'success': False, 'message': '原 Provider 不存在'}), 404
+            if provider in providers:
+                return jsonify({'success': False, 'message': f'Provider 已存在: {provider}'}), 400
+            for model_id, model_info in list(models.items()):
+                if isinstance(model_info, dict) and (model_info.get('provider') == original_provider):
+                    model_info['provider'] = provider
+            existing_provider = providers.pop(original_provider, {})
+        else:
+            existing_provider = providers.get(provider, {})
+        if not isinstance(existing_provider, dict):
+            existing_provider = {}
+
+        provider_record = dict(existing_provider)
+        provider_record['api_key'] = str(api_key)
+        provider_record['base_url'] = str(base_url)
+        provider_record['api_type'] = api_type or 'openai'
+
+        existing_settings = provider_record.get('settings', {}) if isinstance(provider_record.get('settings', {}), dict) else {}
+        merged_settings = dict(existing_settings)
+        merged_settings.update(settings)
+        if provider_record['api_type'] == 'ollama':
+            merged_settings['keep_alive'] = keep_alive
+            provider_record['settings'] = merged_settings
+        elif merged_settings:
+            provider_record['settings'] = merged_settings
+        elif 'settings' in provider_record:
+            provider_record.pop('settings', None)
+
+        providers[provider] = provider_record
         save_models_config(cfg)
         return jsonify({'success': True, 'message': f'Provider {provider} 已保存'})
     except Exception as e:

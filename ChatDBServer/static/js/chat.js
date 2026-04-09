@@ -1,11 +1,49 @@
 
 // --- Helper: Create Thinking Block ---
+function toggleThinkingBlockCollapsed(thinkingBlock) {
+    if (!thinkingBlock) return;
+    thinkingBlock.dataset.userToggled = 'true';
+    thinkingBlock.classList.toggle('collapsed');
+}
+
 function createThinkingBlock(isCollapsed = false) {
-    const block = createThinkingBlock(true);
-    block.querySelector('.thinking-header').addEventListener('click', () => {
-        block.classList.toggle('collapsed');
-    });
+    const block = document.createElement('div');
+    block.className = 'thinking-block reasoning-thinking-block';
+    block.dataset.streamLive = '0';
+    block.dataset.userToggled = 'false';
+    if (isCollapsed) {
+        block.classList.add('collapsed');
+    }
+
+    const header = document.createElement('div');
+    header.className = 'thinking-header';
+
+    const icon = document.createElement('i');
+    icon.className = 'fa-solid fa-brain thinking-icon';
+
+    const title = document.createElement('span');
+    title.className = 'thinking-title';
+    title.textContent = 'Thinking';
+
+    const chevron = document.createElement('i');
+    chevron.className = 'fa-solid fa-chevron-down chevron-icon';
+
+    const content = document.createElement('div');
+    content.className = 'thinking-content';
+
+    header.appendChild(icon);
+    header.appendChild(title);
+    header.appendChild(chevron);
+    header.addEventListener('click', () => toggleThinkingBlockCollapsed(block));
+    block.appendChild(header);
+    block.appendChild(content);
     return block;
+}
+
+function getLatestReasoningThinkingBlock(messageDiv) {
+    if (!messageDiv) return null;
+    const blocks = messageDiv.querySelectorAll('.thinking-block.reasoning-thinking-block');
+    return blocks.length > 0 ? blocks[blocks.length - 1] : null;
 }
 
 // Global State
@@ -127,6 +165,9 @@ let hoverProxyMessageEl = null;
 let isMessageInputComposing = false;
 let selectedModelId = null;
 let modelCatalog = [];
+let providerCatalogByKey = {};
+let ollamaChatProviderStatusCache = new Map();
+let ollamaChatProviderStatusPending = new Map();
 let currentConversationHasImageHistory = false;
 let currentConversationMode = 'chat';
 let currentConversationLongtermState = {
@@ -7128,23 +7169,37 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
     }
     loadModels();
-    loadConversations();
-    
+
     // Check URL param for conversation ID
     const urlParams = new URLSearchParams(window.location.search);
-    const cid = urlParams.get('cid');
+    let cid = urlParams.get('cid');
     const shouldRestoreMailView = isMailViewUrl() && !!document.getElementById('toggleMailView');
+    
+    // Check if there is an active stream resume state that needs a specific conversation
+    const resumeState = loadActiveStreamResumeState();
+    const resumeCid = resumeState ? String(resumeState.conversation_id || '').trim() : '';
+
     if (shouldRestoreMailView) {
+        loadConversations();
         setTimeout(() => openMailPlaceholderView(), 0);
-    } else if (cid) {
-        await loadConversation(cid);
     } else {
-        applyTokenMiniDisplay(0, 0);
-        tokenBudgetState.roundInput = 0;
-        resetTokenBudgetBreakdown();
-        renderTokenBudgetUi();
-        // Init load knowledge even without conversation
-        await loadKnowledge(null);
+        if (!cid && resumeCid && !isGenerating) {
+            // Forward to resumed conversation to prevent double loading the UI
+            cid = resumeCid;
+            if (window.history.replaceState) window.history.replaceState({}, '', `/chat?cid=${cid}`);
+        }
+
+        if (cid) {
+            await loadConversation(cid);
+        } else {
+            loadConversations();
+            applyTokenMiniDisplay(0, 0);
+            tokenBudgetState.roundInput = 0;
+            resetTokenBudgetBreakdown();
+            renderTokenBudgetUi();
+            // Init load knowledge even without conversation
+            await loadKnowledge(null);
+        }
     }
     await resumeActiveStreamAfterReload();
 });
@@ -7168,11 +7223,15 @@ function initUI() {
     mailNotifyState.initialized = mailNotifyState.lastOpenTs > 0;
     mailNotifyState.newCount = 0;
     renderMailNotifyBadge();
-    if (document.getElementById('toggleMailView')) {
-        startMailPolling();
-    }
-    startClientToolPolling();
-    startAgentStatusPolling(); // Agent WSS
+    
+    setTimeout(() => {
+        if (document.getElementById('toggleMailView')) {
+            startMailPolling();
+        }
+        startClientToolPolling();
+        startAgentStatusPolling(); // Agent WSS
+    }, 1500);
+
     window.addEventListener('beforeunload', () => {
         stopMailPolling();
         stopClientToolPolling();
@@ -7425,12 +7484,10 @@ function initUI() {
             const { scrollTop, scrollHeight, clientHeight } = els.messagesContainer;
             const distance = scrollHeight - scrollTop - clientHeight;
             
-            // [Optimization] Ultra-tight threshold (2px)
-            // Only latch if we are practically at the very bottom.
-            // This prevents the "rubber band" effect when dragging slightly up.
-            if (distance <= 2) {
-                shouldAutoScroll = true;
-            } else {
+            // [Optimization] Relaxed threshold (100px)
+            // Latch to bottom to give leeway when model outputs very fast.
+            // If the user scrolls up more than 100px, we break the auto-scroll.
+            if (distance <= 100) {
                 shouldAutoScroll = false;
             }
         });
@@ -7743,11 +7800,42 @@ function initUI() {
     if (configModal) {
         bindBackdropSafeClose(configModal, closeAdminConfigModal);
     }
+    const adminProviderApiTypeInput = document.getElementById('adminProviderApiTypeInput');
+    if (adminProviderApiTypeInput) {
+        adminProviderApiTypeInput.addEventListener('input', syncAdminProviderApiTypeFields);
+        adminProviderApiTypeInput.addEventListener('change', syncAdminProviderApiTypeFields);
+    }
     const configSaveBtn = document.getElementById('adminConfigSaveBtn');
     if (configSaveBtn) {
         configSaveBtn.addEventListener('click', async (e) => {
             e.preventDefault();
             await saveAdminConfigModal();
+        });
+    }
+
+    const ollamaStatusModal = document.getElementById('ollamaModelStatusModal');
+    if (ollamaStatusModal) {
+        bindBackdropSafeClose(ollamaStatusModal, closeAdminOllamaModelStatusModal);
+    }
+    const ollamaStatusCloseBtn = document.getElementById('ollamaModelStatusCloseBtn');
+    if (ollamaStatusCloseBtn) {
+        ollamaStatusCloseBtn.addEventListener('click', closeAdminOllamaModelStatusModal);
+    }
+    const ollamaStatusRefreshBtn = document.getElementById('ollamaModelStatusRefreshBtn');
+    if (ollamaStatusRefreshBtn) {
+        ollamaStatusRefreshBtn.addEventListener('click', async (e) => {
+            e.preventDefault();
+            const state = adminOllamaStatusModalState || {};
+            if (state.provider && state.model) {
+                await loadAdminOllamaModelStatus(state.provider, state.model);
+            }
+        });
+    }
+    const ollamaStatusActionBtn = document.getElementById('ollamaModelStatusActionBtn');
+    if (ollamaStatusActionBtn) {
+        ollamaStatusActionBtn.addEventListener('click', async (e) => {
+            e.preventDefault();
+            await toggleAdminOllamaModelStatus();
         });
     }
 
@@ -8019,6 +8107,45 @@ function buildTokenBudgetHoverText(limit, used, ratioRaw, remain) {
     return rows.join('\n');
 }
 
+function buildTokenBudgetTooltipModel(limit, used, ratioRaw, remain) {
+    const contextOn = !!tokenBudgetState.includeContext;
+    const totalInput = safeTokenInt(tokenBudgetState.latestInputTokens);
+    const rawInput = Math.max(
+        totalInput,
+        safeTokenInt(tokenBudgetState.latestRawInputTokens),
+        safeTokenInt(used)
+    );
+    const cumulativeInput = safeTokenInt(tokenBudgetState.cumulativeInputTokens);
+    const cachedInput = Math.max(
+        0,
+        safeTokenInt(tokenBudgetState.latestCachedInputTokens),
+        Math.max(0, rawInput - totalInput)
+    );
+    const systemTokens = safeTokenInt(tokenBudgetState.systemPromptTokens);
+    const toolExact = safeTokenInt(tokenBudgetState.toolInputTokens);
+    const toolEstimate = safeTokenInt(tokenBudgetState.toolInputEstimate);
+    const toolTokens = toolExact > 0 ? toolExact : toolEstimate;
+    const contextTokens = contextOn ? Math.max(0, rawInput - systemTokens - toolTokens) : 0;
+    const reserveTokens = Math.max(0, limit - used);
+    const pct = (n) => `${Math.max(0, Math.min(100, Math.round((Math.max(0, n) / Math.max(1, limit)) * 1000) / 10)).toFixed(1)}%`;
+    return {
+        limit,
+        used,
+        remain,
+        ratioRaw,
+        contextOn,
+        rawInput,
+        totalInput,
+        cumulativeInput,
+        cachedInput,
+        systemTokens,
+        toolTokens,
+        contextTokens,
+        reserveTokens,
+        pct
+    };
+}
+
 function ensureTokenBudgetTooltipEl() {
     let el = document.getElementById('tokenBudgetTooltip');
     if (el) return el;
@@ -8066,11 +8193,37 @@ function hideTokenBudgetTooltip() {
     el.setAttribute('aria-hidden', 'true');
 }
 
+function renderTokenBudgetTooltipContent(el, model) {
+    if (!el || !model) return;
+    const pctValue = Math.max(0, Math.min(100, Math.round(model.ratioRaw * 1000) / 10));
+    el.innerHTML = `
+        <div class="token-budget-tip-head">
+            <div class="token-budget-tip-title">上下文窗口</div>
+            <div class="token-budget-tip-pct">${pctValue.toFixed(1)}%</div>
+        </div>
+        <div class="token-budget-tip-sub">${model.used.toLocaleString()}/${model.limit.toLocaleString()} 个令牌</div>
+        <div class="token-budget-tip-bar"><span style="width:${pctValue.toFixed(1)}%"></span></div>
+        <div class="token-budget-tip-grid">
+            <div class="token-budget-tip-row"><span>System Instructions</span><em>${model.systemTokens.toLocaleString()} (${model.pct(model.systemTokens)})</em></div>
+            <div class="token-budget-tip-row"><span>Tool Definitions</span><em>${model.toolTokens.toLocaleString()} (${model.pct(model.toolTokens)})</em></div>
+            <div class="token-budget-tip-row"><span>User Messages</span><em>${model.contextTokens.toLocaleString()} (${model.pct(model.contextTokens)})</em></div>
+            <div class="token-budget-tip-row"><span>Cache Hits</span><em>${model.cachedInput.toLocaleString()}</em></div>
+            <div class="token-budget-tip-row"><span>Billable Input</span><em>${model.totalInput.toLocaleString()} / ${model.cumulativeInput.toLocaleString()}</em></div>
+            <div class="token-budget-tip-row"><span>Remaining</span><em>${model.remain.toLocaleString()}${tokenBudgetState.estimated ? ' (估算上限)' : ''}</em></div>
+        </div>
+    `;
+}
+
 function showTokenBudgetTooltip(target, text, clientX = null, clientY = null) {
     const el = ensureTokenBudgetTooltipEl();
     const nextText = String(text || '').trim();
     if (!el || !nextText) return;
-    el.textContent = nextText;
+    const limit = Math.max(1, normalizeContextWindow(tokenBudgetState.contextWindow) || TOKEN_BUDGET_DEFAULT_LIMIT);
+    const used = safeTokenInt(tokenBudgetState.roundInput);
+    const remain = Math.max(0, limit - used);
+    const ratioRaw = used / limit;
+    const tipModel = buildTokenBudgetTooltipModel(limit, used, ratioRaw, remain);
+    renderTokenBudgetTooltipContent(el, tipModel);
     tokenBudgetTooltipState.visible = true;
     tokenBudgetTooltipState.target = target || null;
     tokenBudgetTooltipState.lastText = nextText;
@@ -8087,28 +8240,31 @@ function bindTokenBudgetTooltipTriggers() {
     const mini = els.tokenBudgetMini || document.getElementById('tokenBudgetMini');
     const usage = els.tokenBudgetUsage || document.getElementById('tokenBudgetUsage');
     const ring = els.tokenBudgetRing || document.getElementById('tokenBudgetRing');
-    const targets = [mini, usage, ring].filter(Boolean);
+    const targets = [usage].filter(Boolean);
     if (!targets.length) return;
     targets.forEach((t) => {
         if (!t || t.dataset.tokenBudgetTooltipBound === '1') return;
         t.dataset.tokenBudgetTooltipBound = '1';
-        t.addEventListener('mouseenter', (e) => {
+        t.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
             const tip = String((t.dataset.tokenBudgetTip || '')).trim();
             if (!tip) return;
-            showTokenBudgetTooltip(t, tip, e.clientX, e.clientY);
-        });
-        t.addEventListener('mousemove', (e) => {
-            if (!tokenBudgetTooltipState.visible) return;
-            positionTokenBudgetTooltipFromPoint(e.clientX, e.clientY);
-        });
-        t.addEventListener('mouseleave', () => hideTokenBudgetTooltip());
-        t.addEventListener('focus', () => {
-            const tip = String((t.dataset.tokenBudgetTip || '')).trim();
-            if (!tip) return;
+            if (tokenBudgetTooltipState.visible) {
+                hideTokenBudgetTooltip();
+                return;
+            }
             showTokenBudgetTooltip(t, tip);
         });
-        t.addEventListener('blur', () => hideTokenBudgetTooltip());
     });
+    if (mini && mini.dataset.tokenBudgetMiniBound !== '1') {
+        mini.dataset.tokenBudgetMiniBound = '1';
+        mini.addEventListener('click', (e) => e.stopPropagation());
+    }
+    if (ring && ring.dataset.tokenBudgetRingBound !== '1') {
+        ring.dataset.tokenBudgetRingBound = '1';
+        ring.addEventListener('click', (e) => e.stopPropagation());
+    }
     if (!window.__tokenBudgetTooltipDocBound) {
         window.__tokenBudgetTooltipDocBound = true;
         document.addEventListener('scroll', () => {
@@ -8118,6 +8274,19 @@ function bindTokenBudgetTooltipTriggers() {
                 return;
             }
             positionTokenBudgetTooltipByElement(tokenBudgetTooltipState.target);
+        }, true);
+        document.addEventListener('click', (e) => {
+            if (!tokenBudgetTooltipState.visible) return;
+            const tipEl = document.getElementById('tokenBudgetTooltip');
+            if (tipEl && tipEl.contains(e.target)) return;
+            const usageEl = els.tokenBudgetUsage || document.getElementById('tokenBudgetUsage');
+            if (usageEl && usageEl.contains(e.target)) return;
+            hideTokenBudgetTooltip();
+        }, true);
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && tokenBudgetTooltipState.visible) {
+                hideTokenBudgetTooltip();
+            }
         }, true);
     }
 }
@@ -9422,7 +9591,7 @@ async function ensureSelectedModelReady() {
             selectedModelId = fallbackId;
             try { localStorage.setItem('selectedModel', fallbackId); } catch (_) {}
             if (els.currentModelDisplay) {
-                els.currentModelDisplay.textContent = String(fallbackModel.name || fallbackId);
+                els.currentModelDisplay.innerHTML = renderCurrentModelDisplayHtml(fallbackModel);
             }
             return fallbackId;
         }
@@ -11192,6 +11361,7 @@ async function sendMessage(options = {}) {
                         }
                         
                         else if (chunk.type === 'content') {
+                            aiMsgDiv.__reasoningSegmentOpen = false;
                             currentFullContent += chunk.content;
                             onTokenStreamTextChunk(chunk.content);
                             const planInfo = applyLongtermPlanFromText(currentFullContent, { source: 'live-stream', messageDiv: aiMsgDiv });
@@ -11214,19 +11384,14 @@ async function sendMessage(options = {}) {
                                 currentContentSpan = createContentSpan(aiMsgDiv);
                             }
 
-                            // Keep the assistant reply in a single markdown block so block-level structure
-                            // survives tool inserts and the live render matches the refresh render.
-                            currentSegmentContent = currentFullContent;
+                            currentSegmentContent += chunk.content;
                             const segmentPlanInfo = applyLongtermPlanFromText(currentSegmentContent, { source: 'live-segment', messageDiv: aiMsgDiv });
                             const displaySegmentContent = String(segmentPlanInfo && segmentPlanInfo.text !== undefined ? segmentPlanInfo.text : currentSegmentContent || '');
-                            if (displaySegmentContent !== currentSegmentContent) {
-                                currentSegmentContent = displaySegmentContent;
-                            }
-                            currentContentSpan.dataset.streamRaw = currentSegmentContent;
+                            currentContentSpan.dataset.streamRaw = displaySegmentContent;
                             currentContentSpan.dataset.streamLive = '1';
                             const streamState = ensureStreamBlockState(currentContentSpan);
                             if (streamState) {
-                                streamState.liveRaw = currentSegmentContent;
+                                streamState.liveRaw = displaySegmentContent;
                                 flushStableStreamTail(currentContentSpan, aiMsgDiv.__citationUrlMap || {}, false);
                             }
                             syncStreamingModelBadgeEstimate(aiMsgDiv, modelBadgeState, model);
@@ -11234,22 +11399,16 @@ async function sendMessage(options = {}) {
                         else if (chunk.type === 'reasoning_content') { 
                            onTokenStreamReasoningChunk(chunk.content);
                            const msgContentContainer = aiMsgDiv.querySelector('.message-content');
-// 说明
-// 说明
-                           let thinkingBlock = msgContentContainer.lastElementChild;
+                           let thinkingBlock = aiMsgDiv.__activeReasoningThinkingBlock;
                            
-                           if(!thinkingBlock || !thinkingBlock.classList.contains('reasoning-thinking-block')) {
+                           if(!aiMsgDiv.__reasoningSegmentOpen || !thinkingBlock || !thinkingBlock.isConnected || !thinkingBlock.classList.contains('reasoning-thinking-block')) {
                                thinkingBlock = createThinkingBlock(false);
-                               
-// 说明
-                               const header = thinkingBlock.querySelector('.thinking-header');
-                               header.addEventListener('click', function() {
-                                   thinkingBlock.classList.toggle('collapsed');
-// 说明
-                               });
-                               
-// 说明
                                msgContentContainer.appendChild(thinkingBlock);
+                               aiMsgDiv.__reasoningSegmentOpen = true;
+                               aiMsgDiv.__activeReasoningThinkingBlock = thinkingBlock;
+                           }
+                           if (thinkingBlock && thinkingBlock.dataset.userToggled !== 'true') {
+                               thinkingBlock.classList.remove('collapsed');
                            }
                             
                             const contentDiv = thinkingBlock.querySelector('.thinking-content');
@@ -11266,16 +11425,24 @@ async function sendMessage(options = {}) {
                                syncStreamingModelBadgeEstimate(aiMsgDiv, modelBadgeState, model);
                         }
                         else if (chunk.type === 'context_compression_status') {
+                            aiMsgDiv.__reasoningSegmentOpen = false;
+                            currentContentSpan = null; currentSegmentContent = '';
                             updateMessageDivTools(aiMsgIndex, chunk, aiMsgDiv);
                         }
                         // --- New Chunk Types Support ---
                         else if (chunk.type === 'web_search') {
+                            aiMsgDiv.__reasoningSegmentOpen = false;
+                            currentContentSpan = null; currentSegmentContent = '';
                             updateWebSearchStatus(aiMsgDiv, chunk.status, chunk.query, chunk.content);
                         }
                         else if (chunk.type === 'search_meta') {
+                            aiMsgDiv.__reasoningSegmentOpen = false;
+                            currentContentSpan = null; currentSegmentContent = '';
                             appendSearchMeta(aiMsgDiv, chunk);
                         }
                         else if (chunk.type === 'function_call_delta') {
+                            aiMsgDiv.__reasoningSegmentOpen = false;
+                            currentContentSpan = null; currentSegmentContent = '';
                             const toolName = resolveToolNameFromEvent(chunk);
                             const rawCallId = String(chunk.call_id || chunk.callId || '').trim();
                             const toolIndex = (chunk.index === undefined || chunk.index === null) ? null : Number(chunk.index);
@@ -11291,6 +11458,8 @@ async function sendMessage(options = {}) {
                             });
                         }
                         else if (chunk.type === 'function_call') {
+                            aiMsgDiv.__reasoningSegmentOpen = false;
+                            currentContentSpan = null; currentSegmentContent = '';
                             const toolName = resolveToolNameFromEvent(chunk, chunk.name);
                             const rawCallId = String(chunk.call_id || chunk.callId || '').trim();
                             const toolIndex = (chunk.index === undefined || chunk.index === null) ? null : Number(chunk.index);
@@ -11311,6 +11480,8 @@ async function sendMessage(options = {}) {
                             syncStreamingModelBadgeEstimate(aiMsgDiv, modelBadgeState, model);
                         }
                         else if (chunk.type === 'function_result') {
+                            aiMsgDiv.__reasoningSegmentOpen = false;
+                            currentContentSpan = null; currentSegmentContent = '';
                             const toolName = resolveToolNameFromEvent(chunk, chunk.name);
                             const rawCallId = String(chunk.call_id || chunk.callId || '').trim();
                             const toolIndex = (chunk.index === undefined || chunk.index === null) ? null : Number(chunk.index);
@@ -12652,13 +12823,6 @@ function appendMessage(msg, index) {
         // 兼容老数据：仅 metadata.reasoning_content（无分段 step）
         if (msg.metadata && msg.metadata.reasoning_content && !hasReasoningStep) {
             const thinkingBlock = createThinkingBlock(true);
-            
-            // 添加点击事件监听
-            const header = thinkingBlock.querySelector('.thinking-header');
-            header.addEventListener('click', function() {
-                thinkingBlock.classList.toggle('collapsed');
-            });
-            
             const thinkingContent = thinkingBlock.querySelector('.thinking-content');
             thinkingContent.textContent = msg.metadata.reasoning_content;
             renderMathSafe(thinkingContent);
@@ -13528,14 +13692,19 @@ function updateMessageDivThinking(index, delta, preferredMessageDiv = null) {
     if (!messageDiv) return;
     
     const content = messageDiv.querySelector('.message-content');
-    let thinkingBlock = messageDiv.querySelector('.thinking-block.reasoning-thinking-block');
-    
+    let thinkingBlock = messageDiv.__activeReasoningThinkingBlock;
+    if (thinkingBlock && (!thinkingBlock.isConnected || !thinkingBlock.classList.contains('reasoning-thinking-block'))) {
+        thinkingBlock = null;
+    }
+    if (!thinkingBlock && messageDiv.__reasoningSegmentOpen) {
+        thinkingBlock = getLatestReasoningThinkingBlock(messageDiv);
+    }
     if (!thinkingBlock) {
-        thinkingBlock = createThinkingBlock(true);
+        thinkingBlock = createThinkingBlock(false);
         content.prepend(thinkingBlock); 
-        
-        const header = thinkingBlock.querySelector('.thinking-header');
-        header.addEventListener('click', () => thinkingBlock.classList.toggle('collapsed'));
+        messageDiv.__activeReasoningThinkingBlock = thinkingBlock;
+    } else if (thinkingBlock.dataset.userToggled !== 'true') {
+        thinkingBlock.classList.remove('collapsed');
     }
     
     const textTarget = thinkingBlock.querySelector('.thinking-content');
@@ -13816,8 +13985,9 @@ async function resumeActiveStreamAfterReload() {
 
     let streamCompleted = false;
     let streamAbortedByUser = false;
-    let accumulatedContent = '';
-    let accumulatedReasoning = '';
+    let currentFullContent = '';
+    let currentSegmentContent = '';
+    let currentContentSpan = null;
     let buffer = '';
     const decoder = new TextDecoder();
 
@@ -13842,6 +14012,9 @@ async function resumeActiveStreamAfterReload() {
             if (done) buffer += decoder.decode();
             const lines = buffer.split('\n');
             buffer = done ? '' : (lines.pop() || '');
+
+            let dirtiedContentSpans = new Set();
+            let dirtiedThinkingBlocks = new Set();
 
             for (const line of lines) {
                 if (!line.startsWith('data: ')) continue;
@@ -13894,25 +14067,32 @@ async function resumeActiveStreamAfterReload() {
                         outputTokens: Math.max(safeTokenInt(tokenMiniState.streamOutput), safeTokenInt(tokenMiniState.estimatedStreamOutput))
                     });
                 } else if (chunk.type === 'content') {
-                    accumulatedContent += String(chunk.content || '');
+                    assistantDiv.__reasoningSegmentOpen = false;
+                    currentFullContent += String(chunk.content || '');
+                    currentSegmentContent += String(chunk.content || '');
                     onTokenStreamTextChunk(chunk.content);
-                    updateMessageDivContent(assistantIndex, accumulatedContent, assistantDiv);
-                    syncStreamingModelBadgeEstimate(assistantDiv, {
-                        modelName: getStreamingModelBadgeName(),
-                        searchFlag: 'unknown',
-                        inputTokens: 0,
-                        outputTokens: 0
-                    });
+                    if (!currentContentSpan || !currentContentSpan.isConnected) {
+                        currentContentSpan = createContentSpan(assistantDiv);
+                    }
+                    currentContentSpan.dataset.streamRaw = currentSegmentContent;
+                    dirtiedContentSpans.add(currentContentSpan);
                 } else if (chunk.type === 'reasoning_content') {
-                    accumulatedReasoning += String(chunk.content || '');
                     onTokenStreamReasoningChunk(chunk.content);
-                    updateMessageDivThinking(assistantIndex, String(chunk.content || ''), assistantDiv);
-                    syncStreamingModelBadgeEstimate(assistantDiv, {
-                        modelName: getStreamingModelBadgeName(),
-                        searchFlag: 'unknown',
-                        inputTokens: 0,
-                        outputTokens: 0
-                    });
+                    const msgContentContainer = assistantDiv.querySelector('.message-content');
+                    let thinkingBlock = assistantDiv.__activeReasoningThinkingBlock;
+                    if(!assistantDiv.__reasoningSegmentOpen || !thinkingBlock || !thinkingBlock.isConnected || !thinkingBlock.classList.contains('reasoning-thinking-block')) {
+                        thinkingBlock = createThinkingBlock(false);
+                        msgContentContainer.appendChild(thinkingBlock);
+                        assistantDiv.__reasoningSegmentOpen = true;
+                        assistantDiv.__activeReasoningThinkingBlock = thinkingBlock;
+                    }
+                    if (thinkingBlock.dataset.userToggled !== 'true') {
+                        thinkingBlock.classList.remove('collapsed');
+                    }
+                    const contentDiv = thinkingBlock.querySelector('.thinking-content');
+                    const nextRaw = `${String(contentDiv.dataset.streamRaw || '')}${String(chunk.content || '')}`;
+                    contentDiv.dataset.streamRaw = nextRaw;
+                    dirtiedThinkingBlocks.add(contentDiv);
                 } else if (chunk.type === 'prompt_token_profile') {
                     applyPromptTokenProfileChunk(chunk);
                 } else if (
@@ -13928,6 +14108,8 @@ async function resumeActiveStreamAfterReload() {
                     } else if (chunk.type === 'function_call') {
                         onTokenStreamToolArgsChunk(chunk.arguments || '');
                     }
+                    assistantDiv.__reasoningSegmentOpen = false;
+                    currentContentSpan = null; currentSegmentContent = '';
                     updateMessageDivTools(assistantIndex, chunk, assistantDiv);
                     syncStreamingModelBadgeEstimate(assistantDiv, {
                         modelName: getStreamingModelBadgeName(),
@@ -13950,6 +14132,43 @@ async function resumeActiveStreamAfterReload() {
                 }
             }
 
+            for (const contentDiv of dirtiedContentSpans) {
+                const segmentRaw = contentDiv.dataset.streamRaw || '';
+                const segmentPlanInfo = applyLongtermPlanFromText(segmentRaw, { source: 'live-segment', messageDiv: assistantDiv });
+                const displaySegmentContent = String(segmentPlanInfo && segmentPlanInfo.text !== undefined ? segmentPlanInfo.text : segmentRaw || '');
+                contentDiv.dataset.streamLive = '1';
+                contentDiv.innerHTML = renderMarkdownWithNewTabLinks(displaySegmentContent, { streamingMathProvisional: true });
+                bindSourceMarkdown(contentDiv, displaySegmentContent);
+                highlightCode(contentDiv);
+            }
+            if (dirtiedContentSpans.size > 0 && shouldAutoScroll) {
+                els.messagesContainer.scrollTop = els.messagesContainer.scrollHeight;
+                syncStreamingModelBadgeEstimate(assistantDiv, {
+                    modelName: getStreamingModelBadgeName(),
+                    searchFlag: 'unknown',
+                    inputTokens: 0,
+                    outputTokens: 0
+                });
+            }
+
+            for (const contentDiv of dirtiedThinkingBlocks) {
+                const nextRaw = contentDiv.dataset.streamRaw || '';
+                contentDiv.dataset.streamLive = '1';
+                contentDiv.innerHTML = renderMarkdownWithNewTabLinks(nextRaw, { breaks: false, streamingMathProvisional: true });
+                bindSourceMarkdown(contentDiv, nextRaw);
+                highlightCode(contentDiv);
+                const pt = contentDiv.closest('.thinking-block');
+                if (pt) pt.dataset.streamLive = '1';
+            }
+            if (dirtiedThinkingBlocks.size > 0) {
+                syncStreamingModelBadgeEstimate(assistantDiv, {
+                    modelName: getStreamingModelBadgeName(),
+                    searchFlag: 'unknown',
+                    inputTokens: 0,
+                    outputTokens: 0
+                });
+            }
+
             if (done) {
                 streamCompleted = true;
                 break;
@@ -13959,7 +14178,17 @@ async function resumeActiveStreamAfterReload() {
         if (e && e.name === 'AbortError') {
             streamAbortedByUser = true;
         } else {
-            showToast('重连失败，请稍后刷新重试');
+            console.error('Reconnect failed:', e);
+            if (e && e.message && e.message.includes('404')) {
+                clearActiveStreamResumeState();
+                showToast('重连状态已过期，将重新加载历史记录');
+                const targetCid = String(state.conversation_id || currentConversationId || '').trim();
+                if (targetCid) {
+                    loadConversation(targetCid);
+                }
+            } else {
+                showToast('重连失败，请稍后刷新重试');
+            }
         }
     } finally {
         isGenerating = false;
@@ -14650,8 +14879,11 @@ async function viewKnowledge(title, options = {}) {
 
     // 3. UI Switch
     msgs.style.display = 'none';
+    const inputDock = document.querySelector('.input-dock');
+    if (inputDock) inputDock.style.display = 'none';
     if(inputWrapper) inputWrapper.style.display = 'none';
-    viewer.style.display = 'block';
+    viewer.style.display = 'flex';
+    viewer.style.flexDirection = 'column';
     // 如果当前viewer是搜索页，先恢复为编辑器容器
     if (!document.getElementById('knowledgeEditor')) {
         viewer.innerHTML = '<textarea id="knowledgeEditor"></textarea>';
@@ -14722,8 +14954,7 @@ async function viewKnowledge(title, options = {}) {
     }
     
     const viewportHeight = window.innerHeight;
-    const headerHeight = 60; 
-    easyMDE.codemirror.setSize(null, `${viewportHeight - headerHeight}px`);
+    const headerHeight = 60;
 
     easyMDE.value(content || '');
 
@@ -14940,6 +15171,8 @@ function closeKnowledgeView() {
     // 返回到聊天界面
     viewer.style.display = 'none';
     msgs.style.display = 'flex';
+    const inputDock = document.querySelector('.input-dock');
+    if (inputDock) inputDock.style.display = 'block';
     if(inputWrapper) inputWrapper.style.display = 'block';
     navigationStack = []; // 清空栈
 
@@ -14987,6 +15220,8 @@ window.openMailPlaceholderView = function() {
     }
 
     msgs.style.display = 'none';
+    const inputDock = document.querySelector('.input-dock');
+    if (inputDock) inputDock.style.display = 'none';
     if (inputWrapper) inputWrapper.style.display = 'none';
     viewer.style.display = 'flex';
     viewer.style.flexDirection = 'column';
@@ -15180,6 +15415,8 @@ window.openWorkflowPlaceholderView = function() {
     navigationStack = [];
 
     msgs.style.display = 'none';
+    const inputDock = document.querySelector('.input-dock');
+    if (inputDock) inputDock.style.display = 'none';
     if (inputWrapper) inputWrapper.style.display = 'none';
     viewer.style.display = 'flex';
     viewer.style.flexDirection = 'column';
@@ -16435,6 +16672,8 @@ async function searchKnowledgeVectors(query) {
     
     // 显示搜索结果视图
     msgs.style.display = 'none';
+    const inputDock = document.querySelector('.input-dock');
+    if (inputDock) inputDock.style.display = 'none';
     if(inputWrapper) inputWrapper.style.display = 'none';
     viewer.style.display = 'flex';
     viewer.style.flexDirection = 'column';
@@ -16559,8 +16798,10 @@ function closeKnowledgeSearchResultView() {
     viewer.style.display = 'none';
     viewer.innerHTML = '<textarea id="knowledgeEditor"></textarea>';
     msgs.style.display = 'flex';
+    const inputDock = document.querySelector('.input-dock');
+    if (inputDock) inputDock.style.display = 'block';
     if(inputWrapper) inputWrapper.style.display = 'block';
-    
+
     // 清除导航栈和搜索状态
     navigationStack = [];
     currentSearchQuery = '';
@@ -16851,13 +17092,9 @@ function providerIconFallbackText(text) {
     const src = String(text || '').trim();
     if (!src) return '?';
     const cleaned = src.replace(/[^0-9a-zA-Z\u4e00-\u9fa5]+/g, ' ').trim();
-    if (!cleaned) return src.slice(0, 2).toUpperCase();
-    const parts = cleaned.split(/\s+/).filter(Boolean);
-    if (parts.length >= 2) {
-        return `${parts[0].slice(0, 1)}${parts[1].slice(0, 1)}`.toUpperCase();
-    }
-    if (/[\u4e00-\u9fa5]/.test(parts[0])) return parts[0].slice(0, 2);
-    return parts[0].slice(0, 2).toUpperCase();
+    if (!cleaned) return src.slice(0, 1).toUpperCase();
+    const first = cleaned.slice(0, 1);
+    return /[a-zA-Z]/.test(first) ? first.toUpperCase() : first;
 }
 
 function renderProviderIconHtml(provider, options = {}) {
@@ -16889,13 +17126,131 @@ function renderProviderInlineHtml(provider, labelText = '') {
     `;
 }
 
+function getChatProviderApiType(providerKey) {
+    const key = String(providerKey || '').trim();
+    const providerInfo = key ? (providerCatalogByKey[key] || providerCatalogByKey[key.toLowerCase()] || {}) : {};
+    return String(providerInfo && providerInfo.api_type ? providerInfo.api_type : '').trim().toLowerCase();
+}
+
+function getChatOllamaStatusEntry(providerKey) {
+    const key = String(providerKey || '').trim();
+    return key ? (ollamaChatProviderStatusCache.get(key) || null) : null;
+}
+
+function getChatOllamaModelStatus(providerKey, modelId) {
+    const providerEntry = getChatOllamaStatusEntry(providerKey);
+    const modelKey = String(modelId || '').trim().toLowerCase();
+    if (!providerEntry || !providerEntry.byModelId || !modelKey) return null;
+    return providerEntry.byModelId[modelKey] || null;
+}
+
+async function loadChatOllamaProviderStatus(providerKey) {
+    const key = String(providerKey || '').trim();
+    if (!key) return null;
+    if (ollamaChatProviderStatusCache.has(key)) {
+        return ollamaChatProviderStatusCache.get(key);
+    }
+    if (ollamaChatProviderStatusPending.has(key)) {
+        return ollamaChatProviderStatusPending.get(key);
+    }
+
+    const pending = (async () => {
+        try {
+            const res = await fetch(`/api/provider/ollama/list?provider=${encodeURIComponent(key)}&timeout=8`, { credentials: 'include' });
+            const data = await res.json();
+            const byModelId = {};
+            const rows = Array.isArray(data.models) ? data.models : [];
+            rows.forEach((row) => {
+                const modelKey = String((row && (row.id || row.model || row.name)) || '').trim().toLowerCase();
+                if (!modelKey) return;
+                byModelId[modelKey] = {
+                    ...row,
+                    installed: row && row.installed !== undefined ? !!row.installed : true,
+                    running: !!(row && row.running),
+                    status: String((row && row.status) || '').trim().toLowerCase() || (row && row.running ? 'running' : 'offline'),
+                    status_label: String((row && row.status_label) || (row && row.running ? '在线' : '不在线')),
+                    status_level: String((row && row.status_level) || (row && row.running ? 'success' : 'warning'))
+                };
+            });
+            const payload = {
+                byModelId,
+                raw: data,
+                error: data && data.success === false ? (data.message || '加载失败') : '',
+                loaded: !(data && data.success === false),
+                loadedAt: Date.now()
+            };
+            ollamaChatProviderStatusCache.set(key, payload);
+            return payload;
+        } catch (err) {
+            const payload = {
+                byModelId: {},
+                raw: null,
+                error: err && err.message ? err.message : '加载失败',
+                loaded: false,
+                loadedAt: Date.now()
+            };
+            ollamaChatProviderStatusCache.set(key, payload);
+            return payload;
+        } finally {
+            ollamaChatProviderStatusPending.delete(key);
+        }
+    })();
+
+    ollamaChatProviderStatusPending.set(key, pending);
+    return pending;
+}
+
+function getChatModelOllamaCircleClass(model, providerKey) {
+    const modelId = String(model && model.id ? model.id : '').trim();
+    const modelStatus = String(model && model.status ? model.status : '').trim().toLowerCase();
+    const providerEntry = getChatOllamaStatusEntry(providerKey);
+    if (!providerEntry) {
+        return 'status-loading';
+    }
+    if (providerEntry.error) {
+        return 'status-danger';
+    }
+    const statusEntry = getChatOllamaModelStatus(providerKey, modelId);
+    if (!statusEntry) {
+        return providerEntry.loaded ? 'status-danger' : 'status-loading';
+    }
+    const status = String(statusEntry.status || modelStatus || '').trim().toLowerCase();
+    if (statusEntry.running || status === 'running' || status === 'online' || status === 'ok') return 'status-success';
+    if (statusEntry.installed === false || status === 'missing' || status === 'uninstalled') return 'status-danger';
+    return 'status-warn';
+}
+
+function renderCurrentModelDisplayHtml(model) {
+    const currentModel = model && typeof model === 'object' ? model : null;
+    const label = String(currentModel && currentModel.name ? currentModel.name : currentModel && currentModel.id ? currentModel.id : '').trim();
+    if (!label) return '';
+
+    const providerKey = String(currentModel && currentModel.provider ? currentModel.provider : '').trim();
+    const providerApiType = getChatProviderApiType(providerKey);
+    if (providerApiType !== 'ollama') {
+        return `<span class="current-model-content"><span class="current-model-label">${escapeHtml(label)}</span></span>`;
+    }
+
+    const circleClass = getChatModelOllamaCircleClass(currentModel, providerKey);
+    const statusText = circleClass === 'status-success' ? '在线' : (circleClass === 'status-danger' ? '未安装' : (circleClass === 'status-loading' ? '加载中' : '不在线'));
+    return `
+        <span class="current-model-content">
+            <span class="current-model-label">${escapeHtml(label)}</span>
+            <span class="current-model-ollama-dot ${circleClass}" title="${escapeHtml(statusText)}" aria-label="${escapeHtml(statusText)}"></span>
+        </span>
+    `;
+}
+
 async function loadModels() {
     try {
         const res = await fetch('/api/config');
         const data = await res.json();
         if(data.models) {
+            providerCatalogByKey = (data.providers && typeof data.providers === 'object') ? data.providers : {};
             modelCatalog = Array.isArray(data.models) ? data.models : [];
             modelMetaById.clear();
+            providerVisionModelSetCache.clear();
+            providerVisionPendingFetch.clear();
             modelCatalog.forEach((m) => {
                 if (!m || !m.id) return;
                 modelMetaById.set(String(m.id), {
@@ -16910,6 +17265,10 @@ async function loadModels() {
                     )
                 });
             });
+                const ollamaProviderKeys = Object.keys(providerCatalogByKey || {}).filter((providerKey) => getChatProviderApiType(providerKey) === 'ollama');
+                if (ollamaProviderKeys.length) {
+                    await Promise.all(ollamaProviderKeys.map((providerKey) => loadChatOllamaProviderStatus(providerKey)));
+                }
             renderCustomModelSelect(modelCatalog, data.default_model);
             updateTokenBudgetContextFromSelectedModel();
         }
@@ -16984,6 +17343,7 @@ function renderCustomModelSelect(models, defaultModel) {
     sortedProviders.forEach((providerKey) => {
         const section = document.createElement('div');
         section.className = 'model-group';
+        const providerApiType = getChatProviderApiType(providerKey);
 
         const title = document.createElement('div');
         title.className = 'model-group-title';
@@ -17013,9 +17373,18 @@ function renderCustomModelSelect(models, defaultModel) {
             const statusSpan = document.createElement('span');
             statusSpan.className = `model-chip-status model-status-${statusKey}`;
             statusSpan.textContent = statusLabelMap[statusKey] || statusKey.toUpperCase();
-
             chip.appendChild(nameSpan);
             chip.appendChild(statusSpan);
+
+            if (providerApiType === 'ollama') {
+                const statusDot = document.createElement('span');
+                const circleClass = getChatModelOllamaCircleClass(m, providerKey);
+                const statusText = circleClass === 'status-success' ? '在线' : (circleClass === 'status-danger' ? '未安装' : '不在线');
+                statusDot.className = `model-chip-ollama-dot ${circleClass}`;
+                statusDot.title = statusText;
+                statusDot.setAttribute('aria-label', statusText);
+                chip.appendChild(statusDot);
+            }
 
             if (m.id === selectedModelId) chip.classList.add('same-as-selected');
             chip.addEventListener('click', (e) => {
@@ -17031,7 +17400,7 @@ function renderCustomModelSelect(models, defaultModel) {
     
     // Set initial display
     const currentList = models.find(m => m.id === selectedModelId);
-    if(currentList) els.currentModelDisplay.textContent = currentList.name;
+    if(currentList) els.currentModelDisplay.innerHTML = renderCurrentModelDisplayHtml(currentList);
 
     // Toggle logic
     els.currentModelDisplay.onclick = (e) => {
@@ -17080,16 +17449,18 @@ function normalizeProviderName(provider) {
 
 function fallbackModelVisionMatch(modelId, modelName, provider) {
     const p = normalizeProviderName(provider);
-    if (p !== 'volcengine') return false;
+    if (p !== 'volcengine' && p !== 'ollama') return false;
     const merged = `${String(modelId || '')} ${String(modelName || '')}`.toLowerCase();
-    return ['vision', 'image', 'multimodal', 'vl', 'seed-1-8'].some((k) => merged.includes(k));
+    return ['vision', 'image', 'multimodal', 'vl', 'seed-1-8', 'llava'].some((k) => merged.includes(k));
 }
 
 async function ensureProviderVisionModelSet(provider) {
     const p = normalizeProviderName(provider);
     if (!p) return null;
     if (providerVisionModelSetCache.has(p)) {
-        return providerVisionModelSetCache.get(p);
+        const cached = providerVisionModelSetCache.get(p);
+        if (cached instanceof Set) return cached;
+        providerVisionModelSetCache.delete(p);
     }
     if (providerVisionPendingFetch.has(p)) {
         return providerVisionPendingFetch.get(p);
@@ -17107,7 +17478,13 @@ async function ensureProviderVisionModelSet(provider) {
             );
             const data = await res.json();
             if (!data || !data.success || !Array.isArray(data.models)) {
-                providerVisionModelSetCache.set(p, null);
+                providerVisionModelSetCache.delete(p);
+                return null;
+            }
+            // Ollama capability endpoint may return transient stale-empty payload
+            // before background refresh fills cache; treat it as unknown and retry later.
+            if (data.stale && data.models.length === 0) {
+                providerVisionModelSetCache.delete(p);
                 return null;
             }
             const set = new Set();
@@ -17119,7 +17496,7 @@ async function ensureProviderVisionModelSet(provider) {
             providerVisionModelSetCache.set(p, set);
             return set;
         } catch (e) {
-            providerVisionModelSetCache.set(p, null);
+            providerVisionModelSetCache.delete(p);
             return null;
         } finally {
             if (timer) clearTimeout(timer);
@@ -17169,7 +17546,8 @@ function readImageAsDataUrl(file, onProgress) {
 async function selectModel(id, name) {
     selectedModelId = id;
     localStorage.setItem('selectedModel', id);
-    els.currentModelDisplay.textContent = name;
+    const selectedModel = modelCatalog.find((m) => m && String(m.id || '') === String(id || '')) || { id, name };
+    els.currentModelDisplay.innerHTML = renderCurrentModelDisplayHtml(selectedModel);
     
     // Visual update
     els.modelOptions.querySelectorAll('.model-chip').forEach((chip) => {
@@ -18755,12 +19133,177 @@ let adminModelSearchKeyword = '';
 let adminTextConfirmHandler = null;
 let adminPanelScrollState = { providers: 0, models: 0 };
 let adminConfigState = { mode: '', originalKey: '' };
+let adminOllamaModelStatusCache = {};
+let adminOllamaStatusPending = new Map();
+let adminOllamaStatusModalState = { provider: '', model: '', status: null, loading: false };
 
 function maskSecret(secret) {
     const s = String(secret || '');
     if (!s) return '(empty)';
     if (s.length <= 8) return '*'.repeat(s.length);
     return `${s.slice(0, 4)}...${s.slice(-4)}`;
+}
+
+function normalizeAdminApiType(apiType) {
+    const value = String(apiType || '').trim().toLowerCase();
+    if (!value || value === 'openaiapi') return 'openai';
+    if (value === 'openai-compatible' || value === 'openai compatible') return 'openai_compatible';
+    return value;
+}
+
+function normalizeAdminProviderKey(provider) {
+    return String(provider || '').trim();
+}
+
+function getAdminProviderApiType(providerInfo) {
+    return normalizeAdminApiType(providerInfo && providerInfo.api_type ? providerInfo.api_type : 'openai');
+}
+
+function getAdminProviderKeepAlive(providerInfo) {
+    const settings = providerInfo && typeof providerInfo.settings === 'object' && providerInfo.settings ? providerInfo.settings : {};
+    const keepAlive = String(settings.keep_alive || '').trim();
+    return keepAlive || '5m';
+}
+
+function isAdminOllamaProvider(providerInfo) {
+    return getAdminProviderApiType(providerInfo) === 'ollama';
+}
+
+function getAdminOllamaProviderStatusEntry(providerKey) {
+    const key = normalizeAdminProviderKey(providerKey);
+    return adminOllamaModelStatusCache[key] || null;
+}
+
+function getAdminOllamaModelStatus(providerKey, modelId) {
+    const providerEntry = getAdminOllamaProviderStatusEntry(providerKey);
+    const modelKey = String(modelId || '').trim().toLowerCase();
+    if (!providerEntry || !providerEntry.byModelId || !modelKey) return null;
+    return providerEntry.byModelId[modelKey] || null;
+}
+
+function getAdminOllamaStatusButtonClass(status) {
+    const value = String(status || '').trim().toLowerCase();
+    if (value === 'running' || value === 'online' || value === 'ok') return 'model-status-btn-success';
+    if (value === 'offline' || value === 'idle' || value === 'warning') return 'model-status-btn-warn';
+    if (value === 'missing' || value === 'error' || value === 'failed') return 'model-status-btn-danger';
+    return 'model-status-btn-loading';
+}
+
+function renderAdminOllamaStatusButton(providerKey, modelId, providerInfo) {
+    const key = normalizeAdminProviderKey(providerKey);
+    const modelKey = String(modelId || '').trim();
+    if (!key || !modelKey || !isAdminOllamaProvider(providerInfo)) return '';
+    const providerEntry = getAdminOllamaProviderStatusEntry(key);
+    const statusEntry = getAdminOllamaModelStatus(key, modelKey);
+    const providerLoaded = !!(providerEntry && providerEntry.loaded);
+    const status = String((statusEntry && statusEntry.status) || (providerEntry && providerEntry.error ? 'error' : providerLoaded ? 'missing' : '')).trim().toLowerCase() || 'loading';
+    const statusLabel = String((statusEntry && statusEntry.status_label) || (providerEntry && providerEntry.error ? '错误' : providerLoaded ? '不在线' : '加载中') || '状态').trim();
+    const statusClass = getAdminOllamaStatusButtonClass(status);
+    const title = `${key} / ${modelKey} · ${statusLabel}`;
+    return `
+        <button class="model-icon-btn model-status-btn ${statusClass}" title="${escapeHtml(title)}" onclick="event.stopPropagation(); openAdminOllamaModelStatusByEncoded('${encodeURIComponent(key)}', '${encodeURIComponent(modelKey)}')">
+            <i class="fa-solid fa-circle"></i>
+        </button>
+    `;
+}
+
+async function loadAdminOllamaStatusForProvider(providerKey) {
+    const key = normalizeAdminProviderKey(providerKey);
+    if (!key) return null;
+    if (adminOllamaStatusPending.has(key)) {
+        return adminOllamaStatusPending.get(key);
+    }
+
+    const pending = (async () => {
+        try {
+            const res = await fetch(`/api/provider/ollama/list?provider=${encodeURIComponent(key)}&timeout=8`, { credentials: 'include' });
+            const data = await res.json();
+            const byModelId = {};
+            const rows = Array.isArray(data.models) ? data.models : [];
+            rows.forEach((row) => {
+                const modelKey = String((row && (row.id || row.model || row.name)) || '').trim().toLowerCase();
+                if (!modelKey) return;
+                byModelId[modelKey] = {
+                    ...row,
+                    installed: row && row.installed !== undefined ? !!row.installed : true,
+                    running: !!(row && row.running),
+                    status: String((row && row.status) || '').trim().toLowerCase() || (row && row.running ? 'running' : 'offline'),
+                    status_label: String((row && row.status_label) || (row && row.running ? '在线' : '不在线')),
+                    status_level: String((row && row.status_level) || (row && row.running ? 'success' : 'warning'))
+                };
+            });
+            adminOllamaModelStatusCache[key] = {
+                byModelId,
+                raw: data,
+                error: data && data.success === false ? (data.message || '加载失败') : '',
+                loaded: !(data && data.success === false),
+                loadedAt: Date.now()
+            };
+            return adminOllamaModelStatusCache[key];
+        } catch (err) {
+            adminOllamaModelStatusCache[key] = {
+                byModelId: {},
+                raw: null,
+                error: err && err.message ? err.message : '加载失败',
+                loaded: false,
+                loadedAt: Date.now()
+            };
+            return adminOllamaModelStatusCache[key];
+        } finally {
+            adminOllamaStatusPending.delete(key);
+        }
+    })();
+
+    adminOllamaStatusPending.set(key, pending);
+    return pending;
+}
+
+async function refreshAdminOllamaStatusCache(providerKeys = []) {
+    const keys = Array.from(new Set((providerKeys || []).map((item) => normalizeAdminProviderKey(item)).filter(Boolean)));
+    if (!keys.length) return;
+    await Promise.all(keys.map((providerKey) => loadAdminOllamaStatusForProvider(providerKey)));
+    const listEl = document.getElementById('adminModelConfigList');
+    if (listEl) {
+        renderAdminModelConfig();
+    }
+}
+
+function formatAdminOllamaStatusLabel(statusEntry) {
+    if (!statusEntry) return '加载中';
+    const status = String(statusEntry.status || '').trim().toLowerCase();
+    if (status === 'running') return '在线';
+    if (status === 'offline') return '不在线';
+    if (status === 'missing' || status === 'uninstalled') return '未安装';
+    if (status === 'error') return '错误';
+    return statusEntry.status_label || '状态未知';
+}
+
+function formatAdminOllamaStatusLevel(statusEntry) {
+    if (!statusEntry) return 'info';
+    const status = String(statusEntry.status || '').trim().toLowerCase();
+    if (status === 'running') return 'success';
+    if (status === 'offline') return 'warning';
+    if (status === 'missing' || status === 'error') return 'danger';
+    return statusEntry.status_level || 'info';
+}
+
+function renderAdminOllamaStatusDetail(statusEntry) {
+    if (!statusEntry) {
+        return '<div class="ollama-status-empty">暂无状态信息</div>';
+    }
+    const tagName = String((statusEntry.tag && (statusEntry.tag.name || statusEntry.tag.model || statusEntry.tag.id)) || statusEntry.model || '').trim();
+    const psName = String((statusEntry.ps && (statusEntry.ps.name || statusEntry.ps.model || statusEntry.ps.id)) || '').trim();
+    return `
+        <div class="ollama-status-grid">
+            <div class="ollama-status-row"><span>状态</span><strong>${escapeHtml(formatAdminOllamaStatusLabel(statusEntry))}</strong></div>
+            <div class="ollama-status-row"><span>运行中</span><strong>${escapeHtml(statusEntry.running ? '是' : '否')}</strong></div>
+            <div class="ollama-status-row"><span>已安装</span><strong>${escapeHtml(statusEntry.installed ? '是' : '否')}</strong></div>
+            <div class="ollama-status-row"><span>keep_alive</span><strong>${escapeHtml(String(statusEntry.keep_alive || '5m'))}</strong></div>
+            <div class="ollama-status-row"><span>tags</span><strong>${escapeHtml(tagName || '-')}</strong></div>
+            <div class="ollama-status-row"><span>ps</span><strong>${escapeHtml(psName || '-')}</strong></div>
+        </div>
+        <div class="ollama-status-message ${escapeHtml(`level-${formatAdminOllamaStatusLevel(statusEntry)}`)}">${escapeHtml(statusEntry.message || '')}</div>
+    `;
 }
 
 window.closeAdminTextConfirmModal = function() {
@@ -18814,11 +19357,17 @@ async function loadAdminModelConfig() {
             models: data.models || {},
             providers: data.providers || {}
         };
+        adminOllamaModelStatusCache = {};
+        adminOllamaStatusPending = new Map();
         const providerKeys = Object.keys(adminModelConfigCache.providers || {}).sort((a, b) => a.localeCompare(b));
         if (!adminSelectedProvider || !adminModelConfigCache.providers[adminSelectedProvider]) {
             adminSelectedProvider = providerKeys[0] || '';
         }
         renderAdminModelConfig();
+        const ollamaProviderKeys = providerKeys.filter((providerKey) => isAdminOllamaProvider(adminModelConfigCache.providers[providerKey] || {}));
+        if (ollamaProviderKeys.length) {
+            void refreshAdminOllamaStatusCache(ollamaProviderKeys);
+        }
     } catch (err) {
         listEl.innerHTML = `<div class="model-admin-empty" style="color:#dc2626;">${escapeHtml(err.message || '加载失败')}</div>`;
     }
@@ -18826,6 +19375,7 @@ async function loadAdminModelConfig() {
 
 function renderAdminModelConfig(options = {}) {
     const resetModelsScroll = !!options.resetModelsScroll;
+    const preserveProviderList = !!options.preserveProviderList;
     const listEl = document.getElementById('adminModelConfigList');
     if (!listEl) return;
 
@@ -18844,7 +19394,8 @@ function renderAdminModelConfig(options = {}) {
     const providerMatches = (providerKey, providerInfo) => {
         if (!query) return true;
         const baseUrl = (providerInfo && providerInfo.base_url) ? String(providerInfo.base_url) : '';
-        return providerKey.toLowerCase().includes(query) || baseUrl.toLowerCase().includes(query);
+        const apiType = normalizeAdminApiType(providerInfo && providerInfo.api_type ? providerInfo.api_type : 'openai');
+        return providerKey.toLowerCase().includes(query) || baseUrl.toLowerCase().includes(query) || apiType.includes(query);
     };
     const modelMatches = (modelId, modelInfo) => {
         if (!query) return true;
@@ -18883,7 +19434,7 @@ function renderAdminModelConfig(options = {}) {
         .sort((a, b) => a[0].localeCompare(b[0]));
 
     const providersHtml = providerEntries.length ? providerEntries.map(([key, info]) => `
-        <div class="provider-item ${key === adminSelectedProvider ? 'active' : ''}" onclick="adminSelectProviderByEncoded('${encodeURIComponent(key)}')">
+        <div class="provider-item ${key === adminSelectedProvider ? 'active' : ''}" data-provider-key="${escapeHtml(key)}" onclick="adminSelectProviderByEncoded('${encodeURIComponent(key)}')">
             <div class="model-admin-item-main provider-item-main">
                 <div class="provider-item-head">
                     ${renderProviderIconHtml(key, { className: 'provider-logo provider-logo-md', label: key })}
@@ -18891,6 +19442,7 @@ function renderAdminModelConfig(options = {}) {
                 </div>
                 <div class="provider-item-meta">${escapeHtml(maskSecret(info && info.api_key))}</div>
                 <div class="provider-item-meta">${escapeHtml((info && info.base_url) || '')}</div>
+                <div class="provider-item-meta">api_type: ${escapeHtml(normalizeAdminApiType(info && info.api_type ? info.api_type : 'openai'))}${normalizeAdminApiType(info && info.api_type ? info.api_type : 'openai') === 'ollama' ? ` · keep_alive: ${escapeHtml(getAdminProviderKeepAlive(info))}` : ''}</div>
             </div>
             <div class="model-admin-item-actions">
                 <button class="model-icon-btn" title="Edit Provider" onclick="event.stopPropagation(); adminEditProviderByEncoded('${encodeURIComponent(key)}')"><i class="fa-solid fa-pen"></i></button>
@@ -18902,7 +19454,10 @@ function renderAdminModelConfig(options = {}) {
     const modelsHtml = modelEntries.length ? modelEntries.map(([id, info]) => `
         <div class="model-admin-item">
             <div class="model-admin-item-main">
-                <div class="model-admin-item-name">${escapeHtml(id)} (${escapeHtml((info && info.name) || id)})</div>
+                <div class="model-admin-item-name-row">
+                    ${renderAdminOllamaStatusButton((info && info.provider) || '', id, providers[(info && info.provider) || ''] || {})}
+                    <div class="model-admin-item-name">${escapeHtml(id)} (${escapeHtml((info && info.name) || id)})</div>
+                </div>
                 <div class="model-admin-item-meta">provider: ${renderProviderInlineHtml((info && info.provider) || '', (info && info.provider) || '-')}</div>
                 <div class="model-admin-item-meta">status: ${escapeHtml((info && info.status) || 'normal')}</div>
             </div>
@@ -18912,6 +19467,27 @@ function renderAdminModelConfig(options = {}) {
             </div>
         </div>
     `).join('') : `<div class="model-admin-empty">${adminSelectedProvider ? '该供应商无模型' : '无模型'}</div>`;
+
+    const existingProviderList = listEl.querySelector('.model-admin-col-list[data-col="providers"]');
+    const existingModelList = listEl.querySelector('.model-admin-col-list[data-col="models"]');
+    const providerTitleEl = listEl.querySelector('.model-admin-col:first-child .model-admin-col-title');
+    const modelTitleEl = listEl.querySelector('.model-admin-col:last-child .model-admin-col-title');
+
+    if (preserveProviderList && existingProviderList && existingModelList && providerTitleEl && modelTitleEl) {
+        existingProviderList.querySelectorAll('.provider-item').forEach((item) => {
+            const key = String(item.dataset.providerKey || '');
+            const isActive = key === adminSelectedProvider;
+            item.classList.toggle('active', isActive);
+        });
+        providerTitleEl.textContent = `供应商 (${providerEntries.length})`;
+        modelTitleEl.textContent = adminSelectedProvider ? `模型 (${adminSelectedProvider})` : '模型';
+        existingModelList.innerHTML = modelsHtml;
+        requestAnimationFrame(() => {
+            const modelList = listEl.querySelector('.model-admin-col-list[data-col="models"]');
+            if (modelList) modelList.scrollTop = modelScroll;
+        });
+        return;
+    }
 
     listEl.innerHTML = `
         <div class="model-admin-master">
@@ -18938,7 +19514,7 @@ window.adminSelectProviderByEncoded = function(encoded) {
     const next = decodeURIComponent(encoded || '');
     if (next === adminSelectedProvider) return;
     adminSelectedProvider = next;
-    renderAdminModelConfig({ resetModelsScroll: true });
+    renderAdminModelConfig({ resetModelsScroll: true, preserveProviderList: true });
 };
 
 function openAdminConfigModal(mode, payload = {}) {
@@ -18960,6 +19536,9 @@ function openAdminConfigModal(mode, payload = {}) {
         document.getElementById('adminProviderNameInput').value = payload.provider || '';
         document.getElementById('adminProviderApiKeyInput').value = payload.api_key || '';
         document.getElementById('adminProviderBaseUrlInput').value = payload.base_url || '';
+        document.getElementById('adminProviderApiTypeInput').value = normalizeAdminApiType(payload.api_type || 'openai');
+        document.getElementById('adminProviderKeepAliveInput').value = payload.keep_alive || '5m';
+        syncAdminProviderApiTypeFields();
     } else {
         title.textContent = payload.originalKey ? '修改模型' : '添加模型';
         providerFields.style.display = 'none';
@@ -18977,6 +19556,14 @@ function openAdminConfigModal(mode, payload = {}) {
     modal.classList.add('active');
 }
 
+function syncAdminProviderApiTypeFields() {
+    const apiTypeInput = document.getElementById('adminProviderApiTypeInput');
+    const ollamaSettings = document.getElementById('adminProviderOllamaSettings');
+    if (!apiTypeInput || !ollamaSettings) return;
+    const apiType = normalizeAdminApiType(apiTypeInput.value || 'openai');
+    ollamaSettings.style.display = apiType === 'ollama' ? '' : 'none';
+}
+
 window.closeAdminConfigModal = function() {
     const modal = document.getElementById('adminConfigModal');
     if (modal) modal.classList.remove('active');
@@ -18989,6 +19576,8 @@ async function saveAdminConfigModal() {
             const provider = (document.getElementById('adminProviderNameInput').value || '').trim();
             const apiKey = document.getElementById('adminProviderApiKeyInput').value || '';
             const baseUrl = document.getElementById('adminProviderBaseUrlInput').value || '';
+            const apiType = normalizeAdminApiType(document.getElementById('adminProviderApiTypeInput').value || 'openai');
+            const keepAlive = (document.getElementById('adminProviderKeepAliveInput').value || '').trim() || '5m';
             if (!provider) {
                 showToast('供应商名称是必填项');
                 return;
@@ -18997,9 +19586,12 @@ async function saveAdminConfigModal() {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
+                    original_provider: (adminConfigState.originalKey || '').trim(),
                     provider,
                     api_key: apiKey,
-                    base_url: baseUrl
+                    base_url: baseUrl,
+                    api_type: apiType,
+                    settings: apiType === 'ollama' ? { keep_alive: keepAlive } : {}
                 })
             });
             const data = await res.json();
@@ -19047,6 +19639,153 @@ async function saveAdminConfigModal() {
     }
 }
 
+function closeAdminOllamaModelStatusModal() {
+    const modal = document.getElementById('ollamaModelStatusModal');
+    if (modal) modal.classList.remove('active');
+    adminOllamaStatusModalState = { provider: '', model: '', status: null, loading: false };
+}
+
+function renderAdminOllamaStatusModal(statusData) {
+    const providerEl = document.getElementById('ollamaModelStatusProvider');
+    const modelEl = document.getElementById('ollamaModelStatusModel');
+    const statusEl = document.getElementById('ollamaModelStatusState');
+    const detailEl = document.getElementById('ollamaModelStatusDetail');
+    const actionBtn = document.getElementById('ollamaModelStatusActionBtn');
+    const refreshBtn = document.getElementById('ollamaModelStatusRefreshBtn');
+    if (!providerEl || !modelEl || !statusEl || !detailEl || !actionBtn || !refreshBtn) return;
+
+    adminOllamaStatusModalState.status = statusData || null;
+    const provider = adminOllamaStatusModalState.provider || '-';
+    const model = adminOllamaStatusModalState.model || '-';
+    providerEl.textContent = provider;
+    modelEl.textContent = model;
+
+    if (!statusData) {
+        statusEl.textContent = '加载中';
+        detailEl.innerHTML = '<div class="ollama-status-empty">正在加载状态...</div>';
+        actionBtn.disabled = true;
+        actionBtn.textContent = '处理中';
+        refreshBtn.disabled = true;
+        return;
+    }
+
+    const status = String(statusData.status || '').trim().toLowerCase();
+    const label = formatAdminOllamaStatusLabel(statusData);
+    statusEl.textContent = label;
+    detailEl.innerHTML = renderAdminOllamaStatusDetail(statusData);
+
+    const canToggle = status !== 'missing' && status !== 'error';
+    actionBtn.disabled = !canToggle || !!adminOllamaStatusModalState.loading;
+    actionBtn.textContent = statusData.running ? 'Unload' : 'Load';
+    actionBtn.dataset.action = statusData.running ? 'unload' : 'load';
+    refreshBtn.disabled = !!adminOllamaStatusModalState.loading;
+}
+
+async function loadAdminOllamaModelStatus(providerKey, modelId) {
+    const key = normalizeAdminProviderKey(providerKey);
+    const modelKey = String(modelId || '').trim();
+    if (!key || !modelKey) return null;
+    adminOllamaStatusModalState = { provider: key, model: modelKey, status: null, loading: true };
+    renderAdminOllamaStatusModal(null);
+    try {
+        const providerCache = await loadAdminOllamaStatusForProvider(key);
+        if (providerCache && providerCache.error && !providerCache.loaded) {
+            throw new Error(providerCache.error);
+        }
+        const current = getAdminOllamaModelStatus(key, modelKey) || {
+            ok: true,
+            provider: key,
+            api_type: 'ollama',
+            model: modelKey,
+            installed: false,
+            running: false,
+            status: 'missing',
+            status_label: '未安装',
+            status_level: 'danger',
+            keep_alive: getAdminProviderKeepAlive(adminModelConfigCache.providers[key] || {}),
+            message: '模型未安装或未出现在 Ollama 列表中',
+            ps: null,
+            tag: null
+        };
+        adminOllamaStatusModalState.loading = false;
+        renderAdminOllamaStatusModal(current);
+        return current;
+    } catch (err) {
+        const errorData = {
+            success: false,
+            provider: key,
+            model: modelKey,
+            status: 'error',
+            status_label: '错误',
+            status_level: 'danger',
+            message: err && err.message ? err.message : '加载失败',
+            installed: false,
+            running: false,
+            keep_alive: '5m'
+        };
+        const providerCache = adminOllamaModelStatusCache[key] || { byModelId: {}, raw: null, error: '' };
+        providerCache.error = errorData.message;
+        adminOllamaModelStatusCache[key] = providerCache;
+        adminOllamaStatusModalState.loading = false;
+        renderAdminOllamaStatusModal(errorData);
+        return errorData;
+    }
+}
+
+async function toggleAdminOllamaModelStatus() {
+    const state = adminOllamaStatusModalState || {};
+    if (!state.provider || !state.model) return;
+    const actionBtn = document.getElementById('ollamaModelStatusActionBtn');
+    if (actionBtn) actionBtn.disabled = true;
+    adminOllamaStatusModalState.loading = true;
+    renderAdminOllamaStatusModal(state.status || null);
+    try {
+        const current = state.status || {};
+        const action = String(actionBtn && actionBtn.dataset && actionBtn.dataset.action ? actionBtn.dataset.action : (current.running ? 'unload' : 'load')).trim().toLowerCase() || 'toggle';
+        const keepAlive = current.keep_alive || '5m';
+        const res = await fetch('/api/admin/models/ollama/toggle', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                provider: state.provider,
+                model_id: state.model,
+                action,
+                keep_alive: keepAlive
+            })
+        });
+        const data = await res.json();
+        if (!data.success && !data.status) {
+            throw new Error(data.message || '切换失败');
+        }
+        const providerCache = adminOllamaModelStatusCache[state.provider] || { byModelId: {}, raw: null, error: '' };
+        providerCache.byModelId = providerCache.byModelId || {};
+        providerCache.byModelId[String(state.model || '').trim().toLowerCase()] = data;
+        providerCache.raw = providerCache.raw || data;
+        providerCache.error = '';
+        providerCache.loaded = true;
+        providerCache.loadedAt = Date.now();
+        adminOllamaModelStatusCache[state.provider] = providerCache;
+        adminOllamaStatusModalState.loading = false;
+        renderAdminOllamaStatusModal(data);
+        await loadAdminModelConfig();
+    } catch (err) {
+        adminOllamaStatusModalState.loading = false;
+        showToast('操作失败: ' + (err.message || '未知错误'));
+        await loadAdminOllamaModelStatus(state.provider, state.model);
+    }
+}
+
+window.openAdminOllamaModelStatusByEncoded = async function(encodedProvider, encodedModel) {
+    const provider = decodeURIComponent(encodedProvider || '');
+    const model = decodeURIComponent(encodedModel || '');
+    const modal = document.getElementById('ollamaModelStatusModal');
+    if (!modal) return;
+    modal.classList.add('active');
+    await loadAdminOllamaModelStatus(provider, model);
+};
+
+window.closeAdminOllamaModelStatusModal = closeAdminOllamaModelStatusModal;
+
 async function openProviderEditor(providerName = '') {
     const providers = adminModelConfigCache.providers || {};
     const current = providerName ? (providers[providerName] || {}) : {};
@@ -19054,7 +19793,9 @@ async function openProviderEditor(providerName = '') {
         originalKey: providerName || '',
         provider: providerName || '',
         api_key: current.api_key || '',
-        base_url: current.base_url || ''
+        base_url: current.base_url || '',
+        api_type: current.api_type || 'openai',
+        keep_alive: getAdminProviderKeepAlive(current)
     });
 }
 
@@ -20330,8 +21071,10 @@ function positionSkillModeFloatingMenu(triggerEl, menuEl) {
     }
     top = Math.max(minTop, Math.min(top, maxTop));
 
-    menuEl.style.left = `${left}px`;
-    menuEl.style.top = `${top}px`;
+    menuEl.style.setProperty('left', `${left}px`, 'important');
+    menuEl.style.setProperty('top', `${top}px`, 'important');
+    menuEl.style.setProperty('right', 'auto', 'important');
+    menuEl.style.setProperty('bottom', 'auto', 'important');
 }
 
 function openSkillModeFloatingMenu(skillId, triggerEl, listEl) {
@@ -20357,10 +21100,10 @@ function openSkillModeFloatingMenu(skillId, triggerEl, listEl) {
         <button type="button" class="tool-mode-item settings-skill-mode-item ${mode === 'auto' ? 'active' : ''}" data-mode="auto" role="option" aria-selected="${mode === 'auto' ? 'true' : 'false'}">Auto</button>
         <button type="button" class="tool-mode-item settings-skill-mode-item ${mode === 'off' ? 'active' : ''}" data-mode="off" role="option" aria-selected="${mode === 'off' ? 'true' : 'false'}">Off</button>
     `;
-    menu.style.position = 'fixed';
-    menu.style.right = 'auto';
-    menu.style.bottom = 'auto';
-    menu.style.zIndex = '9600';
+    menu.style.setProperty('position', 'fixed', 'important');
+    menu.style.setProperty('right', 'auto', 'important');
+    menu.style.setProperty('bottom', 'auto', 'important');
+    menu.style.setProperty('z-index', '9600', 'important');
     menu.style.display = 'grid';
     menu.style.gap = '6px';
     document.body.appendChild(menu);

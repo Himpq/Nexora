@@ -50,7 +50,7 @@ class ToolExecutor:
             "js_execute": self._js_execute,
             "client_js_exec": self._js_execute,
             "get_user_profile_memory": self._get_user_profile_memory,
-            "set_user_profile_memory": self._set_user_profile_memory,
+            "updateShort": self._set_user_profile_memory,
             "vector_search": self._vector_search,
             "file_semantic_search": self._file_semantic_search,
             "link_knowledge": self._link_knowledge,
@@ -432,7 +432,7 @@ class ToolExecutor:
             permission_hint = self._resolve_user_permission_hint()
             profile = self.model.user.get_user_profile_memory(
                 user_permission=permission_hint,
-                max_chars=400
+                max_chars=0
             )
             return f"[用户画像短期记忆]\n{str(profile or '').strip()}"
         result = self.model.user.getKnowledgeList(k_type)
@@ -475,7 +475,7 @@ class ToolExecutor:
         permission_hint = self._resolve_user_permission_hint()
         profile = self.model.user.get_user_profile_memory(
             user_permission=permission_hint,
-            max_chars=400
+            max_chars=0
         )
         payload = {
             "success": True,
@@ -493,7 +493,7 @@ class ToolExecutor:
         profile = self.model.user.set_user_profile_memory(
             profile_text=profile_input,
             user_permission=permission_hint,
-            max_chars=400
+            max_chars=0
         )
         payload = {
             "success": True,
@@ -1547,8 +1547,10 @@ class ToolExecutor:
                         engine_meta = engines_meta.get(engine, {}) if isinstance(engines_meta, dict) else {}
                         result_count = engine_meta.get("result_count", len(engine_results))
                         status = engine_meta.get("status", "ok" if engine_results else "empty")
+                        content_length = engine_meta.get("content_length", 0)
+                        source = engine_meta.get("source", "trafilatura")
                         output.append(f"--- {engine.upper()} ---")
-                        output.append(f"count: {result_count}, status: {status}")
+                        output.append(f"count: {result_count}, status: {status}, source: {source}, content_length: {content_length}")
                         if engine_meta.get("error"):
                             output.append(f"error: {engine_meta.get('error')}")
                         if engine_results:
@@ -1626,3 +1628,5 @@ class ToolExecutor:
             return f"HTTP Error {e.code}: {msg}"
         except Exception as e:
             return f"Render Internal Error: {str(e)}"
+
+
