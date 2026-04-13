@@ -35,6 +35,7 @@ from client_tool_bridge import pull_pending_request, submit_request_result, enqu
 from agent_tunnel import register_agent, unregister_agent, update_agent_tools, update_ping, is_agent_online
 from stream_runtime import start_session as start_stream_session, iter_session_chunks as iter_stream_session_chunks, get_session_meta as get_stream_session_meta, request_cancel as request_stream_cancel
 from tools import canonicalize_tool_name
+from secure import normalize_text, resolve_configured_path, safe_filename, safe_join_path
 from flask_sock import Sock
 
 app = Flask(__name__)
@@ -590,8 +591,9 @@ def _save_skill_catalog(skills: List[Dict[str, Any]]) -> None:
 
 def _resolve_user_base_path(username: str) -> str:
     uname = str(username or '').strip()
+    default_path = safe_join_path(DATA_DIR, 'users', uname) if uname else safe_join_path(DATA_DIR, 'users')
     if not uname:
-        return os.path.join(DATA_DIR, 'users', '')
+        return default_path
     try:
         users_meta = load_users()
     except Exception:
@@ -602,14 +604,12 @@ def _resolve_user_base_path(username: str) -> str:
         user_data = {}
     raw_path = str(user_data.get('path') or '').strip() if isinstance(user_data, dict) else ''
     if not raw_path:
-        return os.path.join(DATA_DIR, 'users', uname)
-    if os.path.isabs(raw_path):
-        return raw_path
-    return os.path.normpath(os.path.join(BASE_DIR, raw_path))
+        return default_path
+    return resolve_configured_path(BASE_DIR, raw_path, fallback=default_path)
 
 
 def _user_skill_settings_path(username: str) -> str:
-    return os.path.join(_resolve_user_base_path(username), 'skill_settings.json')
+    return safe_join_path(_resolve_user_base_path(username), 'skill_settings.json')
 
 
 def _load_user_skill_settings(username: str) -> Dict[str, Any]:
@@ -741,7 +741,7 @@ def get_user_permission_hint_by_username(username: str) -> str:
 
 
 def get_user_avatar_file(user_id):
-    return os.path.join(os.path.dirname(__file__), 'data', 'users', user_id, 'profile', 'avatar.png')
+    return safe_join_path(os.path.dirname(__file__), 'data', 'users', user_id, 'profile', 'avatar.png')
 
 
 def build_user_avatar_url(user_id, user_data):
@@ -946,7 +946,7 @@ _ASSET_IMAGE_MIME_TO_EXT = {
 
 
 def _conversation_asset_root(username: str) -> str:
-    return os.path.join(
+    return safe_join_path(
         os.path.dirname(__file__),
         'data',
         'users',
@@ -956,11 +956,11 @@ def _conversation_asset_root(username: str) -> str:
 
 
 def _conversation_asset_dir(username: str, conversation_id: str) -> str:
-    return os.path.join(_conversation_asset_root(username), str(conversation_id or ''))
+    return safe_join_path(_conversation_asset_root(username), str(conversation_id or ''))
 
 
 def _conversation_asset_index_path(username: str, conversation_id: str) -> str:
-    return os.path.join(_conversation_asset_dir(username, conversation_id), 'index.json')
+    return safe_join_path(_conversation_asset_dir(username, conversation_id), 'index.json')
 
 
 def _load_conversation_asset_index(username: str, conversation_id: str) -> Dict[str, Any]:
@@ -1147,25 +1147,11 @@ def _remove_conversation_assets_dir(username: str, conversation_id: str):
 
 
 def _resolve_user_root_dir(username: str) -> str:
-    uname = str(username or '').strip()
-    default_path = os.path.join(BASE_DIR, 'data', 'users', uname)
-    if not uname:
-        return default_path
-    try:
-        users = load_users()
-    except Exception:
-        users = {}
-    user_data = users.get(uname, {}) if isinstance(users, dict) else {}
-    raw_path = str(user_data.get('path') or '').strip() if isinstance(user_data, dict) else ''
-    if not raw_path:
-        return default_path
-    if os.path.isabs(raw_path):
-        return os.path.normpath(raw_path)
-    return os.path.normpath(os.path.join(BASE_DIR, raw_path))
+    return _resolve_user_base_path(username)
 
 
 def _user_trash_dir(username: str) -> str:
-    return os.path.join(_resolve_user_root_dir(username), 'trash')
+    return safe_join_path(_resolve_user_root_dir(username), 'trash')
 
 
 def _normalize_preview_text(text: Any, max_len: int = 280) -> str:
@@ -1244,7 +1230,7 @@ def _trash_write_entry(username: str, entry: Dict[str, Any]) -> Tuple[bool, str,
         payload['id'] = entry_id
         if not payload.get('deleted_at'):
             payload['deleted_at'] = datetime.now().isoformat()
-        file_path = os.path.join(trash_dir, f"{entry_id}.json")
+        file_path = safe_join_path(trash_dir, f"{entry_id}.json")
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         return True, '', payload
@@ -1260,7 +1246,7 @@ def _trash_list_entries(username: str, limit: int = 120) -> List[Dict[str, Any]]
     for name in os.listdir(trash_dir):
         if not str(name or '').lower().endswith('.json'):
             continue
-        path = os.path.join(trash_dir, name)
+        path = safe_join_path(trash_dir, name)
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
@@ -1289,12 +1275,10 @@ def _trash_list_entries(username: str, limit: int = 120) -> List[Dict[str, Any]]
 
 
 def _trash_entry_file_path(username: str, trash_id: str) -> str:
-    tid = str(trash_id or '').strip()
+    tid = safe_filename(trash_id, default='')
     if not tid:
         return ''
-    if not re.fullmatch(r'[A-Za-z0-9_.-]+', tid):
-        return ''
-    return os.path.join(_user_trash_dir(username), f"{tid}.json")
+    return safe_join_path(_user_trash_dir(username), f"{tid}.json")
 
 
 def _trash_read_entry(username: str, trash_id: str) -> Optional[Dict[str, Any]]:
@@ -1328,7 +1312,7 @@ def _trash_clear_entries(username: str) -> int:
     for name in os.listdir(trash_dir):
         if not str(name or '').lower().endswith('.json'):
             continue
-        path = os.path.join(trash_dir, name)
+        path = safe_join_path(trash_dir, name)
         try:
             os.remove(path)
             removed += 1
@@ -1465,7 +1449,7 @@ def _get_mail_cache_lock(user_id):
 
 
 def _mail_cache_file_path(user_id):
-    return os.path.join(os.path.dirname(__file__), 'data', 'users', str(user_id), 'mail_cache.json')
+    return safe_join_path(os.path.dirname(__file__), 'data', 'users', str(user_id), 'mail_cache.json')
 
 
 def _mail_cache_empty():
@@ -3734,19 +3718,19 @@ def get_user_stats(username, user_path):
     
     try:
         # 计算对话数量
-        conversations_path = os.path.join(user_path, 'conversations')
+        conversations_path = safe_join_path(user_path, 'conversations')
         if os.path.exists(conversations_path):
             conversation_files = [f for f in os.listdir(conversations_path) if f.endswith('.json')]
             stats['total_conversations'] = len(conversation_files)
         
         # 计算知识点数量
-        knowledge_path = os.path.join(user_path, 'database')
+        knowledge_path = safe_join_path(user_path, 'database')
         if os.path.exists(knowledge_path):
             knowledge_files = [f for f in os.listdir(knowledge_path) if f.endswith('.json')]
             stats['total_knowledge'] = len(knowledge_files)
         
         # 从token_usage.json获取统计信息
-        token_usage_path = os.path.join(user_path, 'token_usage.json')
+        token_usage_path = safe_join_path(user_path, 'token_usage.json')
         if os.path.exists(token_usage_path):
             with open(token_usage_path, 'r', encoding='utf-8') as f:
                 token_records = json.load(f)
@@ -4190,7 +4174,7 @@ def _ensure_status_recent_row(recent_map: Dict[str, Dict[str, Any]], model_name:
 
 def _status_resolve_user_path(username: str, users_meta: Optional[Dict[str, Any]] = None) -> str:
     uname = str(username or '').strip()
-    default_path = os.path.join(os.path.dirname(__file__), 'data', 'users', uname)
+    default_path = safe_join_path(os.path.dirname(__file__), 'data', 'users', uname) if uname else safe_join_path(os.path.dirname(__file__), 'data', 'users')
     if not uname:
         return default_path
     try:
@@ -4201,15 +4185,13 @@ def _status_resolve_user_path(username: str, users_meta: Optional[Dict[str, Any]
     raw_path = str(user_data.get('path') or '').strip() if isinstance(user_data, dict) else ''
     if not raw_path:
         return default_path
-    if os.path.isabs(raw_path):
-        return raw_path
     project_root = os.path.dirname(__file__)
-    return os.path.normpath(os.path.join(project_root, raw_path))
+    return resolve_configured_path(project_root, raw_path, fallback=default_path)
 
 
 def _status_existing_conversation_ids(user_path: str) -> Set[str]:
     conv_ids: Set[str] = set()
-    conv_dir = os.path.join(user_path, 'conversations')
+    conv_dir = safe_join_path(user_path, 'conversations')
     if not os.path.isdir(conv_dir):
         return conv_ids
     for filename in os.listdir(conv_dir):
@@ -4250,7 +4232,7 @@ def _reconcile_user_token_logs(
     update_user_meta: bool = True
 ) -> Dict[str, Any]:
     uname = str(username or '').strip()
-    token_file = os.path.join(user_path, 'token_usage.json')
+    token_file = safe_join_path(user_path, 'token_usage.json')
     original_logs = _read_json_list_safe(token_file)
     existing_conv_ids = _status_existing_conversation_ids(user_path)
 
@@ -4354,7 +4336,7 @@ def _reconcile_user_token_logs(
 
 
 def build_status_overview() -> Dict[str, Any]:
-    users_root = os.path.join(os.path.dirname(__file__), 'data', 'users')
+    users_root = safe_join_path(os.path.dirname(__file__), 'data', 'users')
     model_map: Dict[str, Dict[str, Any]] = {}
     speed_map: Dict[str, Dict[str, Any]] = {}
     recent_24h_map: Dict[str, Dict[str, Any]] = {}
@@ -4381,11 +4363,11 @@ def build_status_overview() -> Dict[str, Any]:
         }
 
     for username in os.listdir(users_root):
-        user_path = os.path.join(users_root, username)
+        user_path = safe_join_path(users_root, username)
         if not os.path.isdir(user_path):
             continue
 
-        token_logs = _read_json_list_safe(os.path.join(user_path, 'token_usage.json'))
+        token_logs = _read_json_list_safe(safe_join_path(user_path, 'token_usage.json'))
         speed_deduped_logs: Dict[str, Dict[str, Any]] = {}
         deduped_token_logs: Dict[str, Dict[str, Any]] = {}
         for log in token_logs:
@@ -4496,7 +4478,7 @@ def build_status_overview() -> Dict[str, Any]:
             if output_tokens > 0:
                 s_row['output_tokens_total'] += output_tokens
 
-        tool_logs = _read_json_list_safe(os.path.join(user_path, 'tool_usage.json'))
+        tool_logs = _read_json_list_safe(safe_join_path(user_path, 'tool_usage.json'))
         for log in tool_logs:
             if not isinstance(log, dict):
                 continue
@@ -4525,7 +4507,7 @@ def build_status_overview() -> Dict[str, Any]:
                 if err_text:
                     fail_row['note'] = err_text[:120]
 
-        conv_dir = os.path.join(user_path, 'conversations')
+        conv_dir = safe_join_path(user_path, 'conversations')
         if os.path.exists(conv_dir):
             for filename in os.listdir(conv_dir):
                 if not filename.endswith('.json'):
@@ -4867,7 +4849,7 @@ def get_user_preferences():
         
         # 尝试从用户配置文件读取偏好设置
         user_path = f'./data/users/{username}/'
-        prefs_file = os.path.join(user_path, 'preferences.json')
+        prefs_file = safe_join_path(user_path, 'preferences.json')
         if os.path.exists(prefs_file):
             with open(prefs_file, 'r', encoding='utf-8') as f:
                 user_prefs = json.load(f)
@@ -5024,7 +5006,7 @@ def admin_get_users():
         for user_id, info in users.items():
             # 计算总 token 消耗 (从 token_usage.json 读取)
             total_tokens = 0
-            user_token_file = os.path.join(os.path.dirname(__file__), f"data/users/{user_id}/token_usage.json")
+            user_token_file = safe_join_path(os.path.dirname(__file__), 'data', 'users', user_id, 'token_usage.json')
             if os.path.exists(user_token_file):
                 try:
                     with open(user_token_file, 'r', encoding='utf-8') as tf:
@@ -5075,24 +5057,24 @@ def admin_add_user():
             return jsonify({'success': False, 'message': '用户已存在'})
             
         # 初始化用户目录
-        user_path = f"./data/users/{username}/"
+        user_path = safe_join_path(DATA_DIR, 'users', username)
         os.makedirs(user_path, exist_ok=True)
-        os.makedirs(os.path.join(user_path, "database"), exist_ok=True)
-        os.makedirs(os.path.join(user_path, "conversations"), exist_ok=True)
+        os.makedirs(safe_join_path(user_path, "database"), exist_ok=True)
+        os.makedirs(safe_join_path(user_path, "conversations"), exist_ok=True)
         
         # 初始化 database.json
-        db_file = os.path.join(user_path, "database.json")
+        db_file = safe_join_path(user_path, "database.json")
         if not os.path.exists(db_file):
             with open(db_file, 'w', encoding='utf-8') as f:
                 json.dump({"data_short": {}, "data_basis": {}}, f, indent=4, ensure_ascii=False)
         
         # 初始化知识图谱和Token统计文件（防止前端报错）
-        kg_file = os.path.join(user_path, "knowledge_graph.json")
+        kg_file = safe_join_path(user_path, "knowledge_graph.json")
         if not os.path.exists(kg_file):
             with open(kg_file, 'w', encoding='utf-8') as f:
                 json.dump({"nodes": [], "links": []}, f, indent=4, ensure_ascii=False)
         
-        token_file = os.path.join(user_path, "token_usage.json")
+        token_file = safe_join_path(user_path, "token_usage.json")
         if not os.path.exists(token_file):
             with open(token_file, 'w', encoding='utf-8') as f:
                 json.dump([], f, indent=4, ensure_ascii=False)
@@ -5232,7 +5214,7 @@ def admin_nexora_mail_groups():
 def admin_nexora_mail_users():
     """读取 NexoraMail 用户列表"""
     cfg = _get_nexora_mail_config()
-    group = (request.args.get('group') or cfg.get('default_group') or 'default').strip() or 'default'
+    group = normalize_text(request.args.get('group') or cfg.get('default_group') or 'default', default='default') or 'default'
     ok, status, data = _nexora_mail_call('/api/users', method='GET', query={'group': group})
     if not ok:
         return jsonify({'success': False, 'message': data.get('message', '读取邮箱用户失败'), 'upstream': data}), status
@@ -5430,9 +5412,9 @@ def admin_token_stats():
     """获取所有用户的总 token 消耗"""
     try:
         total_tokens = 0
-        user_dir = os.path.join(os.path.dirname(__file__), "data/users")
+        user_dir = safe_join_path(os.path.dirname(__file__), "data", "users")
         for username in os.listdir(user_dir):
-            token_file = os.path.join(user_dir, username, "token_usage.json")
+            token_file = safe_join_path(user_dir, username, "token_usage.json")
             if os.path.exists(token_file):
                 try:
                     with open(token_file, 'r', encoding='utf-8') as f:
@@ -5726,8 +5708,8 @@ def list_cloud_files():
     """列出当前用户文件沙箱中的云端文件"""
     try:
         username = session['username']
-        query = str(request.args.get('q', '') or '').strip()
-        regex_raw = str(request.args.get('regex', '') or '').strip().lower()
+        query = normalize_text(request.args.get('q', ''), default='')
+        regex_raw = normalize_text(request.args.get('regex', ''), default='').lower()
         limit_raw = request.args.get('limit', 200)
 
         try:
@@ -5758,7 +5740,7 @@ def download_cloud_file():
     """下载当前用户文件沙箱中的文件（按 alias 或 sandbox_path）"""
     try:
         username = session['username']
-        file_ref = str(request.args.get('file_ref', '') or '').strip()
+        file_ref = normalize_text(request.args.get('file_ref', ''), default='')
         if not file_ref:
             return jsonify({'success': False, 'message': '缺少 file_ref'}), 400
 
@@ -5766,7 +5748,7 @@ def download_cloud_file():
         entry = sandbox._get_entry(file_ref)
         abs_path = sandbox._get_abs_path(entry)
 
-        download_name = str(entry.get('original_name') or entry.get('alias') or 'download.txt')
+        download_name = safe_filename(entry.get('original_name') or entry.get('alias') or 'download.txt', default='download.txt', max_len=180)
         return send_file(abs_path, as_attachment=True, download_name=download_name)
     except FileNotFoundError as e:
         return jsonify({'success': False, 'message': str(e)}), 404
@@ -6175,7 +6157,7 @@ def get_conversation_asset(conv_id, asset_id):
     if not file_name:
         return jsonify({'success': False, 'message': 'asset file missing'}), 404
 
-    fpath = os.path.join(_conversation_asset_dir(username, conv_id), file_name)
+    fpath = safe_join_path(_conversation_asset_dir(username, conv_id), file_name)
     if not os.path.exists(fpath):
         return jsonify({'success': False, 'message': 'asset file not found'}), 404
 
@@ -6297,7 +6279,7 @@ def get_config():
 @require_admin
 def admin_get_user_models():
     """获取用户可用模型列表（管理员）"""
-    target_username = request.args.get('username')
+    target_username = normalize_text(request.args.get('username', ''), default='')
     if not target_username:
         return jsonify({"success": False, "message": "Missing username"}), 400
 
@@ -6395,7 +6377,7 @@ def _get_admin_provider_runtime(provider_name: str):
 @app.route('/api/provider/ollama/list', methods=['GET'])
 @require_login
 def api_provider_ollama_list():
-    provider_name = str(request.args.get('provider', 'ollama') or 'ollama').strip()
+    provider_name = normalize_text(request.args.get('provider', 'ollama'), default='ollama')
     timeout = request.args.get('timeout', 8)
     try:
         timeout = float(timeout or 8)
@@ -6415,7 +6397,7 @@ def api_provider_ollama_list():
 @app.route('/api/provider/ollama/ps', methods=['GET'])
 @require_login
 def api_provider_ollama_ps():
-    provider_name = str(request.args.get('provider', 'ollama') or 'ollama').strip()
+    provider_name = normalize_text(request.args.get('provider', 'ollama'), default='ollama')
     timeout = request.args.get('timeout', 8)
     try:
         timeout = float(timeout or 8)
@@ -6438,8 +6420,8 @@ def api_provider_ollama_ps():
 @app.route('/api/admin/models/ollama/status', methods=['GET'])
 @require_admin
 def admin_ollama_model_status():
-    provider_name = str(request.args.get('provider', '') or '').strip()
-    model_name = str(request.args.get('model_id', '') or request.args.get('model', '') or '').strip()
+    provider_name = normalize_text(request.args.get('provider', ''), default='')
+    model_name = normalize_text(request.args.get('model_id', '') or request.args.get('model', ''), default='')
     try:
         timeout = float(request.args.get('timeout', 8) or 8)
     except Exception:
@@ -6612,8 +6594,8 @@ def api_provider_models():
     Example:
       /api/provider/models?provider=volcengine&capability=vision
     """
-    provider_name = str(request.args.get('provider', 'volcengine') or 'volcengine').strip()
-    capability = str(request.args.get('capability', '') or '').strip().lower()
+    provider_name = normalize_text(request.args.get('provider', 'volcengine'), default='volcengine')
+    capability = normalize_text(request.args.get('capability', ''), default='').lower()
     try:
         timeout = float(request.args.get('timeout', 30) or 30)
     except Exception:
@@ -6749,15 +6731,15 @@ def admin_model_speed_stats():
 
         now = datetime.now()
         cutoff = now - timedelta(days=days)
-        users_root = os.path.join(os.path.dirname(__file__), 'data', 'users')
+        users_root = safe_join_path(os.path.dirname(__file__), 'data', 'users')
         model_map: Dict[str, Dict[str, Any]] = {}
 
         if os.path.isdir(users_root):
             for username in os.listdir(users_root):
-                user_path = os.path.join(users_root, username)
+                user_path = safe_join_path(users_root, username)
                 if not os.path.isdir(user_path):
                     continue
-                token_logs = _read_json_list_safe(os.path.join(user_path, 'token_usage.json'))
+                token_logs = _read_json_list_safe(safe_join_path(user_path, 'token_usage.json'))
                 for raw in token_logs:
                     if not isinstance(raw, dict):
                         continue
@@ -6937,7 +6919,7 @@ def admin_tool_stats():
         user_dir = os.path.join(os.path.dirname(__file__), "data/users")
         if os.path.exists(user_dir):
             for username in os.listdir(user_dir):
-                tool_file = os.path.join(user_dir, username, "tool_usage.json")
+                tool_file = safe_join_path(user_dir, username, "tool_usage.json")
                 if not os.path.exists(tool_file):
                     continue
                 try:
@@ -7104,10 +7086,10 @@ def admin_token_timeseries():
 
     provider_totals = {}
     model_totals = {}
-    user_dir = os.path.join(os.path.dirname(__file__), "data/users")
+    user_dir = safe_join_path(os.path.dirname(__file__), "data", "users")
     if os.path.exists(user_dir):
         for username in os.listdir(user_dir):
-            token_file = os.path.join(user_dir, username, "token_usage.json")
+            token_file = safe_join_path(user_dir, username, "token_usage.json")
             if not os.path.exists(token_file):
                 continue
             try:
@@ -9667,4 +9649,4 @@ if __name__ == '__main__':
     print("📍 访问地址: http://localhost:5000")
     print("💡 使用 Ctrl+C 停止服务器")
     
-    app.run(debug=True, host='0.0.0.0', port=5000, threaded=True)
+    app.run(debug=False, host='0.0.0.0', port=5000, threaded=True)

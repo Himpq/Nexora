@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Token 使用统计 - Nexora</title>
     <link rel="stylesheet" href="/static/css/chat.css">
+    <script src="/static/js/secure_render.js"></script>
     <style>
         .container {
             max-width: 1200px;
@@ -157,6 +158,16 @@
     </div>
 
     <script>
+        const safeRender = window.NexoraSecureRender;
+
+        function setSafeHTML(element, html) {
+            if (safeRender) {
+                safeRender.setSafeHTML(element, html);
+            } else {
+                element.textContent = String(html || '');
+            }
+        }
+
         document.addEventListener('DOMContentLoaded', loadLogs);
 
         async function loadLogs() {
@@ -168,20 +179,20 @@
                     renderLogs(data.logs);
                     calculateStats(data.logs);
                 } else {
-                    document.getElementById('logsTableBody').innerHTML = `<tr><td colspan="6" style="text-align: center; color: red;">${data.message || '加载失败'}</td></tr>`;
+                    setSafeHTML(document.getElementById('logsTableBody'), `<tr><td colspan="6" style="text-align: center; color: red;">${data.message || '加载失败'}</td></tr>`);
                 }
             } catch (error) {
                 console.error('加载日志失败:', error);
-                document.getElementById('logsTableBody').innerHTML = `<tr><td colspan="6" style="text-align: center; color: red;">网络错误</td></tr>`;
+                setSafeHTML(document.getElementById('logsTableBody'), `<tr><td colspan="6" style="text-align: center; color: red;">网络错误</td></tr>`);
             }
         }
 
         function renderLogs(logs) {
             const tbody = document.getElementById('logsTableBody');
-            tbody.innerHTML = '';
+            tbody.textContent = '';
             
             if (logs.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="6" style="text-align: center;">暂无记录</td></tr>`;
+                setSafeHTML(tbody, `<tr><td colspan="6" style="text-align: center;">暂无记录</td></tr>`);
                 return;
             }
             
@@ -192,7 +203,7 @@
                 else if (log.action.includes('web')) actionClass += ' action-search';
                 else actionClass += ' action-chat';
                 
-                tr.innerHTML = `
+                setSafeHTML(tr, `
                     <td>${log.timestamp}</td>
                     <td>
                         <div style="font-weight: 500;">${log.conversation_title || '未命名对话'}</div>
@@ -202,7 +213,7 @@
                     <td>${log.input_tokens.toLocaleString()}</td>
                     <td>${log.output_tokens.toLocaleString()}</td>
                     <td style="font-weight: bold;">${log.total_tokens.toLocaleString()}</td>
-                `;
+                `);
                 tbody.appendChild(tr);
             });
         }

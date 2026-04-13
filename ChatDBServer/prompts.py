@@ -28,7 +28,7 @@ default_base = """
 - 短期记忆记录近期事项、偏好、情绪；长期记忆/知识库记录稳定知识。
 - 系统可能自动注入时间；除非用户明确问时间，否则忽略该注入。
 - 回答风格：准确、直接、可执行。使用 Markdown。
-- 当你觉得需要更新用户画像的时候调用 updateShort 进行更新。
+
 """
 
 
@@ -71,8 +71,22 @@ TOOL_SKILL_BLOCK_TEMPLATE = """<TOOL-SKILL>
 <END>"""
 
 USER_PROFILE_MEMORY_TEMPLATE = """[短期记忆-用户画像]
+当你觉得需要更新用户画像的时候调用 updateShort 进行更新。
 以下信息用于理解用户偏好与背景，回答时可参考但不要逐字复述：
-{{profile_text}}"""
+<USER_PROFILE>
+{{profile_text}}
+</USER_PROFILE>
+
+[近期浓缩对话]
+<RECENT_DIALOGUE>
+{{recent_dialogue}}
+</RECENT_DIALOGUE>
+
+[用户知识库列表]
+<USER_KNOWLEDGE>
+{{user_knowledge}}
+</USER_KNOWLEDGE>
+"""
 
 def _current_time_text() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -302,11 +316,18 @@ def build_conversation_title_prompt(user_message: str, assistant_response: str) 
     out = out.replace("{{assistant_response}}", str(assistant_response or "")[:100])
     return out
 
-def build_user_profile_memory_prompt(profile_text: str) -> str:
+def build_user_profile_memory_prompt(
+    profile_text: str = "",
+    recent_dialogue: str = "",
+    user_knowledge: str = ""
+) -> str:
     template = str(USER_PROFILE_MEMORY_TEMPLATE or "")
-    if not profile_text:
+    if not any([str(profile_text or "").strip(), str(recent_dialogue or "").strip(), str(user_knowledge or "").strip()]):
         return ""
-    return template.replace("{{profile_text}}", str(profile_text or "").strip())
+    out = template.replace("{{profile_text}}", str(profile_text or "").strip())
+    out = out.replace("{{recent_dialogue}}", str(recent_dialogue or "").strip())
+    out = out.replace("{{user_knowledge}}", str(user_knowledge or "").strip())
+    return out.strip()
 
 def build_context_compression_prompt(history_text: str, max_chars: int = 6000) -> str:
     limit = max(600, min(12000, int(max_chars or 6000)))
