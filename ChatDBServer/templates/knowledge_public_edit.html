@@ -9,6 +9,7 @@
     <link rel="stylesheet" href="/static/vendor/easymde/easymde.min.css">
     <script src="/static/vendor/marked/marked.min.js"></script>
     <script src="/static/vendor/easymde/easymde.min.js"></script>
+    <script src="/static/js/secure_render.js"></script>
     <style>
         :root {
             --bg: #fdfdfd; --surface: #ffffff; --text: #1e293b; 
@@ -47,13 +48,13 @@
 <body>
     <div class="header">
         <div>
-            <h1>{{ title }}</h1>
-            <div class="meta">由 @{{ username }} 开启协作</div>
+            <h1>{{ title | e }}</h1>
+            <div class="meta">由 @{{ username | e }} 开启协作</div>
         </div>
         <div id="saveStatus"><span class="badge">已同步</span></div>
     </div>
     <div class="editor-wrapper">
-        <textarea id="editor">{{ content }}</textarea>
+        <textarea id="editor">{{ content | e }}</textarea>
     </div>
 
     <script>
@@ -73,7 +74,9 @@
             autosave: { enabled: false },
             status: false,
             previewRender: function(plainText) {
-                const html = marked.parse(plainText || '');
+                const html = window.NexoraSecureRender
+                    ? window.NexoraSecureRender.safeMarkdownToHtml(plainText || '')
+                    : marked.parse(plainText || '');
                 return rewriteHtmlFragmentLinksToNewTab(html);
             },
             toolbar: ["bold", "italic", "heading", "|", "quote", "unordered-list", "ordered-list", "|", "link", "image", "table", "|", "preview", "side-by-side", "fullscreen"]

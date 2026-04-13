@@ -15,7 +15,7 @@ from email.header import Header
 from email.utils import parsedate_to_datetime
 from tools import TOOLS, canonicalize_tool_name
 from tool_executor import ToolExecutor
-from database import User
+from database import User, BASIS
 from conversation_manager import ConversationManager
 from provider_factory import create_provider_adapter
 from temp_context_store import TempContextStore
@@ -454,8 +454,124 @@ class Model:
 
     def _build_user_profile_memory_prompt_block(self) -> str:
         profile_text = self._get_user_profile_memory_text()
+        recent_dialogue_text = self._get_recent_dialogue_memory_text()
+        user_knowledge_text = self._get_user_knowledge_memory_text()
         from prompts import build_user_profile_memory_prompt
-        return build_user_profile_memory_prompt(profile_text)
+        return build_user_profile_memory_prompt(
+            profile_text=profile_text,
+            recent_dialogue=recent_dialogue_text,
+            user_knowledge=user_knowledge_text,
+        )
+
+    def _get_recent_dialogue_memory_count(self) -> int:
+        raw = self.config.get("recent_dialogue_memory_count", 3)
+        try:
+            count = int(raw or 3)
+        except Exception:
+            count = 3
+        return max(1, min(10, count))
+
+    def _get_recent_dialogue_item_max_chars(self) -> int:
+        raw = self.config.get("recent_dialogue_item_max_chars", 1200)
+        try:
+            limit = int(raw or 1200)
+        except Exception:
+            limit = 1200
+        return max(200, min(4000, limit))
+
+    def _get_user_knowledge_memory_count(self) -> int:
+        raw = self.config.get("user_knowledge_prompt_max_items", 24)
+        try:
+            count = int(raw or 24)
+        except Exception:
+            count = 24
+        return max(1, min(100, count))
+
+    def _get_user_knowledge_item_max_chars(self) -> int:
+        raw = self.config.get("user_knowledge_prompt_max_chars", 6000)
+        try:
+            limit = int(raw or 6000)
+        except Exception:
+            limit = 6000
+        return max(400, min(12000, limit))
+
+    def _get_recent_dialogue_memory_text(self) -> str:
+        conversation_id = str(getattr(self, "conversation_id", "") or "").strip()
+        if not conversation_id:
+            return ""
+        try:
+            conversation_data = self.conversation_manager.get_conversation(conversation_id)
+        except Exception:
+            return ""
+        compressions = conversation_data.get("context_compressions", [])
+        if not isinstance(compressions, list) or not compressions:
+            return ""
+
+        recent_count = self._get_recent_dialogue_memory_count()
+        recent_items = [item for item in compressions if isinstance(item, dict)][-recent_count:]
+        if not recent_items:
+            return ""
+
+        item_limit = self._get_recent_dialogue_item_max_chars()
+        lines: List[str] = []
+        for index, item in enumerate(recent_items, start=1):
+            summary = str(item.get("summary", "") or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+            if not summary:
+                continue
+            if len(summary) > item_limit:
+                summary = summary[:item_limit].rstrip() + "..."
+            created_at = str(item.get("created_at", "") or "").strip()
+            history_cut_index_value = item.get("history_cut_index", "")
+            history_cut_index = "" if history_cut_index_value is None else str(history_cut_index_value).strip()
+            meta_bits = []
+            if created_at:
+                meta_bits.append(created_at)
+            if history_cut_index:
+                meta_bits.append(f"cut={history_cut_index}")
+            if meta_bits:
+                lines.append(f"第{index}轮（{'，'.join(meta_bits)}）:\n{summary}")
+            else:
+                lines.append(f"第{index}轮:\n{summary}")
+        return "\n\n".join(lines).strip()
+
+    def _get_user_knowledge_memory_text(self) -> str:
+        try:
+            knowledge_map = self.user.getKnowledgeList(BASIS)
+        except Exception:
+            return ""
+        if not isinstance(knowledge_map, dict) or not knowledge_map:
+            return ""
+
+        max_items = self._get_user_knowledge_memory_count()
+        item_limit = self._get_user_knowledge_item_max_chars()
+
+        ranked_items = []
+        for title, meta in knowledge_map.items():
+            title_text = str(title or "").strip()
+            if not title_text:
+                continue
+            meta_map = meta if isinstance(meta, dict) else {}
+            ranked_items.append((bool(meta_map.get("pin", False)), title_text, meta_map))
+
+        if not ranked_items:
+            return ""
+
+        ranked_items.sort(key=lambda item: (0 if item[0] else 1, item[1].lower()))
+        lines: List[str] = []
+        for pinned, title_text, meta_map in ranked_items[:max_items]:
+            tags = []
+            if pinned:
+                tags.append("置顶")
+            if meta_map.get("public"):
+                tags.append("公开")
+            if meta_map.get("collaborative"):
+                tags.append("协作")
+            suffix = f"（{'，'.join(tags)}）" if tags else ""
+            line = f"- {title_text}{suffix}"
+            if len(line) > item_limit:
+                line = line[:item_limit].rstrip() + "..."
+            lines.append(line)
+        return "\n".join(lines).strip()
 
     def _normalize_skill_injection_mode(self, mode: Any) -> str:
         token = str(mode or "").strip().lower()
@@ -3329,6 +3445,55 @@ class Model:
                 except Exception:
                     return default
 
+            def _safe_float_local(v, default=0.0):
+                try:
+                    if v is None:
+                        return default
+                    if isinstance(v, bool):
+                        return float(int(v))
+                    if isinstance(v, (int, float)):
+                        return float(v)
+                    s = str(v).strip()
+                    if not s:
+                        return default
+                    return float(s)
+                except Exception:
+                    return default
+
+            def _get_runtime_int_config(key, default, min_value=0, max_value=None):
+                value = _safe_int_local(self.config.get(key, default), default)
+                if min_value is not None:
+                    value = max(int(min_value), int(value))
+                if max_value is not None:
+                    value = min(int(max_value), int(value))
+                return int(value)
+
+            def _get_runtime_float_config(key, default, min_value=0.0, max_value=None):
+                value = _safe_float_local(self.config.get(key, default), default)
+                if min_value is not None:
+                    value = max(float(min_value), float(value))
+                if max_value is not None:
+                    value = min(float(max_value), float(value))
+                return float(value)
+
+            def _build_tool_loop_guard_message(reason, consecutive_rounds, elapsed_seconds, repeat_count):
+                reason_key = str(reason or "").strip().lower()
+                reason_text = {
+                    "repeat_signature": "模型反复输出相同工具调用",
+                    "tool_only_limit": "模型连续多轮只输出工具调用",
+                    "timeout": "工具调用总耗时过长",
+                }.get(reason_key, "工具调用异常")
+                elapsed_text = f"{float(max(0.0, elapsed_seconds)):.1f}s"
+                parts = [f"连续工具轮数 {int(max(0, consecutive_rounds))} 轮"]
+                if repeat_count:
+                    parts.append(f"重复签名 {int(max(0, repeat_count))} 次")
+                parts.append(f"耗时 {elapsed_text}")
+                return (
+                    f"{reason_text}，已提前停止继续调用以避免超时。"
+                    f"{'，'.join(parts)}。"
+                    "请缩小问题范围、减少工具依赖，或改用更强模型后重试。"
+                )
+
             def _usage_get(obj, key, default=0):
                 if isinstance(obj, dict):
                     return obj.get(key, default)
@@ -3511,6 +3676,63 @@ class Model:
             normalized_conversation_mode_payload = normalize_longterm_payload(conversation_mode_payload)
             self._runtime_conversation_mode = normalized_conversation_mode
             self._runtime_conversation_mode_payload = dict(normalized_conversation_mode_payload)
+
+            tool_loop_started_at = time.time()
+            tool_loop_consecutive_tool_rounds = 0
+            tool_loop_last_signature = ""
+            tool_loop_repeat_signature_count = 0
+            tool_loop_guard_triggered = False
+            tool_loop_guard_reason = ""
+            tool_loop_guard_message = ""
+            tool_loop_guard_elapsed_seconds = 0.0
+            tool_loop_guard_consecutive_rounds = 0
+            tool_loop_guard_repeat_count = 0
+            tool_loop_max_consecutive_rounds = _get_runtime_int_config(
+                "tool_loop_max_consecutive_tool_rounds",
+                6,
+                min_value=1,
+                max_value=64
+            )
+            tool_loop_repeat_signature_limit = _get_runtime_int_config(
+                "tool_loop_repeat_signature_limit",
+                2,
+                min_value=1,
+                max_value=16
+            )
+            tool_loop_timeout_seconds = _get_runtime_float_config(
+                "tool_loop_timeout_seconds",
+                90.0,
+                min_value=15.0,
+                max_value=600.0
+            )
+            if normalized_conversation_mode == "longterm":
+                tool_loop_max_consecutive_rounds = max(
+                    tool_loop_max_consecutive_rounds,
+                    _get_runtime_int_config(
+                        "tool_loop_max_consecutive_tool_rounds_longterm",
+                        10,
+                        min_value=1,
+                        max_value=96
+                    )
+                )
+                tool_loop_repeat_signature_limit = max(
+                    tool_loop_repeat_signature_limit,
+                    _get_runtime_int_config(
+                        "tool_loop_repeat_signature_limit_longterm",
+                        3,
+                        min_value=1,
+                        max_value=32
+                    )
+                )
+                tool_loop_timeout_seconds = max(
+                    tool_loop_timeout_seconds,
+                    _get_runtime_float_config(
+                        "tool_loop_timeout_seconds_longterm",
+                        150.0,
+                        min_value=15.0,
+                        max_value=1200.0
+                    )
+                )
 
             def _debug_preview_text(value, max_len=12000):
                 text = str(value or "")
@@ -5229,7 +5451,7 @@ class Model:
                                     use_responses_api=use_responses_api
                                 )
                             )
-                        
+
                         # [FIX] 工具调用结束后的过渡提示（由 provider adapter 决定是否需要）
                         if self.provider_adapter.should_append_tool_completion_hint(use_responses_api=use_responses_api):
                             hint_msg = self.provider_adapter.build_tool_completion_hint(function_calls)
@@ -5244,6 +5466,83 @@ class Model:
                         )
                         if messages_has_full_context:
                             messages = list(full_context_messages)
+
+                        tool_round_elapsed_seconds = time.time() - float(tool_loop_started_at)
+                        try:
+                            tool_signature = json.dumps(
+                                [
+                                    {
+                                        "name": str(fc.get("name", "") or ""),
+                                        "arguments": str(fc.get("arguments", "") or ""),
+                                        "call_id": str(fc.get("call_id", "") or "")
+                                    }
+                                    for fc in function_calls
+                                ],
+                                ensure_ascii=False,
+                                sort_keys=True,
+                                default=str
+                            )
+                        except Exception:
+                            tool_signature = "|".join([
+                                f"{str(fc.get('name', '') or '')}:{str(fc.get('arguments', '') or '')}:{str(fc.get('call_id', '') or '')}"
+                                for fc in function_calls
+                            ])
+
+                        if function_calls and (not has_text_output):
+                            tool_loop_consecutive_tool_rounds += 1
+                        else:
+                            tool_loop_consecutive_tool_rounds = 0
+
+                        if tool_signature and tool_signature == tool_loop_last_signature:
+                            tool_loop_repeat_signature_count += 1
+                        elif function_calls:
+                            tool_loop_repeat_signature_count = 1
+                        else:
+                            tool_loop_repeat_signature_count = 0
+                        if tool_signature:
+                            tool_loop_last_signature = tool_signature
+
+                        guard_reason = ""
+                        if tool_loop_consecutive_tool_rounds >= tool_loop_max_consecutive_rounds:
+                            guard_reason = "tool_only_limit"
+                        elif tool_loop_repeat_signature_count >= tool_loop_repeat_signature_limit:
+                            guard_reason = "repeat_signature"
+                        elif tool_round_elapsed_seconds >= tool_loop_timeout_seconds:
+                            guard_reason = "timeout"
+
+                        if guard_reason:
+                            tool_loop_guard_triggered = True
+                            tool_loop_guard_reason = guard_reason
+                            tool_loop_guard_elapsed_seconds = float(tool_round_elapsed_seconds)
+                            tool_loop_guard_consecutive_rounds = int(tool_loop_consecutive_tool_rounds)
+                            tool_loop_guard_repeat_count = int(tool_loop_repeat_signature_count)
+                            tool_loop_guard_message = _build_tool_loop_guard_message(
+                                guard_reason,
+                                tool_loop_guard_consecutive_rounds,
+                                tool_loop_guard_elapsed_seconds,
+                                tool_loop_guard_repeat_count,
+                            )
+                            guard_step = {
+                                "type": "tool_loop_guard",
+                                "reason": tool_loop_guard_reason,
+                                "content": tool_loop_guard_message,
+                                "consecutive_tool_rounds": tool_loop_guard_consecutive_rounds,
+                                "repeat_signature_count": tool_loop_guard_repeat_count,
+                                "elapsed_seconds": float(tool_loop_guard_elapsed_seconds),
+                                "max_consecutive_tool_rounds": int(tool_loop_max_consecutive_rounds),
+                                "repeat_signature_limit": int(tool_loop_repeat_signature_limit),
+                                "timeout_seconds": float(tool_loop_timeout_seconds),
+                                "round": int(round_num) + 1,
+                            }
+                            process_steps.append(dict(guard_step))
+                            yield guard_step
+                            if not str(accumulated_content or "").strip():
+                                accumulated_content = tool_loop_guard_message
+                            else:
+                                accumulated_content = f"{accumulated_content}\n\n{tool_loop_guard_message}".strip()
+
+                        if tool_loop_guard_triggered:
+                            break
                         
                         # [DEBUG] 打印更新后的历史状态
                         print(f"[DEBUG_HIST] 更新历史后消息数: {len(messages)}")
@@ -5266,6 +5565,26 @@ class Model:
                     yield {"type": "done", "content": accumulated_content}
                     return
                 
+                if tool_loop_guard_triggered:
+                    print(
+                        f"[WARNING] Tool loop guard triggered: reason={tool_loop_guard_reason}, "
+                        f"rounds={tool_loop_guard_consecutive_rounds}, repeat={tool_loop_guard_repeat_count}, "
+                        f"elapsed={tool_loop_guard_elapsed_seconds:.1f}s"
+                    )
+                    yield {
+                        "type": "warning",
+                        "content": tool_loop_guard_message,
+                        "reason": tool_loop_guard_reason,
+                        "consecutive_tool_rounds": int(tool_loop_guard_consecutive_rounds),
+                        "repeat_signature_count": int(tool_loop_guard_repeat_count),
+                        "elapsed_seconds": float(tool_loop_guard_elapsed_seconds),
+                        "max_consecutive_tool_rounds": int(tool_loop_max_consecutive_rounds),
+                        "repeat_signature_limit": int(tool_loop_repeat_signature_limit),
+                        "timeout_seconds": float(tool_loop_timeout_seconds),
+                    }
+                    yield {"type": "done", "content": accumulated_content}
+                    return
+
                 # 达到最大轮次
                 print(f"[WARNING] 达到最大轮次 {max_rounds}")
                 yield {"type": "done", "content": accumulated_content}

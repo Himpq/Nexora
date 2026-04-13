@@ -12,6 +12,7 @@
     <script src="/static/vendor/katex/katex.min.js"></script>
     <script src="/static/vendor/katex/contrib/auto-render.min.js"></script>
     <script src="/static/vendor/highlightjs/highlight.min.js"></script>
+    <script src="/static/js/secure_render.js"></script>
     <style>
         :root {
             --bg: #fdfdfd; --surface: #ffffff; --text: #1e293b; 
@@ -41,8 +42,8 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>{{ title }}</h1>
-            <div class="meta">由 @{{ username }} 分享 · 只读模式</div>
+            <h1>{{ title | e }}</h1>
+            <div class="meta">由 @{{ username | e }} 分享 · 只读模式</div>
         </div>
         <article class="content" id="content">
             <!-- Rendered Markdown -->
@@ -74,7 +75,9 @@
             });
         }
 
-        contentEl.innerHTML = marked.parse(rawContent);
+        contentEl.innerHTML = window.NexoraSecureRender
+            ? window.NexoraSecureRender.safeMarkdownToHtml(rawContent)
+            : marked.parse(rawContent);
         enforceLinksOpenInNewTab(contentEl);
 
         // Code highlighting

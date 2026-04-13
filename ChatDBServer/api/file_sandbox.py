@@ -7,6 +7,8 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
+from secure import safe_filename
+
 
 _LOCKS: Dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
@@ -76,18 +78,7 @@ class UserFileSandbox:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
     def _sanitize_alias(self, name: str) -> str:
-        raw = os.path.basename(str(name or "").strip())
-        if not raw:
-            raw = "untitled.txt"
-        raw = raw.replace("\\", "_").replace("/", "_")
-        raw = re.sub(r"\s+", "_", raw)
-        raw = re.sub(r"[^\w\-.()\u4e00-\u9fff]", "_", raw)
-        if len(raw) > 120:
-            root, ext = os.path.splitext(raw)
-            raw = root[:100] + ext[:20]
-        if raw.startswith("."):
-            raw = "file" + raw
-        return raw
+        return safe_filename(name, default="untitled.txt", max_len=120)
 
     def _unique_alias(self, desired_name: str, files: Dict[str, Any]) -> str:
         alias = self._sanitize_alias(desired_name)

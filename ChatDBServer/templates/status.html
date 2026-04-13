@@ -880,6 +880,7 @@
     </section>
   </main>
 
+  <script src="/static/js/secure_render.js"></script>
   <script>
     let statusData = null;
 
@@ -936,16 +937,28 @@
 
     const formatNum = (n) => Number(n || 0).toLocaleString('en-US');
     const providerIconMarkup = (item) => {
+      const secure = window.NexoraSecureRender;
       const src = String((item && item.icon) || '').trim();
       const provider = String((item && item.provider) || 'unknown');
       if (!src) return '';
-      return `<img src="${src}" alt="${provider}">`;
+      if (secure && typeof secure.isSafeUrl === 'function' && !secure.isSafeUrl(src, true)) {
+        return '';
+      }
+      const escapeHtml = secure && typeof secure.escapeHtml === 'function'
+        ? secure.escapeHtml
+        : (value) => String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+      return `<img src="${escapeHtml(src)}" alt="${escapeHtml(provider)}">`;
     };
 
     function renderSummary() {
       const root = document.getElementById('summaryGrid');
       const t = statusData.totals;
-      root.innerHTML = [
+      window.NexoraSecureRender.setSafeHTML(root, [
         ['总 Token', formatNum(t.tokens), '样本内所有模型累计 I/O。'],
         ['模型调用', formatNum(t.modelCalls), '按单轮模型响应计数。'],
         ['工具调用', formatNum(t.toolCalls), '用于衡量任务执行强度。'],
@@ -956,7 +969,7 @@
           <div class="summary-value">${value}</div>
           <div class="summary-hint">${hint}</div>
         </div>
-      `).join('');
+      `).join(''));
     }
 
     function renderHeroText() {
@@ -969,11 +982,11 @@
       const root = document.getElementById('rankList');
       const rows = Array.isArray(statusData.models) ? statusData.models : [];
       if (!rows.length) {
-        root.innerHTML = '<div class="empty-hint">No model ranking data.</div>';
+        window.NexoraSecureRender.setSafeHTML(root, '<div class="empty-hint">No model ranking data.</div>');
         return;
       }
       const maxScore = Math.max(...rows.map(item => Number(item.score || 0)), 1);
-      root.innerHTML = rows.map((item, index) => `
+      window.NexoraSecureRender.setSafeHTML(root, rows.map((item, index) => `
         <div class="rank-item">
           <div class="rank-num">#${index + 1}</div>
           <div class="rank-main">
@@ -986,7 +999,7 @@
           </div>
           <div class="rank-score">${Number(item.score || 0)}</div>
         </div>
-      `).join('');
+      `).join(''));
     }
 
     function renderSpeedRankList() {
@@ -1000,11 +1013,11 @@
         })
         .slice(0, 10);
       if (!rows.length) {
-        root.innerHTML = '<div class="empty-hint">No speed samples yet (need token logs with duration/ttft).</div>';
+        window.NexoraSecureRender.setSafeHTML(root, '<div class="empty-hint">No speed samples yet (need token logs with duration/ttft).</div>');
         return;
       }
       const maxScore = Math.max(...rows.map(item => Number(item.score || 0)), 1);
-      root.innerHTML = rows.map((item, index) => `
+      window.NexoraSecureRender.setSafeHTML(root, rows.map((item, index) => `
         <div class="speed-item">
           <div class="rank-num">#${index + 1}</div>
           <div class="speed-main">
@@ -1019,12 +1032,12 @@
           </div>
           <div class="recent-score">${Number(item.score || 0)}</div>
         </div>
-      `).join('');
+      `).join(''));
     }
     function renderHighlights() {
       const root = document.getElementById('statusHighlights');
       if (!statusData.models.length) {
-        root.innerHTML = '<div class="mini-card"><div class="label">当前状态</div><div class="value">No Data</div><div class="hint">后端尚未产出有效模型统计。</div></div>';
+        window.NexoraSecureRender.setSafeHTML(root, '<div class="mini-card"><div class="label">当前状态</div><div class="value">No Data</div><div class="hint">后端尚未产出有效模型统计。</div></div>');
         return;
       }
       const leader = statusData.models[0];
@@ -1037,19 +1050,19 @@
         ['最高任务负载', highestLoad.name, `${formatNum(highestLoad.toolCalls)} 次工具调用。`],
         ['最高 Token 消耗', tokenLeader.name, `${formatNum(tokenLeader.totalTokens)} total tokens。`]
       ];
-      root.innerHTML = cards.map(([label, value, hint]) => `
+      window.NexoraSecureRender.setSafeHTML(root, cards.map(([label, value, hint]) => `
         <div class="mini-card">
           <div class="label">${label}</div>
           <div class="value">${value}</div>
           <div class="hint">${hint}</div>
         </div>
-      `).join('');
+      `).join(''));
     }
 
     function renderTokenChart() {
       const root = document.getElementById('tokenChart');
       if (!statusData.models.length) {
-        root.innerHTML = '<div class="empty-hint">暂无 Token 统计数据</div>';
+        window.NexoraSecureRender.setSafeHTML(root, '<div class="empty-hint">暂无 Token 统计数据</div>');
         return;
       }
       const rows = [...statusData.models]
@@ -1072,12 +1085,12 @@
       const hint = missingTokenCount > 0
         ? `<div class="empty-hint">注：${missingTokenCount} 个模型调用存在历史 token 日志缺失（显示为 0）。</div>`
         : '';
-      root.innerHTML = `${chartRows}${hint}`;
+      window.NexoraSecureRender.setSafeHTML(root, `${chartRows}${hint}`);
     }
 
     function renderComplexity() {
       const total = statusData.complexity;
-      document.getElementById('complexitySummary').innerHTML = [
+      window.NexoraSecureRender.setSafeHTML(document.getElementById('complexitySummary'), [
         ['简单任务', total.simple, '0~2 tools'],
         ['中等任务', total.medium, '3~7 tools'],
         ['复杂任务', total.complex, '8+ tools']
@@ -1087,11 +1100,11 @@
           <div class="value">${formatNum(value)}</div>
           <div class="hint">${hint}</div>
         </div>
-      `).join('');
+      `).join(''));
 
       const root = document.getElementById('complexityList');
       if (!statusData.models.length) {
-        root.innerHTML = '<div class="empty-hint">暂无复杂度分布数据</div>';
+        window.NexoraSecureRender.setSafeHTML(root, '<div class="empty-hint">暂无复杂度分布数据</div>');
         return;
       }
       const top = statusData.models.slice(0, 5);
@@ -1099,7 +1112,7 @@
         const c = item.complexityLoad || {};
         return Number(c.simple || 0) + Number(c.medium || 0) + Number(c.complex || 0);
       }), 1);
-      root.innerHTML = top.map((item) => {
+      window.NexoraSecureRender.setSafeHTML(root, top.map((item) => {
         const sum = item.complexityLoad.simple + item.complexityLoad.medium + item.complexityLoad.complex;
         const loadScale = sum > 0 ? (sum / maxLoad) : 0;
         const totalW = loadScale * 100;
@@ -1109,7 +1122,7 @@
         return `
           <div class="complexity-item">
             <div class="complexity-name">
-              <img src="${item.icon}" alt="${item.provider}">
+              ${providerIconMarkup(item)}
               <span>${item.name}</span>
             </div>
             <div class="complexity-track" title="simple ${item.complexityLoad.simple}, medium ${item.complexityLoad.medium}, complex ${item.complexityLoad.complex}">
@@ -1123,18 +1136,18 @@
             </div>
           </div>
         `;
-      }).join('');
+      }).join(''));
     }
 
     function renderRecent24h() {
       const root = document.getElementById('recent24hList');
       const rows = Array.isArray(statusData.recent24h) ? statusData.recent24h : [];
       if (!rows.length) {
-        root.innerHTML = '<div class="empty-hint">近24小时暂无调用数据</div>';
+        window.NexoraSecureRender.setSafeHTML(root, '<div class="empty-hint">近24小时暂无调用数据</div>');
         return;
       }
       const maxScore = Math.max(...rows.map(item => Number(item.score || 0)), 1);
-      root.innerHTML = rows.map((item, index) => `
+      window.NexoraSecureRender.setSafeHTML(root, rows.map((item, index) => `
         <div class="recent-item">
           <div class="rank-num">#${index + 1}</div>
           <div class="chart-label">
@@ -1149,15 +1162,15 @@
           </div>
           <div class="recent-score">${Number(item.score || 0)}</div>
         </div>
-      `).join('');
+      `).join(''));
     }
 
     function renderToolFailures() {
       const root = document.getElementById('toolFailList');
       if (!statusData.toolFailures.length) {
-        root.innerHTML = '<div class="empty-hint">暂无工具失败记录</div>';
+        window.NexoraSecureRender.setSafeHTML(root, '<div class="empty-hint">暂无工具失败记录</div>');
       } else {
-        root.innerHTML = statusData.toolFailures.map((item) => `
+        window.NexoraSecureRender.setSafeHTML(root, statusData.toolFailures.map((item) => `
         <div class="fail-item">
           <div>
             <div class="fail-name">${item.name}</div>
@@ -1165,7 +1178,7 @@
           </div>
           <div class="fail-count">${item.count}</div>
         </div>
-      `).join('');
+      `).join(''));
       }
       document.getElementById('statusFootnote').textContent =
         `说明：当前页面使用后端聚合数据。样本来源为 ${statusData.source}。当前口径：会话消息统计模型调用，token 日志统计 Token，总工具日志统计工具表现；模型名按 OpenRouter 模型清单通用归一化后合并。近${statusData.recent24hWindowHours}h榜单融合了调用次数(45%)与Token(55%)。`;
