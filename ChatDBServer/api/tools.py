@@ -376,46 +376,24 @@ TOOLS = [
             }
         }
     },
-    # 短期记忆工具已停用（保留定义仅用于回溯）。
-    # {
-    #     "type": "function",
-    #     "function": {
-    #         "name": "queryShortMemory",
-    #         "description": "查询用户短期记忆。支持按关键词过滤，返回短期记忆的ID与标题列表。",
-    #         "parameters": {
-    #             "type": "object",
-    #             "properties": {
-    #                 "keyword": {
-    #                     "type": "string",
-    #                     "description": "可选，按关键词匹配短期记忆标题。为空时返回全部。"
-    #                 },
-    #                 "limit": {
-    #                     "type": "integer",
-    #                     "description": "返回条数上限，默认20，范围1-200。"
-    #                 }
-    #             },
-    #             "required": []
-    #         }
-    #     }
-    # },
-    # {
-    #     "type": "function",
-    #     "function": {
-    #         "name": "addShort",
-    #         "description": "向用户知识库添加短期记忆，短期记忆用于记录用户的喜好偏向、最近在做的事，这个需要频繁主动记录。",
-    #
-    #         "parameters": {
-    #             "type": "object",
-    #             "properties": {
-    #                 "title": {
-    #                     "type": "string",
-    #                     "description": "添加的短期记忆内容，简短总结。"
-    #                 }
-    #             },
-    #             "required": ["title"]
-    #         }
-    #     }
-    # },
+    {
+        "type": "function",
+        "function": {
+            "name": "addShort",
+            "description": "向用户短期记忆追加一条记录，适合补充近期偏好、事项或临时关注点。",
+
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "添加的短期记忆内容，简短总结。"
+                    }
+                },
+                "required": ["title"]
+            }
+        }
+    },
 
     {
         "type": "function",

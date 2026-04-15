@@ -17,8 +17,8 @@
     <script src="/static/vendor/easymde/easymde.min.js"></script>
 
     <!-- App Styles -->
-    <link rel="stylesheet" href="/static/css/style.css?v=20260324_03"> 
-    <link rel="stylesheet" href="/static/css/easymde_override.css">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260415_04">
+    <link rel="stylesheet" href="/static/css/easymde_override.css?v=20260415_04">
 </head>
 <body>
     <div class="app-container">
@@ -62,6 +62,10 @@
                         <a href="#" class="menu-item" id="settingsBtn">
                             <i class="fa-solid fa-gear"></i>
                             <span>设置</span>
+                        </a>
+                        <a href="#" class="menu-item" id="timelineMenuBtn">
+                            <i class="fa-solid fa-timeline"></i>
+                            <span>时间线</span>
                         </a>
                         <a href="#" class="menu-item" id="trashMenuBtn">
                             <i class="fa-regular fa-trash-can"></i>
@@ -130,6 +134,10 @@
                             <button type="button" class="mobile-header-menu-item" id="mobileNotesMenuItem">
                                 <i class="fa-solid fa-note-sticky"></i>
                                 <span>笔记</span>
+                            </button>
+                            <button type="button" class="mobile-header-menu-item" id="mobileTimelineMenuItem">
+                                <i class="fa-solid fa-timeline"></i>
+                                <span>时间线</span>
                             </button>
                         </div>
                    </div>
@@ -469,6 +477,22 @@
             <div id="notesResizeHandle" class="notes-resize-handle" aria-hidden="true"></div>
         </div>
 
+        <div id="timelinePanel" class="timeline-panel" aria-hidden="true">
+            <div class="timeline-panel-head">
+                <div class="timeline-panel-head-main">
+                    <h3>时间线</h3>
+                    <span class="timeline-panel-hint" id="timelinePanelHint">知识库 / 笔记</span>
+                </div>
+                <div class="timeline-panel-head-actions">
+                    <button class="timeline-panel-close" id="closeTimelinePanelBtn" type="button" title="关闭">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="timeline-list" id="timelineList"></div>
+            <div id="timelineResizeHandle" class="timeline-resize-handle" aria-hidden="true"></div>
+        </div>
+
         <div id="debugConsolePanel" class="debug-console-panel" aria-hidden="true">
             <div class="debug-console-head">
                 <div class="debug-console-head-main">
@@ -585,7 +609,7 @@
     </div>
     
     <!-- Scripts -->
-    <script src="/static/js/chat.js?v=20260324_03"></script>
+    <script src="/static/js/chat.js?v=20260415_05"></script>
 
     <!-- 添加用户表单 -->
     <div id="addUserModal" class="modal-backdrop" style="z-index: 2200;">

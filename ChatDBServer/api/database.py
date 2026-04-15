@@ -4,6 +4,7 @@ import time
 import re
 import threading
 import hashlib
+from timeline import record_knowledge_change
 
 # 全局文件锁，防止多用户并发写入 user.json 导致数据“串”或丢失
 _global_file_lock = threading.Lock()
@@ -172,6 +173,37 @@ class User:
 
         return None, None, "title or basis_id is required"
 
+    def _timeline_actor_context(self, timeline_actor=None):
+        actor = timeline_actor if isinstance(timeline_actor, dict) else {}
+        actor_type = str(actor.get("actor_type") or actor.get("type") or "user").strip() or "user"
+        actor_name = str(actor.get("actor_name") or actor.get("name") or self.user).strip() or self.user
+        conversation_id = str(actor.get("conversation_id") or "").strip()
+        conversation_title = str(actor.get("conversation_title") or "").strip()
+        return {
+            "actor_type": actor_type,
+            "actor_name": actor_name,
+            "conversation_id": conversation_id,
+            "conversation_title": conversation_title
+        }
+
+    def _record_knowledge_timeline(self, *, title, before_text="", after_text="", action="update", timeline_actor=None, extra=None):
+        try:
+            actor = self._timeline_actor_context(timeline_actor)
+            record_knowledge_change(
+                self.user,
+                title=title,
+                before_text=before_text,
+                after_text=after_text,
+                action=action,
+                actor_type=actor["actor_type"],
+                actor_name=actor["actor_name"],
+                conversation_id=actor["conversation_id"],
+                conversation_title=actor["conversation_title"],
+                extra=extra if isinstance(extra, dict) else {},
+            )
+        except Exception:
+            pass
+
     def getPassword(self):
         with open("./data/user.json", "r", encoding="utf-8") as f:
             users = json.load(f)
@@ -231,7 +263,7 @@ class User:
                 return title, meta
         return None, None
 
-    def updateBasisSettings(self, old_title, new_title=None, is_public=None, is_collaborative=None):
+    def updateBasisSettings(self, old_title, new_title=None, is_public=None, is_collaborative=None, timeline_actor=None):
         """更新基础知识设置"""
         lock = get_user_lock(self.user)
         with lock:
@@ -268,6 +300,24 @@ class User:
             meta["updated_at"] = time.time()
             with open(self.path + "database.json", "w", encoding="utf-8") as f:
                 json.dump(db, f, indent=4, ensure_ascii=False)
+            if new_title and new_title != old_title:
+                self._record_knowledge_timeline(
+                    title=new_title,
+                    action="rename",
+                    timeline_actor=timeline_actor,
+                    extra={"old_title": old_title, "new_title": new_title}
+                )
+            elif is_public is not None or is_collaborative is not None:
+                self._record_knowledge_timeline(
+                    title=new_title or old_title,
+                    action="update",
+                    timeline_actor=timeline_actor,
+                    extra={
+                        "field": "settings",
+                        "public": is_public,
+                        "collaborative": is_collaborative
+                    }
+                )
             return True, "更新成功"
         
     def updateBasisVectorTime(self, title):
@@ -308,7 +358,7 @@ class User:
                 json.dump(db, f, indent=4, ensure_ascii=False)
         return True
     
-    def addBasis(self, title, context, url):
+    def addBasis(self, title, context, url, timeline_actor=None):
         lock = get_user_lock(self.user)
         with lock:
             with open(self.path + "database.json", "r", encoding="utf-8") as f:
@@ -354,9 +404,16 @@ class User:
                 json.dump(db, f, indent=4, ensure_ascii=False)
         # 自动扫描连接
         self.auto_link_knowledge(title)
+        self._record_knowledge_timeline(
+            title=title,
+            after_text=context,
+            action="add",
+            timeline_actor=timeline_actor,
+            extra={"url": url, "basis_id": basis_id}
+        )
         return True
 
-    def setBasisPublic(self, title, is_public=True):
+    def setBasisPublic(self, title, is_public=True, timeline_actor=None):
         """设置知识公开状态"""
         lock = get_user_lock(self.user)
         try:
@@ -365,16 +422,24 @@ class User:
                     db = json.load(f)
 
                 if title in db["data_basis"]:
+                    old_public = bool(db["data_basis"][title].get("public", False))
                     db["data_basis"][title]["public"] = is_public
                     db["data_basis"][title]["updated_at"] = time.time()
                     with open(self.path + "database.json", "w", encoding="utf-8") as f:
                         json.dump(db, f, indent=4, ensure_ascii=False)
+                    if old_public != bool(is_public):
+                        self._record_knowledge_timeline(
+                            title=title,
+                            action="update",
+                            timeline_actor=timeline_actor,
+                            extra={"field": "public", "old": old_public, "new": bool(is_public)},
+                        )
                     return True, "设置成功"
                 return False, "知识不存在"
         except Exception as e:
             return False, str(e)
 
-    def setBasisPin(self, title, pin=True):
+    def setBasisPin(self, title, pin=True, timeline_actor=None):
         """设置基础知识置顶状态"""
         lock = get_user_lock(self.user)
         try:
@@ -389,11 +454,19 @@ class User:
                 if not isinstance(meta, dict):
                     return False, "知识元数据异常"
 
+                old_pin = bool(meta.get("pin", False))
                 meta["pin"] = bool(pin)
                 meta["pin_updated_at"] = time.time()
 
                 with open(self.path + "database.json", "w", encoding="utf-8") as f:
                     json.dump(db, f, indent=4, ensure_ascii=False)
+                if old_pin != bool(pin):
+                    self._record_knowledge_timeline(
+                        title=title,
+                        action="update",
+                        timeline_actor=timeline_actor,
+                        extra={"field": "pin", "old": old_pin, "new": bool(pin)},
+                    )
                 return True, "设置成功"
         except Exception as e:
             return False, str(e)
@@ -489,19 +562,26 @@ class User:
             json.dump(db, f, indent=4, ensure_ascii=False)
         return True
     
-    def removeBasis(self, title):
+    def removeBasis(self, title, timeline_actor=None):
         with open(self.path + "database.json", "r", encoding="utf-8") as f:
             db = json.load(f)
 
         if title not in db["data_basis"]:
             return False, "Title not found"
 
+        before_text = ""
+        try:
+            with open(db["data_basis"][title]["src"], "r", encoding="utf-8") as f:
+                before_text = f.read()
+        except Exception:
+            before_text = ""
+
         os.remove(db["data_basis"][title]["src"])
         del db["data_basis"][title]
 
         with open(self.path + "database.json", "w", encoding="utf-8") as f:
             json.dump(db, f, indent=4, ensure_ascii=False)
-            
+
         # 清理知识图谱中的该节点及其连接
         graph = self.get_knowledge_graph()
         # 从分类中移除
@@ -513,8 +593,15 @@ class User:
         # 移除节点坐标
         if "knowledge_nodes" in graph and title in graph["knowledge_nodes"]:
             del graph["knowledge_nodes"][title]
-            
+
         self.save_knowledge_graph(graph)
+        self._record_knowledge_timeline(
+            title=title,
+            before_text=before_text,
+            action="delete",
+            timeline_actor=timeline_actor,
+            extra={"field": "content"}
+        )
         return True, "删除成功"
     
     def getBasisContent(
@@ -686,7 +773,7 @@ class User:
             "matches": matches
         }, ensure_ascii=False)
 
-    def updateBasisContent(self, title, content):
+    def updateBasisContent(self, title, content, timeline_actor=None):
         with open(self.path + "database.json", "r", encoding="utf-8") as f:
             db = json.load(f)
         
@@ -695,6 +782,8 @@ class User:
             
         src = db["data_basis"][title]["src"]
         try:
+            with open(src, "r", encoding="utf-8") as f:
+                original = f.read()
             with open(src, "w", encoding="utf-8") as f:
                 f.write(content)
             db["data_basis"][title]["updated_at"] = time.time()
@@ -703,6 +792,15 @@ class User:
                 json.dump(db, f, indent=4, ensure_ascii=False)
             # 更新内容后重新扫描链接
             self.auto_link_knowledge(title)
+            if str(original or "").strip() != str(content or "").strip():
+                self._record_knowledge_timeline(
+                    title=title,
+                    before_text=original,
+                    after_text=content,
+                    action="update",
+                    timeline_actor=timeline_actor,
+                    extra={"field": "content"}
+                )
             return True, "Success"
         except Exception as e:
             return False, str(e)
@@ -718,7 +816,8 @@ class User:
         from_pos=None,
         to_pos=None,
         replacement=None,
-        replacements=None
+        replacements=None,
+        timeline_actor=None
     ):
         """更新基础知识，支持修改标题、整段内容、URL、区间替换（单次/批量）"""
         with open(self.path + "database.json", "r", encoding="utf-8") as f:
@@ -730,6 +829,11 @@ class User:
         # 获取旧的记录
         old_record = db["data_basis"][title]
         src = old_record["src"]
+        try:
+            with open(src, "r", encoding="utf-8") as f:
+                original_content = f.read()
+        except Exception:
+            original_content = ""
         
         has_range_replace = (
             from_pos is not None
@@ -829,6 +933,36 @@ class User:
         # 保存更新
         with open(self.path + "database.json", "w", encoding="utf-8") as f:
             json.dump(db, f, indent=4, ensure_ascii=False)
+        try:
+            with open(src, "r", encoding="utf-8") as f:
+                updated_content = f.read()
+        except Exception:
+            updated_content = original_content
+
+        if (
+            content_updated
+            or (new_title and new_title != title)
+            or (url is not None)
+            or (is_public is not None)
+            or (is_collaborative is not None)
+        ):
+            action = "rename" if (new_title and new_title != title and not content_updated and url is None and is_public is None and is_collaborative is None) else "update"
+            extra = {
+                "field": "content" if content_updated else "meta",
+                "old_title": title,
+                "new_title": new_title or title,
+                "url": url,
+                "public": bool(is_public) if is_public is not None else None,
+                "collaborative": bool(is_collaborative) if is_collaborative is not None else None,
+            }
+            self._record_knowledge_timeline(
+                title=new_title or title,
+                before_text=original_content,
+                after_text=updated_content,
+                action=action,
+                timeline_actor=timeline_actor,
+                extra=extra,
+            )
         
         return True, "Success"
     
