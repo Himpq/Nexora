@@ -30,7 +30,7 @@ class ToolExecutor:
             "select_tools": self._select_tools,
             "enable_tools": self._enable_tools,
             "get_knowledge_list": self._get_knowledge_list,
-            # "addShort": self._add_short,  # short-memory tools disabled
+            "addShort": self._add_short,
             # "queryShortMemory": self._query_short_memory,  # short-memory tools disabled
             "add_basis": self._add_basis,
             # "removeShort": self._remove_short,  # short-memory tools disabled
@@ -631,6 +631,12 @@ class ToolExecutor:
             args.get("title", ""),
             args.get("context", ""),
             args.get("url", ""),
+            timeline_actor={
+                "actor_type": "model_tool",
+                "actor_name": str(getattr(self.model, "model_name", "") or "").strip() or "model",
+                "conversation_id": str(getattr(self.model, "conversation_id", "") or "").strip(),
+                "conversation_title": str(self.model.conversation_manager.get_conversation(self.model.conversation_id).get("title") if getattr(self.model, "conversation_id", None) else "").strip() if getattr(self.model, "conversation_id", None) else "",
+            },
         )
         return "已添加到基础知识库"
 
@@ -639,7 +645,15 @@ class ToolExecutor:
         return "已删除短期记忆"
 
     def _remove_basis(self, args: Dict[str, Any]) -> str:
-        self.model.user.removeBasis(args.get("title", ""))
+        self.model.user.removeBasis(
+            args.get("title", ""),
+            timeline_actor={
+                "actor_type": "model_tool",
+                "actor_name": str(getattr(self.model, "model_name", "") or "").strip() or "model",
+                "conversation_id": str(getattr(self.model, "conversation_id", "") or "").strip(),
+                "conversation_title": str(self.model.conversation_manager.get_conversation(self.model.conversation_id).get("title") if getattr(self.model, "conversation_id", None) else "").strip() if getattr(self.model, "conversation_id", None) else "",
+            },
+        )
         return "已删除基础知识"
 
     def _update_basis(self, args: Dict[str, Any]) -> str:
@@ -654,6 +668,12 @@ class ToolExecutor:
             to_pos=args.get("to_pos"),
             replacement=args.get("replacement"),
             replacements=args.get("replacements"),
+            timeline_actor={
+                "actor_type": "model_tool",
+                "actor_name": str(getattr(self.model, "model_name", "") or "").strip() or "model",
+                "conversation_id": str(getattr(self.model, "conversation_id", "") or "").strip(),
+                "conversation_title": str(self.model.conversation_manager.get_conversation(self.model.conversation_id).get("title") if getattr(self.model, "conversation_id", None) else "").strip() if getattr(self.model, "conversation_id", None) else "",
+            },
         )
         if success:
             updates = []

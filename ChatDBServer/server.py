@@ -36,6 +36,7 @@ from agent_tunnel import register_agent, unregister_agent, update_agent_tools, u
 from stream_runtime import start_session as start_stream_session, iter_session_chunks as iter_stream_session_chunks, get_session_meta as get_stream_session_meta, request_cancel as request_stream_cancel
 from tools import canonicalize_tool_name
 from secure import normalize_text, resolve_configured_path, safe_filename, safe_join_path
+from timeline import list_entries as list_timeline_entries, record_notes_snapshot_change
 from flask_sock import Sock
 
 app = Flask(__name__)
@@ -3309,11 +3310,41 @@ def save_notes_store():
 
     try:
         user = User(username)
+        before_store = user.get_notes_store()
         normalized = user.save_notes_store(store)
+        try:
+            record_notes_snapshot_change(
+                username,
+                before_store,
+                normalized,
+                actor_type='user',
+                actor_name=username,
+            )
+        except Exception:
+            pass
         return jsonify({'success': True, 'store': normalized})
     except Exception as e:
         print(f"Error saving notes store: {e}")
         return jsonify({'success': False, 'message': '保存笔记失败'}), 500
+
+
+@app.route('/api/timeline', methods=['GET'])
+@require_login
+def get_timeline_entries():
+    username = session.get('username')
+    if not username:
+        return jsonify({'success': False, 'message': '未登录'}), 401
+    try:
+        limit = int(request.args.get('limit') or 120)
+    except Exception:
+        limit = 120
+    kind = str(request.args.get('kind') or '').strip()
+    try:
+        items = list_timeline_entries(username, limit=limit, kind=kind or None)
+        return jsonify({'success': True, 'items': items, 'total': len(items)})
+    except Exception as e:
+        print(f"Error getting timeline entries: {e}")
+        return jsonify({'success': False, 'message': '获取时间线失败'}), 500
 
 
 def _resolve_current_user_mail_binding():

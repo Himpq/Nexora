@@ -1,4 +1,4 @@
-
+﻿
 // --- Helper: Create Thinking Block ---
 function toggleThinkingBlockCollapsed(thinkingBlock) {
     if (!thinkingBlock) return;
@@ -201,6 +201,8 @@ const NOTES_LEGACY_PREFIX = 'nexora_notes_conv_';
 const NOTES_MOBILE_PANEL_POS_KEY = 'nexora_notes_mobile_panel_pos_v1';
 const NOTES_PANEL_LAYOUT_KEY = 'nexora_notes_panel_layout_v2';
 const NOTES_CLOUD_SYNC_DEBOUNCE_MS = 240;
+const TIMELINE_PANEL_LAYOUT_KEY = 'nexora_timeline_panel_layout_v1';
+const TIMELINE_REFRESH_INTERVAL_MS = 12000;
 const DEBUG_CONSOLE_ENABLED_KEY = 'nexora_debug_console_enabled_v1';
 let notesState = {
     open: false,
@@ -230,6 +232,27 @@ let notesCloudSyncTimer = null;
 let notesCloudSyncPendingStore = null;
 let notesCloudSyncInFlight = false;
 let notesMutationSeq = 0;
+let timelineState = {
+    open: false,
+    items: [],
+    loading: false,
+    bound: false,
+    dragging: false,
+    resizing: false,
+    pointerId: null,
+    startClientX: 0,
+    startClientY: 0,
+    startLeft: 0,
+    startTop: 0,
+    startWidth: 0,
+    startHeight: 0,
+    left: null,
+    top: null,
+    width: null,
+    height: null
+};
+let timelineRefreshTimer = null;
+let timelineRefreshInFlight = false;
 let debugConsoleState = {
     enabled: false,
     open: false,
@@ -253,6 +276,27 @@ let debugConsoleState = {
     startWidth: 0,
     startHeight: 0
 };
+let floatingPanelZIndexSeed = 5608;
+
+function bringFloatingPanelToFront(panel) {
+    if (!panel) return;
+    const current = Number.parseInt(String(panel.style && panel.style.zIndex ? panel.style.zIndex : ''), 10);
+    const next = Math.max(
+        floatingPanelZIndexSeed + 1,
+        Number.isFinite(current) ? current + 1 : 0,
+        5600
+    );
+    floatingPanelZIndexSeed = next;
+    panel.style.zIndex = String(next);
+}
+
+function bindFloatingPanelFront(panel) {
+    if (!panel || panel.dataset.frontBindDone === '1') return;
+    panel.dataset.frontBindDone = '1';
+    const lift = () => bringFloatingPanelToFront(panel);
+    panel.addEventListener('pointerdown', lift, true);
+    panel.addEventListener('mousedown', lift, true);
+}
 let forceContextCompressionOnce = false;
 let mobileMessageInputViewportBaseline = 0;
 let lastMessageInputGestureTs = 0;
@@ -2781,6 +2825,7 @@ function openDebugConsole() {
     debugConsoleState.enabled = true;
     debugConsoleState.open = true;
     saveDebugConsoleEnabled(true);
+    bringFloatingPanelToFront(els.debugConsolePanel || document.getElementById('debugConsolePanel'));
     ensureDebugConsoleEmptyState();
     updateDebugConsoleTabUi();
     updateDebugConsoleStatus();
@@ -3053,6 +3098,7 @@ function bindDebugConsoleDrag() {
     const resizeHandle = els.debugConsoleResizeHandle;
     if (!panel || !head) return;
     debugConsoleState.bound = true;
+    bindFloatingPanelFront(panel);
 
     const stopDrag = () => {
         if (!debugConsoleState.dragging && !debugConsoleState.resizing) return;
@@ -3100,6 +3146,7 @@ function bindDebugConsoleDrag() {
         const target = e.target;
         if (target && target.closest('button, a, input, select, textarea, label')) return;
         if (!debugConsoleState.open) return;
+        bringFloatingPanelToFront(panel);
         const rect = panel.getBoundingClientRect();
         debugConsoleState.dragging = true;
         debugConsoleState.pointerId = e.pointerId;
@@ -3228,6 +3275,7 @@ function bindMobileHeaderMenu() {
     els.mobileHeaderMenuPanel = document.getElementById('mobileHeaderMenuPanel');
     els.mobileWorkflowMenuItem = document.getElementById('mobileWorkflowMenuItem');
     els.mobileNotesMenuItem = document.getElementById('mobileNotesMenuItem');
+    els.mobileTimelineMenuItem = document.getElementById('mobileTimelineMenuItem');
 
     const menu = els.mobileHeaderMenu;
     const trigger = els.mobileHeaderMenuTrigger;
@@ -3270,6 +3318,16 @@ function bindMobileHeaderMenu() {
                 return;
             }
             toggleNotesPanel();
+        };
+    }
+
+    const timelineItem = els.mobileTimelineMenuItem;
+    if (timelineItem) {
+        timelineItem.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            closeMobileHeaderMenu();
+            toggleTimelinePanel();
         };
     }
 
@@ -3956,6 +4014,13 @@ const els = {
     notesResizeHandle: document.getElementById('notesResizeHandle'),
     notesList: document.getElementById('notesList'),
     notesCountBadge: document.getElementById('notesCountBadge'),
+    timelineMenuBtn: document.getElementById('timelineMenuBtn'),
+    mobileTimelineMenuItem: document.getElementById('mobileTimelineMenuItem'),
+    timelinePanel: document.getElementById('timelinePanel'),
+    timelinePanelHead: document.querySelector('#timelinePanel .timeline-panel-head'),
+    closeTimelinePanelBtn: document.getElementById('closeTimelinePanelBtn'),
+    timelineResizeHandle: document.getElementById('timelineResizeHandle'),
+    timelineList: document.getElementById('timelineList'),
     debugConsolePanel: document.getElementById('debugConsolePanel'),
     debugConsoleHead: document.querySelector('#debugConsolePanel .debug-console-head'),
     debugConsolePromptTab: document.getElementById('debugConsolePromptTab'),
@@ -5124,6 +5189,7 @@ function openNotesPanel() {
     notesState.open = true;
     panel.classList.add('active');
     panel.setAttribute('aria-hidden', 'false');
+    bringFloatingPanelToFront(panel);
     bindNotesPanelMobileDrag();
     requestAnimationFrame(() => applyNotesMobilePanelPosition());
     renderNotesList();
@@ -5150,6 +5216,384 @@ function closeNotesPanel() {
     panel.classList.remove('resizing');
     panel.setAttribute('aria-hidden', 'true');
 }
+
+function loadTimelinePanelPosition() {
+    try {
+        const raw = localStorage.getItem(TIMELINE_PANEL_LAYOUT_KEY);
+        if (!raw) return null;
+        const obj = JSON.parse(raw);
+        const left = Number(obj && obj.left);
+        const top = Number(obj && obj.top);
+        const width = Number(obj && obj.width);
+        const height = Number(obj && obj.height);
+        if (Number.isFinite(left) && Number.isFinite(top) && Number.isFinite(width) && Number.isFinite(height)) {
+            return { left, top, width, height };
+        }
+    } catch (_) {}
+    return null;
+}
+
+function saveTimelinePanelPosition(left, top, width, height) {
+    try {
+        localStorage.setItem(TIMELINE_PANEL_LAYOUT_KEY, JSON.stringify({
+            left: Math.round(Number(left || 0)),
+            top: Math.round(Number(top || 0)),
+            width: Math.round(Number(width || 0)),
+            height: Math.round(Number(height || 0))
+        }));
+    } catch (_) {}
+}
+
+function applyTimelinePanelPosition(forceDefault = false) {
+    const panel = els.timelinePanel || document.getElementById('timelinePanel');
+    if (!panel) return;
+    const saved = loadTimelinePanelPosition();
+    if (!saved && !forceDefault) return;
+    if (saved) {
+        const minWidth = 280;
+        const minHeight = 180;
+        const maxWidth = Math.max(minWidth, window.innerWidth - 24);
+        const maxHeight = Math.max(minHeight, window.innerHeight - 24);
+        const width = Math.max(minWidth, Math.min(maxWidth, Number(saved.width || minWidth)));
+        const height = Math.max(minHeight, Math.min(maxHeight, Number(saved.height || minHeight)));
+        const maxLeft = Math.max(8, window.innerWidth - width - 8);
+        const maxTop = Math.max(8, window.innerHeight - height - 8);
+        timelineState.left = Math.max(8, Math.min(maxLeft, Number(saved.left || 0)));
+        timelineState.top = Math.max(8, Math.min(maxTop, Number(saved.top || 0)));
+        timelineState.width = width;
+        timelineState.height = height;
+        panel.style.left = `${timelineState.left}px`;
+        panel.style.top = `${timelineState.top}px`;
+        panel.style.right = 'auto';
+        panel.style.width = `${timelineState.width}px`;
+        panel.style.height = `${timelineState.height}px`;
+        return;
+    }
+    const rect = panel.getBoundingClientRect();
+    timelineState.left = Number(rect.left || 0);
+    timelineState.top = Number(rect.top || 0);
+    timelineState.width = Number(rect.width || 0);
+    timelineState.height = Number(rect.height || 0);
+}
+
+function bindTimelinePanelDrag() {
+    if (timelineState.bound) return;
+    timelineState.bound = true;
+    const panel = els.timelinePanel || document.getElementById('timelinePanel');
+    const head = els.timelinePanelHead || document.querySelector('#timelinePanel .timeline-panel-head');
+    const resizeHandle = els.timelineResizeHandle || document.getElementById('timelineResizeHandle');
+    if (!panel || !head) return;
+    bindFloatingPanelFront(panel);
+
+    const clampRect = (left, top, width, height) => {
+        const minWidth = 280;
+        const minHeight = 180;
+        const maxWidth = Math.max(minWidth, window.innerWidth - 24);
+        const maxHeight = Math.max(minHeight, window.innerHeight - 24);
+        const safeWidth = Math.max(minWidth, Math.min(maxWidth, Number(width || minWidth)));
+        const safeHeight = Math.max(minHeight, Math.min(maxHeight, Number(height || minHeight)));
+        const maxLeft = Math.max(8, window.innerWidth - safeWidth - 8);
+        const maxTop = Math.max(8, window.innerHeight - safeHeight - 8);
+        return {
+            left: Math.max(8, Math.min(maxLeft, Number(left || 0))),
+            top: Math.max(8, Math.min(maxTop, Number(top || 0))),
+            width: safeWidth,
+            height: safeHeight
+        };
+    };
+
+    const stop = () => {
+        if (!timelineState.dragging && !timelineState.resizing) return;
+        timelineState.dragging = false;
+        timelineState.resizing = false;
+        timelineState.pointerId = null;
+        saveTimelinePanelPosition(
+            timelineState.left,
+            timelineState.top,
+            timelineState.width,
+            timelineState.height
+        );
+        panel.classList.remove('dragging');
+        panel.classList.remove('resizing');
+    };
+
+    const move = (e) => {
+        if (!timelineState.dragging && !timelineState.resizing) return;
+        if (timelineState.pointerId != null && e.pointerId !== timelineState.pointerId) return;
+        const dx = Number(e.clientX || 0) - timelineState.startClientX;
+        const dy = Number(e.clientY || 0) - timelineState.startClientY;
+        e.preventDefault();
+        if (timelineState.dragging) {
+            const next = clampRect(
+                timelineState.startLeft + dx,
+                timelineState.startTop + dy,
+                timelineState.width,
+                timelineState.height
+            );
+            timelineState.left = next.left;
+            timelineState.top = next.top;
+            timelineState.width = next.width;
+            timelineState.height = next.height;
+            panel.style.left = `${next.left}px`;
+            panel.style.top = `${next.top}px`;
+            panel.style.right = 'auto';
+            panel.style.width = `${next.width}px`;
+            panel.style.height = `${next.height}px`;
+        } else if (timelineState.resizing) {
+            const next = clampRect(
+                timelineState.left,
+                timelineState.top,
+                timelineState.startWidth + dx,
+                timelineState.startHeight + dy
+            );
+            timelineState.left = next.left;
+            timelineState.top = next.top;
+            timelineState.width = next.width;
+            timelineState.height = next.height;
+            panel.style.left = `${next.left}px`;
+            panel.style.top = `${next.top}px`;
+            panel.style.right = 'auto';
+            panel.style.width = `${next.width}px`;
+            panel.style.height = `${next.height}px`;
+        }
+    };
+
+    head.addEventListener('pointerdown', (e) => {
+        if (!timelineState.open) return;
+        if (e.button !== 0) return;
+        if (e.target && typeof e.target.closest === 'function' && e.target.closest('button, a, input, textarea, select')) return;
+        bringFloatingPanelToFront(panel);
+        const rect = panel.getBoundingClientRect();
+        timelineState.dragging = true;
+        timelineState.resizing = false;
+        timelineState.pointerId = e.pointerId;
+        timelineState.startClientX = Number(e.clientX || 0);
+        timelineState.startClientY = Number(e.clientY || 0);
+        timelineState.startLeft = Number(rect.left || 0);
+        timelineState.startTop = Number(rect.top || 0);
+        timelineState.left = Number(rect.left || 0);
+        timelineState.top = Number(rect.top || 0);
+        timelineState.width = Number(rect.width || 0);
+        timelineState.height = Number(rect.height || 0);
+        panel.classList.add('dragging');
+        try { head.setPointerCapture(e.pointerId); } catch (_) {}
+        e.preventDefault();
+    });
+
+    if (resizeHandle) {
+        resizeHandle.addEventListener('pointerdown', (e) => {
+            if (!timelineState.open) return;
+            if (e.button !== 0) return;
+            const rect = panel.getBoundingClientRect();
+            timelineState.dragging = false;
+            timelineState.resizing = true;
+            timelineState.pointerId = e.pointerId;
+            timelineState.startClientX = Number(e.clientX || 0);
+            timelineState.startClientY = Number(e.clientY || 0);
+            timelineState.startWidth = Number(rect.width || 0);
+            timelineState.startHeight = Number(rect.height || 0);
+            timelineState.left = Number(rect.left || 0);
+            timelineState.top = Number(rect.top || 0);
+            timelineState.width = Number(rect.width || 0);
+            timelineState.height = Number(rect.height || 0);
+            panel.classList.add('resizing');
+            try { resizeHandle.setPointerCapture(e.pointerId); } catch (_) {}
+            e.preventDefault();
+            e.stopPropagation();
+        });
+    }
+
+    document.addEventListener('pointermove', move, true);
+    document.addEventListener('pointerup', stop, true);
+    document.addEventListener('pointercancel', stop, true);
+    window.addEventListener('resize', () => {
+        if (!timelineState.open) return;
+        applyTimelinePanelPosition(false);
+    });
+}
+
+function formatTimelineDateParts(ts) {
+    const n = Number(ts || 0);
+    if (!n) return { date: '-' };
+    try {
+        const d = new Date(n * 1000);
+        return {
+            date: d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
+        };
+    } catch (_) {
+        return { date: '-' };
+    }
+}
+
+function timelineEntryIconClass(entry) {
+    const kind = String((entry && (entry.kind || entry.type)) || '').toLowerCase();
+    if (kind === 'note') return 'fa-solid fa-note-sticky';
+    if (kind === 'notebook') return 'fa-solid fa-book-bookmark';
+    if (kind === 'knowledge') return 'fa-solid fa-book-open';
+    return 'fa-solid fa-clock';
+}
+
+async function fetchTimelineEntries() {
+    try {
+        const res = await fetch('/api/timeline?limit=120');
+        const data = await res.json();
+        if (data && data.success && Array.isArray(data.items)) {
+            return data.items;
+        }
+    } catch (_) {}
+    return [];
+}
+
+function renderTimelineList() {
+    const listEl = els.timelineList || document.getElementById('timelineList');
+    if (!listEl) return;
+    const items = Array.isArray(timelineState.items) ? timelineState.items : [];
+    if (!items.length) {
+        listEl.innerHTML = '<div class="timeline-empty">暂无时间线记录</div>';
+        return;
+    }
+
+    listEl.innerHTML = '';
+    const track = document.createElement('div');
+    track.className = 'timeline-track';
+    let lastDateLabel = '';
+    items.forEach((entry) => {
+        const item = document.createElement('article');
+        item.className = 'timeline-item';
+        const parts = formatTimelineDateParts(entry.ts);
+        item.title = String(parts.date || '').trim();
+        item.dataset.ts = String(entry.ts || '');
+
+        const rail = document.createElement('div');
+        rail.className = 'timeline-rail';
+        const dateMain = document.createElement('div');
+        dateMain.className = 'timeline-date-main';
+        const currentDate = String(parts.date || '').trim();
+        dateMain.textContent = currentDate === lastDateLabel ? '' : currentDate;
+        if (currentDate) lastDateLabel = currentDate;
+        rail.appendChild(dateMain);
+
+        const node = document.createElement('div');
+        node.className = 'timeline-node';
+        rail.appendChild(node);
+
+        const content = document.createElement('div');
+        content.className = 'timeline-content';
+
+        const top = document.createElement('div');
+        top.className = 'timeline-top';
+        const icon = document.createElement('span');
+        icon.className = 'timeline-type-icon';
+        icon.innerHTML = `<i class="${timelineEntryIconClass(entry)}"></i>`;
+        const title = document.createElement('div');
+        title.className = 'timeline-title';
+        title.textContent = String(entry.title || '未命名').trim() || '未命名';
+        top.appendChild(icon);
+        top.appendChild(title);
+
+        const updateBy = document.createElement('div');
+        updateBy.className = 'timeline-update-by';
+        updateBy.textContent = `updateBy：${String(entry.update_by || '用户').trim() || '用户'}`;
+
+        const diffText = String(entry.difference || '').trim() || '无变更';
+        const diff = document.createElement('div');
+        diff.className = 'timeline-diff';
+        const diffSign = diffText.startsWith('+') ? '+' : (diffText.startsWith('-') ? '-' : '');
+        if (diffSign) {
+            diff.classList.add(diffSign === '+' ? 'positive' : 'negative');
+            const body = document.createElement('span');
+            body.className = 'timeline-diff-body';
+            body.textContent = diffText.slice(1).trim() || '无变更';
+            const sign = document.createElement('span');
+            sign.className = 'timeline-diff-sign';
+            sign.textContent = diffSign;
+            diff.appendChild(sign);
+            diff.appendChild(body);
+            diff.title = diffText;
+        } else {
+            diff.classList.add('neutral');
+            const summary = document.createElement('span');
+            summary.className = 'timeline-diff-summary';
+            const actionLabel = /^新增\s/.test(String(entry.title || '')) ? '新增'
+                : (/^删除\s/.test(String(entry.title || '')) ? '删除' : '修改');
+            const subject = String(entry.title || '记录').replace(/^(新增|删除|修改)\s+/, '').trim() || '记录';
+            summary.textContent = `${actionLabel} ${subject}`;
+            diff.appendChild(summary);
+            diff.title = summary.textContent;
+        }
+
+        content.appendChild(top);
+        content.appendChild(updateBy);
+        content.appendChild(diff);
+
+        item.appendChild(rail);
+        item.appendChild(content);
+        track.appendChild(item);
+    });
+    listEl.appendChild(track);
+}
+
+async function refreshTimelinePanel() {
+    if (timelineRefreshInFlight) return;
+    timelineRefreshInFlight = true;
+    try {
+        const items = await fetchTimelineEntries();
+        timelineState.items = Array.isArray(items) ? items : [];
+        renderTimelineList();
+    } finally {
+        timelineRefreshInFlight = false;
+    }
+}
+
+function startTimelinePolling() {
+    if (timelineRefreshTimer) return;
+    timelineRefreshTimer = setTimeout(async function tick() {
+        timelineRefreshTimer = null;
+        if (!timelineState.open) return;
+        await refreshTimelinePanel();
+        if (timelineState.open) {
+            startTimelinePolling();
+        }
+    }, TIMELINE_REFRESH_INTERVAL_MS);
+}
+
+function stopTimelinePolling() {
+    if (timelineRefreshTimer) {
+        clearTimeout(timelineRefreshTimer);
+        timelineRefreshTimer = null;
+    }
+}
+
+function openTimelinePanel() {
+    const panel = els.timelinePanel || document.getElementById('timelinePanel');
+    if (!panel) return;
+    timelineState.open = true;
+    panel.classList.add('active');
+    panel.setAttribute('aria-hidden', 'false');
+    bringFloatingPanelToFront(panel);
+    bindTimelinePanelDrag();
+    applyTimelinePanelPosition(false);
+    void refreshTimelinePanel();
+    startTimelinePolling();
+}
+
+function closeTimelinePanel() {
+    const panel = els.timelinePanel || document.getElementById('timelinePanel');
+    if (!panel) return;
+    timelineState.open = false;
+    panel.classList.remove('active');
+    panel.classList.remove('dragging');
+    panel.classList.remove('resizing');
+    panel.setAttribute('aria-hidden', 'true');
+    stopTimelinePolling();
+}
+
+window.toggleTimelinePanel = function() {
+    const panel = els.timelinePanel || document.getElementById('timelinePanel');
+    if (!panel) return;
+    if (timelineState.open) closeTimelinePanel();
+    else openTimelinePanel();
+};
 
 function logNotesBridge(message) {
     const msg = String(message || '').trim();
@@ -6544,6 +6988,7 @@ function bindNotesPanelMobileDrag() {
     const head = (els.notesPanelHead || document.querySelector('#notesPanel .notes-panel-head'));
     const resizeHandle = els.notesResizeHandle || document.getElementById('notesResizeHandle');
     if (!panel || !head) return;
+    bindFloatingPanelFront(panel);
 
     const stopInteract = () => {
         if (!notesMobilePanelState.dragging && !notesMobilePanelState.resizing) return;
@@ -6604,6 +7049,7 @@ function bindNotesPanelMobileDrag() {
         const t = e.target;
         if (t && t.closest('button, a, input, select, textarea, label')) return;
         if (!notesState.open) return;
+        bringFloatingPanelToFront(panel);
         notesMobilePanelState.dragging = true;
         notesMobilePanelState.resizing = false;
         notesMobilePanelState.pointerId = e.pointerId;
@@ -6860,6 +7306,7 @@ function bindNotesContextCapture() {
         if (e.key === 'Escape') {
             hideNotesContextMenu();
             if (!NOTES_COMPANION_MODE && notesState.open) closeNotesPanel();
+            if (timelineState.open) closeTimelinePanel();
         }
     });
 }
@@ -6869,6 +7316,9 @@ function initNotesUi() {
     bindNotesPanelMobileDrag();
     if (els.closeNotesPanelBtn) {
         els.closeNotesPanelBtn.addEventListener('click', () => closeNotesPanel());
+    }
+    if (els.closeTimelinePanelBtn) {
+        els.closeTimelinePanelBtn.addEventListener('click', () => closeTimelinePanel());
     }
     if (els.openNotesCompanionBtn) {
         if (NOTES_COMPANION_MODE) {
@@ -14679,6 +15129,12 @@ let currentViewingKnowledge = null;
 let knowledgeMetaCache = {};
 let bulkVectorizeRunning = false;
 let pendingHighlightData = null;
+let knowledgeEditorScrollState = {
+    activeTitle: '',
+    byTitle: Object.create(null)
+};
+let knowledgeEditorPreviewHooksInstalled = false;
+let knowledgeEditorToolbarHooksInstalled = false;
 
 // 导航栈管理：追踪视图层级，支持多层返回
 let navigationStack = [];
@@ -14740,11 +15196,13 @@ function rebindHeaderActionButtons() {
     els.toggleSidebar = document.getElementById('toggleSidebar');
     els.toggleWorkflowView = document.getElementById('toggleWorkflowView');
     els.toggleNotesPanel = document.getElementById('toggleNotesPanel');
+    els.timelineMenuBtn = document.getElementById('timelineMenuBtn');
     els.mobileHeaderMenu = document.getElementById('mobileHeaderMenu');
     els.mobileHeaderMenuTrigger = document.getElementById('mobileHeaderMenuTrigger');
     els.mobileHeaderMenuPanel = document.getElementById('mobileHeaderMenuPanel');
     els.mobileWorkflowMenuItem = document.getElementById('mobileWorkflowMenuItem');
     els.mobileNotesMenuItem = document.getElementById('mobileNotesMenuItem');
+    els.mobileTimelineMenuItem = document.getElementById('mobileTimelineMenuItem');
     els.toggleKnowledgePanel = document.getElementById('toggleKnowledgePanel');
     els.toggleFilePanel = document.getElementById('toggleFilePanel');
     els.toggleMailView = document.getElementById('toggleMailView');
@@ -14779,6 +15237,13 @@ function rebindHeaderActionButtons() {
             toggleNotesPanel();
         };
         renderNotesBadge();
+    }
+    const timelineBtn = els.timelineMenuBtn;
+    if (timelineBtn) {
+        timelineBtn.onclick = (e) => {
+            e.preventDefault();
+            toggleTimelinePanel();
+        };
     }
     const toggleMail = els.toggleMailView;
     if (toggleMail) {
@@ -14835,6 +15300,7 @@ async function viewKnowledge(title, options = {}) {
     currentViewingKnowledge = title;
     const { forceEditMode = false, highlightData = null, fromSearch = false } = options;
     pendingHighlightData = highlightData;
+    knowledgeEditorScrollState.activeTitle = String(title || '').trim();
     const viewer = document.getElementById('knowledgeViewer');
     const msgs = document.getElementById('messagesContainer');
     const inputWrapper = document.getElementById('inputWrapper');
@@ -14918,6 +15384,7 @@ async function viewKnowledge(title, options = {}) {
             status: false,
             spellChecker: false,
             sideBySideFullscreen: false,
+            syncSideBySidePreviewScroll: false,
             previewRender: function(plainText) {
                 const html = renderMarkdownWithNewTabLinks(plainText);
                 const tempDiv = document.createElement('div');
@@ -14933,6 +15400,7 @@ async function viewKnowledge(title, options = {}) {
         // 提示用户如何切换模式
         showToast('提示：点击编辑器工具栏中的“眼睛”图标可切换预览与编辑模式。');
     }
+    installKnowledgeEditorPreviewHooks();
     // 如果编辑器存在但绑定的 DOM 已被替换，重新创建
     if (!easyMDE || !easyMDE.codemirror || !document.getElementById('knowledgeEditor')) {
         easyMDE = null;
@@ -14941,6 +15409,7 @@ async function viewKnowledge(title, options = {}) {
             status: false,
             spellChecker: false,
             sideBySideFullscreen: false,
+            syncSideBySidePreviewScroll: false,
             previewRender: function(plainText) {
                 const html = renderMarkdownWithNewTabLinks(plainText);
                 const tempDiv = document.createElement('div');
@@ -14951,6 +15420,7 @@ async function viewKnowledge(title, options = {}) {
             toolbar: ["bold", "italic", "heading", "|", "quote", "unordered-list", "ordered-list", "|", 
                       "link", "image", "table", "|", "preview", "side-by-side", "fullscreen"]
         });
+        installKnowledgeEditorPreviewHooks();
     }
     
     const viewportHeight = window.innerHeight;
@@ -14960,15 +15430,25 @@ async function viewKnowledge(title, options = {}) {
 
     // Default to Preview Mode unless forced edit mode
     if (forceEditMode) {
-        if (easyMDE.isPreviewActive()) {
-            EasyMDE.togglePreview(easyMDE);
+        if (isKnowledgeEditorPreviewActive()) {
+            storeKnowledgeEditorScrollPosition(true);
+            toggleKnowledgeEditorPreviewMode();
         }
     } else {
-        // 直接进入预览模式
-        if (!easyMDE.isPreviewActive()) {
-            EasyMDE.togglePreview(easyMDE);
+        if (!isKnowledgeEditorPreviewActive()) {
+            storeKnowledgeEditorScrollPosition(false);
+            toggleKnowledgeEditorPreviewMode();
         }
     }
+    bindKnowledgeEditorScrollTracking();
+    restoreKnowledgeEditorScrollPosition(isKnowledgeEditorPreviewActive());
+    [0, 40, 140, 320, 680].forEach((delay) => {
+        setTimeout(() => {
+            bindKnowledgeEditorScrollTracking();
+            restoreKnowledgeEditorScrollPosition(isKnowledgeEditorPreviewActive());
+            syncKnowledgeEditorToolbarState();
+        }, delay);
+    });
 
     const highlightWhenReady = (retryCount = 0) => {
         if (!pendingHighlightData || !pendingHighlightData.text) return;
@@ -15117,6 +15597,14 @@ function closeKnowledgeView() {
     const headerLeft = document.querySelector('.header-left');
     const headerRight = document.querySelector('.header-right');
     const wasMailView = !!(viewer && viewer.querySelector('.mail-workspace'));
+    const closingTitle = String(currentViewingKnowledge || '').trim();
+
+    exitKnowledgeEditorSpecialModes();
+    storeKnowledgeEditorScrollPosition();
+    if (closingTitle && knowledgeEditorScrollState.byTitle && typeof knowledgeEditorScrollState.byTitle === 'object') {
+        delete knowledgeEditorScrollState.byTitle[closingTitle];
+    }
+    knowledgeEditorScrollState.activeTitle = '';
 
     currentViewingKnowledge = null;
     
@@ -16873,6 +17361,512 @@ function escapeHtml(str) {
         .replace(/'/g, '&#039;');
 }
 
+function getKnowledgeEditorState(title = currentViewingKnowledge || '') {
+    const key = String(title || '').trim() || '__default__';
+    if (!knowledgeEditorScrollState.byTitle[key]) {
+        knowledgeEditorScrollState.byTitle[key] = {
+            previewTop: 0,
+            editTop: 0,
+            previewRatio: 0,
+            editRatio: 0
+        };
+    }
+    return knowledgeEditorScrollState.byTitle[key];
+}
+
+function readScrollableProgress(el) {
+    if (!el) return { top: 0, ratio: 0 };
+    const top = Math.max(0, Number(el.scrollTop || 0));
+    const max = Math.max(0, Number((el.scrollHeight || 0) - (el.clientHeight || 0)));
+    const ratio = max > 0 ? Math.max(0, Math.min(1, top / max)) : 0;
+    return { top, ratio };
+}
+
+function readCodeMirrorProgress() {
+    if (!easyMDE || !easyMDE.codemirror || typeof easyMDE.codemirror.getScrollInfo !== 'function') {
+        return { top: 0, ratio: 0 };
+    }
+    try {
+        const info = easyMDE.codemirror.getScrollInfo();
+        const top = Math.max(0, Number((info && info.top) || 0));
+        const max = Math.max(0, Number(((info && info.height) || 0) - ((info && info.clientHeight) || 0)));
+        const ratio = max > 0 ? Math.max(0, Math.min(1, top / max)) : 0;
+        return { top, ratio };
+    } catch (_) {
+        return { top: 0, ratio: 0 };
+    }
+}
+
+function applyScrollableProgress(el, preferredTop = 0, preferredRatio = 0) {
+    if (!el) return;
+    const max = Math.max(0, Number((el.scrollHeight || 0) - (el.clientHeight || 0)));
+    const ratio = Math.max(0, Math.min(1, Number(preferredRatio || 0)));
+    const top = max > 0 ? Math.max(0, Math.min(max, Math.round(max * ratio))) : Math.max(0, Number(preferredTop || 0));
+    el.scrollTop = top;
+}
+
+function applyCodeMirrorProgress(preferredTop = 0, preferredRatio = 0) {
+    if (!easyMDE || !easyMDE.codemirror || typeof easyMDE.codemirror.getScrollInfo !== 'function') return;
+    try {
+        const info = easyMDE.codemirror.getScrollInfo();
+        const max = Math.max(0, Number(((info && info.height) || 0) - ((info && info.clientHeight) || 0)));
+        const ratio = Math.max(0, Math.min(1, Number(preferredRatio || 0)));
+        const top = max > 0 ? Math.max(0, Math.min(max, Math.round(max * ratio))) : Math.max(0, Number(preferredTop || 0));
+        easyMDE.codemirror.scrollTo(null, top);
+    } catch (_) {}
+}
+
+function logKnowledgeEditorDebug(message, details = null) {
+    try {
+        if (details != null) {
+            console.debug('[KnowledgeEditor]', message, details);
+        } else {
+            console.debug('[KnowledgeEditor]', message);
+        }
+    } catch (_) {}
+}
+
+function getKnowledgeEditorScrollMetrics() {
+    const preview = getKnowledgeEditorPreviewEl();
+    const previewProgress = preview ? readScrollableProgress(preview) : { top: 0, ratio: 0 };
+    const previewMax = preview ? Math.max(0, Number((preview.scrollHeight || 0) - (preview.clientHeight || 0))) : 0;
+    let editProgress = { top: 0, ratio: 0 };
+    let editMax = 0;
+
+    if (easyMDE && easyMDE.codemirror && typeof easyMDE.codemirror.getScrollInfo === 'function') {
+        const info = easyMDE.codemirror.getScrollInfo();
+        editProgress = readCodeMirrorProgress();
+        editMax = Math.max(0, Number(((info && info.height) || 0) - ((info && info.clientHeight) || 0)));
+    }
+
+    return {
+        previewProgress,
+        previewMax,
+        editProgress,
+        editMax
+    };
+}
+
+function captureKnowledgeEditorToggleSnapshot(forcePreviewSource = null) {
+    const title = String(currentViewingKnowledge || knowledgeEditorScrollState.activeTitle || '').trim();
+    if (!title) return null;
+
+    const metrics = getKnowledgeEditorScrollMetrics();
+    const usePreviewSource = forcePreviewSource != null
+        ? !!forcePreviewSource
+        : (isKnowledgeEditorSideBySideActive()
+            ? metrics.previewMax >= metrics.editMax
+            : isKnowledgeEditorPreviewActive());
+    const sourceProgress = usePreviewSource ? metrics.previewProgress : metrics.editProgress;
+
+    return {
+        title,
+        sourceMode: usePreviewSource ? 'preview' : 'edit',
+        previewTop: sourceProgress.top,
+        previewRatio: sourceProgress.ratio,
+        editTop: sourceProgress.top,
+        editRatio: sourceProgress.ratio,
+        previewMax: metrics.previewMax,
+        editMax: metrics.editMax
+    };
+}
+
+function mirrorKnowledgeEditorProgressToBothModes(forcePreviewSource = null) {
+    const snapshot = captureKnowledgeEditorToggleSnapshot(forcePreviewSource);
+    if (!snapshot) return;
+
+    const state = getKnowledgeEditorState(snapshot.title);
+    state.previewTop = snapshot.previewTop;
+    state.previewRatio = snapshot.previewRatio;
+    state.editTop = snapshot.editTop;
+    state.editRatio = snapshot.editRatio;
+    knowledgeEditorScrollState.activeTitle = snapshot.title;
+    logKnowledgeEditorDebug('mirrorProgress', {
+        title: snapshot.title,
+        mode: snapshot.sourceMode,
+        previewTop: state.previewTop,
+        previewRatio: state.previewRatio,
+        editTop: state.editTop,
+        editRatio: state.editRatio,
+        previewMax: snapshot.previewMax,
+        editMax: snapshot.editMax
+    });
+    knowledgeEditorPendingToggleScrollSnapshot = snapshot;
+}
+
+function applyKnowledgeEditorToggleSnapshot(snapshot, forcePreview = null) {
+    if (!snapshot) return;
+    const isPreview = forcePreview != null ? !!forcePreview : isKnowledgeEditorPreviewActive();
+    if (isPreview) {
+        const preview = getKnowledgeEditorPreviewEl();
+        if (preview) {
+            applyScrollableProgress(preview, snapshot.previewTop, snapshot.previewRatio);
+        }
+    } else {
+        const scroller = getKnowledgeEditorScrollerEl();
+        if (scroller) {
+            applyScrollableProgress(scroller, snapshot.editTop, snapshot.editRatio);
+        }
+        applyCodeMirrorProgress(snapshot.editTop, snapshot.editRatio);
+    }
+    logKnowledgeEditorDebug('toggleSnapshotRestore', {
+        title: snapshot.title,
+        sourceMode: snapshot.sourceMode,
+        isPreview,
+        previewTop: snapshot.previewTop,
+        previewRatio: snapshot.previewRatio,
+        editTop: snapshot.editTop,
+        editRatio: snapshot.editRatio
+    });
+}
+
+let knowledgeEditorScrollSyncLock = false;
+let knowledgeEditorDelegatedScrollBound = false;
+let knowledgeEditorPendingToggleScrollSnapshot = null;
+let knowledgeEditorModeSwitchActive = false;
+
+function isKnowledgeEditorPreviewActive() {
+    return !!(easyMDE && easyMDE.isPreviewActive && easyMDE.isPreviewActive());
+}
+
+function isKnowledgeEditorSideBySideActive() {
+    return !!(
+        document.querySelector('#knowledgeViewer .CodeMirror-sided')
+        || document.querySelector('#knowledgeViewer .editor-preview-side.editor-preview-active-side')
+    );
+}
+
+function isKnowledgeEditorFullscreenActive() {
+    const toolbar = document.querySelector('#knowledgeViewer .editor-toolbar');
+    return !!(toolbar && toolbar.classList.contains('fullscreen'));
+}
+
+function syncKnowledgeEditorToolbarState() {
+    const toolbar = document.querySelector('#knowledgeViewer .editor-toolbar');
+    if (!toolbar) return;
+    const previewBtn = toolbar.querySelector('a.preview');
+    const sideBtn = toolbar.querySelector('a.side-by-side');
+    const fullBtn = toolbar.querySelector('a.fullscreen');
+    const isPreview = isKnowledgeEditorPreviewActive();
+    const isSide = isKnowledgeEditorSideBySideActive();
+    const isFull = isKnowledgeEditorFullscreenActive();
+    if (previewBtn) previewBtn.classList.toggle('active', isPreview && !isSide);
+    if (sideBtn) sideBtn.classList.toggle('active', isSide);
+    if (fullBtn) fullBtn.classList.toggle('active', isFull);
+}
+
+function toggleKnowledgeEditorPreviewMode() {
+    if (!easyMDE) return;
+    if (typeof easyMDE.togglePreview === 'function') {
+        easyMDE.togglePreview();
+        return;
+    }
+    if (typeof EasyMDE !== 'undefined' && EasyMDE && typeof EasyMDE.togglePreview === 'function') {
+        EasyMDE.togglePreview(easyMDE);
+    }
+}
+
+function exitKnowledgeEditorSpecialModes() {
+    if (!easyMDE) return;
+    try {
+        if (isKnowledgeEditorFullscreenActive() && typeof easyMDE.toggleFullScreen === 'function') {
+            easyMDE.toggleFullScreen();
+        }
+    } catch (_) {}
+    try {
+        if (isKnowledgeEditorSideBySideActive() && typeof easyMDE.toggleSideBySide === 'function') {
+            easyMDE.toggleSideBySide();
+        }
+    } catch (_) {}
+}
+
+function syncKnowledgeEditorMirrorScroll(fromPreview) {
+    if (knowledgeEditorScrollSyncLock || knowledgeEditorModeSwitchActive) return;
+    if (!isKnowledgeEditorSideBySideActive()) return;
+
+    const preview = getKnowledgeEditorPreviewEl();
+    if (!preview || !easyMDE || !easyMDE.codemirror || typeof easyMDE.codemirror.getScrollInfo !== 'function') return;
+
+    const sourceInfo = fromPreview ? readScrollableProgress(preview) : readCodeMirrorProgress();
+    logKnowledgeEditorDebug('syncScroll:start', {
+        fromPreview,
+        previewTop: sourceInfo.top,
+        previewRatio: sourceInfo.ratio,
+        previewScrollHeight: preview.scrollHeight,
+        previewClientHeight: preview.clientHeight,
+        cmScrollInfo: easyMDE.codemirror.getScrollInfo ? easyMDE.codemirror.getScrollInfo() : null
+    });
+
+    knowledgeEditorScrollSyncLock = true;
+    try {
+        if (fromPreview) {
+            const previewProgress = readScrollableProgress(preview);
+            const previewMax = Math.max(0, Number((preview.scrollHeight || 0) - (preview.clientHeight || 0)));
+            const info = easyMDE.codemirror.getScrollInfo();
+            const cmTop = Math.max(0, Number((info && info.top) || 0));
+            const cmMax = Math.max(0, Number(((info && info.height) || 0) - ((info && info.clientHeight) || 0)));
+            let nextTop = cmMax > 0
+                ? Math.max(0, Math.min(cmMax, Math.round(cmMax * previewProgress.ratio)))
+                : Math.max(0, Number(previewProgress.top || 0));
+            if (previewMax > 0 && previewProgress.top >= previewMax - 2) {
+                nextTop = cmMax;
+            } else if (previewProgress.top <= 2) {
+                nextTop = 0;
+            }
+            if (Math.abs(cmTop - nextTop) > 1) {
+                easyMDE.codemirror.scrollTo(null, nextTop);
+            }
+        } else {
+            const cmProgress = readCodeMirrorProgress();
+            const previewMax = Math.max(0, Number((preview.scrollHeight || 0) - (preview.clientHeight || 0)));
+            const cmInfo = easyMDE.codemirror.getScrollInfo();
+            const cmMax = Math.max(0, Number(((cmInfo && cmInfo.height) || 0) - ((cmInfo && cmInfo.clientHeight) || 0)));
+            let nextTop = previewMax > 0
+                ? Math.max(0, Math.min(previewMax, Math.round(previewMax * cmProgress.ratio)))
+                : Math.max(0, Number(cmProgress.top || 0));
+            if (cmMax > 0 && cmProgress.top >= cmMax - 2) {
+                nextTop = previewMax;
+            } else if (cmProgress.top <= 2) {
+                nextTop = 0;
+            }
+            if (Math.abs(Number(preview.scrollTop || 0) - nextTop) > 1) {
+                preview.scrollTop = nextTop;
+            }
+        }
+    } finally {
+        requestAnimationFrame(() => {
+            knowledgeEditorScrollSyncLock = false;
+            logKnowledgeEditorDebug('syncScroll:end', {
+                fromPreview,
+                previewTop: preview ? preview.scrollTop : null,
+                previewMax: preview ? Math.max(0, Number((preview.scrollHeight || 0) - (preview.clientHeight || 0))) : null,
+                cmInfo: easyMDE && easyMDE.codemirror && easyMDE.codemirror.getScrollInfo ? easyMDE.codemirror.getScrollInfo() : null
+            });
+        });
+    }
+}
+
+function getKnowledgeEditorPreviewEl() {
+    return document.querySelector('#knowledgeViewer .editor-preview-side.editor-preview-active-side')
+        || document.querySelector('#knowledgeViewer .editor-preview-active')
+        || document.querySelector('#knowledgeViewer .editor-preview')
+        || document.querySelector('#knowledgeViewer .editor-preview-side');
+}
+
+function getKnowledgeEditorScrollerEl() {
+    if (!easyMDE || !easyMDE.codemirror || typeof easyMDE.codemirror.getScrollerElement !== 'function') return null;
+    return easyMDE.codemirror.getScrollerElement();
+}
+
+function bindKnowledgeEditorScrollTracking() {
+    const title = String(currentViewingKnowledge || knowledgeEditorScrollState.activeTitle || '').trim();
+    if (!title) return;
+
+    const preview = getKnowledgeEditorPreviewEl();
+    if (preview && preview.dataset.nexoraScrollBoundTitle !== title) {
+        preview.dataset.nexoraScrollBoundTitle = title;
+        preview.addEventListener('scroll', () => {
+            if (knowledgeEditorModeSwitchActive) return;
+            const state = getKnowledgeEditorState(title);
+            const progress = readScrollableProgress(preview);
+            state.previewTop = progress.top;
+            state.previewRatio = progress.ratio;
+            knowledgeEditorScrollState.activeTitle = title;
+            logKnowledgeEditorDebug('previewScroll', { title, top: progress.top, ratio: progress.ratio });
+            syncKnowledgeEditorMirrorScroll(true);
+        }, { passive: true });
+    }
+
+    const scroller = getKnowledgeEditorScrollerEl();
+    if (scroller && scroller.dataset.nexoraScrollBoundTitle !== title) {
+        scroller.dataset.nexoraScrollBoundTitle = title;
+        scroller.addEventListener('scroll', () => {
+            if (knowledgeEditorModeSwitchActive) return;
+            if (!easyMDE || !easyMDE.codemirror) return;
+            const state = getKnowledgeEditorState(title);
+            const progress = readCodeMirrorProgress();
+            state.editTop = progress.top;
+            state.editRatio = progress.ratio;
+            knowledgeEditorScrollState.activeTitle = title;
+            logKnowledgeEditorDebug('editScroll', { title, top: progress.top, ratio: progress.ratio });
+            syncKnowledgeEditorMirrorScroll(false);
+        }, { passive: true });
+    }
+
+    const viewer = document.getElementById('knowledgeViewer');
+    if (viewer && !knowledgeEditorDelegatedScrollBound) {
+        knowledgeEditorDelegatedScrollBound = true;
+        viewer.addEventListener('scroll', (e) => {
+            if (knowledgeEditorModeSwitchActive) return;
+            const activeTitle = String(currentViewingKnowledge || knowledgeEditorScrollState.activeTitle || '').trim();
+            if (!activeTitle) return;
+            const target = e && e.target;
+            if (!target || !target.classList) return;
+
+            if (
+                target.classList.contains('editor-preview-side')
+                || target.classList.contains('editor-preview')
+                || target.classList.contains('editor-preview-full')
+            ) {
+                const state = getKnowledgeEditorState(activeTitle);
+                const progress = readScrollableProgress(target);
+                state.previewTop = progress.top;
+                state.previewRatio = progress.ratio;
+                knowledgeEditorScrollState.activeTitle = activeTitle;
+                logKnowledgeEditorDebug('viewerCapture:preview', { activeTitle, top: progress.top, ratio: progress.ratio, cls: target.className });
+                syncKnowledgeEditorMirrorScroll(true);
+                return;
+            }
+
+            if (target.classList.contains('CodeMirror-scroll')) {
+                const state = getKnowledgeEditorState(activeTitle);
+                const progress = readCodeMirrorProgress();
+                state.editTop = progress.top;
+                state.editRatio = progress.ratio;
+                knowledgeEditorScrollState.activeTitle = activeTitle;
+                logKnowledgeEditorDebug('viewerCapture:edit', { activeTitle, top: progress.top, ratio: progress.ratio, cls: target.className });
+                syncKnowledgeEditorMirrorScroll(false);
+            }
+        }, true);
+    }
+}
+
+function bindKnowledgeEditorToolbarHooks() {
+    if (knowledgeEditorToolbarHooksInstalled) return;
+    knowledgeEditorToolbarHooksInstalled = true;
+    document.addEventListener('pointerdown', (e) => {
+        const target = e.target && e.target.closest ? e.target.closest('#knowledgeViewer .editor-toolbar a') : null;
+        if (!target || !currentViewingKnowledge || !easyMDE) return;
+        const cls = String(target.className || '');
+        if (!/\bpreview\b|\bside-by-side\b|\bfullscreen\b/.test(cls)) return;
+        knowledgeEditorModeSwitchActive = true;
+        logKnowledgeEditorDebug('toolbarPointerDown', { cls, previewActive: isKnowledgeEditorPreviewActive(), sideBySideActive: isKnowledgeEditorSideBySideActive() });
+        mirrorKnowledgeEditorProgressToBothModes();
+    }, true);
+    document.addEventListener('click', (e) => {
+        const target = e.target && e.target.closest ? e.target.closest('#knowledgeViewer .editor-toolbar a') : null;
+        if (!target || !currentViewingKnowledge || !easyMDE) return;
+        const cls = String(target.className || '');
+        if (!/\bpreview\b|\bside-by-side\b|\bfullscreen\b/.test(cls)) return;
+        logKnowledgeEditorDebug('toolbarClick', { cls, previewActive: isKnowledgeEditorPreviewActive(), sideBySideActive: isKnowledgeEditorSideBySideActive() });
+        const pendingSnapshot = knowledgeEditorPendingToggleScrollSnapshot
+            ? { ...knowledgeEditorPendingToggleScrollSnapshot }
+            : null;
+        [0, 40, 140].forEach((delay) => {
+            setTimeout(() => {
+                if (easyMDE && easyMDE.codemirror && typeof easyMDE.codemirror.refresh === 'function') {
+                    easyMDE.codemirror.refresh();
+                }
+                bindKnowledgeEditorScrollTracking();
+                applyKnowledgeEditorToggleSnapshot(pendingSnapshot, isKnowledgeEditorPreviewActive());
+                restoreKnowledgeEditorScrollPosition(isKnowledgeEditorPreviewActive(), pendingSnapshot);
+                if (isKnowledgeEditorSideBySideActive()) {
+                    syncKnowledgeEditorMirrorScroll(false);
+                }
+                syncKnowledgeEditorToolbarState();
+                logKnowledgeEditorDebug('toolbarRefresh', {
+                    cls,
+                    previewActive: isKnowledgeEditorPreviewActive(),
+                    sideBySideActive: isKnowledgeEditorSideBySideActive()
+                });
+                if (delay === 140) {
+                    logKnowledgeEditorDebug('toolbarTransitionComplete', {
+                        cls,
+                        previewActive: isKnowledgeEditorPreviewActive(),
+                        sideBySideActive: isKnowledgeEditorSideBySideActive()
+                    });
+                }
+            }, delay);
+        });
+        setTimeout(() => {
+            knowledgeEditorModeSwitchActive = false;
+            knowledgeEditorPendingToggleScrollSnapshot = null;
+        }, 680);
+    }, true);
+}
+
+function restoreKnowledgeEditorScrollPosition(forcePreview = null, preferredSnapshot = null) {
+    const title = String(currentViewingKnowledge || knowledgeEditorScrollState.activeTitle || '').trim();
+    if (!title) return;
+    const state = getKnowledgeEditorState(title);
+    const preview = getKnowledgeEditorPreviewEl();
+    const scroller = getKnowledgeEditorScrollerEl();
+    const isPreview = forcePreview != null
+        ? !!forcePreview
+        : isKnowledgeEditorPreviewActive();
+    const snapshot = preferredSnapshot && String(preferredSnapshot.title || '').trim() === title
+        ? preferredSnapshot
+        : (knowledgeEditorPendingToggleScrollSnapshot && String(knowledgeEditorPendingToggleScrollSnapshot.title || '').trim() === title
+            ? knowledgeEditorPendingToggleScrollSnapshot
+            : null);
+    const preferredTop = snapshot
+        ? (isPreview ? snapshot.previewTop : snapshot.editTop)
+        : (isPreview
+            ? (state.previewTop || state.editTop || 0)
+            : (state.editTop || state.previewTop || 0));
+    const preferredRatio = snapshot
+        ? (isPreview ? snapshot.previewRatio : snapshot.editRatio)
+        : (isPreview
+            ? (Number.isFinite(state.previewRatio) ? state.previewRatio : state.editRatio)
+            : (Number.isFinite(state.editRatio) ? state.editRatio : state.previewRatio));
+    const attemptRestore = () => {
+        if (isPreview) {
+            const target = getKnowledgeEditorPreviewEl();
+            if (!target) return;
+            applyScrollableProgress(target, preferredTop, preferredRatio);
+            return;
+        }
+        const target = getKnowledgeEditorScrollerEl();
+        if (target) {
+            applyScrollableProgress(target, preferredTop, preferredRatio);
+        }
+        applyCodeMirrorProgress(preferredTop, preferredRatio);
+    };
+    [0, 40, 140, 320, 680].forEach((delay) => {
+        setTimeout(() => requestAnimationFrame(attemptRestore), delay);
+    });
+}
+
+function storeKnowledgeEditorScrollPosition(forcePreview = null) {
+    const title = String(currentViewingKnowledge || knowledgeEditorScrollState.activeTitle || '').trim();
+    if (!title) return;
+    const state = getKnowledgeEditorState(title);
+    const preview = getKnowledgeEditorPreviewEl();
+    const scroller = getKnowledgeEditorScrollerEl();
+    const isPreview = forcePreview != null
+        ? !!forcePreview
+        : isKnowledgeEditorPreviewActive();
+    if (isPreview && preview) {
+        const progress = readScrollableProgress(preview);
+        state.previewTop = progress.top;
+        state.previewRatio = progress.ratio;
+    } else if (!isPreview && scroller) {
+        const progress = readCodeMirrorProgress();
+        state.editTop = progress.top;
+        state.editRatio = progress.ratio;
+    }
+    knowledgeEditorScrollState.activeTitle = title;
+}
+
+function installKnowledgeEditorPreviewHooks() {
+    if (knowledgeEditorPreviewHooksInstalled) return;
+    knowledgeEditorPreviewHooksInstalled = true;
+    bindKnowledgeEditorToolbarHooks();
+
+    if (!window.__nexoraKnowledgeEditorSaveShortcutBound) {
+        document.addEventListener('keydown', async (e) => {
+            const viewer = document.getElementById('knowledgeViewer');
+            if (!currentViewingKnowledge || !easyMDE || !viewer || viewer.style.display === 'none') return;
+            const key = String(e.key || '').toLowerCase();
+            if (!(e.ctrlKey || e.metaKey) || key !== 's') return;
+            e.preventDefault();
+            e.stopPropagation();
+            await saveKnowledge(currentViewingKnowledge);
+        }, true);
+        window.__nexoraKnowledgeEditorSaveShortcutBound = true;
+    }
+}
+
 async function saveKnowledge(title) {
     if(!easyMDE) return;
     const content = easyMDE.value();
@@ -18431,7 +19425,7 @@ function updateFilePreview() {
 
         const title = document.createElement('div');
         title.className = 'upload-preview-title';
-        title.textContent = String((file && file.name) || '未命名文件');
+        title.textContent = String(entry.title || '未命名').trim() || '未命名';
         body.appendChild(title);
 
         const meta = document.createElement('div');
@@ -19530,7 +20524,7 @@ function openAdminConfigModal(mode, payload = {}) {
     };
 
     if (mode === 'provider') {
-        title.textContent = payload.originalKey ? '修改供应商' : '添加供应商';
+        title.textContent = String(entry.title || '未命名').trim() || '未命名';
         providerFields.style.display = '';
         modelFields.style.display = 'none';
         document.getElementById('adminProviderNameInput').value = payload.provider || '';
@@ -19540,7 +20534,7 @@ function openAdminConfigModal(mode, payload = {}) {
         document.getElementById('adminProviderKeepAliveInput').value = payload.keep_alive || '5m';
         syncAdminProviderApiTypeFields();
     } else {
-        title.textContent = payload.originalKey ? '修改模型' : '添加模型';
+        title.textContent = String(entry.title || '未命名').trim() || '未命名';
         providerFields.style.display = 'none';
         modelFields.style.display = '';
         document.getElementById('adminModelIdInput').value = payload.model_id || '';

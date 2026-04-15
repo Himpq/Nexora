@@ -504,35 +504,33 @@ class Model:
         except Exception:
             return ""
         compressions = conversation_data.get("context_compressions", [])
-        if not isinstance(compressions, list) or not compressions:
-            return ""
-
         recent_count = self._get_recent_dialogue_memory_count()
-        recent_items = [item for item in compressions if isinstance(item, dict)][-recent_count:]
-        if not recent_items:
-            return ""
-
         item_limit = self._get_recent_dialogue_item_max_chars()
         lines: List[str] = []
-        for index, item in enumerate(recent_items, start=1):
-            summary = str(item.get("summary", "") or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-            if not summary:
-                continue
-            if len(summary) > item_limit:
-                summary = summary[:item_limit].rstrip() + "..."
-            created_at = str(item.get("created_at", "") or "").strip()
-            history_cut_index_value = item.get("history_cut_index", "")
-            history_cut_index = "" if history_cut_index_value is None else str(history_cut_index_value).strip()
-            meta_bits = []
-            if created_at:
-                meta_bits.append(created_at)
-            if history_cut_index:
-                meta_bits.append(f"cut={history_cut_index}")
-            if meta_bits:
-                lines.append(f"第{index}轮（{'，'.join(meta_bits)}）:\n{summary}")
-            else:
-                lines.append(f"第{index}轮:\n{summary}")
-        return "\n\n".join(lines).strip()
+
+        if isinstance(compressions, list) and compressions:
+            recent_items = [item for item in compressions if isinstance(item, dict)][-recent_count:]
+            for index, item in enumerate(recent_items, start=1):
+                summary = str(item.get("summary", "") or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+                if not summary:
+                    continue
+                if len(summary) > item_limit:
+                    summary = summary[:item_limit].rstrip() + "..."
+                created_at = str(item.get("created_at", "") or "").strip()
+                history_cut_index_value = item.get("history_cut_index", "")
+                history_cut_index = "" if history_cut_index_value is None else str(history_cut_index_value).strip()
+                meta_bits = []
+                if created_at:
+                    meta_bits.append(created_at)
+                if history_cut_index:
+                    meta_bits.append(f"cut={history_cut_index}")
+                if meta_bits:
+                    lines.append(f"第{index}轮（{'，'.join(meta_bits)}）:\n{summary}")
+                else:
+                    lines.append(f"第{index}轮:\n{summary}")
+            if lines:
+                return "\n\n".join(lines).strip()
+        return ""
 
     def _get_user_knowledge_memory_text(self) -> str:
         try:
@@ -1681,13 +1679,28 @@ class Model:
             min(CONTEXT_COMPRESSION_MAX_CHARS_MAX, int(max_chars or CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT))
         )
         history_text = self._format_messages_for_context_compression(history_messages)
-        prompt_text = prompts.build_context_compression_prompt(history_text, max_chars=safe_max_chars)
+        profile_text = self._get_user_profile_memory_text()
+        recent_dialogue_text = self._get_recent_dialogue_memory_text()
+        update_short_text = "可用 updateShort：覆盖更新当前用户短期记忆画像。"
+        add_short_text = "可用 addShort：追加一条短期记忆，适合记录新的离散偏好或近期事项。"
+        prompt_text = prompts.build_context_compression_prompt(
+            history_text,
+            profile_text=profile_text,
+            recent_dialogue=recent_dialogue_text,
+            update_short=update_short_text,
+            add_short=add_short_text,
+            max_chars=safe_max_chars
+        )
         history_truncated = ("...[历史过长，已截断中段]..." in history_text)
         out: Dict[str, Any] = {
             "summary": "",
             "prompt_text": str(prompt_text or ""),
             "system_prompt": system_prompt,
             "prompt_template": str(getattr(prompts, "context_compression_prompt_template", "") or ""),
+            "profile_text": str(profile_text or ""),
+            "recent_dialogue": str(recent_dialogue_text or ""),
+            "update_short": update_short_text,
+            "add_short": add_short_text,
             "history_text": str(history_text or ""),
             "model_reply": "",
             "fallback_used": False,
@@ -5005,6 +5018,7 @@ class Model:
                     raw_round_content = ""
                     emitted_round_content_len = 0
                     round_reasoning = ""
+                    has_text_output = False
                     function_calls = []
                     round_tool_args_delta = ""
                     has_web_search = bool(round_native_search_detected)

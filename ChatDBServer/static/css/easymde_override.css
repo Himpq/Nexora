@@ -1,34 +1,52 @@
-/* EasyMDE Fixes */
+﻿/* EasyMDE knowledge-viewer fixes */
 #knowledgeViewer {
     display: flex;
     flex-direction: column;
+    min-height: 0;
+    background: #fff;
 }
 
-.EasyMDEContainer {
-    flex: 1;
+#knowledgeViewer .EasyMDEContainer {
+    flex: 1 1 auto;
     display: flex;
     flex-direction: column;
-    overflow: hidden;
     min-height: 0;
+    overflow: hidden;
+    background: #fff;
 }
 
-.EasyMDEContainer .editor-toolbar {
+/* Keep EasyMDE native side-by-side row layout in non-fullscreen mode */
+#knowledgeViewer .EasyMDEContainer.sided--no-fullscreen {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    align-items: stretch;
+    width: 100%;
+    height: 100%;
+}
+
+#knowledgeViewer .EasyMDEContainer.sided--no-fullscreen .editor-toolbar {
+    grid-column: 1 / -1;
+    grid-row: 1;
+}
+
+#knowledgeViewer .EasyMDEContainer .editor-toolbar {
     border-radius: 0;
     border: none;
     border-bottom: 1px solid #ddd;
     flex-shrink: 0;
 }
 
-.EasyMDEContainer .CodeMirror {
+#knowledgeViewer .EasyMDEContainer .CodeMirror {
     border: none;
     border-radius: 0;
     overflow: hidden !important;
-    flex: 1;
-    height: 0 !important;
+    flex: 1 1 auto;
+    height: auto !important;
     min-height: 0;
 }
 
-.CodeMirror-scroll {
+#knowledgeViewer .EasyMDEContainer .CodeMirror-scroll {
     overflow-y: auto !important;
     overflow-x: auto !important;
     min-height: 100% !important;
@@ -36,23 +54,62 @@
     overscroll-behavior-y: contain !important;
 }
 
-.EasyMDEContainer .editor-preview {
-    background: #fff;
+/* Side-by-side mode must override single-pane size constraints */
+#knowledgeViewer .EasyMDEContainer.sided--no-fullscreen .CodeMirror-sided {
+    grid-column: 1;
+    grid-row: 2;
+    width: 100% !important;
+    height: 100% !important;
+    min-height: 0;
+    max-height: 100%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
 }
-/* Preview Mode Styling */
-.EasyMDEContainer .editor-preview-side,
-.EasyMDEContainer .editor-preview {
+
+#knowledgeViewer .EasyMDEContainer.sided--no-fullscreen .CodeMirror-sided .CodeMirror-scroll {
+    min-height: 0 !important;
+    max-height: 100% !important;
+    height: 100% !important;
+}
+
+#knowledgeViewer .EasyMDEContainer.sided--no-fullscreen .editor-preview-side.editor-preview-active-side {
+    grid-column: 2;
+    grid-row: 2;
+    width: 100% !important;
+    height: 100% !important;
+    min-height: 0;
+    position: relative !important;
+    top: auto !important;
+    right: auto !important;
+    bottom: auto !important;
+    left: auto !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    border-left: 1px solid #e5e7eb;
+}
+
+/* Keep fullscreen editor height controlled by EasyMDE */
+#knowledgeViewer .EasyMDEContainer .CodeMirror.CodeMirror-fullscreen {
+    height: auto !important;
+    min-height: 0;
+}
+
+#knowledgeViewer .EasyMDEContainer .editor-preview,
+#knowledgeViewer .EasyMDEContainer .editor-preview-side {
+    box-sizing: border-box;
     padding: 20px;
+    background: #fff;
+    color: #24292e;
     font-family: 'Inter', -apple-system, sans-serif;
     font-size: 15px;
     line-height: 1.7;
-    color: #24292e;
     overscroll-behavior-y: contain !important;
 }
 
 /* Table Styling */
-.editor-preview table,
-.editor-preview-side table {
+#knowledgeViewer .editor-preview table,
+#knowledgeViewer .editor-preview-side table {
     border-collapse: collapse;
     width: 100%;
     margin: 16px 0;
@@ -60,32 +117,33 @@
     display: block;
 }
 
-.editor-preview table thead,
-.editor-preview-side table thead {
+#knowledgeViewer .editor-preview table thead,
+#knowledgeViewer .editor-preview-side table thead {
     background-color: #f6f8fa;
 }
 
-.editor-preview table th,
-.editor-preview table td,
-.editor-preview-side table th,
-.editor-preview-side table td {
+#knowledgeViewer .editor-preview table th,
+#knowledgeViewer .editor-preview table td,
+#knowledgeViewer .editor-preview-side table th,
+#knowledgeViewer .editor-preview-side table td {
     border: 1px solid #d0d7de;
     padding: 8px 13px;
     text-align: left;
 }
 
-.editor-preview table th,
-.editor-preview-side table th {
+#knowledgeViewer .editor-preview table th,
+#knowledgeViewer .editor-preview-side table th {
     font-weight: 600;
 }
 
-.editor-preview table tr:nth-child(even),
-.editor-preview-side table tr:nth-child(even) {
+#knowledgeViewer .editor-preview table tr:nth-child(even),
+#knowledgeViewer .editor-preview-side table tr:nth-child(even) {
     background-color: #f6f8fa;
 }
 
 /* Headings */
-.editor-preview h1, .editor-preview-side h1 {
+#knowledgeViewer .editor-preview h1,
+#knowledgeViewer .editor-preview-side h1 {
     font-size: 2em;
     font-weight: 600;
     margin: 24px 0 16px;
@@ -93,7 +151,8 @@
     border-bottom: 1px solid #eaecef;
 }
 
-.editor-preview h2, .editor-preview-side h2 {
+#knowledgeViewer .editor-preview h2,
+#knowledgeViewer .editor-preview-side h2 {
     font-size: 1.5em;
     font-weight: 600;
     margin: 24px 0 16px;
@@ -101,15 +160,16 @@
     border-bottom: 1px solid #eaecef;
 }
 
-.editor-preview h3, .editor-preview-side h3 {
+#knowledgeViewer .editor-preview h3,
+#knowledgeViewer .editor-preview-side h3 {
     font-size: 1.25em;
     font-weight: 600;
     margin: 24px 0 16px;
 }
 
 /* Code Blocks */
-.editor-preview pre,
-.editor-preview-side pre {
+#knowledgeViewer .editor-preview pre,
+#knowledgeViewer .editor-preview-side pre {
     background-color: #f6f8fa;
     border-radius: 6px;
     padding: 16px;
@@ -117,36 +177,38 @@
     margin: 16px 0;
 }
 
-.editor-preview code,
-.editor-preview-side code {
-    background-color: rgba(175,184,193,0.2);
+#knowledgeViewer .editor-preview code,
+#knowledgeViewer .editor-preview-side code {
+    background-color: rgba(175, 184, 193, 0.2);
     padding: 0.2em 0.4em;
     border-radius: 3px;
     font-family: 'JetBrains Mono', monospace;
     font-size: 85%;
 }
 
-.editor-preview pre code,
-.editor-preview-side pre code {
+#knowledgeViewer .editor-preview pre code,
+#knowledgeViewer .editor-preview-side pre code {
     background-color: transparent;
     padding: 0;
 }
 
 /* Lists */
-.editor-preview ul, .editor-preview ol,
-.editor-preview-side ul, .editor-preview-side ol {
+#knowledgeViewer .editor-preview ul,
+#knowledgeViewer .editor-preview ol,
+#knowledgeViewer .editor-preview-side ul,
+#knowledgeViewer .editor-preview-side ol {
     padding-left: 2em;
     margin: 16px 0;
 }
 
-.editor-preview li,
-.editor-preview-side li {
+#knowledgeViewer .editor-preview li,
+#knowledgeViewer .editor-preview-side li {
     margin: 4px 0;
 }
 
 /* Blockquotes */
-.editor-preview blockquote,
-.editor-preview-side blockquote {
+#knowledgeViewer .editor-preview blockquote,
+#knowledgeViewer .editor-preview-side blockquote {
     padding: 0 1em;
     color: #57606a;
     border-left: 0.25em solid #d0d7de;
@@ -154,21 +216,29 @@
 }
 
 /* Links */
-.editor-preview a,
-.editor-preview-side a {
+#knowledgeViewer .editor-preview a,
+#knowledgeViewer .editor-preview-side a {
     color: #0969da;
     text-decoration: none;
 }
 
-.editor-preview a:hover,
-.editor-preview-side a:hover {
+#knowledgeViewer .editor-preview a:hover,
+#knowledgeViewer .editor-preview-side a:hover {
     text-decoration: underline;
 }
 
 /* Images */
-.editor-preview img,
-.editor-preview-side img {
+#knowledgeViewer .editor-preview img,
+#knowledgeViewer .editor-preview-side img {
     max-width: 100%;
     height: auto;
     margin: 16px 0;
+}
+
+/* Keep fullscreen layering stable */
+#knowledgeViewer .editor-toolbar.fullscreen,
+#knowledgeViewer .CodeMirror-fullscreen,
+#knowledgeViewer .editor-preview-full,
+#knowledgeViewer .editor-preview-side.editor-preview-active-side {
+    z-index: 5000 !important;
 }
