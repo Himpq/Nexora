@@ -45,10 +45,10 @@ class ConversationManager:
         conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
         with self._get_path_lock(conversation_path):
             if not os.path.exists(conversation_path):
-                raise ValueError(f"ç€µç¡…ç˜½æ¶“å¶…ç“¨é¦? {conversation_id}")
+                raise ValueError(f"对话不存在: {conversation_id}")
             conversation_data = self._load_json_data(conversation_path, default=None)
             if not isinstance(conversation_data, dict):
-                raise ValueError(f"éƒçŠ³ç¡¶ç’‡è¯²å½‡éŽ´æ ¬Ð’é‹æ„¬î‡®ç’‡æ¿‡æžƒæµ ? {conversation_id}")
+                raise ValueError(f"无法读取或解析对话文件: {conversation_id}")
             yield conversation_path, conversation_data
 
     def _load_json_data(self, file_path, default=None):
@@ -113,16 +113,16 @@ class ConversationManager:
                 pass
             raise
     
-    def create_conversation(self, conversation_id=None, title="New Conversation"):
+    def create_conversation(self, conversation_id=None, title="新对话"):
         """
-        ?????
+        创建新对话
         
         Args:
-            conversation_id: ??ID????None???????ID
-            title: ????
+            conversation_id: 对话ID，如果为None则自动生成数字ID
+            title: 对话标题
             
         Returns:
-            str: ??ID
+            str: 对话ID
         """
         with self._get_path_lock(self.base_path):
             if conversation_id is None:
@@ -184,7 +184,7 @@ class ConversationManager:
 
     def update_volc_response_id(self, conversation_id, response_id, model_name=None):
         """
-        ??VolcEngine?Response ID????????
+        更新VolcEngine的Response ID，用于上下文续接
         """
         try:
             with self._conversation_update_session(conversation_id) as (conversation_path, conversation_data):
@@ -197,10 +197,10 @@ class ConversationManager:
 
     def update_conversation_fields(self, conversation_id, fields):
         """
-        ?????????????????????
+        批量更新会话根字段，遇到字典值时做浅合并。
         """
         if not isinstance(fields, dict):
-            raise ValueError("fields ?????")
+            raise ValueError("fields 必须是字典")
 
         with self._conversation_update_session(conversation_id) as (conversation_path, conversation_data):
             for key, value in fields.items():
@@ -270,19 +270,19 @@ class ConversationManager:
 
     def add_message(self, conversation_id, role, content, metadata=None, index=None):
         """
-        ???????
+        添加消息到对话
         
         Args:
-            conversation_id: ??ID
-            role: ?? (user/assistant/function)
-            content: ????
-            metadata: ????????????????????
-            index: ???????????????????????????????
+            conversation_id: 对话ID
+            role: 角色 (user/assistant/function)
+            content: 消息内容
+            metadata: 额外元数据（如函数调用信息、交流总结等）
+            index: 如果提供且有效，则覆盖该索引处的消息（用于重新生成覆盖旧回答）
         """
         with self._conversation_update_session(conversation_id) as (conversation_path, conversation_data):
             messages = conversation_data.get("messages", [])
             if not isinstance(messages, list):
-                raise ValueError(f"????????: {conversation_id}")
+                raise ValueError(f"对话内容格式无效: {conversation_id}")
 
             message = {
                 "role": role,
@@ -721,7 +721,7 @@ class ConversationManager:
 
     def append_context_compression(self, conversation_id, marker):
         """
-        ????????????
+        追加一条上下文压缩标记。
         """
         if not isinstance(marker, dict):
             return False
