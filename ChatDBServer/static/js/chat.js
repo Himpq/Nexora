@@ -15136,6 +15136,724 @@ let knowledgeEditorScrollState = {
 let knowledgeEditorPreviewHooksInstalled = false;
 let knowledgeEditorToolbarHooksInstalled = false;
 
+function destroyKnowledgeMarkdownEditor() {
+    if (easyMDE && typeof easyMDE.__cleanupPreviewBridge === 'function') {
+        try {
+            easyMDE.__cleanupPreviewBridge();
+        } catch (_) {}
+    }
+    if (easyMDE && easyMDE.__editorType === 'toastui' && easyMDE.__editor && typeof easyMDE.__editor.destroy === 'function') {
+        try {
+            easyMDE.__editor.destroy();
+        } catch (_) {}
+    }
+    easyMDE = null;
+}
+
+function createToastUiKnowledgeEditor(initialValue = '') {
+    const host = document.getElementById('knowledgeEditor');
+    const ToastEditor = window.toastui && window.toastui.Editor;
+    if (!host || !ToastEditor) return null;
+
+    const getToastCodeMirror = () => {
+        try {
+            if (editor && editor.mdEditor && editor.mdEditor.cm) return editor.mdEditor.cm;
+        } catch (_) {}
+        try {
+            if (editor && typeof editor.getCurrentModeEditor === 'function') {
+                const modeEditor = editor.getCurrentModeEditor();
+                if (modeEditor && modeEditor.cm) return modeEditor.cm;
+            }
+        } catch (_) {}
+        return null;
+    };
+    const getToastUiRoot = () => host.querySelector('.toastui-editor-defaultUI');
+    const getToastEditorContainer = () => host.querySelector('.toastui-editor-md-container');
+    const getToastVerticalPane = () => (
+        host.querySelector('.toastui-editor-md-container .toastui-editor-md-vertical-style')
+        || host.querySelector('.toastui-editor-md-vertical-style')
+    );
+    const getToastEditPane = () => host.querySelector('.toastui-editor-md-container');
+    const getToastProseMirrorEl = () => host.querySelector('.ProseMirror');
+    const getToastPreviewPane = () => host.querySelector('.toastui-editor-md-container .toastui-editor-md-preview');
+    const getToastSplitter = () => host.querySelector('.toastui-editor-md-splitter');
+    const ensureToastCustomPreviewPane = () => {
+        const parent = getToastUiRoot();
+        if (!parent) return null;
+        let pane = parent.querySelector('.nexora-toast-preview');
+        if (!pane) {
+            pane = document.createElement('div');
+            pane.className = 'nexora-toast-preview';
+            pane.innerHTML = '<div class="toastui-editor-contents"></div>';
+            parent.appendChild(pane);
+        }
+        return pane;
+    };
+    const ensureToastCustomSplitter = () => {
+        const parent = getToastUiRoot();
+        if (!parent) return null;
+        let splitter = parent.querySelector('.nexora-toast-splitter');
+        if (!splitter) {
+            splitter = document.createElement('div');
+            splitter.className = 'nexora-toast-splitter';
+            parent.appendChild(splitter);
+        }
+        return splitter;
+    };
+    const getToastPreviewContentRoot = () => {
+        const pane = ensureToastCustomPreviewPane();
+        return pane ? pane.querySelector('.toastui-editor-contents') : null;
+    };
+    const findBestScrollableDescendant = (root) => {
+        if (!root || !root.querySelectorAll) return null;
+        const candidates = [root, ...Array.from(root.querySelectorAll('*'))];
+        let best = null;
+        let bestOverflow = -1;
+        candidates.forEach((node) => {
+            if (!node || node.nodeType !== 1) return;
+            const className = String(node.className || '');
+            if (className.includes('nexora-toast-preview')) return;
+            const overflow = Math.max(0, Number(node.scrollHeight || 0) - Number(node.clientHeight || 0));
+            if (overflow <= 0) return;
+            const score = /CodeMirror|ProseMirror|toastui-editor/.test(className) ? overflow + 100000 : overflow;
+            if (score > bestOverflow) {
+                bestOverflow = score;
+                best = node;
+            }
+        });
+        return best;
+    };
+    const getToastEditorScroller = () => {
+        const proseMirror = getToastProseMirrorEl();
+        if (proseMirror) return proseMirror;
+        const editPane = getToastEditPane();
+        const discovered = findBestScrollableDescendant(editPane);
+        if (discovered) return discovered;
+        return host.querySelector('.toastui-editor-md-container .CodeMirror-scroll')
+            || host.querySelector('.toastui-editor-md-container .toastui-editor');
+    };
+
+    host.innerHTML = '';
+    const editor = new ToastEditor({
+        el: host,
+        initialEditType: 'markdown',
+        previewStyle: 'vertical',
+        height: '100%',
+        initialValue: String(initialValue || ''),
+        usageStatistics: false,
+        hideModeSwitch: true,
+        toolbarItems: []
+    });
+    try {
+        if (typeof editor.changeMode === 'function') {
+            editor.changeMode('markdown', true);
+        }
+    } catch (_) {}
+
+    let viewMode = 'preview';
+    let fullscreen = false;
+    let previewRenderDebounceTimer = 0;
+    let previewBridgeCleanupFns = [];
+    const queueToastPreviewRender = (preserveScroll = false, delay = 32) => {
+        if (previewRenderDebounceTimer) {
+            clearTimeout(previewRenderDebounceTimer);
+            previewRenderDebounceTimer = 0;
+        }
+        previewRenderDebounceTimer = setTimeout(() => {
+            previewRenderDebounceTimer = 0;
+            renderToastPreview(preserveScroll);
+        }, Math.max(0, Number(delay || 0)));
+    };
+    const renderToastPreview = (preserveScroll = true) => {
+        const pane = ensureToastCustomPreviewPane();
+        const root = getToastPreviewContentRoot();
+        if (!pane || !root) return;
+        const progress = preserveScroll ? readScrollableProgress(pane) : { top: 0, ratio: 0 };
+        const markdown = String(editor.getMarkdown() || '');
+        root.innerHTML = renderMarkdownForNotes(markdown);
+        bindSourceMarkdown(root, markdown);
+        renderMathSafe(root);
+        logKnowledgeEditorDebug('toastPreviewRender', {
+            preserveScroll,
+            markdownLength: markdown.length,
+            pane: summarizeKnowledgeEditorNode(pane),
+            root: summarizeKnowledgeEditorNode(root)
+        });
+        if (preserveScroll) {
+            requestAnimationFrame(() => {
+                applyScrollableProgress(pane, progress.top, progress.ratio);
+                logKnowledgeEditorDebug('toastPreviewRenderRestore', {
+                    top: progress.top,
+                    ratio: progress.ratio,
+                    pane: summarizeKnowledgeEditorNode(pane)
+                });
+            });
+        }
+    };
+    const setViewMode = (mode) => {
+        logKnowledgeEditorDebug('toastSetViewMode:start', {
+            requestedMode: mode,
+            previousMode: viewMode,
+            layout: collectKnowledgeEditorLayoutSnapshot()
+        });
+        viewMode = String(mode || 'split');
+        host.classList.remove('knowledge-toast-mode-edit', 'knowledge-toast-mode-preview', 'knowledge-toast-mode-split');
+        if (viewMode === 'edit') {
+            host.classList.add('knowledge-toast-mode-edit');
+        } else if (viewMode === 'preview') {
+            host.classList.add('knowledge-toast-mode-preview');
+        } else {
+            viewMode = 'split';
+            host.classList.add('knowledge-toast-mode-split');
+        }
+
+        const toolbar = host.querySelector('.editor-toolbar');
+        if (toolbar) {
+            const previewBtn = toolbar.querySelector('.preview');
+            const sideBtn = toolbar.querySelector('.side-by-side');
+            if (previewBtn) previewBtn.classList.toggle('active', viewMode === 'preview');
+            if (sideBtn) sideBtn.classList.toggle('active', viewMode === 'split');
+        }
+
+        try {
+            if (typeof editor.changePreviewStyle === 'function') {
+                editor.changePreviewStyle('vertical');
+            }
+        } catch (_) {}
+
+        const mdContainer = getToastEditorContainer();
+        const uiRoot = getToastUiRoot();
+        const editPane = getToastEditPane();
+        const previewPane = ensureToastCustomPreviewPane();
+        const splitter = ensureToastCustomSplitter();
+        const builtInPreview = getToastPreviewPane();
+        const builtInSplitter = getToastSplitter();
+        if (builtInPreview) builtInPreview.style.setProperty('display', 'none', 'important');
+        if (builtInSplitter) builtInSplitter.style.setProperty('display', 'none', 'important');
+        if (uiRoot && mdContainer && editPane && previewPane && splitter) {
+            if (previewPane.parentElement !== uiRoot) {
+                uiRoot.appendChild(previewPane);
+            }
+            if (splitter.parentElement !== uiRoot) {
+                uiRoot.appendChild(splitter);
+            }
+            mdContainer.classList.add('nexora-toast-layout');
+            editPane.classList.add('nexora-toast-edit-pane');
+            previewPane.classList.add('nexora-toast-preview-pane');
+            splitter.classList.add('nexora-toast-divider');
+            uiRoot.classList.remove('nexora-mode-edit', 'nexora-mode-preview', 'nexora-mode-split');
+            uiRoot.classList.add(viewMode === 'split' ? 'nexora-mode-split' : (viewMode === 'preview' ? 'nexora-mode-preview' : 'nexora-mode-edit'));
+
+            uiRoot.style.setProperty('display', 'grid', 'important');
+            uiRoot.style.setProperty('grid-template-rows', 'auto minmax(0, 1fr)', 'important');
+            uiRoot.style.setProperty('align-items', 'stretch', 'important');
+            uiRoot.style.setProperty('min-height', '0', 'important');
+            uiRoot.style.setProperty('height', '100%', 'important');
+
+            const toolbarEl = toolbar;
+            if (toolbarEl) {
+                toolbarEl.style.setProperty('grid-row', '1', 'important');
+                toolbarEl.style.setProperty('grid-column', '1 / -1', 'important');
+            }
+
+            editPane.style.setProperty('min-height', '0', 'important');
+            editPane.style.setProperty('height', '100%', 'important');
+            editPane.style.setProperty('overflow', 'hidden', 'important');
+            editPane.style.setProperty('position', 'relative', 'important');
+            editPane.style.setProperty('grid-row', '2', 'important');
+
+            previewPane.style.setProperty('min-height', '0', 'important');
+            previewPane.style.setProperty('height', '100%', 'important');
+            previewPane.style.setProperty('overflow-y', 'auto', 'important');
+            previewPane.style.setProperty('overflow-x', 'hidden', 'important');
+            previewPane.style.setProperty('position', 'relative', 'important');
+            previewPane.style.setProperty('grid-row', '2', 'important');
+
+            splitter.style.setProperty('width', '1px', 'important');
+            splitter.style.setProperty('min-width', '1px', 'important');
+            splitter.style.setProperty('background', '#e5e7eb', 'important');
+            splitter.style.setProperty('grid-row', '2', 'important');
+
+            if (viewMode === 'split') {
+                uiRoot.style.setProperty('grid-template-columns', 'minmax(0, 1fr) 1px minmax(0, 1fr)', 'important');
+                editPane.style.setProperty('display', 'block', 'important');
+                editPane.style.setProperty('grid-column', '1', 'important');
+                previewPane.style.setProperty('display', 'block', 'important');
+                previewPane.style.setProperty('grid-column', '3', 'important');
+                splitter.style.setProperty('display', 'block', 'important');
+                splitter.style.setProperty('grid-column', '2', 'important');
+            } else if (viewMode === 'preview') {
+                uiRoot.style.setProperty('grid-template-columns', 'minmax(0, 1fr)', 'important');
+                editPane.style.setProperty('display', 'none', 'important');
+                previewPane.style.setProperty('display', 'block', 'important');
+                previewPane.style.setProperty('grid-column', '1', 'important');
+                splitter.style.setProperty('display', 'none', 'important');
+            } else {
+                uiRoot.style.setProperty('grid-template-columns', 'minmax(0, 1fr)', 'important');
+                editPane.style.setProperty('display', 'block', 'important');
+                editPane.style.setProperty('grid-column', '1', 'important');
+                previewPane.style.setProperty('display', 'none', 'important');
+                splitter.style.setProperty('display', 'none', 'important');
+            }
+        }
+
+        if (toolbar) {
+            toolbar.querySelectorAll('[data-cmd]').forEach((node) => {
+                node.classList.toggle('disabled', viewMode === 'preview');
+                node.setAttribute('aria-disabled', viewMode === 'preview' ? 'true' : 'false');
+            });
+        }
+        renderToastPreview(viewMode !== 'preview');
+        requestAnimationFrame(() => {
+            const cm = getToastCodeMirror();
+            try {
+                if (cm && typeof cm.refresh === 'function') cm.refresh();
+            } catch (_) {}
+            logKnowledgeEditorDebug('toastSetViewMode:afterRefresh', {
+                finalMode: viewMode,
+                layoutBrief: {
+                    verticalParent: uiRoot ? String(uiRoot.className || '') : '',
+                    verticalDisplay: uiRoot ? String((window.getComputedStyle(uiRoot).display || '')) : '',
+                    verticalColumns: uiRoot ? String((window.getComputedStyle(uiRoot).gridTemplateColumns || '')) : '',
+                    editParent: editPane && editPane.parentElement ? String(editPane.parentElement.className || '') : '',
+                    previewParent: previewPane && previewPane.parentElement ? String(previewPane.parentElement.className || '') : '',
+                    editDisplay: editPane ? String((window.getComputedStyle(editPane).display || '')) : '',
+                    previewDisplay: previewPane ? String((window.getComputedStyle(previewPane).display || '')) : '',
+                    splitterDisplay: splitter ? String((window.getComputedStyle(splitter).display || '')) : ''
+                },
+                layout: collectKnowledgeEditorLayoutSnapshot()
+            });
+        });
+    };
+
+    const setFullscreen = (enabled) => {
+        fullscreen = !!enabled;
+        host.classList.toggle('knowledge-toast-fullscreen', fullscreen);
+        const toolbar = host.querySelector('.editor-toolbar');
+        if (toolbar) {
+            const fullBtn = toolbar.querySelector('.fullscreen');
+            if (fullBtn) fullBtn.classList.toggle('active', fullscreen);
+        }
+    };
+
+    const commandAliases = {
+        heading: ['heading'],
+        bold: ['bold'],
+        italic: ['italic'],
+        strike: ['strike'],
+        quote: ['blockQuote', 'quote'],
+        ul: ['bulletList', 'unorderedList', 'ul'],
+        ol: ['orderedList', 'ol'],
+        link: ['addLink', 'link'],
+        image: ['addImage', 'image'],
+        table: ['addTable', 'table']
+    };
+
+    const runToastCommand = (aliases, payload) => {
+        const list = Array.isArray(aliases) ? aliases : [aliases];
+        for (let i = 0; i < list.length; i++) {
+            const name = String(list[i] || '').trim();
+            if (!name) continue;
+            try {
+                const result = typeof payload === 'undefined'
+                    ? editor.exec(name)
+                    : editor.exec(name, payload);
+                if (result !== false) return true;
+            } catch (_) {}
+        }
+        return false;
+    };
+
+    const getSelectedMarkdownText = () => {
+        try {
+            if (typeof editor.getSelectedText === 'function') {
+                return String(editor.getSelectedText() || '').trim();
+            }
+        } catch (_) {}
+        return '';
+    };
+
+    const insertMarkdownFallback = (markdown) => {
+        const text = String(markdown || '');
+        if (!text) return;
+        try {
+            if (typeof editor.replaceSelection === 'function') {
+                editor.replaceSelection(text);
+                return;
+            }
+        } catch (_) {}
+        try {
+            if (typeof editor.insertText === 'function') {
+                editor.insertText(text);
+                return;
+            }
+        } catch (_) {}
+        try {
+            const current = String(editor.getMarkdown() || '');
+            editor.setMarkdown(current + text, false);
+        } catch (_) {}
+    };
+
+    const handleToolbarCommand = (cmd) => {
+        const command = String(cmd || '').trim();
+        if (!command) return;
+
+        if (command === 'heading' || command.startsWith('heading:')) {
+            let level = 2;
+            if (command.startsWith('heading:')) {
+                const parsedLevel = Number(command.split(':')[1] || 2);
+                if (Number.isFinite(parsedLevel) && parsedLevel >= 1 && parsedLevel <= 6) {
+                    level = parsedLevel;
+                }
+            }
+            if (!runToastCommand(commandAliases.heading, { level })) {
+                insertMarkdownFallback(`\n${'#'.repeat(level)} 标题`);
+            }
+            return;
+        }
+
+        if (command === 'link') {
+            const selected = getSelectedMarkdownText();
+            const linkUrl = 'https://';
+            const linkText = selected || '链接文本';
+            if (!runToastCommand(commandAliases.link, { linkUrl, linkText })) {
+                insertMarkdownFallback(`[${linkText}](${linkUrl})`);
+            }
+            showToast('已插入链接模板');
+            return;
+        }
+
+        if (command === 'image') {
+            const imageUrl = 'https://';
+            const altText = getSelectedMarkdownText() || '图片描述';
+            if (!runToastCommand(commandAliases.image, { imageUrl, altText })) {
+                insertMarkdownFallback(`![${altText}](${imageUrl})`);
+            }
+            showToast('已插入图片模板');
+            return;
+        }
+
+        if (command === 'table') {
+            const rowCount = 2;
+            const columnCount = 2;
+            if (!runToastCommand(commandAliases.table, { rowCount, columnCount })) {
+                const headers = Array.from({ length: columnCount }, (_, i) => `列${i + 1}`);
+                const divider = Array.from({ length: columnCount }, () => '---');
+                const body = Array.from({ length: Math.max(1, rowCount - 1) }, () => `| ${Array.from({ length: columnCount }, () => ' ').join(' | ')} |`).join('\n');
+                insertMarkdownFallback(`\n| ${headers.join(' | ')} |\n| ${divider.join(' | ')} |\n${body}`);
+            }
+            showToast('已插入表格模板');
+            return;
+        }
+
+        const aliases = commandAliases[command] || [command];
+        if (!runToastCommand(aliases)) {
+            if (command === 'quote') insertMarkdownFallback('\n> ');
+            if (command === 'ul') insertMarkdownFallback('\n- ');
+            if (command === 'ol') insertMarkdownFallback('\n1. ');
+        }
+    };
+
+    const toolbar = document.createElement('div');
+    toolbar.className = 'editor-toolbar';
+    toolbar.innerHTML = `
+        <div class="heading-control">
+            <a role="button" tabindex="0" class="heading" data-cmd="heading" title="标题"><i class="fa fa-header"></i></a>
+            <div class="heading-menu" hidden>
+                <button type="button" class="heading-option" data-cmd="heading:1">#</button>
+                <button type="button" class="heading-option" data-cmd="heading:2">##</button>
+                <button type="button" class="heading-option" data-cmd="heading:3">###</button>
+                <button type="button" class="heading-option" data-cmd="heading:4">####</button>
+            </div>
+        </div>
+        <a role="button" tabindex="0" class="bold" data-cmd="bold" title="粗体"><i class="fa fa-bold"></i></a>
+        <a role="button" tabindex="0" class="italic" data-cmd="italic" title="斜体"><i class="fa fa-italic"></i></a>
+        <a role="button" tabindex="0" class="strikethrough" data-cmd="strike" title="删除线"><i class="fa fa-strikethrough"></i></a>
+        <i class="separator"></i>
+        <a role="button" tabindex="0" class="quote" data-cmd="quote" title="引用"><i class="fa fa-quote-left"></i></a>
+        <a role="button" tabindex="0" class="unordered-list" data-cmd="ul" title="无序列表"><i class="fa fa-list-ul"></i></a>
+        <a role="button" tabindex="0" class="ordered-list" data-cmd="ol" title="有序列表"><i class="fa fa-list-ol"></i></a>
+        <a role="button" tabindex="0" class="link" data-cmd="link" title="链接"><i class="fa fa-link"></i></a>
+        <a role="button" tabindex="0" class="image" data-cmd="image" title="图片"><i class="fa-solid fa-image"></i></a>
+        <a role="button" tabindex="0" class="table" data-cmd="table" title="表格"><i class="fa fa-table"></i></a>
+        <i class="separator"></i>
+        <a role="button" tabindex="0" class="preview" data-action="preview" title="预览"><i class="fa fa-eye"></i></a>
+        <a role="button" tabindex="0" class="side-by-side" data-action="split" title="分屏"><i class="fa fa-columns"></i></a>
+        <a role="button" tabindex="0" class="fullscreen" data-action="fullscreen" title="全屏"><i class="fa fa-arrows-alt"></i></a>
+    `;
+    toolbar.addEventListener('click', (e) => {
+        const btn = e.target && e.target.closest ? e.target.closest('[data-cmd], [data-action]') : null;
+        if (!btn || !toolbar.contains(btn)) return;
+        e.preventDefault();
+        const headingControl = btn.closest('.heading-control');
+        if (headingControl && btn.classList.contains('heading')) {
+            const menu = headingControl.querySelector('.heading-menu');
+            if (menu) {
+                const willShow = !!menu.hidden;
+                toolbar.querySelectorAll('.heading-menu').forEach((node) => {
+                    node.hidden = true;
+                });
+                menu.hidden = !willShow;
+            }
+            return;
+        }
+        toolbar.querySelectorAll('.heading-menu').forEach((node) => {
+            node.hidden = true;
+        });
+        const cmd = String(btn.dataset.cmd || '');
+        const action = String(btn.dataset.action || '');
+        logKnowledgeEditorDebug('toastToolbarClick', {
+            cmd,
+            action,
+            currentMode: viewMode,
+            layout: collectKnowledgeEditorLayoutSnapshot()
+        });
+        if (cmd) {
+            if (viewMode === 'preview') return;
+            handleToolbarCommand(cmd);
+            requestAnimationFrame(() => renderToastPreview(false));
+            return;
+        }
+        if (action === 'preview') {
+            const editProgress = readScrollableProgress(getToastEditorScroller());
+            const snapshot = {
+                title: String(currentViewingKnowledge || '').trim(),
+                sourceMode: viewMode,
+                previewTop: readScrollableProgress(getKnowledgeEditorPreviewEl()).top,
+                previewRatio: readScrollableProgress(getKnowledgeEditorPreviewEl()).ratio,
+                editTop: editProgress.top,
+                editRatio: editProgress.ratio
+            };
+            setViewMode(viewMode === 'preview' ? 'edit' : 'preview');
+            setTimeout(() => restoreKnowledgeEditorScrollPosition(viewMode !== 'edit', snapshot), 0);
+            setTimeout(() => restoreKnowledgeEditorScrollPosition(viewMode !== 'edit', snapshot), 80);
+            return;
+        }
+        if (action === 'split') {
+            const editProgress = readScrollableProgress(getToastEditorScroller());
+            const snapshot = {
+                title: String(currentViewingKnowledge || '').trim(),
+                sourceMode: viewMode,
+                previewTop: readScrollableProgress(getKnowledgeEditorPreviewEl()).top,
+                previewRatio: readScrollableProgress(getKnowledgeEditorPreviewEl()).ratio,
+                editTop: editProgress.top,
+                editRatio: editProgress.ratio
+            };
+            setViewMode(viewMode === 'split' ? 'edit' : 'split');
+            setTimeout(() => restoreKnowledgeEditorScrollPosition(viewMode !== 'edit', snapshot), 0);
+            setTimeout(() => restoreKnowledgeEditorScrollPosition(viewMode !== 'edit', snapshot), 80);
+            return;
+        }
+        if (action === 'fullscreen') {
+            setFullscreen(!fullscreen);
+        }
+    });
+    if (!window.__nexoraKnowledgeHeadingMenuDismissBound) {
+        document.addEventListener('pointerdown', (e) => {
+            const editorToolbar = document.querySelector('#knowledgeViewer .editor-toolbar');
+            if (!editorToolbar || editorToolbar.contains(e.target)) return;
+            editorToolbar.querySelectorAll('.heading-menu').forEach((node) => {
+                node.hidden = true;
+            });
+        });
+        window.__nexoraKnowledgeHeadingMenuDismissBound = true;
+    }
+
+    const uiRoot = host.querySelector('.toastui-editor-defaultUI');
+    if (uiRoot) {
+        const toastToolbar = uiRoot.querySelector('.toastui-editor-toolbar');
+        if (toastToolbar) {
+            toastToolbar.style.display = 'none';
+        }
+        if (uiRoot.firstChild) {
+            uiRoot.insertBefore(toolbar, uiRoot.firstChild);
+        } else {
+            uiRoot.appendChild(toolbar);
+        }
+    } else {
+        host.insertBefore(toolbar, host.firstChild);
+    }
+    setViewMode('preview');
+    try {
+        if (typeof editor.on === 'function') {
+            const onEditorChange = () => queueToastPreviewRender(false, 0);
+            editor.on('change', onEditorChange);
+        }
+    } catch (_) {}
+
+    const bindPreviewBridge = () => {
+        const proseMirror = getToastProseMirrorEl();
+        if (!proseMirror) return;
+        const queue = () => queueToastPreviewRender(false, 0);
+        proseMirror.addEventListener('input', queue);
+        proseMirror.addEventListener('keyup', queue);
+        proseMirror.addEventListener('paste', queue);
+        proseMirror.addEventListener('cut', queue);
+        proseMirror.addEventListener('compositionend', queue);
+        const observer = new MutationObserver(() => queueToastPreviewRender(false, 0));
+        observer.observe(proseMirror, {
+            childList: true,
+            subtree: true,
+            characterData: true
+        });
+        previewBridgeCleanupFns.push(() => {
+            proseMirror.removeEventListener('input', queue);
+            proseMirror.removeEventListener('keyup', queue);
+            proseMirror.removeEventListener('paste', queue);
+            proseMirror.removeEventListener('cut', queue);
+            proseMirror.removeEventListener('compositionend', queue);
+            observer.disconnect();
+        });
+    };
+    requestAnimationFrame(bindPreviewBridge);
+
+    const codemirrorCompat = {
+        on: (eventName, handler) => {
+            if (typeof handler !== 'function') return;
+            if (eventName === 'change') {
+                try {
+                    if (typeof editor.on === 'function') {
+                        editor.on('change', handler);
+                    }
+                } catch (_) {}
+                return;
+            }
+            if (eventName === 'scroll') {
+                const cm = getToastCodeMirror();
+                try {
+                    if (cm && typeof cm.on === 'function') {
+                        cm.on('scroll', handler);
+                    }
+                } catch (_) {}
+            }
+        },
+        refresh: () => {
+            const cm = getToastCodeMirror();
+            try {
+                if (cm && typeof cm.refresh === 'function') cm.refresh();
+            } catch (_) {}
+        },
+        getScrollInfo: () => {
+            const cm = getToastCodeMirror();
+            if (cm && typeof cm.getScrollInfo === 'function') {
+                try {
+                    return cm.getScrollInfo();
+                } catch (_) {}
+            }
+            const scroller = getToastEditorScroller();
+            if (!scroller) return { top: 0, height: 0, clientHeight: 0 };
+            return {
+                top: Math.max(0, Number(scroller.scrollTop || 0)),
+                height: Math.max(0, Number(scroller.scrollHeight || 0)),
+                clientHeight: Math.max(0, Number(scroller.clientHeight || 0))
+            };
+        },
+        scrollTo: (_x, y) => {
+            const cm = getToastCodeMirror();
+            if (cm && typeof cm.scrollTo === 'function') {
+                try {
+                    cm.scrollTo(null, Math.max(0, Number(y || 0)));
+                    return;
+                } catch (_) {}
+            }
+            const scroller = getToastEditorScroller();
+            if (!scroller) return;
+            scroller.scrollTop = Math.max(0, Number(y || 0));
+        },
+        getScrollerElement: () => getToastEditorScroller(),
+        setCursor: (line, ch) => {
+            const cm = getToastCodeMirror();
+            if (cm && typeof cm.setCursor === 'function') {
+                try {
+                    cm.setCursor(line, ch);
+                } catch (_) {}
+            }
+        },
+        lineCount: () => String(editor.getMarkdown() || '').split('\n').length,
+        getLine: (line) => {
+            const lines = String(editor.getMarkdown() || '').split('\n');
+            return String(lines[Math.max(0, Number(line) || 0)] || '');
+        },
+        heightAtLine: (line) => (Math.max(0, Number(line) || 0) * 22),
+        defaultTextHeight: () => 22,
+        getLineHandle: () => ({ height: 22 }),
+        addLineWidget: () => ({ clear: () => {} })
+    };
+
+    return {
+        __editorType: 'toastui',
+        __editor: editor,
+        __alignedBound: true,
+        get __viewMode() {
+            return viewMode;
+        },
+        get __isFullscreen() {
+            return fullscreen;
+        },
+        value(nextValue) {
+            if (typeof nextValue === 'undefined') {
+                return editor.getMarkdown();
+            }
+            editor.setMarkdown(String(nextValue || ''), false);
+            renderToastPreview(false);
+            return String(nextValue || '');
+        },
+        isPreviewActive() {
+            return viewMode !== 'edit';
+        },
+        isSideBySideActive() {
+            return viewMode === 'split';
+        },
+        togglePreview() {
+            const snapshot = {
+                title: String(currentViewingKnowledge || '').trim(),
+                sourceMode: viewMode,
+                previewTop: readScrollableProgress(ensureToastCustomPreviewPane()).top,
+                previewRatio: readScrollableProgress(ensureToastCustomPreviewPane()).ratio,
+                editTop: readCodeMirrorProgress().top,
+                editRatio: readCodeMirrorProgress().ratio
+            };
+            setViewMode(viewMode === 'preview' ? 'edit' : 'preview');
+            setTimeout(() => restoreKnowledgeEditorScrollPosition(viewMode !== 'edit', snapshot), 0);
+            setTimeout(() => restoreKnowledgeEditorScrollPosition(viewMode !== 'edit', snapshot), 80);
+        },
+        toggleFullScreen() {
+            setFullscreen(!fullscreen);
+        },
+        toggleSideBySide() {
+            const snapshot = {
+                title: String(currentViewingKnowledge || '').trim(),
+                sourceMode: viewMode,
+                previewTop: readScrollableProgress(ensureToastCustomPreviewPane()).top,
+                previewRatio: readScrollableProgress(ensureToastCustomPreviewPane()).ratio,
+                editTop: readCodeMirrorProgress().top,
+                editRatio: readCodeMirrorProgress().ratio
+            };
+            setViewMode(viewMode === 'split' ? 'edit' : 'split');
+            setTimeout(() => restoreKnowledgeEditorScrollPosition(viewMode !== 'edit', snapshot), 0);
+            setTimeout(() => restoreKnowledgeEditorScrollPosition(viewMode !== 'edit', snapshot), 80);
+        },
+        codemirror: codemirrorCompat
+    };
+    easyMDE.__cleanupPreviewBridge = () => {
+        if (previewRenderDebounceTimer) {
+            clearTimeout(previewRenderDebounceTimer);
+            previewRenderDebounceTimer = 0;
+        }
+        previewBridgeCleanupFns.forEach((fn) => {
+            try { fn(); } catch (_) {}
+        });
+        previewBridgeCleanupFns = [];
+    };
+}
+
+function getKnowledgePreviewContentEl() {
+    return document.querySelector('#knowledgeViewer .nexora-toast-preview .toastui-editor-contents')
+        || document.querySelector('#knowledgeViewer .toastui-editor-md-preview .toastui-editor-contents')
+        || document.querySelector('#knowledgeViewer .editor-preview')
+        || document.querySelector('#knowledgeViewer .editor-preview-side.editor-preview-active-side');
+}
+
 // 导航栈管理：追踪视图层级，支持多层返回
 let navigationStack = [];
 let currentSearchQuery = ''; // 保存搜索关键词，以便返回时重新显示
@@ -15301,6 +16019,13 @@ async function viewKnowledge(title, options = {}) {
     const { forceEditMode = false, highlightData = null, fromSearch = false } = options;
     pendingHighlightData = highlightData;
     knowledgeEditorScrollState.activeTitle = String(title || '').trim();
+    if (!fromSearch && !highlightData) {
+        const state = getKnowledgeEditorState(title);
+        state.previewTop = 0;
+        state.previewRatio = 0;
+        state.editTop = 0;
+        state.editRatio = 0;
+    }
     const viewer = document.getElementById('knowledgeViewer');
     const msgs = document.getElementById('messagesContainer');
     const inputWrapper = document.getElementById('inputWrapper');
@@ -15309,6 +16034,13 @@ async function viewKnowledge(title, options = {}) {
     const headerRight = document.querySelector('.header-right');
 
     if(!viewer || !msgs) return;
+    logKnowledgeEditorDebug('viewKnowledge:start', {
+        title,
+        forceEditMode,
+        fromSearch,
+        hasHighlightData: !!highlightData,
+        state: getKnowledgeEditorState(title)
+    });
     
     // 1. Save Header State
     if (!originalHeaderState) {
@@ -15351,10 +16083,11 @@ async function viewKnowledge(title, options = {}) {
     viewer.style.display = 'flex';
     viewer.style.flexDirection = 'column';
     // 如果当前viewer是搜索页，先恢复为编辑器容器
-    if (!document.getElementById('knowledgeEditor')) {
-        viewer.innerHTML = '<textarea id="knowledgeEditor"></textarea>';
+    const existingEditorMount = document.getElementById('knowledgeEditor');
+    if (!existingEditorMount || String(existingEditorMount.tagName || '').toUpperCase() !== 'DIV') {
+        viewer.innerHTML = '<div id="knowledgeEditor" class="knowledge-toast-editor"></div>';
         // 搜索页替换会销毁编辑器，需重建
-        easyMDE = null;
+        destroyKnowledgeMarkdownEditor();
     }
 
     // 4. Update Header
@@ -15377,56 +16110,49 @@ async function viewKnowledge(title, options = {}) {
     `;
     applyDesktopHeaderTools(headerRight);
 
-    // 5. Initialize Editor
+    // 5. Initialize Editor (Toast UI)
+    if (!easyMDE || easyMDE.__editorType !== 'toastui' || !document.getElementById('knowledgeEditor')) {
+        destroyKnowledgeMarkdownEditor();
+        easyMDE = createToastUiKnowledgeEditor(content || '');
+    }
     if (!easyMDE) {
-        easyMDE = new EasyMDE({ 
-            element: document.getElementById('knowledgeEditor'),
-            status: false,
-            spellChecker: false,
-            sideBySideFullscreen: false,
-            syncSideBySidePreviewScroll: false,
-            previewRender: function(plainText) {
-                const html = renderMarkdownWithNewTabLinks(plainText);
-                const tempDiv = document.createElement('div');
-                tempDiv.innerHTML = html;
-                renderMathSafe(tempDiv);
-                
-                return tempDiv.innerHTML;
-            },
-            toolbar: ["bold", "italic", "heading", "|", "quote", "unordered-list", "ordered-list", "|", 
-                      "link", "image", "table", "|", "preview", "side-by-side", "fullscreen"]
-        });
-        
-        // 提示用户如何切换模式
-        showToast('提示：点击编辑器工具栏中的“眼睛”图标可切换预览与编辑模式。');
+        showToast('Markdown Editor 初始化失败');
+        return;
     }
     installKnowledgeEditorPreviewHooks();
-    // 如果编辑器存在但绑定的 DOM 已被替换，重新创建
-    if (!easyMDE || !easyMDE.codemirror || !document.getElementById('knowledgeEditor')) {
-        easyMDE = null;
-        easyMDE = new EasyMDE({ 
-            element: document.getElementById('knowledgeEditor'),
-            status: false,
-            spellChecker: false,
-            sideBySideFullscreen: false,
-            syncSideBySidePreviewScroll: false,
-            previewRender: function(plainText) {
-                const html = renderMarkdownWithNewTabLinks(plainText);
-                const tempDiv = document.createElement('div');
-                tempDiv.innerHTML = html;
-                renderMathSafe(tempDiv);
-                return tempDiv.innerHTML;
-            },
-            toolbar: ["bold", "italic", "heading", "|", "quote", "unordered-list", "ordered-list", "|", 
-                      "link", "image", "table", "|", "preview", "side-by-side", "fullscreen"]
+
+    if (!easyMDE.__alignedBound) {
+        easyMDE.codemirror.on("change", () => {
+            knowledgeEditorLastInputAt = Date.now();
+            clearTimeout(knowledgeEditorAlignDebounce);
+            knowledgeEditorAlignDebounce = setTimeout(() => {
+                if (isKnowledgeEditorSideBySideActive()) {
+                    scheduleKnowledgeEditorAlignment('typing');
+                }
+            }, 700);
         });
-        installKnowledgeEditorPreviewHooks();
+        easyMDE.__alignedBound = true;
     }
-    
+
     const viewportHeight = window.innerHeight;
     const headerHeight = 60;
 
     easyMDE.value(content || '');
+    try {
+        if (easyMDE && easyMDE.codemirror) {
+            easyMDE.codemirror.scrollTo(null, 0);
+            if (typeof easyMDE.codemirror.setCursor === 'function') {
+                easyMDE.codemirror.setCursor(0, 0);
+            }
+        }
+    } catch (_) {}
+    logKnowledgeEditorDebug('viewKnowledge:afterValue', {
+        title,
+        forceEditMode,
+        fromSearch,
+        hasHighlightData: !!highlightData,
+        layout: collectKnowledgeEditorLayoutSnapshot()
+    });
 
     // Default to Preview Mode unless forced edit mode
     if (forceEditMode) {
@@ -15441,12 +16167,27 @@ async function viewKnowledge(title, options = {}) {
         }
     }
     bindKnowledgeEditorScrollTracking();
-    restoreKnowledgeEditorScrollPosition(isKnowledgeEditorPreviewActive());
+    const shouldRestoreInitialKnowledgeScroll = !!(fromSearch || highlightData);
+    if (shouldRestoreInitialKnowledgeScroll) {
+        restoreKnowledgeEditorScrollPosition(isKnowledgeEditorPreviewActive());
+    }
     [0, 40, 140, 320, 680].forEach((delay) => {
         setTimeout(() => {
             bindKnowledgeEditorScrollTracking();
-            restoreKnowledgeEditorScrollPosition(isKnowledgeEditorPreviewActive());
+            if (shouldRestoreInitialKnowledgeScroll) {
+                restoreKnowledgeEditorScrollPosition(isKnowledgeEditorPreviewActive());
+            }
+            if (isKnowledgeEditorSideBySideActive() && (delay === 0 || delay === 320 || delay === 680)) {
+                scheduleKnowledgeEditorAlignment('layout');
+            }
             syncKnowledgeEditorToolbarState();
+            logKnowledgeEditorDebug('viewKnowledge:stabilizeTick', {
+                delay,
+                shouldRestoreInitialKnowledgeScroll,
+                isPreviewActive: isKnowledgeEditorPreviewActive(),
+                isSideBySideActive: isKnowledgeEditorSideBySideActive(),
+                layout: collectKnowledgeEditorLayoutSnapshot()
+            });
         }, delay);
     });
 
@@ -15458,7 +16199,7 @@ async function viewKnowledge(title, options = {}) {
             return;
         }
         
-        const preview = document.querySelector('.editor-preview');
+        const preview = getKnowledgePreviewContentEl();
         if (!preview) {
             setTimeout(() => highlightWhenReady(retryCount + 1), 150);
             return;
@@ -15487,7 +16228,7 @@ async function viewKnowledge(title, options = {}) {
 }
 
 function highlightTextInPreview(text, meta = {}) {
-    const preview = document.querySelector('.editor-preview');
+    const preview = getKnowledgePreviewContentEl();
     if (!preview) {
         console.warn('预览元素不存在');
         return;
@@ -17426,6 +18167,87 @@ function logKnowledgeEditorDebug(message, details = null) {
     } catch (_) {}
 }
 
+function summarizeKnowledgeEditorNode(node) {
+    if (!node) return null;
+    let rect = null;
+    try {
+        const r = node.getBoundingClientRect();
+        rect = {
+            top: Number(r.top || 0),
+            left: Number(r.left || 0),
+            width: Number(r.width || 0),
+            height: Number(r.height || 0)
+        };
+    } catch (_) {}
+    let computed = null;
+    try {
+        const cs = window.getComputedStyle(node);
+        computed = {
+            display: String(cs.display || ''),
+            position: String(cs.position || ''),
+            flexDirection: String(cs.flexDirection || ''),
+            gridTemplateColumns: String(cs.gridTemplateColumns || ''),
+            gridColumn: String(cs.gridColumn || ''),
+            overflowY: String(cs.overflowY || ''),
+            overflowX: String(cs.overflowX || ''),
+            visibility: String(cs.visibility || ''),
+            opacity: String(cs.opacity || '')
+        };
+    } catch (_) {}
+    return {
+        tag: String(node.tagName || '').toLowerCase(),
+        id: String(node.id || ''),
+        className: String(node.className || ''),
+        scrollTop: Number(node.scrollTop || 0),
+        scrollHeight: Number(node.scrollHeight || 0),
+        clientHeight: Number(node.clientHeight || 0),
+        rect,
+        computed
+    };
+}
+
+function collectKnowledgeEditorLayoutSnapshot() {
+    const viewer = document.getElementById('knowledgeViewer');
+    const host = document.getElementById('knowledgeEditor');
+    const mdContainer = viewer ? viewer.querySelector('.toastui-editor-md-container') : null;
+    const vertical = viewer ? viewer.querySelector('.toastui-editor-md-vertical-style') : null;
+    const editPane = viewer ? viewer.querySelector('.toastui-editor') : null;
+    const builtInPreview = viewer ? viewer.querySelector('.toastui-editor-md-preview') : null;
+    const builtInSplitter = viewer ? viewer.querySelector('.toastui-editor-md-splitter') : null;
+    const customPreview = viewer ? viewer.querySelector('.nexora-toast-preview') : null;
+    const customSplitter = viewer ? viewer.querySelector('.nexora-toast-splitter') : null;
+    const previewContent = viewer ? viewer.querySelector('.nexora-toast-preview .toastui-editor-contents') : null;
+    const scroller = getKnowledgeEditorScrollerEl ? getKnowledgeEditorScrollerEl() : null;
+    const previewEl = getKnowledgeEditorPreviewEl ? getKnowledgeEditorPreviewEl() : null;
+    return {
+        currentViewingKnowledge: String(currentViewingKnowledge || ''),
+        activeTitle: String((knowledgeEditorScrollState && knowledgeEditorScrollState.activeTitle) || ''),
+        isPreviewActive: typeof isKnowledgeEditorPreviewActive === 'function' ? !!isKnowledgeEditorPreviewActive() : null,
+        isSideBySideActive: typeof isKnowledgeEditorSideBySideActive === 'function' ? !!isKnowledgeEditorSideBySideActive() : null,
+        isFullscreenActive: typeof isKnowledgeEditorFullscreenActive === 'function' ? !!isKnowledgeEditorFullscreenActive() : null,
+        host: summarizeKnowledgeEditorNode(host),
+        viewer: summarizeKnowledgeEditorNode(viewer),
+        mdContainer: summarizeKnowledgeEditorNode(mdContainer),
+        vertical: summarizeKnowledgeEditorNode(vertical),
+        editPane: summarizeKnowledgeEditorNode(editPane),
+        builtInPreview: summarizeKnowledgeEditorNode(builtInPreview),
+        builtInSplitter: summarizeKnowledgeEditorNode(builtInSplitter),
+        customPreview: summarizeKnowledgeEditorNode(customPreview),
+        customSplitter: summarizeKnowledgeEditorNode(customSplitter),
+        previewContent: summarizeKnowledgeEditorNode(previewContent),
+        scroller: summarizeKnowledgeEditorNode(scroller),
+        previewEl: summarizeKnowledgeEditorNode(previewEl)
+    };
+}
+
+window.__nexoraDumpKnowledgeEditorLayout = function() {
+    const snapshot = collectKnowledgeEditorLayoutSnapshot();
+    try {
+        console.log('[KnowledgeEditor][Dump]', snapshot);
+    } catch (_) {}
+    return snapshot;
+};
+
 function getKnowledgeEditorScrollMetrics() {
     const preview = getKnowledgeEditorPreviewEl();
     const previewProgress = preview ? readScrollableProgress(preview) : { top: 0, ratio: 0 };
@@ -17525,11 +18347,23 @@ let knowledgeEditorDelegatedScrollBound = false;
 let knowledgeEditorPendingToggleScrollSnapshot = null;
 let knowledgeEditorModeSwitchActive = false;
 
+let knowledgeEditorRestoreTimeouts = [];
+let lastScrollSource = null;
+let scrollResetTimer = null;
+
+function cancelKnowledgeEditorRestores() {
+    knowledgeEditorRestoreTimeouts.forEach(clearTimeout);
+    knowledgeEditorRestoreTimeouts = [];
+}
+
 function isKnowledgeEditorPreviewActive() {
     return !!(easyMDE && easyMDE.isPreviewActive && easyMDE.isPreviewActive());
 }
 
 function isKnowledgeEditorSideBySideActive() {
+    if (easyMDE && easyMDE.__editorType === 'toastui') {
+        return !!(typeof easyMDE.isSideBySideActive === 'function' && easyMDE.isSideBySideActive());
+    }
     return !!(
         document.querySelector('#knowledgeViewer .CodeMirror-sided')
         || document.querySelector('#knowledgeViewer .editor-preview-side.editor-preview-active-side')
@@ -17537,6 +18371,9 @@ function isKnowledgeEditorSideBySideActive() {
 }
 
 function isKnowledgeEditorFullscreenActive() {
+    if (easyMDE && easyMDE.__editorType === 'toastui') {
+        return !!easyMDE.__isFullscreen;
+    }
     const toolbar = document.querySelector('#knowledgeViewer .editor-toolbar');
     return !!(toolbar && toolbar.classList.contains('fullscreen'));
 }
@@ -17544,9 +18381,9 @@ function isKnowledgeEditorFullscreenActive() {
 function syncKnowledgeEditorToolbarState() {
     const toolbar = document.querySelector('#knowledgeViewer .editor-toolbar');
     if (!toolbar) return;
-    const previewBtn = toolbar.querySelector('a.preview');
-    const sideBtn = toolbar.querySelector('a.side-by-side');
-    const fullBtn = toolbar.querySelector('a.fullscreen');
+    const previewBtn = toolbar.querySelector('.preview');
+    const sideBtn = toolbar.querySelector('.side-by-side');
+    const fullBtn = toolbar.querySelector('.fullscreen');
     const isPreview = isKnowledgeEditorPreviewActive();
     const isSide = isKnowledgeEditorSideBySideActive();
     const isFull = isKnowledgeEditorFullscreenActive();
@@ -17580,82 +18417,553 @@ function exitKnowledgeEditorSpecialModes() {
     } catch (_) {}
 }
 
-function syncKnowledgeEditorMirrorScroll(fromPreview) {
-    if (knowledgeEditorScrollSyncLock || knowledgeEditorModeSwitchActive) return;
-    if (!isKnowledgeEditorSideBySideActive()) return;
+let knowledgeEditorAlignWidgets = [];
+let knowledgeEditorAlignDebounce = null;
+let knowledgeEditorAlignRetryTimers = [];
+let knowledgeEditorAlignRunToken = 0;
+let knowledgeEditorAlignLastRunAt = 0;
+let knowledgeEditorAlignBusy = false;
+let knowledgeEditorLastInputAt = 0;
 
-    const preview = getKnowledgeEditorPreviewEl();
-    if (!preview || !easyMDE || !easyMDE.codemirror || typeof easyMDE.codemirror.getScrollInfo !== 'function') return;
+function isKnowledgeEditorAlignDebugEnabled() {
+    return !!window.__NEXORA_ALIGN_DEBUG;
+}
 
-    const sourceInfo = fromPreview ? readScrollableProgress(preview) : readCodeMirrorProgress();
-    logKnowledgeEditorDebug('syncScroll:start', {
-        fromPreview,
-        previewTop: sourceInfo.top,
-        previewRatio: sourceInfo.ratio,
-        previewScrollHeight: preview.scrollHeight,
-        previewClientHeight: preview.clientHeight,
-        cmScrollInfo: easyMDE.codemirror.getScrollInfo ? easyMDE.codemirror.getScrollInfo() : null
+function cancelKnowledgeEditorAlignRetries() {
+    knowledgeEditorAlignRetryTimers.forEach((timer) => clearTimeout(timer));
+    knowledgeEditorAlignRetryTimers = [];
+}
+
+function mapKnowledgePreviewAnchorType(node) {
+    if (node && node.classList && node.classList.contains('nexora-preview-cm-header')) return 'heading';
+    const tag = String((node && node.tagName) || '').toUpperCase();
+    if (/^H[1-6]$/.test(tag)) return 'heading';
+    if (tag === 'PRE') return 'code';
+    if (tag === 'TABLE') return 'table';
+    if (tag === 'BLOCKQUOTE') return 'blockquote';
+    if (tag === 'UL' || tag === 'OL') return 'list';
+    if (tag === 'HR') return 'hr';
+    return 'paragraph';
+}
+
+function extractKnowledgePreviewHeadingLevel(node) {
+    if (!node) return 0;
+    const tag = String(node.tagName || '').toUpperCase();
+    if (/^H[1-6]$/.test(tag)) return Number(tag.slice(1));
+    const dataLevel = Number(node.dataset && node.dataset.cmHeaderLevel);
+    if (Number.isFinite(dataLevel) && dataLevel >= 1 && dataLevel <= 6) return dataLevel;
+    const cls = String(node.className || '');
+    const match = /\bcm-header-(\d)\b/.exec(cls);
+    if (match) return Number(match[1]);
+    return 1;
+}
+
+function normalizeKnowledgePreviewHeadingTags(root) {
+    if (!root || !root.querySelectorAll) return;
+    const headings = Array.from(root.querySelectorAll('h1, h2, h3, h4, h5, h6'));
+    headings.forEach((heading) => {
+        const level = Number(String(heading.tagName || 'H1').slice(1)) || 1;
+        const replacement = document.createElement('div');
+        const normalizedLevel = Math.max(1, Math.min(6, level));
+        replacement.className = `nexora-preview-cm-header nexora-preview-cm-header-${normalizedLevel} cm-header cm-header-${normalizedLevel}`;
+        replacement.dataset.cmHeaderLevel = String(normalizedLevel);
+        if (heading.id) replacement.id = heading.id;
+        replacement.innerHTML = heading.innerHTML;
+        heading.replaceWith(replacement);
     });
+}
 
-    knowledgeEditorScrollSyncLock = true;
-    try {
-        if (fromPreview) {
-            const previewProgress = readScrollableProgress(preview);
-            const previewMax = Math.max(0, Number((preview.scrollHeight || 0) - (preview.clientHeight || 0)));
-            const info = easyMDE.codemirror.getScrollInfo();
-            const cmTop = Math.max(0, Number((info && info.top) || 0));
-            const cmMax = Math.max(0, Number(((info && info.height) || 0) - ((info && info.clientHeight) || 0)));
-            let nextTop = cmMax > 0
-                ? Math.max(0, Math.min(cmMax, Math.round(cmMax * previewProgress.ratio)))
-                : Math.max(0, Number(previewProgress.top || 0));
-            if (previewMax > 0 && previewProgress.top >= previewMax - 2) {
-                nextTop = cmMax;
-            } else if (previewProgress.top <= 2) {
-                nextTop = 0;
+function getKnowledgeEditorEffectiveCmBottom(cm) {
+    if (!cm || typeof cm.lineCount !== 'function' || cm.lineCount() <= 0) return 0;
+    let lastLine = Math.max(0, cm.lineCount() - 1);
+    while (lastLine > 0 && !String(cm.getLine(lastLine) || '').trim()) {
+        lastLine -= 1;
+    }
+    const lastTop = Number(cm.heightAtLine(lastLine, "local") || 0);
+    const lineHandle = cm.getLineHandle(lastLine);
+    const lineHeight = Number((lineHandle && lineHandle.height) || cm.defaultTextHeight() || 0);
+    return Math.max(0, Math.round(lastTop + lineHeight));
+}
+
+function collectKnowledgeEditorMarkdownAnchors(cm) {
+    const anchors = [];
+    let inFence = false;
+    let previousType = '';
+    let previousWasBlank = true;
+
+    for (let i = 0; i < cm.lineCount(); i++) {
+        const line = String(cm.getLine(i) || '');
+        const trimmed = line.trim();
+
+        if (/^```/.test(trimmed)) {
+            if (!inFence) {
+                anchors.push({ line: i, type: 'code', level: 0, textNorm: '' });
             }
-            if (Math.abs(cmTop - nextTop) > 1) {
-                easyMDE.codemirror.scrollTo(null, nextTop);
+            inFence = !inFence;
+            previousType = 'fence';
+            previousWasBlank = false;
+            continue;
+        }
+
+        if (inFence) continue;
+
+        if (!trimmed) {
+            previousWasBlank = true;
+            continue;
+        }
+
+        let currentType = 'paragraph';
+        let level = 0;
+        let textRaw = trimmed;
+        const headingMatch = /^(#{1,6})\s+(.+?)\s*#*\s*$/.exec(trimmed);
+        if (headingMatch) {
+            currentType = 'heading';
+            level = headingMatch[1].length;
+            textRaw = headingMatch[2];
+        } else if (/^>\s?/.test(trimmed)) {
+            currentType = 'blockquote';
+            textRaw = trimmed.replace(/^>\s?/, '');
+        } else if (/^[-*+]\s+/.test(trimmed) || /^\d+\.\s+/.test(trimmed)) {
+            currentType = 'list';
+        } else if (/^\|.+\|$/.test(trimmed) || /^:?-{3,}:?(?:\s*\|\s*:?-{3,}:?)+$/.test(trimmed)) {
+            currentType = 'table';
+        } else if (/^[-*_]{3,}\s*$/.test(trimmed)) {
+            currentType = 'hr';
+            textRaw = '';
+        }
+
+        if (previousWasBlank || currentType !== previousType || currentType === 'heading' || currentType === 'hr') {
+            anchors.push({
+                line: i,
+                type: currentType,
+                level,
+                textNorm: normalizeKnowledgeAnchorText(textRaw)
+            });
+        }
+
+        previousType = currentType;
+        previousWasBlank = false;
+    }
+
+    return anchors;
+}
+
+function collectKnowledgeEditorPreviewAnchors(preview) {
+    if (!preview) return [];
+    const anchorTags = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'P', 'PRE', 'TABLE', 'BLOCKQUOTE', 'UL', 'OL', 'HR']);
+    const directChildren = Array.from(preview.children || []).filter((node) => {
+        const tag = String(node.tagName || '').toUpperCase();
+        return anchorTags.has(tag) || (node.classList && node.classList.contains('nexora-preview-cm-header'));
+    });
+    const nodes = directChildren.length > 0
+        ? directChildren
+        : Array.from(preview.querySelectorAll('h1, h2, h3, h4, h5, h6, p, pre, table, blockquote, ul, ol, hr, .nexora-preview-cm-header'));
+    return nodes.map((el) => {
+        return {
+            el,
+            type: mapKnowledgePreviewAnchorType(el),
+            level: extractKnowledgePreviewHeadingLevel(el),
+            textNorm: normalizeKnowledgeAnchorText(el.textContent || '')
+        };
+    });
+}
+
+function normalizeKnowledgeAnchorText(text) {
+    return String(text || '')
+        .replace(/\[(.*?)\]\((.*?)\)/g, '$1')
+        .replace(/[`*_~>#\[\]()!.,:;'"，。！？：；、\s]+/g, '')
+        .toLowerCase();
+}
+
+function areKnowledgeAnchorsCompatible(cmAnchor, previewAnchor) {
+    if (!cmAnchor || !previewAnchor) return false;
+    if (cmAnchor.type === previewAnchor.type) {
+        if (cmAnchor.type === 'heading') {
+            const levelMatch = !cmAnchor.level || !previewAnchor.level || cmAnchor.level === previewAnchor.level;
+            if (!levelMatch) return false;
+            if (cmAnchor.textNorm && previewAnchor.textNorm) {
+                return cmAnchor.textNorm === previewAnchor.textNorm
+                    || cmAnchor.textNorm.includes(previewAnchor.textNorm)
+                    || previewAnchor.textNorm.includes(cmAnchor.textNorm);
             }
-        } else {
-            const cmProgress = readCodeMirrorProgress();
-            const previewMax = Math.max(0, Number((preview.scrollHeight || 0) - (preview.clientHeight || 0)));
-            const cmInfo = easyMDE.codemirror.getScrollInfo();
-            const cmMax = Math.max(0, Number(((cmInfo && cmInfo.height) || 0) - ((cmInfo && cmInfo.clientHeight) || 0)));
-            let nextTop = previewMax > 0
-                ? Math.max(0, Math.min(previewMax, Math.round(previewMax * cmProgress.ratio)))
-                : Math.max(0, Number(cmProgress.top || 0));
-            if (cmMax > 0 && cmProgress.top >= cmMax - 2) {
-                nextTop = previewMax;
-            } else if (cmProgress.top <= 2) {
-                nextTop = 0;
-            }
-            if (Math.abs(Number(preview.scrollTop || 0) - nextTop) > 1) {
-                preview.scrollTop = nextTop;
+            return true;
+        }
+
+        if ((cmAnchor.type === 'paragraph' || cmAnchor.type === 'blockquote') && cmAnchor.textNorm && previewAnchor.textNorm) {
+            return cmAnchor.textNorm.includes(previewAnchor.textNorm)
+                || previewAnchor.textNorm.includes(cmAnchor.textNorm);
+        }
+
+        return true;
+    }
+
+    if (cmAnchor.type === 'paragraph' && (previewAnchor.type === 'paragraph' || previewAnchor.type === 'blockquote')) return true;
+    if (cmAnchor.type === 'blockquote' && (previewAnchor.type === 'paragraph' || previewAnchor.type === 'blockquote')) return true;
+    return false;
+}
+
+function buildKnowledgeAnchorPairs(cmAnchors, previewAnchors) {
+    const pairs = [];
+    const pairCount = Math.min(cmAnchors.length, previewAnchors.length);
+    for (let i = 0; i < pairCount; i++) {
+        pairs.push({
+            cmAnchor: cmAnchors[i],
+            previewAnchor: previewAnchors[i]
+        });
+    }
+    return pairs;
+}
+
+function alignKnowledgeEditorBlocks(mode = 'full') {
+    if (easyMDE && easyMDE.__editorType === 'toastui') return;
+    if (!isKnowledgeEditorSideBySideActive()) return;
+    const preview = getKnowledgeEditorPreviewEl();
+    const scroller = getKnowledgeEditorScrollerEl();
+    if (!preview || !scroller || !easyMDE || !easyMDE.codemirror) return;
+
+    const cm = easyMDE.codemirror;
+    
+    knowledgeEditorAlignWidgets.forEach(w => w.clear());
+    knowledgeEditorAlignWidgets = [];
+
+    const previewAnchors = collectKnowledgeEditorPreviewAnchors(preview);
+    previewAnchors.forEach(({ el }) => {
+        if (!el || !el.dataset) return;
+        if (el.dataset.nexoraAlignBound === '1') {
+            el.style.marginTop = '';
+            delete el.dataset.nexoraAlignBound;
+        }
+        if (el.dataset.nexoraAlignMarginBottom === '1') {
+            el.style.marginBottom = '';
+            delete el.dataset.nexoraAlignMarginBottom;
+        }
+    });
+    preview.style.paddingBottom = '';
+
+    const cmAnchors = collectKnowledgeEditorMarkdownAnchors(cm);
+    const anchorPairs = buildKnowledgeAnchorPairs(cmAnchors, previewAnchors);
+    const cmTotalBefore = getKnowledgeEditorEffectiveCmBottom(cm);
+    const cmOffsets = anchorPairs.map((pair) => cm.heightAtLine(Number(pair.cmAnchor && pair.cmAnchor.line), "local"));
+    cmOffsets.push(cmTotalBefore);
+    const useLightMode = mode === 'light';
+    const debugAlign = !useLightMode && isKnowledgeEditorAlignDebugEnabled();
+    const pairDebugRows = debugAlign ? [] : null;
+    let rangeStart = 0;
+    let rangeEnd = Math.max(0, anchorPairs.length - 1);
+    if (useLightMode && anchorPairs.length > 0) {
+        const cmInfo = cm.getScrollInfo();
+        const viewStart = Math.max(0, Number((cmInfo && cmInfo.top) || 0) - 600);
+        const viewEnd = Math.max(viewStart, Number((cmInfo && cmInfo.top) || 0) + Number((cmInfo && cmInfo.clientHeight) || 0) + 800);
+
+        while (rangeStart < anchorPairs.length - 1 && Number(cmOffsets[rangeStart + 1] || 0) < viewStart) {
+            rangeStart += 1;
+        }
+        rangeEnd = rangeStart;
+        while (rangeEnd < anchorPairs.length - 1 && Number(cmOffsets[rangeEnd] || 0) <= viewEnd) {
+            rangeEnd += 1;
+        }
+        rangeStart = Math.max(0, rangeStart - 6);
+        rangeEnd = Math.min(anchorPairs.length - 1, rangeEnd + 8);
+    }
+
+    const previewOffsets = useLightMode
+        ? null
+        : anchorPairs.map((pair) => Number((pair.previewAnchor && pair.previewAnchor.el && pair.previewAnchor.el.offsetTop) || 0));
+    if (previewOffsets) {
+        previewOffsets.push(Math.max(preview.scrollHeight, previewOffsets.length ? previewOffsets[previewOffsets.length - 1] : 0));
+    }
+    const previewOffsetCache = new Map();
+    const readPreviewOffset = (index) => {
+        if (index >= anchorPairs.length) return Math.max(preview.scrollHeight, 0);
+        if (previewOffsets) return Number(previewOffsets[index] || 0);
+        if (previewOffsetCache.has(index)) return Number(previewOffsetCache.get(index) || 0);
+        const node = anchorPairs[index] && anchorPairs[index].previewAnchor && anchorPairs[index].previewAnchor.el;
+        const value = Number((node && node.offsetTop) || 0);
+        previewOffsetCache.set(index, value);
+        return value;
+    };
+    let previewAdded = 0;
+    let editorAdded = 0;
+
+    for (let i = rangeStart; i <= rangeEnd; i++) {
+        const cmLine = Number(anchorPairs[i].cmAnchor && anchorPairs[i].cmAnchor.line);
+        const prNode = anchorPairs[i].previewAnchor && anchorPairs[i].previewAnchor.el;
+        if (!prNode || !Number.isFinite(cmLine)) continue;
+
+        const nextCmLine = i + 1 < anchorPairs.length
+            ? Number(anchorPairs[i + 1].cmAnchor && anchorPairs[i + 1].cmAnchor.line)
+            : null;
+
+        const cmStart = Number(cmOffsets[i] || 0);
+        const cmEnd = Number(cmOffsets[i + 1] || cmTotalBefore);
+        const editHeight = Math.max(0, Math.round(cmEnd - cmStart));
+
+        const previewStart = readPreviewOffset(i);
+        const previewEnd = readPreviewOffset(i + 1);
+        const previewHeight = Math.max(0, Math.round(previewEnd - previewStart));
+
+        const targetHeight = Math.max(editHeight, previewHeight);
+        const editPad = Math.max(0, targetHeight - editHeight);
+        const previewPad = Math.max(0, targetHeight - previewHeight);
+
+        if (debugAlign) {
+            const style = window.getComputedStyle(prNode);
+            pairDebugRows.push({
+                i,
+                cmLine,
+                previewTag: String(prNode.tagName || '').toLowerCase(),
+                previewText: String(prNode.textContent || '').trim().slice(0, 80),
+                previewFontSize: (style.fontSize || ''),
+                previewLineHeight: (style.lineHeight || ''),
+                editHeight,
+                previewHeight,
+                targetHeight,
+                editPad,
+                previewPad
+            });
+        }
+
+        if (previewPad > 1) {
+            const currentMb = parseFloat(window.getComputedStyle(prNode).marginBottom) || 0;
+            prNode.style.marginBottom = `${Math.round(currentMb + previewPad)}px`;
+            prNode.dataset.nexoraAlignMarginBottom = '1';
+            previewAdded += previewPad;
+        }
+
+        if (editPad > 1) {
+            const div = document.createElement("div");
+            div.style.height = `${Math.round(editPad)}px`;
+            div.style.pointerEvents = "none";
+            const insertLine = Number.isFinite(nextCmLine) ? nextCmLine : Math.max(0, cm.lineCount() - 1);
+            const widget = cm.addLineWidget(insertLine, div, {
+                coverGutter: false,
+                noHScroll: true,
+                above: Number.isFinite(nextCmLine)
+            });
+            knowledgeEditorAlignWidgets.push(widget);
+            editorAdded += editPad;
+        }
+    }
+
+    if (!useLightMode && previewAnchors.length > anchorPairs.length) {
+        const firstExtra = previewAnchors[anchorPairs.length];
+        const firstExtraNode = firstExtra && firstExtra.el;
+        if (firstExtraNode) {
+            const extraPreviewHeight = Math.max(0, Math.round(preview.scrollHeight - Number(firstExtraNode.offsetTop || 0)));
+            if (extraPreviewHeight > 1) {
+                const div = document.createElement("div");
+                div.style.height = `${extraPreviewHeight}px`;
+                div.style.pointerEvents = "none";
+                const widget = cm.addLineWidget(Math.max(0, cm.lineCount() - 1), div, {
+                    coverGutter: false,
+                    noHScroll: true
+                });
+                knowledgeEditorAlignWidgets.push(widget);
+                editorAdded += extraPreviewHeight;
             }
         }
-    } finally {
-        requestAnimationFrame(() => {
-            knowledgeEditorScrollSyncLock = false;
-            logKnowledgeEditorDebug('syncScroll:end', {
-                fromPreview,
-                previewTop: preview ? preview.scrollTop : null,
-                previewMax: preview ? Math.max(0, Number((preview.scrollHeight || 0) - (preview.clientHeight || 0))) : null,
-                cmInfo: easyMDE && easyMDE.codemirror && easyMDE.codemirror.getScrollInfo ? easyMDE.codemirror.getScrollInfo() : null
+    } else if (!useLightMode && cmAnchors.length > anchorPairs.length) {
+        const firstExtraCm = cmAnchors[anchorPairs.length];
+        if (firstExtraCm && Number.isFinite(firstExtraCm.line)) {
+            const extraCmStart = cm.heightAtLine(firstExtraCm.line, "local");
+            const extraCmHeight = Math.max(0, Math.round(cmTotalBefore - extraCmStart));
+            if (extraCmHeight > 1) {
+                preview.style.paddingBottom = `${extraCmHeight}px`;
+                previewAdded += extraCmHeight;
+            }
+        }
+    }
+
+    if (debugAlign) {
+        try {
+            console.info('[KnowledgeAlign] summary', {
+                anchorPairs: anchorPairs.length,
+                previewAnchors: previewAnchors.length,
+                cmAnchors: cmAnchors.length,
+                previewAdded,
+                editorAdded
             });
+            console.table(pairDebugRows.slice(0, 120));
+        } catch (_) {}
+    }
+
+    if (!useLightMode) {
+        // Synchronize bottom space
+        setTimeout(() => {
+            const cmScroll = cm.getScrollInfo();
+            const cmMax = Math.max(0, cmScroll.height - cmScroll.clientHeight);
+            const prevMax = Math.max(0, preview.scrollHeight - preview.clientHeight);
+            const diff = Math.round(cmMax - prevMax);
+
+            if (diff > 1) {
+                preview.style.paddingBottom = `${Math.max(0, diff)}px`;
+            } else if (diff < -1) {
+                const div = document.createElement("div");
+                div.style.height = `${Math.round(Math.abs(diff))}px`;
+                div.style.pointerEvents = "none";
+                knowledgeEditorAlignWidgets.push(cm.addLineWidget(Math.max(0, cm.lineCount() - 1), div, {coverGutter: false, noHScroll: true}));
+            }
+        }, 40);
+
+        const pendingImages = Array.from(preview.querySelectorAll('img')).filter((img) => !img.complete);
+        pendingImages.forEach((img) => {
+            if (img.dataset.nexoraAlignLoadBound === '1') return;
+            img.dataset.nexoraAlignLoadBound = '1';
+            const onDone = () => {
+                delete img.dataset.nexoraAlignLoadBound;
+                if (isKnowledgeEditorSideBySideActive()) {
+                    scheduleKnowledgeEditorAlignment('image');
+                }
+            };
+            img.addEventListener('load', onDone, { once: true });
+            img.addEventListener('error', onDone, { once: true });
         });
     }
 }
 
+function scheduleKnowledgeEditorAlignment(reason = 'typing') {
+    if (easyMDE && easyMDE.__editorType === 'toastui') return;
+    if (!isKnowledgeEditorSideBySideActive()) return;
+    cancelKnowledgeEditorAlignRetries();
+    const runToken = ++knowledgeEditorAlignRunToken;
+    const now = Date.now();
+    let delays;
+    if (reason === 'toggle') {
+        delays = [0, 180, 420];
+    } else if (reason === 'layout') {
+        delays = [100, 320];
+    } else if (reason === 'image') {
+        delays = [120, 380];
+    } else {
+        delays = [1200];
+        if (now - knowledgeEditorAlignLastRunAt < 300) {
+            delays = [1400];
+        }
+    }
+
+    delays.forEach((delay) => {
+        const timer = setTimeout(() => {
+            if (runToken !== knowledgeEditorAlignRunToken) return;
+            if (!isKnowledgeEditorSideBySideActive()) return;
+            if (reason === 'typing' && (Date.now() - knowledgeEditorLastInputAt) < 650) return;
+            if (knowledgeEditorAlignBusy) return;
+            knowledgeEditorAlignBusy = true;
+            requestAnimationFrame(() => {
+                try {
+                    if (runToken !== knowledgeEditorAlignRunToken) return;
+                    if (!isKnowledgeEditorSideBySideActive()) return;
+                    alignKnowledgeEditorBlocks(reason === 'typing' ? 'light' : 'full');
+                    if (reason !== 'typing') {
+                        syncKnowledgeEditorMirrorScroll(false);
+                    }
+                    knowledgeEditorAlignLastRunAt = Date.now();
+                } finally {
+                    knowledgeEditorAlignBusy = false;
+                }
+            });
+        }, delay);
+        knowledgeEditorAlignRetryTimers.push(timer);
+    });
+}
+
+function syncKnowledgeEditorMirrorScroll(fromPreview) {
+    if (knowledgeEditorModeSwitchActive || knowledgeEditorScrollSyncLock) return;
+    if (!isKnowledgeEditorSideBySideActive()) return;
+
+    const preview = getKnowledgeEditorPreviewEl();
+    const scroller = getKnowledgeEditorScrollerEl();
+    if (!preview || !scroller || !easyMDE || !easyMDE.codemirror) return;
+
+    if (fromPreview && lastScrollSource === 'editor') return;
+    if (!fromPreview && lastScrollSource === 'preview') return;
+
+    lastScrollSource = fromPreview ? 'preview' : 'editor';
+    clearTimeout(scrollResetTimer);
+    scrollResetTimer = setTimeout(() => { lastScrollSource = null; }, 50);
+
+    knowledgeEditorScrollSyncLock = true;
+    logKnowledgeEditorDebug('mirrorScroll:start', {
+        fromPreview,
+        preview: summarizeKnowledgeEditorNode(preview),
+        scroller: summarizeKnowledgeEditorNode(scroller),
+        layout: collectKnowledgeEditorLayoutSnapshot()
+    });
+    requestAnimationFrame(() => {
+        try {
+            if (fromPreview) {
+                const previewProgress = readScrollableProgress(preview);
+                let cmInfo = null;
+                let targetTop = 0;
+                if (easyMDE && easyMDE.__editorType === 'toastui') {
+                    const editorProgress = readScrollableProgress(scroller);
+                    const editorMax = Math.max(0, Number((scroller.scrollHeight || 0) - (scroller.clientHeight || 0)));
+                    targetTop = editorMax > 0
+                        ? Math.round(editorMax * Number(previewProgress.ratio || 0))
+                        : Math.max(0, Number(previewProgress.top || 0));
+                    scroller.scrollTop = targetTop;
+                    cmInfo = {
+                        top: editorProgress.top,
+                        height: Number(scroller.scrollHeight || 0),
+                        clientHeight: Number(scroller.clientHeight || 0)
+                    };
+                } else {
+                    cmInfo = easyMDE.codemirror.getScrollInfo ? easyMDE.codemirror.getScrollInfo() : null;
+                    const cmMax = Math.max(0, Number(((cmInfo && cmInfo.height) || 0) - ((cmInfo && cmInfo.clientHeight) || 0)));
+                    targetTop = cmMax > 0
+                        ? Math.round(cmMax * Number(previewProgress.ratio || 0))
+                        : Math.max(0, Number(previewProgress.top || 0));
+                    easyMDE.codemirror.scrollTo(null, targetTop);
+                }
+                logKnowledgeEditorDebug('mirrorScroll:applyToEditor', {
+                    previewProgress,
+                    cmInfo,
+                    targetTop
+                });
+            } else {
+                const cmProgress = (easyMDE && easyMDE.__editorType === 'toastui')
+                    ? readScrollableProgress(scroller)
+                    : readCodeMirrorProgress();
+                const previewMax = Math.max(0, Number((preview.scrollHeight || 0) - (preview.clientHeight || 0)));
+                const targetTop = previewMax > 0
+                    ? Math.round(previewMax * Number(cmProgress.ratio || 0))
+                    : Math.max(0, Number(cmProgress.top || 0));
+                preview.scrollTop = targetTop;
+                logKnowledgeEditorDebug('mirrorScroll:applyToPreview', {
+                    cmProgress,
+                    previewMax,
+                    targetTop
+                });
+            }
+        } finally {
+            requestAnimationFrame(() => {
+                knowledgeEditorScrollSyncLock = false;
+                logKnowledgeEditorDebug('mirrorScroll:end', {
+                    fromPreview,
+                    preview: summarizeKnowledgeEditorNode(preview),
+                    scroller: summarizeKnowledgeEditorNode(scroller)
+                });
+            });
+        }
+    });
+}
+
 function getKnowledgeEditorPreviewEl() {
-    return document.querySelector('#knowledgeViewer .editor-preview-side.editor-preview-active-side')
+    return document.querySelector('#knowledgeViewer .nexora-toast-preview')
+        || document.querySelector('#knowledgeViewer .toastui-editor-md-preview')
+        || document.querySelector('#knowledgeViewer .toastui-editor-md-preview .toastui-editor-contents')
+        || document.querySelector('#knowledgeViewer .editor-preview-side.editor-preview-active-side')
         || document.querySelector('#knowledgeViewer .editor-preview-active')
         || document.querySelector('#knowledgeViewer .editor-preview')
         || document.querySelector('#knowledgeViewer .editor-preview-side');
 }
 
 function getKnowledgeEditorScrollerEl() {
-    if (!easyMDE || !easyMDE.codemirror || typeof easyMDE.codemirror.getScrollerElement !== 'function') return null;
-    return easyMDE.codemirror.getScrollerElement();
+    if (easyMDE && easyMDE.codemirror && typeof easyMDE.codemirror.getScrollerElement === 'function') {
+        const scroller = easyMDE.codemirror.getScrollerElement();
+        if (scroller) return scroller;
+    }
+    return document.querySelector('#knowledgeViewer .toastui-editor-md-container .CodeMirror-scroll')
+        || document.querySelector('#knowledgeViewer .CodeMirror-scroll');
 }
 
 function bindKnowledgeEditorScrollTracking() {
@@ -17666,13 +18974,19 @@ function bindKnowledgeEditorScrollTracking() {
     if (preview && preview.dataset.nexoraScrollBoundTitle !== title) {
         preview.dataset.nexoraScrollBoundTitle = title;
         preview.addEventListener('scroll', () => {
-            if (knowledgeEditorModeSwitchActive) return;
+            cancelKnowledgeEditorRestores();
+            if (knowledgeEditorModeSwitchActive || knowledgeEditorScrollSyncLock) return;
             const state = getKnowledgeEditorState(title);
             const progress = readScrollableProgress(preview);
             state.previewTop = progress.top;
             state.previewRatio = progress.ratio;
             knowledgeEditorScrollState.activeTitle = title;
-            logKnowledgeEditorDebug('previewScroll', { title, top: progress.top, ratio: progress.ratio });
+            logKnowledgeEditorDebug('previewScroll', {
+                title,
+                top: progress.top,
+                ratio: progress.ratio,
+                preview: summarizeKnowledgeEditorNode(preview)
+            });
             syncKnowledgeEditorMirrorScroll(true);
         }, { passive: true });
     }
@@ -17681,23 +18995,83 @@ function bindKnowledgeEditorScrollTracking() {
     if (scroller && scroller.dataset.nexoraScrollBoundTitle !== title) {
         scroller.dataset.nexoraScrollBoundTitle = title;
         scroller.addEventListener('scroll', () => {
-            if (knowledgeEditorModeSwitchActive) return;
+            cancelKnowledgeEditorRestores();
+            if (knowledgeEditorModeSwitchActive || knowledgeEditorScrollSyncLock) return;
             if (!easyMDE || !easyMDE.codemirror) return;
             const state = getKnowledgeEditorState(title);
-            const progress = readCodeMirrorProgress();
+            const progress = (easyMDE && easyMDE.__editorType === 'toastui')
+                ? readScrollableProgress(scroller)
+                : readCodeMirrorProgress();
             state.editTop = progress.top;
             state.editRatio = progress.ratio;
             knowledgeEditorScrollState.activeTitle = title;
-            logKnowledgeEditorDebug('editScroll', { title, top: progress.top, ratio: progress.ratio });
+            logKnowledgeEditorDebug('editScroll', {
+                title,
+                top: progress.top,
+                ratio: progress.ratio,
+                scroller: summarizeKnowledgeEditorNode(scroller)
+            });
             syncKnowledgeEditorMirrorScroll(false);
         }, { passive: true });
+    }
+
+    if (easyMDE && easyMDE.__editorType === 'toastui' && easyMDE.codemirror && typeof easyMDE.codemirror.on === 'function') {
+        if (easyMDE.codemirror.__nexoraScrollBoundTitle !== title) {
+            easyMDE.codemirror.__nexoraScrollBoundTitle = title;
+            easyMDE.codemirror.on('scroll', () => {
+                cancelKnowledgeEditorRestores();
+                if (knowledgeEditorModeSwitchActive || knowledgeEditorScrollSyncLock) return;
+                const state = getKnowledgeEditorState(title);
+                const progress = readCodeMirrorProgress();
+                state.editTop = progress.top;
+                state.editRatio = progress.ratio;
+                knowledgeEditorScrollState.activeTitle = title;
+                logKnowledgeEditorDebug('editScroll:cm', {
+                    title,
+                    top: progress.top,
+                    ratio: progress.ratio,
+                    scroller: summarizeKnowledgeEditorNode(getKnowledgeEditorScrollerEl())
+                });
+                syncKnowledgeEditorMirrorScroll(false);
+            });
+        }
+    }
+
+    const proseMirror = getToastProseMirrorEl ? getToastProseMirrorEl() : null;
+    if (proseMirror && proseMirror.dataset.nexoraPmBoundTitle !== title) {
+        proseMirror.dataset.nexoraPmBoundTitle = title;
+        proseMirror.addEventListener('scroll', () => {
+            cancelKnowledgeEditorRestores();
+            if (knowledgeEditorModeSwitchActive || knowledgeEditorScrollSyncLock) return;
+            const state = getKnowledgeEditorState(title);
+            const progress = readScrollableProgress(proseMirror);
+            state.editTop = progress.top;
+            state.editRatio = progress.ratio;
+            knowledgeEditorScrollState.activeTitle = title;
+            logKnowledgeEditorDebug('editScroll:pm', {
+                title,
+                top: progress.top,
+                ratio: progress.ratio,
+                scroller: summarizeKnowledgeEditorNode(proseMirror)
+            });
+            syncKnowledgeEditorMirrorScroll(false);
+        }, { passive: true });
+        const refreshPreviewFromPm = () => {
+            requestAnimationFrame(() => renderToastPreview(false));
+        };
+        proseMirror.addEventListener('input', refreshPreviewFromPm);
+        proseMirror.addEventListener('keyup', refreshPreviewFromPm);
+        proseMirror.addEventListener('paste', refreshPreviewFromPm);
+        proseMirror.addEventListener('cut', refreshPreviewFromPm);
+        proseMirror.addEventListener('compositionend', refreshPreviewFromPm);
     }
 
     const viewer = document.getElementById('knowledgeViewer');
     if (viewer && !knowledgeEditorDelegatedScrollBound) {
         knowledgeEditorDelegatedScrollBound = true;
         viewer.addEventListener('scroll', (e) => {
-            if (knowledgeEditorModeSwitchActive) return;
+            cancelKnowledgeEditorRestores();
+            if (knowledgeEditorModeSwitchActive || knowledgeEditorScrollSyncLock) return;
             const activeTitle = String(currentViewingKnowledge || knowledgeEditorScrollState.activeTitle || '').trim();
             if (!activeTitle) return;
             const target = e && e.target;
@@ -17713,7 +19087,7 @@ function bindKnowledgeEditorScrollTracking() {
                 state.previewTop = progress.top;
                 state.previewRatio = progress.ratio;
                 knowledgeEditorScrollState.activeTitle = activeTitle;
-                logKnowledgeEditorDebug('viewerCapture:preview', { activeTitle, top: progress.top, ratio: progress.ratio, cls: target.className });
+                // logKnowledgeEditorDebug('viewerCapture:preview', { activeTitle, top: progress.top, ratio: progress.ratio, cls: target.className });
                 syncKnowledgeEditorMirrorScroll(true);
                 return;
             }
@@ -17724,7 +19098,7 @@ function bindKnowledgeEditorScrollTracking() {
                 state.editTop = progress.top;
                 state.editRatio = progress.ratio;
                 knowledgeEditorScrollState.activeTitle = activeTitle;
-                logKnowledgeEditorDebug('viewerCapture:edit', { activeTitle, top: progress.top, ratio: progress.ratio, cls: target.className });
+                // logKnowledgeEditorDebug('viewerCapture:edit', { activeTitle, top: progress.top, ratio: progress.ratio, cls: target.className });
                 syncKnowledgeEditorMirrorScroll(false);
             }
         }, true);
@@ -17735,8 +19109,9 @@ function bindKnowledgeEditorToolbarHooks() {
     if (knowledgeEditorToolbarHooksInstalled) return;
     knowledgeEditorToolbarHooksInstalled = true;
     document.addEventListener('pointerdown', (e) => {
-        const target = e.target && e.target.closest ? e.target.closest('#knowledgeViewer .editor-toolbar a') : null;
+        const target = e.target && e.target.closest ? e.target.closest('#knowledgeViewer .editor-toolbar a, #knowledgeViewer .editor-toolbar button') : null;
         if (!target || !currentViewingKnowledge || !easyMDE) return;
+        if (easyMDE && easyMDE.__editorType === 'toastui') return;
         const cls = String(target.className || '');
         if (!/\bpreview\b|\bside-by-side\b|\bfullscreen\b/.test(cls)) return;
         knowledgeEditorModeSwitchActive = true;
@@ -17744,8 +19119,9 @@ function bindKnowledgeEditorToolbarHooks() {
         mirrorKnowledgeEditorProgressToBothModes();
     }, true);
     document.addEventListener('click', (e) => {
-        const target = e.target && e.target.closest ? e.target.closest('#knowledgeViewer .editor-toolbar a') : null;
+        const target = e.target && e.target.closest ? e.target.closest('#knowledgeViewer .editor-toolbar a, #knowledgeViewer .editor-toolbar button') : null;
         if (!target || !currentViewingKnowledge || !easyMDE) return;
+        if (easyMDE && easyMDE.__editorType === 'toastui') return;
         const cls = String(target.className || '');
         if (!/\bpreview\b|\bside-by-side\b|\bfullscreen\b/.test(cls)) return;
         logKnowledgeEditorDebug('toolbarClick', { cls, previewActive: isKnowledgeEditorPreviewActive(), sideBySideActive: isKnowledgeEditorSideBySideActive() });
@@ -17760,8 +19136,8 @@ function bindKnowledgeEditorToolbarHooks() {
                 bindKnowledgeEditorScrollTracking();
                 applyKnowledgeEditorToggleSnapshot(pendingSnapshot, isKnowledgeEditorPreviewActive());
                 restoreKnowledgeEditorScrollPosition(isKnowledgeEditorPreviewActive(), pendingSnapshot);
-                if (isKnowledgeEditorSideBySideActive()) {
-                    syncKnowledgeEditorMirrorScroll(false);
+                if (isKnowledgeEditorSideBySideActive() && delay === 140) {
+                    scheduleKnowledgeEditorAlignment('toggle');
                 }
                 syncKnowledgeEditorToolbarState();
                 logKnowledgeEditorDebug('toolbarRefresh', {
@@ -17799,31 +19175,81 @@ function restoreKnowledgeEditorScrollPosition(forcePreview = null, preferredSnap
         : (knowledgeEditorPendingToggleScrollSnapshot && String(knowledgeEditorPendingToggleScrollSnapshot.title || '').trim() === title
             ? knowledgeEditorPendingToggleScrollSnapshot
             : null);
+    const chooseScrollTop = (primary, secondary) => {
+        if (Number.isFinite(Number(primary)) && Number(primary) >= 0) return Number(primary);
+        if (Number.isFinite(Number(secondary)) && Number(secondary) >= 0) return Number(secondary);
+        return 0;
+    };
+    const snapshotTop = (() => {
+        if (!snapshot) return null;
+        if (snapshot.sourceMode === 'preview') {
+            return isPreview ? snapshot.previewTop : snapshot.previewTop;
+        }
+        if (snapshot.sourceMode === 'edit') {
+            return isPreview ? snapshot.editTop : snapshot.editTop;
+        }
+        return isPreview ? snapshot.previewTop : snapshot.editTop;
+    })();
+    const snapshotRatio = (() => {
+        if (!snapshot) return null;
+        if (snapshot.sourceMode === 'preview') {
+            return isPreview ? snapshot.previewRatio : snapshot.previewRatio;
+        }
+        if (snapshot.sourceMode === 'edit') {
+            return isPreview ? snapshot.editRatio : snapshot.editRatio;
+        }
+        return isPreview ? snapshot.previewRatio : snapshot.editRatio;
+    })();
     const preferredTop = snapshot
-        ? (isPreview ? snapshot.previewTop : snapshot.editTop)
+        ? Number(snapshotTop || 0)
         : (isPreview
-            ? (state.previewTop || state.editTop || 0)
-            : (state.editTop || state.previewTop || 0));
+            ? chooseScrollTop(state.previewTop, state.editTop)
+            : chooseScrollTop(state.editTop, state.previewTop));
     const preferredRatio = snapshot
-        ? (isPreview ? snapshot.previewRatio : snapshot.editRatio)
+        ? Math.max(0, Math.min(1, Number(snapshotRatio || 0)))
         : (isPreview
             ? (Number.isFinite(state.previewRatio) ? state.previewRatio : state.editRatio)
             : (Number.isFinite(state.editRatio) ? state.editRatio : state.previewRatio));
+    logKnowledgeEditorDebug('restoreScroll:prepare', {
+        title,
+        isPreview,
+        preferredTop,
+        preferredRatio,
+        snapshot,
+        state,
+        layout: collectKnowledgeEditorLayoutSnapshot()
+    });
     const attemptRestore = () => {
         if (isPreview) {
             const target = getKnowledgeEditorPreviewEl();
             if (!target) return;
             applyScrollableProgress(target, preferredTop, preferredRatio);
+            logKnowledgeEditorDebug('restoreScroll:previewApplied', {
+                title,
+                preferredTop,
+                preferredRatio,
+                target: summarizeKnowledgeEditorNode(target)
+            });
             return;
         }
         const target = getKnowledgeEditorScrollerEl();
         if (target) {
             applyScrollableProgress(target, preferredTop, preferredRatio);
         }
-        applyCodeMirrorProgress(preferredTop, preferredRatio);
+        if (!(easyMDE && easyMDE.__editorType === 'toastui')) {
+            applyCodeMirrorProgress(preferredTop, preferredRatio);
+        }
+        logKnowledgeEditorDebug('restoreScroll:editApplied', {
+            title,
+            preferredTop,
+            preferredRatio,
+            target: summarizeKnowledgeEditorNode(target)
+        });
     };
+    
+    cancelKnowledgeEditorRestores();
     [0, 40, 140, 320, 680].forEach((delay) => {
-        setTimeout(() => requestAnimationFrame(attemptRestore), delay);
+        knowledgeEditorRestoreTimeouts.push(setTimeout(() => requestAnimationFrame(attemptRestore), delay));
     });
 }
 
@@ -17886,7 +19312,6 @@ async function saveKnowledge(title) {
                 : {};
             meta.updated_at = Math.max(nowSec, Number(meta.updated_at || 0));
             if (Number(meta.vector_updated_at || 0) >= meta.updated_at) {
-                meta.vector_updated_at = Math.max(0, meta.updated_at - 1);
             }
             knowledgeMetaCache[title] = meta;
             // 保存后立即刷新知识列表与元数据，让“需重新向量化”状态及时可见
@@ -18780,7 +20205,7 @@ function decorateCodeBlock(pre, block) {
     if (pre.classList.contains('nc-code-block')) return;
 
     // Keep note cards compact; decorate chat/thinking/editor only.
-    if (!pre.closest('.content-body, .thinking-content, .editor-preview')) return;
+    if (!pre.closest('.content-body, .thinking-content, .editor-preview, .toastui-editor-contents')) return;
 
     const langRaw = detectCodeLanguageFromBlock(block);
     const langLabel = normalizeCodeLanguageLabel(langRaw);

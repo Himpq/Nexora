@@ -6,6 +6,350 @@
     background: #fff;
 }
 
+#knowledgeViewer .knowledge-toast-editor {
+    flex: 1 1 auto;
+    min-height: 0;
+    height: 100%;
+}
+
+#knowledgeViewer .knowledge-toast-editor.knowledge-toast-fullscreen {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 6000;
+    height: auto;
+    background: #fff;
+}
+
+#knowledgeViewer .toastui-editor-defaultUI {
+    border: none;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+}
+
+#knowledgeViewer .toastui-editor-toolbar {
+    border: none;
+    border-bottom: 1px solid #ddd;
+    display: flex;
+    align-items: center;
+    display: none !important;
+}
+
+#knowledgeViewer .knowledge-toast-editor .editor-toolbar {
+    border-radius: 0;
+    border: none;
+    border-bottom: 1px solid #ddd;
+    padding: 9px 10px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    background: #fafafa;
+}
+
+#knowledgeViewer .knowledge-toast-editor .editor-toolbar a,
+#knowledgeViewer .knowledge-toast-editor .editor-toolbar button {
+    width: 28px;
+    height: 28px;
+    line-height: 28px;
+    border: 1px solid transparent;
+    border-radius: 3px;
+    background: transparent;
+    color: #2f363d;
+    cursor: pointer;
+    text-decoration: none;
+    text-align: center;
+    flex: 0 0 auto;
+    padding: 0;
+}
+
+#knowledgeViewer .knowledge-toast-editor .editor-toolbar .heading-control {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+}
+
+#knowledgeViewer .knowledge-toast-editor .editor-toolbar .heading-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 44px;
+    padding: 4px;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    background: #fff;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.14);
+    z-index: 30;
+}
+
+#knowledgeViewer .knowledge-toast-editor .editor-toolbar .heading-menu[hidden] {
+    display: none !important;
+}
+
+#knowledgeViewer .knowledge-toast-editor .editor-toolbar .heading-option {
+    width: auto;
+    min-width: 36px;
+    padding: 0 8px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+}
+
+#knowledgeViewer .knowledge-toast-editor .editor-toolbar [data-cmd].disabled {
+    opacity: 0.42;
+    pointer-events: none;
+}
+
+#knowledgeViewer .knowledge-toast-editor .editor-toolbar a:hover,
+#knowledgeViewer .knowledge-toast-editor .editor-toolbar button:hover {
+    background: #fcfcfc;
+    border-color: #95a5a6;
+}
+
+#knowledgeViewer .knowledge-toast-editor .editor-toolbar a.active,
+#knowledgeViewer .knowledge-toast-editor .editor-toolbar button.active {
+    background: #fcfcfc;
+    border-color: #95a5a6;
+}
+
+#knowledgeViewer .knowledge-toast-editor .editor-toolbar a i,
+#knowledgeViewer .knowledge-toast-editor .editor-toolbar button i {
+    font-size: 14px;
+}
+
+#knowledgeViewer .knowledge-toast-editor .editor-toolbar i.separator {
+    display: inline-block;
+    width: 1px;
+    height: 18px;
+    margin: 0 6px;
+    background: #d0d7de;
+    flex: 0 0 auto;
+}
+
+#knowledgeViewer .toastui-editor-main {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+#knowledgeViewer .toastui-editor-md-mode,
+#knowledgeViewer .toastui-editor-md-container,
+#knowledgeViewer .toastui-editor-md-container .toastui-editor-md-vertical-style {
+    height: 100%;
+    min-height: 0;
+}
+
+#knowledgeViewer .toastui-editor-md-container,
+#knowledgeViewer .toastui-editor-md-preview {
+    min-height: 0;
+    height: 100%;
+}
+
+#knowledgeViewer .knowledge-toast-editor .toastui-editor-md-container .toastui-editor-md-vertical-style {
+    display: flex;
+    align-items: stretch;
+    height: 100% !important;
+    min-height: 0 !important;
+}
+
+#knowledgeViewer .knowledge-toast-editor .toastui-editor-md-container .toastui-editor,
+#knowledgeViewer .knowledge-toast-editor .toastui-editor-md-container .toastui-editor-md-preview {
+    min-height: 0 !important;
+}
+
+#knowledgeViewer .knowledge-toast-editor .toastui-editor-md-container .toastui-editor {
+    display: flex;
+    flex-direction: column;
+    height: 100% !important;
+}
+
+#knowledgeViewer .knowledge-toast-editor .toastui-editor-md-container .ProseMirror {
+    height: 100% !important;
+    min-height: 100% !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    box-sizing: border-box !important;
+}
+
+#knowledgeViewer .knowledge-toast-editor .toastui-editor-md-container .toastui-editor-md-preview,
+#knowledgeViewer .knowledge-toast-editor .toastui-editor-md-container .toastui-editor-md-splitter {
+    display: none !important;
+}
+
+#knowledgeViewer .knowledge-toast-editor .nexora-toast-preview {
+    display: none;
+    min-height: 0;
+    height: 100%;
+    overflow-y: auto;
+    overflow-x: hidden;
+    background: #fff;
+    padding: 20px;
+    box-sizing: border-box;
+    color: #24292e;
+    font-family: 'Inter', -apple-system, sans-serif;
+    font-size: 15px;
+    line-height: 1.7;
+}
+
+#knowledgeViewer .knowledge-toast-editor .nexora-toast-splitter {
+    display: none;
+    width: 1px;
+    min-width: 1px;
+    background: #e5e7eb;
+}
+
+#knowledgeViewer .knowledge-toast-editor .toastui-editor-md-container .toastui-editor .CodeMirror {
+    flex: 1 1 auto;
+    min-height: 0 !important;
+    height: 100% !important;
+}
+
+#knowledgeViewer .knowledge-toast-editor .toastui-editor-md-container .toastui-editor .CodeMirror-scroll {
+    min-height: 0 !important;
+    max-height: 100% !important;
+    height: 100% !important;
+}
+
+#knowledgeViewer .knowledge-toast-editor.knowledge-toast-mode-split .toastui-editor-md-container {
+    display: flex !important;
+    flex-direction: column !important;
+    min-height: 0 !important;
+    height: 100% !important;
+}
+
+#knowledgeViewer .knowledge-toast-editor.knowledge-toast-mode-split .toastui-editor-md-container .toastui-editor-md-vertical-style {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) 1px minmax(0, 1fr) !important;
+    align-items: stretch !important;
+    min-height: 0 !important;
+    height: 100% !important;
+}
+
+#knowledgeViewer .knowledge-toast-editor.knowledge-toast-mode-split .toastui-editor-md-container .toastui-editor {
+    display: block !important;
+    grid-column: 1 !important;
+    width: auto !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    height: 100% !important;
+}
+
+#knowledgeViewer .knowledge-toast-editor.knowledge-toast-mode-split .toastui-editor-md-container .nexora-toast-preview {
+    display: block !important;
+    grid-column: 3 !important;
+    width: auto !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    height: 100% !important;
+    overflow-y: auto !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    background: #fff !important;
+}
+
+#knowledgeViewer .knowledge-toast-editor.knowledge-toast-mode-split .toastui-editor-md-container .nexora-toast-splitter {
+    display: block !important;
+    grid-column: 2 !important;
+    width: 1px !important;
+    flex: 0 0 1px !important;
+    background: #e5e7eb !important;
+}
+
+#knowledgeViewer .knowledge-toast-editor.knowledge-toast-mode-edit .toastui-editor-md-container {
+    display: flex !important;
+    flex-direction: column !important;
+    min-height: 0 !important;
+    height: 100% !important;
+}
+
+#knowledgeViewer .knowledge-toast-editor.knowledge-toast-mode-edit .toastui-editor-md-container .toastui-editor-md-vertical-style {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+    min-height: 0 !important;
+    height: 100% !important;
+}
+
+#knowledgeViewer .knowledge-toast-editor.knowledge-toast-mode-edit .toastui-editor-md-container .toastui-editor {
+    display: block !important;
+    grid-column: 1 !important;
+    width: auto !important;
+    min-height: 0 !important;
+    height: 100% !important;
+}
+
+#knowledgeViewer .knowledge-toast-editor.knowledge-toast-mode-edit .toastui-editor-md-container .nexora-toast-preview,
+#knowledgeViewer .knowledge-toast-editor.knowledge-toast-mode-edit .toastui-editor-md-container .nexora-toast-splitter {
+    display: none !important;
+}
+
+#knowledgeViewer .knowledge-toast-editor.knowledge-toast-mode-preview .toastui-editor-md-container {
+    display: flex !important;
+    flex-direction: column !important;
+    min-height: 0 !important;
+    height: 100% !important;
+}
+
+#knowledgeViewer .knowledge-toast-editor.knowledge-toast-mode-preview .toastui-editor-md-container .toastui-editor-md-vertical-style {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+    min-height: 0 !important;
+    height: 100% !important;
+}
+
+#knowledgeViewer .knowledge-toast-editor.knowledge-toast-mode-preview .toastui-editor-md-container .toastui-editor {
+    display: none !important;
+}
+
+#knowledgeViewer .knowledge-toast-editor.knowledge-toast-mode-preview .toastui-editor-md-container .nexora-toast-preview {
+    display: block !important;
+    grid-column: 1 !important;
+    width: auto !important;
+    min-height: 0 !important;
+    height: 100% !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+}
+
+#knowledgeViewer .knowledge-toast-editor.knowledge-toast-mode-preview .toastui-editor-md-container .nexora-toast-splitter {
+    display: none !important;
+}
+
+#knowledgeViewer .toastui-editor-md-container .CodeMirror,
+#knowledgeViewer .toastui-editor-md-container .CodeMirror pre {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14px;
+    line-height: 1.6;
+}
+
+#knowledgeViewer .toastui-editor-contents {
+    font-family: 'Inter', -apple-system, sans-serif;
+    font-size: 15px;
+    line-height: 1.7;
+    color: #24292e;
+    background: #fff;
+}
+
+#knowledgeViewer .toastui-editor-contents h1 {
+    font-size: 2em;
+    margin: 24px 0 16px;
+}
+
+#knowledgeViewer .toastui-editor-contents h2 {
+    font-size: 1.5em;
+    margin: 24px 0 16px;
+}
+
+#knowledgeViewer .toastui-editor-contents h3 {
+    font-size: 1.25em;
+    margin: 24px 0 16px;
+}
+
 #knowledgeViewer .EasyMDEContainer {
     flex: 1 1 auto;
     display: flex;
@@ -108,20 +452,25 @@
 }
 
 /* Table Styling */
+#knowledgeViewer .toastui-editor-contents table,
 #knowledgeViewer .editor-preview table,
 #knowledgeViewer .editor-preview-side table {
     border-collapse: collapse;
-    width: 100%;
+    width: fit-content !important;
+    max-width: none !important;
     margin: 16px 0;
-    overflow-x: auto;
-    display: block;
+    overflow-x: visible;
+    display: table !important;
 }
 
+#knowledgeViewer .toastui-editor-contents table thead,
 #knowledgeViewer .editor-preview table thead,
 #knowledgeViewer .editor-preview-side table thead {
     background-color: #f6f8fa;
 }
 
+#knowledgeViewer .toastui-editor-contents table th,
+#knowledgeViewer .toastui-editor-contents table td,
 #knowledgeViewer .editor-preview table th,
 #knowledgeViewer .editor-preview table td,
 #knowledgeViewer .editor-preview-side table th,
@@ -131,17 +480,20 @@
     text-align: left;
 }
 
+#knowledgeViewer .toastui-editor-contents table th,
 #knowledgeViewer .editor-preview table th,
 #knowledgeViewer .editor-preview-side table th {
     font-weight: 600;
 }
 
+#knowledgeViewer .toastui-editor-contents table tr:nth-child(even),
 #knowledgeViewer .editor-preview table tr:nth-child(even),
 #knowledgeViewer .editor-preview-side table tr:nth-child(even) {
     background-color: #f6f8fa;
 }
 
 /* Headings */
+#knowledgeViewer .toastui-editor-contents h1,
 #knowledgeViewer .editor-preview h1,
 #knowledgeViewer .editor-preview-side h1 {
     font-size: 2em;
@@ -151,6 +503,7 @@
     border-bottom: 1px solid #eaecef;
 }
 
+#knowledgeViewer .toastui-editor-contents h2,
 #knowledgeViewer .editor-preview h2,
 #knowledgeViewer .editor-preview-side h2 {
     font-size: 1.5em;
@@ -160,6 +513,7 @@
     border-bottom: 1px solid #eaecef;
 }
 
+#knowledgeViewer .toastui-editor-contents h3,
 #knowledgeViewer .editor-preview h3,
 #knowledgeViewer .editor-preview-side h3 {
     font-size: 1.25em;
@@ -167,7 +521,52 @@
     margin: 24px 0 16px;
 }
 
+#knowledgeViewer .editor-preview .nexora-preview-cm-header,
+#knowledgeViewer .editor-preview-side .nexora-preview-cm-header {
+    display: block;
+    color: inherit;
+    font-weight: 600;
+    line-height: 1.35;
+    margin: 24px 0 16px;
+}
+
+#knowledgeViewer .editor-preview .nexora-preview-cm-header-1,
+#knowledgeViewer .editor-preview-side .nexora-preview-cm-header-1 {
+    font-size: 2em;
+    padding-bottom: 0.3em;
+    border-bottom: 1px solid #eaecef;
+}
+
+#knowledgeViewer .editor-preview .nexora-preview-cm-header-2,
+#knowledgeViewer .editor-preview-side .nexora-preview-cm-header-2 {
+    font-size: 1.5em;
+    padding-bottom: 0.3em;
+    border-bottom: 1px solid #eaecef;
+}
+
+#knowledgeViewer .editor-preview .nexora-preview-cm-header-3,
+#knowledgeViewer .editor-preview-side .nexora-preview-cm-header-3 {
+    font-size: 1.25em;
+}
+
+#knowledgeViewer .editor-preview .nexora-preview-cm-header-4,
+#knowledgeViewer .editor-preview-side .nexora-preview-cm-header-4 {
+    font-size: 1.1em;
+}
+
+#knowledgeViewer .editor-preview .nexora-preview-cm-header-5,
+#knowledgeViewer .editor-preview-side .nexora-preview-cm-header-5 {
+    font-size: 1em;
+}
+
+#knowledgeViewer .editor-preview .nexora-preview-cm-header-6,
+#knowledgeViewer .editor-preview-side .nexora-preview-cm-header-6 {
+    font-size: 0.9em;
+    color: #57606a;
+}
+
 /* Code Blocks */
+#knowledgeViewer .toastui-editor-contents pre,
 #knowledgeViewer .editor-preview pre,
 #knowledgeViewer .editor-preview-side pre {
     background-color: #f6f8fa;
@@ -177,6 +576,7 @@
     margin: 16px 0;
 }
 
+#knowledgeViewer .toastui-editor-contents code,
 #knowledgeViewer .editor-preview code,
 #knowledgeViewer .editor-preview-side code {
     background-color: rgba(175, 184, 193, 0.2);
@@ -186,6 +586,7 @@
     font-size: 85%;
 }
 
+#knowledgeViewer .toastui-editor-contents pre code,
 #knowledgeViewer .editor-preview pre code,
 #knowledgeViewer .editor-preview-side pre code {
     background-color: transparent;
@@ -193,6 +594,8 @@
 }
 
 /* Lists */
+#knowledgeViewer .toastui-editor-contents ul,
+#knowledgeViewer .toastui-editor-contents ol,
 #knowledgeViewer .editor-preview ul,
 #knowledgeViewer .editor-preview ol,
 #knowledgeViewer .editor-preview-side ul,
@@ -201,12 +604,14 @@
     margin: 16px 0;
 }
 
+#knowledgeViewer .toastui-editor-contents li,
 #knowledgeViewer .editor-preview li,
 #knowledgeViewer .editor-preview-side li {
     margin: 4px 0;
 }
 
 /* Blockquotes */
+#knowledgeViewer .toastui-editor-contents blockquote,
 #knowledgeViewer .editor-preview blockquote,
 #knowledgeViewer .editor-preview-side blockquote {
     padding: 0 1em;
@@ -216,18 +621,21 @@
 }
 
 /* Links */
+#knowledgeViewer .toastui-editor-contents a,
 #knowledgeViewer .editor-preview a,
 #knowledgeViewer .editor-preview-side a {
     color: #0969da;
     text-decoration: none;
 }
 
+#knowledgeViewer .toastui-editor-contents a:hover,
 #knowledgeViewer .editor-preview a:hover,
 #knowledgeViewer .editor-preview-side a:hover {
     text-decoration: underline;
 }
 
 /* Images */
+#knowledgeViewer .toastui-editor-contents img,
 #knowledgeViewer .editor-preview img,
 #knowledgeViewer .editor-preview-side img {
     max-width: 100%;

@@ -9,16 +9,18 @@
     <link rel="stylesheet" href="/static/vendor/highlightjs/styles/github.min.css">
     <link rel="stylesheet" href="/static/vendor/katex/katex.min.css">
     <link rel="stylesheet" href="/static/vendor/easymde/easymde.min.css">
+    <link rel="stylesheet" href="https://uicdn.toast.com/editor/latest/toastui-editor.min.css">
     <link rel="stylesheet" href="/static/vendor/fontawesome/css/all.min.css">
     <script src="/static/vendor/marked/marked.min.js"></script>
     <script src="/static/vendor/highlightjs/highlight.min.js"></script>
     <script src="/static/vendor/katex/katex.min.js"></script>
     <script src="/static/vendor/katex/contrib/auto-render.min.js"></script>
     <script src="/static/vendor/easymde/easymde.min.js"></script>
+    <script src="https://uicdn.toast.com/editor/latest/toastui-editor-all.min.js"></script>
 
     <!-- App Styles -->
     <link rel="stylesheet" href="/static/css/style.css?v=20260415_04">
-    <link rel="stylesheet" href="/static/css/easymde_override.css?v=20260415_04">
+    <link rel="stylesheet" href="/static/css/easymde_override.css?v=20260416_12">
 </head>
 <body>
     <div class="app-container">
@@ -171,7 +173,7 @@
 
             <!-- Knowledge Viewer -->
             <div id="knowledgeViewer" style="display:none; flex:1; flex-direction: column; overflow: hidden; min-height: 0;">
-                <textarea id="knowledgeEditor"></textarea>
+                <div id="knowledgeEditor" class="knowledge-toast-editor"></div>
             </div>
 
             <!-- Input Area -->
@@ -609,7 +611,7 @@
     </div>
     
     <!-- Scripts -->
-    <script src="/static/js/chat.js?v=20260415_05"></script>
+    <script src="/static/js/chat.js?v=20260416_12"></script>
 
     <!-- 添加用户表单 -->
     <div id="addUserModal" class="modal-backdrop" style="z-index: 2200;">

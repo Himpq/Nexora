@@ -3,12 +3,18 @@
 """
 import os
 import json
+import shutil
+import threading
+from contextlib import contextmanager
 from datetime import datetime
 
+from conversation_repair import recover_conversation_bytes
 from longterm.longterm_api import conversation_longterm_root_state, normalize_longterm_state
 
 
 class ConversationManager:
+    _path_locks = {}
+    _path_locks_guard = threading.Lock()
     """对话记录管理类"""
     
     def __init__(self, username):
@@ -23,6 +29,27 @@ class ConversationManager:
         
         # 确保对话目录存在
         os.makedirs(self.base_path, exist_ok=True)
+
+    @classmethod
+    def _get_path_lock(cls, path):
+        normalized = os.path.abspath(str(path or ''))
+        with cls._path_locks_guard:
+            lock = cls._path_locks.get(normalized)
+            if lock is None:
+                lock = threading.RLock()
+                cls._path_locks[normalized] = lock
+            return lock
+
+    @contextmanager
+    def _conversation_update_session(self, conversation_id):
+        conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
+        with self._get_path_lock(conversation_path):
+            if not os.path.exists(conversation_path):
+                raise ValueError(f"ç€µç¡…ç˜½æ¶“å¶…ç“¨é¦? {conversation_id}")
+            conversation_data = self._load_json_data(conversation_path, default=None)
+            if not isinstance(conversation_data, dict):
+                raise ValueError(f"éƒçŠ³ç¡¶ç’‡è¯²å½‡éŽ´æ ¬Ð’é‹æ„¬î‡®ç’‡æ¿‡æžƒæµ ? {conversation_id}")
+            yield conversation_path, conversation_data
 
     def _load_json_data(self, file_path, default=None):
         """尽量兼容损坏或非 UTF-8 的历史对话文件。"""
@@ -45,6 +72,9 @@ class ConversationManager:
         try:
             return json.loads(raw.decode('utf-8', errors='replace'))
         except Exception:
+            recovered = recover_conversation_bytes(raw, source_path=file_path)
+            if isinstance(recovered, dict):
+                return recovered
             return default
 
     def _load_conversation_data_for_update(self, conversation_id):
@@ -64,11 +94,16 @@ class ConversationManager:
         if directory:
             os.makedirs(directory, exist_ok=True)
         temp_path = f"{file_path}.tmp"
+        backup_path = f"{file_path}.bak"
         try:
+            payload_text = json.dumps(payload, ensure_ascii=False, indent=2)
+            json.loads(payload_text)
             with open(temp_path, 'w', encoding='utf-8') as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
+                f.write(payload_text)
                 f.flush()
                 os.fsync(f.fileno())
+            if os.path.exists(file_path):
+                shutil.copyfile(file_path, backup_path)
             os.replace(temp_path, file_path)
         except Exception:
             try:
@@ -78,48 +113,42 @@ class ConversationManager:
                 pass
             raise
     
-    def create_conversation(self, conversation_id=None, title="新对话"):
+    def create_conversation(self, conversation_id=None, title="New Conversation"):
         """
-        创建新对话
+        ?????
         
         Args:
-            conversation_id: 对话ID，如果为None则自动生成数字ID
-            title: 对话标题
+            conversation_id: ??ID????None???????ID
+            title: ????
             
         Returns:
-            str: 对话ID
+            str: ??ID
         """
-        if conversation_id is None:
-            # 使用数字生成对话ID
-            existing_ids = []
-            if os.path.exists(self.base_path):
-                for filename in os.listdir(self.base_path):
-                    if filename.endswith('.json'):
-                        try:
-                            existing_ids.append(int(filename[:-5]))
-                        except ValueError:
-                            pass
-            
-            # 生成新ID（最大ID + 1）
-            conversation_id = str(max(existing_ids) + 1) if existing_ids else "1"
-        
-        conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
-        
-        # 创建对话记录
-        conversation_data = {
-            "conversation_id": conversation_id,
-            "title": title,
-            "created_at": datetime.now().isoformat(),
-            "updated_at": datetime.now().isoformat(),
-            "pin": False,
-            "messages": [],
-            "conversation_mode": "chat",
-            "longterm": conversation_longterm_root_state()
-        }
+        with self._get_path_lock(self.base_path):
+            if conversation_id is None:
+                existing_ids = []
+                if os.path.exists(self.base_path):
+                    for filename in os.listdir(self.base_path):
+                        if filename.endswith('.json'):
+                            try:
+                                existing_ids.append(int(filename[:-5]))
+                            except ValueError:
+                                pass
+                conversation_id = str(max(existing_ids) + 1) if existing_ids else "1"
 
-        self._save_json_atomic(conversation_path, conversation_data)
-        
-        return conversation_id
+            conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
+            conversation_data = {
+                "conversation_id": conversation_id,
+                "title": title,
+                "created_at": datetime.now().isoformat(),
+                "updated_at": datetime.now().isoformat(),
+                "pin": False,
+                "messages": [],
+                "conversation_mode": "chat",
+                "longterm": conversation_longterm_root_state()
+            }
+            self._save_json_atomic(conversation_path, conversation_data)
+            return conversation_id
     
     def update_title(self, conversation_id, title):
         """
@@ -155,38 +184,35 @@ class ConversationManager:
 
     def update_volc_response_id(self, conversation_id, response_id, model_name=None):
         """
-        更新VolcEngine的Response ID，用于上下文续接
+        ??VolcEngine?Response ID????????
         """
         try:
-            conversation_path, conversation_data = self._load_conversation_data_for_update(conversation_id)
+            with self._conversation_update_session(conversation_id) as (conversation_path, conversation_data):
+                conversation_data["last_volc_response_id"] = response_id
+                if model_name:
+                    conversation_data["last_model_used"] = model_name
+                self._save_json_atomic(conversation_path, conversation_data)
         except ValueError:
             return
-        
-        conversation_data["last_volc_response_id"] = response_id
-        if model_name:
-             conversation_data["last_model_used"] = model_name
-        
-        self._save_json_atomic(conversation_path, conversation_data)
 
     def update_conversation_fields(self, conversation_id, fields):
         """
-        批量更新会话根字段，遇到字典值时做浅合并。
+        ?????????????????????
         """
         if not isinstance(fields, dict):
-            raise ValueError("fields 必须是字典")
+            raise ValueError("fields ?????")
 
-        conversation_path, conversation_data = self._load_conversation_data_for_update(conversation_id)
+        with self._conversation_update_session(conversation_id) as (conversation_path, conversation_data):
+            for key, value in fields.items():
+                if isinstance(value, dict) and isinstance(conversation_data.get(key), dict):
+                    merged = dict(conversation_data.get(key) or {})
+                    merged.update(value)
+                    conversation_data[key] = merged
+                else:
+                    conversation_data[key] = value
 
-        for key, value in fields.items():
-            if isinstance(value, dict) and isinstance(conversation_data.get(key), dict):
-                merged = dict(conversation_data.get(key) or {})
-                merged.update(value)
-                conversation_data[key] = merged
-            else:
-                conversation_data[key] = value
-
-        conversation_data["updated_at"] = datetime.now().isoformat()
-        self._save_json_atomic(conversation_path, conversation_data)
+            conversation_data["updated_at"] = datetime.now().isoformat()
+            self._save_json_atomic(conversation_path, conversation_data)
 
     def update_last_response_id(self, conversation_id, response_id, model_name=None):
         """
@@ -244,101 +270,93 @@ class ConversationManager:
 
     def add_message(self, conversation_id, role, content, metadata=None, index=None):
         """
-        添加消息到对话
+        ???????
         
         Args:
-            conversation_id: 对话ID
-            role: 角色 (user/assistant/function)
-            content: 消息内容
-            metadata: 额外元数据（如函数调用信息、交流总结等）
-            index: 如果提供且有效，则覆盖该索引处的消息（用于重新生成覆盖旧回答）
+            conversation_id: ??ID
+            role: ?? (user/assistant/function)
+            content: ????
+            metadata: ????????????????????
+            index: ???????????????????????????????
         """
-        conversation_path, conversation_data = self._load_conversation_data_for_update(conversation_id)
-        messages = conversation_data.get("messages", [])
-        if not isinstance(messages, list):
-            raise ValueError(f"对话内容格式无效: {conversation_id}")
-        
-        # 准备消息
-        message = {
-            "role": role,
-            "content": content,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        if index is not None and 0 <= index < len(conversation_data["messages"]):
-            old_msg = conversation_data["messages"][index]
-            old_metadata = old_msg.get("metadata", {}) if isinstance(old_msg.get("metadata", {}), dict) else {}
-            old_versions = old_metadata.get("versions", [])
-            if not isinstance(old_versions, list):
-                old_versions = []
+        with self._conversation_update_session(conversation_id) as (conversation_path, conversation_data):
+            messages = conversation_data.get("messages", [])
+            if not isinstance(messages, list):
+                raise ValueError(f"????????: {conversation_id}")
 
-            if "metadata" not in message:
-                message["metadata"] = {}
-            # 覆盖写入时先继承既有版本链，避免重答过程中丢失版本历史
-            message["metadata"]["versions"] = list(old_versions)
+            message = {
+                "role": role,
+                "content": content,
+                "timestamp": datetime.now().isoformat()
+            }
 
-            # assistant 覆盖 assistant：把被覆盖的当前消息快照并入历史版本（原子保存）
-            if role == "assistant" and str(old_msg.get("role", "")).strip() == "assistant":
-                prev_content = old_msg.get("content", "")
-                prev_ts = old_msg.get("timestamp", "")
-                prev_meta_without_versions = {
-                    k: v for k, v in old_metadata.items() if k != "versions"
-                }
-                prev_variant = {
-                    "content": prev_content,
-                    "timestamp": prev_ts,
-                    "metadata": prev_meta_without_versions
-                }
-                if "exchange_summary" in old_msg:
-                    prev_variant["exchange_summary"] = old_msg["exchange_summary"]
+            if index is not None and 0 <= index < len(conversation_data["messages"]):
+                old_msg = conversation_data["messages"][index]
+                old_metadata = old_msg.get("metadata", {}) if isinstance(old_msg.get("metadata", {}), dict) else {}
+                old_versions = old_metadata.get("versions", [])
+                if not isinstance(old_versions, list):
+                    old_versions = []
 
-                has_meaningful_content = bool(str(prev_content or "").strip())
-                has_meaningful_steps = bool(
-                    isinstance(prev_meta_without_versions.get("process_steps"), list)
-                    and len(prev_meta_without_versions.get("process_steps")) > 0
-                )
-                if has_meaningful_content or has_meaningful_steps:
-                    existed = False
-                    for v in message["metadata"]["versions"]:
-                        if not isinstance(v, dict):
-                            continue
-                        if (
-                            str(v.get("timestamp", "")) == str(prev_variant.get("timestamp", ""))
-                            and str(v.get("content", "")) == str(prev_variant.get("content", ""))
-                        ):
-                            existed = True
-                            break
-                    if not existed:
-                        message["metadata"]["versions"].append(prev_variant)
+                if "metadata" not in message:
+                    message["metadata"] = {}
+                message["metadata"]["versions"] = list(old_versions)
 
-        # 合并新传入的 metadata
-        if metadata:
-            if "metadata" not in message:
-                message["metadata"] = {}
-            message["metadata"].update(metadata)
-        
-        # 如果是assistant消息，且有exchange_summary，记录这次交流的总结
-        if role == "assistant" and metadata and "exchange_summary" in metadata:
-            message["exchange_summary"] = metadata["exchange_summary"]
-        if role == "assistant":
-            model_name = ""
-            if isinstance(message.get("metadata"), dict):
-                model_name = str(message["metadata"].get("model_name", "") or "").strip()
-            if model_name:
-                message["model_name"] = model_name
-            elif "model_name" in message:
-                del message["model_name"]
-        
-        if index is not None and 0 <= index < len(messages):
-            messages[index] = message
-        else:
-            messages.append(message)
-        conversation_data["messages"] = messages
-            
-        conversation_data["updated_at"] = datetime.now().isoformat()
-        
-        # 保存对话
-        self._save_json_atomic(conversation_path, conversation_data)
+                if role == "assistant" and str(old_msg.get("role", "")).strip() == "assistant":
+                    prev_content = old_msg.get("content", "")
+                    prev_ts = old_msg.get("timestamp", "")
+                    prev_meta_without_versions = {
+                        k: v for k, v in old_metadata.items() if k != "versions"
+                    }
+                    prev_variant = {
+                        "content": prev_content,
+                        "timestamp": prev_ts,
+                        "metadata": prev_meta_without_versions
+                    }
+                    if "exchange_summary" in old_msg:
+                        prev_variant["exchange_summary"] = old_msg["exchange_summary"]
+
+                    has_meaningful_content = bool(str(prev_content or "").strip())
+                    has_meaningful_steps = bool(
+                        isinstance(prev_meta_without_versions.get("process_steps"), list)
+                        and len(prev_meta_without_versions.get("process_steps")) > 0
+                    )
+                    if has_meaningful_content or has_meaningful_steps:
+                        existed = False
+                        for v in message["metadata"]["versions"]:
+                            if not isinstance(v, dict):
+                                continue
+                            if (
+                                str(v.get("timestamp", "")) == str(prev_variant.get("timestamp", ""))
+                                and str(v.get("content", "")) == str(prev_variant.get("content", ""))
+                            ):
+                                existed = True
+                                break
+                        if not existed:
+                            message["metadata"]["versions"].append(prev_variant)
+
+            if metadata:
+                if "metadata" not in message:
+                    message["metadata"] = {}
+                message["metadata"].update(metadata)
+
+            if role == "assistant" and metadata and "exchange_summary" in metadata:
+                message["exchange_summary"] = metadata["exchange_summary"]
+            if role == "assistant":
+                model_name = ""
+                if isinstance(message.get("metadata"), dict):
+                    model_name = str(message["metadata"].get("model_name", "") or "").strip()
+                if model_name:
+                    message["model_name"] = model_name
+                elif "model_name" in message:
+                    del message["model_name"]
+
+            if index is not None and 0 <= index < len(messages):
+                messages[index] = message
+            else:
+                messages.append(message)
+            conversation_data["messages"] = messages
+            conversation_data["updated_at"] = datetime.now().isoformat()
+            self._save_json_atomic(conversation_path, conversation_data)
 
     def delete_message(self, conversation_id, message_index):
         """
@@ -703,36 +721,31 @@ class ConversationManager:
 
     def append_context_compression(self, conversation_id, marker):
         """
-        追加一条上下文压缩标记。
+        ????????????
         """
-        conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
-        if not os.path.exists(conversation_path):
-            return False
         if not isinstance(marker, dict):
             return False
         try:
-            conversation_data = self._load_json_data(conversation_path, default=None)
-            if not isinstance(conversation_data, dict):
-                return False
-            arr = conversation_data.get("context_compressions", [])
-            if not isinstance(arr, list):
-                arr = []
-            item = {
-                "summary": str(marker.get("summary", "") or "").strip(),
-                "history_cut_index": int(marker.get("history_cut_index", -1) or -1),
-                "created_at": str(marker.get("created_at", datetime.now().isoformat()) or datetime.now().isoformat()),
-                "model": str(marker.get("model", "") or "").strip(),
-                "provider": str(marker.get("provider", "") or "").strip(),
-                "trigger_raw_input_tokens": int(marker.get("trigger_raw_input_tokens", 0) or 0),
-                "context_window": int(marker.get("context_window", 0) or 0),
-            }
-            arr.append(item)
-            if len(arr) > 40:
-                arr = arr[-40:]
-            conversation_data["context_compressions"] = arr
-            conversation_data["updated_at"] = datetime.now().isoformat()
-            self._save_json_atomic(conversation_path, conversation_data)
-            return True
+            with self._conversation_update_session(conversation_id) as (conversation_path, conversation_data):
+                arr = conversation_data.get("context_compressions", [])
+                if not isinstance(arr, list):
+                    arr = []
+                item = {
+                    "summary": str(marker.get("summary", "") or "").strip(),
+                    "history_cut_index": int(marker.get("history_cut_index", -1) or -1),
+                    "created_at": str(marker.get("created_at", datetime.now().isoformat()) or datetime.now().isoformat()),
+                    "model": str(marker.get("model", "") or "").strip(),
+                    "provider": str(marker.get("provider", "") or "").strip(),
+                    "trigger_raw_input_tokens": int(marker.get("trigger_raw_input_tokens", 0) or 0),
+                    "context_window": int(marker.get("context_window", 0) or 0),
+                }
+                arr.append(item)
+                if len(arr) > 40:
+                    arr = arr[-40:]
+                conversation_data["context_compressions"] = arr
+                conversation_data["updated_at"] = datetime.now().isoformat()
+                self._save_json_atomic(conversation_path, conversation_data)
+                return True
         except Exception:
             return False
     

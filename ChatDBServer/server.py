@@ -1347,8 +1347,7 @@ def _restore_conversation_from_trash(username: str, payload: Dict[str, Any], tit
     if src.get('last_model_used'):
         conversation_data["last_model_used"] = src.get('last_model_used')
     try:
-        with open(conv_path, 'w', encoding='utf-8') as f:
-            json.dump(conversation_data, f, ensure_ascii=False, indent=2)
+        manager._save_json_atomic(conv_path, conversation_data)
         return True, '', {"conversation_id": str(new_conv_id), "title": restored_title}
     except Exception as e:
         return False, str(e), {}
