@@ -4,8 +4,8 @@ import hashlib
 import secrets
 from typing import Any, Dict, Optional, List
 
-os.environ['HTTP_PROXY'] = 'http://localhost:15555'
-os.environ['HTTPS_PROXY'] = 'http://localhost:15555'
+#os.environ['HTTP_PROXY'] = 'http://localhost:15555'
+#os.environ['HTTPS_PROXY'] = 'http://localhost:15555'
 
 from flask import Flask, request, jsonify, render_template, session, redirect, url_for, g
 import chromadb
