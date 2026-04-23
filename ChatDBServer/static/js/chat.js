@@ -50,6 +50,7 @@ function getLatestReasoningThinkingBlock(messageDiv) {
 let currentConversationId = null;
 let currentAbortController = null;
 let isGenerating = false;
+
 let shouldAutoScroll = true; // Auto-scroll control
 let uploadedFileIds = []; // Uploaded files {id, name}
 let isUploadingFiles = false;
@@ -209,6 +210,7 @@ let notesState = {
     notebooks: [],
     activeNotebookId: NOTES_DEFAULT_NOTEBOOK_ID,
     items: [],
+    storeUpdatedAt: 0,
     pendingSelectionText: '',
     pendingSelectionSource: null
 };
@@ -490,6 +492,31 @@ function rewriteHtmlDocumentLinksToNewTab(html) {
         return src;
     }
 }
+function stripUnbalancedInlineDollarsByLine(text) {
+    const src = String(text || '');
+    if (!src) return src;
+    const lines = src.split('\n');
+    const cleaned = lines.map((line) => {
+        const raw = String(line || '');
+        if (!raw) return raw;
+        if (raw.includes('$$') || raw.includes('\\[') || raw.includes('\\]')) return raw;
+        const positions = findUnescapedSingleDollarPositions(raw);
+        if (positions.length % 2 === 0) return raw;
+
+        if (positions.length === 1) {
+            const p = positions[0];
+            const left = raw.slice(0, p);
+            const right = raw.slice(p + 1);
+            if (looksLikeMathText(right)) return `${left}$${right}$`;
+            if (looksLikeMathText(left)) return `$${left}$${right}`;
+        }
+
+        // 仍不平衡时，删除最后一个孤立 `$`，尽量保留前面已成对片段。
+        const lastPos = positions[positions.length - 1];
+        return raw.slice(0, lastPos) + raw.slice(lastPos + 1);
+    });
+    return cleaned.join('\n');
+}
 
 function countUnescapedSingleDollars(line) {
     const src = String(line || '');
@@ -520,32 +547,6 @@ function looksLikeMathText(s) {
     const src = String(s || '').trim();
     if (!src) return false;
     return /[=+\-*/^_{}\\]|\\[a-zA-Z]+|[A-Za-z]\s*\(|\d+\s*[A-Za-z]/.test(src);
-}
-
-function stripUnbalancedInlineDollarsByLine(text) {
-    const src = String(text || '');
-    if (!src) return src;
-    const lines = src.split('\n');
-    const cleaned = lines.map((line) => {
-        const raw = String(line || '');
-        if (!raw) return raw;
-        if (raw.includes('$$') || raw.includes('\\[') || raw.includes('\\]')) return raw;
-        const positions = findUnescapedSingleDollarPositions(raw);
-        if (positions.length % 2 === 0) return raw;
-
-        if (positions.length === 1) {
-            const p = positions[0];
-            const left = raw.slice(0, p);
-            const right = raw.slice(p + 1);
-            if (looksLikeMathText(right)) return `${left}$${right}$`;
-            if (looksLikeMathText(left)) return `$${left}$${right}`;
-        }
-
-        // 仍不平衡时，删除最后一个孤立 `$`，尽量保留前面已成对片段。
-        const lastPos = positions[positions.length - 1];
-        return raw.slice(0, lastPos) + raw.slice(lastPos + 1);
-    });
-    return cleaned.join('\n');
 }
 
 function normalizeTableLineMathNoise(text) {
@@ -4105,8 +4106,45 @@ function createDefaultNotesStore() {
     return {
         activeNotebookId: NOTES_DEFAULT_NOTEBOOK_ID,
         notebooks: [createDefaultNotebook()],
-        notes: []
+        notes: [],
+        updatedAt: 0
     };
+}
+
+function getNotesStoreUpdatedAt(store) {
+    const src = (store && typeof store === 'object') ? store : {};
+    const value = Number(src.updatedAt || 0);
+    return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+}
+
+function notesStoreHasUserData(store) {
+    const src = (store && typeof store === 'object') ? store : {};
+    const notes = Array.isArray(src.notes) ? src.notes : [];
+    if (notes.length > 0) return true;
+    const notebooks = Array.isArray(src.notebooks) ? src.notebooks : [];
+    return notebooks.some((item) => {
+        const notebookId = String((item && item.id) || '').trim();
+        const notebookName = String((item && item.name) || '').trim();
+        return notebookId !== NOTES_DEFAULT_NOTEBOOK_ID || notebookName !== '默认笔记本';
+    });
+}
+
+function shouldApplyNotesStoreUpdate(currentStore, incomingStore) {
+    const currentUpdatedAt = getNotesStoreUpdatedAt(currentStore);
+    const incomingUpdatedAt = getNotesStoreUpdatedAt(incomingStore);
+    if (incomingUpdatedAt > 0) {
+        if (currentUpdatedAt > 0 && incomingUpdatedAt <= currentUpdatedAt) {
+            return false;
+        }
+        return true;
+    }
+    if (currentUpdatedAt > 0) {
+        return false;
+    }
+    const currentHasUserData = notesStoreHasUserData(currentStore);
+    const incomingHasUserData = notesStoreHasUserData(incomingStore);
+    if (!incomingHasUserData) return false;
+    return !currentHasUserData;
 }
 
 function normalizeNotebookItem(raw) {
@@ -4176,6 +4214,15 @@ function loadNotesStore() {
     // 云端为主；这里仅作为兼容旧版本的本地迁移来源。
     const fallback = createDefaultNotesStore();
     try {
+        const syncedRaw = localStorage.getItem('nc_sync_notes_data_payload');
+        if (syncedRaw) {
+            const syncedParsed = JSON.parse(syncedRaw);
+            if (syncedParsed && typeof syncedParsed === 'object') return syncedParsed;
+        }
+    } catch (_) {
+        // ignore
+    }
+    try {
         const raw = localStorage.getItem(NOTES_LEGACY_STORE_KEY);
         if (raw) {
             const parsed = JSON.parse(raw);
@@ -4236,13 +4283,15 @@ function applyNotesStoreToState(store) {
     notesState.notebooks = notebooks;
     notesState.items = notes;
     notesState.activeNotebookId = activeNotebookId;
+    notesState.storeUpdatedAt = getNotesStoreUpdatedAt(src);
 }
 
 function buildNotesStorePayload() {
     return {
         activeNotebookId: String(notesState.activeNotebookId || NOTES_DEFAULT_NOTEBOOK_ID),
         notebooks: Array.isArray(notesState.notebooks) ? notesState.notebooks : [createDefaultNotebook()],
-        notes: Array.isArray(notesState.items) ? notesState.items : []
+        notes: Array.isArray(notesState.items) ? notesState.items : [],
+        updatedAt: Number(notesState.storeUpdatedAt || 0)
     };
 }
 
@@ -4311,11 +4360,13 @@ function hasPendingLocalNotesChanges() {
 
 function saveNotesToStorage(options = {}) {
     const immediate = !!(options && options.immediate);
+    const nowTs = Date.now();
     notesMutationSeq += 1;
+    notesState.storeUpdatedAt = nowTs;
     notesCloudSyncPendingStore = buildNotesStorePayload();
     try {
         localStorage.setItem('nc_sync_notes_data_payload', JSON.stringify(notesCloudSyncPendingStore));
-        localStorage.setItem('nc_sync_notes_ts', String(Date.now()));
+        localStorage.setItem('nc_sync_notes_ts', String(nowTs));
           if (typeof notesSyncChannel !== 'undefined') notesSyncChannel.postMessage({ type: 'SYNC', payload: notesCloudSyncPendingStore });
     } catch (_) {}
     if (notesCloudSyncTimer) {
@@ -4337,6 +4388,7 @@ const notesSyncChannel = new BroadcastChannel('nc_notes_sync');
       if (e.data && e.data.type === 'SYNC') {
           if (e.data.payload && typeof e.data.payload === 'object') {
               applyNotesStoreToState(e.data.payload);
+              notesMutationSeq += 1;
               renderNotesList();
           }
       }
@@ -4350,6 +4402,7 @@ const notesSyncChannel = new BroadcastChannel('nc_notes_sync');
                 const parsed = JSON.parse(raw);
                 if (parsed && typeof parsed === 'object') {
                     applyNotesStoreToState(parsed);
+                    notesMutationSeq += 1;
                     renderNotesList();
                 }
             }
@@ -4372,20 +4425,41 @@ async function hydrateNotesState() {
             renderNotesList();
             return;
         }
-        const cloudNotes = Array.isArray(cloudStore.notes) ? cloudStore.notes : [];
-        const cloudBooks = Array.isArray(cloudStore.notebooks) ? cloudStore.notebooks : [];
-        const cloudHasUserData = cloudNotes.length > 0 || cloudBooks.some((b) => String((b && b.id) || '') !== NOTES_DEFAULT_NOTEBOOK_ID);
+        const cloudHasUserData = notesStoreHasUserData(cloudStore);
+        const cloudUpdatedAt = getNotesStoreUpdatedAt(cloudStore);
+        const currentUpdatedAt = getNotesStoreUpdatedAt(notesState);
+        const currentHasUserData = notesStoreHasUserData(notesState);
 
-        const localNotes = Array.isArray(localStore.notes) ? localStore.notes : [];
-        const localBooks = Array.isArray(localStore.notebooks) ? localStore.notebooks : [];
-        const localHasUserData = localNotes.length > 0 || localBooks.some((b) => String((b && b.id) || '') !== NOTES_DEFAULT_NOTEBOOK_ID);
+        const localHasUserData = notesStoreHasUserData(localStore);
 
-        if (!cloudHasUserData && localHasUserData) {
-            applyNotesStoreToState(localStore);
-            saveNotesToStorage({ immediate: true });
-        } else {
-            applyNotesStoreToState(cloudStore);
+        if (!cloudHasUserData) {
+            if (cloudUpdatedAt > 0) {
+                if (currentUpdatedAt > 0 && cloudUpdatedAt <= currentUpdatedAt) {
+                    renderNotesList();
+                    return;
+                }
+                applyNotesStoreToState(cloudStore);
+                renderNotesList();
+                return;
+            }
+            if (currentHasUserData) {
+                saveNotesToStorage({ immediate: true });
+                renderNotesList();
+                return;
+            }
+            if (localHasUserData) {
+                applyNotesStoreToState(localStore);
+                saveNotesToStorage({ immediate: true });
+                renderNotesList();
+                return;
+            }
         }
+
+        if (!shouldApplyNotesStoreUpdate(notesState, cloudStore)) {
+            renderNotesList();
+            return;
+        }
+        applyNotesStoreToState(cloudStore);
     } else {
         // 云端不可用时，保留当前状态并尝试回写。
         saveNotesToStorage({ immediate: true });
@@ -5199,9 +5273,29 @@ function openNotesPanel() {
         if (!store) return;
         if (requestSeq !== notesMutationSeq) return;
         if (hasPendingLocalNotesChanges()) return;
+        const cloudHasUserData = notesStoreHasUserData(store);
+        const cloudUpdatedAt = getNotesStoreUpdatedAt(store);
+        const currentUpdatedAt = getNotesStoreUpdatedAt(notesState);
+        const currentHasUserData = notesStoreHasUserData(notesState);
+        if (!cloudHasUserData) {
+            if (cloudUpdatedAt > 0) {
+                if (currentUpdatedAt > 0 && cloudUpdatedAt <= currentUpdatedAt) return;
+                applyNotesStoreToState(store);
+                notesMutationSeq += 1;
+                renderNotesList();
+                return;
+            }
+            if (currentHasUserData) {
+                saveNotesToStorage({ immediate: true });
+                renderNotesList();
+            }
+            return;
+        }
+        if (!shouldApplyNotesStoreUpdate(notesState, store)) return;
         const cloudSig = getNotesStoreSignature(store);
         if (cloudSig && cloudSig === localSigBeforeFetch) return;
         applyNotesStoreToState(store);
+        notesMutationSeq += 1;
         renderNotesList();
     });
 }
@@ -8241,6 +8335,23 @@ function initUI() {
         });
     }
 
+    const adminQuotaUnitSelect = document.getElementById('adminQuotaUnitSelect');
+    if (adminQuotaUnitSelect) {
+        adminQuotaDisplayUnit = loadAdminQuotaDisplayUnitPreference();
+        adminQuotaUnitSelect.value = adminQuotaDisplayUnit;
+        adminQuotaUnitSelect.addEventListener('change', async (e) => {
+            const nextValue = e && e.target ? e.target.value : '';
+            adminQuotaDisplayUnit = normalizeAdminQuotaDisplayUnit(nextValue);
+            saveAdminQuotaDisplayUnitPreference(adminQuotaDisplayUnit);
+            if (e && e.target) e.target.value = adminQuotaDisplayUnit;
+            if (Array.isArray(adminServerQuotaProvidersCache) && adminServerQuotaProvidersCache.length) {
+                renderAdminModelConfig({ preserveProviderList: true });
+            } else if (currentUserRole === 'admin') {
+                await loadServerQuotaSettings();
+            }
+        });
+    }
+
     const textConfirmModal = document.getElementById('adminTextConfirmModal');
     if (textConfirmModal) {
         bindBackdropSafeClose(textConfirmModal, closeAdminTextConfirmModal);
@@ -10055,6 +10166,17 @@ async function readErrorMessageFromResponse(response, fallback = '') {
     try {
         const data = await response.clone().json();
         if (data && typeof data === 'object') {
+            try {
+                const cid = String(data.conversation_id || '').trim();
+                if (cid) {
+                    currentConversationId = cid;
+                    syncNotesForConversation(cid);
+                    noteTokenMiniConversationId(cid);
+                    const next = new URL(window.location.href);
+                    next.searchParams.set('id', cid);
+                    window.history.replaceState({}, '', next.toString());
+                }
+            } catch (_) {}
             const m = String(data.message || data.error || '').trim();
             if (m) return m;
         }
@@ -10068,9 +10190,54 @@ async function readErrorMessageFromResponse(response, fallback = '') {
     return errMsg;
 }
 
+function isLikelyRetryableNetworkErrorText(message) {
+    const text = String(message || '').toLowerCase();
+    if (!text) return false;
+    return (
+        text.includes('failed to fetch')
+        || text.includes('network')
+        || text.includes('timeout')
+        || text.includes('connection')
+        || text.includes('err_connection')
+        || text.includes('err_socket')
+        || text.includes('incomplete chunked read')
+        || text.includes('stream body is empty')
+    );
+}
+
 function isSseResponse(response) {
     const contentType = String((response && response.headers && response.headers.get('content-type')) || '').toLowerCase();
     return contentType.includes('text/event-stream');
+}
+
+async function ensureConversationExistsForStreaming(seedText = '') {
+    const existing = String(currentConversationId || '').trim();
+    if (existing) return existing;
+    const titleSeed = String(seedText || '').replace(/\s+/g, ' ').trim();
+    const title = titleSeed ? titleSeed.slice(0, 48) : '新对话';
+    try {
+        const res = await fetch('/api/conversations', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !(data && data.success)) return '';
+        const convId = String(data.conversation_id || '').trim();
+        if (!convId) return '';
+        currentConversationId = convId;
+        syncNotesForConversation(convId);
+        noteTokenMiniConversationId(convId);
+        try {
+            const next = new URL(window.location.href);
+            next.searchParams.set('id', convId);
+            window.history.replaceState({}, '', next.toString());
+        } catch (_) {}
+        try { await loadConversations(); } catch (_) {}
+        return convId;
+    } catch (_) {
+        return '';
+    }
 }
 
 async function syncConversationMessagesFromServer(conversationId, options = {}) {
@@ -10179,8 +10346,9 @@ async function persistAbortedAssistantPartial(conversationId, content, options =
             aborted_by_user: true
         }
     };
-    if (Number.isFinite(Number(opts.index))) {
-        payload.index = Number(opts.index);
+    const normalizedIndex = normalizeOptionalIndex(opts.index);
+    if (normalizedIndex !== null) {
+        payload.index = normalizedIndex;
     }
     try {
         const res = await fetch(`/api/conversations/${encodeURIComponent(cid)}/assistant_partial`, {
@@ -10193,6 +10361,125 @@ async function persistAbortedAssistantPartial(conversationId, content, options =
     } catch (_) {
         return false;
     }
+}
+
+async function persistUserPartial(conversationId, content, options = {}) {
+    const cid = String(conversationId || '').trim();
+    const text = String(content || '');
+    if (!cid || !text.trim()) return false;
+    const opts = (options && typeof options === 'object') ? options : {};
+    const payload = {
+        content: text,
+        model_name: String(opts.modelName || '').trim(),
+        metadata: {
+            source: String(opts.source || 'chat').trim() || 'chat'
+        }
+    };
+    if (Array.isArray(opts.attachments) && opts.attachments.length > 0) {
+        payload.metadata.attachments = opts.attachments;
+    }
+    if (Array.isArray(opts.sandboxPaths) && opts.sandboxPaths.length > 0) {
+        payload.metadata.sandbox_paths = opts.sandboxPaths;
+    }
+    try {
+        const res = await fetch(`/api/conversations/${encodeURIComponent(cid)}/user_partial`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json().catch(() => ({}));
+        return !!(res.ok && data && data.success);
+    } catch (_) {
+        return false;
+    }
+}
+
+async function persistAssistantErrorPartial(conversationId, content, options = {}) {
+    const cid = String(conversationId || '').trim();
+    if (!cid) return false;
+    const opts = (options && typeof options === 'object') ? options : {};
+    const errMsg = String(opts.errorMessage || '').trim() || '请求失败';
+    const errCode = String(opts.errorCode || '').trim();
+    const base = String(content || '').trim();
+    const marker = `[系统错误] ${errMsg}`;
+    const finalText = base
+        ? (base.includes(marker) ? base : `${base}\n\n${marker}`)
+        : marker;
+    const payload = {
+        content: finalText,
+        model_name: String(opts.modelName || '').trim(),
+        metadata: {
+            source: String(opts.source || 'chat').trim() || 'chat',
+            aborted_by_user: false,
+            terminal_error: true,
+            retryable: !!opts.retryable
+        }
+    };
+    if (errCode) payload.metadata.error_code = errCode;
+    const normalizedIndex = normalizeOptionalIndex(opts.index);
+    if (normalizedIndex !== null) {
+        payload.index = normalizedIndex;
+    }
+    try {
+        const res = await fetch(`/api/conversations/${encodeURIComponent(cid)}/assistant_partial`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json().catch(() => ({}));
+        return !!(res.ok && data && data.success);
+    } catch (_) {
+        return false;
+    }
+}
+
+function buildTerminalErrorMessage(baseContent, errorMessage) {
+    const errMsg = String(errorMessage || '').trim() || '请求失败';
+    const marker = `[系统错误] ${errMsg}`;
+    const base = String(baseContent || '').trim();
+    if (!base) return marker;
+    if (base.includes(marker)) return base;
+    return `${base}\n\n${marker}`;
+}
+
+function normalizeOptionalIndex(rawIndex) {
+    const indexType = typeof rawIndex;
+    if ((indexType !== 'number' && indexType !== 'string') || rawIndex === '') {
+        return null;
+    }
+    const parsedIndex = Number(rawIndex);
+    if (!Number.isInteger(parsedIndex) || parsedIndex < 0) {
+        return null;
+    }
+    return parsedIndex;
+}
+
+function extractStandaloneSystemErrorMessage(text) {
+    const raw = String(text || '').trim();
+    if (!raw) return '';
+    const m = raw.match(/^\[系统错误\]\s*(.+)$/s);
+    if (!m) return '';
+    const msg = String(m[1] || '').trim();
+    return msg || '请求失败';
+}
+
+function renderAssistantTerminalErrorMessage(messageDiv, messageIndex, baseContent, errorMessage) {
+    const finalText = buildTerminalErrorMessage(baseContent, errorMessage);
+    const chipText = String(errorMessage || '').trim() || extractStandaloneSystemErrorMessage(finalText) || '请求失败';
+    if (messageDiv) {
+        appendErrorEvent(messageDiv, chipText, false);
+        const idx = Number(messageIndex);
+        if (Number.isFinite(idx) && idx >= 0) {
+            try { finalizeMessageRenderForIndex(idx, messageDiv); } catch (_) {}
+        }
+        return finalText;
+    }
+    const idx = Number(messageIndex);
+    if (Number.isFinite(idx) && idx >= 0) {
+        const row = getMessageRowByIndex(idx);
+        if (row) appendErrorEvent(row, chipText, false);
+    }
+    return finalText;
 }
 
 function stopGeneration() {
@@ -10808,6 +11095,10 @@ async function sendMessage(options = {}) {
     );
     if (!compressionDecision.ok) return;
     const forceContextCompression = !!compressionDecision.forceCompression;
+    const ensuredConversationId = await ensureConversationExistsForStreaming(text);
+    if (ensuredConversationId) {
+        currentConversationId = ensuredConversationId;
+    }
 
     // UI Updates
     els.messageInput.value = '';
@@ -10955,6 +11246,17 @@ async function sendMessage(options = {}) {
     uploadedFileIds = [];
     updateFilePreview();
 
+    let userMessagePersisted = false;
+    if (!isAutoContinue && currentConversationId) {
+        userMessagePersisted = await persistUserPartial(currentConversationId, displayContent, {
+            modelName: model,
+            source: 'chat',
+            attachments: pendingUserAttachments,
+            sandboxPaths
+        });
+    }
+    payload.skip_user_message = !!(isAutoContinue || userMessagePersisted);
+
     isGenerating = true;
     updateSendButtonState();
     beginTokenMiniStreaming();
@@ -10965,6 +11267,10 @@ async function sendMessage(options = {}) {
     const aiMsgIndex = Number(aiMsgDiv && aiMsgDiv.dataset ? aiMsgDiv.dataset.index : NaN);
     let streamCompleted = false;
     let streamAbortedByUser = false;
+    let streamEndedWithError = false;
+    let streamErrorRetryable = false;
+    let streamErrorCode = '';
+    let streamErrorMessage = '';
     let currentFullContent = '';
     let currentSegmentContent = '';
     let currentContentSpan = null;
@@ -11112,7 +11418,7 @@ async function sendMessage(options = {}) {
         for (let i = Number(index) - 1; i >= 0 && src[i] === '\\'; i -= 1) {
             slashCount += 1;
         }
-        return slashCount % 2 === 1;
+        return (slashCount % 2) === 1;
     }
 
     function countEscapedMathDelimiter(text, delimiter) {
@@ -11132,8 +11438,8 @@ async function sendMessage(options = {}) {
     function countLatexEnvironmentBoundary(text, envName, kind = 'begin') {
         const src = String(text || '');
         const env = String(envName || '').trim();
-        const token = kind === 'end' ? `\\end{${env}}` : `\\begin{${env}}`;
         if (!src || !env) return 0;
+        const token = kind === 'end' ? `\\end{${env}}` : `\\begin{${env}}`;
         let count = 0;
         for (let i = 0; i <= src.length - token.length; i += 1) {
             if (src.slice(i, i + token.length) !== token) continue;
@@ -11953,13 +12259,26 @@ async function sendMessage(options = {}) {
                             if(els.conversationTitle) els.conversationTitle.textContent = chunk.title;
                         }
                         else if (chunk.type === 'error') {
+                            streamEndedWithError = true;
+                            streamErrorRetryable = !!chunk.retryable;
+                            streamErrorCode = String(chunk.error_code || '').trim().toLowerCase();
+                            streamErrorMessage = String(chunk.content || 'Unknown error').trim() || 'Unknown error';
                             appendDebugConsoleEntry({
                                 direction: 'model->server',
                                 stage: 'error',
                                 title: 'Error',
-                                payload: { content: chunk.content || 'Unknown error' }
+                                payload: {
+                                    content: streamErrorMessage,
+                                    error_code: streamErrorCode,
+                                    retryable: streamErrorRetryable
+                                }
                             });
-                            appendErrorEvent(aiMsgDiv, chunk.content || 'Unknown error');
+                            if (streamErrorRetryable || streamErrorCode === 'network_error') {
+                                appendErrorEvent(aiMsgDiv, streamErrorMessage);
+                                showToast('连接中断，可刷新页面后自动重连此条回复');
+                            } else {
+                                showToast(streamErrorMessage);
+                            }
                         }
                         
                     } catch (e) { console.error("Parse error", e); }
@@ -12003,13 +12322,24 @@ async function sendMessage(options = {}) {
                 payload: { content: '[Generation Terminated by User]' }
             });
         } else {
+            const errText = String((e && e.message) || e || 'Unknown error');
+            const isRetryableNetwork = isLikelyRetryableNetworkErrorText(errText);
+            streamEndedWithError = true;
+            streamErrorRetryable = !!isRetryableNetwork;
+            streamErrorCode = isRetryableNetwork ? 'network_error' : 'client_exception';
+            streamErrorMessage = errText;
+            if (e && typeof e === 'object') {
+                try { e.message = isRetryableNetwork ? '连接中断，可刷新页面后自动重连此条回复' : errText; } catch (_) {}
+            }
             appendDebugConsoleEntry({
                 direction: 'client->local',
                 stage: 'exception',
                 title: 'Client Exception',
                 payload: { message: e.message || 'Unknown error' }
             });
-            appendErrorEvent(aiMsgDiv, e.message || 'Unknown error');
+            if (isRetryableNetwork) {
+                appendErrorEvent(aiMsgDiv, e.message || 'Unknown error');
+            }
             showToast(String((e && e.message) || '发送失败'));
         }
         isGenerating = false;
@@ -12018,6 +12348,8 @@ async function sendMessage(options = {}) {
         isGenerating = false;
         currentAbortController = null;
         updateSendButtonState();
+        const streamErroredRetryable = !!(streamEndedWithError && (streamErrorRetryable || streamErrorCode === 'network_error'));
+        const streamEndedTerminally = !!(streamCompleted || streamAbortedByUser || (streamEndedWithError && !streamErroredRetryable));
         if (streamAbortedByUser && !streamCompleted) {
             const saved = await persistAbortedAssistantPartial(currentConversationId, currentFullContent, {
                 modelName: model,
@@ -12033,23 +12365,41 @@ async function sendMessage(options = {}) {
                 showToast('已中断');
             }
         }
-        if (streamCompleted || streamAbortedByUser) {
+        if (streamEndedWithError && !streamErroredRetryable) {
+            const terminalText = renderAssistantTerminalErrorMessage(
+                aiMsgDiv,
+                aiMsgIndex,
+                currentFullContent,
+                streamErrorMessage || '请求失败'
+            );
+            currentFullContent = terminalText;
+            const saved = await persistAssistantErrorPartial(currentConversationId, currentFullContent, {
+                modelName: model,
+                source: 'send',
+                index: null,
+                errorMessage: streamErrorMessage || '请求失败',
+                errorCode: streamErrorCode || 'stream_error',
+                retryable: false
+            });
+            aiMsgDiv.dataset.localOnly = saved ? '0' : '1';
+        }
+        if (streamCompleted || streamAbortedByUser || (streamEndedWithError && !streamErroredRetryable)) {
             clearActiveStreamResumeState();
+        }
+        if (streamEndedTerminally) {
             aiMsgDiv.classList.remove('pending');
-        } else {
-            showToast('连接中断：刷新页面后将自动续传该条回复');
         }
         if (nextConversationMode === 'longterm') {
             currentConversationLongtermState = normalizeLongtermState({
                 ...currentConversationLongtermState,
-                active: false,
+                active: streamErroredRetryable ? true : false,
                 task: longtermTaskText || currentConversationLongtermState.task || rawText,
                 plan: currentConversationLongtermState.plan || []
             });
             renderLongtermPlanPanel();
             syncLocalConversationModeFlags(currentConversationId, {
                 conversation_mode: 'longterm',
-                longterm_active: false,
+                longterm_active: streamErroredRetryable ? true : false,
                 longterm: currentConversationLongtermState
             });
         }
@@ -13341,6 +13691,10 @@ function appendMessage(msg, index) {
         const hasContentStep = processSteps.some((s) => s && s.type === 'content');
                                
         if(msg.content && !hasContentStep) {
+            const standaloneErr = extractStandaloneSystemErrorMessage(msg.content);
+            if (standaloneErr) {
+                appendErrorEvent(div, standaloneErr, true);
+            } else {
             const planInfo = applyLongtermPlanFromText(msg.content, { source: 'history-main', messageDiv: div });
             const cleanedMsgContent = String(planInfo && planInfo.text !== undefined ? planInfo.text : msg.content || '');
             const body = document.createElement('div');
@@ -13350,6 +13704,7 @@ function appendMessage(msg, index) {
             renderMathSafe(body);
             highlightCode(body);
             content.appendChild(body);
+            }
         }
 
         // Add model badge/hint
@@ -13853,7 +14208,10 @@ async function startRegenerate(index) {
     }
     let streamCompleted = false;
     let streamAbortedByUser = false;
-    let streamServerError = '';
+    let streamEndedWithError = false;
+    let streamErrorRetryable = false;
+    let streamErrorCode = '';
+    let streamErrorMessage = '';
     
     try {
         const response = await fetch('/api/chat/stream', {
@@ -14011,15 +14369,26 @@ async function startRegenerate(index) {
                         modelBadgeState.outputTokens = modelBadgeUsageState.output;
                         updateMessageModelBadge(regenMessageDiv, modelBadgeState);
                     } else if (data.type === 'error') {
-                        streamServerError = String(data.content || '').trim() || '重新回答失败';
+                        streamEndedWithError = true;
+                        streamErrorRetryable = !!data.retryable;
+                        streamErrorCode = String(data.error_code || '').trim().toLowerCase();
+                        streamErrorMessage = String(data.content || '').trim() || '重新回答失败';
                         appendDebugConsoleEntry({
                             direction: 'model->server',
                             stage: 'error',
                             title: 'Error',
-                            payload: { content: streamServerError }
+                            payload: {
+                                content: streamErrorMessage,
+                                error_code: streamErrorCode,
+                                retryable: streamErrorRetryable
+                            }
                         });
-                        appendErrorEvent(regenMessageDiv, streamServerError);
-                        showToast(streamServerError);
+                        if (streamErrorRetryable || streamErrorCode === 'network_error') {
+                            appendErrorEvent(regenMessageDiv, streamErrorMessage);
+                            showToast('连接中断，可刷新页面后自动重连此条回复');
+                        } else {
+                            showToast(streamErrorMessage);
+                        }
                     }
                 } catch (e) { }
             }
@@ -14035,12 +14404,26 @@ async function startRegenerate(index) {
             console.log("Generation stopped.");
         } else {
             console.error(e);
-            showToast(`重新回答失败: ${String((e && e.message) || e || 'unknown')}`);
+            const errText = String((e && e.message) || e || 'unknown');
+            const isRetryableNetwork = isLikelyRetryableNetworkErrorText(errText);
+            streamEndedWithError = true;
+            streamErrorRetryable = !!isRetryableNetwork;
+            streamErrorCode = isRetryableNetwork ? 'network_error' : 'client_exception';
+            streamErrorMessage = errText;
+            const displayError = streamErrorRetryable
+                ? '连接中断，可刷新页面后自动重连此条回复'
+                : `重新回答失败: ${errText}`;
+            if (streamErrorRetryable) {
+                appendErrorEvent(regenMessageDiv, displayError);
+            }
+            showToast(displayError);
         }
     } finally {
         isGenerating = false;
         updateSendButtonState();
-        if (regenMessageDiv) regenMessageDiv.classList.remove('pending');
+        const streamErroredRetryable = !!(streamEndedWithError && (streamErrorRetryable || streamErrorCode === 'network_error'));
+        const streamEndedTerminally = !!(streamCompleted || streamAbortedByUser || (streamEndedWithError && !streamErroredRetryable));
+        if (streamEndedTerminally && regenMessageDiv) regenMessageDiv.classList.remove('pending');
         if (streamCompleted) {
             if (regenMessageDiv) regenMessageDiv.dataset.localOnly = '0';
             finalizeMessageRenderForIndex(index, regenMessageDiv);
@@ -14093,7 +14476,25 @@ async function startRegenerate(index) {
                 showToast('已中断');
             }
         }
-        if (streamCompleted || streamAbortedByUser) {
+        if (streamEndedWithError && !streamErroredRetryable) {
+            const terminalText = renderAssistantTerminalErrorMessage(
+                regenMessageDiv,
+                index,
+                accumulatedContent,
+                streamErrorMessage || '重新回答失败'
+            );
+            accumulatedContent = terminalText;
+            const saved = await persistAssistantErrorPartial(currentConversationId, accumulatedContent, {
+                modelName: modelName,
+                source: 'regenerate',
+                index,
+                errorMessage: streamErrorMessage || '重新回答失败',
+                errorCode: streamErrorCode || 'stream_error',
+                retryable: false
+            });
+            if (regenMessageDiv) regenMessageDiv.dataset.localOnly = saved ? '0' : '1';
+        }
+        if (streamCompleted || streamAbortedByUser || (streamEndedWithError && !streamErroredRetryable)) {
             clearActiveStreamResumeState();
         }
         // Keep current message DOM to avoid delayed full re-render/flash.
@@ -14435,6 +14836,10 @@ async function resumeActiveStreamAfterReload() {
 
     let streamCompleted = false;
     let streamAbortedByUser = false;
+    let streamEndedWithError = false;
+    let streamErrorRetryable = false;
+    let streamErrorCode = '';
+    let streamErrorMessage = '';
     let currentFullContent = '';
     let currentSegmentContent = '';
     let currentContentSpan = null;
@@ -14578,7 +14983,16 @@ async function resumeActiveStreamAfterReload() {
                 } else if (chunk.type === 'title') {
                     if (els.conversationTitle) els.conversationTitle.textContent = String(chunk.title || '');
                 } else if (chunk.type === 'error') {
-                    appendErrorEvent(assistantDiv, chunk.content || 'Unknown error');
+                    streamEndedWithError = true;
+                    streamErrorRetryable = !!chunk.retryable;
+                    streamErrorCode = String(chunk.error_code || '').trim().toLowerCase();
+                    streamErrorMessage = String(chunk.content || '').trim() || 'Unknown error';
+                    if (streamErrorRetryable || streamErrorCode === 'network_error') {
+                        appendErrorEvent(assistantDiv, streamErrorMessage);
+                        showToast('连接中断，可刷新页面后自动重连此条回复');
+                    } else {
+                        showToast(streamErrorMessage);
+                    }
                 }
             }
 
@@ -14630,6 +15044,10 @@ async function resumeActiveStreamAfterReload() {
         } else {
             console.error('Reconnect failed:', e);
             if (e && e.message && e.message.includes('404')) {
+                streamEndedWithError = true;
+                streamErrorRetryable = false;
+                streamErrorCode = 'resume_expired';
+                streamErrorMessage = '重连状态已过期';
                 clearActiveStreamResumeState();
                 showToast('重连状态已过期，将重新加载历史记录');
                 const targetCid = String(state.conversation_id || currentConversationId || '').trim();
@@ -14637,33 +15055,65 @@ async function resumeActiveStreamAfterReload() {
                     loadConversation(targetCid);
                 }
             } else {
-                showToast('重连失败，请稍后刷新重试');
+                const errText = String((e && e.message) || e || '重连失败');
+                const isRetryableNetwork = isLikelyRetryableNetworkErrorText(errText);
+                streamEndedWithError = true;
+                streamErrorRetryable = !!isRetryableNetwork;
+                streamErrorCode = isRetryableNetwork ? 'network_error' : 'reconnect_failed';
+                streamErrorMessage = errText;
+                if (streamErrorRetryable) {
+                    showToast('连接中断，可刷新页面后自动重连此条回复');
+                } else {
+                    showToast('重连失败，请稍后刷新重试');
+                }
             }
         }
     } finally {
         isGenerating = false;
         currentAbortController = null;
         updateSendButtonState();
+        const streamErroredRetryable = !!(streamEndedWithError && (streamErrorRetryable || streamErrorCode === 'network_error'));
+        const streamEndedTerminally = !!(streamCompleted || streamAbortedByUser || (streamEndedWithError && !streamErroredRetryable));
         if (streamCompleted) {
             finalizeMessageRenderForIndex(assistantIndex, assistantDiv);
             collapseReasoningBlocksForMessage(assistantDiv);
             collapseModelBadgeForMessage(assistantDiv);
         }
-        assistantDiv.classList.remove('pending');
+        if (streamEndedTerminally) {
+            assistantDiv.classList.remove('pending');
+        }
+        if (streamEndedWithError && !streamErroredRetryable) {
+            const terminalText = renderAssistantTerminalErrorMessage(
+                assistantDiv,
+                assistantIndex,
+                currentFullContent,
+                streamErrorMessage || '重连失败'
+            );
+            currentFullContent = terminalText;
+            const saved = await persistAssistantErrorPartial(currentConversationId, currentFullContent, {
+                modelName: '',
+                source: 'reconnect',
+                index: assistantIndex,
+                errorMessage: streamErrorMessage || '重连失败',
+                errorCode: streamErrorCode || 'reconnect_error',
+                retryable: false
+            });
+            assistantDiv.dataset.localOnly = saved ? '0' : '1';
+        }
         if (currentConversationMode === 'longterm') {
             currentConversationLongtermState = normalizeLongtermState({
                 ...currentConversationLongtermState,
-                active: false
+                active: streamErroredRetryable ? true : false
             });
             renderLongtermPlanPanel();
             syncLocalConversationModeFlags(currentConversationId, {
                 conversation_mode: 'longterm',
-                longterm_active: false,
+                longterm_active: streamErroredRetryable ? true : false,
                 longterm: currentConversationLongtermState
             });
         }
         await finishTokenMiniStreaming();
-        if (streamCompleted || streamAbortedByUser) {
+        if (streamCompleted || streamAbortedByUser || (streamEndedWithError && !streamErroredRetryable)) {
             clearActiveStreamResumeState();
         }
         if (streamCompleted) {
@@ -16167,23 +16617,17 @@ async function viewKnowledge(title, options = {}) {
         }
     }
     bindKnowledgeEditorScrollTracking();
-    const shouldRestoreInitialKnowledgeScroll = !!(fromSearch || highlightData);
-    if (shouldRestoreInitialKnowledgeScroll) {
-        restoreKnowledgeEditorScrollPosition(isKnowledgeEditorPreviewActive());
-    }
+    restoreKnowledgeEditorScrollPosition(isKnowledgeEditorPreviewActive());
     [0, 40, 140, 320, 680].forEach((delay) => {
         setTimeout(() => {
             bindKnowledgeEditorScrollTracking();
-            if (shouldRestoreInitialKnowledgeScroll) {
-                restoreKnowledgeEditorScrollPosition(isKnowledgeEditorPreviewActive());
-            }
+            restoreKnowledgeEditorScrollPosition(isKnowledgeEditorPreviewActive());
             if (isKnowledgeEditorSideBySideActive() && (delay === 0 || delay === 320 || delay === 680)) {
                 scheduleKnowledgeEditorAlignment('layout');
             }
             syncKnowledgeEditorToolbarState();
             logKnowledgeEditorDebug('viewKnowledge:stabilizeTick', {
                 delay,
-                shouldRestoreInitialKnowledgeScroll,
                 isPreviewActive: isKnowledgeEditorPreviewActive(),
                 isSideBySideActive: isKnowledgeEditorSideBySideActive(),
                 layout: collectKnowledgeEditorLayoutSnapshot()
@@ -19463,9 +19907,12 @@ function showToast(msg) {
 const LOCAL_PROVIDER_ICON_MAP = {
     github: '',
     alibabacloud: '/static/img/Index/static/icons/aliyun.png',
+    aliyun: '/static/img/icons/tongyi_single_icon.png',
     bytedance: '/static/img/icons/volcengine_single_icon.svg',
+    volcengine: '/static/img/icons/volcengine_single_icon.svg',
     qq: '/static/img/icons/tencent_cloud_single_icon.svg',
     wechat: '/static/img/icons/tencent_cloud_single_icon.svg',
+    tencent: '/static/img/icons/tencent_cloud_single_icon.svg',
     deepseek: '/static/img/icons/deepseek_single_icon.svg',
     openai: '/static/img/icons/openai_single_icon.svg',
     stepfun: '/static/img/icons/stepfun_single_icon.png',
@@ -19478,7 +19925,11 @@ const LOCAL_PROVIDER_ICON_MAP = {
     spark: '/static/img/icons/xunfei_spark_single_icon.svg',
     hunyuan: '/static/img/icons/hunyuan_single_icon.png',
     ollama: '/static/img/icons/ollama_single_icon.svg',
-    nvidia: '/static/img/icons/nvidia.svg'
+    nvidia: '/static/img/icons/nvidia.svg',
+    zhipu: '/static/img/icons/zhipu_single_icon.svg',
+    zhipuai: '/static/img/icons/zhipu_single_icon.svg',
+    zai: '/static/img/icons/zhipu_single_icon.svg',
+    bigmodel: '/static/img/icons/zhipu_single_icon.svg'
 };
 
 function resolveProviderSimpleIconSlug(provider) {
@@ -19495,7 +19946,22 @@ function resolveProviderSimpleIconSlug(provider) {
         qq: 'qq',
         wechat: 'wechat',
         deepseek: 'deepseek',
-        openai: 'openai'
+        openai: 'openai',
+        stepfun: 'stepfun',
+        moonshot: 'moonshot',
+        kimi: 'kimi',
+        minimax: 'minimax',
+        siliconflow: 'siliconflow',
+        openrouter: 'openrouter',
+        xunfei: 'xunfei',
+        spark: 'spark',
+        hunyuan: 'hunyuan',
+        ollama: 'ollama',
+        nvidia: 'nvidia',
+        zhipu: 'zhipu',
+        zhipuai: 'zhipu',
+        zai: 'zhipu',
+        bigmodel: 'zhipu'
     };
     if (exactMap[p]) return exactMap[p];
     if (p.includes('aliyun') || p.includes('alibaba')) return 'alibabacloud';
@@ -19504,6 +19970,16 @@ function resolveProviderSimpleIconSlug(provider) {
     if (p.includes('github')) return 'github';
     if (p.includes('openai')) return 'openai';
     if (p.includes('deepseek')) return 'deepseek';
+    if (p.includes('moonshot') || p.includes('kimi')) return 'kimi';
+    if (p.includes('step')) return 'stepfun';
+    if (p.includes('minimax')) return 'minimax';
+    if (p.includes('silicon')) return 'siliconflow';
+    if (p.includes('openrouter')) return 'openrouter';
+    if (p.includes('xunfei') || p.includes('spark')) return 'xunfei';
+    if (p.includes('hunyuan')) return 'hunyuan';
+    if (p.includes('ollama')) return 'ollama';
+    if (p.includes('nvidia')) return 'nvidia';
+    if (p.includes('zhipu') || p.includes('bigmodel')) return 'zhipu';
     return '';
 }
 
@@ -20916,11 +21392,13 @@ async function checkUserRole() {
                 if (settingsAdminGap) settingsAdminGap.style.display = '';
                 settingsAdminBtns.forEach((btn) => { btn.style.display = ''; });
                 console.log('[ADMIN] User is admin, showing settings admin entry');
+                void checkAdminQuotaOverageAlertOnRefresh();
             } else {
                 document.body.classList.remove('is-admin');
                 if (settingsAdminGap) settingsAdminGap.style.display = 'none';
                 settingsAdminBtns.forEach((btn) => { btn.style.display = 'none'; });
                 console.log('[ADMIN] User is not admin, hiding settings admin entry');
+                adminQuotaOverageNoticeChecked = false;
             }
         }
     } catch (err) {
@@ -21546,9 +22024,17 @@ window.closeModelPermModal = function() {
     currentTargetPermUser = null;
 };
 
+const ADMIN_QUOTA_UNIT_STORAGE_KEY = 'chatdb.admin.quota_display_unit';
+const ADMIN_QUOTA_ADJUST_MODE_STORAGE_KEY = 'chatdb.admin.quota_adjust_mode';
+
 let adminModelConfigCache = { models: {}, providers: {} };
 let adminSelectedProvider = '';
 let adminModelSearchKeyword = '';
+let adminQuotaDefaultOverageAction = 'disable_model';
+let adminProviderOverageActionMap = {};
+let adminQuotaDisplayUnit = loadAdminQuotaDisplayUnitPreference();
+let adminServerQuotaProvidersCache = [];
+let adminQuotaOverageNoticeChecked = false;
 let adminTextConfirmHandler = null;
 let adminPanelScrollState = { providers: 0, models: 0 };
 let adminConfigState = { mode: '', originalKey: '' };
@@ -21586,6 +22072,233 @@ function getAdminProviderKeepAlive(providerInfo) {
 
 function isAdminOllamaProvider(providerInfo) {
     return getAdminProviderApiType(providerInfo) === 'ollama';
+}
+
+function resolveAdminProviderIconProvider(providerKey, providerInfo = null) {
+    const key = String(providerKey || '').trim();
+    if (resolveProviderSimpleIconSlug(key)) return key;
+
+    const info = providerInfo && typeof providerInfo === 'object' ? providerInfo : {};
+    const apiType = normalizeAdminApiType(info.api_type || '');
+    if (resolveProviderSimpleIconSlug(apiType)) return apiType;
+
+    const baseUrl = String(info.base_url || info.api_base || '').trim().toLowerCase();
+    if (baseUrl.includes('dashscope') || baseUrl.includes('aliyuncs') || baseUrl.includes('alibabacloud')) return 'aliyun';
+    if (baseUrl.includes('github')) return 'github';
+    if (baseUrl.includes('openai')) return 'openai';
+    if (baseUrl.includes('deepseek')) return 'deepseek';
+    if (baseUrl.includes('volc') || baseUrl.includes('volces') || baseUrl.includes('bytedance')) return 'volcengine';
+    if (baseUrl.includes('qq.com') || baseUrl.includes('tencent')) return 'tencent';
+    if (baseUrl.includes('ollama')) return 'ollama';
+
+    return key || apiType || 'openai';
+}
+
+function normalizeAdminModelIconKey(rawModel) {
+    let src = String(rawModel || '').trim().toLowerCase();
+    if (!src) return 'unknown';
+    src = src.split('?', 1)[0].trim();
+    if (src.includes('/') && !src.startsWith('http')) {
+        src = src.split('/', 2)[1].trim();
+    }
+    if (src.includes(':')) {
+        const parts = src.split(':');
+        const tail = String(parts[parts.length - 1] || '').trim();
+        if (tail === 'free' || tail === 'beta' || tail === 'alpha' || tail === 'preview' || tail === 'latest') {
+            parts.pop();
+            src = parts.join(':').trim();
+        }
+    }
+    src = src.replace(/（/g, '(').replace(/）/g, ')');
+    src = src.replace(/[\[\]{}()]+/g, '-');
+    src = src.replace(/[_.\s/]+/g, '-');
+    src = src.replace(/^(qwen|gpt|gemini|claude|mistral|deepseek|kimi|glm|chatglm|step|doubao|seed)(?=\d)/, '$1-');
+    src = src.replace(/-(?:\d{6}|\d{8})$/, '');
+    src = src.replace(/-+/g, '-').replace(/^-|-$/g, '');
+    if (src.startsWith('bytedance-seed-')) {
+        src = `doubao-seed-${src.slice('bytedance-seed-'.length)}`;
+    } else if (src.startsWith('seed-')) {
+        src = `doubao-seed-${src.slice('seed-'.length)}`;
+    }
+    return src || 'unknown';
+}
+
+function resolveAdminModelIconProvider(modelId, fallbackProvider = '', providerInfo = null) {
+    const fallback = resolveAdminProviderIconProvider(fallbackProvider, providerInfo);
+    const raw = String(modelId || '').trim().toLowerCase();
+    if (!raw) return fallback;
+
+    const vendor = raw.includes('/') ? String(raw.split('/', 1)[0] || '').trim() : '';
+    const vendorAliasMap = {
+        'bytedance-seed': 'volcengine',
+        byte: 'volcengine',
+        azure: 'openai',
+        zhipuai: 'zhipu',
+        zai: 'zhipu',
+        bigmodel: 'zhipu'
+    };
+    const normalizedVendor = vendorAliasMap[vendor] || vendor;
+    if (normalizedVendor && resolveProviderSimpleIconSlug(normalizedVendor)) {
+        return normalizedVendor;
+    }
+
+    const key = normalizeAdminModelIconKey(raw);
+    if (!key || key === 'unknown') return fallback;
+    if (key.startsWith('glm') || key.startsWith('chatglm')) return 'zhipu';
+    if (key.startsWith('gpt') || key.startsWith('chatgpt') || key.startsWith('o1') || key.startsWith('o3') || key.startsWith('o4')) return 'openai';
+    if (key.startsWith('deepseek')) return 'deepseek';
+    if (key.startsWith('doubao-seed') || key.startsWith('seed')) return 'volcengine';
+    if (key.startsWith('qwen')) return 'aliyun';
+    if (key.startsWith('kimi') || key.startsWith('moonshot')) return 'kimi';
+    if (key.startsWith('step')) return 'stepfun';
+    return fallback;
+}
+
+function normalizeAdminQuotaOnExhaustedAction(raw) {
+    const value = String(raw || '').trim().toLowerCase();
+    if (value === 'stop_model') return 'disable_model';
+    if (value === 'none' || value === 'noop' || value === 'no-op') return 'no_op';
+    if (value === 'no_op' || value === 'disable_model' || value === 'notify_admin' || value === 'disable_and_notify') {
+        return value;
+    }
+    return 'disable_model';
+}
+
+function getAdminQuotaOnExhaustedActionLabel(actionRaw) {
+    const action = normalizeAdminQuotaOnExhaustedAction(actionRaw);
+    if (action === 'no_op') return '无操作';
+    if (action === 'notify_admin') return '发送通知';
+    if (action === 'disable_and_notify') return '停用并发送通知';
+    return '停用模型';
+}
+
+function normalizeAdminProviderOverageActionMap(rawMap) {
+    const out = {};
+    if (!rawMap || typeof rawMap !== 'object') return out;
+    Object.entries(rawMap).forEach(([providerName, action]) => {
+        const provider = normalizeAdminProviderKey(providerName);
+        if (!provider) return;
+        out[provider] = normalizeAdminQuotaOnExhaustedAction(action);
+    });
+    return out;
+}
+
+function resolveAdminProviderOverageAction(providerName, fallbackAction = '') {
+    const provider = normalizeAdminProviderKey(providerName);
+    const localMap = adminProviderOverageActionMap && typeof adminProviderOverageActionMap === 'object'
+        ? adminProviderOverageActionMap
+        : {};
+    const fallback = normalizeAdminQuotaOnExhaustedAction(fallbackAction || adminQuotaDefaultOverageAction);
+    if (!provider) return fallback;
+    return normalizeAdminQuotaOnExhaustedAction(localMap[provider] || fallback);
+}
+
+function syncAdminQuotaActionFromPayload(quotaPayload) {
+    const quota = quotaPayload && typeof quotaPayload === 'object' ? quotaPayload : {};
+    adminQuotaDefaultOverageAction = normalizeAdminQuotaOnExhaustedAction(quota.on_exhausted || adminQuotaDefaultOverageAction);
+    adminProviderOverageActionMap = normalizeAdminProviderOverageActionMap(quota.provider_overage_actions || {});
+
+    if (Array.isArray(quota.providers)) {
+        quota.providers.forEach((providerRow) => {
+            if (!providerRow || typeof providerRow !== 'object') return;
+            const providerName = normalizeAdminProviderKey(providerRow.name || '');
+            providerRow.on_exhausted = resolveAdminProviderOverageAction(providerName, providerRow.on_exhausted || adminQuotaDefaultOverageAction);
+        });
+    }
+}
+
+function _formatAdminOveragePopupMessage(models) {
+    const rows = Array.isArray(models) ? models : [];
+    if (!rows.length) return '暂无超额模型。';
+    const details = rows.slice(0, 12).map((item, idx) => {
+        const provider = String(item && item.provider ? item.provider : 'unknown').trim() || 'unknown';
+        const model = String(item && item.model ? item.model : 'unknown').trim() || 'unknown';
+        const overage = Math.max(0, parseInt(item && item.overage_tokens ? item.overage_tokens : 0, 10) || 0);
+        const used = Math.max(0, parseInt(item && item.used_tokens ? item.used_tokens : 0, 10) || 0);
+        const total = Math.max(0, parseInt(item && item.quota_total_tokens ? item.quota_total_tokens : 0, 10) || 0);
+        return `${idx + 1}. ${provider}/${model}（负${overage.toLocaleString()}，用${used.toLocaleString()}，共${total.toLocaleString()}）`;
+    });
+    if (rows.length > 12) {
+        details.push(`... 另有 ${rows.length - 12} 个超额模型`);
+    }
+    return `检测到 ${rows.length} 个模型超额：${details.join('；')}`;
+}
+
+async function checkAdminQuotaOverageAlertOnRefresh() {
+    if (currentUserRole !== 'admin') return;
+    if (adminQuotaOverageNoticeChecked) return;
+    adminQuotaOverageNoticeChecked = true;
+    try {
+        const res = await fetch('/api/admin/quota/overage-alert');
+        const data = await res.json();
+        if (!res.ok || !data || !data.success) return;
+        if (!data.should_popup) return;
+        const rows = Array.isArray(data.models) ? data.models : [];
+        if (!rows.length) return;
+        const message = _formatAdminOveragePopupMessage(rows);
+        window.showConfirm('模型超额通知', message, 'danger', () => {}, () => {});
+    } catch (_) {
+        // ignore notify fetch errors to keep startup path stable
+    }
+}
+
+async function saveAdminProviderOverageActionSetting(providerName, nextRawValue) {
+    const provider = normalizeAdminProviderKey(providerName);
+    if (!provider) {
+        return { ok: false, action: normalizeAdminQuotaOnExhaustedAction(nextRawValue) };
+    }
+
+    const nextAction = normalizeAdminQuotaOnExhaustedAction(nextRawValue);
+    const hadPrevious = Object.prototype.hasOwnProperty.call(adminProviderOverageActionMap || {}, provider);
+    const previousAction = hadPrevious ? adminProviderOverageActionMap[provider] : adminQuotaDefaultOverageAction;
+
+    adminProviderOverageActionMap[provider] = nextAction;
+    if (Array.isArray(adminServerQuotaProvidersCache)) {
+        const providerEntry = adminServerQuotaProvidersCache.find((row) => {
+            return normalizeAdminProviderKey(row && row.name) === provider;
+        });
+        if (providerEntry && typeof providerEntry === 'object') {
+            providerEntry.on_exhausted = nextAction;
+        }
+    }
+
+    try {
+        const res = await fetch('/api/admin/quota', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ provider, on_exhausted: nextAction }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data || !data.success) {
+            throw new Error((data && data.message) ? data.message : '保存失败');
+        }
+
+        const quota = data && data.quota && typeof data.quota === 'object' ? data.quota : {};
+        syncAdminQuotaActionFromPayload(quota);
+        if (Array.isArray(quota.providers)) {
+            adminServerQuotaProvidersCache = quota.providers;
+        }
+
+        const finalAction = resolveAdminProviderOverageAction(provider, nextAction);
+        showToast(`修改 ${provider} 的超额策略为 ${getAdminQuotaOnExhaustedActionLabel(finalAction)}`);
+        return { ok: true, action: finalAction };
+    } catch (err) {
+        if (hadPrevious) {
+            adminProviderOverageActionMap[provider] = normalizeAdminQuotaOnExhaustedAction(previousAction);
+        } else {
+            delete adminProviderOverageActionMap[provider];
+        }
+        if (Array.isArray(adminServerQuotaProvidersCache)) {
+            const providerEntry = adminServerQuotaProvidersCache.find((row) => {
+                return normalizeAdminProviderKey(row && row.name) === provider;
+            });
+            if (providerEntry && typeof providerEntry === 'object') {
+                providerEntry.on_exhausted = resolveAdminProviderOverageAction(provider, adminQuotaDefaultOverageAction);
+            }
+        }
+        showToast(`修改 ${provider} 的超额策略失败: ${String((err && err.message) || '未知错误')}`);
+        return { ok: false, action: resolveAdminProviderOverageAction(provider, previousAction) };
+    }
 }
 
 function getAdminOllamaProviderStatusEntry(providerKey) {
@@ -21758,18 +22471,22 @@ function showAdminTextConfirmModal(onConfirm) {
 }
 
 async function loadAdminModelConfig() {
-    const listEl = document.getElementById('adminModelConfigList');
-    if (!listEl) return;
+    const providerPaneEl = document.getElementById('adminModelProviderList');
+    const modelPaneEl = document.getElementById('adminModelConfigList');
+    if (!providerPaneEl || !modelPaneEl) return;
     const searchInput = document.getElementById('adminModelSearchInput');
     if (searchInput && searchInput.value !== adminModelSearchKeyword) {
         searchInput.value = adminModelSearchKeyword;
     }
-    listEl.innerHTML = '<div class="model-admin-empty">Loading...</div>';
+    providerPaneEl.innerHTML = '<div class="admin-user-detail-empty">Loading...</div>';
+    modelPaneEl.innerHTML = '<div class="admin-user-detail-empty">Loading...</div>';
     try {
         const res = await fetch('/api/admin/models/config');
         const data = await res.json();
         if (!data.success) {
-            listEl.innerHTML = `<div class="model-admin-empty" style="color:#dc2626;">${escapeHtml(data.message || '加载失败')}</div>`;
+            const err = `<div class="admin-user-detail-empty" style="color:#dc2626;">${escapeHtml(data.message || '加载失败')}</div>`;
+            providerPaneEl.innerHTML = err;
+            modelPaneEl.innerHTML = err;
             return;
         }
         adminModelConfigCache = {
@@ -21788,26 +22505,39 @@ async function loadAdminModelConfig() {
             void refreshAdminOllamaStatusCache(ollamaProviderKeys);
         }
     } catch (err) {
-        listEl.innerHTML = `<div class="model-admin-empty" style="color:#dc2626;">${escapeHtml(err.message || '加载失败')}</div>`;
+        const errHtml = `<div class="admin-user-detail-empty" style="color:#dc2626;">${escapeHtml(err.message || '加载失败')}</div>`;
+        providerPaneEl.innerHTML = errHtml;
+        modelPaneEl.innerHTML = errHtml;
     }
 }
 
 function renderAdminModelConfig(options = {}) {
     const resetModelsScroll = !!options.resetModelsScroll;
     const preserveProviderList = !!options.preserveProviderList;
-    const listEl = document.getElementById('adminModelConfigList');
-    if (!listEl) return;
+    const providerPaneEl = document.getElementById('adminModelProviderList');
+    const modelPaneEl = document.getElementById('adminModelConfigList');
+    if (!providerPaneEl || !modelPaneEl) return;
 
-    const oldProviderList = listEl.querySelector('.model-admin-col-list[data-col="providers"]');
-    const oldModelList = listEl.querySelector('.model-admin-col-list[data-col="models"]');
-    const providerScroll = oldProviderList ? oldProviderList.scrollTop : adminPanelScrollState.providers;
-    const modelScroll = resetModelsScroll ? 0 : (oldModelList ? oldModelList.scrollTop : adminPanelScrollState.models);
+    const oldProviderList = providerPaneEl.querySelector('.model-admin-pane-list[data-col="providers"]');
+    const oldModelList = modelPaneEl.querySelector('.model-admin-pane-list[data-col="models"]');
+    const providerScroll = Number(providerPaneEl.scrollTop || 0);
+    const modelScroll = resetModelsScroll ? 0 : Number(modelPaneEl.scrollTop || 0);
     adminPanelScrollState.providers = providerScroll;
     adminPanelScrollState.models = modelScroll;
 
     const providers = adminModelConfigCache.providers || {};
     const models = adminModelConfigCache.models || {};
-    const allProviderEntries = Object.entries(providers).sort((a, b) => a[0].localeCompare(b[0]));
+    const providerModelCountMap = {};
+    Object.values(models).forEach((modelInfo) => {
+        const providerKey = String((modelInfo && modelInfo.provider) || '').trim();
+        if (!providerKey) return;
+        providerModelCountMap[providerKey] = (providerModelCountMap[providerKey] || 0) + 1;
+    });
+    const allProviderEntries = Object.entries(providers).sort((a, b) => {
+        const countDiff = (providerModelCountMap[b[0]] || 0) - (providerModelCountMap[a[0]] || 0);
+        if (countDiff !== 0) return countDiff;
+        return a[0].localeCompare(b[0]);
+    });
     const query = String(adminModelSearchKeyword || '').trim().toLowerCase();
 
     const providerMatches = (providerKey, providerInfo) => {
@@ -21852,80 +22582,166 @@ function renderAdminModelConfig(options = {}) {
         })
         .sort((a, b) => a[0].localeCompare(b[0]));
 
-    const providersHtml = providerEntries.length ? providerEntries.map(([key, info]) => `
-        <div class="provider-item ${key === adminSelectedProvider ? 'active' : ''}" data-provider-key="${escapeHtml(key)}" onclick="adminSelectProviderByEncoded('${encodeURIComponent(key)}')">
-            <div class="model-admin-item-main provider-item-main">
-                <div class="provider-item-head">
-                    ${renderProviderIconHtml(key, { className: 'provider-logo provider-logo-md', label: key })}
-                    <div class="provider-item-name">${escapeHtml(key)}</div>
+    const providerQuotaActionOptionsHtml = (providerName, fallbackAction = 'disable_model') => {
+        const resolved = resolveAdminProviderOverageAction(providerName, fallbackAction);
+        return [
+            ['no_op', '无操作'],
+            ['disable_model', '停用模型'],
+            ['notify_admin', '发送通知'],
+            ['disable_and_notify', '停用并发送通知'],
+        ].map(([value, label]) => {
+            const selected = resolved === value ? ' selected' : '';
+            return `<option value="${value}"${selected}>${label}</option>`;
+        }).join('');
+    };
+
+    const providersHtml = providerEntries.length ? providerEntries.map(([key, info]) => {
+        const iconProvider = resolveAdminProviderIconProvider(key, info);
+        const providerActionSelect = providerQuotaActionOptionsHtml(key, (info && info.on_exhausted) || adminQuotaDefaultOverageAction);
+        return `
+        <div class="admin-user-item model-provider-item ${key === adminSelectedProvider ? 'active' : ''}" data-role="model-provider-item" data-provider-key="${escapeHtml(key)}" onclick="adminSelectProviderByEncoded('${encodeURIComponent(key)}')">
+            ${renderProviderIconHtml(iconProvider, { className: 'model-provider-avatar', label: key })}
+            <div>
+                <div class="admin-user-name">${escapeHtml(key)}</div>
+                <div class="admin-user-meta">api_type: ${escapeHtml(normalizeAdminApiType(info && info.api_type ? info.api_type : 'openai'))}</div>
+                <div class="model-provider-quota-row" onclick="event.stopPropagation();">
+                    <label class="model-provider-quota-label">超额策略</label>
+                    <select class="input-modern model-provider-overage-select" data-provider="${escapeHtml(key)}">
+                        ${providerActionSelect}
+                    </select>
                 </div>
-                <div class="provider-item-meta">${escapeHtml(maskSecret(info && info.api_key))}</div>
-                <div class="provider-item-meta">${escapeHtml((info && info.base_url) || '')}</div>
-                <div class="provider-item-meta">api_type: ${escapeHtml(normalizeAdminApiType(info && info.api_type ? info.api_type : 'openai'))}${normalizeAdminApiType(info && info.api_type ? info.api_type : 'openai') === 'ollama' ? ` · keep_alive: ${escapeHtml(getAdminProviderKeepAlive(info))}` : ''}</div>
             </div>
-            <div class="model-admin-item-actions">
-                <button class="model-icon-btn" title="Edit Provider" onclick="event.stopPropagation(); adminEditProviderByEncoded('${encodeURIComponent(key)}')"><i class="fa-solid fa-pen"></i></button>
-                <button class="model-icon-btn model-icon-btn-danger" title="Delete Provider" onclick="event.stopPropagation(); adminDeleteProviderByEncoded('${encodeURIComponent(key)}')"><i class="fa-solid fa-trash"></i></button>
+            <div class="model-admin-item-actions model-provider-item-actions">
+                <button class="model-icon-btn" title="编辑供应商" onclick="event.stopPropagation(); adminEditProviderByEncoded('${encodeURIComponent(key)}')"><i class="fa-solid fa-pen"></i></button>
+                <button class="model-icon-btn model-icon-btn-danger" title="删除供应商" onclick="event.stopPropagation(); adminDeleteProviderByEncoded('${encodeURIComponent(key)}')"><i class="fa-solid fa-trash"></i></button>
             </div>
         </div>
-    `).join('') : '<div class="model-admin-empty">无供应商</div>';
+    `;
+    }).join('') : '<div class="admin-user-detail-empty">无供应商</div>';
 
-    const modelsHtml = modelEntries.length ? modelEntries.map(([id, info]) => `
+    const modelQuotaMap = (() => {
+        const out = {};
+        const rows = Array.isArray(adminServerQuotaProvidersCache) ? adminServerQuotaProvidersCache : [];
+        rows.forEach((providerRow) => {
+            const providerName = String((providerRow && providerRow.name) || '').trim();
+            const modelsArr = Array.isArray(providerRow && providerRow.models) ? providerRow.models : [];
+            modelsArr.forEach((m) => {
+                const modelName = String((m && m.name) || '').trim();
+                if (!providerName || !modelName) return;
+                out[`${providerName}::${modelName}`.toLowerCase()] = m;
+            });
+        });
+        return out;
+    })();
+
+    const bindModelQuotaEditButtons = (scopeEl) => {
+        if (!scopeEl || typeof scopeEl.querySelectorAll !== 'function') return;
+        scopeEl.querySelectorAll('.model-admin-item-meter-wrap').forEach((wrapEl) => {
+            wrapEl.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                const popover = document.getElementById('quotaAdjustPopover');
+                const isOpen = !!popover && popover.style.display !== 'none';
+                if (isOpen && _quotaAdjustPopoverAnchorEl === wrapEl) {
+                    _closeQuotaAdjustPopover();
+                    return;
+                }
+                const provider = String(wrapEl.dataset.provider || '').trim();
+                const model = String(wrapEl.dataset.model || '').trim();
+                const total = Math.max(0, parseInt(wrapEl.dataset.totalTokens || 0, 10) || 0);
+                const used = Math.max(0, parseInt(wrapEl.dataset.usedTokens || 0, 10) || 0);
+                if (!provider || !model) return;
+                _openQuotaAdjustPopover(wrapEl, provider, model, total, used);
+            });
+        });
+    };
+
+    const modelsHtml = modelEntries.length ? modelEntries.map(([id, info]) => {
+        const providerKey = (info && info.provider) || '';
+        const providerInfo = providers[providerKey] || {};
+        const iconProvider = resolveAdminModelIconProvider(id, providerKey, providerInfo);
+        const quotaRow = modelQuotaMap[`${providerKey}::${id}`.toLowerCase()] || null;
+        const modelUsedTokens = Math.max(0, parseInt((quotaRow && quotaRow.tokens) || 0, 10) || 0);
+        const modelTotalTokens = Math.max(0, parseInt((quotaRow && quotaRow.quota_total_tokens) || 0, 10) || 0);
+        const modelOverageTokens = Math.max(0, parseInt((quotaRow && quotaRow.overage_tokens) || 0, 10) || 0);
+        const meterHtml = _buildQuotaReverseOverflowMeterHtml(modelUsedTokens, modelTotalTokens, modelOverageTokens, Math.max(0, modelOverageTokens));
+        return `
         <div class="model-admin-item">
+            <div class="model-admin-model-icon-cell">
+                ${renderProviderIconHtml(iconProvider, { className: 'model-admin-model-icon', label: (info && info.name) || id })}
+            </div>
             <div class="model-admin-item-main">
                 <div class="model-admin-item-name-row">
-                    ${renderAdminOllamaStatusButton((info && info.provider) || '', id, providers[(info && info.provider) || ''] || {})}
-                    <div class="model-admin-item-name">${escapeHtml(id)} (${escapeHtml((info && info.name) || id)})</div>
+                    <div class="model-admin-item-name-main">
+                        ${renderAdminOllamaStatusButton(providerKey, id, providerInfo)}
+                        <div class="model-admin-item-name">${escapeHtml(id)} (${escapeHtml((info && info.name) || id)})</div>
+                    </div>
+                    <div class="model-admin-item-actions">
+                        <button class="model-icon-btn" title="修改模型" onclick="adminEditModelByEncoded('${encodeURIComponent(id)}')"><i class="fa-solid fa-pen"></i></button>
+                        <button class="model-icon-btn model-icon-btn-danger" title="Delete Model" onclick="adminDeleteModelByEncoded('${encodeURIComponent(id)}')"><i class="fa-solid fa-trash"></i></button>
+                    </div>
                 </div>
-                <div class="model-admin-item-meta">provider: ${renderProviderInlineHtml((info && info.provider) || '', (info && info.provider) || '-')}</div>
-                <div class="model-admin-item-meta">status: ${escapeHtml((info && info.status) || 'normal')}</div>
-            </div>
-            <div class="model-admin-item-actions">
-                <button class="model-icon-btn" title="修改模型" onclick="adminEditModelByEncoded('${encodeURIComponent(id)}')"><i class="fa-solid fa-pen"></i></button>
-                <button class="model-icon-btn model-icon-btn-danger" title="Delete Model" onclick="adminDeleteModelByEncoded('${encodeURIComponent(id)}')"><i class="fa-solid fa-trash"></i></button>
+                <div class="model-admin-item-meter-wrap" data-provider="${escapeHtml(providerKey)}" data-model="${escapeHtml(id)}" data-total-tokens="${modelTotalTokens}" data-used-tokens="${modelUsedTokens}" title="点击编辑额度">
+                    <div class="model-admin-item-meter">${meterHtml}</div>
+                </div>
             </div>
         </div>
-    `).join('') : `<div class="model-admin-empty">${adminSelectedProvider ? '该供应商无模型' : '无模型'}</div>`;
+    `;
+    }).join('') : `<div class="admin-user-detail-empty">${adminSelectedProvider ? '该供应商无模型' : '无模型'}</div>`;
 
-    const existingProviderList = listEl.querySelector('.model-admin-col-list[data-col="providers"]');
-    const existingModelList = listEl.querySelector('.model-admin-col-list[data-col="models"]');
-    const providerTitleEl = listEl.querySelector('.model-admin-col:first-child .model-admin-col-title');
-    const modelTitleEl = listEl.querySelector('.model-admin-col:last-child .model-admin-col-title');
+    const existingProviderList = providerPaneEl.querySelector('.model-admin-pane-list[data-col="providers"]');
+    const existingModelList = modelPaneEl.querySelector('.model-admin-pane-list[data-col="models"]');
 
-    if (preserveProviderList && existingProviderList && existingModelList && providerTitleEl && modelTitleEl) {
-        existingProviderList.querySelectorAll('.provider-item').forEach((item) => {
+    if (preserveProviderList && existingProviderList && existingModelList) {
+        existingProviderList.querySelectorAll('[data-role="model-provider-item"]').forEach((item) => {
             const key = String(item.dataset.providerKey || '');
             const isActive = key === adminSelectedProvider;
             item.classList.toggle('active', isActive);
         });
-        providerTitleEl.textContent = `供应商 (${providerEntries.length})`;
-        modelTitleEl.textContent = adminSelectedProvider ? `模型 (${adminSelectedProvider})` : '模型';
         existingModelList.innerHTML = modelsHtml;
+        bindModelQuotaEditButtons(existingModelList);
+        _layoutQuotaMeterLabels(existingModelList);
         requestAnimationFrame(() => {
-            const modelList = listEl.querySelector('.model-admin-col-list[data-col="models"]');
-            if (modelList) modelList.scrollTop = modelScroll;
+            modelPaneEl.scrollTop = modelScroll;
         });
         return;
     }
 
-    listEl.innerHTML = `
-        <div class="model-admin-master">
-            <div class="model-admin-col">
-                <div class="model-admin-col-title">供应商 (${providerEntries.length})</div>
-                <div class="model-admin-col-list" data-col="providers">${providersHtml}</div>
-            </div>
-            <div class="model-admin-col">
-                <div class="model-admin-col-title">模型 ${adminSelectedProvider ? `(${escapeHtml(adminSelectedProvider)})` : ''}</div>
-                <div class="model-admin-col-list" data-col="models">${modelsHtml}</div>
-            </div>
+    providerPaneEl.innerHTML = `
+        <div class="model-admin-pane-list model-admin-provider-pane-list" data-col="providers">
+            ${providersHtml}
         </div>
     `;
 
+    modelPaneEl.innerHTML = `
+        <div class="model-admin-pane-list" data-col="models">
+            ${modelsHtml}
+        </div>
+    `;
+
+    providerPaneEl.querySelectorAll('.model-provider-overage-select').forEach((selectEl) => {
+        selectEl.addEventListener('click', (ev) => ev.stopPropagation());
+        selectEl.addEventListener('change', async (e) => {
+            const target = e && e.target ? e.target : selectEl;
+            const provider = normalizeAdminProviderKey(target && target.dataset ? target.dataset.provider : '');
+            if (!provider) return;
+            const requested = normalizeAdminQuotaOnExhaustedAction(target.value || 'disable_model');
+            target.disabled = true;
+            try {
+                const result = await saveAdminProviderOverageActionSetting(provider, requested);
+                target.value = normalizeAdminQuotaOnExhaustedAction((result && result.action) || requested);
+            } finally {
+                target.disabled = false;
+            }
+        });
+    });
+
+    bindModelQuotaEditButtons(modelPaneEl);
+    _layoutQuotaMeterLabels(modelPaneEl);
+
     requestAnimationFrame(() => {
-        const providerList = listEl.querySelector('.model-admin-col-list[data-col="providers"]');
-        const modelList = listEl.querySelector('.model-admin-col-list[data-col="models"]');
-        if (providerList) providerList.scrollTop = providerScroll;
-        if (modelList) modelList.scrollTop = modelScroll;
+        providerPaneEl.scrollTop = providerScroll;
+        modelPaneEl.scrollTop = modelScroll;
     });
 }
 
@@ -21943,13 +22759,17 @@ function openAdminConfigModal(mode, payload = {}) {
     const modelFields = document.getElementById('adminConfigModelFields');
     if (!modal || !title || !providerFields || !modelFields) return;
 
+    const modalTitle = mode === 'provider'
+        ? (payload.provider || payload.originalKey || '新建供应商')
+        : (payload.name || payload.model_id || payload.originalKey || '新建模型');
+
     adminConfigState = {
         mode,
         originalKey: payload.originalKey || ''
     };
 
     if (mode === 'provider') {
-        title.textContent = String(entry.title || '未命名').trim() || '未命名';
+        title.textContent = String(modalTitle).trim() || '未命名';
         providerFields.style.display = '';
         modelFields.style.display = 'none';
         document.getElementById('adminProviderNameInput').value = payload.provider || '';
@@ -21959,7 +22779,7 @@ function openAdminConfigModal(mode, payload = {}) {
         document.getElementById('adminProviderKeepAliveInput').value = payload.keep_alive || '5m';
         syncAdminProviderApiTypeFields();
     } else {
-        title.textContent = String(entry.title || '未命名').trim() || '未命名';
+        title.textContent = String(modalTitle).trim() || '未命名';
         providerFields.style.display = 'none';
         modelFields.style.display = '';
         document.getElementById('adminModelIdInput').value = payload.model_id || '';
@@ -23343,6 +24163,9 @@ function initSettingsTabs() {
 }
 
 function switchSettingsTab(tabName) {
+    if (tabName !== 'quota' && tabName !== 'admin-models') {
+        _closeQuotaAdjustPopover();
+    }
     const modal = document.getElementById('settingsModal');
     if (modal && modal.dataset) {
         modal.dataset.activeSettingsTab = String(tabName || '');
@@ -23386,8 +24209,12 @@ function switchSettingsTab(tabName) {
     if (tabName === 'admin-stats') {
         loadAdminStats();
     }
+    if (tabName === 'quota') {
+        void loadServerQuotaSettings();
+    }
     if (tabName === 'admin-models') {
         loadAdminModelConfig();
+        void loadServerQuotaSettings();
     }
     if (tabName === 'admin-chroma') {
         loadAdminChromaStats();
@@ -23850,6 +24677,7 @@ async function loadUserSettings() {
         // 获取用户信息
         const userRes = await fetch('/api/user/info');
         const userData = await userRes.json();
+        let stats = {};
 
         if (userData.success) {
             const user = userData.user;
@@ -23870,7 +24698,7 @@ async function loadUserSettings() {
             updateSidebarUserProfile(user.username || user.id, currentUserAvatarUrl);
 
             // 填充统计信息
-            const stats = user.stats || {};
+            stats = user.stats || {};
             document.getElementById('set-stat-convs').textContent = stats.total_conversations || 0;
             document.getElementById('set-stat-tokens').textContent = (stats.total_tokens || 0).toLocaleString();
             document.getElementById('set-stat-knowledge').textContent = stats.total_knowledge || 0;
@@ -23905,7 +24733,6 @@ async function loadUserSettings() {
             document.getElementById('set-stream').textContent = prefs.streaming ? '流式输出 (开启)' : '完整输出 (关闭)';
             document.getElementById('set-lang').textContent = prefs.language === 'zh' ? '简体中文' : 'English';
         }
-
     } catch (e) {
         console.error('加载用户设置失败:', e);
     }
@@ -23938,6 +24765,807 @@ async function saveUserProfile() {
         await checkUserRole();
     } catch (e) {
         showToast('保存失败');
+    }
+}
+
+function normalizeAdminQuotaDisplayUnit(raw) {
+    const value = String(raw || '').trim().toLowerCase();
+    if (value === 'auto' || value === 'k' || value === 'w' || value === 'm' || value === 'token') {
+        return value;
+    }
+    return 'auto';
+}
+
+function loadAdminQuotaDisplayUnitPreference() {
+    try {
+        return normalizeAdminQuotaDisplayUnit(localStorage.getItem(ADMIN_QUOTA_UNIT_STORAGE_KEY));
+    } catch (_) {
+        return 'auto';
+    }
+}
+
+function saveAdminQuotaDisplayUnitPreference(raw) {
+    const value = normalizeAdminQuotaDisplayUnit(raw);
+    try {
+        localStorage.setItem(ADMIN_QUOTA_UNIT_STORAGE_KEY, value);
+    } catch (_) {
+        // ignore storage failures (private mode / quota exceeded)
+    }
+    return value;
+}
+
+function normalizeAdminQuotaAdjustMode(raw) {
+    const value = String(raw || '').trim().toLowerCase();
+    return value === 'remaining' ? 'remaining' : 'total';
+}
+
+function loadAdminQuotaAdjustModePreference() {
+    try {
+        return normalizeAdminQuotaAdjustMode(localStorage.getItem(ADMIN_QUOTA_ADJUST_MODE_STORAGE_KEY));
+    } catch (_) {
+        return 'total';
+    }
+}
+
+function saveAdminQuotaAdjustModePreference(raw) {
+    const value = normalizeAdminQuotaAdjustMode(raw);
+    try {
+        localStorage.setItem(ADMIN_QUOTA_ADJUST_MODE_STORAGE_KEY, value);
+    } catch (_) {
+        // ignore storage failures
+    }
+    return value;
+}
+
+function _pickQuotaDisplayUnit(value, mode) {
+    const normalizedMode = normalizeAdminQuotaDisplayUnit(mode || adminQuotaDisplayUnit);
+    if (normalizedMode !== 'auto') return normalizedMode;
+    const numeric = Math.max(0, parseInt(value || 0, 10) || 0);
+    if (numeric >= 1000000) return 'm';
+    if (numeric >= 10000) return 'w';
+    if (numeric >= 1000) return 'k';
+    return 'token';
+}
+
+function _formatQuotaScaledNumber(value, divisor) {
+    const numeric = Math.max(0, Number(value || 0));
+    const scaled = divisor > 0 ? (numeric / divisor) : numeric;
+    const absScaled = Math.abs(scaled);
+    let digits = 0;
+    if (absScaled < 10) digits = 2;
+    else if (absScaled < 100) digits = 1;
+    const text = scaled.toLocaleString(undefined, {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: digits,
+    });
+    return text;
+}
+
+function _formatQuotaTokens(value, options = {}) {
+    const numeric = Math.max(0, parseInt(value || 0, 10) || 0);
+    const unitMode = normalizeAdminQuotaDisplayUnit(options && options.unitMode ? options.unitMode : adminQuotaDisplayUnit);
+    const unit = _pickQuotaDisplayUnit(numeric, unitMode);
+
+    if (unit === 'token') {
+        return numeric.toLocaleString();
+    }
+
+    if (unit === 'k') {
+        return `${_formatQuotaScaledNumber(numeric, 1000)}K`;
+    }
+    if (unit === 'w') {
+        return `${_formatQuotaScaledNumber(numeric, 10000)}w`;
+    }
+    if (unit === 'm') {
+        return `${_formatQuotaScaledNumber(numeric, 1000000)}M`;
+    }
+    return numeric.toLocaleString();
+}
+
+function _roundQuotaDebtScale(valueTokens) {
+    const raw = Math.max(0, parseInt(valueTokens || 0, 10) || 0);
+    if (raw <= 0) return 0;
+    const step = 500000;
+    return Math.ceil(raw / step) * step;
+}
+
+function _layoutSingleQuotaMeterLabelRow(rowEl) {
+    if (!rowEl) return;
+    const debtEl = rowEl.querySelector('[data-role="quota-meter-label-debt"]');
+    const remainEl = rowEl.querySelector('[data-role="quota-meter-label-remaining"]');
+    const totalEl = rowEl.querySelector('[data-role="quota-meter-label-total"]');
+    const usedEl = rowEl.querySelector('[data-role="quota-meter-label-used"]');
+    if (!debtEl || !remainEl || !totalEl) return;
+
+    const rowWidth = Math.max(0, rowEl.clientWidth || 0);
+    if (rowWidth <= 0) return;
+
+    const gap = 8;
+    const rightReserve = Math.max(0, parseInt(rowEl.dataset.rightReserve || 0, 10) || 0);
+    const debtVisible = String(debtEl.dataset.visible || '1') !== '0' && debtEl.style.display !== 'none';
+    const remainVisible = String(remainEl.dataset.visible || '1') !== '0' && remainEl.style.display !== 'none';
+    const usedVisible = !!usedEl && String(usedEl.dataset.visible || '1') !== '0' && usedEl.style.display !== 'none';
+    const debtWidth = debtVisible ? Math.ceil(debtEl.getBoundingClientRect().width || 0) : 0;
+    const remainWidth = remainVisible ? Math.ceil(remainEl.getBoundingClientRect().width || 0) : 0;
+    const totalWidth = Math.ceil(totalEl.getBoundingClientRect().width || 0);
+    const usedWidth = usedVisible ? Math.ceil(usedEl.getBoundingClientRect().width || 0) : 0;
+
+    const rightBlocked = rightReserve + (usedVisible ? (usedWidth + gap) : 0);
+    const layoutWidth = Math.max(0, rowWidth - rightBlocked);
+    if (layoutWidth <= 0) return;
+
+    const debtAnchorPct = Math.max(0, Math.min(100, parseFloat(debtEl.dataset.anchor || '0') || 0));
+    const remainAnchorPct = Math.max(0, Math.min(100, parseFloat(remainEl.dataset.anchor || '0') || 0));
+
+    const debtAnchorPx = (debtAnchorPct / 100) * layoutWidth;
+    const remainAnchorPx = (remainAnchorPct / 100) * layoutWidth;
+
+    let totalRight = layoutWidth;
+    let remainRight = remainVisible ? Math.max(remainWidth, Math.min(layoutWidth, remainAnchorPx)) : 0;
+    let debtRight = debtVisible ? Math.max(debtWidth, Math.min(layoutWidth, debtAnchorPx)) : 0;
+
+    const maxRemainRight = remainVisible ? Math.max(remainWidth, totalRight - totalWidth - gap) : 0;
+    if (remainVisible && remainRight > maxRemainRight) {
+        remainRight = maxRemainRight;
+    }
+
+    const minRemainRight = remainVisible ? (debtVisible ? (debtRight + remainWidth + gap) : remainWidth) : 0;
+    if (remainVisible && remainRight < minRemainRight) {
+        remainRight = Math.min(maxRemainRight, minRemainRight);
+    }
+
+    if (debtVisible && remainVisible) {
+        const maxDebtRight = remainRight - remainWidth - gap;
+        if (debtRight > maxDebtRight) {
+            debtRight = Math.max(debtWidth, maxDebtRight);
+        }
+    } else if (debtVisible) {
+        const maxDebtRight = totalRight - totalWidth - gap;
+        if (debtRight > maxDebtRight) {
+            debtRight = Math.max(debtWidth, maxDebtRight);
+        }
+    }
+
+    const debtLeft = Math.max(0, Math.min(layoutWidth - debtWidth, debtRight - debtWidth));
+    const remainLeft = Math.max(0, Math.min(layoutWidth - remainWidth, remainRight - remainWidth));
+    const totalLeft = Math.max(0, Math.min(layoutWidth - totalWidth, totalRight - totalWidth));
+
+    debtEl.style.left = `${Math.round(debtLeft)}px`;
+    if (remainVisible) {
+        remainEl.style.left = `${Math.round(remainLeft)}px`;
+    }
+    totalEl.style.left = `${Math.round(totalLeft)}px`;
+    if (usedVisible) {
+        const usedLeft = Math.max(0, Math.min(rowWidth - usedWidth, rowWidth - rightReserve - usedWidth));
+        usedEl.style.left = `${Math.round(usedLeft)}px`;
+    }
+}
+
+function _layoutQuotaMeterLabels(rootEl) {
+    const scope = rootEl && rootEl.querySelectorAll ? rootEl : document;
+    scope.querySelectorAll('[data-role="quota-meter-label-row"]').forEach((rowEl) => {
+        _layoutSingleQuotaMeterLabelRow(rowEl);
+    });
+}
+
+let _quotaMeterLayoutEventsBound = false;
+
+function _ensureQuotaMeterLayoutEvents() {
+    if (_quotaMeterLayoutEventsBound) return;
+    _quotaMeterLayoutEventsBound = true;
+    window.addEventListener('resize', () => {
+        const quotaContainer = document.getElementById('quotaProviderList');
+        if (quotaContainer) _layoutQuotaMeterLabels(quotaContainer);
+        const modelContainer = document.getElementById('adminModelConfigList');
+        if (modelContainer) _layoutQuotaMeterLabels(modelContainer);
+    });
+}
+
+function _buildQuotaReverseOverflowMeterHtml(usedTokens, totalTokens, overageTokens, providerDebtScaleTokens, labelRightReservePx = 0) {
+    const used = Math.max(0, parseInt(usedTokens || 0, 10) || 0);
+    const total = Math.max(0, parseInt(totalTokens || 0, 10) || 0);
+    const overage = Math.max(0, parseInt(overageTokens || 0, 10) || 0);
+    const debtScale = Math.max(0, parseInt(providerDebtScaleTokens || 0, 10) || 0);
+    const remaining = total > used ? (total - used) : 0;
+
+    const hasDebt = overage > 0;
+    const showUsedBar = !hasDebt && used > 0 && total > 0;
+    const showRemainingLabel = remaining > 0;
+    const usedRight = showUsedBar
+        ? Math.max(0, Math.min((used / total) * 50, 50))
+        : 0;
+    const remainingRight = (!hasDebt && total > 0)
+        ? Math.max(0, Math.min((remaining / total) * 50, 50))
+        : 0;
+    const overflowLeft = (hasDebt && debtScale > 0)
+        ? Math.max(0, Math.min((overage / debtScale) * 50, 50))
+        : 0;
+    const debtAnchor = overflowLeft > 0
+        ? Math.max(2, Math.min(50, 50 - overflowLeft))
+        : 50;
+    const remainAnchor = (!hasDebt && total > 0)
+        ? Math.max(50, Math.min(98, 50 + remainingRight))
+        : 50;
+
+    const debtLabel = hasDebt ? `负${_formatQuotaTokens(overage)}` : '';
+    const remainLabel = showRemainingLabel ? `剩${_formatQuotaTokens(remaining)}` : '';
+    const totalLabel = `共${_formatQuotaTokens(total)}`;
+    const usedLabel = `已用${_formatQuotaTokens(used)}`;
+    const showUsedLabel = usedRight > 0;
+    const rightReserve = Math.max(0, parseInt(labelRightReservePx || 0, 10) || 0);
+
+    return `
+        <div class="quota-meter-shell" style="position:relative;">
+            <div class="quota-meter-track" style="position:relative; height:12px; border-radius:999px; background: rgba(148, 163, 184, 0.18); overflow:hidden;">
+            ${remainingRight > 0 ? `<div class="quota-meter-seg quota-meter-seg-remaining" style="position:absolute; left:50%; top:0; bottom:0; width:${remainingRight}%; background:#16a34a;"></div>` : ''}
+            ${usedRight > 0 ? `<div class="quota-meter-seg quota-meter-seg-used" style="position:absolute; left:${50 + remainingRight}%; top:0; bottom:0; width:${usedRight}%; background:#f7f072;"></div>` : ''}
+            ${overflowLeft > 0 ? `<div class="quota-meter-seg quota-meter-seg-overage" style="position:absolute; right:50%; top:0; bottom:0; width:${overflowLeft}%; background:#dc2626;"></div>` : ''}
+            <div class="quota-meter-midline" style="position:absolute; left:50%; top:-2px; bottom:-2px; width:2px; background:#334155; opacity:0.9;"></div>
+            </div>
+            <div data-role="quota-meter-label-row" class="quota-meter-label-row" data-right-reserve="${rightReserve}" style="position:relative; height:18px; margin-top:4px; font-size:11px; line-height:18px;">
+                <div data-role="quota-meter-label-debt" data-visible="${hasDebt ? '1' : '0'}" data-anchor="${debtAnchor}" style="position:absolute; top:0; color:#b91c1c; white-space:nowrap; ${hasDebt ? '' : 'display:none;'}">${debtLabel}</div>
+                <div data-role="quota-meter-label-remaining" data-visible="${showRemainingLabel ? '1' : '0'}" data-anchor="${remainAnchor}" style="position:absolute; top:0; color:#166534; white-space:nowrap; ${showRemainingLabel ? '' : 'display:none;'}">${remainLabel}</div>
+                <div data-role="quota-meter-label-total" style="position:absolute; top:0; color:#0f172a; white-space:nowrap;">${totalLabel}</div>
+                <div data-role="quota-meter-label-used" data-visible="${showUsedLabel ? '1' : '0'}" style="position:absolute; top:0; color:#a16207; white-space:nowrap; ${showUsedLabel ? '' : 'display:none;'}">${usedLabel}</div>
+            </div>
+        </div>
+    `;
+}
+
+let _quotaAdjustPopoverAnchorEl = null;
+let _activeQuotaMeterWrapEl = null;
+let _quotaAdjustPopoverFollowRaf = 0;
+
+function _setActiveQuotaMeterWrap(nextEl) {
+    if (_activeQuotaMeterWrapEl && _activeQuotaMeterWrapEl.classList) {
+        _activeQuotaMeterWrapEl.classList.remove('quota-meter-active');
+    }
+    _activeQuotaMeterWrapEl = nextEl || null;
+    if (_activeQuotaMeterWrapEl && _activeQuotaMeterWrapEl.classList) {
+        _activeQuotaMeterWrapEl.classList.add('quota-meter-active');
+    }
+}
+
+function _getQuotaAdjustPopover() {
+    let popover = document.getElementById('quotaAdjustPopover');
+    if (popover) return popover;
+
+    popover = document.createElement('div');
+    popover.id = 'quotaAdjustPopover';
+    popover.style.position = 'fixed';
+    popover.style.display = 'none';
+    popover.style.zIndex = '12020';
+    popover.style.minWidth = '340px';
+    popover.style.padding = '12px';
+    popover.style.border = '1px solid var(--border-color)';
+    popover.style.borderRadius = '10px';
+    popover.style.background = '#ffffff';
+    popover.style.boxShadow = '0 14px 34px rgba(2, 6, 23, 0.18)';
+    popover.innerHTML = `
+        <div data-role="quota-target" style="font-size:13px; color:#0f172a; font-weight:700;">-</div>
+        <div style="display:flex; align-items:center; gap:8px; margin-top:10px;">
+            <div data-role="quota-used" style="font-size:12px; color:#334155; white-space:nowrap;">用 0 /</div>
+            <select data-role="quota-adjust-mode" class="input-modern" style="width:72px; min-width:72px; height:30px; padding:4px 8px; font-size:12px;">
+                <option value="total">共</option>
+                <option value="remaining">剩</option>
+            </select>
+            <input data-role="quota-adjust-input" type="number" min="0" step="1" style="flex:1; border:1px solid #64748b; border-radius:8px; padding:6px 8px; font-size:12px; background:#ffffff; box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.22);">
+            <button type="button" data-act="save" title="保存额度" style="width:30px; height:30px; border:1px solid #cbd5e1; border-radius:8px; background:#ffffff; color:#0f172a; cursor:pointer; display:inline-flex; align-items:center; justify-content:center;">
+                <i class="fa-solid fa-floppy-disk" style="font-size:12px;"></i>
+            </button>
+        </div>
+        <div data-role="quota-adjust-hint" style="margin-top:8px; font-size:11px; color:#64748b; line-height:1.4;">-</div>
+    `;
+
+    const _closeByOutside = (ev) => {
+        if (!popover || popover.style.display === 'none') return;
+        const target = ev && ev.target;
+        if (!target) return;
+        if (popover.contains(target)) return;
+        if (target.closest && target.closest('.quota-total-icon-btn')) return;
+        if (target.closest && target.closest('.model-admin-item-meter-wrap')) return;
+        _closeQuotaAdjustPopover();
+    };
+
+    const _followAnchor = () => {
+        if (!popover || popover.style.display === 'none') return;
+        if (!_quotaAdjustPopoverAnchorEl || !_quotaAdjustPopoverAnchorEl.isConnected) {
+            _closeQuotaAdjustPopover();
+            return;
+        }
+        _positionQuotaAdjustPopover(popover, _quotaAdjustPopoverAnchorEl);
+    };
+
+    const _queueFollowAnchor = () => {
+        if (_quotaAdjustPopoverFollowRaf) return;
+        _quotaAdjustPopoverFollowRaf = requestAnimationFrame(() => {
+            _quotaAdjustPopoverFollowRaf = 0;
+            _followAnchor();
+        });
+    };
+
+    document.addEventListener('pointerdown', _closeByOutside, true);
+    window.addEventListener('resize', _queueFollowAnchor);
+    window.addEventListener('scroll', _queueFollowAnchor, true);
+
+    const _savePopoverValue = async () => {
+        if (popover.dataset.busy === '1') return;
+        const provider = String(popover.dataset.provider || '').trim();
+        const model = String(popover.dataset.model || '').trim();
+        if (!provider || !model) return;
+
+        const modeEl = popover.querySelector('[data-role="quota-adjust-mode"]');
+        const inputEl = popover.querySelector('[data-role="quota-adjust-input"]');
+        const mode = modeEl ? normalizeAdminQuotaAdjustMode(modeEl.value || 'total') : 'total';
+        saveAdminQuotaAdjustModePreference(mode);
+        const inputRaw = inputEl ? parseInt(inputEl.value || 0, 10) : 0;
+        const inputValue = Math.max(0, Number.isFinite(inputRaw) ? inputRaw : 0);
+        const currentTotal = Math.max(0, parseInt(popover.dataset.totalTokens || 0, 10) || 0);
+        const usedTokens = Math.max(0, parseInt(popover.dataset.usedTokens || 0, 10) || 0);
+
+        let nextTotal = inputValue;
+        let modeText = '总量模式';
+        let deltaText = '';
+        if (mode === 'remaining') {
+            nextTotal = Math.max(0, usedTokens + inputValue);
+            const delta = nextTotal - currentTotal;
+            modeText = '剩余额度模式';
+            if (delta > 0) {
+                deltaText = `，自动增加 ${_formatQuotaTokens(delta, { unitMode: 'token' })}`;
+            } else if (delta < 0) {
+                deltaText = `，自动减少 ${_formatQuotaTokens(Math.abs(delta), { unitMode: 'token' })}`;
+            } else {
+                deltaText = '，总量不变';
+            }
+        }
+
+        await _submitModelQuotaUpdate('set', provider, model, nextTotal, {
+            successMessage: `模型额度已更新（${modeText}${deltaText}）`
+        });
+    };
+
+    popover.addEventListener('click', async (ev) => {
+        const btn = ev.target && ev.target.closest ? ev.target.closest('button') : null;
+        if (!btn) return;
+        if (!btn.dataset || btn.dataset.act !== 'save') return;
+        await _savePopoverValue();
+    });
+
+    popover.addEventListener('keydown', async (ev) => {
+        if (ev.key === 'Escape') {
+            ev.preventDefault();
+            ev.stopPropagation();
+            _closeQuotaAdjustPopover();
+            return;
+        }
+        if (ev.key !== 'Enter') return;
+        ev.preventDefault();
+        await _savePopoverValue();
+    });
+
+    document.addEventListener('keydown', (ev) => {
+        if (!ev || ev.key !== 'Escape') return;
+        if (!popover || popover.style.display === 'none') return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        _closeQuotaAdjustPopover();
+    }, true);
+
+    popover.addEventListener('change', (ev) => {
+        const target = ev && ev.target;
+        if (!target) return;
+        if (target.matches('[data-role="quota-adjust-mode"]')) {
+            const inputEl = popover.querySelector('[data-role="quota-adjust-input"]');
+            if (inputEl) {
+                const mode = saveAdminQuotaAdjustModePreference(target.value || 'total');
+                target.value = mode;
+                const total = Math.max(0, parseInt(popover.dataset.totalTokens || 0, 10) || 0);
+                const used = Math.max(0, parseInt(popover.dataset.usedTokens || 0, 10) || 0);
+                const remaining = total > used ? (total - used) : 0;
+                inputEl.value = mode === 'remaining' ? String(remaining) : String(total);
+                inputEl.focus();
+                inputEl.select();
+            }
+            _refreshQuotaAdjustPopoverHint(popover);
+        }
+    });
+
+    popover.addEventListener('input', (ev) => {
+        const target = ev && ev.target;
+        if (!target) return;
+        if (target.matches('[data-role="quota-adjust-input"]')) {
+            _refreshQuotaAdjustPopoverHint(popover);
+        }
+    });
+
+    document.body.appendChild(popover);
+    return popover;
+}
+
+function _closeQuotaAdjustPopover() {
+    const popover = document.getElementById('quotaAdjustPopover');
+    if (!popover) return;
+    if (_quotaAdjustPopoverFollowRaf) {
+        cancelAnimationFrame(_quotaAdjustPopoverFollowRaf);
+        _quotaAdjustPopoverFollowRaf = 0;
+    }
+    _quotaAdjustPopoverAnchorEl = null;
+    _setActiveQuotaMeterWrap(null);
+    popover.style.display = 'none';
+    popover.dataset.provider = '';
+    popover.dataset.model = '';
+    popover.dataset.totalTokens = '';
+    popover.dataset.usedTokens = '';
+    popover.dataset.busy = '0';
+
+    const modeEl = popover.querySelector('[data-role="quota-adjust-mode"]');
+    if (modeEl) modeEl.value = loadAdminQuotaAdjustModePreference();
+}
+
+function _positionQuotaAdjustPopover(popover, anchorEl) {
+    if (!popover || !anchorEl) return;
+    const rect = anchorEl.getBoundingClientRect();
+    popover.style.left = '-9999px';
+    popover.style.top = '-9999px';
+    popover.style.display = 'block';
+
+    const popRect = popover.getBoundingClientRect();
+    const gap = 10;
+    let left = rect.left + (rect.width / 2) - (popRect.width / 2);
+    let top = rect.bottom + gap;
+
+    if (left < 12) left = 12;
+    if (left + popRect.width > window.innerWidth - 12) {
+        left = window.innerWidth - popRect.width - 12;
+    }
+    if (top + popRect.height > window.innerHeight - 12) {
+        top = rect.top - popRect.height - gap;
+    }
+    if (top < 12) top = 12;
+
+    popover.style.left = `${Math.round(left)}px`;
+    popover.style.top = `${Math.round(top)}px`;
+}
+
+function _refreshQuotaAdjustPopoverHint(popover) {
+    const panel = popover || document.getElementById('quotaAdjustPopover');
+    if (!panel) return;
+
+    const hintEl = panel.querySelector('[data-role="quota-adjust-hint"]');
+    const modeEl = panel.querySelector('[data-role="quota-adjust-mode"]');
+    const inputEl = panel.querySelector('[data-role="quota-adjust-input"]');
+    if (!hintEl || !modeEl || !inputEl) return;
+
+    const mode = normalizeAdminQuotaAdjustMode(modeEl.value || 'total');
+    const currentTotal = Math.max(0, parseInt(panel.dataset.totalTokens || 0, 10) || 0);
+    const usedTokens = Math.max(0, parseInt(panel.dataset.usedTokens || 0, 10) || 0);
+    const inputRaw = parseInt(inputEl.value || 0, 10);
+    const inputValue = Math.max(0, Number.isFinite(inputRaw) ? inputRaw : 0);
+
+    if (mode === 'remaining') {
+        const nextTotal = Math.max(0, usedTokens + inputValue);
+        const delta = nextTotal - currentTotal;
+        const deltaText = delta > 0
+            ? `增加 ${_formatQuotaTokens(delta, { unitMode: 'token' })}`
+            : (delta < 0 ? `减少 ${_formatQuotaTokens(Math.abs(delta), { unitMode: 'token' })}` : '不变');
+        hintEl.textContent = `剩余 ${_formatQuotaTokens(inputValue, { unitMode: 'token' })} => 总量 ${_formatQuotaTokens(nextTotal, { unitMode: 'token' })}（较当前${deltaText}）`;
+        return;
+    }
+
+    const delta = inputValue - currentTotal;
+    const deltaText = delta > 0
+        ? `增加 ${_formatQuotaTokens(delta, { unitMode: 'token' })}`
+        : (delta < 0 ? `减少 ${_formatQuotaTokens(Math.abs(delta), { unitMode: 'token' })}` : '不变');
+    hintEl.textContent = `总量设为 ${_formatQuotaTokens(inputValue, { unitMode: 'token' })}（较当前${deltaText}）`;
+}
+
+function _mergeQuotaProvidersFromServerSnapshot(quotaPayload) {
+    const quota = quotaPayload && typeof quotaPayload === 'object' ? quotaPayload : {};
+    syncAdminQuotaActionFromPayload(quota);
+    if (!Array.isArray(quota.providers)) return false;
+    adminServerQuotaProvidersCache = quota.providers;
+    return true;
+}
+
+function _applyLocalQuotaModelTotal(providerName, modelName, nextTotalTokens) {
+    const providers = Array.isArray(adminServerQuotaProvidersCache) ? adminServerQuotaProvidersCache : [];
+    if (!providers.length) return false;
+
+    const providerNeedle = String(providerName || '').trim().toLowerCase();
+    const modelNeedle = String(modelName || '').trim().toLowerCase();
+    if (!providerNeedle || !modelNeedle) return false;
+
+    const providerEntry = providers.find((row) => String((row && row.name) || '').trim().toLowerCase() === providerNeedle);
+    if (!providerEntry || !Array.isArray(providerEntry.models)) return false;
+
+    const modelEntry = providerEntry.models.find((row) => {
+        const nameLower = String((row && row.name) || '').trim().toLowerCase();
+        if (nameLower === modelNeedle) return true;
+        const rawModel = String((row && row.model) || '').trim().toLowerCase();
+        if (rawModel === modelNeedle) return true;
+        const key = String((row && row.key) || '').trim().toLowerCase();
+        return !!key && key.endsWith(`::${modelNeedle}`);
+    });
+    if (!modelEntry) return false;
+
+    const nextTotal = Math.max(0, parseInt(nextTotalTokens || 0, 10) || 0);
+    const used = Math.max(0, parseInt(modelEntry.tokens || 0, 10) || 0);
+    modelEntry.quota_total_tokens = nextTotal;
+    modelEntry.overage_tokens = used > nextTotal ? (used - nextTotal) : 0;
+    return true;
+}
+
+async function _submitModelQuotaUpdate(op, provider, model, valueTokens, options = {}) {
+    if (currentUserRole !== 'admin') {
+        showToast('只有管理员可以管理模型额度');
+        return;
+    }
+
+    const popover = _getQuotaAdjustPopover();
+    if (popover.dataset.busy === '1') return;
+    popover.dataset.busy = '1';
+
+    try {
+        const payload = {
+            op,
+            provider,
+            model,
+        };
+        if (op === 'set') payload.total_tokens = Math.max(0, parseInt(valueTokens || 0, 10) || 0);
+        else payload.delta_tokens = parseInt(valueTokens || 0, 10) || 0;
+
+        const res = await fetch('/api/admin/quota/model', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!data.success) {
+            showToast(data.message || '模型额度更新失败');
+            return;
+        }
+
+        const nextTotal = Math.max(0, parseInt((data && data.change && data.change.after_total_tokens) != null ? data.change.after_total_tokens : valueTokens, 10) || 0);
+        const merged = _mergeQuotaProvidersFromServerSnapshot(data && data.quota ? data.quota : null);
+        const patched = merged ? true : _applyLocalQuotaModelTotal(provider, model, nextTotal);
+
+        const successMessage = options && options.successMessage ? String(options.successMessage) : '模型额度已更新';
+        showToast(successMessage);
+        _closeQuotaAdjustPopover();
+        if (patched && Array.isArray(adminServerQuotaProvidersCache)) {
+            _renderServerQuotaProviderList(adminServerQuotaProvidersCache);
+            renderAdminModelConfig({ preserveProviderList: true });
+        } else {
+            await loadServerQuotaSettings();
+        }
+    } catch (e) {
+        showToast('模型额度更新失败');
+    } finally {
+        popover.dataset.busy = '0';
+    }
+}
+
+function _openQuotaAdjustPopover(anchorEl, provider, model, totalTokens, usedTokens) {
+    const popover = _getQuotaAdjustPopover();
+    _setActiveQuotaMeterWrap(anchorEl || null);
+    _quotaAdjustPopoverAnchorEl = anchorEl || null;
+    popover.dataset.provider = String(provider || '').trim();
+    popover.dataset.model = String(model || '').trim();
+    const total = Math.max(0, parseInt(totalTokens || 0, 10) || 0);
+    const used = Math.max(0, parseInt(usedTokens || 0, 10) || 0);
+    const remaining = total > used ? (total - used) : 0;
+    popover.dataset.totalTokens = String(total);
+    popover.dataset.usedTokens = String(used);
+
+    const targetEl = popover.querySelector('[data-role="quota-target"]');
+    if (targetEl) targetEl.textContent = `${String(provider || '')}/${String(model || '')}`;
+
+    const usedEl = popover.querySelector('[data-role="quota-used"]');
+    if (usedEl) usedEl.textContent = `用 ${_formatQuotaTokens(used)} /`;
+
+    const modeEl = popover.querySelector('[data-role="quota-adjust-mode"]');
+    const mode = loadAdminQuotaAdjustModePreference();
+    if (modeEl) modeEl.value = mode;
+
+    const inputEl = popover.querySelector('[data-role="quota-adjust-input"]');
+    if (inputEl) {
+        inputEl.value = mode === 'remaining' ? String(remaining) : String(total);
+        inputEl.focus();
+        inputEl.select();
+    }
+
+    const hintEl = popover.querySelector('[data-role="quota-adjust-hint"]');
+    if (hintEl) {
+        hintEl.textContent = `当前剩余 ${_formatQuotaTokens(remaining)}，当前总量 ${_formatQuotaTokens(total)}`;
+    }
+
+    _refreshQuotaAdjustPopoverHint(popover);
+    _positionQuotaAdjustPopover(popover, anchorEl);
+}
+
+function _bindQuotaTotalButtons() {
+    const container = document.getElementById('quotaProviderList');
+    if (!container) return;
+    container.querySelectorAll('.quota-total-icon-btn').forEach((btn) => {
+        btn.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            const provider = String(btn.dataset.provider || '').trim();
+            const model = String(btn.dataset.model || '').trim();
+            const total = Math.max(0, parseInt(btn.dataset.totalTokens || 0, 10) || 0);
+            const used = Math.max(0, parseInt(btn.dataset.usedTokens || 0, 10) || 0);
+            if (!provider || !model) return;
+            _openQuotaAdjustPopover(btn, provider, model, total, used);
+        });
+    });
+}
+
+function _bindQuotaProviderOverageSelects() {
+    const container = document.getElementById('quotaProviderList');
+    if (!container) return;
+
+    container.querySelectorAll('.quota-provider-overage-select').forEach((selectEl) => {
+        selectEl.addEventListener('change', async (e) => {
+            const target = e && e.target ? e.target : selectEl;
+            if (!target) return;
+            const provider = normalizeAdminProviderKey(target.dataset.provider || '');
+            if (!provider) return;
+            const requested = normalizeAdminQuotaOnExhaustedAction(target.value || 'disable_model');
+            target.disabled = true;
+            try {
+                const result = await saveAdminProviderOverageActionSetting(provider, requested);
+                target.value = normalizeAdminQuotaOnExhaustedAction((result && result.action) || requested);
+            } finally {
+                target.disabled = false;
+            }
+        });
+    });
+}
+
+function _renderServerQuotaProviderList(providerList) {
+    const container = document.getElementById('quotaProviderList');
+    if (!container) return;
+    const providers = (Array.isArray(providerList) ? providerList : []).filter((provider) => {
+        const providerName = String((provider && provider.name) || '').trim().toLowerCase();
+        return !!providerName && providerName !== 'unknown';
+    });
+
+    if (!providers.length) {
+        container.innerHTML = '<div class="settings-field" style="padding: 12px 14px;">暂无 token 使用记录</div>';
+        return;
+    }
+
+    container.innerHTML = providers.map((provider) => {
+        const providerName = String(provider.name || 'unknown');
+        const providerIconProvider = resolveAdminProviderIconProvider(providerName);
+        const providerTokens = Math.max(0, parseInt(provider.tokens || 0, 10) || 0);
+        const providerAction = resolveAdminProviderOverageAction(providerName, provider && provider.on_exhausted ? provider.on_exhausted : adminQuotaDefaultOverageAction);
+        const providerActionOptions = [
+            ['no_op', '无操作'],
+            ['disable_model', '停用模型'],
+            ['notify_admin', '发送通知'],
+            ['disable_and_notify', '停用并发送通知'],
+        ].map(([value, label]) => {
+            const selected = providerAction === value ? ' selected' : '';
+            return `<option value="${value}"${selected}>${label}</option>`;
+        }).join('');
+        const providerRows = (Array.isArray(provider.models) ? provider.models : []).filter((model) => {
+            const modelName = String((model && model.name) || '').trim().toLowerCase();
+            return !!modelName && modelName !== 'unknown';
+        });
+        const maxOverageRaw = Math.max(0, ...providerRows.map((row) => {
+            const rowTokens = Math.max(0, parseInt((row && row.tokens) || 0, 10) || 0);
+            const rowTotal = Math.max(0, parseInt((row && row.quota_total_tokens) || 0, 10) || 0);
+            const rowOverage = Math.max(0, parseInt((row && row.overage_tokens) || 0, 10) || 0);
+            if (rowOverage > 0) return rowOverage;
+            if (rowTotal <= 0 && rowTokens > 0) return rowTokens;
+            return 0;
+        }));
+        const providerDebtScale = _roundQuotaDebtScale(maxOverageRaw);
+
+        const modelsHtml = providerRows.length
+            ? providerRows.map((model) => {
+                const modelName = String(model.name || 'unknown');
+                const modelIconProvider = resolveAdminModelIconProvider(modelName, providerName);
+                const modelTokens = Math.max(0, parseInt(model.tokens || 0, 10) || 0);
+                const modelTotal = Math.max(0, parseInt(model.quota_total_tokens || 0, 10) || 0);
+                const modelOverageRaw = Math.max(0, parseInt(model.overage_tokens || 0, 10) || 0);
+                const modelOverage = modelOverageRaw > 0
+                    ? modelOverageRaw
+                    : (modelTotal <= 0 && modelTokens > 0 ? modelTokens : 0);
+                return `
+                    <div class="quota-model-row">
+                        <div class="quota-model-head">
+                            <div class="quota-model-head-main">
+                                <div class="quota-model-icon-cell">
+                                    ${renderProviderIconHtml(modelIconProvider, { className: 'quota-model-icon', label: modelName })}
+                                </div>
+                                <div class="quota-model-name">${escapeHtml(modelName)}</div>
+                            </div>
+                            <button
+                                type="button"
+                                class="quota-total-icon-btn"
+                                data-provider="${escapeHtml(providerName)}"
+                                data-model="${escapeHtml(modelName)}"
+                                data-total-tokens="${modelTotal}"
+                                data-used-tokens="${modelTokens}"
+                                title="设置额度"
+                                style="width:30px; height:30px; border:1px solid #cbd5e1; border-radius:8px; background:#ffffff; color:#0f172a; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto;"
+                            >
+                                <i class="fa-solid fa-pen-to-square" style="font-size:12px;"></i>
+                            </button>
+                        </div>
+                        <div style="margin-top: 8px;">${_buildQuotaReverseOverflowMeterHtml(modelTokens, modelTotal, modelOverage, providerDebtScale)}</div>
+                    </div>
+                `;
+            }).join('')
+            : '<div class="settings-field" style="padding: 10px 12px;">该 Provider 暂无模型记录</div>';
+
+        return `
+            <div class="quota-provider-card">
+                <div class="quota-provider-head">
+                    <div class="quota-provider-head-main">
+                        <div class="quota-provider-icon-cell">
+                            ${renderProviderIconHtml(providerIconProvider, { className: 'quota-provider-icon', label: providerName })}
+                        </div>
+                        <div class="quota-provider-title">${escapeHtml(providerName)}</div>
+                    </div>
+                    <div class="quota-provider-head-right">
+                        <div class="quota-provider-stats">用 ${_formatQuotaTokens(providerTokens)} · 负债满刻度 ${_formatQuotaTokens(providerDebtScale)}</div>
+                        <div class="quota-provider-overage-action-inline">
+                            <label>超额策略</label>
+                            <select class="input-modern quota-provider-overage-select" data-provider="${escapeHtml(providerName)}" title="设置 ${escapeHtml(providerName)} 的超额策略">
+                                ${providerActionOptions}
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                <div class="quota-model-list">
+                    ${modelsHtml}
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    _bindQuotaProviderOverageSelects();
+    _bindQuotaTotalButtons();
+    _ensureQuotaMeterLayoutEvents();
+    _layoutQuotaMeterLabels(container);
+}
+
+async function loadServerQuotaSettings() {
+    if (currentUserRole !== 'admin') return;
+    const providerList = document.getElementById('quotaProviderList');
+
+    const unitSelect = document.getElementById('adminQuotaUnitSelect');
+    if (unitSelect) {
+        unitSelect.value = adminQuotaDisplayUnit;
+    }
+
+    if (providerList) {
+        providerList.innerHTML = '<div class="settings-field" style="padding: 12px 14px;">加载中...</div>';
+    }
+
+    try {
+        const res = await fetch('/api/admin/quota');
+        const data = await res.json();
+        if (!data.success) {
+            throw new Error(data.message || '加载服务器额度失败');
+        }
+
+        const quota = data.quota || {};
+        syncAdminQuotaActionFromPayload(quota);
+        adminServerQuotaProvidersCache = Array.isArray(quota.providers) ? quota.providers : [];
+        _closeQuotaAdjustPopover();
+        _renderServerQuotaProviderList(adminServerQuotaProvidersCache);
+        renderAdminModelConfig({ preserveProviderList: true });
+    } catch (e) {
+        adminServerQuotaProvidersCache = [];
+        if (providerList) {
+            providerList.innerHTML = `<div class="settings-field" style="padding: 12px 14px; color: #ef4444;">${escapeHtml(e && e.message ? e.message : '加载服务器额度失败')}</div>`;
+        }
+        _closeQuotaAdjustPopover();
+        renderAdminModelConfig({ preserveProviderList: true });
     }
 }
 
@@ -24168,6 +25796,3 @@ function applyAvatarCropAndPreview() {
     closeAvatarCropModal();
     showToast('头像已裁切，点击“保存资料”后生效');
 }
-
-
-

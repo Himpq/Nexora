@@ -12,3 +12,8 @@ ChatDBServer/models.json
 ChatDBServer/data/config.json
 ChatDBServer/data/models.json
 ChatDBServer/api/localsearch
+NexoraCode/data/
+todolist
+NexoraLearning/data
+NexoraLearning/NEXORALEARNING_WORKING.md
+ChatDBServer/api/conversation_repair.py

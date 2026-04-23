@@ -909,8 +909,90 @@
       };
     }
 
+    function normalizeComplexityLoad(raw) {
+      const src = (raw && typeof raw === 'object') ? raw : {};
+      return {
+        simple: Math.max(0, Number(src.simple || 0) || 0),
+        medium: Math.max(0, Number(src.medium || 0) || 0),
+        complex: Math.max(0, Number(src.complex || 0) || 0)
+      };
+    }
+
+    function complexityLoadTotal(load) {
+      const c = normalizeComplexityLoad(load);
+      return c.simple + c.medium + c.complex;
+    }
+
+    function deriveComplexityLoadFromToolCalls(rawToolCalls) {
+      const calls = Math.max(0, Number(rawToolCalls || 0) || 0);
+      if (calls <= 0) {
+        return { simple: 0, medium: 0, complex: 0 };
+      }
+      if (calls <= 2) {
+        return { simple: 1, medium: 0, complex: 0 };
+      }
+      if (calls <= 7) {
+        return { simple: 0, medium: 1, complex: 0 };
+      }
+      return { simple: 0, medium: 0, complex: 1 };
+    }
+
+    function normalizeModelRow(raw) {
+      const src = (raw && typeof raw === 'object') ? raw : {};
+      const load = normalizeComplexityLoad(src.complexityLoad);
+      return {
+        ...src,
+        id: String(src.id || src.name || 'unknown'),
+        name: String(src.name || src.id || 'unknown'),
+        provider: String(src.provider || 'unknown'),
+        score: Math.max(0, Number(src.score || 0) || 0),
+        callCount: Math.max(0, Number(src.callCount || 0) || 0),
+        toolCalls: Math.max(0, Number(src.toolCalls || 0) || 0),
+        totalTokens: Math.max(0, Number(src.totalTokens || 0) || 0),
+        successRate: Math.max(0, Number(src.successRate || 0) || 0),
+        tokenCoverage: Math.max(0, Number(src.tokenCoverage || 0) || 0),
+        complexityLoad: load
+      };
+    }
+
+    function normalizeRecentRow(raw) {
+      const src = (raw && typeof raw === 'object') ? raw : {};
+      return {
+        ...src,
+        id: String(src.id || src.name || 'unknown'),
+        name: String(src.name || src.id || 'unknown'),
+        provider: String(src.provider || 'unknown'),
+        score: Math.max(0, Number(src.score || 0) || 0),
+        recentCalls: Math.max(0, Number(src.recentCalls || 0) || 0),
+        recentTokens: Math.max(0, Number(src.recentTokens || 0) || 0)
+      };
+    }
+
     function normalizeStatusData(raw) {
       const src = (raw && typeof raw === 'object') ? raw : {};
+      const models = Array.isArray(src.models) ? src.models.map(normalizeModelRow) : [];
+      const complexity = {
+        simple: Math.max(0, Number((src.complexity && src.complexity.simple) || 0) || 0),
+        medium: Math.max(0, Number((src.complexity && src.complexity.medium) || 0) || 0),
+        complex: Math.max(0, Number((src.complexity && src.complexity.complex) || 0) || 0)
+      };
+
+      if ((complexity.simple + complexity.medium + complexity.complex) <= 0 && models.length) {
+        models.forEach((item) => {
+          let load = normalizeComplexityLoad(item.complexityLoad);
+          if (complexityLoadTotal(load) <= 0) {
+            load = deriveComplexityLoadFromToolCalls(item.toolCalls);
+            if (complexityLoadTotal(load) <= 0 && Number(item.callCount || 0) > 0) {
+              load = { simple: Number(item.callCount || 0), medium: 0, complex: 0 };
+            }
+            item.complexityLoad = load;
+          }
+          complexity.simple += load.simple;
+          complexity.medium += load.medium;
+          complexity.complex += load.complex;
+        });
+      }
+
       return {
         snapshotAt: String(src.snapshotAt || '-'),
         source: String(src.source || 'ChatDBServer/data/users/*/{token_usage,tool_usage,conversations}'),
@@ -920,17 +1002,13 @@
           toolCalls: Number((src.totals && src.totals.toolCalls) || 0),
           toolFailures: Number((src.totals && src.totals.toolFailures) || 0)
         },
-        complexity: {
-          simple: Number((src.complexity && src.complexity.simple) || 0),
-          medium: Number((src.complexity && src.complexity.medium) || 0),
-          complex: Number((src.complexity && src.complexity.complex) || 0)
-        },
-        models: Array.isArray(src.models) ? src.models : [],
+        complexity,
+        models,
         speedModels: Array.isArray(src.speedModels) ? src.speedModels : [],
         speedWindowDays: Number(src.speedWindowDays || 30) || 30,
         speedMinSamples: Number(src.speedMinSamples || 3) || 3,
         toolFailures: Array.isArray(src.toolFailures) ? src.toolFailures : [],
-        recent24h: Array.isArray(src.recent24h) ? src.recent24h : [],
+        recent24h: Array.isArray(src.recent24h) ? src.recent24h.map(normalizeRecentRow) : [],
         recent24hWindowHours: Number(src.recent24hWindowHours || 24) || 24
       };
     }
@@ -954,6 +1032,28 @@
             .replace(/'/g, '&#39;');
       return `<img src="${escapeHtml(src)}" alt="${escapeHtml(provider)}">`;
     };
+
+    const clampBarPercent = (value) => {
+      const num = Number(value);
+      if (!Number.isFinite(num)) return 0;
+      return Math.max(0, Math.min(100, num));
+    };
+
+    function applyDataWidths(root, selector) {
+      if (!root || !root.querySelectorAll) return;
+      root.querySelectorAll(selector).forEach((bar) => {
+        const width = clampBarPercent(bar.getAttribute('data-width'));
+        bar.style.width = `${width}%`;
+      });
+    }
+
+    function applyRankBarWidths(root) {
+      applyDataWidths(root, '.rank-bar > span[data-width], .chart-bar > span[data-width]');
+    }
+
+    function applyComplexityBarWidths(root) {
+      applyDataWidths(root, '.complexity-seg[data-width]');
+    }
 
     function renderSummary() {
       const root = document.getElementById('summaryGrid');
@@ -995,11 +1095,12 @@
               <span>${item.name}</span>
             </div>
             <div class="rank-meta">${item.provider} · ${formatNum(item.callCount)} calls · ${item.successRate}% success</div>
-            <div class="rank-bar"><span style="width:${(Number(item.score || 0) / maxScore) * 100}%"></span></div>
+            <div class="rank-bar"><span data-width="${(Number(item.score || 0) / maxScore) * 100}" style="width:${clampBarPercent((Number(item.score || 0) / maxScore) * 100)}%"></span></div>
           </div>
           <div class="rank-score">${Number(item.score || 0)}</div>
         </div>
       `).join(''));
+      applyRankBarWidths(root);
     }
 
     function renderSpeedRankList() {
@@ -1027,12 +1128,13 @@
                 <span class="chart-name-text">${item.name}</span>
               </span>
             </div>
-            <div class="rank-bar"><span style="width:${(Number(item.score || 0) / maxScore) * 100}%"></span></div>
+            <div class="rank-bar"><span data-width="${(Number(item.score || 0) / maxScore) * 100}" style="width:${clampBarPercent((Number(item.score || 0) / maxScore) * 100)}%"></span></div>
             <div class="recent-meta">${item.provider} &middot; TTFT ${Number(item.avgTTFTMs || 0).toFixed(1)} ms &middot; TPS ${Number(item.avgOutputTPS || 0).toFixed(2)} &middot; ${formatNum(item.samples)} samples</div>
           </div>
           <div class="recent-score">${Number(item.score || 0)}</div>
         </div>
       `).join(''));
+      applyRankBarWidths(root);
     }
     function renderHighlights() {
       const root = document.getElementById('statusHighlights');
@@ -1078,7 +1180,7 @@
             </span>
             <span class="chart-value-inline">${formatNum(item.totalTokens)}</span>
           </div>
-          <div class="chart-bar"><span style="width:${(item.totalTokens / maxToken) * 100}%"></span></div>
+          <div class="chart-bar"><span data-width="${(item.totalTokens / maxToken) * 100}" style="width:${clampBarPercent((item.totalTokens / maxToken) * 100)}%"></span></div>
           <div class="chart-value">${formatNum(item.totalTokens)}</div>
         </div>
       `).join('');
@@ -1086,6 +1188,7 @@
         ? `<div class="empty-hint">注：${missingTokenCount} 个模型调用存在历史 token 日志缺失（显示为 0）。</div>`
         : '';
       window.NexoraSecureRender.setSafeHTML(root, `${chartRows}${hint}`);
+      applyRankBarWidths(root);
     }
 
     function renderComplexity() {
@@ -1107,28 +1210,51 @@
         window.NexoraSecureRender.setSafeHTML(root, '<div class="empty-hint">暂无复杂度分布数据</div>');
         return;
       }
-      const top = statusData.models.slice(0, 5);
-      const maxLoad = Math.max(...top.map((item) => {
-        const c = item.complexityLoad || {};
-        return Number(c.simple || 0) + Number(c.medium || 0) + Number(c.complex || 0);
-      }), 1);
+      const top = [...statusData.models]
+        .sort((a, b) => complexityLoadTotal(b.complexityLoad) - complexityLoadTotal(a.complexityLoad))
+        .slice(0, 5);
+      const topWithLoad = top.map((item) => {
+        let load = normalizeComplexityLoad(item.complexityLoad || {});
+        if (complexityLoadTotal(load) <= 0) {
+          load = deriveComplexityLoadFromToolCalls(item.toolCalls);
+        }
+        if (complexityLoadTotal(load) <= 0 && Number(item.callCount || 0) > 0) {
+          load = { simple: Number(item.callCount || 0), medium: 0, complex: 0 };
+        }
+        return {
+          item,
+          load,
+          sum: complexityLoadTotal(load),
+        };
+      });
+      const totalLoad = Math.max(...[
+        topWithLoad.reduce((acc, row) => acc + Number(row.sum || 0), 0),
+        1,
+      ]);
       window.NexoraSecureRender.setSafeHTML(root, top.map((item) => {
-        const sum = item.complexityLoad.simple + item.complexityLoad.medium + item.complexityLoad.complex;
-        const loadScale = sum > 0 ? (sum / maxLoad) : 0;
+        let load = normalizeComplexityLoad(item.complexityLoad || {});
+        if (complexityLoadTotal(load) <= 0) {
+          load = deriveComplexityLoadFromToolCalls(item.toolCalls);
+        }
+        if (complexityLoadTotal(load) <= 0 && Number(item.callCount || 0) > 0) {
+          load = { simple: Number(item.callCount || 0), medium: 0, complex: 0 };
+        }
+        const sum = load.simple + load.medium + load.complex;
+        const loadScale = sum > 0 ? (sum / totalLoad) : 0;
         const totalW = loadScale * 100;
-        const simpleW = sum ? totalW * (item.complexityLoad.simple / sum) : 0;
-        const mediumW = sum ? totalW * (item.complexityLoad.medium / sum) : 0;
-        const complexW = sum ? totalW * (item.complexityLoad.complex / sum) : 0;
+        const simpleW = sum ? totalW * (load.simple / sum) : 0;
+        const mediumW = sum ? totalW * (load.medium / sum) : 0;
+        const complexW = sum ? totalW * (load.complex / sum) : 0;
         return `
           <div class="complexity-item">
             <div class="complexity-name">
               ${providerIconMarkup(item)}
               <span>${item.name}</span>
             </div>
-            <div class="complexity-track" title="simple ${item.complexityLoad.simple}, medium ${item.complexityLoad.medium}, complex ${item.complexityLoad.complex}">
-              <div class="complexity-seg simple" style="width:${simpleW}%"></div>
-              <div class="complexity-seg medium" style="width:${mediumW}%"></div>
-              <div class="complexity-seg complex" style="width:${complexW}%"></div>
+            <div class="complexity-track" title="simple ${load.simple}, medium ${load.medium}, complex ${load.complex}">
+              <div class="complexity-seg simple" data-width="${simpleW}" style="width:${clampBarPercent(simpleW)}%"></div>
+              <div class="complexity-seg medium" data-width="${mediumW}" style="width:${clampBarPercent(mediumW)}%"></div>
+              <div class="complexity-seg complex" data-width="${complexW}" style="width:${clampBarPercent(complexW)}%"></div>
             </div>
             <div class="complexity-metrics">
               <span class="load">${formatNum(sum)}</span>
@@ -1137,6 +1263,7 @@
           </div>
         `;
       }).join(''));
+      applyComplexityBarWidths(root);
     }
 
     function renderRecent24h() {
@@ -1157,12 +1284,13 @@
             </span>
           </div>
           <div>
-            <div class="rank-bar"><span style="width:${(Number(item.score || 0) / maxScore) * 100}%"></span></div>
+            <div class="rank-bar"><span data-width="${(Number(item.score || 0) / maxScore) * 100}" style="width:${clampBarPercent((Number(item.score || 0) / maxScore) * 100)}%"></span></div>
             <div class="recent-meta">${item.provider} · ${formatNum(item.recentCalls)} calls · ${formatNum(item.recentTokens)} tokens</div>
           </div>
           <div class="recent-score">${Number(item.score || 0)}</div>
         </div>
       `).join(''));
+      applyRankBarWidths(root);
     }
 
     function renderToolFailures() {

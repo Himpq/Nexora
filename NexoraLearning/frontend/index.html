@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NexoraLearning Dashboard</title>
+  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260421_11">
+</head>
+<body>
+  <main class="learning-shell" id="learningPanel">
+    <section class="workbench-grid">
+      <article class="panel-card progress-panel">
+        <header class="panel-head">
+          <p class="panel-kicker">course progress</p>
+        </header>
+        <div id="progressList" class="progress-list"></div>
+      </article>
+
+      <div class="side-column">
+        <article class="panel-card pie-panel">
+          <header class="panel-head">
+            <p class="panel-kicker">study time share</p>
+          </header>
+          <div id="timePieChart" class="time-pie-chart" aria-label="学习时间占比"></div>
+        </article>
+
+        <article class="panel-card profile-panel">
+          <section id="userProfileCard" class="user-profile-card" aria-label="sample user profile"></section>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <script src="/api/frontend/assets/app.js?v=20260421_11"></script>
+</body>
+</html>

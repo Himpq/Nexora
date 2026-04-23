@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
@@ -909,8 +909,8 @@
                         {% if nexora_mail_enabled %}
                         <button type="button" id="settingsAdminMailBtn" class="admin-tab settings-admin-entry" data-tab="admin-mail" style="display:none;">邮箱管理</button>
                         {% endif %}
-                        <button type="button" id="settingsAdminStatsBtn" class="admin-tab settings-admin-entry" data-tab="admin-stats" style="display:none;">统计信息</button>
                         <button type="button" id="settingsAdminModelsBtn" class="admin-tab settings-admin-entry" data-tab="admin-models" style="display:none;">模型管理</button>
+                        <button type="button" id="settingsAdminStatsBtn" class="admin-tab settings-admin-entry" data-tab="admin-stats" style="display:none;">统计信息</button>
                         <button type="button" id="settingsAdminChromaBtn" class="admin-tab settings-admin-entry" data-tab="admin-chroma" style="display:none;">向量库</button>
                     </aside>
                     <section class="admin-content settings-content">
@@ -1044,17 +1044,27 @@
                             </div>
                         </div>
                         <div id="settings-admin-models-tab" class="admin-tab-content">
-                            <div class="model-admin-panel">
-                                <div class="model-admin-head">
-                                    <h4>模型列表</h4>
-                                    <input id="adminModelSearchInput" class="input-modern model-admin-search" placeholder="搜索：Provider / BaseURL / 模型ID / 名称 / 状态">
-                                    <div class="model-admin-actions">
-                                        <button id="btnAddProvider" class="model-icon-btn model-icon-btn-dark" title="Add Provider"><i class="fa-solid fa-plug"></i></button>
-                                        <button id="btnAddModel" class="model-icon-btn model-icon-btn-dark" title="Add Model"><i class="fa-solid fa-cube"></i></button>
-                                    </div>
+                            <div class="admin-users-toolbar">
+                                <button id="btnAddProvider" class="btn-primary" type="button">+ 添加供应商</button>
+                                <button id="btnAddModel" class="btn-primary" type="button">+ 添加模型</button>
+                                <input id="adminModelSearchInput" class="input-modern model-admin-search" placeholder="筛选模型：Provider / BaseURL / 模型ID / 名称 / 状态">
+                                <div class="model-admin-toolbar-unit">
+                                    <label for="adminQuotaUnitSelect">单位</label>
+                                    <select id="adminQuotaUnitSelect" class="input-modern" title="额度显示单位">
+                                        <option value="auto">自动</option>
+                                        <option value="k">K</option>
+                                        <option value="w">w</option>
+                                        <option value="m">M</option>
+                                        <option value="token">token</option>
+                                    </select>
                                 </div>
-                                <div id="adminModelConfigList" class="model-admin-list">
-                                    <div class="model-admin-empty">Loading...</div>
+                            </div>
+                            <div class="admin-users-layout model-admin-users-layout" style="padding-top:12px;">
+                                <div id="adminModelProviderList" class="admin-users-list">
+                                    <div class="admin-user-detail-empty">Loading...</div>
+                                </div>
+                                <div id="adminModelConfigList" class="admin-user-detail">
+                                    <div class="admin-user-detail-empty">请选择左侧供应商查看模型</div>
                                 </div>
                             </div>
                         </div>

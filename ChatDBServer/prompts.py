@@ -31,6 +31,11 @@ default_base = """
 
 """
 
+nexoracode_prompt = """
+用户现已接入 NexoraCode，你可以调用一些工具执行本地命令、在用户电脑上渲染内容等。
+{{nexoracode_uploaded_prompt}}
+"""
+
 
 system_web_search_enabled = """
 当前会话能力：
@@ -447,3 +452,19 @@ default = default_base
 
 others = {
 }
+
+
+experiment_prompts = """
+If you think the task haven't been completed yet:
+Use <title></title> to output the title of your next step, and use <think></think> to output the content of your planning.
+title and think should be used together, and you can use them multiple times in the conversation to continuously plan your next steps.
+content inside title and think will presented to the user as your thought process.
+it should be frank and detailed, and can include your analysis, reasoning, doubts, plans, etc. to show how you think about the task and how you plan to complete it.
+
+
+If you think the task has been completed:
+Use <final></final> to output your final answer to the user.
+
+Things without "final", "title" or "think" tags will not be presented to the user.
+"""
+# 要求

@@ -1,71 +1,49 @@
 import difflib
 import json
 import os
-import threading
 import time
 from typing import Any, Dict, List, Optional
+
+from datastorage import get_user_lock, safe_append_jsonl, safe_read_jsonl_tail, safe_read_json
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 TIMELINE_DIR = os.path.join(DATA_DIR, "users")
 
-_user_locks: Dict[str, threading.Lock] = {}
-_user_locks_lock = threading.Lock()
-
-
-def _get_user_lock(username: str) -> threading.Lock:
-    user = str(username or "").strip()
-    if not user:
-        user = "unknown"
-    with _user_locks_lock:
-        lock = _user_locks.get(user)
-        if lock is None:
-            lock = threading.Lock()
-            _user_locks[user] = lock
-        return lock
-
-
-def _timeline_path(username: str) -> str:
+def _timeline_path(username: str, is_jsonl: bool = True) -> str:
     user = str(username or "").strip() or "unknown"
-    return os.path.join(TIMELINE_DIR, user, "timeline.json")
-
+    ext = "jsonl" if is_jsonl else "json"
+    return os.path.join(TIMELINE_DIR, user, f"timeline.{ext}")
 
 def _default_store() -> Dict[str, Any]:
     return {"version": 1, "items": []}
 
-
-def _safe_read_json(path: str, default: Optional[dict] = None) -> dict:
-    try:
-        with open(path, "rb") as f:
-            raw = f.read()
-    except FileNotFoundError:
-        return default if isinstance(default, dict) else _default_store()
-    except Exception:
-        return default if isinstance(default, dict) else _default_store()
-
-    for encoding in ("utf-8", "utf-8-sig"):
-        try:
-            parsed = json.loads(raw.decode(encoding))
-            return parsed if isinstance(parsed, dict) else _default_store()
-        except Exception:
-            continue
-    try:
-        parsed = json.loads(raw.decode("utf-8", errors="replace"))
-        return parsed if isinstance(parsed, dict) else _default_store()
-    except Exception:
-        return default if isinstance(default, dict) else _default_store()
-
-
-def _safe_write_json(path: str, payload: dict) -> None:
-    directory = os.path.dirname(path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-    temp_path = f"{path}.tmp"
-    with open(temp_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(temp_path, path)
+def _ensure_hot_migration(username: str):
+    user = str(username or "").strip() or "unknown"
+    old_path = _timeline_path(user, is_jsonl=False)
+    new_path = _timeline_path(user, is_jsonl=True)
+    
+    with get_user_lock(user):
+        if os.path.exists(old_path) and not os.path.exists(new_path):
+            try:
+                store = safe_read_json(old_path, default=_default_store())
+                items = store.get("items", []) if isinstance(store, dict) else []
+                if items:
+                    real_items = [i for i in items if isinstance(i, dict)]
+                    real_items.reverse()  # 旧版是最新的排最前，转换 JSONL 时老数据放前面
+                    
+                    directory = os.path.dirname(new_path)
+                    if directory:
+                        os.makedirs(directory, exist_ok=True)
+                        
+                    with open(new_path, "w", encoding="utf-8") as f:
+                        for it in real_items:
+                            f.write(json.dumps(it, ensure_ascii=False) + "\n")
+                try:
+                    os.remove(old_path)
+                except: pass
+            except Exception as e:
+                print(f"[Timeline] 迁移 timeline 失败: {e}")
 
 
 def _clip_one_line(text: Any, limit: int = 120) -> str:
@@ -171,57 +149,42 @@ def _normalize_entry(username: str, raw: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _load_store(username: str) -> Dict[str, Any]:
-    path = _timeline_path(username)
-    if not os.path.exists(path):
-        return _default_store()
-    store = _safe_read_json(path, default=_default_store())
-    items = store.get("items", []) if isinstance(store, dict) else []
-    if not isinstance(items, list):
-        items = []
-    normalized = [_normalize_entry(username, item) for item in items if isinstance(item, dict)]
-    normalized.sort(key=lambda x: float(x.get("ts") or 0), reverse=True)
-    return {"version": 1, "items": normalized}
-
-
-def _save_store(username: str, store: Dict[str, Any]) -> Dict[str, Any]:
-    path = _timeline_path(username)
-    payload = _default_store()
-    payload["items"] = []
-    items = store.get("items", []) if isinstance(store, dict) else []
-    if isinstance(items, list):
-        payload["items"] = [_normalize_entry(username, item) for item in items if isinstance(item, dict)]
-    payload["items"].sort(key=lambda x: float(x.get("ts") or 0), reverse=True)
-    payload["items"] = payload["items"][:1200]
-    _safe_write_json(path, payload)
-    return payload
-
-
 def append_entry(username: str, entry: Dict[str, Any]) -> Dict[str, Any]:
     user = str(username or "").strip() or "unknown"
-    lock = _get_user_lock(user)
-    with lock:
-        store = _load_store(user)
-        normalized = _normalize_entry(user, entry)
-        store["items"] = [normalized, *store.get("items", [])]
-        saved = _save_store(user, store)
-        return saved["items"][0] if saved.get("items") else normalized
+    _ensure_hot_migration(user)
+    
+    normalized = _normalize_entry(user, entry)
+    new_path = _timeline_path(user, is_jsonl=True)
+    
+    lock = get_user_lock(user)
+    safe_append_jsonl(new_path, normalized, lock=lock)
+    return normalized
 
 
 def list_entries(username: str, limit: int = 120, kind: Optional[str] = None) -> List[Dict[str, Any]]:
     user = str(username or "").strip() or "unknown"
-    lock = _get_user_lock(user)
-    with lock:
-        store = _load_store(user)
-    items = store.get("items", [])
-    if kind:
-        k = str(kind or "").strip().lower()
-        items = [item for item in items if str(item.get("kind") or item.get("type") or "").strip().lower() == k]
+    _ensure_hot_migration(user)
+    
+    new_path = _timeline_path(user, is_jsonl=True)
+
     try:
         lim = int(limit or 120)
     except Exception:
         lim = 120
-    lim = max(1, min(lim, 500))
+    lim = max(1, min(lim, 5000))
+    
+    read_lim = lim
+    if kind:
+        read_lim = max(lim * 20, 5000)
+
+    lock = get_user_lock(user)
+    with lock:
+        items = safe_read_jsonl_tail(new_path, limit=read_lim)
+
+    if kind:
+        k = str(kind or "").strip().lower()
+        items = [item for item in items if str(item.get("kind") or item.get("type") or "").strip().lower() == k]
+
     return items[:lim]
 
 

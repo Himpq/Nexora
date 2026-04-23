@@ -19,6 +19,7 @@ from database import User, BASIS
 from conversation_manager import ConversationManager
 from provider_factory import create_provider_adapter
 from temp_context_store import TempContextStore
+from server_quota import get_generation_quota_gate
 from longterm.longterm_api import (
     build_longterm_hook_payload,
     build_longterm_prompt_block,
@@ -3436,6 +3437,105 @@ class Model:
             return
 
         try:
+            quota_gate = get_generation_quota_gate(provider_name=self.provider, model_name=self.model_name)
+        except Exception:
+            quota_gate = {}
+        try:
+            _q_model_status = quota_gate.get("model_status", {}) if isinstance(quota_gate.get("model_status"), dict) else {}
+            print(
+                f"[QUOTA_GATE] provider={self.provider} model={self.model_name} "
+                f"enabled={bool(quota_gate.get('enabled'))} should_block={bool(quota_gate.get('should_block'))} "
+                f"reason={str(quota_gate.get('reason', '') or '')} "
+                f"model_quota_set={bool(_q_model_status.get('quota_set'))} "
+                f"model_remaining={_q_model_status.get('remaining_tokens')}"
+            )
+        except Exception:
+            pass
+        if quota_gate.get("should_block"):
+            # Ensure blocked turns are still traceable in conversation history.
+            # For non-regenerate user turns, persist the triggering user message before returning.
+            try:
+                skip_user_message_flag = self._as_bool(skip_user_message, default=False)
+            except Exception:
+                skip_user_message_flag = bool(skip_user_message)
+            try:
+                if self.persist_conversation and (not self.conversation_id):
+                    self.conversation_id = self.conversation_manager.create_conversation()
+            except Exception:
+                pass
+            try:
+                if (
+                    self.persist_conversation
+                    and (not is_regenerate)
+                    and self.conversation_id
+                    and (not skip_user_message_flag)
+                ):
+                    blocked_user_text = str(msg or '').strip()
+                    if blocked_user_text:
+                        self.conversation_manager.add_message(
+                            self.conversation_id,
+                            "user",
+                            blocked_user_text,
+                            metadata={
+                                "source": "quota_precheck",
+                                "blocked": True,
+                                "error_code": "quota_exhausted",
+                                "model_name": str(self.model_name or '').strip(),
+                                "provider": str(self.provider or '').strip(),
+                            }
+                        )
+            except Exception as _persist_user_err:
+                try:
+                    print(f"[QUOTA_GATE] persist blocked user message failed: {_persist_user_err}")
+                except Exception:
+                    pass
+            if quota_gate.get("reason") == "model_exhausted":
+                model_status = quota_gate.get("model_status", {}) if isinstance(quota_gate.get("model_status"), dict) else {}
+                model_remaining = model_status.get("remaining_tokens")
+                if model_remaining is None:
+                    model_remaining = 0
+                yield {
+                    "type": "error",
+                    "error_code": "quota_exhausted",
+                    "retryable": False,
+                    "content": f"模型额度已用尽（{self.model_name}，剩余额度 {int(model_remaining)}）。已按设置停止模型使用。"
+                }
+            else:
+                quota_status = quota_gate.get("quota", {}) if isinstance(quota_gate.get("quota"), dict) else {}
+                remaining_tokens = int(quota_status.get("remaining_tokens", 0) or 0)
+                yield {
+                    "type": "error",
+                    "error_code": "quota_exhausted",
+                    "retryable": False,
+                    "content": f"服务器额度已用尽（剩余额度 {remaining_tokens}）。已按设置停止模型使用。"
+                }
+            return
+
+        has_text_output = False
+        quota_status_seed = quota_gate.get("quota", {}) if isinstance(quota_gate.get("quota"), dict) else {}
+        quota_model_status_seed = quota_gate.get("model_status", {}) if isinstance(quota_gate.get("model_status"), dict) else {}
+        quota_enabled_seed = bool(quota_gate.get("enabled"))
+        quota_model_set_seed = bool(quota_model_status_seed.get("quota_set"))
+        quota_model_remaining_seed = None
+        if quota_model_set_seed:
+            try:
+                quota_model_remaining_seed = int(quota_model_status_seed.get("remaining_tokens", 0) or 0)
+            except Exception:
+                quota_model_remaining_seed = 0
+        quota_model_disable_action_seed = str(
+            quota_gate.get("provider_on_exhausted", quota_gate.get("on_exhausted", "disable_model")) or "disable_model"
+        ).strip().lower() in {"disable_model", "disable_and_notify"}
+        try:
+            quota_global_total_seed = int(quota_status_seed.get("total_tokens", 0) or 0)
+        except Exception:
+            quota_global_total_seed = 0
+        try:
+            quota_global_remaining_seed = int(quota_status_seed.get("remaining_tokens", 0) or 0)
+        except Exception:
+            quota_global_remaining_seed = 0
+        quota_global_disable_action_seed = str(quota_gate.get("global_on_exhausted", "disable_model") or "disable_model").strip().lower() in {"disable_model", "disable_and_notify"}
+
+        try:
             # 确保对话已创建
             if not self.conversation_id and self.persist_conversation:
                 self.conversation_id = self.conversation_manager.create_conversation()
@@ -4308,6 +4408,9 @@ class Model:
             accumulated_content = ""
             accumulated_reasoning = ""  # 累积思维链内容
             process_steps = []  # 记录完整的工具调用过程
+            terminal_error_content = ""
+            terminal_error_code = ""
+            terminal_error_retryable = False
             request_input_tokens_total = 0
             request_output_tokens_total = 0
             request_input_tokens_raw_total = 0
@@ -4866,6 +4969,45 @@ class Model:
                     except Exception:
                         pass
 
+                    def _build_quota_preflight_error_payload(round_input_tokens_estimate: Any) -> Optional[Dict[str, Any]]:
+                        if not quota_enabled_seed:
+                            return None
+                        try:
+                            estimated_input = int(max(0, _safe_int_local(round_input_tokens_estimate, 0)))
+                        except Exception:
+                            estimated_input = 0
+                        if estimated_input <= 0:
+                            return None
+
+                        already_consumed_input = int(max(0, _safe_int_local(request_input_tokens_total, 0)))
+
+                        if quota_model_set_seed and quota_model_disable_action_seed and quota_model_remaining_seed is not None:
+                            model_remaining_now = int(quota_model_remaining_seed - already_consumed_input)
+                            if (model_remaining_now <= 0) or (estimated_input > model_remaining_now):
+                                return {
+                                    "type": "error",
+                                    "error_code": "quota_preflight_model",
+                                    "retryable": False,
+                                    "content": (
+                                        f"模型额度不足，已在请求前拦截（{self.model_name}，"
+                                        f"剩余 {max(0, model_remaining_now)}，预计本轮输入 {estimated_input}）。"
+                                    ),
+                                }
+
+                        if quota_global_disable_action_seed and quota_global_total_seed > 0:
+                            global_remaining_now = int(quota_global_remaining_seed - already_consumed_input)
+                            if (global_remaining_now <= 0) or (estimated_input > global_remaining_now):
+                                return {
+                                    "type": "error",
+                                    "error_code": "quota_preflight_global",
+                                    "retryable": False,
+                                    "content": (
+                                        f"服务器额度不足，已在请求前拦截（全局剩余 {max(0, global_remaining_now)}，"
+                                        f"预计本轮输入 {estimated_input}）。"
+                                    ),
+                                }
+                        return None
+
                     if debug_mode:
                         debug_tools_payload = request_params.get("tools", [])
                         yield _build_debug_trace(
@@ -4947,6 +5089,20 @@ class Model:
                     
                     # 调用API
                     print(f"[DEBUG_API] 发送请求 (Provider: {self.provider})")
+
+                    preflight_quota_error = _build_quota_preflight_error_payload(round_input_est_tokens)
+                    if isinstance(preflight_quota_error, dict):
+                        terminal_error_content = str(preflight_quota_error.get("content") or "").strip()
+                        terminal_error_code = str(preflight_quota_error.get("error_code") or "").strip()
+                        terminal_error_retryable = bool(preflight_quota_error.get("retryable", False))
+                        process_steps.append({
+                            "type": "error",
+                            "code": terminal_error_code or "quota_preflight",
+                            "retryable": terminal_error_retryable,
+                            "content": terminal_error_content,
+                        })
+                        yield preflight_quota_error
+                        return
                     
                     response_iterator = None
                     try:
@@ -5000,6 +5156,19 @@ class Model:
                                  f"[ROUND_PAYLOAD_RETRY] round={round_num + 1} input_count={round_input_count} "
                                  f"input_chars={round_input_chars} input_est_tokens={round_input_est_tokens}"
                              )
+                             preflight_quota_error_retry = _build_quota_preflight_error_payload(round_input_est_tokens)
+                             if isinstance(preflight_quota_error_retry, dict):
+                                 terminal_error_content = str(preflight_quota_error_retry.get("content") or "").strip()
+                                 terminal_error_code = str(preflight_quota_error_retry.get("error_code") or "").strip()
+                                 terminal_error_retryable = bool(preflight_quota_error_retry.get("retryable", False))
+                                 process_steps.append({
+                                     "type": "error",
+                                     "code": terminal_error_code or "quota_preflight",
+                                     "retryable": terminal_error_retryable,
+                                     "content": terminal_error_content,
+                                 })
+                                 yield preflight_quota_error_retry
+                                 return
                              response_iterator = self.provider_adapter.create_stream_iterator(
                                  client=self.client,
                                  request_params=request_params,
@@ -5084,6 +5253,48 @@ class Model:
                                     response_id_seen_count += 1
                                     round_response_id_emitted = True
                                 continue
+
+                            if ev_type == "error":
+                                error_message = str(
+                                    event.get("content", "")
+                                    or event.get("error", "")
+                                    or event.get("message", "")
+                                    or "Unknown stream error"
+                                ).strip()
+                                lower_error = error_message.lower()
+                                error_code = str(event.get("error_code", "") or "").strip()
+                                if (not error_code) and any(
+                                    hint in lower_error for hint in (
+                                        "rate limit",
+                                        "too many requests",
+                                        "insufficient_quota",
+                                        "quota exceeded",
+                                        "resource exhausted",
+                                        "429",
+                                    )
+                                ):
+                                    error_code = "rate_limit"
+                                error_payload = {
+                                    "type": "error",
+                                    "content": error_message or "Unknown stream error",
+                                }
+                                if error_code:
+                                    error_payload["error_code"] = error_code
+                                if "retryable" in event:
+                                    error_payload["retryable"] = bool(event.get("retryable"))
+                                elif error_code == "rate_limit":
+                                    error_payload["retryable"] = True
+                                terminal_error_content = str(error_payload.get("content") or "").strip()
+                                terminal_error_code = str(error_payload.get("error_code") or "").strip()
+                                terminal_error_retryable = bool(error_payload.get("retryable", False))
+                                process_steps.append({
+                                    "type": "error",
+                                    "code": terminal_error_code or "stream_error",
+                                    "retryable": terminal_error_retryable,
+                                    "content": terminal_error_content,
+                                })
+                                yield error_payload
+                                return
 
                             if ev_type == "content_delta":
                                 if round_first_emit_at is None:
@@ -5606,9 +5817,11 @@ class Model:
             finally:
                 # 统一保存消息（无论正常结束、Function调用中断、Client中断）
                 # 只有当有内容或有步骤时才保存
-                if accumulated_content or process_steps:
+                if accumulated_content or process_steps or terminal_error_content:
                     print(f"[DEBUG] 保存助手消息，Steps: {len(process_steps)}")
                     saved_assistant_content = accumulated_content
+                    if (not str(saved_assistant_content or "").strip()) and str(terminal_error_content or "").strip():
+                        saved_assistant_content = str(terminal_error_content or "").strip()
                     longterm_hook_payload = {}
                     if normalized_conversation_mode == "longterm":
                         longterm_hook_payload = build_longterm_hook_payload(
@@ -5697,6 +5910,12 @@ class Model:
                     # 保存思维链内容（如果有）
                     if accumulated_reasoning:
                         metadata["reasoning_content"] = accumulated_reasoning
+                    if str(terminal_error_content or "").strip():
+                        metadata["terminal_error"] = {
+                            "content": str(terminal_error_content or "").strip(),
+                            "code": str(terminal_error_code or "").strip(),
+                            "retryable": bool(terminal_error_retryable),
+                        }
                     
                     if self.persist_conversation and self.conversation_id:
                         self.conversation_manager.add_message(
@@ -5786,8 +6005,126 @@ class Model:
                      pass
             
         except Exception as e:
-            error_msg = f"错误: {str(e)}"
+            err_text = str(e or "")
+            rate_limit_hints = (
+                "rate limit",
+                "too many requests",
+                "insufficient_quota",
+                "global rate limit",
+                "quota exceeded",
+                "resource exhausted",
+                "429",
+            )
+            network_hints = (
+                "connection reset",
+                "connection aborted",
+                "connection error",
+                "connection refused",
+                "failed to establish a new connection",
+                "name or service not known",
+                "temporary failure in name resolution",
+                "timed out",
+                "timeout",
+                "incomplete chunked read",
+                "remoteprotocolerror",
+                "readerror",
+                "eof",
+                "peer closed connection",
+            )
+            if any(hint in err_text.lower() for hint in rate_limit_hints):
+                error_msg = f"模型限流/额度超限: {err_text}"
+                print(f"[ERROR] {error_msg}")
+                if self.persist_conversation and self.conversation_id:
+                    try:
+                        self.conversation_manager.add_message(
+                            self.conversation_id,
+                            "assistant",
+                            error_msg,
+                            metadata={
+                                "process_steps": [{
+                                    "type": "error",
+                                    "code": "rate_limit",
+                                    "retryable": True,
+                                    "content": error_msg
+                                }],
+                                "terminal_error": {
+                                    "content": error_msg,
+                                    "code": "rate_limit",
+                                    "retryable": True
+                                },
+                                "conversation_mode": str(locals().get("normalized_conversation_mode", "chat") or "chat")
+                            },
+                            index=regenerate_index if is_regenerate else None
+                        )
+                    except Exception:
+                        pass
+                yield {
+                    "type": "error",
+                    "error_code": "rate_limit",
+                    "retryable": True,
+                    "content": error_msg
+                }
+                return
+            if any(hint in err_text.lower() for hint in network_hints):
+                error_msg = f"网络异常，流式连接中断: {err_text}"
+                print(f"[ERROR] {error_msg}")
+                if self.persist_conversation and self.conversation_id:
+                    try:
+                        self.conversation_manager.add_message(
+                            self.conversation_id,
+                            "assistant",
+                            error_msg,
+                            metadata={
+                                "process_steps": [{
+                                    "type": "error",
+                                    "code": "network_error",
+                                    "retryable": True,
+                                    "content": error_msg
+                                }],
+                                "terminal_error": {
+                                    "content": error_msg,
+                                    "code": "network_error",
+                                    "retryable": True
+                                },
+                                "conversation_mode": str(locals().get("normalized_conversation_mode", "chat") or "chat")
+                            },
+                            index=regenerate_index if is_regenerate else None
+                        )
+                    except Exception:
+                        pass
+                yield {
+                    "type": "error",
+                    "error_code": "network_error",
+                    "retryable": True,
+                    "content": error_msg
+                }
+                return
+            error_msg = f"错误: {err_text}"
             print(f"[ERROR] {error_msg}")
+            if self.persist_conversation and self.conversation_id:
+                try:
+                    self.conversation_manager.add_message(
+                        self.conversation_id,
+                        "assistant",
+                        error_msg,
+                        metadata={
+                            "process_steps": [{
+                                "type": "error",
+                                "code": "server_error",
+                                "retryable": False,
+                                "content": error_msg
+                            }],
+                            "terminal_error": {
+                                "content": error_msg,
+                                "code": "server_error",
+                                "retryable": False
+                            },
+                            "conversation_mode": str(locals().get("normalized_conversation_mode", "chat") or "chat")
+                        },
+                        index=regenerate_index if is_regenerate else None
+                    )
+                except Exception:
+                    pass
             yield {"type": "error", "content": error_msg}
         finally:
             self._clear_runtime_tool_selection()

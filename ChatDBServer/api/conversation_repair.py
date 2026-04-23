@@ -42,6 +42,140 @@ def decode_loose_json_string(raw: str) -> str:
         return fallback
 
 
+def _repair_json_text(text: str) -> str:
+    out: List[str] = []
+    in_string = False
+    escape = False
+    n = len(text)
+    i = 0
+
+    while i < n:
+        ch = text[i]
+        if not in_string:
+            out.append('\ufffd' if '\udc80' <= ch <= '\udcff' else ch)
+            if ch == '"':
+                in_string = True
+            i += 1
+            continue
+
+        if escape:
+            out.append(ch)
+            escape = False
+            i += 1
+            continue
+
+        if ch == '\\':
+            out.append(ch)
+            escape = True
+            i += 1
+            continue
+
+        if ch == '"':
+            j = i + 1
+            while j < n and text[j] in ' \t\r\n':
+                j += 1
+            nextch = text[j] if j < n else ''
+            if nextch in ',:}]' or nextch == '':
+                out.append(ch)
+                in_string = False
+            else:
+                out.append('\\"')
+            i += 1
+            continue
+
+        out.append('\ufffd' if '\udc80' <= ch <= '\udcff' else ch)
+        i += 1
+
+    return ''.join(out)
+
+
+def _extract_balanced_fragment(text: str, start: int, opening: str, closing: str) -> Optional[str]:
+    if start < 0 or start >= len(text) or text[start] != opening:
+        return None
+
+    depth = 0
+    in_string = False
+    escape = False
+    for idx in range(start, len(text)):
+        ch = text[idx]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == '\\':
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+
+        if ch == '"':
+            in_string = True
+        elif ch == opening:
+            depth += 1
+        elif ch == closing:
+            depth -= 1
+            if depth == 0:
+                return text[start:idx + 1]
+
+    return None
+
+
+def _extract_json_value(text: str, field_name: str, default: Any = None) -> Any:
+    marker = f'"{field_name}":'
+    start = text.find(marker)
+    if start < 0:
+        return default
+
+    value_start = start + len(marker)
+    while value_start < len(text) and text[value_start] in ' \t\r\n':
+        value_start += 1
+
+    if value_start >= len(text):
+        return default
+
+    if text[value_start] == '"':
+        end = value_start + 1
+        escape = False
+        while end < len(text):
+            ch = text[end]
+            if escape:
+                escape = False
+            elif ch == '\\':
+                escape = True
+            elif ch == '"':
+                break
+            end += 1
+        if end >= len(text):
+            return default
+        return decode_loose_json_string(text[value_start + 1:end])
+
+    if text[value_start] in '{[':
+        opening = text[value_start]
+        fragment = _extract_balanced_fragment(text, value_start, opening, '}' if opening == '{' else ']')
+        if fragment is not None:
+            return fragment
+        return default
+
+    end = value_start
+    while end < len(text) and text[end] not in ',}]\r\n':
+        end += 1
+    raw_value = text[value_start:end].strip()
+    if raw_value in ('true', 'false'):
+        return raw_value == 'true'
+    if raw_value == 'null':
+        return None
+    return raw_value if raw_value else default
+
+
+def _clean_surrogates(value: Any) -> Any:
+    if isinstance(value, str):
+        return ''.join('\ufffd' if 0xD800 <= ord(ch) <= 0xDFFF else ch for ch in value)
+    if isinstance(value, list):
+        return [_clean_surrogates(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _clean_surrogates(item) for key, item in value.items()}
+    return value
+
+
 def _extract_json_string_field(text: str, field_name: str, default: str = '') -> str:
     marker = f'"{field_name}": "'
     start = text.find(marker)
@@ -67,13 +201,21 @@ def _extract_context_compressions(text: str) -> List[Dict[str, Any]]:
     start = text.find('"context_compressions": [')
     if start < 0:
         return []
-    candidate = '{' + text[start:]
+
+    array_start = text.find('[', start)
+    if array_start < 0:
+        return []
+
+    fragment = _extract_balanced_fragment(text, array_start, '[', ']')
+    if not fragment:
+        return []
+
     try:
-        parsed = json.loads(candidate)
-        arr = parsed.get('context_compressions', [])
-        return arr if isinstance(arr, list) else []
+        parsed = json.loads(_repair_json_text(fragment))
     except Exception:
         return []
+
+    return parsed if isinstance(parsed, list) else []
 
 
 def _find_content_end(chunk: str, content_start: int) -> int:
@@ -113,6 +255,72 @@ def _fill_missing_timestamps(messages: List[Dict[str, Any]]) -> None:
             item['timestamp'] = prev_known
 
 
+def _parse_message_chunk(chunk: str) -> Dict[str, Any]:
+    repaired = _repair_json_text(chunk)
+    try:
+        parsed = json.loads(repaired)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    item: Dict[str, Any] = {
+        'role': _extract_json_value(chunk, 'role', 'assistant') or 'assistant',
+        'content': _extract_json_value(chunk, 'content', '') or '',
+        'timestamp': _extract_json_value(chunk, 'timestamp', '') or '',
+    }
+
+    model_name = _extract_json_value(chunk, 'model_name', '')
+    if isinstance(model_name, str) and model_name:
+        item['model_name'] = model_name
+
+    exchange_summary = _extract_json_value(chunk, 'exchange_summary', '')
+    if isinstance(exchange_summary, str) and exchange_summary:
+        item['exchange_summary'] = exchange_summary
+
+    metadata_start = chunk.find('"metadata":')
+    if metadata_start >= 0:
+        fragment_start = chunk.find('{', metadata_start)
+        if fragment_start >= 0:
+            metadata_fragment = _extract_balanced_fragment(chunk, fragment_start, '{', '}')
+            metadata: Dict[str, Any] = {}
+            if metadata_fragment:
+                parsed_metadata = None
+                try:
+                    parsed_metadata = json.loads(_repair_json_text(metadata_fragment))
+                except Exception:
+                    parsed_metadata = None
+                if isinstance(parsed_metadata, dict):
+                    metadata = parsed_metadata
+                else:
+                    meta_model_name = _extract_json_value(metadata_fragment, 'model_name', '')
+                    if isinstance(meta_model_name, str) and meta_model_name:
+                        metadata['model_name'] = meta_model_name
+
+                    search_enabled = _extract_json_value(metadata_fragment, 'search_enabled', None)
+                    if isinstance(search_enabled, bool):
+                        metadata['search_enabled'] = search_enabled
+
+                    reasoning_content = _extract_json_value(metadata_fragment, 'reasoning_content', '')
+                    if isinstance(reasoning_content, str) and reasoning_content:
+                        metadata['reasoning_content'] = reasoning_content
+
+                    for subkey in ('request_debug', 'io_tokens'):
+                        raw_value = _extract_json_value(metadata_fragment, subkey, None)
+                        if isinstance(raw_value, str):
+                            try:
+                                parsed_value = json.loads(_repair_json_text(raw_value))
+                            except Exception:
+                                parsed_value = None
+                            if isinstance(parsed_value, dict):
+                                metadata[subkey] = parsed_value
+
+            if metadata:
+                item['metadata'] = metadata
+
+    return item
+
+
 def _repair_messages(text: str) -> List[Dict[str, Any]]:
     start = text.find('"messages": [')
     if start < 0:
@@ -127,37 +335,8 @@ def _repair_messages(text: str) -> List[Dict[str, Any]]:
 
     for idx, pos in enumerate(positions):
         next_pos = positions[idx + 1] if idx + 1 < len(positions) else len(body)
-        chunk = body[pos:next_pos]
-
-        role_match = re.search(r'"role":\s*"([^"]+)"', chunk)
-        if not role_match:
-            continue
-        role = role_match.group(1).strip()
-        if not role:
-            continue
-
-        content = ''
-        content_marker = re.search(r'"content":\s*"', chunk)
-        if content_marker:
-            content_start = content_marker.end()
-            content_end = _find_content_end(chunk, content_start)
-            raw_content = chunk[content_start:content_end]
-            content = decode_loose_json_string(raw_content)
-
-        timestamp_match = re.search(r'"timestamp":\s*"([^"]+)"', chunk)
-        timestamp = timestamp_match.group(1).strip() if timestamp_match else ''
-
-        item: Dict[str, Any] = {
-            'role': role,
-            'content': content,
-            'timestamp': timestamp,
-        }
-
-        model_match = re.search(r'"model_name":\s*"([^"]+)"', chunk)
-        if model_match:
-            item['model_name'] = decode_loose_json_string(model_match.group(1))
-
-        messages.append(item)
+        chunk = body[pos:next_pos].rstrip(',\n\r \t')
+        messages.append(_parse_message_chunk(chunk))
 
     _fill_missing_timestamps(messages)
     return messages
@@ -212,6 +391,8 @@ def repair_conversation_file(file_path: str, backup: bool = True) -> Optional[Di
     repaired = recover_conversation_bytes(raw, source_path=file_path)
     if not isinstance(repaired, dict):
         return None
+
+    repaired = _clean_surrogates(repaired)
 
     if backup:
         backup_path = f'{file_path}.bak'

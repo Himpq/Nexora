@@ -10,11 +10,9 @@ from datetime import datetime
 
 from conversation_repair import recover_conversation_bytes
 from longterm.longterm_api import conversation_longterm_root_state, normalize_longterm_state
-
+from datastorage import get_path_lock, safe_write_json
 
 class ConversationManager:
-    _path_locks = {}
-    _path_locks_guard = threading.Lock()
     """对话记录管理类"""
     
     def __init__(self, username):
@@ -30,20 +28,10 @@ class ConversationManager:
         # 确保对话目录存在
         os.makedirs(self.base_path, exist_ok=True)
 
-    @classmethod
-    def _get_path_lock(cls, path):
-        normalized = os.path.abspath(str(path or ''))
-        with cls._path_locks_guard:
-            lock = cls._path_locks.get(normalized)
-            if lock is None:
-                lock = threading.RLock()
-                cls._path_locks[normalized] = lock
-            return lock
-
     @contextmanager
     def _conversation_update_session(self, conversation_id):
         conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
-        with self._get_path_lock(conversation_path):
+        with get_path_lock(conversation_path):
             if not os.path.exists(conversation_path):
                 raise ValueError(f"对话不存在: {conversation_id}")
             conversation_data = self._load_json_data(conversation_path, default=None)
@@ -89,29 +77,8 @@ class ConversationManager:
         return conversation_path, conversation_data
 
     def _save_json_atomic(self, file_path, payload):
-        """原子写入，避免进程被终止时把原文件写坏。"""
-        directory = os.path.dirname(file_path)
-        if directory:
-            os.makedirs(directory, exist_ok=True)
-        temp_path = f"{file_path}.tmp"
-        backup_path = f"{file_path}.bak"
-        try:
-            payload_text = json.dumps(payload, ensure_ascii=False, indent=2)
-            json.loads(payload_text)
-            with open(temp_path, 'w', encoding='utf-8') as f:
-                f.write(payload_text)
-                f.flush()
-                os.fsync(f.fileno())
-            if os.path.exists(file_path):
-                shutil.copyfile(file_path, backup_path)
-            os.replace(temp_path, file_path)
-        except Exception:
-            try:
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-            except Exception:
-                pass
-            raise
+        """原子写入包裹"""
+        safe_write_json(file_path, payload, indent=2)
     
     def create_conversation(self, conversation_id=None, title="新对话"):
         """
@@ -124,7 +91,7 @@ class ConversationManager:
         Returns:
             str: 对话ID
         """
-        with self._get_path_lock(self.base_path):
+        with get_path_lock(self.base_path):
             if conversation_id is None:
                 existing_ids = []
                 if os.path.exists(self.base_path):

@@ -32,11 +32,20 @@ from chroma_client import ChromaStore
 from file_sandbox import UserFileSandbox
 from provider_factory import create_provider_adapter
 from client_tool_bridge import pull_pending_request, submit_request_result, enqueue_request, wait_for_result, pull_local_tool_request
-from agent_tunnel import register_agent, unregister_agent, update_agent_tools, update_ping, is_agent_online
+from agent_tunnel import register_agent, unregister_agent, update_agent_tools, update_agent_prompt, update_ping, is_agent_online, handle_agent_result
 from stream_runtime import start_session as start_stream_session, iter_session_chunks as iter_stream_session_chunks, get_session_meta as get_stream_session_meta, request_cancel as request_stream_cancel
 from tools import canonicalize_tool_name
 from secure import normalize_text, resolve_configured_path, safe_filename, safe_join_path
 from timeline import list_entries as list_timeline_entries, record_notes_snapshot_change
+from datastorage import safe_read_json, safe_write_json
+from server_quota import (
+    get_server_quota_status,
+    update_server_quota_config,
+    adjust_model_quota_total,
+    set_model_quota_total,
+    get_generation_quota_gate,
+    is_stopped,
+)
 from flask_sock import Sock
 
 app = Flask(__name__)
@@ -251,6 +260,14 @@ DEFAULT_MODEL_ADAPTER_CONFIG = {
     "relay_order": []
 }
 
+DISABLED_MODEL_STATUSES = {
+    'disabled',
+    'off',
+    'stopped',
+    'quota_disabled',
+    'quota_exhausted',
+}
+
 
 def _merge_defaults(dst, src):
     changed = False
@@ -287,6 +304,17 @@ def ensure_main_config_defaults():
         with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
             json.dump(cfg, f, indent=4, ensure_ascii=False)
     return cfg
+
+
+def save_main_config(cfg):
+    if not isinstance(cfg, dict):
+        cfg = {}
+    payload = json.loads(json.dumps(cfg, ensure_ascii=False))
+    payload = {k: v for k, v in payload.items() if k not in {'models', 'providers'}}
+    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+    with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, indent=4, ensure_ascii=False)
+    return payload
 
 
 def _ensure_server_bootstrap_files():
@@ -337,16 +365,14 @@ _ensure_server_bootstrap_files()
 
 
 def load_users():
-    with open(USERS_PATH, 'r', encoding='utf-8') as f:
-        users = json.load(f)
+    users = safe_read_json(USERS_PATH, default={})
     if not isinstance(users, dict):
         return {}
     return users
 
 
 def save_users(users):
-    with open(USERS_PATH, 'w', encoding='utf-8') as f:
-        json.dump(users, f, indent=4, ensure_ascii=False)
+    safe_write_json(USERS_PATH, users, indent=4)
 
 
 def _normalize_skill_mode(raw: Any) -> str:
@@ -1811,6 +1837,171 @@ def save_models_config(models_cfg):
         json.dump(payload, f, indent=4, ensure_ascii=False)
 
 
+def _normalize_model_status_text(raw_status: Any) -> str:
+    status = str(raw_status or 'normal').strip().lower()
+    if not status:
+        return 'normal'
+
+    alias = {
+        'enable': 'normal',
+        'enabled': 'normal',
+        'normal': 'normal',
+        'active': 'normal',
+        'ok': 'normal',
+        'on': 'normal',
+        'disable': 'disabled',
+        'disabled': 'disabled',
+        'off': 'off',
+        'stopped': 'stopped',
+        'stop': 'stopped',
+        'quota-disabled': 'quota_disabled',
+        'quota disabled': 'quota_disabled',
+        'quota_exhausted': 'quota_exhausted',
+        'quota exhausted': 'quota_exhausted',
+        'ban': 'disabled',
+        'banned': 'disabled',
+        'forbidden': 'disabled',
+        'inactive': 'disabled',
+        '禁用': 'disabled',
+        '停用': 'disabled',
+        '关闭': 'off',
+        '已关闭': 'off',
+        '停止': 'stopped',
+        '已停用': 'disabled',
+        '已禁用': 'disabled',
+    }
+    return alias.get(status, status)
+
+
+def _is_model_disabled_status(raw_status: Any) -> bool:
+    return _normalize_model_status_text(raw_status) in DISABLED_MODEL_STATUSES
+
+
+def _is_model_disabled_entry(model_info: Any) -> bool:
+    info = model_info if isinstance(model_info, dict) else {}
+    return _is_model_disabled_status(info.get('status', 'normal'))
+
+
+def _normalize_quota_on_exhausted_action(raw_value: Any) -> str:
+    raw = str(raw_value or '').strip().lower()
+    if raw in {'stop_model', 'stop', 'block'}:
+        return 'disable_model'
+    if raw in {'none', 'noop', 'no-op'}:
+        return 'no_op'
+    if raw in {'no_op', 'disable_model', 'notify_admin', 'disable_and_notify'}:
+        return raw
+    return 'disable_model'
+
+
+def _disable_model_by_quota(model_id: Any, provider_name: Any = None, reason: str = 'quota_exhausted') -> Dict[str, Any]:
+    model_key = str(model_id or '').strip()
+    provider = str(provider_name or '').strip()
+    if not model_key:
+        return {'success': False, 'changed': False, 'message': 'model_id 不能为空'}
+
+    cfg = load_models_config()
+    models = cfg.setdefault('models', {})
+    model_info = models.get(model_key)
+    if not isinstance(model_info, dict):
+        return {'success': False, 'changed': False, 'message': '模型不存在'}
+
+    model_provider = str(model_info.get('provider') or '').strip()
+    if provider and model_provider and provider != model_provider:
+        return {
+            'success': False,
+            'changed': False,
+            'message': f'provider 不匹配: expect={provider} actual={model_provider}',
+        }
+
+    current_status = _normalize_model_status_text(model_info.get('status', 'normal'))
+    if _is_model_disabled_status(current_status):
+        return {
+            'success': True,
+            'changed': False,
+            'status': current_status,
+            'provider': model_provider,
+            'model': model_key,
+        }
+
+    next_status = 'quota_disabled'
+    model_info['status'] = next_status
+    model_info['status_reason'] = str(reason or 'quota_exhausted').strip() or 'quota_exhausted'
+    model_info['status_updated_at'] = int(time.time())
+    models[model_key] = model_info
+    save_models_config(cfg)
+    return {
+        'success': True,
+        'changed': True,
+        'status': next_status,
+        'provider': model_provider,
+        'model': model_key,
+    }
+
+
+def _build_quota_block_message(quota_gate: Dict[str, Any], model_name: str) -> str:
+    gate = quota_gate if isinstance(quota_gate, dict) else {}
+    reason = str(gate.get('reason') or '').strip().lower()
+    model_status = gate.get('model_status', {}) if isinstance(gate.get('model_status'), dict) else {}
+    quota_status = gate.get('quota', {}) if isinstance(gate.get('quota'), dict) else {}
+    action = _normalize_quota_on_exhausted_action(gate.get('provider_on_exhausted', gate.get('on_exhausted')))
+
+    if reason == 'model_exhausted':
+        model_remaining = int(model_status.get('remaining_tokens', 0) or 0)
+        if action in {'disable_model', 'disable_and_notify'}:
+            return f'模型已停用：{model_name} 超出额度（剩余 {model_remaining}）。'
+        return f'模型额度已超出：{model_name}（剩余 {model_remaining}）。'
+
+    remaining_tokens = int(quota_status.get('remaining_tokens', 0) or 0)
+    return f'服务器额度已用尽（剩余 {remaining_tokens}）。'
+
+
+def _build_over_budget_unavailable_response(extra_payload: Optional[Dict[str, Any]] = None):
+    payload: Dict[str, Any] = {
+        'success': False,
+        'message': 'Server is not available: Over budget',
+    }
+    if isinstance(extra_payload, dict):
+        payload.update(extra_payload)
+    return jsonify(payload), 429
+
+
+def _is_rate_limit_exception(exc: Exception) -> bool:
+    if exc is None:
+        return False
+
+    def _safe_status_code(value: Any) -> int:
+        try:
+            if value is None:
+                return 0
+            return int(value)
+        except Exception:
+            return 0
+
+    direct_status = _safe_status_code(getattr(exc, 'status_code', None))
+    if direct_status == 429:
+        return True
+
+    response_obj = getattr(exc, 'response', None)
+    if response_obj is not None:
+        response_status = _safe_status_code(getattr(response_obj, 'status_code', None))
+        if response_status == 429:
+            return True
+
+    text = str(exc or '').strip().lower()
+    if not text:
+        return False
+    patterns = (
+        'rate limit',
+        'too many requests',
+        'insufficient_quota',
+        'exceeded your current quota',
+        'quota exceeded',
+        'global rate limit',
+        'resource exhausted',
+    )
+    return any(pattern in text for pattern in patterns)
+
+
 def _normalize_provider_api_type(raw_api_type):
     api_type = str(raw_api_type or '').strip().lower()
     if api_type in {'', 'openaiapi'}:
@@ -3065,6 +3256,184 @@ def require_papi_key(f):
             
         return f(*args, **kwargs)
     return decorated_function
+
+
+def _papi_pick_model(config: Dict[str, Any], requested_model: str) -> Tuple[str, Dict[str, Any], str, Dict[str, Any]]:
+    """为 PAPI 请求解析可用模型与供应商配置。"""
+    config = config if isinstance(config, dict) else {}
+    models_cfg = config.get('models', {}) if isinstance(config.get('models', {}), dict) else {}
+    providers_cfg = config.get('providers', {}) if isinstance(config.get('providers', {}), dict) else {}
+    model_name = str(requested_model or '').strip()
+    if model_name not in models_cfg or not model_name:
+        default_model = str(config.get('default_model') or '').strip()
+        if default_model in models_cfg:
+            model_name = default_model
+        elif models_cfg:
+            model_name = next(iter(models_cfg.keys()))
+        else:
+            return '', {}, '', {}
+
+    model_info = dict(models_cfg.get(model_name, {}) or {})
+
+    provider_name = str(model_info.get('provider') or '').strip() or 'volcengine'
+    provider_info = dict(providers_cfg.get(provider_name, {}) or {})
+
+    # 允许模型条目直接携带连接参数，作为 provider 配置的兜底。
+    for key in ('api_key', 'base_url', 'api_base'):
+        if not provider_info.get(key) and model_info.get(key):
+            provider_info[key] = model_info.get(key)
+
+    return model_name, model_info, provider_name, provider_info
+
+
+def _papi_normalize_messages(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """兼容 messages / prompt / system_prompt 的输入格式。"""
+    data = data if isinstance(data, dict) else {}
+    raw_messages = data.get('messages')
+    normalized: List[Dict[str, Any]] = []
+
+    if isinstance(raw_messages, list):
+        for item in raw_messages:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get('role') or '').strip().lower()
+            if role not in {'system', 'user', 'assistant', 'tool'}:
+                continue
+
+            content = item.get('content')
+            if content is None:
+                content = None if role == 'assistant' and isinstance(item.get('tool_calls'), list) else ''
+            elif not isinstance(content, (str, list, dict)):
+                content = str(content)
+
+            msg: Dict[str, Any] = {'role': role, 'content': content}
+
+            name = str(item.get('name') or '').strip()
+            if name:
+                msg['name'] = name
+
+            tool_call_id = str(item.get('tool_call_id') or '').strip()
+            if tool_call_id:
+                msg['tool_call_id'] = tool_call_id
+
+            tool_calls = item.get('tool_calls')
+            if isinstance(tool_calls, list) and tool_calls:
+                msg['tool_calls'] = tool_calls
+
+            normalized.append(msg)
+
+    system_prompt = str(data.get('system_prompt') or '').strip()
+    prompt_text = str(
+        data.get('prompt')
+        or data.get('message')
+        or data.get('input')
+        or data.get('content')
+        or ''
+    ).strip()
+
+    if system_prompt and not any(item.get('role') == 'system' for item in normalized):
+        normalized.insert(0, {'role': 'system', 'content': system_prompt})
+
+    if prompt_text and not any(item.get('role') == 'user' for item in normalized):
+        normalized.append({'role': 'user', 'content': prompt_text})
+
+    return normalized
+
+
+def _papi_extract_completion_text(response_obj: Any) -> str:
+    """从 provider 返回中尽量提取完整文本。"""
+    if response_obj is None:
+        return ''
+
+    if isinstance(response_obj, dict):
+        output_text = response_obj.get('output_text')
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text.strip()
+
+        choices = response_obj.get('choices')
+        if isinstance(choices, list) and choices:
+            choice0 = choices[0] if isinstance(choices[0], dict) else {}
+            msg = choice0.get('message', {}) if isinstance(choice0, dict) else {}
+            if isinstance(msg, dict):
+                content = msg.get('content', '')
+                if isinstance(content, str):
+                    return content.strip()
+
+        output_items = response_obj.get('output')
+        if isinstance(output_items, list):
+            parts: List[str] = []
+            for item in output_items:
+                if not isinstance(item, dict) or str(item.get('type', '') or '').strip() != 'message':
+                    continue
+                content = item.get('content', [])
+                if isinstance(content, list):
+                    for piece in content:
+                        if isinstance(piece, dict):
+                            piece_type = str(piece.get('type', '') or '').strip()
+                            if piece_type in {'text', 'output_text'}:
+                                parts.append(str(piece.get('text', '') or ''))
+                        elif piece is not None:
+                            parts.append(str(piece))
+                elif isinstance(content, str):
+                    parts.append(content)
+            merged = '\n'.join([p for p in parts if str(p or '').strip()]).strip()
+            if merged:
+                return merged
+
+    try:
+        output_text = getattr(response_obj, 'output_text', None)
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text.strip()
+    except Exception:
+        pass
+
+    try:
+        choices = getattr(response_obj, 'choices', None)
+        if isinstance(choices, list) and choices:
+            choice0 = choices[0]
+            message = getattr(choice0, 'message', None)
+            if message is not None:
+                content = getattr(message, 'content', None)
+                if isinstance(content, str):
+                    return content.strip()
+                if isinstance(content, list):
+                    parts: List[str] = []
+                    for piece in content:
+                        if isinstance(piece, dict):
+                            piece_type = str(piece.get('type', '') or '').strip()
+                            if piece_type in {'text', 'output_text', 'input_text'}:
+                                parts.append(str(piece.get('text', '') or ''))
+                        elif piece is not None:
+                            parts.append(str(piece))
+                    merged = ''.join([p for p in parts if str(p or '').strip()]).strip()
+                    if merged:
+                        return merged
+    except Exception:
+        pass
+
+    try:
+        output_items = getattr(response_obj, 'output', None)
+        if isinstance(output_items, list):
+            parts: List[str] = []
+            for item in output_items:
+                item_type = str(getattr(item, 'type', '') or '').strip()
+                if item_type != 'message':
+                    continue
+                content = getattr(item, 'content', None)
+                if isinstance(content, list):
+                    for piece in content:
+                        piece_type = str(getattr(piece, 'type', '') or '').strip()
+                        if piece_type in {'text', 'output_text'}:
+                            parts.append(str(getattr(piece, 'text', '') or ''))
+                elif isinstance(content, str):
+                    parts.append(content)
+            merged = '\n'.join([p for p in parts if str(p or '').strip()]).strip()
+            if merged:
+                return merged
+    except Exception:
+        pass
+
+    return ''
 
 # ==================== 认证相关 ====================
 
@@ -4371,6 +4740,7 @@ def build_status_overview() -> Dict[str, Any]:
     speed_map: Dict[str, Dict[str, Any]] = {}
     recent_24h_map: Dict[str, Dict[str, Any]] = {}
     tool_failure_map: Dict[str, Dict[str, Any]] = {}
+    fallback_tool_complexity_tasks: Dict[str, Dict[str, Any]] = {}
     complexity = {'simple': 0, 'medium': 0, 'complex': 0}
     total_tokens = 0
     total_tool_calls = 0
@@ -4526,6 +4896,17 @@ def build_status_overview() -> Dict[str, Any]:
                 row['failureCount'] += 1
             _status_add_provider_count(row, provider)
 
+            conversation_id = str(log.get('conversation_id') or '').strip()
+            if conversation_id:
+                task_key = '|'.join([str(username), conversation_id, model_name])
+                task_item = fallback_tool_complexity_tasks.setdefault(task_key, {
+                    'model': model_name,
+                    'display_name': display_name,
+                    'provider': provider,
+                    'calls': 0,
+                })
+                task_item['calls'] = _safe_int_status(task_item.get('calls', 0), 0) + 1
+
             fail_row = tool_failure_map.setdefault(tool_name, {
                 'name': tool_name,
                 'count': 0,
@@ -4570,6 +4951,59 @@ def build_status_overview() -> Dict[str, Any]:
                         bucket = 'complex'
                     row['complexityLoad'][bucket] += 1
                     complexity[bucket] += 1
+
+    fallback_complexity_by_model: Dict[str, Dict[str, int]] = {}
+    for task_item in fallback_tool_complexity_tasks.values():
+        if not isinstance(task_item, dict):
+            continue
+        model_name = str(task_item.get('model') or 'unknown').strip() or 'unknown'
+        calls = _safe_int_status(task_item.get('calls', 0), 0)
+        if calls <= 0:
+            continue
+        if calls <= 2:
+            bucket = 'simple'
+        elif calls <= 7:
+            bucket = 'medium'
+        else:
+            bucket = 'complex'
+        per_model = fallback_complexity_by_model.setdefault(model_name, {'simple': 0, 'medium': 0, 'complex': 0})
+        per_model[bucket] = _safe_int_status(per_model.get(bucket, 0), 0) + 1
+
+    for model_name, row in model_map.items():
+        if not isinstance(row, dict):
+            continue
+        load = row.get('complexityLoad', {}) if isinstance(row.get('complexityLoad'), dict) else {}
+        load_total = (
+            _safe_int_status(load.get('simple', 0), 0)
+            + _safe_int_status(load.get('medium', 0), 0)
+            + _safe_int_status(load.get('complex', 0), 0)
+        )
+        if load_total > 0:
+            continue
+        fallback_load = fallback_complexity_by_model.get(model_name)
+        if not isinstance(fallback_load, dict):
+            call_count = _safe_int_status(row.get('callCount', 0), 0)
+            if call_count > 0:
+                row['complexityLoad'] = {
+                    'simple': call_count,
+                    'medium': 0,
+                    'complex': 0,
+                }
+            continue
+        row['complexityLoad'] = {
+            'simple': _safe_int_status(fallback_load.get('simple', 0), 0),
+            'medium': _safe_int_status(fallback_load.get('medium', 0), 0),
+            'complex': _safe_int_status(fallback_load.get('complex', 0), 0),
+        }
+
+    complexity = {'simple': 0, 'medium': 0, 'complex': 0}
+    for row in model_map.values():
+        if not isinstance(row, dict):
+            continue
+        load = row.get('complexityLoad', {}) if isinstance(row.get('complexityLoad'), dict) else {}
+        complexity['simple'] += _safe_int_status(load.get('simple', 0), 0)
+        complexity['medium'] += _safe_int_status(load.get('medium', 0), 0)
+        complexity['complex'] += _safe_int_status(load.get('complex', 0), 0)
 
     for _, row in model_map.items():
         counts = row.get('_providerCounts', {}) if isinstance(row.get('_providerCounts'), dict) else {}
@@ -4617,10 +5051,23 @@ def build_status_overview() -> Dict[str, Any]:
     max_recent_tokens = max((_safe_int_status(item.get('recentTokens', 0)) for item in recent_24h_map.values()), default=0)
 
     for row in model_map.values():
-        call_factor = (_safe_int_status(row.get('callCount', 0)) / max_calls * 22.0) if max_calls else 0.0
-        token_factor = (_safe_int_status(row.get('totalTokens', 0)) / max_tokens * 10.0) if max_tokens else 0.0
-        tool_factor = (_safe_int_status(row.get('toolCalls', 0)) / max_tools * 8.0) if max_tools else 0.0
-        score = round(min(100.0, row['successRate'] * 0.6 + call_factor + token_factor + tool_factor))
+        call_count = _safe_int_status(row.get('callCount', 0))
+        token_total = _safe_int_status(row.get('totalTokens', 0))
+        tool_calls = _safe_int_status(row.get('toolCalls', 0))
+        success_rate = max(0.0, min(100.0, float(row.get('successRate', 0.0)))) / 100.0
+        call_ratio = (call_count / max_calls) if max_calls > 0 else 0.0
+        token_ratio = (token_total / max_tokens) if max_tokens > 0 else 0.0
+        tool_ratio = (tool_calls / max_tools) if max_tools > 0 else 0.0
+
+        raw_score = (
+            success_rate * 0.38
+            + call_ratio * 0.30
+            + token_ratio * 0.22
+            + tool_ratio * 0.10
+        ) * 100.0
+        score = round(max(0.0, min(100.0, raw_score)))
+        if call_count <= 0 and token_total <= 0 and tool_calls <= 0:
+            score = 0
         if str(row.get('id') or '') == 'unknown':
             score = 0
         row['score'] = int(score)
@@ -4861,7 +5308,7 @@ def get_user_stats_api():
         return jsonify({'success': False, 'message': '获取统计信息失败'}), 500
 
 
-@app.route('/api/user/preferences', methods=['GET'])
+@app.route('/api/user/preferences', methods=['GET', 'PUT'])
 def get_user_preferences():
     """获取当前用户的偏好设置"""
     username = session.get('username')
@@ -4869,25 +5316,38 @@ def get_user_preferences():
         return jsonify({'success': False, 'message': '未登录'}), 401
     
     try:
-        # 暂时返回默认偏好设置，后续可以从用户配置文件读取
-        preferences = {
-            'default_model': 'auto',  # 默认模型
-            'theme': 'dark',  # 主题
-            'streaming': True,  # 是否流式输出
-            'language': 'zh'  # 语言
-        }
-        
-        # 尝试从用户配置文件读取偏好设置
-        user_path = f'./data/users/{username}/'
-        prefs_file = safe_join_path(user_path, 'preferences.json')
-        if os.path.exists(prefs_file):
-            with open(prefs_file, 'r', encoding='utf-8') as f:
-                user_prefs = json.load(f)
-                preferences.update(user_prefs)
-        
+        user = User(username)
+
+        if request.method == 'PUT':
+            payload = request.get_json(silent=True) or {}
+            updates: Dict[str, Any] = {}
+            for key in ('default_model', 'theme', 'streaming', 'language'):
+                if key in payload:
+                    updates[key] = payload.get(key)
+
+            quota_payload = payload.get('quota')
+            if isinstance(quota_payload, dict):
+                updates['quota'] = quota_payload
+            else:
+                legacy_quota_payload = {}
+                for key in ('quota_enabled', 'quota_remaining_tokens', 'quota_warn_threshold_tokens', 'quota_on_exhausted'):
+                    if key in payload:
+                        legacy_quota_payload[key] = payload.get(key)
+                if legacy_quota_payload:
+                    updates.update(legacy_quota_payload)
+
+            saved = user.update_preferences(updates)
+            return jsonify({
+                'success': True,
+                'preferences': saved,
+                'quota': saved.get('quota', {}) if isinstance(saved, dict) else {},
+            })
+
+        preferences = user.get_preferences()
         return jsonify({
             'success': True,
-            'preferences': preferences
+            'preferences': preferences,
+            'quota': preferences.get('quota', {}) if isinstance(preferences, dict) else {},
         })
     except Exception as e:
         print(f"Error getting user preferences: {e}")
@@ -5460,6 +5920,120 @@ def admin_token_stats():
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 
+
+@app.route('/api/admin/quota', methods=['GET', 'PUT'])
+@require_admin
+def admin_server_quota():
+    """获取或更新服务器统一额度配置与用量概览"""
+    try:
+        if request.method == 'PUT':
+            payload = request.get_json(silent=True) or {}
+            quota_payload = {}
+            for key in ('enabled', 'total_tokens', 'warn_threshold_tokens', 'on_exhausted', 'provider', 'provider_overage_actions'):
+                if key in payload:
+                    quota_payload[key] = payload.get(key)
+            update_server_quota_config(quota_payload)
+        return jsonify({'success': True, 'quota': get_server_quota_status()})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/admin/quota/overage-alert', methods=['GET'])
+@require_admin
+def admin_server_quota_overage_alert():
+    """管理员刷新页面时查询一次超额模型聚合信息。"""
+    try:
+        quota = get_server_quota_status()
+        default_action = _normalize_quota_on_exhausted_action(quota.get('on_exhausted'))
+        provider_action_map = quota.get('provider_overage_actions', {}) if isinstance(quota.get('provider_overage_actions'), dict) else {}
+
+        def _resolve_provider_action(provider_name: Any) -> str:
+            provider = str(provider_name or '').strip()
+            if provider in provider_action_map:
+                return _normalize_quota_on_exhausted_action(provider_action_map.get(provider))
+            provider_lower = provider.lower()
+            for key, value in provider_action_map.items():
+                if str(key or '').strip().lower() == provider_lower:
+                    return _normalize_quota_on_exhausted_action(value)
+            return default_action
+
+        model_status_map = quota.get('model_status_map', {}) if isinstance(quota.get('model_status_map'), dict) else {}
+        exhausted_models = []
+        notify_targets = []
+        for row in model_status_map.values():
+            if not isinstance(row, dict):
+                continue
+            overage_tokens = int(row.get('overage_tokens', 0) or 0)
+            if overage_tokens <= 0 and not bool(row.get('is_exhausted')):
+                continue
+            provider = str(row.get('provider') or '').strip()
+            action = _resolve_provider_action(provider)
+            exhausted_models.append({
+                'provider': provider,
+                'model': str(row.get('name') or '').strip(),
+                'used_tokens': int(row.get('tokens', 0) or 0),
+                'quota_total_tokens': int(row.get('quota_total_tokens', 0) or 0),
+                'overage_tokens': overage_tokens,
+                'action': action,
+            })
+            if action in {'notify_admin', 'disable_and_notify'}:
+                notify_targets.append(row)
+
+        exhausted_models.sort(key=lambda item: (int(item.get('overage_tokens', 0) or 0), int(item.get('used_tokens', 0) or 0)), reverse=True)
+        should_popup = bool(len(notify_targets) > 0)
+
+        return jsonify({
+            'success': True,
+            'action': default_action,
+            'should_popup': should_popup,
+            'models': exhausted_models,
+            'count': len(exhausted_models),
+            'queried_at': int(time.time()),
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/admin/quota/model', methods=['POST'])
+@require_admin
+def admin_model_quota_update():
+    """调整单个模型额度（支持 set/adjust），并写入 data/model_quota.jsonl 记录。"""
+    try:
+        payload = request.get_json(silent=True) or {}
+        provider = str(payload.get('provider') or '').strip()
+        model = str(payload.get('model') or '').strip()
+        op = str(payload.get('op') or 'adjust').strip().lower()
+        actor = str(session.get('username') or 'admin').strip() or 'admin'
+        reason = str(payload.get('reason') or '').strip() or ('manual_set' if op == 'set' else 'manual_adjust')
+
+        if not provider:
+            return jsonify({'success': False, 'message': 'provider 不能为空'}), 400
+        if not model:
+            return jsonify({'success': False, 'message': 'model 不能为空'}), 400
+
+        if op == 'set':
+            change = set_model_quota_total(
+                provider_name=provider,
+                model_name=model,
+                total_tokens=payload.get('total_tokens', 0),
+                actor=actor,
+                reason=reason,
+            )
+        elif op == 'adjust':
+            change = adjust_model_quota_total(
+                provider_name=provider,
+                model_name=model,
+                delta_tokens=payload.get('delta_tokens', 0),
+                actor=actor,
+                reason=reason,
+            )
+        else:
+            return jsonify({'success': False, 'message': '不支持的 op，允许 set / adjust'}), 400
+
+        return jsonify({'success': True, 'change': change, 'quota': get_server_quota_status()})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
 @app.route('/api/admin/chroma/stats', methods=['GET'])
 @require_admin
 def admin_chroma_stats():
@@ -5591,6 +6165,167 @@ def papi_query_vectors(username):
         return jsonify({'success': True, 'result': result})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
+
+
+@app.route('/api/papi/completions', methods=['POST'])
+@app.route('/api/papi/completions/<username>', methods=['POST'])
+@require_papi_key
+def papi_completions(username=None):
+    """PAPI: OpenAI 风格单轮补全接口。"""
+    data = request.get_json(silent=True) or {}
+    config = get_config_all()
+    request_username = str(username or data.get('username') or '').strip()
+
+    requested_model = str(data.get('model') or '').strip()
+    raw_models_cfg = config.get('models', {}) if isinstance(config.get('models', {}), dict) else {}
+    if requested_model and requested_model not in raw_models_cfg:
+        return jsonify({
+            'success': False,
+            'message': f'模型不存在：{requested_model}',
+            'model': requested_model,
+            'username': request_username or username,
+        }), 400
+
+    if requested_model and requested_model in raw_models_cfg and _is_model_disabled_entry(raw_models_cfg.get(requested_model, {})):
+        return jsonify({
+            'success': False,
+            'message': f'模型已停用：{requested_model}',
+            'model': requested_model,
+            'username': request_username or username,
+        }), 403
+
+    model_name, _model_info, provider_name, provider_info = _papi_pick_model(config, requested_model)
+    if not model_name:
+        return jsonify({'success': False, 'message': '没有可用模型'}), 400
+
+    if _is_model_disabled_entry(_model_info):
+        return jsonify({
+            'success': False,
+            'message': f'模型已停用：{model_name}',
+            'model': model_name,
+            'provider': provider_name,
+            'username': request_username or username,
+        }), 403
+
+    messages = _papi_normalize_messages(data)
+    if not messages:
+        return jsonify({'success': False, 'message': 'messages 或 prompt 不能为空'}), 400
+
+    if not any(item.get('role') == 'user' for item in messages):
+        return jsonify({'success': False, 'message': '缺少 user 消息'}), 400
+
+    if _as_bool(data.get('stream', False), False):
+        return jsonify({
+            'success': False,
+            'message': '当前 /api/papi/completions 仅支持非流式返回，请使用 /api/chat/stream'
+        }), 400
+
+    quota_gate = get_generation_quota_gate(provider_name=provider_name, model_name=model_name)
+    if quota_gate.get('should_disable_model'):
+        _disable_model_by_quota(model_name, provider_name=provider_name, reason='quota_exhausted')
+
+    quota_status = quota_gate.get('quota', {}) if isinstance(quota_gate.get('quota'), dict) else {}
+    if quota_gate.get('should_block'):
+        return _build_over_budget_unavailable_response({
+            'message': _build_quota_block_message(quota_gate, model_name),
+            'model': model_name,
+            'provider': provider_name,
+            'username': request_username or username,
+            'quota': quota_status,
+        })
+
+    def _coerce_float(value, default=None):
+        if value is None or value == '':
+            return default
+        try:
+            return float(value)
+        except Exception:
+            return default
+
+    def _coerce_int(value, default=None):
+        if value is None or value == '':
+            return default
+        try:
+            return int(float(value))
+        except Exception:
+            return default
+
+    temperature = _coerce_float(data.get('temperature'), 0.3)
+    top_p = _coerce_float(data.get('top_p'), None)
+    max_tokens = _coerce_int(data.get('max_tokens', data.get('max_completion_tokens', None)), None)
+
+    request_kwargs: Dict[str, Any] = {}
+    for key, value in (
+        ('temperature', temperature),
+        ('top_p', top_p),
+        ('max_tokens', max_tokens),
+        ('stop', data.get('stop')),
+        ('presence_penalty', _coerce_float(data.get('presence_penalty'), None)),
+        ('frequency_penalty', _coerce_float(data.get('frequency_penalty'), None)),
+        ('seed', _coerce_int(data.get('seed'), None)),
+    ):
+        if value is not None:
+            request_kwargs[key] = value
+
+    api_key = str(provider_info.get('api_key') or '').strip()
+    base_url = provider_info.get('base_url') or provider_info.get('api_base')
+    adapter = create_provider_adapter(provider_name, provider_info)
+
+    global _CLIENT_CACHE
+    cache_key = adapter.client_cache_key(api_key, scope='papi')
+    if cache_key in _CLIENT_CACHE:
+        client = _CLIENT_CACHE[cache_key]
+    else:
+        client = adapter.create_client(api_key=api_key, base_url=base_url, timeout=60.0)
+        _CLIENT_CACHE[cache_key] = client
+
+    try:
+        response = adapter.create_chat_completion(
+            client=client,
+            model=model_name,
+            messages=messages,
+            stream=False,
+            **request_kwargs
+        )
+        content = _papi_extract_completion_text(response)
+        payload = {
+            'success': True,
+            'model': model_name,
+            'provider': provider_name,
+            'username': request_username or username,
+            'content': content,
+            'message': {
+                'role': 'assistant',
+                'content': content,
+            },
+            'choices': [
+                {
+                    'index': 0,
+                    'message': {
+                        'role': 'assistant',
+                        'content': content,
+                    },
+                    'finish_reason': 'stop',
+                }
+            ],
+        }
+        payload['quota'] = quota_status
+        return jsonify(payload)
+    except Exception as e:
+        print(f"[PAPI_COMPLETIONS] model={model_name} provider={provider_name} error={e}")
+        is_rate_limit_error = _is_rate_limit_exception(e)
+        status_code = 429 if is_rate_limit_error else 502
+        message_text = str(e or '').strip()
+        if is_rate_limit_error and not message_text:
+            message_text = '请求触发模型限流或额度不足。'
+        return jsonify({
+            'success': False,
+            'message': message_text,
+            'error_type': 'rate_limit' if is_rate_limit_error else 'provider_error',
+            'model': model_name,
+            'provider': provider_name,
+            'username': request_username or username,
+        }), status_code
 
 # ==================== 聊天相关 ====================
 
@@ -6104,6 +6839,47 @@ def update_user_message_content(conv_id, msg_index):
             'conversation_id': conv_id,
             'index': int(msg_index),
             'content': content
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/conversations/<conv_id>/user_partial', methods=['POST'])
+@require_login
+def save_user_partial(conv_id):
+    data = request.get_json(silent=True) or {}
+    content = str(data.get('content') or '')
+    if not content.strip():
+        return jsonify({'success': False, 'message': 'content 不能为空'}), 400
+
+    username = session['username']
+    manager = ConversationManager(username)
+    try:
+        conversation = manager.get_conversation(conv_id)
+    except Exception:
+        conversation = None
+    if not isinstance(conversation, dict):
+        return jsonify({'success': False, 'message': '对话不存在'}), 404
+
+    metadata_raw = data.get('metadata')
+    metadata = metadata_raw if isinstance(metadata_raw, dict) else {}
+    metadata = dict(metadata)
+    model_name = str(data.get('model_name') or '').strip()
+    if model_name and not str(metadata.get('model_name') or '').strip():
+        metadata['model_name'] = model_name
+
+    try:
+        manager.add_message(
+            conv_id,
+            'user',
+            content,
+            metadata=metadata
+        )
+        return jsonify({
+            'success': True,
+            'conversation_id': conv_id,
+            'index': max(0, int(manager.get_message_count(conv_id) or 1) - 1),
+            'saved_chars': len(content)
         })
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
@@ -7317,7 +8093,7 @@ def admin_upsert_model():
     original_model_id = (data.get('original_model_id') or '').strip()
     name = (data.get('name') or '').strip()
     provider = (data.get('provider') or '').strip()
-    status = (data.get('status') or 'normal').strip()
+    status = _normalize_model_status_text(data.get('status') or 'normal')
 
     if not model_id:
         return jsonify({'success': False, 'message': 'model_id 不能为空'}), 400
@@ -7493,6 +8269,48 @@ def chat_stream():
         return jsonify({'success': False, 'message': '消息不能为空'}), 400
     
     username = session['username']
+    conversation_id_from_request = bool(str(conversation_id or '').strip())
+    skip_user_message = bool(data.get('skip_user_message', False))
+    user_message_persisted = False
+    if not is_regenerate and not skip_user_message:
+        user_text = str(message or '')
+        has_user_turn_payload = bool(user_text.strip()) or bool(file_ids) or bool(sanitized_user_attachments) or bool(sanitized_sandbox_paths)
+        if has_user_turn_payload:
+            try:
+                manager = ConversationManager(username)
+                persisted_conversation_id = str(conversation_id or '').strip()
+                if persisted_conversation_id:
+                    existing = manager.get_conversation(persisted_conversation_id)
+                    if not isinstance(existing, dict):
+                        persisted_conversation_id = manager.create_conversation(
+                            conversation_id=persisted_conversation_id,
+                            title=(user_text.strip()[:48] or '新对话')
+                        )
+                else:
+                    persisted_conversation_id = manager.create_conversation(
+                        title=(user_text.strip()[:48] or '新对话')
+                    )
+
+                if persisted_conversation_id:
+                    conversation_id = persisted_conversation_id
+                    user_metadata = {'source': 'chat_stream'}
+                    if sanitized_user_attachments:
+                        user_metadata['attachments'] = sanitized_user_attachments
+                    if sanitized_sandbox_paths:
+                        user_metadata['sandbox_paths'] = sanitized_sandbox_paths
+                    manager.add_message(
+                        persisted_conversation_id,
+                        'user',
+                        user_text,
+                        metadata=user_metadata
+                    )
+                    user_message_persisted = True
+            except Exception as persist_error:
+                try:
+                    print(f"[CHAT_STREAM_PERSIST] failed to persist user message: {persist_error}")
+                except Exception:
+                    pass
+
     skill_mode = 'force'
     skill_runtime: Dict[str, Any] = {}
     active_tool_skills = []
@@ -7530,6 +8348,7 @@ def chat_stream():
         skill_mode = _normalize_skill_mode(raw_skill_mode)
     
     # --- 模型权限校验 ---
+    requested_model_name = str(model_name or '').strip()
     try:
         blacklist_path = './data/model_permissions.json'
         blacklist = []
@@ -7539,23 +8358,24 @@ def chat_stream():
                 user_blacklists = perm_config.get('user_blacklists', {})
                 blacklist = user_blacklists.get(username, perm_config.get('default_blacklist', []))
         
-        # 获取系统配置中的默认模型和全部模型
-        sys_config = get_config_all()
-        all_models = list(sys_config.get('models', {}).keys())
+        all_models_cfg = sys_config.get('models', {}) if isinstance(sys_config.get('models', {}), dict) else {}
+        all_models = list(all_models_cfg.keys())
         default_sys_model = sys_config.get('default_model')
 
-        # 校验请求的模型是否合法（存在且未被禁）
-        if model_name and (model_name not in all_models or model_name in blacklist):
-            # 如果请求非法或被禁，清空它，进入下方的自动分配逻辑
-            model_name = None
+        if requested_model_name:
+            if requested_model_name not in all_models_cfg:
+                return jsonify({'success': False, 'message': f'模型不存在：{requested_model_name}'}), 400
+            if requested_model_name in blacklist:
+                return jsonify({'success': False, 'message': f'当前账号无权使用模型：{requested_model_name}'}), 403
+            if _is_model_disabled_entry(all_models_cfg.get(requested_model_name, {})):
+                return jsonify({'success': False, 'message': f'模型已停用：{requested_model_name}', 'model': requested_model_name}), 403
+            model_name = requested_model_name
         
-        # 如果 model_name 为空（用户没选或者是上面的校验失败了），则自动分配第一个可用的
+        # 如果 model_name 为空（用户没选），则自动分配第一个可用模型（不屏蔽停用态，后续门禁统一报错）。
         if not model_name:
-            # 尝试使用系统默认模型
-            if default_sys_model and default_sys_model not in blacklist:
+            if default_sys_model and default_sys_model not in blacklist and default_sys_model in all_models:
                 model_name = default_sys_model
             else:
-                # 寻找第一个不在黑名单的模型
                 available_models = [m for m in all_models if m not in blacklist]
                 if not available_models:
                     return jsonify({'success': False, 'message': '当前账号无可用模型，请联系管理员'}), 403
@@ -7564,6 +8384,47 @@ def chat_stream():
     except Exception as e:
         print(f"Permission check error: {e}")
     # ------------------
+
+    model_info_entry = {}
+    if isinstance(sys_config.get('models', {}), dict):
+        model_info_entry = sys_config.get('models', {}).get(model_name, {})
+    if _is_model_disabled_entry(model_info_entry):
+        return jsonify({'success': False, 'message': f'模型已停用：{model_name}', 'model': model_name}), 403
+
+    provider_name = str((model_info_entry if isinstance(model_info_entry, dict) else {}).get('provider') or '').strip()
+    quota_gate = get_generation_quota_gate(provider_name=provider_name, model_name=model_name)
+    if quota_gate.get('should_disable_model'):
+        _disable_model_by_quota(model_name, provider_name=provider_name, reason='quota_exhausted')
+    if quota_gate.get('should_block'):
+        blocked_message = _build_quota_block_message(quota_gate, model_name)
+        quota_status = quota_gate.get('quota', {}) if isinstance(quota_gate.get('quota'), dict) else {}
+        persisted_conversation_id = str(conversation_id or '').strip()
+        try:
+            manager = ConversationManager(username)
+            if persisted_conversation_id:
+                existing = manager.get_conversation(persisted_conversation_id)
+                if not isinstance(existing, dict):
+                    persisted_conversation_id = manager.create_conversation(
+                        conversation_id=persisted_conversation_id,
+                        title=(str(message or '').strip()[:48] or '新对话')
+                    )
+            else:
+                persisted_conversation_id = manager.create_conversation(
+                    title=(str(message or '').strip()[:48] or '新对话')
+                )
+
+        except Exception as persist_error:
+            try:
+                print(f"[QUOTA_PERSIST] failed to persist blocked turn: {persist_error}")
+            except Exception:
+                pass
+        return _build_over_budget_unavailable_response({
+            'message': blocked_message,
+            'model': model_name,
+            'provider': provider_name,
+            'conversation_id': persisted_conversation_id or str(conversation_id or '').strip(),
+            'quota': quota_status,
+        })
 
     # 检测 NexoraCode 本地 Agent 状态，通过 WSS 长连接注入工具
     from agent_tunnel import is_agent_online, get_agent_tools
@@ -7603,7 +8464,6 @@ def chat_stream():
             raw_conversation_mode_payload = request_meta.get('conversation_mode_payload')
             if not isinstance(raw_conversation_mode_payload, dict):
                 raw_conversation_mode_payload = {}
-            skip_user_message = bool(data.get('skip_user_message', False))
             effective_enable_tools = bool(enable_tools)
             effective_tool_mode = tool_mode
             if raw_conversation_mode == 'longterm':
@@ -7628,7 +8488,7 @@ def chat_stream():
             if model.conversation_id:
                 set_conversation_id(model.conversation_id)
 
-            if not conversation_id:
+            if not conversation_id_from_request:
                 push_chunk({'type': 'conversation_id', 'conversation_id': model.conversation_id})
 
             for chunk in model.sendMessage(
@@ -7652,7 +8512,7 @@ def chat_stream():
                 active_tool_skills=active_tool_skills,
                 conversation_mode=raw_conversation_mode,
                 conversation_mode_payload=raw_conversation_mode_payload,
-                skip_user_message=skip_user_message
+                skip_user_message=bool(skip_user_message or user_message_persisted)
             ):
                 if log_all_chunks:
                     _log_stream_chunk(chunk, model_name=model_name or model.model_name)
@@ -7660,6 +8520,14 @@ def chat_stream():
         except Exception as e:
             error_details = _format_exception_details(e)
             print(f"[STREAM_ERROR]\n{error_details}")
+            if _is_rate_limit_exception(e):
+                push_chunk({
+                    'type': 'error',
+                    'error_code': 'rate_limit',
+                    'retryable': True,
+                    'content': f'模型请求触发限流/额度限制：{str(e)}'
+                })
+                return
             push_chunk({
                 'type': 'error',
                 'content': f'处理消息时出错:\n{error_details}'
@@ -9655,6 +10523,10 @@ def agent_tunnel_socket(ws):
                     tools = payload.get('tools', [])
                     update_agent_tools(username, tools)
                     ws.send(json.dumps({'type': 'tools_synced', 'count': len(tools)}))
+                elif ctype == 'sync_prompt':
+                    custom_prompt = payload.get('prompt', '')
+                    update_agent_prompt(username, custom_prompt)
+                    ws.send(json.dumps({'type': 'prompt_synced'}))
                 elif ctype == 'tool_result':
                     task_id = payload.get('task_id')
                     result = payload.get('result')
