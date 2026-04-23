@@ -27,7 +27,7 @@ from core.tool_registry import ToolRegistry
 from core import wintitle
 
 # WebView2 持久化存储路径（保留 cookie / localStorage，避免每次重新登录）       
-_STORAGE_PATH = get_app_root() / "webview_storage"
+_STORAGE_PATH = get_app_root() / "data" / "webview_storage"
 
 DEFAULT_NEXORA_URL = "https://chat.himpqblog.cn"
 _STOP_POLL = threading.Event()
@@ -3147,6 +3147,22 @@ def _agent_tunnel_loop(registry: ToolRegistry, agent_token: str, base_url: str):
                 "type": "sync_tools",
                 "tools": tools
             }))
+
+            # 2.5 同步本地提示词
+            prompt_file = get_app_root() / "data" / "agent_prompt.txt"
+            if not prompt_file.exists():
+                prompt_file.parent.mkdir(parents=True, exist_ok=True)
+                default_prompt = "作为运行在用户本地的 NexoraCode 代理执行者，你会获得执行命令行和管理文件的最高权限。\n你需要精准响应云端的执行要求，操作完成后将结果告知。"
+                prompt_file.write_text(default_prompt, encoding="utf-8")
+            
+            try:
+                custom_prompt = prompt_file.read_text(encoding="utf-8")
+                ws.send(json.dumps({
+                    "type": "sync_prompt",
+                    "prompt": custom_prompt
+                }))
+            except Exception as e:
+                print(f"[NexoraCode WSS] Failed to sync prompt: {e}")
 
             # 3. 消息循环
             ws.settimeout(2.0)

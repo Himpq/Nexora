@@ -5,7 +5,7 @@ import threading
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
-
+from datastorage import safe_read_json, safe_write_json
 
 _FILE_LOCK = threading.Lock()
 
@@ -85,23 +85,18 @@ class TempContextStore:
 
     def _read_file_entries(self) -> List[Dict[str, Any]]:
         with _FILE_LOCK:
-            try:
-                with open(self.file_path, "r", encoding="utf-8") as f:
-                    payload = json.load(f)
-                entries = payload.get("entries", []) if isinstance(payload, dict) else []
-                return entries if isinstance(entries, list) else []
-            except Exception:
-                return []
+            payload = safe_read_json(self.file_path, default={})
+            entries = payload.get("entries", []) if isinstance(payload, dict) else []
+            return entries if isinstance(entries, list) else []
 
     def _write_file_entries(self, entries: List[Dict[str, Any]]) -> None:
         with _FILE_LOCK:
             payload = {
                 "version": 1,
                 "updated_at": self._now(),
-                "entries": entries if isinstance(entries, list) else [],
+                "entries": entries,
             }
-            with open(self.file_path, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
+            safe_write_json(self.file_path, payload)
 
     def _list_scope_entries(self, include_expired: bool = False) -> List[Dict[str, Any]]:
         now_ts = self._now()

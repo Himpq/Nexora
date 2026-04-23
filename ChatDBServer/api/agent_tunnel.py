@@ -19,6 +19,11 @@ def update_agent_tools(username, tools: list):
         if username in _ACTIVE_AGENTS:
             _ACTIVE_AGENTS[username]["tools"] = tools
 
+def update_agent_prompt(username, prompt_text: str):
+    with _AGENT_LOCK:
+        if username in _ACTIVE_AGENTS:
+            _ACTIVE_AGENTS[username]["prompt"] = prompt_text
+
 def update_ping(username):
     with _AGENT_LOCK:
         if username in _ACTIVE_AGENTS:
@@ -47,6 +52,13 @@ def get_agent_tools(username: str) -> list:
         if agent and time.time() - agent["last_ping"] < 60:
             return agent.get("tools", [])
         return []
+
+def get_agent_prompt(username: str) -> str:
+    with _AGENT_LOCK:
+        agent = _ACTIVE_AGENTS.get(username)
+        if agent and time.time() - agent["last_ping"] < 60:
+            return agent.get("prompt", "")
+        return ""
 
 def call_local_tool_sync(username: str, tool_name: str, args: dict, timeout_sec: int = 30) -> dict:
     with _AGENT_LOCK:

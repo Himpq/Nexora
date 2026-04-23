@@ -1,22 +1,17 @@
-﻿import os
+import os
 import json
 import time
 import re
-import threading
 import hashlib
 from timeline import record_knowledge_change
-
-# 全局文件锁，防止多用户并发写入 user.json 导致数据“串”或丢失
-_global_file_lock = threading.Lock()
-# 用户目录锁，防止同一用户的 database.json 并发写入冲突
-_user_locks = {}
-_user_locks_lock = threading.Lock()
-
-def get_user_lock(username):
-    with _user_locks_lock:
-        if username not in _user_locks:
-            _user_locks[username] = threading.Lock()
-        return _user_locks[username]
+from datastorage import (
+    get_user_lock,
+    global_file_lock as _global_file_lock,
+    safe_read_json,
+    safe_write_json,
+    safe_read_text,
+    safe_write_text,
+)
 
 # 知识库
 
@@ -107,8 +102,7 @@ class User:
                 "connections": [],
                 "category_order": ["未分类"]
             }
-            with open(graph_file, "w", encoding="utf-8") as f:
-                json.dump(initial_graph, f, indent=4, ensure_ascii=False)
+            safe_write_json(graph_file, initial_graph)
 
     def _build_basis_id(self, title, meta):
         m = meta if isinstance(meta, dict) else {}
@@ -205,17 +199,15 @@ class User:
             pass
 
     def getPassword(self):
-        with open("./data/user.json", "r", encoding="utf-8") as f:
-            users = json.load(f)
+        users = safe_read_json("./data/user.json", default={})
         return users[self.user]["password"]
     
     def getKnowledgeList(self, _type=SHORT_TIME):
         lock = get_user_lock(self.user)
         with lock:
-            if not os.path.exists(self.path + "database.json"):
+            db = safe_read_json(self.path + "database.json", default=None)
+            if db is None:
                 return {}
-            with open(self.path + "database.json", "r", encoding="utf-8") as f:
-                db = json.load(f)
             
             # 自动迁移：为旧数据添加 share_id 和 collaborative
             migrated = False
@@ -240,8 +232,7 @@ class User:
                 if self._ensure_basis_ids_in_db(db):
                     migrated = True
             if migrated:
-                with open(self.path + "database.json", "w", encoding="utf-8") as f:
-                    json.dump(db, f, indent=4, ensure_ascii=False)
+                safe_write_json(self.path + "database.json", db)
 
         if _type == SHORT_TIME:
             return db["data_short"]
@@ -252,13 +243,13 @@ class User:
 
     def getBasisByShareId(self, share_id):
         """通过 share_id 查找知识点"""
-        with open(self.path + "database.json", "r", encoding="utf-8") as f:
-            db = json.load(f)
-        changed = self._ensure_basis_ids_in_db(db)
-        if changed:
-            with open(self.path + "database.json", "w", encoding="utf-8") as f:
-                json.dump(db, f, indent=4, ensure_ascii=False)
-        for title, meta in db["data_basis"].items():
+        lock = get_user_lock(self.user)
+        with lock:
+            db = safe_read_json(self.path + "database.json", default={})
+            changed = self._ensure_basis_ids_in_db(db)
+            if changed:
+                safe_write_json(self.path + "database.json", db)
+        for title, meta in db.get("data_basis", {}).items():
             if meta.get("share_id") == share_id:
                 return title, meta
         return None, None
@@ -267,10 +258,9 @@ class User:
         """更新基础知识设置"""
         lock = get_user_lock(self.user)
         with lock:
-            with open(self.path + "database.json", "r", encoding="utf-8") as f:
-                db = json.load(f)
+            db = safe_read_json(self.path + "database.json", default={})
             
-            if old_title not in db["data_basis"]:
+            if old_title not in db.get("data_basis", {}):
                 return False, "知识点不存在"
             
             meta = db["data_basis"][old_title]
@@ -298,8 +288,7 @@ class User:
                 self.save_knowledge_graph(graph)
                 
             meta["updated_at"] = time.time()
-            with open(self.path + "database.json", "w", encoding="utf-8") as f:
-                json.dump(db, f, indent=4, ensure_ascii=False)
+            safe_write_json(self.path + "database.json", db)
             if new_title and new_title != old_title:
                 self._record_knowledge_timeline(
                     title=new_title,
@@ -324,26 +313,23 @@ class User:
         """更新知识向量时间戳"""
         lock = get_user_lock(self.user)
         with lock:
-            with open(self.path + "database.json", "r", encoding="utf-8") as f:
-                db = json.load(f)
+            db = safe_read_json(self.path + "database.json", default={})
 
-            if title not in db["data_basis"]:
+            if title not in db.get("data_basis", {}):
                 return False, "知识不存在"
 
             db["data_basis"][title]["vector_updated_at"] = time.time()
-            with open(self.path + "database.json", "w", encoding="utf-8") as f:
-                json.dump(db, f, indent=4, ensure_ascii=False)
+            safe_write_json(self.path + "database.json", db)
             return True, "OK"
 
     def addShort(self, title):
         lock = get_user_lock(self.user)
         with lock:
-            with open(self.path + "database.json", "r", encoding="utf-8") as f:
-                db = json.load(f)
+            db = safe_read_json(self.path + "database.json", default={})
             
             # 找到已存在的最大ID
             max_id = -1
-            for k in db["data_short"].keys():
+            for k in db.get("data_short", {}).keys():
                 try:
                     curr_id = int(k)
                     if curr_id > max_id:
@@ -353,21 +339,20 @@ class User:
             
             ID = max_id + 1
             
-            db["data_short"][str(ID)] = title
-            with open(self.path + "database.json", "w", encoding="utf-8") as f:
-                json.dump(db, f, indent=4, ensure_ascii=False)
+            db.setdefault("data_short", {})[str(ID)] = title
+            safe_write_json(self.path + "database.json", db)
         return True
     
     def addBasis(self, title, context, url, timeline_actor=None):
         lock = get_user_lock(self.user)
         with lock:
-            with open(self.path + "database.json", "r", encoding="utf-8") as f:
-                db = json.load(f)
+            db = safe_read_json(self.path + "database.json", default={})
 
             # 找到已存在的最大ID（根据文件名 xxx.txt）
             max_id = 0
-            if db["data_basis"]:
-                for item in db["data_basis"].values():
+            data_basis = db.get("data_basis", {})
+            if data_basis:
+                for item in data_basis.values():
                     src = item["src"]
                     try:
                         basename = os.path.basename(src)
@@ -385,7 +370,7 @@ class User:
                 "created_at": time.time(),
                 "share_id": share_id,
             })
-            db["data_basis"][title] = {
+            db.setdefault("data_basis", {})[title] = {
                 "src": f"./data/users/{self.user}/database/{ID}.txt",
                 "url": url,
                 "public": False,  # 默认不公开
@@ -397,11 +382,11 @@ class User:
                 "updated_at": time.time(),
                 "vector_updated_at": 0
             }
-            with open(f"./data/users/{self.user}/database/{ID}.txt", "w", encoding="utf-8") as f:
-                f.write(context)
+            txt_path = f"./data/users/{self.user}/database/{ID}.txt"
+            os.makedirs(os.path.dirname(txt_path), exist_ok=True)
+            safe_write_text(txt_path, context)
 
-            with open(self.path + "database.json", "w", encoding="utf-8") as f:
-                json.dump(db, f, indent=4, ensure_ascii=False)
+            safe_write_json(self.path + "database.json", db)
         # 自动扫描连接
         self.auto_link_knowledge(title)
         self._record_knowledge_timeline(
@@ -418,15 +403,13 @@ class User:
         lock = get_user_lock(self.user)
         try:
             with lock:
-                with open(self.path + "database.json", "r", encoding="utf-8") as f:
-                    db = json.load(f)
+                db = safe_read_json(self.path + "database.json", default={})
 
-                if title in db["data_basis"]:
+                if title in db.get("data_basis", {}):
                     old_public = bool(db["data_basis"][title].get("public", False))
                     db["data_basis"][title]["public"] = is_public
                     db["data_basis"][title]["updated_at"] = time.time()
-                    with open(self.path + "database.json", "w", encoding="utf-8") as f:
-                        json.dump(db, f, indent=4, ensure_ascii=False)
+                    safe_write_json(self.path + "database.json", db)
                     if old_public != bool(is_public):
                         self._record_knowledge_timeline(
                             title=title,
@@ -444,8 +427,7 @@ class User:
         lock = get_user_lock(self.user)
         try:
             with lock:
-                with open(self.path + "database.json", "r", encoding="utf-8") as f:
-                    db = json.load(f)
+                db = safe_read_json(self.path + "database.json", default={})
 
                 if title not in db.get("data_basis", {}):
                     return False, "知识不存在"
@@ -458,8 +440,7 @@ class User:
                 meta["pin"] = bool(pin)
                 meta["pin_updated_at"] = time.time()
 
-                with open(self.path + "database.json", "w", encoding="utf-8") as f:
-                    json.dump(db, f, indent=4, ensure_ascii=False)
+                safe_write_json(self.path + "database.json", db)
                 if old_pin != bool(pin):
                     self._record_knowledge_timeline(
                         title=title,
@@ -474,9 +455,8 @@ class User:
     def isBasisPublic(self, title):
         """检查知识点是否公开"""
         try:
-            with open(self.path + "database.json", "r", encoding="utf-8") as f:
-                db = json.load(f)
-            if title in db["data_basis"]:
+            db = safe_read_json(self.path + "database.json", default={})
+            if title in db.get("data_basis", {}):
                 return db["data_basis"][title].get("public", False)
             return False
         except:
@@ -485,9 +465,8 @@ class User:
     def getBasisMetadata(self, title):
         """获取元数据"""
         try:
-            with open(self.path + "database.json", "r", encoding="utf-8") as f:
-                db = json.load(f)
-            return db["data_basis"].get(title)
+            db = safe_read_json(self.path + "database.json", default={})
+            return db.get("data_basis", {}).get(title)
         except:
             return None
 
@@ -553,34 +532,39 @@ class User:
         return changed
 
     def removeShort(self, ID):
-        with open(self.path + "database.json", "r", encoding="utf-8") as f:
-            db = json.load(f)
-
-        del db["data_short"][str(ID)]
-
-        with open(self.path + "database.json", "w", encoding="utf-8") as f:
-            json.dump(db, f, indent=4, ensure_ascii=False)
+        lock = get_user_lock(self.user)
+        with lock:
+            db = safe_read_json(self.path + "database.json", default={})
+            
+            if "data_short" in db and str(ID) in db["data_short"]:
+                del db["data_short"][str(ID)]
+                safe_write_json(self.path + "database.json", db)
         return True
     
     def removeBasis(self, title, timeline_actor=None):
-        with open(self.path + "database.json", "r", encoding="utf-8") as f:
-            db = json.load(f)
-
-        if title not in db["data_basis"]:
-            return False, "Title not found"
-
-        before_text = ""
-        try:
-            with open(db["data_basis"][title]["src"], "r", encoding="utf-8") as f:
-                before_text = f.read()
-        except Exception:
+        lock = get_user_lock(self.user)
+        with lock:
+            db = safe_read_json(self.path + "database.json", default={})
+            
+            if title not in db.get("data_basis", {}):
+                return False, "Title not found"
+            
             before_text = ""
-
-        os.remove(db["data_basis"][title]["src"])
-        del db["data_basis"][title]
-
-        with open(self.path + "database.json", "w", encoding="utf-8") as f:
-            json.dump(db, f, indent=4, ensure_ascii=False)
+            try:
+                with open(db["data_basis"][title]["src"], "r", encoding="utf-8") as f:
+                    before_text = f.read()
+            except Exception:
+                before_text = ""
+            
+            src = db["data_basis"][title]["src"]
+            del db["data_basis"][title]
+            
+            safe_write_json(self.path + "database.json", db)
+            
+            try:
+                os.remove(src)
+            except Exception:
+                pass
 
         # 清理知识图谱中的该节点及其连接
         graph = self.get_knowledge_graph()
@@ -618,15 +602,13 @@ class User:
     ):
         lock = get_user_lock(self.user)
         with lock:
-            with open(self.path + "database.json", "r", encoding="utf-8") as f:
-                db = json.load(f)
+            db = safe_read_json(self.path + "database.json", default={})
             changed = self._ensure_basis_ids_in_db(db)
             resolved_title, basis_meta, err = self._resolve_basis_title_and_meta(
                 db, title=title, basis_id=basis_id
             )
             if changed:
-                with open(self.path + "database.json", "w", encoding="utf-8") as f:
-                    json.dump(db, f, indent=4, ensure_ascii=False)
+                safe_write_json(self.path + "database.json", db)
 
         if not resolved_title or not isinstance(basis_meta, dict):
             raise KeyError(err or "basis not found")
@@ -774,36 +756,35 @@ class User:
         }, ensure_ascii=False)
 
     def updateBasisContent(self, title, content, timeline_actor=None):
-        with open(self.path + "database.json", "r", encoding="utf-8") as f:
-            db = json.load(f)
-        
-        if title not in db["data_basis"]:
-            return False, "Title not found"
+        lock = get_user_lock(self.user)
+        with lock:
+            db = safe_read_json(self.path + "database.json", default={})
             
-        src = db["data_basis"][title]["src"]
-        try:
-            with open(src, "r", encoding="utf-8") as f:
-                original = f.read()
-            with open(src, "w", encoding="utf-8") as f:
-                f.write(content)
-            db["data_basis"][title]["updated_at"] = time.time()
-            db["data_basis"][title]["vector_updated_at"] = 0
-            with open(self.path + "database.json", "w", encoding="utf-8") as f:
-                json.dump(db, f, indent=4, ensure_ascii=False)
-            # 更新内容后重新扫描链接
-            self.auto_link_knowledge(title)
-            if str(original or "").strip() != str(content or "").strip():
-                self._record_knowledge_timeline(
-                    title=title,
-                    before_text=original,
-                    after_text=content,
-                    action="update",
-                    timeline_actor=timeline_actor,
-                    extra={"field": "content"}
-                )
-            return True, "Success"
-        except Exception as e:
-            return False, str(e)
+            if title not in db.get("data_basis", {}):
+                return False, "Title not found"
+                
+            src = db["data_basis"][title]["src"]
+            try:
+                original = safe_read_text(src)
+                safe_write_text(src, content)
+                db["data_basis"][title]["updated_at"] = time.time()
+                db["data_basis"][title]["vector_updated_at"] = 0
+                safe_write_json(self.path + "database.json", db)
+            except Exception as e:
+                return False, str(e)
+            
+        # 更新内容后重新扫描链接
+        self.auto_link_knowledge(title)
+        if str(original or "").strip() != str(content or "").strip():
+            self._record_knowledge_timeline(
+                title=title,
+                before_text=original,
+                after_text=content,
+                action="update",
+                timeline_actor=timeline_actor,
+                extra={"field": "content"}
+            )
+        return True, "Success"
     
     def updateBasis(
         self,
@@ -820,20 +801,17 @@ class User:
         timeline_actor=None
     ):
         """更新基础知识，支持修改标题、整段内容、URL、区间替换（单次/批量）"""
-        with open(self.path + "database.json", "r", encoding="utf-8") as f:
-            db = json.load(f)
-        
-        if title not in db["data_basis"]:
-            return False, "Title not found"
-        
-        # 获取旧的记录
-        old_record = db["data_basis"][title]
-        src = old_record["src"]
-        try:
-            with open(src, "r", encoding="utf-8") as f:
-                original_content = f.read()
-        except Exception:
-            original_content = ""
+        lock = get_user_lock(self.user)
+        with lock:
+            db = safe_read_json(self.path + "database.json", default={})
+            
+            if title not in db.get("data_basis", {}):
+                return False, "Title not found"
+            
+            # 获取旧的记录
+            old_record = db["data_basis"][title]
+            src = old_record["src"]
+            original_content = safe_read_text(src)
         
         has_range_replace = (
             from_pos is not None
@@ -850,22 +828,19 @@ class User:
         # 更新内容（整段覆盖）
         if context is not None:
             try:
-                with open(src, "r", encoding="utf-8") as f:
-                    original = f.read()
+                original = safe_read_text(src)
                 new_content = str(context)
                 if new_content == original:
                     content_updated = False
                 else:
-                    with open(src, "w", encoding="utf-8") as f:
-                        f.write(new_content)
+                    safe_write_text(src, new_content)
                     content_updated = True
             except Exception as e:
                 return False, f"Failed to update content: {str(e)}"
         # 更新内容（区间替换）
         elif has_range_replace:
             try:
-                with open(src, "r", encoding="utf-8") as f:
-                    original = f.read()
+                original = safe_read_text(src)
                 current = original
 
                 ops = []
@@ -896,8 +871,7 @@ class User:
                     current = current[:s] + rep + current[e:]
 
                 if current != original:
-                    with open(src, "w", encoding="utf-8") as f:
-                        f.write(current)
+                    safe_write_text(src, current)
                     content_updated = True
                 else:
                     content_updated = False
@@ -930,14 +904,12 @@ class User:
         if content_updated:
             old_record["vector_updated_at"] = 0
 
-        # 保存更新
-        with open(self.path + "database.json", "w", encoding="utf-8") as f:
-            json.dump(db, f, indent=4, ensure_ascii=False)
-        try:
-            with open(src, "r", encoding="utf-8") as f:
-                updated_content = f.read()
-        except Exception:
-            updated_content = original_content
+        # 保存更新，带锁情况下
+        lock = get_user_lock(self.user)
+        with lock:
+            safe_write_json(self.path + "database.json", db)
+
+        updated_content = safe_read_text(src, default=original_content)
 
         if (
             content_updated
@@ -971,8 +943,9 @@ class User:
         graph_file = self.path + "knowledge_graph.json"
         
         try:
-            with open(graph_file, "r", encoding="utf-8") as f:
-                graph = json.load(f)
+            graph = safe_read_json(graph_file, default={})
+            if not graph:
+                return
             
             # 更新categories中的knowledge_ids
             for category in graph.get("categories", {}).values():
@@ -987,8 +960,7 @@ class User:
                 if conn.get("target") == old_title:
                     conn["target"] = new_title
             
-            with open(graph_file, "w", encoding="utf-8") as f:
-                json.dump(graph, f, indent=4, ensure_ascii=False)
+            safe_write_json(graph_file, graph)
         except Exception as e:
             print(f"Warning: Failed to update knowledge graph: {e}")
     
@@ -1013,16 +985,7 @@ class User:
             total_tokens = input_tokens + output_tokens
         total_tokens = int(total_tokens or 0)
 
-        # 确保日志文件存在
-        if not os.path.exists(log_file):
-            with open(log_file, "w", encoding="utf-8") as f:
-                json.dump([], f, indent=4, ensure_ascii=False)
-
-        try:
-            with open(log_file, "r", encoding="utf-8") as f:
-                logs = json.load(f)
-        except:
-            logs = []
+        logs = safe_read_json(log_file, default=[])
 
         # 添加新日志
         log_entry = {
@@ -1049,36 +1012,205 @@ class User:
         if len(logs) > 1000:
             logs = logs[:1000]
 
-        with open(log_file, "w", encoding="utf-8") as f:
-            json.dump(logs, f, indent=4, ensure_ascii=False)
+        safe_write_json(log_file, logs)
 
         # 同时更新全局 user.json 中的累计 token 消耗
         try:
             users_meta_path = "./data/user.json"
             if os.path.exists(users_meta_path):
                 with _global_file_lock:  # 使用锁保护全局文件的读写操作
-                    with open(users_meta_path, "r", encoding="utf-8") as f:
-                        users_data = json.load(f)
+                    users_data = safe_read_json(users_meta_path, default={})
 
                     if self.user in users_data:
                         current_usage = users_data[self.user].get("token_usage", 0)
                         users_data[self.user]["token_usage"] = current_usage + total_tokens
-
-                        with open(users_meta_path, "w", encoding="utf-8") as f:
-                            json.dump(users_data, f, indent=4, ensure_ascii=False)
+                        safe_write_json(users_meta_path, users_data, backup=False)
         except Exception as e:
             print(f"Error updating global token usage: {e}")
+
+        # 服务器统一额度由全局 token 日志推算，不在这里单独扣减。
 
     def get_token_logs(self):
         """获取Token使用日志"""
         log_file = self.path + "token_usage.json"
-        if not os.path.exists(log_file):
-            return []
+        return safe_read_json(log_file, default=[])
+
+    def _preferences_file(self):
+        return self.path + "preferences.json"
+
+    def _default_preferences(self):
+        return {
+            "default_model": "auto",
+            "theme": "dark",
+            "streaming": True,
+            "language": "zh",
+            "quota": {
+                "enabled": False,
+                "remaining_tokens": 0,
+                "warn_threshold_tokens": 0,
+                "on_exhausted": "stop_model",
+                "updated_at": 0,
+            },
+        }
+
+    def _normalize_quota_settings(self, quota):
+        quota_raw = quota if isinstance(quota, dict) else {}
+
+        def _int_value(raw_value):
+            try:
+                return max(0, int(float(raw_value or 0)))
+            except Exception:
+                return 0
+
+        on_exhausted = str(quota_raw.get("on_exhausted") or "stop_model").strip().lower()
+        if on_exhausted not in {"stop_model", "no_op"}:
+            on_exhausted = "stop_model"
+
+        return {
+            "enabled": bool(quota_raw.get("enabled", False)),
+            "remaining_tokens": _int_value(quota_raw.get("remaining_tokens", 0)),
+            "warn_threshold_tokens": _int_value(quota_raw.get("warn_threshold_tokens", 0)),
+            "on_exhausted": on_exhausted,
+            "updated_at": _int_value(quota_raw.get("updated_at", 0)),
+        }
+
+    def _quota_status_from_normalized(self, quota):
+        quota_norm = self._normalize_quota_settings(quota)
+        remaining = int(quota_norm.get("remaining_tokens", 0) or 0)
+        threshold = int(quota_norm.get("warn_threshold_tokens", 0) or 0)
+        enabled = bool(quota_norm.get("enabled", False))
+        on_exhausted = str(quota_norm.get("on_exhausted") or "stop_model").strip().lower()
+        is_exhausted = bool(enabled and remaining <= 0)
+        is_low = bool(enabled and remaining > 0 and threshold > 0 and remaining <= threshold)
+        return {
+            "enabled": enabled,
+            "remaining_tokens": remaining,
+            "warn_threshold_tokens": threshold,
+            "on_exhausted": on_exhausted,
+            "updated_at": int(quota_norm.get("updated_at", 0) or 0),
+            "is_low": is_low,
+            "is_exhausted": is_exhausted,
+            "should_block_model": bool(is_exhausted and on_exhausted == "stop_model"),
+        }
+
+    def _load_preferences_unlocked(self):
+        prefs = self._default_preferences()
+        raw = safe_read_json(self._preferences_file(), default={})
+        if not isinstance(raw, dict):
+            raw = {}
+
+        for key in ("default_model", "theme", "language"):
+            if key in raw:
+                value = str(raw.get(key) or "").strip()
+                if value:
+                    prefs[key] = value
+
+        if "streaming" in raw:
+            prefs["streaming"] = bool(raw.get("streaming"))
+
+        quota_raw = raw.get("quota", {}) if isinstance(raw.get("quota"), dict) else {}
+        legacy_quota_map = {
+            "enabled": raw.get("quota_enabled"),
+            "remaining_tokens": raw.get("quota_remaining_tokens"),
+            "warn_threshold_tokens": raw.get("quota_warn_threshold_tokens"),
+            "on_exhausted": raw.get("quota_on_exhausted"),
+            "updated_at": raw.get("quota_updated_at"),
+        }
+        for key, value in legacy_quota_map.items():
+            if value is not None and key not in quota_raw:
+                quota_raw[key] = value
+
+        prefs["quota"] = self._normalize_quota_settings(quota_raw)
+
+        # 保留将来可能新增的偏好字段。
+        for key, value in raw.items():
+            if key not in prefs:
+                prefs[key] = value
+
+        return prefs
+
+    def _save_preferences_unlocked(self, prefs):
+        payload = dict(prefs if isinstance(prefs, dict) else {})
+        quota_payload = self._normalize_quota_settings(payload.get("quota"))
+        quota_payload["updated_at"] = int(time.time())
+        payload["quota"] = quota_payload
+        payload["default_model"] = str(payload.get("default_model") or "auto").strip() or "auto"
+        payload["theme"] = str(payload.get("theme") or "dark").strip() or "dark"
+        payload["language"] = str(payload.get("language") or "zh").strip() or "zh"
+        payload["streaming"] = bool(payload.get("streaming", True))
+        safe_write_json(self._preferences_file(), payload, indent=2)
+        return payload
+
+    def get_preferences(self):
+        lock = get_user_lock(self.user)
+        with lock:
+            return self._load_preferences_unlocked()
+
+    def update_preferences(self, updates):
+        lock = get_user_lock(self.user)
+        with lock:
+            prefs = self._load_preferences_unlocked()
+            updates = updates if isinstance(updates, dict) else {}
+
+            for key in ("default_model", "theme", "language"):
+                if key in updates and updates.get(key) is not None:
+                    value = str(updates.get(key) or "").strip()
+                    if value:
+                        prefs[key] = value
+
+            if "streaming" in updates:
+                prefs["streaming"] = bool(updates.get("streaming"))
+
+            quota_updates = updates.get("quota") if isinstance(updates.get("quota"), dict) else {}
+            if quota_updates:
+                quota_payload = dict(prefs.get("quota", {}))
+                quota_payload.update(quota_updates)
+                prefs["quota"] = self._normalize_quota_settings(quota_payload)
+
+            # 兼容老式的平铺 quota 字段。
+            legacy_quota_fields = {
+                "enabled": "quota_enabled",
+                "remaining_tokens": "quota_remaining_tokens",
+                "warn_threshold_tokens": "quota_warn_threshold_tokens",
+                "on_exhausted": "quota_on_exhausted",
+                "updated_at": "quota_updated_at",
+            }
+            legacy_quota_payload = {}
+            for target_key, source_key in legacy_quota_fields.items():
+                if source_key in updates:
+                    legacy_quota_payload[target_key] = updates.get(source_key)
+            if legacy_quota_payload:
+                quota_payload = dict(prefs.get("quota", {}))
+                quota_payload.update(legacy_quota_payload)
+                prefs["quota"] = self._normalize_quota_settings(quota_payload)
+
+            return self._save_preferences_unlocked(prefs)
+
+    def get_quota_status(self):
+        prefs = self.get_preferences()
+        return self._quota_status_from_normalized(prefs.get("quota", {}))
+
+    def consume_quota_tokens(self, total_tokens):
         try:
-            with open(log_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except:
-            return []
+            spend = max(0, int(total_tokens or 0))
+        except Exception:
+            spend = 0
+        if spend <= 0:
+            return self.get_quota_status()
+
+        lock = get_user_lock(self.user)
+        with lock:
+            prefs = self._load_preferences_unlocked()
+            quota = self._normalize_quota_settings(prefs.get("quota", {}))
+            if not quota.get("enabled", False):
+                return self._quota_status_from_normalized(quota)
+
+            remaining = max(0, int(quota.get("remaining_tokens", 0) or 0) - spend)
+            quota["remaining_tokens"] = remaining
+            quota["updated_at"] = int(time.time())
+            prefs["quota"] = quota
+            self._save_preferences_unlocked(prefs)
+            return self._quota_status_from_normalized(quota)
 
     # ==================== 笔记云存储 ====================
 
@@ -1096,7 +1228,8 @@ class User:
                     "ts": now_ts
                 }
             ],
-            "notes": []
+            "notes": [],
+            "updatedAt": 0
         }
 
     def _normalize_note_anchor(self, raw):
@@ -1214,10 +1347,18 @@ class User:
         if len(normalized_notes) > 6000:
             normalized_notes = normalized_notes[:6000]
 
+        try:
+            updated_at = int(src.get("updatedAt", 0) or 0)
+            if updated_at < 0:
+                updated_at = 0
+        except Exception:
+            updated_at = 0
+
         return {
             "activeNotebookId": active_notebook_id,
             "notebooks": notebooks,
-            "notes": normalized_notes
+            "notes": normalized_notes,
+            "updatedAt": updated_at
         }
 
     def get_notes_store(self):
@@ -1227,20 +1368,14 @@ class User:
             fpath = self._notes_store_path()
             if not os.path.exists(fpath):
                 data = self._default_notes_store()
-                with open(fpath, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2, ensure_ascii=False)
+                safe_write_json(fpath, data, indent=2)
                 return data
 
-            try:
-                with open(fpath, "r", encoding="utf-8") as f:
-                    raw = json.load(f)
-            except Exception:
-                raw = self._default_notes_store()
+            raw = safe_read_json(fpath, default=self._default_notes_store())
 
             normalized = self._normalize_notes_store(raw)
             try:
-                with open(fpath, "w", encoding="utf-8") as f:
-                    json.dump(normalized, f, indent=2, ensure_ascii=False)
+                safe_write_json(fpath, normalized, indent=2)
             except Exception:
                 pass
             return normalized
@@ -1251,8 +1386,7 @@ class User:
         lock = get_user_lock(self.user)
         with lock:
             fpath = self._notes_store_path()
-            with open(fpath, "w", encoding="utf-8") as f:
-                json.dump(normalized, f, indent=2, ensure_ascii=False)
+            safe_write_json(fpath, normalized, indent=2)
         return normalized
 
     # ==================== 知识图谱管理 ====================
@@ -1280,13 +1414,11 @@ class User:
 
     def get_knowledge_graph(self):
         """获取知识图谱数据"""
-        with open(self.path + "knowledge_graph.json", "r", encoding="utf-8") as f:
-            return json.load(f)
+        return safe_read_json(self.path + "knowledge_graph.json", default={})
     
     def save_knowledge_graph(self, graph_data):
         """保存知识图谱数据"""
-        with open(self.path + "knowledge_graph.json", "w", encoding="utf-8") as f:
-            json.dump(graph_data, f, indent=4, ensure_ascii=False)
+        safe_write_json(self.path + "knowledge_graph.json", graph_data)
     
     def create_category(self, category_name, color="#667eea", position=None):
         """创建知识分类"""
@@ -1495,7 +1627,8 @@ class User:
         
         graph["categories"][category_name]["position"] = position
         self.save_knowledge_graph(graph)
-        return True, "更新成功"    def search_keyword(self, keyword, range_size=10):
+        return True, "更新成功"
+    def search_keyword(self, keyword, range_size=10):
         """
         在短期记忆和基础知识库中搜索关键词并返回结构化命中信息。
         """
@@ -1511,12 +1644,10 @@ class User:
 
         lock = get_user_lock(self.user)
         with lock:
-            with open(self.path + "database.json", "r", encoding="utf-8") as f:
-                db = json.load(f)
+            db = safe_read_json(self.path + "database.json", default={})
             changed = self._ensure_basis_ids_in_db(db)
             if changed:
-                with open(self.path + "database.json", "w", encoding="utf-8") as f:
-                    json.dump(db, f, indent=4, ensure_ascii=False)
+                safe_write_json(self.path + "database.json", db)
 
         matches = []
         article_stats = {}
@@ -1573,8 +1704,9 @@ class User:
                 title_pos = title_text.find(key, title_pos + max(1, len(key)))
 
             try:
-                with open(meta.get("src", ""), "r", encoding="utf-8") as f:
-                    content = f.read()
+                content = safe_read_text(meta.get("src", ""))
+                if not content:
+                    continue
             except Exception:
                 continue
 

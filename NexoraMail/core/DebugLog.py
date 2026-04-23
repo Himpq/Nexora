@@ -8,7 +8,7 @@ file = None
 # mapping like {'SMTP': '25', 'POP3': '110'} (strings)
 service_ports = {}
 pad_char = '_'
-_lock = threading.Lock()
+_lock = threading.RLock()
 isAutoCleanerRunning = False
 
 def autoCleaner():
@@ -24,17 +24,32 @@ def autoCleaner():
 
             if avr > 20000000:
                 try:
+                    if file and not file.closed:
+                        file.close()
+                except Exception:
+                    pass
 
-                    file.close()
-
+                # Try to clean wmailserver.log
+                try:
                     os.remove("./logs/wmailserver.log")
+                except Exception:
+                    try:
+                        open("./logs/wmailserver.log", "w", encoding="utf-8").close()
+                    except: pass
+
+                # Try to clean output.log
+                try:
                     os.remove("./logs/output.log")
+                except Exception:
+                    try:
+                        open("./logs/output.log", "w", encoding="utf-8").close()
+                    except: pass
 
+                try:
                     init()
-
                     write("[DebugLog_] Autocleaner did its job.")
                 except Exception as e:
-                    print("[DebugLog_] Cannot clean logs:", str(e))
+                    print("[DebugLog_] Cannot init logs:", str(e))
 
         time.sleep(60)
 

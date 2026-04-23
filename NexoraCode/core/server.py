@@ -309,6 +309,7 @@ def _proxy_request(path: str):
 
     if str(path or "").startswith("api/local_agent/register"):
         try:
+            print(f"[NexoraProxy DEBUG] cookies sent to upstream: {dict(request.cookies)}")
             print(
                 f"[NexoraProxy] register upstream status={upstream.status_code} "
                 f"location={upstream.headers.get('Location','')} set-cookie={'yes' if upstream.headers.get('Set-Cookie') else 'no'}"

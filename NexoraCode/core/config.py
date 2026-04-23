@@ -14,7 +14,10 @@ def get_app_root() -> Path:
     else:
         return Path(__file__).resolve().parent.parent
 
-_CONFIG_PATH = get_app_root() / "config.json"
+_DATA_DIR = get_app_root() / "data"
+if not _DATA_DIR.exists():
+    _DATA_DIR.mkdir(parents=True, exist_ok=True)
+_CONFIG_PATH = _DATA_DIR / "config.json"
 _DEFAULTS = {
     "nexora_url": "https://chat.himpqblog.cn",
     "allowed_dirs": [],

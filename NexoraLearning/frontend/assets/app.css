@@ -1,0 +1,442 @@
+:root {
+  --nxl-bg: #ffffff;
+  --nxl-panel: #ffffff;
+  --nxl-panel-soft: #f7f7f7;
+  --nxl-line: #e8e8e8;
+  --nxl-line-strong: #d8d8d8;
+  --nxl-text: #111111;
+  --nxl-text-soft: #666666;
+  --nxl-shadow: 0 8px 18px rgba(17, 17, 17, 0.04);
+  --nxl-radius: 18px;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--nxl-bg);
+  color: var(--nxl-text);
+}
+
+.learning-shell,
+.learning-shell *,
+.learning-shell *::before,
+.learning-shell *::after {
+  box-sizing: border-box;
+}
+
+.learning-shell {
+  width: 100%;
+  height: 100%;
+  padding: 12px 16px;
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.learning-shell p,
+.learning-shell span,
+.learning-shell button,
+.learning-shell div,
+.learning-shell article,
+.learning-shell section {
+  writing-mode: horizontal-tb !important;
+  text-orientation: mixed !important;
+}
+
+.learning-shell p {
+  margin: 0 !important;
+}
+
+.learning-shell button {
+  appearance: none;
+  -webkit-appearance: none;
+  font: inherit;
+  color: inherit;
+}
+
+.workbench-grid {
+  width: 100%;
+  height: 400px;
+  min-height: 400px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+}
+
+.side-column {
+  min-width: 0;
+  min-height: 0;
+  height: 400px;
+  display: grid;
+  grid-template-rows: 3fr 1fr;
+  gap: 14px;
+}
+
+.panel-card {
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--nxl-line);
+  border-radius: var(--nxl-radius);
+  background: var(--nxl-panel);
+  box-shadow: var(--nxl-shadow);
+  overflow: hidden;
+}
+
+.progress-panel,
+.pie-panel,
+.profile-panel {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.panel-card.progress-panel {
+  height: 400px;
+}
+
+.panel-card.pie-panel {
+  min-height: 0;
+}
+
+.panel-card.profile-panel {
+  min-height: 0;
+  justify-content: center;
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.panel-kicker {
+  margin: 0;
+  font-size: 11px !important;
+  line-height: 1.2 !important;
+  color: var(--nxl-text-soft);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.progress-list,
+.focus-list {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: #c6c6c6 transparent;
+}
+
+.progress-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding-right: 8px;
+  align-content: start;
+}
+
+.focus-list {
+  display: grid;
+  gap: 10px;
+  padding-right: 8px;
+}
+
+.progress-list::-webkit-scrollbar,
+.focus-list::-webkit-scrollbar {
+  width: 10px;
+}
+
+.progress-list::-webkit-scrollbar-track,
+.focus-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.progress-list::-webkit-scrollbar-thumb,
+.focus-list::-webkit-scrollbar-thumb {
+  background: #cbcbcb;
+  border-radius: 999px;
+}
+
+.progress-list::-webkit-scrollbar-thumb:hover,
+.focus-list::-webkit-scrollbar-thumb:hover {
+  background: #a9a9a9;
+}
+
+.nxl-course-item {
+  border: 1px solid var(--nxl-line);
+  border-radius: 16px;
+  background: #ffffff;
+  overflow: hidden;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+  min-height: 112px;
+  height: 112px;
+}
+
+.nxl-course-item.is-open {
+  border-color: var(--nxl-line-strong);
+  background: #fcfcfc;
+  box-shadow: 0 6px 14px rgba(17, 17, 17, 0.045);
+}
+
+.nxl-course-toggle {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: default;
+  padding: 8px 9px;
+  display: grid !important;
+  grid-template-rows: auto auto;
+  gap: 6px;
+}
+
+.nxl-course-top {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 10px;
+  min-width: 0;
+}
+
+.nxl-course-main {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: block !important;
+  overflow: visible !important;
+}
+
+.nxl-course-title {
+  font-size: 12px !important;
+  line-height: 1.22 !important;
+  font-weight: 600 !important;
+  color: var(--nxl-text) !important;
+  white-space: normal !important;
+  overflow: visible !important;
+}
+
+.nxl-course-meta {
+  margin-top: 2px !important;
+  font-size: 9px !important;
+  line-height: 1.25 !important;
+  color: var(--nxl-text-soft) !important;
+  white-space: normal !important;
+  overflow: visible !important;
+}
+
+.nxl-course-percent {
+  flex: 0 0 auto;
+  min-width: 34px;
+  text-align: right;
+  font-size: 10px !important;
+  line-height: 1.1 !important;
+  font-weight: 600 !important;
+}
+
+.nxl-course-bar-row {
+  display: flex !important;
+  align-items: flex-start !important;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.nxl-course-bar {
+  width: 100%;
+  min-width: 0;
+  height: 5px;
+  border-radius: 999px;
+  background: #e4e4e4;
+  overflow: hidden;
+}
+
+.nxl-course-bar-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #111111, #3e3e3e);
+}
+
+.nxl-course-stage {
+  font-size: 9px !important;
+  line-height: 1.2 !important;
+  color: var(--nxl-text-soft) !important;
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+}
+
+.nxl-course-expand {
+  display: none !important;
+  align-items: center !important;
+  gap: 8px;
+  font-size: 11px !important;
+  line-height: 1.2 !important;
+  color: var(--nxl-text-soft) !important;
+}
+
+.time-pie-chart {
+  min-height: 0;
+  flex: 1 1 auto;
+  display: grid;
+  place-items: center;
+  padding: 4px 0 0;
+}
+
+.user-profile-card {
+  width: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+}
+
+.user-profile-avatar {
+  width: 52px;
+  height: 52px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #111111, #5a5a5a);
+  display: grid;
+  place-items: center;
+  color: #ffffff;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.user-profile-meta {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.user-profile-name {
+  font-size: 12px;
+  line-height: 1.2;
+  font-weight: 600;
+  color: var(--nxl-text);
+}
+
+.user-profile-line {
+  font-size: 10px;
+  line-height: 1.3;
+  color: var(--nxl-text-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nxl-pie-svg {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: block;
+}
+
+.nxl-pie-center-label {
+  font-size: 10px;
+  fill: #666666;
+}
+
+.nxl-pie-center-value {
+  font-size: 24px;
+  font-weight: 600;
+  fill: #111111;
+}
+
+.nxl-pie-segment {
+  cursor: pointer;
+  transition: opacity 180ms ease;
+}
+
+.nxl-pie-segment path {
+  transition: transform 220ms ease, filter 220ms ease, opacity 220ms ease;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.nxl-pie-segment.is-active path {
+  filter: drop-shadow(0 6px 12px rgba(17, 17, 17, 0.16));
+}
+
+.nxl-pie-callout {
+  cursor: pointer;
+  transition: opacity 180ms ease;
+}
+
+.nxl-pie-callout polyline,
+.nxl-pie-callout line {
+  stroke: #c6c6c6;
+  stroke-width: 1.5;
+  fill: none;
+  transition: stroke 180ms ease;
+}
+
+.nxl-pie-callout text {
+  font-size: 13px;
+  fill: #3a3a3a;
+  transition: fill 180ms ease, font-weight 180ms ease;
+}
+
+.nxl-pie-callout .nxl-pie-callout-sub {
+  font-size: 11px;
+  fill: #777777;
+}
+
+.nxl-pie-callout.is-active polyline,
+.nxl-pie-callout.is-active line {
+  stroke: #111111;
+}
+
+.nxl-pie-callout.is-active text {
+  fill: #111111;
+  font-weight: 600;
+}
+
+@media (max-width: 860px) {
+  html,
+  body {
+    overflow: auto;
+  }
+
+  .learning-shell {
+    height: auto;
+    min-height: 100%;
+  }
+
+  .workbench-grid {
+    height: auto;
+    min-height: 0;
+    grid-template-columns: 1fr;
+  }
+
+  .side-column {
+    height: auto;
+    grid-template-rows: minmax(220px, 1fr) auto;
+  }
+
+  .progress-list {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .learning-shell {
+    padding: 10px;
+  }
+
+  .nxl-course-top {
+    flex-direction: column;
+    align-items: flex-start !important;
+  }
+
+  .nxl-course-bar {
+    width: 100%;
+    max-width: 220px;
+  }
+}

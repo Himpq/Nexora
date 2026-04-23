@@ -8,6 +8,7 @@ import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
 from secure import safe_filename
+from datastorage import safe_read_json, safe_write_json
 
 
 _LOCKS: Dict[str, threading.Lock] = {}
@@ -56,26 +57,20 @@ class UserFileSandbox:
     def _ensure_index(self) -> None:
         if os.path.exists(self.index_path):
             return
-        with open(self.index_path, "w", encoding="utf-8") as f:
-            json.dump({"files": {}}, f, ensure_ascii=False, indent=2)
+        safe_write_json(self.index_path, {"files": {}}, indent=2)
 
     def _load_index(self) -> Dict[str, Any]:
-        try:
-            with open(self.index_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if not isinstance(data, dict):
-                data = {}
-            files = data.get("files")
-            if not isinstance(files, dict):
-                files = {}
-            data["files"] = files
-            return data
-        except Exception:
-            return {"files": {}}
+        data = safe_read_json(self.index_path, default={})
+        if not isinstance(data, dict):
+            data = {}
+        files = data.get("files")
+        if not isinstance(files, dict):
+            files = {}
+        data["files"] = files
+        return data
 
     def _save_index(self, data: Dict[str, Any]) -> None:
-        with open(self.index_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        safe_write_json(self.index_path, data, indent=2)
 
     def _sanitize_alias(self, name: str) -> str:
         return safe_filename(name, default="untitled.txt", max_len=120)
