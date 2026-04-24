@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 import re
 from typing import Any, Dict, Mapping, Optional, Type
 
-from . import prompts
+import prompts
 from .nexora_proxy import NexoraProxy
 
 
@@ -269,6 +269,12 @@ class AnswerModel(BaseLearningModel):
     model_key = "answer"
 
 
+class QuestionVerifyModel(BaseLearningModel):
+    """Model used to review and fix generated questions."""
+
+    model_key = "question_verify"
+
+
 class MemoryProfileModel(BaseLearningModel):
     """Model used to update soul/user/context memory files."""
 
@@ -304,6 +310,7 @@ class LearningModelFactory:
 
     _registry: Dict[str, Type[BaseLearningModel]] = {
         "question": QuestionGenerationModel,
+        "question_verify": QuestionVerifyModel,
         "intensive_reading": IntensiveReadingModel,
         "answer": AnswerModel,
         "memory": MemoryProfileModel,

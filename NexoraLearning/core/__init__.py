@@ -8,6 +8,7 @@ from .models import (
     NexoraCompletionClient,
     PromptContextManager,
     QuestionGenerationModel,
+    QuestionVerifyModel,
 )
 from .lectures import (
     create_book,
@@ -20,9 +21,16 @@ from .lectures import (
     initialize_lecture_dirs,
     list_books,
     list_lectures,
+    load_book_chunks,
+    load_book_text,
+    save_book_chunks,
+    save_book_papi_request,
+    save_book_text,
     update_book,
     update_lecture,
 )
+from .tool_executor import ToolExecutor
+from .tools import TOOLS, Tools
 from .user import (
     append_learning_record,
     append_question_completion,
@@ -39,3 +47,4 @@ from .user import (
     update_user,
     write_memory,
 )
+from .vectorization import NexoraVectorPAPIPlaceholder, queue_vectorize_book, vectorize_book

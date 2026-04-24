@@ -22,7 +22,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-_lock = threading.Lock()
+_lock = threading.RLock()
 
 
 # ──────────────────────────────────────────────

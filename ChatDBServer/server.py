@@ -3248,7 +3248,11 @@ def require_papi_key(f):
         if not api_config.get('public_api_enabled', False):
             return jsonify({'success': False, 'message': 'Public API is disabled'}), 403
             
-        auth_key = request.headers.get('X-API-Key') or request.args.get('api_key')
+        auth_key = (
+            request.headers.get('X-API-Key')
+            or _extract_bearer_token(request.headers.get('Authorization'))
+            or request.args.get('api_key')
+        )
         expected_key = api_config.get('public_api_key')
         
         if not auth_key or auth_key != expected_key:
@@ -3256,6 +3260,15 @@ def require_papi_key(f):
             
         return f(*args, **kwargs)
     return decorated_function
+
+
+def _extract_bearer_token(header_value: Any) -> str:
+    raw = str(header_value or '').strip()
+    if not raw:
+        return ''
+    if raw.lower().startswith('bearer '):
+        return raw[7:].strip()
+    return ''
 
 
 def _papi_pick_model(config: Dict[str, Any], requested_model: str) -> Tuple[str, Dict[str, Any], str, Dict[str, Any]]:
@@ -3434,6 +3447,282 @@ def _papi_extract_completion_text(response_obj: Any) -> str:
         pass
 
     return ''
+
+
+def _papi_extract_usage(response_obj: Any) -> Dict[str, int]:
+    usage_obj = None
+    if isinstance(response_obj, dict):
+        usage_obj = response_obj.get('usage')
+    if usage_obj is None:
+        usage_obj = getattr(response_obj, 'usage', None)
+    if usage_obj is None:
+        return {}
+
+    def _read_usage(key: str, default: int = 0) -> int:
+        if isinstance(usage_obj, dict):
+            try:
+                return int(usage_obj.get(key, default) or default)
+            except Exception:
+                return default
+        try:
+            return int(getattr(usage_obj, key, default) or default)
+        except Exception:
+            return default
+
+    prompt_tokens = _read_usage('prompt_tokens', 0)
+    completion_tokens = _read_usage('completion_tokens', _read_usage('output_tokens', 0))
+    total_tokens = _read_usage('total_tokens', prompt_tokens + completion_tokens)
+    return {
+        'prompt_tokens': prompt_tokens,
+        'completion_tokens': completion_tokens,
+        'total_tokens': total_tokens,
+    }
+
+
+def _papi_extract_finish_reason(response_obj: Any) -> str:
+    choice0 = None
+    if isinstance(response_obj, dict):
+        choices = response_obj.get('choices')
+        if isinstance(choices, list) and choices:
+            choice0 = choices[0]
+    else:
+        try:
+            choices = getattr(response_obj, 'choices', None)
+            if isinstance(choices, list) and choices:
+                choice0 = choices[0]
+        except Exception:
+            choice0 = None
+
+    if choice0 is None:
+        return 'stop'
+
+    if isinstance(choice0, dict):
+        return str(choice0.get('finish_reason') or 'stop')
+    try:
+        return str(getattr(choice0, 'finish_reason', None) or 'stop')
+    except Exception:
+        return 'stop'
+
+
+def _papi_extract_tool_calls(response_obj: Any) -> List[Dict[str, Any]]:
+    message = None
+    if isinstance(response_obj, dict):
+        choices = response_obj.get('choices')
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            message = choices[0].get('message')
+    else:
+        try:
+            choices = getattr(response_obj, 'choices', None)
+            if isinstance(choices, list) and choices:
+                message = getattr(choices[0], 'message', None)
+        except Exception:
+            message = None
+
+    if message is None:
+        return []
+
+    raw_tool_calls = None
+    if isinstance(message, dict):
+        raw_tool_calls = message.get('tool_calls')
+    else:
+        raw_tool_calls = getattr(message, 'tool_calls', None)
+
+    if not isinstance(raw_tool_calls, list):
+        return []
+
+    normalized: List[Dict[str, Any]] = []
+    for idx, tool_call in enumerate(raw_tool_calls):
+        if isinstance(tool_call, dict):
+            call_id = str(tool_call.get('id') or f'tool_call_{idx}')
+            call_type = str(tool_call.get('type') or 'function')
+            function_obj = tool_call.get('function') if isinstance(tool_call.get('function'), dict) else {}
+            normalized.append({
+                'id': call_id,
+                'type': call_type,
+                'function': {
+                    'name': str(function_obj.get('name') or ''),
+                    'arguments': str(function_obj.get('arguments') or ''),
+                },
+            })
+            continue
+
+        try:
+            function_obj = getattr(tool_call, 'function', None)
+            normalized.append({
+                'id': str(getattr(tool_call, 'id', None) or f'tool_call_{idx}'),
+                'type': str(getattr(tool_call, 'type', None) or 'function'),
+                'function': {
+                    'name': str(getattr(function_obj, 'name', None) or ''),
+                    'arguments': str(getattr(function_obj, 'arguments', None) or ''),
+                },
+            })
+        except Exception:
+            continue
+
+    return normalized
+
+
+def _papi_extract_response_id(response_obj: Any) -> str:
+    if isinstance(response_obj, dict):
+        raw_id = response_obj.get('id')
+        if raw_id:
+            return str(raw_id)
+    try:
+        raw_id = getattr(response_obj, 'id', None)
+        if raw_id:
+            return str(raw_id)
+    except Exception:
+        pass
+    return f'chatcmpl-{uuid.uuid4().hex}'
+
+
+def _papi_build_openai_payload(
+    *,
+    response_obj: Any,
+    model_name: str,
+    provider_name: str,
+    request_username: str,
+    quota_status: Dict[str, Any],
+) -> Dict[str, Any]:
+    content = _papi_extract_completion_text(response_obj)
+    tool_calls = _papi_extract_tool_calls(response_obj)
+    finish_reason = _papi_extract_finish_reason(response_obj)
+    if tool_calls and finish_reason == 'stop':
+        finish_reason = 'tool_calls'
+    usage = _papi_extract_usage(response_obj)
+    payload = {
+        'id': _papi_extract_response_id(response_obj),
+        'object': 'chat.completion',
+        'created': int(time.time()),
+        'model': model_name,
+        'provider': provider_name,
+        'username': request_username,
+        'success': True,
+        'content': content,
+        'message': {
+            'role': 'assistant',
+            'content': content if not tool_calls else (content or None),
+        },
+        'choices': [
+            {
+                'index': 0,
+                'message': {
+                    'role': 'assistant',
+                    'content': content if not tool_calls else (content or None),
+                },
+                'finish_reason': finish_reason,
+            }
+        ],
+        'quota': quota_status,
+    }
+    if tool_calls:
+        payload['message']['tool_calls'] = tool_calls
+        payload['choices'][0]['message']['tool_calls'] = tool_calls
+    if usage:
+        payload['usage'] = usage
+    return payload
+
+
+def _papi_stream_openai_chat(
+    *,
+    adapter: Any,
+    client: Any,
+    model_name: str,
+    messages: List[Dict[str, Any]],
+    request_kwargs: Dict[str, Any],
+) -> Response:
+    created_ts = int(time.time())
+    completion_id = f'chatcmpl-{uuid.uuid4().hex}'
+    request_params: Dict[str, Any] = {'model': model_name, 'stream': True}
+    request_params.update(dict(request_kwargs or {}))
+    request_params = adapter.apply_protocol_payload(
+        request_params,
+        use_responses_api=False,
+        messages=messages,
+        previous_response_id=None,
+        current_function_outputs=None,
+    )
+    stream_options = request_params.get('stream_options')
+    include_usage = bool(isinstance(stream_options, dict) and stream_options.get('include_usage'))
+    iterator = adapter.create_stream_iterator(
+        client=client,
+        request_params=request_params,
+        use_responses_api=False,
+    )
+    event_iter = adapter.iter_stream_events(
+        iterator,
+        use_responses_api=False,
+        native_web_search_enabled=False,
+    )
+
+    def _event_stream():
+        role_emitted = False
+        usage_payload = None
+        saw_tool_calls = False
+        for ev in event_iter:
+            if not isinstance(ev, dict):
+                continue
+            ev_type = str(ev.get('type') or '').strip()
+            if ev_type == 'content_delta':
+                delta_payload: Dict[str, Any] = {}
+                if not role_emitted:
+                    delta_payload['role'] = 'assistant'
+                    role_emitted = True
+                delta_payload['content'] = str(ev.get('delta') or '')
+                chunk = {
+                    'id': completion_id,
+                    'object': 'chat.completion.chunk',
+                    'created': created_ts,
+                    'model': model_name,
+                    'choices': [{'index': 0, 'delta': delta_payload, 'finish_reason': None}],
+                }
+                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            elif ev_type == 'function_call_delta':
+                saw_tool_calls = True
+                delta_tool_call = {
+                    'index': int(ev.get('index', 0) or 0),
+                    'id': str(ev.get('call_id') or f'tool_call_{int(ev.get(\"index\", 0) or 0)}'),
+                    'type': 'function',
+                    'function': {},
+                }
+                name_delta = str(ev.get('name_delta') or '')
+                arguments_delta = str(ev.get('arguments_delta') or '')
+                if name_delta:
+                    delta_tool_call['function']['name'] = name_delta
+                if arguments_delta:
+                    delta_tool_call['function']['arguments'] = arguments_delta
+                delta_payload = {'tool_calls': [delta_tool_call]}
+                if not role_emitted:
+                    delta_payload['role'] = 'assistant'
+                    role_emitted = True
+                chunk = {
+                    'id': completion_id,
+                    'object': 'chat.completion.chunk',
+                    'created': created_ts,
+                    'model': model_name,
+                    'choices': [{'index': 0, 'delta': delta_payload, 'finish_reason': None}],
+                }
+                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            elif ev_type == 'usage':
+                usage_payload = {
+                    'prompt_tokens': int(ev.get('input_tokens', 0) or 0),
+                    'completion_tokens': int(ev.get('output_tokens', 0) or 0),
+                    'total_tokens': int(ev.get('total_tokens', 0) or 0),
+                }
+
+        final_chunk = {
+            'id': completion_id,
+            'object': 'chat.completion.chunk',
+            'created': created_ts,
+            'model': model_name,
+            'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'tool_calls' if saw_tool_calls else 'stop'}],
+        }
+        if include_usage and usage_payload:
+            final_chunk['usage'] = usage_payload
+        yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return Response(_event_stream(), mimetype='text/event-stream')
 
 # ==================== 认证相关 ====================
 
@@ -6169,6 +6458,7 @@ def papi_query_vectors(username):
 
 @app.route('/api/papi/completions', methods=['POST'])
 @app.route('/api/papi/completions/<username>', methods=['POST'])
+@app.route('/v1/chat/completions', methods=['POST'])
 @require_papi_key
 def papi_completions(username=None):
     """PAPI: OpenAI 风格单轮补全接口。"""

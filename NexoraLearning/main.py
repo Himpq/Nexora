@@ -43,13 +43,23 @@ def ensure_bootstrap():
     if not CONFIG_PATH.exists():
         config = DEFAULT_CONFIG.copy()
         config["auth_token"] = secrets.token_hex(24)
+        config = _normalize_config_paths(config)
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=4, ensure_ascii=False)
         print(f"[BOOTSTRAP] Created default config at {CONFIG_PATH}")
         return config
     
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+        return _normalize_config_paths(json.load(f))
+
+
+def _normalize_config_paths(config):
+    cfg = dict(config or {})
+    data_dir = Path(str(cfg.get("data_dir") or "data"))
+    if not data_dir.is_absolute():
+        data_dir = (ROOT / data_dir).resolve()
+    cfg["data_dir"] = str(data_dir)
+    return cfg
 
 def create_app():
     cfg = ensure_bootstrap()
