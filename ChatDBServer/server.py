@@ -7476,9 +7476,30 @@ def papi_completions(username=None):
     ):
         synthetic_messages = _papi_build_synthetic_messages_from_function_outputs(responses_input_items)
         if synthetic_messages:
-            messages = list(messages or []) + synthetic_messages
+            clean_messages = []
+            for msg in (messages or []):
+                role = str(msg.get('role') or '').strip().lower()
+                if role == 'tool':
+                    continue
+                if role == 'assistant' and msg.get('tool_calls'):
+                    new_msg = dict(msg)
+                    new_msg.pop('tool_calls', None)
+                    content_val = new_msg.get('content')
+                    is_empty = False
+                    if not content_val:
+                        is_empty = True
+                    elif isinstance(content_val, str) and not content_val.strip():
+                        is_empty = True
+                    elif isinstance(content_val, list) and not content_val:
+                        is_empty = True
+                    if is_empty:
+                        continue
+                    clean_messages.append(new_msg)
+                else:
+                    clean_messages.append(msg)
+            messages = clean_messages + synthetic_messages
             responses_input_items = None
-            _papi_log("[PAPI_RESP_IN] appended synthetic tool-output user message because previous_response_id is missing")
+            _papi_log("[PAPI_RESP_IN] appended synthetic tool-output user message and cleaned tool_calls because previous_response_id is missing")
     if not messages and not responses_input_items:
         return jsonify({'success': False, 'message': 'messages 或 prompt 不能为空'}), 400
 
