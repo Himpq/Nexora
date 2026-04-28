@@ -239,6 +239,41 @@ def get_user_state(cfg: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     }
 
 
+def set_lecture_selection(
+    cfg: Dict[str, Any],
+    user_id: str,
+    lecture_id: str,
+    *,
+    selected: bool,
+    actor: str = "",
+) -> Dict[str, Any]:
+    lecture_key = str(lecture_id or "").strip()
+    if not lecture_key:
+        raise ValueError("lecture_id is required")
+    record = {
+        "type": "lecture_selection",
+        "lecture_id": lecture_key,
+        "selected": bool(selected),
+        "actor": str(actor or "").strip(),
+    }
+    return append_learning_record(cfg, user_id, record)
+
+
+def list_selected_lecture_ids(cfg: Dict[str, Any], user_id: str) -> List[str]:
+    records = list_learning_records(cfg, user_id)
+    states: Dict[str, bool] = {}
+    for row in records:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("type") or "").strip() != "lecture_selection":
+            continue
+        lecture_id = str(row.get("lecture_id") or "").strip()
+        if not lecture_id:
+            continue
+        states[lecture_id] = bool(row.get("selected"))
+    return [lecture_id for lecture_id, is_selected in states.items() if is_selected]
+
+
 def _read_json(path: Path) -> Optional[Dict[str, Any]]:
     if not path.exists():
         return None

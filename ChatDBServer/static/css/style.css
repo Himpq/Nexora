@@ -2964,7 +2964,9 @@ body.settings-companion-mode #addUserModal,
 body.settings-companion-mode #modelPermModal,
 body.settings-companion-mode #avatarCropModal,
 body.settings-companion-mode #adminTextConfirmModal,
-body.settings-companion-mode #adminConfigModal {
+body.settings-companion-mode #adminConfigModal,
+body.settings-companion-mode #adminPublicApiKeyModal,
+body.settings-companion-mode #adminPublicApiDeleteModal {
     z-index: 4300 !important;
 }
 
@@ -7627,8 +7629,19 @@ body.is-admin .menu-item.admin-only {
     border-color: #dc2626;
 }
 
+.btn-danger-solid {
+    background: #dc2626;
+    border: 1px solid #dc2626;
+    color: #ffffff;
+}
+
+.btn-danger-solid:hover {
+    background: #b91c1c;
+    border-color: #b91c1c;
+}
+
 /* Toast Notification */
-.toast-notification { position: fixed; top: 20px; left: 50%; transform: translateX(-50%) translateY(-20px); background: #333; color: #fff; padding: 10px 20px; border-radius: 8px; font-size: 14px; opacity: 0; pointer-events: none; transition: all 0.3s ease; z-index: 2000; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+.toast-notification { position: fixed; top: 20px; left: 50%; transform: translateX(-50%) translateY(-20px); background: #333; color: #fff; padding: 10px 20px; border-radius: 8px; font-size: 14px; opacity: 0; pointer-events: none; transition: all 0.3s ease; z-index: 16000 !important; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
 .toast-notification.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 /* Better Knowledge Panel Buttons */
 .k-actions .btn-icon-small { border: 1px solid transparent; width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; color: #666; transition: all 0.2s; background: transparent; }
@@ -8302,6 +8315,106 @@ body.is-admin .menu-item.admin-only {
     line-height: 1.4;
     padding-top: 4px;
     word-break: break-word;
+}
+
+#settings-admin-auth-tab .admin-public-api-layout {
+    display: grid;
+    grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+    gap: 12px;
+}
+
+#settings-admin-auth-tab .admin-public-api-detail {
+    overflow-y: auto;
+    min-height: 0;
+}
+
+#settings-admin-auth-tab .admin-public-api-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 10px 12px;
+    margin-bottom: 10px;
+}
+
+#settings-admin-auth-tab .admin-public-api-grid .form-group {
+    margin-bottom: 0 !important;
+}
+
+#settings-admin-auth-tab .admin-public-api-grid .admin-info-text {
+    background: transparent;
+    border: none;
+    padding: 4px 0 0;
+}
+
+#settings-admin-auth-tab .admin-public-api-perm-wrap {
+    margin-bottom: 10px;
+}
+
+#settings-admin-auth-tab .admin-public-api-perm-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px 14px;
+    margin-top: 8px;
+}
+
+#settings-admin-auth-tab .admin-public-api-check-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: #334155;
+}
+
+#settings-admin-auth-tab .admin-public-api-save-row {
+    margin-bottom: 8px !important;
+}
+
+#settings-admin-auth-tab .admin-public-api-danger-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+#settings-admin-auth-tab .admin-public-api-danger-row > button {
+    flex: 1 1 0;
+    width: calc(50% - 5px);
+}
+
+#settings-admin-auth-tab .form-group:has(#adminPublicApiLatestKey) {
+    display: none !important;
+}
+
+#settings-admin-auth-tab .btn-warning {
+    background: #fff6cf !important;
+    border: 1px solid #f7de8a !important;
+    color: #6b5200 !important;
+}
+
+#settings-admin-auth-tab .btn-warning:hover {
+    background: #fcecad !important;
+    border-color: #e8cb67 !important;
+    color: #4d3b00 !important;
+}
+
+#settings-admin-auth-tab .btn-danger-solid {
+    background: #dc2626 !important;
+    border: 1px solid #dc2626 !important;
+    color: #ffffff !important;
+}
+
+#settings-admin-auth-tab .btn-danger-solid:hover {
+    background: #b91c1c !important;
+    border-color: #b91c1c !important;
+}
+
+@media (max-width: 1100px) {
+    #settings-admin-auth-tab .admin-public-api-layout {
+        grid-template-columns: 1fr;
+    }
+
+    #settings-admin-auth-tab .admin-public-api-perm-grid,
+    #settings-admin-auth-tab .admin-public-api-grid {
+        grid-template-columns: 1fr;
+    }
 }
 
 .admin-user-actions {
@@ -9420,7 +9533,7 @@ body.is-admin .menu-item.admin-only {
 }
 
 .toast-notification {
-    z-index: 9100 !important;
+    z-index: 16000 !important;
 }
 
 /* Ensure second-level admin modals render above settings modal */
@@ -9430,7 +9543,9 @@ body.is-admin .menu-item.admin-only {
 
 #modelPermModal,
 #addUserModal,
-#adminConfigModal {
+#adminConfigModal,
+#adminPublicApiKeyModal,
+#adminPublicApiDeleteModal {
     z-index: 9200 !important;
 }
 
@@ -10916,4 +11031,69 @@ body:not(.settings-companion-mode) #settingsModal #settings-admin-models-tab.adm
     #settingsModal #settings-admin-models-tab .admin-users-toolbar .model-admin-search {
         min-width: 320px !important;
     }
+}
+
+/* ===== Final admin auth/model fix lock ===== */
+#settingsModal #settings-admin-auth-tab #adminPublicApiRegenerateBtn {
+    background: #fff6cf !important;
+    border: 1px solid #f7de8a !important;
+    color: #6b5200 !important;
+}
+
+#settingsModal #settings-admin-auth-tab #adminPublicApiRegenerateBtn:hover {
+    background: #fcecad !important;
+    border-color: #e8cb67 !important;
+    color: #4d3b00 !important;
+}
+
+#settingsModal #settings-admin-auth-tab #adminPublicApiRevokeBtn {
+    background: #dc2626 !important;
+    border: 1px solid #dc2626 !important;
+    color: #ffffff !important;
+}
+
+#settingsModal #settings-admin-auth-tab #adminPublicApiRevokeBtn:hover {
+    background: #b91c1c !important;
+    border-color: #b91c1c !important;
+}
+
+#settingsModal #settings-admin-auth-tab.admin-tab-content.active {
+    display: grid !important;
+    grid-template-rows: auto minmax(0, 1fr) !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+}
+
+#settingsModal #settings-admin-auth-tab .admin-users-layout {
+    min-height: 0 !important;
+    height: 100% !important;
+    overflow: hidden !important;
+    padding-right: 0 !important;
+}
+
+#settingsModal #settings-admin-auth-tab .admin-public-api-layout {
+    min-height: 0 !important;
+    height: 100% !important;
+    overflow: hidden !important;
+}
+
+#settingsModal #settings-admin-auth-tab .admin-users-list,
+#settingsModal #settings-admin-auth-tab .admin-user-detail {
+    min-height: 0 !important;
+    height: auto !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+}
+
+#settingsModal #settings-admin-models-tab .admin-users-layout {
+    border: none !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+    background: transparent !important;
+}
+
+#settingsModal #settings-admin-models-tab #adminModelProviderList,
+#settingsModal #settings-admin-models-tab #adminModelConfigList {
+    border: 1px solid #e5e7eb !important;
+    border-radius: 10px !important;
 }

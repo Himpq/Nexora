@@ -782,6 +782,40 @@
         </div>
     </div>
 
+    <div id="adminPublicApiKeyModal" class="modal-backdrop">
+        <div class="modal" style="width: 480px; padding: 0;">
+            <div class="modal-head">
+                <h3 id="adminPublicApiKeyModalTitle">生成 Public API Key</h3>
+                <button class="btn-modal-close" onclick="closeAdminPublicApiKeyModal()" title="Close"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body" style="padding: 16px 20px;">
+                <p id="adminPublicApiKeyModalDesc" style="margin: 0 0 10px;">请选择 Key 过期时间。</p>
+                <div class="form-group" style="margin-bottom: 10px;">
+                    <label>Key Name</label>
+                    <input id="adminPublicApiKeyNameInput" class="input-modern" placeholder="例如：NexoraLearning / OpenCode / OpenClaw">
+                </div>
+                <div class="form-group" style="margin-bottom: 10px;">
+                    <label>Expire</label>
+                    <select id="adminPublicApiExpireModalInput" class="input-modern">
+                        <option value="1d">1d</option>
+                        <option value="7d">7d</option>
+                        <option value="1m">1m</option>
+                        <option value="3m">3m</option>
+                        <option value="forever" selected>forever</option>
+                    </select>
+                </div>
+                <div id="adminPublicApiModalLatestKeyGroup" class="form-group" style="display:none; margin-bottom: 0;">
+                    <label>New API Key (show once)</label>
+                    <div id="adminPublicApiModalLatestKey" class="admin-info-text mono" style="font-size: 12px; word-break: break-all;"></div>
+                </div>
+                <div class="modal-footer" style="margin-top: 14px;">
+                    <button id="adminPublicApiKeyModalCancelBtn" class="btn-cancel" type="button" onclick="closeAdminPublicApiKeyModal()">取消</button>
+                    <button id="adminPublicApiKeyModalConfirmBtn" class="btn-confirm" type="button">确认</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div id="ollamaModelStatusModal" class="modal-backdrop" style="z-index: 9950;">
         <div class="modal ollama-status-modal" style="width: min(640px, 94vw); padding: 0;">
             <div class="modal-head">
@@ -910,6 +944,7 @@
                         <button type="button" id="settingsAdminMailBtn" class="admin-tab settings-admin-entry" data-tab="admin-mail" style="display:none;">邮箱管理</button>
                         {% endif %}
                         <button type="button" id="settingsAdminModelsBtn" class="admin-tab settings-admin-entry" data-tab="admin-models" style="display:none;">模型管理</button>
+                        <button type="button" id="settingsAdminAuthBtn" class="admin-tab settings-admin-entry" data-tab="admin-auth" style="display:none;">认证管理</button>
                         <button type="button" id="settingsAdminStatsBtn" class="admin-tab settings-admin-entry" data-tab="admin-stats" style="display:none;">统计信息</button>
                         <button type="button" id="settingsAdminChromaBtn" class="admin-tab settings-admin-entry" data-tab="admin-chroma" style="display:none;">向量库</button>
                     </aside>
@@ -1065,6 +1100,83 @@
                                 </div>
                                 <div id="adminModelConfigList" class="admin-user-detail">
                                     <div class="admin-user-detail-empty">请选择左侧供应商查看模型</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="settings-admin-auth-tab" class="admin-tab-content">
+                            <div class="admin-users-toolbar">
+                                <button id="adminPublicApiGenerateBtn" class="btn-primary" type="button">生成 Public API Key</button>
+                                <label style="display:flex; align-items:center; gap:8px; margin-left: 8px;">
+                                    <input id="adminPublicApiEnabledToggle" type="checkbox">
+                                    启用 Public API（总开关）
+                                </label>
+                                <button id="adminPublicApiSaveGlobalBtn" class="btn-primary" type="button">保存总开关</button>
+                            </div>
+                            <div class="admin-users-layout" style="padding-top:12px; min-height: 520px;">
+                                <div id="adminPublicApiKeyList" class="admin-users-list">
+                                    <div class="admin-user-detail-empty" style="padding: 12px;">Loading...</div>
+                                </div>
+                                <div class="admin-user-detail" style="padding: 12px 14px;">
+                                    <div class="form-group" style="margin-bottom: 8px;">
+                                        <label>API 状态</label>
+                                        <div id="adminPublicApiStatus" class="settings-field">-</div>
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 10px;">
+                                        <label>Key Name</label>
+                                        <input id="adminPublicApiNameInput" class="input-modern" placeholder="Key Name">
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 10px;">
+                                        <label>Key 预览</label>
+                                        <div id="adminPublicApiKeyPreview" class="settings-field mono">-</div>
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 8px;">
+                                        <label>创建时间</label>
+                                        <div id="adminPublicApiCreatedAt" class="settings-field mono">-</div>
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 8px;">
+                                        <label>过期时间</label>
+                                        <div id="adminPublicApiExpiresAt" class="settings-field mono">-</div>
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 10px;">
+                                        <label>剩余时长</label>
+                                        <div id="adminPublicApiRemaining" class="settings-field mono">-</div>
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 10px;">
+                                        <label>权限（Lite Permission Manager）</label>
+                                        <label style="display:flex; align-items:center; gap:8px; margin-top:8px;">
+                                            <input id="adminPublicApiPermModel" type="checkbox" checked>
+                                            模型推理
+                                        </label>
+                                        <label style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                                            <input id="adminPublicApiPermKnowledge" type="checkbox" checked>
+                                            知识库读取
+                                        </label>
+                                        <label style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                                            <input id="adminPublicApiPermConversation" type="checkbox" checked>
+                                            对话读取（conversations_read）
+                                        </label>
+                                        <label style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                                            <input id="adminPublicApiPermConversationWrite" type="checkbox" checked>
+                                            对话写入（conversations_write）
+                                        </label>
+                                        <label style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                                            <input id="adminPublicApiPermToken" type="checkbox" checked>
+                                            Token 统计读取
+                                        </label>
+                                        <label style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                                            <input id="adminPublicApiPermUserRead" type="checkbox" checked>
+                                            用户信息读取
+                                        </label>
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 8px; display:flex; gap:8px; flex-wrap: wrap;">
+                                        <button id="adminPublicApiSaveSettingsBtn" class="btn-primary" type="button">保存当前 Key 设置</button>
+                                        <button id="adminPublicApiRegenerateBtn" class="btn-primary" type="button">重新生成当前 Key</button>
+                                        <button id="adminPublicApiRevokeBtn" class="btn-cancel" type="button">删除当前 Key</button>
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 0;" hidden>
+                                        <label>最新明文 Key（仅展示一次）</label>
+                                        <textarea id="adminPublicApiLatestKey" class="input-modern mono" rows="3" placeholder="生成后会在此处展示一次" readonly></textarea>
+                                    </div>
                                 </div>
                             </div>
                         </div>

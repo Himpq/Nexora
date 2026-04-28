@@ -56,6 +56,10 @@ def _book_text_dir(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Path:
     return _book_dir(cfg, lecture_id, book_id) / "text"
 
 
+def _book_original_dir(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Path:
+    return _book_dir(cfg, lecture_id, book_id) / "original"
+
+
 def _book_text_path(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Path:
     return _book_text_dir(cfg, lecture_id, book_id) / "content.txt"
 
@@ -186,6 +190,7 @@ def create_book(
     book_id = f"b_{uuid.uuid4().hex[:12]}"
     book_dir = _book_dir(cfg, lecture_id, book_id)
     book_dir.mkdir(parents=True, exist_ok=True)
+    _book_original_dir(cfg, lecture_id, book_id).mkdir(parents=True, exist_ok=True)
     _book_text_dir(cfg, lecture_id, book_id).mkdir(parents=True, exist_ok=True)
     _book_vectors_dir(cfg, lecture_id, book_id).mkdir(parents=True, exist_ok=True)
 
@@ -202,6 +207,8 @@ def create_book(
         "text_status": "empty",
         "text_chars": 0,
         "text_filename": "",
+        "original_filename": "",
+        "original_path": "",
         "vector_status": "idle",
         "vector_provider": "nexoradb_papi_placeholder",
         "chunks_count": 0,
@@ -278,6 +285,35 @@ def save_book_text(
             "vector_count": 0,
             "last_vectorized_at": None,
             "error": "",
+        },
+    ) or book
+
+
+def save_book_original_file(
+    cfg: Dict[str, Any],
+    lecture_id: str,
+    book_id: str,
+    content: bytes,
+    *,
+    filename: str,
+) -> Dict[str, Any]:
+    book = get_book(cfg, lecture_id, book_id)
+    if book is None:
+        raise ValueError(f"Book not found: {lecture_id}/{book_id}")
+
+    target_dir = _book_original_dir(cfg, lecture_id, book_id)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = (filename or "").strip() or "source.bin"
+    target_path = target_dir / safe_name
+    target_path.write_bytes(content)
+
+    return update_book(
+        cfg,
+        lecture_id,
+        book_id,
+        {
+            "original_filename": safe_name,
+            "original_path": str(target_path),
         },
     ) or book
 

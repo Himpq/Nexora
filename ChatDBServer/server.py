@@ -7,6 +7,8 @@ import sys
 import json
 import base64
 import binascii
+import secrets
+import hashlib
 import re
 import shutil
 import threading
@@ -37,7 +39,7 @@ from stream_runtime import start_session as start_stream_session, iter_session_c
 from tools import canonicalize_tool_name
 from secure import normalize_text, resolve_configured_path, safe_filename, safe_join_path
 from timeline import list_entries as list_timeline_entries, record_notes_snapshot_change
-from datastorage import safe_read_json, safe_write_json
+from datastorage import safe_read_json, safe_write_json, get_path_lock
 from server_quota import (
     get_server_quota_status,
     update_server_quota_config,
@@ -78,6 +80,7 @@ MODEL_ADAPTERS_PATH = os.path.join(DATA_DIR, 'model_adapters.json')
 MODELS_CONTEXT_WINDOW_CACHE_LEGACY_PATH = os.path.join(BASE_DIR, 'models_context_window.json')
 MODELS_CONTEXT_WINDOW_CACHE_PATH = os.path.join(DATA_RES_DIR, 'models_context_window.json')
 USERS_PATH = os.path.join(DATA_DIR, 'user.json')
+PAPI_KEYS_PATH = os.path.join(DATA_DIR, 'papikey.jsonl')
 OPENROUTER_MODELS_SNAPSHOT_LEGACY_PATH = os.path.join(DATA_DIR, 'openrouter_models_snapshot.json')
 OPENROUTER_MODELS_SNAPSHOT_PATH = os.path.join(DATA_RES_DIR, 'openrouter_models_snapshot.json')
 OPENROUTER_MODEL_ALIAS_LIST_LEGACY_PATH = os.path.join(DATA_DIR, 'openrouter_model_alias_list.json')
@@ -211,8 +214,18 @@ DEFAULT_MAIN_CONFIG = {
     "continuous_summary": False,
     "log_status": "silent",
     "api": {
-        "public_api_key": "public-1234567890abcdef",
-        "public_api_enabled": True
+        "public_api_key": "",
+        "public_api_enabled": False,
+        "public_api_keys_file": "./data/papikey.jsonl",
+        "public_api_key_created_at": "",
+        "public_api_key_expires_at": "",
+        "public_api_key_last_regenerated_at": "",
+        "public_api_key_permissions": {
+            "model_inference": True,
+            "knowledge_read": True,
+            "conversations_read": True,
+            "token_stats_read": True
+        }
     },
     "rag_database": {
         "host": "127.0.0.1",
@@ -261,6 +274,632 @@ DEFAULT_MODEL_ADAPTER_CONFIG = {
     "relay_order": []
 }
 
+PUBLIC_API_PERMISSION_DEFAULTS = {
+    "model_inference": True,
+    "knowledge_read": True,
+    "conversations_read": True,
+    "conversations_write": True,
+    "token_stats_read": True,
+    "user_read": True,
+}
+
+PUBLIC_API_PERMISSION_LABELS = {
+    "model_inference": "Model Inference",
+    "knowledge_read": "Knowledge Read",
+    "conversations_read": "Conversations Read",
+    "conversations_write": "Conversations Write",
+    "token_stats_read": "Token Stats Read",
+    "user_read": "User Read",
+}
+
+PUBLIC_API_EXPIRE_PRESETS = {
+    "1d": {"seconds": 24 * 60 * 60, "label": "1 day"},
+    "7d": {"seconds": 7 * 24 * 60 * 60, "label": "7 days"},
+    "1m": {"seconds": 30 * 24 * 60 * 60, "label": "1 month"},
+    "3m": {"seconds": 90 * 24 * 60 * 60, "label": "3 months"},
+    "forever": {"seconds": None, "label": "Forever"},
+}
+
+
+def _coerce_bool_flag(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _utc_now_iso() -> str:
+    return f"{datetime.utcnow().replace(microsecond=0).isoformat()}Z"
+
+
+def _parse_iso_datetime(raw: Any) -> Optional[datetime]:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        text = text.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone().replace(tzinfo=None)
+        return dt
+    except Exception:
+        return None
+
+
+def _mask_public_api_key(key: Any) -> str:
+    text = str(key or "").strip()
+    if not text:
+        return ""
+    if len(text) <= 10:
+        return "*" * len(text)
+    return f"{text[:8]}...{text[-4:]}"
+
+
+def _normalize_public_api_permissions(raw_permissions: Any) -> Dict[str, bool]:
+    normalized = dict(PUBLIC_API_PERMISSION_DEFAULTS)
+    if isinstance(raw_permissions, dict):
+        for key in PUBLIC_API_PERMISSION_DEFAULTS.keys():
+            if key in raw_permissions:
+                normalized[key] = _coerce_bool_flag(raw_permissions.get(key), normalized[key])
+    return normalized
+
+
+def _resolve_public_api_expire_option(raw_option: Any) -> Tuple[str, str, Optional[datetime], Optional[str]]:
+    option = str(raw_option or "").strip().lower() or "forever"
+    if option not in PUBLIC_API_EXPIRE_PRESETS:
+        return option, "", None, "Invalid expire option. Use one of: 1d, 7d, 1m, 3m, forever."
+    preset = PUBLIC_API_EXPIRE_PRESETS[option]
+    seconds = preset.get("seconds")
+    if seconds is None:
+        return option, "", None, None
+    expires_dt = datetime.utcnow() + timedelta(seconds=int(seconds))
+    return option, f"{expires_dt.replace(microsecond=0).isoformat()}Z", expires_dt, None
+
+
+def _hash_public_api_key(raw_key: Any) -> str:
+    text = str(raw_key or "").strip()
+    if not text:
+        return ""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _generate_public_api_key_value() -> str:
+    return f"public-{secrets.token_urlsafe(24).replace('-', '').replace('_', '')}"
+
+
+def _normalize_public_api_key_name(raw_name: Any, *, fallback: str = "") -> str:
+    text = str(raw_name or "").strip()
+    if text:
+        return text[:80]
+    fb = str(fallback or "").strip()
+    return fb[:80]
+
+
+def _read_papi_key_rows() -> List[Dict[str, Any]]:
+    path = PAPI_KEYS_PATH
+    if not os.path.exists(path):
+        return []
+    rows: List[Dict[str, Any]] = []
+    with get_path_lock(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for raw_line in f:
+                    line = str(raw_line or "").strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except Exception:
+                        continue
+                    if isinstance(row, dict):
+                        rows.append(row)
+        except Exception:
+            return []
+    return rows
+
+
+def _write_papi_key_rows(rows: List[Dict[str, Any]]) -> None:
+    path = PAPI_KEYS_PATH
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    normalized_rows: List[Dict[str, Any]] = []
+    for row in list(rows or []):
+        normalized = _normalize_papi_key_record(row)
+        if normalized:
+            normalized_rows.append(normalized)
+    normalized_rows.sort(
+        key=lambda item: (
+            str(item.get("created_at") or ""),
+            str(item.get("id") or ""),
+        )
+    )
+    with get_path_lock(path):
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            for row in normalized_rows:
+                f.write(json.dumps(row, ensure_ascii=False))
+                f.write("\n")
+
+
+def _normalize_papi_key_record(raw: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return None
+    key_id = str(raw.get("id") or "").strip()
+    if not key_id:
+        return None
+    status = str(raw.get("status") or "active").strip().lower()
+    if status not in {"active", "revoked"}:
+        status = "active"
+    created_at = str(raw.get("created_at") or "").strip()
+    updated_at = str(raw.get("updated_at") or "").strip()
+    expires_at = str(raw.get("expires_at") or "").strip()
+    last_regenerated_at = str(raw.get("last_regenerated_at") or "").strip()
+    name = _normalize_public_api_key_name(raw.get("name"), fallback=key_id)
+    key_hash = str(raw.get("key_hash") or "").strip()
+    if not key_hash:
+        return None
+    record: Dict[str, Any] = {
+        "id": key_id,
+        "name": name,
+        "status": status,
+        "key_hash": key_hash,
+        "key_preview": str(raw.get("key_preview") or "").strip(),
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "expires_at": expires_at,
+        "expire_option": str(raw.get("expire_option") or "forever").strip().lower() or "forever",
+        "last_regenerated_at": last_regenerated_at,
+        "permissions": _normalize_public_api_permissions(raw.get("permissions")),
+        "last_used_at": str(raw.get("last_used_at") or "").strip(),
+        "created_by": str(raw.get("created_by") or "").strip(),
+        "updated_by": str(raw.get("updated_by") or "").strip(),
+        "last_regenerated_by": str(raw.get("last_regenerated_by") or "").strip(),
+    }
+    return record
+
+
+def _papi_key_sort_key(record: Dict[str, Any]) -> Tuple[str, str]:
+    return (
+        str(record.get("updated_at") or record.get("created_at") or ""),
+        str(record.get("id") or ""),
+    )
+
+
+def _load_papi_key_index(*, include_revoked: bool = True) -> Dict[str, Dict[str, Any]]:
+    index: Dict[str, Dict[str, Any]] = {}
+    for row in _read_papi_key_rows():
+        normalized = _normalize_papi_key_record(row)
+        if not normalized:
+            continue
+        key_id = str(normalized.get("id") or "").strip()
+        if not key_id:
+            continue
+        old = index.get(key_id)
+        if old is None or _papi_key_sort_key(normalized) >= _papi_key_sort_key(old):
+            index[key_id] = normalized
+    if include_revoked:
+        return index
+    return {
+        k: v
+        for k, v in index.items()
+        if str(v.get("status") or "").strip().lower() == "active"
+    }
+
+
+def _list_papi_key_records(*, include_revoked: bool = False) -> List[Dict[str, Any]]:
+    index = _load_papi_key_index(include_revoked=include_revoked)
+    rows = list(index.values())
+    rows.sort(
+        key=lambda item: str(item.get("created_at") or item.get("updated_at") or ""),
+        reverse=True,
+    )
+    return rows
+
+
+def _papi_key_expire_info(record: Dict[str, Any]) -> Tuple[bool, Optional[int]]:
+    expires_at = str(record.get("expires_at") or "").strip()
+    if not expires_at:
+        return False, None
+    expires_dt = _parse_iso_datetime(expires_at)
+    if expires_dt is None:
+        return False, None
+    now_dt = datetime.utcnow()
+    is_expired = bool(now_dt >= expires_dt)
+    if is_expired:
+        return True, 0
+    return False, max(0, int((expires_dt - now_dt).total_seconds()))
+
+
+def _build_public_api_key_state(record: Dict[str, Any]) -> Dict[str, Any]:
+    is_expired, expires_in_seconds = _papi_key_expire_info(record)
+    return {
+        "id": str(record.get("id") or "").strip(),
+        "name": _normalize_public_api_key_name(record.get("name"), fallback=str(record.get("id") or "")),
+        "status": str(record.get("status") or "active").strip().lower(),
+        "key_preview": str(record.get("key_preview") or "").strip(),
+        "created_at": str(record.get("created_at") or "").strip(),
+        "updated_at": str(record.get("updated_at") or "").strip(),
+        "expires_at": str(record.get("expires_at") or "").strip(),
+        "expire_option": str(record.get("expire_option") or "forever").strip().lower() or "forever",
+        "last_regenerated_at": str(record.get("last_regenerated_at") or "").strip(),
+        "is_expired": bool(is_expired),
+        "expires_in_seconds": expires_in_seconds,
+        "permissions": _normalize_public_api_permissions(record.get("permissions")),
+        "last_used_at": str(record.get("last_used_at") or "").strip(),
+        "created_by": str(record.get("created_by") or "").strip(),
+        "updated_by": str(record.get("updated_by") or "").strip(),
+        "last_regenerated_by": str(record.get("last_regenerated_by") or "").strip(),
+    }
+
+
+def _select_primary_papi_key(keys: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not keys:
+        return None
+    for row in keys:
+        if str(row.get("status") or "").strip().lower() == "active":
+            return row
+    return keys[0]
+
+
+def _build_public_api_auth_state(
+    api_cfg: Any,
+    include_plain_key: bool = False,
+    plain_key: str = "",
+) -> Dict[str, Any]:
+    cfg = api_cfg if isinstance(api_cfg, dict) else {}
+    global_enabled = _coerce_bool_flag(cfg.get("public_api_enabled"), False)
+    key_records = _list_papi_key_records(include_revoked=False)
+    key_states = [_build_public_api_key_state(row) for row in key_records]
+
+    active_non_expired = [
+        row for row in key_states
+        if str(row.get("status") or "").strip().lower() == "active" and not bool(row.get("is_expired"))
+    ]
+    primary = _select_primary_papi_key(active_non_expired or key_states)
+
+    payload: Dict[str, Any] = {
+        "public_api_enabled": bool(global_enabled and bool(active_non_expired)),
+        "global_enabled": bool(global_enabled),
+        "has_key": bool(len(active_non_expired) > 0),
+        "key_count": len(key_states),
+        "active_key_count": len(active_non_expired),
+        "keys": key_states,
+        "selected_key_id": str(primary.get("id") or "").strip() if isinstance(primary, dict) else "",
+        "key_preview": str(primary.get("key_preview") or "").strip() if isinstance(primary, dict) else "",
+        "created_at": str(primary.get("created_at") or "").strip() if isinstance(primary, dict) else "",
+        "expires_at": str(primary.get("expires_at") or "").strip() if isinstance(primary, dict) else "",
+        "last_regenerated_at": str(primary.get("last_regenerated_at") or "").strip() if isinstance(primary, dict) else "",
+        "is_expired": bool(primary.get("is_expired")) if isinstance(primary, dict) else False,
+        "expires_in_seconds": (primary.get("expires_in_seconds") if isinstance(primary, dict) else None),
+        "permissions": _normalize_public_api_permissions((primary or {}).get("permissions") if isinstance(primary, dict) else {}),
+        "permission_labels": dict(PUBLIC_API_PERMISSION_LABELS),
+        "expire_options": [
+            {"id": key, "label": str(meta.get("label") or key)}
+            for key, meta in PUBLIC_API_EXPIRE_PRESETS.items()
+        ],
+    }
+    if include_plain_key:
+        payload["public_api_key"] = str(plain_key or "").strip()
+    return payload
+
+
+def _find_papi_key_by_id(key_id: Any, *, include_revoked: bool = True) -> Optional[Dict[str, Any]]:
+    lookup = str(key_id or "").strip()
+    if not lookup:
+        return None
+    index = _load_papi_key_index(include_revoked=include_revoked)
+    return index.get(lookup)
+
+
+def _find_active_papi_key_by_hash(key_hash: str) -> Optional[Dict[str, Any]]:
+    lookup = str(key_hash or "").strip()
+    if not lookup:
+        return None
+    for row in _list_papi_key_records(include_revoked=False):
+        if str(row.get("key_hash") or "").strip() == lookup:
+            return row
+    return None
+
+
+def _is_papi_key_name_taken(name: Any, *, exclude_key_id: str = "") -> bool:
+    lookup = str(name or "").strip().lower()
+    if not lookup:
+        return False
+    exclude = str(exclude_key_id or "").strip()
+    for row in _list_papi_key_records(include_revoked=True):
+        row_id = str(row.get("id") or "").strip()
+        if exclude and row_id == exclude:
+            continue
+        row_name = str(row.get("name") or "").strip().lower()
+        if row_name == lookup:
+            return True
+    return False
+
+
+def _assert_unique_papi_key_name(name: Any, *, exclude_key_id: str = "") -> None:
+    normalized = _normalize_public_api_key_name(name, fallback="")
+    if not normalized:
+        return
+    if _is_papi_key_name_taken(normalized, exclude_key_id=exclude_key_id):
+        raise ValueError(f"PAPI key name already exists: {normalized}")
+
+
+def _write_papi_key_record(record: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = _normalize_papi_key_record(record)
+    if not normalized:
+        raise ValueError("invalid papi key record")
+    key_id = str(normalized.get("id") or "").strip()
+    if not key_id:
+        raise ValueError("invalid papi key id")
+    index = _load_papi_key_index(include_revoked=True)
+    index[key_id] = normalized
+    _write_papi_key_rows(list(index.values()))
+    return normalized
+
+
+def _delete_papi_key_record(*, key_id: str) -> None:
+    target = str(key_id or "").strip()
+    if not target:
+        raise ValueError("invalid papi key id")
+    index = _load_papi_key_index(include_revoked=True)
+    if target not in index:
+        raise ValueError("PAPI key not found")
+    index.pop(target, None)
+    _write_papi_key_rows(list(index.values()))
+
+
+def _create_public_api_key(*, expire_option: str, permissions: Dict[str, bool], name: str = "", actor: str = "") -> Tuple[Dict[str, Any], str]:
+    option, expires_at, _expires_dt, err = _resolve_public_api_expire_option(expire_option)
+    if err:
+        raise ValueError(err)
+    now_iso = _utc_now_iso()
+    plain_key = _generate_public_api_key_value()
+    actor_name = str(actor or "").strip() or "admin"
+    raw_name = str(name or "").strip()
+    if raw_name:
+        normalized_name = _normalize_public_api_key_name(raw_name, fallback="")
+        _assert_unique_papi_key_name(normalized_name)
+    else:
+        normalized_name = _normalize_public_api_key_name(
+            "",
+            fallback=f"PAPI Key {now_iso[:19]}-{uuid.uuid4().hex[:6]}",
+        )
+    record = {
+        "id": f"pak_{uuid.uuid4().hex}",
+        "name": normalized_name,
+        "status": "active",
+        "key_hash": _hash_public_api_key(plain_key),
+        "key_preview": _mask_public_api_key(plain_key),
+        "created_at": now_iso,
+        "updated_at": now_iso,
+        "expires_at": expires_at,
+        "expire_option": option,
+        "last_regenerated_at": "",
+        "permissions": _normalize_public_api_permissions(permissions),
+        "last_used_at": "",
+        "created_by": actor_name,
+        "updated_by": actor_name,
+        "last_regenerated_by": "",
+    }
+    _write_papi_key_record(record)
+    return record, plain_key
+
+
+def _regenerate_public_api_key(
+    *,
+    key_id: str,
+    expire_option: str,
+    permissions: Optional[Dict[str, bool]] = None,
+    name: Optional[str] = None,
+    actor: str = "",
+) -> Tuple[Dict[str, Any], str]:
+    old = _find_papi_key_by_id(key_id, include_revoked=True)
+    if not old:
+        raise ValueError("PAPI key not found")
+    option, expires_at, _expires_dt, err = _resolve_public_api_expire_option(expire_option)
+    if err:
+        raise ValueError(err)
+    now_iso = _utc_now_iso()
+    plain_key = _generate_public_api_key_value()
+    actor_name = str(actor or "").strip() or "admin"
+    record = dict(old)
+    record["status"] = "active"
+    record["key_hash"] = _hash_public_api_key(plain_key)
+    record["key_preview"] = _mask_public_api_key(plain_key)
+    record["updated_at"] = now_iso
+    record["updated_by"] = actor_name
+    record["last_regenerated_at"] = now_iso
+    record["last_regenerated_by"] = actor_name
+    record["expires_at"] = expires_at
+    record["expire_option"] = option
+    if not str(record.get("created_by") or "").strip():
+        record["created_by"] = actor_name
+    if name is not None:
+        normalized_name = _normalize_public_api_key_name(name, fallback=str(old.get("name") or old.get("id") or ""))
+        old_name = _normalize_public_api_key_name(old.get("name"), fallback=str(old.get("id") or ""))
+        if normalized_name.strip().lower() != old_name.strip().lower():
+            _assert_unique_papi_key_name(normalized_name, exclude_key_id=str(old.get("id") or ""))
+        record["name"] = normalized_name
+    if permissions is not None:
+        record["permissions"] = _normalize_public_api_permissions(permissions)
+    _write_papi_key_record(record)
+    return record, plain_key
+
+
+def _update_public_api_key(
+    *,
+    key_id: str,
+    permissions: Optional[Dict[str, bool]] = None,
+    expire_option: Optional[str] = None,
+    name: Optional[str] = None,
+    actor: str = "",
+) -> Dict[str, Any]:
+    old = _find_papi_key_by_id(key_id, include_revoked=True)
+    if not old:
+        raise ValueError("PAPI key not found")
+    record = dict(old)
+    now_iso = _utc_now_iso()
+    if permissions is not None:
+        record["permissions"] = _normalize_public_api_permissions(permissions)
+    if name is not None:
+        normalized_name = _normalize_public_api_key_name(name, fallback=str(old.get("name") or old.get("id") or ""))
+        old_name = _normalize_public_api_key_name(old.get("name"), fallback=str(old.get("id") or ""))
+        if normalized_name.strip().lower() != old_name.strip().lower():
+            _assert_unique_papi_key_name(normalized_name, exclude_key_id=str(old.get("id") or ""))
+        record["name"] = normalized_name
+    if expire_option is not None:
+        option, expires_at, _expires_dt, err = _resolve_public_api_expire_option(expire_option)
+        if err:
+            raise ValueError(err)
+        record["expire_option"] = option
+        record["expires_at"] = expires_at
+    record["updated_at"] = now_iso
+    record["updated_by"] = str(actor or "").strip() or "admin"
+    if not str(record.get("created_by") or "").strip():
+        record["created_by"] = str(actor or "").strip() or "admin"
+    _write_papi_key_record(record)
+    return record
+
+
+def _delete_public_api_key(*, key_id: str) -> Dict[str, Any]:
+    old = _find_papi_key_by_id(key_id, include_revoked=True)
+    if not old:
+        raise ValueError("PAPI key not found")
+    _delete_papi_key_record(key_id=str(old.get("id") or ""))
+    return old
+
+
+def _migrate_legacy_public_api_key(api_cfg: Dict[str, Any]) -> bool:
+    cfg = api_cfg if isinstance(api_cfg, dict) else {}
+    legacy_key = str(cfg.get("public_api_key") or "").strip()
+    if not legacy_key:
+        return False
+    if legacy_key == "public-1234567890abcdef":
+        return False
+
+    legacy_hash = _hash_public_api_key(legacy_key)
+    exists = _find_active_papi_key_by_hash(legacy_hash) is not None
+    if not exists:
+        created_at = str(cfg.get("public_api_key_created_at") or "").strip() or _utc_now_iso()
+        migrated = {
+            "id": f"pak_legacy_{uuid.uuid4().hex}",
+            "name": "Migrated Legacy Key",
+            "status": "active",
+            "key_hash": legacy_hash,
+            "key_preview": _mask_public_api_key(legacy_key),
+            "created_at": created_at,
+            "updated_at": _utc_now_iso(),
+            "expires_at": str(cfg.get("public_api_key_expires_at") or "").strip(),
+            "expire_option": "forever",
+            "last_regenerated_at": str(cfg.get("public_api_key_last_regenerated_at") or "").strip(),
+            "permissions": _normalize_public_api_permissions(cfg.get("public_api_key_permissions")),
+            "last_used_at": "",
+            "created_by": "system:migration",
+            "updated_by": "system:migration",
+            "last_regenerated_by": "",
+        }
+        _write_papi_key_record(migrated)
+
+    cfg["public_api_key"] = ""
+    cfg["public_api_key_created_at"] = ""
+    cfg["public_api_key_expires_at"] = ""
+    cfg["public_api_key_last_regenerated_at"] = ""
+    cfg["public_api_key_permissions"] = _normalize_public_api_permissions({})
+    return True
+
+
+def _issue_public_api_key(
+    expire_option: str,
+    permissions: Dict[str, bool],
+    regenerate: bool = False,
+    key_id: str = "",
+    name: str = "",
+    actor: str = "",
+) -> Dict[str, Any]:
+    cfg = ensure_main_config_defaults()
+    api_cfg = cfg.setdefault("api", {})
+    normalized_permissions = _normalize_public_api_permissions(permissions)
+
+    if regenerate:
+        target_id = str(key_id or "").strip()
+        if not target_id:
+            primary = _select_primary_papi_key(_list_papi_key_records(include_revoked=False))
+            target_id = str((primary or {}).get("id") or "").strip()
+        if not target_id:
+            raise ValueError("No active PAPI key to regenerate.")
+        _, plain_key = _regenerate_public_api_key(
+            key_id=target_id,
+            expire_option=expire_option,
+            permissions=normalized_permissions,
+            name=name if str(name or "").strip() else None,
+            actor=actor,
+        )
+    else:
+        _record, plain_key = _create_public_api_key(
+            expire_option=expire_option,
+            permissions=normalized_permissions,
+            name=name,
+            actor=actor,
+        )
+
+    if not _coerce_bool_flag(api_cfg.get("public_api_enabled"), False):
+        api_cfg["public_api_enabled"] = True
+    save_main_config(cfg)
+    return _build_public_api_auth_state(api_cfg, include_plain_key=True, plain_key=plain_key)
+
+
+def resolve_public_api_key_auth(auth_key: Any, *, request_path: str = "", method: str = "GET") -> Dict[str, Any]:
+    cfg = ensure_main_config_defaults()
+    api_cfg = cfg.get("api", {}) if isinstance(cfg.get("api"), dict) else {}
+
+    if not _coerce_bool_flag(api_cfg.get("public_api_enabled"), False):
+        return {"ok": False, "status": 403, "message": "Public API is disabled"}
+
+    key_text = str(auth_key or "").strip()
+    if not key_text:
+        return {"ok": False, "status": 401, "message": "Invalid or missing API Key"}
+
+    key_hash = _hash_public_api_key(key_text)
+    record = _find_active_papi_key_by_hash(key_hash)
+    if record is None:
+        return {"ok": False, "status": 401, "message": "Invalid or missing API Key"}
+
+    key_state = _build_public_api_key_state(record)
+    if bool(key_state.get("is_expired")):
+        return {"ok": False, "status": 401, "message": "Public API key expired"}
+
+    required_permission = ""
+    path = str(request_path or "").strip().lower()
+    req_method = str(method or "GET").strip().upper()
+    if path.startswith("/api/papi/knowledge/"):
+        required_permission = "knowledge_read"
+    elif path.startswith("/api/papi/conversations/"):
+        required_permission = "conversations_write" if req_method in {"POST", "PUT", "PATCH", "DELETE"} else "conversations_read"
+    elif path.startswith("/api/papi/tokens/stats/"):
+        required_permission = "token_stats_read"
+    elif path.startswith("/api/papi/user/"):
+        required_permission = "user_read"
+    elif (
+        path.startswith("/api/papi/completions")
+        or path.startswith("/api/papi/chat/completions")
+        or path.startswith("/api/papi/responses")
+        or path.startswith("/api/papi/models")
+        or path.startswith("/api/papi/v1")
+    ):
+        required_permission = "model_inference"
+
+    permissions = _normalize_public_api_permissions(record.get("permissions"))
+    if required_permission and not permissions.get(required_permission, True):
+        return {"ok": False, "status": 403, "message": f"Permission denied: {required_permission}"}
+
+    return {
+        "ok": True,
+        "status": 200,
+        "message": "",
+        "key": _build_public_api_key_state(record),
+        "required_permission": required_permission,
+    }
+
+
 DISABLED_MODEL_STATUSES = {
     'disabled',
     'off',
@@ -294,6 +933,30 @@ def ensure_main_config_defaults():
             cfg = {}
 
     changed = _merge_defaults(cfg, json.loads(json.dumps(DEFAULT_MAIN_CONFIG, ensure_ascii=False)))
+    api_cfg = cfg.get('api')
+    if not isinstance(api_cfg, dict):
+        api_cfg = {}
+        cfg['api'] = api_cfg
+        changed = True
+    # Security migration: retire historical placeholder key automatically.
+    default_placeholder_key = "public-1234567890abcdef"
+    if str(api_cfg.get('public_api_key') or '').strip() == default_placeholder_key:
+        api_cfg['public_api_key'] = ''
+        api_cfg['public_api_enabled'] = False
+        api_cfg['public_api_key_created_at'] = ''
+        api_cfg['public_api_key_expires_at'] = ''
+        api_cfg['public_api_key_last_regenerated_at'] = ''
+        changed = True
+    if _migrate_legacy_public_api_key(api_cfg):
+        changed = True
+    normalized_api_perms = _normalize_public_api_permissions(api_cfg.get('public_api_key_permissions'))
+    if api_cfg.get('public_api_key_permissions') != normalized_api_perms:
+        api_cfg['public_api_key_permissions'] = normalized_api_perms
+        changed = True
+    active_keys = _list_papi_key_records(include_revoked=False)
+    if (not active_keys) and _coerce_bool_flag(api_cfg.get('public_api_enabled'), False):
+        api_cfg['public_api_enabled'] = False
+        changed = True
     temp_cache = cfg.get('temp_context_cache')
     if isinstance(temp_cache, dict):
         old_temp_path = str(temp_cache.get('file_path', '') or '').strip()
@@ -351,6 +1014,14 @@ def _ensure_server_bootstrap_files():
         if not os.path.exists(MODEL_ADAPTERS_PATH):
             with open(MODEL_ADAPTERS_PATH, 'w', encoding='utf-8') as f:
                 json.dump(DEFAULT_MODEL_ADAPTER_CONFIG, f, indent=4, ensure_ascii=False)
+    except Exception:
+        pass
+
+    try:
+        if not os.path.exists(PAPI_KEYS_PATH):
+            os.makedirs(os.path.dirname(PAPI_KEYS_PATH), exist_ok=True)
+            with open(PAPI_KEYS_PATH, 'w', encoding='utf-8') as f:
+                f.write('')
     except Exception:
         pass
 
@@ -1939,6 +2610,108 @@ def _disable_model_by_quota(model_id: Any, provider_name: Any = None, reason: st
     }
 
 
+def _is_quota_disabled_status(raw_status: Any) -> bool:
+    return _normalize_model_status_text(raw_status) in {'quota_disabled', 'quota_exhausted'}
+
+
+def _can_auto_recover_quota_disabled_model(model_info: Dict[str, Any]) -> bool:
+    info = model_info if isinstance(model_info, dict) else {}
+    if not _is_quota_disabled_status(info.get('status', '')):
+        return False
+    # Guardrail: only auto-recover statuses that look quota-generated.
+    reason = str(info.get('status_reason') or '').strip().lower()
+    if not reason:
+        return True
+    return reason in {
+        'quota_exhausted',
+        'quota_disabled',
+        'quota_auto_disabled',
+        'over_budget',
+    }
+
+
+def _recover_model_from_quota_disable(
+    model_id: Any,
+    provider_name: Any = None,
+    quota_gate: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    model_key = str(model_id or '').strip()
+    provider = str(provider_name or '').strip()
+    if not model_key:
+        return {'success': False, 'changed': False, 'message': 'missing model_id'}
+
+    cfg = load_models_config()
+    models = cfg.setdefault('models', {})
+    model_info = models.get(model_key)
+    if not isinstance(model_info, dict):
+        return {'success': False, 'changed': False, 'message': 'model not found'}
+    if not _can_auto_recover_quota_disabled_model(model_info):
+        return {'success': True, 'changed': False, 'message': 'model is not auto-recoverable quota status'}
+
+    model_provider = str(model_info.get('provider') or '').strip()
+    effective_provider = model_provider or provider
+    gate = quota_gate if isinstance(quota_gate, dict) else get_generation_quota_gate(
+        provider_name=effective_provider,
+        model_name=model_key
+    )
+    should_keep_disabled = bool(gate.get('should_disable_model') or gate.get('should_block'))
+    if should_keep_disabled:
+        return {
+            'success': True,
+            'changed': False,
+            'message': 'quota gate still blocks model',
+            'provider': model_provider,
+            'model': model_key,
+        }
+
+    model_info['status'] = 'normal'
+    model_info.pop('status_reason', None)
+    model_info['status_updated_at'] = int(time.time())
+    models[model_key] = model_info
+    save_models_config(cfg)
+    return {
+        'success': True,
+        'changed': True,
+        'status': 'normal',
+        'provider': model_provider,
+        'model': model_key,
+    }
+
+
+def _recover_quota_disabled_models(provider_name: Any = None) -> Dict[str, Any]:
+    provider_filter = str(provider_name or '').strip().lower()
+    cfg = load_models_config()
+    models = cfg.setdefault('models', {})
+    changed_models: List[str] = []
+    checked = 0
+
+    for model_id, model_info in list(models.items()):
+        if not isinstance(model_info, dict):
+            continue
+        if not _can_auto_recover_quota_disabled_model(model_info):
+            continue
+        model_provider = str(model_info.get('provider') or '').strip()
+        if provider_filter and model_provider.lower() != provider_filter:
+            continue
+        checked += 1
+        gate = get_generation_quota_gate(provider_name=model_provider, model_name=model_id)
+        if bool(gate.get('should_disable_model') or gate.get('should_block')):
+            continue
+        model_info['status'] = 'normal'
+        model_info.pop('status_reason', None)
+        model_info['status_updated_at'] = int(time.time())
+        models[model_id] = model_info
+        changed_models.append(model_id)
+
+    if changed_models:
+        save_models_config(cfg)
+    return {
+        'checked': checked,
+        'changed': len(changed_models),
+        'models': changed_models,
+    }
+
+
 def _build_quota_block_message(quota_gate: Dict[str, Any], model_name: str) -> str:
     gate = quota_gate if isinstance(quota_gate, dict) else {}
     reason = str(gate.get('reason') or '').strip().lower()
@@ -3237,1414 +4010,6 @@ def _log_stream_chunk(chunk, model_name=None):
         prefix = f"[MODEL_STREAM][{model_name}]"
     print(f"{prefix} type={chunk_type} content={content_dump}")
 
-
-def require_papi_key(f):
-    """公有 API 密钥验证装饰器"""
-    from functools import wraps
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        config = get_config_all()
-        api_config = config.get('api', {})
-        
-        if not api_config.get('public_api_enabled', False):
-            return jsonify({'success': False, 'message': 'Public API is disabled'}), 403
-            
-        auth_key = (
-            request.headers.get('X-API-Key')
-            or _extract_bearer_token(request.headers.get('Authorization'))
-            or request.args.get('api_key')
-        )
-        expected_key = api_config.get('public_api_key')
-        
-        if not auth_key or auth_key != expected_key:
-            return jsonify({'success': False, 'message': 'Invalid or missing API Key'}), 401
-            
-        return f(*args, **kwargs)
-    return decorated_function
-
-
-def _extract_bearer_token(header_value: Any) -> str:
-    raw = str(header_value or '').strip()
-    if not raw:
-        return ''
-    if raw.lower().startswith('bearer '):
-        return raw[7:].strip()
-    return ''
-
-
-def _papi_pick_model(config: Dict[str, Any], requested_model: str) -> Tuple[str, Dict[str, Any], str, Dict[str, Any]]:
-    """为 PAPI 请求解析可用模型与供应商配置。"""
-    config = config if isinstance(config, dict) else {}
-    models_cfg = config.get('models', {}) if isinstance(config.get('models', {}), dict) else {}
-    providers_cfg = config.get('providers', {}) if isinstance(config.get('providers', {}), dict) else {}
-    model_name = str(requested_model or '').strip()
-    if model_name not in models_cfg or not model_name:
-        default_model = str(config.get('default_model') or '').strip()
-        if default_model in models_cfg:
-            model_name = default_model
-        elif models_cfg:
-            model_name = next(iter(models_cfg.keys()))
-        else:
-            return '', {}, '', {}
-
-    model_info = dict(models_cfg.get(model_name, {}) or {})
-
-    provider_name = str(model_info.get('provider') or '').strip() or 'volcengine'
-    provider_info = dict(providers_cfg.get(provider_name, {}) or {})
-
-    # 允许模型条目直接携带连接参数，作为 provider 配置的兜底。
-    for key in ('api_key', 'base_url', 'api_base'):
-        if not provider_info.get(key) and model_info.get(key):
-            provider_info[key] = model_info.get(key)
-
-    return model_name, model_info, provider_name, provider_info
-
-
-def _papi_normalize_messages(data: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """兼容 messages / prompt / system_prompt 的输入格式。"""
-    data = data if isinstance(data, dict) else {}
-    raw_messages = data.get('messages')
-    if not isinstance(raw_messages, list) and isinstance(data.get('input'), list):
-        raw_messages = data.get('input')
-    normalized: List[Dict[str, Any]] = []
-
-    if isinstance(raw_messages, list):
-        for item in raw_messages:
-            if not isinstance(item, dict):
-                continue
-            role = str(item.get('role') or '').strip().lower()
-            if role not in {'system', 'developer', 'user', 'assistant', 'tool'}:
-                continue
-
-            content = item.get('content')
-            if content is None:
-                content = None if role == 'assistant' and isinstance(item.get('tool_calls'), list) else ''
-            elif not isinstance(content, (str, list, dict)):
-                content = str(content)
-
-            msg: Dict[str, Any] = {'role': role, 'content': content}
-
-            name = str(item.get('name') or '').strip()
-            if name:
-                msg['name'] = name
-
-            tool_call_id = str(item.get('tool_call_id') or '').strip()
-            if tool_call_id:
-                msg['tool_call_id'] = tool_call_id
-
-            tool_calls = item.get('tool_calls')
-            if isinstance(tool_calls, list) and tool_calls:
-                msg['tool_calls'] = tool_calls
-
-            normalized.append(msg)
-
-    system_prompt = str(data.get('system_prompt') or '').strip()
-    prompt_text = str(
-        data.get('prompt')
-        or data.get('message')
-        or data.get('input')
-        or data.get('content')
-        or ''
-    ).strip()
-
-    if system_prompt and not any(item.get('role') == 'system' for item in normalized):
-        normalized.insert(0, {'role': 'system', 'content': system_prompt})
-
-    if prompt_text and not any(item.get('role') == 'user' for item in normalized):
-        normalized.append({'role': 'user', 'content': prompt_text})
-
-    return normalized
-
-
-def _papi_stringify_instruction_content(content: Any) -> str:
-    if content is None:
-        return ''
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        parts: List[str] = []
-        for piece in content:
-            if isinstance(piece, str):
-                text = piece.strip()
-                if text:
-                    parts.append(text)
-                continue
-            if not isinstance(piece, dict):
-                text = str(piece or '').strip()
-                if text:
-                    parts.append(text)
-                continue
-            piece_type = str(piece.get('type') or '').strip().lower()
-            if piece_type in {'text', 'input_text', 'output_text'}:
-                text = str(piece.get('text') or '').strip()
-                if text:
-                    parts.append(text)
-                continue
-            if 'text' in piece:
-                text = str(piece.get('text') or '').strip()
-                if text:
-                    parts.append(text)
-        return '\n'.join([part for part in parts if part]).strip()
-    if isinstance(content, dict):
-        piece_type = str(content.get('type') or '').strip().lower()
-        if piece_type in {'text', 'input_text', 'output_text'} or 'text' in content:
-            return str(content.get('text') or '').strip()
-        try:
-            return json.dumps(content, ensure_ascii=False, default=str).strip()
-        except Exception:
-            return str(content).strip()
-    return str(content).strip()
-
-
-def _papi_merge_instruction_parts(*parts: Any) -> str:
-    merged = []
-    for part in parts:
-        text = _papi_stringify_instruction_content(part)
-        if text:
-            merged.append(text)
-    return '\n\n'.join(merged).strip()
-
-
-def _papi_extract_instruction_messages(messages: List[Dict[str, Any]], seed_instructions: Any = None) -> Tuple[str, List[Dict[str, Any]]]:
-    instruction_parts: List[str] = []
-    seed_text = _papi_stringify_instruction_content(seed_instructions)
-    if seed_text:
-        instruction_parts.append(seed_text)
-
-    filtered_messages: List[Dict[str, Any]] = []
-    for item in (messages or []):
-        if not isinstance(item, dict):
-            continue
-        role = str(item.get('role') or '').strip().lower()
-        if role in {'system', 'developer'}:
-            text = _papi_stringify_instruction_content(item.get('content'))
-            if text:
-                instruction_parts.append(text)
-            continue
-        filtered_messages.append(item)
-
-    return '\n\n'.join(instruction_parts).strip(), filtered_messages
-
-
-def _papi_extract_instructions_from_input_items(input_items: Any, seed_instructions: Any = None) -> Tuple[str, List[Dict[str, Any]]]:
-    instruction_parts: List[str] = []
-    seed_text = _papi_stringify_instruction_content(seed_instructions)
-    if seed_text:
-        instruction_parts.append(seed_text)
-
-    filtered_items: List[Dict[str, Any]] = []
-    for item in (input_items or []):
-        if not isinstance(item, dict):
-            continue
-        item_type = str(item.get('type') or '').strip().lower()
-        role = str(item.get('role') or '').strip().lower()
-        if item_type == 'message' and role in {'system', 'developer'}:
-            text = _papi_stringify_instruction_content(item.get('content'))
-            if text:
-                instruction_parts.append(text)
-            continue
-        filtered_items.append(item)
-
-    return '\n\n'.join(instruction_parts).strip(), filtered_items
-
-
-def _papi_prepare_chat_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    prepared: List[Dict[str, Any]] = []
-    for item in (messages or []):
-        if not isinstance(item, dict):
-            continue
-        msg = dict(item)
-        if str(msg.get('role') or '').strip().lower() == 'developer':
-            msg['role'] = 'system'
-        prepared.append(msg)
-    return prepared
-
-
-def _papi_normalize_tool_spec(tool: Any, *, use_responses_api: bool) -> Optional[Dict[str, Any]]:
-    if not isinstance(tool, dict):
-        return None
-
-    tool_type = str(tool.get('type') or '').strip() or 'function'
-
-    if 'function' in tool and isinstance(tool.get('function'), dict):
-        function_obj = dict(tool.get('function') or {})
-        if use_responses_api:
-            normalized = {
-                'type': tool_type,
-                'name': str(function_obj.get('name') or '').strip(),
-            }
-            if function_obj.get('description') is not None:
-                normalized['description'] = function_obj.get('description')
-            if function_obj.get('parameters') is not None:
-                normalized['parameters'] = function_obj.get('parameters')
-            if function_obj.get('strict') is not None:
-                normalized['strict'] = function_obj.get('strict')
-            return normalized if normalized.get('name') else None
-        return tool
-
-    if tool_type == 'function' and str(tool.get('name') or '').strip():
-        if use_responses_api:
-            return tool
-        normalized_function = {
-            'name': str(tool.get('name') or '').strip(),
-        }
-        if tool.get('description') is not None:
-            normalized_function['description'] = tool.get('description')
-        if tool.get('parameters') is not None:
-            normalized_function['parameters'] = tool.get('parameters')
-        if tool.get('strict') is not None:
-            normalized_function['strict'] = tool.get('strict')
-        return {
-            'type': 'function',
-            'function': normalized_function,
-        }
-
-    if use_responses_api and tool_type and tool_type != 'function':
-        return tool
-    return None
-
-
-def _papi_normalize_tool_choice(tool_choice: Any, *, use_responses_api: bool) -> Any:
-    if tool_choice is None or isinstance(tool_choice, str):
-        return tool_choice
-    if not isinstance(tool_choice, dict):
-        return tool_choice
-
-    choice_type = str(tool_choice.get('type') or '').strip()
-    if choice_type != 'function':
-        return tool_choice
-
-    if use_responses_api:
-        if str(tool_choice.get('name') or '').strip():
-            return tool_choice
-        function_obj = tool_choice.get('function')
-        if isinstance(function_obj, dict) and str(function_obj.get('name') or '').strip():
-            return {
-                'type': 'function',
-                'name': str(function_obj.get('name') or '').strip(),
-            }
-        return tool_choice
-
-    if isinstance(tool_choice.get('function'), dict):
-        return tool_choice
-    if str(tool_choice.get('name') or '').strip():
-        return {
-            'type': 'function',
-            'function': {
-                'name': str(tool_choice.get('name') or '').strip(),
-            },
-        }
-    return tool_choice
-
-
-def _papi_extract_completion_text(response_obj: Any) -> str:
-    """从 provider 返回中尽量提取完整文本。"""
-    if response_obj is None:
-        return ''
-
-    if isinstance(response_obj, dict):
-        output_text = response_obj.get('output_text')
-        if isinstance(output_text, str) and output_text.strip():
-            return output_text.strip()
-
-        choices = response_obj.get('choices')
-        if isinstance(choices, list) and choices:
-            choice0 = choices[0] if isinstance(choices[0], dict) else {}
-            msg = choice0.get('message', {}) if isinstance(choice0, dict) else {}
-            if isinstance(msg, dict):
-                content = msg.get('content', '')
-                if isinstance(content, str):
-                    return content.strip()
-
-        output_items = response_obj.get('output')
-        if isinstance(output_items, list):
-            parts: List[str] = []
-            for item in output_items:
-                if not isinstance(item, dict) or str(item.get('type', '') or '').strip() != 'message':
-                    continue
-                content = item.get('content', [])
-                if isinstance(content, list):
-                    for piece in content:
-                        if isinstance(piece, dict):
-                            piece_type = str(piece.get('type', '') or '').strip()
-                            if piece_type in {'text', 'output_text'}:
-                                parts.append(str(piece.get('text', '') or ''))
-                        elif piece is not None:
-                            parts.append(str(piece))
-                elif isinstance(content, str):
-                    parts.append(content)
-            merged = '\n'.join([p for p in parts if str(p or '').strip()]).strip()
-            if merged:
-                return merged
-
-    try:
-        output_text = getattr(response_obj, 'output_text', None)
-        if isinstance(output_text, str) and output_text.strip():
-            return output_text.strip()
-    except Exception:
-        pass
-
-    try:
-        choices = getattr(response_obj, 'choices', None)
-        if isinstance(choices, list) and choices:
-            choice0 = choices[0]
-            message = getattr(choice0, 'message', None)
-            if message is not None:
-                content = getattr(message, 'content', None)
-                if isinstance(content, str):
-                    return content.strip()
-                if isinstance(content, list):
-                    parts: List[str] = []
-                    for piece in content:
-                        if isinstance(piece, dict):
-                            piece_type = str(piece.get('type', '') or '').strip()
-                            if piece_type in {'text', 'output_text', 'input_text'}:
-                                parts.append(str(piece.get('text', '') or ''))
-                        elif piece is not None:
-                            parts.append(str(piece))
-                    merged = ''.join([p for p in parts if str(p or '').strip()]).strip()
-                    if merged:
-                        return merged
-    except Exception:
-        pass
-
-    try:
-        output_items = getattr(response_obj, 'output', None)
-        if isinstance(output_items, list):
-            parts: List[str] = []
-            for item in output_items:
-                item_type = str(getattr(item, 'type', '') or '').strip()
-                if item_type != 'message':
-                    continue
-                content = getattr(item, 'content', None)
-                if isinstance(content, list):
-                    for piece in content:
-                        piece_type = str(getattr(piece, 'type', '') or '').strip()
-                        if piece_type in {'text', 'output_text'}:
-                            parts.append(str(getattr(piece, 'text', '') or ''))
-                elif isinstance(content, str):
-                    parts.append(content)
-            merged = '\n'.join([p for p in parts if str(p or '').strip()]).strip()
-            if merged:
-                return merged
-    except Exception:
-        pass
-
-    return ''
-
-
-def _papi_extract_usage(response_obj: Any) -> Dict[str, int]:
-    usage_obj = None
-    if isinstance(response_obj, dict):
-        usage_obj = response_obj.get('usage')
-    if usage_obj is None:
-        usage_obj = getattr(response_obj, 'usage', None)
-    if usage_obj is None:
-        return {}
-
-    def _read_usage(key: str, default: int = 0) -> int:
-        if isinstance(usage_obj, dict):
-            try:
-                return int(usage_obj.get(key, default) or default)
-            except Exception:
-                return default
-        try:
-            return int(getattr(usage_obj, key, default) or default)
-        except Exception:
-            return default
-
-    prompt_tokens = _read_usage('prompt_tokens', 0)
-    completion_tokens = _read_usage('completion_tokens', _read_usage('output_tokens', 0))
-    total_tokens = _read_usage('total_tokens', prompt_tokens + completion_tokens)
-    return {
-        'prompt_tokens': prompt_tokens,
-        'completion_tokens': completion_tokens,
-        'total_tokens': total_tokens,
-    }
-
-
-def _papi_extract_finish_reason(response_obj: Any) -> str:
-    choice0 = None
-    if isinstance(response_obj, dict):
-        choices = response_obj.get('choices')
-        if isinstance(choices, list) and choices:
-            choice0 = choices[0]
-    else:
-        try:
-            choices = getattr(response_obj, 'choices', None)
-            if isinstance(choices, list) and choices:
-                choice0 = choices[0]
-        except Exception:
-            choice0 = None
-
-    if choice0 is None:
-        return 'stop'
-
-    if isinstance(choice0, dict):
-        return str(choice0.get('finish_reason') or 'stop')
-    try:
-        return str(getattr(choice0, 'finish_reason', None) or 'stop')
-    except Exception:
-        return 'stop'
-
-
-def _papi_extract_tool_calls(response_obj: Any) -> List[Dict[str, Any]]:
-    message = None
-    if isinstance(response_obj, dict):
-        choices = response_obj.get('choices')
-        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
-            message = choices[0].get('message')
-    else:
-        try:
-            choices = getattr(response_obj, 'choices', None)
-            if isinstance(choices, list) and choices:
-                message = getattr(choices[0], 'message', None)
-        except Exception:
-            message = None
-
-    if message is None:
-        return []
-
-    raw_tool_calls = None
-    if isinstance(message, dict):
-        raw_tool_calls = message.get('tool_calls')
-    else:
-        raw_tool_calls = getattr(message, 'tool_calls', None)
-
-    if not isinstance(raw_tool_calls, list):
-        return []
-
-    normalized: List[Dict[str, Any]] = []
-    for idx, tool_call in enumerate(raw_tool_calls):
-        if isinstance(tool_call, dict):
-            call_id = str(tool_call.get('id') or f'tool_call_{idx}')
-            call_type = str(tool_call.get('type') or 'function')
-            function_obj = tool_call.get('function') if isinstance(tool_call.get('function'), dict) else {}
-            normalized.append({
-                'id': call_id,
-                'type': call_type,
-                'function': {
-                    'name': str(function_obj.get('name') or ''),
-                    'arguments': str(function_obj.get('arguments') or ''),
-                },
-            })
-            continue
-
-        try:
-            function_obj = getattr(tool_call, 'function', None)
-            normalized.append({
-                'id': str(getattr(tool_call, 'id', None) or f'tool_call_{idx}'),
-                'type': str(getattr(tool_call, 'type', None) or 'function'),
-                'function': {
-                    'name': str(getattr(function_obj, 'name', None) or ''),
-                    'arguments': str(getattr(function_obj, 'arguments', None) or ''),
-                },
-            })
-        except Exception:
-            continue
-
-    return normalized
-
-
-def _papi_extract_response_id(response_obj: Any) -> str:
-    if isinstance(response_obj, dict):
-        raw_id = response_obj.get('id')
-        if raw_id:
-            return str(raw_id)
-    try:
-        raw_id = getattr(response_obj, 'id', None)
-        if raw_id:
-            return str(raw_id)
-    except Exception:
-        pass
-    return f'chatcmpl-{uuid.uuid4().hex}'
-
-
-def _papi_build_openai_payload(
-    *,
-    response_obj: Any,
-    model_name: str,
-    provider_name: str,
-    request_username: str,
-    quota_status: Dict[str, Any],
-) -> Dict[str, Any]:
-    content = _papi_extract_completion_text(response_obj)
-    tool_calls = _papi_extract_tool_calls(response_obj)
-    finish_reason = _papi_extract_finish_reason(response_obj)
-    if tool_calls and finish_reason == 'stop':
-        finish_reason = 'tool_calls'
-    usage = _papi_extract_usage(response_obj)
-    payload = {
-        'id': _papi_extract_response_id(response_obj),
-        'object': 'chat.completion',
-        'created': int(time.time()),
-        'model': model_name,
-        'provider': provider_name,
-        'username': request_username,
-        'success': True,
-        'content': content,
-        'message': {
-            'role': 'assistant',
-            'content': content if not tool_calls else (content or None),
-        },
-        'choices': [
-            {
-                'index': 0,
-                'message': {
-                    'role': 'assistant',
-                    'content': content if not tool_calls else (content or None),
-                },
-                'finish_reason': finish_reason,
-            }
-        ],
-        'quota': quota_status,
-    }
-    if tool_calls:
-        payload['message']['tool_calls'] = tool_calls
-        payload['choices'][0]['message']['tool_calls'] = tool_calls
-    if usage:
-        payload['usage'] = usage
-    return payload
-
-
-def _papi_stream_openai_chat(
-    *,
-    adapter: Any,
-    client: Any,
-    model_name: str,
-    messages: List[Dict[str, Any]],
-    request_kwargs: Dict[str, Any],
-) -> Response:
-    created_ts = int(time.time())
-    completion_id = f'chatcmpl-{uuid.uuid4().hex}'
-    request_params: Dict[str, Any] = {'model': model_name, 'stream': True}
-    request_params.update(dict(request_kwargs or {}))
-    request_params = adapter.apply_protocol_payload(
-        request_params,
-        use_responses_api=False,
-        messages=messages,
-        previous_response_id=None,
-        current_function_outputs=None,
-    )
-    stream_options = request_params.get('stream_options')
-    include_usage = bool(isinstance(stream_options, dict) and stream_options.get('include_usage'))
-    iterator = adapter.create_stream_iterator(
-        client=client,
-        request_params=request_params,
-        use_responses_api=False,
-    )
-    event_iter = adapter.iter_stream_events(
-        iterator,
-        use_responses_api=False,
-        native_web_search_enabled=False,
-    )
-
-    def _event_stream():
-        role_emitted = False
-        usage_payload = None
-        saw_tool_calls = False
-        for ev in event_iter:
-            if not isinstance(ev, dict):
-                continue
-            ev_type = str(ev.get('type') or '').strip()
-            if ev_type == 'content_delta':
-                delta_payload: Dict[str, Any] = {}
-                if not role_emitted:
-                    delta_payload['role'] = 'assistant'
-                    role_emitted = True
-                delta_payload['content'] = str(ev.get('delta') or '')
-                chunk = {
-                    'id': completion_id,
-                    'object': 'chat.completion.chunk',
-                    'created': created_ts,
-                    'model': model_name,
-                    'choices': [{'index': 0, 'delta': delta_payload, 'finish_reason': None}],
-                }
-                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-            elif ev_type == 'function_call_delta':
-                saw_tool_calls = True
-                delta_tool_call = {
-                    'index': int(ev.get('index', 0) or 0),
-                    'id': str(ev.get('call_id') or ('tool_call_' + str(int(ev.get('index', 0) or 0)))),
-                    'type': 'function',
-                    'function': {},
-                }
-                name_delta = str(ev.get('name_delta') or '')
-                arguments_delta = str(ev.get('arguments_delta') or '')
-                if name_delta:
-                    delta_tool_call['function']['name'] = name_delta
-                if arguments_delta:
-                    delta_tool_call['function']['arguments'] = arguments_delta
-                delta_payload = {'tool_calls': [delta_tool_call]}
-                if not role_emitted:
-                    delta_payload['role'] = 'assistant'
-                    role_emitted = True
-                chunk = {
-                    'id': completion_id,
-                    'object': 'chat.completion.chunk',
-                    'created': created_ts,
-                    'model': model_name,
-                    'choices': [{'index': 0, 'delta': delta_payload, 'finish_reason': None}],
-                }
-                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-            elif ev_type == 'usage':
-                usage_payload = {
-                    'prompt_tokens': int(ev.get('input_tokens', 0) or 0),
-                    'completion_tokens': int(ev.get('output_tokens', 0) or 0),
-                    'total_tokens': int(ev.get('total_tokens', 0) or 0),
-                }
-
-        final_chunk = {
-            'id': completion_id,
-            'object': 'chat.completion.chunk',
-            'created': created_ts,
-            'model': model_name,
-            'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'tool_calls' if saw_tool_calls else 'stop'}],
-        }
-        if include_usage and usage_payload:
-            final_chunk['usage'] = usage_payload
-        yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
-        yield "data: [DONE]\n\n"
-
-    return Response(_event_stream(), mimetype='text/event-stream')
-
-
-def _papi_build_responses_payload(
-    *,
-    response_obj: Any,
-    model_name: str,
-    provider_name: str,
-    request_username: str,
-    quota_status: Dict[str, Any],
-) -> Dict[str, Any]:
-    content = _papi_extract_completion_text(response_obj)
-    tool_calls = _papi_extract_tool_calls(response_obj)
-    usage = _papi_extract_usage(response_obj)
-    response_id = _papi_extract_response_id(response_obj)
-    if not str(response_id or '').startswith('resp_'):
-        response_id = f'resp_{uuid.uuid4().hex}'
-    message_item_id = f'msg_{uuid.uuid4().hex}'
-    output_items: List[Dict[str, Any]] = [
-        {
-            'id': message_item_id,
-            'type': 'message',
-            'role': 'assistant',
-            'status': 'completed',
-            'content': [
-                {
-                    'type': 'output_text',
-                    'text': content,
-                    'annotations': [],
-                }
-            ],
-        }
-    ]
-    for idx, tool_call in enumerate(tool_calls):
-        function_obj = tool_call.get('function', {}) if isinstance(tool_call, dict) else {}
-        output_items.append({
-            'id': str((tool_call or {}).get('id') or f'fc_{idx}_{uuid.uuid4().hex[:8]}'),
-            'type': 'function_call',
-            'call_id': str((tool_call or {}).get('id') or f'call_{idx}'),
-            'name': str(function_obj.get('name') or ''),
-            'arguments': str(function_obj.get('arguments') or ''),
-            'status': 'completed',
-        })
-
-    payload = {
-        'id': response_id,
-        'object': 'response',
-        'created_at': int(time.time()),
-        'status': 'completed',
-        'model': model_name,
-        'output': output_items,
-        'output_text': content,
-        'provider': provider_name,
-        'username': request_username,
-        'success': True,
-        'quota': quota_status,
-    }
-    if usage:
-        payload['usage'] = {
-            'input_tokens': int(usage.get('prompt_tokens', 0) or 0),
-            'output_tokens': int(usage.get('completion_tokens', 0) or 0),
-            'total_tokens': int(usage.get('total_tokens', 0) or 0),
-        }
-    return payload
-
-
-def _papi_normalize_responses_input_payload(payload: Any) -> Any:
-    def _fallback_text_piece(value: Any) -> Dict[str, Any]:
-        if value is None:
-            return {'type': 'input_text', 'text': ''}
-        if isinstance(value, str):
-            return {'type': 'input_text', 'text': value}
-        if isinstance(value, (int, float, bool)):
-            return {'type': 'input_text', 'text': str(value)}
-        try:
-            return {'type': 'input_text', 'text': json.dumps(value, ensure_ascii=False, default=str)}
-        except Exception:
-            return {'type': 'input_text', 'text': str(value)}
-
-    def _normalize_content_piece(piece: Any) -> Any:
-        if piece is None:
-            return {'type': 'input_text', 'text': ''}
-        if isinstance(piece, str):
-            return {'type': 'input_text', 'text': piece}
-        if not isinstance(piece, dict):
-            return {'type': 'input_text', 'text': str(piece)}
-
-        normalized_piece: Dict[str, Any] = {}
-        for key, value in piece.items():
-            if isinstance(value, list):
-                normalized_piece[key] = [_normalize_content_piece(child) for child in value]
-            elif isinstance(value, dict):
-                normalized_piece[key] = _normalize_content_piece(value)
-            else:
-                normalized_piece[key] = value
-
-        piece_type = str(normalized_piece.get('type') or '').strip().lower()
-        if piece_type in {'text', 'output_text'}:
-            return {
-                'type': 'input_text',
-                'text': str(
-                    normalized_piece.get('text')
-                    or normalized_piece.get('content')
-                    or normalized_piece.get('value')
-                    or ''
-                ),
-            }
-        if piece_type == 'input_text':
-            return {
-                'type': 'input_text',
-                'text': str(
-                    normalized_piece.get('text')
-                    or normalized_piece.get('content')
-                    or normalized_piece.get('value')
-                    or ''
-                ),
-            }
-        if piece_type == 'image_url':
-            image_url = normalized_piece.get('image_url') or normalized_piece.get('url') or ''
-            if not image_url:
-                return _fallback_text_piece(piece)
-            return {
-                'type': 'input_image',
-                'image_url': image_url,
-            }
-        if piece_type == 'input_image':
-            if not normalized_piece.get('image_url') and normalized_piece.get('url') is not None:
-                normalized_piece['image_url'] = normalized_piece.get('url')
-            if not normalized_piece.get('image_url'):
-                return _fallback_text_piece(piece)
-            return {
-                'type': 'input_image',
-                'image_url': normalized_piece.get('image_url'),
-            }
-        if piece_type == 'video_url':
-            video_url = normalized_piece.get('video_url') or normalized_piece.get('url') or ''
-            if not video_url:
-                return _fallback_text_piece(piece)
-            return {
-                'type': 'video_url',
-                'video_url': video_url,
-            }
-        if piece_type == 'input_video':
-            if not normalized_piece.get('video_url') and normalized_piece.get('url') is not None:
-                normalized_piece['video_url'] = normalized_piece.get('url')
-            if not normalized_piece.get('video_url'):
-                return _fallback_text_piece(piece)
-            return {
-                'type': 'input_video',
-                'video_url': normalized_piece.get('video_url'),
-            }
-
-        for key in ('text', 'content', 'value'):
-            if key in normalized_piece and not isinstance(normalized_piece.get(key), (list, dict)):
-                return {'type': 'input_text', 'text': str(normalized_piece.get(key) or '')}
-        return _fallback_text_piece(piece)
-
-    def _normalize_item(item: Any, *, top_level: bool) -> Any:
-        if isinstance(item, list):
-            return [_normalize_item(child, top_level=top_level) for child in item]
-        if not isinstance(item, dict):
-            return item
-
-        normalized: Dict[str, Any] = {}
-        for key, value in item.items():
-            if isinstance(value, list):
-                normalized[key] = [_normalize_item(child, top_level=False) for child in value]
-            elif isinstance(value, dict):
-                normalized[key] = _normalize_item(value, top_level=False)
-            else:
-                normalized[key] = value
-
-        if top_level:
-            item_type = str(normalized.get('type') or '').strip()
-            has_call_output = ('call_id' in normalized) and ('output' in normalized)
-            if not item_type and has_call_output:
-                normalized['type'] = 'function_call_output'
-                item_type = 'function_call_output'
-
-            if 'role' in normalized:
-                if not item_type:
-                    normalized['type'] = 'message'
-                    item_type = 'message'
-                role_val = str(normalized.get('role') or '').strip().lower()
-                content_value = normalized.get('content')
-                if content_value is None:
-                    # None content: assistant 有 tool_calls 时 content 合法为 None，生成空列表
-                    normalized_content = []
-                elif isinstance(content_value, list):
-                    normalized_content = [_normalize_content_piece(child) for child in content_value]
-                elif isinstance(content_value, dict):
-                    normalized_content = [_normalize_content_piece(content_value)]
-                else:
-                    normalized_content = [_normalize_content_piece(content_value)]
-                # 过滤掉 text 为空字符串的 input_text 条目，避免 API 报 missing text
-                normalized_content = [
-                    piece for piece in normalized_content
-                    if not (isinstance(piece, dict)
-                            and str(piece.get('type') or '').strip() == 'input_text'
-                            and str(piece.get('text') or '').strip() == '')
-                ]
-                # 只有非 assistant 角色且内容为空时才插入空 text fallback
-                if not normalized_content and role_val != 'assistant':
-                    normalized_content = [{'type': 'input_text', 'text': ''}]
-                normalized['content'] = normalized_content
-                if 'status' not in normalized:
-                    normalized['status'] = 'completed'
-            elif item_type == 'message':
-                role_val = str(normalized.get('role') or '').strip().lower()
-                content_value = normalized.get('content')
-                if isinstance(content_value, list):
-                    normalized_content = [_normalize_content_piece(child) for child in content_value]
-                elif isinstance(content_value, dict):
-                    normalized_content = [_normalize_content_piece(content_value)]
-                elif content_value is not None:
-                    normalized_content = [_normalize_content_piece(content_value)]
-                else:
-                    normalized_content = []
-                # 过滤掉 text 为空字符串的 input_text 条目，避免 API 报 missing text
-                normalized_content = [
-                    piece for piece in normalized_content
-                    if not (isinstance(piece, dict)
-                            and str(piece.get('type') or '').strip() == 'input_text'
-                            and str(piece.get('text') or '').strip() == '')
-                ]
-                if not normalized_content and role_val != 'assistant':
-                    normalized_content = [{'type': 'input_text', 'text': ''}]
-                normalized['content'] = normalized_content
-                if 'status' not in normalized:
-                    normalized['status'] = 'completed'
-            elif item_type == 'function_call_output':
-                normalized['output'] = str(normalized.get('output') or '')
-        return normalized
-
-    def _expand_chat_item_to_responses_items(item: Any) -> List[Dict[str, Any]]:
-        """
-        将 chat.completions 格式的单条消息展开为 Responses API 所需的一或多个条目。
-        - assistant + tool_calls  → 多个 function_call 条目
-        - role:tool + tool_call_id → function_call_output 条目
-        - 其余消息                → 普通 message 条目（经过 _normalize_item 处理）
-        """
-        if not isinstance(item, dict):
-            return [_normalize_item(item, top_level=True)]
-
-        role = str(item.get('role') or '').strip().lower()
-
-        # role=tool → function_call_output
-        if role == 'tool':
-            call_id = str(item.get('tool_call_id') or '').strip()
-            content_raw = item.get('content')
-            if isinstance(content_raw, str):
-                output_str = content_raw
-            elif content_raw is None:
-                output_str = ''
-            else:
-                try:
-                    output_str = json.dumps(content_raw, ensure_ascii=False, default=str)
-                except Exception:
-                    output_str = str(content_raw)
-            return [{'type': 'function_call_output', 'call_id': call_id, 'output': output_str}]
-
-        # role=assistant 且有 tool_calls → 展开为多个 function_call 条目
-        if role == 'assistant':
-            raw_tool_calls = item.get('tool_calls')
-            if isinstance(raw_tool_calls, list) and raw_tool_calls:
-                fc_items: List[Dict[str, Any]] = []
-                for tc in raw_tool_calls:
-                    if not isinstance(tc, dict):
-                        continue
-                    fn = tc.get('function') if isinstance(tc.get('function'), dict) else {}
-                    fc_items.append({
-                        'type': 'function_call',
-                        'call_id': str(tc.get('id') or '').strip(),
-                        'name': str(fn.get('name') or '').strip(),
-                        'arguments': str(fn.get('arguments') or '{}'),
-                        'status': 'completed',
-                    })
-                if fc_items:
-                    return fc_items
-                # tool_calls 为空列表时，退出为普通 message
-            # assistant 无 tool_calls → 普通 message，但跳过 content 为空的条目
-            normalized = _normalize_item(item, top_level=True)
-            if isinstance(normalized, dict):
-                content_list = normalized.get('content', [])
-                if isinstance(content_list, list) and not content_list:
-                    # content 为空的 assistant 消息对 Responses API 无意义，跳过
-                    return []
-            return [normalized]
-
-        # 其余角色（user / system / developer）正常处理
-        return [_normalize_item(item, top_level=True)]
-
-    if isinstance(payload, list):
-        result: List[Dict[str, Any]] = []
-        for raw_item in payload:
-            result.extend(_expand_chat_item_to_responses_items(raw_item))
-        return result
-    return _normalize_item(payload, top_level=True)
-
-
-def _papi_has_function_call_outputs(input_items: Any) -> bool:
-    return bool(
-        isinstance(input_items, list)
-        and any(
-            isinstance(item, dict)
-            and (
-                str(item.get('type') or '').strip() == 'function_call_output'
-                or (('call_id' in item) and ('output' in item))
-            )
-            for item in input_items
-        )
-    )
-
-
-def _papi_build_synthetic_messages_from_function_outputs(input_items: Any) -> List[Dict[str, Any]]:
-    if not isinstance(input_items, list):
-        return []
-
-    output_parts: List[str] = []
-    for item in input_items:
-        if not isinstance(item, dict):
-            continue
-        item_type = str(item.get('type') or '').strip()
-        if item_type != 'function_call_output' and not (('call_id' in item) and ('output' in item)):
-            continue
-        call_id = str(item.get('call_id') or '').strip()
-        output_value = item.get('output')
-        if isinstance(output_value, str):
-            output_text = output_value
-        else:
-            try:
-                output_text = json.dumps(output_value, ensure_ascii=False, default=str)
-            except Exception:
-                output_text = str(output_value or '')
-        output_parts.append(f"[tool:{call_id or 'unknown'}]\n{output_text}")
-
-    synthetic_user_content = "\n\n".join([part for part in output_parts if str(part or '').strip()]).strip()
-    if not synthetic_user_content:
-        return []
-    return [{'role': 'user', 'content': synthetic_user_content}]
-
-
-def _papi_log(message: str, level: str = 'warning') -> None:
-    text = str(message or '').strip()
-    if not text:
-        return
-    try:
-        logger_method = getattr(app.logger, str(level or 'warning').lower(), None)
-        if callable(logger_method):
-            logger_method(text)
-        else:
-            app.logger.warning(text)
-    except Exception:
-        pass
-    try:
-        print(text, flush=True)
-    except Exception:
-        pass
-
-
-def _papi_stream_openai_responses(
-    *,
-    adapter: Any,
-    client: Any,
-    model_name: str,
-    messages: List[Dict[str, Any]],
-    request_kwargs: Dict[str, Any],
-    previous_response_id: Optional[str] = None,
-    input_items: Optional[List[Dict[str, Any]]] = None,
-    allow_synthetic_fallback: bool = False,
-) -> Response:
-    created_ts = int(time.time())
-    response_id_box = [f'resp_{uuid.uuid4().hex}']
-    message_item_id = f'msg_{uuid.uuid4().hex}'
-    message_output_index = 0
-    message_content_index = 0
-    fallback_messages = _papi_build_synthetic_messages_from_function_outputs(input_items) if allow_synthetic_fallback else []
-
-    def _build_request_params(active_messages, active_previous_response_id, active_input_items):
-        params: Dict[str, Any] = {'model': model_name, 'stream': True}
-        params.update(dict(request_kwargs or {}))
-        if isinstance(active_input_items, list) and active_input_items:
-            if active_previous_response_id:
-                params['previous_response_id'] = active_previous_response_id
-            params['input'] = active_input_items
-        else:
-            params = adapter.apply_protocol_payload(
-                params,
-                use_responses_api=True,
-                messages=active_messages,
-                previous_response_id=active_previous_response_id,
-                current_function_outputs=None,
-            )
-        if 'input' in params:
-            params['input'] = _papi_normalize_responses_input_payload(params.get('input'))
-        return params
-
-    request_params = _build_request_params(messages, previous_response_id, input_items)
-    try:
-        _input_items_count = len(request_params.get('input') or []) if isinstance(request_params.get('input'), list) else 0
-    except Exception:
-        _input_items_count = 0
-    _papi_log(
-        f"[PAPI_RESP_REQ] model={model_name} prev={'yes' if request_params.get('previous_response_id') else 'no'} "
-        f"input_items={_input_items_count} stream=true"
-    )
-    try:
-        iterator = adapter.create_stream_iterator(
-            client=client,
-            request_params=request_params,
-            use_responses_api=True,
-        )
-    except Exception as create_error:
-        if fallback_messages:
-            _papi_log(f"[PAPI_RESP_REQ] retry without previous_response_id via synthetic message fallback: {create_error}")
-            request_params = _build_request_params(fallback_messages, None, None)
-            iterator = adapter.create_stream_iterator(
-                client=client,
-                request_params=request_params,
-                use_responses_api=True,
-            )
-        else:
-            raise
-    event_iter = adapter.iter_stream_events(
-        iterator,
-        use_responses_api=True,
-        native_web_search_enabled=False,
-    )
-
-    def _event_stream():
-        text_parts: List[str] = []
-        function_calls: Dict[str, Dict[str, Any]] = {}
-        sequence_number = 0
-
-        def _emit(payload: Dict[str, Any]):
-            nonlocal sequence_number
-            payload = dict(payload or {})
-            payload['sequence_number'] = sequence_number
-            sequence_number += 1
-            return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-
-        message_item = {
-            'id': message_item_id,
-            'type': 'message',
-            'role': 'assistant',
-            'status': 'in_progress',
-            'content': [],
-        }
-        text_part = {
-            'type': 'output_text',
-            'text': '',
-            'annotations': [],
-        }
-
-        yield _emit({
-            'type': 'response.created',
-            'response': {
-                'id': response_id_box[0],
-                'object': 'response',
-                'created_at': created_ts,
-                'model': model_name,
-                'status': 'in_progress',
-                'output': [],
-            },
-        })
-        yield _emit({
-            'type': 'response.output_item.added',
-            'response_id': response_id_box[0],
-            'output_index': message_output_index,
-            'item': message_item,
-        })
-        yield _emit({
-            'type': 'response.content_part.added',
-            'response_id': response_id_box[0],
-            'item_id': message_item_id,
-            'output_index': message_output_index,
-            'content_index': message_content_index,
-            'part': text_part,
-        })
-        try:
-            for ev in event_iter:
-                if not isinstance(ev, dict):
-                    continue
-                ev_type = str(ev.get('type') or '').strip()
-                if ev_type == 'response_id':
-                    rid = str(ev.get('response_id') or '').strip()
-                    if rid:
-                        response_id_box[0] = rid if rid.startswith('resp_') else f'resp_{rid}'
-                    continue
-                if ev_type == 'content_delta':
-                    delta = str(ev.get('delta') or '')
-                    if delta:
-                        text_parts.append(delta)
-                        yield _emit({
-                            'type': 'response.output_text.delta',
-                            'response_id': response_id_box[0],
-                            'item_id': message_item_id,
-                            'output_index': message_output_index,
-                            'content_index': message_content_index,
-                            'delta': delta,
-                        })
-                    continue
-                if ev_type == 'function_call_delta':
-                    call_id = str(ev.get('call_id') or f'fc_{len(function_calls)}').strip()
-                    entry = function_calls.setdefault(call_id, {
-                        'id': call_id,
-                        'name': '',
-                        'arguments': '',
-                        'output_index': len(function_calls) + 1,
-                        'emitted': False,
-                    })
-                    full_name = str(ev.get('name') or '').strip()
-                    name_delta = str(ev.get('name_delta') or '')
-                    if full_name:
-                        entry['name'] = full_name
-                    elif name_delta:
-                        entry['name'] += name_delta
-                    if (not entry.get('emitted')) and str(entry.get('name') or '').strip():
-                        yield _emit({
-                            'type': 'response.output_item.added',
-                            'response_id': response_id_box[0],
-                            'output_index': int(entry['output_index']),
-                            'item': {
-                                'id': call_id,
-                                'type': 'function_call',
-                                'call_id': call_id,
-                                'name': str(entry.get('name') or ''),
-                                'arguments': '',
-                                'status': 'in_progress',
-                            },
-                        })
-                        entry['emitted'] = True
-                    if ev.get('arguments_delta'):
-                        entry['arguments'] += str(ev.get('arguments_delta') or '')
-                        if entry.get('emitted'):
-                            yield _emit({
-                                'type': 'response.function_call_arguments.delta',
-                                'response_id': response_id_box[0],
-                                'item_id': call_id,
-                                'output_index': int(entry['output_index']),
-                                'delta': str(ev.get('arguments_delta') or ''),
-                            })
-                    continue
-                if ev_type == 'function_call':
-                    call_id = str(ev.get('call_id') or f'fc_{len(function_calls)}').strip()
-                    entry = function_calls.setdefault(call_id, {
-                        'id': call_id,
-                        'name': '',
-                        'arguments': '',
-                        'output_index': len(function_calls) + 1,
-                        'emitted': False,
-                    })
-                    full_name = str(ev.get('name') or '').strip()
-                    full_arguments = str(ev.get('arguments') or '')
-                    if full_name:
-                        entry['name'] = full_name
-                    if full_arguments:
-                        entry['arguments'] = full_arguments
-                    if (not entry.get('emitted')) and str(entry.get('name') or '').strip():
-                        yield _emit({
-                            'type': 'response.output_item.added',
-                            'response_id': response_id_box[0],
-                            'output_index': int(entry['output_index']),
-                            'item': {
-                                'id': call_id,
-                                'type': 'function_call',
-                                'call_id': call_id,
-                                'name': str(entry.get('name') or ''),
-                                'arguments': '',
-                                'status': 'in_progress',
-                            },
-                        })
-                        entry['emitted'] = True
-                    if entry.get('emitted') and full_arguments:
-                        yield _emit({
-                            'type': 'response.function_call_arguments.delta',
-                            'response_id': response_id_box[0],
-                            'item_id': call_id,
-                            'output_index': int(entry['output_index']),
-                            'delta': full_arguments,
-                        })
-                    continue
-        except Exception as stream_error:
-            _papi_log(f"[PAPI_RESP_STREAM_ITER] model={model_name} error={stream_error}", level='error')
-            yield _emit({
-                'type': 'response.failed',
-                'response': {
-                    'id': response_id_box[0],
-                    'object': 'response',
-                    'created_at': created_ts,
-                    'model': model_name,
-                    'status': 'failed',
-                    'error': {
-                        'type': 'provider_error',
-                        'message': str(stream_error or ''),
-                    },
-                },
-            })
-            yield "data: [DONE]\n\n"
-            return
-
-        final_text = ''.join(text_parts)
-        yield _emit({
-            'type': 'response.output_text.done',
-            'response_id': response_id_box[0],
-            'item_id': message_item_id,
-            'output_index': message_output_index,
-            'content_index': message_content_index,
-            'text': final_text,
-        })
-        yield _emit({
-            'type': 'response.content_part.done',
-            'response_id': response_id_box[0],
-            'item_id': message_item_id,
-            'output_index': message_output_index,
-            'content_index': message_content_index,
-            'part': {
-                'type': 'output_text',
-                'text': final_text,
-                'annotations': [],
-            },
-        })
-        completed_output: List[Dict[str, Any]] = [
-            {
-                'id': message_item_id,
-                'type': 'message',
-                'role': 'assistant',
-                'status': 'completed',
-                'content': [
-                    {
-                        'type': 'output_text',
-                        'text': final_text,
-                        'annotations': [],
-                    }
-                ],
-            }
-        ]
-        yield _emit({
-            'type': 'response.output_item.done',
-            'response_id': response_id_box[0],
-            'output_index': message_output_index,
-            'item': completed_output[0],
-        })
-        for call_id, fc in function_calls.items():
-            completed_item = {
-                'id': call_id,
-                'type': 'function_call',
-                'call_id': call_id,
-                'name': str(fc.get('name') or ''),
-                'arguments': str(fc.get('arguments') or ''),
-                'status': 'completed',
-            }
-            completed_output.append(completed_item)
-            yield _emit({
-                'type': 'response.output_item.done',
-                'response_id': response_id_box[0],
-                'output_index': int(fc.get('output_index') or 0),
-                'item': completed_item,
-            })
-        completed = {
-            'type': 'response.completed',
-            'response': {
-                'id': response_id_box[0],
-                'object': 'response',
-                'created_at': created_ts,
-                'model': model_name,
-                'status': 'completed',
-                'output': completed_output,
-                'output_text': final_text,
-            },
-        }
-        yield _emit(completed)
-        yield "data: [DONE]\n\n"
-
-    return Response(_event_stream(), mimetype='text/event-stream')
-
-
-def _papi_create_openai_responses_payload(
-    *,
-    adapter: Any,
-    client: Any,
-    model_name: str,
-    messages: List[Dict[str, Any]],
-    request_kwargs: Dict[str, Any],
-    provider_name: str,
-    request_username: str,
-    quota_status: Dict[str, Any],
-    previous_response_id: Optional[str] = None,
-    input_items: Optional[List[Dict[str, Any]]] = None,
-    allow_synthetic_fallback: bool = False,
-) -> Dict[str, Any]:
-    fallback_messages = _papi_build_synthetic_messages_from_function_outputs(input_items) if allow_synthetic_fallback else []
-
-    def _build_request_params(active_messages, active_previous_response_id, active_input_items):
-        params: Dict[str, Any] = {'model': model_name, 'stream': False}
-        params.update(dict(request_kwargs or {}))
-        if isinstance(active_input_items, list) and active_input_items:
-            if active_previous_response_id:
-                params['previous_response_id'] = active_previous_response_id
-            params['input'] = active_input_items
-        else:
-            params = adapter.apply_protocol_payload(
-                params,
-                use_responses_api=True,
-                messages=active_messages,
-                previous_response_id=active_previous_response_id,
-                current_function_outputs=None,
-            )
-        if 'input' in params:
-            params['input'] = _papi_normalize_responses_input_payload(params.get('input'))
-        return params
-
-    request_params = _build_request_params(messages, previous_response_id, input_items)
-    try:
-        _input_items_count = len(request_params.get('input') or []) if isinstance(request_params.get('input'), list) else 0
-    except Exception:
-        _input_items_count = 0
-    _papi_log(
-        f"[PAPI_RESP_REQ] model={model_name} prev={'yes' if request_params.get('previous_response_id') else 'no'} "
-        f"input_items={_input_items_count} stream=false"
-    )
-    try:
-        response = client.responses.create(**request_params)
-    except Exception as create_error:
-        if fallback_messages:
-            _papi_log(f"[PAPI_RESP_REQ] retry non-stream without previous_response_id via synthetic message fallback: {create_error}")
-            request_params = _build_request_params(fallback_messages, None, None)
-            response = client.responses.create(**request_params)
-        else:
-            raise
-    return _papi_build_responses_payload(
-        response_obj=response,
-        model_name=model_name,
-        provider_name=provider_name,
-        request_username=request_username,
-        quota_status=quota_status,
-    )
-
-# ==================== 认证相关 ====================
 
 @app.route('/')
 def index():
@@ -7142,6 +6507,7 @@ def admin_server_quota():
                 if key in payload:
                     quota_payload[key] = payload.get(key)
             update_server_quota_config(quota_payload)
+            _recover_quota_disabled_models(quota_payload.get('provider'))
         return jsonify({'success': True, 'quota': get_server_quota_status()})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
@@ -7239,6 +6605,7 @@ def admin_model_quota_update():
         else:
             return jsonify({'success': False, 'message': '不支持的 op，允许 set / adjust'}), 400
 
+        _recover_quota_disabled_models(provider)
         return jsonify({'success': True, 'change': change, 'quota': get_server_quota_status()})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
@@ -7271,471 +6638,6 @@ def admin_chroma_stats():
 
 
 # ==================== 通用开放接口 (Public API - papi) ====================
-
-@app.route('/api/papi/knowledge/list/<username>', methods=['GET'])
-@require_papi_key
-def papi_list_knowledge(username):
-    """获取指定用户的知识库列表"""
-    try:
-        user = User(username)
-        basis = user.getKnowledgeList(1)
-        return jsonify({
-            'success': True,
-            'username': username,
-            'knowledge': list(basis.keys())
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)})
-
-@app.route('/api/papi/knowledge/basis/<username>/<path:title>', methods=['GET'])
-@require_papi_key
-def papi_get_knowledge(username, title):
-    """获取指定用户的某个知识内容"""
-    try:
-        user = User(username)
-        content = user.getBasisContent(title)
-        meta = user.getBasisMetadata(title)
-        return jsonify({
-            'success': True,
-            'username': username,
-            'title': title,
-            'content': content,
-            'metadata': meta
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)})
-
-@app.route('/api/papi/tokens/stats/<username>', methods=['GET'])
-@require_papi_key
-def papi_token_stats(username):
-    """获取指定用户的 Token 消耗记录"""
-    try:
-        user = User(username)
-        logs = user.get_token_logs()
-        total_tokens = sum(log.get('total_tokens', 0) for log in logs)
-        return jsonify({
-            'success': True,
-            'username': username,
-            'total': total_tokens,
-            'logs': logs
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)})
-
-@app.route('/api/papi/conversations/<username>', methods=['GET'])
-@require_papi_key
-def papi_list_conversations(username):
-    """获取指定用户的对话列表"""
-    try:
-        manager = ConversationManager(username)
-        conversations = manager.list_conversations()
-        return jsonify({
-            'success': True,
-            'username': username,
-            'conversations': conversations
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)})
-
-@app.route('/api/papi/conversations/<username>/<conv_id>', methods=['GET'])
-@require_papi_key
-def papi_get_conversation(username, conv_id):
-    """获取指定用户的详细对话记录"""
-    try:
-        manager = ConversationManager(username)
-        conversation = manager.get_conversation(conv_id)
-        return jsonify({
-            'success': True,
-            'username': username,
-            'conversation': conversation
-        })
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)})
-
-@app.route('/api/papi/knowledge/query/<username>', methods=['POST'])
-@require_papi_key
-def papi_query_vectors(username):
-    """PAPI: vector query"""
-    data = request.get_json() or {}
-    query_text = data.get('text') or data.get('query')
-    top_k = int(data.get('top_k') or 5)
-
-    if not query_text:
-        return jsonify({'success': False, 'message': 'missing query text'})
-
-    store, store_err = get_chroma_store()
-    if not store:
-        return jsonify({'success': False, 'message': f'ChromaDB unavailable: {store_err}'})
-
-    try:
-        if getattr(store, 'mode', '') != 'service':
-            return jsonify({'success': False, 'message': 'NexoraDB service mode required'})
-        result = store.query_text(username, query_text, top_k=top_k)
-        return jsonify({'success': True, 'result': result})
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)})
-
-
-@app.route('/api/papi/completions', methods=['POST'])
-@app.route('/api/papi/chat/completions', methods=['POST'])
-@app.route('/api/papi/responses', methods=['POST'])
-@app.route('/api/papi/v1/completions', methods=['POST'])
-@app.route('/api/papi/v1/chat/completions', methods=['POST'])
-@app.route('/api/papi/v1/responses', methods=['POST'])
-@app.route('/api/papi/completions/<username>', methods=['POST'])
-@app.route('/api/papi/chat/completions/<username>', methods=['POST'])
-@app.route('/api/papi/responses/<username>', methods=['POST'])
-@app.route('/api/papi/v1/completions/<username>', methods=['POST'])
-@app.route('/api/papi/v1/chat/completions/<username>', methods=['POST'])
-@app.route('/api/papi/v1/responses/<username>', methods=['POST'])
-@require_papi_key
-def papi_completions(username=None):
-    """PAPI: OpenAI 兼容的 chat/completions 接口，支持流式与非流式。"""
-    data = request.get_json(silent=True) or {}
-    config = get_config_all()
-    request_username = str(username or data.get('username') or '').strip()
-    request_path = str(request.path or '').strip().lower()
-    use_responses_compat = ('/responses' in request_path)
-    previous_response_id = str(
-        data.get('previous_response_id')
-        or data.get('parent_response_id')
-        or data.get('response_id')
-        or data.get('parent_id')
-        or ''
-    ).strip() or None
-    allow_synthetic_fallback = _as_bool(data.get('allow_synthetic_fallback', True), True)
-    raw_input_items = data.get('input') if isinstance(data.get('input'), list) else None
-    responses_input_items = _papi_normalize_responses_input_payload(raw_input_items) if (use_responses_compat and isinstance(raw_input_items, list)) else None
-    has_function_outputs = _papi_has_function_call_outputs(responses_input_items)
-    if use_responses_compat:
-        _papi_log(
-            f"[PAPI_RESP_IN] prev={'yes' if previous_response_id else 'no'} "
-            f"input_items={len(responses_input_items or [])} "
-            f"has_function_outputs={'yes' if has_function_outputs else 'no'}"
-        )
-    if use_responses_compat and has_function_outputs and not previous_response_id:
-        if allow_synthetic_fallback:
-            _papi_log("[PAPI_RESP_IN] missing previous_response_id while function_call_output exists; continue with synthetic fallback")
-        else:
-            _papi_log("[PAPI_RESP_IN] missing previous_response_id while function_call_output exists; strict compatibility mode")
-
-    requested_model = str(data.get('model') or '').strip()
-    raw_models_cfg = config.get('models', {}) if isinstance(config.get('models', {}), dict) else {}
-    if requested_model and requested_model not in raw_models_cfg:
-        return jsonify({
-            'success': False,
-            'message': f'模型不存在：{requested_model}',
-            'model': requested_model,
-            'username': request_username or username,
-        }), 400
-
-    if requested_model and requested_model in raw_models_cfg and _is_model_disabled_entry(raw_models_cfg.get(requested_model, {})):
-        return jsonify({
-            'success': False,
-            'message': f'模型已停用：{requested_model}',
-            'model': requested_model,
-            'username': request_username or username,
-        }), 403
-
-    model_name, _model_info, provider_name, provider_info = _papi_pick_model(config, requested_model)
-    if not model_name:
-        return jsonify({'success': False, 'message': '没有可用模型'}), 400
-
-    if _is_model_disabled_entry(_model_info):
-        return jsonify({
-            'success': False,
-            'message': f'模型已停用：{model_name}',
-            'model': model_name,
-            'provider': provider_name,
-            'username': request_username or username,
-        }), 403
-
-    messages = _papi_normalize_messages(data)
-    responses_instructions = ''
-    if use_responses_compat:
-        responses_instructions = _papi_stringify_instruction_content(data.get('instructions'))
-        if isinstance(responses_input_items, list) and responses_input_items:
-            responses_instructions, responses_input_items = _papi_extract_instructions_from_input_items(
-                responses_input_items,
-                seed_instructions=responses_instructions,
-            )
-        else:
-            responses_instructions, messages = _papi_extract_instruction_messages(
-                messages,
-                seed_instructions=responses_instructions,
-            )
-    else:
-        messages = _papi_prepare_chat_messages(messages)
-
-    if (
-        use_responses_compat
-        and has_function_outputs
-        and (not previous_response_id)
-        and allow_synthetic_fallback
-        and isinstance(responses_input_items, list)
-    ):
-        synthetic_messages = _papi_build_synthetic_messages_from_function_outputs(responses_input_items)
-        if synthetic_messages:
-            clean_messages = []
-            for msg in (messages or []):
-                role = str(msg.get('role') or '').strip().lower()
-                if role == 'tool':
-                    continue
-                if role == 'assistant' and msg.get('tool_calls'):
-                    new_msg = dict(msg)
-                    new_msg.pop('tool_calls', None)
-                    content_val = new_msg.get('content')
-                    is_empty = False
-                    if not content_val:
-                        is_empty = True
-                    elif isinstance(content_val, str) and not content_val.strip():
-                        is_empty = True
-                    elif isinstance(content_val, list) and not content_val:
-                        is_empty = True
-                    if is_empty:
-                        continue
-                    clean_messages.append(new_msg)
-                else:
-                    clean_messages.append(msg)
-            messages = clean_messages + synthetic_messages
-            responses_input_items = None
-            _papi_log("[PAPI_RESP_IN] appended synthetic tool-output user message and cleaned tool_calls because previous_response_id is missing")
-    if not messages and not responses_input_items:
-        return jsonify({'success': False, 'message': 'messages 或 prompt 不能为空'}), 400
-
-    if (not responses_input_items) and (not any(item.get('role') == 'user' for item in messages)):
-        return jsonify({'success': False, 'message': '缺少 user 消息'}), 400
-
-    want_stream = _as_bool(data.get('stream', False), False)
-
-    quota_gate = get_generation_quota_gate(provider_name=provider_name, model_name=model_name)
-    if quota_gate.get('should_disable_model'):
-        _disable_model_by_quota(model_name, provider_name=provider_name, reason='quota_exhausted')
-
-    quota_status = quota_gate.get('quota', {}) if isinstance(quota_gate.get('quota'), dict) else {}
-    if quota_gate.get('should_block'):
-        return _build_over_budget_unavailable_response({
-            'message': _build_quota_block_message(quota_gate, model_name),
-            'model': model_name,
-            'provider': provider_name,
-            'username': request_username or username,
-            'quota': quota_status,
-        })
-
-    def _coerce_float(value, default=None):
-        if value is None or value == '':
-            return default
-        try:
-            return float(value)
-        except Exception:
-            return default
-
-    def _coerce_int(value, default=None):
-        if value is None or value == '':
-            return default
-        try:
-            return int(float(value))
-        except Exception:
-            return default
-
-    temperature = _coerce_float(data.get('temperature'), 0.3)
-    top_p = _coerce_float(data.get('top_p'), None)
-    max_tokens = _coerce_int(data.get('max_tokens', data.get('max_completion_tokens', None)), None)
-
-    request_kwargs: Dict[str, Any] = {}
-    for key, value in (
-        ('temperature', temperature),
-        ('top_p', top_p),
-        ('max_tokens', max_tokens),
-        ('stop', data.get('stop')),
-        ('presence_penalty', _coerce_float(data.get('presence_penalty'), None)),
-        ('frequency_penalty', _coerce_float(data.get('frequency_penalty'), None)),
-        ('seed', _coerce_int(data.get('seed'), None)),
-    ):
-        if value is not None:
-            request_kwargs[key] = value
-
-    # 透传 tools / tool_choice / response_format / stream_options
-    for _k in ('tools', 'tool_choice', 'response_format', 'stream_options'):
-        val = data.get(_k)
-        if val is not None:
-            if _k == 'tools':
-                if not isinstance(val, list):
-                    continue
-                normalized_tools = []
-                for t in val:
-                    normalized_tool = _papi_normalize_tool_spec(t, use_responses_api=use_responses_compat)
-                    if normalized_tool is not None:
-                        normalized_tools.append(normalized_tool)
-                if not normalized_tools:
-                    continue
-                request_kwargs[_k] = normalized_tools
-                continue
-            if _k == 'tool_choice':
-                request_kwargs[_k] = _papi_normalize_tool_choice(val, use_responses_api=use_responses_compat)
-                continue
-            if _k == 'tools':
-                if not isinstance(val, list):
-                    continue
-                valid_tools = []
-                for t in val:
-                    # 必须包含明确的 function 定义才被认为是合法的 tool
-                    if isinstance(t, dict) and 'function' in t and isinstance(t['function'], dict):
-                        valid_tools.append(t)
-                if not valid_tools:
-                    continue
-                request_kwargs[_k] = valid_tools
-                continue
-            request_kwargs[_k] = val
-
-    if use_responses_compat and responses_instructions:
-        request_kwargs['instructions'] = responses_instructions
-
-    if use_responses_compat:
-        for _k in ('parallel_tool_calls', 'metadata', 'text', 'reasoning', 'store', 'include', 'truncation', 'max_output_tokens'):
-            val = data.get(_k)
-            if val is not None:
-                request_kwargs[_k] = val
-
-    api_key = str(provider_info.get('api_key') or '').strip()
-    base_url = provider_info.get('base_url') or provider_info.get('api_base')
-    adapter = create_provider_adapter(provider_name, provider_info)
-
-    global _CLIENT_CACHE
-    cache_key = adapter.client_cache_key(api_key, scope='papi')
-    if cache_key in _CLIENT_CACHE:
-        client = _CLIENT_CACHE[cache_key]
-    else:
-        client = adapter.create_client(api_key=api_key, base_url=base_url, timeout=60.0)
-        _CLIENT_CACHE[cache_key] = client
-
-    # ---- 流式响应 ----
-    if want_stream:
-        try:
-            if use_responses_compat:
-                resp = _papi_stream_openai_responses(
-                    adapter=adapter,
-                    client=client,
-                    model_name=model_name,
-                    messages=messages,
-                    request_kwargs=request_kwargs,
-                    previous_response_id=previous_response_id,
-                    input_items=responses_input_items,
-                    allow_synthetic_fallback=allow_synthetic_fallback,
-                )
-            else:
-                resp = _papi_stream_openai_chat(
-                    adapter=adapter,
-                    client=client,
-                    model_name=model_name,
-                    messages=messages,
-                    request_kwargs=request_kwargs,
-                )
-            resp.headers['Cache-Control'] = 'no-cache, no-transform'
-            resp.headers['X-Accel-Buffering'] = 'no'
-            resp.headers['Connection'] = 'keep-alive'
-            return resp
-        except Exception as e:
-            _papi_log(f"[PAPI_COMPLETIONS_STREAM] model={model_name} provider={provider_name} error={e}", level='error')
-            is_rate_limit_error = _is_rate_limit_exception(e)
-            status_code = 429 if is_rate_limit_error else 502
-            message_text = str(e or '').strip()
-            if is_rate_limit_error and not message_text:
-                message_text = '请求触发模型限流或额度不足。'
-            return jsonify({
-                'success': False,
-                'message': message_text,
-                'error_type': 'rate_limit' if is_rate_limit_error else 'provider_error',
-                'model': model_name,
-                'provider': provider_name,
-                'username': request_username or (username or ''),
-            }), status_code
-
-    # ---- 非流式响应 ----
-    try:
-        if use_responses_compat:
-            payload = _papi_create_openai_responses_payload(
-                adapter=adapter,
-                client=client,
-                model_name=model_name,
-                messages=messages,
-                request_kwargs=request_kwargs,
-                provider_name=provider_name,
-                request_username=request_username or (username or ''),
-                quota_status=quota_status,
-                previous_response_id=previous_response_id,
-                input_items=responses_input_items,
-                allow_synthetic_fallback=allow_synthetic_fallback,
-            )
-        else:
-            response = adapter.create_chat_completion(
-                client=client,
-                model=model_name,
-                messages=messages,
-                stream=False,
-                **request_kwargs
-            )
-            payload = _papi_build_openai_payload(
-                response_obj=response,
-                model_name=model_name,
-                provider_name=provider_name,
-                request_username=request_username or (username or ''),
-                quota_status=quota_status,
-            )
-        return jsonify(payload)
-    except Exception as e:
-        _papi_log(f"[PAPI_COMPLETIONS] model={model_name} provider={provider_name} error={e}", level='error')
-        is_rate_limit_error = _is_rate_limit_exception(e)
-        status_code = 429 if is_rate_limit_error else 502
-        message_text = str(e or '').strip()
-        if is_rate_limit_error and not message_text:
-            message_text = '请求触发模型限流或额度不足。'
-        return jsonify({
-            'success': False,
-            'message': message_text,
-            'error_type': 'rate_limit' if is_rate_limit_error else 'provider_error',
-            'model': model_name,
-            'provider': provider_name,
-            'username': request_username or (username or ''),
-        }), status_code
-
-# ==================== PAPI - 模型列表 ====================
-
-@app.route('/api/papi/models', methods=['GET'])
-@app.route('/api/papi/v1/models', methods=['GET'])
-@require_papi_key
-def papi_list_models():
-    """PAPI: 返回已配置的可用模型列表（OpenAI /v1/models 格式）。"""
-    config = get_config_all()
-    models_cfg = config.get('models', {}) if isinstance(config.get('models', {}), dict) else {}
-    data_list = []
-    for name, info in models_cfg.items():
-        if _is_model_disabled_entry(info if isinstance(info, dict) else {}):
-            continue
-        provider = str((info or {}).get('provider', 'custom') if isinstance(info, dict) else 'custom')
-        data_list.append({
-            'id': name,
-            'object': 'model',
-            'created': 0,
-            'owned_by': provider,
-        })
-    return jsonify({'object': 'list', 'data': data_list})
-
-
-@app.route('/api/papi/v1', methods=['GET'])
-@require_papi_key
-def papi_v1_root():
-    return jsonify({
-        'object': 'api_root',
-        'service': 'nexora-papi',
-        'version': 'v1',
-        'endpoints': {
-            'models': '/api/papi/v1/models',
-            'chat_completions': '/api/papi/v1/chat/completions',
-            'responses': '/api/papi/v1/responses',
-        },
-    })
-
 
 # ==================== 聊天相关 ====================
 
@@ -8575,6 +7477,147 @@ def admin_get_models_config():
         })
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
+
+
+@app.route('/api/admin/auth/public-api', methods=['GET'])
+@require_admin
+def admin_get_public_api_auth():
+    try:
+        cfg = ensure_main_config_defaults()
+        api_cfg = cfg.get('api', {}) if isinstance(cfg.get('api'), dict) else {}
+        state = _build_public_api_auth_state(api_cfg, include_plain_key=False)
+        return jsonify({'success': True, 'auth': state})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/admin/auth/public-api/keys', methods=['GET'])
+@require_admin
+def admin_list_public_api_keys():
+    try:
+        cfg = ensure_main_config_defaults()
+        api_cfg = cfg.get('api', {}) if isinstance(cfg.get('api'), dict) else {}
+        state = _build_public_api_auth_state(api_cfg, include_plain_key=False)
+        return jsonify({'success': True, 'keys': state.get('keys', []), 'auth': state})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/admin/auth/public-api/settings', methods=['POST'])
+@require_admin
+def admin_update_public_api_auth_settings():
+    data = request.get_json(silent=True) or {}
+    try:
+        actor = str(session.get('username') or 'admin').strip() or 'admin'
+        cfg = ensure_main_config_defaults()
+        api_cfg = cfg.setdefault('api', {})
+        if 'public_api_enabled' in data:
+            enable_requested = _coerce_bool_flag(data.get('public_api_enabled'), False)
+            if enable_requested and (not _build_public_api_auth_state(api_cfg).get('has_key')):
+                return jsonify({'success': False, 'message': 'No active PAPI key found. Please generate one first.'}), 400
+            api_cfg['public_api_enabled'] = enable_requested
+        key_id = str(data.get('key_id') or '').strip()
+        if key_id:
+            permissions = _normalize_public_api_permissions(data.get('permissions')) if ('permissions' in data) else None
+            expire = str(data.get('expire') or '').strip().lower() if ('expire' in data) else None
+            key_name = str(data.get('name') or '').strip() if ('name' in data) else None
+            _update_public_api_key(
+                key_id=key_id,
+                permissions=permissions,
+                expire_option=expire if expire is not None else None,
+                name=key_name,
+                actor=actor,
+            )
+        save_main_config(cfg)
+        state = _build_public_api_auth_state(api_cfg, include_plain_key=False)
+        return jsonify({'success': True, 'auth': state})
+    except ValueError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/admin/auth/public-api/generate', methods=['POST'])
+@require_admin
+def admin_generate_public_api_key():
+    data = request.get_json(silent=True) or {}
+    expire = str(data.get('expire') or '').strip().lower()
+    if not expire:
+        return jsonify({'success': False, 'message': 'expire is required. Use one of: 1d, 7d, 1m, 3m, forever.'}), 400
+    permissions = _normalize_public_api_permissions(data.get('permissions'))
+    key_name = str(data.get('name') or '').strip()
+    try:
+        actor = str(session.get('username') or 'admin').strip() or 'admin'
+        state = _issue_public_api_key(expire, permissions, regenerate=False, name=key_name, actor=actor)
+        return jsonify({
+            'success': True,
+            'message': 'Public API key generated.',
+            'auth': state,
+            'public_api_key': state.get('public_api_key', ''),
+        })
+    except ValueError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/admin/auth/public-api/regenerate', methods=['POST'])
+@require_admin
+def admin_regenerate_public_api_key():
+    data = request.get_json(silent=True) or {}
+    expire = str(data.get('expire') or '').strip().lower()
+    if not expire:
+        return jsonify({'success': False, 'message': 'expire is required. Use one of: 1d, 7d, 1m, 3m, forever.'}), 400
+    permissions = _normalize_public_api_permissions(data.get('permissions'))
+    key_id = str(data.get('key_id') or '').strip()
+    key_name = str(data.get('name') or '').strip()
+    try:
+        actor = str(session.get('username') or 'admin').strip() or 'admin'
+        state = _issue_public_api_key(
+            expire,
+            permissions,
+            regenerate=True,
+            key_id=key_id,
+            name=key_name,
+            actor=actor,
+        )
+        return jsonify({
+            'success': True,
+            'message': 'Public API key regenerated.',
+            'auth': state,
+            'public_api_key': state.get('public_api_key', ''),
+        })
+    except ValueError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/admin/auth/public-api/revoke', methods=['POST'])
+@app.route('/api/admin/auth/public-api/delete', methods=['POST'])
+@require_admin
+def admin_revoke_public_api_key():
+    try:
+        data = request.get_json(silent=True) or {}
+        cfg = ensure_main_config_defaults()
+        api_cfg = cfg.setdefault('api', {})
+        key_id = str(data.get('key_id') or '').strip()
+        target_id = key_id
+        if not target_id:
+            primary = _select_primary_papi_key(_list_papi_key_records(include_revoked=False))
+            target_id = str((primary or {}).get('id') or '').strip()
+        if not target_id:
+            return jsonify({'success': False, 'message': 'No active PAPI key to delete.'}), 400
+        _delete_public_api_key(key_id=target_id)
+        if not _list_papi_key_records(include_revoked=False):
+            api_cfg['public_api_enabled'] = False
+        save_main_config(cfg)
+        state = _build_public_api_auth_state(api_cfg, include_plain_key=False)
+        return jsonify({'success': True, 'message': 'Public API key deleted.', 'auth': state})
+    except ValueError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 
 def _get_admin_provider_runtime(provider_name: str):
@@ -9773,6 +8816,12 @@ def chat_stream():
         default_sys_model = sys_config.get('default_model')
 
         if requested_model_name:
+            requested_entry = all_models_cfg.get(requested_model_name, {})
+            if _is_model_disabled_entry(requested_entry) and _is_quota_disabled_status((requested_entry if isinstance(requested_entry, dict) else {}).get('status')):
+                requested_provider = str((requested_entry if isinstance(requested_entry, dict) else {}).get('provider') or '').strip()
+                _recover_model_from_quota_disable(requested_model_name, provider_name=requested_provider)
+                sys_config = get_config_all()
+                all_models_cfg = sys_config.get('models', {}) if isinstance(sys_config.get('models', {}), dict) else {}
             if requested_model_name not in all_models_cfg:
                 return jsonify({'success': False, 'message': f'模型不存在：{requested_model_name}'}), 400
             if requested_model_name in blacklist:
@@ -9798,6 +8847,11 @@ def chat_stream():
     model_info_entry = {}
     if isinstance(sys_config.get('models', {}), dict):
         model_info_entry = sys_config.get('models', {}).get(model_name, {})
+    if _is_model_disabled_entry(model_info_entry) and _is_quota_disabled_status((model_info_entry if isinstance(model_info_entry, dict) else {}).get('status')):
+        provider_name_for_recover = str((model_info_entry if isinstance(model_info_entry, dict) else {}).get('provider') or '').strip()
+        _recover_model_from_quota_disable(model_name, provider_name=provider_name_for_recover)
+        sys_config = get_config_all()
+        model_info_entry = sys_config.get('models', {}).get(model_name, {}) if isinstance(sys_config.get('models', {}), dict) else {}
     if _is_model_disabled_entry(model_info_entry):
         return jsonify({'success': False, 'message': f'模型已停用：{model_name}', 'model': model_name}), 403
 
@@ -11950,6 +11004,10 @@ def agent_tunnel_socket(ws):
     finally:
         if username:
             unregister_agent(username, ws)
+
+
+from api.papi.routes import papi_bp
+app.register_blueprint(papi_bp)
 
 if __name__ == '__main__':
     # 确保必要的目录存在
