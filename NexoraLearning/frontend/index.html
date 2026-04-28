@@ -3,34 +3,135 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>NexoraLearning Dashboard</title>
-  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260421_11">
+  <title>NexoraLearning 学习看板</title>
+  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260428_04">
 </head>
 <body>
   <main class="learning-shell" id="learningPanel">
-    <section class="workbench-grid">
-      <article class="panel-card progress-panel">
-        <header class="panel-head">
-          <p class="panel-kicker">course progress</p>
-        </header>
-        <div id="progressList" class="progress-list"></div>
-      </article>
-
-      <div class="side-column">
-        <article class="panel-card pie-panel">
+    <section id="dashboardView" class="view-pane is-active">
+      <section class="workbench-grid">
+        <article class="panel-card progress-panel">
           <header class="panel-head">
-            <p class="panel-kicker">study time share</p>
+            <p class="panel-kicker">COURSE PROGRESS</p>
+            <button id="openMaterialsViewBtn" class="nxl-icon-btn" type="button" aria-label="打开课程页" title="打开课程页">☰</button>
           </header>
-          <div id="timePieChart" class="time-pie-chart" aria-label="学习时间占比"></div>
+          <div id="progressList" class="progress-list"></div>
         </article>
 
-        <article class="panel-card profile-panel">
-          <section id="userProfileCard" class="user-profile-card" aria-label="sample user profile"></section>
-        </article>
-      </div>
+        <div class="side-column">
+          <article class="panel-card pie-panel">
+            <header class="panel-head">
+              <p class="panel-kicker">STUDY TIME SHARE</p>
+            </header>
+            <div id="timePieChart" class="time-pie-chart" aria-label="学习时间占比"></div>
+          </article>
+
+          <article class="panel-card profile-panel">
+            <section id="userProfileCard" class="user-profile-card" aria-label="用户资料"></section>
+            <button id="profileAdminSettingsBtn" class="profile-admin-settings-icon" type="button" hidden aria-label="管理员设置" title="管理员设置">⚙</button>
+          </article>
+        </div>
+      </section>
+    </section>
+
+    <section id="materialsView" class="view-pane">
+      <article class="panel-card materials-panel">
+        <header class="panel-head materials-head">
+          <div class="materials-head-left">
+            <button id="backToDashboardBtn" class="nxl-icon-btn" type="button" aria-label="返回首页" title="返回首页">←</button>
+            <p class="panel-kicker">COURSES</p>
+          </div>
+          <div class="materials-head-right">
+            <button id="openUploadViewBtn" class="nxl-icon-btn nxl-icon-btn-dark" type="button" hidden aria-label="上传教材" title="上传教材">⤴</button>
+          </div>
+        </header>
+
+        <section class="materials-layout">
+          <aside class="materials-list-pane">
+            <div id="lectureList" class="materials-list"></div>
+          </aside>
+          <section id="lectureDetailPane" class="materials-detail-pane"></section>
+        </section>
+      </article>
+    </section>
+
+    <section id="uploadView" class="view-pane">
+      <article class="panel-card upload-panel">
+        <header class="panel-head materials-head">
+          <div class="materials-head-left">
+            <button id="backToMaterialsBtn" class="nxl-icon-btn" type="button" aria-label="返回课程页" title="返回课程页">←</button>
+            <div class="panel-kicker panel-kicker-switch" role="tablist" aria-label="上传页切换">
+              <button id="kickerCreateTabBtn" class="kicker-tab is-active" type="button" role="tab" aria-selected="true">新建课程</button>
+              <button id="kickerUploadTabBtn" class="kicker-tab" type="button" role="tab" aria-selected="false">上传教材</button>
+            </div>
+          </div>
+        </header>
+
+        <section class="materials-upload-layout">
+          <section class="materials-upload-left">
+            <section id="createLectureBlock" class="upload-block">
+              <div class="upload-block-title">新建课程</div>
+              <div class="materials-form-row">
+                <label class="materials-form-label" for="createLectureTitleInput">课程名</label>
+                <input id="createLectureTitleInput" class="input-lite" placeholder="例如：机器学习导论">
+              </div>
+              <div class="materials-form-row">
+                <label class="materials-form-label" for="createLectureCategoryInput">分类</label>
+                <input id="createLectureCategoryInput" class="input-lite" placeholder="例如：AI / 前端 / 语言">
+              </div>
+              <div class="materials-form-row">
+                <label class="materials-form-label" for="createLectureStatusSelect">状态</label>
+                <select id="createLectureStatusSelect" class="input-lite">
+                  <option value="draft">草稿</option>
+                  <option value="active">进行中</option>
+                  <option value="ready">已准备</option>
+                  <option value="archived">归档</option>
+                </select>
+              </div>
+              <div class="materials-form-row materials-form-row-textarea">
+                <label class="materials-form-label" for="createLectureDescriptionInput">描述</label>
+                <textarea id="createLectureDescriptionInput" class="input-lite input-textarea" placeholder="课程简介、目标、学习范围"></textarea>
+              </div>
+              <div class="materials-form-actions">
+                <button id="createLectureBtn" class="nxl-icon-btn nxl-icon-btn-dark" type="button" aria-label="新建课程" title="新建课程">＋</button>
+              </div>
+            </section>
+
+            <section id="uploadBookBlock" class="upload-block" hidden>
+              <div class="upload-block-title">上传教材</div>
+              <div class="materials-form-row">
+                <label class="materials-form-label" for="materialsLectureInput">课程</label>
+                <div class="course-picker-input-wrap">
+                  <input id="materialsLectureInput" class="input-lite" placeholder="点击选择课程" readonly>
+                  <input id="materialsLectureIdHidden" type="hidden">
+                  <button id="openCoursePickerBtn" class="nxl-icon-btn" type="button" aria-label="选择课程" title="选择课程">⌕</button>
+                </div>
+              </div>
+              <div class="materials-form-row">
+                <label class="materials-form-label" for="materialsBookTitleInput">教材名</label>
+                <input id="materialsBookTitleInput" class="input-lite" placeholder="例如：第 1 版教材">
+              </div>
+              <div class="materials-form-row materials-form-row-file">
+                <label class="materials-form-label" for="materialsFileInput">文件</label>
+                <input id="materialsFileInput" class="input-lite input-file" type="file" accept=".epub,.pdf,.txt,.md,.docx,.doc,.c,.h,.py,.rst">
+              </div>
+              <div class="materials-form-actions materials-form-actions-right">
+                <button id="materialsUploadBookBtn" class="nxl-icon-btn nxl-icon-btn-dark" type="button" aria-label="确认上传" title="确认上传">⤴</button>
+              </div>
+              <p id="uploadTip" class="upload-tip">支持 EPUB、PDF、TXT、MD、DOCX、DOC、C、H、PY、RST</p>
+            </section>
+          </section>
+
+          <section class="materials-upload-right">
+            <header id="materialsPreviewHead" class="materials-preview-head">教材预览</header>
+            <section id="materialsPreviewPane" class="materials-preview-pane">
+              <div class="materials-empty">请选择教材文件后预览</div>
+            </section>
+          </section>
+        </section>
+      </article>
     </section>
   </main>
-
-  <script src="/api/frontend/assets/app.js?v=20260421_11"></script>
+  <script src="/api/frontend/assets/app.js?v=20260428_04"></script>
 </body>
 </html>

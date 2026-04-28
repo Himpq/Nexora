@@ -1,5 +1,4 @@
 Rubbish
-.gitignore
 __pycache__/
 webview_storage/
 ChatDBServer/temp/

@@ -24,7 +24,16 @@ DEFAULT_CONFIG = {
     "max_upload_mb": 50,
     "nexora": {
         "base_url": "http://127.0.0.1:5000",
-        "api_key": "public-1234567890abcdef"
+        "api_key": "",
+        "public_api_key": "",
+        "request_timeout": 90,
+        "target_username": "",
+        "models_path": "/api/papi/models",
+        "completions_path": "/api/papi/completions",
+        "responses_path": "/api/papi/responses",
+        "chat_completions_path": "/api/papi/chat/completions",
+        "user_info_path": "/api/papi/user/info",
+        "append_username_to_path": False
     },
     "nexoradb": {
         "service_url": "http://127.0.0.1:8100",

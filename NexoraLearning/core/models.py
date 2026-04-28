@@ -140,13 +140,26 @@ class NexoraCompletionClient:
         user_prompt: str,
         model: Optional[str] = None,
         username: Optional[str] = None,
+        api_mode: str = "chat",
+        options: Optional[Mapping[str, Any]] = None,
     ) -> str:
-        return self.proxy.chat_complete(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
+        messages = []
+        if str(system_prompt or "").strip():
+            messages.append({"role": "system", "content": str(system_prompt)})
+        messages.append({"role": "user", "content": str(user_prompt or "")})
+        merged_options = dict(options or {})
+        if "temperature" not in merged_options:
+            merged_options["temperature"] = 0.3
+        result = self.proxy.complete_raw(
+            messages=messages,
             model=model,
             username=username,
+            api_mode=api_mode,
+            options=merged_options,
         )
+        if not result.get("success"):
+            raise RuntimeError(f"Nexora API Error: {result.get('message') or 'request failed'}")
+        return str(result.get("content") or "")
 
 
 class BaseLearningModel:

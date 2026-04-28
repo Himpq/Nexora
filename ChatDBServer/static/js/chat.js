@@ -68,6 +68,11 @@ let adminMailUsersCache = [];
 let adminSelectedMailUser = null;
 let adminMailUserFilterKeyword = '';
 let adminMailGroup = 'default';
+let adminPublicApiAuthState = null;
+let adminPublicApiActionMode = 'generate';
+let adminSelectedPublicApiKeyId = '';
+let adminPublicApiModalCompleted = false;
+let adminPublicApiDeleteTargetKey = null;
 let mailViewState = {
     status: null,
     mails: [],
@@ -93,6 +98,10 @@ const CHAT_COMPOSER_PREFS_KEY = 'nexora_chat_composer_prefs_v1';
 const CHAT_INPUT_DRAFT_KEY = 'nexora_chat_input_draft_v1';
 const CHAT_INPUT_DRAFT_MAX_LEN = 12000;
 const MAIL_POLL_INTERVAL_MS = 5000;
+const AGENT_STATUS_POLL_VISIBLE_MS = 5000;
+const MODAL_STACK_BASE_Z = 12000;
+const MODAL_STACK_STEP_Z = 20;
+let modalStackCounter = 0;
 let mailPollTimer = null;
 let mailPollInFlight = false;
 let mailNotifyState = {
@@ -2553,6 +2562,51 @@ function positionMobileHeaderMenuPanel() {
     panel.style.right = 'auto';
 }
 
+function syncModalBackdropStacking() {
+    const activeBackdrops = Array.from(document.querySelectorAll('.modal-backdrop.active'));
+    activeBackdrops.sort((a, b) => {
+        const ao = Number(a.dataset.modalStackOrder || 0);
+        const bo = Number(b.dataset.modalStackOrder || 0);
+        if (ao !== bo) return ao - bo;
+        return 0;
+    });
+    activeBackdrops.forEach((backdrop, idx) => {
+        const zIndex = MODAL_STACK_BASE_Z + (idx * MODAL_STACK_STEP_Z);
+        backdrop.style.setProperty('z-index', String(zIndex), 'important');
+    });
+}
+
+function handleBackdropStackingChange(backdrop) {
+    if (!backdrop) return;
+    if (backdrop.classList.contains('active')) {
+        const currentOrder = Number(backdrop.dataset.modalStackOrder || 0);
+        if (!Number.isFinite(currentOrder) || currentOrder <= 0) {
+            modalStackCounter += 1;
+            backdrop.dataset.modalStackOrder = String(modalStackCounter);
+        }
+    } else {
+        delete backdrop.dataset.modalStackOrder;
+        backdrop.style.removeProperty('z-index');
+    }
+    syncModalBackdropStacking();
+}
+
+function initModalBackdropStacking() {
+    const allBackdrops = Array.from(document.querySelectorAll('.modal-backdrop'));
+    allBackdrops.forEach((backdrop) => {
+        if (!backdrop || backdrop.dataset.modalStackBound === '1') return;
+        backdrop.dataset.modalStackBound = '1';
+        const observer = new MutationObserver(() => {
+            handleBackdropStackingChange(backdrop);
+        });
+        observer.observe(backdrop, { attributes: true, attributeFilter: ['class'] });
+        if (backdrop.classList.contains('active')) {
+            handleBackdropStackingChange(backdrop);
+        }
+    });
+    syncModalBackdropStacking();
+}
+
 function bindBackdropSafeClose(backdrop, onClose) {
     const modal = backdrop;
     if (!modal || typeof onClose !== 'function') return;
@@ -3533,6 +3587,7 @@ function startAgentStatusPolling() {
     if (agentStatusPollTimer) clearInterval(agentStatusPollTimer);
     
     const checkStatus = () => {
+        if (document.hidden) return;
         fetch('/api/agent/status')
             .then(res => res.json())
             .then(data => {
@@ -3556,7 +3611,7 @@ function startAgentStatusPolling() {
     };
     
     checkStatus(); // Initial fetch
-    agentStatusPollTimer = setInterval(checkStatus, 5000); // 5s interval
+    agentStatusPollTimer = setInterval(checkStatus, AGENT_STATUS_POLL_VISIBLE_MS);
 }
 
 function stopMailPolling() {
@@ -3572,6 +3627,7 @@ function startMailPolling() {
     stopMailPolling();
     const tick = async () => {
         if (mailPollInFlight) return;
+        if (document.hidden) return;
         mailPollInFlight = true;
         try {
             if (isMailViewActiveInDom()) {
@@ -7750,6 +7806,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 function initUI() {
     captureChatHeaderBaseState();
+    initModalBackdropStacking();
+    ensureAdminPublicApiLayout();
     bindImageViewerEvents();
     bindToolsModeDropdown();
     applyComposerPrefsFromStorage();
@@ -8164,6 +8222,20 @@ function initUI() {
             if (!e || e.key !== 'Escape') return;
             const settingsModal = document.getElementById('settingsModal');
             if (!settingsModal || !settingsModal.classList.contains('active')) return;
+            const publicApiModal = document.getElementById('adminPublicApiKeyModal');
+            if (publicApiModal && publicApiModal.classList.contains('active')) {
+                e.preventDefault();
+                e.stopPropagation();
+                closeAdminPublicApiKeyModal();
+                return;
+            }
+            const publicApiDeleteModal = document.getElementById('adminPublicApiDeleteModal');
+            if (publicApiDeleteModal && publicApiDeleteModal.classList.contains('active')) {
+                e.preventDefault();
+                e.stopPropagation();
+                closeAdminPublicApiDeleteModal();
+                return;
+            }
             const blockerIds = [
                 'confirmBackdrop',
                 'addUserModal',
@@ -8171,7 +8243,9 @@ function initUI() {
                 'avatarCropModal',
                 'adminTextConfirmModal',
                 'adminConfigModal',
-                'skillEditorModal'
+                'skillEditorModal',
+                'adminPublicApiKeyModal',
+                'adminPublicApiDeleteModal'
             ];
             for (const bid of blockerIds) {
                 const node = document.getElementById(bid);
@@ -8349,6 +8423,45 @@ function initUI() {
             } else if (currentUserRole === 'admin') {
                 await loadServerQuotaSettings();
             }
+        });
+    }
+
+    const adminPublicApiGenerateBtn = document.getElementById('adminPublicApiGenerateBtn');
+    if (adminPublicApiGenerateBtn) {
+        adminPublicApiGenerateBtn.addEventListener('click', () => openAdminPublicApiKeyModal('generate'));
+    }
+    const adminPublicApiRegenerateBtn = document.getElementById('adminPublicApiRegenerateBtn');
+    if (adminPublicApiRegenerateBtn) {
+        adminPublicApiRegenerateBtn.addEventListener('click', () => openAdminPublicApiKeyModal('regenerate'));
+    }
+    const adminPublicApiRevokeBtn = document.getElementById('adminPublicApiRevokeBtn');
+    if (adminPublicApiRevokeBtn) {
+        adminPublicApiRevokeBtn.addEventListener('click', async () => {
+            await revokeAdminPublicApiKey();
+        });
+    }
+    const adminPublicApiSaveSettingsBtn = document.getElementById('adminPublicApiSaveSettingsBtn');
+    if (adminPublicApiSaveSettingsBtn) {
+        adminPublicApiSaveSettingsBtn.addEventListener('click', async () => {
+            await saveAdminPublicApiSettings();
+        });
+    }
+    const adminPublicApiSaveGlobalBtn = document.getElementById('adminPublicApiSaveGlobalBtn');
+    if (adminPublicApiSaveGlobalBtn) {
+        adminPublicApiSaveGlobalBtn.addEventListener('click', async () => {
+            await saveAdminPublicApiGlobalSettings();
+        });
+    }
+
+    const publicApiModal = document.getElementById('adminPublicApiKeyModal');
+    if (publicApiModal) {
+        bindBackdropSafeClose(publicApiModal, closeAdminPublicApiKeyModal);
+    }
+    const publicApiModalConfirmBtn = document.getElementById('adminPublicApiKeyModalConfirmBtn');
+    if (publicApiModalConfirmBtn) {
+        publicApiModalConfirmBtn.addEventListener('click', async (e) => {
+            e.preventDefault();
+            await submitAdminPublicApiKeyAction();
         });
     }
 
@@ -21415,6 +21528,7 @@ async function openAdminDashboard(defaultTab = 'users') {
         mail: 'admin-mail',
         stats: 'admin-stats',
         models: 'admin-models',
+        auth: 'admin-auth',
         chroma: 'admin-chroma'
     };
     switchSettingsTab(tabMap[defaultTab] || 'admin-users');
@@ -22468,6 +22582,547 @@ function showAdminTextConfirmModal(onConfirm) {
         }
         closeAdminTextConfirmModal();
     };
+}
+
+function normalizeAdminPublicApiPermissions(raw) {
+    const src = (raw && typeof raw === 'object') ? raw : {};
+    return {
+        model_inference: !!src.model_inference,
+        knowledge_read: !!src.knowledge_read,
+        conversations_read: !!src.conversations_read,
+        conversations_write: !!src.conversations_write,
+        token_stats_read: !!src.token_stats_read,
+        user_read: !!src.user_read
+    };
+}
+
+function collectAdminPublicApiPermissionsFromUi() {
+    return normalizeAdminPublicApiPermissions({
+        model_inference: !!document.getElementById('adminPublicApiPermModel')?.checked,
+        knowledge_read: !!document.getElementById('adminPublicApiPermKnowledge')?.checked,
+        conversations_read: !!document.getElementById('adminPublicApiPermConversation')?.checked,
+        conversations_write: !!document.getElementById('adminPublicApiPermConversationWrite')?.checked,
+        token_stats_read: !!document.getElementById('adminPublicApiPermToken')?.checked,
+        user_read: !!document.getElementById('adminPublicApiPermUserRead')?.checked
+    });
+}
+
+function applyAdminPublicApiPermissionsToUi(perms) {
+    const p = normalizeAdminPublicApiPermissions(perms);
+    const modelEl = document.getElementById('adminPublicApiPermModel');
+    const knowledgeEl = document.getElementById('adminPublicApiPermKnowledge');
+    const convEl = document.getElementById('adminPublicApiPermConversation');
+    const convWriteEl = document.getElementById('adminPublicApiPermConversationWrite');
+    const tokenEl = document.getElementById('adminPublicApiPermToken');
+    const userReadEl = document.getElementById('adminPublicApiPermUserRead');
+    if (modelEl) modelEl.checked = !!p.model_inference;
+    if (knowledgeEl) knowledgeEl.checked = !!p.knowledge_read;
+    if (convEl) convEl.checked = !!p.conversations_read;
+    if (convWriteEl) convWriteEl.checked = !!p.conversations_write;
+    if (tokenEl) tokenEl.checked = !!p.token_stats_read;
+    if (userReadEl) userReadEl.checked = !!p.user_read;
+}
+
+function formatAdminPublicApiRemaining(key) {
+    if (!key) return '-';
+    if (key.is_expired) return '已过期';
+    if (key.expires_in_seconds === null || key.expires_in_seconds === undefined) return '永久';
+    const sec = Number(key.expires_in_seconds);
+    if (!Number.isFinite(sec)) return '永久';
+    const days = Math.floor(sec / 86400);
+    const hours = Math.floor((sec % 86400) / 3600);
+    const mins = Math.floor((sec % 3600) / 60);
+    if (days > 0) return `${days}天 ${hours}小时`;
+    if (hours > 0) return `${hours}小时 ${mins}分钟`;
+    return `${Math.max(0, mins)}分钟`;
+}
+
+function formatAdminPublicApiDateTime(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '-';
+    const dt = new Date(raw);
+    if (!Number.isFinite(dt.getTime())) return raw;
+    const pad2 = (n) => String(n).padStart(2, '0');
+    const yyyy = dt.getFullYear();
+    const mm = pad2(dt.getMonth() + 1);
+    const dd = pad2(dt.getDate());
+    const hh = pad2(dt.getHours());
+    const mi = pad2(dt.getMinutes());
+    const ss = pad2(dt.getSeconds());
+    return `${yyyy}年${mm}月${dd}日 ${hh}:${mi}:${ss}`;
+}
+
+function ensureAdminPublicApiLayout() {
+    const tab = document.getElementById('settings-admin-auth-tab');
+    if (!tab) return;
+    const layout = tab.querySelector('.admin-users-layout');
+    if (layout) layout.classList.add('admin-public-api-layout');
+    const detail = layout ? layout.querySelector('.admin-user-detail') : null;
+    if (detail) detail.classList.add('admin-public-api-detail');
+
+    const globalToggle = document.getElementById('adminPublicApiEnabledToggle');
+    if (globalToggle) {
+        const toggleWrap = globalToggle.closest('label');
+        if (toggleWrap) toggleWrap.style.display = 'none';
+    }
+    const saveGlobalBtn = document.getElementById('adminPublicApiSaveGlobalBtn');
+    if (saveGlobalBtn) saveGlobalBtn.style.display = 'none';
+    const statusGroup = document.getElementById('adminPublicApiStatus')?.closest('.form-group');
+    if (statusGroup) statusGroup.style.display = 'none';
+    if (detail) {
+        const keyPreviewEl = document.getElementById('adminPublicApiKeyPreview');
+        const createdEl = document.getElementById('adminPublicApiCreatedAt');
+        const expiresEl = document.getElementById('adminPublicApiExpiresAt');
+        const remainingEl = document.getElementById('adminPublicApiRemaining');
+        [keyPreviewEl, createdEl, expiresEl, remainingEl].forEach((el) => {
+            if (!el) return;
+            el.classList.remove('settings-field');
+            el.classList.add('admin-info-text');
+        });
+        const nameGroup = document.getElementById('adminPublicApiNameInput')?.closest('.form-group');
+        const keyPreviewGroup = document.getElementById('adminPublicApiKeyPreview')?.closest('.form-group');
+        const createdGroup = document.getElementById('adminPublicApiCreatedAt')?.closest('.form-group');
+        const expiresGroup = document.getElementById('adminPublicApiExpiresAt')?.closest('.form-group');
+        const remainingGroup = document.getElementById('adminPublicApiRemaining')?.closest('.form-group');
+        let createdByEl = document.getElementById('adminPublicApiCreatedBy');
+        let createdByGroup = createdByEl ? createdByEl.closest('.form-group') : null;
+        if (!createdByGroup) {
+            createdByGroup = document.createElement('div');
+            createdByGroup.className = 'form-group';
+            createdByGroup.innerHTML = '<label>生成者</label><div id="adminPublicApiCreatedBy" class="admin-info-text">-</div>';
+            createdByEl = createdByGroup.querySelector('#adminPublicApiCreatedBy');
+        }
+
+        let infoGrid = detail.querySelector('#adminPublicApiInfoGrid');
+        if (!infoGrid) {
+            infoGrid = document.createElement('div');
+            infoGrid.id = 'adminPublicApiInfoGrid';
+            infoGrid.className = 'admin-user-detail-grid admin-public-api-grid';
+            const permGroup = document.getElementById('adminPublicApiPermModel')?.closest('.form-group');
+            if (permGroup) detail.insertBefore(infoGrid, permGroup);
+            else detail.insertBefore(infoGrid, detail.firstChild);
+        }
+        [nameGroup, keyPreviewGroup, createdGroup, expiresGroup, remainingGroup, createdByGroup].forEach((group) => {
+            if (group && group.parentElement !== infoGrid) infoGrid.appendChild(group);
+        });
+        if (createdByEl) createdByEl.id = 'adminPublicApiCreatedBy';
+    }
+
+    const permGroup = document.getElementById('adminPublicApiPermModel')?.closest('.form-group');
+    if (permGroup) {
+        permGroup.classList.add('admin-public-api-perm-wrap');
+        const heading = permGroup.querySelector('label');
+        if (heading) heading.textContent = '权限';
+        let permGrid = permGroup.querySelector('.admin-public-api-perm-grid');
+        if (!permGrid) {
+            permGrid = document.createElement('div');
+            permGrid.className = 'admin-public-api-perm-grid';
+            permGroup.appendChild(permGrid);
+        }
+        const permItems = [
+            ['adminPublicApiPermModel', '模型调用'],
+            ['adminPublicApiPermKnowledge', '知识库读取'],
+            ['adminPublicApiPermConversation', '会话读取'],
+            ['adminPublicApiPermConversationWrite', '会话写入'],
+            ['adminPublicApiPermToken', 'Token 统计读取'],
+            ['adminPublicApiPermUserRead', '用户信息读取'],
+        ];
+        permItems.forEach(([id, labelText]) => {
+            const input = document.getElementById(id);
+            if (!input) return;
+            const oldWrap = input.closest('label');
+            let targetWrap = permGrid.querySelector(`label[data-key="${id}"]`);
+            if (!targetWrap) {
+                targetWrap = document.createElement('label');
+                targetWrap.className = 'admin-public-api-check-item';
+                targetWrap.dataset.key = id;
+                permGrid.appendChild(targetWrap);
+            }
+            if (input.parentElement !== targetWrap) targetWrap.appendChild(input);
+            let span = targetWrap.querySelector('span');
+            if (!span) {
+                span = document.createElement('span');
+                targetWrap.appendChild(span);
+            }
+            span.textContent = labelText;
+            if (oldWrap && oldWrap !== targetWrap && oldWrap.parentElement) oldWrap.remove();
+        });
+    }
+
+    const saveBtn = document.getElementById('adminPublicApiSaveSettingsBtn');
+    const regenerateBtn = document.getElementById('adminPublicApiRegenerateBtn');
+    const deleteBtn = document.getElementById('adminPublicApiRevokeBtn');
+    const saveGroup = saveBtn ? saveBtn.closest('.form-group') : null;
+    if (saveGroup && saveBtn && regenerateBtn && deleteBtn) {
+        saveGroup.classList.add('admin-public-api-save-row');
+        if (saveBtn.parentElement !== saveGroup) saveGroup.appendChild(saveBtn);
+        let dangerRow = saveGroup.parentElement?.querySelector('.admin-public-api-danger-row');
+        if (!dangerRow) {
+            dangerRow = document.createElement('div');
+            dangerRow.className = 'admin-public-api-danger-row';
+            saveGroup.insertAdjacentElement('afterend', dangerRow);
+        }
+        if (regenerateBtn.parentElement !== dangerRow) dangerRow.appendChild(regenerateBtn);
+        if (deleteBtn.parentElement !== dangerRow) dangerRow.appendChild(deleteBtn);
+        regenerateBtn.classList.remove('btn-primary');
+        deleteBtn.classList.remove('btn-cancel');
+        regenerateBtn.classList.add('btn-warning');
+        deleteBtn.classList.add('btn-danger-solid');
+    }
+}
+
+function getSelectedAdminPublicApiKey(auth = adminPublicApiAuthState, options = {}) {
+    const payload = (auth && typeof auth === 'object') ? auth : {};
+    const keys = Array.isArray(payload.keys) ? payload.keys : [];
+    if (!keys.length) return null;
+    const allowFallback = !!options.allowFallback;
+    const usePayloadDefault = !!options.usePayloadDefault;
+    const wantedId = String(
+        adminSelectedPublicApiKeyId || (usePayloadDefault ? payload.selected_key_id : '') || ''
+    ).trim();
+    const selected = wantedId ? keys.find((item) => String(item?.id || '') === wantedId) : null;
+    if (selected) return selected;
+    if (allowFallback) {
+        const fallback = keys.find((item) => String(item?.status || '').toLowerCase() === 'active' && !item?.is_expired) || keys[0];
+        return fallback || null;
+    }
+    return null;
+}
+
+function renderAdminPublicApiKeyList(payload) {
+    const listEl = document.getElementById('adminPublicApiKeyList');
+    if (!listEl) return;
+    const keys = Array.isArray(payload?.keys) ? payload.keys : [];
+    if (!keys.length) {
+        listEl.innerHTML = '<div class="admin-user-detail-empty" style="padding:12px;">暂无 Key，点击上方“生成 Public API Key”。</div>';
+        return;
+    }
+    const selected = getSelectedAdminPublicApiKey(payload);
+    const selectedId = String(selected?.id || '');
+    listEl.innerHTML = keys.map((item) => {
+        const id = String(item?.id || '');
+        const name = escapeHtml(String(item?.name || id || 'Unnamed Key'));
+        const preview = escapeHtml(String(item?.key_preview || '-'));
+        const isExpired = !!item?.is_expired;
+        const statusRaw = String(item?.status || 'active').toLowerCase();
+        const statusText = statusRaw === 'revoked' ? 'revoked' : (isExpired ? 'expired' : 'active');
+        const activeCls = id === selectedId ? ' active' : '';
+        return `
+            <div class="admin-user-item${activeCls}" data-papi-key-id="${escapeHtml(id)}">
+                <div class="admin-user-avatar" style="display:flex;align-items:center;justify-content:center;font-size:12px;">🔑</div>
+                <div>
+                    <div class="admin-user-name">${name}</div>
+                    <div class="admin-user-meta mono">${preview}</div>
+                    <div class="admin-user-meta">${escapeHtml(statusText)}</div>
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    listEl.querySelectorAll('.admin-user-item[data-papi-key-id]').forEach((node) => {
+        node.addEventListener('click', () => {
+            const keyId = String(node.getAttribute('data-papi-key-id') || '').trim();
+            if (!keyId) return;
+            adminSelectedPublicApiKeyId = keyId;
+            renderAdminPublicApiAuth(adminPublicApiAuthState, { keepLatest: true });
+        });
+    });
+}
+
+function renderAdminPublicApiAuth(auth, options = {}) {
+    const payload = (auth && typeof auth === 'object') ? auth : {};
+    adminPublicApiAuthState = payload;
+    ensureAdminPublicApiLayout();
+    const keys = Array.isArray(payload.keys) ? payload.keys : [];
+    if (!keys.length) adminSelectedPublicApiKeyId = '';
+    if (options.selectedKeyId) {
+        adminSelectedPublicApiKeyId = String(options.selectedKeyId || '').trim();
+    }
+
+    const selected = getSelectedAdminPublicApiKey(payload);
+    if (selected && selected.id) adminSelectedPublicApiKeyId = String(selected.id);
+    const keyPreviewEl = document.getElementById('adminPublicApiKeyPreview');
+    const createdEl = document.getElementById('adminPublicApiCreatedAt');
+    const expiresEl = document.getElementById('adminPublicApiExpiresAt');
+    const remainingEl = document.getElementById('adminPublicApiRemaining');
+    const createdByEl = document.getElementById('adminPublicApiCreatedBy');
+    const nameInput = document.getElementById('adminPublicApiNameInput');
+    const detailPane = document.querySelector('#settings-admin-auth-tab .admin-user-detail');
+
+    if (detailPane) {
+        let emptyEl = detailPane.querySelector('.admin-public-api-empty');
+        if (!emptyEl) {
+            emptyEl = document.createElement('div');
+            emptyEl.className = 'admin-public-api-empty admin-user-detail-empty';
+            emptyEl.textContent = '请先在左侧选择一个 API Key。';
+            detailPane.insertBefore(emptyEl, detailPane.firstChild);
+        }
+        const detailBlocks = Array.from(detailPane.children).filter((node) => node !== emptyEl);
+        const hasSelection = !!selected;
+        emptyEl.style.display = hasSelection ? 'none' : 'block';
+        detailBlocks.forEach((node) => {
+            node.style.display = hasSelection ? '' : 'none';
+        });
+    }
+
+    if (nameInput) nameInput.value = selected ? String(selected.name || '') : '';
+    if (keyPreviewEl) keyPreviewEl.textContent = selected ? (selected.key_preview || '-') : '-';
+    if (createdEl) createdEl.textContent = selected ? formatAdminPublicApiDateTime(selected.created_at || '') : '-';
+    if (expiresEl) expiresEl.textContent = selected ? formatAdminPublicApiDateTime(selected.expires_at || '') : '-';
+    if (remainingEl) remainingEl.textContent = formatAdminPublicApiRemaining(selected);
+    if (createdByEl) createdByEl.textContent = selected ? (String(selected.created_by || '').trim() || '-') : '-';
+    applyAdminPublicApiPermissionsToUi(selected?.permissions || {});
+    renderAdminPublicApiKeyList(payload);
+}
+
+async function loadAdminPublicApiAuth(options = {}) {
+    ensureAdminPublicApiLayout();
+    try {
+        const res = await fetch('/api/admin/auth/public-api');
+        const data = await res.json();
+        if (!data.success) {
+            throw new Error(data.message || '加载失败');
+        }
+        renderAdminPublicApiAuth(data.auth || {}, { keepLatest: !!options.keepLatest });
+    } catch (err) {
+        showToast(err.message || '加载认证状态失败');
+    }
+}
+
+async function saveAdminPublicApiSettings() {
+    const selected = getSelectedAdminPublicApiKey();
+    if (!selected) {
+        showToast('请先在左侧选择一个 Key');
+        return;
+    }
+    try {
+        const permissions = collectAdminPublicApiPermissionsFromUi();
+        const keyName = String(document.getElementById('adminPublicApiNameInput')?.value || '').trim();
+        const res = await fetch('/api/admin/auth/public-api/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                key_id: String(selected.id || ''),
+                permissions,
+                name: keyName
+            })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            throw new Error(data.message || '保存失败');
+        }
+        renderAdminPublicApiAuth(data.auth || {}, { keepLatest: true, selectedKeyId: String(selected.id || '') });
+        showToast('当前 Key 设置已保存');
+    } catch (err) {
+        showToast(err.message || '保存认证设置失败');
+    }
+}
+
+async function saveAdminPublicApiGlobalSettings() {
+    try {
+        const enabled = !!document.getElementById('adminPublicApiEnabledToggle')?.checked;
+        const res = await fetch('/api/admin/auth/public-api/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ public_api_enabled: enabled })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            throw new Error(data.message || '保存失败');
+        }
+        renderAdminPublicApiAuth(data.auth || {}, { keepLatest: true });
+        showToast('Public API 总开关已保存');
+    } catch (err) {
+        showToast(err.message || '保存总开关失败');
+    }
+}
+
+window.closeAdminPublicApiKeyModal = function() {
+    const modal = document.getElementById('adminPublicApiKeyModal');
+    const latestKeyGroup = document.getElementById('adminPublicApiModalLatestKeyGroup');
+    const latestKeyEl = document.getElementById('adminPublicApiModalLatestKey');
+    const confirmBtn = document.getElementById('adminPublicApiKeyModalConfirmBtn');
+    const keyNameInput = document.getElementById('adminPublicApiKeyNameInput');
+    const expireInput = document.getElementById('adminPublicApiExpireModalInput');
+    adminPublicApiModalCompleted = false;
+    if (latestKeyGroup) latestKeyGroup.style.display = 'none';
+    if (latestKeyEl) latestKeyEl.textContent = '';
+    if (confirmBtn) confirmBtn.textContent = '确认';
+    if (keyNameInput) keyNameInput.disabled = false;
+    if (expireInput) expireInput.disabled = false;
+    if (modal) modal.classList.remove('active');
+};
+
+window.openAdminPublicApiKeyModal = function(mode = 'generate') {
+    adminPublicApiActionMode = mode === 'regenerate' ? 'regenerate' : 'generate';
+    adminPublicApiModalCompleted = false;
+    const selected = getSelectedAdminPublicApiKey();
+    if (adminPublicApiActionMode === 'regenerate' && !selected) {
+        showToast('请先在左侧选择一个 Key');
+        return;
+    }
+    const modal = document.getElementById('adminPublicApiKeyModal');
+    const title = document.getElementById('adminPublicApiKeyModalTitle');
+    const desc = document.getElementById('adminPublicApiKeyModalDesc');
+    const keyNameInput = document.getElementById('adminPublicApiKeyNameInput');
+    const expireInput = document.getElementById('adminPublicApiExpireModalInput');
+    const confirmBtn = document.getElementById('adminPublicApiKeyModalConfirmBtn');
+    const latestKeyGroup = document.getElementById('adminPublicApiModalLatestKeyGroup');
+    const latestKeyEl = document.getElementById('adminPublicApiModalLatestKey');
+    if (title) title.textContent = adminPublicApiActionMode === 'regenerate' ? '重新生成 Public API Key' : '生成 Public API Key';
+    if (desc) desc.textContent = adminPublicApiActionMode === 'regenerate'
+        ? '将为当前选中的 Key 重新生成明文 key，旧 key 会立即失效。'
+        : '创建新的 Public API Key（明文仅展示一次）。';
+    if (keyNameInput) keyNameInput.value = selected ? String(selected.name || '') : '';
+    if (expireInput) {
+        const preset = String(selected?.expire_option || '').trim() || '7d';
+        expireInput.value = preset;
+    }
+    if (keyNameInput) keyNameInput.disabled = false;
+    if (expireInput) expireInput.disabled = false;
+    if (confirmBtn) confirmBtn.textContent = '确认';
+    if (latestKeyGroup) latestKeyGroup.style.display = 'none';
+    if (latestKeyEl) latestKeyEl.textContent = '';
+    if (modal) modal.classList.add('active');
+};
+
+async function submitAdminPublicApiKeyAction() {
+    if (adminPublicApiModalCompleted) {
+        closeAdminPublicApiKeyModal();
+        return;
+    }
+    const selected = getSelectedAdminPublicApiKey();
+    const expireInput = document.getElementById('adminPublicApiExpireModalInput');
+    const keyNameInput = document.getElementById('adminPublicApiKeyNameInput');
+    const latestKeyGroup = document.getElementById('adminPublicApiModalLatestKeyGroup');
+    const latestKeyEl = document.getElementById('adminPublicApiModalLatestKey');
+    const confirmBtn = document.getElementById('adminPublicApiKeyModalConfirmBtn');
+    const expire = String(expireInput?.value || '').trim() || 'forever';
+    const keyName = String(keyNameInput?.value || '').trim();
+    const permissions = collectAdminPublicApiPermissionsFromUi();
+    const action = adminPublicApiActionMode === 'regenerate' ? 'regenerate' : 'generate';
+    try {
+        const body = {
+            expire,
+            permissions,
+            name: keyName
+        };
+        if (action === 'regenerate') {
+            if (!selected || !selected.id) {
+                throw new Error('请先选择要重新生成的 Key');
+            }
+            body.key_id = String(selected.id);
+        }
+        const res = await fetch(`/api/admin/auth/public-api/${action}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (!data.success) {
+            throw new Error(data.message || '操作失败');
+        }
+        renderAdminPublicApiAuth(data.auth || {}, {
+            keepLatest: true,
+            selectedKeyId: action === 'regenerate'
+                ? String(selected?.id || '')
+                : String((data.auth || {}).selected_key_id || '')
+        });
+        if (latestKeyEl) latestKeyEl.textContent = String(data.public_api_key || '').trim() || '-';
+        if (latestKeyGroup) latestKeyGroup.style.display = '';
+        if (keyNameInput) keyNameInput.disabled = true;
+        if (expireInput) expireInput.disabled = true;
+        adminPublicApiModalCompleted = true;
+        if (confirmBtn) confirmBtn.textContent = '关闭';
+        showToast(action === 'regenerate' ? '当前 Key 已重新生成，旧 key 已失效' : 'Public API key 已生成');
+    } catch (err) {
+        showToast(err.message || '操作失败');
+    }
+}
+
+function ensureAdminPublicApiDeleteModal() {
+    let modal = document.getElementById('adminPublicApiDeleteModal');
+    if (modal) return modal;
+    modal = document.createElement('div');
+    modal.id = 'adminPublicApiDeleteModal';
+    modal.className = 'modal-backdrop';
+    modal.innerHTML = `
+        <div class="modal" style="width: 420px; padding: 0;">
+            <div class="modal-head">
+                <h3>删除 API Key</h3>
+                <button class="btn-modal-close" type="button" id="adminPublicApiDeleteModalCloseBtn" title="Close">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            <div class="modal-body" style="padding: 16px 20px;">
+                <p id="adminPublicApiDeleteModalDesc" style="margin: 0 0 12px;">确认删除当前 API Key 吗？此操作不可撤销。</p>
+                <div class="modal-footer" style="margin-top: 14px; justify-content: flex-end; gap: 8px;">
+                    <button id="adminPublicApiDeleteModalCancelBtn" class="btn-cancel" type="button">取消</button>
+                    <button id="adminPublicApiDeleteModalConfirmBtn" class="btn-danger-solid" type="button">删除</button>
+                </div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+    bindBackdropSafeClose(modal, closeAdminPublicApiDeleteModal);
+    modal.querySelector('#adminPublicApiDeleteModalCloseBtn')?.addEventListener('click', closeAdminPublicApiDeleteModal);
+    modal.querySelector('#adminPublicApiDeleteModalCancelBtn')?.addEventListener('click', closeAdminPublicApiDeleteModal);
+    modal.querySelector('#adminPublicApiDeleteModalConfirmBtn')?.addEventListener('click', async () => {
+        await confirmAdminPublicApiDeleteModal();
+    });
+    return modal;
+}
+
+window.closeAdminPublicApiDeleteModal = function() {
+    const modal = document.getElementById('adminPublicApiDeleteModal');
+    if (modal) modal.classList.remove('active');
+    adminPublicApiDeleteTargetKey = null;
+};
+
+function openAdminPublicApiDeleteModal(selected) {
+    const modal = ensureAdminPublicApiDeleteModal();
+    adminPublicApiDeleteTargetKey = selected || null;
+    const desc = document.getElementById('adminPublicApiDeleteModalDesc');
+    if (desc) {
+        const keyName = String(selected?.name || selected?.id || '当前 API Key');
+        desc.textContent = `确认删除 “${keyName}” 吗？此操作不可撤销。`;
+    }
+    modal.classList.add('active');
+}
+
+async function confirmAdminPublicApiDeleteModal() {
+    const selected = adminPublicApiDeleteTargetKey;
+    if (!selected || !selected.id) {
+        closeAdminPublicApiDeleteModal();
+        showToast('未找到要删除的 API Key');
+        return;
+    }
+    try {
+        const res = await fetch('/api/admin/auth/public-api/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ key_id: String(selected.id) })
+        });
+        const data = await res.json();
+        if (!data.success) {
+            throw new Error(data.message || '删除失败');
+        }
+        adminSelectedPublicApiKeyId = '';
+        renderAdminPublicApiAuth(data.auth || {}, { keepLatest: false });
+        closeAdminPublicApiDeleteModal();
+        showToast('Key 已删除');
+    } catch (err) {
+        showToast(err.message || '删除失败');
+    }
+}
+
+async function revokeAdminPublicApiKey() {
+    const selected = getSelectedAdminPublicApiKey();
+    if (!selected || !selected.id) {
+        showToast('请先在左侧选择一个 Key');
+        return;
+    }
+    openAdminPublicApiDeleteModal(selected);
 }
 
 async function loadAdminModelConfig() {
@@ -24215,6 +24870,9 @@ function switchSettingsTab(tabName) {
     if (tabName === 'admin-models') {
         loadAdminModelConfig();
         void loadServerQuotaSettings();
+    }
+    if (tabName === 'admin-auth') {
+        void loadAdminPublicApiAuth();
     }
     if (tabName === 'admin-chroma') {
         loadAdminChromaStats();

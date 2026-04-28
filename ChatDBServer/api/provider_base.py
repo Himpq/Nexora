@@ -643,8 +643,27 @@ class ProviderInterface(ABC):
         Parse OpenAI-compatible chat.completions streaming chunks into unified events.
         """
         function_calls: List[Dict[str, Any]] = []
-        debug_unknown_stream =True
+        debug_unknown_stream = self._as_bool(self.provider_config.get("debug_unknown_stream", False), default=False)
         unknown_delta_key_logged: set = set()
+        thinking_mode = False
+        think_buffer = ""
+        first_chunk_processed = False
+
+        def _obj_get_raw(obj: Any, key: str, default: Any = None) -> Any:
+            if obj is None:
+                return default
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            try:
+                extra = getattr(obj, "model_extra", None)
+                if isinstance(extra, dict) and key in extra:
+                    return extra.get(key, default)
+            except Exception:
+                pass
+            try:
+                return getattr(obj, key)
+            except Exception:
+                return default
 
         def _extract_text_piece(val: Any) -> str:
             if val is None:
@@ -675,6 +694,179 @@ class ProviderInterface(ABC):
                     pass
             return str(val) if val is not None else ""
 
+        def _extract_reasoning_fields(delta_obj: Any) -> str:
+            pieces: List[str] = []
+            for key in ("reasoning_content", "reasoning", "reasoning_text", "thinking", "thinking_content"):
+                piece = _extract_text_piece(_obj_get_raw(delta_obj, key, None))
+                if piece:
+                    pieces.append(piece)
+            return "".join(pieces)
+
+        def _split_delta_content(content_val: Any) -> Dict[str, str]:
+            content_parts: List[str] = []
+            reasoning_parts: List[str] = []
+            if isinstance(content_val, list):
+                for item in content_val:
+                    item_type = str(_obj_get_raw(item, "type", "") or "").strip().lower()
+                    piece = _extract_text_piece(item)
+                    if not piece:
+                        continue
+                    if any(tag in item_type for tag in ("reason", "think")):
+                        reasoning_parts.append(piece)
+                    else:
+                        content_parts.append(piece)
+            else:
+                piece = _extract_text_piece(content_val)
+                if piece:
+                    content_parts.append(piece)
+            return {
+                "content": "".join(content_parts),
+                "reasoning": "".join(reasoning_parts),
+            }
+
+        def _split_think_markup(text: str, is_final: bool = False) -> Dict[str, str]:
+            nonlocal thinking_mode, think_buffer
+            raw = think_buffer + str(text or "")
+            if not raw and not is_final:
+                return {"content": "", "reasoning": ""}
+            
+            content_parts: List[str] = []
+            reasoning_parts: List[str] = []
+            
+            while raw:
+                if thinking_mode:
+                    end_idx = raw.find("</think>")
+                    if end_idx < 0:
+                        # Might be a partial </think> at the end
+                        potential_match = False
+                        for i in range(1, 9):
+                            if raw.endswith("</think>"[:i]):
+                                potential_match = True
+                                reasoning_parts.append(raw[:-i])
+                                think_buffer = raw[-i:]
+                                raw = ""
+                                break
+                        if not potential_match:
+                            reasoning_parts.append(raw)
+                            think_buffer = ""
+                            raw = ""
+                        
+                        if is_final and think_buffer:
+                            reasoning_parts.append(think_buffer)
+                            think_buffer = ""
+                    else:
+                        reasoning_parts.append(raw[:end_idx])
+                        raw = raw[end_idx + len("</think>"):]
+                        thinking_mode = False
+                else:
+                    start_idx = raw.find("<think>")
+                    end_fallback_idx = raw.find("</think>")
+                    
+                    if start_idx < 0:
+                        if end_fallback_idx >= 0:
+                            # Unexpected </think> when not in thinking mode
+                            reasoning_parts.append(raw[:end_fallback_idx])
+                            raw = raw[end_fallback_idx + len("</think>"):]
+                            continue
+                            
+                        # Might be a partial <think> or </think> at the end
+                        potential_match = False
+                        for tag in ("<think>", "</think>"):
+                            for i in range(1, len(tag)):
+                                if raw.endswith(tag[:i]):
+                                    potential_match = True
+                                    content_parts.append(raw[:-i])
+                                    think_buffer = raw[-i:]
+                                    raw = ""
+                                    break
+                            if potential_match:
+                                break
+                                
+                        if not potential_match:
+                            content_parts.append(raw)
+                            think_buffer = ""
+                            raw = ""
+                            
+                        if is_final and think_buffer:
+                            content_parts.append(think_buffer)
+                            think_buffer = ""
+                    else:
+                        if end_fallback_idx >= 0 and end_fallback_idx < start_idx:
+                            reasoning_parts.append(raw[:end_fallback_idx])
+                            raw = raw[end_fallback_idx + len("</think>"):]
+                            continue
+                        content_parts.append(raw[:start_idx])
+                        raw = raw[start_idx + len("<think>"):]
+                        thinking_mode = True
+
+            return {
+                "content": "".join(content_parts),
+                "reasoning": "".join(reasoning_parts),
+            }
+
+        def _merge_stream_fragment(base: str, frag: str) -> str:
+            base_s = str(base or "")
+            frag_s = str(frag or "")
+            if not frag_s:
+                return base_s
+            if not base_s:
+                return frag_s
+            if frag_s == base_s:
+                return base_s
+            if frag_s.startswith(base_s):
+                return frag_s
+            if base_s.startswith(frag_s):
+                return base_s
+            if base_s.endswith(frag_s):
+                return base_s
+            if (len(frag_s) >= 16) and (frag_s in base_s):
+                return base_s
+            return base_s + frag_s
+
+        def _apply_tool_call_delta(tc_obj: Any, idx_default: int = 0) -> Optional[Dict[str, Any]]:
+            try:
+                idx = int(_obj_get_raw(tc_obj, "index", idx_default) or idx_default)
+            except Exception:
+                idx = idx_default
+            if idx < 0:
+                idx = idx_default
+            while idx >= len(function_calls):
+                function_calls.append({"name": "", "arguments": "", "call_id": ""})
+            fc = function_calls[idx]
+
+            tc_id = _extract_text_piece(_obj_get_raw(tc_obj, "id", None))
+            if tc_id:
+                fc["call_id"] = str(tc_id)
+
+            fn_obj = _obj_get_raw(tc_obj, "function", None)
+            if fn_obj is None and (
+                _obj_get_raw(tc_obj, "name", None) is not None
+                or _obj_get_raw(tc_obj, "arguments", None) is not None
+            ):
+                fn_obj = tc_obj
+            name_delta = _extract_text_piece(_obj_get_raw(fn_obj, "name", None)) if fn_obj is not None else ""
+            args_delta = _extract_text_piece(_obj_get_raw(fn_obj, "arguments", None)) if fn_obj is not None else ""
+
+            old_name = str(fc.get("name", "") or "")
+            old_args = str(fc.get("arguments", "") or "")
+            if name_delta:
+                fc["name"] = _merge_stream_fragment(old_name, str(name_delta))
+            if args_delta:
+                fc["arguments"] = _merge_stream_fragment(old_args, str(args_delta))
+
+            name_changed = str(fc.get("name", "") or "") != old_name
+            args_changed = str(fc.get("arguments", "") or "") != old_args
+            if (not (name_delta or args_delta)) or (not (name_changed or args_changed)):
+                return None
+            return {
+                "type": "function_call_delta",
+                "name": fc.get("name", "") or name_delta,
+                "call_id": fc.get("call_id", ""),
+                "arguments_delta": args_delta,
+                "name_delta": name_delta,
+                "index": idx,
+            }
+
         def _collect_obj_keys(obj: Any) -> List[str]:
             keys: List[str] = []
             if obj is None:
@@ -704,9 +896,9 @@ class ProviderInterface(ABC):
 
         for chunk in chunks:
             # Usage may come in an empty-choices tail chunk.
-            choices = getattr(chunk, "choices", None)
+            choices = _obj_get_raw(chunk, "choices", None)
             if not choices:
-                usage_obj = getattr(chunk, "usage", None)
+                usage_obj = _obj_get_raw(chunk, "usage", None)
                 if usage_obj:
                     yield {
                         "type": "usage",
@@ -717,59 +909,62 @@ class ProviderInterface(ABC):
                     }
                 continue
 
-            delta = getattr(choices[0], "delta", None)
+            choice0 = choices[0] if isinstance(choices, list) and choices else None
+            delta = _obj_get_raw(choice0, "delta", None)
+            # Some OpenAI-compatible gateways may put final tool_calls/message on choice.message.
             if not delta:
+                msg_obj = _obj_get_raw(choice0, "message", None)
+                if msg_obj is not None:
+                    msg_split = _split_delta_content(_obj_get_raw(msg_obj, "content", None))
+                    msg_reasoning = _merge_stream_fragment(
+                        _split_think_markup(msg_split.get("reasoning", "")).get("reasoning", ""),
+                        _extract_reasoning_fields(msg_obj),
+                    )
+                    msg_content = _split_think_markup(msg_split.get("content", "")).get("content", "")
+                    if msg_content:
+                        yield {"type": "content_delta", "delta": str(msg_content)}
+                    if msg_reasoning:
+                        yield {"type": "reasoning_delta", "delta": str(msg_reasoning)}
+
+                    msg_tool_calls = _obj_get_raw(msg_obj, "tool_calls", None)
+                    if isinstance(msg_tool_calls, dict):
+                        msg_tool_calls = [msg_tool_calls]
+                    if isinstance(msg_tool_calls, list):
+                        for tc in msg_tool_calls:
+                            fc_delta = _apply_tool_call_delta(tc, idx_default=0)
+                            if fc_delta:
+                                yield fc_delta
                 continue
 
-            content_piece = getattr(delta, "content", None)
-            content_piece = _extract_text_piece(content_piece)
+            split_payload = _split_delta_content(_obj_get_raw(delta, "content", None))
+            think_split = _split_think_markup(split_payload.get("content", ""))
+            content_piece = think_split.get("content", "")
+            reasoning_piece = _merge_stream_fragment(
+                _merge_stream_fragment(split_payload.get("reasoning", ""), think_split.get("reasoning", "")),
+                _extract_reasoning_fields(delta),
+            )
+
             if content_piece:
                 yield {"type": "content_delta", "delta": str(content_piece)}
 
-            # Different providers expose reasoning chunks with different field names.
-            reasoning_piece = (
-                getattr(delta, "reasoning_content", None)
-                or getattr(delta, "reasoning", None)
-                or getattr(delta, "reasoning_text", None)
-            )
-            reasoning_piece = _extract_text_piece(reasoning_piece)
             if reasoning_piece:
                 yield {"type": "reasoning_delta", "delta": str(reasoning_piece)}
 
-            tool_calls = getattr(delta, "tool_calls", None)
-            if tool_calls:
+            tool_calls = _obj_get_raw(delta, "tool_calls", None)
+            if isinstance(tool_calls, dict):
+                tool_calls = [tool_calls]
+            if isinstance(tool_calls, list) and tool_calls:
                 for tc in tool_calls:
-                    idx = int(getattr(tc, "index", 0) or 0)
-                    while idx >= len(function_calls):
-                        function_calls.append({"name": "", "arguments": "", "call_id": ""})
-                    fc = function_calls[idx]
+                    fc_delta = _apply_tool_call_delta(tc, idx_default=0)
+                    if fc_delta:
+                        yield fc_delta
 
-                    tc_id = getattr(tc, "id", None)
-                    if tc_id:
-                        fc["call_id"] = str(tc_id)
-
-                    function_obj = getattr(tc, "function", None)
-                    name_delta = ""
-                    args_delta = ""
-                    if function_obj is not None:
-                        fn_name = getattr(function_obj, "name", None)
-                        fn_args = getattr(function_obj, "arguments", None)
-                        if fn_name:
-                            name_delta = str(fn_name)
-                            fc["name"] += name_delta
-                        if fn_args:
-                            args_delta = str(fn_args)
-                            fc["arguments"] += args_delta
-
-                    if name_delta or args_delta:
-                        yield {
-                            "type": "function_call_delta",
-                            "name": fc.get("name", "") or name_delta,
-                            "call_id": fc.get("call_id", ""),
-                            "arguments_delta": args_delta,
-                            "name_delta": name_delta,
-                            "index": idx,
-                        }
+            # Legacy stream shape: delta.function_call.{name,arguments}
+            legacy_fc = _obj_get_raw(delta, "function_call", None)
+            if legacy_fc is not None:
+                fc_delta = _apply_tool_call_delta(legacy_fc, idx_default=0)
+                if fc_delta:
+                    yield fc_delta
 
             if debug_unknown_stream and (not content_piece) and (not reasoning_piece) and (not tool_calls):
                 key_sig = ",".join(_collect_obj_keys(delta))
@@ -777,7 +972,7 @@ class ProviderInterface(ABC):
                     unknown_delta_key_logged.add(key_sig)
                     print(f"[STREAM_DEBUG] Unhandled delta keys: {key_sig}")
 
-            usage_obj = getattr(chunk, "usage", None)
+            usage_obj = _obj_get_raw(chunk, "usage", None)
             if usage_obj:
                 yield {
                     "type": "usage",
@@ -786,6 +981,13 @@ class ProviderInterface(ABC):
                     "output_tokens": int(getattr(usage_obj, "completion_tokens", 0) or 0),
                     "total_tokens": int(getattr(usage_obj, "total_tokens", 0) or 0),
                 }
+
+        # Flush any remaining buffered think tag
+        final_think_split = _split_think_markup("", is_final=True)
+        if final_think_split.get("content", ""):
+            yield {"type": "content_delta", "delta": str(final_think_split["content"])}
+        if final_think_split.get("reasoning", ""):
+            yield {"type": "reasoning_delta", "delta": str(final_think_split["reasoning"])}
 
         for i, fc in enumerate(function_calls):
             name = str(fc.get("name", "") or "").strip()

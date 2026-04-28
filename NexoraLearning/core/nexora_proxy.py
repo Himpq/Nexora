@@ -1,53 +1,415 @@
-"""
-NexoraLearning — Nexora API 代理
-封装对 ChatDBServer 的模型调用，用于文本解析、大纲生成等任务。
-"""
+"""Nexora API/PAPI proxy client for NexoraLearning."""
 
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
-import urllib.request
 import urllib.error
 import urllib.parse
+import urllib.request
+from typing import Any, Dict, List, Mapping, Optional, Tuple
+
 
 class NexoraProxy:
-    def __init__(self, cfg: Dict[str, Any]):
-        nexora_cfg = cfg.get("nexora") or {}
+    """Thin HTTP client around fixed Nexora PAPI endpoints."""
+
+    def __init__(self, cfg: Mapping[str, Any]):
+        nexora_cfg = dict((cfg or {}).get("nexora") or {})
         self.base_url = str(nexora_cfg.get("base_url") or "http://127.0.0.1:5000").rstrip("/")
         self.api_key = str(
             nexora_cfg.get("public_api_key")
             or nexora_cfg.get("api_key")
             or ""
-        )
+        ).strip()
         self.default_username = str(
             nexora_cfg.get("username")
             or nexora_cfg.get("target_username")
             or ""
         ).strip()
-    
-    def _call_api(self, endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """通用 API 调用，带 X-API-Key 认证"""
-        url = f"{self.base_url}{endpoint}"
-        headers = {
-            "Content-Type": "application/json",
-            "X-API-Key": self.api_key
-        }
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-        
+        self.models_path = self._normalize_path(nexora_cfg.get("models_path"), default="/api/papi/models")
+        self.completions_path = self._normalize_path(
+            nexora_cfg.get("completions_path"), default="/api/papi/completions"
+        )
+        self.responses_path = self._normalize_path(nexora_cfg.get("responses_path"), default="/api/papi/responses")
+        self.chat_completions_path = self._normalize_path(
+            nexora_cfg.get("chat_completions_path"), default="/api/papi/chat/completions"
+        )
+        self.user_info_path = self._normalize_path(
+            nexora_cfg.get("user_info_path"), default="/api/papi/user/info"
+        )
+        self.append_username_to_path = self._as_bool(nexora_cfg.get("append_username_to_path"), default=False)
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                body = resp.read().decode("utf-8")
-                return json.loads(body) if body else {}
-        except urllib.error.HTTPError as e:
+            timeout = float(nexora_cfg.get("request_timeout") or 90)
+        except Exception:
+            timeout = 90.0
+        self.request_timeout = max(10.0, min(timeout, 600.0))
+
+    @staticmethod
+    def _as_bool(value: Any, default: bool = False) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _normalize_path(value: Any, *, default: str) -> str:
+        path = str(value or default).strip()
+        if not path.startswith("/"):
+            path = f"/{path}"
+        return path.rstrip("/")
+
+    def _build_headers(self) -> Dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["X-API-Key"] = self.api_key
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+
+    def _resolve_path(self, path: str, username: Optional[str]) -> str:
+        base_path = self._normalize_path(path, default=path)
+        target_username = str(username or "").strip()
+        if target_username and self.append_username_to_path:
+            return f"{base_path}/{urllib.parse.quote(target_username)}"
+        return base_path
+
+    def _request_json(
+        self,
+        path: str,
+        *,
+        method: str = "POST",
+        payload: Optional[Dict[str, Any]] = None,
+        username: Optional[str] = None,
+    ) -> Tuple[int, Dict[str, Any], str]:
+        endpoint = self._resolve_path(path, username)
+        url = f"{self.base_url}{endpoint}"
+        body = None
+        if payload is not None:
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers=self._build_headers(),
+            method=method.upper(),
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.request_timeout) as resp:
+                status = int(getattr(resp, "status", 200) or 200)
+                text = resp.read().decode("utf-8", errors="replace")
+                if not text.strip():
+                    return status, {}, endpoint
+                try:
+                    parsed = json.loads(text)
+                except Exception:
+                    return status, {"raw_text": text}, endpoint
+                return status, parsed if isinstance(parsed, dict) else {"data": parsed}, endpoint
+        except urllib.error.HTTPError as exc:
+            status = int(getattr(exc, "code", 502) or 502)
             try:
-                err_body = e.read().decode("utf-8")
-                return json.loads(err_body) if err_body else {"success": False, "message": str(e)}
-            except:
-                return {"success": False, "message": str(e)}
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+                text = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                text = str(exc)
+            try:
+                parsed = json.loads(text) if text.strip() else {}
+                if isinstance(parsed, dict):
+                    return status, parsed, endpoint
+                return status, {"data": parsed}, endpoint
+            except Exception:
+                return status, {"success": False, "message": text or str(exc)}, endpoint
+        except Exception as exc:
+            return 0, {"success": False, "message": str(exc)}, endpoint
+
+    @staticmethod
+    def _safe_error(payload: Mapping[str, Any], status: int) -> str:
+        message = str(payload.get("message") or "").strip()
+        if message:
+            return message
+        err = payload.get("error")
+        if isinstance(err, dict):
+            detail = str(err.get("message") or err.get("detail") or "").strip()
+            if detail:
+                return detail
+        if status:
+            return f"HTTP {status}"
+        return "request failed"
+
+    @staticmethod
+    def _extract_output_text(payload: Mapping[str, Any]) -> str:
+        content = payload.get("content")
+        if isinstance(content, str) and content.strip():
+            return content
+
+        message = payload.get("message")
+        if isinstance(message, dict):
+            msg_content = message.get("content")
+            if isinstance(msg_content, str) and msg_content.strip():
+                return msg_content
+            if isinstance(msg_content, list):
+                parts: List[str] = []
+                for piece in msg_content:
+                    if isinstance(piece, dict):
+                        text = str(piece.get("text") or "").strip()
+                        if text:
+                            parts.append(text)
+                if parts:
+                    return "\n".join(parts).strip()
+
+        choices = payload.get("choices")
+        if isinstance(choices, list) and choices:
+            first = choices[0] if isinstance(choices[0], dict) else {}
+            choice_message = first.get("message") if isinstance(first, dict) else {}
+            if isinstance(choice_message, dict):
+                text = choice_message.get("content")
+                if isinstance(text, str) and text.strip():
+                    return text
+
+        output_text = payload.get("output_text")
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text
+
+        output = payload.get("output")
+        if isinstance(output, list):
+            text_parts: List[str] = []
+            for item in output:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("type") or "").strip() != "message":
+                    continue
+                for part in item.get("content") or []:
+                    if not isinstance(part, dict):
+                        continue
+                    part_type = str(part.get("type") or "").strip()
+                    if part_type in {"output_text", "text", "input_text"}:
+                        text = str(part.get("text") or "").strip()
+                        if text:
+                            text_parts.append(text)
+            if text_parts:
+                return "\n".join(text_parts).strip()
+        return ""
+
+    def extract_output_text(self, payload: Mapping[str, Any]) -> str:
+        return self._extract_output_text(payload)
+
+    def _build_request_result(self, *, status: int, payload: Dict[str, Any], endpoint: str) -> Dict[str, Any]:
+        if status >= 400 or status == 0:
+            return {
+                "ok": False,
+                "status": status or 502,
+                "endpoint": endpoint,
+                "payload": payload,
+                "message": self._safe_error(payload, status),
+            }
+        if isinstance(payload, dict) and payload.get("success") is False:
+            return {
+                "ok": False,
+                "status": status or 502,
+                "endpoint": endpoint,
+                "payload": payload,
+                "message": self._safe_error(payload, status),
+            }
+        return {
+            "ok": True,
+            "status": status,
+            "endpoint": endpoint,
+            "payload": payload if isinstance(payload, dict) else {},
+            "message": "",
+        }
+
+    def list_models(self, username: Optional[str] = None) -> Dict[str, Any]:
+        status, resp, endpoint = self._request_json(
+            self.models_path,
+            method="GET",
+            payload=None,
+            username=username,
+        )
+        result = self._build_request_result(status=status, payload=resp, endpoint=endpoint)
+        if not result.get("ok"):
+            return {
+                "success": False,
+                "status": result.get("status"),
+                "endpoint": result.get("endpoint"),
+                "message": result.get("message"),
+                "payload": result.get("payload"),
+            }
+        return {
+            "success": True,
+            "status": result.get("status"),
+            "endpoint": result.get("endpoint"),
+            "payload": result.get("payload"),
+        }
+
+    def get_user_info(self, username: Optional[str] = None) -> Dict[str, Any]:
+        target_username = str(username or self.default_username or "").strip()
+        if not target_username:
+            return {
+                "success": False,
+                "status": 400,
+                "endpoint": self.user_info_path,
+                "message": "username is required",
+                "payload": {},
+            }
+        endpoint = f"{self.user_info_path}/{urllib.parse.quote(target_username)}"
+        status, resp, used_endpoint = self._request_json(endpoint, method="GET", payload=None, username=None)
+        result = self._build_request_result(status=status, payload=resp, endpoint=used_endpoint)
+        if not result.get("ok"):
+            return {
+                "success": False,
+                "status": result.get("status"),
+                "endpoint": result.get("endpoint"),
+                "message": result.get("message"),
+                "payload": result.get("payload"),
+            }
+        payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+        return {
+            "success": True,
+            "status": result.get("status"),
+            "endpoint": result.get("endpoint"),
+            "payload": payload,
+            "user": payload.get("user") if isinstance(payload.get("user"), dict) else {},
+        }
+
+    def chat_completions(
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        model: Optional[str] = None,
+        username: Optional[str] = None,
+        options: Optional[Mapping[str, Any]] = None,
+        use_chat_path: bool = False,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "messages": list(messages or []),
+            "stream": False,
+        }
+        target_username = str(username or self.default_username or "").strip()
+        if model:
+            payload["model"] = model
+        if target_username:
+            payload["username"] = target_username
+        for key in (
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "presence_penalty",
+            "frequency_penalty",
+            "seed",
+            "stop",
+            "tools",
+            "tool_choice",
+            "response_format",
+            "stream_options",
+        ):
+            value = (options or {}).get(key)
+            if value is not None:
+                payload[key] = value
+
+        endpoint = self.chat_completions_path if use_chat_path else self.completions_path
+        status, resp, used_endpoint = self._request_json(endpoint, method="POST", payload=payload, username=target_username)
+        return self._build_request_result(status=status, payload=resp, endpoint=used_endpoint)
+
+    def responses(
+        self,
+        *,
+        model: Optional[str] = None,
+        username: Optional[str] = None,
+        input_items: Optional[List[Dict[str, Any]]] = None,
+        instructions: str = "",
+        options: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"stream": False}
+        target_username = str(username or self.default_username or "").strip()
+        if model:
+            payload["model"] = model
+        if target_username:
+            payload["username"] = target_username
+        if isinstance(input_items, list):
+            payload["input"] = input_items
+        if str(instructions or "").strip():
+            payload["instructions"] = str(instructions or "")
+        for key in (
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "max_output_tokens",
+            "tools",
+            "tool_choice",
+            "response_format",
+            "parallel_tool_calls",
+            "metadata",
+            "text",
+            "reasoning",
+            "store",
+            "include",
+            "truncation",
+            "previous_response_id",
+            "allow_synthetic_fallback",
+            "force_chat_bridge",
+        ):
+            value = (options or {}).get(key)
+            if value is not None:
+                payload[key] = value
+
+        status, resp, endpoint = self._request_json(
+            self.responses_path,
+            method="POST",
+            payload=payload,
+            username=target_username,
+        )
+        return self._build_request_result(status=status, payload=resp, endpoint=endpoint)
+
+    def complete_raw(
+        self,
+        *,
+        messages: Optional[List[Dict[str, Any]]] = None,
+        model: Optional[str] = None,
+        username: Optional[str] = None,
+        api_mode: str = "chat",
+        input_items: Optional[List[Dict[str, Any]]] = None,
+        instructions: str = "",
+        options: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        normalized_mode = str(api_mode or "chat").strip().lower()
+        safe_messages = list(messages or [])
+        safe_input = list(input_items or [])
+        if normalized_mode == "auto":
+            normalized_mode = "responses" if safe_input else "chat"
+        if normalized_mode == "responses":
+            result = self.responses(
+                model=model,
+                username=username,
+                input_items=safe_input,
+                instructions=instructions,
+                options=options,
+            )
+            mode = "responses"
+        else:
+            result = self.chat_completions(
+                messages=safe_messages,
+                model=model,
+                username=username,
+                options=options,
+                use_chat_path=False,
+            )
+            mode = "chat"
+
+        if not result.get("ok"):
+            return {
+                "success": False,
+                "api_mode": mode,
+                "endpoint": result.get("endpoint"),
+                "status": result.get("status"),
+                "message": result.get("message") or "request failed",
+                "payload": result.get("payload") or {},
+            }
+
+        payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+        return {
+            "success": True,
+            "api_mode": mode,
+            "endpoint": result.get("endpoint"),
+            "status": result.get("status"),
+            "payload": payload,
+            "content": self._extract_output_text(payload),
+        }
 
     def chat_complete(
         self,
@@ -56,31 +418,22 @@ class NexoraProxy:
         model: Optional[str] = None,
         username: Optional[str] = None,
     ) -> str:
-        """
-        通过 Nexora 模型的 API 进行对话（待 ChatDBServer 实现标准接口）。
-        目前假设 ChatDBServer 提供了一个类似的公共调用接口。
-        """
-        target_username = str(username or self.default_username or "").strip()
-        payload = {
-            "model": model or "doubao-seed-1-6-250615",
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            "temperature": 0.3
-        }
-        endpoint = "/api/papi/completions"
-        if target_username:
-            endpoint = f"/api/papi/completions/{urllib.parse.quote(target_username)}"
-        resp = self._call_api(endpoint, payload)
-        if resp.get("success") is False:
-            raise RuntimeError(f"Nexora API Error: {resp.get('message')}")
-        content = resp.get("content")
-        if content is None:
-            content = resp.get("message", {}).get("content", "") if isinstance(resp.get("message"), dict) else ""
-        return str(content or "")
+        messages = []
+        if str(system_prompt or "").strip():
+            messages.append({"role": "system", "content": str(system_prompt)})
+        messages.append({"role": "user", "content": str(user_prompt or "")})
+
+        result = self.complete_raw(
+            messages=messages,
+            model=model,
+            username=username,
+            api_mode="chat",
+            options={"temperature": 0.3},
+        )
+        if not result.get("success"):
+            raise RuntimeError(f"Nexora API Error: {result.get('message') or 'request failed'}")
+        return str(result.get("content") or "")
 
     def extract_outline(self, text: str) -> str:
-        """解析教材大纲"""
-        system = "你是一个专业助教。请将以下教材内容解析为结构良好的知识点大纲（Markdown格式）。"
-        return self.chat_complete(system, text[:15000]) # 限制长度防止超限
+        system = "Extract a short learning outline in markdown."
+        return self.chat_complete(system, str(text or "")[:15000])
