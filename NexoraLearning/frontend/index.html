@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NexoraLearning 学习看板</title>
-  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260428_04">
+  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260429_06">
 </head>
 <body>
   <main class="learning-shell" id="learningPanel">
@@ -46,11 +46,24 @@
           </div>
         </header>
 
-        <section class="materials-layout">
+        <section id="materialsLayout" class="materials-layout">
           <aside class="materials-list-pane">
             <div id="lectureList" class="materials-list"></div>
           </aside>
           <section id="lectureDetailPane" class="materials-detail-pane"></section>
+        </section>
+
+        <section id="readerPane" class="materials-reader-pane" hidden>
+          <header class="reader-head">
+            <button id="backFromReaderBtn" class="nxl-icon-btn" type="button" aria-label="返回课程详情" title="返回课程详情">←</button>
+            <div class="reader-head-text">
+              <div id="readerTitle" class="reader-title">教材阅读</div>
+              <div id="readerSubTitle" class="reader-subtitle">提取文本预览</div>
+            </div>
+          </header>
+          <section id="readerContent" class="reader-content">
+            <div class="materials-empty">请选择教材后进入阅读</div>
+          </section>
         </section>
       </article>
     </section>
@@ -132,6 +145,6 @@
       </article>
     </section>
   </main>
-  <script src="/api/frontend/assets/app.js?v=20260428_04"></script>
+  <script src="/api/frontend/assets/app.js?v=20260429_06"></script>
 </body>
 </html>
