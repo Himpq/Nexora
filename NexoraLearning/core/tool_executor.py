@@ -17,7 +17,7 @@ from .lectures import (
     update_book,
 )
 from .tools import TOOLS
-from .vectorization import queue_vectorize_book, vectorize_book
+from .vector import queue_vectorize_book, vectorize_book
 
 
 class ToolExecutor:

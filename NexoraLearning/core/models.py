@@ -6,15 +6,142 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
+import threading
 import re
+from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Type
 
 import prompts
 from .nexora_proxy import NexoraProxy
+from .runlog import log_event
 
 
-DEFAULT_NEXORA_MODEL = "doubao-seed-1-6-250615"
+DEFAULT_NEXORA_MODEL = ""
 PLACEHOLDER_PATTERN = re.compile(r"{{\s*([^{}]+?)\s*}}")
+_MODEL_CONFIG_LOCK = threading.RLock()
+
+
+DEFAULT_SCHEDULER_MODELS_CONFIG: Dict[str, Any] = {
+    "default_nexora_model": DEFAULT_NEXORA_MODEL,
+    "rough_reading": {
+        "enabled": True,
+        "model_name": "",
+        "api_mode": "chat",
+        "temperature": 0.2,
+        "max_output_tokens": 4000,
+        "max_input_chars": 120000,
+        "prompt_notes": "",
+    }
+}
+
+
+def _scheduler_models_config_path(cfg: Mapping[str, Any]) -> Path:
+    """定位全局配置文件路径（models 分支存储在 config.json 中）。"""
+    raw = str(cfg.get("_config_path") or "").strip()
+    if raw:
+        return Path(raw)
+    data_dir = Path(str(cfg.get("data_dir") or "data"))
+    return data_dir.parent / "config.json"
+
+
+def load_scheduler_models_config(cfg: Mapping[str, Any]) -> Dict[str, Any]:
+    """读取并合并模型调度配置（来源：config.json -> models）。"""
+    path = _scheduler_models_config_path(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    base = json.loads(json.dumps(DEFAULT_SCHEDULER_MODELS_CONFIG, ensure_ascii=False))
+    if not path.exists():
+        root = {"models": base}
+        path.write_text(json.dumps(root, ensure_ascii=False, indent=2), encoding="utf-8")
+        return base
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return base
+    except Exception:
+        return base
+    models_branch = raw.get("models") if isinstance(raw, dict) else {}
+    if not isinstance(models_branch, dict):
+        models_branch = {}
+    merged = dict(base)
+    for key, value in models_branch.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            branch = dict(merged[key])
+            branch.update(value)
+            merged[key] = branch
+        else:
+            merged[key] = value
+    return merged
+
+
+def save_scheduler_models_config(cfg: Mapping[str, Any], payload: Mapping[str, Any]) -> Dict[str, Any]:
+    """写回模型调度配置到 config.json 的 models 分支。"""
+    with _MODEL_CONFIG_LOCK:
+        path = _scheduler_models_config_path(cfg)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        current = load_scheduler_models_config(cfg)
+        merged = dict(current)
+        for key, value in dict(payload or {}).items():
+            if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+                branch = dict(merged[key])
+                branch.update(value)
+                merged[key] = branch
+            else:
+                merged[key] = value
+        try:
+            root = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+            if not isinstance(root, dict):
+                root = {}
+        except Exception:
+            root = {}
+        root["models"] = merged
+        path.write_text(json.dumps(root, ensure_ascii=False, indent=2), encoding="utf-8")
+        return merged
+
+
+def get_rough_reading_model_config(cfg: Mapping[str, Any]) -> Dict[str, Any]:
+    """读取粗读模型配置。"""
+    data = load_scheduler_models_config(cfg)
+    rough = data.get("rough_reading")
+    if isinstance(rough, dict):
+        return dict(rough)
+    return dict(DEFAULT_SCHEDULER_MODELS_CONFIG["rough_reading"])
+
+
+def update_rough_reading_model_config(cfg: Mapping[str, Any], updates: Mapping[str, Any]) -> Dict[str, Any]:
+    """更新粗读模型配置并做基础类型校验。"""
+    current = get_rough_reading_model_config(cfg)
+    allowed_fields = {
+        "enabled",
+        "model_name",
+        "api_mode",
+        "temperature",
+        "max_output_tokens",
+        "max_input_chars",
+        "prompt_notes",
+    }
+    sanitized: Dict[str, Any] = {}
+    for key, value in dict(updates or {}).items():
+        if key not in allowed_fields:
+            continue
+        sanitized[key] = value
+    if "enabled" in sanitized:
+        sanitized["enabled"] = bool(sanitized["enabled"])
+    for int_field in ("max_output_tokens", "max_input_chars"):
+        if int_field in sanitized:
+            try:
+                sanitized[int_field] = max(1, int(sanitized[int_field]))
+            except Exception:
+                sanitized[int_field] = current.get(int_field)
+    if "temperature" in sanitized:
+        try:
+            sanitized["temperature"] = float(sanitized["temperature"])
+        except Exception:
+            sanitized["temperature"] = current.get("temperature")
+    merged_branch = dict(current)
+    merged_branch.update(sanitized)
+    save_scheduler_models_config(cfg, {"rough_reading": merged_branch})
+    return merged_branch
 
 
 @dataclass(frozen=True)
@@ -184,7 +311,9 @@ class BaseLearningModel:
             raise ValueError("model_key must be defined on subclasses.")
 
         self.cfg = dict(cfg)
-        self.model_name = model_name or self.default_model_name
+        models_cfg = load_scheduler_models_config(self.cfg)
+        configured_default = str(models_cfg.get("default_nexora_model") or "").strip()
+        self.model_name = model_name or configured_default or self.default_model_name
         self.context_manager = context_manager or PromptContextManager()
         self.nexora_client = nexora_client or NexoraCompletionClient(self.cfg)
 
@@ -239,12 +368,37 @@ class BaseLearningModel:
             extra_prompt_vars=extra_prompt_vars,
         )
         target_username = username or prompt_bundle["username"] or None
-        return self.nexora_client.complete(
+        log_event(
+            "model_context_input",
+            "模型输入（BaseLearningModel.run）",
+            payload={
+                "model_key": self.model_key,
+                "model_name": model_name or self.model_name,
+                "username": target_username or "",
+            },
+            content=json.dumps(
+                {"system": prompt_bundle["system"], "user": prompt_bundle["user"]},
+                ensure_ascii=False,
+                indent=2,
+            )[:12000],
+        )
+        output = self.nexora_client.complete(
             system_prompt=prompt_bundle["system"],
             user_prompt=prompt_bundle["user"],
             model=model_name or self.model_name,
             username=target_username,
         )
+        log_event(
+            "model_output",
+            "模型输出（BaseLearningModel.run）",
+            payload={
+                "model_key": self.model_key,
+                "model_name": model_name or self.model_name,
+                "username": target_username or "",
+            },
+            content=output[:12000],
+        )
+        return output
 
     def preview_prompts(
         self,
@@ -274,6 +428,12 @@ class IntensiveReadingModel(BaseLearningModel):
     """Placeholder model for close reading and study guidance."""
 
     model_key = "intensive_reading"
+
+
+class CoarseReadingModel(BaseLearningModel):
+    """Model used for rough reading / chapter structure extraction."""
+
+    model_key = "coarse_reading"
 
 
 class AnswerModel(BaseLearningModel):
@@ -322,6 +482,7 @@ class LearningModelFactory:
     """Factory for model instances by logical task name."""
 
     _registry: Dict[str, Type[BaseLearningModel]] = {
+        "coarse_reading": CoarseReadingModel,
         "question": QuestionGenerationModel,
         "question_verify": QuestionVerifyModel,
         "intensive_reading": IntensiveReadingModel,

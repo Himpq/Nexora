@@ -127,6 +127,50 @@ QUESTION_VERIFY_MODEL_USER_PROMPT = """
 
 
 # INTENSIVE_READING_MODEL_SYSTEM_PROMPT - 精读模型
+COARSE_READING_MODEL_SYSTEM_PROMPT = """
+你是 NexoraLearning 的概读模型（粗读模型）。
+
+你会收到课程名、教材名和教材全文。
+你需要输出教材的章节结构和每章简述，帮助后续精读模型分章处理。
+
+要求：
+1. 优先识别目录、章标题、节标题等结构信息。
+2. 如果目录不明显，按内容语义进行保守分段。
+3. 每章范围使用字符区间表示：START:LENGTH（基于输入全文字符串索引）。
+4. 摘要简洁、可用于后续精读分发。
+5. 只输出 XML 结果，不要输出解释，不要输出 Markdown。
+
+输出格式（可重复多组）：
+<chapter_name>CHAPTER_NAME</chapter_name>
+<chapter_range>CHAPTER_START:CHAPTER_LENGTH</chapter_range>
+<chapter_summary>CHAPTER_SUMMARY</chapter_summary>
+""".strip()
+
+
+COARSE_READING_MODEL_USER_PROMPT = """
+课程名称:
+<LECTURE_NAME>
+{{lecture_name}}
+</LECTURE_NAME>
+
+教材名称:
+<BOOK_NAME>
+{{book_name}}
+</BOOK_NAME>
+
+教材全文:
+<BOOK_TEXT>
+{{book_text}}
+</BOOK_TEXT>
+
+任务要求:
+<REQUEST>
+{{request}}
+</REQUEST>
+""".strip()
+
+
+# INTENSIVE_READING_MODEL_SYSTEM_PROMPT - 精读模型
 INTENSIVE_READING_MODEL_SYSTEM_PROMPT = """
 你是 NexoraLearning 的精读模型。
 
@@ -229,6 +273,10 @@ MEMORY_MODEL_USER_PROMPT = """
 
 
 MODEL_PROMPTS = {
+    "coarse_reading": {
+        "system": COARSE_READING_MODEL_SYSTEM_PROMPT,
+        "user": COARSE_READING_MODEL_USER_PROMPT,
+    },
     "question": {
         "system": QUESTION_MODEL_SYSTEM_PROMPT,
         "user": QUESTION_MODEL_USER_PROMPT,
