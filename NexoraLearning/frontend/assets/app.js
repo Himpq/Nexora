@@ -279,6 +279,7 @@
     ].join(" ");
   }
 
+  
   function renderPie() {
     const courses = buildDashboardCourses(state.dashboardRows).slice(0, 6);
     const totalByRows = courses.reduce((sum, item) => sum + toNumber(item.studyHours, 0), 0);
