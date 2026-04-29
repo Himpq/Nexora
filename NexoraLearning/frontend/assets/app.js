@@ -351,8 +351,8 @@
       <div class="user-profile-avatar">${escapeHtml(avatar)}</div>
       <div class="user-profile-meta">
         <div class="user-profile-name">${escapeHtml(username)}</div>
-        <div class="user-profile-line">\u89d2\u8272\uff1a${escapeHtml(role)} · \u5168\u90e8\u8bfe\u7a0b\uff1a${state.allLectureRows.length} ·  \u6559\u6750\uff1a${booksCount}</div>
-        <div class="user-profile-line">\u5b66\u4e60\u65f6\u957f\uff1a${totalHours > 0 ? `${totalHours.toFixed(1)}h` : "0h"} \u00b7 \u6a21\u578b\uff1a${connected ? `\u5df2\u8fde\u63a5(${modelsCount})` : "\u672a\u8fde\u63a5"}</div>
+        <div class="user-profile-line">角色：${escapeHtml(role)} · 全部课程：${state.allLectureRows.length} · 教材：${booksCount}</div>
+        <div class="user-profile-line">学习时长：${totalHours > 0 ? `${totalHours.toFixed(1)}h` : "0h"} · 模型：${connected ? `已连接(${modelsCount})` : "未连接"}</div>
       </div>
     `;
   }

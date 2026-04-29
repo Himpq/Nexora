@@ -2,6 +2,7 @@
 
 from .models import (
     AnswerModel,
+    CoarseReadingModel,
     IntensiveReadingModel,
     LearningModelFactory,
     MemoryProfileModel,
@@ -9,6 +10,8 @@ from .models import (
     PromptContextManager,
     QuestionGenerationModel,
     QuestionVerifyModel,
+    get_rough_reading_model_config,
+    update_rough_reading_model_config,
 )
 from .lectures import (
     create_book,
@@ -24,7 +27,6 @@ from .lectures import (
     load_book_chunks,
     load_book_text,
     save_book_chunks,
-    save_book_papi_request,
     save_book_text,
     update_book,
     update_lecture,
@@ -47,4 +49,4 @@ from .user import (
     update_user,
     write_memory,
 )
-from .vectorization import NexoraVectorPAPIPlaceholder, queue_vectorize_book, vectorize_book
+from .vector import queue_vectorize_book, vectorize_book

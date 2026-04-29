@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
-import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 from urllib import error as urllib_error
@@ -14,7 +12,7 @@ from urllib import request as urllib_request
 from flask import Blueprint, jsonify, request, send_from_directory
 from werkzeug.utils import secure_filename
 
-from core import chroma, parser, storage
+from core import storage
 from core.lectures import (
     create_book as create_lecture_book,
     create_lecture as create_learning_lecture,
@@ -32,8 +30,28 @@ from core.lectures import (
 )
 from core.models import LearningModelFactory
 from core.nexora_proxy import NexoraProxy
+from core.runlog import log_event
 from core import user as user_store
-from core.vectorization import queue_vectorize_book, vectorize_book
+from core.booksproc import (
+    enqueue_book_refinement,
+    get_refinement_queue_snapshot,
+    get_rough_reading_settings,
+    init_booksproc,
+    list_refinement_candidates,
+    mark_book_uploaded,
+    update_rough_reading_settings,
+)
+from core.vector import (
+    collection_stats as vector_collection_stats,
+    delete_course_collection as vector_delete_course_collection,
+    delete_material_chunks as vector_delete_material_chunks,
+    query as vector_query,
+    queue_vectorize_book,
+    split_text_for_vector,
+    upsert_chunks as vector_upsert_chunks,
+    vectorize_book,
+)
+from core.utils import extract_text
 
 bp = Blueprint("learning", __name__, url_prefix="/api")
 _cfg: Dict[str, Any] = {}
@@ -72,6 +90,7 @@ def init_routes(cfg: Dict[str, Any]) -> None:
     global _cfg, _proxy
     _cfg = cfg
     _proxy = NexoraProxy(cfg)
+    init_booksproc(cfg)
 
 
 def _allowed(filename: str) -> bool:
@@ -544,11 +563,39 @@ def completions():
             runner = LearningModelFactory.create(model_type, _cfg, model_name=model)
             safe_context_payload = context_payload if isinstance(context_payload, dict) else {}
             safe_extra_prompt_vars = extra_prompt_vars if isinstance(extra_prompt_vars, dict) else {}
+            log_event(
+                "model_context_input",
+                "模型上下文输入（model_type）",
+                payload={
+                    "model_type": model_type,
+                    "model": model or "",
+                    "username": username or "",
+                },
+                content=json.dumps(
+                    {
+                        "prompt": prompt,
+                        "context_payload": safe_context_payload,
+                        "extra_prompt_vars": safe_extra_prompt_vars,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            )
             content = runner.run(
                 prompt,
                 context_payload=safe_context_payload,
                 extra_prompt_vars=safe_extra_prompt_vars,
                 username=username,
+            )
+            log_event(
+                "model_output",
+                "模型输出（model_type）",
+                payload={
+                    "model_type": model_type,
+                    "model": model or "",
+                    "username": username or "",
+                },
+                content=content[:12000],
             )
             preview = runner.preview_prompts(
                 prompt,
@@ -565,6 +612,21 @@ def completions():
             })
 
         if messages or input_items:
+            log_event(
+                "model_context_input",
+                "模型上下文输入（raw messages/input）",
+                payload={
+                    "model_type": "",
+                    "model": model or "",
+                    "username": username or "",
+                    "api_mode": api_mode,
+                },
+                content=json.dumps(
+                    {"messages": messages or [], "input": input_items or [], "instructions": instructions},
+                    ensure_ascii=False,
+                    indent=2,
+                )[:12000],
+            )
             result = _proxy.complete_raw(
                 messages=list(messages or []),
                 model=model,
@@ -584,6 +646,16 @@ def completions():
                         "username": username,
                     }
                 ), 502
+            log_event(
+                "model_output",
+                "模型输出（raw messages/input）",
+                payload={
+                    "model": model or "",
+                    "username": username or "",
+                    "api_mode": result.get("api_mode") or api_mode,
+                },
+                content=str(result.get("content") or "")[:12000],
+            )
             return jsonify(
                 {
                     "success": True,
@@ -597,7 +669,24 @@ def completions():
                 }
             )
 
+        log_event(
+            "model_context_input",
+            "模型上下文输入（chat prompt）",
+            payload={
+                "model_type": model_type or "",
+                "model": model or "",
+                "username": username or "",
+                "api_mode": "chat",
+            },
+            content=json.dumps({"system_prompt": system_prompt, "prompt": prompt}, ensure_ascii=False, indent=2)[:12000],
+        )
         content = _proxy.chat_complete(system_prompt=system_prompt, user_prompt=prompt, model=model, username=username)
+        log_event(
+            "model_output",
+            "模型输出（chat prompt）",
+            payload={"model": model or "", "username": username or "", "api_mode": "chat"},
+            content=content[:12000],
+        )
         return jsonify({
             "success": True,
             "content": content,
@@ -608,6 +697,21 @@ def completions():
         })
     except Exception as exc:
         return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@bp.route("/models/rough-reading", methods=["GET"])
+def get_rough_reading_model_settings():
+    settings = get_rough_reading_settings(_cfg)
+    return jsonify({"success": True, "model_type": "coarse_reading", "settings": settings})
+
+
+@bp.route("/models/rough-reading", methods=["PATCH"])
+def patch_rough_reading_model_settings():
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "error": "JSON body is required."}), 400
+    settings = update_rough_reading_settings(_cfg, data)
+    return jsonify({"success": True, "model_type": "coarse_reading", "settings": settings})
 
 
 @bp.route("/courses", methods=["GET"])
@@ -638,7 +742,7 @@ def get_course(course_id: str):
         return jsonify({"success": False, "error": "Course not found."}), 404
 
     materials = storage.list_materials(_cfg, course_id)
-    stats = chroma.collection_stats(_cfg, course_id)
+    stats = vector_collection_stats(_cfg, course_id)
     return jsonify({
         "success": True,
         "course": meta,
@@ -666,7 +770,7 @@ def delete_course(course_id: str):
     if not storage.get_course(_cfg, course_id):
         return jsonify({"success": False, "error": "Course not found."}), 404
 
-    chroma.delete_course_collection(_cfg, course_id)
+    vector_delete_course_collection(_cfg, course_id)
     storage.delete_course(_cfg, course_id)
     return jsonify({"success": True, "message": f"Course {course_id} deleted."})
 
@@ -730,7 +834,7 @@ def delete_material(course_id: str, material_id: str):
         return jsonify({"success": False, "error": "Material not found."}), 404
 
     try:
-        chroma.delete_material_chunks(_cfg, course_id, material_id)
+        vector_delete_material_chunks(_cfg, course_id, material_id)
     except Exception:
         pass
 
@@ -771,7 +875,7 @@ def query_course(course_id: str):
         return jsonify({"success": False, "error": "q is required."}), 400
 
     top_k = min(int(request.args.get("top_k") or 5), 20)
-    results = chroma.query(_cfg, course_id, query_text, top_k=top_k)
+    results = vector_query(_cfg, course_id, query_text, top_k=top_k)
     return jsonify({"success": True, "results": results, "count": len(results)})
 
 
@@ -781,7 +885,7 @@ def course_stats(course_id: str):
     if not meta:
         return jsonify({"success": False, "error": "Course not found."}), 404
 
-    stats = chroma.collection_stats(_cfg, course_id)
+    stats = vector_collection_stats(_cfg, course_id)
     materials = storage.list_materials(_cfg, course_id)
     return jsonify({
         "success": True,
@@ -944,6 +1048,72 @@ def get_book_text(lecture_id: str, book_id: str):
     })
 
 
+@bp.route("/books/refinement/list", methods=["GET"])
+@bp.route("/books/extract/list", methods=["GET"])
+def list_books_for_refinement_all():
+    status = str(request.args.get("status") or "").strip()
+    rows = list_refinement_candidates(_cfg, status=status)
+    return jsonify({"success": True, "items": rows, "total": len(rows)})
+
+
+@bp.route("/lectures/<lecture_id>/books/refinement/list", methods=["GET"])
+@bp.route("/lectures/<lecture_id>/books/extract/list", methods=["GET"])
+def list_books_for_refinement_lecture(lecture_id: str):
+    status = str(request.args.get("status") or "").strip()
+    rows = list_refinement_candidates(_cfg, lecture_id=lecture_id, status=status)
+    return jsonify({"success": True, "lecture_id": lecture_id, "items": rows, "total": len(rows)})
+
+
+@bp.route("/refinement/queue", methods=["GET"])
+@bp.route("/extract/queue", methods=["GET"])
+def get_refinement_queue():
+    return jsonify({"success": True, **get_refinement_queue_snapshot()})
+
+
+@bp.route("/lectures/<lecture_id>/books/refinement", methods=["POST"])
+@bp.route("/lectures/<lecture_id>/books/extract", methods=["POST"])
+def enqueue_lecture_books_refinement(lecture_id: str):
+    data = request.get_json(silent=True) or {}
+    book_ids = data.get("book_ids")
+    if not isinstance(book_ids, list) or not book_ids:
+        return jsonify({"success": False, "error": "book_ids(list) is required."}), 400
+    actor = str(data.get("actor") or "").strip()
+    force = _as_bool(data.get("force"), default=False)
+
+    queued: List[Dict[str, Any]] = []
+    errors: List[Dict[str, Any]] = []
+    for raw_id in book_ids:
+        book_id = str(raw_id or "").strip()
+        if not book_id:
+            continue
+        try:
+            result = enqueue_book_refinement(_cfg, lecture_id, book_id, actor=actor, force=force)
+            queued.append({"book_id": book_id, **result})
+        except Exception as exc:
+            errors.append({"book_id": book_id, "error": str(exc)})
+
+    return jsonify(
+        {
+            "success": True,
+            "lecture_id": lecture_id,
+            "queued_count": len(queued),
+            "error_count": len(errors),
+            "queued": queued,
+            "errors": errors,
+        }
+    )
+
+
+@bp.route("/lectures/<lecture_id>/books/<book_id>/refinement", methods=["POST"])
+@bp.route("/lectures/<lecture_id>/books/<book_id>/extract", methods=["POST"])
+def enqueue_single_book_refinement(lecture_id: str, book_id: str):
+    data = request.get_json(silent=True) or {}
+    actor = str(data.get("actor") or "").strip()
+    force = _as_bool(data.get("force"), default=False)
+    result = enqueue_book_refinement(_cfg, lecture_id, book_id, actor=actor, force=force)
+    return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, **result}), 202
+
+
 @bp.route("/lectures/<lecture_id>/books/<book_id>/file", methods=["POST"])
 def upload_book_file(lecture_id: str, book_id: str):
     _, _, error_response = _book_or_404(lecture_id, book_id)
@@ -964,9 +1134,7 @@ def upload_book_file(lecture_id: str, book_id: str):
     if len(content) > max_mb * 1024 * 1024:
         return jsonify({"success": False, "error": f"file exceeds {max_mb}MB"}), 413
 
-    safe_name = secure_filename(filename_raw) or "content.txt"
-    ext = Path(safe_name).suffix.lower() or ".txt"
-    tmp_path = ""
+    safe_name = secure_filename(filename_raw) or "content.bin"
     try:
         save_book_original_file(
             _cfg,
@@ -975,41 +1143,23 @@ def upload_book_file(lecture_id: str, book_id: str):
             content,
             filename=safe_name,
         )
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-            tmp.write(content)
-            tmp_path = str(tmp.name)
-
-        text = parser.extract_text(tmp_path)
-        saved = save_book_text(_cfg, lecture_id, book_id, text, filename=safe_name)
-        saved = update_lecture_book(
+        saved = mark_book_uploaded(
             _cfg,
             lecture_id,
             book_id,
-            {
-                "source_type": "file",
-                "error": "",
-            },
-        ) or saved
-        vectorization_result = queue_vectorize_book(_cfg, lecture_id, book_id, force=True)
-        preview_text = text[:3000]
+            filename=safe_name,
+            file_size=len(content),
+            actor=str(request.headers.get("X-User") or request.headers.get("X-Username") or ""),
+        )
         return jsonify(
             {
                 "success": True,
                 "book": saved,
-                "chars": len(text),
-                "preview_text": preview_text,
-                "vectorization": vectorization_result,
+                "message": "File uploaded. Refinement is not started automatically.",
             }
         ), 201
     except Exception as exc:
         return jsonify({"success": False, "error": str(exc)}), 500
-    finally:
-        if tmp_path:
-            try:
-                os.remove(tmp_path)
-            except Exception:
-                pass
 
 
 @bp.route("/lectures/<lecture_id>/books/<book_id>/text", methods=["POST"])
@@ -1090,8 +1240,8 @@ def trigger_book_vectorize(lecture_id: str, book_id: str):
 def _parse_and_store(cfg: Dict[str, Any], course_id: str, material_id: str, file_path: str, filename: str) -> None:
     try:
         storage.update_material_meta(cfg, course_id, material_id, {"parse_status": "parsing"})
-        text = parser.extract_text(file_path)
-        chunks = parser.chunk_text(text)
+        text = extract_text(file_path)
+        chunks = split_text_for_vector(cfg, text)
         chunk_count = storage.save_chunks(cfg, course_id, material_id, chunks)
         storage.update_material_meta(
             cfg,
@@ -1118,7 +1268,7 @@ def _parse_and_store(cfg: Dict[str, Any], course_id: str, material_id: str, file
 def _ingest_chunks(cfg: Dict[str, Any], course_id: str, material_id: str, chunks, title: str) -> None:
     try:
         storage.update_material_meta(cfg, course_id, material_id, {"ingest_status": "ingesting"})
-        vector_count = chroma.upsert_chunks(cfg, course_id, material_id, chunks, title)
+        vector_count = vector_upsert_chunks(cfg, course_id, material_id, chunks, title)
         storage.update_material_meta(
             cfg,
             course_id,

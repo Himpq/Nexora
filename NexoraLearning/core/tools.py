@@ -104,7 +104,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "triggerBookVectorization",
-            "description": "Trigger placeholder NexoraDB PAPI vectorization for a book.",
+            "description": "Trigger NexoraDB vectorization for a book.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -121,7 +121,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "vectorSearch",
-            "description": "Search vectorized lecture chunks. Before real NexoraDB integration, this uses local placeholder search over stored chunks.",
+            "description": "Search vectorized lecture chunks (local fallback over chunks when needed).",
             "parameters": {
                 "type": "object",
                 "properties": {

@@ -24,6 +24,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
+from .utils import read_chunks_jsonl, write_chunks_jsonl
 
 _lock = threading.RLock()
 
@@ -70,10 +71,6 @@ def _book_vectors_dir(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Pat
 
 def _book_chunks_path(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Path:
     return _book_vectors_dir(cfg, lecture_id, book_id) / "chunks.jsonl"
-
-
-def _book_papi_request_path(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Path:
-    return _book_vectors_dir(cfg, lecture_id, book_id) / "papi_request.json"
 
 
 def ensure_lecture_root(cfg: Dict[str, Any]) -> Path:
@@ -209,8 +206,17 @@ def create_book(
         "text_filename": "",
         "original_filename": "",
         "original_path": "",
+        "refinement_status": "empty",
+        "refinement_error": "",
+        "refinement_job_id": "",
+        "refinement_requested_at": None,
+        "refined_at": None,
+        "coarse_status": "idle",
+        "coarse_output": "",
+        "coarse_model_name": "",
+        "coarse_error": "",
         "vector_status": "idle",
-        "vector_provider": "nexoradb_papi_placeholder",
+        "vector_provider": "nexoradb_service",
         "chunks_count": 0,
         "vector_count": 0,
         "last_vectorized_at": None,
@@ -280,6 +286,9 @@ def save_book_text(
             "text_chars": len(content),
             "text_filename": filename.strip() or "content.txt",
             "text_path": str(text_path),
+            "refinement_status": "extracted" if content.strip() else "empty",
+            "refinement_error": "",
+            "coarse_error": "",
             "vector_status": "idle",
             "chunks_count": 0,
             "vector_count": 0,
@@ -314,6 +323,11 @@ def save_book_original_file(
         {
             "original_filename": safe_name,
             "original_path": str(target_path),
+            "refinement_status": "uploaded",
+            "refinement_error": "",
+            "coarse_status": "idle",
+            "coarse_output": "",
+            "coarse_error": "",
         },
     ) or book
 
@@ -332,42 +346,12 @@ def save_book_chunks(
     chunks: Iterable[str],
 ) -> int:
     chunks_path = _book_chunks_path(cfg, lecture_id, book_id)
-    chunks_path.parent.mkdir(parents=True, exist_ok=True)
-    with chunks_path.open("w", encoding="utf-8") as handle:
-        count = 0
-        for index, chunk in enumerate(chunks):
-            handle.write(json.dumps({"index": index, "text": chunk}, ensure_ascii=False) + "\n")
-            count += 1
-    return count
+    return write_chunks_jsonl(chunks_path, list(chunks))
 
 
 def load_book_chunks(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> List[str]:
     chunks_path = _book_chunks_path(cfg, lecture_id, book_id)
-    if not chunks_path.exists():
-        return []
-
-    chunks: List[str] = []
-    for line in chunks_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            chunks.append(str(json.loads(line).get("text") or ""))
-        except Exception:
-            continue
-    return chunks
-
-
-def save_book_papi_request(
-    cfg: Dict[str, Any],
-    lecture_id: str,
-    book_id: str,
-    payload: Dict[str, Any],
-) -> str:
-    request_path = _book_papi_request_path(cfg, lecture_id, book_id)
-    request_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_json(request_path, payload)
-    return str(request_path)
+    return read_chunks_jsonl(chunks_path)
 
 
 def initialize_lecture_dirs(
