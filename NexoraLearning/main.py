@@ -17,6 +17,8 @@ ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 CONFIG_PATH = DATA_DIR / "config.json"
 
+os.chdir(ROOT)
+
 DEFAULT_CONFIG = {
     "port": 5001,
     "debug": False,

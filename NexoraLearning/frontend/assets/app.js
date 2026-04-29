@@ -17,8 +17,14 @@
     timePieChart: document.getElementById("timePieChart"),
     userProfileCard: document.getElementById("userProfileCard"),
     profileAdminSettingsBtn: document.getElementById("profileAdminSettingsBtn"),
+    materialsLayout: document.getElementById("materialsLayout"),
     lectureList: document.getElementById("lectureList"),
     lectureDetailPane: document.getElementById("lectureDetailPane"),
+    readerPane: document.getElementById("readerPane"),
+    backFromReaderBtn: document.getElementById("backFromReaderBtn"),
+    readerTitle: document.getElementById("readerTitle"),
+    readerSubTitle: document.getElementById("readerSubTitle"),
+    readerContent: document.getElementById("readerContent"),
     createLectureTitleInput: document.getElementById("createLectureTitleInput"),
     createLectureCategoryInput: document.getElementById("createLectureCategoryInput"),
     createLectureStatusSelect: document.getElementById("createLectureStatusSelect"),
@@ -58,6 +64,8 @@
     uploadRightMode: "preview",
     previewObjectUrl: "",
     totalStudyHours: 0,
+    isReaderOpen: false,
+    readerRequestToken: 0,
   };
 
   function escapeHtml(str) {
@@ -80,7 +88,55 @@
 
   function statusText(status) {
     const key = String(status || "").trim().toLowerCase();
-    return STATUS_LABELS[key] || key || "未设置";
+    return STATUS_LABELS[key] || key || "未知状态";
+  }
+
+  function normalizeStatusKey(value) {
+    return String(value || "").trim().toLowerCase();
+  }
+
+  function vectorStatusLabel(value, provider) {
+    const key = normalizeStatusKey(value);
+    const providerKey = normalizeStatusKey(provider);
+    if (key === "done" && providerKey.includes("placeholder")) return "占位完成(未入库)";
+    if (["done", "success", "indexed", "ready"].includes(key)) return "已向量化";
+    if (["running", "processing", "pending", "queued"].includes(key)) return "向量化中";
+    if (["failed", "error"].includes(key)) return "向量化失败";
+    return key || "未开始";
+  }
+
+  function materialStatusLabel(value) {
+    const key = normalizeStatusKey(value);
+    if (["active", "ready", "published"].includes(key)) return "可用";
+    if (["draft", "new"].includes(key)) return "草稿";
+    if (["archived"].includes(key)) return "归档";
+    return key || "未知";
+  }
+
+  function statusBadgeClass(value, provider) {
+    const key = normalizeStatusKey(value);
+    const providerKey = normalizeStatusKey(provider);
+    if (key === "done" && providerKey.includes("placeholder")) return "is-placeholder";
+    if (["done", "success", "indexed", "ready", "active", "published"].includes(key)) return "is-ready";
+    if (["running", "processing", "pending", "queued"].includes(key)) return "is-processing";
+    if (["failed", "error"].includes(key)) return "is-error";
+    return "is-idle";
+  }
+
+  function notifyHostInputVisibility(hidden) {
+    const payload = {
+      source: "nexora-learning",
+      type: "nexora:chat-input:visibility",
+      hidden: !!hidden,
+    };
+    try {
+      window.dispatchEvent(new CustomEvent("nexora:chat-input:visibility", { detail: payload }));
+    } catch (_err) {}
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage(payload, "*");
+      }
+    } catch (_err) {}
   }
 
   function getRuntimeUsername() {
@@ -104,6 +160,7 @@
     el.dashboardView.classList.toggle("is-active", name === "dashboard");
     el.materialsView.classList.toggle("is-active", name === "materials");
     el.uploadView.classList.toggle("is-active", name === "upload");
+    notifyHostInputVisibility(true);
   }
 
   function setUploadTab(tab) {
@@ -123,9 +180,18 @@
   }
 
   function getCourseProgress(lecture, books) {
-    const direct = toNumber((lecture && (lecture.progress ?? lecture.study_progress ?? lecture.learning_progress)) ?? NaN, NaN);
-    if (Number.isFinite(direct)) return clamp(Math.round(direct), 0, 100);
     const list = Array.isArray(books) ? books : [];
+    const direct = toNumber((lecture && (lecture.progress ?? lecture.study_progress ?? lecture.learning_progress)) ?? NaN, NaN);
+    const currentChapter = String((lecture && lecture.current_chapter) || "").trim();
+    const nextChapter = String((lecture && lecture.next_chapter) || "").trim();
+    if (!list.length && !currentChapter && !nextChapter) return 0;
+    if (Number.isFinite(direct)) {
+      if (direct >= 100 && !currentChapter && !nextChapter) {
+        const hasReadyBook = list.some((book) => ["done", "success", "indexed", "ready"].includes(normalizeStatusKey(book && book.vector_status)));
+        if (!hasReadyBook) return 0;
+      }
+      return clamp(Math.round(direct), 0, 100);
+    }
     if (!list.length) return 0;
     let ready = 0;
     list.forEach((book) => {
@@ -145,17 +211,17 @@
     const lectureCurrent = String((lecture && lecture.current_chapter) || "").trim();
     const lectureNext = String((lecture && lecture.next_chapter) || "").trim();
     if (lectureCurrent || lectureNext) {
-      return { current: lectureCurrent || "未设置", next: lectureNext || "未设置" };
+      return { current: lectureCurrent || "待开始", next: lectureNext || "待规划" };
     }
     const list = Array.isArray(books) ? books : [];
     const first = list.find((book) => String(book.current_chapter || "").trim() || String(book.next_chapter || "").trim());
     if (first) {
       return {
-        current: String(first.current_chapter || "").trim() || "未设置",
-        next: String(first.next_chapter || "").trim() || "未设置",
+        current: String(first.current_chapter || "").trim() || "待开始",
+        next: String(first.next_chapter || "").trim() || "待规划",
       };
     }
-    return { current: "未设置", next: "未设置" };
+    return { current: "待开始", next: "待规划" };
   }
 
   function buildDashboardCourses(rows) {
@@ -182,7 +248,7 @@
       return;
     }
     el.progressList.innerHTML = courses.map((course) => `
-      <article class="nxl-course-item">
+      <article class="nxl-course-item" data-progress-lecture-id="${escapeHtml(course.id)}">
         <div class="nxl-course-top">
           <div class="nxl-course-title">${escapeHtml(course.title)}</div>
           <div class="nxl-course-percent">${course.progress}%</div>
@@ -316,7 +382,7 @@
     }).join("");
   }
 
-  function renderLectureDetail(previewText) {
+  function renderLectureDetail() {
     const row = getSelectedLectureRow();
     if (!row) {
       el.lectureDetailPane.innerHTML = '<div class="materials-empty">请选择课程</div>';
@@ -330,7 +396,6 @@
     if (!state.selectedBookId && books.length) {
       state.selectedBookId = String(books[0].id || "");
     }
-    const selectedBook = books.find((book) => String(book.id || "") === state.selectedBookId) || null;
     const toggleBtnClass = isLearning ? "nxl-icon-btn nxl-icon-btn-danger" : "nxl-icon-btn nxl-icon-btn-dark";
     const toggleBtnTitle = isLearning ? "退出学习" : "加入学习";
     const toggleBtnText = isLearning ? "−" : "+";
@@ -347,15 +412,18 @@
               <button class="${toggleBtnClass}" data-action="toggle-learning" data-lecture-id="${escapeHtml(lectureId)}" aria-label="${toggleBtnTitle}" title="${toggleBtnTitle}">${toggleBtnText}</button>
             </div>
           </div>
-          <div class="detail-grid">
-            <div class="detail-line">分类：${escapeHtml(String(lecture.category || "未分类"))}</div>
-            <div class="detail-line">状态：${escapeHtml(statusText(lecture.status))}</div>
-            <div class="detail-line">当前章节：${escapeHtml(chapter.current)}</div>
-            <div class="detail-line">下一章节：${escapeHtml(chapter.next)}</div>
-            <div class="detail-line">教材数量：${books.length}</div>
-            <div class="detail-line">课程进度：${getCourseProgress(lecture, books)}%</div>
+          <div class="detail-kv-list">
+            <div class="detail-kv-row"><div class="detail-kv-label">分类</div><div class="detail-kv-value">${escapeHtml(String(lecture.category || "暂无分类"))}</div></div>
+            <div class="detail-kv-row"><div class="detail-kv-label">状态</div><div class="detail-kv-value">${escapeHtml(statusText(lecture.status))}</div></div>
+            <div class="detail-kv-row"><div class="detail-kv-label">当前章节</div><div class="detail-kv-value">${escapeHtml(chapter.current)}</div></div>
+            <div class="detail-kv-row"><div class="detail-kv-label">下一章节</div><div class="detail-kv-value">${escapeHtml(chapter.next)}</div></div>
+            <div class="detail-kv-row"><div class="detail-kv-label">教材数量</div><div class="detail-kv-value">${books.length}</div></div>
+            <div class="detail-kv-row"><div class="detail-kv-label">课程进度</div><div class="detail-kv-value">${getCourseProgress(lecture, books)}%</div></div>
           </div>
-          <div class="detail-line" style="margin-top:8px;">描述：${escapeHtml(String(lecture.description || "暂无描述"))}</div>
+          <div class="detail-description">
+            <div class="detail-description-label">课程描述</div>
+            <div class="detail-description-text">${escapeHtml(String(lecture.description || "暂无描述"))}</div>
+          </div>
         </section>
         <section class="detail-section">
           <div class="detail-title">教材列表</div>
@@ -366,33 +434,51 @@
               return `
                 <article class="book-item ${active}" data-book-id="${escapeHtml(bookId)}">
                   <div class="book-title">${escapeHtml(book.title || bookId)}</div>
-                  <div class="book-meta">向量：${escapeHtml(book.vector_status || "-")} · 状态：${escapeHtml(book.status || "-")}</div>
+                  <div class="book-badges">
+                    <span class="book-badge ${statusBadgeClass(book.vector_status, book.vector_provider)}">向量：${escapeHtml(vectorStatusLabel(book.vector_status, book.vector_provider))}</span>
+                    <span class="book-badge ${statusBadgeClass(book.status)}">教材：${escapeHtml(materialStatusLabel(book.status))}</span>
+                  </div>
                 </article>
               `;
             }).join("") : '<div class="materials-empty">暂无教材</div>'}
           </div>
         </section>
-        <section class="detail-section">
-          <div class="detail-title">教材预览</div>
-          ${previewText
-            ? `<pre class="materials-preview-text">${escapeHtml(previewText)}</pre>`
-            : `<div class="materials-empty">${selectedBook ? "点击教材可加载预览内容" : "暂无教材预览"}</div>`}
-        </section>
       </section>
     `;
   }
 
-  async function fetchBookTextPreview() {
+  async function fetchBookTextFull() {
     const row = getSelectedLectureRow();
     if (!row || !state.selectedBookId) return "";
     const lectureId = String((row.lecture || {}).id || "");
     if (!lectureId) return "";
     try {
       const data = await fetchJson(`/api/lectures/${encodeURIComponent(lectureId)}/books/${encodeURIComponent(state.selectedBookId)}/text`);
-      return String(data.content || "").slice(0, 5000);
+      return String(data.content || "");
     } catch (_err) {
       return "";
     }
+  }
+
+  function renderReaderPlaceholder(msg) {
+    el.readerContent.innerHTML = `<div class="materials-empty">${escapeHtml(msg || "阅读内容加载中")}</div>`;
+  }
+
+  function openReader(title, subtitle, content) {
+    state.isReaderOpen = true;
+    state.readerRequestToken += 1;
+    el.materialsLayout.hidden = true;
+    el.readerPane.hidden = false;
+    el.readerTitle.textContent = title || "教材阅读";
+    el.readerSubTitle.textContent = subtitle || "";
+    el.readerContent.innerHTML = `<pre class="materials-preview-text">${escapeHtml(content || "（暂无文本内容）")}</pre>`;
+  }
+
+  function closeReader() {
+    state.isReaderOpen = false;
+    state.readerRequestToken += 1;
+    el.readerPane.hidden = true;
+    el.materialsLayout.hidden = false;
   }
 
   function setSelectedUploadLecture(lectureId) {
@@ -571,7 +657,7 @@
     renderProgressList();
     renderPie();
     renderLectureList();
-    renderLectureDetail("");
+    renderLectureDetail();
     renderUploadLectureInputDefault();
   }
 
@@ -643,15 +729,39 @@
     el.openMaterialsViewBtn.addEventListener("click", () => {
       setView("materials");
       renderLectureList();
-      renderLectureDetail("");
+      closeReader();
+      renderLectureDetail();
     });
 
-    el.backToDashboardBtn.addEventListener("click", () => setView("dashboard"));
+    el.progressList.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const item = target.closest("[data-progress-lecture-id]");
+      if (!item) return;
+      const lectureId = String(item.getAttribute("data-progress-lecture-id") || "");
+      if (!lectureId) return;
+      state.selectedLectureId = lectureId;
+      state.selectedBookId = "";
+      closeReader();
+      setView("materials");
+      renderLectureList();
+      renderLectureDetail();
+    });
+
+    el.backToDashboardBtn.addEventListener("click", () => {
+      closeReader();
+      setView("dashboard");
+    });
     el.openUploadViewBtn.addEventListener("click", () => {
+      closeReader();
       setView("upload");
       setUploadTab("upload");
     });
-    el.backToMaterialsBtn.addEventListener("click", () => setView("materials"));
+    el.backToMaterialsBtn.addEventListener("click", () => {
+      closeReader();
+      setView("materials");
+    });
+    el.backFromReaderBtn.addEventListener("click", () => closeReader());
 
     el.kickerCreateTabBtn.addEventListener("click", () => setUploadTab("create"));
     el.kickerUploadTabBtn.addEventListener("click", () => setUploadTab("upload"));
@@ -674,8 +784,9 @@
       if (!item) return;
       state.selectedLectureId = String(item.getAttribute("data-lecture-id") || "");
       state.selectedBookId = "";
+      closeReader();
       renderLectureList();
-      renderLectureDetail("");
+      renderLectureDetail();
     });
 
     el.lectureDetailPane.addEventListener("click", async (event) => {
@@ -691,7 +802,7 @@
           await toggleLearningSelection(lectureId, selected);
           await refreshAll();
           renderLectureList();
-          renderLectureDetail("");
+          renderLectureDetail();
           showToast(selected ? "已加入学习课程" : "已退出学习课程");
         } catch (err) {
           showToast(`操作失败：${err.message || "未知错误"}`);
@@ -701,9 +812,28 @@
 
       const bookItem = target.closest(".book-item");
       if (!bookItem) return;
+      const requestToken = state.readerRequestToken + 1;
       state.selectedBookId = String(bookItem.getAttribute("data-book-id") || "");
-      const preview = await fetchBookTextPreview();
-      renderLectureDetail(preview);
+      renderLectureDetail();
+      const row = getSelectedLectureRow();
+      const lecture = row ? (row.lecture || {}) : {};
+      const books = row && Array.isArray(row.books) ? row.books : [];
+      const book = books.find((it) => String((it && it.id) || "") === state.selectedBookId) || {};
+      renderReaderPlaceholder("正在加载教材全文...");
+      openReader(
+        String(book.title || "教材阅读"),
+        `${getLectureTitle(lecture)} · ${vectorStatusLabel(book.vector_status, book.vector_provider)} / ${materialStatusLabel(book.status)}`,
+        "正在加载..."
+      );
+      const fullText = await fetchBookTextFull();
+      if (requestToken !== state.readerRequestToken || !state.isReaderOpen) {
+        return;
+      }
+      openReader(
+        String(book.title || "教材阅读"),
+        `${getLectureTitle(lecture)} · ${vectorStatusLabel(book.vector_status, book.vector_provider)} / ${materialStatusLabel(book.status)}`,
+        fullText || "（当前教材暂无可读取文本，可能仍在解析或向量化）"
+      );
     });
 
     el.materialsPreviewPane.addEventListener("input", (event) => {
@@ -741,8 +871,9 @@
         await createLecture();
         await refreshAll();
         setView("materials");
+        closeReader();
         renderLectureList();
-        renderLectureDetail("");
+        renderLectureDetail();
         showToast("课程创建成功");
       } catch (err) {
         showToast(`创建失败：${err.message || "未知错误"}`);
@@ -754,9 +885,9 @@
         await uploadBookByFile();
         await refreshAll();
         setView("materials");
-        const preview = await fetchBookTextPreview();
+        closeReader();
         renderLectureList();
-        renderLectureDetail(preview);
+        renderLectureDetail();
         showToast("教材上传成功，已完成文本提取并提交向量化");
       } catch (err) {
         showToast(`上传失败：${err.message || "未知错误"}`);
@@ -772,6 +903,7 @@
   async function init() {
     state.username = getRuntimeUsername();
     setView("dashboard");
+    closeReader();
     setUploadTab("create");
     renderUploadPreviewEmpty("请选择教材文件后预览");
     setUploadTip("支持 EPUB、PDF、TXT、MD、DOCX、DOC、C、H、PY、RST", false);
@@ -785,4 +917,6 @@
   init().catch((err) => {
     showToast(`初始化失败：${err && err.message ? err.message : "未知错误"}`);
   });
+
+  window.addEventListener("beforeunload", () => notifyHostInputVisibility(false));
 })();
