@@ -340,7 +340,7 @@
   function renderUserProfile() {
     const username = String(state.user.username || state.username || "访客");
     const role = state.isAdmin ? "管理员" : "成员";
-    const avatar = username.slice(0, 2).toUpperCase() || "NL";
+    const avatar = (Array.from(username.trim())[0] || "N").toUpperCase();
     const booksCount = state.allLectureRows.reduce((sum, row) => sum + toNumber(row && row.books_count, 0), 0);
     const connected = !!(state.integration && state.integration.connected);
     const modelsCount = toNumber(state.integration && state.integration.models_count, 0);
