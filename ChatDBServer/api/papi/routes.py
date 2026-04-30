@@ -395,6 +395,22 @@ def papi_completions(username=None):
                 continue
             request_kwargs[_k] = val
 
+    _tools_payload = request_kwargs.get('tools') if isinstance(request_kwargs.get('tools'), list) else []
+    _tool_names: List[str] = []
+    for _tool in _tools_payload:
+        if not isinstance(_tool, dict):
+            continue
+        if isinstance(_tool.get('function'), dict):
+            _name = str((_tool.get('function') or {}).get('name') or '').strip()
+        else:
+            _name = str(_tool.get('name') or '').strip()
+        if _name:
+            _tool_names.append(_name)
+    _papi_log(
+        f"[PAPI_TOOLS] model={model_name} use_responses_compat={'yes' if use_responses_compat else 'no'} "
+        f"tool_count={len(_tools_payload)} tool_names={_tool_names}"
+    )
+
     if use_responses_compat and responses_instructions:
         request_kwargs['instructions'] = responses_instructions
 
@@ -555,6 +571,7 @@ def papi_completions(username=None):
 # ==================== PAPI - 模型列表 ====================
 
 @papi_bp.route('/api/papi/models', methods=['GET'])
+@papi_bp.route('/api/papi/model_list', methods=['GET'])
 @papi_bp.route('/api/papi/v1/models', methods=['GET'])
 @require_papi_key
 def papi_list_models():

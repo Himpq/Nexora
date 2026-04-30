@@ -21,6 +21,7 @@ import uuid
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from .utils import read_chunks_jsonl, write_chunks_jsonl
 
 _lock = threading.RLock()
 
@@ -194,26 +195,13 @@ def save_chunks(cfg: Dict[str, Any], course_id: str, material_id: str, chunks: L
     """将切片以 JSONL 格式写入 chunks.jsonl。返回写入数量。"""
     d = _material_dir(cfg, course_id, material_id)
     chunks_path = d / "chunks.jsonl"
-    with open(str(chunks_path), "w", encoding="utf-8") as f:
-        for i, chunk in enumerate(chunks):
-            f.write(json.dumps({"index": i, "text": chunk}, ensure_ascii=False) + "\n")
-    return len(chunks)
+    return write_chunks_jsonl(chunks_path, chunks)
 
 
 def load_chunks(cfg: Dict[str, Any], course_id: str, material_id: str) -> List[str]:
     """从 chunks.jsonl 读取切片列表。"""
     p = _material_dir(cfg, course_id, material_id) / "chunks.jsonl"
-    if not p.exists():
-        return []
-    chunks = []
-    for line in p.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line:
-            try:
-                chunks.append(json.loads(line)["text"])
-            except Exception:
-                pass
-    return chunks
+    return read_chunks_jsonl(p)
 
 
 # ──────────────────────────────────────────────

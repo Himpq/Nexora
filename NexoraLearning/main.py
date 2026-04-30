@@ -9,9 +9,11 @@ import json
 import secrets
 import os
 from pathlib import Path
+from typing import Any, Dict
 
 from flask import Flask, jsonify
 from flask_cors import CORS
+from core.runlog import init_run_logger
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
@@ -40,6 +42,22 @@ DEFAULT_CONFIG = {
     "nexoradb": {
         "service_url": "http://127.0.0.1:8100",
         "api_key": ""
+    },
+    "models": {
+        "default_nexora_model": "",
+        "rough_reading": {
+            "enabled": True,
+            "model_name": "",
+            "api_mode": "chat",
+            "temperature": 0.2,
+            "max_output_tokens": 4000,
+            "max_input_chars": 120000,
+            "prompt_notes": ""
+        }
+    },
+    "vectorization": {
+        "chunk_size": 600,
+        "chunk_overlap": 80
     }
 }
 
@@ -52,7 +70,7 @@ def ensure_bootstrap():
     (DATA_DIR / "users").mkdir(exist_ok=True)
 
     if not CONFIG_PATH.exists():
-        config = DEFAULT_CONFIG.copy()
+        config = json.loads(json.dumps(DEFAULT_CONFIG, ensure_ascii=False))
         config["auth_token"] = secrets.token_hex(24)
         config = _normalize_config_paths(config)
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -61,10 +79,19 @@ def ensure_bootstrap():
         return config
     
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        return _normalize_config_paths(json.load(f))
+        loaded = json.load(f)
+    merged = _deep_merge_defaults(DEFAULT_CONFIG, loaded if isinstance(loaded, dict) else {})
+    if "auth_token" not in merged:
+        merged["auth_token"] = secrets.token_hex(24)
+    normalized = _normalize_config_paths(merged)
+    if normalized != loaded:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(normalized, f, indent=4, ensure_ascii=False)
+    return normalized
 
 
 def _normalize_config_paths(config):
+    """规范化配置中的路径字段。"""
     cfg = dict(config or {})
     data_dir = Path(str(cfg.get("data_dir") or "data"))
     if not data_dir.is_absolute():
@@ -72,8 +99,25 @@ def _normalize_config_paths(config):
     cfg["data_dir"] = str(data_dir)
     return cfg
 
+
+def _deep_merge_defaults(defaults: Dict[str, Any], current: Dict[str, Any]) -> Dict[str, Any]:
+    """递归合并默认配置，保证新增字段自动补齐。"""
+    merged: Dict[str, Any] = json.loads(json.dumps(defaults, ensure_ascii=False))
+    for key, value in dict(current or {}).items():
+        if (
+            key in merged
+            and isinstance(merged[key], dict)
+            and isinstance(value, dict)
+        ):
+            merged[key] = _deep_merge_defaults(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
 def create_app():
     cfg = ensure_bootstrap()
+    cfg["_config_path"] = str(CONFIG_PATH)
+    init_run_logger(cfg)
 
     app = Flask(__name__)
     CORS(app)
