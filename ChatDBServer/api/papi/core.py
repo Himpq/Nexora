@@ -561,6 +561,48 @@ def _papi_normalize_tool_choice(tool_choice: Any, *, use_responses_api: bool) ->
 
 def _papi_extract_completion_text(response_obj: Any) -> str:
     """从 provider 返回中尽量提取完整文本。"""
+    def _stringify_any(value: Any) -> str:
+        if value is None:
+            return ''
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            parts: List[str] = []
+            for item in value:
+                piece = _stringify_any(item)
+                if piece:
+                    parts.append(piece)
+            return ''.join(parts)
+        if isinstance(value, dict):
+            for key in ('text', 'content', 'reasoning_content', 'reasoning_text', 'value', 'delta'):
+                if key in value:
+                    piece = _stringify_any(value.get(key))
+                    if piece:
+                        return piece
+            return ''
+        try:
+            return str(value)
+        except Exception:
+            return ''
+
+    def _extract_reasoning_like(container: Any) -> str:
+        if container is None:
+            return ''
+        if isinstance(container, dict):
+            for key in ('reasoning_content', 'reasoning', 'reasoning_text', 'thinking', 'thinking_content'):
+                piece = _stringify_any(container.get(key))
+                if piece and piece.strip():
+                    return piece.strip()
+        else:
+            for key in ('reasoning_content', 'reasoning', 'reasoning_text', 'thinking', 'thinking_content'):
+                try:
+                    piece = _stringify_any(getattr(container, key, None))
+                except Exception:
+                    piece = ''
+                if piece and piece.strip():
+                    return piece.strip()
+        return ''
+
     if response_obj is None:
         return ''
 
@@ -577,6 +619,18 @@ def _papi_extract_completion_text(response_obj: Any) -> str:
                 content = msg.get('content', '')
                 if isinstance(content, str):
                     return content.strip()
+                reasoning_text = _extract_reasoning_like(msg)
+                if reasoning_text:
+                    return reasoning_text
+            if isinstance(choice0, dict):
+                delta_obj = choice0.get('delta')
+                if isinstance(delta_obj, dict):
+                    delta_content = delta_obj.get('content')
+                    if isinstance(delta_content, str) and delta_content.strip():
+                        return delta_content.strip()
+                    reasoning_text = _extract_reasoning_like(delta_obj)
+                    if reasoning_text:
+                        return reasoning_text
 
         output_items = response_obj.get('output')
         if isinstance(output_items, list):
@@ -627,6 +681,17 @@ def _papi_extract_completion_text(response_obj: Any) -> str:
                     merged = ''.join([p for p in parts if str(p or '').strip()]).strip()
                     if merged:
                         return merged
+                reasoning_text = _extract_reasoning_like(message)
+                if reasoning_text:
+                    return reasoning_text
+            delta_obj = getattr(choice0, 'delta', None)
+            if delta_obj is not None:
+                delta_content = getattr(delta_obj, 'content', None)
+                if isinstance(delta_content, str) and delta_content.strip():
+                    return delta_content.strip()
+                reasoning_text = _extract_reasoning_like(delta_obj)
+                if reasoning_text:
+                    return reasoning_text
     except Exception:
         pass
 
@@ -883,6 +948,22 @@ def _papi_stream_openai_chat(
                     'choices': [{'index': 0, 'delta': delta_payload, 'finish_reason': None}],
                 }
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            elif ev_type == 'reasoning_delta':
+                # 对外保持 chat.completions 兼容：把 reasoning 也映射到 delta.content，
+                # 避免上游仅输出 thinking 时客户端看到空流。
+                delta_payload: Dict[str, Any] = {}
+                if not role_emitted:
+                    delta_payload['role'] = 'assistant'
+                    role_emitted = True
+                delta_payload['content'] = str(ev.get('delta') or '')
+                chunk = {
+                    'id': completion_id,
+                    'object': 'chat.completion.chunk',
+                    'created': created_ts,
+                    'model': model_name,
+                    'choices': [{'index': 0, 'delta': delta_payload, 'finish_reason': None}],
+                }
+                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
             elif ev_type == 'function_call_delta':
                 saw_tool_calls = True
                 delta_tool_call = {
@@ -898,6 +979,37 @@ def _papi_stream_openai_chat(
                 if arguments_delta:
                     delta_tool_call['function']['arguments'] = arguments_delta
                 delta_payload = {'tool_calls': [delta_tool_call]}
+                if not role_emitted:
+                    delta_payload['role'] = 'assistant'
+                    role_emitted = True
+                chunk = {
+                    'id': completion_id,
+                    'object': 'chat.completion.chunk',
+                    'created': created_ts,
+                    'model': model_name,
+                    'choices': [{'index': 0, 'delta': delta_payload, 'finish_reason': None}],
+                }
+                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            elif ev_type == 'function_call':
+                # 兼容部分 provider 只在收尾阶段给完整 function_call，而不提供 delta 过程。
+                saw_tool_calls = True
+                call_index = int(ev.get('index', 0) or 0)
+                call_id = str(ev.get('call_id') or ('tool_call_' + str(call_index)))
+                fc_name = str(ev.get('name') or '')
+                fc_args = str(ev.get('arguments') or '')
+                delta_payload = {
+                    'tool_calls': [
+                        {
+                            'index': call_index,
+                            'id': call_id,
+                            'type': 'function',
+                            'function': {
+                                'name': fc_name,
+                                'arguments': fc_args,
+                            },
+                        }
+                    ]
+                }
                 if not role_emitted:
                     delta_payload['role'] = 'assistant'
                     role_emitted = True
@@ -1539,6 +1651,20 @@ def _papi_stream_openai_responses(
                         response_id_box[0] = rid if rid.startswith('resp_') else f'resp_{rid}'
                     continue
                 if ev_type == 'content_delta':
+                    delta = str(ev.get('delta') or '')
+                    if delta:
+                        text_parts.append(delta)
+                        yield _emit({
+                            'type': 'response.output_text.delta',
+                            'response_id': response_id_box[0],
+                            'item_id': message_item_id,
+                            'output_index': message_output_index,
+                            'content_index': message_content_index,
+                            'delta': delta,
+                        })
+                    continue
+                if ev_type == 'reasoning_delta':
+                    # 与 content 统一通道输出，避免上游仅 thinking 时客户端拿不到文本。
                     delta = str(ev.get('delta') or '')
                     if delta:
                         text_parts.append(delta)

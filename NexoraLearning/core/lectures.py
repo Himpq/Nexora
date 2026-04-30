@@ -8,6 +8,8 @@ Directory layout:
         books/
           {book_id}/
             book.json
+            bookinfo.xml
+            bookdetail.xml
             text/
               content.txt
             vectors/
@@ -24,8 +26,15 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
+from .utils import read_chunks_jsonl, write_chunks_jsonl
 
 _lock = threading.RLock()
+_BOOK_SUMMARY_KEYS = {
+    "coarse_output",
+    "coarse_model_name",
+    "current_chapter",
+    "next_chapter",
+}
 
 
 def _lectures_root(cfg: Dict[str, Any]) -> Path:
@@ -52,6 +61,14 @@ def _book_json_path(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Path:
     return _book_dir(cfg, lecture_id, book_id) / "book.json"
 
 
+def _book_info_xml_path(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Path:
+    return _book_dir(cfg, lecture_id, book_id) / "bookinfo.xml"
+
+
+def _book_detail_xml_path(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Path:
+    return _book_dir(cfg, lecture_id, book_id) / "bookdetail.xml"
+
+
 def _book_text_dir(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Path:
     return _book_dir(cfg, lecture_id, book_id) / "text"
 
@@ -70,10 +87,6 @@ def _book_vectors_dir(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Pat
 
 def _book_chunks_path(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Path:
     return _book_vectors_dir(cfg, lecture_id, book_id) / "chunks.jsonl"
-
-
-def _book_papi_request_path(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Path:
-    return _book_vectors_dir(cfg, lecture_id, book_id) / "papi_request.json"
 
 
 def ensure_lecture_root(cfg: Dict[str, Any]) -> Path:
@@ -167,12 +180,15 @@ def list_books(cfg: Dict[str, Any], lecture_id: str) -> List[Dict[str, Any]]:
         if entry.is_dir() and book_path.exists():
             data = _read_json(book_path)
             if data:
-                books.append(data)
+                books.append(_sanitize_book_metadata(cfg, lecture_id, data))
     return books
 
 
 def get_book(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Optional[Dict[str, Any]]:
-    return _read_json(_book_json_path(cfg, lecture_id, book_id))
+    data = _read_json(_book_json_path(cfg, lecture_id, book_id))
+    if not isinstance(data, dict):
+        return data
+    return _sanitize_book_metadata(cfg, lecture_id, data)
 
 
 def create_book(
@@ -209,16 +225,23 @@ def create_book(
         "text_filename": "",
         "original_filename": "",
         "original_path": "",
+        "refinement_status": "empty",
+        "refinement_error": "",
+        "refinement_job_id": "",
+        "refinement_requested_at": None,
+        "refined_at": None,
+        "coarse_status": "idle",
+        "coarse_error": "",
         "vector_status": "idle",
-        "vector_provider": "nexoradb_papi_placeholder",
+        "vector_provider": "nexoradb_service",
         "chunks_count": 0,
         "vector_count": 0,
         "last_vectorized_at": None,
-        "current_chapter": "",
-        "next_chapter": "",
         "error": "",
     }
     _write_json(_book_json_path(cfg, lecture_id, book_id), book)
+    _write_text(_book_info_xml_path(cfg, lecture_id, book_id), "")
+    _write_text(_book_detail_xml_path(cfg, lecture_id, book_id), "")
     _increment_lecture_field(cfg, lecture_id, "book_count", 1)
     return book
 
@@ -237,7 +260,11 @@ def update_book(
     sanitized.pop("id", None)
     sanitized.pop("lecture_id", None)
     sanitized.pop("created_at", None)
+    for key in _BOOK_SUMMARY_KEYS:
+        sanitized.pop(key, None)
     book.update(sanitized)
+    for key in _BOOK_SUMMARY_KEYS:
+        book.pop(key, None)
     book["updated_at"] = int(time.time())
     _write_json(_book_json_path(cfg, lecture_id, book_id), book)
     return book
@@ -280,6 +307,9 @@ def save_book_text(
             "text_chars": len(content),
             "text_filename": filename.strip() or "content.txt",
             "text_path": str(text_path),
+            "refinement_status": "extracted" if content.strip() else "empty",
+            "refinement_error": "",
+            "coarse_error": "",
             "vector_status": "idle",
             "chunks_count": 0,
             "vector_count": 0,
@@ -314,8 +344,48 @@ def save_book_original_file(
         {
             "original_filename": safe_name,
             "original_path": str(target_path),
+            "refinement_status": "uploaded",
+            "refinement_error": "",
+            "coarse_status": "idle",
+            "coarse_error": "",
         },
     ) or book
+
+
+def load_book_info_xml(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> str:
+    """读取教材粗读结果 XML。"""
+    path = _book_info_xml_path(cfg, lecture_id, book_id)
+    if not path.exists():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+
+
+def save_book_info_xml(cfg: Dict[str, Any], lecture_id: str, book_id: str, content: str) -> str:
+    """保存教材粗读结果 XML。"""
+    path = _book_info_xml_path(cfg, lecture_id, book_id)
+    _write_text(path, str(content or ""))
+    return str(path)
+
+
+def load_book_detail_xml(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> str:
+    """读取教材精读结果 XML。"""
+    path = _book_detail_xml_path(cfg, lecture_id, book_id)
+    if not path.exists():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+
+
+def save_book_detail_xml(cfg: Dict[str, Any], lecture_id: str, book_id: str, content: str) -> str:
+    """保存教材精读结果 XML。"""
+    path = _book_detail_xml_path(cfg, lecture_id, book_id)
+    _write_text(path, str(content or ""))
+    return str(path)
 
 
 def load_book_text(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> str:
@@ -332,42 +402,12 @@ def save_book_chunks(
     chunks: Iterable[str],
 ) -> int:
     chunks_path = _book_chunks_path(cfg, lecture_id, book_id)
-    chunks_path.parent.mkdir(parents=True, exist_ok=True)
-    with chunks_path.open("w", encoding="utf-8") as handle:
-        count = 0
-        for index, chunk in enumerate(chunks):
-            handle.write(json.dumps({"index": index, "text": chunk}, ensure_ascii=False) + "\n")
-            count += 1
-    return count
+    return write_chunks_jsonl(chunks_path, list(chunks))
 
 
 def load_book_chunks(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> List[str]:
     chunks_path = _book_chunks_path(cfg, lecture_id, book_id)
-    if not chunks_path.exists():
-        return []
-
-    chunks: List[str] = []
-    for line in chunks_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            chunks.append(str(json.loads(line).get("text") or ""))
-        except Exception:
-            continue
-    return chunks
-
-
-def save_book_papi_request(
-    cfg: Dict[str, Any],
-    lecture_id: str,
-    book_id: str,
-    payload: Dict[str, Any],
-) -> str:
-    request_path = _book_papi_request_path(cfg, lecture_id, book_id)
-    request_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_json(request_path, payload)
-    return str(request_path)
+    return read_chunks_jsonl(chunks_path)
 
 
 def initialize_lecture_dirs(
@@ -411,6 +451,12 @@ def _write_json(path: Path, data: Any) -> None:
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _write_text(path: Path, content: str) -> None:
+    with _lock:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(content or ""), encoding="utf-8")
+
+
 def _increment_lecture_field(cfg: Dict[str, Any], lecture_id: str, field: str, delta: int) -> None:
     with _lock:
         lecture = get_lecture(cfg, lecture_id)
@@ -419,3 +465,18 @@ def _increment_lecture_field(cfg: Dict[str, Any], lecture_id: str, field: str, d
         lecture[field] = max(0, int(lecture.get(field) or 0) + delta)
         lecture["updated_at"] = int(time.time())
         _write_json(_lecture_json_path(cfg, lecture_id), lecture)
+
+
+def _sanitize_book_metadata(cfg: Dict[str, Any], lecture_id: str, book: Dict[str, Any]) -> Dict[str, Any]:
+    """清理 book.json 中不应存放的模型摘要字段。"""
+    data = dict(book or {})
+    changed = False
+    for key in _BOOK_SUMMARY_KEYS:
+        if key in data:
+            data.pop(key, None)
+            changed = True
+    if changed:
+        book_id = str(data.get("id") or "").strip()
+        if book_id:
+            _write_json(_book_json_path(cfg, lecture_id, book_id), data)
+    return data
