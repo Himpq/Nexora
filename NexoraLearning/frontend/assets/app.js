@@ -244,9 +244,16 @@
   function renderProgressList() {
     const courses = buildDashboardCourses(state.dashboardRows);
     if (!courses.length) {
-      el.progressList.innerHTML = '<div class="materials-empty">你还没有选择学习课程，请在课程页加入学习</div>';
+      el.progressList.classList.add("is-empty");
+      el.progressList.innerHTML = `
+        <div class="materials-empty progress-empty">
+          <span class="progress-empty-line">你还没有选择学习课程</span>
+          <span class="progress-empty-line">请在右上角课程页加入课程</span>
+        </div>
+      `;
       return;
     }
+    el.progressList.classList.remove("is-empty");
     el.progressList.innerHTML = courses.map((course) => `
       <article class="nxl-course-item" data-progress-lecture-id="${escapeHtml(course.id)}">
         <div class="nxl-course-top">
@@ -351,8 +358,8 @@
       <div class="user-profile-avatar">${escapeHtml(avatar)}</div>
       <div class="user-profile-meta">
         <div class="user-profile-name">${escapeHtml(username)}</div>
-        <div class="user-profile-line">\u89d2\u8272\uff1a${escapeHtml(role)} · \u5168\u90e8\u8bfe\u7a0b\uff1a${state.allLectureRows.length} ·  \u6559\u6750\uff1a${booksCount}</div>
-        <div class="user-profile-line">\u5b66\u4e60\u65f6\u957f\uff1a${totalHours > 0 ? `${totalHours.toFixed(1)}h` : "0h"} \u00b7 \u6a21\u578b\uff1a${connected ? `\u5df2\u8fde\u63a5(${modelsCount})` : "\u672a\u8fde\u63a5"}</div>
+        <div class="user-profile-line">角色：${escapeHtml(role)} · 全部课程：${state.allLectureRows.length} · 教材：${booksCount}</div>
+        <div class="user-profile-line">学习时长：${totalHours > 0 ? `${totalHours.toFixed(1)}h` : "0h"} · 模型：${connected ? `已连接(${modelsCount})` : "未连接"}</div>
       </div>
     `;
   }
