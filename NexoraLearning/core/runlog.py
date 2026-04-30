@@ -16,18 +16,21 @@ from typing import Any, Mapping, Optional
 
 _LOCK = threading.RLock()
 _LOG_PATH: Optional[Path] = None
+_MODEL_LOG_PATH: Optional[Path] = None
 
 
 def init_run_logger(cfg: Mapping[str, Any]) -> str:
     """初始化本次启动日志文件并返回文件路径。"""
-    global _LOG_PATH
+    global _LOG_PATH, _MODEL_LOG_PATH
     data_dir = Path(str((cfg or {}).get("data_dir") or "data"))
     logs_dir = data_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     _LOG_PATH = logs_dir / f"server_{ts}.log"
+    _MODEL_LOG_PATH = logs_dir / f"models_{ts}.log"
     with _LOCK:
         _LOG_PATH.write_text("", encoding="utf-8")
+        _MODEL_LOG_PATH.write_text("", encoding="utf-8")
     log_event(
         "server_start",
         "NexoraLearning server started",
@@ -64,9 +67,40 @@ def log_event(event_type: str, title: str, *, payload: Optional[Mapping[str, Any
             fh.write("\n".join(lines))
 
 
+def append_log_text(text: str) -> None:
+    """向当前日志文件直接追加原始文本（无额外事件包裹）。"""
+    path = _LOG_PATH
+    if path is None:
+        return
+    body = str(text or "")
+    if not body:
+        return
+    with _LOCK:
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(body)
+
+
+def log_model_text(text: str, *, source: str = "") -> None:
+    """仅记录模型文本输出到 models.log，并将 \\n 转义还原为真实换行。"""
+    path = _MODEL_LOG_PATH
+    if path is None:
+        return
+    raw = str(text or "")
+    if not raw.strip():
+        return
+    normalized = raw.replace("\\r\\n", "\n").replace("\\n", "\n")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    head = f"\n[{now}] {source or 'model'}\n"
+    with _LOCK:
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(head)
+            fh.write(normalized)
+            if not normalized.endswith("\n"):
+                fh.write("\n")
+
+
 def _to_json(data: Mapping[str, Any]) -> str:
     try:
         return json.dumps(dict(data), ensure_ascii=False, indent=2)
     except Exception:
         return json.dumps({"_raw": str(data)}, ensure_ascii=False, indent=2)
-

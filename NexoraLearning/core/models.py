@@ -10,7 +10,7 @@ import json
 import threading
 import re
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Type
+from typing import Any, Callable, Dict, Mapping, Optional, Type
 
 import prompts
 from .nexora_proxy import NexoraProxy
@@ -20,6 +20,7 @@ from .runlog import log_event
 DEFAULT_NEXORA_MODEL = ""
 PLACEHOLDER_PATTERN = re.compile(r"{{\s*([^{}]+?)\s*}}")
 _MODEL_CONFIG_LOCK = threading.RLock()
+_PROMPT_FILE_LOCK = threading.RLock()
 
 
 DEFAULT_SCHEDULER_MODELS_CONFIG: Dict[str, Any] = {
@@ -30,10 +31,45 @@ DEFAULT_SCHEDULER_MODELS_CONFIG: Dict[str, Any] = {
         "api_mode": "chat",
         "temperature": 0.2,
         "max_output_tokens": 4000,
-        "max_input_chars": 120000,
+        "max_output_chars": 240000,
+        "request_timeout": 240,
         "prompt_notes": "",
     }
 }
+
+
+def _prompts_dir(cfg: Mapping[str, Any]) -> Path:
+    """Return external prompt directory path: <data_dir>/prompts."""
+    data_dir = Path(str(cfg.get("data_dir") or "data"))
+    return data_dir / "prompts"
+
+
+def _prompt_file_path(cfg: Mapping[str, Any], model_key: str, prompt_role: str) -> Path:
+    """Map prompt key/role to markdown file path."""
+    safe_key = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(model_key or "").strip())
+    safe_role = "system" if str(prompt_role or "").strip().lower() == "system" else "user"
+    return _prompts_dir(cfg) / f"{safe_key}.{safe_role}.md"
+
+
+def _load_external_prompt_or_init(
+    cfg: Mapping[str, Any],
+    *,
+    model_key: str,
+    prompt_role: str,
+    fallback_text: str,
+) -> str:
+    """Read external prompt file in UTF-8; initialize from fallback if missing."""
+    target = _prompt_file_path(cfg, model_key, prompt_role)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with _PROMPT_FILE_LOCK:
+        if not target.exists():
+            target.write_text(str(fallback_text or ""), encoding="utf-8")
+            return str(fallback_text or "")
+        try:
+            return target.read_text(encoding="utf-8")
+        except Exception:
+            # If broken file encoding/content causes read failure, keep service usable.
+            return str(fallback_text or "")
 
 
 def _scheduler_models_config_path(cfg: Mapping[str, Any]) -> Path:
@@ -108,6 +144,19 @@ def get_rough_reading_model_config(cfg: Mapping[str, Any]) -> Dict[str, Any]:
     return dict(DEFAULT_SCHEDULER_MODELS_CONFIG["rough_reading"])
 
 
+def get_default_nexora_model(cfg: Mapping[str, Any]) -> str:
+    """读取默认 Nexora 模型名。"""
+    data = load_scheduler_models_config(cfg)
+    return str(data.get("default_nexora_model") or "").strip()
+
+
+def update_default_nexora_model(cfg: Mapping[str, Any], model_name: str) -> str:
+    """更新默认 Nexora 模型名。空字符串表示不设默认模型。"""
+    normalized = str(model_name or "").strip()
+    save_scheduler_models_config(cfg, {"default_nexora_model": normalized})
+    return normalized
+
+
 def update_rough_reading_model_config(cfg: Mapping[str, Any], updates: Mapping[str, Any]) -> Dict[str, Any]:
     """更新粗读模型配置并做基础类型校验。"""
     current = get_rough_reading_model_config(cfg)
@@ -117,7 +166,8 @@ def update_rough_reading_model_config(cfg: Mapping[str, Any], updates: Mapping[s
         "api_mode",
         "temperature",
         "max_output_tokens",
-        "max_input_chars",
+        "max_output_chars",
+        "request_timeout",
         "prompt_notes",
     }
     sanitized: Dict[str, Any] = {}
@@ -127,7 +177,7 @@ def update_rough_reading_model_config(cfg: Mapping[str, Any], updates: Mapping[s
         sanitized[key] = value
     if "enabled" in sanitized:
         sanitized["enabled"] = bool(sanitized["enabled"])
-    for int_field in ("max_output_tokens", "max_input_chars"):
+    for int_field in ("max_output_tokens", "max_output_chars", "request_timeout"):
         if int_field in sanitized:
             try:
                 sanitized[int_field] = max(1, int(sanitized[int_field]))
@@ -269,6 +319,8 @@ class NexoraCompletionClient:
         username: Optional[str] = None,
         api_mode: str = "chat",
         options: Optional[Mapping[str, Any]] = None,
+        request_timeout: Optional[float] = None,
+        on_delta: Optional[Callable[[str], None]] = None,
     ) -> str:
         messages = []
         if str(system_prompt or "").strip():
@@ -283,6 +335,8 @@ class NexoraCompletionClient:
             username=username,
             api_mode=api_mode,
             options=merged_options,
+            request_timeout=request_timeout,
+            on_delta=on_delta,
         )
         if not result.get("success"):
             raise RuntimeError(f"Nexora API Error: {result.get('message') or 'request failed'}")
@@ -322,7 +376,23 @@ class BaseLearningModel:
             prompt_pack = prompts.MODEL_PROMPTS[self.model_key]
         except KeyError as exc:
             raise KeyError(f"Unknown prompt pack: {self.model_key}") from exc
-        return dict(prompt_pack)
+        system_fallback = str(prompt_pack.get("system") or "")
+        user_fallback = str(prompt_pack.get("user") or "")
+        # Hot-reload behavior: always read external files on every call.
+        # If file does not exist, initialize once from code fallback.
+        system_text = _load_external_prompt_or_init(
+            self.cfg,
+            model_key=self.model_key,
+            prompt_role="system",
+            fallback_text=system_fallback,
+        )
+        user_text = _load_external_prompt_or_init(
+            self.cfg,
+            model_key=self.model_key,
+            prompt_role="user",
+            fallback_text=user_fallback,
+        )
+        return {"system": system_text, "user": user_text}
 
     def build_prompts(
         self,
@@ -361,6 +431,10 @@ class BaseLearningModel:
         extra_prompt_vars: Optional[Mapping[str, Any]] = None,
         model_name: Optional[str] = None,
         username: Optional[str] = None,
+        api_mode: str = "chat",
+        options: Optional[Mapping[str, Any]] = None,
+        request_timeout: Optional[float] = None,
+        on_delta: Optional[Callable[[str], None]] = None,
     ) -> str:
         prompt_bundle = self.build_prompts(
             request,
@@ -387,6 +461,10 @@ class BaseLearningModel:
             user_prompt=prompt_bundle["user"],
             model=model_name or self.model_name,
             username=target_username,
+            api_mode=api_mode,
+            options=options,
+            request_timeout=request_timeout,
+            on_delta=on_delta,
         )
         log_event(
             "model_output",

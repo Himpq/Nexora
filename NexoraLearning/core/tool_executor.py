@@ -14,7 +14,6 @@ from .lectures import (
     load_book_chunks,
     load_book_text,
     save_book_text,
-    update_book,
 )
 from .tools import TOOLS
 from .vector import queue_vectorize_book, vectorize_book
@@ -87,8 +86,6 @@ class ToolExecutor:
         book_id: str,
         content: str,
         filename: str = "content.txt",
-        current_chapter: str = "",
-        next_chapter: str = "",
         auto_vectorize: bool = True,
     ) -> Dict[str, Any]:
         if not str(content or "").strip():
@@ -101,16 +98,6 @@ class ToolExecutor:
             content,
             filename=filename,
         )
-        if current_chapter or next_chapter:
-            book = update_book(
-                self.cfg,
-                lecture_id,
-                book_id,
-                {
-                    "current_chapter": current_chapter,
-                    "next_chapter": next_chapter,
-                },
-            ) or book
 
         vectorization = None
         if auto_vectorize:

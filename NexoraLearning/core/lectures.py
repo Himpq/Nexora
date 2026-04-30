@@ -8,6 +8,8 @@ Directory layout:
         books/
           {book_id}/
             book.json
+            bookinfo.xml
+            bookdetail.xml
             text/
               content.txt
             vectors/
@@ -27,6 +29,12 @@ from typing import Any, Dict, Iterable, List, Optional
 from .utils import read_chunks_jsonl, write_chunks_jsonl
 
 _lock = threading.RLock()
+_BOOK_SUMMARY_KEYS = {
+    "coarse_output",
+    "coarse_model_name",
+    "current_chapter",
+    "next_chapter",
+}
 
 
 def _lectures_root(cfg: Dict[str, Any]) -> Path:
@@ -51,6 +59,14 @@ def _book_dir(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Path:
 
 def _book_json_path(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Path:
     return _book_dir(cfg, lecture_id, book_id) / "book.json"
+
+
+def _book_info_xml_path(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Path:
+    return _book_dir(cfg, lecture_id, book_id) / "bookinfo.xml"
+
+
+def _book_detail_xml_path(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Path:
+    return _book_dir(cfg, lecture_id, book_id) / "bookdetail.xml"
 
 
 def _book_text_dir(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Path:
@@ -164,12 +180,15 @@ def list_books(cfg: Dict[str, Any], lecture_id: str) -> List[Dict[str, Any]]:
         if entry.is_dir() and book_path.exists():
             data = _read_json(book_path)
             if data:
-                books.append(data)
+                books.append(_sanitize_book_metadata(cfg, lecture_id, data))
     return books
 
 
 def get_book(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Optional[Dict[str, Any]]:
-    return _read_json(_book_json_path(cfg, lecture_id, book_id))
+    data = _read_json(_book_json_path(cfg, lecture_id, book_id))
+    if not isinstance(data, dict):
+        return data
+    return _sanitize_book_metadata(cfg, lecture_id, data)
 
 
 def create_book(
@@ -212,19 +231,17 @@ def create_book(
         "refinement_requested_at": None,
         "refined_at": None,
         "coarse_status": "idle",
-        "coarse_output": "",
-        "coarse_model_name": "",
         "coarse_error": "",
         "vector_status": "idle",
         "vector_provider": "nexoradb_service",
         "chunks_count": 0,
         "vector_count": 0,
         "last_vectorized_at": None,
-        "current_chapter": "",
-        "next_chapter": "",
         "error": "",
     }
     _write_json(_book_json_path(cfg, lecture_id, book_id), book)
+    _write_text(_book_info_xml_path(cfg, lecture_id, book_id), "")
+    _write_text(_book_detail_xml_path(cfg, lecture_id, book_id), "")
     _increment_lecture_field(cfg, lecture_id, "book_count", 1)
     return book
 
@@ -243,7 +260,11 @@ def update_book(
     sanitized.pop("id", None)
     sanitized.pop("lecture_id", None)
     sanitized.pop("created_at", None)
+    for key in _BOOK_SUMMARY_KEYS:
+        sanitized.pop(key, None)
     book.update(sanitized)
+    for key in _BOOK_SUMMARY_KEYS:
+        book.pop(key, None)
     book["updated_at"] = int(time.time())
     _write_json(_book_json_path(cfg, lecture_id, book_id), book)
     return book
@@ -326,10 +347,45 @@ def save_book_original_file(
             "refinement_status": "uploaded",
             "refinement_error": "",
             "coarse_status": "idle",
-            "coarse_output": "",
             "coarse_error": "",
         },
     ) or book
+
+
+def load_book_info_xml(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> str:
+    """读取教材粗读结果 XML。"""
+    path = _book_info_xml_path(cfg, lecture_id, book_id)
+    if not path.exists():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+
+
+def save_book_info_xml(cfg: Dict[str, Any], lecture_id: str, book_id: str, content: str) -> str:
+    """保存教材粗读结果 XML。"""
+    path = _book_info_xml_path(cfg, lecture_id, book_id)
+    _write_text(path, str(content or ""))
+    return str(path)
+
+
+def load_book_detail_xml(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> str:
+    """读取教材精读结果 XML。"""
+    path = _book_detail_xml_path(cfg, lecture_id, book_id)
+    if not path.exists():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+
+
+def save_book_detail_xml(cfg: Dict[str, Any], lecture_id: str, book_id: str, content: str) -> str:
+    """保存教材精读结果 XML。"""
+    path = _book_detail_xml_path(cfg, lecture_id, book_id)
+    _write_text(path, str(content or ""))
+    return str(path)
 
 
 def load_book_text(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> str:
@@ -395,6 +451,12 @@ def _write_json(path: Path, data: Any) -> None:
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _write_text(path: Path, content: str) -> None:
+    with _lock:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(content or ""), encoding="utf-8")
+
+
 def _increment_lecture_field(cfg: Dict[str, Any], lecture_id: str, field: str, delta: int) -> None:
     with _lock:
         lecture = get_lecture(cfg, lecture_id)
@@ -403,3 +465,18 @@ def _increment_lecture_field(cfg: Dict[str, Any], lecture_id: str, field: str, d
         lecture[field] = max(0, int(lecture.get(field) or 0) + delta)
         lecture["updated_at"] = int(time.time())
         _write_json(_lecture_json_path(cfg, lecture_id), lecture)
+
+
+def _sanitize_book_metadata(cfg: Dict[str, Any], lecture_id: str, book: Dict[str, Any]) -> Dict[str, Any]:
+    """清理 book.json 中不应存放的模型摘要字段。"""
+    data = dict(book or {})
+    changed = False
+    for key in _BOOK_SUMMARY_KEYS:
+        if key in data:
+            data.pop(key, None)
+            changed = True
+    if changed:
+        book_id = str(data.get("id") or "").strip()
+        if book_id:
+            _write_json(_book_json_path(cfg, lecture_id, book_id), data)
+    return data

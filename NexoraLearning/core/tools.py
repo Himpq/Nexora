@@ -48,8 +48,6 @@ TOOLS = [
                     "book_id": {"type": "string", "description": "Target book id."},
                     "content": {"type": "string", "description": "UTF-8 text content."},
                     "filename": {"type": "string", "description": "Logical source filename, default content.txt."},
-                    "current_chapter": {"type": "string", "description": "Optional current chapter label."},
-                    "next_chapter": {"type": "string", "description": "Optional next chapter label."},
                     "auto_vectorize": {"type": "boolean", "description": "Whether to queue vectorization immediately."},
                 },
                 "required": ["lecture_id", "book_id", "content"],

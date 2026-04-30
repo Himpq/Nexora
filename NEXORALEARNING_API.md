@@ -164,6 +164,10 @@
 - `GET /api/lectures/{lecture_id}/books/{book_id}/text`
 - `POST /api/lectures/{lecture_id}/books/{book_id}/text`
 - `POST /api/lectures/{lecture_id}/books/{book_id}/file`（上传原件，不自动提炼）
+- `GET /api/lectures/{lecture_id}/books/{book_id}/bookinfo`
+- `POST /api/lectures/{lecture_id}/books/{book_id}/bookinfo`
+- `GET /api/lectures/{lecture_id}/books/{book_id}/bookdetail`
+- `POST /api/lectures/{lecture_id}/books/{book_id}/bookdetail`
 
 上传文件（multipart/form-data）：
 - 字段：`file`
@@ -177,6 +181,11 @@
   "message": "File uploaded. Refinement is not started automatically."
 }
 ```
+
+说明：
+- `book.json` 仅存教材元数据与状态，不再存模型摘要字段（如 `coarse_output/current_chapter/next_chapter`）。
+- 粗读模型输出统一写入：`data/lectures/{lecture_id}/books/{book_id}/bookinfo.xml`
+- 精读模型输出统一写入：`data/lectures/{lecture_id}/books/{book_id}/bookdetail.xml`
 
 ---
 
@@ -276,4 +285,3 @@ Body：
 
 7. 提炼后触发向量化（可异步）  
 `POST /api/lectures/{lecture_id}/books/{book_id}/vectorize`
-

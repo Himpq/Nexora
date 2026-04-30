@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 
 class NexoraProxy:
@@ -79,12 +80,19 @@ class NexoraProxy:
         method: str = "POST",
         payload: Optional[Dict[str, Any]] = None,
         username: Optional[str] = None,
+        request_timeout: Optional[float] = None,
     ) -> Tuple[int, Dict[str, Any], str]:
         endpoint = self._resolve_path(path, username)
         url = f"{self.base_url}{endpoint}"
         body = None
         if payload is not None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        timeout_value = self.request_timeout
+        if request_timeout is not None:
+            try:
+                timeout_value = max(10.0, min(float(request_timeout), 1800.0))
+            except Exception:
+                timeout_value = self.request_timeout
         req = urllib.request.Request(
             url,
             data=body,
@@ -92,7 +100,7 @@ class NexoraProxy:
             method=method.upper(),
         )
         try:
-            with urllib.request.urlopen(req, timeout=self.request_timeout) as resp:
+            with urllib.request.urlopen(req, timeout=timeout_value) as resp:
                 status = int(getattr(resp, "status", 200) or 200)
                 text = resp.read().decode("utf-8", errors="replace")
                 if not text.strip():
@@ -134,6 +142,13 @@ class NexoraProxy:
 
     @staticmethod
     def _extract_output_text(payload: Mapping[str, Any]) -> str:
+        # 某些代理会把真实结果包在 response 字段中。
+        nested_response = payload.get("response")
+        if isinstance(nested_response, dict):
+            nested = NexoraProxy._extract_output_text(nested_response)
+            if nested.strip():
+                return nested
+
         content = payload.get("content")
         if isinstance(content, str) and content.strip():
             return content
@@ -161,6 +176,22 @@ class NexoraProxy:
                 text = choice_message.get("content")
                 if isinstance(text, str) and text.strip():
                     return text
+                if isinstance(text, list):
+                    parts: List[str] = []
+                    for piece in text:
+                        if not isinstance(piece, dict):
+                            continue
+                        piece_text = str(piece.get("text") or "").strip()
+                        if piece_text:
+                            parts.append(piece_text)
+                    if parts:
+                        return "\n".join(parts).strip()
+            # OpenAI compatible delta-style aggregate fallback
+            delta_obj = first.get("delta") if isinstance(first, dict) else {}
+            if isinstance(delta_obj, dict):
+                dtext = delta_obj.get("content")
+                if isinstance(dtext, str) and dtext.strip():
+                    return dtext
 
         output_text = payload.get("output_text")
         if isinstance(output_text, str) and output_text.strip():
@@ -214,12 +245,13 @@ class NexoraProxy:
             "message": "",
         }
 
-    def list_models(self, username: Optional[str] = None) -> Dict[str, Any]:
+    def list_models(self, username: Optional[str] = None, request_timeout: Optional[float] = None) -> Dict[str, Any]:
         status, resp, endpoint = self._request_json(
             self.models_path,
             method="GET",
             payload=None,
             username=username,
+            request_timeout=request_timeout,
         )
         result = self._build_request_result(status=status, payload=resp, endpoint=endpoint)
         if not result.get("ok"):
@@ -237,7 +269,38 @@ class NexoraProxy:
             "payload": result.get("payload"),
         }
 
-    def get_user_info(self, username: Optional[str] = None) -> Dict[str, Any]:
+    def get(
+        self,
+        path: str,
+        *,
+        username: Optional[str] = None,
+        request_timeout: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """通用 GET 请求，返回统一 success/payload 结构。"""
+        status, resp, endpoint = self._request_json(
+            path,
+            method="GET",
+            payload=None,
+            username=username,
+            request_timeout=request_timeout,
+        )
+        result = self._build_request_result(status=status, payload=resp, endpoint=endpoint)
+        if not result.get("ok"):
+            return {
+                "success": False,
+                "status": result.get("status"),
+                "endpoint": result.get("endpoint"),
+                "message": result.get("message"),
+                "payload": result.get("payload"),
+            }
+        return {
+            "success": True,
+            "status": result.get("status"),
+            "endpoint": result.get("endpoint"),
+            "payload": result.get("payload"),
+        }
+
+    def get_user_info(self, username: Optional[str] = None, request_timeout: Optional[float] = None) -> Dict[str, Any]:
         target_username = str(username or self.default_username or "").strip()
         if not target_username:
             return {
@@ -248,7 +311,13 @@ class NexoraProxy:
                 "payload": {},
             }
         endpoint = f"{self.user_info_path}/{urllib.parse.quote(target_username)}"
-        status, resp, used_endpoint = self._request_json(endpoint, method="GET", payload=None, username=None)
+        status, resp, used_endpoint = self._request_json(
+            endpoint,
+            method="GET",
+            payload=None,
+            username=None,
+            request_timeout=request_timeout,
+        )
         result = self._build_request_result(status=status, payload=resp, endpoint=used_endpoint)
         if not result.get("ok"):
             return {
@@ -275,10 +344,12 @@ class NexoraProxy:
         username: Optional[str] = None,
         options: Optional[Mapping[str, Any]] = None,
         use_chat_path: bool = False,
+        request_timeout: Optional[float] = None,
+        on_delta: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
             "messages": list(messages or []),
-            "stream": False,
+            "stream": bool((options or {}).get("stream") is True),
         }
         target_username = str(username or self.default_username or "").strip()
         if model:
@@ -289,6 +360,7 @@ class NexoraProxy:
             "temperature",
             "top_p",
             "max_tokens",
+            "think",
             "presence_penalty",
             "frequency_penalty",
             "seed",
@@ -303,7 +375,22 @@ class NexoraProxy:
                 payload[key] = value
 
         endpoint = self.chat_completions_path if use_chat_path else self.completions_path
-        status, resp, used_endpoint = self._request_json(endpoint, method="POST", payload=payload, username=target_username)
+        if payload.get("stream") is True:
+            status, resp, used_endpoint = self._request_chat_stream(
+                endpoint,
+                payload=payload,
+                username=target_username,
+                request_timeout=request_timeout,
+                on_delta=on_delta,
+            )
+        else:
+            status, resp, used_endpoint = self._request_json(
+                endpoint,
+                method="POST",
+                payload=payload,
+                username=target_username,
+                request_timeout=request_timeout,
+            )
         return self._build_request_result(status=status, payload=resp, endpoint=used_endpoint)
 
     def responses(
@@ -314,6 +401,7 @@ class NexoraProxy:
         input_items: Optional[List[Dict[str, Any]]] = None,
         instructions: str = "",
         options: Optional[Mapping[str, Any]] = None,
+        request_timeout: Optional[float] = None,
     ) -> Dict[str, Any]:
         payload: Dict[str, Any] = {"stream": False}
         target_username = str(username or self.default_username or "").strip()
@@ -353,6 +441,7 @@ class NexoraProxy:
             method="POST",
             payload=payload,
             username=target_username,
+            request_timeout=request_timeout,
         )
         return self._build_request_result(status=status, payload=resp, endpoint=endpoint)
 
@@ -366,6 +455,8 @@ class NexoraProxy:
         input_items: Optional[List[Dict[str, Any]]] = None,
         instructions: str = "",
         options: Optional[Mapping[str, Any]] = None,
+        request_timeout: Optional[float] = None,
+        on_delta: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, Any]:
         normalized_mode = str(api_mode or "chat").strip().lower()
         safe_messages = list(messages or [])
@@ -379,6 +470,7 @@ class NexoraProxy:
                 input_items=safe_input,
                 instructions=instructions,
                 options=options,
+                request_timeout=request_timeout,
             )
             mode = "responses"
         else:
@@ -388,6 +480,8 @@ class NexoraProxy:
                 username=username,
                 options=options,
                 use_chat_path=False,
+                request_timeout=request_timeout,
+                on_delta=on_delta,
             )
             mode = "chat"
 
@@ -410,6 +504,129 @@ class NexoraProxy:
             "payload": payload,
             "content": self._extract_output_text(payload),
         }
+
+    def _request_chat_stream(
+        self,
+        path: str,
+        *,
+        payload: Dict[str, Any],
+        username: Optional[str],
+        request_timeout: Optional[float],
+        on_delta: Optional[Callable[[str], None]] = None,
+    ) -> Tuple[int, Dict[str, Any], str]:
+        endpoint = self._resolve_path(path, username)
+        url = f"{self.base_url}{endpoint}"
+        timeout_value = self.request_timeout
+        if request_timeout is not None:
+            try:
+                timeout_value = max(10.0, min(float(request_timeout), 1800.0))
+            except Exception:
+                timeout_value = self.request_timeout
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers=self._build_headers(),
+            method="POST",
+        )
+        full_text: List[str] = []
+        raw_events: List[str] = []
+        chunk_count = 0
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_value) as resp:
+                status = int(getattr(resp, "status", 200) or 200)
+                for raw in resp:
+                    try:
+                        raw_line = raw.decode("utf-8", errors="replace")
+                    except Exception:
+                        continue
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    if line.startswith(":"):
+                        continue
+                    data_text = line
+                    if line.startswith("data:"):
+                        data_text = line[5:].strip()
+                    if not data_text:
+                        continue
+                    if len(raw_events) < 40:
+                        raw_events.append(data_text[:500])
+                    if data_text == "[DONE]":
+                        break
+                    try:
+                        obj = json.loads(data_text)
+                    except Exception:
+                        continue
+                    if isinstance(obj, dict) and obj.get("error"):
+                        return status, obj, endpoint
+                    if not isinstance(obj, dict):
+                        continue
+                    chunk_count += 1
+
+                    # OpenAI chat.completions chunk -> choices[0].delta.content
+                    delta_text = ""
+                    choices = obj.get("choices")
+                    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+                        delta = choices[0].get("delta")
+                        if isinstance(delta, dict):
+                            content = delta.get("content")
+                            if isinstance(content, str):
+                                delta_text = content
+                            elif isinstance(content, list):
+                                parts: List[str] = []
+                                for piece in content:
+                                    if isinstance(piece, str):
+                                        parts.append(piece)
+                                    elif isinstance(piece, dict):
+                                        text_piece = str(piece.get("text") or piece.get("content") or "")
+                                        if text_piece:
+                                            parts.append(text_piece)
+                                delta_text = "".join(parts)
+                    if delta_text:
+                        full_text.append(delta_text)
+                        if on_delta is not None:
+                            try:
+                                # 只回传 token 增量，避免日志膨胀。
+                                on_delta(delta_text)
+                            except Exception:
+                                pass
+                if chunk_count == 0:
+                    debug_preview = "\n".join(raw_events[:20])
+                    return status, {
+                        "success": False,
+                        "message": f"stream completed but no event parsed | preview={debug_preview[:1500]}",
+                        "debug_events_preview": debug_preview,
+                    }, endpoint
+                final_text = "".join(full_text).strip()
+                return status, {
+                    "object": "chat.completion",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": final_text},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "_stream_chunks": chunk_count,
+                }, endpoint
+        except urllib.error.HTTPError as exc:
+            status = int(getattr(exc, "code", 502) or 502)
+            try:
+                text = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                text = str(exc)
+            try:
+                parsed = json.loads(text) if text.strip() else {}
+                if isinstance(parsed, dict):
+                    return status, parsed, endpoint
+                return status, {"data": parsed}, endpoint
+            except Exception:
+                return status, {"success": False, "message": text or str(exc)}, endpoint
+        except (socket.timeout, TimeoutError) as exc:
+            return 0, {"success": False, "message": str(exc) or "timed out"}, endpoint
+        except Exception as exc:
+            return 0, {"success": False, "message": str(exc)}, endpoint
 
     def chat_complete(
         self,

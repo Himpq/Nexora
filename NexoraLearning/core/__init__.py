@@ -10,7 +10,9 @@ from .models import (
     PromptContextManager,
     QuestionGenerationModel,
     QuestionVerifyModel,
+    get_default_nexora_model,
     get_rough_reading_model_config,
+    update_default_nexora_model,
     update_rough_reading_model_config,
 )
 from .lectures import (
@@ -24,8 +26,12 @@ from .lectures import (
     initialize_lecture_dirs,
     list_books,
     list_lectures,
+    load_book_detail_xml,
+    load_book_info_xml,
     load_book_chunks,
     load_book_text,
+    save_book_detail_xml,
+    save_book_info_xml,
     save_book_chunks,
     save_book_text,
     update_book,

@@ -5,6 +5,7 @@
     dashboardView: document.getElementById("dashboardView"),
     materialsView: document.getElementById("materialsView"),
     uploadView: document.getElementById("uploadView"),
+    settingsView: document.getElementById("settingsView"),
     openMaterialsViewBtn: document.getElementById("openMaterialsViewBtn"),
     backToDashboardBtn: document.getElementById("backToDashboardBtn"),
     openUploadViewBtn: document.getElementById("openUploadViewBtn"),
@@ -39,6 +40,9 @@
     uploadTip: document.getElementById("uploadTip"),
     materialsPreviewHead: document.getElementById("materialsPreviewHead"),
     materialsPreviewPane: document.getElementById("materialsPreviewPane"),
+    backFromSettingsBtn: document.getElementById("backFromSettingsBtn"),
+    settingsNavList: document.getElementById("settingsNavList"),
+    settingsDetailPane: document.getElementById("settingsDetailPane"),
   };
 
   const PIE_COLORS = ["#111111", "#373737", "#585858", "#7a7a7a", "#9d9d9d", "#bbbbbb"];
@@ -66,6 +70,13 @@
     totalStudyHours: 0,
     isReaderOpen: false,
     readerRequestToken: 0,
+    settingsTab: "refinement",
+    refinementRows: [],
+    refinementQueue: { queue_size: 0, running_count: 0 },
+    modelOptions: [],
+    modelSettings: { default_nexora_model: "", rough_reading: {} },
+    settingsPollTimer: null,
+    refinementScrollTop: 0,
   };
 
   function escapeHtml(str) {
@@ -160,6 +171,12 @@
     el.dashboardView.classList.toggle("is-active", name === "dashboard");
     el.materialsView.classList.toggle("is-active", name === "materials");
     el.uploadView.classList.toggle("is-active", name === "upload");
+    el.settingsView.classList.toggle("is-active", name === "settings");
+    if (name !== "settings") {
+      stopSettingsPolling();
+    } else {
+      startSettingsPolling();
+    }
     notifyHostInputVisibility(true);
   }
 
@@ -182,11 +199,9 @@
   function getCourseProgress(lecture, books) {
     const list = Array.isArray(books) ? books : [];
     const direct = toNumber((lecture && (lecture.progress ?? lecture.study_progress ?? lecture.learning_progress)) ?? NaN, NaN);
-    const currentChapter = String((lecture && lecture.current_chapter) || "").trim();
-    const nextChapter = String((lecture && lecture.next_chapter) || "").trim();
-    if (!list.length && !currentChapter && !nextChapter) return 0;
+    if (!list.length) return 0;
     if (Number.isFinite(direct)) {
-      if (direct >= 100 && !currentChapter && !nextChapter) {
+      if (direct >= 100) {
         const hasReadyBook = list.some((book) => ["done", "success", "indexed", "ready"].includes(normalizeStatusKey(book && book.vector_status)));
         if (!hasReadyBook) return 0;
       }
@@ -208,20 +223,11 @@
   }
 
   function getChapterInfo(lecture, books) {
-    const lectureCurrent = String((lecture && lecture.current_chapter) || "").trim();
-    const lectureNext = String((lecture && lecture.next_chapter) || "").trim();
-    if (lectureCurrent || lectureNext) {
-      return { current: lectureCurrent || "待开始", next: lectureNext || "待规划" };
-    }
     const list = Array.isArray(books) ? books : [];
-    const first = list.find((book) => String(book.current_chapter || "").trim() || String(book.next_chapter || "").trim());
-    if (first) {
-      return {
-        current: String(first.current_chapter || "").trim() || "待开始",
-        next: String(first.next_chapter || "").trim() || "待规划",
-      };
-    }
-    return { current: "待开始", next: "待规划" };
+    if (!list.length) return { current: "待开始", next: "待规划" };
+    const refined = list.filter((book) => ["done", "completed"].includes(normalizeStatusKey(book && book.coarse_status)));
+    if (refined.length) return { current: "已完成粗读", next: "待精读" };
+    return { current: "待开始", next: "待提炼" };
   }
 
   function buildDashboardCourses(rows) {
@@ -357,6 +363,210 @@
     `;
   }
 
+  function refinementStatusText(item) {
+    const refine = normalizeStatusKey(item && item.refinement_status);
+    const coarse = normalizeStatusKey(item && item.coarse_status);
+    const job = normalizeStatusKey(item && item.job_status);
+    if (["running", "queued"].includes(job)) return job === "running" ? "精读执行中" : "精读排队中";
+    if (["error", "failed"].includes(refine) || ["error", "failed"].includes(coarse)) return "精读失败";
+    if (["done", "completed"].includes(coarse)) return "精读完成";
+    if (["extracting", "extracted", "queued", "uploaded"].includes(refine)) return `待精读（${refine}）`;
+    return refine || coarse || "待精读";
+  }
+
+  function canStartRefinement(item) {
+    const refine = normalizeStatusKey(item && item.refinement_status);
+    const coarse = normalizeStatusKey(item && item.coarse_status);
+    const job = normalizeStatusKey(item && item.job_status);
+    if (["running", "queued"].includes(job)) return false;
+    if (["done", "completed"].includes(coarse)) return false;
+    if (["running", "queued", "extracting"].includes(refine)) return false;
+    return true;
+  }
+
+  function formatTs(ts) {
+    const n = Number(ts);
+    if (!Number.isFinite(n) || n <= 0) return "—";
+    const d = new Date(n * 1000);
+    if (Number.isNaN(d.getTime())) return "—";
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    const ss = String(d.getSeconds()).padStart(2, "0");
+    return `${y}-${m}-${day} ${hh}:${mm}:${ss}`;
+  }
+
+  function renderSettingsNav() {
+    const tabs = [
+      { id: "refinement", title: "待精读列表", sub: "选择教材并触发精读" },
+      { id: "model", title: "模型设置", sub: "设置默认模型与精读模型" },
+      { id: "profile", title: "用户信息", sub: "当前用户与连接状态" },
+    ];
+    el.settingsNavList.innerHTML = tabs.map((tab) => `
+      <button class="settings-nav-item ${state.settingsTab === tab.id ? "is-active" : ""}" data-settings-tab="${tab.id}" type="button">
+        <div class="settings-nav-title">${escapeHtml(tab.title)}</div>
+        <div class="settings-nav-sub">${escapeHtml(tab.sub)}</div>
+      </button>
+    `).join("");
+  }
+
+  function renderSettingsProfile() {
+    const username = String(state.user.username || state.username || "访客");
+    const role = state.isAdmin ? "管理员" : "成员";
+    const connected = !!(state.integration && state.integration.connected);
+    const modelsCount = toNumber(state.integration && state.integration.models_count, 0);
+    el.settingsDetailPane.innerHTML = `
+      <section class="settings-detail-scroll">
+        <article class="settings-card">
+          <div class="settings-title">用户信息</div>
+          <div class="settings-grid">
+            <div><div class="settings-kv-label">用户名</div><div class="settings-kv-value">${escapeHtml(username)}</div></div>
+            <div><div class="settings-kv-label">角色</div><div class="settings-kv-value">${escapeHtml(role)}</div></div>
+            <div><div class="settings-kv-label">全部课程</div><div class="settings-kv-value">${state.allLectureRows.length}</div></div>
+            <div><div class="settings-kv-label">总学习时长</div><div class="settings-kv-value">${toNumber(state.totalStudyHours, 0).toFixed(1)}h</div></div>
+          </div>
+        </article>
+        <article class="settings-card">
+          <div class="settings-title">Nexora 连接</div>
+          <div class="settings-grid">
+            <div><div class="settings-kv-label">连接状态</div><div class="settings-kv-value">${connected ? "已连接" : "未连接"}</div></div>
+            <div><div class="settings-kv-label">模型数量</div><div class="settings-kv-value">${modelsCount}</div></div>
+            <div><div class="settings-kv-label">Base URL</div><div class="settings-kv-value">${escapeHtml(String(state.integration.base_url || "—"))}</div></div>
+            <div><div class="settings-kv-label">Endpoint</div><div class="settings-kv-value">${escapeHtml(String(state.integration.endpoint || "—"))}</div></div>
+          </div>
+        </article>
+      </section>
+    `;
+  }
+
+  function renderSettingsRefinement() {
+    const prevScroll = state.refinementScrollTop || 0;
+    const queueSize = toNumber(state.refinementQueue.queue_size, 0);
+    const runningCount = toNumber(state.refinementQueue.running_count, 0);
+    const rows = Array.isArray(state.refinementRows) ? state.refinementRows : [];
+    el.settingsDetailPane.innerHTML = `
+      <section class="settings-detail-scroll">
+        <article class="settings-card">
+          <div class="settings-title">精读队列状态</div>
+          <div class="settings-grid">
+            <div><div class="settings-kv-label">排队数量</div><div class="settings-kv-value">${queueSize}</div></div>
+            <div><div class="settings-kv-label">执行中</div><div class="settings-kv-value">${runningCount}</div></div>
+          </div>
+          <div class="settings-sub">状态会自动刷新</div>
+        </article>
+        ${rows.length ? rows.map((item) => `
+          <article class="refine-item">
+            <div class="refine-item-head">
+              <div class="refine-item-title">${escapeHtml(item.book_title || item.book_id || "未命名教材")}</div>
+              <div class="refine-item-actions">
+                <button
+                  class="nxl-icon-btn ${canStartRefinement(item) ? "nxl-icon-btn-dark" : ""}"
+                  data-action="start-refinement"
+                  data-lecture-id="${escapeHtml(String(item.lecture_id || ""))}"
+                  data-book-id="${escapeHtml(String(item.book_id || ""))}"
+                  ${canStartRefinement(item) ? "" : "disabled"}
+                  type="button"
+                  title="开始精读"
+                >▶</button>
+                <button
+                  class="nxl-icon-btn nxl-icon-btn-danger"
+                  data-action="stop-refinement"
+                  data-lecture-id="${escapeHtml(String(item.lecture_id || ""))}"
+                  data-book-id="${escapeHtml(String(item.book_id || ""))}"
+                  type="button"
+                  title="暂停并重置"
+                >■</button>
+              </div>
+            </div>
+            <div class="refine-item-meta">课程：${escapeHtml(item.lecture_title || item.lecture_id || "—")}</div>
+            <div class="refine-item-meta">精读状态：${escapeHtml(refinementStatusText(item))}</div>
+            <div class="refine-item-meta">细节：refinement=${escapeHtml(String(item.refinement_status || "—"))} · coarse=${escapeHtml(String(item.coarse_status || "—"))} · job=${escapeHtml(String(item.job_status || "—"))}</div>
+            ${item.coarse_error || item.refinement_error ? `<div class="refine-item-meta" style="color:#b91c1c;">错误：${escapeHtml(item.coarse_error || item.refinement_error)}</div>` : ""}
+            <div class="refine-item-meta">更新时间：${escapeHtml(formatTs(item.updated_at))}</div>
+          </article>
+        `).join("") : '<div class="materials-empty">暂无待精读教材</div>'}
+      </section>
+    `;
+    const scrollEl = el.settingsDetailPane.querySelector(".settings-detail-scroll");
+    if (scrollEl) {
+      scrollEl.scrollTop = prevScroll;
+      scrollEl.addEventListener("scroll", () => {
+        state.refinementScrollTop = scrollEl.scrollTop;
+      }, { passive: true });
+    }
+  }
+
+  function renderSettingsModel() {
+    const settings = state.modelSettings || {};
+    const rough = settings.rough_reading || {};
+    const options = Array.isArray(state.modelOptions) ? state.modelOptions : [];
+    const optionHtml = ['<option value="">(空) 手动指定后才启用</option>']
+      .concat(options.map((row) => `<option value="${escapeHtml(row.id)}">${escapeHtml(row.label || row.id)}</option>`))
+      .join("");
+    const disabledAttr = state.isAdmin ? "" : "disabled";
+    el.settingsDetailPane.innerHTML = `
+      <section class="settings-detail-scroll">
+        <article class="settings-card">
+          <div class="settings-title">模型设置</div>
+          <div class="settings-sub">默认模型为空时，后端不会强制绑定默认模型。</div>
+          <div class="settings-inline-form">
+            <div class="materials-form-row">
+              <label class="materials-form-label" for="settingsDefaultModelSelect">默认模型</label>
+              <select id="settingsDefaultModelSelect" class="input-lite" ${disabledAttr}>${optionHtml}</select>
+            </div>
+            <div class="materials-form-row">
+              <label class="materials-form-label" for="settingsRoughModelSelect">精读模型</label>
+              <select id="settingsRoughModelSelect" class="input-lite" ${disabledAttr}>${optionHtml}</select>
+            </div>
+          </div>
+          <div class="settings-actions">
+            <button id="saveModelSettingsBtn" class="nxl-icon-btn nxl-icon-btn-dark" type="button" ${disabledAttr} title="保存模型设置">✓</button>
+            <span class="settings-sub">${state.isAdmin ? "管理员可保存设置" : "仅管理员可修改模型设置"}</span>
+          </div>
+        </article>
+      </section>
+    `;
+    const defaultSelect = document.getElementById("settingsDefaultModelSelect");
+    const roughSelect = document.getElementById("settingsRoughModelSelect");
+    if (defaultSelect) defaultSelect.value = String(settings.default_nexora_model || "");
+    if (roughSelect) roughSelect.value = String(rough.model_name || "");
+  }
+
+  function renderSettingsDetail() {
+    if (state.settingsTab === "model") {
+      renderSettingsModel();
+      return;
+    }
+    if (state.settingsTab === "profile") {
+      renderSettingsProfile();
+      return;
+    }
+    renderSettingsRefinement();
+  }
+
+  function renderSettingsView() {
+    renderSettingsNav();
+    renderSettingsDetail();
+  }
+
+  function stopSettingsPolling() {
+    if (state.settingsPollTimer) {
+      clearInterval(state.settingsPollTimer);
+      state.settingsPollTimer = null;
+    }
+  }
+
+  function startSettingsPolling() {
+    if (state.settingsPollTimer) return;
+    state.settingsPollTimer = setInterval(() => {
+      if (!el.settingsView.classList.contains("is-active")) return;
+      if (state.settingsTab !== "refinement") return;
+      loadRefinementSettings().catch(() => {});
+    }, 3000);
+  }
+
   function getSelectedLectureRow() {
     return state.allLectureRows.find((row) => String((row.lecture || {}).id || "") === state.selectedLectureId) || null;
   }
@@ -432,9 +642,15 @@
             ${books.length ? books.map((book) => {
               const bookId = String(book.id || "");
               const active = bookId === state.selectedBookId ? "is-active" : "";
+              const deleteBtn = state.isAdmin
+                ? `<button class="book-delete-btn" type="button" data-action="delete-book" data-lecture-id="${escapeHtml(lectureId)}" data-book-id="${escapeHtml(bookId)}" title="删除教材">删除</button>`
+                : "";
               return `
                 <article class="book-item ${active}" data-book-id="${escapeHtml(bookId)}">
-                  <div class="book-title">${escapeHtml(book.title || bookId)}</div>
+                  <div class="book-item-head">
+                    <div class="book-title">${escapeHtml(book.title || bookId)}</div>
+                    ${deleteBtn}
+                  </div>
                   <div class="book-badges">
                     <span class="book-badge ${statusBadgeClass(book.vector_status, book.vector_provider)}">向量：${escapeHtml(vectorStatusLabel(book.vector_status, book.vector_provider))}</span>
                     <span class="book-badge ${statusBadgeClass(book.status)}">教材：${escapeHtml(materialStatusLabel(book.status))}</span>
@@ -651,6 +867,88 @@
     }
   }
 
+  async function loadRefinementSettings() {
+    const data = await fetchJson("/api/frontend/settings/refinement");
+    state.refinementRows = Array.isArray(data.items) ? data.items : [];
+    state.refinementQueue = data.queue && typeof data.queue === "object" ? data.queue : { queue_size: 0, running_count: 0 };
+    if (el.settingsView.classList.contains("is-active") && state.settingsTab === "refinement") {
+      renderSettingsDetail();
+    }
+  }
+
+  async function loadModelSettings() {
+    const data = await fetchJson("/api/frontend/settings/models");
+    state.modelOptions = Array.isArray(data.available_models) ? data.available_models : [];
+    state.modelSettings = data.settings && typeof data.settings === "object"
+      ? data.settings
+      : { default_nexora_model: "", rough_reading: {} };
+    if (el.settingsView.classList.contains("is-active") && state.settingsTab === "model") {
+      renderSettingsDetail();
+    }
+  }
+
+  async function saveModelSettings() {
+    if (!state.isAdmin) throw new Error("仅管理员可修改模型设置");
+    const defaultSelect = document.getElementById("settingsDefaultModelSelect");
+    const roughSelect = document.getElementById("settingsRoughModelSelect");
+    const payload = {
+      default_nexora_model: defaultSelect ? String(defaultSelect.value || "").trim() : "",
+      rough_reading: {
+        model_name: roughSelect ? String(roughSelect.value || "").trim() : "",
+      },
+    };
+    await fetchJson("/api/frontend/settings/models", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    await loadModelSettings();
+  }
+
+  async function startRefinement(lectureId, bookId) {
+    await fetchJson("/api/frontend/settings/refinement/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        lecture_id: lectureId,
+        book_id: bookId,
+        actor: state.username || "",
+        force: false,
+      }),
+    });
+    await loadRefinementSettings();
+  }
+
+  async function stopRefinement(lectureId, bookId) {
+    await fetchJson("/api/frontend/settings/refinement/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        lecture_id: lectureId,
+        book_id: bookId,
+        actor: state.username || "",
+      }),
+    });
+    await loadRefinementSettings();
+  }
+
+  async function deleteBook(lectureId, bookId) {
+    await fetchJson(`/api/lectures/${encodeURIComponent(lectureId)}/books/${encodeURIComponent(bookId)}`, {
+      method: "DELETE",
+    });
+  }
+
+  async function openSettingsView(tab) {
+    state.settingsTab = tab || state.settingsTab || "refinement";
+    setView("settings");
+    if (state.settingsTab === "model") {
+      await loadModelSettings();
+    } else if (state.settingsTab === "refinement") {
+      await loadRefinementSettings();
+    }
+    renderSettingsView();
+  }
+
   async function refreshAll() {
     await loadMaterialsRows();
     await loadDashboardRows();
@@ -660,6 +958,9 @@
     renderLectureList();
     renderLectureDetail();
     renderUploadLectureInputDefault();
+    if (el.settingsView.classList.contains("is-active")) {
+      renderSettingsView();
+    }
   }
 
   async function createLecture() {
@@ -762,13 +1063,19 @@
       closeReader();
       setView("materials");
     });
+    el.backFromSettingsBtn.addEventListener("click", () => {
+      setView("dashboard");
+    });
     el.backFromReaderBtn.addEventListener("click", () => closeReader());
 
     el.kickerCreateTabBtn.addEventListener("click", () => setUploadTab("create"));
     el.kickerUploadTabBtn.addEventListener("click", () => setUploadTab("upload"));
 
     el.profileAdminSettingsBtn.addEventListener("click", () => {
-      window.location.href = "/status";
+      openSettingsView("model").catch((err) => showToast(`打开设置失败：${err.message || "未知错误"}`));
+    });
+    el.userProfileCard.addEventListener("click", () => {
+      openSettingsView("refinement").catch((err) => showToast(`打开设置失败：${err.message || "未知错误"}`));
     });
 
     el.openCoursePickerBtn.addEventListener("click", () => {
@@ -807,6 +1114,26 @@
           showToast(selected ? "已加入学习课程" : "已退出学习课程");
         } catch (err) {
           showToast(`操作失败：${err.message || "未知错误"}`);
+        }
+        return;
+      }
+
+      const deleteBtn = target.closest("[data-action='delete-book']");
+      if (deleteBtn) {
+        event.stopPropagation();
+        const lectureId = String(deleteBtn.getAttribute("data-lecture-id") || "");
+        const bookId = String(deleteBtn.getAttribute("data-book-id") || "");
+        if (!lectureId || !bookId) return;
+        if (!window.confirm("确认删除该教材？此操作不可撤销。")) return;
+        try {
+          await deleteBook(lectureId, bookId);
+          if (state.selectedBookId === bookId) state.selectedBookId = "";
+          await refreshAll();
+          renderLectureList();
+          renderLectureDetail();
+          showToast("教材已删除");
+        } catch (err) {
+          showToast(`删除失败：${err.message || "未知错误"}`);
         }
         return;
       }
@@ -860,6 +1187,64 @@
       setSelectedUploadLecture(lectureId);
       renderUploadPreviewEmpty("课程已选择，继续选择教材文件进行预览");
       showToast("课程选择成功");
+    });
+
+    el.settingsNavList.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const item = target.closest("[data-settings-tab]");
+      if (!item) return;
+      state.settingsTab = String(item.getAttribute("data-settings-tab") || "refinement");
+      if (state.settingsTab === "model") {
+        loadModelSettings()
+          .then(() => renderSettingsView())
+          .catch((err) => showToast(`加载模型设置失败：${err.message || "未知错误"}`));
+        return;
+      }
+      if (state.settingsTab === "refinement") {
+        loadRefinementSettings()
+          .then(() => renderSettingsView())
+          .catch((err) => showToast(`加载精读列表失败：${err.message || "未知错误"}`));
+        return;
+      }
+      renderSettingsView();
+    });
+
+    el.settingsDetailPane.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const saveBtn = target.closest("#saveModelSettingsBtn");
+      if (saveBtn) {
+        saveModelSettings()
+          .then(() => showToast("模型设置已保存"))
+          .catch((err) => showToast(`保存失败：${err.message || "未知错误"}`));
+        return;
+      }
+      const startBtn = target.closest("[data-action='start-refinement']");
+      if (startBtn) {
+        const lectureId = String(startBtn.getAttribute("data-lecture-id") || "");
+        const bookId = String(startBtn.getAttribute("data-book-id") || "");
+        if (!lectureId || !bookId) return;
+        startRefinement(lectureId, bookId)
+          .then(() => {
+            showToast("已提交精读任务");
+            renderSettingsView();
+          })
+          .catch((err) => showToast(`精读启动失败：${err.message || "未知错误"}`));
+        return;
+      }
+      const stopBtn = target.closest("[data-action='stop-refinement']");
+      if (stopBtn) {
+        const lectureId = String(stopBtn.getAttribute("data-lecture-id") || "");
+        const bookId = String(stopBtn.getAttribute("data-book-id") || "");
+        if (!lectureId || !bookId) return;
+        stopRefinement(lectureId, bookId)
+          .then(() => {
+            showToast("已停止并重置教材状态");
+            renderSettingsView();
+          })
+          .catch((err) => showToast(`停止失败：${err.message || "未知错误"}`));
+      }
     });
 
     el.materialsFileInput.addEventListener("change", async () => {
@@ -919,5 +1304,8 @@
     showToast(`初始化失败：${err && err.message ? err.message : "未知错误"}`);
   });
 
-  window.addEventListener("beforeunload", () => notifyHostInputVisibility(false));
+  window.addEventListener("beforeunload", () => {
+    stopSettingsPolling();
+    notifyHostInputVisibility(false);
+  });
 })();
