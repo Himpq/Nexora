@@ -1,0 +1,15 @@
+{
+  "models": {
+    "default_nexora_model": "",
+    "rough_reading": {
+      "enabled": true,
+      "model_name": "",
+      "api_mode": "chat",
+      "temperature": 0.2,
+      "max_output_tokens": 4000,
+      "max_output_chars": 240000,
+      "request_timeout": 240,
+      "prompt_notes": ""
+    }
+  }
+}

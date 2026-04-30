@@ -3,18 +3,16 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
-import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 from flask import Blueprint, jsonify, request, send_from_directory
 from werkzeug.utils import secure_filename
 
-from core import chroma, parser, storage
+from core import storage
 from core.lectures import (
     create_book as create_lecture_book,
     create_lecture as create_learning_lecture,
@@ -25,15 +23,44 @@ from core.lectures import (
     list_books as list_lecture_books,
     list_lectures as list_learning_lectures,
     load_book_text,
+    load_book_info_xml,
+    load_book_detail_xml,
     save_book_text,
+    save_book_info_xml,
+    save_book_detail_xml,
     save_book_original_file,
     update_book as update_lecture_book,
     update_lecture as update_learning_lecture,
 )
-from core.models import LearningModelFactory
+from core.models import (
+    LearningModelFactory,
+    get_default_nexora_model,
+    update_default_nexora_model,
+)
 from core.nexora_proxy import NexoraProxy
+from core.runlog import log_event
 from core import user as user_store
-from core.vectorization import queue_vectorize_book, vectorize_book
+from core.booksproc import (
+    cancel_book_refinement,
+    enqueue_book_refinement,
+    get_refinement_queue_snapshot,
+    get_rough_reading_settings,
+    init_booksproc,
+    list_refinement_candidates,
+    mark_book_uploaded,
+    update_rough_reading_settings,
+)
+from core.vector import (
+    collection_stats as vector_collection_stats,
+    delete_course_collection as vector_delete_course_collection,
+    delete_material_chunks as vector_delete_material_chunks,
+    query as vector_query,
+    queue_vectorize_book,
+    split_text_for_vector,
+    upsert_chunks as vector_upsert_chunks,
+    vectorize_book,
+)
+from core.utils import extract_text
 
 bp = Blueprint("learning", __name__, url_prefix="/api")
 _cfg: Dict[str, Any] = {}
@@ -72,6 +99,7 @@ def init_routes(cfg: Dict[str, Any]) -> None:
     global _cfg, _proxy
     _cfg = cfg
     _proxy = NexoraProxy(cfg)
+    init_booksproc(cfg)
 
 
 def _allowed(filename: str) -> bool:
@@ -216,6 +244,93 @@ def _build_user_study_hours_map(user_id: str) -> Dict[str, float]:
         if amount_hours > 0:
             hours_map[lecture_id] = float(hours_map.get(lecture_id, 0.0) + amount_hours)
     return hours_map
+
+
+def _resolve_runtime_role() -> str:
+    """解析当前请求对应用户角色，默认 member。"""
+    session_result = _fetch_session_user_from_nexora()
+    if session_result.get("success"):
+        user_payload = session_result.get("user") if isinstance(session_result.get("user"), dict) else {}
+        role = str(user_payload.get("role") or "").strip().lower()
+        if role:
+            return role
+
+    user_id = _resolve_runtime_user_id()
+    if _proxy is not None:
+        result = _proxy.get_user_info(username=user_id or None)
+        if result.get("success"):
+            user_payload = result.get("user") if isinstance(result.get("user"), dict) else {}
+            role = str(user_payload.get("role") or "").strip().lower()
+            if role:
+                return role
+    return "member"
+
+
+def _is_runtime_admin() -> bool:
+    """判断当前请求是否管理员角色。"""
+    return _resolve_runtime_role() == "admin"
+
+
+def _extract_model_options(payload: Dict[str, Any]) -> List[Dict[str, str]]:
+    """从 Nexora model list 响应中抽取模型选项。"""
+    rows: List[Dict[str, str]] = []
+    if not isinstance(payload, dict):
+        return rows
+    data_list = payload.get("data")
+    if isinstance(data_list, list):
+        for item in data_list:
+            if not isinstance(item, dict):
+                continue
+            model_id = str(item.get("id") or "").strip()
+            if not model_id:
+                continue
+            label = str(item.get("name") or item.get("label") or model_id).strip() or model_id
+            rows.append({"id": model_id, "label": label})
+    models_field = payload.get("models")
+    if isinstance(models_field, list):
+        for raw_name in models_field:
+            model_id = str(raw_name or "").strip()
+            if model_id:
+                rows.append({"id": model_id, "label": model_id})
+    elif isinstance(models_field, dict):
+        for raw_name in models_field.keys():
+            model_id = str(raw_name or "").strip()
+            if model_id:
+                rows.append({"id": model_id, "label": model_id})
+    dedup: Dict[str, Dict[str, str]] = {}
+    for row in rows:
+        dedup[row["id"]] = row
+    return list(dedup.values())
+
+
+def _list_nexora_models_payload(username: str) -> Dict[str, Any]:
+    """读取 Nexora 可用模型列表，支持多种 models 路径。"""
+    if _proxy is None:
+        return {"success": False, "message": "Nexora proxy not initialized.", "payload": {}}
+    result = _proxy.list_models(username=username or None)
+    if result.get("success"):
+        return {
+            "success": True,
+            "message": "",
+            "payload": result.get("payload") if isinstance(result.get("payload"), dict) else {},
+        }
+    # 兼容：如果 /api/papi/models 失败，尝试 /api/papi/model_list
+    raw_username = str(username or "").strip()
+    fallback_path = "/api/papi/model_list"
+    if raw_username:
+        fallback_path = f"{fallback_path}/{raw_username}"
+    fallback = _proxy.get(fallback_path)
+    if fallback.get("success"):
+        return {
+            "success": True,
+            "message": "",
+            "payload": fallback.get("payload") if isinstance(fallback.get("payload"), dict) else {},
+        }
+    return {
+        "success": False,
+        "message": str(result.get("message") or fallback.get("message") or "failed to load models"),
+        "payload": {},
+    }
 
 
 def _book_or_404(
@@ -434,7 +549,154 @@ def frontend_select_learning_lecture():
     )
 
 
+@bp.route("/frontend/settings/refinement", methods=["GET"])
+def frontend_settings_refinement():
+    """设置页：待精读列表 + 队列状态。"""
+    status = str(request.args.get("status") or "").strip()
+    rows = list_refinement_candidates(_cfg, status=status)
+    queue_snapshot = get_refinement_queue_snapshot()
+    running_by_book: Dict[str, str] = {}
+    for job in queue_snapshot.get("jobs", []) if isinstance(queue_snapshot.get("jobs"), list) else []:
+        if not isinstance(job, dict):
+            continue
+        lecture_id = str(job.get("lecture_id") or "").strip()
+        book_id = str(job.get("book_id") or "").strip()
+        job_status = str(job.get("status") or "").strip().lower()
+        if lecture_id and book_id:
+            running_by_book[f"{lecture_id}::{book_id}"] = job_status
+    items: List[Dict[str, Any]] = []
+    for row in rows:
+        lecture_id = str(row.get("lecture_id") or "").strip()
+        lecture_title = str(row.get("lecture_title") or "").strip()
+        book = row.get("book") if isinstance(row.get("book"), dict) else {}
+        if not lecture_id or not book:
+            continue
+        book_id = str(book.get("id") or "").strip()
+        refine_status = str(book.get("refinement_status") or "").strip().lower()
+        coarse_status = str(book.get("coarse_status") or "").strip().lower()
+        if not status and coarse_status in {"done", "completed"} and refine_status in {"done", "extracted"}:
+            continue
+        key = f"{lecture_id}::{book_id}"
+        items.append(
+            {
+                "lecture_id": lecture_id,
+                "lecture_title": lecture_title,
+                "book_id": book_id,
+                "book_title": str(book.get("title") or book_id),
+                "refinement_status": str(book.get("refinement_status") or ""),
+                "text_status": str(book.get("text_status") or ""),
+                "coarse_status": str(book.get("coarse_status") or ""),
+                "coarse_model": str(book.get("coarse_model") or ""),
+                "coarse_error": str(book.get("coarse_error") or ""),
+                "refinement_error": str(book.get("refinement_error") or ""),
+                "job_status": running_by_book.get(key, ""),
+                "updated_at": int(book.get("updated_at") or 0),
+            }
+        )
+    return jsonify(
+        {
+            "success": True,
+            "status_filter": status,
+            "queue": queue_snapshot,
+            "items": items,
+            "total": len(items),
+        }
+    )
+
+
+@bp.route("/frontend/settings/refinement/start", methods=["POST"])
+def frontend_settings_refinement_start():
+    """设置页：手动触发教材精读。"""
+    if not _is_runtime_admin():
+        return jsonify({"success": False, "error": "Only admin can start refinement."}), 403
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    actor = str(data.get("actor") or _resolve_runtime_user_id()).strip()
+    force = _as_bool(data.get("force"), default=False)
+    if not lecture_id or not book_id:
+        return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+    result = enqueue_book_refinement(_cfg, lecture_id, book_id, actor=actor, force=force)
+    return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, **result}), 202
+
+
+@bp.route("/frontend/settings/refinement/stop", methods=["POST"])
+def frontend_settings_refinement_stop():
+    """设置页：停止教材精读并重置状态。"""
+    if not _is_runtime_admin():
+        return jsonify({"success": False, "error": "Only admin can stop refinement."}), 403
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    actor = str(data.get("actor") or _resolve_runtime_user_id()).strip()
+    if not lecture_id or not book_id:
+        return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+    result = cancel_book_refinement(_cfg, lecture_id, book_id, actor=actor)
+    return jsonify({"success": True, **result}), 200
+
+
+@bp.route("/frontend/settings/models", methods=["GET"])
+def frontend_settings_models():
+    """设置页：读取模型选项与当前模型设置。"""
+    username = _resolve_runtime_user_id()
+    listed = _list_nexora_models_payload(username)
+    options = _extract_model_options(listed.get("payload") if isinstance(listed.get("payload"), dict) else {})
+    options.sort(key=lambda row: row.get("id", ""))
+    rough = get_rough_reading_settings(_cfg)
+    default_model = get_default_nexora_model(_cfg)
+    return jsonify(
+        {
+            "success": True,
+            "is_admin": _is_runtime_admin(),
+            "available_models": options,
+            "available_count": len(options),
+            "models_fetch_success": bool(listed.get("success")),
+            "models_fetch_message": str(listed.get("message") or ""),
+            "settings": {
+                "default_nexora_model": default_model,
+                "rough_reading": rough,
+            },
+        }
+    )
+
+
+@bp.route("/frontend/settings/models", methods=["PATCH"])
+def frontend_settings_models_patch():
+    """设置页：更新默认模型与粗读模型。"""
+    if not _is_runtime_admin():
+        return jsonify({"success": False, "error": "Only admin can update model settings."}), 403
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "error": "JSON body is required."}), 400
+    default_model = data.get("default_nexora_model")
+    rough_updates = data.get("rough_reading")
+    listed = _list_nexora_models_payload(_resolve_runtime_user_id())
+    available_ids = {row.get("id", "") for row in _extract_model_options(listed.get("payload") if isinstance(listed.get("payload"), dict) else {})}
+    updated_default = get_default_nexora_model(_cfg)
+    updated_rough = get_rough_reading_settings(_cfg)
+    if default_model is not None:
+        normalized_default = str(default_model or "").strip()
+        if normalized_default and normalized_default not in available_ids:
+            return jsonify({"success": False, "error": "default_nexora_model is not in available models."}), 400
+        updated_default = update_default_nexora_model(_cfg, normalized_default)
+    if isinstance(rough_updates, dict):
+        rough_model_name = str(rough_updates.get("model_name") or "").strip()
+        if rough_model_name and rough_model_name not in available_ids:
+            return jsonify({"success": False, "error": "rough_reading.model_name is not in available models."}), 400
+        updated_rough = update_rough_reading_settings(_cfg, rough_updates)
+    return jsonify(
+        {
+            "success": True,
+            "settings": {
+                "default_nexora_model": updated_default,
+                "rough_reading": updated_rough,
+            },
+        }
+    )
+
+
 @bp.route("/nexora/models", methods=["GET"])
+@bp.route("/nexora/model_list", methods=["GET"])
 def list_nexora_models():
     if _proxy is None:
         return jsonify({"success": False, "error": "Nexora proxy not initialized."}), 503
@@ -544,11 +806,39 @@ def completions():
             runner = LearningModelFactory.create(model_type, _cfg, model_name=model)
             safe_context_payload = context_payload if isinstance(context_payload, dict) else {}
             safe_extra_prompt_vars = extra_prompt_vars if isinstance(extra_prompt_vars, dict) else {}
+            log_event(
+                "model_context_input",
+                "模型上下文输入（model_type）",
+                payload={
+                    "model_type": model_type,
+                    "model": model or "",
+                    "username": username or "",
+                },
+                content=json.dumps(
+                    {
+                        "prompt": prompt,
+                        "context_payload": safe_context_payload,
+                        "extra_prompt_vars": safe_extra_prompt_vars,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            )
             content = runner.run(
                 prompt,
                 context_payload=safe_context_payload,
                 extra_prompt_vars=safe_extra_prompt_vars,
                 username=username,
+            )
+            log_event(
+                "model_output",
+                "模型输出（model_type）",
+                payload={
+                    "model_type": model_type,
+                    "model": model or "",
+                    "username": username or "",
+                },
+                content=content[:12000],
             )
             preview = runner.preview_prompts(
                 prompt,
@@ -565,6 +855,21 @@ def completions():
             })
 
         if messages or input_items:
+            log_event(
+                "model_context_input",
+                "模型上下文输入（raw messages/input）",
+                payload={
+                    "model_type": "",
+                    "model": model or "",
+                    "username": username or "",
+                    "api_mode": api_mode,
+                },
+                content=json.dumps(
+                    {"messages": messages or [], "input": input_items or [], "instructions": instructions},
+                    ensure_ascii=False,
+                    indent=2,
+                )[:12000],
+            )
             result = _proxy.complete_raw(
                 messages=list(messages or []),
                 model=model,
@@ -584,6 +889,16 @@ def completions():
                         "username": username,
                     }
                 ), 502
+            log_event(
+                "model_output",
+                "模型输出（raw messages/input）",
+                payload={
+                    "model": model or "",
+                    "username": username or "",
+                    "api_mode": result.get("api_mode") or api_mode,
+                },
+                content=str(result.get("content") or "")[:12000],
+            )
             return jsonify(
                 {
                     "success": True,
@@ -597,7 +912,24 @@ def completions():
                 }
             )
 
+        log_event(
+            "model_context_input",
+            "模型上下文输入（chat prompt）",
+            payload={
+                "model_type": model_type or "",
+                "model": model or "",
+                "username": username or "",
+                "api_mode": "chat",
+            },
+            content=json.dumps({"system_prompt": system_prompt, "prompt": prompt}, ensure_ascii=False, indent=2)[:12000],
+        )
         content = _proxy.chat_complete(system_prompt=system_prompt, user_prompt=prompt, model=model, username=username)
+        log_event(
+            "model_output",
+            "模型输出（chat prompt）",
+            payload={"model": model or "", "username": username or "", "api_mode": "chat"},
+            content=content[:12000],
+        )
         return jsonify({
             "success": True,
             "content": content,
@@ -608,6 +940,21 @@ def completions():
         })
     except Exception as exc:
         return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@bp.route("/models/rough-reading", methods=["GET"])
+def get_rough_reading_model_settings():
+    settings = get_rough_reading_settings(_cfg)
+    return jsonify({"success": True, "model_type": "coarse_reading", "settings": settings})
+
+
+@bp.route("/models/rough-reading", methods=["PATCH"])
+def patch_rough_reading_model_settings():
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "error": "JSON body is required."}), 400
+    settings = update_rough_reading_settings(_cfg, data)
+    return jsonify({"success": True, "model_type": "coarse_reading", "settings": settings})
 
 
 @bp.route("/courses", methods=["GET"])
@@ -638,7 +985,7 @@ def get_course(course_id: str):
         return jsonify({"success": False, "error": "Course not found."}), 404
 
     materials = storage.list_materials(_cfg, course_id)
-    stats = chroma.collection_stats(_cfg, course_id)
+    stats = vector_collection_stats(_cfg, course_id)
     return jsonify({
         "success": True,
         "course": meta,
@@ -666,7 +1013,7 @@ def delete_course(course_id: str):
     if not storage.get_course(_cfg, course_id):
         return jsonify({"success": False, "error": "Course not found."}), 404
 
-    chroma.delete_course_collection(_cfg, course_id)
+    vector_delete_course_collection(_cfg, course_id)
     storage.delete_course(_cfg, course_id)
     return jsonify({"success": True, "message": f"Course {course_id} deleted."})
 
@@ -730,7 +1077,7 @@ def delete_material(course_id: str, material_id: str):
         return jsonify({"success": False, "error": "Material not found."}), 404
 
     try:
-        chroma.delete_material_chunks(_cfg, course_id, material_id)
+        vector_delete_material_chunks(_cfg, course_id, material_id)
     except Exception:
         pass
 
@@ -771,7 +1118,7 @@ def query_course(course_id: str):
         return jsonify({"success": False, "error": "q is required."}), 400
 
     top_k = min(int(request.args.get("top_k") or 5), 20)
-    results = chroma.query(_cfg, course_id, query_text, top_k=top_k)
+    results = vector_query(_cfg, course_id, query_text, top_k=top_k)
     return jsonify({"success": True, "results": results, "count": len(results)})
 
 
@@ -781,7 +1128,7 @@ def course_stats(course_id: str):
     if not meta:
         return jsonify({"success": False, "error": "Course not found."}), 404
 
-    stats = chroma.collection_stats(_cfg, course_id)
+    stats = vector_collection_stats(_cfg, course_id)
     materials = storage.list_materials(_cfg, course_id)
     return jsonify({
         "success": True,
@@ -907,8 +1254,6 @@ def update_book(lecture_id: str, book_id: str):
         "description",
         "source_type",
         "cover_path",
-        "current_chapter",
-        "next_chapter",
         "status",
     }
     updates = {key: value for key, value in data.items() if key in allowed_fields}
@@ -944,6 +1289,72 @@ def get_book_text(lecture_id: str, book_id: str):
     })
 
 
+@bp.route("/books/refinement/list", methods=["GET"])
+@bp.route("/books/extract/list", methods=["GET"])
+def list_books_for_refinement_all():
+    status = str(request.args.get("status") or "").strip()
+    rows = list_refinement_candidates(_cfg, status=status)
+    return jsonify({"success": True, "items": rows, "total": len(rows)})
+
+
+@bp.route("/lectures/<lecture_id>/books/refinement/list", methods=["GET"])
+@bp.route("/lectures/<lecture_id>/books/extract/list", methods=["GET"])
+def list_books_for_refinement_lecture(lecture_id: str):
+    status = str(request.args.get("status") or "").strip()
+    rows = list_refinement_candidates(_cfg, lecture_id=lecture_id, status=status)
+    return jsonify({"success": True, "lecture_id": lecture_id, "items": rows, "total": len(rows)})
+
+
+@bp.route("/refinement/queue", methods=["GET"])
+@bp.route("/extract/queue", methods=["GET"])
+def get_refinement_queue():
+    return jsonify({"success": True, **get_refinement_queue_snapshot()})
+
+
+@bp.route("/lectures/<lecture_id>/books/refinement", methods=["POST"])
+@bp.route("/lectures/<lecture_id>/books/extract", methods=["POST"])
+def enqueue_lecture_books_refinement(lecture_id: str):
+    data = request.get_json(silent=True) or {}
+    book_ids = data.get("book_ids")
+    if not isinstance(book_ids, list) or not book_ids:
+        return jsonify({"success": False, "error": "book_ids(list) is required."}), 400
+    actor = str(data.get("actor") or "").strip()
+    force = _as_bool(data.get("force"), default=False)
+
+    queued: List[Dict[str, Any]] = []
+    errors: List[Dict[str, Any]] = []
+    for raw_id in book_ids:
+        book_id = str(raw_id or "").strip()
+        if not book_id:
+            continue
+        try:
+            result = enqueue_book_refinement(_cfg, lecture_id, book_id, actor=actor, force=force)
+            queued.append({"book_id": book_id, **result})
+        except Exception as exc:
+            errors.append({"book_id": book_id, "error": str(exc)})
+
+    return jsonify(
+        {
+            "success": True,
+            "lecture_id": lecture_id,
+            "queued_count": len(queued),
+            "error_count": len(errors),
+            "queued": queued,
+            "errors": errors,
+        }
+    )
+
+
+@bp.route("/lectures/<lecture_id>/books/<book_id>/refinement", methods=["POST"])
+@bp.route("/lectures/<lecture_id>/books/<book_id>/extract", methods=["POST"])
+def enqueue_single_book_refinement(lecture_id: str, book_id: str):
+    data = request.get_json(silent=True) or {}
+    actor = str(data.get("actor") or "").strip()
+    force = _as_bool(data.get("force"), default=False)
+    result = enqueue_book_refinement(_cfg, lecture_id, book_id, actor=actor, force=force)
+    return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, **result}), 202
+
+
 @bp.route("/lectures/<lecture_id>/books/<book_id>/file", methods=["POST"])
 def upload_book_file(lecture_id: str, book_id: str):
     _, _, error_response = _book_or_404(lecture_id, book_id)
@@ -964,9 +1375,7 @@ def upload_book_file(lecture_id: str, book_id: str):
     if len(content) > max_mb * 1024 * 1024:
         return jsonify({"success": False, "error": f"file exceeds {max_mb}MB"}), 413
 
-    safe_name = secure_filename(filename_raw) or "content.txt"
-    ext = Path(safe_name).suffix.lower() or ".txt"
-    tmp_path = ""
+    safe_name = secure_filename(filename_raw) or "content.bin"
     try:
         save_book_original_file(
             _cfg,
@@ -975,41 +1384,86 @@ def upload_book_file(lecture_id: str, book_id: str):
             content,
             filename=safe_name,
         )
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-            tmp.write(content)
-            tmp_path = str(tmp.name)
-
-        text = parser.extract_text(tmp_path)
-        saved = save_book_text(_cfg, lecture_id, book_id, text, filename=safe_name)
-        saved = update_lecture_book(
+        saved = mark_book_uploaded(
             _cfg,
             lecture_id,
             book_id,
-            {
-                "source_type": "file",
-                "error": "",
-            },
-        ) or saved
-        vectorization_result = queue_vectorize_book(_cfg, lecture_id, book_id, force=True)
-        preview_text = text[:3000]
+            filename=safe_name,
+            file_size=len(content),
+            actor=str(request.headers.get("X-User") or request.headers.get("X-Username") or ""),
+        )
         return jsonify(
             {
                 "success": True,
                 "book": saved,
-                "chars": len(text),
-                "preview_text": preview_text,
-                "vectorization": vectorization_result,
+                "message": "File uploaded. Refinement is not started automatically.",
             }
         ), 201
     except Exception as exc:
         return jsonify({"success": False, "error": str(exc)}), 500
-    finally:
-        if tmp_path:
-            try:
-                os.remove(tmp_path)
-            except Exception:
-                pass
+
+
+@bp.route("/lectures/<lecture_id>/books/<book_id>/parse", methods=["POST"])
+def parse_book_file(lecture_id: str, book_id: str):
+    """手动解析教材原文件为纯文本，并写入教材存储。"""
+    _, book, error_response = _book_or_404(lecture_id, book_id)
+    if error_response is not None:
+        return error_response
+
+    original_path = str((book or {}).get("original_path") or "").strip()
+    if not original_path:
+        return jsonify({"success": False, "error": "book has no original file."}), 400
+
+    source = Path(original_path)
+    if not source.exists():
+        return jsonify({"success": False, "error": "original file not found."}), 404
+
+    filename = str((book or {}).get("original_filename") or source.name or "content.txt").strip() or "content.txt"
+    try:
+        parsed_text = extract_text(str(source))
+        if not str(parsed_text or "").strip():
+            updated = update_lecture_book(
+                _cfg,
+                lecture_id,
+                book_id,
+                {
+                    "text_status": "error",
+                    "error": "parsed text is empty",
+                },
+            ) or book
+            return jsonify({"success": False, "error": "parsed text is empty", "book": updated}), 422
+
+        saved = save_book_text(_cfg, lecture_id, book_id, str(parsed_text), filename=filename)
+        log_event(
+            "book_parse_done",
+            "教材文本解析完成",
+            payload={
+                "lecture_id": lecture_id,
+                "book_id": book_id,
+                "filename": filename,
+                "chars": len(str(parsed_text)),
+            },
+        )
+        return jsonify(
+            {
+                "success": True,
+                "lecture_id": lecture_id,
+                "book_id": book_id,
+                "chars": len(str(parsed_text)),
+                "book": saved,
+            }
+        ), 200
+    except Exception as exc:
+        updated = update_lecture_book(
+            _cfg,
+            lecture_id,
+            book_id,
+            {
+                "text_status": "error",
+                "error": str(exc),
+            },
+        ) or book
+        return jsonify({"success": False, "error": str(exc), "book": updated}), 500
 
 
 @bp.route("/lectures/<lecture_id>/books/<book_id>/text", methods=["POST"])
@@ -1024,21 +1478,9 @@ def upload_book_text(lecture_id: str, book_id: str):
         return jsonify({"success": False, "error": "content is required."}), 400
 
     filename = secure_filename(str(data.get("filename") or "content.txt").strip()) or "content.txt"
-    current_chapter = str(data.get("current_chapter") or "").strip()
-    next_chapter = str(data.get("next_chapter") or "").strip()
     auto_vectorize = _as_bool(data.get("auto_vectorize"), default=True)
 
     saved = save_book_text(_cfg, lecture_id, book_id, content, filename=filename)
-    if current_chapter or next_chapter:
-        saved = update_lecture_book(
-            _cfg,
-            lecture_id,
-            book_id,
-            {
-                "current_chapter": current_chapter,
-                "next_chapter": next_chapter,
-            },
-        ) or saved
 
     vectorization_result = None
     if auto_vectorize:
@@ -1049,6 +1491,46 @@ def upload_book_text(lecture_id: str, book_id: str):
         "book": saved,
         "vectorization": vectorization_result,
     }), 201
+
+
+@bp.route("/lectures/<lecture_id>/books/<book_id>/bookinfo", methods=["GET"])
+def get_book_info_xml(lecture_id: str, book_id: str):
+    _, _, error_response = _book_or_404(lecture_id, book_id)
+    if error_response is not None:
+        return error_response
+    content = load_book_info_xml(_cfg, lecture_id, book_id)
+    return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, "content": content})
+
+
+@bp.route("/lectures/<lecture_id>/books/<book_id>/bookinfo", methods=["POST"])
+def set_book_info_xml(lecture_id: str, book_id: str):
+    _, _, error_response = _book_or_404(lecture_id, book_id)
+    if error_response is not None:
+        return error_response
+    data = request.get_json(silent=True) or {}
+    content = str(data.get("content") or "")
+    path = save_book_info_xml(_cfg, lecture_id, book_id, content)
+    return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, "path": path})
+
+
+@bp.route("/lectures/<lecture_id>/books/<book_id>/bookdetail", methods=["GET"])
+def get_book_detail_xml(lecture_id: str, book_id: str):
+    _, _, error_response = _book_or_404(lecture_id, book_id)
+    if error_response is not None:
+        return error_response
+    content = load_book_detail_xml(_cfg, lecture_id, book_id)
+    return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, "content": content})
+
+
+@bp.route("/lectures/<lecture_id>/books/<book_id>/bookdetail", methods=["POST"])
+def set_book_detail_xml(lecture_id: str, book_id: str):
+    _, _, error_response = _book_or_404(lecture_id, book_id)
+    if error_response is not None:
+        return error_response
+    data = request.get_json(silent=True) or {}
+    content = str(data.get("content") or "")
+    path = save_book_detail_xml(_cfg, lecture_id, book_id, content)
+    return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, "path": path})
 
 
 @bp.route("/lectures/<lecture_id>/books/<book_id>/vectorize", methods=["GET"])
@@ -1090,8 +1572,8 @@ def trigger_book_vectorize(lecture_id: str, book_id: str):
 def _parse_and_store(cfg: Dict[str, Any], course_id: str, material_id: str, file_path: str, filename: str) -> None:
     try:
         storage.update_material_meta(cfg, course_id, material_id, {"parse_status": "parsing"})
-        text = parser.extract_text(file_path)
-        chunks = parser.chunk_text(text)
+        text = extract_text(file_path)
+        chunks = split_text_for_vector(cfg, text)
         chunk_count = storage.save_chunks(cfg, course_id, material_id, chunks)
         storage.update_material_meta(
             cfg,
@@ -1118,7 +1600,7 @@ def _parse_and_store(cfg: Dict[str, Any], course_id: str, material_id: str, file
 def _ingest_chunks(cfg: Dict[str, Any], course_id: str, material_id: str, chunks, title: str) -> None:
     try:
         storage.update_material_meta(cfg, course_id, material_id, {"ingest_status": "ingesting"})
-        vector_count = chroma.upsert_chunks(cfg, course_id, material_id, chunks, title)
+        vector_count = vector_upsert_chunks(cfg, course_id, material_id, chunks, title)
         storage.update_material_meta(
             cfg,
             course_id,
