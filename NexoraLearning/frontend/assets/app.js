@@ -250,9 +250,16 @@
   function renderProgressList() {
     const courses = buildDashboardCourses(state.dashboardRows);
     if (!courses.length) {
-      el.progressList.innerHTML = '<div class="materials-empty">你还没有选择学习课程，请在课程页加入学习</div>';
+      el.progressList.classList.add("is-empty");
+      el.progressList.innerHTML = `
+        <div class="materials-empty progress-empty">
+          <span class="progress-empty-line">你还没有选择学习课程</span>
+          <span class="progress-empty-line">请在右上角课程页加入课程</span>
+        </div>
+      `;
       return;
     }
+    el.progressList.classList.remove("is-empty");
     el.progressList.innerHTML = courses.map((course) => `
       <article class="nxl-course-item" data-progress-lecture-id="${escapeHtml(course.id)}">
         <div class="nxl-course-top">
