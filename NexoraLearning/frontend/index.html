@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NexoraLearning 学习看板</title>
-  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260429_06">
+  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260429_07">
 </head>
 <body>
   <main class="learning-shell" id="learningPanel">
@@ -144,7 +144,24 @@
         </section>
       </article>
     </section>
+
+    <section id="settingsView" class="view-pane">
+      <article class="panel-card settings-panel">
+        <header class="panel-head materials-head">
+          <div class="materials-head-left">
+            <button id="backFromSettingsBtn" class="nxl-icon-btn" type="button" aria-label="返回首页" title="返回首页">←</button>
+            <p class="panel-kicker">SETTINGS</p>
+          </div>
+        </header>
+        <section class="settings-layout">
+          <aside class="settings-nav-pane">
+            <div id="settingsNavList" class="settings-nav-list"></div>
+          </aside>
+          <section id="settingsDetailPane" class="settings-detail-pane"></section>
+        </section>
+      </article>
+    </section>
   </main>
-  <script src="/api/frontend/assets/app.js?v=20260429_06"></script>
+  <script src="/api/frontend/assets/app.js?v=20260429_07"></script>
 </body>
 </html>

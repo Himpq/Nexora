@@ -48,8 +48,6 @@ TOOLS = [
                     "book_id": {"type": "string", "description": "Target book id."},
                     "content": {"type": "string", "description": "UTF-8 text content."},
                     "filename": {"type": "string", "description": "Logical source filename, default content.txt."},
-                    "current_chapter": {"type": "string", "description": "Optional current chapter label."},
-                    "next_chapter": {"type": "string", "description": "Optional next chapter label."},
                     "auto_vectorize": {"type": "boolean", "description": "Whether to queue vectorization immediately."},
                 },
                 "required": ["lecture_id", "book_id", "content"],
@@ -104,7 +102,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "triggerBookVectorization",
-            "description": "Trigger placeholder NexoraDB PAPI vectorization for a book.",
+            "description": "Trigger NexoraDB vectorization for a book.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -121,7 +119,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "vectorSearch",
-            "description": "Search vectorized lecture chunks. Before real NexoraDB integration, this uses local placeholder search over stored chunks.",
+            "description": "Search vectorized lecture chunks (local fallback over chunks when needed).",
             "parameters": {
                 "type": "object",
                 "properties": {
