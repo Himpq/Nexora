@@ -1,0 +1,21 @@
+{
+  "expo": {
+    "name": "Nexora",
+    "slug": "nexora-chat-app",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": false
+    },
+    "android": {
+      "package": "cn.nexora.chatapp"
+    },
+    "web": {
+      "bundler": "metro"
+    }
+  }
+}

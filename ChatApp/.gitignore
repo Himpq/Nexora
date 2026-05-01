@@ -1,0 +1,19 @@
+node_modules/
+.expo/
+.expo-shared/
+dist/
+build/
+coverage/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.tsbuildinfo
+.env
+.env.local
+
+# AI 对话导出 / 全局指令 Markdown 仅保留在本地
+AGENT.md
+AGENTS.md
+**/*.instructions.md
+chat-export-*.md
