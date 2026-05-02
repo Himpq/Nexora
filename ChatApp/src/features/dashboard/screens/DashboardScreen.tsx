@@ -61,10 +61,9 @@ function MetricCard({ label, value }: MetricCardProps) {
 
 type LearningCourseCardProps = {
   row: LectureRow;
-  onContinue: () => void;
 };
 
-function LearningCourseCard({ row, onContinue }: LearningCourseCardProps) {
+function LearningCourseCard({ row }: LearningCourseCardProps) {
   const lecture = row.lecture || {};
   const category = String(lecture.category || "").trim();
   const status = String(lecture.status || "").trim();
@@ -110,7 +109,12 @@ function LearningCourseCard({ row, onContinue }: LearningCourseCardProps) {
         </View>
       </View>
 
-      <AppButton title="继续学习" onPress={onContinue} style={styles.continueButton} />
+      <View style={styles.continueBlock}>
+        <AppButton title="继续学习" disabled style={styles.continueButton} />
+        <AppText variant="caption" tone="secondary">
+          继续学习位置等待后端支持。
+        </AppText>
+      </View>
     </AppCard>
   );
 }
@@ -206,7 +210,6 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
           <LearningCourseCard
             key={lectureId || getLectureTitle(row)}
             row={row}
-            onContinue={goToCourses}
           />
         );
       })}
@@ -266,5 +269,8 @@ const styles = StyleSheet.create({
   },
   continueButton: {
     alignSelf: "stretch",
+  },
+  continueBlock: {
+    gap: spacing.xs,
   },
 });

@@ -1,3 +1,6 @@
+import type { BottomTabScreenProps } from "@react-navigation/bottom-tabs";
+import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import type { CompositeScreenProps } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { StyleSheet, View } from "react-native";
 
@@ -17,12 +20,19 @@ import {
   selectLearning,
 } from "../../../services/frontendService";
 import type { LectureRow } from "../../../services/types";
+import type { MainTabParamList, RootStackParamList } from "../../../navigation/types";
+
+type CourseListScreenProps = CompositeScreenProps<
+  BottomTabScreenProps<MainTabParamList, "Courses">,
+  NativeStackScreenProps<RootStackParamList>
+>;
 
 type CourseCardProps = {
   row: LectureRow;
   selected: boolean;
   updating: boolean;
   onToggle: () => void;
+  onOpen: () => void;
 };
 
 function normalizeError(err: unknown) {
@@ -33,7 +43,7 @@ function getLectureTitle(row: LectureRow) {
   return String(row.lecture?.title || "").trim() || "未命名课程";
 }
 
-function CourseCard({ row, selected, updating, onToggle }: CourseCardProps) {
+function CourseCard({ row, selected, updating, onToggle, onOpen }: CourseCardProps) {
   const lecture = row.lecture || {};
   const category = String(lecture.category || "").trim();
   const status = String(lecture.status || "").trim();
@@ -76,19 +86,29 @@ function CourseCard({ row, selected, updating, onToggle }: CourseCardProps) {
         <AppText variant="caption" tone="secondary">
           教材 {booksCount} 本
         </AppText>
-        <AppButton
-          title={selected ? "退出学习" : "加入学习"}
-          variant={selected ? "secondary" : "primary"}
-          loading={updating}
-          onPress={onToggle}
-          style={styles.selectButton}
-        />
+        <View style={styles.actions}>
+          {selected ? (
+            <AppButton
+              title="查看教材"
+              loading={updating}
+              onPress={onOpen}
+              style={styles.selectButton}
+            />
+          ) : null}
+          <AppButton
+            title={selected ? "退出学习" : "加入学习"}
+            variant={selected ? "secondary" : "primary"}
+            loading={updating}
+            onPress={onToggle}
+            style={styles.selectButton}
+          />
+        </View>
       </View>
     </AppCard>
   );
 }
 
-export function CourseListScreen() {
+export function CourseListScreen({ navigation }: CourseListScreenProps) {
   const { username } = useSession();
   const [rows, setRows] = useState<LectureRow[]>([]);
   const [selectedLectureIds, setSelectedLectureIds] = useState<string[]>([]);
@@ -167,6 +187,20 @@ export function CourseListScreen() {
       }
     },
     [selectedLectureIdSet, updatingLectureId, username],
+  );
+
+  const openCourseDetail = useCallback(
+    (row: LectureRow) => {
+      const lectureId = String(row.lecture?.id || "").trim();
+      if (!lectureId) {
+        return;
+      }
+      navigation.navigate("CourseDetail", {
+        lectureId,
+        lectureTitle: getLectureTitle(row),
+      });
+    },
+    [navigation],
   );
 
   if (loading) {
@@ -253,6 +287,7 @@ export function CourseListScreen() {
             selected={selected}
             updating={updatingLectureId === lectureId}
             onToggle={() => void handleToggle(row)}
+            onOpen={() => openCourseDetail(row)}
           />
         );
       })}
@@ -302,9 +337,14 @@ const styles = StyleSheet.create({
     flexShrink: 1,
   },
   footer: {
+    alignItems: "stretch",
+    gap: spacing.md,
+  },
+  actions: {
     alignItems: "center",
     flexDirection: "row",
-    justifyContent: "space-between",
+    flexWrap: "wrap",
+    justifyContent: "flex-end",
     gap: spacing.md,
   },
   selectButton: {
