@@ -96,7 +96,7 @@ export function postJson<T>(path: string, payload?: unknown, options?: RequestOp
       "Content-Type": "application/json",
       ...(options?.headers || {}),
     },
-    body: JSON.stringify(payload || {}),
+    body: JSON.stringify(payload ?? {}),
   });
 }
 
@@ -108,7 +108,7 @@ export function patchJson<T>(path: string, payload?: unknown, options?: RequestO
       "Content-Type": "application/json",
       ...(options?.headers || {}),
     },
-    body: JSON.stringify(payload || {}),
+    body: JSON.stringify(payload ?? {}),
   });
 }
 
