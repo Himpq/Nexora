@@ -7,5 +7,6 @@ export function formatCount(value: unknown) {
 export function compactText(value: unknown, maxLength = 120) {
   const text = String(value || "").trim();
   if (text.length <= maxLength) return text;
-  return `${text.slice(0, maxLength - 1)}...`;
+  if (maxLength <= 3) return text.slice(0, Math.max(0, maxLength));
+  return `${text.slice(0, maxLength - 3)}...`;
 }
