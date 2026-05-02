@@ -42,7 +42,7 @@ export function SettingsScreen() {
       <AppText variant="title">设置</AppText>
       <AppCard style={styles.card}>
         <AppText variant="heading">应用信息</AppText>
-        <DetailRow label="版本" value="0.2.0" />
+        <DetailRow label="版本" value="0.3.0" />
         <DetailRow label="API 基地址" value={appEnv.nexoraLearningBaseUrl} />
       </AppCard>
       <AppCard style={styles.card}>

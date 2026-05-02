@@ -2,6 +2,7 @@ import { getJson, postJson } from "./apiClient";
 import type {
   DashboardResponse,
   FrontendContext,
+  LearningSelectionResponse,
   MaterialsResponse,
 } from "./types";
 
@@ -20,12 +21,7 @@ export function getDashboard() {
 }
 
 export function selectLearning(lectureId: string, selected: boolean, actor?: string) {
-  return postJson<{
-    success: boolean;
-    user_id: string;
-    selected: boolean;
-    selected_lecture_ids: string[];
-  }>("/api/frontend/learning/select", {
+  return postJson<LearningSelectionResponse>("/api/frontend/learning/select", {
     lecture_id: lectureId,
     selected,
     actor,
