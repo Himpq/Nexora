@@ -84,6 +84,15 @@ export type DashboardResponse = {
   [key: string]: unknown;
 };
 
+export type LearningSelectionResponse = {
+  success: boolean;
+  user_id: string;
+  lecture?: Lecture;
+  selected: boolean;
+  selected_lecture_ids: string[];
+  [key: string]: unknown;
+};
+
 export type ModelOption = {
   id?: string;
   name?: string;
