@@ -54,11 +54,17 @@
         </section>
 
         <section id="readerPane" class="materials-reader-pane" hidden>
-          <header class="reader-head">
-            <button id="backFromReaderBtn" class="nxl-icon-btn" type="button" aria-label="返回课程详情" title="返回课程详情">←</button>
-            <div class="reader-head-text">
-              <div id="readerTitle" class="reader-title">教材阅读</div>
-              <div id="readerSubTitle" class="reader-subtitle">提取文本预览</div>
+          <header class="panel-head materials-head reader-head">
+            <div class="materials-head-left">
+              <button id="backFromReaderBtn" class="nxl-icon-btn" type="button" aria-label="返回课程详情" title="返回课程详情">←</button>
+              <div class="reader-head-text">
+                <div id="readerTitle" class="reader-title">教材阅读</div>
+                <div id="readerSubTitle" class="reader-subtitle">提取文本预览</div>
+              </div>
+            </div>
+            <div class="reader-head-actions">
+              <button id="readerFullscreenBtn" class="nxl-icon-btn" type="button" aria-label="全屏阅读" title="全屏阅读">⛶</button>
+              <button id="readerExitFullscreenBtn" class="nxl-icon-btn reader-exit-fullscreen" type="button" hidden aria-label="退出全屏" title="退出全屏">×</button>
             </div>
           </header>
           <section id="readerContent" class="reader-content">
