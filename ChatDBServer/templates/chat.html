@@ -27,7 +27,14 @@
         <!-- Sidebar: Navigation -->
         <nav class="sidebar" id="sidebar">
             <div class="sidebar-header">
-                <div class="logo">Nexora<span class="dot"></span></div>
+                <div class="sidebar-brand-tabs" id="sidebarBrandTabs">
+                    <button type="button" class="sidebar-brand-tab active" id="sidebarBrandNexoraTab" data-sidebar-mode="nexora" aria-pressed="true">
+                        <span class="logo">Nexora<span class="dot"></span></span>
+                    </button>
+                    <button type="button" class="sidebar-brand-tab" id="sidebarBrandLearningTab" data-sidebar-mode="learning" aria-pressed="false">
+                        <span class="sidebar-brand-learning-text">Learning</span>
+                    </button>
+                </div>
                 <button class="btn-icon" id="toggleSidebarMobile">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
                 </button>
@@ -42,6 +49,7 @@
             <div class="sidebar-content" id="conversationList">
                 <!-- Dynamic List -->
             </div>
+            <div class="sidebar-content learning-sidebar-panel" id="learningSidebarPanel" style="display:none;"></div>
 
             <div class="sidebar-footer">
                 <!--<a href="/knowledge_graph" class="footer-link">-->
@@ -100,9 +108,7 @@
                     </div>
                 </div>
                 
-                <div class="header-center" id="conversationTitle">
-                    Untitled Conversation
-                </div>
+                <div class="header-center" id="conversationTitle">Untitled Conversation</div>
 
                 <div class="header-right">
                    <button class="btn-icon notes-toggle-btn" id="toggleNotesPanel" title="笔记" onclick="toggleNotesPanel()">
@@ -170,6 +176,7 @@
                     <p>How can I assist you today?</p>
                 </div>
             </div>
+            <div id="learningMainPanel" class="messages-area learning-main-panel" style="display:none;"></div>
 
             <!-- Knowledge Viewer -->
             <div id="knowledgeViewer" style="display:none; flex:1; flex-direction: column; overflow: hidden; min-height: 0;">
@@ -982,6 +989,17 @@
                                 <div class="form-group"><label>主题</label><div id="set-theme" class="settings-field">-</div></div>
                                 <div class="form-group"><label>流式输出</label><div id="set-stream" class="settings-field">-</div></div>
                                 <div class="form-group"><label>语言</label><div id="set-lang" class="settings-field">-</div></div>
+                                <div class="form-group settings-pref-card settings-pref-card-wide">
+                                    <label>学习模式</label>
+                                    <div class="settings-pref-inline">
+                                        <div class="settings-mode-toggle" id="learningModeToggleGroup" role="tablist" aria-label="学习模式">
+                                            <button id="set-learning-mode-off" class="settings-mode-toggle-btn active" type="button" data-learning-mode="off">Nexora</button>
+                                            <button id="set-learning-mode-on" class="settings-mode-toggle-btn" type="button" data-learning-mode="on">Learning</button>
+                                        </div>
+                                        <button id="saveLearningModeBtn" class="btn-primary btn-compact" type="button">保存</button>
+                                    </div>
+                                    <div id="set-learning-mode-desc" class="settings-help-text">开启后默认进入 Learning 侧边栏；点击侧边栏里的 New Chat 可打开 NexoraLearning 学习界面。</div>
+                                </div>
                             </div>
                         </div>
                         <div id="settings-skills-tab" class="admin-tab-content">

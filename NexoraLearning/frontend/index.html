@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NexoraLearning 学习看板</title>
-  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260429_07">
+  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260502_01">
 </head>
 <body>
   <main class="learning-shell" id="learningPanel">
@@ -162,6 +162,18 @@
       </article>
     </section>
   </main>
-  <script src="/api/frontend/assets/app.js?v=20260429_07"></script>
+  <div id="confirmBackdrop" class="modal-backdrop" style="display:none;">
+    <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+      <div class="modal-head">
+        <h3 id="confirmTitle">确认操作</h3>
+      </div>
+      <div id="confirmBody" class="modal-body">请确认是否继续。</div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-primary" id="confirmOkBtn">确认</button>
+        <button type="button" class="btn btn-secondary" id="confirmCancelBtn">取消</button>
+      </div>
+    </div>
+  </div>
+  <script src="/api/frontend/assets/app.js?v=20260502_01"></script>
 </body>
 </html>

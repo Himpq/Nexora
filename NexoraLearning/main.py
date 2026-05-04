@@ -64,9 +64,9 @@ DEFAULT_CONFIG = {
 def ensure_bootstrap():
     """确保 data 目录和配置文件存在"""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    (DATA_DIR / "courses").mkdir(exist_ok=True)
+   # (DATA_DIR / "courses").mkdir(exist_ok=True)
     (DATA_DIR / "lectures").mkdir(exist_ok=True)
-    (DATA_DIR / "chroma").mkdir(exist_ok=True)
+    #(DATA_DIR / "chroma").mkdir(exist_ok=True)
     (DATA_DIR / "users").mkdir(exist_ok=True)
 
     if not CONFIG_PATH.exists():

@@ -46,6 +46,19 @@ function getLatestReasoningThinkingBlock(messageDiv) {
     return blocks.length > 0 ? blocks[blocks.length - 1] : null;
 }
 
+function isLearningConversationView() {
+    if (!learningModeEnabled) return false;
+    return String(currentConversationMode || '').trim().toLowerCase() === 'learning'
+        || String(learningHeaderMode || '').trim().toLowerCase() === 'learning';
+}
+
+function resolveNewConversationMode(targetMode = null) {
+    const normalizedTarget = String(targetMode || '').trim().toLowerCase();
+    if (normalizedTarget === 'learning') return learningModeEnabled ? 'learning' : 'chat';
+    if (normalizedTarget === 'chat') return 'chat';
+    return isLearningConversationView() ? 'learning' : 'chat';
+}
+
 // Global State
 let currentConversationId = null;
 let currentAbortController = null;
@@ -60,6 +73,14 @@ let uploadCancelledByUser = false;
 let currentUsername = null;
 let currentUserRole = 'member';
 let currentUserAvatarUrl = '';
+let currentUserPreferences = null;
+let learningModeEnabled = false;
+let learningSidebarMode = 'nexora';
+let learningHeaderMode = 'chat';
+let learningWelcomeMounted = false;
+let learningMainMounted = false;
+let learningModeAssetsPromise = null;
+let pendingLearningModeValue = false;
 let pendingAvatarDataUrl = '';
 let adminUsersCache = [];
 let adminSelectedUserId = null;
@@ -97,6 +118,9 @@ const MAIL_LAST_OPEN_TS_KEY = 'nexora_mail_last_open_ts';
 const CHAT_COMPOSER_PREFS_KEY = 'nexora_chat_composer_prefs_v1';
 const CHAT_INPUT_DRAFT_KEY = 'nexora_chat_input_draft_v1';
 const CHAT_INPUT_DRAFT_MAX_LEN = 12000;
+const NEXORA_LEARNING_FRONTEND_URL = `${window.location.protocol}//${window.location.hostname}:5001/api/frontend/`;
+const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260503_01';
+const NEXORA_LEARNING_JS_URL = '/static/js/learning_mode.js?v=20260503_01';
 const MAIL_POLL_INTERVAL_MS = 5000;
 const AGENT_STATUS_POLL_VISIBLE_MS = 5000;
 const MODAL_STACK_BASE_Z = 12000;
@@ -3994,7 +4018,9 @@ async function loadCloudFiles() {
 // DOM Elements
 const els = {
     sidebar: document.getElementById('sidebar'),
+    inputDock: document.querySelector('.input-dock'),
     messagesContainer: document.getElementById('messagesContainer'),
+    learningMainPanel: document.getElementById('learningMainPanel'),
     messageInput: document.getElementById('messageInput'),
     longtermPlanPanel: document.getElementById('longtermPlanPanel'),
     longtermPlanToggle: document.getElementById('longtermPlanToggle'),
@@ -4016,6 +4042,9 @@ const els = {
     modelOptions: document.getElementById('modelOptions'),
     // ...
     conversationList: document.getElementById('conversationList'),
+    learningSidebarPanel: document.getElementById('learningSidebarPanel'),
+    sidebarBrandNexoraTab: document.getElementById('sidebarBrandNexoraTab'),
+    sidebarBrandLearningTab: document.getElementById('sidebarBrandLearningTab'),
     newChatBtn: document.getElementById('newChatBtn'),
     conversationTitle: document.getElementById('conversationTitle'),
     knowledgePanel: document.getElementById('knowledgePanel'),
@@ -4149,6 +4178,293 @@ const els = {
     knowledgeSearchInput: document.getElementById('knowledgeSearchInput'),
     knowledgeSearchBtn: document.getElementById('knowledgeSearchBtn')
 };
+
+function ensureStylesheetAsset(id, href) {
+    let link = document.getElementById(id);
+    if (link) return Promise.resolve(link);
+    link = document.createElement('link');
+    link.id = id;
+    link.rel = 'stylesheet';
+    link.href = href;
+    document.head.appendChild(link);
+    return new Promise((resolve, reject) => {
+        link.addEventListener('load', () => resolve(link), { once: true });
+        link.addEventListener('error', () => reject(new Error(`failed to load stylesheet: ${href}`)), { once: true });
+    });
+}
+
+function ensureScriptAsset(id, src) {
+    const existing = document.getElementById(id);
+    if (existing) {
+        if (existing.dataset.loaded === '1') return Promise.resolve(existing);
+        return new Promise((resolve, reject) => {
+            existing.addEventListener('load', () => resolve(existing), { once: true });
+            existing.addEventListener('error', () => reject(new Error(`failed to load script: ${src}`)), { once: true });
+        });
+    }
+    const script = document.createElement('script');
+    script.id = id;
+    script.src = src;
+    script.async = true;
+    document.body.appendChild(script);
+    return new Promise((resolve, reject) => {
+        script.addEventListener('load', () => {
+            script.dataset.loaded = '1';
+            resolve(script);
+        }, { once: true });
+        script.addEventListener('error', () => reject(new Error(`failed to load script: ${src}`)), { once: true });
+    });
+}
+
+async function ensureLearningModeAssets() {
+    if (learningModeAssetsPromise) return learningModeAssetsPromise;
+    learningModeAssetsPromise = Promise.all([
+        ensureStylesheetAsset('nexoraLearningModeCss', NEXORA_LEARNING_CSS_URL),
+        ensureScriptAsset('nexoraLearningModeJs', NEXORA_LEARNING_JS_URL),
+    ]).then(() => window.NexoraLearningMode || null);
+    return learningModeAssetsPromise;
+}
+
+function applyLearningSidebarMode(mode) {
+    const normalized = (learningModeEnabled && String(mode || 'nexora').trim().toLowerCase() === 'learning') ? 'learning' : 'nexora';
+    learningSidebarMode = normalized;
+    const visible = normalized === 'learning';
+    const renderSidebarPanel = () => {
+        if (!visible) return;
+        if (!window.NexoraLearningMode || typeof window.NexoraLearningMode.renderSidebarPanel !== 'function') return;
+        window.NexoraLearningMode.renderSidebarPanel(els.learningSidebarPanel, {
+            username: currentUsername,
+            role: currentUserRole,
+            enabled: learningModeEnabled,
+            sidebarMode: normalized,
+        });
+    };
+    if (els.sidebarBrandLearningTab) {
+        els.sidebarBrandLearningTab.style.display = learningModeEnabled ? '' : 'none';
+        els.sidebarBrandLearningTab.classList.toggle('active', visible);
+        els.sidebarBrandLearningTab.setAttribute('aria-pressed', visible ? 'true' : 'false');
+    }
+    if (els.sidebarBrandNexoraTab) {
+        els.sidebarBrandNexoraTab.classList.toggle('active', !visible);
+        els.sidebarBrandNexoraTab.setAttribute('aria-pressed', !visible ? 'true' : 'false');
+    }
+    if (els.conversationList) {
+        els.conversationList.style.display = visible ? 'none' : '';
+    }
+    if (els.newChatBtn) {
+        els.newChatBtn.style.display = visible ? 'none' : '';
+    }
+    if (els.learningSidebarPanel) {
+        els.learningSidebarPanel.style.display = visible ? '' : 'none';
+        if (visible) {
+            if (window.NexoraLearningMode && typeof window.NexoraLearningMode.renderSidebarPanel === 'function') {
+                renderSidebarPanel();
+            } else {
+                els.learningSidebarPanel.innerHTML = '<div class="learning-mode-welcome-loading">正在载入 NexoraLearning...</div>';
+                void ensureLearningModeAssets()
+                    .then(() => {
+                        if (learningSidebarMode !== 'learning') return;
+                        renderSidebarPanel();
+                    })
+                    .catch((err) => {
+                        console.error('加载学习侧栏资源失败:', err);
+                    });
+            }
+        }
+    }
+}
+
+function clearLearningWelcomeState() {
+    if (els.inputDock) els.inputDock.classList.remove('learning-mode-hidden');
+}
+
+async function renderLearningMainPanel() {
+    if (!els.learningMainPanel) return;
+    try {
+        const api = await ensureLearningModeAssets();
+        if (learningMainMounted) return;
+        els.learningMainPanel.innerHTML = '<div class="learning-mode-welcome-loading">正在载入 NexoraLearning...</div>';
+        if (api && typeof api.renderMainPanel === 'function') {
+            api.renderMainPanel(els.learningMainPanel, {
+                frontendUrl: NEXORA_LEARNING_FRONTEND_URL,
+                username: currentUsername,
+            });
+            learningMainMounted = true;
+        } else if (api && typeof api.renderWelcome === 'function') {
+            api.renderWelcome(els.learningMainPanel, {
+                frontendUrl: NEXORA_LEARNING_FRONTEND_URL,
+                username: currentUsername,
+            });
+            learningMainMounted = true;
+        }
+    } catch (err) {
+        console.error('加载学习主面板失败:', err);
+        els.learningMainPanel.innerHTML = `
+            <div class="welcome-screen">
+                <h1>Learning</h1>
+                <p>无法载入学习面板。</p>
+            </div>
+        `;
+    }
+}
+
+async function syncLearningHeaderMode() {
+    const hasConversation = !!String(currentConversationId || '').trim();
+    const showLearning = isLearningConversationView();
+    const showLearningMain = String(learningHeaderMode || '').trim().toLowerCase() === 'learning' && hasConversation;
+    if (els.messagesContainer) {
+        els.messagesContainer.style.display = showLearningMain ? 'none' : '';
+    }
+    if (els.learningMainPanel) {
+        els.learningMainPanel.style.display = showLearningMain ? '' : 'none';
+        if (showLearningMain) {
+            await renderLearningMainPanel();
+        }
+    }
+    if (els.conversationTitle) {
+        els.conversationTitle.textContent = hasConversation ? (els.conversationTitle.textContent || 'Untitled Conversation') : (showLearning ? 'Learning' : 'Nexora');
+    }
+}
+
+async function renderWelcomeScreen() {
+    if (!els.messagesContainer) return;
+    if (!isLearningConversationView()) {
+        clearLearningWelcomeState();
+        learningWelcomeMounted = false;
+        els.messagesContainer.innerHTML = `
+            <div class="welcome-screen">
+                <h1>Hello.</h1>
+                <p>Start a new conversation.</p>
+            </div>
+        `;
+        return;
+    }
+    try {
+        const api = await ensureLearningModeAssets();
+        let host = els.messagesContainer.querySelector('.welcome-screen.learning-mode-welcome-shell');
+        if (!host) {
+            els.messagesContainer.innerHTML = `
+                <div class="welcome-screen learning-mode-welcome-shell">
+                    <div class="learning-mode-welcome-loading">正在载入 NexoraLearning...</div>
+                </div>
+            `;
+            host = els.messagesContainer.querySelector('.welcome-screen.learning-mode-welcome-shell');
+        }
+        if (!host || currentConversationId) return;
+        if (learningWelcomeMounted) return;
+        if (api && typeof api.renderWelcome === 'function') {
+            api.renderWelcome(host, {
+                frontendUrl: NEXORA_LEARNING_FRONTEND_URL,
+                username: currentUsername,
+            });
+            learningWelcomeMounted = true;
+        }
+    } catch (err) {
+        console.error('加载学习模式资源失败:', err);
+        const host = els.messagesContainer.querySelector('.welcome-screen');
+        if (host) {
+            host.innerHTML = `
+                <h1>Learning Mode</h1>
+                <p>无法载入 NexoraLearning 前端。</p>
+            `;
+        }
+    }
+}
+
+async function applyLearningMode(enabled) {
+    learningModeEnabled = !!enabled;
+    document.body.classList.toggle('learning-mode-enabled', learningModeEnabled);
+    if (learningModeEnabled) {
+        try {
+            await ensureLearningModeAssets();
+        } catch (err) {
+            console.error('预加载学习模式资源失败:', err);
+        }
+    } else {
+        clearLearningWelcomeState();
+    }
+    learningSidebarMode = learningModeEnabled ? 'learning' : 'nexora';
+    if (!learningModeEnabled) {
+        if (currentConversationMode === 'learning') currentConversationMode = 'chat';
+        if (learningHeaderMode === 'learning') learningHeaderMode = 'chat';
+    }
+    applyLearningSidebarMode(learningSidebarMode);
+    await syncLearningHeaderMode();
+    if (!currentConversationId) {
+        await renderWelcomeScreen();
+    }
+}
+
+async function loadCurrentUserPreferences() {
+    const prefsRes = await fetch('/api/user/preferences');
+    const prefsData = await prefsRes.json();
+    if (!prefsData.success) {
+        throw new Error(prefsData.message || '获取偏好设置失败');
+    }
+    currentUserPreferences = (prefsData && typeof prefsData.preferences === 'object' && prefsData.preferences)
+        ? prefsData.preferences
+        : {};
+    return currentUserPreferences;
+}
+
+function getLearningModeOffBtn() {
+    return document.getElementById('set-learning-mode-off');
+}
+
+function getLearningModeOnBtn() {
+    return document.getElementById('set-learning-mode-on');
+}
+
+function getSaveLearningModeBtn() {
+    return document.getElementById('saveLearningModeBtn');
+}
+
+function setLearningModeToggleUi(enabled) {
+    pendingLearningModeValue = !!enabled;
+    const offBtn = getLearningModeOffBtn();
+    const onBtn = getLearningModeOnBtn();
+    if (offBtn) {
+        offBtn.classList.toggle('active', !pendingLearningModeValue);
+        offBtn.setAttribute('aria-pressed', !pendingLearningModeValue ? 'true' : 'false');
+    }
+    if (onBtn) {
+        onBtn.classList.toggle('active', pendingLearningModeValue);
+        onBtn.setAttribute('aria-pressed', pendingLearningModeValue ? 'true' : 'false');
+    }
+}
+
+async function saveLearningModePreference() {
+    const enabled = !!pendingLearningModeValue;
+    const saveBtn = getSaveLearningModeBtn();
+    try {
+        if (saveBtn) {
+            saveBtn.disabled = true;
+            saveBtn.textContent = '保存中...';
+        }
+        const res = await fetch('/api/user/preferences', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ learning_mode: enabled }),
+        });
+        const data = await res.json();
+        if (!data.success) {
+            showToast(data.message || '保存学习模式失败');
+            return;
+        }
+        currentUserPreferences = data.preferences || currentUserPreferences || {};
+        setLearningModeToggleUi(!!currentUserPreferences.learning_mode);
+        await applyLearningMode(!!currentUserPreferences.learning_mode);
+        showToast(enabled ? '学习模式已开启' : '学习模式已关闭');
+    } catch (err) {
+        console.error('保存学习模式失败:', err);
+        showToast('保存学习模式失败');
+    } finally {
+        if (saveBtn) {
+            saveBtn.disabled = false;
+            saveBtn.textContent = '保存';
+        }
+    }
+}
 
 function createDefaultNotebook() {
     return {
@@ -7769,6 +8085,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
     }
     loadModels();
+    try {
+        const prefs = await loadCurrentUserPreferences();
+        await applyLearningMode(!!(prefs && prefs.learning_mode));
+    } catch (err) {
+        console.error('初始化学习模式失败:', err);
+    }
 
     // Check URL param for conversation ID
     const urlParams = new URLSearchParams(window.location.search);
@@ -7876,6 +8198,34 @@ function initUI() {
     });
     // Event Listeners
     if(els.sendBtn) els.sendBtn.addEventListener('click', sendMessage);
+    if (els.sidebarBrandNexoraTab) {
+        els.sidebarBrandNexoraTab.addEventListener('click', () => applyLearningSidebarMode('nexora'));
+    }
+    if (els.sidebarBrandLearningTab) {
+        els.sidebarBrandLearningTab.addEventListener('click', () => {
+            if (!learningModeEnabled) return;
+            applyLearningSidebarMode('learning');
+        });
+    }
+    document.addEventListener('click', (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        const learningActionBtn = target.closest('[data-learning-action="new-learning"]');
+        if (learningActionBtn) {
+            void createNewConversation(false, learningModeEnabled ? 'learning' : 'chat');
+            return;
+        }
+        const modeBtn = target.closest('[data-learning-mode]');
+        if (modeBtn) {
+            const mode = String(modeBtn.getAttribute('data-learning-mode') || '').trim().toLowerCase();
+            setLearningModeToggleUi(mode === 'on');
+            return;
+        }
+        const saveBtn = target.closest('#saveLearningModeBtn');
+        if (saveBtn) {
+            void saveLearningModePreference();
+        }
+    });
     if (els.longtermPlanToggle) {
         els.longtermPlanToggle.addEventListener('click', (e) => {
             e.preventDefault();
@@ -8135,7 +8485,7 @@ function initUI() {
     }
 
     // New Chat
-    if(els.newChatBtn) els.newChatBtn.addEventListener('click', () => createNewConversation());
+    if(els.newChatBtn) els.newChatBtn.addEventListener('click', () => createNewConversation(false, 'chat'));
 
 // 说明
     if(els.tokenDisplay) els.tokenDisplay.addEventListener('click', openTokenModal);
@@ -9495,9 +9845,18 @@ function renderConversationList(conversations) {
         div.dataset.pin = isPinned ? '1' : '0';
         const isLongterm = String(c && c.conversation_mode || '').trim() === 'longterm' || !!(c && c.longterm_active);
         const isLongtermActive = !!(c && c.longterm_active);
+        const tags = Array.isArray(c && c.tags) ? c.tags.map((item) => String(item || '').trim().toLowerCase()) : [];
+        const isLearningConversation = tags.includes('learning') || String(c && c.conversation_mode || '').trim() === 'learning';
         
         const titleSpan = document.createElement('span');
         titleSpan.className = 'title'; // Add class for CSS styling
+        if (isLearningConversation) {
+            const learningIcon = document.createElement('i');
+            learningIcon.className = 'fa-solid fa-book-open conversation-mode-icon';
+            learningIcon.setAttribute('aria-hidden', 'true');
+            learningIcon.title = 'Learning 对话';
+            titleSpan.appendChild(learningIcon);
+        }
         if (isLongterm) {
             const modeIcon = document.createElement('i');
             modeIcon.className = `fa-solid fa-diagram-project conversation-mode-icon${isLongtermActive ? ' active' : ''}`;
@@ -9765,7 +10124,9 @@ function applyLongtermPlanFromText(rawText, source = {}) {
 function syncConversationModeFromConversation(conversation) {
     const conv = (conversation && typeof conversation === 'object') ? conversation : {};
     const mode = String(conv.conversation_mode || 'chat').trim().toLowerCase();
-    currentConversationMode = mode === 'longterm' ? 'longterm' : 'chat';
+    currentConversationMode = mode === 'longterm'
+        ? 'longterm'
+        : ((learningModeEnabled && mode === 'learning') ? 'learning' : 'chat');
     currentConversationLongtermState = normalizeLongtermState(conv.longterm);
     currentConversationLongtermAutoContinueKind = '';
     currentConversationLongtermConfirmationInFlight = false;
@@ -9964,13 +10325,14 @@ function setLongtermMode(active, state = {}) {
     renderLongtermPlanPanel();
 }
 
-async function createNewConversation(silent = false) {
+async function createNewConversation(silent = false, targetMode = null) {
     const viewer = document.getElementById('knowledgeViewer');
     if (viewer && viewer.style.display !== 'none') {
         closeKnowledgeView();
     }
     currentConversationHasImageHistory = false;
-    currentConversationMode = 'chat';
+    const resolvedMode = resolveNewConversationMode(targetMode);
+    currentConversationMode = resolvedMode;
     currentConversationLongtermState = {
         active: false,
         task: '',
@@ -9984,14 +10346,14 @@ async function createNewConversation(silent = false) {
     if(!silent) {
         // Clear UI
         currentConversationId = null;
+        learningHeaderMode = resolvedMode === 'learning' ? 'learning' : 'chat';
+        learningWelcomeMounted = false;
+        learningMainMounted = false;
         syncNotesForConversation(null);
-        els.messagesContainer.innerHTML = `
-            <div class="welcome-screen">
-                <h1>Hello.</h1>
-                <p>Start a new conversation.</p>
-            </div>
-        `;
-        els.conversationTitle.textContent = 'New Chat';
+        applyLearningSidebarMode(resolvedMode === 'learning' ? 'learning' : 'nexora');
+        void renderWelcomeScreen();
+        els.conversationTitle.textContent = resolvedMode === 'learning' ? 'New Learning' : 'New Chat';
+        void syncLearningHeaderMode();
         tokenMiniState.baseInput = 0;
         tokenMiniState.baseOutput = 0;
         resetTokenMiniStreamPart();
@@ -10020,6 +10382,9 @@ async function loadConversation(id) {
     originalHeaderState = null;
     
     currentConversationId = id;
+    learningHeaderMode = 'chat';
+    void syncLearningHeaderMode();
+    clearLearningWelcomeState();
     syncNotesForConversation(id);
     els.messagesContainer.innerHTML = ''; // Loading state
     tokenMiniState.conversationId = id ? String(id) : null;
@@ -10041,6 +10406,9 @@ async function loadConversation(id) {
         if (data.success && data.conversation) {
             refreshConversationImageHistoryFlag(data.conversation.messages || []);
             syncConversationModeFromConversation(data.conversation);
+            applyLearningSidebarMode(currentConversationMode === 'learning' ? 'learning' : 'nexora');
+            learningHeaderMode = 'chat';
+            void syncLearningHeaderMode();
             // Render
             renderMessages(data.conversation.messages, false, { instant: true });
             applyTokenBudgetFromConversationMessages(data.conversation.messages || []);
@@ -10060,6 +10428,8 @@ async function loadConversation(id) {
             currentConversationLongtermConfirmationInFlight = false;
             renderLongtermPlanPanel();
             console.error("Failed to load conversation:", data.message);
+            applyLearningSidebarMode('nexora');
+            void syncLearningHeaderMode();
             await refreshTokenMiniForConversation(null);
         }
         
@@ -10085,6 +10455,8 @@ async function loadConversation(id) {
         currentConversationLongtermConfirmationInFlight = false;
         renderLongtermPlanPanel();
         console.error("Error loading chat", e);
+        applyLearningSidebarMode('nexora');
+        void syncLearningHeaderMode();
         await refreshTokenMiniForConversation(null);
     }
 }
@@ -10323,22 +10695,233 @@ function isSseResponse(response) {
     return contentType.includes('text/event-stream');
 }
 
-async function ensureConversationExistsForStreaming(seedText = '') {
+function createLearningCardNode(card) {
+    const payload = (card && typeof card === 'object') ? card : {};
+    const html = String(payload.html || '').trim();
+    if (!html) return null;
+    const wrap = document.createElement('div');
+    wrap.className = 'learning-chat-card-wrap';
+    wrap.innerHTML = html;
+    return wrap;
+}
+
+function createQuestionCardNode(question, options = {}) {
+    const payload = (question && typeof question === 'object') ? question : {};
+    const wrap = document.createElement('div');
+    wrap.className = 'question-tool-card';
+    wrap.dataset.toolName = 'question';
+    wrap.dataset.pending = 'true';
+    wrap.dataset.resolved = 'false';
+    const title = escapeHtml(String(payload.question_title || 'Question').trim());
+    const content = escapeHtml(String(payload.question_content || '').trim());
+    const choices = Array.isArray(payload.choices) ? payload.choices : [];
+    const allowOther = payload.allow_other !== false;
+    const cardId = String(payload.question_id || options.cardId || `question_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`);
+    const choicesHtml = choices.map((choice, index) => {
+        const safeChoice = String(choice || '').trim();
+        return `<button class="question-choice-btn" data-question-card-id="${cardId}" data-choice-index="${index}" data-choice-value="${escapeHtml(safeChoice)}">${escapeHtml(safeChoice)}</button>`;
+    }).join('');
+    wrap.innerHTML = `
+        <div class="question-card-body" data-question-card-id="${cardId}">
+            <div class="question-card-topline">
+                <div class="question-card-kicker">QUESTION</div>
+                <div class="question-card-pill">Awaiting answer</div>
+            </div>
+            <div class="question-card-title">${title}</div>
+            <div class="question-card-content">${content}</div>
+            ${choices.length ? `<div class="question-card-choices">${choicesHtml}</div>` : ''}
+            ${allowOther ? `
+            <div class="question-card-other">
+                <input class="question-other-input" type="text" placeholder="其他" data-question-card-id="${cardId}">
+                <button class="question-other-submit" data-question-card-id="${cardId}">提交</button>
+            </div>` : ''}
+            <div class="question-card-meta">Question ID: ${escapeHtml(cardId)}</div>
+        </div>
+    `;
+    wrap.querySelectorAll('.question-choice-btn').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+            await submitQuestionAnswer(btn.dataset.choiceValue || btn.textContent || '', wrap);
+        });
+    });
+    const submit = wrap.querySelector('.question-other-submit');
+    const input = wrap.querySelector('.question-other-input');
+    if (submit && input) {
+        submit.addEventListener('click', async () => {
+            await submitQuestionAnswer(input.value || '', wrap);
+        });
+        input.addEventListener('keydown', async (event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                await submitQuestionAnswer(input.value || '', wrap);
+            }
+        });
+    }
+    return wrap;
+}
+
+function applyQuestionAnswer(questionCard, answerText) {
+    if (!questionCard) return;
+    const body = questionCard.querySelector('.question-card-body');
+    if (body) {
+        body.classList.add('answered');
+        const controls = body.querySelectorAll('button, input');
+        controls.forEach((el) => {
+            el.disabled = true;
+        });
+        const answer = document.createElement('div');
+        answer.className = 'question-card-answer';
+        answer.textContent = `Your answer: ${String(answerText || '').trim()}`;
+        body.appendChild(answer);
+        const pill = body.querySelector('.question-card-pill');
+        if (pill) pill.textContent = 'Answered';
+    }
+    questionCard.dataset.pending = 'false';
+    questionCard.dataset.resolved = 'true';
+}
+
+async function submitQuestionAnswer(answerText, questionCard = null) {
+    const finalAnswer = String(answerText || '').trim();
+    if (!finalAnswer) return;
+    if (questionCard) applyQuestionAnswer(questionCard, finalAnswer);
+    if (els.messageInput) {
+        els.messageInput.value = finalAnswer;
+        els.messageInput.style.height = 'auto';
+        els.messageInput.style.height = `${els.messageInput.scrollHeight}px`;
+    }
+    await sendMessage();
+}
+
+function appendQuestionStep(messageDiv, step) {
+    if (!messageDiv || !step || typeof step !== 'object') return;
+    const content = messageDiv.querySelector('.message-content');
+    if (!content) return;
+    const payload = (step.question && typeof step.question === 'object') ? step.question : step;
+    const node = createQuestionCardNode(payload);
+    if (!node) return;
+    content.appendChild(node);
+    placeInteractiveCardsBelowToolChain(messageDiv);
+}
+
+function appendLearningCardsToContent(contentEl, cards) {
+    if (!contentEl || !Array.isArray(cards) || cards.length === 0) return;
+    cards.forEach((card) => {
+        const node = createLearningCardNode(card);
+        if (node) contentEl.appendChild(node);
+    });
+}
+
+function appendLearningCardStep(messageDiv, step) {
+    if (!messageDiv || !step || typeof step !== 'object') return;
+    const content = messageDiv.querySelector('.message-content');
+    if (!content) return;
+    const node = createLearningCardNode(step.card || step);
+    if (node) {
+        content.appendChild(node);
+        placeInteractiveCardsBelowToolChain(messageDiv);
+    }
+}
+
+function placeInteractiveCardsBelowToolChain(messageDiv) {
+    const parent = (messageDiv && (messageDiv.querySelector('.message-content') || messageDiv)) || null;
+    if (!parent) return;
+    const cards = Array.from(parent.querySelectorAll('.learning-chat-card-wrap, .question-tool-card'));
+    if (!cards.length) return;
+
+    let anchorNode = null;
+    Array.from(parent.children || []).forEach((node) => {
+        if (!node || !node.classList) return;
+        if (
+            node.classList.contains('tool-usage')
+            || node.classList.contains('add-basis-view')
+            || node.classList.contains('content-body')
+        ) {
+            anchorNode = node;
+        }
+    });
+
+    cards.forEach((card) => {
+        if (card && card.parentNode === parent) {
+            card.remove();
+        }
+    });
+
+    if (anchorNode && anchorNode.parentNode === parent) {
+        const ref = anchorNode.nextSibling;
+        cards.forEach((card) => {
+            if (ref) parent.insertBefore(card, ref);
+            else parent.appendChild(card);
+        });
+        return;
+    }
+
+    cards.forEach((card) => parent.appendChild(card));
+}
+
+function extractLearningCardPayload(rawResult) {
+    if (!rawResult) return null;
+    if (typeof rawResult === 'object') {
+        if (rawResult.card && typeof rawResult.card === 'object') return rawResult.card;
+        if (rawResult.html) return rawResult;
+        return null;
+    }
+    const text = String(rawResult || '').trim();
+    if (!text) return null;
+    try {
+        const parsed = JSON.parse(text);
+        if (!parsed || typeof parsed !== 'object') return null;
+        if (parsed.card && typeof parsed.card === 'object') return parsed.card;
+        if (parsed.html) return parsed;
+    } catch (_) {
+        return null;
+    }
+    return null;
+}
+
+function extractQuestionPayload(rawResult) {
+    if (!rawResult) return null;
+    if (typeof rawResult === 'object') {
+        if (rawResult.question && typeof rawResult.question === 'object') return rawResult.question;
+        if (rawResult.question_title || rawResult.question_content) return rawResult;
+        return null;
+    }
+    const text = String(rawResult || '').trim();
+    if (!text) return null;
+    try {
+        const parsed = JSON.parse(text);
+        if (parsed && typeof parsed === 'object') {
+            if (parsed.question && typeof parsed.question === 'object') return parsed.question;
+            if (parsed.question_title || parsed.question_content) return parsed;
+        }
+    } catch (_) {}
+    return null;
+}
+
+async function ensureConversationExistsForStreaming(seedText = '', conversationMode = null) {
     const existing = String(currentConversationId || '').trim();
     if (existing) return existing;
     const titleSeed = String(seedText || '').replace(/\s+/g, ' ').trim();
     const title = titleSeed ? titleSeed.slice(0, 48) : '新对话';
+    const normalizedConversationMode = String(conversationMode || '').trim().toLowerCase();
+    const learningConversation = learningModeEnabled && normalizedConversationMode === 'learning';
     try {
         const res = await fetch('/api/conversations', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title })
+            body: JSON.stringify({
+                title,
+                conversation_mode: learningConversation ? 'learning' : 'chat',
+                tags: learningConversation ? ['learning'] : [],
+                metadata: learningConversation ? { learning: true } : {}
+            })
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || !(data && data.success)) return '';
         const convId = String(data.conversation_id || '').trim();
         if (!convId) return '';
         currentConversationId = convId;
+        if (learningConversation) {
+            currentConversationMode = 'learning';
+        }
         syncNotesForConversation(convId);
         noteTokenMiniConversationId(convId);
         try {
@@ -11135,7 +11718,9 @@ async function sendMessage(options = {}) {
     const rawText = isAutoContinue ? '' : els.messageInput.value.trim();
     const longtermTriggered = !isAutoContinue && /^\s*\/longterm(?:\s+|$)/i.test(rawText);
     let text = rawText;
-    let nextConversationMode = (currentConversationMode === 'longterm' || isAutoContinue) ? 'longterm' : 'chat';
+    let nextConversationMode = (currentConversationMode === 'longterm' || isAutoContinue)
+        ? 'longterm'
+        : ((learningModeEnabled && currentConversationMode === 'learning') ? 'learning' : 'chat');
     let longtermTaskText = '';
     if (isAutoContinue && !text) {
         text = isConfirmationAutoContinue
@@ -11208,11 +11793,10 @@ async function sendMessage(options = {}) {
     );
     if (!compressionDecision.ok) return;
     const forceContextCompression = !!compressionDecision.forceCompression;
-    const ensuredConversationId = await ensureConversationExistsForStreaming(text);
+    const ensuredConversationId = await ensureConversationExistsForStreaming(text, nextConversationMode);
     if (ensuredConversationId) {
         currentConversationId = ensuredConversationId;
     }
-
     // UI Updates
     els.messageInput.value = '';
     els.messageInput.style.height = 'auto';
@@ -11318,11 +11902,20 @@ async function sendMessage(options = {}) {
             step: String(currentConversationLongtermState.step || '').trim(),
             current_index: Number.isFinite(Number(currentConversationLongtermState.current_index)) ? Number(currentConversationLongtermState.current_index) : -1,
             done_indices: Array.isArray(currentConversationLongtermState.done_indices) ? currentConversationLongtermState.done_indices : [],
-        } : {},
+        } : (nextConversationMode === 'learning' ? {
+            learning: true,
+            system_prompt: '',
+            context_blocks: [],
+            active_tool_skills: [],
+            meta: {
+                source: 'chatdbserver_learning_mode'
+            },
+        } : {}),
         enable_thinking: enableThinking,
         enable_web_search: enableSearch,
         enable_tools: enableTools,
-        tool_mode: nextConversationMode === 'longterm' ? 'force' : toolsMode,
+        tool_mode: nextConversationMode === 'longterm' ? 'force' : (nextConversationMode === 'learning' ? 'force' : toolsMode),
+        skill_mode: nextConversationMode === 'learning' ? 'force' : 'off',
         debug_mode: isDebugConsoleEnabled(),
         file_ids: fileInputs,
         sandbox_paths: sandboxPaths,
@@ -12133,6 +12726,7 @@ async function sendMessage(options = {}) {
             longtermBlocks.forEach((block) => {
                 block.dataset.streamLive = '0';
             });
+            placeLearningCardsBelowToolChain(aiMsgDiv);
         } catch (_) {}
     }
     
@@ -12330,6 +12924,9 @@ async function sendMessage(options = {}) {
                             aiMsgDiv.__reasoningSegmentOpen = false;
                             currentContentSpan = null; currentSegmentContent = '';
                             const toolName = resolveToolNameFromEvent(chunk, chunk.name);
+                            if (toolName === 'question' || toolName === 'learning_card') {
+                                continue;
+                            }
                             const rawCallId = String(chunk.call_id || chunk.callId || '').trim();
                             const toolIndex = (chunk.index === undefined || chunk.index === null) ? null : Number(chunk.index);
                             const callId = allocateToolCallId(aiMsgDiv, toolName, 'call', rawCallId, toolIndex);
@@ -12352,6 +12949,9 @@ async function sendMessage(options = {}) {
                             aiMsgDiv.__reasoningSegmentOpen = false;
                             currentContentSpan = null; currentSegmentContent = '';
                             const toolName = resolveToolNameFromEvent(chunk, chunk.name);
+                            if (toolName === 'question' || toolName === 'learning_card') {
+                                continue;
+                            }
                             const rawCallId = String(chunk.call_id || chunk.callId || '').trim();
                             const toolIndex = (chunk.index === undefined || chunk.index === null) ? null : Number(chunk.index);
                             const callId = allocateToolCallId(aiMsgDiv, toolName, 'result', rawCallId, toolIndex);
@@ -12360,6 +12960,12 @@ async function sendMessage(options = {}) {
                                 applyLongtermPlanFromText(chunk.result, { source: 'function_result', messageDiv: aiMsgDiv });
                             }
                             maybeRenderCanvasFromJsExecuteResult(aiMsgDiv, toolName, chunk.result, callId, toolIndex);
+                        }
+                        else if (chunk.type === 'learning_card') {
+                            appendLearningCardStep(aiMsgDiv, chunk);
+                        }
+                        else if (chunk.type === 'question') {
+                            appendQuestionStep(aiMsgDiv, chunk);
                         }
                         else if (chunk.type === 'token_usage') {
                             onTokenStreamUsageChunk(chunk);
@@ -13724,6 +14330,9 @@ function appendMessage(msg, index) {
         const processSteps = (msg.metadata && Array.isArray(msg.metadata.process_steps))
             ? msg.metadata.process_steps
             : [];
+        const learningCards = (msg.metadata && Array.isArray(msg.metadata.learning_cards))
+            ? msg.metadata.learning_cards
+            : [];
         const hasReasoningStep = processSteps.some((s) => s && s.type === 'reasoning_content');
         const longtermHook = (msg.metadata && msg.metadata.longterm_hook && typeof msg.metadata.longterm_hook === 'object')
             ? msg.metadata.longterm_hook
@@ -13759,6 +14368,7 @@ function appendMessage(msg, index) {
                 }
                 else if (step.type === 'function_call') {
                     const toolName = resolveToolNameFromEvent(step, step.name);
+                    if (toolName === 'learning_card' || toolName === 'question') return;
                     if (toolName === 'add_basis' || toolName === 'addBasis') {
                         try {
                             const args = JSON.parse(step.arguments);
@@ -13771,6 +14381,14 @@ function appendMessage(msg, index) {
                 }
                 else if (step.type === 'function_result') {
                     const toolName = resolveToolNameFromEvent(step, step.name);
+                    if (toolName === 'question') return;
+                    if (toolName === 'learning_card') {
+                        const cardPayload = extractLearningCardPayload(step.result);
+                        if (cardPayload) {
+                            appendLearningCardStep(div, { type: 'learning_card', card: cardPayload });
+                        }
+                        return;
+                    }
                     const callId = allocateToolCallId(div, toolName, 'result', step.call_id || '', step.index);
                     updateLastToolResult(div, toolName, step.result, callId, { toolIndex: step.index });
                     if (toolName === 'longterm_plan' || toolName === 'longterm_update') {
@@ -13796,6 +14414,12 @@ function appendMessage(msg, index) {
                     highlightCode(body);
                     content.appendChild(body);
                 }
+                else if (step.type === 'learning_card') {
+                    appendLearningCardStep(div, step);
+                }
+                else if (step.type === 'question') {
+                    appendQuestionStep(div, step);
+                }
             });
         }
         
@@ -13817,6 +14441,20 @@ function appendMessage(msg, index) {
             renderMathSafe(body);
             highlightCode(body);
             content.appendChild(body);
+            }
+        }
+
+        if (learningCards.length > 0) {
+            appendLearningCardsToContent(content, learningCards);
+        }
+
+        const pendingQuestions = (msg.metadata && Array.isArray(msg.metadata.pending_questions))
+            ? msg.metadata.pending_questions
+            : [];
+        if (pendingQuestions.length > 0) {
+            const hasQuestionStep = processSteps.some((s) => s && s.type === 'question');
+            if (!hasQuestionStep) {
+                pendingQuestions.forEach((question) => appendQuestionStep(div, { type: 'question', question }));
             }
         }
 
@@ -13877,6 +14515,7 @@ function appendMessage(msg, index) {
     }
 
     els.messagesContainer.appendChild(div);
+    clearLearningWelcomeState();
     
     // Remove welcome screen if exists
     const welcome = els.messagesContainer.querySelector('.welcome-screen');
@@ -14084,17 +14723,15 @@ function renderMessages(messages, noScroll, options = {}) {
     resetUserPromptInlineEditor();
     // preserve welcome if empty
     refreshConversationImageHistoryFlag(Array.isArray(messages) ? messages : []);
-    if(!messages || messages.length === 0) {
+        if(!messages || messages.length === 0) {
+            clearHoverProxyMessage();
+            void renderWelcomeScreen();
+            void syncLearningHeaderMode();
+            return;
+        }
         clearHoverProxyMessage();
-        els.messagesContainer.innerHTML = `
-            <div class="welcome-screen">
-                <h1>Hello.</h1>
-                <p>Start a new conversation.</p>
-            </div>
-        `;
-        return;
-    }
-    clearHoverProxyMessage();
+        clearLearningWelcomeState();
+        void syncLearningHeaderMode();
     const opts = (options && typeof options === 'object') ? options : {};
     const instant = !!opts.instant;
     
@@ -14335,10 +14972,28 @@ async function startRegenerate(index) {
             model_name: modelName,
             is_regenerate: true,
             regenerate_index: index,
+            conversation_mode: (learningModeEnabled && currentConversationMode === 'learning') ? 'learning' : (currentConversationMode === 'longterm' ? 'longterm' : 'chat'),
+            conversation_mode_payload: currentConversationMode === 'longterm' ? {
+                task: String(currentConversationLongtermState.task || '').trim(),
+                plan: Array.isArray(currentConversationLongtermState.plan) ? currentConversationLongtermState.plan : [],
+                context: String(currentConversationLongtermState.context || '').trim(),
+                step: String(currentConversationLongtermState.step || '').trim(),
+                current_index: Number.isFinite(Number(currentConversationLongtermState.current_index)) ? Number(currentConversationLongtermState.current_index) : -1,
+                done_indices: Array.isArray(currentConversationLongtermState.done_indices) ? currentConversationLongtermState.done_indices : [],
+            } : ((learningModeEnabled && currentConversationMode === 'learning') ? {
+                learning: true,
+                system_prompt: '',
+                context_blocks: [],
+                active_tool_skills: [],
+                meta: {
+                    source: 'chatdbserver_learning_mode_regenerate'
+                },
+            } : {}),
             enable_thinking: els.checkThinking.checked,
             enable_web_search: els.checkSearch.checked,
             enable_tools: enableTools,
-            tool_mode: toolsMode,
+            tool_mode: (learningModeEnabled && currentConversationMode === 'learning') ? 'force' : (currentConversationMode === 'longterm' ? 'force' : toolsMode),
+            skill_mode: (learningModeEnabled && currentConversationMode === 'learning') ? 'force' : 'off',
             debug_mode: isDebugConsoleEnabled(),
             show_token_usage: true,
             file_ids: regenAttachmentPayload.file_ids,
@@ -14472,7 +15127,8 @@ async function startRegenerate(index) {
                         data.type === 'function_call_delta' ||
                         data.type === 'function_call' ||
                         data.type === 'function_result' ||
-                        data.type === 'context_compression_status'
+                        data.type === 'context_compression_status' ||
+                        data.type === 'learning_card'
                     ) {
                         updateMessageDivTools(index, data, regenMessageDiv);
                     } else if (data.type === 'token_usage') {
@@ -14860,6 +15516,7 @@ function updateMessageDivTools(index, data, preferredMessageDiv = null) {
         });
     } else if (data.type === 'function_call') {
         const toolName = resolveToolNameFromEvent(data, data.name);
+        if (toolName === 'learning_card') return;
         const rawCallId = String(data.call_id || data.callId || '').trim();
         const toolIndex = (data.index === undefined || data.index === null) ? null : Number(data.index);
         const callId = allocateToolCallId(messageDiv, toolName, 'call', rawCallId, toolIndex);
@@ -14867,6 +15524,14 @@ function updateMessageDivTools(index, data, preferredMessageDiv = null) {
         finalizeToolCallBadge(messageDiv, toolName, callId, data.arguments || '', { toolIndex });
     } else if (data.type === 'function_result') {
         const toolName = resolveToolNameFromEvent(data, data.name);
+        if (toolName === 'question') return;
+        if (toolName === 'learning_card') {
+            const cardPayload = extractLearningCardPayload(data.result);
+            if (cardPayload) {
+                appendLearningCardStep(messageDiv, { type: 'learning_card', card: cardPayload });
+            }
+            return;
+        }
         const rawCallId = String(data.call_id || data.callId || '').trim();
         const toolIndex = (data.index === undefined || data.index === null) ? null : Number(data.index);
         const callId = allocateToolCallId(messageDiv, toolName, 'result', rawCallId, toolIndex);
@@ -14882,6 +15547,10 @@ function updateMessageDivTools(index, data, preferredMessageDiv = null) {
             String(data.content || '上下文压缩中'),
             data
         );
+    } else if (data.type === 'learning_card') {
+        appendLearningCardStep(messageDiv, data);
+    } else if (data.type === 'question') {
+        appendQuestionStep(messageDiv, data);
     }
 }
 
@@ -15069,22 +15738,27 @@ async function resumeActiveStreamAfterReload() {
                     chunk.type === 'context_compression_status' ||
                     chunk.type === 'function_call_delta' ||
                     chunk.type === 'function_call' ||
-                    chunk.type === 'function_result'
+                    chunk.type === 'function_result' ||
+                    chunk.type === 'learning_card'
                 ) {
-                    if (chunk.type === 'function_call_delta') {
+                    if (chunk.type === 'learning_card') {
+                        appendLearningCardStep(assistantDiv, chunk);
+                    } else if (chunk.type === 'function_call_delta') {
                         onTokenStreamToolArgsChunk(chunk.arguments_delta || chunk.delta || '');
                     } else if (chunk.type === 'function_call') {
                         onTokenStreamToolArgsChunk(chunk.arguments || '');
                     }
-                    assistantDiv.__reasoningSegmentOpen = false;
-                    currentContentSpan = null; currentSegmentContent = '';
-                    updateMessageDivTools(assistantIndex, chunk, assistantDiv);
-                    syncStreamingModelBadgeEstimate(assistantDiv, {
-                        modelName: getStreamingModelBadgeName(),
-                        searchFlag: 'unknown',
-                        inputTokens: 0,
-                        outputTokens: 0
-                    });
+                    if (chunk.type !== 'learning_card') {
+                        assistantDiv.__reasoningSegmentOpen = false;
+                        currentContentSpan = null; currentSegmentContent = '';
+                        updateMessageDivTools(assistantIndex, chunk, assistantDiv);
+                        syncStreamingModelBadgeEstimate(assistantDiv, {
+                            modelName: getStreamingModelBadgeName(),
+                            searchFlag: 'unknown',
+                            inputTokens: 0,
+                            outputTokens: 0
+                        });
+                    }
                 } else if (chunk.type === 'token_usage') {
                     onTokenStreamUsageChunk(chunk);
                     updateMessageModelBadge(assistantDiv, {
@@ -25385,11 +26059,13 @@ async function loadUserSettings() {
 
         if (prefsData.success) {
             const prefs = prefsData.preferences;
+            currentUserPreferences = prefs || currentUserPreferences || {};
             // 填充偏好设置
             document.getElementById('set-defmodel').textContent = prefs.default_model || '自动选择';
             document.getElementById('set-theme').textContent = prefs.theme === 'dark' ? '暗色主题' : '亮色主题';
             document.getElementById('set-stream').textContent = prefs.streaming ? '流式输出 (开启)' : '完整输出 (关闭)';
             document.getElementById('set-lang').textContent = prefs.language === 'zh' ? '简体中文' : 'English';
+            setLearningModeToggleUi(!!prefs.learning_mode);
         }
     } catch (e) {
         console.error('加载用户设置失败:', e);

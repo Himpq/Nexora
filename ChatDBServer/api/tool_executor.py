@@ -13,6 +13,7 @@ from chroma_client import ChromaStore
 from file_sandbox import UserFileSandbox
 from client_tool_bridge import request_client_js_execution
 from tools import TOOL_NAME_ALIASES, canonicalize_tool_name
+from learning_runtime import LearningRuntimeExecutor, get_learning_tools
 
 
 class ToolExecutor:
@@ -81,6 +82,7 @@ class ToolExecutor:
             if handler:
                 self.handlers.setdefault(legacy_name, handler)
         self._file_sandbox = UserFileSandbox(self.model.username)
+        self._learning_executor = None
 
     def _safe_int(self, v, default=None):
         try:
@@ -366,6 +368,11 @@ class ToolExecutor:
         canonical_name = canonicalize_tool_name(function_name)
         handler = self.handlers.get(canonical_name) or self.handlers.get(function_name)
         if not handler:
+            if self._is_learning_runtime_tool(canonical_name or function_name):
+                try:
+                    return self._get_learning_executor().execute(canonical_name or function_name, args or {})
+                except Exception as e:
+                    return f"错误：Learning 工具执行失败: {str(e)}"
             return f"错误：未知函数 {function_name}"
         try:
             safe_args = args if isinstance(args, dict) else {}
@@ -374,6 +381,26 @@ class ToolExecutor:
         except Exception as e:
             return f"错误：参数模板解析失败: {str(e)}"
         return handler(resolved_args)
+
+    def _is_learning_runtime_tool(self, function_name: str) -> bool:
+        if str(getattr(self.model, "_runtime_conversation_mode", "") or "").strip().lower() != "learning":
+            return False
+        target = canonicalize_tool_name(function_name)
+        if not target:
+            return False
+        for tool in (get_learning_tools() or []):
+            if not isinstance(tool, dict) or str(tool.get("type", "") or "").strip() != "function":
+                continue
+            fn = tool.get("function") if isinstance(tool.get("function"), dict) else {}
+            name = canonicalize_tool_name(str(fn.get("name", "") or "").strip())
+            if name == target:
+                return True
+        return False
+
+    def _get_learning_executor(self) -> LearningRuntimeExecutor:
+        if self._learning_executor is None:
+            self._learning_executor = LearningRuntimeExecutor()
+        return self._learning_executor
 
     def _longterm_plan(self, args: Dict[str, Any]) -> str:
         safe_args = args if isinstance(args, dict) else {}
@@ -1648,5 +1675,6 @@ class ToolExecutor:
             return f"HTTP Error {e.code}: {msg}"
         except Exception as e:
             return f"Render Internal Error: {str(e)}"
+
 
 

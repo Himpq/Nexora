@@ -220,7 +220,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "vector_search",
-            "description": "在向量库中做语义检索，默认检索 knowledge 库。",
+            "description": "在向量库中做语义检索，仅能检索知识库的内容。",
             "parameters": {
                 "type": "object",
                 "properties": {

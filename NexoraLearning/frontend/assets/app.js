@@ -43,6 +43,10 @@
     backFromSettingsBtn: document.getElementById("backFromSettingsBtn"),
     settingsNavList: document.getElementById("settingsNavList"),
     settingsDetailPane: document.getElementById("settingsDetailPane"),
+    confirmBackdrop: document.getElementById("confirmBackdrop"),
+    confirmBody: document.getElementById("confirmBody"),
+    confirmOkBtn: document.getElementById("confirmOkBtn"),
+    confirmCancelBtn: document.getElementById("confirmCancelBtn"),
   };
 
   const PIE_COLORS = ["#111111", "#373737", "#585858", "#7a7a7a", "#9d9d9d", "#bbbbbb"];
@@ -77,6 +81,8 @@
     modelSettings: { default_nexora_model: "", rough_reading: {} },
     settingsPollTimer: null,
     refinementScrollTop: 0,
+    refinementExpandedMap: {},
+    refinementViewBootstrapped: false,
   };
 
   function escapeHtml(str) {
@@ -165,6 +171,38 @@
     toast.textContent = String(msg || "");
     toast.classList.add("show");
     setTimeout(() => toast.classList.remove("show"), 3000);
+  }
+
+  function closeConfirmModal() {
+    if (!el.confirmBackdrop) return;
+    el.confirmBackdrop.style.display = "none";
+  }
+
+  function showConfirmModal(message, onConfirm, onCancel) {
+    if (!el.confirmBackdrop || !el.confirmBody || !el.confirmOkBtn || !el.confirmCancelBtn) {
+      if (typeof onCancel === "function") onCancel();
+      return;
+    }
+    el.confirmBody.textContent = String(message || "请确认是否继续。");
+    el.confirmBackdrop.style.display = "flex";
+    el.confirmOkBtn.onclick = () => {
+      closeConfirmModal();
+      if (typeof onConfirm === "function") onConfirm();
+    };
+    el.confirmCancelBtn.onclick = () => {
+      closeConfirmModal();
+      if (typeof onCancel === "function") onCancel();
+    };
+  }
+
+  function confirmModalAsync(message) {
+    return new Promise((resolve) => {
+      showConfirmModal(
+        message,
+        () => resolve(true),
+        () => resolve(false),
+      );
+    });
   }
 
   function setView(name) {
@@ -364,12 +402,17 @@
   }
 
   function refinementStatusText(item) {
+    const progress = String(item && item.progress_text || "").trim();
+    if (progress) return progress;
     const refine = normalizeStatusKey(item && item.refinement_status);
     const coarse = normalizeStatusKey(item && item.coarse_status);
+    const intensive = normalizeStatusKey(item && item.intensive_status);
     const job = normalizeStatusKey(item && item.job_status);
     if (["running", "queued"].includes(job)) return job === "running" ? "精读执行中" : "精读排队中";
+    if (["running", "queued"].includes(intensive)) return intensive === "running" ? "精读执行中" : "精读排队中";
+    if (["done", "completed", "success"].includes(intensive)) return "精读完成";
     if (["error", "failed"].includes(refine) || ["error", "failed"].includes(coarse)) return "精读失败";
-    if (["done", "completed"].includes(coarse)) return "精读完成";
+    if (["done", "completed", "success"].includes(coarse)) return "粗读完成，待精读";
     if (["extracting", "extracted", "queued", "uploaded"].includes(refine)) return `待精读（${refine}）`;
     return refine || coarse || "待精读";
   }
@@ -382,6 +425,62 @@
     if (["done", "completed"].includes(coarse)) return false;
     if (["running", "queued", "extracting"].includes(refine)) return false;
     return true;
+  }
+
+  function canStartIntensive(item) {
+    const coarse = normalizeStatusKey(item && item.coarse_status);
+    const intensive = normalizeStatusKey(item && item.intensive_status);
+    const job = normalizeStatusKey(item && item.job_status);
+    if (!["done", "completed", "success"].includes(coarse)) return false;
+    if (["running", "queued"].includes(job)) return false;
+    if (["running", "queued", "done", "completed", "success"].includes(intensive)) return false;
+    return true;
+  }
+
+  function canStartQuestion(item) {
+    const intensive = normalizeStatusKey(item && item.intensive_status);
+    const question = normalizeStatusKey(item && item.question_status);
+    const job = normalizeStatusKey(item && item.job_status);
+    if (!["done", "completed", "success"].includes(intensive)) return false;
+    if (["running", "queued"].includes(job)) return false;
+    if (["running", "queued", "done", "completed", "success"].includes(question)) return false;
+    return true;
+  }
+
+  function getRefinementActionMeta(item) {
+    const coarseDone = ["done", "completed", "success"].includes(normalizeStatusKey(item && item.coarse_status));
+    const intensiveDone = ["done", "completed", "success"].includes(normalizeStatusKey(item && item.intensive_status));
+    const questionDone = ["done", "completed", "success"].includes(normalizeStatusKey(item && item.question_status));
+    if (!coarseDone) {
+      return {
+        action: "start-refinement",
+        title: "开始粗读",
+        text: "▶",
+        enabled: canStartRefinement(item),
+      };
+    }
+    if (!intensiveDone) {
+      return {
+        action: "start-intensive",
+        title: "开始精读",
+        text: "●",
+        enabled: canStartIntensive(item),
+      };
+    }
+    if (!questionDone) {
+      return {
+        action: "start-question",
+        title: "开始出题",
+        text: "?",
+        enabled: canStartQuestion(item),
+      };
+    }
+    return {
+      action: "start-question",
+      title: "题目已生成",
+      text: "✓",
+      enabled: false,
+    };
   }
 
   function formatTs(ts) {
@@ -442,60 +541,123 @@
   }
 
   function renderSettingsRefinement() {
-    const prevScroll = state.refinementScrollTop || 0;
     const queueSize = toNumber(state.refinementQueue.queue_size, 0);
     const runningCount = toNumber(state.refinementQueue.running_count, 0);
     const rows = Array.isArray(state.refinementRows) ? state.refinementRows : [];
-    el.settingsDetailPane.innerHTML = `
-      <section class="settings-detail-scroll">
-        <article class="settings-card">
-          <div class="settings-title">精读队列状态</div>
-          <div class="settings-grid">
-            <div><div class="settings-kv-label">排队数量</div><div class="settings-kv-value">${queueSize}</div></div>
-            <div><div class="settings-kv-label">执行中</div><div class="settings-kv-value">${runningCount}</div></div>
-          </div>
-          <div class="settings-sub">状态会自动刷新</div>
-        </article>
-        ${rows.length ? rows.map((item) => `
-          <article class="refine-item">
-            <div class="refine-item-head">
-              <div class="refine-item-title">${escapeHtml(item.book_title || item.book_id || "未命名教材")}</div>
-              <div class="refine-item-actions">
-                <button
-                  class="nxl-icon-btn ${canStartRefinement(item) ? "nxl-icon-btn-dark" : ""}"
-                  data-action="start-refinement"
-                  data-lecture-id="${escapeHtml(String(item.lecture_id || ""))}"
-                  data-book-id="${escapeHtml(String(item.book_id || ""))}"
-                  ${canStartRefinement(item) ? "" : "disabled"}
-                  type="button"
-                  title="开始精读"
-                >▶</button>
-                <button
-                  class="nxl-icon-btn nxl-icon-btn-danger"
-                  data-action="stop-refinement"
-                  data-lecture-id="${escapeHtml(String(item.lecture_id || ""))}"
-                  data-book-id="${escapeHtml(String(item.book_id || ""))}"
-                  type="button"
-                  title="暂停并重置"
-                >■</button>
-              </div>
-            </div>
-            <div class="refine-item-meta">课程：${escapeHtml(item.lecture_title || item.lecture_id || "—")}</div>
-            <div class="refine-item-meta">精读状态：${escapeHtml(refinementStatusText(item))}</div>
-            <div class="refine-item-meta">细节：refinement=${escapeHtml(String(item.refinement_status || "—"))} · coarse=${escapeHtml(String(item.coarse_status || "—"))} · job=${escapeHtml(String(item.job_status || "—"))}</div>
-            ${item.coarse_error || item.refinement_error ? `<div class="refine-item-meta" style="color:#b91c1c;">错误：${escapeHtml(item.coarse_error || item.refinement_error)}</div>` : ""}
-            <div class="refine-item-meta">更新时间：${escapeHtml(formatTs(item.updated_at))}</div>
-          </article>
-        `).join("") : '<div class="materials-empty">暂无待精读教材</div>'}
-      </section>
-    `;
-    const scrollEl = el.settingsDetailPane.querySelector(".settings-detail-scroll");
-    if (scrollEl) {
-      scrollEl.scrollTop = prevScroll;
-      scrollEl.addEventListener("scroll", () => {
-        state.refinementScrollTop = scrollEl.scrollTop;
-      }, { passive: true });
+
+    let container = document.getElementById("refineItemsContainer");
+    if (state.refinementViewBootstrapped && !container) {
+      state.refinementViewBootstrapped = false;
     }
+
+    if (!state.refinementViewBootstrapped) {
+      el.settingsDetailPane.innerHTML = `
+        <section class="settings-detail-scroll">
+          <article class="settings-card">
+            <div class="settings-title">精读队列状态</div>
+            <div class="settings-grid">
+              <div><div class="settings-kv-label">排队数量</div><div class="settings-kv-value" id="refineQueueCountValue">0</div></div>
+              <div><div class="settings-kv-label">执行中</div><div class="settings-kv-value" id="refineRunningCountValue">0</div></div>
+            </div>
+            <div class="settings-sub">状态会自动刷新</div>
+          </article>
+          <section id="refineItemsContainer"></section>
+        </section>
+      `;
+      const scrollEl0 = el.settingsDetailPane.querySelector(".settings-detail-scroll");
+      if (scrollEl0) {
+        scrollEl0.addEventListener("scroll", () => {
+          state.refinementScrollTop = scrollEl0.scrollTop;
+        }, { passive: true });
+      }
+      state.refinementViewBootstrapped = true;
+      container = document.getElementById("refineItemsContainer");
+    }
+
+    const queueEl = document.getElementById("refineQueueCountValue");
+    const runningEl = document.getElementById("refineRunningCountValue");
+    if (queueEl) queueEl.textContent = String(queueSize);
+    if (runningEl) runningEl.textContent = String(runningCount);
+
+    container = document.getElementById("refineItemsContainer");
+    if (!container) return;
+
+    const desiredKeys = new Set(rows.map((item) => `${String(item.lecture_id || "")}::${String(item.book_id || "")}`));
+    Array.from(container.querySelectorAll("[data-refine-key]")).forEach((node) => {
+      const key = String(node.getAttribute("data-refine-key") || "");
+      if (!desiredKeys.has(key)) node.remove();
+    });
+
+    if (!rows.length) {
+      container.innerHTML = '<div class="materials-empty">暂无待精读教材</div>';
+      return;
+    }
+
+    rows.forEach((item) => {
+      const lectureId = String(item.lecture_id || "");
+      const bookId = String(item.book_id || "");
+      const key = `${lectureId}::${bookId}`;
+      const title = `${String(item.book_title || item.book_id || "未命名教材")} - ${String(item.lecture_title || item.lecture_id || "未命名课程")}`;
+      const progress = refinementStatusText(item);
+      const actionMeta = getRefinementActionMeta(item);
+      const btnAction = actionMeta.action;
+      const btnTitle = actionMeta.title;
+      const btnText = actionMeta.text;
+      const btnEnabled = actionMeta.enabled;
+      const steps = Array.isArray(item.progress_steps) ? item.progress_steps : [];
+      const expanded = !!state.refinementExpandedMap[key];
+      const stepHtml = steps.slice(-12).map((step) => {
+        const sTitle = String(step && step.title || "步骤");
+        const sPreview = String(step && step.preview || "");
+        return `<div class="refine-step-row">
+          <div class="refine-step-title">- ${escapeHtml(sTitle)}</div>
+          ${sPreview ? `<div class="refine-step-preview">${escapeHtml(sPreview)}</div>` : ""}
+        </div>`;
+      }).join("");
+
+      let card = container.querySelector(`[data-refine-key="${CSS.escape(key)}"]`);
+      if (!card) {
+        card = document.createElement("article");
+        card.className = "refine-item";
+        card.setAttribute("data-refine-key", key);
+        container.appendChild(card);
+      }
+      card.innerHTML = `
+        <div class="refine-item-head">
+          <div>
+            <div class="refine-item-title">${escapeHtml(title)}</div>
+            <div class="refine-item-date">${escapeHtml(formatTs(item.updated_at))}</div>
+          </div>
+          <div class="refine-item-actions">
+            <button
+              class="nxl-icon-btn ${btnEnabled ? "nxl-icon-btn-dark" : ""}"
+              data-action="${btnAction}"
+              data-lecture-id="${escapeHtml(lectureId)}"
+              data-book-id="${escapeHtml(bookId)}"
+              ${btnEnabled ? "" : "disabled"}
+              type="button"
+              title="${escapeHtml(btnTitle)}"
+            >${btnText}</button>
+            <button
+              class="nxl-icon-btn nxl-icon-btn-danger"
+              data-action="stop-refinement"
+              data-lecture-id="${escapeHtml(lectureId)}"
+              data-book-id="${escapeHtml(bookId)}"
+              type="button"
+              title="重置状态"
+            >■</button>
+          </div>
+        </div>
+        <div class="refine-progress-box ${expanded ? "is-expanded" : ""}" data-action="toggle-refine-steps" data-refine-key="${escapeHtml(key)}" title="点击展开/收起模型工具链">
+          <span class="refine-thinking-dot"></span>
+          <span class="refine-progress-text">${escapeHtml(progress)}</span>
+        </div>
+        <div class="refine-steps ${expanded ? "is-open" : ""}">
+          ${stepHtml || '<div class="refine-step-preview">暂无工具链步骤</div>'}
+        </div>
+        ${item.question_error || item.intensive_error || item.coarse_error || item.refinement_error ? `<div class="refine-item-meta" style="color:#b91c1c;">错误：${escapeHtml(item.question_error || item.intensive_error || item.coarse_error || item.refinement_error)}</div>` : ""}
+      `;
+    });
   }
 
   function renderSettingsModel() {
@@ -536,10 +698,12 @@
 
   function renderSettingsDetail() {
     if (state.settingsTab === "model") {
+      state.refinementViewBootstrapped = false;
       renderSettingsModel();
       return;
     }
     if (state.settingsTab === "profile") {
+      state.refinementViewBootstrapped = false;
       renderSettingsProfile();
       return;
     }
@@ -871,9 +1035,7 @@
     const data = await fetchJson("/api/frontend/settings/refinement");
     state.refinementRows = Array.isArray(data.items) ? data.items : [];
     state.refinementQueue = data.queue && typeof data.queue === "object" ? data.queue : { queue_size: 0, running_count: 0 };
-    if (el.settingsView.classList.contains("is-active") && state.settingsTab === "refinement") {
-      renderSettingsDetail();
-    }
+    if (el.settingsView.classList.contains("is-active") && state.settingsTab === "refinement") renderSettingsDetail();
   }
 
   async function loadModelSettings() {
@@ -921,6 +1083,32 @@
 
   async function stopRefinement(lectureId, bookId) {
     await fetchJson("/api/frontend/settings/refinement/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        lecture_id: lectureId,
+        book_id: bookId,
+        actor: state.username || "",
+      }),
+    });
+    await loadRefinementSettings();
+  }
+
+  async function startIntensive(lectureId, bookId) {
+    await fetchJson("/api/frontend/settings/refinement/intensive", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        lecture_id: lectureId,
+        book_id: bookId,
+        actor: state.username || "",
+      }),
+    });
+    await loadRefinementSettings();
+  }
+
+  async function startQuestion(lectureId, bookId) {
+    await fetchJson("/api/frontend/settings/refinement/question", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1124,7 +1312,8 @@
         const lectureId = String(deleteBtn.getAttribute("data-lecture-id") || "");
         const bookId = String(deleteBtn.getAttribute("data-book-id") || "");
         if (!lectureId || !bookId) return;
-        if (!window.confirm("确认删除该教材？此操作不可撤销。")) return;
+        const ok = await confirmModalAsync("确认删除该教材？此操作不可撤销。");
+        if (!ok) return;
         try {
           await deleteBook(lectureId, bookId);
           if (state.selectedBookId === bookId) state.selectedBookId = "";
@@ -1210,7 +1399,7 @@
       renderSettingsView();
     });
 
-    el.settingsDetailPane.addEventListener("click", (event) => {
+    el.settingsDetailPane.addEventListener("click", async (event) => {
       const target = event.target;
       if (!(target instanceof Element)) return;
       const saveBtn = target.closest("#saveModelSettingsBtn");
@@ -1227,10 +1416,10 @@
         if (!lectureId || !bookId) return;
         startRefinement(lectureId, bookId)
           .then(() => {
-            showToast("已提交精读任务");
+            showToast("已提交粗读任务");
             renderSettingsView();
           })
-          .catch((err) => showToast(`精读启动失败：${err.message || "未知错误"}`));
+          .catch((err) => showToast("粗读启动失败：" + (err.message || "未知错误")));
         return;
       }
       const stopBtn = target.closest("[data-action='stop-refinement']");
@@ -1238,14 +1427,56 @@
         const lectureId = String(stopBtn.getAttribute("data-lecture-id") || "");
         const bookId = String(stopBtn.getAttribute("data-book-id") || "");
         if (!lectureId || !bookId) return;
+        const ok = await confirmModalAsync("确认重置该教材状态？这会清空当前提炼进度。");
+        if (!ok) return;
         stopRefinement(lectureId, bookId)
           .then(() => {
             showToast("已停止并重置教材状态");
-            renderSettingsView();
           })
-          .catch((err) => showToast(`停止失败：${err.message || "未知错误"}`));
+          .catch((err) => showToast("停止失败：" + (err.message || "未知错误")));
+        return;
+      }
+      const toggleStepsBtn = target.closest("[data-action='toggle-refine-steps']");
+      if (toggleStepsBtn) {
+        const key = String(toggleStepsBtn.getAttribute("data-refine-key") || "");
+        if (!key) return;
+        state.refinementExpandedMap[key] = !state.refinementExpandedMap[key];
+        renderSettingsRefinement();
+        return;
+      }
+      const intensiveBtn = target.closest("[data-action='start-intensive']");
+      if (intensiveBtn) {
+        const lectureId = String(intensiveBtn.getAttribute("data-lecture-id") || "");
+        const bookId = String(intensiveBtn.getAttribute("data-book-id") || "");
+        if (!lectureId || !bookId) return;
+        startIntensive(lectureId, bookId)
+          .then(() => {
+            showToast("已开始精读");
+          })
+          .catch((err) => showToast("精读执行失败：" + (err.message || "未知错误")));
+        return;
+      }
+      const questionBtn = target.closest("[data-action='start-question']");
+      if (questionBtn) {
+        const lectureId = String(questionBtn.getAttribute("data-lecture-id") || "");
+        const bookId = String(questionBtn.getAttribute("data-book-id") || "");
+        if (!lectureId || !bookId) return;
+        startQuestion(lectureId, bookId)
+          .then(() => {
+            showToast("已开始生成题目");
+          })
+          .catch((err) => showToast("出题执行失败：" + (err.message || "未知错误")));
+        return;
       }
     });
+
+    if (el.confirmBackdrop) {
+      el.confirmBackdrop.addEventListener("click", (event) => {
+        if (event.target === el.confirmBackdrop) {
+          closeConfirmModal();
+        }
+      });
+    }
 
     el.materialsFileInput.addEventListener("change", async () => {
       const file = el.materialsFileInput.files ? el.materialsFileInput.files[0] : null;

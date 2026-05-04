@@ -65,7 +65,7 @@ def require_papi_key(f):
             auth = resolver(auth_key, request_path=request.path, method=request.method)
             if not isinstance(auth, dict) or not bool(auth.get('ok')):
                 status_code = int((auth or {}).get('status') or 401)
-                message = str((auth or {}).get('message') or 'Invalid or missing API Key')
+                message = str((auth or {}).get('message') or 'Invalid or missing API Key: authentication failed')
                 return jsonify({'success': False, 'message': message}), status_code
             request.environ['papi.auth'] = auth
         else:
@@ -78,7 +78,7 @@ def require_papi_key(f):
             if not expected_key:
                 return jsonify({'success': False, 'message': 'Public API key is not configured'}), 401
             if not auth_key or str(auth_key).strip() != expected_key:
-                return jsonify({'success': False, 'message': 'Invalid or missing API Key'}), 401
+                return jsonify({'success': False, 'message': 'Invalid or missing API Key: incorrect'}), 401
         return f(*args, **kwargs)
     return decorated_function
 

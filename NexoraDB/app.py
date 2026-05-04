@@ -222,7 +222,7 @@ def _auth():
     if request.path in ["/health", "/"] or request.path.startswith("/admin"):
         return None
     if not require_api_key():
-        return jsonify({"success": False, "message": "Invalid or missing API key"}), 401
+        return jsonify({"success": False, "message": "Invalid or missing API key: NexoraDB"}), 401
     return None
 
 

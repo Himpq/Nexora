@@ -38,7 +38,7 @@ from .lectures import (
     update_lecture,
 )
 from .tool_executor import ToolExecutor
-from .tools import TOOLS, Tools
+from .tools import NexoraTools, TOOLS, Tools
 from .user import (
     append_learning_record,
     append_question_completion,
