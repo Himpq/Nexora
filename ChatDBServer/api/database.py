@@ -1044,6 +1044,7 @@ class User:
             "theme": "dark",
             "streaming": True,
             "language": "zh",
+            "learning_mode": False,
             "quota": {
                 "enabled": False,
                 "remaining_tokens": 0,
@@ -1107,6 +1108,8 @@ class User:
 
         if "streaming" in raw:
             prefs["streaming"] = bool(raw.get("streaming"))
+        if "learning_mode" in raw:
+            prefs["learning_mode"] = bool(raw.get("learning_mode"))
 
         quota_raw = raw.get("quota", {}) if isinstance(raw.get("quota"), dict) else {}
         legacy_quota_map = {
@@ -1138,6 +1141,7 @@ class User:
         payload["theme"] = str(payload.get("theme") or "dark").strip() or "dark"
         payload["language"] = str(payload.get("language") or "zh").strip() or "zh"
         payload["streaming"] = bool(payload.get("streaming", True))
+        payload["learning_mode"] = bool(payload.get("learning_mode", False))
         safe_write_json(self._preferences_file(), payload, indent=2)
         return payload
 
@@ -1160,6 +1164,8 @@ class User:
 
             if "streaming" in updates:
                 prefs["streaming"] = bool(updates.get("streaming"))
+            if "learning_mode" in updates:
+                prefs["learning_mode"] = bool(updates.get("learning_mode"))
 
             quota_updates = updates.get("quota") if isinstance(updates.get("quota"), dict) else {}
             if quota_updates:
@@ -1414,11 +1420,65 @@ class User:
 
     def get_knowledge_graph(self):
         """获取知识图谱数据"""
-        return safe_read_json(self.path + "knowledge_graph.json", default={})
+        raw = safe_read_json(self.path + "knowledge_graph.json", default={})
+        return self._normalize_knowledge_graph(raw)
     
     def save_knowledge_graph(self, graph_data):
         """保存知识图谱数据"""
-        safe_write_json(self.path + "knowledge_graph.json", graph_data)
+        safe_write_json(self.path + "knowledge_graph.json", self._normalize_knowledge_graph(graph_data))
+
+    def _normalize_knowledge_graph(self, graph_data):
+        """标准化知识图谱结构，兼容旧数据缺字段的情况。"""
+        graph = graph_data if isinstance(graph_data, dict) else {}
+        categories = graph.get("categories")
+        if not isinstance(categories, dict):
+            categories = {}
+        connections = graph.get("connections")
+        if not isinstance(connections, list):
+            connections = []
+        category_order = graph.get("category_order")
+        if not isinstance(category_order, list):
+            category_order = []
+        knowledge_nodes = graph.get("knowledge_nodes")
+        if not isinstance(knowledge_nodes, dict):
+            knowledge_nodes = {}
+
+        if "未分类" not in categories:
+            categories["未分类"] = {
+                "name": "未分类",
+                "color": "#9ca3af",
+                "knowledge_ids": [],
+                "position": {"x": 100, "y": 100},
+            }
+
+        normalized_categories = {}
+        for name, payload in categories.items():
+            cat_name = str(name or "").strip() or "未分类"
+            row = payload if isinstance(payload, dict) else {}
+            knowledge_ids = row.get("knowledge_ids")
+            if not isinstance(knowledge_ids, list):
+                knowledge_ids = []
+            position = row.get("position")
+            if not isinstance(position, dict):
+                position = {"x": 0, "y": 0}
+            normalized_categories[cat_name] = {
+                "name": str(row.get("name") or cat_name),
+                "color": str(row.get("color") or "#9ca3af"),
+                "knowledge_ids": [str(item) for item in knowledge_ids if str(item).strip()],
+                "position": {"x": position.get("x", 0), "y": position.get("y", 0)},
+            }
+
+        ordered = [str(item) for item in category_order if str(item) in normalized_categories]
+        for name in normalized_categories.keys():
+            if name not in ordered:
+                ordered.append(name)
+
+        return {
+            "categories": normalized_categories,
+            "connections": [row for row in connections if isinstance(row, dict)],
+            "category_order": ordered,
+            "knowledge_nodes": knowledge_nodes,
+        }
     
     def create_category(self, category_name, color="#667eea", position=None):
         """创建知识分类"""

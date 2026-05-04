@@ -80,7 +80,14 @@ class ConversationManager:
         """原子写入包裹"""
         safe_write_json(file_path, payload, indent=2)
     
-    def create_conversation(self, conversation_id=None, title="新对话"):
+    def create_conversation(
+        self,
+        conversation_id=None,
+        title="新对话",
+        conversation_mode="chat",
+        tags=None,
+        metadata=None,
+    ):
         """
         创建新对话
         
@@ -104,6 +111,17 @@ class ConversationManager:
                 conversation_id = str(max(existing_ids) + 1) if existing_ids else "1"
 
             conversation_path = os.path.join(self.base_path, f"{conversation_id}.json")
+            normalized_mode = str(conversation_mode or "chat").strip() or "chat"
+            normalized_tags = []
+            if isinstance(tags, list):
+                seen = set()
+                for item in tags:
+                    tag = str(item or "").strip().lower()
+                    if not tag or tag in seen:
+                        continue
+                    seen.add(tag)
+                    normalized_tags.append(tag)
+            normalized_metadata = metadata if isinstance(metadata, dict) else {}
             conversation_data = {
                 "conversation_id": conversation_id,
                 "title": title,
@@ -111,7 +129,9 @@ class ConversationManager:
                 "updated_at": datetime.now().isoformat(),
                 "pin": False,
                 "messages": [],
-                "conversation_mode": "chat",
+                "conversation_mode": normalized_mode,
+                "tags": normalized_tags,
+                "metadata": normalized_metadata,
                 "longterm": conversation_longterm_root_state()
             }
             self._save_json_atomic(conversation_path, conversation_data)
@@ -601,6 +621,7 @@ class ConversationManager:
                     'pin': bool(data.get('pin', False)),
                     'message_count': len(data.get('messages', [])),
                     'conversation_mode': str(data.get('conversation_mode', 'chat') or 'chat'),
+                    'tags': list(data.get('tags', [])) if isinstance(data.get('tags', []), list) else [],
                     'longterm_active': bool(longterm.get('active', False)),
                     'longterm_task': str(longterm.get('task', '') or ''),
                     'longterm_step': str(longterm.get('step', '') or '')
