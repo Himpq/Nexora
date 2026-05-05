@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NexoraLearning 学习看板</title>
-  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260502_01">
+  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260505_07">
 </head>
 <body>
   <main class="learning-shell" id="learningPanel">
@@ -36,7 +36,7 @@
 
     <section id="materialsView" class="view-pane">
       <article class="panel-card materials-panel">
-        <header class="panel-head materials-head">
+        <header id="materialsMainHeader" class="panel-head materials-head">
           <div class="materials-head-left">
             <button id="backToDashboardBtn" class="nxl-icon-btn" type="button" aria-label="返回首页" title="返回首页">←</button>
             <p class="panel-kicker">COURSES</p>
@@ -54,7 +54,7 @@
         </section>
 
         <section id="readerPane" class="materials-reader-pane" hidden>
-          <header class="panel-head materials-head reader-head">
+          <header id="readerHeader" class="panel-head materials-head reader-head reader-header">
             <div class="materials-head-left">
               <button id="backFromReaderBtn" class="nxl-icon-btn" type="button" aria-label="返回课程详情" title="返回课程详情">←</button>
               <div class="reader-head-text">
@@ -63,13 +63,128 @@
               </div>
             </div>
             <div class="reader-head-actions">
+              <button id="readerChapterListBtn" class="nxl-icon-btn" type="button" aria-label="章节目录" title="章节目录">☰</button>
+              <button id="readerSettingsBtn" class="nxl-icon-btn" type="button" aria-label="阅读设置" title="阅读设置">⚙</button>
               <button id="readerFullscreenBtn" class="nxl-icon-btn" type="button" aria-label="全屏阅读" title="全屏阅读">⛶</button>
-              <button id="readerExitFullscreenBtn" class="nxl-icon-btn reader-exit-fullscreen" type="button" hidden aria-label="退出全屏" title="退出全屏">×</button>
             </div>
           </header>
           <section id="readerContent" class="reader-content">
             <div class="materials-empty">请选择教材后进入阅读</div>
           </section>
+          <div id="readerClickAreas" class="reader-click-areas" hidden>
+            <div id="readerClickLeft" class="reader-click-left"></div>
+            <div id="readerClickRight" class="reader-click-right"></div>
+            <div id="readerClickTop" class="reader-click-top"></div>
+          </div>
+          <div class="reader-settings-panel" id="readerSettingsPanel">
+            <div class="settings-header">
+              <button class="btn btn-sm btn-outline-light" id="closeReaderSettings" type="button">×</button>
+            </div>
+            <div class="settings-content">
+              <div class="settings-section">
+                <h6>显示模式</h6>
+                <div class="display-mode-grid">
+                  <input type="radio" class="btn-check" name="readerDisplayMode" id="displayModeBilingual" value="zh-ja" checked>
+                  <label class="display-mode-btn" for="displayModeBilingual"><span>中日对照</span></label>
+                  <input type="radio" class="btn-check" name="readerDisplayMode" id="displayModeReverseBilingual" value="ja-zh">
+                  <label class="display-mode-btn" for="displayModeReverseBilingual"><span>日中对照</span></label>
+                  <input type="radio" class="btn-check" name="readerDisplayMode" id="displayModeChineseOnly" value="zh">
+                  <label class="display-mode-btn" for="displayModeChineseOnly"><span>仅中文</span></label>
+                  <input type="radio" class="btn-check" name="readerDisplayMode" id="displayModeJapaneseOnly" value="ja">
+                  <label class="display-mode-btn" for="displayModeJapaneseOnly"><span>仅日文</span></label>
+                </div>
+              </div>
+              <div class="settings-section">
+                <h6>主题</h6>
+                <div class="theme-grid">
+                  <input type="radio" class="btn-check" name="readerTheme" id="themeLight" value="light" checked>
+                  <label class="theme-btn" for="themeLight"><div class="theme-preview light-preview"></div><span>浅色</span></label>
+                  <input type="radio" class="btn-check" name="readerTheme" id="themeDark" value="dark">
+                  <label class="theme-btn" for="themeDark"><div class="theme-preview dark-preview"></div><span>深色</span></label>
+                  <input type="radio" class="btn-check" name="readerTheme" id="themeEyeCare" value="sepia">
+                  <label class="theme-btn" for="themeEyeCare"><div class="theme-preview eyecare-preview"></div><span>护眼</span></label>
+                </div>
+              </div>
+              <div class="settings-section">
+                <h6>字体大小</h6>
+                <div class="slider-container">
+                  <div class="slider-label">
+                    <span>A</span>
+                    <span id="fontSizeValue">18px</span>
+                    <span style="font-size: 1.2em;">A</span>
+                  </div>
+                  <input type="range" class="custom-range" id="fontSizeSlider" min="12" max="24" value="18">
+                </div>
+              </div>
+              <div class="settings-section">
+                <h6>行距</h6>
+                <div class="slider-container">
+                  <div class="slider-label">
+                    <span>紧密</span>
+                    <span id="lineHeightValue">1.7</span>
+                    <span>宽松</span>
+                  </div>
+                  <input type="range" class="custom-range" id="lineHeightSlider" min="1.0" max="3.5" step="0.1" value="1.7">
+                </div>
+              </div>
+              <div class="settings-section">
+                <h6>左右边距</h6>
+                <div class="slider-container">
+                  <div class="slider-label">
+                    <span>窄</span>
+                    <span id="edgeClickWidthValue">60px</span>
+                    <span>宽</span>
+                  </div>
+                  <input type="range" class="custom-range" id="edgeClickWidthSlider" min="30" max="160" step="2" value="60">
+                </div>
+              </div>
+              <div class="settings-section">
+                <h6>顶部点击区</h6>
+                <div class="slider-container">
+                  <div class="slider-label">
+                    <span>低</span>
+                    <span id="topClickHeightValue">80px</span>
+                    <span>高</span>
+                  </div>
+                  <input type="range" class="custom-range" id="topClickHeightSlider" min="48" max="180" step="2" value="80">
+                </div>
+              </div>
+              <div class="settings-section">
+                <h6>其他设置</h6>
+                <div class="setting-toggle">
+                  <label class="toggle-label">
+                    <input type="checkbox" id="enableKeyNavigation" checked>
+                    <span class="toggle-slider"></span>
+                    <span class="toggle-text">键盘导航</span>
+                  </label>
+                </div>
+                <div class="setting-item mt-2">
+                  <label for="translatorSelect" class="form-label small">翻译器</label>
+                  <select class="form-select form-select-sm" id="translatorSelect">
+                    <option value="auto">自动选择</option>
+                    <option value="freeqwen">免费Qwen AI</option>
+                    <option value="youdao">有道翻译</option>
+                    <option value="baidu">百度翻译</option>
+                  </select>
+                </div>
+              </div>
+              <div class="settings-section">
+                <div class="settings-actions">
+                  <button class="btn btn-outline-danger btn-sm" id="resetReaderSettings" type="button">重置设置</button>
+                  <button class="btn btn-outline-secondary btn-sm" id="exportReaderSettings" type="button">导出设置</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="chapter-list-panel" id="chapterListPanel">
+            <div class="chapter-list-header">
+              <h6>章节目录</h6>
+              <button class="btn btn-sm btn-outline-secondary" id="closeChapterList" type="button">×</button>
+            </div>
+            <div class="chapter-list-content" id="chapterListContent">
+              <div class="materials-empty">暂无目录</div>
+            </div>
+          </div>
         </section>
       </article>
     </section>
@@ -180,6 +295,6 @@
       </div>
     </div>
   </div>
-  <script src="/api/frontend/assets/app.js?v=20260502_01"></script>
+  <script src="/api/frontend/assets/app.js?v=20260505_07"></script>
 </body>
 </html>

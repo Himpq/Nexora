@@ -84,6 +84,15 @@ def run_rough_model(
     review_timeout = max(20, int(model_cfg.get("summary_review_request_timeout") or 120))
     review_stream = as_bool(model_cfg.get("summary_review_stream", True), True)
     review_think = as_bool(model_cfg.get("summary_review_think", False), False)
+    section_review_model_name = str(model_cfg.get("section_review_model_name") or "").strip()
+    try:
+        section_review_temperature = float(model_cfg.get("section_review_temperature") or 0.1)
+    except Exception:
+        section_review_temperature = 0.1
+    section_review_max_tokens = max(128, int(model_cfg.get("section_review_max_output_tokens") or 1200))
+    section_review_timeout = max(20, int(model_cfg.get("section_review_request_timeout") or 120))
+    section_review_stream = as_bool(model_cfg.get("section_review_stream", True), True)
+    section_review_think = as_bool(model_cfg.get("section_review_think", False), False)
 
     rough_run = run_coarse_reading_chunked(
         runner=runner,
@@ -110,6 +119,12 @@ def run_rough_model(
         summary_review_timeout=review_timeout,
         summary_review_stream=review_stream,
         summary_review_think=review_think,
+        section_review_model_name=section_review_model_name,
+        section_review_temperature=section_review_temperature,
+        section_review_max_tokens=section_review_max_tokens,
+        section_review_timeout=section_review_timeout,
+        section_review_stream=section_review_stream,
+        section_review_think=section_review_think,
     )
     if isinstance(rough_run, dict):
         output = str(rough_run.get("content") or "").strip()
@@ -150,4 +165,3 @@ def run_rough_model(
         "completed_chapters": completed_chapters,
         "chapters_count": chapters_count,
     }
-
