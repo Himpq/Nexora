@@ -5,7 +5,6 @@
     dashboardView: document.getElementById("dashboardView"),
     materialsView: document.getElementById("materialsView"),
     uploadView: document.getElementById("uploadView"),
-    settingsView: document.getElementById("settingsView"),
     openMaterialsViewBtn: document.getElementById("openMaterialsViewBtn"),
     backToDashboardBtn: document.getElementById("backToDashboardBtn"),
     openUploadViewBtn: document.getElementById("openUploadViewBtn"),
@@ -26,6 +25,8 @@
     readerTitle: document.getElementById("readerTitle"),
     readerSubTitle: document.getElementById("readerSubTitle"),
     readerContent: document.getElementById("readerContent"),
+    readerFullscreenBtn: document.getElementById("readerFullscreenBtn"),
+    readerExitFullscreenBtn: document.getElementById("readerExitFullscreenBtn"),
     createLectureTitleInput: document.getElementById("createLectureTitleInput"),
     createLectureCategoryInput: document.getElementById("createLectureCategoryInput"),
     createLectureStatusSelect: document.getElementById("createLectureStatusSelect"),
@@ -73,6 +74,7 @@
     previewObjectUrl: "",
     totalStudyHours: 0,
     isReaderOpen: false,
+    isReaderFullscreen: false,
     readerRequestToken: 0,
     settingsTab: "refinement",
     refinementRows: [],
@@ -92,6 +94,35 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#039;");
+  }
+
+  function formatReaderText(text) {
+    const raw = String(text || "").replace(/\r\n?/g, "\n");
+    const probe = document.createElement("div");
+    probe.innerHTML = raw;
+    const readable = String(probe.innerText || probe.textContent || "")
+      .replace(/\u00a0/g, " ")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n[ \t]+/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+
+    if (!readable) {
+      return `<p class="materials-preview-paragraph">（暂无文本内容）</p>`;
+    }
+
+    return readable
+      .split(/\n{2,}/)
+      .map((block) => {
+        const lines = block
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean);
+        if (!lines.length) return "";
+        return `<p class="materials-preview-paragraph">${lines.map(escapeHtml).join("<br>")}</p>`;
+      })
+      .filter(Boolean)
+      .join("");
   }
 
   function toNumber(value, fallback) {
@@ -209,12 +240,6 @@
     el.dashboardView.classList.toggle("is-active", name === "dashboard");
     el.materialsView.classList.toggle("is-active", name === "materials");
     el.uploadView.classList.toggle("is-active", name === "upload");
-    el.settingsView.classList.toggle("is-active", name === "settings");
-    if (name !== "settings") {
-      stopSettingsPolling();
-    } else {
-      startSettingsPolling();
-    }
     notifyHostInputVisibility(true);
   }
 
@@ -237,9 +262,11 @@
   function getCourseProgress(lecture, books) {
     const list = Array.isArray(books) ? books : [];
     const direct = toNumber((lecture && (lecture.progress ?? lecture.study_progress ?? lecture.learning_progress)) ?? NaN, NaN);
-    if (!list.length) return 0;
+    const currentChapter = String((lecture && lecture.current_chapter) || "").trim();
+    const nextChapter = String((lecture && lecture.next_chapter) || "").trim();
+    if (!list.length && !currentChapter && !nextChapter) return 0;
     if (Number.isFinite(direct)) {
-      if (direct >= 100) {
+      if (direct >= 100 && !currentChapter && !nextChapter) {
         const hasReadyBook = list.some((book) => ["done", "success", "indexed", "ready"].includes(normalizeStatusKey(book && book.vector_status)));
         if (!hasReadyBook) return 0;
       }
@@ -261,11 +288,20 @@
   }
 
   function getChapterInfo(lecture, books) {
+    const lectureCurrent = String((lecture && lecture.current_chapter) || "").trim();
+    const lectureNext = String((lecture && lecture.next_chapter) || "").trim();
+    if (lectureCurrent || lectureNext) {
+      return { current: lectureCurrent || "待开始", next: lectureNext || "待规划" };
+    }
     const list = Array.isArray(books) ? books : [];
-    if (!list.length) return { current: "待开始", next: "待规划" };
-    const refined = list.filter((book) => ["done", "completed"].includes(normalizeStatusKey(book && book.coarse_status)));
-    if (refined.length) return { current: "已完成粗读", next: "待精读" };
-    return { current: "待开始", next: "待提炼" };
+    const first = list.find((book) => String(book.current_chapter || "").trim() || String(book.next_chapter || "").trim());
+    if (first) {
+      return {
+        current: String(first.current_chapter || "").trim() || "待开始",
+        next: String(first.next_chapter || "").trim() || "待规划",
+      };
+    }
+    return { current: "待开始", next: "待规划" };
   }
 
   function buildDashboardCourses(rows) {
@@ -813,15 +849,9 @@
             ${books.length ? books.map((book) => {
               const bookId = String(book.id || "");
               const active = bookId === state.selectedBookId ? "is-active" : "";
-              const deleteBtn = state.isAdmin
-                ? `<button class="book-delete-btn" type="button" data-action="delete-book" data-lecture-id="${escapeHtml(lectureId)}" data-book-id="${escapeHtml(bookId)}" title="删除教材">删除</button>`
-                : "";
               return `
                 <article class="book-item ${active}" data-book-id="${escapeHtml(bookId)}">
-                  <div class="book-item-head">
-                    <div class="book-title">${escapeHtml(book.title || bookId)}</div>
-                    ${deleteBtn}
-                  </div>
+                  <div class="book-title">${escapeHtml(book.title || bookId)}</div>
                   <div class="book-badges">
                     <span class="book-badge ${statusBadgeClass(book.vector_status, book.vector_provider)}">向量：${escapeHtml(vectorStatusLabel(book.vector_status, book.vector_provider))}</span>
                     <span class="book-badge ${statusBadgeClass(book.status)}">教材：${escapeHtml(materialStatusLabel(book.status))}</span>
@@ -859,14 +889,24 @@
     el.readerPane.hidden = false;
     el.readerTitle.textContent = title || "教材阅读";
     el.readerSubTitle.textContent = subtitle || "";
-    el.readerContent.innerHTML = `<pre class="materials-preview-text">${escapeHtml(content || "（暂无文本内容）")}</pre>`;
+    el.readerContent.innerHTML = `<div class="materials-preview-text">${formatReaderText(content || "")}</div>`;
   }
 
   function closeReader() {
     state.isReaderOpen = false;
     state.readerRequestToken += 1;
+    state.isReaderFullscreen = false;
+    document.body.classList.remove("reader-fullscreen-active");
+    el.readerExitFullscreenBtn.hidden = true;
     el.readerPane.hidden = true;
     el.materialsLayout.hidden = false;
+  }
+
+  function setReaderFullscreen(active) {
+    state.isReaderFullscreen = !!active;
+    document.body.classList.toggle("reader-fullscreen-active", state.isReaderFullscreen);
+    el.readerExitFullscreenBtn.hidden = !state.isReaderFullscreen;
+    el.readerFullscreenBtn.hidden = state.isReaderFullscreen;
   }
 
   function setSelectedUploadLecture(lectureId) {
@@ -963,7 +1003,7 @@
       const text = await file.text();
       const clipped = text.length > 12000 ? `${text.slice(0, 12000)}\n\n...（预览已截断）` : text;
       el.materialsPreviewPane.innerHTML = `
-        <pre class="materials-preview-text">${escapeHtml(clipped || "（空文件）")}</pre>
+        <div class="materials-preview-text">${formatReaderText(clipped || "（空文件）")}</div>
         <div class="materials-preview-foot">文件：${escapeHtml(name)} · 大小：${sizeMB} MB</div>
       `;
       return;
@@ -1153,9 +1193,6 @@
     renderLectureList();
     renderLectureDetail();
     renderUploadLectureInputDefault();
-    if (el.settingsView.classList.contains("is-active")) {
-      renderSettingsView();
-    }
   }
 
   async function createLecture() {
@@ -1258,19 +1295,15 @@
       closeReader();
       setView("materials");
     });
-    el.backFromSettingsBtn.addEventListener("click", () => {
-      setView("dashboard");
-    });
     el.backFromReaderBtn.addEventListener("click", () => closeReader());
+    el.readerFullscreenBtn.addEventListener("click", () => setReaderFullscreen(true));
+    el.readerExitFullscreenBtn.addEventListener("click", () => setReaderFullscreen(false));
 
     el.kickerCreateTabBtn.addEventListener("click", () => setUploadTab("create"));
     el.kickerUploadTabBtn.addEventListener("click", () => setUploadTab("upload"));
 
     el.profileAdminSettingsBtn.addEventListener("click", () => {
-      openSettingsView("model").catch((err) => showToast(`打开设置失败：${err.message || "未知错误"}`));
-    });
-    el.userProfileCard.addEventListener("click", () => {
-      openSettingsView("refinement").catch((err) => showToast(`打开设置失败：${err.message || "未知错误"}`));
+      window.location.href = "/status";
     });
 
     el.openCoursePickerBtn.addEventListener("click", () => {
@@ -1542,8 +1575,5 @@
     showToast(`初始化失败：${err && err.message ? err.message : "未知错误"}`);
   });
 
-  window.addEventListener("beforeunload", () => {
-    stopSettingsPolling();
-    notifyHostInputVisibility(false);
-  });
+  window.addEventListener("beforeunload", () => notifyHostInputVisibility(false));
 })();
