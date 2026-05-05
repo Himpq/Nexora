@@ -48,7 +48,6 @@
     translatorSelect: document.getElementById("translatorSelect"),
     resetReaderSettings: document.getElementById("resetReaderSettings"),
     exportReaderSettings: document.getElementById("exportReaderSettings"),
-    readerFullscreenBtn: document.getElementById("readerFullscreenBtn"),
     readerClickAreas: document.getElementById("readerClickAreas"),
     readerClickLeft: document.getElementById("readerClickLeft"),
     readerClickRight: document.getElementById("readerClickRight"),
@@ -1198,7 +1197,6 @@
     const isReading = state.readerViewMode === "reading";
     if (el.readerChapterListBtn) el.readerChapterListBtn.hidden = !isReading;
     if (el.readerSettingsBtn) el.readerSettingsBtn.hidden = !isReading;
-    if (el.readerFullscreenBtn) el.readerFullscreenBtn.hidden = !isReading;
     if (el.materialsMainHeader) el.materialsMainHeader.hidden = state.isReaderOpen;
     if (el.readerHeader) el.readerHeader.hidden = !state.isReaderOpen;
   }
@@ -1689,7 +1687,6 @@
       }
       closeReader();
     });
-    el.readerFullscreenBtn.addEventListener("click", () => setReaderFullscreen(true));
     if (el.readerSettingsBtn) {
       el.readerSettingsBtn.addEventListener("click", (event) => {
         event.stopPropagation();
