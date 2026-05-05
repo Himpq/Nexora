@@ -2,9 +2,12 @@
   "use strict";
 
   const el = {
+    learningPanel: document.getElementById("learningPanel"),
     dashboardView: document.getElementById("dashboardView"),
     materialsView: document.getElementById("materialsView"),
     uploadView: document.getElementById("uploadView"),
+    settingsView: document.getElementById("settingsView"),
+    materialsMainHeader: document.getElementById("materialsMainHeader"),
     openMaterialsViewBtn: document.getElementById("openMaterialsViewBtn"),
     backToDashboardBtn: document.getElementById("backToDashboardBtn"),
     openUploadViewBtn: document.getElementById("openUploadViewBtn"),
@@ -21,12 +24,35 @@
     lectureList: document.getElementById("lectureList"),
     lectureDetailPane: document.getElementById("lectureDetailPane"),
     readerPane: document.getElementById("readerPane"),
+    readerHeader: document.getElementById("readerHeader"),
     backFromReaderBtn: document.getElementById("backFromReaderBtn"),
     readerTitle: document.getElementById("readerTitle"),
     readerSubTitle: document.getElementById("readerSubTitle"),
+    readerChapterListBtn: document.getElementById("readerChapterListBtn"),
+    chapterListPanel: document.getElementById("chapterListPanel"),
+    chapterListContent: document.getElementById("chapterListContent"),
+    closeChapterList: document.getElementById("closeChapterList"),
     readerContent: document.getElementById("readerContent"),
+    readerSettingsBtn: document.getElementById("readerSettingsBtn"),
+    readerSettingsPanel: document.getElementById("readerSettingsPanel"),
+    fontSizeSlider: document.getElementById("fontSizeSlider"),
+    fontSizeValue: document.getElementById("fontSizeValue"),
+    lineHeightSlider: document.getElementById("lineHeightSlider"),
+    lineHeightValue: document.getElementById("lineHeightValue"),
+    edgeClickWidthSlider: document.getElementById("edgeClickWidthSlider"),
+    edgeClickWidthValue: document.getElementById("edgeClickWidthValue"),
+    topClickHeightSlider: document.getElementById("topClickHeightSlider"),
+    topClickHeightValue: document.getElementById("topClickHeightValue"),
+    closeReaderSettings: document.getElementById("closeReaderSettings"),
+    enableKeyNavigation: document.getElementById("enableKeyNavigation"),
+    translatorSelect: document.getElementById("translatorSelect"),
+    resetReaderSettings: document.getElementById("resetReaderSettings"),
+    exportReaderSettings: document.getElementById("exportReaderSettings"),
     readerFullscreenBtn: document.getElementById("readerFullscreenBtn"),
-    readerExitFullscreenBtn: document.getElementById("readerExitFullscreenBtn"),
+    readerClickAreas: document.getElementById("readerClickAreas"),
+    readerClickLeft: document.getElementById("readerClickLeft"),
+    readerClickRight: document.getElementById("readerClickRight"),
+    readerClickTop: document.getElementById("readerClickTop"),
     createLectureTitleInput: document.getElementById("createLectureTitleInput"),
     createLectureCategoryInput: document.getElementById("createLectureCategoryInput"),
     createLectureStatusSelect: document.getElementById("createLectureStatusSelect"),
@@ -51,6 +77,17 @@
   };
 
   const PIE_COLORS = ["#111111", "#373737", "#585858", "#7a7a7a", "#9d9d9d", "#bbbbbb"];
+  const READER_SETTINGS_STORAGE_KEY = "nxl_reader_settings_v1";
+  const DEFAULT_READER_SETTINGS = Object.freeze({
+    fontSize: 18,
+    lineHeight: 1.7,
+    edgeClickWidth: 60,
+    topClickHeight: 80,
+    theme: "light",
+    displayMode: "zh-ja",
+    enableKeyNavigation: true,
+    preferredTranslator: "auto",
+  });
   const STATUS_LABELS = {
     draft: "草稿",
     active: "开放学习",
@@ -85,6 +122,23 @@
     refinementScrollTop: 0,
     refinementExpandedMap: {},
     refinementViewBootstrapped: false,
+    readerSettings: {
+      fontSize: DEFAULT_READER_SETTINGS.fontSize,
+      lineHeight: DEFAULT_READER_SETTINGS.lineHeight,
+      edgeClickWidth: DEFAULT_READER_SETTINGS.edgeClickWidth,
+      topClickHeight: DEFAULT_READER_SETTINGS.topClickHeight,
+      theme: DEFAULT_READER_SETTINGS.theme,
+      displayMode: DEFAULT_READER_SETTINGS.displayMode,
+      enableKeyNavigation: DEFAULT_READER_SETTINGS.enableKeyNavigation,
+      preferredTranslator: DEFAULT_READER_SETTINGS.preferredTranslator,
+    },
+    readerChapters: [],
+    readerActiveChapterIndex: 0,
+    readerFullTextRaw: "",
+    readerViewMode: "closed",
+    readerMeta: { title: "", subtitle: "" },
+    materialsDetailMode: "lecture",
+    catalogContext: null,
   };
 
   function escapeHtml(str) {
@@ -96,11 +150,31 @@
       .replace(/'/g, "&#039;");
   }
 
+  function decodeBasicHtmlEntities(src) {
+    return String(src || "")
+      .replace(/&nbsp;/gi, " ")
+      .replace(/&lt;/gi, "<")
+      .replace(/&gt;/gi, ">")
+      .replace(/&quot;/gi, "\"")
+      .replace(/&#39;/gi, "'")
+      .replace(/&amp;/gi, "&")
+      .replace(/&#(\d+);/g, (_m, n) => {
+        const code = Number(n);
+        return Number.isFinite(code) ? String.fromCharCode(code) : "";
+      });
+  }
+
   function formatReaderText(text) {
     const raw = String(text || "").replace(/\r\n?/g, "\n");
-    const probe = document.createElement("div");
-    probe.innerHTML = raw;
-    const readable = String(probe.innerText || probe.textContent || "")
+    const noScripts = raw
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ");
+    const structural = noScripts
+      .replace(/<\/(p|div|h[1-6]|section|article|blockquote|tr|table)>/gi, "\n\n")
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<li[^>]*>/gi, "\n- ");
+    const noTags = structural.replace(/<[^>]+>/g, " ");
+    const readable = decodeBasicHtmlEntities(noTags)
       .replace(/\u00a0/g, " ")
       .replace(/[ \t]+\n/g, "\n")
       .replace(/\n[ \t]+/g, "\n")
@@ -250,6 +324,12 @@
     el.dashboardView.classList.toggle("is-active", name === "dashboard");
     el.materialsView.classList.toggle("is-active", name === "materials");
     el.uploadView.classList.toggle("is-active", name === "upload");
+    el.settingsView.classList.toggle("is-active", name === "settings");
+    if (name !== "settings") {
+      stopSettingsPolling();
+    } else {
+      startSettingsPolling();
+    }
     notifyHostInputVisibility(true);
   }
 
@@ -811,6 +891,30 @@
   }
 
   function renderLectureDetail() {
+    if (state.materialsDetailMode === "catalog" && state.catalogContext) {
+      const ctx = state.catalogContext;
+      const chapters = Array.isArray(ctx.chapters) ? ctx.chapters : [];
+      el.lectureDetailPane.innerHTML = `
+        <section class="materials-detail-scroll materials-catalog-page">
+          <section class="detail-section">
+            <div class="detail-title">${escapeHtml(ctx.title || "教材目录")}</div>
+            <p class="detail-line">${escapeHtml(ctx.subtitle || "")}</p>
+          </section>
+          <section class="detail-section">
+            <div class="detail-title">目录</div>
+            <div class="materials-catalog-list">
+              ${chapters.length ? chapters.map((item, idx) => `
+                <button class="materials-catalog-item" type="button" data-material-catalog-index="${idx}">
+                  <span class="materials-catalog-index">${idx + 1}.</span>
+                  <span class="materials-catalog-text">${escapeHtml(item.title || `章节 ${idx + 1}`)}</span>
+                </button>
+              `).join("") : '<div class="materials-empty">暂无目录</div>'}
+            </div>
+          </section>
+        </section>
+      `;
+      return;
+    }
     const row = getSelectedLectureRow();
     if (!row) {
       el.lectureDetailPane.innerHTML = '<div class="materials-empty">请选择课程</div>';
@@ -892,31 +996,285 @@
     el.readerContent.innerHTML = `<div class="materials-empty">${escapeHtml(msg || "阅读内容加载中")}</div>`;
   }
 
-  function openReader(title, subtitle, content) {
+  async function fetchBookInfoXml() {
+    const row = getSelectedLectureRow();
+    if (!row || !state.selectedBookId) return "";
+    const lectureId = String((row.lecture || {}).id || "");
+    if (!lectureId) return "";
+    try {
+      const data = await fetchJson(`/api/lectures/${encodeURIComponent(lectureId)}/books/${encodeURIComponent(state.selectedBookId)}/bookinfo`);
+      return String(data.content || "");
+    } catch (_err) {
+      return "";
+    }
+  }
+
+  function notifyHostLayout(mode, extra) {
+    const payload = Object.assign(
+      {
+        source: "nexora-learning",
+        type: "nexora:layout:request",
+        mode: String(mode || "default").trim().toLowerCase() === "immersive" ? "immersive" : "default",
+      },
+      (extra && typeof extra === "object") ? extra : {},
+    );
+    try {
+      window.dispatchEvent(new CustomEvent("nexora:layout:request", { detail: payload }));
+    } catch (_err) {}
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage(payload, "*");
+      }
+    } catch (_err) {}
+  }
+
+  function parseBookInfoChapters(xmlText, fullTextLength) {
+    const src = String(xmlText || "");
+    if (!src.trim()) return [];
+    const entries = [];
+    const reg = /<chapter_name>([\s\S]*?)<\/chapter_name>[\s\S]*?<chapter_range>([\s\S]*?)<\/chapter_range>/gi;
+    let m = null;
+    while ((m = reg.exec(src)) !== null) {
+      const name = String(m[1] || "").trim();
+      const range = String(m[2] || "").trim();
+      const nums = range.split(":").map((x) => Number(String(x || "").trim()));
+      if (!name || nums.length < 2 || !Number.isFinite(nums[0]) || !Number.isFinite(nums[1])) continue;
+      const start = Math.max(0, Math.floor(nums[0]));
+      const second = Math.floor(nums[1]);
+      const end = second > start ? second : Math.min(fullTextLength, start + Math.max(0, second));
+      entries.push({ title: name, start, end: Math.max(start, end) });
+    }
+    entries.sort((a, b) => a.start - b.start);
+    return entries;
+  }
+
+  function renderChapterList() {
+    if (!el.chapterListContent) return;
+    const chapters = Array.isArray(state.readerChapters) ? state.readerChapters : [];
+    if (!chapters.length) {
+      el.chapterListContent.innerHTML = '<div class="materials-empty">暂无目录</div>';
+      return;
+    }
+    el.chapterListContent.innerHTML = chapters.map((item, idx) => {
+      const active = idx === state.readerActiveChapterIndex ? "current" : "";
+      return `<div class="chapter-item ${active}" data-reader-chapter-index="${idx}" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</div>`;
+    }).join("");
+  }
+
+  function openReaderChapter(index) {
+    const chapters = Array.isArray(state.readerChapters) ? state.readerChapters : [];
+    if (!chapters.length) {
+      el.readerContent.innerHTML = `<div class="materials-preview-text">${formatReaderText(state.readerFullTextRaw || "")}</div>`;
+      syncReaderSettingsPanel();
+      applyReaderTypography();
+      return;
+    }
+    const idx = Math.max(0, Math.min(chapters.length - 1, Number(index) || 0));
+    state.readerActiveChapterIndex = idx;
+    const chapter = chapters[idx];
+    const start = Math.max(0, Math.min(state.readerFullTextRaw.length, chapter.start));
+    const end = Math.max(start, Math.min(state.readerFullTextRaw.length, chapter.end));
+    const part = state.readerFullTextRaw.slice(start, end).trim() || state.readerFullTextRaw;
+    el.readerContent.innerHTML = `<div class="materials-preview-text">${formatReaderText(part || "")}</div>`;
+    renderChapterList();
+    syncReaderSettingsPanel();
+    applyReaderTypography();
+  }
+
+  function loadReaderSettings() {
+    try {
+      const raw = localStorage.getItem(READER_SETTINGS_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") return;
+      const fontSize = Number(parsed.fontSize);
+      const lineHeight = Number(parsed.lineHeight);
+      const edgeClickWidth = Number(parsed.edgeClickWidth);
+      const topClickHeight = Number(parsed.topClickHeight);
+      if (Number.isFinite(fontSize)) {
+        state.readerSettings.fontSize = Math.max(12, Math.min(36, Math.round(fontSize)));
+      }
+      if (Number.isFinite(lineHeight)) {
+        state.readerSettings.lineHeight = Math.max(1.0, Math.min(3.5, Number(lineHeight.toFixed(1))));
+      }
+      if (Number.isFinite(edgeClickWidth)) {
+        state.readerSettings.edgeClickWidth = Math.max(30, Math.min(160, Math.round(edgeClickWidth)));
+      }
+      if (Number.isFinite(topClickHeight)) {
+        state.readerSettings.topClickHeight = Math.max(48, Math.min(180, Math.round(topClickHeight)));
+      }
+      if (typeof parsed.theme === "string" && parsed.theme) {
+        state.readerSettings.theme = parsed.theme;
+      }
+      if (typeof parsed.displayMode === "string" && parsed.displayMode) {
+        state.readerSettings.displayMode = parsed.displayMode;
+      }
+      if (typeof parsed.enableKeyNavigation === "boolean") {
+        state.readerSettings.enableKeyNavigation = parsed.enableKeyNavigation;
+      }
+      if (typeof parsed.preferredTranslator === "string" && parsed.preferredTranslator) {
+        state.readerSettings.preferredTranslator = parsed.preferredTranslator;
+      }
+    } catch (_err) {
+      // ignore invalid local storage
+    }
+  }
+
+  function saveReaderSettings() {
+    try {
+      localStorage.setItem(READER_SETTINGS_STORAGE_KEY, JSON.stringify(state.readerSettings));
+    } catch (_err) {
+      // ignore storage failure
+    }
+  }
+
+  function syncReaderSettingsPanel() {
+    if (el.fontSizeSlider) el.fontSizeSlider.value = String(state.readerSettings.fontSize);
+    if (el.fontSizeValue) el.fontSizeValue.textContent = `${state.readerSettings.fontSize}px`;
+    if (el.lineHeightSlider) el.lineHeightSlider.value = String(state.readerSettings.lineHeight);
+    if (el.lineHeightValue) el.lineHeightValue.textContent = String(state.readerSettings.lineHeight);
+    if (el.edgeClickWidthSlider) el.edgeClickWidthSlider.value = String(state.readerSettings.edgeClickWidth || DEFAULT_READER_SETTINGS.edgeClickWidth);
+    if (el.edgeClickWidthValue) el.edgeClickWidthValue.textContent = `${state.readerSettings.edgeClickWidth || DEFAULT_READER_SETTINGS.edgeClickWidth}px`;
+    if (el.topClickHeightSlider) el.topClickHeightSlider.value = String(state.readerSettings.topClickHeight || DEFAULT_READER_SETTINGS.topClickHeight);
+    if (el.topClickHeightValue) el.topClickHeightValue.textContent = `${state.readerSettings.topClickHeight || DEFAULT_READER_SETTINGS.topClickHeight}px`;
+    const themeInput = document.querySelector(`input[name="readerTheme"][value="${state.readerSettings.theme}"]`);
+    if (themeInput instanceof HTMLInputElement) themeInput.checked = true;
+    const displayModeInput = document.querySelector(`input[name="readerDisplayMode"][value="${state.readerSettings.displayMode}"]`);
+    if (displayModeInput instanceof HTMLInputElement) displayModeInput.checked = true;
+    if (el.enableKeyNavigation) el.enableKeyNavigation.checked = !!state.readerSettings.enableKeyNavigation;
+    if (el.translatorSelect) el.translatorSelect.value = String(state.readerSettings.preferredTranslator || "auto");
+  }
+
+  function applyReaderTypography() {
+    const fs = Number(state.readerSettings.fontSize || DEFAULT_READER_SETTINGS.fontSize);
+    const lh = Number(state.readerSettings.lineHeight || DEFAULT_READER_SETTINGS.lineHeight);
+    const edgeW = Math.max(30, Math.min(160, Number(state.readerSettings.edgeClickWidth || DEFAULT_READER_SETTINGS.edgeClickWidth)));
+    const topH = Math.max(48, Math.min(180, Number(state.readerSettings.topClickHeight || DEFAULT_READER_SETTINGS.topClickHeight)));
+    const textRoot = el.readerContent ? el.readerContent.querySelector(".materials-preview-text") : null;
+    if (textRoot instanceof HTMLElement) {
+      textRoot.style.fontSize = `${fs}px`;
+      textRoot.style.lineHeight = String(lh);
+    }
+    if (el.readerPane) {
+      el.readerPane.classList.remove("theme-light", "theme-dark", "theme-sepia");
+      el.readerPane.classList.add(`theme-${state.readerSettings.theme || "light"}`);
+      el.readerPane.style.setProperty("--reader-edge-width", `${edgeW}px`);
+      el.readerPane.style.setProperty("--reader-top-click-height", `${topH}px`);
+    }
+  }
+
+  function isReaderSettingsOpen() {
+    return !!(el.readerSettingsPanel && el.readerSettingsPanel.classList.contains("show"));
+  }
+
+  function setReaderSettingsPanelOpen(open) {
+    if (!el.readerSettingsPanel) return;
+    const shouldOpen = !!open;
+    el.readerSettingsPanel.classList.toggle("show", shouldOpen);
+  }
+
+  function setChapterListPanelOpen(open) {
+    if (!el.chapterListPanel) return;
+    if (!state.isReaderFullscreen) {
+      el.chapterListPanel.classList.remove("show");
+      return;
+    }
+    const shouldOpen = !!open;
+    el.chapterListPanel.classList.toggle("show", shouldOpen);
+  }
+
+  function setReaderHeaderVisible(visible) {
+    if (!el.readerHeader) return;
+    if (visible) {
+      el.readerHeader.classList.remove("hidden", "header-hidden");
+      el.readerHeader.classList.add("header-visible");
+    } else {
+      el.readerHeader.classList.add("hidden", "header-hidden");
+      el.readerHeader.classList.remove("header-visible");
+    }
+  }
+
+  function syncReaderModeUI() {
+    const isReading = state.readerViewMode === "reading";
+    if (el.readerChapterListBtn) el.readerChapterListBtn.hidden = !isReading;
+    if (el.readerSettingsBtn) el.readerSettingsBtn.hidden = !isReading;
+    if (el.readerFullscreenBtn) el.readerFullscreenBtn.hidden = !isReading;
+    if (el.materialsMainHeader) el.materialsMainHeader.hidden = state.isReaderOpen;
+    if (el.readerHeader) el.readerHeader.hidden = !state.isReaderOpen;
+  }
+
+  function toggleReaderUI() {
+    if (isReaderSettingsOpen() || (el.chapterListPanel && el.chapterListPanel.classList.contains("show"))) {
+      setReaderSettingsPanelOpen(false);
+      setChapterListPanelOpen(false);
+      return;
+    }
+    const hidden = el.readerHeader.classList.contains("header-hidden") || el.readerHeader.classList.contains("hidden");
+    setReaderHeaderVisible(hidden);
+  }
+
+  function openReader(title, subtitle, content, options) {
+    const opts = (options && typeof options === "object") ? options : {};
+    const mode = opts.mode === "catalog" ? "catalog" : "reading";
     state.isReaderOpen = true;
     state.readerRequestToken += 1;
+    setReaderFullscreen(false);
+    setReaderHeaderVisible(true);
+    setReaderSettingsPanelOpen(false);
+    setChapterListPanelOpen(false);
     el.materialsLayout.hidden = true;
     el.readerPane.hidden = false;
-    el.readerTitle.textContent = title || "教材阅读";
-    el.readerSubTitle.textContent = subtitle || "";
-    el.readerContent.innerHTML = `<div class="materials-preview-text">${formatReaderText(content || "")}</div>`;
+    state.readerViewMode = mode;
+    state.readerMeta.title = String(title || "教材阅读");
+    state.readerMeta.subtitle = String(subtitle || "");
+    el.readerTitle.textContent = state.readerMeta.title;
+    el.readerSubTitle.textContent = state.readerMeta.subtitle;
+    state.readerFullTextRaw = String(content || "");
+    if (Array.isArray(state.readerChapters) && state.readerChapters.length) {
+      const requestedIndex = Number.isFinite(Number(opts.chapterIndex)) ? Number(opts.chapterIndex) : state.readerActiveChapterIndex;
+      state.readerActiveChapterIndex = Math.max(0, Math.min(state.readerChapters.length - 1, Number(requestedIndex) || 0));
+    } else {
+      state.readerActiveChapterIndex = 0;
+    }
+    syncReaderModeUI();
+    openReaderChapter(state.readerActiveChapterIndex);
+    setReaderFullscreen(true);
+    syncReaderSettingsPanel();
+    applyReaderTypography();
   }
 
   function closeReader() {
     state.isReaderOpen = false;
     state.readerRequestToken += 1;
-    state.isReaderFullscreen = false;
-    document.body.classList.remove("reader-fullscreen-active");
-    el.readerExitFullscreenBtn.hidden = true;
+    setReaderFullscreen(false);
+    setReaderSettingsPanelOpen(false);
+    setChapterListPanelOpen(false);
+    state.readerChapters = [];
+    state.readerActiveChapterIndex = 0;
+    state.readerFullTextRaw = "";
+    state.readerViewMode = "closed";
+    state.readerMeta = { title: "", subtitle: "" };
+    syncReaderModeUI();
     el.readerPane.hidden = true;
     el.materialsLayout.hidden = false;
+    notifyHostLayout("default", { hideInputDock: true });
   }
 
   function setReaderFullscreen(active) {
-    state.isReaderFullscreen = !!active;
-    document.body.classList.toggle("reader-fullscreen-active", state.isReaderFullscreen);
-    el.readerExitFullscreenBtn.hidden = !state.isReaderFullscreen;
-    el.readerFullscreenBtn.hidden = state.isReaderFullscreen;
+    const fs = !!active;
+    state.isReaderFullscreen = fs;
+    document.body.classList.toggle("reader-fullscreen-active", fs);
+    document.body.style.overflow = fs ? "hidden" : "";
+    if (el.learningPanel) el.learningPanel.classList.toggle("reader-fill-active", fs);
+    if (el.readerClickAreas) el.readerClickAreas.hidden = !fs;
+    if (!fs) {
+      setReaderHeaderVisible(true);
+      if (el.readerSettingsPanel) el.readerSettingsPanel.classList.remove("show");
+      if (el.chapterListPanel) el.chapterListPanel.classList.remove("show");
+    }
+    notifyHostLayout(fs ? "immersive" : "default", { hideInputDock: true });
+    syncReaderModeUI();
+    applyReaderTypography();
   }
 
   function setSelectedUploadLecture(lectureId) {
@@ -1293,6 +1651,12 @@
     });
 
     el.backToDashboardBtn.addEventListener("click", () => {
+      if (state.materialsDetailMode === "catalog") {
+        state.materialsDetailMode = "lecture";
+        state.catalogContext = null;
+        renderLectureDetail();
+        return;
+      }
       closeReader();
       setView("dashboard");
     });
@@ -1305,15 +1669,217 @@
       closeReader();
       setView("materials");
     });
-    el.backFromReaderBtn.addEventListener("click", () => closeReader());
+    el.backFromSettingsBtn.addEventListener("click", () => {
+      setView("dashboard");
+    });
+    el.backFromReaderBtn.addEventListener("click", () => {
+      if (!state.isReaderOpen) return;
+      if (isReaderSettingsOpen()) {
+        setReaderSettingsPanelOpen(false);
+        return;
+      }
+      if (el.chapterListPanel && el.chapterListPanel.classList.contains("show")) {
+        setChapterListPanelOpen(false);
+        return;
+      }
+      if (state.readerViewMode === "reading") {
+        setReaderFullscreen(false);
+        closeReader();
+        return;
+      }
+      closeReader();
+    });
     el.readerFullscreenBtn.addEventListener("click", () => setReaderFullscreen(true));
-    el.readerExitFullscreenBtn.addEventListener("click", () => setReaderFullscreen(false));
+    if (el.readerSettingsBtn) {
+      el.readerSettingsBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        setReaderSettingsPanelOpen(!isReaderSettingsOpen());
+      });
+    }
+    if (el.readerChapterListBtn) {
+      el.readerChapterListBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        setChapterListPanelOpen(!(el.chapterListPanel && el.chapterListPanel.classList.contains("show")));
+        setReaderSettingsPanelOpen(false);
+      });
+    }
+    if (el.chapterListContent) {
+      el.chapterListContent.addEventListener("click", (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        const item = target.closest("[data-reader-chapter-index]");
+        if (!item) return;
+        const idx = Number(item.getAttribute("data-reader-chapter-index") || "0");
+        openReaderChapter(idx);
+        setChapterListPanelOpen(false);
+        state.readerViewMode = "reading";
+        syncReaderModeUI();
+        setReaderFullscreen(true);
+      });
+    }
+    if (el.closeChapterList) {
+      el.closeChapterList.addEventListener("click", () => setChapterListPanelOpen(false));
+    }
+    if (el.closeReaderSettings) {
+      el.closeReaderSettings.addEventListener("click", (event) => {
+        event.stopPropagation();
+        setReaderSettingsPanelOpen(false);
+      });
+    }
+    if (el.fontSizeSlider) {
+      el.fontSizeSlider.addEventListener("input", () => {
+        const v = Number(el.fontSizeSlider.value || DEFAULT_READER_SETTINGS.fontSize);
+        state.readerSettings.fontSize = Math.max(12, Math.min(36, Math.round(v)));
+        syncReaderSettingsPanel();
+        applyReaderTypography();
+        saveReaderSettings();
+      });
+    }
+    if (el.lineHeightSlider) {
+      el.lineHeightSlider.addEventListener("input", () => {
+        const v = Number(el.lineHeightSlider.value || DEFAULT_READER_SETTINGS.lineHeight);
+        state.readerSettings.lineHeight = Math.max(1.0, Math.min(3.5, Number(v.toFixed(1))));
+        syncReaderSettingsPanel();
+        applyReaderTypography();
+        saveReaderSettings();
+      });
+    }
+    if (el.edgeClickWidthSlider) {
+      el.edgeClickWidthSlider.addEventListener("input", () => {
+        const v = Number(el.edgeClickWidthSlider.value || DEFAULT_READER_SETTINGS.edgeClickWidth);
+        state.readerSettings.edgeClickWidth = Math.max(30, Math.min(160, Math.round(v)));
+        syncReaderSettingsPanel();
+        applyReaderTypography();
+        saveReaderSettings();
+      });
+    }
+    if (el.topClickHeightSlider) {
+      el.topClickHeightSlider.addEventListener("input", () => {
+        const v = Number(el.topClickHeightSlider.value || DEFAULT_READER_SETTINGS.topClickHeight);
+        state.readerSettings.topClickHeight = Math.max(48, Math.min(180, Math.round(v)));
+        syncReaderSettingsPanel();
+        applyReaderTypography();
+        saveReaderSettings();
+      });
+    }
+    document.querySelectorAll('input[name="readerTheme"]').forEach((node) => {
+      node.addEventListener("change", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLInputElement)) return;
+        state.readerSettings.theme = String(target.value || "light");
+        applyReaderTypography();
+        saveReaderSettings();
+      });
+    });
+    document.querySelectorAll('input[name="readerDisplayMode"]').forEach((node) => {
+      node.addEventListener("change", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLInputElement)) return;
+        state.readerSettings.displayMode = String(target.value || "zh-ja");
+        saveReaderSettings();
+      });
+    });
+    if (el.enableKeyNavigation) {
+      el.enableKeyNavigation.addEventListener("change", () => {
+        state.readerSettings.enableKeyNavigation = !!el.enableKeyNavigation.checked;
+        saveReaderSettings();
+      });
+    }
+    if (el.translatorSelect) {
+      el.translatorSelect.addEventListener("change", () => {
+        state.readerSettings.preferredTranslator = String(el.translatorSelect.value || "auto");
+        saveReaderSettings();
+      });
+    }
+    if (el.resetReaderSettings) {
+      el.resetReaderSettings.addEventListener("click", () => {
+        state.readerSettings = {
+          fontSize: DEFAULT_READER_SETTINGS.fontSize,
+          lineHeight: DEFAULT_READER_SETTINGS.lineHeight,
+          edgeClickWidth: DEFAULT_READER_SETTINGS.edgeClickWidth,
+          topClickHeight: DEFAULT_READER_SETTINGS.topClickHeight,
+          theme: DEFAULT_READER_SETTINGS.theme,
+          displayMode: DEFAULT_READER_SETTINGS.displayMode,
+          enableKeyNavigation: DEFAULT_READER_SETTINGS.enableKeyNavigation,
+          preferredTranslator: DEFAULT_READER_SETTINGS.preferredTranslator,
+        };
+        syncReaderSettingsPanel();
+        applyReaderTypography();
+        saveReaderSettings();
+        showToast("阅读设置已重置");
+      });
+    }
+    if (el.exportReaderSettings) {
+      el.exportReaderSettings.addEventListener("click", () => {
+        try {
+          const settingsJson = JSON.stringify(state.readerSettings, null, 2);
+          const blob = new Blob([settingsJson], { type: "application/json" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = "reader-settings.json";
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+          showToast("阅读设置已导出");
+        } catch (_err) {
+          showToast("导出设置失败");
+        }
+      });
+    }
+    el.readerContent.addEventListener("click", (event) => {
+      if (!state.isReaderFullscreen) return;
+      event.stopPropagation();
+      toggleReaderUI();
+    });
+    if (el.readerClickLeft) {
+      el.readerClickLeft.addEventListener("click", (event) => {
+        if (!state.isReaderFullscreen) return;
+        event.stopPropagation();
+        toggleReaderUI();
+      });
+    }
+    if (el.readerClickRight) {
+      el.readerClickRight.addEventListener("click", (event) => {
+        if (!state.isReaderFullscreen) return;
+        event.stopPropagation();
+        toggleReaderUI();
+      });
+    }
+    if (el.readerClickTop) {
+      el.readerClickTop.addEventListener("click", (event) => {
+        if (!state.isReaderFullscreen) return;
+        event.stopPropagation();
+        toggleReaderUI();
+      });
+    }
+    document.addEventListener("keydown", (event) => {
+      if (state.isReaderOpen && state.readerSettings.enableKeyNavigation) {
+        if (event.key === "s" || event.key === "S") {
+          event.preventDefault();
+          setReaderSettingsPanelOpen(!isReaderSettingsOpen());
+          return;
+        }
+      }
+      if (event.key === "Escape" && isReaderSettingsOpen()) {
+        setReaderSettingsPanelOpen(false);
+        return;
+      }
+      if (event.key === "Escape" && el.chapterListPanel && el.chapterListPanel.classList.contains("show")) {
+        setChapterListPanelOpen(false);
+        return;
+      }
+      if (event.key === "Escape" && state.isReaderFullscreen) {
+        setReaderFullscreen(false);
+      }
+    });
 
     el.kickerCreateTabBtn.addEventListener("click", () => setUploadTab("create"));
     el.kickerUploadTabBtn.addEventListener("click", () => setUploadTab("upload"));
 
     el.profileAdminSettingsBtn.addEventListener("click", () => {
-      window.location.href = "/status";
+      openSettingsView("model").catch((err) => showToast(`打开设置失败：${err.message || "未知错误"}`));
     });
 
     el.openCoursePickerBtn.addEventListener("click", () => {
@@ -1330,6 +1896,8 @@
       if (!item) return;
       state.selectedLectureId = String(item.getAttribute("data-lecture-id") || "");
       state.selectedBookId = "";
+      state.materialsDetailMode = "lecture";
+      state.catalogContext = null;
       closeReader();
       renderLectureList();
       renderLectureDetail();
@@ -1384,26 +1952,54 @@
       const bookItem = target.closest(".book-item");
       if (!bookItem) return;
       const requestToken = state.readerRequestToken + 1;
+      state.readerRequestToken = requestToken;
+      bookItem.classList.remove("book-item-enter");
+      void bookItem.offsetWidth;
+      bookItem.classList.add("book-item-enter");
       state.selectedBookId = String(bookItem.getAttribute("data-book-id") || "");
       renderLectureDetail();
       const row = getSelectedLectureRow();
       const lecture = row ? (row.lecture || {}) : {};
       const books = row && Array.isArray(row.books) ? row.books : [];
       const book = books.find((it) => String((it && it.id) || "") === state.selectedBookId) || {};
-      renderReaderPlaceholder("正在加载教材全文...");
-      openReader(
-        String(book.title || "教材阅读"),
-        `${getLectureTitle(lecture)} · ${vectorStatusLabel(book.vector_status, book.vector_provider)} / ${materialStatusLabel(book.status)}`,
-        "正在加载..."
-      );
+      state.materialsDetailMode = "catalog";
+      state.catalogContext = {
+        title: String(book.title || "教材目录"),
+        subtitle: `${getLectureTitle(lecture)} · ${vectorStatusLabel(book.vector_status, book.vector_provider)} / ${materialStatusLabel(book.status)}`,
+        chapters: [],
+        fullTextRaw: "",
+      };
+      renderLectureDetail();
       const fullText = await fetchBookTextFull();
-      if (requestToken !== state.readerRequestToken || !state.isReaderOpen) {
+      const bookInfoXml = await fetchBookInfoXml();
+      if (requestToken !== state.readerRequestToken) {
         return;
       }
+      const chapters = parseBookInfoChapters(bookInfoXml, String(fullText || "").length);
+      state.catalogContext = {
+        title: String(book.title || "教材目录"),
+        subtitle: `${getLectureTitle(lecture)} · ${vectorStatusLabel(book.vector_status, book.vector_provider)} / ${materialStatusLabel(book.status)}`,
+        chapters,
+        fullTextRaw: String(fullText || "（当前教材暂无可读取文本，可能仍在解析或向量化）"),
+      };
+      state.materialsDetailMode = "catalog";
+      renderLectureDetail();
+    });
+
+    el.lectureDetailPane.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const item = target.closest("[data-material-catalog-index]");
+      if (!item || !state.catalogContext) return;
+      const idx = Number(item.getAttribute("data-material-catalog-index") || "0");
+      state.readerChapters = Array.isArray(state.catalogContext.chapters) ? state.catalogContext.chapters.slice() : [];
+      state.readerFullTextRaw = String(state.catalogContext.fullTextRaw || "");
+      state.readerActiveChapterIndex = Math.max(0, Math.min(state.readerChapters.length - 1, Number.isFinite(idx) ? idx : 0));
       openReader(
-        String(book.title || "教材阅读"),
-        `${getLectureTitle(lecture)} · ${vectorStatusLabel(book.vector_status, book.vector_provider)} / ${materialStatusLabel(book.status)}`,
-        fullText || "（当前教材暂无可读取文本，可能仍在解析或向量化）"
+        state.catalogContext.title || "教材阅读",
+        state.catalogContext.subtitle || "",
+        state.readerFullTextRaw,
+        { chapterIndex: state.readerActiveChapterIndex }
       );
     });
 
@@ -1564,6 +2160,7 @@
         showToast(`上传失败：${err.message || "未知错误"}`);
       }
     });
+
   }
 
   function updateAdminVisibility() {
@@ -1573,8 +2170,10 @@
 
   async function init() {
     state.username = getRuntimeUsername();
+    loadReaderSettings();
     setView("dashboard");
     closeReader();
+    syncReaderSettingsPanel();
     setUploadTab("create");
     renderUploadPreviewEmpty("请选择教材文件后预览");
     setUploadTip("支持 EPUB、PDF、TXT、MD、DOCX、DOC、C、H、PY、RST", false);
@@ -1589,6 +2188,9 @@
     showToast(`初始化失败：${err && err.message ? err.message : "未知错误"}`);
   });
 
-  window.addEventListener("beforeunload", () => notifyHostInputVisibility(false));
+  window.addEventListener("beforeunload", () => {
+    stopSettingsPolling();
+    notifyHostInputVisibility(false);
+  });
 })();
 

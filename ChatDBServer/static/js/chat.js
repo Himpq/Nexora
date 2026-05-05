@@ -80,6 +80,7 @@ let learningHeaderMode = 'chat';
 let learningWelcomeMounted = false;
 let learningMainMounted = false;
 let learningModeAssetsPromise = null;
+let learningEmbedLayoutMode = 'default';
 let pendingLearningModeValue = false;
 let pendingAvatarDataUrl = '';
 let adminUsersCache = [];
@@ -119,7 +120,7 @@ const CHAT_COMPOSER_PREFS_KEY = 'nexora_chat_composer_prefs_v1';
 const CHAT_INPUT_DRAFT_KEY = 'nexora_chat_input_draft_v1';
 const CHAT_INPUT_DRAFT_MAX_LEN = 12000;
 const NEXORA_LEARNING_FRONTEND_URL = `${window.location.protocol}//${window.location.hostname}:5001/api/frontend/`;
-const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260503_01';
+const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260505_02';
 const NEXORA_LEARNING_JS_URL = '/static/js/learning_mode.js?v=20260503_01';
 const MAIL_POLL_INTERVAL_MS = 5000;
 const AGENT_STATUS_POLL_VISIBLE_MS = 5000;
@@ -4018,6 +4019,7 @@ async function loadCloudFiles() {
 // DOM Elements
 const els = {
     sidebar: document.getElementById('sidebar'),
+    mainContent: document.querySelector('.main-content'),
     inputDock: document.querySelector('.input-dock'),
     messagesContainer: document.getElementById('messagesContainer'),
     learningMainPanel: document.getElementById('learningMainPanel'),
@@ -4276,7 +4278,60 @@ function applyLearningSidebarMode(mode) {
 
 function clearLearningWelcomeState() {
     if (els.inputDock) els.inputDock.classList.remove('learning-mode-hidden');
+    if (learningEmbedLayoutMode !== 'default') {
+        setLearningEmbedLayoutMode('default');
+    }
 }
+
+function setLearningEmbedLayoutMode(mode, options = {}) {
+    const normalized = String(mode || 'default').trim().toLowerCase() === 'immersive' ? 'immersive' : 'default';
+    learningEmbedLayoutMode = normalized;
+    const active = normalized === 'immersive';
+    document.body.classList.toggle('learning-embed-immersive', active);
+    if (els.mainContent) {
+        els.mainContent.classList.toggle('learning-embed-immersive', active);
+    }
+    if (els.inputDock) {
+        if (options && options.hasOwnProperty('hideInputDock')) {
+            const shouldHide = !!options.hideInputDock;
+            els.inputDock.classList.toggle('learning-mode-hidden', shouldHide);
+        } else if (!active) {
+            els.inputDock.classList.remove('learning-mode-hidden');
+        }
+    }
+}
+
+function handleLearningHostMessage(payload) {
+    if (!payload || typeof payload !== 'object') return false;
+    if (String(payload.source || '').trim().toLowerCase() !== 'nexora-learning') return false;
+    const msgType = String(payload.type || '').trim().toLowerCase();
+    if (msgType === 'nexora:chat-input:visibility') {
+        if (els.inputDock) {
+            els.inputDock.classList.toggle('learning-mode-hidden', !!payload.hidden);
+        }
+        return true;
+    }
+    if (msgType === 'nexora:layout:request') {
+        setLearningEmbedLayoutMode(payload.mode, payload);
+        return true;
+    }
+    return false;
+}
+
+window.addEventListener('message', (event) => {
+    const data = event && event.data;
+    handleLearningHostMessage(data);
+});
+
+window.addEventListener('nexora:chat-input:visibility', (event) => {
+    const payload = event && event.detail;
+    handleLearningHostMessage(payload);
+});
+
+window.addEventListener('nexora:layout:request', (event) => {
+    const payload = event && event.detail;
+    handleLearningHostMessage(payload);
+});
 
 async function renderLearningMainPanel() {
     if (!els.learningMainPanel) return;
@@ -4311,7 +4366,10 @@ async function renderLearningMainPanel() {
 async function syncLearningHeaderMode() {
     const hasConversation = !!String(currentConversationId || '').trim();
     const showLearning = isLearningConversationView();
-    const showLearningMain = String(learningHeaderMode || '').trim().toLowerCase() === 'learning' && hasConversation;
+    const showLearningMain = showLearning && hasConversation;
+    if (!showLearningMain) {
+        setLearningEmbedLayoutMode('default');
+    }
     if (els.messagesContainer) {
         els.messagesContainer.style.display = showLearningMain ? 'none' : '';
     }
@@ -4389,6 +4447,10 @@ async function applyLearningMode(enabled) {
         if (learningHeaderMode === 'learning') learningHeaderMode = 'chat';
     }
     applyLearningSidebarMode(learningSidebarMode);
+    if (learningModeEnabled && !String(currentConversationId || '').trim()) {
+        currentConversationMode = 'learning';
+        learningHeaderMode = 'learning';
+    }
     await syncLearningHeaderMode();
     if (!currentConversationId) {
         await renderWelcomeScreen();
@@ -8114,6 +8176,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (cid) {
             await loadConversation(cid);
         } else {
+            if (learningModeEnabled) {
+                await createNewConversation(false, 'learning');
+                await renderWelcomeScreen();
+                return;
+            }
             loadConversations();
             applyTokenMiniDisplay(0, 0);
             tokenBudgetState.roundInput = 0;
@@ -10331,7 +10398,8 @@ async function createNewConversation(silent = false, targetMode = null) {
         closeKnowledgeView();
     }
     currentConversationHasImageHistory = false;
-    const resolvedMode = resolveNewConversationMode(targetMode);
+    const forcedLearning = learningModeEnabled && String(targetMode || '').trim().toLowerCase() === 'chat';
+    const resolvedMode = forcedLearning ? 'learning' : resolveNewConversationMode(targetMode);
     currentConversationMode = resolvedMode;
     currentConversationLongtermState = {
         active: false,
@@ -10382,7 +10450,7 @@ async function loadConversation(id) {
     originalHeaderState = null;
     
     currentConversationId = id;
-    learningHeaderMode = 'chat';
+    learningHeaderMode = String(currentConversationMode || '').trim().toLowerCase() === 'learning' ? 'learning' : 'chat';
     void syncLearningHeaderMode();
     clearLearningWelcomeState();
     syncNotesForConversation(id);
@@ -10407,7 +10475,7 @@ async function loadConversation(id) {
             refreshConversationImageHistoryFlag(data.conversation.messages || []);
             syncConversationModeFromConversation(data.conversation);
             applyLearningSidebarMode(currentConversationMode === 'learning' ? 'learning' : 'nexora');
-            learningHeaderMode = 'chat';
+            learningHeaderMode = currentConversationMode === 'learning' ? 'learning' : 'chat';
             void syncLearningHeaderMode();
             // Render
             renderMessages(data.conversation.messages, false, { instant: true });
