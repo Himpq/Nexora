@@ -41,25 +41,40 @@ def init_run_logger(cfg: Mapping[str, Any]) -> str:
 
 
 def log_event(event_type: str, title: str, *, payload: Optional[Mapping[str, Any]] = None, content: str = "") -> None:
-    """写入结构化事件日志。"""
+    """写入简化结构化事件日志。"""
     path = _LOG_PATH
     if path is None:
         return
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     payload_text = _to_json(payload or {})
     body = str(content or "")
+    lines = [f"> {now} {event_type} {title}", f"> PAYLOAD: {payload_text}"]
+    if body:
+        lines.append(body)
+    lines.append("")
+    with _LOCK:
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write("\n".join(lines))
+
+
+def log_tool_flow(
+    *,
+    tool_name: str,
+    arguments: Mapping[str, Any],
+    tool_output: Any,
+    model_output: str = "",
+) -> None:
+    """按固定格式记录工具调用与模型回合输出。"""
+    path = _LOG_PATH
+    if path is None:
+        return
+    args_text = _to_json(arguments or {})
+    output_text = _to_json(tool_output or {})
+    model_text = str(model_output or "")
     lines = [
-        "\n" + "=" * 32 + " NEXORALEARNING EVENT BEGIN " + "=" * 32,
-        f"TIME: {now}",
-        f"TYPE: {event_type}",
-        f"TITLE: {title}",
-        "-" * 84,
-        "[PAYLOAD]",
-        payload_text,
-        "-" * 84,
-        "[CONTENT]",
-        body,
-        "=" * 34 + " NEXORALEARNING EVENT END " + "=" * 34,
+        f"> {tool_name}({args_text})",
+        output_text,
+        f">>> {model_text}",
         "",
     ]
     with _LOCK:
@@ -101,6 +116,6 @@ def log_model_text(text: str, *, source: str = "") -> None:
 
 def _to_json(data: Mapping[str, Any]) -> str:
     try:
-        return json.dumps(dict(data), ensure_ascii=False, indent=2)
+        return json.dumps(dict(data), ensure_ascii=False, separators=(",", ":"))
     except Exception:
-        return json.dumps({"_raw": str(data)}, ensure_ascii=False, indent=2)
+        return json.dumps({"_raw": str(data)}, ensure_ascii=False, separators=(",", ":"))

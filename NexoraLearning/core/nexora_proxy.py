@@ -14,6 +14,7 @@ class NexoraProxy:
     """Thin HTTP client around fixed Nexora PAPI endpoints."""
 
     def __init__(self, cfg: Mapping[str, Any]):
+        import traceback
         nexora_cfg = dict((cfg or {}).get("nexora") or {})
         self.base_url = str(nexora_cfg.get("base_url") or "http://127.0.0.1:5000").rstrip("/")
         self.api_key = str(
@@ -33,6 +34,9 @@ class NexoraProxy:
         self.responses_path = self._normalize_path(nexora_cfg.get("responses_path"), default="/api/papi/responses")
         self.chat_completions_path = self._normalize_path(
             nexora_cfg.get("chat_completions_path"), default="/api/papi/chat/completions"
+        )
+        self.learning_chat_path = self._normalize_path(
+            nexora_cfg.get("learning_chat_path"), default="/api/papi/learning/chat"
         )
         self.user_info_path = self._normalize_path(
             nexora_cfg.get("user_info_path"), default="/api/papi/user/info"
@@ -300,6 +304,38 @@ class NexoraProxy:
             "payload": result.get("payload"),
         }
 
+    def post_json(
+        self,
+        path: str,
+        *,
+        payload: Optional[Dict[str, Any]] = None,
+        username: Optional[str] = None,
+        request_timeout: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """通用 POST JSON 请求，返回统一 success/payload 结构。"""
+        status, resp, endpoint = self._request_json(
+            path,
+            method="POST",
+            payload=payload or {},
+            username=username,
+            request_timeout=request_timeout,
+        )
+        result = self._build_request_result(status=status, payload=resp, endpoint=endpoint)
+        if not result.get("ok"):
+            return {
+                "success": False,
+                "status": result.get("status"),
+                "endpoint": result.get("endpoint"),
+                "message": result.get("message"),
+                "payload": result.get("payload"),
+            }
+        return {
+            "success": True,
+            "status": result.get("status"),
+            "endpoint": result.get("endpoint"),
+            "payload": result.get("payload"),
+        }
+
     def get_user_info(self, username: Optional[str] = None, request_timeout: Optional[float] = None) -> Dict[str, Any]:
         target_username = str(username or self.default_username or "").strip()
         if not target_username:
@@ -532,6 +568,10 @@ class NexoraProxy:
         full_text: List[str] = []
         raw_events: List[str] = []
         chunk_count = 0
+        streamed_tool_calls: Dict[str, Dict[str, Any]] = {}
+        streamed_tool_order: List[str] = []
+        final_finish_reason = "stop"
+        usage_payload: Dict[str, Any] = {}
         try:
             with urllib.request.urlopen(req, timeout=timeout_value) as resp:
                 status = int(getattr(resp, "status", 200) or 200)
@@ -568,6 +608,7 @@ class NexoraProxy:
                     delta_text = ""
                     choices = obj.get("choices")
                     if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+                        choice0 = choices[0]
                         delta = choices[0].get("delta")
                         if isinstance(delta, dict):
                             content = delta.get("content")
@@ -583,6 +624,60 @@ class NexoraProxy:
                                         if text_piece:
                                             parts.append(text_piece)
                                 delta_text = "".join(parts)
+
+                            # OpenAI-compatible tool-calls streaming fragments.
+                            raw_tool_calls = delta.get("tool_calls")
+                            if isinstance(raw_tool_calls, list):
+                                for idx, tc in enumerate(raw_tool_calls):
+                                    if not isinstance(tc, dict):
+                                        continue
+                                    tc_id = str(tc.get("id") or "").strip()
+                                    tc_index = tc.get("index", idx)
+                                    try:
+                                        tc_index_i = int(tc_index)
+                                    except Exception:
+                                        tc_index_i = idx
+                                    key = tc_id or f"index:{tc_index_i}"
+                                    if key not in streamed_tool_calls:
+                                        streamed_tool_calls[key] = {
+                                            "id": tc_id or f"tool_call_{tc_index_i}",
+                                            "type": str(tc.get("type") or "function"),
+                                            "index": tc_index_i,
+                                            "function": {"name": "", "arguments": ""},
+                                        }
+                                        streamed_tool_order.append(key)
+                                    entry = streamed_tool_calls[key]
+                                    func = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+                                    name_part = str(func.get("name") or "")
+                                    args_part = str(func.get("arguments") or "")
+                                    if name_part:
+                                        # 某些流会分片 name；若已存在且不同则追加，否则覆盖空值。
+                                        prev_name = str((entry.get("function") or {}).get("name") or "")
+                                        if prev_name and name_part != prev_name and not name_part.startswith(prev_name):
+                                            (entry["function"])["name"] = f"{prev_name}{name_part}"
+                                        else:
+                                            (entry["function"])["name"] = name_part if not prev_name else prev_name
+                                    if args_part:
+                                        prev_args = str((entry.get("function") or {}).get("arguments") or "")
+                                        merged_args = args_part
+                                        if prev_args:
+                                            if args_part == prev_args:
+                                                merged_args = prev_args
+                                            elif args_part.startswith(prev_args):
+                                                merged_args = args_part
+                                            elif prev_args.startswith(args_part):
+                                                merged_args = prev_args
+                                            else:
+                                                merged_args = f"{prev_args}{args_part}"
+                                        (entry["function"])["arguments"] = merged_args
+
+                        finish_reason = choice0.get("finish_reason")
+                        if isinstance(finish_reason, str) and finish_reason.strip():
+                            final_finish_reason = finish_reason.strip()
+
+                    usage_obj = obj.get("usage")
+                    if isinstance(usage_obj, dict):
+                        usage_payload = dict(usage_obj)
                     if delta_text:
                         full_text.append(delta_text)
                         if on_delta is not None:
@@ -599,16 +694,45 @@ class NexoraProxy:
                         "debug_events_preview": debug_preview,
                     }, endpoint
                 final_text = "".join(full_text).strip()
-                return status, {
+                tool_calls_list: List[Dict[str, Any]] = []
+                for key in streamed_tool_order:
+                    row = streamed_tool_calls.get(key) or {}
+                    if not isinstance(row, dict):
+                        continue
+                    fn = row.get("function") if isinstance(row.get("function"), dict) else {}
+                    # 至少有 name 或 arguments 才认为是有效工具调用。
+                    if not str(fn.get("name") or "").strip() and not str(fn.get("arguments") or "").strip():
+                        continue
+                    tool_calls_list.append(
+                        {
+                            "id": str(row.get("id") or ""),
+                            "type": str(row.get("type") or "function"),
+                            "function": {
+                                "name": str(fn.get("name") or ""),
+                                "arguments": str(fn.get("arguments") or ""),
+                            },
+                        }
+                    )
+                message_obj: Dict[str, Any] = {"role": "assistant", "content": final_text}
+                if tool_calls_list:
+                    message_obj["tool_calls"] = tool_calls_list
+                    if final_finish_reason == "stop":
+                        final_finish_reason = "tool_calls"
+                payload_obj: Dict[str, Any] = {
                     "object": "chat.completion",
                     "choices": [
                         {
                             "index": 0,
-                            "message": {"role": "assistant", "content": final_text},
-                            "finish_reason": "stop",
+                            "message": message_obj,
+                            "finish_reason": final_finish_reason,
                         }
                     ],
                     "_stream_chunks": chunk_count,
+                }
+                if usage_payload:
+                    payload_obj["usage"] = usage_payload
+                return status, {
+                    **payload_obj
                 }, endpoint
         except urllib.error.HTTPError as exc:
             status = int(getattr(exc, "code", 502) or 502)

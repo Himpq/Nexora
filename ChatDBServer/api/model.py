@@ -27,6 +27,7 @@ from longterm.longterm_api import (
     normalize_longterm_payload,
     conversation_longterm_root_state,
 )
+from learning_runtime import get_learning_tools
 import prompts
 
 # 配置文件路径
@@ -135,6 +136,12 @@ CONTEXT_COMPRESSION_MAX_CHARS_MAX = 120000
 CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_DEFAULT = 1500000
 CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MIN = 50000
 CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MAX = 4000000
+LEARNING_ALLOWED_BASE_TOOL_NAMES = {
+    "vector_search",
+    "get_knowledge_list",
+    "get_basis_content",
+    "search_keyword",
+}
 
 def _ensure_json_serializable(obj):
     """
@@ -184,6 +191,7 @@ class Model:
         self._runtime_longterm_plan_text = ""
         self._runtime_longterm_context_text = ""
         self._runtime_longterm_current_plan_text = ""
+        self._runtime_learning_prompt_block = ""
         
         # 加载配置
         global CONFIG
@@ -404,6 +412,7 @@ class Model:
         confirmation_round = bool(mode_payload.get("confirmation_round", False))
         force_full_history = bool(mode_payload.get("force_full_history", False)) or confirmation_round
         self._runtime_longterm_prompt_block = ""
+        self._runtime_learning_prompt_block = ""
         if normalized_mode == "longterm":
             task_text = str(mode_payload.get("task") or "").strip()
             plan_items = [str(item or "").strip() for item in (mode_payload.get("plan") or []) if str(item or "").strip()]
@@ -435,6 +444,19 @@ class Model:
             )
             if self._runtime_longterm_prompt_block:
                 combined_template = f"{combined_template}\n\n{self._runtime_longterm_prompt_block}".strip()
+        elif normalized_mode == "learning":
+            raw_payload = conversation_mode_payload if isinstance(conversation_mode_payload, dict) else {}
+            learning_system_prompt = str(raw_payload.get("system_prompt") or "").strip()
+            if learning_system_prompt:
+                self._runtime_learning_prompt_block = learning_system_prompt
+                combined_template = f"{combined_template}\n\n{learning_system_prompt}".strip()
+            else:
+                self._runtime_learning_prompt_block = (
+                    "你当前处于 NexoraLearning 学习模式。\n"
+                    "请优先围绕课程学习、教材理解、章节梳理、题目讲解与学习规划提供帮助。\n"
+                    "如果用户问题与学习直接无关，也可以正常回答，但应优先尝试连接到学习场景。"
+                )
+                combined_template = f"{combined_template}\n\n{self._runtime_learning_prompt_block}".strip()
         rendered = self._render_prompt_template(combined_template)
         profile_block = self._build_user_profile_memory_prompt_block()
         if profile_block:
@@ -2399,13 +2421,13 @@ class Model:
     def _parse_tools(self, tools_config: List[Dict]) -> List[Dict]:
         """解析工具定义为API格式 - 兼容不同供应商"""
         parsed_tools = []
+        learning_mode = str(getattr(self, "_runtime_conversation_mode", "") or "").strip().lower() == "learning"
         rag_cfg = CONFIG.get("rag_database", {}) if isinstance(CONFIG, dict) else {}
         rag_enabled = bool(rag_cfg.get("rag_database_enabled", False))
         mail_cfg = CONFIG.get("nexora_mail", {}) if isinstance(CONFIG, dict) else {}
         mail_enabled = bool(mail_cfg.get("nexora_mail_enabled", False))
         nexora_search_cfg = CONFIG.get("nexora_search", {}) if isinstance(CONFIG, dict) else {}
         nexora_search_enabled = bool(nexora_search_cfg.get("nexora_search_enabled", False))
-
         provider = getattr(self, 'provider', 'volcengine')
         use_responses_api = self._provider_use_responses_api(provider)
 
@@ -2424,6 +2446,9 @@ class Model:
         for tool in tools_config:
             if tool["type"] == "function":
                 func_def = tool["function"]
+                func_name = str(func_def.get("name") or "").strip()
+                if learning_mode and func_name not in LEARNING_ALLOWED_BASE_TOOL_NAMES:
+                    continue
                 if func_def.get("name") in ["vector_search", "file_semantic_search"] and not rag_enabled:
                     continue
                 if func_def.get("name") in ["send_email", "get_email", "get_email_list"] and not mail_enabled:
@@ -2454,6 +2479,29 @@ class Model:
                         "function": {
                             "name": func_def["name"],
                             "description": func_def["description"],
+                            "parameters": func_def.get("parameters", {})
+                        }
+                    })
+        if learning_mode:
+            for tool in (get_learning_tools() or []):
+                if not isinstance(tool, dict) or tool.get("type") != "function":
+                    continue
+                func_def = tool.get("function") if isinstance(tool.get("function"), dict) else {}
+                if not func_def.get("name"):
+                    continue
+                if use_responses_api:
+                    parsed_tools.append({
+                        "type": "function",
+                        "name": func_def["name"],
+                        "description": func_def.get("description", ""),
+                        "parameters": func_def.get("parameters", {})
+                    })
+                else:
+                    parsed_tools.append({
+                        "type": "function",
+                        "function": {
+                            "name": func_def["name"],
+                            "description": func_def.get("description", ""),
                             "parameters": func_def.get("parameters", {})
                         }
                     })
@@ -3048,6 +3096,8 @@ class Model:
             self._temp_context_scope_id = ""
 
     def _cache_tool_result_if_needed(self, result: str, func_name: str) -> Optional[str]:
+        if str(getattr(self, "_runtime_conversation_mode", "") or "").strip().lower() == "learning":
+            return None
         no_cache_tools = {"readtmp", "searchtmp", "listtmp", "cleartmp"}
         if func_name in no_cache_tools:
             return None
@@ -3406,6 +3456,7 @@ class Model:
         stream: bool = True,
         max_rounds: int = 100,
         enable_thinking: bool = True,
+        thinking_level: Optional[Any] = None,
         enable_web_search: bool = True,
         enable_tools: bool = True,
         tool_mode: str = "force",
@@ -3786,9 +3837,14 @@ class Model:
             disable_thinking_after_tool_call = self._as_bool(disable_thinking_after_tool_call, default=True)
             skip_user_message = self._as_bool(skip_user_message, default=False)
             normalized_conversation_mode = normalize_conversation_mode(conversation_mode)
-            normalized_conversation_mode_payload = normalize_longterm_payload(conversation_mode_payload)
+            normalized_conversation_mode_payload = (
+                normalize_longterm_payload(conversation_mode_payload)
+                if normalized_conversation_mode == "longterm"
+                else (dict(conversation_mode_payload) if isinstance(conversation_mode_payload, dict) else {})
+            )
             self._runtime_conversation_mode = normalized_conversation_mode
             self._runtime_conversation_mode_payload = dict(normalized_conversation_mode_payload)
+            self.tools = self._parse_tools(TOOLS)
 
             tool_loop_started_at = time.time()
             tool_loop_consecutive_tool_rounds = 0
@@ -4199,9 +4255,57 @@ class Model:
                     })
                 except Exception as e:
                     print(f"[LONGTERM] 进入模式状态写入失败: {e}")
+            elif self.persist_conversation and self.conversation_id and normalized_conversation_mode == "learning":
+                try:
+                    current_conv = self.conversation_manager.get_conversation(self.conversation_id) or {}
+                    existing_tags = current_conv.get("tags", []) if isinstance(current_conv.get("tags", []), list) else []
+                    normalized_tags = []
+                    seen_tags = set()
+                    for item in existing_tags + ["learning"]:
+                        tag = str(item or "").strip().lower()
+                        if not tag or tag in seen_tags:
+                            continue
+                        seen_tags.add(tag)
+                        normalized_tags.append(tag)
+                    current_meta = current_conv.get("metadata", {}) if isinstance(current_conv.get("metadata", {}), dict) else {}
+                    next_meta = dict(current_meta)
+                    next_meta["learning"] = True
+                    self.conversation_manager.update_conversation_fields(self.conversation_id, {
+                        "conversation_mode": "learning",
+                        "tags": normalized_tags,
+                        "metadata": next_meta,
+                    })
+                except Exception as e:
+                    print(f"[LEARNING] 进入模式状态写入失败: {e}")
              
             # 构造本次用户消息内容 (多模态)
             user_content = self._build_user_content_payload(msg, image_urls, use_responses_api)
+            if normalized_conversation_mode == "learning":
+                learning_blocks = normalized_conversation_mode_payload.get("context_blocks", [])
+                if isinstance(learning_blocks, list) and learning_blocks:
+                    rendered_blocks = []
+                    for item in learning_blocks:
+                        if not isinstance(item, dict):
+                            continue
+                        block_type = str(item.get("type", "") or "").strip() or "learning_context"
+                        block_title = str(item.get("title", "") or "").strip() or block_type
+                        block_content = str(item.get("content", "") or "").strip()
+                        if not block_content:
+                            continue
+                        rendered_blocks.append(
+                            f"<LEARNING_CONTEXT_BLOCK type=\"{block_type}\" title=\"{block_title}\">\n{block_content}\n</LEARNING_CONTEXT_BLOCK>"
+                        )
+                    if rendered_blocks:
+                        learning_hint = (
+                            "\n\n[系统注入] 当前对话处于 NexoraLearning 学习模式。以下是学习上下文，请优先参考：\n"
+                            + "\n\n".join(rendered_blocks)
+                            + "\n"
+                        )
+                        user_content = self._append_text_to_user_content_payload(
+                            user_content,
+                            learning_hint,
+                            use_responses_api
+                        )
             sandbox_path_list: List[str] = []
             if isinstance(sandbox_paths, list):
                 seen_paths = set()
@@ -4411,6 +4515,11 @@ class Model:
             terminal_error_content = ""
             terminal_error_code = ""
             terminal_error_retryable = False
+            awaiting_question_response = False
+            empty_output_recovery_rounds = 0
+            reasoning_only_recovery_rounds = 0
+            tool_activity_after_last_text = False
+            learning_no_tool_nudge_injected = False
             request_input_tokens_total = 0
             request_output_tokens_total = 0
             request_input_tokens_raw_total = 0
@@ -4423,9 +4532,13 @@ class Model:
             
             # previous_response_id 已在上面初始化
             current_function_outputs = []  # 当前轮的function输出
+            pending_function_outputs_for_text = []
             native_search_meta_emitted = False
             citation_url_map: Dict[int, str] = {}
             thinking_disabled_for_followup_rounds = False
+            normalized_thinking_level = str(thinking_level or "").strip().lower()
+            if normalized_thinking_level not in {"low", "medium", "high"}:
+                normalized_thinking_level = ""
             
             try:
                 for round_num in range(max_rounds):
@@ -4453,7 +4566,21 @@ class Model:
                         print("[CACHE] previous_response_id missing; promoted to full context payload.")
                     
                     # 构建请求
-                    print(f"[DEBUG_REQ] Pkg_ID: {previous_response_id} | Func_Outs: {len(current_function_outputs) if current_function_outputs else 0}")
+                    request_function_outputs = current_function_outputs
+                    if (
+                        (not request_function_outputs)
+                        and tool_activity_after_last_text
+                        and pending_function_outputs_for_text
+                    ):
+                        request_function_outputs = [
+                            dict(x) if isinstance(x, dict) else x
+                            for x in pending_function_outputs_for_text
+                        ]
+                    print(
+                        f"[DEBUG_REQ] Pkg_ID: {previous_response_id} | "
+                        f"Func_Outs: {len(request_function_outputs) if request_function_outputs else 0} "
+                        f"| PendingToolOuts: {len(pending_function_outputs_for_text) if pending_function_outputs_for_text else 0}"
+                    )
                     if not previous_response_id and messages:
                         last_msg = messages[-1]
                         print(f"[DEBUG_REQ] Last Msg Role: {last_msg.get('role')} | Content: {str(last_msg.get('content'))[:50]}...")
@@ -4464,9 +4591,10 @@ class Model:
                         messages=messages,
                         previous_response_id=previous_response_id,
                         enable_thinking=round_enable_thinking,
+                        thinking_level=normalized_thinking_level,
                         enable_web_search=enable_web_search,
                         enable_tools=effective_enable_tools,
-                        current_function_outputs=current_function_outputs,
+                        current_function_outputs=request_function_outputs,
                         runtime_function_tool_names=self._runtime_function_tool_names_for_request()
                     )
 
@@ -4763,6 +4891,7 @@ class Model:
                                         messages=messages,
                                         previous_response_id=previous_response_id,
                                         enable_thinking=round_enable_thinking,
+                                        thinking_level=normalized_thinking_level,
                                         enable_web_search=enable_web_search,
                                         enable_tools=effective_enable_tools,
                                         current_function_outputs=current_function_outputs,
@@ -5189,6 +5318,7 @@ class Model:
                     round_reasoning = ""
                     has_text_output = False
                     function_calls = []
+                    round_had_tool_activity = False
                     round_tool_args_delta = ""
                     has_web_search = bool(round_native_search_detected)
                     round_started_at = time.time()
@@ -5617,6 +5747,10 @@ class Model:
                     
                     # 处理函数调用
                     if function_calls:
+                        round_had_tool_activity = True
+                        # If this round ends in a tool call, we require a later
+                        # assistant text round before allowing the response to finish.
+                        tool_activity_after_last_text = True
                         if disable_thinking_after_tool_call and (not thinking_disabled_for_followup_rounds):
                             thinking_disabled_for_followup_rounds = True
                             print("[THINKING] tool call detected; disable thinking for follow-up rounds.")
@@ -5666,6 +5800,33 @@ class Model:
                                 "call_id": call_id
                             }
                             process_steps.append(step_result)
+                            if func_name == "question":
+                                question_payload = None
+                                try:
+                                    parsed_question = json.loads(result) if isinstance(result, str) else result
+                                    if isinstance(parsed_question, dict) and isinstance(parsed_question.get("question"), dict):
+                                        question_payload = parsed_question.get("question")
+                                except Exception:
+                                    question_payload = None
+                                if isinstance(question_payload, dict):
+                                    question_payload = dict(question_payload)
+                                    if call_id and not str(question_payload.get("question_id") or "").strip():
+                                        question_payload["question_id"] = call_id
+                                question_step = {
+                                    "type": "question",
+                                    "question": question_payload or {},
+                                    "call_id": call_id,
+                                    "await": True,
+                                    "reasoning_content": accumulated_reasoning or "",
+                                }
+                                process_steps.append(question_step)
+                                yield question_step
+                                accumulated_content = accumulated_content or ""
+                                function_calls = []
+                                current_function_outputs = []
+                                pending_function_outputs_for_text = []
+                                awaiting_question_response = True
+                                break
                             yield step_result
                             
                             # 收集函数输出（provider adapter 统一构建）
@@ -5677,11 +5838,18 @@ class Model:
                                 )
                             )
 
+                        if process_steps and process_steps[-1].get("type") == "question":
+                            break
+
                         # [FIX] 工具调用结束后的过渡提示（由 provider adapter 决定是否需要）
                         if self.provider_adapter.should_append_tool_completion_hint(use_responses_api=use_responses_api):
                             hint_msg = self.provider_adapter.build_tool_completion_hint(function_calls)
                             if isinstance(hint_msg, dict) and hint_msg:
                                 current_function_outputs.append(hint_msg)
+                        pending_function_outputs_for_text = [
+                            dict(x) if isinstance(x, dict) else x
+                            for x in (current_function_outputs or [])
+                        ]
                         
                         # 继续下一轮（保持messages累积，但current_function_outputs已重置）
                         messages = self._append_function_outputs(messages, current_function_outputs)
@@ -5766,27 +5934,94 @@ class Model:
                             else:
                                 accumulated_content = f"{accumulated_content}\n\n{tool_loop_guard_message}".strip()
 
-                        if tool_loop_guard_triggered:
-                            break
-                        
-                        # [DEBUG] 打印更新后的历史状态
-                        print(f"[DEBUG_HIST] 更新历史后消息数: {len(messages)}")
-                        if len(messages) >= 2:
-                            print(f"[DEBUG_HIST] 倒数第二条: {messages[-2].get('role')} (Tools: {len(messages[-2].get('tool_calls', []))})")
-                            print(f"[DEBUG_HIST] 最后一条: {messages[-1].get('role')} (Type: {messages[-1].get('type', 'text')})")
+                    if round_content and (not round_had_tool_activity):
+                        tool_activity_after_last_text = False
+                        pending_function_outputs_for_text = []
 
-                        if bool(getattr(self, "_runtime_tool_selection_changed", False)):
-                            print("[TOOLS] detect runtime selector update, switch runtime tools from next round.")
-                            self._runtime_tool_selection_changed = False
-                            # 不主动清空 previous_response_id，避免 cache-hit 场景丢失历史。
-                            # 若 provider 明确返回续接错误，将由重试分支自动切到 full context。
-                            if use_responses_api:
-                                print("[TOOLS] runtime tool-set changed; keep previous_response_id and rely on retry fallback if mismatch.")
-
-                        # 继续循环下一轮
+                    no_text_yet = not str(accumulated_content or "").strip()
+                    reasoning_only_this_round = bool(
+                        no_text_yet
+                        and (not round_had_tool_activity)
+                        and str(round_reasoning or "").strip()
+                        and (not terminal_error_content)
+                        and (not awaiting_question_response)
+                    )
+                    if reasoning_only_this_round:
+                        reasoning_only_recovery_rounds += 1
+                        if normalized_conversation_mode == "learning" and (not round_had_tool_activity):
+                            learning_nudge = {
+                                "role": "system",
+                                "content": (
+                                    "当前为 NexoraLearning 学习模式。不要只输出思考。"
+                                    "请直接调用一个最相关的 Learning 或知识库读取工具，"
+                                    "再基于工具结果继续回答用户。"
+                                ),
+                            }
+                            messages.append(dict(learning_nudge))
+                            full_context_messages.append(dict(learning_nudge))
+                            learning_no_tool_nudge_injected = True
+                            print(
+                                f"[RECOVERY] learning round produced reasoning only without tool call; injected minimal tool nudge and continue round={round_num + 1} "
+                                f"recovery_rounds={reasoning_only_recovery_rounds}"
+                            )
+                        else:
+                            print(
+                                f"[RECOVERY] reasoning only without visible output; continue with existing context round={round_num + 1} "
+                                f"recovery_rounds={reasoning_only_recovery_rounds}"
+                            )
                         continue
 
+                    needs_post_tool_text = bool(
+                        tool_activity_after_last_text
+                        and (not awaiting_question_response)
+                        and (not terminal_error_content)
+                    )
+                    if needs_post_tool_text:
+                        empty_output_recovery_rounds += 1
+                        if normalized_conversation_mode == "learning":
+                            tool_loop_guard_triggered = False
+                            tool_loop_guard_reason = ""
+                            tool_loop_guard_message = ""
+                            tool_loop_guard_elapsed_seconds = 0.0
+                            tool_loop_guard_consecutive_rounds = 0
+                            tool_loop_guard_repeat_count = 0
+                            tool_loop_consecutive_tool_rounds = 0
+                            tool_loop_repeat_signature_count = 0
+                            tool_loop_last_signature = ""
+                        print(
+                            f"[RECOVERY] missing post-tool text; continue with existing tool context round={round_num + 1} "
+                            f"recovery_rounds={empty_output_recovery_rounds}"
+                        )
+                        continue
+
+                    if no_text_yet and round_had_tool_activity and not terminal_error_content and not awaiting_question_response:
+                        empty_output_recovery_rounds += 1
+                        if normalized_conversation_mode == "learning":
+                            tool_loop_guard_triggered = False
+                            tool_loop_guard_reason = ""
+                            tool_loop_guard_message = ""
+                            tool_loop_guard_elapsed_seconds = 0.0
+                            tool_loop_guard_consecutive_rounds = 0
+                            tool_loop_guard_repeat_count = 0
+                            tool_loop_consecutive_tool_rounds = 0
+                            tool_loop_repeat_signature_count = 0
+                            tool_loop_last_signature = ""
+                        print(
+                            f"[RECOVERY] empty output after tool activity; continue with existing tool context round={round_num + 1} "
+                            f"recovery_rounds={empty_output_recovery_rounds}"
+                        )
+                        continue
+
+                    if awaiting_question_response:
+                        break
+
+                    if tool_loop_guard_triggered:
+                        break
+
                     # 没有函数调用，对话结束
+                    if not str(accumulated_content or "").strip() and round_had_tool_activity:
+                        print("[RECOVERY] tool activity exists but no text output yet; forcing continue instead of ending.")
+                        continue
                     yield {"type": "done", "content": accumulated_content}
                     return
                 
@@ -5817,7 +6052,12 @@ class Model:
             finally:
                 # 统一保存消息（无论正常结束、Function调用中断、Client中断）
                 # 只有当有内容或有步骤时才保存
-                if accumulated_content or process_steps or terminal_error_content:
+                has_persistable_step = any(
+                    isinstance(step, dict)
+                    and str(step.get("type") or "").strip() not in {"", "reasoning_content"}
+                    for step in (process_steps or [])
+                )
+                if accumulated_content or terminal_error_content or has_persistable_step:
                     print(f"[DEBUG] 保存助手消息，Steps: {len(process_steps)}")
                     saved_assistant_content = accumulated_content
                     if (not str(saved_assistant_content or "").strip()) and str(terminal_error_content or "").strip():
@@ -5910,6 +6150,60 @@ class Model:
                     # 保存思维链内容（如果有）
                     if accumulated_reasoning:
                         metadata["reasoning_content"] = accumulated_reasoning
+                    if normalized_conversation_mode == "learning":
+                        learning_cards = []
+                        pending_questions = []
+                        for step in process_steps:
+                            if not isinstance(step, dict):
+                                continue
+                            if str(step.get("type") or "").strip() != "function_result":
+                                continue
+                            step_name = str(step.get("name") or "").strip()
+                            if step_name == "question":
+                                raw_result = step.get("result")
+                                question_payload = None
+                                if isinstance(raw_result, dict):
+                                    if isinstance(raw_result.get("question"), dict):
+                                        question_payload = raw_result.get("question")
+                                else:
+                                    raw_text = str(raw_result or "").strip()
+                                    if raw_text:
+                                        try:
+                                            parsed = json.loads(raw_text)
+                                            if isinstance(parsed, dict) and isinstance(parsed.get("question"), dict):
+                                                question_payload = parsed.get("question")
+                                        except Exception:
+                                            question_payload = None
+                                if isinstance(question_payload, dict):
+                                    pending_questions.append(question_payload)
+                                continue
+                            if step_name != "learning_card":
+                                continue
+                            raw_result = step.get("result")
+                            card_payload = None
+                            if isinstance(raw_result, dict):
+                                if isinstance(raw_result.get("card"), dict):
+                                    card_payload = raw_result.get("card")
+                                elif raw_result.get("html"):
+                                    card_payload = raw_result
+                            else:
+                                raw_text = str(raw_result or "").strip()
+                                if raw_text:
+                                    try:
+                                        parsed = json.loads(raw_text)
+                                        if isinstance(parsed, dict):
+                                            if isinstance(parsed.get("card"), dict):
+                                                card_payload = parsed.get("card")
+                                            elif parsed.get("html"):
+                                                card_payload = parsed
+                                    except Exception:
+                                        card_payload = None
+                            if isinstance(card_payload, dict) and str(card_payload.get("html") or "").strip():
+                                learning_cards.append(card_payload)
+                        if learning_cards:
+                            metadata["learning_cards"] = learning_cards
+                        if pending_questions:
+                            metadata["pending_questions"] = pending_questions
                     if str(terminal_error_content or "").strip():
                         metadata["terminal_error"] = {
                             "content": str(terminal_error_content or "").strip(),
@@ -6683,6 +6977,7 @@ class Model:
         enable_thinking: bool,
         enable_web_search: bool,
         enable_tools: bool,
+        thinking_level: str = "",
         current_function_outputs: List[Dict] = None,
         runtime_function_tool_names: Optional[Set[str]] = None
     ) -> Dict:
@@ -6730,6 +7025,8 @@ class Model:
         # 已弃用“运行时能力 system 注入”，避免每轮附加协议文本导致输入 token 异常抬升。
         should_inject_runtime_hints = False
         runtime_messages = self._strip_reasoning_content(runtime_messages)
+        learning_mode_active = str(getattr(self, "_runtime_conversation_mode", "") or "").strip().lower() == "learning"
+        has_function_output_context = bool(current_function_outputs)
 
         # --- Responses API 逻辑（由 provider adapter 判定） ---
         if use_responses_api:
@@ -6780,6 +7077,7 @@ class Model:
                     filtered_tools.append(t)
                 tools_payload = filtered_tools
 
+            # 始终显式下发 tools（若为空则不下发），避免“开着搜索却丢失函数工具”。
             if tools_payload:
                 params["tools"] = tools_payload
 
@@ -6867,6 +7165,38 @@ class Model:
             request_options=provider_req_opts,
             model_name=self.model_name,
         )
+
+        # 统一兜底：主聊天链路在 OpenAI 兼容 provider（如 Ollama/vLLM）上显式传递 think 开关，
+        # 避免前端关闭 Thinking 后上游仍默认开启思考模式。
+        try:
+            provider_info = self._get_provider_info(self.provider)
+            api_type = str((provider_info or {}).get("api_type", "") or "").strip().lower()
+            if (not use_responses_api) and api_type in {"openai", "ollama"}:
+                extra_body = params.get("extra_body", {})
+                if not isinstance(extra_body, dict):
+                    extra_body = {}
+                if bool(enable_thinking):
+                    # Ollama/GPT-OSS 兼容：支持布尔或 low/medium/high 级别。
+                    lvl = str(thinking_level or "").strip().lower()
+                    if lvl in {"low", "medium", "high"}:
+                        extra_body["think"] = lvl
+                    else:
+                        extra_body["think"] = True
+                else:
+                    extra_body["think"] = False
+                    # 对支持 reasoning_effort 的兼容网关一并兜底关闭。
+                    params["reasoning_effort"] = "none"
+                params["extra_body"] = extra_body
+                print(
+                    f"[CHAT_THINK] provider={self.provider} model={self.model_name} "
+                    f"api_type={api_type} think={extra_body.get('think', None)} "
+                    f"thinking_level={thinking_level} reasoning_effort={params.get('reasoning_effort', None)}"
+                )
+        except Exception as _think_e:
+            try:
+                print(f"[CHAT_THINK] normalize failed: {_think_e}")
+            except Exception:
+                pass
 
         return params
     
