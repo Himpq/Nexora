@@ -1,4 +1,4 @@
-(function () {
+﻿(function () {
   "use strict";
 
   const el = {
@@ -230,6 +230,16 @@
     return new Promise((resolve) => {
       showConfirmModal(
         message,
+        () => resolve(true),
+        () => resolve(false),
+      );
+    });
+  }
+
+  function confirmExitLearningAsync() {
+    return new Promise((resolve) => {
+      showConfirmModal(
+        "是否退出学习",
         () => resolve(true),
         () => resolve(false),
       );
@@ -1334,6 +1344,10 @@
         const lectureId = String(actionBtn.getAttribute("data-lecture-id") || "");
         if (!lectureId) return;
         const selected = !state.selectedLearningLectureIds.includes(lectureId);
+        if (!selected) {
+          const ok = await confirmExitLearningAsync();
+          if (!ok) return;
+        }
         try {
           await toggleLearningSelection(lectureId, selected);
           await refreshAll();
@@ -1345,7 +1359,7 @@
         }
         return;
       }
-
+      
       const deleteBtn = target.closest("[data-action='delete-book']");
       if (deleteBtn) {
         event.stopPropagation();
@@ -1577,3 +1591,4 @@
 
   window.addEventListener("beforeunload", () => notifyHostInputVisibility(false));
 })();
+
