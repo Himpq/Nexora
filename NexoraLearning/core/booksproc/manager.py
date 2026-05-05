@@ -904,6 +904,12 @@ def _run_coarse_reading_chunked(
     summary_review_timeout: int = 120,
     summary_review_stream: bool = True,
     summary_review_think: bool = False,
+    section_review_model_name: str = "",
+    section_review_temperature: float = 0.1,
+    section_review_max_tokens: int = 1200,
+    section_review_timeout: int = 120,
+    section_review_stream: bool = True,
+    section_review_think: bool = False,
 ) -> str:
     """粗读模型两阶段执行：第一阶段建骨架，第二阶段仅补摘要。"""
     total_len = len(full_text)
@@ -1208,6 +1214,35 @@ def _run_coarse_reading_chunked(
             section_plan["reason"] = "model_section_plan" if str(planning_result.get("raw_text") or "").strip() else "tool_auto_outline"
         else:
             section_plan["reason"] = "model_section_plan_empty"
+        if planned_sections:
+            header_block_end = full_text.find("[/EPUB_HEADING_CANDIDATES]")
+            body_search_start = 0
+            if header_block_end >= 0:
+                body_search_start = header_block_end + len("[/EPUB_HEADING_CANDIDATES]")
+            snapped_sections = _snap_outline_boundaries_by_index(
+                full_text=full_text,
+                sections=planned_sections,
+                body_search_start=body_search_start,
+            )
+            if snapped_sections:
+                planned_sections = snapped_sections
+            reviewed_sections = _review_outline_sections_with_model(
+                runner=runner,
+                review_model_name=section_review_model_name,
+                lecture_name=lecture_name,
+                book_name=book_name,
+                full_text=full_text,
+                heading_candidates=heading_candidates,
+                planned_sections=planned_sections,
+                body_search_start=body_search_start,
+                temperature=float(section_review_temperature),
+                max_tokens=int(section_review_max_tokens),
+                request_timeout=int(section_review_timeout),
+                stream=bool(section_review_stream),
+                think=bool(section_review_think),
+            )
+            if reviewed_sections:
+                planned_sections = reviewed_sections
         if planned_sections:
             chapters = []
             seen_signatures.clear()
@@ -1957,14 +1992,13 @@ def _run_coarse_reading_sectioned_summary_only(
                 "type": "function",
                 "function": {
                     "name": "update_summary",
-                    "description": "Write chapter_summary for the current locked chapter_range only.",
+                    "description": "Write chapter_summary for the current locked chapter only.",
                     "parameters": {
                         "type": "object",
                         "properties": {
-                            "chapter_range": {"type": "string"},
                             "chapter_summary": {"type": "string"},
                         },
-                        "required": ["chapter_range", "chapter_summary"],
+                        "required": ["chapter_summary"],
                     },
                 },
             },
@@ -2170,45 +2204,37 @@ def _run_coarse_reading_sectioned_summary_only(
                         },
                     )
                 elif tool_name == "update_summary":
-                    forced_range = str(args_obj.get("chapter_range") or "").strip()
-                    if forced_range != chapter_range:
-                        result_obj = {
-                            "ok": False,
-                            "error": "chapter_range mismatch in summary-only phase",
-                            "chapter_range": chapter_range,
-                        }
+                    result_obj = on_update_summary(
+                        chapter_range=chapter_range,
+                        chapter_summary=str(args_obj.get("chapter_summary") or "").strip(),
+                    )
+                    _push_book_progress_step(
+                        lecture_id,
+                        book_id,
+                        {
+                            "type": "update_summary",
+                            "title": f"写入章节摘要 {chapter_range}",
+                            "preview": _preview_plain_text(args_obj.get("chapter_summary"), 50),
+                        },
+                    )
+                    if bool(result_obj.get("ok")):
+                        turn_has_update = True
+                        section_done = True
+                        latest_quality_feedback = ""
                     else:
-                        result_obj = on_update_summary(
-                            chapter_range=chapter_range,
-                            chapter_summary=str(args_obj.get("chapter_summary") or "").strip(),
-                        )
-                        _push_book_progress_step(
-                            lecture_id,
-                            book_id,
-                            {
-                                "type": "update_summary",
-                                "title": f"写入章节摘要 {chapter_range}",
-                                "preview": _preview_plain_text(args_obj.get("chapter_summary"), 50),
-                            },
-                        )
-                        if bool(result_obj.get("ok")):
-                            turn_has_update = True
-                            section_done = True
-                            latest_quality_feedback = ""
-                        else:
-                            quality_feedback = str(result_obj.get("quality_feedback") or "")
-                            if quality_feedback:
-                                latest_quality_feedback = quality_feedback
-                                turn_history.append(
-                                    {
-                                        "role": "user",
-                                        "content": (
-                                            "summary quality rejected. "
-                                            f"feedback: {quality_feedback}. "
-                                            "rewrite with concrete events and人物, then call update_summary again."
-                                        ),
-                                    }
-                                )
+                        quality_feedback = str(result_obj.get("quality_feedback") or "")
+                        if quality_feedback:
+                            latest_quality_feedback = quality_feedback
+                            turn_history.append(
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        "summary quality rejected. "
+                                        f"feedback: {quality_feedback}. "
+                                        "rewrite with concrete events and人物, then call update_summary again."
+                                    ),
+                                }
+                            )
                 elif tool_name == "done":
                     result_obj = {"ok": True, "done": True}
                     _push_book_progress_step(
@@ -2687,6 +2713,316 @@ def _build_outline_from_discovered_offsets(
             content=_format_section_plan(sections)[:2400],
         )
     return sections
+
+
+def _snap_outline_boundaries_by_index(
+    *,
+    full_text: str,
+    sections: List[Dict[str, Any]],
+    body_search_start: int = 0,
+) -> List[Dict[str, Any]]:
+    """用标题 index 命中校准章节起点，再重算章节区间。"""
+    raw = str(full_text or "")
+    total_len = len(raw)
+    if total_len <= 0 or not sections:
+        return list(sections or [])
+    normalized = sorted([dict(row or {}) for row in list(sections or [])], key=lambda x: int(x.get("start") or 0))
+    snapped_starts: List[int] = []
+    for idx, row in enumerate(normalized):
+        title = str(row.get("chapter_name") or "").strip()
+        try:
+            old_start = int(row.get("start") or 0)
+        except Exception:
+            old_start = 0
+        old_start = max(0, min(total_len - 1, old_start))
+        if not title:
+            snapped_starts.append(old_start)
+            continue
+        prev_start = int(normalized[idx - 1].get("start") or 0) if idx > 0 else int(body_search_start or 0)
+        next_start = int(normalized[idx + 1].get("start") or total_len) if idx + 1 < len(normalized) else total_len
+        search_start = max(int(body_search_start or 0), prev_start, old_start - 6000)
+        search_end = min(total_len, max(old_start + 6000, next_start + 1200))
+        if search_end <= search_start:
+            search_start = max(int(body_search_start or 0), old_start - 6000)
+            search_end = min(total_len, old_start + 6000)
+        hit = _exec_index_book_text_tool(
+            full_text=raw,
+            total_len=total_len,
+            arguments={
+                "keyword": title,
+                "range_start": int(search_start),
+                "range_end": int(search_end),
+                "context_range": 220,
+                "max_hits": 6,
+            },
+        )
+        best_start = old_start
+        if isinstance(hit, dict):
+            hits = hit.get("hits") if isinstance(hit.get("hits"), list) else []
+            ranked: List[Tuple[int, int, int]] = []
+            for item in hits:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    off = int(item.get("offset") or item.get("match_start") or -1)
+                except Exception:
+                    off = -1
+                if off < 0:
+                    continue
+                snippet = str(item.get("text") or "")
+                score = _score_heading_hit(snippet)
+                dist = abs(off - old_start)
+                ranked.append((score, -dist, off))
+            if ranked:
+                ranked.sort(reverse=True)
+                best_start = int(ranked[0][2])
+        snapped_starts.append(max(0, min(total_len - 1, best_start)))
+    cleaned_starts: List[int] = []
+    last = max(0, int(body_search_start or 0))
+    for s in snapped_starts:
+        cur = max(last, int(s))
+        cleaned_starts.append(cur)
+        last = cur + 1
+    adjusted: List[Dict[str, Any]] = []
+    for idx, row in enumerate(normalized):
+        start = cleaned_starts[idx]
+        end = cleaned_starts[idx + 1] if idx + 1 < len(cleaned_starts) else total_len
+        end = max(start + 1, min(total_len, end))
+        adjusted.append(
+            {
+                "chapter_name": str(row.get("chapter_name") or "").strip() or f"Chapter {idx + 1}",
+                "start": int(start),
+                "end": int(end),
+                "range": f"{int(start)}:{max(1, int(end) - int(start))}",
+            }
+        )
+    return adjusted
+
+
+def _review_outline_sections_with_model(
+    *,
+    runner: Any,
+    review_model_name: str,
+    lecture_name: str,
+    book_name: str,
+    full_text: str,
+    heading_candidates: List[str],
+    planned_sections: List[Dict[str, Any]],
+    body_search_start: int,
+    temperature: float,
+    max_tokens: int,
+    request_timeout: int,
+    stream: bool,
+    think: bool,
+) -> List[Dict[str, Any]]:
+    """独立模型复核分节边界，必须走 submit_outline。失败返回原分节。"""
+    model_to_use = str(review_model_name or "").strip()
+    if not model_to_use:
+        return list(planned_sections or [])
+    candidate_block = _format_heading_hints(list(heading_candidates or []))
+    total_len = len(str(full_text or ""))
+    system_prompt = (
+        "You are section-boundary reviewer for coarse reading phase-1.\n"
+        "Goal: refine chapter boundaries with index/read tools.\n"
+        "Rules:\n"
+        "1) Keep chapter order and chapter count unless boundary is clearly wrong.\n"
+        "2) Prefer chapter-level boundaries, avoid tiny fragments.\n"
+        "3) Ignore matches in EPUB heading candidates header block.\n"
+        "4) Must call submit_outline(sections=[...]) then done. No plain final text."
+    )
+    user_prompt = (
+        f"Course: {lecture_name}\n"
+        f"Book: {book_name}\n"
+        f"Body search start offset: {int(body_search_start)}\n"
+        f"Heading candidates:\n{candidate_block or '(none)'}\n\n"
+        "Please find chapter boundaries from text by using index/read and submit sections."
+    )
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "read",
+                "description": "Read full-book text by global offset and length.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"offset": {"type": "integer"}, "length": {"type": "integer"}},
+                    "required": ["offset", "length"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "index",
+                "description": "Find keyword in a range and return exact offsets with snippets.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "keyword": {"type": "string"},
+                        "range_start": {"type": "integer"},
+                        "range_end": {"type": "integer"},
+                        "context_range": {"type": "integer"},
+                        "max_hits": {"type": "integer"},
+                    },
+                    "required": ["keyword"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "submit_outline",
+                "description": "Submit final reviewed sections with chapter_name/start/end.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "sections": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "chapter_name": {"type": "string"},
+                                    "start": {"type": "integer"},
+                                    "end": {"type": "integer"},
+                                },
+                                "required": ["chapter_name", "start", "end"],
+                            },
+                        }
+                    },
+                    "required": ["sections"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {"name": "done", "description": "Finish after submit_outline.", "parameters": {"type": "object", "properties": {}}},
+        },
+    ]
+    messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+    turn_history: List[Dict[str, Any]] = []
+    submitted: List[Dict[str, Any]] = []
+    for turn in range(1, 9):
+        request_messages = list(messages)
+        if turn_history:
+            request_messages.extend(turn_history)
+        response = runner.nexora_client.proxy.chat_completions(
+            messages=request_messages,
+            model=model_to_use,
+            username=None,
+            options={
+                "temperature": float(temperature),
+                "max_tokens": int(max_tokens),
+                "stream": bool(stream),
+                "think": bool(think),
+                "tools": tools,
+                "tool_choice": "auto",
+            },
+            use_chat_path=False,
+            request_timeout=int(request_timeout),
+            on_delta=None,
+        )
+        if not bool(response.get("ok")):
+            log_event(
+                "section_review_failed",
+                "分节复核模型调用失败，回退原分节",
+                payload={"turn": int(turn), "review_model": model_to_use},
+                content=str(response.get("message") or ""),
+            )
+            return list(planned_sections or [])
+        payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
+        choices = payload.get("choices") if isinstance(payload.get("choices"), list) else []
+        if not choices:
+            continue
+        msg = choices[0].get("message") if isinstance(choices[0], dict) else {}
+        content = str((msg or {}).get("content") or "")
+        raw_tool_calls = (msg or {}).get("tool_calls") if isinstance((msg or {}).get("tool_calls"), list) else []
+        tool_calls: List[Dict[str, Any]] = []
+        for raw_call in raw_tool_calls:
+            if not isinstance(raw_call, dict):
+                continue
+            raw_func = raw_call.get("function") if isinstance(raw_call.get("function"), dict) else {}
+            tool_calls.append(
+                {
+                    "id": str(raw_call.get("id") or ""),
+                    "type": "function",
+                    "function": {
+                        "name": str(raw_func.get("name") or "").strip(),
+                        "arguments": _safe_json_dumps(_safe_json_obj(str(raw_func.get("arguments") or "{}"))),
+                    },
+                }
+            )
+        turn_history.append({"role": "assistant", "content": content if content else None, "tool_calls": tool_calls if tool_calls else None})
+        if not tool_calls:
+            turn_history.append(
+                {
+                    "role": "user",
+                    "content": "No valid tool call detected. You must call submit_outline(sections=[...]) then done.",
+                }
+            )
+            continue
+        for call in tool_calls:
+            call_id = str(call.get("id") or "")
+            func = call.get("function") if isinstance(call.get("function"), dict) else {}
+            tool_name = str(func.get("name") or "").strip()
+            args_obj = _safe_json_obj(str(func.get("arguments") or "{}"))
+            if tool_name in {"read", "read_book_text"}:
+                result_obj = _exec_read_book_text_tool(full_text=full_text, total_len=total_len, arguments=args_obj)
+            elif tool_name in {"index", "index_book_text"}:
+                try:
+                    req_start = int(args_obj.get("range_start") or body_search_start)
+                except Exception:
+                    req_start = body_search_start
+                args_obj["range_start"] = max(int(body_search_start), int(req_start))
+                args_obj["range_end"] = int(total_len)
+                result_obj = _exec_index_book_text_tool(full_text=full_text, total_len=total_len, arguments=args_obj)
+            elif tool_name == "submit_outline":
+                parsed: List[Dict[str, Any]] = []
+                raw_sections = args_obj.get("sections")
+                if isinstance(raw_sections, list):
+                    for row in raw_sections:
+                        if not isinstance(row, dict):
+                            continue
+                        name = str(row.get("chapter_name") or "").strip()
+                        try:
+                            start = int(row.get("start"))
+                            end = int(row.get("end"))
+                        except Exception:
+                            continue
+                        if not name:
+                            continue
+                        start = max(int(body_search_start), min(total_len - 1, start))
+                        end = max(start + 1, min(total_len, end))
+                        parsed.append(
+                            {
+                                "chapter_name": name,
+                                "start": int(start),
+                                "end": int(end),
+                                "range": f"{int(start)}:{max(1, int(end) - int(start))}",
+                            }
+                        )
+                parsed.sort(key=lambda item: int(item.get("start") or 0))
+                submitted = parsed
+                result_obj = {"ok": bool(submitted), "sections_count": len(submitted)}
+            elif tool_name == "done":
+                result_obj = {"ok": True, "done": True}
+            else:
+                result_obj = {"ok": False, "error": f"unsupported tool: {tool_name}"}
+            turn_history.append({"role": "tool", "tool_call_id": call_id, "content": _safe_json_dumps(result_obj)})
+        if submitted:
+            snapped = _snap_outline_boundaries_by_index(
+                full_text=full_text,
+                sections=submitted,
+                body_search_start=body_search_start,
+            )
+            if snapped:
+                log_event(
+                    "section_review_applied",
+                    "分节复核结果已应用",
+                    payload={"review_model": model_to_use, "sections_count": len(snapped)},
+                    content=_format_section_plan(snapped)[:2400],
+                )
+                return snapped
+    return list(planned_sections or [])
 
 
 def _run_intensive_with_tools(
