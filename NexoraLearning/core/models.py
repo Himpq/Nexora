@@ -57,6 +57,12 @@ DEFAULT_SCHEDULER_MODELS_CONFIG: Dict[str, Any] = {
         "summary_review_request_timeout": 120,
         "summary_review_stream": True,
         "summary_review_think": False,
+        "section_review_model_name": "",
+        "section_review_temperature": 0.1,
+        "section_review_max_output_tokens": 1200,
+        "section_review_request_timeout": 120,
+        "section_review_stream": True,
+        "section_review_think": False,
         "prompt_notes": "",
     },
     "intensive_reading": {
@@ -242,6 +248,12 @@ def update_rough_reading_model_config(cfg: Mapping[str, Any], updates: Mapping[s
         "summary_review_request_timeout",
         "summary_review_stream",
         "summary_review_think",
+        "section_review_model_name",
+        "section_review_temperature",
+        "section_review_max_output_tokens",
+        "section_review_request_timeout",
+        "section_review_stream",
+        "section_review_think",
         "prompt_notes",
     }
     sanitized: Dict[str, Any] = {}
@@ -249,10 +261,27 @@ def update_rough_reading_model_config(cfg: Mapping[str, Any], updates: Mapping[s
         if key not in allowed_fields:
             continue
         sanitized[key] = value
-    for bool_field in ("enabled", "stream", "think", "summary_review_stream", "summary_review_think"):
+    for bool_field in (
+        "enabled",
+        "stream",
+        "think",
+        "summary_review_stream",
+        "summary_review_think",
+        "section_review_stream",
+        "section_review_think",
+    ):
         if bool_field in sanitized:
             sanitized[bool_field] = _as_bool(sanitized[bool_field], default=_as_bool(current.get(bool_field), False))
-    for int_field in ("max_output_tokens", "max_output_chars", "request_timeout", "summary_review_max_output_tokens", "summary_review_request_timeout"):
+    for int_field in (
+        "max_input_chars",
+        "max_output_tokens",
+        "max_output_chars",
+        "request_timeout",
+        "summary_review_max_output_tokens",
+        "summary_review_request_timeout",
+        "section_review_max_output_tokens",
+        "section_review_request_timeout",
+    ):
         if int_field in sanitized:
             try:
                 sanitized[int_field] = max(1, int(sanitized[int_field]))
@@ -268,6 +297,11 @@ def update_rough_reading_model_config(cfg: Mapping[str, Any], updates: Mapping[s
             sanitized["summary_review_temperature"] = float(sanitized["summary_review_temperature"])
         except Exception:
             sanitized["summary_review_temperature"] = current.get("summary_review_temperature")
+    if "section_review_temperature" in sanitized:
+        try:
+            sanitized["section_review_temperature"] = float(sanitized["section_review_temperature"])
+        except Exception:
+            sanitized["section_review_temperature"] = current.get("section_review_temperature")
     merged_branch = dict(current)
     merged_branch.update(sanitized)
     save_scheduler_models_config(cfg, {"rough_reading": merged_branch})

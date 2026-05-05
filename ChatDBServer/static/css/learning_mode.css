@@ -35,6 +35,41 @@
   background: transparent;
 }
 
+body.learning-embed-immersive .chat-header {
+  display: none !important;
+}
+
+body.learning-embed-immersive .input-dock {
+  display: none !important;
+}
+
+body.learning-embed-immersive .main-content {
+  height: 100vh;
+  min-height: 100vh;
+}
+
+body.learning-embed-immersive #learningMainPanel.learning-main-panel {
+  margin: 0 !important;
+  padding: 0 !important;
+  align-items: stretch !important;
+  justify-content: stretch !important;
+  box-shadow: none !important;
+  border: 0 !important;
+}
+
+body.learning-embed-immersive #messagesContainer.messages-area {
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+body.learning-embed-immersive #learningMainPanel .learning-mode-shell,
+body.learning-embed-immersive #learningMainPanel .learning-mode-frame-wrap,
+body.learning-embed-immersive #learningMainPanel .learning-mode-frame {
+  width: 100%;
+  height: 100%;
+  min-height: 100%;
+}
+
 .learning-sidebar-shell {
   display: flex;
   flex-direction: column;
