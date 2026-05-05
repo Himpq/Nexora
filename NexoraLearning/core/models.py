@@ -22,6 +22,21 @@ PLACEHOLDER_PATTERN = re.compile(r"{{\s*([^{}]+?)\s*}}")
 _MODEL_CONFIG_LOCK = threading.RLock()
 _PROMPT_FILE_LOCK = threading.RLock()
 
+def _as_bool(value: Any, default: bool = False) -> bool:
+    """Parse bool-like values from JSON/UI payloads safely."""
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off", ""}:
+        return False
+    return bool(default)
+
 
 DEFAULT_SCHEDULER_MODELS_CONFIG: Dict[str, Any] = {
     "default_nexora_model": DEFAULT_NEXORA_MODEL,
@@ -31,10 +46,42 @@ DEFAULT_SCHEDULER_MODELS_CONFIG: Dict[str, Any] = {
         "api_mode": "chat",
         "temperature": 0.2,
         "max_output_tokens": 4000,
+        "max_input_chars": 24000,
         "max_output_chars": 240000,
         "request_timeout": 240,
+        "stream": True,
+        "think": False,
+        "summary_review_model_name": "",
+        "summary_review_temperature": 0.1,
+        "summary_review_max_output_tokens": 900,
+        "summary_review_request_timeout": 120,
+        "summary_review_stream": True,
+        "summary_review_think": False,
         "prompt_notes": "",
-    }
+    },
+    "intensive_reading": {
+        "enabled": True,
+        "model_name": "",
+        "api_mode": "chat",
+        "temperature": 0.2,
+        "max_output_tokens": 4000,
+        "request_timeout": 240,
+        "stream": True,
+        "think": False,
+        "prompt_notes": "",
+    },
+    "question_generation": {
+        "enabled": True,
+        "model_name": "",
+        "api_mode": "chat",
+        "temperature": 0.2,
+        "max_output_tokens": 4000,
+        "max_input_chars": 12000,
+        "request_timeout": 240,
+        "stream": True,
+        "think": False,
+        "prompt_notes": "",
+    },
 }
 
 
@@ -144,6 +191,15 @@ def get_rough_reading_model_config(cfg: Mapping[str, Any]) -> Dict[str, Any]:
     return dict(DEFAULT_SCHEDULER_MODELS_CONFIG["rough_reading"])
 
 
+def get_intensive_reading_model_config(cfg: Mapping[str, Any]) -> Dict[str, Any]:
+    """读取精读模型配置。"""
+    data = load_scheduler_models_config(cfg)
+    intensive = data.get("intensive_reading")
+    if isinstance(intensive, dict):
+        return dict(intensive)
+    return dict(DEFAULT_SCHEDULER_MODELS_CONFIG["intensive_reading"])
+
+
 def get_default_nexora_model(cfg: Mapping[str, Any]) -> str:
     """读取默认 Nexora 模型名。"""
     data = load_scheduler_models_config(cfg)
@@ -157,6 +213,15 @@ def update_default_nexora_model(cfg: Mapping[str, Any], model_name: str) -> str:
     return normalized
 
 
+def get_question_generation_model_config(cfg: Mapping[str, Any]) -> Dict[str, Any]:
+    """读取出题模型配置。"""
+    data = load_scheduler_models_config(cfg)
+    branch = data.get("question_generation")
+    if isinstance(branch, dict):
+        return dict(branch)
+    return dict(DEFAULT_SCHEDULER_MODELS_CONFIG["question_generation"])
+
+
 def update_rough_reading_model_config(cfg: Mapping[str, Any], updates: Mapping[str, Any]) -> Dict[str, Any]:
     """更新粗读模型配置并做基础类型校验。"""
     current = get_rough_reading_model_config(cfg)
@@ -166,8 +231,17 @@ def update_rough_reading_model_config(cfg: Mapping[str, Any], updates: Mapping[s
         "api_mode",
         "temperature",
         "max_output_tokens",
+        "max_input_chars",
         "max_output_chars",
         "request_timeout",
+        "stream",
+        "think",
+        "summary_review_model_name",
+        "summary_review_temperature",
+        "summary_review_max_output_tokens",
+        "summary_review_request_timeout",
+        "summary_review_stream",
+        "summary_review_think",
         "prompt_notes",
     }
     sanitized: Dict[str, Any] = {}
@@ -175,9 +249,54 @@ def update_rough_reading_model_config(cfg: Mapping[str, Any], updates: Mapping[s
         if key not in allowed_fields:
             continue
         sanitized[key] = value
-    if "enabled" in sanitized:
-        sanitized["enabled"] = bool(sanitized["enabled"])
-    for int_field in ("max_output_tokens", "max_output_chars", "request_timeout"):
+    for bool_field in ("enabled", "stream", "think", "summary_review_stream", "summary_review_think"):
+        if bool_field in sanitized:
+            sanitized[bool_field] = _as_bool(sanitized[bool_field], default=_as_bool(current.get(bool_field), False))
+    for int_field in ("max_output_tokens", "max_output_chars", "request_timeout", "summary_review_max_output_tokens", "summary_review_request_timeout"):
+        if int_field in sanitized:
+            try:
+                sanitized[int_field] = max(1, int(sanitized[int_field]))
+            except Exception:
+                sanitized[int_field] = current.get(int_field)
+    if "temperature" in sanitized:
+        try:
+            sanitized["temperature"] = float(sanitized["temperature"])
+        except Exception:
+            sanitized["temperature"] = current.get("temperature")
+    if "summary_review_temperature" in sanitized:
+        try:
+            sanitized["summary_review_temperature"] = float(sanitized["summary_review_temperature"])
+        except Exception:
+            sanitized["summary_review_temperature"] = current.get("summary_review_temperature")
+    merged_branch = dict(current)
+    merged_branch.update(sanitized)
+    save_scheduler_models_config(cfg, {"rough_reading": merged_branch})
+    return merged_branch
+
+
+def update_intensive_reading_model_config(cfg: Mapping[str, Any], updates: Mapping[str, Any]) -> Dict[str, Any]:
+    """更新精读模型配置并做基础类型校验。"""
+    current = get_intensive_reading_model_config(cfg)
+    allowed_fields = {
+        "enabled",
+        "model_name",
+        "api_mode",
+        "temperature",
+        "max_output_tokens",
+        "request_timeout",
+        "stream",
+        "think",
+        "prompt_notes",
+    }
+    sanitized: Dict[str, Any] = {}
+    for key, value in dict(updates or {}).items():
+        if key not in allowed_fields:
+            continue
+        sanitized[key] = value
+    for bool_field in ("enabled", "stream", "think"):
+        if bool_field in sanitized:
+            sanitized[bool_field] = _as_bool(sanitized[bool_field], default=_as_bool(current.get(bool_field), False))
+    for int_field in ("max_output_tokens", "request_timeout"):
         if int_field in sanitized:
             try:
                 sanitized[int_field] = max(1, int(sanitized[int_field]))
@@ -190,7 +309,47 @@ def update_rough_reading_model_config(cfg: Mapping[str, Any], updates: Mapping[s
             sanitized["temperature"] = current.get("temperature")
     merged_branch = dict(current)
     merged_branch.update(sanitized)
-    save_scheduler_models_config(cfg, {"rough_reading": merged_branch})
+    save_scheduler_models_config(cfg, {"intensive_reading": merged_branch})
+    return merged_branch
+
+
+def update_question_generation_model_config(cfg: Mapping[str, Any], updates: Mapping[str, Any]) -> Dict[str, Any]:
+    """更新出题模型配置并做基础类型校验。"""
+    current = get_question_generation_model_config(cfg)
+    allowed_fields = {
+        "enabled",
+        "model_name",
+        "api_mode",
+        "temperature",
+        "max_output_tokens",
+        "max_input_chars",
+        "request_timeout",
+        "stream",
+        "think",
+        "prompt_notes",
+    }
+    sanitized: Dict[str, Any] = {}
+    for key, value in dict(updates or {}).items():
+        if key not in allowed_fields:
+            continue
+        sanitized[key] = value
+    for bool_field in ("enabled", "stream", "think"):
+        if bool_field in sanitized:
+            sanitized[bool_field] = _as_bool(sanitized[bool_field], default=_as_bool(current.get(bool_field), False))
+    for int_field in ("max_output_tokens", "max_input_chars", "request_timeout"):
+        if int_field in sanitized:
+            try:
+                sanitized[int_field] = max(1, int(sanitized[int_field]))
+            except Exception:
+                sanitized[int_field] = current.get(int_field)
+    if "temperature" in sanitized:
+        try:
+            sanitized["temperature"] = float(sanitized["temperature"])
+        except Exception:
+            sanitized["temperature"] = current.get("temperature")
+    merged_branch = dict(current)
+    merged_branch.update(sanitized)
+    save_scheduler_models_config(cfg, {"question_generation": merged_branch})
     return merged_branch
 
 

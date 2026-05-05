@@ -40,6 +40,7 @@ from tools import canonicalize_tool_name
 from secure import normalize_text, resolve_configured_path, safe_filename, safe_join_path
 from timeline import list_entries as list_timeline_entries, record_notes_snapshot_change
 from datastorage import safe_read_json, safe_write_json, get_path_lock
+from learning_runtime import build_learning_context_payload
 from server_quota import (
     get_server_quota_status,
     update_server_quota_config,
@@ -204,6 +205,7 @@ def apply_auth_response_cache_policy(resp: Response):
     except Exception:
         pass
     return resp
+
 
 DEFAULT_MAIN_CONFIG = {
     "public_base_url": "",
@@ -856,12 +858,12 @@ def resolve_public_api_key_auth(auth_key: Any, *, request_path: str = "", method
 
     key_text = str(auth_key or "").strip()
     if not key_text:
-        return {"ok": False, "status": 401, "message": "Invalid or missing API Key"}
+        return {"ok": False, "status": 401, "message": "Invalid or missing API Key: empty"}
 
     key_hash = _hash_public_api_key(key_text)
     record = _find_active_papi_key_by_hash(key_hash)
     if record is None:
-        return {"ok": False, "status": 401, "message": "Invalid or missing API Key"}
+        return {"ok": False, "status": 401, "message": "Invalid or missing API Key: not found"}
 
     key_state = _build_public_api_key_state(record)
     if bool(key_state.get("is_expired")):
@@ -5895,7 +5897,7 @@ def get_user_preferences():
         if request.method == 'PUT':
             payload = request.get_json(silent=True) or {}
             updates: Dict[str, Any] = {}
-            for key in ('default_model', 'theme', 'streaming', 'language'):
+            for key in ('default_model', 'theme', 'streaming', 'language', 'learning_mode'):
                 if key in payload:
                     updates[key] = payload.get(key)
 
@@ -6929,6 +6931,10 @@ def create_conversation_api():
     manager = ConversationManager(username)
     data = request.get_json(silent=True) or {}
     title = str(data.get('title') or '新对话').strip() or '新对话'
+    conversation_mode = str(data.get('conversation_mode') or 'chat').strip() or 'chat'
+    raw_tags = data.get('tags')
+    tags = raw_tags if isinstance(raw_tags, list) else []
+    metadata = data.get('metadata') if isinstance(data.get('metadata'), dict) else {}
     conversation_id = data.get('conversation_id')
     conversation_id = str(conversation_id or '').strip() or None
     try:
@@ -6938,7 +6944,13 @@ def create_conversation_api():
                 return jsonify({'success': True, 'conversation_id': conversation_id, 'title': title, 'existed': True})
             except Exception:
                 pass
-        conv_id = manager.create_conversation(conversation_id=conversation_id, title=title)
+        conv_id = manager.create_conversation(
+            conversation_id=conversation_id,
+            title=title,
+            conversation_mode=conversation_mode,
+            tags=tags,
+            metadata=metadata,
+        )
         return jsonify({'success': True, 'conversation_id': conv_id, 'title': title})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
@@ -8652,6 +8664,17 @@ def chat_stream():
     conversation_id = data.get('conversation_id')
     model_name = data.get('model_name')
     enable_thinking = data.get('enable_thinking', False)
+    thinking_level = data.get('thinking_level', data.get('think', None))
+    try:
+        raw_enable_thinking = data.get('enable_thinking', None)
+        normalized_enable_thinking = _as_bool(raw_enable_thinking, False)
+        print(
+            f"[CHAT_THINK_IN] raw={raw_enable_thinking!r} "
+            f"normalized={normalized_enable_thinking} model={data.get('model_name', '')}"
+        )
+        enable_thinking = normalized_enable_thinking
+    except Exception:
+        pass
     enable_web_search = data.get('enable_web_search', True)
     enable_tools = data.get('enable_tools', True)
     raw_tool_mode = data.get('tool_mode')
@@ -8799,6 +8822,18 @@ def chat_stream():
     elif raw_skill_mode is not None:
         # Legacy global override fallback.
         skill_mode = _normalize_skill_mode(raw_skill_mode)
+
+    if str(data.get('conversation_mode') or '').strip() == 'learning':
+        try:
+            learning_runtime_payload = build_learning_context_payload(username, data.get('conversation_mode_payload'))
+            runtime_skills = learning_runtime_payload.get('active_tool_skills', [])
+            if isinstance(runtime_skills, list) and runtime_skills:
+                if isinstance(active_tool_skills, list):
+                    active_tool_skills = list(runtime_skills) + active_tool_skills
+                else:
+                    active_tool_skills = list(runtime_skills)
+        except Exception as learning_skill_error:
+            print(f"[LEARNING_RUNTIME] failed to build active_tool_skills: {learning_skill_error}")
     
     # --- 模型权限校验 ---
     requested_model_name = str(model_name or '').strip()
@@ -8916,6 +8951,23 @@ def chat_stream():
             if convo and regenerate_index > 0:
                 message = convo['messages'][regenerate_index - 1].get('content', "")
 
+    if (not is_regenerate) and conversation_id:
+        try:
+            manager = ConversationManager(username)
+            convo = manager.get_conversation(conversation_id)
+            if isinstance(convo, dict):
+                stored_mode = str(convo.get('conversation_mode') or '').strip().lower()
+                if stored_mode == 'learning' and not str(data.get('conversation_mode') or '').strip():
+                    data['conversation_mode'] = 'learning'
+                    if not isinstance(data.get('conversation_mode_payload'), dict):
+                        data['conversation_mode_payload'] = {"learning": True}
+                elif stored_mode == 'longterm' and not str(data.get('conversation_mode') or '').strip():
+                    data['conversation_mode'] = 'longterm'
+                    if not isinstance(data.get('conversation_mode_payload'), dict):
+                        data['conversation_mode_payload'] = {}
+        except Exception:
+            pass
+
     def _stream_worker(push_chunk, set_conversation_id):
         try:
             request_meta = normalize_longterm_request(
@@ -8928,9 +8980,42 @@ def chat_stream():
             raw_conversation_mode_payload = request_meta.get('conversation_mode_payload')
             if not isinstance(raw_conversation_mode_payload, dict):
                 raw_conversation_mode_payload = {}
+            if raw_conversation_mode == 'learning':
+                try:
+                    learning_runtime_payload = build_learning_context_payload(username, raw_conversation_mode_payload)
+                    merged_payload = dict(raw_conversation_mode_payload)
+                    for key, value in learning_runtime_payload.items():
+                        if key == 'context_blocks':
+                            existing_blocks = merged_payload.get('context_blocks', [])
+                            if not isinstance(existing_blocks, list):
+                                existing_blocks = []
+                            merged_payload['context_blocks'] = list(value or []) + existing_blocks
+                        elif key == 'active_tool_skills':
+                            existing_skills = merged_payload.get('active_tool_skills', [])
+                            if not isinstance(existing_skills, list):
+                                existing_skills = []
+                            merged_payload['active_tool_skills'] = list(value or []) + existing_skills
+                        elif key == 'meta':
+                            current_meta = merged_payload.get('meta', {})
+                            if not isinstance(current_meta, dict):
+                                current_meta = {}
+                            next_meta = dict(value or {})
+                            next_meta.update(current_meta)
+                            merged_payload['meta'] = next_meta
+                        elif key == 'system_prompt':
+                            if not str(merged_payload.get('system_prompt') or '').strip():
+                                merged_payload['system_prompt'] = value
+                        else:
+                            merged_payload[key] = value
+                    raw_conversation_mode_payload = merged_payload
+                except Exception as learning_runtime_error:
+                    print(f"[LEARNING_RUNTIME] failed to merge payload: {learning_runtime_error}")
             effective_enable_tools = bool(enable_tools)
             effective_tool_mode = tool_mode
             if raw_conversation_mode == 'longterm':
+                effective_enable_tools = True
+                effective_tool_mode = 'force'
+            elif raw_conversation_mode == 'learning':
                 effective_enable_tools = True
                 effective_tool_mode = 'force'
             model = Model(
@@ -8959,6 +9044,7 @@ def chat_stream():
                 effective_message,
                 stream=True,
                 enable_thinking=enable_thinking,
+                thinking_level=thinking_level,
                 enable_web_search=enable_web_search,
                 enable_tools=effective_enable_tools,
                 tool_mode=effective_tool_mode,

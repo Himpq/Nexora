@@ -2,21 +2,50 @@
 
 from .manager import (
     cancel_book_refinement,
+    enqueue_book_intensive,
+    enqueue_book_question,
     enqueue_book_refinement,
+    get_book_progress_text,
+    get_book_progress_steps,
     get_refinement_queue_snapshot,
     init_booksproc,
     list_refinement_candidates,
     mark_book_uploaded,
+    run_intensive_reading_once,
 )
-from .modeling import get_rough_reading_settings, update_rough_reading_settings
+from .modeling import (
+    get_intensive_reading_settings,
+    get_question_generation_settings,
+    get_rough_reading_settings,
+    update_intensive_reading_settings,
+    update_question_generation_settings,
+    update_rough_reading_settings,
+)
+from .queue import get_queue_snapshot as _internal_get_queue_snapshot
+from .runtime import as_bool, exec_read_book_text_tool, exec_search_book_text_tool, resolve_book_text, safe_json_obj
+from .state import get_book_progress_steps as _state_get_book_progress_steps, get_book_progress_text as _state_get_book_progress_text
 
 __all__ = [
     "init_booksproc",
     "mark_book_uploaded",
     "list_refinement_candidates",
     "enqueue_book_refinement",
+    "enqueue_book_intensive",
+    "enqueue_book_question",
     "cancel_book_refinement",
+    "get_book_progress_text",
+    "get_book_progress_steps",
     "get_refinement_queue_snapshot",
+    "run_intensive_reading_once",
+    "get_intensive_reading_settings",
+    "get_question_generation_settings",
     "get_rough_reading_settings",
+    "update_intensive_reading_settings",
+    "update_question_generation_settings",
     "update_rough_reading_settings",
+    "as_bool",
+    "safe_json_obj",
+    "resolve_book_text",
+    "exec_read_book_text_tool",
+    "exec_search_book_text_tool",
 ]

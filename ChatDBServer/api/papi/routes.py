@@ -1,6 +1,7 @@
 import importlib
+import json
 import sys
-from typing import Any, Dict
+from typing import Any, Dict, List
 from flask import Blueprint, request, jsonify
 
 papi_bp = Blueprint('papi', __name__)
@@ -216,25 +217,12 @@ def papi_query_vectors(username):
         return jsonify({'success': False, 'message': str(e)})
 
 
-@papi_bp.route('/api/papi/completions', methods=['POST'])
-@papi_bp.route('/api/papi/chat/completions', methods=['POST'])
-@papi_bp.route('/api/papi/responses', methods=['POST'])
-@papi_bp.route('/api/papi/v1/completions', methods=['POST'])
-@papi_bp.route('/api/papi/v1/chat/completions', methods=['POST'])
-@papi_bp.route('/api/papi/v1/responses', methods=['POST'])
-@papi_bp.route('/api/papi/completions/<username>', methods=['POST'])
-@papi_bp.route('/api/papi/chat/completions/<username>', methods=['POST'])
-@papi_bp.route('/api/papi/responses/<username>', methods=['POST'])
-@papi_bp.route('/api/papi/v1/completions/<username>', methods=['POST'])
-@papi_bp.route('/api/papi/v1/chat/completions/<username>', methods=['POST'])
-@papi_bp.route('/api/papi/v1/responses/<username>', methods=['POST'])
-@require_papi_key
-def papi_completions(username=None):
-    """PAPI: OpenAI 兼容的 chat/completions 接口，支持流式与非流式。"""
-    data = request.get_json(silent=True) or {}
+def _papi_handle_completion_request(data=None, username=None, request_path=''):
+    """PAPI 主处理逻辑，可供普通 completions 与学习对话入口复用。"""
+    data = data if isinstance(data, dict) else {}
     config = get_config_all()
     request_username = str(username or data.get('username') or '').strip()
-    request_path = str(request.path or '').strip().lower()
+    request_path = str(request_path or '').strip().lower()
     use_responses_compat = ('/responses' in request_path)
     previous_response_id = str(
         data.get('previous_response_id')
@@ -362,6 +350,16 @@ def papi_completions(username=None):
         if value is not None:
             request_kwargs[key] = value
 
+    # Ollama/OpenAI 兼容：think 不能作为顶层 kwargs 传给 SDK，
+    # 否则会触发 Completions.create() unexpected keyword argument 'think'。
+    think_value = data.get('think')
+    if think_value is not None:
+        extra_body = request_kwargs.get('extra_body', {})
+        if not isinstance(extra_body, dict):
+            extra_body = {}
+        extra_body['think'] = think_value
+        request_kwargs['extra_body'] = extra_body
+
     # 透传 tools / tool_choice / response_format / stream_options
     for _k in ('tools', 'tool_choice', 'response_format', 'stream_options'):
         val = data.get(_k)
@@ -410,6 +408,17 @@ def papi_completions(username=None):
         f"[PAPI_TOOLS] model={model_name} use_responses_compat={'yes' if use_responses_compat else 'no'} "
         f"tool_count={len(_tools_payload)} tool_names={_tool_names}"
     )
+    _think_log_value = None
+    try:
+        _extra_body_for_log = request_kwargs.get('extra_body', {})
+        if isinstance(_extra_body_for_log, dict):
+            _think_log_value = _extra_body_for_log.get('think', None)
+    except Exception:
+        _think_log_value = None
+    _papi_log(
+        f"[PAPI_THINK] model={model_name} provider={provider_name} think={_think_log_value} "
+        f"reasoning={'yes' if ('reasoning' in request_kwargs) else 'no'}"
+    )
 
     if use_responses_compat and responses_instructions:
         request_kwargs['instructions'] = responses_instructions
@@ -424,7 +433,51 @@ def papi_completions(username=None):
     base_url = provider_info.get('base_url') or provider_info.get('api_base')
     adapter = create_provider_adapter(provider_name, provider_info)
     adapter_api_type = str(getattr(adapter, 'api_type', '') or '').strip().lower()
+    if adapter_api_type == "ollama":
+        _think_src = None
+        _eb = request_kwargs.get("extra_body", {})
+        if isinstance(_eb, dict):
+            _think_src = _eb.get("think", None)
+        if _think_src is not None:
+            _mapped_effort = None
+            if isinstance(_think_src, str):
+                _s = _think_src.strip().lower()
+                if _s in {"low", "medium", "high", "none"}:
+                    _mapped_effort = _s
+                elif _s in {"false", "0", "off", "no", "n"}:
+                    _mapped_effort = "none"
+                elif _s in {"true", "1", "on", "yes", "y"}:
+                    _mapped_effort = "medium"
+            elif isinstance(_think_src, bool):
+                _mapped_effort = "medium" if _think_src else "none"
+            elif isinstance(_think_src, (int, float)):
+                _mapped_effort = "medium" if float(_think_src) != 0.0 else "none"
+            if _mapped_effort:
+                request_kwargs["reasoning_effort"] = _mapped_effort
+            _papi_log(
+                f"[PAPI_THINK_MAP] model={model_name} provider={provider_name} "
+                f"api_type=ollama think={_think_src!r} reasoning_effort={request_kwargs.get('reasoning_effort', None)}"
+            )
     use_responses_upstream = bool(adapter.use_responses_api(request_kwargs)) if use_responses_compat else False
+    provider_settings = provider_info.get('settings') if isinstance(provider_info.get('settings'), dict) else {}
+    timeout_candidates = [
+        provider_info.get('request_timeout'),
+        provider_info.get('timeout'),
+        provider_settings.get('request_timeout'),
+        provider_settings.get('timeout'),
+    ]
+    timeout_seconds = 300.0
+    for candidate in timeout_candidates:
+        try:
+            if candidate is None or candidate == '':
+                continue
+            parsed = float(candidate)
+            if parsed > 0:
+                timeout_seconds = parsed
+                break
+        except Exception:
+            continue
+    timeout_seconds = max(10.0, min(timeout_seconds, 1800.0))
 
     bridge_reason_parts = []
     if use_responses_compat and use_responses_upstream:
@@ -469,12 +522,16 @@ def papi_completions(username=None):
             )
 
     client_cache = _get_client_cache()
-    cache_key = adapter.client_cache_key(api_key, scope='papi')
+    cache_key = f"{adapter.client_cache_key(api_key, scope='papi')}|timeout={timeout_seconds}"
     if cache_key in client_cache:
         client = client_cache[cache_key]
     else:
-        client = adapter.create_client(api_key=api_key, base_url=base_url, timeout=60.0)
+        client = adapter.create_client(api_key=api_key, base_url=base_url, timeout=timeout_seconds)
         client_cache[cache_key] = client
+    _papi_log(
+        f"[PAPI_TIMEOUT] model={model_name} provider={provider_name} client_timeout={timeout_seconds}s "
+        f"stream={'yes' if want_stream else 'no'} api_type={adapter_api_type or 'unknown'}"
+    )
 
     # ---- 流式响应 ----
     if want_stream:
@@ -567,6 +624,235 @@ def papi_completions(username=None):
             'provider': provider_name,
             'username': request_username or (username or ''),
         }), status_code
+
+@papi_bp.route('/api/papi/completions', methods=['POST'])
+@papi_bp.route('/api/papi/chat/completions', methods=['POST'])
+@papi_bp.route('/api/papi/responses', methods=['POST'])
+@papi_bp.route('/api/papi/v1/completions', methods=['POST'])
+@papi_bp.route('/api/papi/v1/chat/completions', methods=['POST'])
+@papi_bp.route('/api/papi/v1/responses', methods=['POST'])
+@papi_bp.route('/api/papi/completions/<username>', methods=['POST'])
+@papi_bp.route('/api/papi/chat/completions/<username>', methods=['POST'])
+@papi_bp.route('/api/papi/responses/<username>', methods=['POST'])
+@papi_bp.route('/api/papi/v1/completions/<username>', methods=['POST'])
+@papi_bp.route('/api/papi/v1/chat/completions/<username>', methods=['POST'])
+@papi_bp.route('/api/papi/v1/responses/<username>', methods=['POST'])
+@require_papi_key
+def papi_completions(username=None):
+    """PAPI: OpenAI 兼容的 chat/completions 接口，支持流式与非流式。"""
+    data = request.get_json(silent=True) or {}
+    return _papi_handle_completion_request(
+        data=data,
+        username=username,
+        request_path=str(request.path or '').strip().lower(),
+    )
+
+
+def _papi_learning_stringify_context_blocks(context_blocks):
+    if not isinstance(context_blocks, dict) or not context_blocks:
+        return ''
+    try:
+        return json.dumps(context_blocks, ensure_ascii=False, indent=2)
+    except Exception:
+        try:
+            return json.dumps(context_blocks, ensure_ascii=False, default=str)
+        except Exception:
+            return str(context_blocks)
+
+
+def _papi_learning_normalize_chat_messages(messages):
+    normalized = _papi_prepare_chat_messages(
+        _papi_normalize_messages({'messages': messages if isinstance(messages, list) else []})
+    )
+    result = []
+    for item in normalized:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get('role') or '').strip().lower()
+        if role not in {'system', 'developer', 'user', 'assistant', 'tool'}:
+            continue
+        row = {
+            'role': role,
+            'content': item.get('content'),
+        }
+        if item.get('tool_call_id'):
+            row['tool_call_id'] = item.get('tool_call_id')
+        if isinstance(item.get('tool_calls'), list) and item.get('tool_calls'):
+            row['tool_calls'] = item.get('tool_calls')
+        result.append(row)
+    return result
+
+
+def _papi_learning_extract_assistant_text(payload):
+    if not isinstance(payload, dict):
+        return ''
+    choices = payload.get('choices')
+    if isinstance(choices, list) and choices:
+        first = choices[0] if isinstance(choices[0], dict) else {}
+        message = first.get('message') if isinstance(first, dict) else {}
+        if isinstance(message, dict):
+            content = message.get('content')
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                parts = []
+                for piece in content:
+                    if isinstance(piece, dict):
+                        text = str(piece.get('text') or '').strip()
+                        if text:
+                            parts.append(text)
+                return '\n'.join(parts).strip()
+    response_obj = payload.get('response')
+    if isinstance(response_obj, dict):
+        return _papi_learning_extract_assistant_text(response_obj)
+    content = payload.get('content')
+    if isinstance(content, str):
+        return content
+    return ''
+
+
+@papi_bp.route('/api/papi/learning/chat', methods=['POST'])
+@papi_bp.route('/api/learning/chat', methods=['POST'])
+@require_papi_key
+def papi_learning_chat():
+    """Learning 主控对话入口：由外部提供 prompt/tools/context，Nexora 管理历史与执行。"""
+    data = request.get_json(silent=True) or {}
+    metadata = data.get('metadata') if isinstance(data.get('metadata'), dict) else {}
+    username = str(data.get('username') or metadata.get('username') or '').strip()
+    if not username:
+        auth = request.environ.get('papi.auth') if isinstance(request.environ.get('papi.auth'), dict) else {}
+        username = str(auth.get('created_by') or auth.get('username') or '').strip()
+    if not username:
+        return jsonify({'success': False, 'message': 'username is required'}), 400
+
+    manager = ConversationManager(username)
+    conversation_id = str(
+        data.get('conversation_id')
+        or metadata.get('conversation_id')
+        or ''
+    ).strip()
+    title = str(
+        data.get('conversation_title')
+        or data.get('title')
+        or metadata.get('conversation_title')
+        or 'Learning Chat'
+    ).strip() or 'Learning Chat'
+    if conversation_id:
+        try:
+            manager.get_conversation(conversation_id)
+        except Exception:
+            conversation_id = manager.create_conversation(conversation_id=conversation_id, title=title)
+    else:
+        conversation_id = manager.create_conversation(title=title)
+
+    system_prompt = str(
+        data.get('system_prompt')
+        or data.get('system_override')
+        or ''
+    ).strip()
+    context_blocks = data.get('context_blocks')
+    if not isinstance(context_blocks, dict):
+        context_blocks = data.get('extra_context') if isinstance(data.get('extra_context'), dict) else {}
+
+    incoming_messages = _papi_learning_normalize_chat_messages(data.get('messages'))
+    if not incoming_messages:
+        return jsonify({'success': False, 'message': 'messages(list) is required'}), 400
+
+    history_limit = 80
+    try:
+        history_limit = max(1, min(int(data.get('history_limit') or 80), 200))
+    except Exception:
+        history_limit = 80
+    history_messages = _papi_learning_normalize_chat_messages(manager.get_messages(conversation_id, limit=history_limit))
+
+    def _strip_system_rows(rows):
+        cleaned = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            role = str(row.get('role') or '').strip().lower()
+            if role in {'system', 'developer'}:
+                continue
+            cleaned.append(row)
+        return cleaned
+
+    context_text = _papi_learning_stringify_context_blocks(context_blocks)
+    final_system_parts = []
+    if system_prompt:
+        final_system_parts.append(system_prompt)
+    if context_text:
+        final_system_parts.append(f"<LEARNING_CONTEXT>\n{context_text}\n</LEARNING_CONTEXT>")
+    merged_messages = []
+    if final_system_parts:
+        merged_messages.append({'role': 'system', 'content': '\n\n'.join(final_system_parts).strip()})
+    merged_messages.extend(_strip_system_rows(history_messages))
+    merged_messages.extend(_strip_system_rows(incoming_messages))
+
+    for row in incoming_messages:
+        if not isinstance(row, dict):
+            continue
+        role = str(row.get('role') or '').strip().lower()
+        if role != 'user':
+            continue
+        manager.add_message(
+            conversation_id,
+            'user',
+            row.get('content'),
+            metadata={
+                'source': 'nexoralearning',
+                'learning_mode': True,
+                'conversation_id': conversation_id,
+            },
+        )
+
+    request_payload = dict(data)
+    request_payload['username'] = username
+    request_payload['messages'] = merged_messages
+    request_payload['system_prompt'] = ''
+    request_payload.pop('prompt', None)
+    request_payload.pop('message', None)
+    request_payload.pop('content', None)
+    request_payload.pop('input', None)
+    request_payload['metadata'] = {
+        **metadata,
+        'source': 'nexoralearning',
+        'conversation_id': conversation_id,
+    }
+    request_payload['extra_context'] = context_blocks
+    request_payload['system_override'] = system_prompt
+
+    result = _papi_handle_completion_request(
+        data=request_payload,
+        username=username,
+        request_path='/api/papi/learning/chat',
+    )
+
+    if bool(data.get('stream') is True):
+        return result
+
+    response_obj = result[0] if isinstance(result, tuple) else result
+    status_code = result[1] if isinstance(result, tuple) and len(result) > 1 else getattr(response_obj, 'status_code', 200)
+    if int(status_code or 200) < 400 and hasattr(response_obj, 'get_json'):
+        payload = response_obj.get_json(silent=True) or {}
+        assistant_text = _papi_learning_extract_assistant_text(payload).strip()
+        if assistant_text:
+            manager.add_message(
+                conversation_id,
+                'assistant',
+                assistant_text,
+                metadata={
+                    'source': 'nexoralearning',
+                    'learning_mode': True,
+                    'conversation_id': conversation_id,
+                    'model_name': str(payload.get('model') or data.get('model') or '').strip(),
+                },
+            )
+        if isinstance(payload, dict):
+            payload['conversation_id'] = conversation_id
+            return jsonify(payload), int(status_code or 200)
+
+    return result
+
 
 # ==================== PAPI - 模型列表 ====================
 

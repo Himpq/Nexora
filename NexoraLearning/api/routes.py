@@ -28,6 +28,7 @@ from core.lectures import (
     save_book_text,
     save_book_info_xml,
     save_book_detail_xml,
+    load_book_questions_xml,
     save_book_original_file,
     update_book as update_lecture_book,
     update_lecture as update_learning_lecture,
@@ -42,12 +43,20 @@ from core.runlog import log_event
 from core import user as user_store
 from core.booksproc import (
     cancel_book_refinement,
+    enqueue_book_intensive,
+    enqueue_book_question,
     enqueue_book_refinement,
+    get_book_progress_steps,
+    get_book_progress_text,
+    get_intensive_reading_settings,
+    get_question_generation_settings,
     get_refinement_queue_snapshot,
     get_rough_reading_settings,
     init_booksproc,
     list_refinement_candidates,
     mark_book_uploaded,
+    update_intensive_reading_settings,
+    update_question_generation_settings,
     update_rough_reading_settings,
 )
 from core.vector import (
@@ -244,6 +253,79 @@ def _build_user_study_hours_map(user_id: str) -> Dict[str, float]:
         if amount_hours > 0:
             hours_map[lecture_id] = float(hours_map.get(lecture_id, 0.0) + amount_hours)
     return hours_map
+
+
+def _escape_card_html(value: Any) -> str:
+    text = str(value or "")
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
+    )
+
+
+def _build_lecture_display_card_payload(lecture_id: str) -> Dict[str, Any]:
+    lecture = get_learning_lecture(_cfg, lecture_id)
+    if lecture is None:
+        raise ValueError("Lecture not found.")
+    books = list_lecture_books(_cfg, lecture_id)
+    title = str(lecture.get("title") or lecture.get("name") or lecture_id).strip() or lecture_id
+    category = str(lecture.get("category") or "").strip() or "未分类"
+    progress = int(lecture.get("progress") or 0)
+    description = str(lecture.get("description") or "").strip()
+    html = f"""
+<article class="nxl-chat-card nxl-chat-card-lecture" data-lecture-id="{_escape_card_html(lecture_id)}">
+  <div class="nxl-chat-card-kicker">Learning Lecture</div>
+  <h3>{_escape_card_html(title)}</h3>
+  <div class="nxl-chat-card-meta">{_escape_card_html(category)} · {len(books)} 本教材 · {progress}% 进度</div>
+  <div class="nxl-chat-card-progress"><span style="width:{max(0, min(progress, 100))}%"></span></div>
+  <p>{_escape_card_html(description or '暂无课程描述')}</p>
+</article>
+""".strip()
+    return {
+        "type": "lecture_display",
+        "lecture_id": lecture_id,
+        "lecture": lecture,
+        "books_count": len(books),
+        "html": html,
+    }
+
+
+def _build_chapter_range_card_payload(lecture_id: str, book_id: str, content_range: List[Any]) -> Dict[str, Any]:
+    lecture = get_learning_lecture(_cfg, lecture_id)
+    if lecture is None:
+        raise ValueError("Lecture not found.")
+    book = get_lecture_book(_cfg, lecture_id, book_id)
+    if book is None:
+        raise ValueError("Book not found.")
+    if not isinstance(content_range, list) or len(content_range) != 2:
+        raise ValueError("content_range must be [start, end].")
+    start = max(0, int(content_range[0] or 0))
+    end = max(start, int(content_range[1] or start))
+    content = load_book_text(_cfg, lecture_id, book_id)
+    snippet = content[start:end]
+    title = str(book.get("title") or book_id).strip() or book_id
+    lecture_title = str(lecture.get("title") or lecture_id).strip() or lecture_id
+    html = f"""
+<article class="nxl-chat-card nxl-chat-card-range" data-lecture-id="{_escape_card_html(lecture_id)}" data-book-id="{_escape_card_html(book_id)}">
+  <div class="nxl-chat-card-kicker">Chapter Range</div>
+  <h3>{_escape_card_html(title)}</h3>
+  <div class="nxl-chat-card-meta">{_escape_card_html(lecture_title)} · [{start}, {end}]</div>
+  <pre class="nxl-chat-card-snippet">{_escape_card_html(snippet[:1600] or '该区间暂无文本内容')}</pre>
+</article>
+""".strip()
+    return {
+        "type": "chapter_range",
+        "lecture_id": lecture_id,
+        "book_id": book_id,
+        "content_range": [start, end],
+        "lecture": lecture,
+        "book": book,
+        "content": snippet,
+        "html": html,
+    }
 
 
 def _resolve_runtime_role() -> str:
@@ -516,6 +598,179 @@ def frontend_dashboard():
     )
 
 
+def _legacy_frontend_chat_context_removed():
+    """Legacy placeholder for the removed ChatDBServer bridge route."""
+    return None
+    data = request.get_json(silent=True) or {}
+    user_id = _resolve_runtime_user_id()
+    user_store.ensure_user_files(_cfg, user_id)
+    selected_lecture_ids = set(user_store.list_selected_lecture_ids(_cfg, user_id))
+    lectures = list_learning_lectures(_cfg)
+
+    lecture_rows: List[Dict[str, Any]] = []
+    cards: List[Dict[str, Any]] = []
+    progress_lines: List[str] = []
+
+    for lecture in lectures:
+        lecture_id = str((lecture or {}).get("id") or "").strip()
+        if not lecture_id or lecture_id not in selected_lecture_ids:
+            continue
+        books = list_lecture_books(_cfg, lecture_id)
+        lecture_rows.append(
+            {
+                "id": lecture_id,
+                "title": str((lecture or {}).get("title") or "").strip(),
+                "category": str((lecture or {}).get("category") or "").strip(),
+                "progress": int((lecture or {}).get("progress") or 0),
+                "current_chapter": str((lecture or {}).get("current_chapter") or "").strip(),
+                "books_count": len(books),
+            }
+        )
+        progress_lines.append(
+            f"- {str((lecture or {}).get('title') or '').strip() or lecture_id} | 进度 {int((lecture or {}).get('progress') or 0)}% | 当前 {str((lecture or {}).get('current_chapter') or '').strip() or '未开始'}"
+        )
+        try:
+            cards.append(_build_lecture_display_card_payload(lecture_id))
+        except Exception:
+            pass
+
+    user_payload = user_store.get_user(_cfg, user_id) or {}
+    learning_records = user_store.list_learning_records(_cfg, user_id)
+    recent_learning = learning_records[-8:] if isinstance(learning_records, list) else []
+
+    system_prompt = (
+        "你现在处于 NexoraLearning 学习对话模式。\n\n"
+        "你的职责是围绕用户当前已选课程进行学习辅助，不要脱离学习语境。\n"
+        "优先结合课程进度、教材、章节信息回答。\n"
+        "如果用户问题与当前学习内容无关，可以正常回答，但要优先尝试连接到学习任务。\n"
+        "当适合展示课程卡片或章节片段时，可以在回答中配合学习卡片信息。\n"
+    ).strip()
+
+    context_blocks = [
+        {
+            "type": "learning_profile",
+            "title": "学习用户信息",
+            "content": json.dumps(
+                {
+                    "user_id": user_id,
+                    "user": user_payload,
+                    "selected_lecture_ids": sorted(selected_lecture_ids),
+                    "selected_lectures": lecture_rows,
+                },
+                ensure_ascii=False,
+            ),
+        },
+        {
+            "type": "learning_progress",
+            "title": "当前课程进度",
+            "content": "\n".join(progress_lines) if progress_lines else "当前还没有已选课程。",
+        },
+        {
+            "type": "learning_recent_records",
+            "title": "近期学习记录",
+            "content": json.dumps(recent_learning, ensure_ascii=False),
+        },
+    ]
+
+    active_tool_skills = [
+        {
+            "id": "learning-card-injection",
+            "title": "Learning Card Injection",
+            "required_tools": ["learning_card"],
+            "mode": "force",
+            "author": "NexoraLearning",
+            "version": "1.0",
+            "main_content": (
+                "当前处于 NexoraLearning 学习对话模式。"
+                "当需要展示课程总览卡片或章节片段卡片时，请主动调用 learning_card 工具。"
+                "课程总览使用 type=lecture_display；章节片段使用 type=chapter_range，"
+                "并传入 lecture_id、book_id 和 content_range。"
+                "不要把卡片内容直接当普通文本输出。"
+            ),
+        },
+        {
+            "id": "learning-course-book-tools",
+            "title": "Learning Course and Book Tools",
+            "required_tools": [
+                "listLectures",
+                "createLecture",
+                "getLecture",
+                "updateLecture",
+                "listBooks",
+                "createBook",
+                "getBook",
+                "updateBook",
+                "getBookText",
+                "readBookTextRange",
+                "searchBookText",
+                "getBookInfoXml",
+                "saveBookInfoXml",
+                "getBookDetailXml",
+                "saveBookDetailXml",
+                "getBookQuestionsXml",
+                "saveBookQuestionsXml",
+                "triggerBookVectorization",
+                "vectorSearch",
+            ],
+            "mode": "auto",
+            "author": "NexoraLearning",
+            "version": "1.0",
+            "main_content": (
+                "当前处于 NexoraLearning 学习对话模式。"
+                "当需要查看课程列表、课程详情、教材列表、教材正文、文本区间、粗读/精读 XML、题目 XML、"
+                "教材向量化或向量检索时，请主动使用对应工具完成，不要凭空编造课程结构或教材结构。"
+                "课程容器相关操作使用 listLectures/createLecture/getLecture/updateLecture；"
+                "教材相关操作使用 listBooks/createBook/getBook/updateBook；"
+                "正文与片段读取使用 getBookText/readBookTextRange/searchBookText；"
+                "结构 XML 读写使用 getBookInfoXml/saveBookInfoXml、getBookDetailXml/saveBookDetailXml、getBookQuestionsXml/saveBookQuestionsXml；"
+                "向量化与检索使用 triggerBookVectorization 和 vectorSearch。"
+            ),
+        },
+    ]
+
+    return jsonify(
+        {
+            "success": True,
+            "user_id": user_id,
+            "system_prompt": system_prompt,
+            "context_blocks": context_blocks,
+            "active_tool_skills": active_tool_skills,
+            "cards": cards,
+            "meta": {
+                "selected_lecture_count": len(lecture_rows),
+            },
+        }
+    )
+
+
+@bp.route("/frontend/card", methods=["POST"])
+def frontend_card():
+    data = request.get_json(silent=True) or {}
+    card_type = str(data.get("type") or "").strip()
+    if not card_type:
+        return jsonify({"success": False, "error": "type is required."}), 400
+    try:
+        if card_type == "lecture_display":
+            lecture_id = str(data.get("lecture_id") or "").strip()
+            if not lecture_id:
+                return jsonify({"success": False, "error": "lecture_id is required."}), 400
+            payload = _build_lecture_display_card_payload(lecture_id)
+        elif card_type == "chapter_range":
+            lecture_id = str(data.get("lecture_id") or "").strip()
+            book_id = str(data.get("book_id") or "").strip()
+            content_range = data.get("content_range")
+            if not lecture_id or not book_id:
+                return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+            payload = _build_chapter_range_card_payload(lecture_id, book_id, content_range)
+        else:
+            return jsonify({"success": False, "error": f"unsupported card type: {card_type}"}), 400
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+    return jsonify({"success": True, "card": payload})
+
+
 @bp.route("/frontend/learning/select", methods=["POST"])
 def frontend_select_learning_lecture():
     data = request.get_json(silent=True) or {}
@@ -556,14 +811,18 @@ def frontend_settings_refinement():
     rows = list_refinement_candidates(_cfg, status=status)
     queue_snapshot = get_refinement_queue_snapshot()
     running_by_book: Dict[str, str] = {}
+    running_count = 0
     for job in queue_snapshot.get("jobs", []) if isinstance(queue_snapshot.get("jobs"), list) else []:
         if not isinstance(job, dict):
             continue
         lecture_id = str(job.get("lecture_id") or "").strip()
         book_id = str(job.get("book_id") or "").strip()
         job_status = str(job.get("status") or "").strip().lower()
+        if job_status == "running":
+            running_count += 1
         if lecture_id and book_id:
             running_by_book[f"{lecture_id}::{book_id}"] = job_status
+    queue_snapshot["running_count"] = int(running_count)
     items: List[Dict[str, Any]] = []
     for row in rows:
         lecture_id = str(row.get("lecture_id") or "").strip()
@@ -574,8 +833,6 @@ def frontend_settings_refinement():
         book_id = str(book.get("id") or "").strip()
         refine_status = str(book.get("refinement_status") or "").strip().lower()
         coarse_status = str(book.get("coarse_status") or "").strip().lower()
-        if not status and coarse_status in {"done", "completed"} and refine_status in {"done", "extracted"}:
-            continue
         key = f"{lecture_id}::{book_id}"
         items.append(
             {
@@ -586,10 +843,18 @@ def frontend_settings_refinement():
                 "refinement_status": str(book.get("refinement_status") or ""),
                 "text_status": str(book.get("text_status") or ""),
                 "coarse_status": str(book.get("coarse_status") or ""),
+                "intensive_status": str(book.get("intensive_status") or ""),
+                "question_status": str(book.get("question_status") or ""),
                 "coarse_model": str(book.get("coarse_model") or ""),
+                "intensive_model": str(book.get("intensive_model") or ""),
+                "question_model": str(book.get("question_model") or ""),
                 "coarse_error": str(book.get("coarse_error") or ""),
+                "intensive_error": str(book.get("intensive_error") or ""),
+                "question_error": str(book.get("question_error") or ""),
                 "refinement_error": str(book.get("refinement_error") or ""),
                 "job_status": running_by_book.get(key, ""),
+                "progress_text": get_book_progress_text(lecture_id, book_id),
+                "progress_steps": get_book_progress_steps(lecture_id, book_id),
                 "updated_at": int(book.get("updated_at") or 0),
             }
         )
@@ -618,6 +883,66 @@ def frontend_settings_refinement_start():
         return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
     result = enqueue_book_refinement(_cfg, lecture_id, book_id, actor=actor, force=force)
     return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, **result}), 202
+
+
+@bp.route("/frontend/settings/refinement/intensive", methods=["POST"])
+def frontend_settings_refinement_intensive():
+    """设置页：手动触发教材精读（输出写入 bookdetail.xml）。"""
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    actor = str(data.get("actor") or _resolve_runtime_user_id()).strip()
+    model_name = str(data.get("model_name") or "").strip()
+    log_event(
+        "frontend_intensive_request",
+        "收到前端精读请求",
+        payload={
+            "lecture_id": lecture_id,
+            "book_id": book_id,
+            "actor": actor,
+            "model_name": model_name,
+            "is_admin": bool(_is_runtime_admin()),
+        },
+    )
+    if not _is_runtime_admin():
+        return jsonify({"success": False, "error": "Only admin can start intensive reading."}), 403
+    if not lecture_id or not book_id:
+        return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+    try:
+        result = enqueue_book_intensive(_cfg, lecture_id, book_id, actor=actor, model_name=model_name)
+        return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, **result}), 202
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@bp.route("/frontend/settings/refinement/question", methods=["POST"])
+def frontend_settings_refinement_question():
+    """设置页：手动触发教材出题（输出写入 questions.xml）。"""
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    actor = str(data.get("actor") or _resolve_runtime_user_id()).strip()
+    model_name = str(data.get("model_name") or "").strip()
+    log_event(
+        "frontend_question_request",
+        "收到前端出题请求",
+        payload={
+            "lecture_id": lecture_id,
+            "book_id": book_id,
+            "actor": actor,
+            "model_name": model_name,
+            "is_admin": bool(_is_runtime_admin()),
+        },
+    )
+    if not _is_runtime_admin():
+        return jsonify({"success": False, "error": "Only admin can start question generation."}), 403
+    if not lecture_id or not book_id:
+        return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+    try:
+        result = enqueue_book_question(_cfg, lecture_id, book_id, actor=actor, model_name=model_name)
+        return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, **result}), 202
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
 
 
 @bp.route("/frontend/settings/refinement/stop", methods=["POST"])
@@ -655,6 +980,8 @@ def frontend_settings_models():
             "settings": {
                 "default_nexora_model": default_model,
                 "rough_reading": rough,
+                "intensive_reading": get_intensive_reading_settings(_cfg),
+                "question_generation": get_question_generation_settings(_cfg),
             },
         }
     )
@@ -670,10 +997,13 @@ def frontend_settings_models_patch():
         return jsonify({"success": False, "error": "JSON body is required."}), 400
     default_model = data.get("default_nexora_model")
     rough_updates = data.get("rough_reading")
+    intensive_updates = data.get("intensive_reading")
     listed = _list_nexora_models_payload(_resolve_runtime_user_id())
     available_ids = {row.get("id", "") for row in _extract_model_options(listed.get("payload") if isinstance(listed.get("payload"), dict) else {})}
     updated_default = get_default_nexora_model(_cfg)
     updated_rough = get_rough_reading_settings(_cfg)
+    updated_intensive = get_intensive_reading_settings(_cfg)
+    updated_question = get_question_generation_settings(_cfg)
     if default_model is not None:
         normalized_default = str(default_model or "").strip()
         if normalized_default and normalized_default not in available_ids:
@@ -684,12 +1014,25 @@ def frontend_settings_models_patch():
         if rough_model_name and rough_model_name not in available_ids:
             return jsonify({"success": False, "error": "rough_reading.model_name is not in available models."}), 400
         updated_rough = update_rough_reading_settings(_cfg, rough_updates)
+    if isinstance(intensive_updates, dict):
+        intensive_model_name = str(intensive_updates.get("model_name") or "").strip()
+        if intensive_model_name and intensive_model_name not in available_ids:
+            return jsonify({"success": False, "error": "intensive_reading.model_name is not in available models."}), 400
+        updated_intensive = update_intensive_reading_settings(_cfg, intensive_updates)
+    question_updates = data.get("question_generation")
+    if isinstance(question_updates, dict):
+        question_model_name = str(question_updates.get("model_name") or "").strip()
+        if question_model_name and question_model_name not in available_ids:
+            return jsonify({"success": False, "error": "question_generation.model_name is not in available models."}), 400
+        updated_question = update_question_generation_settings(_cfg, question_updates)
     return jsonify(
         {
             "success": True,
             "settings": {
                 "default_nexora_model": updated_default,
                 "rough_reading": updated_rough,
+                "intensive_reading": updated_intensive,
+                "question_generation": updated_question,
             },
         }
     )

@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 import prompts
 
 LONGTERM_MODE_TOKENS = {"longterm", "long_term", "long-term", "lt", "plan"}
+LEARNING_MODE_TOKENS = {"learning", "learn", "study", "study_mode", "learning_mode"}
 
 
 def _coerce_text(value: Any) -> str:
@@ -15,7 +16,11 @@ def _coerce_text(value: Any) -> str:
 
 def normalize_conversation_mode(mode: Any) -> str:
     token = str(mode or "").strip().lower()
-    return "longterm" if token in LONGTERM_MODE_TOKENS else "chat"
+    if token in LONGTERM_MODE_TOKENS:
+        return "longterm"
+    if token in LEARNING_MODE_TOKENS:
+        return "learning"
+    return "chat"
 
 
 def _coerce_plan_list(raw_plan: Any) -> List[str]:
@@ -177,7 +182,9 @@ def normalize_longterm_request(
     conversation_mode_payload: Any = None
 ) -> Dict[str, Any]:
     raw_mode = normalize_conversation_mode(conversation_mode) if str(conversation_mode or "").strip() else ""
-    payload = normalize_longterm_payload(conversation_mode_payload)
+    payload = normalize_longterm_payload(conversation_mode_payload) if raw_mode == "longterm" else (
+        dict(conversation_mode_payload) if isinstance(conversation_mode_payload, dict) else {}
+    )
     effective_message = str(message or "")
     if not raw_mode and effective_message.lstrip().lower().startswith('/longterm'):
         raw_mode = 'longterm'
