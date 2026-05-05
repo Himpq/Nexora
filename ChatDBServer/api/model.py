@@ -7077,8 +7077,9 @@ class Model:
                     filtered_tools.append(t)
                 tools_payload = filtered_tools
 
-                if tools_payload:
-                    params["tools"] = tools_payload
+            # 始终显式下发 tools（若为空则不下发），避免“开着搜索却丢失函数工具”。
+            if tools_payload:
+                params["tools"] = tools_payload
 
             params = provider_adapter.apply_protocol_payload(
                 params,

@@ -25,8 +25,10 @@ def init_booksproc_queue(
 ) -> None:
     """Initialize background queue worker once."""
     with state.LOCK:
-        state.CFG.clear()
-        state.CFG.update(dict(cfg or {}))
+        if cfg is not state.CFG:
+            new_cfg = dict(cfg or {})
+            state.CFG.clear()
+            state.CFG.update(new_cfg)
         if state.RUNNING and state.WORKER and state.WORKER.is_alive():
             return
         state.RUNNING = True
