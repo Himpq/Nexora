@@ -1237,9 +1237,13 @@ body.reader-fullscreen-active .materials-preview-text {
 
 .modal-body {
   padding: 14px 16px 12px;
-  font-size: 14px;
+  font-size: 16px;
   color: #344054;
   line-height: 1.6;
+}
+
+.modal-body-center {
+  text-align: center;
 }
 
 .modal-footer {
