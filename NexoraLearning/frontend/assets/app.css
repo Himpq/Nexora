@@ -932,7 +932,8 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 10px 12px;
+  padding: 6px 10px;
+  min-height: 42px;
   border-bottom: 1px solid #eee;
   background: #f8f9fa;
 }
@@ -1007,7 +1008,6 @@ body.reader-fullscreen-active #readerPane.theme-dark .chapter-list-panel {
 
 .settings-content {
   padding: 1rem;
-  padding-top: 2rem;
 }
 
 .settings-section {
@@ -1383,14 +1383,14 @@ body.reader-fullscreen-active #readerPane.theme-sepia .reader-content {
 .reader-click-left {
   top: var(--reader-top-click-height, 80px);
   left: 0;
-  width: var(--reader-edge-width, 60px);
+  width: var(--reader-edge-width-effective, var(--reader-edge-width, 60px));
   bottom: 0;
 }
 
 .reader-click-right {
   top: var(--reader-top-click-height, 80px);
   right: 0;
-  width: var(--reader-edge-width, 60px);
+  width: var(--reader-edge-width-effective, var(--reader-edge-width, 60px));
   bottom: 0;
 }
 
@@ -2190,7 +2190,8 @@ body.reader-fullscreen-active .materials-preview-text {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 1rem;
+  padding: 6px 10px;
+  min-height: 42px;
   border-bottom: 1px solid #eee;
   background: #f8f9fa;
 }
@@ -2225,6 +2226,18 @@ body.reader-fullscreen-active .materials-preview-text {
   }
 }
 
+@media (max-width: 768px) {
+  #readerPane .reader-settings-panel {
+    max-height: 72vh !important;
+  }
+
+  #readerPane .reader-content .materials-preview-text,
+  body.reader-fullscreen-active #readerPane .reader-content .materials-preview-text {
+    width: 100% !important;
+    max-width: none !important;
+  }
+}
+
 /* ---- Hard lock: AITranslationNovel parity for header/container ---- */
 body.reader-fullscreen-active #materialsView .panel-card.materials-panel {
   padding: 0 !important;
@@ -2234,12 +2247,22 @@ body.reader-fullscreen-active #materialsView .panel-card.materials-panel {
   box-shadow: none !important;
   overflow: visible !important;
   background: transparent !important;
+  transform: none !important;
+  animation: none !important;
+}
+
+body.reader-fullscreen-active #materialsView.view-pane,
+body.reader-fullscreen-active #materialsView.view-pane.is-active {
+  transform: none !important;
+  animation: none !important;
 }
 
 body.reader-fullscreen-active #materialsView #readerPane {
   border: 0 !important;
   border-radius: 0 !important;
   box-shadow: none !important;
+  transform: none !important;
+  animation: none !important;
 }
 
 body.reader-fullscreen-active #materialsView #readerHeader,
@@ -2261,7 +2284,7 @@ body.reader-fullscreen-active #materialsView #readerHeader .nxl-icon-btn {
 /* squeeze readable text area by edge click width */
 #readerPane .reader-content .materials-preview-text,
 body.reader-fullscreen-active #readerPane .reader-content .materials-preview-text {
-  height: calc(100vh - var(--reader-top-click-height, 80px));
+  height: calc(100vh - 60px);
   overflow-y: auto;
   overflow-x: hidden;
   box-sizing: border-box;
@@ -2302,9 +2325,9 @@ body.reader-fullscreen-active #readerPane .reader-content .materials-preview-tex
 /* hard sync: click areas and main text layout share the same geometry */
 #readerPane .reader-content,
 body.reader-fullscreen-active #readerPane .reader-content {
-  padding-top: var(--reader-top-click-height, 80px) !important;
-  padding-left: var(--reader-edge-width, 60px) !important;
-  padding-right: var(--reader-edge-width, 60px) !important;
+  padding-top: 0 !important;
+  padding-left: var(--reader-edge-width-effective, var(--reader-edge-width, 60px)) !important;
+  padding-right: var(--reader-edge-width-effective, var(--reader-edge-width, 60px)) !important;
   padding-bottom: 0 !important;
 }
 
@@ -2316,5 +2339,164 @@ body.reader-fullscreen-active #readerPane .reader-click-left:hover,
 body.reader-fullscreen-active #readerPane .reader-click-right:hover,
 body.reader-fullscreen-active #readerPane .reader-click-top:hover {
   background: rgba(127, 127, 127, 0.14) !important;
+}
+
+/* ---- Reader stability lock (mobile + desktop) ---- */
+body.reader-fullscreen-active #readerPane,
+body.reader-fullscreen-active #readerPane .reader-content,
+body.reader-fullscreen-active #readerPane .reader-click-areas,
+body.reader-fullscreen-active #readerPane .reader-click-left,
+body.reader-fullscreen-active #readerPane .reader-click-right,
+body.reader-fullscreen-active #readerPane .reader-click-top,
+body.reader-fullscreen-active #readerPane .reader-header,
+body.reader-fullscreen-active #readerPane .nxl-icon-btn {
+  -webkit-tap-highlight-color: transparent !important;
+}
+
+body.reader-fullscreen-active #readerPane .reader-header {
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  margin: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  will-change: transform;
+  backface-visibility: hidden;
+}
+
+body.reader-fullscreen-active #readerPane .reader-content {
+  width: 100vw !important;
+  max-width: none !important;
+  margin: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background-clip: padding-box !important;
+}
+
+body.reader-fullscreen-active #readerPane .reader-content .materials-preview-text {
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+}
+
+body.reader-fullscreen-active #readerPane .reader-settings-panel {
+  position: fixed !important;
+  top: auto !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  transform: translateY(100%) !important;
+  transition: transform 0.3s ease !important;
+  z-index: 10003 !important;
+  width: 100% !important;
+  height: auto !important;
+  max-height: 35dvh !important;
+  border: 0 !important;
+  border-top: 1px solid rgba(0, 0, 0, 0.12) !important;
+  border-radius: 0 !important;
+  background: #ffffff !important;
+  opacity: 1 !important;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+body.reader-fullscreen-active #readerPane .reader-settings-panel.show {
+  transform: translateY(0) !important;
+  visibility: visible !important;
+  pointer-events: auto !important;
+  opacity: 1 !important;
+}
+
+body.reader-settings-open #readerPane .reader-click-areas,
+body.reader-settings-open #readerPane .reader-click-left,
+body.reader-settings-open #readerPane .reader-click-right,
+body.reader-settings-open #readerPane .reader-click-top {
+  pointer-events: none !important;
+}
+
+@media (max-width: 768px) {
+  body.reader-fullscreen-active #readerPane .reader-settings-panel {
+    max-height: 35dvh !important;
+  }
+}
+
+/* ---- Reader final lock (NexoraLearning only) ---- */
+#readerPane .reader-click-top {
+  display: none !important;
+}
+
+#readerPane .reader-click-left,
+#readerPane .reader-click-right {
+  top: 60px !important;
+  bottom: 0 !important;
+}
+
+#readerPane .reader-click-left:hover,
+#readerPane .reader-click-right:hover {
+  background: rgba(127, 127, 127, 0.14) !important;
+}
+
+#readerPane .reader-content,
+body.reader-fullscreen-active #readerPane .reader-content {
+  padding-top: 0 !important;
+  padding-left: var(--reader-edge-width-effective, var(--reader-edge-width, 60px)) !important;
+  padding-right: var(--reader-edge-width-effective, var(--reader-edge-width, 60px)) !important;
+  padding-bottom: 0 !important;
+}
+
+#readerPane .reader-content .materials-preview-text,
+body.reader-fullscreen-active #readerPane .reader-content .materials-preview-text {
+  box-sizing: border-box !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  max-height: 100% !important;
+  padding-top: 72px !important;
+  padding-bottom: 8px !important;
+  padding-right: 6px !important;
+  padding-left: 0 !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  transition: font-size 220ms ease, color 220ms ease, background-color 220ms ease !important;
+}
+
+#readerPane .reader-content .materials-preview-paragraph,
+body.reader-fullscreen-active #readerPane .reader-content .materials-preview-paragraph {
+  margin: 0 0 var(--reader-paragraph-gap, 1.7em) 0 !important;
+  line-height: 1.8 !important;
+  transition: margin-bottom 220ms ease, color 220ms ease !important;
+}
+
+#readerPane .reader-content .chapter-header,
+body.reader-fullscreen-active #readerPane .reader-content .chapter-header {
+  text-align: center;
+  margin-bottom: 1.25rem !important;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid rgba(17, 24, 39, 0.14);
+}
+
+#readerPane .reader-content .chapter-header h2,
+body.reader-fullscreen-active #readerPane .reader-content .chapter-header h2 {
+  margin: 0;
+  font-size: 1.35em;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+#readerPane .reader-content .chapter-navigation,
+body.reader-fullscreen-active #readerPane .reader-content .chapter-navigation {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  border-top: 1px solid rgba(17, 24, 39, 0.14);
+  padding-top: 0.9rem;
+  margin-top: 1.6rem !important;
+  padding-bottom: 1.2rem;
+}
+
+#readerPane .reader-content .chapter-navigation .btn {
+  min-width: 92px;
+  transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease;
 }
 

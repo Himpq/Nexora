@@ -85,6 +85,8 @@ def run_rough_model(
     review_stream = as_bool(model_cfg.get("summary_review_stream", True), True)
     review_think = as_bool(model_cfg.get("summary_review_think", False), False)
     section_review_model_name = str(model_cfg.get("section_review_model_name") or "").strip()
+    if not section_review_model_name:
+        section_review_model_name = str(model_name or runner.model_name or "").strip()
     try:
         section_review_temperature = float(model_cfg.get("section_review_temperature") or 0.1)
     except Exception:
