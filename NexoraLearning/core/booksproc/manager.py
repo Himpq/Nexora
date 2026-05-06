@@ -1243,6 +1243,26 @@ def _run_coarse_reading_chunked(
             )
             if reviewed_sections:
                 planned_sections = reviewed_sections
+            log_event(
+                "section_review_status",
+                "分节复核阶段状态",
+                payload={
+                    "enabled": bool(str(section_review_model_name or "").strip()),
+                    "review_model": str(section_review_model_name or "").strip(),
+                    "sections_count": len(planned_sections),
+                },
+                content=_format_section_plan(planned_sections)[:1600],
+            )
+            log_model_text(
+                (
+                    "[section_review_status]\n"
+                    f"enabled={bool(str(section_review_model_name or '').strip())}\n"
+                    f"review_model={str(section_review_model_name or '').strip()}\n"
+                    f"sections_count={len(planned_sections)}\n"
+                    f"{_format_section_plan(planned_sections)}"
+                ),
+                source="section_review_status",
+            )
         if planned_sections:
             chapters = []
             seen_signatures.clear()
@@ -1281,6 +1301,15 @@ def _run_coarse_reading_chunked(
             "reason": str(section_plan.get("reason") or ""),
         },
         content=_format_section_plan(planned_sections)[:12000],
+    )
+    log_model_text(
+        (
+            "[coarse_section_discovery]\n"
+            f"mode={plan_mode}\n"
+            f"sections_count={len(planned_sections)}\n"
+            f"{_format_section_plan(planned_sections)}"
+        ),
+        source="coarse_section_discovery",
     )
     section_plan_reliable = plan_mode == "sectioned" and bool(planned_sections)
     if not section_plan_reliable:
@@ -3286,6 +3315,9 @@ def _exec_index_book_text_tool(*, full_text: str, total_len: int, arguments: Map
     scan_text = raw[range_start:range_end]
     source = scan_text.lower()
     needle = keyword.lower()
+    # 标题常见问题：文本中会插入空白/换行/全角空格，导致精确子串匹配错失命中。
+    # 这里增加一个宽松匹配形态（去空白）作为兜底。
+    loose_needle = re.sub(r"\s+", "", needle)
     cursor = 0
     hits: List[Dict[str, Any]] = []
     header_block_end = raw.find("[/EPUB_HEADING_CANDIDATES]")
@@ -3293,13 +3325,30 @@ def _exec_index_book_text_tool(*, full_text: str, total_len: int, arguments: Map
         header_block_end += len("[/EPUB_HEADING_CANDIDATES]")
     while cursor < len(source) and len(hits) < max_hits:
         local_idx = source.find(needle, cursor)
+        matched_len = len(needle)
+        if local_idx < 0 and loose_needle:
+            loose_source = re.sub(r"\s+", "", source[cursor:])
+            loose_idx = loose_source.find(loose_needle)
+            if loose_idx >= 0:
+                # 将去空白后的命中大致映射回原始坐标：从 cursor 往后扫描到累计非空白字符位置。
+                non_ws = 0
+                mapped = -1
+                for raw_idx, ch in enumerate(source[cursor:]):
+                    if not ch.isspace():
+                        if non_ws == loose_idx:
+                            mapped = raw_idx
+                            break
+                        non_ws += 1
+                if mapped >= 0:
+                    local_idx = mapped
+                    matched_len = max(1, len(keyword))
         if local_idx < 0:
             break
         match_start = range_start + local_idx
         if header_block_end > 0 and match_start < header_block_end:
             cursor = max(cursor + 1, local_idx + len(keyword))
             continue
-        match_end = match_start + len(keyword)
+        match_end = match_start + matched_len
         block_start = max(0, match_start - context_range)
         block_end = min(total_len, match_end + context_range)
         snippet = raw[block_start:block_end]
@@ -3315,7 +3364,7 @@ def _exec_index_book_text_tool(*, full_text: str, total_len: int, arguments: Map
                 "text": snippet,
             }
         )
-        cursor = max(cursor + 1, local_idx + len(keyword))
+        cursor = max(cursor + 1, local_idx + matched_len)
     return {
         "ok": True,
         "keyword": keyword,
