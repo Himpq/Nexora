@@ -41,9 +41,6 @@
     lineHeightValue: document.getElementById("lineHeightValue"),
     edgeClickWidthSlider: document.getElementById("edgeClickWidthSlider"),
     edgeClickWidthValue: document.getElementById("edgeClickWidthValue"),
-    topClickHeightSlider: document.getElementById("topClickHeightSlider"),
-    topClickHeightValue: document.getElementById("topClickHeightValue"),
-    closeReaderSettings: document.getElementById("closeReaderSettings"),
     enableKeyNavigation: document.getElementById("enableKeyNavigation"),
     translatorSelect: document.getElementById("translatorSelect"),
     resetReaderSettings: document.getElementById("resetReaderSettings"),
@@ -51,7 +48,6 @@
     readerClickAreas: document.getElementById("readerClickAreas"),
     readerClickLeft: document.getElementById("readerClickLeft"),
     readerClickRight: document.getElementById("readerClickRight"),
-    readerClickTop: document.getElementById("readerClickTop"),
     createLectureTitleInput: document.getElementById("createLectureTitleInput"),
     createLectureCategoryInput: document.getElementById("createLectureCategoryInput"),
     createLectureStatusSelect: document.getElementById("createLectureStatusSelect"),
@@ -79,9 +75,8 @@
   const READER_SETTINGS_STORAGE_KEY = "nxl_reader_settings_v1";
   const DEFAULT_READER_SETTINGS = Object.freeze({
     fontSize: 18,
-    lineHeight: 1.7,
+    paragraphSpacing: 1.7,
     edgeClickWidth: 60,
-    topClickHeight: 80,
     theme: "light",
     displayMode: "zh-ja",
     enableKeyNavigation: true,
@@ -123,9 +118,8 @@
     refinementViewBootstrapped: false,
     readerSettings: {
       fontSize: DEFAULT_READER_SETTINGS.fontSize,
-      lineHeight: DEFAULT_READER_SETTINGS.lineHeight,
+      paragraphSpacing: DEFAULT_READER_SETTINGS.paragraphSpacing,
       edgeClickWidth: DEFAULT_READER_SETTINGS.edgeClickWidth,
-      topClickHeight: DEFAULT_READER_SETTINGS.topClickHeight,
       theme: DEFAULT_READER_SETTINGS.theme,
       displayMode: DEFAULT_READER_SETTINGS.displayMode,
       enableKeyNavigation: DEFAULT_READER_SETTINGS.enableKeyNavigation,
@@ -136,9 +130,56 @@
     readerFullTextRaw: "",
     readerViewMode: "closed",
     readerMeta: { title: "", subtitle: "" },
+    readerUiToggleLockedUntil: 0,
+    readerClosePanelsUntil: 0,
     materialsDetailMode: "lecture",
     catalogContext: null,
   };
+
+  function logReaderDebug(eventName, extra) {
+    try {
+      const payload = {
+        event: String(eventName || ""),
+        time: Date.now(),
+        isReaderOpen: !!state.isReaderOpen,
+        isReaderFullscreen: !!state.isReaderFullscreen,
+        settingsOpen: !!(el.readerSettingsPanel && el.readerSettingsPanel.classList.contains("show")),
+        chapterOpen: !!(el.chapterListPanel && el.chapterListPanel.classList.contains("show")),
+        headerHidden: !!(el.readerHeader && (el.readerHeader.classList.contains("hidden") || el.readerHeader.classList.contains("header-hidden"))),
+        extra: extra || {},
+      };
+      if (el.readerSettingsPanel) {
+        const cs = window.getComputedStyle(el.readerSettingsPanel);
+        const rect = el.readerSettingsPanel.getBoundingClientRect();
+        const parent = el.readerSettingsPanel.parentElement;
+        const parentRect = parent ? parent.getBoundingClientRect() : null;
+        payload.settingsStyle = {
+          position: cs.position,
+          top: cs.top,
+          bottom: cs.bottom,
+          left: cs.left,
+          right: cs.right,
+          transform: cs.transform,
+          display: cs.display,
+          visibility: cs.visibility,
+          opacity: cs.opacity,
+          zIndex: cs.zIndex,
+          rectTop: Number(rect.top.toFixed(2)),
+          rectBottom: Number(rect.bottom.toFixed(2)),
+          rectHeight: Number(rect.height.toFixed(2)),
+          winH: Number((window.innerHeight || 0).toFixed(2)),
+          parentTag: parent ? parent.tagName : "",
+          parentClass: parent ? String(parent.className || "") : "",
+          parentRectTop: parentRect ? Number(parentRect.top.toFixed(2)) : null,
+          parentRectBottom: parentRect ? Number(parentRect.bottom.toFixed(2)) : null,
+          parentRectHeight: parentRect ? Number(parentRect.height.toFixed(2)) : null,
+        };
+      }
+      console.info("[NXL-ReaderDebug]", payload);
+    } catch (_err) {
+      // ignore debug errors
+    }
+  }
 
   function escapeHtml(str) {
     return String(str || "")
@@ -1039,8 +1080,9 @@
       const nums = range.split(":").map((x) => Number(String(x || "").trim()));
       if (!name || nums.length < 2 || !Number.isFinite(nums[0]) || !Number.isFinite(nums[1])) continue;
       const start = Math.max(0, Math.floor(nums[0]));
-      const second = Math.floor(nums[1]);
-      const end = second > start ? second : Math.min(fullTextLength, start + Math.max(0, second));
+      // backend chapter_range uses START:LENGTH, not START:END
+      const length = Math.max(0, Math.floor(nums[1]));
+      const end = Math.min(fullTextLength, start + length);
       entries.push({ title: name, start, end: Math.max(start, end) });
     }
     entries.sort((a, b) => a.start - b.start);
@@ -1074,7 +1116,20 @@
     const start = Math.max(0, Math.min(state.readerFullTextRaw.length, chapter.start));
     const end = Math.max(start, Math.min(state.readerFullTextRaw.length, chapter.end));
     const part = state.readerFullTextRaw.slice(start, end).trim() || state.readerFullTextRaw;
-    el.readerContent.innerHTML = `<div class="materials-preview-text">${formatReaderText(part || "")}</div>`;
+    const prevDisabled = idx <= 0 ? "disabled" : "";
+    const nextDisabled = idx >= chapters.length - 1 ? "disabled" : "";
+    el.readerContent.innerHTML = `
+      <div class="materials-preview-text">
+        <div class="chapter-header text-center mb-4">
+          <h2>${escapeHtml(chapter.title || `第 ${idx + 1} 章`)}</h2>
+        </div>
+        <div class="chapter-body">${formatReaderText(part || "")}</div>
+        <div class="chapter-navigation mt-5 d-flex justify-content-between">
+          <button class="btn btn-outline-secondary btn-sm" data-reader-nav="prev" ${prevDisabled}>上一章</button>
+          <button class="btn btn-outline-secondary btn-sm" data-reader-nav="next" ${nextDisabled}>下一章</button>
+        </div>
+      </div>
+    `;
     renderChapterList();
     syncReaderSettingsPanel();
     applyReaderTypography();
@@ -1087,20 +1142,19 @@
       const parsed = JSON.parse(raw);
       if (!parsed || typeof parsed !== "object") return;
       const fontSize = Number(parsed.fontSize);
-      const lineHeight = Number(parsed.lineHeight);
+      const paragraphSpacing = Number(parsed.paragraphSpacing);
+      const legacyLineHeight = Number(parsed.lineHeight);
       const edgeClickWidth = Number(parsed.edgeClickWidth);
-      const topClickHeight = Number(parsed.topClickHeight);
       if (Number.isFinite(fontSize)) {
         state.readerSettings.fontSize = Math.max(12, Math.min(36, Math.round(fontSize)));
       }
-      if (Number.isFinite(lineHeight)) {
-        state.readerSettings.lineHeight = Math.max(1.0, Math.min(3.5, Number(lineHeight.toFixed(1))));
+      if (Number.isFinite(paragraphSpacing)) {
+        state.readerSettings.paragraphSpacing = Math.max(1.0, Math.min(3.5, Number(paragraphSpacing.toFixed(1))));
+      } else if (Number.isFinite(legacyLineHeight)) {
+        state.readerSettings.paragraphSpacing = Math.max(1.0, Math.min(3.5, Number(legacyLineHeight.toFixed(1))));
       }
       if (Number.isFinite(edgeClickWidth)) {
         state.readerSettings.edgeClickWidth = Math.max(30, Math.min(160, Math.round(edgeClickWidth)));
-      }
-      if (Number.isFinite(topClickHeight)) {
-        state.readerSettings.topClickHeight = Math.max(48, Math.min(180, Math.round(topClickHeight)));
       }
       if (typeof parsed.theme === "string" && parsed.theme) {
         state.readerSettings.theme = parsed.theme;
@@ -1130,12 +1184,10 @@
   function syncReaderSettingsPanel() {
     if (el.fontSizeSlider) el.fontSizeSlider.value = String(state.readerSettings.fontSize);
     if (el.fontSizeValue) el.fontSizeValue.textContent = `${state.readerSettings.fontSize}px`;
-    if (el.lineHeightSlider) el.lineHeightSlider.value = String(state.readerSettings.lineHeight);
-    if (el.lineHeightValue) el.lineHeightValue.textContent = String(state.readerSettings.lineHeight);
+    if (el.lineHeightSlider) el.lineHeightSlider.value = String(state.readerSettings.paragraphSpacing);
+    if (el.lineHeightValue) el.lineHeightValue.textContent = String(state.readerSettings.paragraphSpacing);
     if (el.edgeClickWidthSlider) el.edgeClickWidthSlider.value = String(state.readerSettings.edgeClickWidth || DEFAULT_READER_SETTINGS.edgeClickWidth);
     if (el.edgeClickWidthValue) el.edgeClickWidthValue.textContent = `${state.readerSettings.edgeClickWidth || DEFAULT_READER_SETTINGS.edgeClickWidth}px`;
-    if (el.topClickHeightSlider) el.topClickHeightSlider.value = String(state.readerSettings.topClickHeight || DEFAULT_READER_SETTINGS.topClickHeight);
-    if (el.topClickHeightValue) el.topClickHeightValue.textContent = `${state.readerSettings.topClickHeight || DEFAULT_READER_SETTINGS.topClickHeight}px`;
     const themeInput = document.querySelector(`input[name="readerTheme"][value="${state.readerSettings.theme}"]`);
     if (themeInput instanceof HTMLInputElement) themeInput.checked = true;
     const displayModeInput = document.querySelector(`input[name="readerDisplayMode"][value="${state.readerSettings.displayMode}"]`);
@@ -1146,19 +1198,23 @@
 
   function applyReaderTypography() {
     const fs = Number(state.readerSettings.fontSize || DEFAULT_READER_SETTINGS.fontSize);
-    const lh = Number(state.readerSettings.lineHeight || DEFAULT_READER_SETTINGS.lineHeight);
+    const spacing = Number(state.readerSettings.paragraphSpacing || DEFAULT_READER_SETTINGS.paragraphSpacing);
     const edgeW = Math.max(30, Math.min(160, Number(state.readerSettings.edgeClickWidth || DEFAULT_READER_SETTINGS.edgeClickWidth)));
-    const topH = Math.max(48, Math.min(180, Number(state.readerSettings.topClickHeight || DEFAULT_READER_SETTINGS.topClickHeight)));
+    const viewportW = Math.max(320, Number(window.innerWidth || 390));
+    const isMobileViewport = viewportW <= 768;
+    const mobileEdgeCap = Math.max(18, Math.floor(viewportW * 0.14));
+    const effectiveEdgeW = isMobileViewport ? Math.max(18, Math.min(edgeW, mobileEdgeCap)) : edgeW;
     const textRoot = el.readerContent ? el.readerContent.querySelector(".materials-preview-text") : null;
     if (textRoot instanceof HTMLElement) {
       textRoot.style.fontSize = `${fs}px`;
-      textRoot.style.lineHeight = String(lh);
+      textRoot.style.lineHeight = "1.8";
+      textRoot.style.setProperty("--reader-paragraph-gap", `${spacing}em`);
     }
     if (el.readerPane) {
       el.readerPane.classList.remove("theme-light", "theme-dark", "theme-sepia");
       el.readerPane.classList.add(`theme-${state.readerSettings.theme || "light"}`);
       el.readerPane.style.setProperty("--reader-edge-width", `${edgeW}px`);
-      el.readerPane.style.setProperty("--reader-top-click-height", `${topH}px`);
+      el.readerPane.style.setProperty("--reader-edge-width-effective", `${effectiveEdgeW}px`);
     }
   }
 
@@ -1169,7 +1225,17 @@
   function setReaderSettingsPanelOpen(open) {
     if (!el.readerSettingsPanel) return;
     const shouldOpen = !!open;
+    logReaderDebug("setReaderSettingsPanelOpen:before", { shouldOpen });
+    state.readerUiToggleLockedUntil = Date.now() + 120;
+    if (shouldOpen) {
+      setChapterListPanelOpen(false);
+      setReaderHeaderVisible(true);
+    }
     el.readerSettingsPanel.classList.toggle("show", shouldOpen);
+    document.body.classList.toggle("reader-settings-open", shouldOpen);
+    requestAnimationFrame(() => {
+      logReaderDebug("setReaderSettingsPanelOpen:afterRAF", { shouldOpen });
+    });
   }
 
   function setChapterListPanelOpen(open) {
@@ -1180,6 +1246,9 @@
     }
     const shouldOpen = !!open;
     el.chapterListPanel.classList.toggle("show", shouldOpen);
+    if (!shouldOpen) {
+      state.readerClosePanelsUntil = Date.now() + 180;
+    }
   }
 
   function setReaderHeaderVisible(visible) {
@@ -1202,13 +1271,21 @@
   }
 
   function toggleReaderUI() {
+    if (Date.now() < Number(state.readerUiToggleLockedUntil || 0)) {
+      logReaderDebug("toggleReaderUI:blockedByLock", { lockedUntil: state.readerUiToggleLockedUntil });
+      return;
+    }
+    if (Date.now() < Number(state.readerClosePanelsUntil || 0)) {
+      logReaderDebug("toggleReaderUI:blockedAfterClosePanel", { lockedUntil: state.readerClosePanelsUntil });
+      return;
+    }
     if (isReaderSettingsOpen() || (el.chapterListPanel && el.chapterListPanel.classList.contains("show"))) {
-      setReaderSettingsPanelOpen(false);
-      setChapterListPanelOpen(false);
+      logReaderDebug("toggleReaderUI:blockedByPanel", {});
       return;
     }
     const hidden = el.readerHeader.classList.contains("header-hidden") || el.readerHeader.classList.contains("hidden");
     setReaderHeaderVisible(hidden);
+    logReaderDebug("toggleReaderUI:headerToggled", { nextVisible: hidden });
   }
 
   function openReader(title, subtitle, content, options) {
@@ -1247,6 +1324,7 @@
     setReaderFullscreen(false);
     setReaderSettingsPanelOpen(false);
     setChapterListPanelOpen(false);
+    document.body.classList.remove("reader-settings-open");
     state.readerChapters = [];
     state.readerActiveChapterIndex = 0;
     state.readerFullTextRaw = "";
@@ -1269,6 +1347,7 @@
       setReaderHeaderVisible(true);
       if (el.readerSettingsPanel) el.readerSettingsPanel.classList.remove("show");
       if (el.chapterListPanel) el.chapterListPanel.classList.remove("show");
+      document.body.classList.remove("reader-settings-open");
     }
     notifyHostLayout(fs ? "immersive" : "default", { hideInputDock: true });
     syncReaderModeUI();
@@ -1689,8 +1768,25 @@
     });
     if (el.readerSettingsBtn) {
       el.readerSettingsBtn.addEventListener("click", (event) => {
+        event.preventDefault();
         event.stopPropagation();
+        logReaderDebug("readerSettingsBtn:click", {});
         setReaderSettingsPanelOpen(!isReaderSettingsOpen());
+      });
+    }
+    if (el.readerSettingsPanel) {
+      el.readerSettingsPanel.addEventListener("click", (event) => {
+        event.stopPropagation();
+        logReaderDebug("readerSettingsPanel:click", {});
+      });
+      el.readerSettingsPanel.addEventListener("pointerdown", (event) => {
+        event.stopPropagation();
+        logReaderDebug("readerSettingsPanel:pointerdown", {});
+      });
+      ["transitionstart", "transitionend", "animationstart", "animationend"].forEach((evtName) => {
+        el.readerSettingsPanel.addEventListener(evtName, () => {
+          logReaderDebug(`readerSettingsPanel:${evtName}`, {});
+        });
       });
     }
     if (el.readerChapterListBtn) {
@@ -1717,12 +1813,6 @@
     if (el.closeChapterList) {
       el.closeChapterList.addEventListener("click", () => setChapterListPanelOpen(false));
     }
-    if (el.closeReaderSettings) {
-      el.closeReaderSettings.addEventListener("click", (event) => {
-        event.stopPropagation();
-        setReaderSettingsPanelOpen(false);
-      });
-    }
     if (el.fontSizeSlider) {
       el.fontSizeSlider.addEventListener("input", () => {
         const v = Number(el.fontSizeSlider.value || DEFAULT_READER_SETTINGS.fontSize);
@@ -1734,8 +1824,8 @@
     }
     if (el.lineHeightSlider) {
       el.lineHeightSlider.addEventListener("input", () => {
-        const v = Number(el.lineHeightSlider.value || DEFAULT_READER_SETTINGS.lineHeight);
-        state.readerSettings.lineHeight = Math.max(1.0, Math.min(3.5, Number(v.toFixed(1))));
+        const v = Number(el.lineHeightSlider.value || DEFAULT_READER_SETTINGS.paragraphSpacing);
+        state.readerSettings.paragraphSpacing = Math.max(1.0, Math.min(3.5, Number(v.toFixed(1))));
         syncReaderSettingsPanel();
         applyReaderTypography();
         saveReaderSettings();
@@ -1745,15 +1835,6 @@
       el.edgeClickWidthSlider.addEventListener("input", () => {
         const v = Number(el.edgeClickWidthSlider.value || DEFAULT_READER_SETTINGS.edgeClickWidth);
         state.readerSettings.edgeClickWidth = Math.max(30, Math.min(160, Math.round(v)));
-        syncReaderSettingsPanel();
-        applyReaderTypography();
-        saveReaderSettings();
-      });
-    }
-    if (el.topClickHeightSlider) {
-      el.topClickHeightSlider.addEventListener("input", () => {
-        const v = Number(el.topClickHeightSlider.value || DEFAULT_READER_SETTINGS.topClickHeight);
-        state.readerSettings.topClickHeight = Math.max(48, Math.min(180, Math.round(v)));
         syncReaderSettingsPanel();
         applyReaderTypography();
         saveReaderSettings();
@@ -1792,9 +1873,8 @@
       el.resetReaderSettings.addEventListener("click", () => {
         state.readerSettings = {
           fontSize: DEFAULT_READER_SETTINGS.fontSize,
-          lineHeight: DEFAULT_READER_SETTINGS.lineHeight,
+          paragraphSpacing: DEFAULT_READER_SETTINGS.paragraphSpacing,
           edgeClickWidth: DEFAULT_READER_SETTINGS.edgeClickWidth,
-          topClickHeight: DEFAULT_READER_SETTINGS.topClickHeight,
           theme: DEFAULT_READER_SETTINGS.theme,
           displayMode: DEFAULT_READER_SETTINGS.displayMode,
           enableKeyNavigation: DEFAULT_READER_SETTINGS.enableKeyNavigation,
@@ -1827,27 +1907,65 @@
     }
     el.readerContent.addEventListener("click", (event) => {
       if (!state.isReaderFullscreen) return;
+      const target = event.target instanceof Element ? event.target : null;
+      const navBtn = target ? target.closest("[data-reader-nav]") : null;
+      if (navBtn) {
+        event.preventDefault();
+        event.stopPropagation();
+        const dir = String(navBtn.getAttribute("data-reader-nav") || "");
+        const nextIndex = dir === "prev"
+          ? state.readerActiveChapterIndex - 1
+          : state.readerActiveChapterIndex + 1;
+        openReaderChapter(nextIndex);
+        return;
+      }
+      if (isReaderSettingsOpen()) {
+        setReaderSettingsPanelOpen(false);
+        state.readerClosePanelsUntil = Date.now() + 180;
+        return;
+      }
+      if (el.chapterListPanel && el.chapterListPanel.classList.contains("show")) {
+        setChapterListPanelOpen(false);
+        state.readerClosePanelsUntil = Date.now() + 180;
+        return;
+      }
       event.stopPropagation();
+      logReaderDebug("readerContent:clickToggle", {});
       toggleReaderUI();
     });
     if (el.readerClickLeft) {
       el.readerClickLeft.addEventListener("click", (event) => {
         if (!state.isReaderFullscreen) return;
+        if (el.chapterListPanel && el.chapterListPanel.classList.contains("show")) {
+          setChapterListPanelOpen(false);
+          state.readerClosePanelsUntil = Date.now() + 180;
+          return;
+        }
+        if (isReaderSettingsOpen()) {
+          setReaderSettingsPanelOpen(false);
+          state.readerClosePanelsUntil = Date.now() + 180;
+          return;
+        }
         event.stopPropagation();
+        logReaderDebug("readerClickLeft:toggle", {});
         toggleReaderUI();
       });
     }
     if (el.readerClickRight) {
       el.readerClickRight.addEventListener("click", (event) => {
         if (!state.isReaderFullscreen) return;
+        if (el.chapterListPanel && el.chapterListPanel.classList.contains("show")) {
+          setChapterListPanelOpen(false);
+          state.readerClosePanelsUntil = Date.now() + 180;
+          return;
+        }
+        if (isReaderSettingsOpen()) {
+          setReaderSettingsPanelOpen(false);
+          state.readerClosePanelsUntil = Date.now() + 180;
+          return;
+        }
         event.stopPropagation();
-        toggleReaderUI();
-      });
-    }
-    if (el.readerClickTop) {
-      el.readerClickTop.addEventListener("click", (event) => {
-        if (!state.isReaderFullscreen) return;
-        event.stopPropagation();
+        logReaderDebug("readerClickRight:toggle", {});
         toggleReaderUI();
       });
     }
@@ -1870,6 +1988,26 @@
       if (event.key === "Escape" && state.isReaderFullscreen) {
         setReaderFullscreen(false);
       }
+    });
+    document.addEventListener("pointerdown", (event) => {
+      if (!state.isReaderOpen || !state.isReaderFullscreen) return;
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const clickedSettingsPanel = !!target.closest("#readerSettingsPanel");
+      const clickedChapterPanel = !!target.closest("#chapterListPanel");
+      const clickedSettingsBtn = !!target.closest("#readerSettingsBtn");
+      const clickedChapterBtn = !!target.closest("#readerChapterListBtn");
+      if (isReaderSettingsOpen() && !clickedSettingsPanel && !clickedSettingsBtn) {
+        setReaderSettingsPanelOpen(false);
+        state.readerClosePanelsUntil = Date.now() + 180;
+      }
+      if (el.chapterListPanel && el.chapterListPanel.classList.contains("show") && !clickedChapterPanel && !clickedChapterBtn) {
+        setChapterListPanelOpen(false);
+        state.readerClosePanelsUntil = Date.now() + 180;
+      }
+    });
+    window.addEventListener("resize", () => {
+      if (state.isReaderOpen) applyReaderTypography();
     });
 
     el.kickerCreateTabBtn.addEventListener("click", () => setUploadTab("create"));

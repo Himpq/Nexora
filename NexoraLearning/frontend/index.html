@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NexoraLearning 学习看板</title>
-  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260505_07">
+  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260506_18">
 </head>
 <body>
   <main class="learning-shell" id="learningPanel">
@@ -73,12 +73,8 @@
           <div id="readerClickAreas" class="reader-click-areas" hidden>
             <div id="readerClickLeft" class="reader-click-left"></div>
             <div id="readerClickRight" class="reader-click-right"></div>
-            <div id="readerClickTop" class="reader-click-top"></div>
           </div>
-          <div class="reader-settings-panel" id="readerSettingsPanel">
-            <div class="settings-header">
-              <button class="btn btn-sm btn-outline-light" id="closeReaderSettings" type="button">×</button>
-            </div>
+          <div class="reader-settings-panel" id="readerSettingsPanel" style="position:fixed;left:0;right:0;bottom:0;top:auto;transform:translateY(100%);visibility:hidden;pointer-events:none;z-index:10003;max-height:35dvh;overflow-y:auto;background:#fff;border-top:1px solid rgba(0,0,0,.12);border-radius:0;">
             <div class="settings-content">
               <div class="settings-section">
                 <h6>显示模式</h6>
@@ -116,7 +112,7 @@
                 </div>
               </div>
               <div class="settings-section">
-                <h6>行距</h6>
+                <h6>段落距</h6>
                 <div class="slider-container">
                   <div class="slider-label">
                     <span>紧密</span>
@@ -135,17 +131,6 @@
                     <span>宽</span>
                   </div>
                   <input type="range" class="custom-range" id="edgeClickWidthSlider" min="30" max="160" step="2" value="60">
-                </div>
-              </div>
-              <div class="settings-section">
-                <h6>顶部点击区</h6>
-                <div class="slider-container">
-                  <div class="slider-label">
-                    <span>低</span>
-                    <span id="topClickHeightValue">80px</span>
-                    <span>高</span>
-                  </div>
-                  <input type="range" class="custom-range" id="topClickHeightSlider" min="48" max="180" step="2" value="80">
                 </div>
               </div>
               <div class="settings-section">
@@ -294,7 +279,7 @@
       </div>
     </div>
   </div>
-  <script src="/api/frontend/assets/app.js?v=20260505_07"></script>
+  <script src="/api/frontend/assets/app.js?v=20260506_18"></script>
 </body>
 </html>
 
