@@ -10398,8 +10398,9 @@ async function createNewConversation(silent = false, targetMode = null) {
         closeKnowledgeView();
     }
     currentConversationHasImageHistory = false;
-    const forcedLearning = learningModeEnabled && String(targetMode || '').trim().toLowerCase() === 'chat';
-    const resolvedMode = forcedLearning ? 'learning' : resolveNewConversationMode(targetMode);
+    const normalizedTargetMode = String(targetMode || '').trim().toLowerCase();
+    const preferNexoraChat = normalizedTargetMode === 'chat' && String(learningSidebarMode || '').trim().toLowerCase() === 'nexora';
+    const resolvedMode = preferNexoraChat ? 'chat' : resolveNewConversationMode(targetMode);
     currentConversationMode = resolvedMode;
     currentConversationLongtermState = {
         active: false,
