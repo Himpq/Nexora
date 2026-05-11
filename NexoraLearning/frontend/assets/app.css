@@ -693,6 +693,15 @@ body {
   align-content: start;
 }
 
+.materials-loading {
+  border: 1px dashed var(--nxl-line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: #667085;
+  background: #fafafa;
+}
+
 .materials-catalog-item {
   width: 100%;
   text-align: left;
@@ -1845,6 +1854,68 @@ body.reader-fullscreen-active .materials-preview-text {
   color: #101828;
 }
 
+.refine-flow-wrap {
+  margin-top: 6px;
+}
+
+.refine-flow-bar {
+  height: 8px;
+  border-radius: 999px;
+  border: 1px solid var(--nxl-line);
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.refine-flow-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #2f6fec 0%, #5187f5 100%);
+  transition: width 0.25s ease;
+}
+
+.refine-flow-fill.is-error {
+  background: linear-gradient(90deg, #ef4444 0%, #f97316 100%);
+}
+
+.refine-flow-steps {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.refine-flow-step {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 26px;
+  border-radius: 10px;
+  border: 1px solid var(--nxl-line-strong);
+  background: #fff;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.refine-flow-step.is-done {
+  border-color: #b6ccff;
+  background: #f4f8ff;
+  color: #1d4ed8;
+}
+
+.refine-flow-step.is-active {
+  border-color: #2f6fec;
+  background: #eff6ff;
+  color: #1e40af;
+}
+
+.refine-flow-step.is-error {
+  border-color: #ef4444;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
 .refine-steps {
   margin-top: 8px;
   margin-left: 18px;
@@ -1881,6 +1952,35 @@ body.reader-fullscreen-active .materials-preview-text {
   margin-top: 10px;
   display: grid;
   gap: 10px;
+}
+
+.settings-model-form {
+  gap: 12px;
+}
+
+.settings-model-row {
+  grid-template-columns: 160px minmax(260px, 560px);
+  align-items: center;
+  justify-content: start;
+}
+
+.settings-model-label {
+  white-space: nowrap;
+}
+
+.settings-model-select {
+  width: min(560px, 100%);
+}
+
+@media (max-width: 920px) {
+  .settings-model-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .settings-model-select {
+    width: 100%;
+  }
 }
 
 .course-picker-search {
@@ -2422,6 +2522,11 @@ body.reader-settings-open #readerPane .reader-click-top {
 }
 
 /* ---- Reader final lock (NexoraLearning only) ---- */
+#readerPane,
+#readerPane * {
+  cursor: auto !important;
+}
+
 #readerPane .reader-click-top {
   display: none !important;
 }
@@ -2500,3 +2605,66 @@ body.reader-fullscreen-active #readerPane .reader-content .chapter-navigation {
   transition: background-color 160ms ease, color 160ms ease, border-color 160ms ease;
 }
 
+/* --- reader geometry + scrollbar tuning (2026-05-11) --- */
+@media (max-width: 768px) {
+  #readerPane .reader-content,
+  body.reader-fullscreen-active #readerPane .reader-content {
+    padding-left: calc(var(--reader-edge-width-effective, var(--reader-edge-width, 48px)) + env(safe-area-inset-left, 0px)) !important;
+    padding-right: calc(var(--reader-edge-width-effective, var(--reader-edge-width, 48px)) + env(safe-area-inset-right, 0px)) !important;
+  }
+
+  #readerPane .reader-content .materials-preview-text,
+  body.reader-fullscreen-active #readerPane .reader-content .materials-preview-text {
+    padding-left: 8px !important;
+    padding-right: 8px !important;
+  }
+
+  #readerPane .reader-click-left,
+  body.reader-fullscreen-active #readerPane .reader-click-left {
+    width: calc(var(--reader-edge-width-effective, var(--reader-edge-width, 48px)) + env(safe-area-inset-left, 0px)) !important;
+  }
+
+  #readerPane .reader-click-right,
+  body.reader-fullscreen-active #readerPane .reader-click-right {
+    width: calc(var(--reader-edge-width-effective, var(--reader-edge-width, 48px)) + env(safe-area-inset-right, 0px)) !important;
+  }
+}
+
+@media (min-width: 1024px) {
+  #readerPane .reader-content,
+  #readerPane .chapter-list-content,
+  #readerPane .reader-settings-panel,
+  #readerPane .reader-content .materials-preview-text,
+  body.reader-fullscreen-active #readerPane .reader-content,
+  body.reader-fullscreen-active #readerPane .chapter-list-content,
+  body.reader-fullscreen-active #readerPane .reader-settings-panel,
+  body.reader-fullscreen-active #readerPane .reader-content .materials-preview-text {
+    scrollbar-width: auto;
+  }
+
+  #readerPane .reader-content::-webkit-scrollbar,
+  #readerPane .chapter-list-content::-webkit-scrollbar,
+  #readerPane .reader-settings-panel::-webkit-scrollbar,
+  #readerPane .reader-content .materials-preview-text::-webkit-scrollbar,
+  body.reader-fullscreen-active #readerPane .reader-content::-webkit-scrollbar,
+  body.reader-fullscreen-active #readerPane .chapter-list-content::-webkit-scrollbar,
+  body.reader-fullscreen-active #readerPane .reader-settings-panel::-webkit-scrollbar,
+  body.reader-fullscreen-active #readerPane .reader-content .materials-preview-text::-webkit-scrollbar {
+    width: 14px;
+    height: 14px;
+  }
+
+  #readerPane .reader-content::-webkit-scrollbar-thumb,
+  #readerPane .chapter-list-content::-webkit-scrollbar-thumb,
+  #readerPane .reader-settings-panel::-webkit-scrollbar-thumb,
+  #readerPane .reader-content .materials-preview-text::-webkit-scrollbar-thumb,
+  body.reader-fullscreen-active #readerPane .reader-content::-webkit-scrollbar-thumb,
+  body.reader-fullscreen-active #readerPane .chapter-list-content::-webkit-scrollbar-thumb,
+  body.reader-fullscreen-active #readerPane .reader-settings-panel::-webkit-scrollbar-thumb,
+  body.reader-fullscreen-active #readerPane .reader-content .materials-preview-text::-webkit-scrollbar-thumb {
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background: rgba(100, 116, 139, 0.65);
+    background-clip: content-box;
+  }
+}

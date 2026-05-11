@@ -73,6 +73,10 @@ def _book_questions_xml_path(cfg: Dict[str, Any], lecture_id: str, book_id: str)
     return _book_dir(cfg, lecture_id, book_id) / "questions.xml"
 
 
+def _book_sections_xml_path(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Path:
+    return _book_dir(cfg, lecture_id, book_id) / "sections.xml"
+
+
 def _book_text_dir(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Path:
     return _book_dir(cfg, lecture_id, book_id) / "text"
 
@@ -242,6 +246,9 @@ def create_book(
         "question_status": "idle",
         "question_error": "",
         "question_model": "",
+        "section_status": "idle",
+        "section_error": "",
+        "section_model": "",
         "vector_status": "idle",
         "vector_provider": "nexoradb_service",
         "chunks_count": 0,
@@ -253,6 +260,7 @@ def create_book(
     _write_text(_book_info_xml_path(cfg, lecture_id, book_id), "")
     _write_text(_book_detail_xml_path(cfg, lecture_id, book_id), "")
     _write_text(_book_questions_xml_path(cfg, lecture_id, book_id), "")
+    _write_text(_book_sections_xml_path(cfg, lecture_id, book_id), "")
     _increment_lecture_field(cfg, lecture_id, "book_count", 1)
     return book
 
@@ -327,6 +335,9 @@ def save_book_text(
             "question_status": "idle",
             "question_error": "",
             "question_model": "",
+            "section_status": "idle",
+            "section_error": "",
+            "section_model": "",
             "vector_status": "idle",
             "chunks_count": 0,
             "vector_count": 0,
@@ -371,6 +382,9 @@ def save_book_original_file(
             "question_status": "idle",
             "question_error": "",
             "question_model": "",
+            "section_status": "idle",
+            "section_error": "",
+            "section_model": "",
         },
     ) or book
 
@@ -425,6 +439,24 @@ def load_book_questions_xml(cfg: Dict[str, Any], lecture_id: str, book_id: str) 
 def save_book_questions_xml(cfg: Dict[str, Any], lecture_id: str, book_id: str, content: str) -> str:
     """保存教材题目结果 XML。"""
     path = _book_questions_xml_path(cfg, lecture_id, book_id)
+    _write_text(path, str(content or ""))
+    return str(path)
+
+
+def load_book_sections_xml(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> str:
+    """读取教材分节结果 XML。"""
+    path = _book_sections_xml_path(cfg, lecture_id, book_id)
+    if not path.exists():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+
+
+def save_book_sections_xml(cfg: Dict[str, Any], lecture_id: str, book_id: str, content: str) -> str:
+    """保存教材分节结果 XML。"""
+    path = _book_sections_xml_path(cfg, lecture_id, book_id)
     _write_text(path, str(content or ""))
     return str(path)
 

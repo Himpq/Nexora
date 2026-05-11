@@ -3952,8 +3952,11 @@ body.settings-companion-mode #adminPublicApiDeleteModal {
     border-radius: 6px;
     background: #111;
     color: #fff;
-    padding: 7px 11px;
+    min-height: 36px;
+    padding: 9px 12px;
     font-size: 13px;
+    line-height: 1.35;
+    white-space: normal;
     cursor: pointer;
 }
 
