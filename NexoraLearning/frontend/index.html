@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
@@ -104,9 +104,9 @@
                 <h6>字体大小</h6>
                 <div class="slider-container">
                   <div class="slider-label">
-                    <span>A</span>
+                    <span>小</span>
                     <span id="fontSizeValue">18px</span>
-                    <span style="font-size: 1.2em;">A</span>
+                    <span style="font-size: 1.2em;">大</span>
                   </div>
                   <input type="range" class="custom-range" id="fontSizeSlider" min="12" max="24" value="18">
                 </div>
@@ -270,15 +270,17 @@
   <div id="confirmBackdrop" class="modal-backdrop" style="display:none;">
     <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
       <div class="modal-head">
-        <h3 id="confirmTitle">确认操作</h3>
+        <h3 id="confirmTitle">学习确认</h3>
       </div>
-      <div id="confirmBody" class="modal-body">请确认是否继续。</div>
+      <div id="confirmBody" class="modal-body modal-body-center">是否退出学习</div>
       <div class="modal-footer">
-        <button type="button" class="btn btn-primary" id="confirmOkBtn">确认</button>
-        <button type="button" class="btn btn-secondary" id="confirmCancelBtn">取消</button>
+        <button type="button" class="btn btn-primary" id="confirmOkBtn">是</button>
+        <button type="button" class="btn btn-secondary" id="confirmCancelBtn">否</button>
       </div>
     </div>
   </div>
   <script src="/api/frontend/assets/app.js?v=20260506_18"></script>
 </body>
 </html>
+
+
