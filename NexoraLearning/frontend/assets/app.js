@@ -111,7 +111,13 @@
     refinementRows: [],
     refinementQueue: { queue_size: 0, running_count: 0 },
     modelOptions: [],
-    modelSettings: { default_nexora_model: "", rough_reading: {} },
+    modelSettings: {
+      default_nexora_model: "",
+      rough_reading: {},
+      intensive_reading: {},
+      question_generation: {},
+      split_chapters: {},
+    },
     settingsPollTimer: null,
     refinementScrollTop: 0,
     refinementExpandedMap: {},
@@ -134,7 +140,10 @@
     readerClosePanelsUntil: 0,
     materialsDetailMode: "lecture",
     catalogContext: null,
+    materialsSortBy: "updated_at",
+    materialsSortOrder: "desc",
   };
+  let readerContextSyncTimer = null;
 
   function logReaderDebug(eventName, extra) {
     try {
@@ -286,19 +295,26 @@
   }
 
   function notifyHostInputVisibility(hidden) {
+    emitHostPayload("nexora:chat-input:visibility", {
+      hidden: !!hidden,
+    });
+  }
+
+  function emitHostPayload(type, extra = {}) {
     const payload = {
       source: "nexora-learning",
-      type: "nexora:chat-input:visibility",
-      hidden: !!hidden,
+      type: String(type || "").trim(),
+      ...(extra && typeof extra === "object" ? extra : {}),
     };
     try {
-      window.dispatchEvent(new CustomEvent("nexora:chat-input:visibility", { detail: payload }));
+      window.dispatchEvent(new CustomEvent(payload.type, { detail: payload }));
     } catch (_err) {}
     try {
       if (window.parent && window.parent !== window) {
         window.parent.postMessage(payload, "*");
       }
     } catch (_err) {}
+    return payload;
   }
 
   function getRuntimeUsername() {
@@ -361,6 +377,97 @@
       startSettingsPolling();
     }
     notifyHostInputVisibility(true);
+  }
+
+  function notifyHostReaderState(opened) {
+    emitHostPayload("nexora:reader:state", {
+      opened: !!opened,
+    });
+  }
+
+  function normalizeReaderSelectionText(raw, maxLen = 1600) {
+    return String(raw || "")
+      .replace(/\r\n?/g, "\n")
+      .replace(/[ \t]+/g, " ")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim()
+      .slice(0, Math.max(0, Number(maxLen) || 0));
+  }
+
+  function getReaderHostPointer(x, y) {
+    let baseX = 0;
+    let baseY = 0;
+    try {
+      const frame = window.frameElement;
+      if (frame && typeof frame.getBoundingClientRect === "function") {
+        const rect = frame.getBoundingClientRect();
+        baseX = Number(rect.left || 0);
+        baseY = Number(rect.top || 0);
+      }
+    } catch (_err) {}
+    return {
+      x: Math.round(baseX + Number(x || 0)),
+      y: Math.round(baseY + Number(y || 0)),
+    };
+  }
+
+  function getReaderCurrentChapterMeta() {
+    const chapters = Array.isArray(state.readerChapters) ? state.readerChapters : [];
+    const idx = Math.max(0, Math.min(chapters.length - 1, Number(state.readerActiveChapterIndex) || 0));
+    const chapter = chapters[idx] || null;
+    return {
+      chapterIndex: chapter ? idx : null,
+      chapterTitle: chapter ? String(chapter.title || "").trim() : "",
+    };
+  }
+
+  function collectReaderVisibleText(maxLen = 2800) {
+    const root = el.readerContent ? el.readerContent.querySelector(".materials-preview-text") : null;
+    if (!root) return "";
+    const rootRect = root.getBoundingClientRect();
+    const top = Math.max(0, rootRect.top);
+    const bottom = Math.min(window.innerHeight || rootRect.bottom, rootRect.bottom);
+    const nodes = Array.from(root.querySelectorAll(".chapter-header h2, .materials-preview-paragraph"));
+    const parts = [];
+    for (let i = 0; i < nodes.length; i += 1) {
+      const node = nodes[i];
+      if (!(node instanceof Element)) continue;
+      const rect = node.getBoundingClientRect();
+      const visible = rect.bottom > top && rect.top < bottom;
+      if (!visible) continue;
+      const text = normalizeReaderSelectionText(node.textContent || "", 600);
+      if (!text) continue;
+      parts.push(text);
+      if (parts.join("\n\n").length >= maxLen) break;
+    }
+    if (!parts.length) {
+      return normalizeReaderSelectionText(root.textContent || "", maxLen);
+    }
+    return normalizeReaderSelectionText(parts.join("\n\n"), maxLen);
+  }
+
+  function buildReaderContextPayload() {
+    const windowText = collectReaderVisibleText(2800);
+    if (!windowText) return null;
+    const chapterMeta = getReaderCurrentChapterMeta();
+    return {
+      lecture_id: String(state.selectedLectureId || "").trim(),
+      book_id: String(state.selectedBookId || "").trim(),
+      chapter_index: chapterMeta.chapterIndex,
+      chapter_title: chapterMeta.chapterTitle,
+      reader_title: String(state.readerMeta && state.readerMeta.title ? state.readerMeta.title : "").trim(),
+      reader_subtitle: String(state.readerMeta && state.readerMeta.subtitle ? state.readerMeta.subtitle : "").trim(),
+      window_text: windowText,
+      captured_at: Date.now(),
+    };
+  }
+
+  function notifyHostReaderContext() {
+    const contextPayload = state.isReaderOpen ? buildReaderContextPayload() : null;
+    emitHostPayload("nexora:reader:context", {
+      context: contextPayload,
+      opened: !!state.isReaderOpen,
+    });
   }
 
   function setUploadTab(tab) {
@@ -610,6 +717,51 @@
     return true;
   }
 
+  function canStartSection(item) {
+    const question = normalizeStatusKey(item && item.question_status);
+    const section = normalizeStatusKey(item && item.section_status);
+    const job = normalizeStatusKey(item && item.job_status);
+    const sectionJob = normalizeStatusKey(item && item.section_job_status);
+    if (!["done", "completed", "success"].includes(question)) return false;
+    if (["running", "queued"].includes(job) || ["running", "queued"].includes(sectionJob)) return false;
+    if (["running", "queued", "done", "completed", "success"].includes(section)) return false;
+    return true;
+  }
+
+  function isDoneStatus(value) {
+    return ["done", "completed", "success"].includes(normalizeStatusKey(value));
+  }
+
+  function isRunningStatus(value) {
+    return ["running", "queued"].includes(normalizeStatusKey(value));
+  }
+
+  function isErrorStatus(value) {
+    return ["error", "failed"].includes(normalizeStatusKey(value));
+  }
+
+  function buildRefineFlow(item) {
+    const coarseStatus = normalizeStatusKey(item && item.coarse_status);
+    const intensiveStatus = normalizeStatusKey(item && item.intensive_status);
+    const questionStatus = normalizeStatusKey(item && item.question_status);
+    const hasError = isErrorStatus(coarseStatus)
+      || isErrorStatus(intensiveStatus)
+      || isErrorStatus(questionStatus);
+    const steps = [
+      { key: "coarse", label: "粗读", done: isDoneStatus(coarseStatus), running: isRunningStatus(coarseStatus) },
+      { key: "intensive", label: "精读", done: isDoneStatus(intensiveStatus), running: isRunningStatus(intensiveStatus) },
+      { key: "question", label: "出题", done: isDoneStatus(questionStatus), running: isRunningStatus(questionStatus) },
+    ];
+    const doneCount = steps.filter((row) => row.done).length;
+    const activeIndex = steps.findIndex((row) => row.running);
+    let percent = (doneCount / steps.length) * 100;
+    if (activeIndex >= 0 && doneCount < steps.length) {
+      percent = Math.max(percent, ((activeIndex + 0.5) / steps.length) * 100);
+    }
+    percent = Math.max(0, Math.min(100, percent));
+    return { steps, doneCount, activeIndex, percent, hasError };
+  }
+
   function getRefinementActionMeta(item) {
     const coarseDone = ["done", "completed", "success"].includes(normalizeStatusKey(item && item.coarse_status));
     const intensiveDone = ["done", "completed", "success"].includes(normalizeStatusKey(item && item.intensive_status));
@@ -638,9 +790,18 @@
         enabled: canStartQuestion(item),
       };
     }
+    const sectionDone = ["done", "completed", "success"].includes(normalizeStatusKey(item && item.section_status));
+    if (!sectionDone) {
+      return {
+        action: "start-section",
+        title: "开始分节",
+        text: "§",
+        enabled: canStartSection(item),
+      };
+    }
     return {
-      action: "start-question",
-      title: "题目已生成",
+      action: "start-section",
+      title: "分节已完成",
       text: "✓",
       enabled: false,
     };
@@ -762,6 +923,7 @@
       const key = `${lectureId}::${bookId}`;
       const title = `${String(item.book_title || item.book_id || "未命名教材")} - ${String(item.lecture_title || item.lecture_id || "未命名课程")}`;
       const progress = refinementStatusText(item);
+      const flow = buildRefineFlow(item);
       const actionMeta = getRefinementActionMeta(item);
       const btnAction = actionMeta.action;
       const btnTitle = actionMeta.title;
@@ -769,6 +931,17 @@
       const btnEnabled = actionMeta.enabled;
       const steps = Array.isArray(item.progress_steps) ? item.progress_steps : [];
       const expanded = !!state.refinementExpandedMap[key];
+      const flowStepsHtml = flow.steps.map((step, idx) => {
+        let cls = "pending";
+        if (step.done) {
+          cls = "done";
+        } else if (step.running || idx === flow.activeIndex) {
+          cls = "active";
+        } else if (flow.hasError && idx === Math.max(flow.doneCount, 0)) {
+          cls = "error";
+        }
+        return `<span class="refine-flow-step is-${cls}">${escapeHtml(step.label)}</span>`;
+      }).join("");
       const stepHtml = steps.slice(-12).map((step) => {
         const sTitle = String(step && step.title || "步骤");
         const sPreview = String(step && step.preview || "");
@@ -815,10 +988,16 @@
           <span class="refine-thinking-dot"></span>
           <span class="refine-progress-text">${escapeHtml(progress)}</span>
         </div>
+        <div class="refine-flow-wrap">
+          <div class="refine-flow-bar">
+            <span class="refine-flow-fill ${flow.hasError ? "is-error" : ""}" style="width:${flow.percent.toFixed(2)}%"></span>
+          </div>
+          <div class="refine-flow-steps">${flowStepsHtml}</div>
+        </div>
         <div class="refine-steps ${expanded ? "is-open" : ""}">
           ${stepHtml || '<div class="refine-step-preview">暂无工具链步骤</div>'}
         </div>
-        ${item.question_error || item.intensive_error || item.coarse_error || item.refinement_error ? `<div class="refine-item-meta" style="color:#b91c1c;">错误：${escapeHtml(item.question_error || item.intensive_error || item.coarse_error || item.refinement_error)}</div>` : ""}
+        ${item.question_error || item.intensive_error || item.coarse_error || item.section_error || item.refinement_error ? `<div class="refine-item-meta" style="color:#b91c1c;">错误：${escapeHtml(item.question_error || item.intensive_error || item.coarse_error || item.section_error || item.refinement_error)}</div>` : ""}
       `;
     });
   }
@@ -826,6 +1005,9 @@
   function renderSettingsModel() {
     const settings = state.modelSettings || {};
     const rough = settings.rough_reading || {};
+    const intensive = settings.intensive_reading || {};
+    const question = settings.question_generation || {};
+    const splitChapters = settings.split_chapters || {};
     const options = Array.isArray(state.modelOptions) ? state.modelOptions : [];
     const optionHtml = ['<option value="">(空) 手动指定后才启用</option>']
       .concat(options.map((row) => `<option value="${escapeHtml(row.id)}">${escapeHtml(row.label || row.id)}</option>`))
@@ -836,14 +1018,26 @@
         <article class="settings-card">
           <div class="settings-title">模型设置</div>
           <div class="settings-sub">默认模型为空时，后端不会强制绑定默认模型。</div>
-          <div class="settings-inline-form">
-            <div class="materials-form-row">
-              <label class="materials-form-label" for="settingsDefaultModelSelect">默认模型</label>
-              <select id="settingsDefaultModelSelect" class="input-lite" ${disabledAttr}>${optionHtml}</select>
+          <div class="settings-inline-form settings-model-form">
+            <div class="materials-form-row settings-model-row">
+              <label class="materials-form-label settings-model-label" for="settingsDefaultModelSelect">默认模型</label>
+              <select id="settingsDefaultModelSelect" class="input-lite settings-model-select" ${disabledAttr}>${optionHtml}</select>
             </div>
-            <div class="materials-form-row">
-              <label class="materials-form-label" for="settingsRoughModelSelect">精读模型</label>
-              <select id="settingsRoughModelSelect" class="input-lite" ${disabledAttr}>${optionHtml}</select>
+            <div class="materials-form-row settings-model-row">
+              <label class="materials-form-label settings-model-label" for="settingsRoughModelSelect">精读模型</label>
+              <select id="settingsRoughModelSelect" class="input-lite settings-model-select" ${disabledAttr}>${optionHtml}</select>
+            </div>
+            <div class="materials-form-row settings-model-row">
+              <label class="materials-form-label settings-model-label" for="settingsIntensiveModelSelect">IntensiveReadingModel</label>
+              <select id="settingsIntensiveModelSelect" class="input-lite settings-model-select" ${disabledAttr}>${optionHtml}</select>
+            </div>
+            <div class="materials-form-row settings-model-row">
+              <label class="materials-form-label settings-model-label" for="settingsQuestionModelSelect">QuestionGenerationModel</label>
+              <select id="settingsQuestionModelSelect" class="input-lite settings-model-select" ${disabledAttr}>${optionHtml}</select>
+            </div>
+            <div class="materials-form-row settings-model-row">
+              <label class="materials-form-label settings-model-label" for="settingsSplitChaptersModelSelect">SplitChaptersModel</label>
+              <select id="settingsSplitChaptersModelSelect" class="input-lite settings-model-select" ${disabledAttr}>${optionHtml}</select>
             </div>
           </div>
           <div class="settings-actions">
@@ -855,8 +1049,14 @@
     `;
     const defaultSelect = document.getElementById("settingsDefaultModelSelect");
     const roughSelect = document.getElementById("settingsRoughModelSelect");
+    const intensiveSelect = document.getElementById("settingsIntensiveModelSelect");
+    const questionSelect = document.getElementById("settingsQuestionModelSelect");
+    const splitSelect = document.getElementById("settingsSplitChaptersModelSelect");
     if (defaultSelect) defaultSelect.value = String(settings.default_nexora_model || "");
     if (roughSelect) roughSelect.value = String(rough.model_name || "");
+    if (intensiveSelect) intensiveSelect.value = String(intensive.model_name || "");
+    if (questionSelect) questionSelect.value = String(question.model_name || "");
+    if (splitSelect) splitSelect.value = String(splitChapters.model_name || "");
   }
 
   function renderSettingsDetail() {
@@ -924,6 +1124,7 @@
     if (state.materialsDetailMode === "catalog" && state.catalogContext) {
       const ctx = state.catalogContext;
       const chapters = Array.isArray(ctx.chapters) ? ctx.chapters : [];
+      const isLoading = !!ctx.loading;
       el.lectureDetailPane.innerHTML = `
         <section class="materials-detail-scroll materials-catalog-page">
           <section class="detail-section">
@@ -933,12 +1134,12 @@
           <section class="detail-section">
             <div class="detail-title">目录</div>
             <div class="materials-catalog-list">
-              ${chapters.length ? chapters.map((item, idx) => `
+              ${isLoading ? '<div class="materials-loading">目录加载中...</div>' : (chapters.length ? chapters.map((item, idx) => `
                 <button class="materials-catalog-item" type="button" data-material-catalog-index="${idx}">
                   <span class="materials-catalog-index">${idx + 1}.</span>
                   <span class="materials-catalog-text">${escapeHtml(item.title || `章节 ${idx + 1}`)}</span>
                 </button>
-              `).join("") : '<div class="materials-empty">暂无目录</div>'}
+              `).join("") : '<div class="materials-empty">暂无目录</div>')}
             </div>
           </section>
         </section>
@@ -999,6 +1200,8 @@
                   <div class="book-badges">
                     <span class="book-badge ${statusBadgeClass(book.vector_status, book.vector_provider)}">向量：${escapeHtml(vectorStatusLabel(book.vector_status, book.vector_provider))}</span>
                     <span class="book-badge ${statusBadgeClass(book.status)}">教材：${escapeHtml(materialStatusLabel(book.status))}</span>
+                    <span class="book-badge ${statusBadgeClass(book.question_status)}">出题：${escapeHtml(normalizeStatusKey(book.question_status) || "idle")}</span>
+                    <span class="book-badge ${statusBadgeClass(book.section_status)}">分节：${escapeHtml(normalizeStatusKey(book.section_status) || "idle")}</span>
                   </div>
                 </article>
               `;
@@ -1092,6 +1295,70 @@
     }).join("");
   }
 
+  function scheduleHostReaderContextSync(delay = 120) {
+    if (readerContextSyncTimer) {
+      clearTimeout(readerContextSyncTimer);
+      readerContextSyncTimer = null;
+    }
+    readerContextSyncTimer = setTimeout(() => {
+      readerContextSyncTimer = null;
+      notifyHostReaderContext();
+    }, Math.max(0, Number(delay) || 0));
+  }
+
+  function buildReaderSelectionSourceMeta(textForAnchor = "") {
+    const chapterMeta = getReaderCurrentChapterMeta();
+    const sourceTitle = [
+      String(state.readerMeta && state.readerMeta.title ? state.readerMeta.title : "").trim(),
+      chapterMeta.chapterTitle || "",
+    ].filter(Boolean).join(" / ");
+    return {
+      source: "Learning Reader",
+      sourceTitle,
+      reader_title: String(state.readerMeta && state.readerMeta.title ? state.readerMeta.title : "").trim(),
+      chapter_title: chapterMeta.chapterTitle || "",
+      chapter_index: chapterMeta.chapterIndex,
+      lecture_id: String(state.selectedLectureId || "").trim(),
+      book_id: String(state.selectedBookId || "").trim(),
+      snippet: normalizeReaderSelectionText(textForAnchor, 280),
+    };
+  }
+
+  function hideHostReaderSelectionContextMenu() {
+    emitHostPayload("nexora:reader:selection-context-menu-hide", {});
+  }
+
+  function handleReaderContextMenu(event) {
+    if (!state.isReaderOpen) {
+      hideHostReaderSelectionContextMenu();
+      return;
+    }
+    const sel = window.getSelection ? window.getSelection() : null;
+    if (!sel || sel.rangeCount <= 0 || sel.isCollapsed) {
+      hideHostReaderSelectionContextMenu();
+      return;
+    }
+    const text = normalizeReaderSelectionText(sel.toString(), 1600);
+    if (!text) {
+      hideHostReaderSelectionContextMenu();
+      return;
+    }
+    const anchorNode = sel.anchorNode || sel.focusNode;
+    const anchorElement = anchorNode && anchorNode.nodeType === Node.TEXT_NODE ? anchorNode.parentElement : anchorNode;
+    if (!anchorElement || !el.readerContent || !el.readerContent.contains(anchorElement)) {
+      hideHostReaderSelectionContextMenu();
+      return;
+    }
+    event.preventDefault();
+    const hostPoint = getReaderHostPointer(event.clientX, event.clientY);
+    emitHostPayload("nexora:reader:selection-context-menu", {
+      x: hostPoint.x,
+      y: hostPoint.y,
+      text,
+      source_meta: buildReaderSelectionSourceMeta(text),
+    });
+  }
+
   function openReaderChapter(index) {
     const chapters = Array.isArray(state.readerChapters) ? state.readerChapters : [];
     if (!chapters.length) {
@@ -1123,6 +1390,7 @@
     renderChapterList();
     syncReaderSettingsPanel();
     applyReaderTypography();
+    scheduleHostReaderContextSync(0);
   }
 
   function loadReaderSettings() {
@@ -1306,6 +1574,8 @@
     setReaderFullscreen(true);
     syncReaderSettingsPanel();
     applyReaderTypography();
+    notifyHostReaderState(true);
+    notifyHostReaderContext();
   }
 
   function closeReader() {
@@ -1324,6 +1594,8 @@
     el.readerPane.hidden = true;
     el.materialsLayout.hidden = false;
     notifyHostLayout("default", { hideInputDock: true });
+    notifyHostReaderState(false);
+    notifyHostReaderContext();
   }
 
   function setReaderFullscreen(active) {
@@ -1491,8 +1763,14 @@
   }
 
   async function loadMaterialsRows() {
-    const data = await fetchJson("/api/frontend/materials");
+    const qs = new URLSearchParams({
+      sort_by: String(state.materialsSortBy || "updated_at"),
+      order: String(state.materialsSortOrder || "desc"),
+    });
+    const data = await fetchJson(`/api/frontend/materials?${qs.toString()}`);
     state.allLectureRows = Array.isArray(data.lectures) ? data.lectures : [];
+    state.materialsSortBy = String(data.sort_by || state.materialsSortBy || "updated_at");
+    state.materialsSortOrder = String(data.order || state.materialsSortOrder || "desc");
     if (!state.selectedLectureId && state.allLectureRows.length) {
       state.selectedLectureId = String((state.allLectureRows[0].lecture || {}).id || "");
     }
@@ -1525,7 +1803,13 @@
     state.modelOptions = Array.isArray(data.available_models) ? data.available_models : [];
     state.modelSettings = data.settings && typeof data.settings === "object"
       ? data.settings
-      : { default_nexora_model: "", rough_reading: {} };
+      : {
+        default_nexora_model: "",
+        rough_reading: {},
+        intensive_reading: {},
+        question_generation: {},
+        split_chapters: {},
+      };
     if (el.settingsView.classList.contains("is-active") && state.settingsTab === "model") {
       renderSettingsDetail();
     }
@@ -1535,10 +1819,22 @@
     if (!state.isAdmin) throw new Error("仅管理员可修改模型设置");
     const defaultSelect = document.getElementById("settingsDefaultModelSelect");
     const roughSelect = document.getElementById("settingsRoughModelSelect");
+    const intensiveSelect = document.getElementById("settingsIntensiveModelSelect");
+    const questionSelect = document.getElementById("settingsQuestionModelSelect");
+    const splitSelect = document.getElementById("settingsSplitChaptersModelSelect");
     const payload = {
       default_nexora_model: defaultSelect ? String(defaultSelect.value || "").trim() : "",
       rough_reading: {
         model_name: roughSelect ? String(roughSelect.value || "").trim() : "",
+      },
+      intensive_reading: {
+        model_name: intensiveSelect ? String(intensiveSelect.value || "").trim() : "",
+      },
+      question_generation: {
+        model_name: questionSelect ? String(questionSelect.value || "").trim() : "",
+      },
+      split_chapters: {
+        model_name: splitSelect ? String(splitSelect.value || "").trim() : "",
       },
     };
     await fetchJson("/api/frontend/settings/models", {
@@ -1600,6 +1896,20 @@
       }),
     });
     await loadRefinementSettings();
+  }
+
+  async function startSection(lectureId, bookId) {
+    await fetchJson("/api/frontend/settings/refinement/section", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        lecture_id: lectureId,
+        book_id: bookId,
+        actor: state.username || "",
+      }),
+    });
+    await loadRefinementSettings();
+    await loadMaterialsRows();
   }
 
   async function deleteBook(lectureId, bookId) {
@@ -1923,6 +2233,15 @@
       logReaderDebug("readerContent:clickToggle", {});
       toggleReaderUI();
     });
+    el.readerContent.addEventListener("contextmenu", handleReaderContextMenu);
+    el.readerContent.addEventListener("pointerdown", () => {
+      hideHostReaderSelectionContextMenu();
+    }, { capture: true });
+    el.readerContent.addEventListener("scroll", () => {
+      if (!state.isReaderOpen) return;
+      hideHostReaderSelectionContextMenu();
+      scheduleHostReaderContextSync(120);
+    }, { passive: true, capture: true });
     if (el.readerClickLeft) {
       el.readerClickLeft.addEventListener("click", (event) => {
         if (!state.isReaderFullscreen) return;
@@ -1997,7 +2316,10 @@
       }
     });
     window.addEventListener("resize", () => {
-      if (state.isReaderOpen) applyReaderTypography();
+      if (state.isReaderOpen) {
+        applyReaderTypography();
+        scheduleHostReaderContextSync(120);
+      }
     });
 
     el.kickerCreateTabBtn.addEventListener("click", () => setUploadTab("create"));
@@ -2089,6 +2411,7 @@
         subtitle: `${getLectureTitle(lecture)} · ${vectorStatusLabel(book.vector_status, book.vector_provider)} / ${materialStatusLabel(book.status)}`,
         chapters: [],
         fullTextRaw: "",
+        loading: true,
       };
       renderLectureDetail();
       const fullText = await fetchBookTextFull();
@@ -2102,6 +2425,7 @@
         subtitle: `${getLectureTitle(lecture)} · ${vectorStatusLabel(book.vector_status, book.vector_provider)} / ${materialStatusLabel(book.status)}`,
         chapters,
         fullTextRaw: String(fullText || "（当前教材暂无可读取文本，可能仍在解析或向量化）"),
+        loading: false,
       };
       state.materialsDetailMode = "catalog";
       renderLectureDetail();
@@ -2239,6 +2563,18 @@
           .catch((err) => showToast("出题执行失败：" + (err.message || "未知错误")));
         return;
       }
+      const sectionBtn = target.closest("[data-action='start-section']");
+      if (sectionBtn) {
+        const lectureId = String(sectionBtn.getAttribute("data-lecture-id") || "");
+        const bookId = String(sectionBtn.getAttribute("data-book-id") || "");
+        if (!lectureId || !bookId) return;
+        startSection(lectureId, bookId)
+          .then(() => {
+            showToast("已开始分节");
+          })
+          .catch((err) => showToast("分节执行失败：" + (err.message || "未知错误")));
+        return;
+      }
     });
 
     if (el.confirmBackdrop) {
@@ -2298,6 +2634,7 @@
     setUploadTab("create");
     renderUploadPreviewEmpty("请选择教材文件后预览");
     setUploadTip("支持 EPUB、PDF、TXT、MD、DOCX、DOC、C、H、PY、RST", false);
+    notifyHostReaderState(false);
 
     await loadFrontendContext();
     updateAdminVisibility();

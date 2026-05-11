@@ -88,6 +88,18 @@ DEFAULT_SCHEDULER_MODELS_CONFIG: Dict[str, Any] = {
         "think": False,
         "prompt_notes": "",
     },
+    "split_chapters": {
+        "enabled": True,
+        "model_name": "",
+        "api_mode": "chat",
+        "temperature": 0.2,
+        "max_output_tokens": 4000,
+        "max_input_chars": 12000,
+        "request_timeout": 240,
+        "stream": True,
+        "think": False,
+        "prompt_notes": "",
+    },
 }
 
 
@@ -226,6 +238,15 @@ def get_question_generation_model_config(cfg: Mapping[str, Any]) -> Dict[str, An
     if isinstance(branch, dict):
         return dict(branch)
     return dict(DEFAULT_SCHEDULER_MODELS_CONFIG["question_generation"])
+
+
+def get_split_chapters_model_config(cfg: Mapping[str, Any]) -> Dict[str, Any]:
+    """Read split-chapters model settings."""
+    data = load_scheduler_models_config(cfg)
+    branch = data.get("split_chapters")
+    if isinstance(branch, dict):
+        return dict(branch)
+    return dict(DEFAULT_SCHEDULER_MODELS_CONFIG["split_chapters"])
 
 
 def update_rough_reading_model_config(cfg: Mapping[str, Any], updates: Mapping[str, Any]) -> Dict[str, Any]:
@@ -384,6 +405,46 @@ def update_question_generation_model_config(cfg: Mapping[str, Any], updates: Map
     merged_branch = dict(current)
     merged_branch.update(sanitized)
     save_scheduler_models_config(cfg, {"question_generation": merged_branch})
+    return merged_branch
+
+
+def update_split_chapters_model_config(cfg: Mapping[str, Any], updates: Mapping[str, Any]) -> Dict[str, Any]:
+    """Update split-chapters model settings with basic validation."""
+    current = get_split_chapters_model_config(cfg)
+    allowed_fields = {
+        "enabled",
+        "model_name",
+        "api_mode",
+        "temperature",
+        "max_output_tokens",
+        "max_input_chars",
+        "request_timeout",
+        "stream",
+        "think",
+        "prompt_notes",
+    }
+    sanitized: Dict[str, Any] = {}
+    for key, value in dict(updates or {}).items():
+        if key not in allowed_fields:
+            continue
+        sanitized[key] = value
+    for bool_field in ("enabled", "stream", "think"):
+        if bool_field in sanitized:
+            sanitized[bool_field] = _as_bool(sanitized[bool_field], default=_as_bool(current.get(bool_field), False))
+    for int_field in ("max_output_tokens", "max_input_chars", "request_timeout"):
+        if int_field in sanitized:
+            try:
+                sanitized[int_field] = max(1, int(sanitized[int_field]))
+            except Exception:
+                sanitized[int_field] = current.get(int_field)
+    if "temperature" in sanitized:
+        try:
+            sanitized["temperature"] = float(sanitized["temperature"])
+        except Exception:
+            sanitized["temperature"] = current.get("temperature")
+    merged_branch = dict(current)
+    merged_branch.update(sanitized)
+    save_scheduler_models_config(cfg, {"split_chapters": merged_branch})
     return merged_branch
 
 
@@ -707,6 +768,12 @@ class CoarseReadingModel(BaseLearningModel):
     model_key = "coarse_reading"
 
 
+class SplitChaptersModel(BaseLearningModel):
+    """Model used to split chapter-level detail into study sessions."""
+
+    model_key = "split_chapters"
+
+
 class AnswerModel(BaseLearningModel):
     """Placeholder model for learning-oriented answers."""
 
@@ -757,6 +824,7 @@ class LearningModelFactory:
         "question": QuestionGenerationModel,
         "question_verify": QuestionVerifyModel,
         "intensive_reading": IntensiveReadingModel,
+        "split_chapters": SplitChaptersModel,
         "answer": AnswerModel,
         "memory": MemoryProfileModel,
     }

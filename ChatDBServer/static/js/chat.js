@@ -120,8 +120,8 @@ const CHAT_COMPOSER_PREFS_KEY = 'nexora_chat_composer_prefs_v1';
 const CHAT_INPUT_DRAFT_KEY = 'nexora_chat_input_draft_v1';
 const CHAT_INPUT_DRAFT_MAX_LEN = 12000;
 const NEXORA_LEARNING_FRONTEND_URL = `${window.location.protocol}//${window.location.hostname}:5001/api/frontend/`;
-const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260505_02';
-const NEXORA_LEARNING_JS_URL = '/static/js/learning_mode.js?v=20260503_01';
+const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260511_02';
+const NEXORA_LEARNING_JS_URL = '/static/js/learning_mode.js?v=20260511_02';
 const MAIL_POLL_INTERVAL_MS = 5000;
 const AGENT_STATUS_POLL_VISIBLE_MS = 5000;
 const MODAL_STACK_BASE_Z = 12000;
@@ -420,6 +420,324 @@ function clearHoverProxyMessage() {
         els.messagesContainer.classList.remove('has-proxy-hover');
     }
 }
+
+let learningSidebarListeners = [];
+let learningReaderContextSnapshot = null;
+let learningReaderOpened = false;
+let learningSidebarNotifyTimer = null;
+let learningSidebarSendInFlight = false;
+
+function notifyLearningSidebarBridge() {
+    try {
+        learningSidebarListeners.forEach((listener) => {
+            try { listener(); } catch (_) {}
+        });
+    } catch (_) {}
+}
+
+function scheduleLearningSidebarBridgeNotify(delayMs = 80) {
+    if (learningSidebarNotifyTimer) return;
+    const delay = Math.max(0, Number(delayMs) || 0);
+    learningSidebarNotifyTimer = setTimeout(() => {
+        learningSidebarNotifyTimer = null;
+        notifyLearningSidebarBridge();
+    }, delay);
+}
+
+function getLearningSidebarMessages() {
+    const rows = [];
+    if (!els.messagesContainer) return rows;
+    const nodes = Array.from(els.messagesContainer.querySelectorAll('.message'));
+    nodes.forEach((node) => {
+        const role = node.classList.contains('user')
+            ? 'user'
+            : (node.classList.contains('assistant') ? 'assistant' : 'system');
+        const body = node.querySelector('.message-content') || node.querySelector('.message-body') || node;
+        const parts = [];
+        if (body) {
+            const consumed = new Set();
+            const markConsumed = (el) => {
+                if (!el) return;
+                consumed.add(el);
+            };
+            const isInsideConsumed = (el) => {
+                let cur = el;
+                while (cur && cur !== body) {
+                    if (consumed.has(cur)) return true;
+                    cur = cur.parentElement;
+                }
+                return false;
+            };
+            const orderedNodes = Array.from(body.querySelectorAll('.thinking-block.reasoning-thinking-block, .content-body, .tool-usage, .add-basis-view, .question-tool-card'));
+            orderedNodes.forEach((item) => {
+                if (!(item instanceof Element) || isInsideConsumed(item)) return;
+                if (item.classList.contains('thinking-block') && item.classList.contains('reasoning-thinking-block')) {
+                    const contentEl = item.querySelector('.thinking-content');
+                    const raw = String(
+                        contentEl && (
+                            (typeof contentEl.__sourceMarkdown === 'string')
+                                ? contentEl.__sourceMarkdown
+                                : (contentEl.dataset.rawText || contentEl.dataset.streamRaw || contentEl.textContent || '')
+                        )
+                    ).trim();
+                    if (!raw) return;
+                    markConsumed(item);
+                    parts.push({
+                        kind: 'thinking',
+                        format: 'markdown',
+                        content: raw
+                    });
+                    return;
+                }
+                if (item.classList.contains('content-body')) {
+                    const raw = String(
+                        (typeof item.__sourceMarkdown === 'string')
+                            ? item.__sourceMarkdown
+                            : (item.dataset.streamRaw || item.textContent || '')
+                    ).trim();
+                    if (!raw) return;
+                    markConsumed(item);
+                    parts.push({
+                        kind: 'content',
+                        format: 'markdown',
+                        content: raw
+                    });
+                    return;
+                }
+                if (item.classList.contains('tool-usage') || item.classList.contains('add-basis-view')) {
+                    const toolName = String(item.dataset.toolName || '').trim();
+                    const toolPhase = String(item.dataset.phase || '').trim().toLowerCase();
+                    const toolPending = String(item.dataset.pending || '').trim().toLowerCase() === 'true';
+                    const toolResolved = String(item.dataset.resolved || '').trim().toLowerCase() === 'true';
+                    const statusEl = item.querySelector('.tool-status');
+                    const outputEl = item.querySelector('.tool-output');
+                    const statusText = String(statusEl ? (statusEl.textContent || '') : '').trim();
+                    const outputText = String(outputEl ? (outputEl.textContent || '') : '').trim();
+                    const fallbackText = String(item.innerText || item.textContent || '').trim();
+                    const bodyText = outputText || fallbackText;
+                    if (!statusText && !bodyText && !toolName) return;
+                    markConsumed(item);
+                    parts.push({
+                        kind: 'tool',
+                        format: 'tool',
+                        title: toolName,
+                        content: bodyText,
+                        status: statusText,
+                        phase: toolPhase,
+                        pending: toolPending,
+                        resolved: toolResolved,
+                        call_id: String(item.dataset.callId || '').trim(),
+                        tool_index: String(item.dataset.toolIndex || '').trim()
+                    });
+                    return;
+                }
+                if (item.classList.contains('question-tool-card')) {
+                    const questionBody = item.querySelector('.question-card-body');
+                    const questionId = String(
+                        (questionBody && questionBody.dataset && questionBody.dataset.questionCardId)
+                        || item.dataset.questionId
+                        || ''
+                    ).trim();
+                    const questionTitle = String((item.querySelector('.question-card-title') || {}).textContent || '').trim();
+                    const questionContent = String((item.querySelector('.question-card-content') || {}).textContent || '').trim();
+                    const choices = Array.from(item.querySelectorAll('.question-choice-btn'))
+                        .map((btn) => String(btn.textContent || '').trim())
+                        .filter(Boolean);
+                    const allowOther = !!item.querySelector('.question-other-input');
+                    const resolved = (
+                        String(item.dataset.resolved || '').trim().toLowerCase() === 'true'
+                        || !!(questionBody && questionBody.classList.contains('answered'))
+                    );
+                    let answerText = String((item.querySelector('.question-card-answer') || {}).textContent || '').trim();
+                    answerText = answerText.replace(/^your answer:\s*/i, '').trim();
+                    markConsumed(item);
+                    parts.push({
+                        kind: 'question',
+                        format: 'question',
+                        question: {
+                            question_id: questionId,
+                            question_title: questionTitle,
+                            question_content: questionContent,
+                            choices,
+                            allow_other: allowOther,
+                            resolved,
+                            answer: answerText
+                        }
+                    });
+                }
+            });
+        }
+        const fallbackText = String(body && body.innerText ? body.innerText : '').trim();
+        if (!parts.length && !fallbackText) return;
+        rows.push({
+            role,
+            content: fallbackText,
+            parts: parts.length ? parts : [{
+                kind: 'content',
+                format: 'text',
+                content: fallbackText
+            }]
+        });
+    });
+    return rows.slice(-24);
+}
+
+function normalizeLearningReaderContextPayload(raw) {
+    const src = (raw && typeof raw === 'object') ? raw : {};
+    const windowTextRaw = String(src.window_text || src.visible_text || src.text || '').replace(/\r\n?/g, '\n');
+    const windowText = normalizeSelectionTextForNotes(windowTextRaw).slice(0, 4000);
+    if (!windowText) return null;
+    const lectureId = String(src.lecture_id || '').trim();
+    const bookId = String(src.book_id || '').trim();
+    const chapterTitle = String(src.chapter_title || '').trim();
+    const chapterIndexNum = Number(src.chapter_index);
+    const chapterIndex = Number.isFinite(chapterIndexNum) ? Math.max(0, Math.floor(chapterIndexNum)) : null;
+    const title = String(src.reader_title || src.title || '').trim();
+    const subTitle = String(src.reader_subtitle || src.subtitle || '').trim();
+    const capturedAtNum = Number(src.captured_at || src.ts || Date.now());
+    const capturedAt = Number.isFinite(capturedAtNum) ? Math.floor(capturedAtNum) : Date.now();
+    return {
+        lecture_id: lectureId,
+        book_id: bookId,
+        chapter_title: chapterTitle,
+        chapter_index: chapterIndex,
+        reader_title: title,
+        reader_subtitle: subTitle,
+        window_text: windowText,
+        captured_at: capturedAt
+    };
+}
+
+function buildLearningReaderContextBlocks(mode) {
+    if (String(mode || '').trim().toLowerCase() !== 'learning') return [];
+    const ctx = normalizeLearningReaderContextPayload(learningReaderContextSnapshot);
+    if (!ctx || !ctx.window_text) return [];
+    const lines = [];
+    if (ctx.reader_title) lines.push(`阅读器标题: ${ctx.reader_title}`);
+    if (ctx.reader_subtitle) lines.push(`阅读器副标题: ${ctx.reader_subtitle}`);
+    if (ctx.chapter_title) lines.push(`章节: ${ctx.chapter_title}${Number.isFinite(ctx.chapter_index) ? ` (#${ctx.chapter_index + 1})` : ''}`);
+    if (ctx.lecture_id) lines.push(`lecture_id: ${ctx.lecture_id}`);
+    if (ctx.book_id) lines.push(`book_id: ${ctx.book_id}`);
+    lines.push(`captured_at: ${new Date(Number(ctx.captured_at || Date.now())).toISOString()}`);
+    lines.push('');
+    lines.push('当前阅读窗口可见文本:');
+    lines.push(ctx.window_text);
+    return [{
+        type: 'learning_reader_window',
+        title: 'Web Reader 当前窗口文本',
+        content: lines.join('\n')
+    }];
+}
+
+function buildLearningReaderSelectionSourceMeta(rawSourceMeta, selectionText, plainText = '') {
+    const src = (rawSourceMeta && typeof rawSourceMeta === 'object') ? rawSourceMeta : {};
+    const source = String(src.source || '学习阅读器').trim() || '学习阅读器';
+    const sourceTitle = String(src.sourceTitle || src.reader_title || src.chapter_title || '').trim();
+    const anchor = {
+        type: 'knowledge',
+        title: sourceTitle.slice(0, 200),
+        snippet: buildNoteAnchorSnippet(selectionText, 280),
+        plainSnippet: buildNoteAnchorSnippet(plainText || selectionText, 280)
+    };
+    return { source, sourceTitle, anchor };
+}
+
+function escapeCssSelectorLiteral(raw) {
+    const text = String(raw || '');
+    if (!text) return '';
+    if (typeof CSS !== 'undefined' && CSS && typeof CSS.escape === 'function') {
+        return CSS.escape(text);
+    }
+    return text.replace(/["\\]/g, '\\$&');
+}
+
+function findQuestionCardById(questionId) {
+    const safeId = String(questionId || '').trim();
+    if (!safeId || !els.messagesContainer) return null;
+    const selectorId = escapeCssSelectorLiteral(safeId);
+    if (!selectorId) return null;
+    const body = els.messagesContainer.querySelector(`.question-card-body[data-question-card-id="${selectorId}"]`);
+    const card = body ? body.closest('.question-tool-card') : null;
+    return card || null;
+}
+
+function findFirstPendingQuestionCard() {
+    if (!els.messagesContainer) return null;
+    const cards = Array.from(els.messagesContainer.querySelectorAll('.question-tool-card'));
+    for (let i = cards.length - 1; i >= 0; i -= 1) {
+        const card = cards[i];
+        if (!(card instanceof Element)) continue;
+        const resolved = String(card.dataset.resolved || '').trim().toLowerCase() === 'true';
+        const pending = String(card.dataset.pending || '').trim().toLowerCase() === 'true';
+        if (!resolved && pending) return card;
+    }
+    return null;
+}
+
+async function submitQuestionAnswerFromSidebar(answerText, questionId = '') {
+    const finalAnswer = String(answerText || '').trim();
+    if (!finalAnswer) return false;
+    const questionCard = findQuestionCardById(questionId) || findFirstPendingQuestionCard();
+    if (questionCard) {
+        await submitQuestionAnswer(finalAnswer, questionCard);
+        return true;
+    }
+    if (learningSidebarSendInFlight || isGenerating || !els.messageInput) return false;
+    learningSidebarSendInFlight = true;
+    notifyLearningSidebarBridge();
+    els.messageInput.value = finalAnswer;
+    els.messageInput.dispatchEvent(new Event('input', { bubbles: true }));
+    try {
+        await sendMessage();
+        return true;
+    } finally {
+        learningSidebarSendInFlight = false;
+        notifyLearningSidebarBridge();
+    }
+}
+
+window.NexoraLearningSidebarBridge = {
+    getMessages: () => getLearningSidebarMessages(),
+    getInputValue: () => String((els.messageInput && els.messageInput.value) || ''),
+    setInputValue: (value) => {
+        if (!els.messageInput) return;
+        els.messageInput.value = String(value || '');
+        els.messageInput.dispatchEvent(new Event('input', { bubbles: true }));
+    },
+    send: async (text) => {
+        if (!els.messageInput) return;
+        if (learningSidebarSendInFlight || isGenerating) return;
+        const next = String(text || '').trim();
+        if (!next) return;
+        learningSidebarSendInFlight = true;
+        notifyLearningSidebarBridge();
+        els.messageInput.value = next;
+        els.messageInput.dispatchEvent(new Event('input', { bubbles: true }));
+        try {
+            await sendMessage();
+        } finally {
+            learningSidebarSendInFlight = false;
+            notifyLearningSidebarBridge();
+        }
+    },
+    subscribe: (listener) => {
+        if (typeof listener !== 'function') return () => {};
+        learningSidebarListeners.push(listener);
+        return () => {
+            learningSidebarListeners = learningSidebarListeners.filter((item) => item !== listener);
+        };
+    },
+    submitQuestionAnswer: async (answerText, questionId = '') => submitQuestionAnswerFromSidebar(answerText, questionId),
+    stop: async () => {
+        if (!isGenerating) return false;
+        stopGeneration();
+        notifyLearningSidebarBridge();
+        return true;
+    },
+    isGenerating: () => !!isGenerating,
+    isPendingSend: () => !!learningSidebarSendInFlight,
+    isBusy: () => !!(isGenerating || learningSidebarSendInFlight),
+};
 
 function isHoverProxySuppressedBySelection() {
     if (isChatMobileLayout()) return true;
@@ -4227,6 +4545,15 @@ async function ensureLearningModeAssets() {
     return learningModeAssetsPromise;
 }
 
+function shouldForceLearningSidebarMode() {
+    return !!(learningModeEnabled && learningReaderOpened);
+}
+
+function resolveLearningSidebarModeForConversation(modeHint = null) {
+    if (shouldForceLearningSidebarMode()) return 'learning';
+    return 'nexora';
+}
+
 function applyLearningSidebarMode(mode) {
     const normalized = (learningModeEnabled && String(mode || 'nexora').trim().toLowerCase() === 'learning') ? 'learning' : 'nexora';
     learningSidebarMode = normalized;
@@ -4255,6 +4582,9 @@ function applyLearningSidebarMode(mode) {
     }
     if (els.newChatBtn) {
         els.newChatBtn.style.display = visible ? 'none' : '';
+        els.newChatBtn.innerHTML = visible
+            ? '<span class="icon">+</span> New Learning'
+            : '<span class="icon">+</span> New Chat';
     }
     if (els.learningSidebarPanel) {
         els.learningSidebarPanel.style.display = visible ? '' : 'none';
@@ -4272,11 +4602,22 @@ function applyLearningSidebarMode(mode) {
                         console.error('加载学习侧栏资源失败:', err);
                     });
             }
+        } else if (window.NexoraLearningMode && typeof window.NexoraLearningMode.destroySidebarPanel === 'function') {
+            window.NexoraLearningMode.destroySidebarPanel();
         }
     }
 }
 
-function clearLearningWelcomeState() {
+function shouldPreserveLearningReaderImmersiveLayout() {
+    const mode = String(currentConversationMode || '').trim().toLowerCase();
+    return !!(learningModeEnabled && learningReaderOpened && mode === 'learning');
+}
+
+function clearLearningWelcomeState(options = {}) {
+    const force = !!(options && options.force);
+    if (!force && shouldPreserveLearningReaderImmersiveLayout()) {
+        return;
+    }
     if (els.inputDock) els.inputDock.classList.remove('learning-mode-hidden');
     if (learningEmbedLayoutMode !== 'default') {
         setLearningEmbedLayoutMode('default');
@@ -4313,6 +4654,45 @@ function handleLearningHostMessage(payload) {
     }
     if (msgType === 'nexora:layout:request') {
         setLearningEmbedLayoutMode(payload.mode, payload);
+        return true;
+    }
+    if (msgType === 'nexora:reader:state') {
+        const wasReaderOpened = !!learningReaderOpened;
+        learningReaderOpened = !!payload.opened;
+        if (learningReaderOpened) {
+            learningHeaderMode = 'learning';
+            applyLearningSidebarMode('learning');
+            void syncLearningHeaderMode();
+            return true;
+        }
+        if (wasReaderOpened) {
+            const hasConversation = !!String(currentConversationId || '').trim();
+            learningHeaderMode = hasConversation ? 'chat' : 'learning';
+            applyLearningSidebarMode(hasConversation ? 'nexora' : 'learning');
+            void syncLearningHeaderMode();
+        }
+        return true;
+    }
+    if (msgType === 'nexora:reader:context') {
+        learningReaderContextSnapshot = normalizeLearningReaderContextPayload(payload.context || payload);
+        return true;
+    }
+    if (msgType === 'nexora:reader:selection-context-menu') {
+        const text = normalizeSelectionTextForNotes(String(payload.text || payload.selection_text || ''));
+        if (!text) {
+            hideNotesContextMenu();
+            return true;
+        }
+        const sourceMeta = buildLearningReaderSelectionSourceMeta(payload.source_meta, text, text);
+        const xNum = Number(payload.x);
+        const yNum = Number(payload.y);
+        const safeX = Number.isFinite(xNum) ? xNum : Math.floor(window.innerWidth / 2);
+        const safeY = Number.isFinite(yNum) ? yNum : Math.floor(window.innerHeight / 2);
+        showNotesContextMenu(safeX, safeY, text, sourceMeta);
+        return true;
+    }
+    if (msgType === 'nexora:reader:selection-context-menu-hide') {
+        hideNotesContextMenu();
         return true;
     }
     return false;
@@ -4366,11 +4746,24 @@ async function renderLearningMainPanel() {
 async function syncLearningHeaderMode() {
     const hasConversation = !!String(currentConversationId || '').trim();
     const showLearning = isLearningConversationView();
-    const showLearningMain = showLearning && hasConversation;
+    const showLearningMain = !!(
+        learningModeEnabled
+        && (
+            (String(learningHeaderMode || '').trim().toLowerCase() === 'learning' && !hasConversation)
+            || learningReaderOpened
+        )
+    );
     if (!showLearningMain) {
         setLearningEmbedLayoutMode('default');
     }
     if (els.messagesContainer) {
+        if (showLearningMain && !hasConversation) {
+            const welcomeShell = els.messagesContainer.querySelector('.welcome-screen.learning-mode-welcome-shell');
+            if (welcomeShell) {
+                els.messagesContainer.innerHTML = '';
+                learningWelcomeMounted = false;
+            }
+        }
         els.messagesContainer.style.display = showLearningMain ? 'none' : '';
     }
     if (els.learningMainPanel) {
@@ -4386,6 +4779,15 @@ async function syncLearningHeaderMode() {
 
 async function renderWelcomeScreen() {
     if (!els.messagesContainer) return;
+    if (
+        learningModeEnabled
+        && !String(currentConversationId || '').trim()
+        && String(learningHeaderMode || '').trim().toLowerCase() === 'learning'
+    ) {
+        learningWelcomeMounted = false;
+        els.messagesContainer.innerHTML = '';
+        return;
+    }
     if (!isLearningConversationView()) {
         clearLearningWelcomeState();
         learningWelcomeMounted = false;
@@ -4431,6 +4833,9 @@ async function renderWelcomeScreen() {
 
 async function applyLearningMode(enabled) {
     learningModeEnabled = !!enabled;
+    if (!learningModeEnabled) {
+        learningReaderOpened = false;
+    }
     document.body.classList.toggle('learning-mode-enabled', learningModeEnabled);
     if (learningModeEnabled) {
         try {
@@ -6367,6 +6772,7 @@ function fillMessageInputWithExplainText(rawText) {
         // ignore selection API failures
     }
     ensureMessageInputFocus({ onlyIfBlurred: false, preserveSelection: true });
+    notifyLearningSidebarBridge();
     return true;
 }
 
@@ -8271,6 +8677,10 @@ function initUI() {
     if (els.sidebarBrandLearningTab) {
         els.sidebarBrandLearningTab.addEventListener('click', () => {
             if (!learningModeEnabled) return;
+            if (!String(currentConversationId || '').trim()) {
+                learningHeaderMode = 'learning';
+                void syncLearningHeaderMode();
+            }
             applyLearningSidebarMode('learning');
         });
     }
@@ -8552,7 +8962,13 @@ function initUI() {
     }
 
     // New Chat
-    if(els.newChatBtn) els.newChatBtn.addEventListener('click', () => createNewConversation(false, 'chat'));
+    if (els.newChatBtn) {
+        els.newChatBtn.addEventListener('click', () => {
+            const inLearningSidebar = String(learningSidebarMode || '').trim().toLowerCase() === 'learning';
+            const targetMode = (learningModeEnabled && inLearningSidebar) ? 'learning' : 'chat';
+            createNewConversation(false, targetMode);
+        });
+    }
 
 // 说明
     if(els.tokenDisplay) els.tokenDisplay.addEventListener('click', openTokenModal);
@@ -10451,7 +10867,7 @@ async function loadConversation(id) {
     originalHeaderState = null;
     
     currentConversationId = id;
-    learningHeaderMode = String(currentConversationMode || '').trim().toLowerCase() === 'learning' ? 'learning' : 'chat';
+    learningHeaderMode = learningReaderOpened ? 'learning' : 'chat';
     void syncLearningHeaderMode();
     clearLearningWelcomeState();
     syncNotesForConversation(id);
@@ -10475,8 +10891,8 @@ async function loadConversation(id) {
         if (data.success && data.conversation) {
             refreshConversationImageHistoryFlag(data.conversation.messages || []);
             syncConversationModeFromConversation(data.conversation);
-            applyLearningSidebarMode(currentConversationMode === 'learning' ? 'learning' : 'nexora');
-            learningHeaderMode = currentConversationMode === 'learning' ? 'learning' : 'chat';
+            applyLearningSidebarMode(learningReaderOpened ? 'learning' : 'nexora');
+            learningHeaderMode = learningReaderOpened ? 'learning' : 'chat';
             void syncLearningHeaderMode();
             // Render
             renderMessages(data.conversation.messages, false, { instant: true });
@@ -10828,6 +11244,24 @@ function createQuestionCardNode(question, options = {}) {
     return wrap;
 }
 
+function buildQuestionAnswerInjectionText(questionPayload, answerText) {
+    const payload = (questionPayload && typeof questionPayload === 'object') ? questionPayload : {};
+    const finalAnswer = String(answerText || '').trim();
+    const title = String(payload.question_title || '').trim();
+    const content = String(payload.question_content || '').trim();
+    const questionId = String(payload.question_id || '').trim();
+    const choices = Array.isArray(payload.choices)
+        ? payload.choices.map((item) => String(item || '').trim()).filter(Boolean)
+        : [];
+    const lines = ['[Question Response]'];
+    if (questionId) lines.push(`Question ID: ${questionId}`);
+    if (title) lines.push(`Title: ${title}`);
+    if (content) lines.push(`Question: ${content}`);
+    if (choices.length) lines.push(`Choices: ${choices.join(' | ')}`);
+    lines.push(`Answer: ${finalAnswer}`);
+    return lines.join('\n');
+}
+
 function applyQuestionAnswer(questionCard, answerText) {
     if (!questionCard) return;
     const body = questionCard.querySelector('.question-card-body');
@@ -10851,13 +11285,25 @@ function applyQuestionAnswer(questionCard, answerText) {
 async function submitQuestionAnswer(answerText, questionCard = null) {
     const finalAnswer = String(answerText || '').trim();
     if (!finalAnswer) return;
+    const body = questionCard ? questionCard.querySelector('.question-card-body') : null;
+    const payload = questionCard ? {
+        question_id: String((body && body.dataset && body.dataset.questionCardId) || '').trim(),
+        question_title: String((questionCard.querySelector('.question-card-title') || {}).textContent || '').trim(),
+        question_content: String((questionCard.querySelector('.question-card-content') || {}).textContent || '').trim(),
+        choices: Array.from(questionCard.querySelectorAll('.question-choice-btn'))
+            .map((btn) => String(btn.textContent || '').trim())
+            .filter(Boolean),
+    } : {};
     if (questionCard) applyQuestionAnswer(questionCard, finalAnswer);
     if (els.messageInput) {
         els.messageInput.value = finalAnswer;
         els.messageInput.style.height = 'auto';
         els.messageInput.style.height = `${els.messageInput.scrollHeight}px`;
     }
-    await sendMessage();
+    await sendMessage({
+        displayContentOverride: finalAnswer,
+        textOverride: buildQuestionAnswerInjectionText(payload, finalAnswer)
+    });
 }
 
 function appendQuestionStep(messageDiv, step) {
@@ -10924,6 +11370,10 @@ function placeInteractiveCardsBelowToolChain(messageDiv) {
     }
 
     cards.forEach((card) => parent.appendChild(card));
+}
+
+function syncInteractiveCardsBelowToolChain(messageDiv) {
+    placeInteractiveCardsBelowToolChain(messageDiv);
 }
 
 function extractLearningCardPayload(rawResult) {
@@ -11784,12 +12234,19 @@ async function sendMessage(options = {}) {
     const isAutoContinue = !!(options && options.autoContinue);
     const autoContinueKind = String(options && options.autoContinueKind ? options.autoContinueKind : '').trim();
     const isConfirmationAutoContinue = autoContinueKind === 'confirm';
-    const rawText = isAutoContinue ? '' : els.messageInput.value.trim();
+    const overrideDisplayContent = String(options && options.displayContentOverride ? options.displayContentOverride : '').trim();
+    const overrideText = String(options && options.textOverride ? options.textOverride : '').trim();
+    const rawText = isAutoContinue ? '' : (overrideText || els.messageInput.value.trim());
     const longtermTriggered = !isAutoContinue && /^\s*\/longterm(?:\s+|$)/i.test(rawText);
     let text = rawText;
     let nextConversationMode = (currentConversationMode === 'longterm' || isAutoContinue)
         ? 'longterm'
         : ((learningModeEnabled && currentConversationMode === 'learning') ? 'learning' : 'chat');
+    if (learningModeEnabled && learningReaderOpened && nextConversationMode !== 'longterm') {
+        nextConversationMode = 'learning';
+        currentConversationMode = 'learning';
+        learningHeaderMode = 'learning';
+    }
     let longtermTaskText = '';
     if (isAutoContinue && !text) {
         text = isConfirmationAutoContinue
@@ -11872,7 +12329,7 @@ async function sendMessage(options = {}) {
     saveMessageDraftToStorage('');
 
     // Prepare display content
-    let displayContent = text;
+    let displayContent = overrideDisplayContent || text;
     const pendingUserAttachments = [];
     if (uploadedFileIds.length > 0) {
         uploadedFileIds.forEach((f) => {
@@ -11922,6 +12379,7 @@ async function sendMessage(options = {}) {
             content: displayContent,
             metadata: pendingUserAttachments.length > 0 ? { attachments: pendingUserAttachments } : {}
         });
+        notifyLearningSidebarBridge();
         if (messageHasImageAttachments({ metadata: { attachments: pendingUserAttachments } })) {
             currentConversationHasImageHistory = true;
         }
@@ -11959,6 +12417,7 @@ async function sendMessage(options = {}) {
         ? currentConversationLongtermState.plan.map((item) => normalizeLongtermPlanItemText(item)).filter(Boolean)
         : [];
     const longtermContextText = String(currentConversationLongtermState.context || '').trim();
+    const learningReaderContextBlocks = buildLearningReaderContextBlocks(nextConversationMode);
     const payload = {
         message: finalMessage,
         model_name: model,
@@ -11974,7 +12433,7 @@ async function sendMessage(options = {}) {
         } : (nextConversationMode === 'learning' ? {
             learning: true,
             system_prompt: '',
-            context_blocks: [],
+            context_blocks: learningReaderContextBlocks,
             active_tool_skills: [],
             meta: {
                 source: 'chatdbserver_learning_mode'
@@ -12039,6 +12498,7 @@ async function sendMessage(options = {}) {
     // Create Placeholder for AI Response
     const aiMsgId = Date.now().toString(); // Temporary ID
     const aiMsgDiv = appendMessage({ role: 'assistant', content: '', id: aiMsgId, pending: true });
+    notifyLearningSidebarBridge();
     const aiMsgIndex = Number(aiMsgDiv && aiMsgDiv.dataset ? aiMsgDiv.dataset.index : NaN);
     let streamCompleted = false;
     let streamAbortedByUser = false;
@@ -13068,7 +13528,7 @@ async function sendMessage(options = {}) {
                                 showToast(streamErrorMessage);
                             }
                         }
-                        
+                        scheduleLearningSidebarBridgeNotify();
                     } catch (e) { console.error("Parse error", e); }
                 }
             }
@@ -13196,6 +13656,7 @@ async function sendMessage(options = {}) {
         loadConversations(); // Update list preview
         loadKnowledge(currentConversationId); // Refresh knowledge
         currentConversationLongtermConfirmationInFlight = false;
+        scheduleLearningSidebarBridgeNotify(0);
     }
 }
 
@@ -13406,6 +13867,11 @@ function appendToolEvent(aiMsgDiv, name, details, isFunction = false, options = 
     if (callId) div.dataset.callId = callId;
     div.dataset.pending = pending ? 'true' : 'false';
     if (pending) div.dataset.resolved = 'false';
+    div.dataset.userToggled = 'false';
+    div.dataset.autoLock = pending ? '1' : '0';
+    if (pending) {
+        div.classList.add('expanded');
+    }
 
     // Icon selection
     let iconSvg = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path></svg>'; // default toolbox
@@ -13430,6 +13896,7 @@ function appendToolEvent(aiMsgDiv, name, details, isFunction = false, options = 
     `;
     bindToolUsageToggle(div);
     placeCanvasCardsBelowToolChain(aiMsgDiv);
+    syncInteractiveCardsBelowToolChain(aiMsgDiv);
     return div;
 }
 
@@ -13438,11 +13905,13 @@ function bindToolUsageToggle(toolEl) {
     const badge = toolEl.querySelector('.tool-badge');
     if (!badge) return;
     badge.addEventListener('click', () => {
+        if (toolEl.dataset.autoLock === '1') return;
         if (!toolEl.classList.contains('has-output')) return;
         if (toolEl.__autoCollapseTimer) {
             clearTimeout(toolEl.__autoCollapseTimer);
             toolEl.__autoCollapseTimer = null;
         }
+        toolEl.dataset.userToggled = 'true';
         toolEl.classList.toggle('expanded');
     });
     toolEl.dataset.toggleBound = '1';
@@ -13454,8 +13923,11 @@ function scheduleToolAutoCollapse(toolEl, delay = 260) {
         clearTimeout(toolEl.__autoCollapseTimer);
     }
     toolEl.__autoCollapseTimer = setTimeout(() => {
-        toolEl.classList.remove('expanded');
         toolEl.__autoCollapseTimer = null;
+        toolEl.dataset.autoLock = '0';
+        if (!toolEl.isConnected) return;
+        if (toolEl.dataset.userToggled === 'true') return;
+        toolEl.classList.remove('expanded');
     }, Math.max(0, Number(delay) || 0));
 }
 
@@ -13793,6 +14265,8 @@ function appendToolCallDelta(aiMsgDiv, data) {
         if (outDiv.textContent) {
             row.classList.add('has-output');
             row.classList.add('expanded'); // 调用进行中自动展开
+            row.dataset.autoLock = '1';
+            row.dataset.userToggled = 'false';
             scrollToolOutputToBottom(outDiv);
         }
     }
@@ -13838,6 +14312,8 @@ function finalizeToolCallBadge(aiMsgDiv, name, callId, argumentsText = '', optio
             if (buildOut.textContent.trim()) {
                 buildRow.classList.add('has-output');
                 buildRow.classList.add('expanded');
+                buildRow.dataset.autoLock = '1';
+                buildRow.dataset.userToggled = 'false';
                 scrollToolOutputToBottom(buildOut);
                 scheduleToolAutoCollapse(buildRow, 380);
             }
@@ -13864,7 +14340,13 @@ function finalizeToolCallBadge(aiMsgDiv, name, callId, argumentsText = '', optio
     if (outDiv) {
         outDiv.textContent = '';
         row.classList.remove('has-output');
-        if (autoExpand) row.classList.add('expanded');
+        if (autoExpand) {
+            row.classList.add('expanded');
+            row.dataset.autoLock = '1';
+            row.dataset.userToggled = 'false';
+        } else {
+            row.dataset.autoLock = '0';
+        }
     }
 }
 
@@ -13938,6 +14420,8 @@ function updateLastToolResult(aiMsgDiv, name, result, callId = '', options = {})
         outDiv.textContent = resultText;
         if (outDiv.textContent.trim()) {
             target.classList.add('has-output');
+            target.dataset.autoLock = '1';
+            target.dataset.userToggled = 'false';
             scrollToolOutputToBottom(outDiv);
         }
         // 调用结束后自动折叠
@@ -14598,7 +15082,7 @@ function appendMessage(msg, index) {
     if (shouldAutoScroll && !isBatchRenderingMessages) {
         els.messagesContainer.scrollTop = els.messagesContainer.scrollHeight;
     }
-    
+    notifyLearningSidebarBridge();
     return div; // Return main message div
 }
 
@@ -14856,6 +15340,7 @@ function renderMessages(messages, noScroll, options = {}) {
             });
         }
     }
+    notifyLearningSidebarBridge();
 }
 
 // Global modal functions
@@ -14959,6 +15444,9 @@ async function startRegenerate(index) {
     );
     if (!compressionDecision.ok) return;
     const forceContextCompression = !!compressionDecision.forceCompression;
+    const regenLearningReaderContextBlocks = buildLearningReaderContextBlocks(
+        (learningModeEnabled && currentConversationMode === 'learning') ? 'learning' : currentConversationMode
+    );
     const toolsMode = getToolsMode();
     const enableTools = toolsMode !== 'off';
     let regenMessageDiv = document.querySelector(`.message.assistant[data-index="${index}"]`);
@@ -15052,7 +15540,7 @@ async function startRegenerate(index) {
             } : ((learningModeEnabled && currentConversationMode === 'learning') ? {
                 learning: true,
                 system_prompt: '',
-                context_blocks: [],
+                context_blocks: regenLearningReaderContextBlocks,
                 active_tool_skills: [],
                 meta: {
                     source: 'chatdbserver_learning_mode_regenerate'
@@ -15228,6 +15716,7 @@ async function startRegenerate(index) {
                             showToast(streamErrorMessage);
                         }
                     }
+                    scheduleLearningSidebarBridgeNotify();
                 } catch (e) { }
             }
             if (done) {
@@ -15337,6 +15826,7 @@ async function startRegenerate(index) {
         }
         // Keep current message DOM to avoid delayed full re-render/flash.
         loadConversations();
+        scheduleLearningSidebarBridgeNotify(0);
     }
 }
 
@@ -15374,6 +15864,7 @@ function updateMessageDivContent(index, fullText, preferredMessageDiv = null) {
     highlightCode(body);
     
     if (shouldAutoScroll) els.messagesContainer.scrollTop = els.messagesContainer.scrollHeight;
+    scheduleLearningSidebarBridgeNotify();
 }
 
 function updateMessageDivThinking(index, delta, preferredMessageDiv = null) {
@@ -15407,6 +15898,7 @@ function updateMessageDivThinking(index, delta, preferredMessageDiv = null) {
     });
     bindSourceMarkdown(textTarget, raw);
     highlightCode(textTarget);
+    scheduleLearningSidebarBridgeNotify();
 }
 
 function finalizeMessageRenderForIndex(index, preferredMessageDiv = null) {
@@ -15621,6 +16113,7 @@ function updateMessageDivTools(index, data, preferredMessageDiv = null) {
     } else if (data.type === 'question') {
         appendQuestionStep(messageDiv, data);
     }
+    scheduleLearningSidebarBridgeNotify();
 }
 
 async function resumeActiveStreamAfterReload() {
@@ -15850,6 +16343,7 @@ async function resumeActiveStreamAfterReload() {
                         showToast(streamErrorMessage);
                     }
                 }
+                scheduleLearningSidebarBridgeNotify();
             }
 
             for (const contentDiv of dirtiedContentSpans) {
@@ -15978,6 +16472,7 @@ async function resumeActiveStreamAfterReload() {
                 loadKnowledge(currentConversationId);
             }
         }
+        scheduleLearningSidebarBridgeNotify(0);
     }
 }
 

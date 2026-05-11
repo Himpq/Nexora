@@ -25,9 +25,11 @@ from core.lectures import (
     load_book_text,
     load_book_info_xml,
     load_book_detail_xml,
+    load_book_sections_xml,
     save_book_text,
     save_book_info_xml,
     save_book_detail_xml,
+    save_book_sections_xml,
     load_book_questions_xml,
     save_book_original_file,
     update_book as update_lecture_book,
@@ -46,18 +48,21 @@ from core.booksproc import (
     enqueue_book_intensive,
     enqueue_book_question,
     enqueue_book_refinement,
+    enqueue_book_section,
     get_book_progress_steps,
     get_book_progress_text,
     get_intensive_reading_settings,
     get_question_generation_settings,
     get_refinement_queue_snapshot,
     get_rough_reading_settings,
+    get_split_chapters_settings,
     init_booksproc,
     list_refinement_candidates,
     mark_book_uploaded,
     update_intensive_reading_settings,
     update_question_generation_settings,
     update_rough_reading_settings,
+    update_split_chapters_settings,
 )
 from core.vector import (
     collection_stats as vector_collection_stats,
@@ -532,6 +537,10 @@ def frontend_context():
 
 @bp.route("/frontend/materials", methods=["GET"])
 def frontend_materials():
+    sort_by = str(request.args.get("sort_by") or "updated_at").strip().lower() or "updated_at"
+    order = str(request.args.get("order") or "desc").strip().lower() or "desc"
+    desc = order != "asc"
+
     lectures = list_learning_lectures(_cfg)
     rows = []
     total_books = 0
@@ -546,12 +555,39 @@ def frontend_materials():
                 "books_count": len(books),
             }
         )
+
+    def _row_sort_key(row: Dict[str, Any]):
+        lecture = row.get("lecture") if isinstance(row.get("lecture"), dict) else {}
+        books = row.get("books") if isinstance(row.get("books"), list) else []
+        if sort_by == "title":
+            return str((lecture or {}).get("title") or "").strip().lower()
+        if sort_by == "progress":
+            return int((lecture or {}).get("progress") or 0)
+        if sort_by == "books_count":
+            return int(row.get("books_count") or 0)
+        if sort_by == "study_hours":
+            return float((lecture or {}).get("study_hours") or 0.0)
+        if sort_by == "book_updated_at":
+            latest = 0
+            for book in books:
+                if not isinstance(book, dict):
+                    continue
+                latest = max(latest, int(book.get("updated_at") or 0))
+            return latest
+        if sort_by == "created_at":
+            return int((lecture or {}).get("created_at") or 0)
+        return int((lecture or {}).get("updated_at") or 0)
+
+    rows.sort(key=_row_sort_key, reverse=desc)
+
     return jsonify(
         {
             "success": True,
             "lectures": rows,
             "total_lectures": len(rows),
             "total_books": total_books,
+            "sort_by": sort_by,
+            "order": "desc" if desc else "asc",
         }
     )
 
@@ -818,10 +854,12 @@ def frontend_settings_refinement():
         lecture_id = str(job.get("lecture_id") or "").strip()
         book_id = str(job.get("book_id") or "").strip()
         job_status = str(job.get("status") or "").strip().lower()
+        job_type = str(job.get("job_type") or "").strip().lower()
         if job_status == "running":
             running_count += 1
         if lecture_id and book_id:
-            running_by_book[f"{lecture_id}::{book_id}"] = job_status
+            suffix = f"::{job_type}" if job_type else ""
+            running_by_book[f"{lecture_id}::{book_id}{suffix}"] = job_status
     queue_snapshot["running_count"] = int(running_count)
     items: List[Dict[str, Any]] = []
     for row in rows:
@@ -845,14 +883,18 @@ def frontend_settings_refinement():
                 "coarse_status": str(book.get("coarse_status") or ""),
                 "intensive_status": str(book.get("intensive_status") or ""),
                 "question_status": str(book.get("question_status") or ""),
+                "section_status": str(book.get("section_status") or ""),
                 "coarse_model": str(book.get("coarse_model") or ""),
                 "intensive_model": str(book.get("intensive_model") or ""),
                 "question_model": str(book.get("question_model") or ""),
+                "section_model": str(book.get("section_model") or ""),
                 "coarse_error": str(book.get("coarse_error") or ""),
                 "intensive_error": str(book.get("intensive_error") or ""),
                 "question_error": str(book.get("question_error") or ""),
+                "section_error": str(book.get("section_error") or ""),
                 "refinement_error": str(book.get("refinement_error") or ""),
                 "job_status": running_by_book.get(key, ""),
+                "section_job_status": running_by_book.get(f"{key}::section", ""),
                 "progress_text": get_book_progress_text(lecture_id, book_id),
                 "progress_steps": get_book_progress_steps(lecture_id, book_id),
                 "updated_at": int(book.get("updated_at") or 0),
@@ -945,6 +987,36 @@ def frontend_settings_refinement_question():
         return jsonify({"success": False, "error": str(exc)}), 500
 
 
+@bp.route("/frontend/settings/refinement/section", methods=["POST"])
+def frontend_settings_refinement_section():
+    """设置页：手动触发教材分节（输出写入 sections.xml）。"""
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    actor = str(data.get("actor") or _resolve_runtime_user_id()).strip()
+    model_name = str(data.get("model_name") or "").strip()
+    log_event(
+        "frontend_section_request",
+        "收到前端分节请求",
+        payload={
+            "lecture_id": lecture_id,
+            "book_id": book_id,
+            "actor": actor,
+            "model_name": model_name,
+            "is_admin": bool(_is_runtime_admin()),
+        },
+    )
+    if not _is_runtime_admin():
+        return jsonify({"success": False, "error": "Only admin can start section generation."}), 403
+    if not lecture_id or not book_id:
+        return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+    try:
+        result = enqueue_book_section(_cfg, lecture_id, book_id, actor=actor, model_name=model_name)
+        return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, **result}), 202
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
 @bp.route("/frontend/settings/refinement/stop", methods=["POST"])
 def frontend_settings_refinement_stop():
     """设置页：停止教材精读并重置状态。"""
@@ -982,6 +1054,7 @@ def frontend_settings_models():
                 "rough_reading": rough,
                 "intensive_reading": get_intensive_reading_settings(_cfg),
                 "question_generation": get_question_generation_settings(_cfg),
+                "split_chapters": get_split_chapters_settings(_cfg),
             },
         }
     )
@@ -998,12 +1071,15 @@ def frontend_settings_models_patch():
     default_model = data.get("default_nexora_model")
     rough_updates = data.get("rough_reading")
     intensive_updates = data.get("intensive_reading")
+    question_updates = data.get("question_generation")
+    split_chapters_updates = data.get("split_chapters")
     listed = _list_nexora_models_payload(_resolve_runtime_user_id())
     available_ids = {row.get("id", "") for row in _extract_model_options(listed.get("payload") if isinstance(listed.get("payload"), dict) else {})}
     updated_default = get_default_nexora_model(_cfg)
     updated_rough = get_rough_reading_settings(_cfg)
     updated_intensive = get_intensive_reading_settings(_cfg)
     updated_question = get_question_generation_settings(_cfg)
+    updated_split_chapters = get_split_chapters_settings(_cfg)
     if default_model is not None:
         normalized_default = str(default_model or "").strip()
         if normalized_default and normalized_default not in available_ids:
@@ -1019,12 +1095,16 @@ def frontend_settings_models_patch():
         if intensive_model_name and intensive_model_name not in available_ids:
             return jsonify({"success": False, "error": "intensive_reading.model_name is not in available models."}), 400
         updated_intensive = update_intensive_reading_settings(_cfg, intensive_updates)
-    question_updates = data.get("question_generation")
     if isinstance(question_updates, dict):
         question_model_name = str(question_updates.get("model_name") or "").strip()
         if question_model_name and question_model_name not in available_ids:
             return jsonify({"success": False, "error": "question_generation.model_name is not in available models."}), 400
         updated_question = update_question_generation_settings(_cfg, question_updates)
+    if isinstance(split_chapters_updates, dict):
+        split_model_name = str(split_chapters_updates.get("model_name") or "").strip()
+        if split_model_name and split_model_name not in available_ids:
+            return jsonify({"success": False, "error": "split_chapters.model_name is not in available models."}), 400
+        updated_split_chapters = update_split_chapters_settings(_cfg, split_chapters_updates)
     return jsonify(
         {
             "success": True,
@@ -1033,6 +1113,7 @@ def frontend_settings_models_patch():
                 "rough_reading": updated_rough,
                 "intensive_reading": updated_intensive,
                 "question_generation": updated_question,
+                "split_chapters": updated_split_chapters,
             },
         }
     )

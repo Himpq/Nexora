@@ -382,6 +382,45 @@ INTENSIVE_READING_MODEL_USER_PROMPT = """
 
 
 # ANSWER_MODEL_SYSTEM_PROMPT - 回答模型
+SPLIT_CHAPTERS_MODEL_SYSTEM_PROMPT = """
+你是 NexoraLearning 的章节分节模型。
+任务是把当前章节切分成若干学习 Session，每个 Session 都必须逻辑完整，长度尽量均衡，并且所有 Session 连续覆盖整个章节范围。
+
+强约束:
+1. 只能基于当前章节内容进行分节，不得引入章节外信息。
+2. 你必须通过工具 write(...) 一次性提交完整 sessions 数组。
+3. sessions 必须连续覆盖 chapter_range，不能有重叠和空洞。
+4. 最后一个 session 的结尾必须严格等于 chapter end。
+5. 在调用 write 成功后，再调用 done。
+6. 只做工具调用，不要输出额外解释性文本。
+""".strip()
+
+
+SPLIT_CHAPTERS_MODEL_USER_PROMPT = """
+课程: {{lecture_name}}
+教材: {{book_name}}
+章节名: {{chapter_name}}
+章节范围: {{chapter_range}}
+历史平均 Session 长度(字符): {{historical_avg_session_chars}}
+建议 Session 数量: {{target_session_count_hint}}
+
+章节结构信息:
+<CHAPTER_DETAIL_XML>
+{{chapter_detail_xml}}
+</CHAPTER_DETAIL_XML>
+
+章节正文片段:
+<CHAPTER_CONTEXT>
+{{chapter_context}}
+</CHAPTER_CONTEXT>
+
+任务要求:
+<REQUEST>
+{{request}}
+</REQUEST>
+""".strip()
+
+
 ANSWER_MODEL_SYSTEM_PROMPT = """
 你是 NexoraLearning 的回答模型。
 
@@ -460,6 +499,10 @@ MODEL_PROMPTS = {
     "intensive_reading": {
         "system": INTENSIVE_READING_MODEL_SYSTEM_PROMPT,
         "user": INTENSIVE_READING_MODEL_USER_PROMPT,
+    },
+    "split_chapters": {
+        "system": SPLIT_CHAPTERS_MODEL_SYSTEM_PROMPT,
+        "user": SPLIT_CHAPTERS_MODEL_USER_PROMPT,
     },
     "answer": {
         "system": ANSWER_MODEL_SYSTEM_PROMPT,
