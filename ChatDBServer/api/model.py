@@ -27,7 +27,12 @@ from longterm.longterm_api import (
     normalize_longterm_payload,
     conversation_longterm_root_state,
 )
-from learning_runtime import get_learning_tools
+from learning_runtime import (
+    get_learning_tools,
+    trigger_learning_memory_analysis,
+    increment_learning_turn_and_maybe_enqueue,
+    mark_learning_context_compression,
+)
 import prompts
 
 # 配置文件路径
@@ -3395,6 +3400,58 @@ class Model:
             return out
         return f"{str(user_content or '')}{addon}"
 
+    def _build_learning_memory_history_payload(
+        self,
+        *,
+        latest_user_message: str,
+        latest_assistant_message: str,
+        limit: int = 8,
+    ) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        if not self.conversation_id:
+            return rows
+        try:
+            history_messages = self.conversation_manager.get_messages(self.conversation_id, limit=max(2, int(limit or 8)))
+        except Exception:
+            history_messages = []
+        for item in history_messages:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "").strip()
+            if role not in {"user", "assistant"}:
+                continue
+            content = str(item.get("content") or "").strip()
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            row: Dict[str, Any] = {
+                "role": role,
+                "content": content[:4000],
+            }
+            if role == "assistant":
+                row["model_name"] = str(metadata.get("model_name") or "").strip()
+                if isinstance(metadata.get("pending_questions"), list) and metadata.get("pending_questions"):
+                    row["pending_questions"] = metadata.get("pending_questions")
+                if isinstance(metadata.get("learning_cards"), list) and metadata.get("learning_cards"):
+                    row["learning_cards_count"] = len(metadata.get("learning_cards"))
+            conversation_mode = str(metadata.get("conversation_mode") or "").strip()
+            if conversation_mode:
+                row["conversation_mode"] = conversation_mode
+            rows.append(row)
+        latest_user_text = str(latest_user_message or "").strip()
+        latest_assistant_text = str(latest_assistant_message or "").strip()
+        if latest_user_text:
+            if not rows or str(rows[-1].get("role") or "") != "user" or str(rows[-1].get("content") or "") != latest_user_text:
+                rows.append({"role": "user", "content": latest_user_text[:4000]})
+        if latest_assistant_text:
+            if not rows or str(rows[-1].get("role") or "") != "assistant" or str(rows[-1].get("content") or "") != latest_assistant_text:
+                rows.append(
+                    {
+                        "role": "assistant",
+                        "content": latest_assistant_text[:4000],
+                        "model_name": str(self.model_name or "").strip(),
+                    }
+                )
+        return rows[-max(2, int(limit or 8)):]
+
     def _normalize_non_image_user_attachments(self, raw_items: Any) -> List[Dict[str, Any]]:
         if not isinstance(raw_items, list):
             return []
@@ -3842,6 +3899,13 @@ class Model:
                 if normalized_conversation_mode == "longterm"
                 else (dict(conversation_mode_payload) if isinstance(conversation_mode_payload, dict) else {})
             )
+            learning_lecture_id = ""
+            if normalized_conversation_mode == "learning":
+                learning_lecture_id = str(normalized_conversation_mode_payload.get("lecture_id") or "").strip()
+                if not learning_lecture_id:
+                    meta_obj = normalized_conversation_mode_payload.get("meta")
+                    if isinstance(meta_obj, dict):
+                        learning_lecture_id = str(meta_obj.get("lecture_id") or "").strip()
             self._runtime_conversation_mode = normalized_conversation_mode
             self._runtime_conversation_mode_payload = dict(normalized_conversation_mode_payload)
             self.tools = self._parse_tools(TOOLS)
@@ -4270,6 +4334,8 @@ class Model:
                     current_meta = current_conv.get("metadata", {}) if isinstance(current_conv.get("metadata", {}), dict) else {}
                     next_meta = dict(current_meta)
                     next_meta["learning"] = True
+                    if learning_lecture_id:
+                        next_meta["learning_lecture_id"] = learning_lecture_id
                     self.conversation_manager.update_conversation_fields(self.conversation_id, {
                         "conversation_mode": "learning",
                         "tags": normalized_tags,
@@ -4702,7 +4768,8 @@ class Model:
                                 )
                                 if exact_input_pre is not None and exact_input_pre > 0:
                                     preflight_raw_input_tokens = int(exact_input_pre)
-                            compression_threshold = int(max(1, context_window_limit) * 0.9)
+                            compression_ratio = 0.8 if normalized_conversation_mode == "learning" else 0.9
+                            compression_threshold = int(max(1, context_window_limit) * compression_ratio)
                             force_compression_trigger = bool(force_context_compression)
                             if force_compression_trigger or preflight_raw_input_tokens >= compression_threshold:
                                 context_compression_triggered = True
@@ -4739,6 +4806,102 @@ class Model:
                                         title="Compression Trigger",
                                         round_index=round_num
                                     )
+
+                                if normalized_conversation_mode == "learning":
+                                    try:
+                                        full_context_messages = self._build_initial_messages(
+                                            user_msg=msg,
+                                            current_user_content=user_content,
+                                            use_responses_api=use_responses_api,
+                                            allow_history_images=allow_history_images,
+                                            include_context=False,
+                                            system_prompt_text=request_system_prompt,
+                                        )
+                                        previous_response_id = None
+                                        messages = list(full_context_messages)
+                                        messages_has_full_context = True
+                                        request_promoted_to_full_context = True
+                                        request_resume_id_seed = ""
+                                        request_started_with_resume_id = False
+                                        request_params = self._build_request_params(
+                                            messages=messages,
+                                            previous_response_id=previous_response_id,
+                                            enable_thinking=round_enable_thinking,
+                                            thinking_level=normalized_thinking_level,
+                                            enable_web_search=enable_web_search,
+                                            enable_tools=effective_enable_tools,
+                                            current_function_outputs=current_function_outputs,
+                                            runtime_function_tool_names=self._runtime_function_tool_names_for_request()
+                                        )
+                                        try:
+                                            runtime_input_post = request_params.get("input", request_params.get("messages", []))
+                                            runtime_input_post_raw = json.dumps(runtime_input_post, ensure_ascii=False, default=str)
+                                        except Exception:
+                                            runtime_input_post_raw = str(request_params.get("input", request_params.get("messages", "")))
+                                        runtime_input_post_text, _ = self._mask_data_image_urls_for_token_estimation(
+                                            runtime_input_post_raw
+                                        )
+                                        postflight_raw_input_tokens = self._estimate_token_count(runtime_input_post_text)
+                                        if len(runtime_input_post_text) <= 120000:
+                                            exact_input_post = self._count_text_tokens_exact(
+                                                runtime_input_post_text,
+                                                provider_name=self.provider,
+                                                model_name=self.model_name,
+                                                timeout=15.0
+                                            )
+                                            if exact_input_post is not None and exact_input_post > 0:
+                                                postflight_raw_input_tokens = int(exact_input_post)
+                                        saved_raw_input_tokens = max(
+                                            0,
+                                            int(max(0, preflight_raw_input_tokens)) - int(max(0, postflight_raw_input_tokens)),
+                                        )
+                                        saved_ratio_value = (
+                                            float(saved_raw_input_tokens) / float(preflight_raw_input_tokens)
+                                            if preflight_raw_input_tokens > 0 else 0.0
+                                        )
+                                        try:
+                                            if learning_lecture_id:
+                                                learning_memory_history = self._build_learning_memory_history_payload(
+                                                    latest_user_message=str(msg or ""),
+                                                    latest_assistant_message=str(accumulated_content or ""),
+                                                    limit=8,
+                                                )
+                                                memory_trigger_result = trigger_learning_memory_analysis(
+                                                    self.username,
+                                                    learning_lecture_id,
+                                                    reason="context_80",
+                                                    payload={
+                                                        "conversation_id": str(self.conversation_id or "").strip(),
+                                                        "preflight_raw_input_tokens": int(max(0, preflight_raw_input_tokens)),
+                                                        "context_window": int(max(1, context_window_limit)),
+                                                        "trigger_mode": context_compression_trigger_mode,
+                                                        "recent_conversation_messages": learning_memory_history,
+                                                    },
+                                                )
+                                                print(f"[LEARNING_MEMORY] context_80 enqueue result: {memory_trigger_result}")
+                                                mark_learning_context_compression(
+                                                    self.username,
+                                                    learning_lecture_id,
+                                                )
+                                        except Exception as learning_memory_error:
+                                            print(f"[LEARNING_MEMORY] compression trigger failed: {learning_memory_error}")
+                                        ctx_done_status = {
+                                            "type": "context_compression_status",
+                                            "status": "done",
+                                            "content": "学习模式上下文已切换为记忆压缩视图",
+                                            "raw_input_tokens": int(max(0, context_compression_trigger_raw_input)),
+                                            "post_raw_input_tokens": int(max(0, postflight_raw_input_tokens)),
+                                            "saved_tokens": int(max(0, saved_raw_input_tokens)),
+                                            "saved_ratio": float(max(0.0, saved_ratio_value)),
+                                            "context_window": int(max(1, context_window_limit)),
+                                            "trigger_mode": context_compression_trigger_mode,
+                                        }
+                                        process_steps.append(dict(ctx_done_status))
+                                        yield ctx_done_status
+                                    except Exception as learning_compress_error:
+                                        print(f"[LEARNING_MEMORY] rebuild failed: {learning_compress_error}")
+                                    else:
+                                        continue
 
                                 try:
                                     conv_msgs = self.conversation_manager.get_messages(self.conversation_id) if self.conversation_id else []
@@ -6219,6 +6382,31 @@ class Model:
                             metadata=metadata,
                             index=regenerate_index if is_regenerate else None
                         )
+                    if (
+                        normalized_conversation_mode == "learning"
+                        and self.persist_conversation
+                        and self.conversation_id
+                        and learning_lecture_id
+                        and (not is_regenerate)
+                    ):
+                        try:
+                            learning_memory_history = self._build_learning_memory_history_payload(
+                                latest_user_message=str(msg or ""),
+                                latest_assistant_message=str(saved_assistant_content or ""),
+                                limit=8,
+                            )
+                            learning_memory_turn_result = increment_learning_turn_and_maybe_enqueue(
+                                self.username,
+                                learning_lecture_id,
+                                payload={
+                                    "conversation_id": str(self.conversation_id or "").strip(),
+                                    "assistant_message_chars": len(str(saved_assistant_content or "")),
+                                    "recent_conversation_messages": learning_memory_history,
+                                },
+                            )
+                            print(f"[LEARNING_MEMORY] turn increment result: {learning_memory_turn_result}")
+                        except Exception as learning_turn_error:
+                            print(f"[LEARNING_MEMORY] increment turn failed: {learning_turn_error}")
                     if self.persist_conversation and self.conversation_id and normalized_conversation_mode == "longterm":
                         try:
                             self.conversation_manager.update_conversation_fields(self.conversation_id, {

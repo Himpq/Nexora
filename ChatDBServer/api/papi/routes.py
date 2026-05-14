@@ -113,13 +113,18 @@ def papi_user_info(username):
         row = users_meta.get(username, {}) if isinstance(users_meta, dict) else {}
         if not isinstance(row, dict) or not row:
             return jsonify({'success': False, 'message': f'user not found: {username}'}), 404
+        avatar_url = ''
+        try:
+            avatar_url = str(_server_attr('build_user_avatar_url')(username, row) or '').strip()
+        except Exception:
+            avatar_url = str(row.get('avatar_url') or '').strip()
         return jsonify({
             'success': True,
             'user': {
                 'id': username,
                 'username': str(row.get('username') or username),
                 'role': str(row.get('role') or 'member'),
-                'avatar_url': str(row.get('avatar_url') or ''),
+                'avatar_url': avatar_url,
                 'created_at': row.get('created_at', ''),
                 'last_login': row.get('last_login', ''),
             }

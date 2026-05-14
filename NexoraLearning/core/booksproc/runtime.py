@@ -11,7 +11,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
-from ..lectures import load_book_text, save_book_text
+from ..epub_assets import extract_epub_with_assets
+from ..lectures import load_book_text, save_book_images_meta, save_book_text
 from ..utils import extract_text
 
 MAX_READ_CHARS_PER_CALL = 8000
@@ -85,7 +86,18 @@ def resolve_book_text(
     source_path = Path(original_path)
     if not source_path.exists():
         raise ValueError(f"Original file not found: {source_path}")
-    text = extract_text(str(source_path))
+    if source_path.suffix.lower() == ".epub":
+        images_dir = Path(str(cfg.get("data_dir") or "data")) / "lectures" / lecture_id / "books" / book_id / "assets" / "images"
+        epub_result = extract_epub_with_assets(
+            str(source_path),
+            lecture_id=lecture_id,
+            book_id=book_id,
+            assets_dir=images_dir,
+        )
+        text = str(epub_result.get("text") or "")
+        save_book_images_meta(dict(cfg), lecture_id, book_id, epub_result.get("images") or [])
+    else:
+        text = extract_text(str(source_path))
     if not text.strip():
         raise ValueError("Parsed text is empty.")
     save_book_text(

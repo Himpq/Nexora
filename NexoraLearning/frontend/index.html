@@ -1,27 +1,32 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NexoraLearning 学习看板</title>
-  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260511_01">
+  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260514_14">
 </head>
 <body>
   <main class="learning-shell" id="learningPanel">
     <section id="dashboardView" class="view-pane is-active">
       <section class="workbench-grid">
         <article class="panel-card progress-panel">
-          <header class="panel-head">
-            <p class="panel-kicker">COURSE PROGRESS</p>
+          <header class="panel-head materials-head">
+            <div class="panel-kicker-switch panel-kicker-switch-progress">
+              <button id="dashboardProgressTabBtn" class="kicker-tab is-active" type="button">课程进度</button>
+              <button id="dashboardProgressFeedTabBtn" class="kicker-tab" type="button">动态中心</button>
+            </div>
             <button id="openMaterialsViewBtn" class="nxl-icon-btn" type="button" aria-label="打开课程页" title="打开课程页">☰</button>
           </header>
           <div id="progressList" class="progress-list"></div>
+          <div id="learningFeedPanel" class="feed-stream-panel" hidden></div>
+          <button id="learningFeedComposeBtn" class="nxl-floating-feed-btn" type="button" aria-label="发布动态" title="发布动态" hidden>+</button>
         </article>
 
         <div class="side-column">
           <article class="panel-card pie-panel">
-            <header class="panel-head">
-              <p class="panel-kicker">STUDY TIME SHARE</p>
+            <header class="panel-head materials-head">
+              <p class="panel-kicker panel-kicker-zh">学习时长数据</p>
             </header>
             <div id="timePieChart" class="time-pie-chart" aria-label="学习时间占比"></div>
           </article>
@@ -279,7 +284,7 @@
       </div>
     </div>
   </div>
-  <script src="/api/frontend/assets/app.js?v=20260506_18"></script>
+  <script src="/api/frontend/assets/app.js?v=20260514_14"></script>
 </body>
 </html>
 

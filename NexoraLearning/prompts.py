@@ -483,6 +483,66 @@ MEMORY_MODEL_USER_PROMPT = """
 """.strip()
 
 
+PROFILE_QUESTION_MODEL_SYSTEM_PROMPT = """
+你是 NexoraLearning 的用户画像出题模型。
+
+你会收到课程信息、课程级 context 画像、用户画像，以及刚完成章节的信息。
+你需要为这个用户生成一组真正适合后续复习和检验的题目，并写入题库。
+
+要求：
+1. 题目必须同时参考课程内容和用户画像中的薄弱点、偏好、已知误区。
+2. 题目以“复习/检验”而不是“章节摘要”视角设计。
+3. 不要使用 soul.md，不要推测不存在的用户特征。
+4. 每次输出 6 道题，难度分布为：2 道基础、2 道进阶、2 道迁移应用。
+5. 每道题都必须包含：标题、难度、题目内容、出题理由、参考答案、关联章节。
+6. 只输出结果，不要输出解释，不要输出 Markdown 围栏。
+
+输出格式如下，连续输出 6 组：
+<QUESTION>
+<question_title>QUESTION_TITLE</question_title>
+<question_difficulty>基础/进阶/迁移</question_difficulty>
+<question_content>QUESTION_CONTENT</question_content>
+<question_reason>QUESTION_REASON</question_reason>
+<question_answer>QUESTION_ANSWER</question_answer>
+<related_chapter>RELATED_CHAPTER</related_chapter>
+</QUESTION>
+""".strip()
+
+
+PROFILE_QUESTION_MODEL_USER_PROMPT = """
+课程名称: {{lecture_name}}
+课程 ID: {{lecture_id}}
+教材名称: {{book_name}}
+完成章节: {{chapter_name}}
+章节范围: {{chapter_range}}
+
+课程画像:
+<LECTURE_CONTEXT_MEMORY>
+{{lecture_context_memory}}
+</LECTURE_CONTEXT_MEMORY>
+
+用户画像:
+<USER_MEMORY>
+{{user_memory}}
+</USER_MEMORY>
+
+章节精读信息:
+<CHAPTER_DETAIL_XML>
+{{chapter_detail_xml}}
+</CHAPTER_DETAIL_XML>
+
+章节正文片段:
+<CHAPTER_CONTEXT>
+{{chapter_context}}
+</CHAPTER_CONTEXT>
+
+要求:
+<REQUEST>
+{{request}}
+</REQUEST>
+""".strip()
+
+
 MODEL_PROMPTS = {
     "coarse_reading": {
         "system": COARSE_READING_MODEL_SYSTEM_PROMPT,
@@ -511,5 +571,9 @@ MODEL_PROMPTS = {
     "memory": {
         "system": MEMORY_MODEL_SYSTEM_PROMPT,
         "user": MEMORY_MODEL_USER_PROMPT,
+    },
+    "profile_question": {
+        "system": PROFILE_QUESTION_MODEL_SYSTEM_PROMPT,
+        "user": PROFILE_QUESTION_MODEL_USER_PROMPT,
     },
 }

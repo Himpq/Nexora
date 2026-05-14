@@ -6,6 +6,7 @@
     let sidebarContainerRef = null;
     let sidebarOptionsRef = {};
     const sidebarFoldState = new Map();
+    let currentFrontendUrl = '';
 
     function escapeHtml(value) {
         return String(value || '')
@@ -19,12 +20,16 @@
     function ensureSharedIframe(kind, frontendUrl) {
         const useMain = kind === 'main';
         let frame = useMain ? sharedMainIframe : sharedWelcomeIframe;
+        const nextSrc = String(frontendUrl || '').trim();
         if (frame && frame.isConnected) {
+            if (nextSrc && frame.src !== nextSrc) {
+                frame.src = nextSrc;
+            }
             return frame;
         }
         frame = document.createElement('iframe');
         frame.className = 'learning-mode-frame';
-        frame.src = String(frontendUrl || '').trim();
+        frame.src = nextSrc;
         frame.title = 'NexoraLearning';
         frame.loading = 'lazy';
         frame.referrerPolicy = 'no-referrer';
@@ -34,6 +39,14 @@
             sharedWelcomeIframe = frame;
         }
         return frame;
+    }
+
+    function getSharedMainWindow() {
+        try {
+            return sharedMainIframe && sharedMainIframe.contentWindow ? sharedMainIframe.contentWindow : null;
+        } catch (_) {
+            return null;
+        }
     }
 
     function renderWelcome(container, options = {}) {
@@ -49,6 +62,7 @@
     function renderMainPanel(container, options = {}) {
         if (!container) return;
         const frontendUrl = String(options.frontendUrl || '').trim();
+        currentFrontendUrl = frontendUrl;
         container.innerHTML = '<div class="learning-mode-shell"><div class="learning-mode-frame-wrap"></div></div>';
         const wrap = container.querySelector('.learning-mode-frame-wrap');
         if (!wrap) return;
@@ -320,92 +334,139 @@
             container.innerHTML = '<div class="learning-mode-welcome-loading">学习侧栏桥接未就绪。</div>';
             return;
         }
+
+        let shell = container.querySelector('.learning-sidebar-chat');
+        if (!shell) {
+            container.innerHTML = `
+                <div class="learning-sidebar-chat">
+                    <div class="learning-sidebar-chat-log"></div>
+                    <div class="learning-sidebar-chat-compose">
+                        <textarea class="learning-sidebar-chat-input" placeholder="结合当前学习上下文继续提问..."></textarea>
+                        <button type="button" class="learning-sidebar-chat-send" aria-label="发送" title="发送" data-action="send">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                        </button>
+                    </div>
+                </div>
+            `;
+            shell = container.querySelector('.learning-sidebar-chat');
+        }
+
+        const log = shell ? shell.querySelector('.learning-sidebar-chat-log') : null;
+        const input = shell ? shell.querySelector('.learning-sidebar-chat-input') : null;
+        const sendBtn = shell ? shell.querySelector('.learning-sidebar-chat-send') : null;
+        if (!shell || !log || !input || !sendBtn) return;
+
+        if (!input.dataset.bound) {
+            input.dataset.bound = 'true';
+            input.addEventListener('input', () => {
+                bridge.setInputValue?.(input.value);
+                renderSidebarChat(container);
+            });
+            input.addEventListener('keydown', async (event) => {
+                const liveGenerating = !!bridge.isGenerating?.();
+                const livePendingSend = !!bridge.isPendingSend?.();
+                const liveCanStop = liveGenerating && typeof bridge.stop === 'function';
+                if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault();
+                    const text = String(input.value || '').trim();
+                    if (!text || liveGenerating || livePendingSend) return;
+                    await bridge.send?.(text);
+                    return;
+                }
+                if (event.key === 'Escape' && liveCanStop) {
+                    event.preventDefault();
+                    await bridge.stop?.();
+                }
+            });
+        }
+
+        if (!sendBtn.dataset.bound) {
+            sendBtn.dataset.bound = 'true';
+            sendBtn.addEventListener('click', async () => {
+                const liveGenerating = !!bridge.isGenerating?.();
+                const livePendingSend = !!bridge.isPendingSend?.();
+                const liveCanStop = liveGenerating && typeof bridge.stop === 'function';
+                if (liveCanStop) {
+                    await bridge.stop?.();
+                    return;
+                }
+                const text = String(input.value || '').trim();
+                if (!text || liveGenerating || livePendingSend) return;
+                await bridge.send?.(text);
+            });
+        }
+
         const messages = Array.isArray(bridge.getMessages?.()) ? bridge.getMessages() : [];
         const inputValue = String(bridge.getInputValue?.() || '');
         const generating = !!bridge.isGenerating?.();
         const pendingSend = !!bridge.isPendingSend?.();
         const canStop = generating && typeof bridge.stop === 'function';
-        const sendDisabled = pendingSend || (!canStop && !!bridge.isBusy?.());
-        container.innerHTML = `
-            <div class="learning-sidebar-chat">
-                <div class="learning-sidebar-chat-log"></div>
-                <div class="learning-sidebar-chat-compose">
-                    <textarea class="learning-sidebar-chat-input" placeholder="结合当前学习上下文继续提问...">${escapeHtml(inputValue)}</textarea>
-                    <button type="button" class="learning-sidebar-chat-send${canStop ? ' is-stop' : ''}" aria-label="${canStop ? '中断' : '发送'}" title="${canStop ? '中断' : '发送'}" data-action="${canStop ? 'stop' : 'send'}" ${sendDisabled ? 'disabled' : ''}>
-                        ${canStop
-                            ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"></rect></svg>'
-                            : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>'
-                        }
-                    </button>
-                </div>
-            </div>
-        `;
-        const log = container.querySelector('.learning-sidebar-chat-log');
-        if (log) {
-            if (!messages.length) {
-                const empty = document.createElement('div');
-                empty.className = 'learning-sidebar-chat-empty';
-                empty.textContent = '暂无消息，进入阅读器后可在此直接对话。';
-                log.appendChild(empty);
-            } else {
-                messages.forEach((row, messageIndex) => {
-                    const role = String(row && row.role ? row.role : 'assistant').trim().toLowerCase();
-                    const msg = document.createElement('div');
-                    msg.className = `learning-sidebar-chat-msg is-${escapeHtml(role || 'assistant')}`;
+        const trimmedInput = String(inputValue || '').trim();
+        const sendDisabled = canStop ? false : (pendingSend || !!bridge.isBusy?.() || !trimmedInput);
+        const hadFocus = document.activeElement === input;
+        const selectionStart = typeof input.selectionStart === 'number' ? input.selectionStart : null;
+        const selectionEnd = typeof input.selectionEnd === 'number' ? input.selectionEnd : null;
 
-                    const roleDiv = document.createElement('div');
-                    roleDiv.className = 'learning-sidebar-chat-role';
-                    roleDiv.textContent = role === 'user' ? '你' : (role === 'assistant' ? 'Nexora' : '系统');
-                    msg.appendChild(roleDiv);
-
-                    const parts = Array.isArray(row && row.parts) ? row.parts : [];
-                    if (!parts.length) {
-                        const textDiv = document.createElement('div');
-                        textDiv.className = 'learning-sidebar-chat-text';
-                        renderSidebarMarkdown(textDiv, role, row && row.content ? row.content : '');
-                        msg.appendChild(textDiv);
-                    } else {
-                        parts.forEach((part, partIndex) => {
-                            msg.appendChild(createFoldablePart(role, part, messageIndex, partIndex, bridge));
-                        });
-                    }
-                    log.appendChild(msg);
-                });
-            }
-            log.scrollTop = log.scrollHeight;
+        if (input.value !== inputValue) {
+            input.value = inputValue;
         }
+        input.disabled = false;
+        input.readOnly = false;
+        input.setAttribute('aria-busy', generating ? 'true' : 'false');
 
-        const input = container.querySelector('.learning-sidebar-chat-input');
-        const sendBtn = container.querySelector('.learning-sidebar-chat-send');
-        if (input) {
-            input.addEventListener('input', () => {
-                bridge.setInputValue?.(input.value);
-            });
-            input.addEventListener('keydown', async (event) => {
-                if (event.key === 'Enter' && !event.shiftKey) {
-                    event.preventDefault();
-                    const text = String(input.value || '').trim();
-                    if (!text || generating || pendingSend) return;
-                    await bridge.send?.(text);
-                    return;
+        sendBtn.disabled = sendDisabled;
+        sendBtn.dataset.action = canStop ? 'stop' : 'send';
+        sendBtn.classList.toggle('is-stop', canStop);
+        sendBtn.setAttribute('aria-label', canStop ? '中断' : '发送');
+        sendBtn.title = canStop ? '中断' : '发送';
+        sendBtn.innerHTML = canStop
+            ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"></rect></svg>'
+            : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>';
+
+        log.replaceChildren();
+        if (!messages.length) {
+            const empty = document.createElement('div');
+            empty.className = 'learning-sidebar-chat-empty';
+            empty.textContent = '暂无消息，进入阅读器后可在此直接对话。';
+            log.appendChild(empty);
+        } else {
+            messages.forEach((row, messageIndex) => {
+                const role = String(row && row.role ? row.role : 'assistant').trim().toLowerCase();
+                const msg = document.createElement('div');
+                msg.className = `learning-sidebar-chat-msg is-${escapeHtml(role || 'assistant')}`;
+
+                const roleDiv = document.createElement('div');
+                roleDiv.className = 'learning-sidebar-chat-role';
+                roleDiv.textContent = role === 'user' ? '你' : (role === 'assistant' ? 'Nexora' : '系统');
+                msg.appendChild(roleDiv);
+
+                const parts = Array.isArray(row && row.parts) ? row.parts : [];
+                if (!parts.length) {
+                    const textDiv = document.createElement('div');
+                    textDiv.className = 'learning-sidebar-chat-text';
+                    renderSidebarMarkdown(textDiv, role, row && row.content ? row.content : '');
+                    msg.appendChild(textDiv);
+                } else {
+                    parts.forEach((part, partIndex) => {
+                        msg.appendChild(createFoldablePart(role, part, messageIndex, partIndex, bridge));
+                    });
                 }
-                if (event.key === 'Escape' && canStop) {
-                    event.preventDefault();
-                    await bridge.stop?.();
-                }
+                log.appendChild(msg);
             });
         }
-        if (sendBtn) {
-            sendBtn.addEventListener('click', async () => {
-                if (canStop) {
-                    await bridge.stop?.();
-                    return;
+        log.scrollTop = log.scrollHeight;
+
+        if (hadFocus) {
+            try {
+                input.focus({ preventScroll: true });
+                if (selectionStart !== null && selectionEnd !== null) {
+                    const maxPos = input.value.length;
+                    input.setSelectionRange(
+                        Math.max(0, Math.min(selectionStart, maxPos)),
+                        Math.max(0, Math.min(selectionEnd, maxPos))
+                    );
                 }
-                if (!input) return;
-                const text = String(input.value || '').trim();
-                if (!text || generating || pendingSend) return;
-                await bridge.send?.(text);
-            });
+            } catch (_) {}
         }
     }
 
@@ -414,7 +475,6 @@
         const role = String(options.role || 'member').trim() || 'member';
         container.innerHTML = `
             <div class="learning-sidebar-shell">
-                <button type="button" class="btn-primary-outline full-width" data-learning-action="new-learning">New Learning</button>
                 <div class="learning-sidebar-card">
                     <h3>Learning</h3>
                     <p><span class="learning-sidebar-user">${escapeHtml(username)}</span> 当前在学习模式。</p>
@@ -456,6 +516,53 @@
         applySidebarByState();
     }
 
+    async function postFeedViaIframe(content) {
+        const win = getSharedMainWindow();
+        if (!win) throw new Error('Learning iframe 未就绪。');
+        const frontendUrl = String(currentFrontendUrl || '').trim();
+        const origin = (() => {
+            try { return frontendUrl ? new URL(frontendUrl).origin : '*'; } catch (_) { return '*'; }
+        })();
+        const requestId = `feed_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        return await new Promise((resolve, reject) => {
+            let done = false;
+            const timer = setTimeout(() => {
+                if (done) return;
+                done = true;
+                window.removeEventListener('message', onMessage);
+                reject(new Error('发布动态超时。'));
+            }, 12000);
+            function cleanup() {
+                clearTimeout(timer);
+                window.removeEventListener('message', onMessage);
+            }
+            function onMessage(event) {
+                const data = event && event.data;
+                if (!data || typeof data !== 'object') return;
+                if (String(data.source || '').trim().toLowerCase() !== 'nexora-learning') return;
+                if (String(data.type || '').trim().toLowerCase() !== 'nexora:feed-compose:result') return;
+                if (String(data.requestId || '') !== requestId) return;
+                if (done) return;
+                done = true;
+                cleanup();
+                if (data.success === false) reject(new Error(String(data.error || '发布动态失败。')));
+                else resolve(data);
+            }
+            window.addEventListener('message', onMessage);
+            try {
+                win.postMessage({
+                    source: 'nexora-learning',
+                    type: 'nexora:feed-compose:submit',
+                    requestId,
+                    content: String(content || ''),
+                }, origin === '*' ? '*' : origin);
+            } catch (err) {
+                cleanup();
+                reject(err);
+            }
+        });
+    }
+
     function renderSidebarPanel(container, options = {}) {
         if (!container) return;
         sidebarContainerRef = container;
@@ -484,5 +591,6 @@
         renderMainPanel,
         renderSidebarPanel,
         destroySidebarPanel,
+        postFeedViaIframe,
     };
 })();

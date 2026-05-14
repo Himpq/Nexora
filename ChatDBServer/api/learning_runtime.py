@@ -1,835 +1,357 @@
-"""Local NexoraLearning runtime injection for ChatDBServer.
+"""HTTP runtime adapter for NexoraLearning.
 
-This module keeps the architecture simple:
-1. ChatDBServer still owns conversations and history.
-2. NexoraLearning provides learning-mode prompt/context injection.
-3. NexoraLearning tools are injected only when conversation_mode=learning.
-4. Tool execution is local Python delegation, not HTTP proxying.
+ChatDBServer must not import NexoraLearning internals directly.
+This module talks to NexoraLearning over its runtime API.
 """
 
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional
+from urllib import error as urllib_error
+from urllib import parse as urllib_parse
+from urllib import request as urllib_request
 
 
-ROOT_DIR = Path(__file__).resolve().parents[2]
-NEXORA_LEARNING_DIR = ROOT_DIR / "NexoraLearning"
-
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+ROOT_DIR = Path(__file__).resolve().parents[1]
+CONFIG_PATH = ROOT_DIR / "data" / "config.json"
 
 
-def _deps() -> Dict[str, Any]:
-    from NexoraLearning.core.tool_executor import ToolExecutor as LearningToolExecutor
-    from NexoraLearning.core.tools import TOOLS as LEARNING_TOOLS
-    from NexoraLearning.core.lectures import (
-        get_book,
-        get_lecture,
-        list_books,
-        list_lectures,
-        load_book_detail_xml,
-        load_book_info_xml,
-        load_book_questions_xml,
-        load_book_text,
-    )
-    from NexoraLearning.core.user import (
-        ensure_user_files,
-        get_user,
-        list_learning_records,
-        list_selected_lecture_ids,
-    )
-
-    return {
-        "ToolExecutor": LearningToolExecutor,
-        "TOOLS": LEARNING_TOOLS,
-        "get_book": get_book,
-        "get_lecture": get_lecture,
-        "list_books": list_books,
-        "list_lectures": list_lectures,
-        "load_book_detail_xml": load_book_detail_xml,
-        "load_book_info_xml": load_book_info_xml,
-        "load_book_questions_xml": load_book_questions_xml,
-        "load_book_text": load_book_text,
-        "ensure_user_files": ensure_user_files,
-        "get_user": get_user,
-        "list_learning_records": list_learning_records,
-        "list_selected_lecture_ids": list_selected_lecture_ids,
-    }
-
-
-def build_learning_cfg() -> Dict[str, Any]:
-    data_dir = NEXORA_LEARNING_DIR / "data"
-    return {
-        "data_dir": str(data_dir),
-        "_config_path": str(NEXORA_LEARNING_DIR / "config.json"),
-        "_project_root": str(NEXORA_LEARNING_DIR),
-    }
-
-
-LEARNING_READONLY_TOOL_NAMES = {
-    "listLectures",
-    "getLecture",
-    "listBooks",
-    "getBook",
-    "getBookText",
-    "readBookTextRange",
-    "searchBookText",
-    "getBookInfoXml",
-    "getBookDetailXml",
-    "getBookQuestionsXml",
-    "vectorSearch",
-    "learning_card",
-    "question",
-}
-
-
-def _escape_html(value: Any) -> str:
-    text = str(value or "")
-    return (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-        .replace("'", "&#39;")
-    )
-
-
-def _safe_int(value: Any, default: int = 0) -> int:
+def _load_config() -> Dict[str, Any]:
+    if not CONFIG_PATH.exists():
+        return {}
     try:
-        return int(value)
+        payload = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     except Exception:
-        return int(default)
+        return {}
+    return dict(payload) if isinstance(payload, dict) else {}
 
 
-def _get_active_lecture_ids(
-    username: str,
-    payload: Optional[Mapping[str, Any]] = None,
+def _learning_cfg() -> Dict[str, Any]:
+    cfg = _load_config()
+    branch = cfg.get("nexora_learning") if isinstance(cfg.get("nexora_learning"), dict) else {}
+    merged = dict(branch or {})
+    frontend_url = _normalize_learning_base_url(
+        merged.get("frontend_url"),
+        fallback_cfg=cfg,
+        legacy_branch=merged,
+    )
+    merged = {
+        "host": str(merged.get("host") or "").strip(),
+        "port": int(merged.get("port") or 5001),
+        "frontend_url": frontend_url,
+        "api_key": str(merged.get("api_key") or "").strip(),
+        "request_timeout": float(merged.get("request_timeout") or 30),
+    }
+    return merged
+
+
+def _is_local_host(hostname: str) -> bool:
+    host = str(hostname or "").strip().lower()
+    return host in {"127.0.0.1", "localhost", "0.0.0.0", "::1", "[::1]"}
+
+
+def _public_base_url() -> str:
+    cfg = _load_config()
+    if not isinstance(cfg, dict):
+        return ""
+    api_cfg = cfg.get("api") if isinstance(cfg.get("api"), dict) else {}
+    for raw in (
+        cfg.get("public_base_url"),
+        api_cfg.get("public_base_url"),
+    ):
+        value = str(raw or "").strip()
+        if value:
+            return value.rstrip("/")
+    return ""
+
+
+def _normalize_learning_base_url(
+    value: Any,
     *,
-    cfg: Optional[Mapping[str, Any]] = None,
-) -> List[str]:
-    deps = _deps()
-    runtime_cfg = dict(cfg or build_learning_cfg())
-    user_id = str(username or "").strip()
-    deps["ensure_user_files"](runtime_cfg, user_id)
-    selected_ids = [
-        str(item or "").strip()
-        for item in (deps["list_selected_lecture_ids"](runtime_cfg, user_id) or [])
-        if str(item or "").strip()
-    ]
-    if selected_ids:
-        return selected_ids
-    raw_payload = payload if isinstance(payload, Mapping) else {}
-    lecture_id = str(raw_payload.get("lecture_id") or "").strip()
-    return [lecture_id] if lecture_id else []
+    fallback_cfg: Optional[Mapping[str, Any]] = None,
+    legacy_branch: Optional[Mapping[str, Any]] = None,
+) -> str:
+    text = str(value or "").strip().rstrip("/")
+    if text.endswith("/api/frontend"):
+        text = text[:-len("/api/frontend")]
+    elif text.endswith("/api/runtime"):
+        text = text[:-len("/api/runtime")]
+    text = text.rstrip("/")
+    if text:
+        return text
 
+    branch = dict(legacy_branch or {})
+    legacy_service_url = str(branch.get("service_url") or "").strip().rstrip("/")
+    if legacy_service_url:
+        if legacy_service_url.endswith("/api/frontend"):
+            legacy_service_url = legacy_service_url[:-len("/api/frontend")]
+        elif legacy_service_url.endswith("/api/runtime"):
+            legacy_service_url = legacy_service_url[:-len("/api/runtime")]
+        legacy_service_url = legacy_service_url.rstrip("/")
+        if legacy_service_url:
+            return legacy_service_url
 
-def _study_hours_map(username: str, *, cfg: Optional[Mapping[str, Any]] = None) -> Dict[str, float]:
-    deps = _deps()
-    runtime_cfg = dict(cfg or build_learning_cfg())
-    user_id = str(username or "").strip()
-    deps["ensure_user_files"](runtime_cfg, user_id)
-    rows = deps["list_learning_records"](runtime_cfg, user_id) or []
-    result: Dict[str, float] = {}
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        lecture_id = str(row.get("lecture_id") or "").strip()
-        if not lecture_id:
-            continue
-        hours = row.get("study_hours")
-        minutes = row.get("study_minutes")
-        seconds = row.get("study_seconds")
-        duration = row.get("duration")
-        amount = 0.0
+    host = str(branch.get("host") or "").strip()
+    if host:
+        cfg = dict(fallback_cfg or _load_config())
+        public_base = str(cfg.get("public_base_url") or "").strip()
+        scheme = "https"
+        if public_base.lower().startswith("http://"):
+            scheme = "http"
         try:
-            if hours is not None:
-                amount = max(0.0, float(hours))
-            elif minutes is not None:
-                amount = max(0.0, float(minutes) / 60.0)
-            elif seconds is not None:
-                amount = max(0.0, float(seconds) / 3600.0)
-            elif duration is not None:
-                amount = max(0.0, float(duration) / 3600.0)
+            port = int(branch.get("port") or 5001)
         except Exception:
-            amount = 0.0
-        if amount > 0:
-            result[lecture_id] = float(result.get(lecture_id, 0.0) + amount)
-    return result
+            port = 5001
+        default_port = 443 if scheme == "https" else 80
+        host_part = host
+        if port != default_port:
+            host_part = f"{host_part}:{port}"
+        return f"{scheme}://{host_part}"
+
+    return ""
 
 
-def _lecture_card_payload(lecture_id: str, *, cfg: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
-    deps = _deps()
-    runtime_cfg = dict(cfg or build_learning_cfg())
-    lecture = deps["get_lecture"](runtime_cfg, lecture_id)
-    if not isinstance(lecture, dict):
-        raise ValueError("Lecture not found.")
-    books = deps["list_books"](runtime_cfg, lecture_id) or []
-    title = str(lecture.get("title") or lecture.get("name") or lecture_id).strip() or lecture_id
-    category = str(lecture.get("category") or "").strip() or "未分类"
-    progress = max(0, min(100, _safe_int(lecture.get("progress"), 0)))
-    description = str(lecture.get("description") or "").strip() or "暂无课程描述。"
-    html = f"""
-<article class="nxl-chat-card nxl-chat-card-lecture" data-lecture-id="{_escape_html(lecture_id)}">
-  <div class="nxl-chat-card-kicker">Learning Lecture</div>
-  <h3>{_escape_html(title)}</h3>
-  <div class="nxl-chat-card-meta">{_escape_html(category)} · {len(books)} 本教材 · {progress}% 进度</div>
-  <div class="nxl-chat-card-progress"><span style="width:{progress}%"></span></div>
-  <p>{_escape_html(description)}</p>
-</article>
-""".strip()
+def _derive_frontend_url(cfg: Optional[Mapping[str, Any]] = None) -> str:
+    branch = dict(cfg or _learning_cfg())
+    base = _normalize_learning_base_url(branch.get("frontend_url"))
+    if base:
+        return f"{base}/api/frontend"
+    return "http://127.0.0.1:5001/api/frontend"
+
+
+def _normalize_frontend_url(frontend_url: str, cfg: Optional[Mapping[str, Any]] = None) -> str:
+    return _derive_frontend_url(cfg)
+
+
+def _fallback_runtime_config() -> Dict[str, Any]:
+    cfg = _learning_cfg()
     return {
-        "type": "lecture_display",
-        "lecture_id": lecture_id,
-        "lecture": lecture,
-        "books_count": len(books),
-        "html": html,
+        "enabled": True,
+        "base_path": "/api/runtime",
+        "frontend_url": _derive_frontend_url(cfg),
+        "request_timeout": int(float(cfg.get("request_timeout") or 30)),
     }
 
 
-def _chapter_card_payload(
-    lecture_id: str,
-    book_id: str,
-    content_range: Sequence[Any],
-    *,
-    cfg: Optional[Mapping[str, Any]] = None,
-) -> Dict[str, Any]:
-    deps = _deps()
-    runtime_cfg = dict(cfg or build_learning_cfg())
-    lecture = deps["get_lecture"](runtime_cfg, lecture_id)
-    if not isinstance(lecture, dict):
-        raise ValueError("Lecture not found.")
-    book = deps["get_book"](runtime_cfg, lecture_id, book_id)
-    if not isinstance(book, dict):
-        raise ValueError("Book not found.")
-    if not isinstance(content_range, Sequence) or len(content_range) != 2:
-        raise ValueError("content_range must be [start, end].")
-    start = max(0, _safe_int(content_range[0], 0))
-    end = max(start, _safe_int(content_range[1], start))
-    text = str(deps["load_book_text"](runtime_cfg, lecture_id, book_id) or "")
-    snippet = text[start:end]
-    lecture_title = str(lecture.get("title") or lecture_id).strip() or lecture_id
-    book_title = str(book.get("title") or book_id).strip() or book_id
-    html = f"""
-<article class="nxl-chat-card nxl-chat-card-range" data-lecture-id="{_escape_html(lecture_id)}" data-book-id="{_escape_html(book_id)}">
-  <div class="nxl-chat-card-kicker">Chapter Range</div>
-  <h3>{_escape_html(book_title)}</h3>
-  <div class="nxl-chat-card-meta">{_escape_html(lecture_title)} · [{start}, {end}]</div>
-  <pre class="nxl-chat-card-snippet">{_escape_html(snippet[:1600] or "该范围暂无文本内容。")}</pre>
-</article>
-""".strip()
-    return {
-        "type": "chapter_range",
-        "lecture_id": lecture_id,
-        "book_id": book_id,
-        "content_range": [start, end],
-        "lecture": lecture,
-        "book": book,
-        "content": snippet,
-        "html": html,
-    }
+def _runtime_headers() -> Dict[str, str]:
+    cfg = _learning_cfg()
+    api_key = str(cfg.get("api_key") or "").strip()
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if api_key:
+        headers["X-API-Key"] = api_key
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
 
 
-def _learning_card_tool() -> Dict[str, Any]:
-    return {
-        "type": "function",
-        "function": {
-            "name": "learning_card",
-            "description": "Create a structured Learning card for a lecture overview or a chapter text range.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "type": {
-                        "type": "string",
-                        "enum": ["lecture_display", "chapter_range"],
-                        "description": "Card type to render.",
-                    },
-                    "lecture_id": {
-                        "type": "string",
-                        "description": "Target lecture id.",
-                    },
-                    "book_id": {
-                        "type": "string",
-                        "description": "Required for chapter_range cards.",
-                    },
-                    "content_range": {
-                        "type": "array",
-                        "description": "For chapter_range cards: [start, end] character offsets.",
-                        "items": {"type": "integer"},
-                        "minItems": 2,
-                        "maxItems": 2,
-                    },
-                },
-                "required": ["type", "lecture_id"],
-            },
-        },
-    }
+def _runtime_base_url(cfg: Optional[Mapping[str, Any]] = None) -> str:
+    branch = dict(cfg or _learning_cfg())
+    host = str(branch.get("host") or "").strip()
+    try:
+        port = int(branch.get("port") or 5001)
+    except Exception:
+        port = 5001
+    if host:
+        return f"http://{host}:{port}"
+    base = _normalize_learning_base_url(branch.get("frontend_url"))
+    if base:
+        return base
+    return "http://127.0.0.1:5001"
 
 
-def _question_tool() -> Dict[str, Any]:
-    return {
-        "type": "function",
-        "function": {
-            "name": "question",
-            "description": "Ask the user a structured question and wait for an explicit response before continuing.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "question_title": {
-                        "type": "string",
-                        "description": "Short question title.",
-                    },
-                    "question_content": {
-                        "type": "string",
-                        "description": "Main question body shown to the user.",
-                    },
-                    "choices": {
-                        "type": "array",
-                        "description": "Suggested choices for the user.",
-                        "items": {"type": "string"},
-                    },
-                    "allow_other": {
-                        "type": "boolean",
-                        "description": "Whether the user may type a custom answer.",
-                    },
-                },
-                "required": ["question_title", "question_content"],
-            },
-        },
-    }
+def _runtime_url(path: str) -> str:
+    base = _runtime_base_url(_learning_cfg())
+    root = "/api/runtime"
+    suffix = "/" + str(path or "").lstrip("/")
+    return base + root + suffix
+
+
+def _post_json(path: str, payload: Mapping[str, Any]) -> Dict[str, Any]:
+    body = json.dumps(dict(payload or {}), ensure_ascii=False).encode("utf-8")
+    req = urllib_request.Request(
+        _runtime_url(path),
+        data=body,
+        headers=_runtime_headers(),
+        method="POST",
+    )
+    timeout = float(_learning_cfg().get("request_timeout") or 30)
+    try:
+        with urllib_request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+    except urllib_error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            payload_obj = json.loads(raw) if raw.strip() else {}
+        except Exception:
+            payload_obj = {}
+        message = str(payload_obj.get("error") or payload_obj.get("message") or f"HTTP {exc.code}")
+        raise RuntimeError(message) from exc
+    except Exception as exc:
+        raise RuntimeError(str(exc)) from exc
+    try:
+        payload_obj = json.loads(raw) if raw.strip() else {}
+    except Exception as exc:
+        raise RuntimeError(f"Invalid NexoraLearning runtime response: {exc}") from exc
+    if not isinstance(payload_obj, dict):
+        raise RuntimeError("Invalid NexoraLearning runtime response type.")
+    if payload_obj.get("success") is False:
+        raise RuntimeError(str(payload_obj.get("error") or payload_obj.get("message") or "NexoraLearning runtime request failed."))
+    return payload_obj
+
+
+def _get_json(path: str) -> Dict[str, Any]:
+    req = urllib_request.Request(_runtime_url(path), headers=_runtime_headers(), method="GET")
+    timeout = float(_learning_cfg().get("request_timeout") or 30)
+    try:
+        with urllib_request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+    except urllib_error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            payload_obj = json.loads(raw) if raw.strip() else {}
+        except Exception:
+            payload_obj = {}
+        message = str(payload_obj.get("error") or payload_obj.get("message") or f"HTTP {exc.code}")
+        raise RuntimeError(message) from exc
+    except Exception as exc:
+        raise RuntimeError(str(exc)) from exc
+    try:
+        payload_obj = json.loads(raw) if raw.strip() else {}
+    except Exception as exc:
+        raise RuntimeError(f"Invalid NexoraLearning runtime response: {exc}") from exc
+    if not isinstance(payload_obj, dict):
+        raise RuntimeError("Invalid NexoraLearning runtime response type.")
+    if payload_obj.get("success") is False:
+        raise RuntimeError(str(payload_obj.get("error") or payload_obj.get("message") or "NexoraLearning runtime request failed."))
+    return payload_obj
 
 
 def get_learning_tools() -> List[Dict[str, Any]]:
-    deps = _deps()
-    tools = list(deps["TOOLS"] or [])
-    names = set()
-    normalized: List[Dict[str, Any]] = []
-    for tool in tools:
-        if not isinstance(tool, dict) or str(tool.get("type", "") or "").strip() != "function":
-            continue
-        fn = tool.get("function") if isinstance(tool.get("function"), dict) else {}
-        name = str(fn.get("name") or "").strip()
-        if not name or name in names or name not in LEARNING_READONLY_TOOL_NAMES:
-            continue
-        names.add(name)
-        normalized.append(json.loads(json.dumps(tool, ensure_ascii=False)))
-    if "learning_card" not in names:
-        normalized.append(_learning_card_tool())
-        names.add("learning_card")
-    if "question" not in names:
-        normalized.append(_question_tool())
-    return normalized
+    payload = _get_json("/tools")
+    tools = payload.get("tools")
+    return list(tools) if isinstance(tools, list) else []
 
 
 class LearningRuntimeExecutor:
-    """Local adapter so ChatDBServer can execute NexoraLearning tools."""
-
     def __init__(self, cfg: Optional[Mapping[str, Any]] = None):
-        deps = _deps()
-        self.cfg = dict(cfg or build_learning_cfg())
-        self._executor = deps["ToolExecutor"](self.cfg)
+        self.cfg = dict(cfg or {})
 
     def execute(self, function_name: str, arguments: Optional[Mapping[str, Any]] = None) -> str:
-        tool_name = str(function_name or "").strip()
-        safe_args = dict(arguments or {})
-        if tool_name not in LEARNING_READONLY_TOOL_NAMES:
-            raise ValueError(f"Learning mode only supports read-only tools: {tool_name}")
-        if tool_name == "learning_card":
-            payload = self._execute_learning_card(safe_args)
-            return json.dumps(payload, ensure_ascii=False)
-        if tool_name == "question":
-            payload = self._execute_question(safe_args)
-            return json.dumps(payload, ensure_ascii=False)
-        if tool_name == "listLectures":
-            payload = self._execute_list_lectures()
-        elif tool_name == "getLecture":
-            payload = self._execute_get_lecture(safe_args)
-        elif tool_name == "listBooks":
-            payload = self._execute_list_books(safe_args)
-        elif tool_name == "getBook":
-            payload = self._execute_get_book(safe_args)
-        elif tool_name == "getBookText":
-            payload = self._execute_get_book_text(safe_args)
-        elif tool_name == "readBookTextRange":
-            payload = self._execute_read_book_text_range(safe_args)
-        elif tool_name == "searchBookText":
-            payload = self._execute_search_book_text(safe_args)
-        elif tool_name == "getBookInfoXml":
-            payload = self._execute_get_book_info_xml(safe_args)
-        elif tool_name == "getBookDetailXml":
-            payload = self._execute_get_book_detail_xml(safe_args)
-        elif tool_name == "getBookQuestionsXml":
-            payload = self._execute_get_book_questions_xml(safe_args)
-        else:
-            payload = self._executor.execute(tool_name, safe_args)
-        return json.dumps(payload, ensure_ascii=False)
-
-    def _execute_learning_card(self, arguments: Mapping[str, Any]) -> Dict[str, Any]:
-        card_type = str(arguments.get("type") or "").strip()
-        lecture_id = str(arguments.get("lecture_id") or "").strip()
-        if not lecture_id:
-            raise ValueError("lecture_id is required.")
-        if card_type == "lecture_display":
-            card = _lecture_card_payload(lecture_id, cfg=self.cfg)
-        elif card_type == "chapter_range":
-            book_id = str(arguments.get("book_id") or "").strip()
-            if not book_id:
-                raise ValueError("book_id is required for chapter_range.")
-            content_range = arguments.get("content_range")
-            card = _chapter_card_payload(lecture_id, book_id, content_range, cfg=self.cfg)
-        else:
-            raise ValueError(f"unsupported card type: {card_type}")
-        return {"success": True, "card": card}
-
-    def _execute_question(self, arguments: Mapping[str, Any]) -> Dict[str, Any]:
-        title = str(arguments.get("question_title") or "").strip()
-        content = str(arguments.get("question_content") or "").strip()
-        if not title or not content:
-            raise ValueError("question_title and question_content are required.")
-        raw_choices = arguments.get("choices")
-        choices = [str(item or "").strip() for item in (raw_choices or []) if str(item or "").strip()]
-        question_id = str(arguments.get("question_id") or "").strip()
-        return {
-            "success": True,
-            "question": {
-                "question_id": question_id,
-                "question_title": title,
-                "question_content": content,
-                "choices": choices,
-                "allow_other": bool(arguments.get("allow_other", True)),
-            },
-            "await": True,
-        }
-
-    def _build_book_views(self, lecture_id: str, book: Mapping[str, Any]) -> Dict[str, Any]:
-        deps = _deps()
-        book_id = str(book.get("id") or "").strip()
-        text = str(deps["load_book_text"](self.cfg, lecture_id, book_id) or "")
-        coarse = str(deps["load_book_info_xml"](self.cfg, lecture_id, book_id) or "")
-        intensive = str(deps["load_book_detail_xml"](self.cfg, lecture_id, book_id) or "")
-        questions = str(deps["load_book_questions_xml"](self.cfg, lecture_id, book_id) or "")
-        return {
-            "coarse": {
-                "tool": "getBookInfoXml",
-                "chars": len(coarse),
-                "available": bool(coarse.strip()),
-                "content": coarse,
-            },
-            "intensive": {
-                "tool": "getBookDetailXml",
-                "chars": len(intensive),
-                "available": bool(intensive.strip()),
-                "content": intensive,
-            },
-            "questions": {
-                "tool": "getBookQuestionsXml",
-                "chars": len(questions),
-                "available": bool(questions.strip()),
-                "content": questions,
-            },
-            "full_text": {
-                "tool": "getBookText",
-                "chars": len(text),
-                "available": bool(text),
-                "preview": text[:1200],
-            },
-        }
-
-    def _book_reading_entry(self, lecture_id: str, book: Mapping[str, Any]) -> Dict[str, Any]:
-        book_id = str(book.get("id") or "").strip()
-        return {
-            "book_id": book_id,
-            "title": str(book.get("title") or "").strip(),
-            "description": str(book.get("description") or "").strip(),
-            "status": str(book.get("status") or "").strip(),
-            "source_type": str(book.get("source_type") or "").strip(),
-            "views": self._build_book_views(lecture_id, book),
-        }
-
-    def _book_listing_entry(self, lecture_id: str, book: Mapping[str, Any]) -> Dict[str, Any]:
-        """Return a lightweight book row for lecture/list views.
-
-        We keep the rich chapter view data behind getBook/getBookInfoXml/getBookDetailXml,
-        because embedding all view contents in lecture/listBooks makes the prompt too heavy
-        and tends to stop the learning model from producing a final answer.
-        """
-        book_id = str(book.get("id") or "").strip()
-        views = self._build_book_views(lecture_id, book)
-        view_summary = {
-            key: {
-                "tool": str(view.get("tool") or "").strip(),
-                "chars": _safe_int(view.get("chars"), 0),
-                "available": bool(view.get("available")),
-            }
-            for key, view in views.items()
-            if isinstance(view, Mapping)
-        }
-        return {
-            "book_id": book_id,
-            "title": str(book.get("title") or "").strip(),
-            "description": str(book.get("description") or "").strip(),
-            "status": str(book.get("status") or "").strip(),
-            "source_type": str(book.get("source_type") or "").strip(),
-            "view_summary": view_summary,
-        }
-
-    def _execute_list_lectures(self) -> Dict[str, Any]:
-        deps = _deps()
-        lectures = deps["list_lectures"](self.cfg) or []
-        rows: List[Dict[str, Any]] = []
-        for lecture in lectures:
-            if not isinstance(lecture, Mapping):
-                continue
-            lecture_id = str(lecture.get("id") or "").strip()
-            if not lecture_id:
-                continue
-            books = deps["list_books"](self.cfg, lecture_id) or []
-            rows.append(
-                {
-                    "lecture_id": lecture_id,
-                    "title": str(lecture.get("title") or "").strip(),
-                    "description": str(lecture.get("description") or "").strip(),
-                    "category": str(lecture.get("category") or "").strip(),
-                    "progress": _safe_int(lecture.get("progress"), 0),
-                    "books": [self._book_listing_entry(lecture_id, book) for book in books if isinstance(book, Mapping)],
-                }
-            )
-        return {"success": True, "lectures": rows, "total": len(rows)}
-
-    def _execute_get_lecture(self, arguments: Mapping[str, Any]) -> Dict[str, Any]:
-        deps = _deps()
-        lecture_id = str(arguments.get("lecture_id") or "").strip()
-        if not lecture_id:
-            raise ValueError("lecture_id is required.")
-        lecture = deps["get_lecture"](self.cfg, lecture_id)
-        if not isinstance(lecture, Mapping):
-            raise ValueError("Lecture not found.")
-        books = deps["list_books"](self.cfg, lecture_id) or []
-        return {
-            "success": True,
-            "lecture": lecture,
-            "books": [self._book_listing_entry(lecture_id, book) for book in books if isinstance(book, Mapping)],
-            "total_books": len(books),
-        }
-
-    def _execute_list_books(self, arguments: Mapping[str, Any]) -> Dict[str, Any]:
-        deps = _deps()
-        lecture_id = str(arguments.get("lecture_id") or "").strip()
-        if not lecture_id:
-            raise ValueError("lecture_id is required.")
-        lecture = deps["get_lecture"](self.cfg, lecture_id)
-        if not isinstance(lecture, Mapping):
-            raise ValueError("Lecture not found.")
-        books = deps["list_books"](self.cfg, lecture_id) or []
-        return {
-            "success": True,
-            "lecture": lecture,
-            # Keep the first-hop book list lightweight so the learning model can continue
-            # with a follow-up request instead of treating the whole book view as the answer.
-            "books": [self._book_listing_entry(lecture_id, book) for book in books if isinstance(book, Mapping)],
-            "total": len(books),
-        }
-
-    def _execute_get_book(self, arguments: Mapping[str, Any]) -> Dict[str, Any]:
-        deps = _deps()
-        lecture_id = str(arguments.get("lecture_id") or "").strip()
-        book_id = str(arguments.get("book_id") or "").strip()
-        if not lecture_id or not book_id:
-            raise ValueError("lecture_id and book_id are required.")
-        lecture = deps["get_lecture"](self.cfg, lecture_id)
-        book = deps["get_book"](self.cfg, lecture_id, book_id)
-        if not isinstance(lecture, Mapping):
-            raise ValueError("Lecture not found.")
-        if not isinstance(book, Mapping):
-            raise ValueError("Book not found.")
-        return {
-            "success": True,
-            "lecture": lecture,
-            "book": dict(book),
-            "views": self._build_book_views(lecture_id, book),
-        }
-
-    def _execute_get_book_text(self, arguments: Mapping[str, Any]) -> Dict[str, Any]:
-        payload = self._executor.execute("getBookText", dict(arguments))
-        if isinstance(payload, Mapping):
-            book = payload.get("book") if isinstance(payload.get("book"), Mapping) else {}
-            return {
-                "success": True,
-                "lecture_id": str(arguments.get("lecture_id") or "").strip(),
-                "book_id": str(arguments.get("book_id") or "").strip(),
-                "book_title": str(book.get("title") or "").strip(),
-                "content": str(payload.get("content") or ""),
-                "chars": _safe_int(payload.get("chars"), 0),
-                "view": "full_text",
-            }
-        return dict(payload)
-
-    def _execute_read_book_text_range(self, arguments: Mapping[str, Any]) -> Dict[str, Any]:
-        payload = self._executor.execute("readBookTextRange", dict(arguments))
-        if isinstance(payload, Mapping):
-            return {
-                "success": True,
-                "lecture_id": str(arguments.get("lecture_id") or "").strip(),
-                "book_id": str(arguments.get("book_id") or "").strip(),
-                "offset": _safe_int(payload.get("offset"), 0),
-                "length": _safe_int(payload.get("length"), 0),
-                "chars": _safe_int(payload.get("chars"), 0),
-                "content": str(payload.get("content") or payload.get("text") or ""),
-                "view": "full_text_range",
-            }
-        return dict(payload)
-
-    def _execute_search_book_text(self, arguments: Mapping[str, Any]) -> Dict[str, Any]:
-        payload = self._executor.execute("searchBookText", dict(arguments))
-        if isinstance(payload, Mapping):
-            return {
-                "success": True,
-                "lecture_id": str(payload.get("lecture_id") or arguments.get("lecture_id") or "").strip(),
-                "book_id": str(payload.get("book_id") or arguments.get("book_id") or "").strip(),
-                "query": str(payload.get("query") or arguments.get("keyword") or "").strip(),
-                "hits": list(payload.get("hits") or []),
-                "count": _safe_int(payload.get("count"), 0),
-                "view": "full_text_search",
-            }
-        return dict(payload)
-
-    def _execute_get_book_info_xml(self, arguments: Mapping[str, Any]) -> Dict[str, Any]:
-        payload = self._executor.execute("getBookInfoXml", dict(arguments))
-        if isinstance(payload, Mapping):
-            return {
-                "success": True,
-                "lecture_id": str(arguments.get("lecture_id") or "").strip(),
-                "book_id": str(arguments.get("book_id") or "").strip(),
-                "content": str(payload.get("content") or ""),
-                "chars": _safe_int(payload.get("chars"), 0),
-                "view": "coarse",
-            }
-        return dict(payload)
-
-    def _execute_get_book_detail_xml(self, arguments: Mapping[str, Any]) -> Dict[str, Any]:
-        payload = self._executor.execute("getBookDetailXml", dict(arguments))
-        if isinstance(payload, Mapping):
-            return {
-                "success": True,
-                "lecture_id": str(arguments.get("lecture_id") or "").strip(),
-                "book_id": str(arguments.get("book_id") or "").strip(),
-                "content": str(payload.get("content") or ""),
-                "chars": _safe_int(payload.get("chars"), 0),
-                "view": "intensive",
-            }
-        return dict(payload)
-
-    def _execute_get_book_questions_xml(self, arguments: Mapping[str, Any]) -> Dict[str, Any]:
-        payload = self._executor.execute("getBookQuestionsXml", dict(arguments))
-        if isinstance(payload, Mapping):
-            return {
-                "success": True,
-                "lecture_id": str(arguments.get("lecture_id") or "").strip(),
-                "book_id": str(arguments.get("book_id") or "").strip(),
-                "content": str(payload.get("content") or ""),
-                "chars": _safe_int(payload.get("chars"), 0),
-                "view": "questions",
-            }
-        return dict(payload)
-
-
-def build_learning_active_tool_skills() -> List[Dict[str, Any]]:
-    return [
-        {
-            "title": "Learning Card Injection",
-            "required_tools": ["learning_card"],
-            "mode": "force",
-            "version": "1.0",
-            "author": "NexoraLearning",
-            "main_content": (
-                "当需要向用户展示课程概览、教材片段、章节范围或学习提示卡片时，"
-                "请主动调用 learning_card 工具。"
-                "课程总览使用 type=lecture_display；教材片段使用 type=chapter_range，"
-                "并传入 lecture_id、book_id、content_range。"
-            ),
-        },
-        {
-            "title": "Learning Read-Only Course and Book Tools",
-            "required_tools": [
-                "listLectures",
-                "getLecture",
-                "listBooks",
-                "getBook",
-                "getBookText",
-                "readBookTextRange",
-                "searchBookText",
-                "getBookInfoXml",
-                "getBookDetailXml",
-                "getBookQuestionsXml",
-                "vectorSearch",
-            ],
-            "mode": "force",
-            "version": "1.0",
-            "author": "NexoraLearning",
-            "main_content": (
-                "当前对话处于 NexoraLearning 学习模式。"
-                "本模式只允许读取课程、教材、概读、精读、题目和正文，不允许创建、修改、删除学习数据。"
-                "当用户询问课程、教材、书籍文本、章节摘要、精读内容或题目内容时，"
-                "优先调用对应 Learning 工具查询，不要凭空假设。"
-                "默认优先查看概读、精读和题目，不要一上来直接读取教材正文。"
-                "先用课程列表和教材目录建立结构，再按需查看概读、精读和题目。"
-                "只有当概读、精读和题目仍不足以回答，才补充使用 readBookTextRange 或 searchBookText。"
-            ),
-        },
-    ]
-
-
-def _select_learning_rows(
-    username: str,
-    payload: Optional[Mapping[str, Any]] = None,
-    *,
-    cfg: Optional[Mapping[str, Any]] = None,
-) -> Tuple[List[Dict[str, Any]], int]:
-    deps = _deps()
-    runtime_cfg = dict(cfg or build_learning_cfg())
-    lecture_filter = set(_get_active_lecture_ids(username, payload, cfg=runtime_cfg))
-    lectures = deps["list_lectures"](runtime_cfg) or []
-    rows: List[Dict[str, Any]] = []
-    total_books = 0
-    for lecture in lectures:
-        if not isinstance(lecture, dict):
-            continue
-        lecture_id = str(lecture.get("id") or "").strip()
-        if not lecture_id:
-            continue
-        if lecture_filter and lecture_id not in lecture_filter:
-            continue
-        books = deps["list_books"](runtime_cfg, lecture_id) or []
-        total_books += len(books)
-        rows.append(
+        username = str(self.cfg.get("_runtime_user_id") or "").strip()
+        if not username:
+            raise ValueError("runtime user id missing")
+        payload = _post_json(
+            "/tool/execute",
             {
-                "id": lecture_id,
-                "title": str(lecture.get("title") or "").strip(),
-                "category": str(lecture.get("category") or "").strip(),
-                "status": str(lecture.get("status") or "").strip(),
-                "progress": _safe_int(lecture.get("progress"), 0),
-                "current_chapter": str(lecture.get("current_chapter") or "").strip(),
-                "books_count": len(books),
-            }
+                "username": username,
+                "tool_name": str(function_name or "").strip(),
+                "arguments": dict(arguments or {}),
+            },
         )
-    return rows, total_books
+        return json.dumps(payload.get("result") or {}, ensure_ascii=False)
 
 
 def build_learning_context_payload(
     username: str,
     payload: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    deps = _deps()
-    cfg = build_learning_cfg()
-    user_id = str(username or "").strip()
-    deps["ensure_user_files"](cfg, user_id)
-
-    lecture_rows, total_books = _select_learning_rows(user_id, payload, cfg=cfg)
-    progress_lines = [
-        f"- {row['title'] or row['id']} | 进度 {max(0, min(100, _safe_int(row.get('progress'), 0)))}% | 当前章节 {row.get('current_chapter') or '暂无'} | 教材 {row.get('books_count', 0)} 本"
-        for row in lecture_rows
-    ]
-    recent_learning = deps["list_learning_records"](cfg, user_id) or []
-    recent_learning = recent_learning[-8:] if isinstance(recent_learning, list) else []
-    selected_lecture_ids = [row["id"] for row in lecture_rows if str(row.get("id") or "").strip()]
-    user_payload = deps["get_user"](cfg, user_id) or {}
-
-    cards: List[Dict[str, Any]] = []
-    for row in lecture_rows[:4]:
-        lecture_id = str(row.get("id") or "").strip()
-        if not lecture_id:
-            continue
-        try:
-            cards.append(_lecture_card_payload(lecture_id, cfg=cfg))
-        except Exception:
-            continue
-
-    system_prompt = (
-        "你当前处于 NexoraLearning 学习模式。\n"
-        "Nexora 只负责对话历史管理；NexoraLearning 负责学习上下文、学习提示词和学习工具注入。\n"
-        "不要使用任何非学习用途的工具来替代 Learning 工具。\n"
-        "当用户询问课程、教材、章节、摘要、精读内容、题目、知识点时，请优先调用 Learning 工具获取信息。\n"
-        "默认先读取概读、精读、题目与课程结构，不要直接阅读教材正文；只有现有摘要仍不够时，才补充读取正文范围。\n"
-        "你可以结合用户知识库工具做补充检索，但学习模式的主数据源始终是 NexoraLearning。\n"
-        "如有必要，可调用 learning_card 生成可视化学习卡片，但卡片不是必须步骤。"
-    )
-
-    return {
-        "learning": True,
-        "system_prompt": system_prompt,
-        "context_blocks": [
-            {
-                "type": "learning_profile",
-                "title": "学习用户档案",
-                "content": json.dumps(
-                    {
-                        "user_id": user_id,
-                        "user": user_payload,
-                        "selected_lecture_ids": selected_lecture_ids,
-                        "selected_lectures": lecture_rows,
-                        "study_hours_map": _study_hours_map(user_id, cfg=cfg),
-                    },
-                    ensure_ascii=False,
-                ),
-            },
-            {
-                "type": "learning_injection_contract",
-                "title": "学习模式注入说明",
-                "content": json.dumps(
-                    {
-                        "history_owner": "Nexora",
-                        "learning_owner": "NexoraLearning",
-                        "tool_policy": {
-                            "learning_tools": "readonly_only",
-                            "knowledge_tools": "readonly_only",
-                            "tmp_tools": "disabled",
-                            "longterm_tools": "disabled",
-                        },
-                        "suggested_external_injection": [
-                            "用户知识库列表",
-                            "用户描述",
-                            "课程进度",
-                            "近期学习记录",
-                        ],
-                    },
-                    ensure_ascii=False,
-                ),
-            },
-            {
-                "type": "learning_progress",
-                "title": "课程学习进度",
-                "content": "\n".join(progress_lines) if progress_lines else "当前还没有加入学习中的课程。",
-            },
-            {
-                "type": "learning_recent_records",
-                "title": "最近学习记录",
-                "content": json.dumps(recent_learning, ensure_ascii=False),
-            },
-            {
-                "type": "learning_card_suggestion",
-                "title": "推荐卡片",
-                "content": json.dumps(
-                    [
-                        {
-                            "tool": "learning_card",
-                            "type": "lecture_display",
-                            "lecture_id": card.get("lecture_id"),
-                        }
-                        for card in cards
-                        if isinstance(card, dict) and str(card.get("lecture_id") or "").strip()
-                    ],
-                    ensure_ascii=False,
-                ),
-            },
-        ],
-        "meta": {
-            "source": "chatdbserver_learning_mode",
-            "selected_lecture_count": len(lecture_rows),
-            "total_books": total_books,
-            "cards": cards,
+    response = _post_json(
+        "/context",
+        {
+            "username": str(username or "").strip(),
+            "payload": dict(payload or {}),
         },
-        "cards": cards,
-        "active_tool_skills": build_learning_active_tool_skills(),
+    )
+    result = response.get("payload")
+    return dict(result) if isinstance(result, dict) else {}
+
+
+def build_learning_memory_blocks(
+    username: str,
+    lecture_id: str,
+    *,
+    cfg: Optional[Mapping[str, Any]] = None,
+) -> List[Dict[str, str]]:
+    response = _post_json(
+        "/memory-blocks",
+        {
+            "username": str(username or "").strip(),
+            "lecture_id": str(lecture_id or "").strip(),
+        },
+    )
+    blocks = response.get("blocks")
+    return list(blocks) if isinstance(blocks, list) else []
+
+
+def trigger_learning_memory_analysis(
+    username: str,
+    lecture_id: str,
+    *,
+    reason: str,
+    payload: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    response = _post_json(
+        "/memory/trigger",
+        {
+            "username": str(username or "").strip(),
+            "lecture_id": str(lecture_id or "").strip(),
+            "reason": str(reason or "").strip() or "manual",
+            "payload": dict(payload or {}),
+        },
+    )
+    result = response.get("result")
+    return dict(result) if isinstance(result, dict) else {}
+
+
+def mark_learning_context_compression(
+    username: str,
+    lecture_id: str,
+    *,
+    job_id: str = "",
+) -> Dict[str, Any]:
+    response = _post_json(
+        "/memory/context-compression",
+        {
+            "username": str(username or "").strip(),
+            "lecture_id": str(lecture_id or "").strip(),
+            "job_id": str(job_id or "").strip(),
+        },
+    )
+    result = response.get("result")
+    return dict(result) if isinstance(result, dict) else {}
+
+
+def increment_learning_turn_and_maybe_enqueue(
+    username: str,
+    lecture_id: str,
+    *,
+    payload: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    response = _post_json(
+        "/memory/turn",
+        {
+            "username": str(username or "").strip(),
+            "lecture_id": str(lecture_id or "").strip(),
+            "payload": dict(payload or {}),
+        },
+    )
+    return {
+        "state": dict(response.get("state") or {}) if isinstance(response.get("state"), dict) else {},
+        "enqueue": dict(response.get("enqueue") or {}) if isinstance(response.get("enqueue"), dict) else {},
     }
+
+
+def get_learning_runtime_config() -> Dict[str, Any]:
+    fallback = _fallback_runtime_config()
+    try:
+        response = _get_json("/config")
+    except Exception:
+        return fallback
+    result = response.get("runtime_api")
+    if not isinstance(result, dict):
+        return fallback
+    merged = dict(fallback)
+    merged.update(dict(result))
+    merged["frontend_url"] = _derive_frontend_url(_learning_cfg())
+    return merged
