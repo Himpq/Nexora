@@ -127,6 +127,15 @@ body {
   flex: 1 1 auto;
 }
 
+.feed-channel-select {
+  width: 118px;
+  min-width: 118px;
+  max-width: 118px;
+  flex: 0 0 118px;
+  margin-left: auto;
+  justify-self: end;
+}
+
 .kicker-tab {
   border: 0;
   background: transparent;

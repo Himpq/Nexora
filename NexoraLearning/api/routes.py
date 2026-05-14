@@ -52,6 +52,9 @@ from core.memory_analysis import run_memory_analysis_job
 from core.profile_question import run_profile_question_job
 from core.learning_feed import prepend_learning_feed_item
 from core.learning_feed import list_learning_feed_items
+from core.learning_feed import list_learning_feed_channels
+from core.learning_feed import upsert_learning_feed_channel
+from core.learning_feed import delete_learning_feed_channel
 from core.learning_feed import toggle_learning_feed_like
 from core.learning_feed import append_learning_feed_comment
 from core.learning_feed import delete_learning_feed_item
@@ -3130,13 +3133,140 @@ def frontend_question_bank():
     return jsonify({"success": True, "items": rows, "total": len(rows)})
 
 
+def _builtin_feed_channels(username: str, is_admin: bool) -> List[Dict[str, Any]]:
+    rows = [
+        {
+            "id": "public_all",
+            "title": "ALL",
+            "type": "public",
+            "member_user_ids": [],
+            "builtin": True,
+        }
+    ]
+    if is_admin:
+        rows.append(
+            {
+                "id": "public_admin",
+                "title": "公告",
+                "type": "public",
+                "member_user_ids": [],
+                "builtin": True,
+            }
+        )
+    return rows
+
+
+def _normalize_channel_members(raw_members: Any) -> List[str]:
+    if not isinstance(raw_members, list):
+        return []
+    rows: List[str] = []
+    seen = set()
+    for item in raw_members:
+        value = str(item or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        rows.append(value)
+    return rows
+
+
+def _resolve_learning_feed_channels_for_user(username: str, is_admin: bool) -> List[Dict[str, Any]]:
+    custom_rows = list_learning_feed_channels(_cfg)
+    visible_rows: List[Dict[str, Any]] = []
+    for row in custom_rows:
+        if not isinstance(row, dict):
+            continue
+        channel_type = str(row.get("type") or "private").strip().lower()
+        member_user_ids = _normalize_channel_members(row.get("member_user_ids"))
+        if channel_type == "public" or (username and username in member_user_ids) or is_admin:
+            visible_rows.append(
+                {
+                    **row,
+                    "member_user_ids": member_user_ids,
+                    "builtin": False,
+                }
+            )
+    return _builtin_feed_channels(username, is_admin) + visible_rows
+
+
+def _can_view_feed_channel(channel: Dict[str, Any], username: str, is_admin: bool) -> bool:
+    channel_id = str(channel.get("id") or "").strip()
+    if channel_id == "public_all":
+        return True
+    if channel_id == "public_admin":
+        return bool(is_admin)
+    channel_type = str(channel.get("type") or "private").strip().lower()
+    member_user_ids = _normalize_channel_members(channel.get("member_user_ids"))
+    return bool(channel_type == "public" or is_admin or (username and username in member_user_ids))
+
+
+@bp.route("/frontend/learning-feeds/channels", methods=["GET"])
+def frontend_learning_feed_channels():
+    username = str(_resolve_runtime_user_id() or "").strip()
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+    is_admin = bool(_is_runtime_admin())
+    rows = _resolve_learning_feed_channels_for_user(username, is_admin)
+    return jsonify({"success": True, "items": rows, "total": len(rows)})
+
+
+@bp.route("/frontend/settings/feed-channels", methods=["POST"])
+def frontend_settings_feed_channels_create():
+    if not _is_runtime_admin():
+        return jsonify({"success": False, "error": "Only admin can create channels."}), 403
+    data = request.get_json(silent=True) or {}
+    title = str(data.get("title") or "").strip()
+    if not title:
+        return jsonify({"success": False, "error": "title is required."}), 400
+    member_user_ids = _normalize_channel_members(data.get("member_user_ids"))
+    if "ALL" in {item.upper() for item in member_user_ids}:
+        member_user_ids = []
+        channel_type = "public"
+    else:
+        channel_type = "private"
+    record = upsert_learning_feed_channel(
+        _cfg,
+        {
+            "title": title,
+            "type": channel_type,
+            "member_user_ids": member_user_ids,
+            "created_by": str(_resolve_runtime_user_id() or "").strip(),
+        },
+    )
+    return jsonify({"success": True, "item": record})
+
+
+@bp.route("/frontend/settings/feed-channels/<channel_id>", methods=["DELETE"])
+def frontend_settings_feed_channels_delete(channel_id: str):
+    if not _is_runtime_admin():
+        return jsonify({"success": False, "error": "Only admin can delete channels."}), 403
+    removed = delete_learning_feed_channel(_cfg, channel_id)
+    if not removed:
+        return jsonify({"success": False, "error": "channel not found."}), 404
+    return jsonify({"success": True, "channel_id": channel_id})
+
+
 @bp.route("/frontend/learning-feeds", methods=["GET"])
 def frontend_learning_feeds():
+    username = str(_resolve_runtime_user_id() or "").strip()
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
     limit = _safe_int(request.args.get("limit"), 50)
-    rows = list_learning_feed_items(_cfg, limit=limit)
-    author_cache: Dict[str, Dict[str, Any]] = {}
-    current_user_id = str(_resolve_runtime_user_id() or "").strip()
+    selected_channel_id = str(request.args.get("channel_id") or "public_all").strip() or "public_all"
     current_is_admin = bool(_is_runtime_admin())
+    visible_channels = _resolve_learning_feed_channels_for_user(username, current_is_admin)
+    channel_map = {str(row.get("id") or "").strip(): row for row in visible_channels if isinstance(row, dict)}
+    if selected_channel_id not in channel_map:
+        selected_channel_id = "public_all"
+    rows = list_learning_feed_items(_cfg, limit=max(limit, 200))
+    rows = [
+        row for row in rows
+        if isinstance(row, dict)
+        and str(row.get("channel_id") or "public_all").strip() == selected_channel_id
+        and _can_view_feed_channel(channel_map.get(selected_channel_id, {"id": "public_all", "type": "public"}), username, current_is_admin)
+    ][:limit]
+    author_cache: Dict[str, Dict[str, Any]] = {}
+    current_user_id = username
 
     def _resolve_author_view(user_id: str) -> Dict[str, Any]:
         key = str(user_id or "").strip()
@@ -3221,7 +3351,15 @@ def frontend_learning_feeds():
                     }
                 )
             row["comments"] = rendered_comments
-    return jsonify({"success": True, "items": rows, "total": len(rows)})
+    return jsonify(
+        {
+            "success": True,
+            "items": rows,
+            "total": len(rows),
+            "channel_id": selected_channel_id,
+            "channels": visible_channels,
+        }
+    )
 
 
 @bp.route("/frontend/learning-feeds", methods=["POST"])
@@ -3230,14 +3368,24 @@ def frontend_learning_feeds_create():
     username = _resolve_runtime_user_id()
     if not username:
         return jsonify({"success": False, "error": "username is required."}), 400
+    current_is_admin = bool(_is_runtime_admin())
     content = str(data.get("content") or data.get("summary") or "").strip()
     if not content:
         return jsonify({"success": False, "error": "content is required."}), 400
+    selected_channel_id = str(data.get("channel_id") or "public_all").strip() or "public_all"
+    visible_channels = _resolve_learning_feed_channels_for_user(str(username), current_is_admin)
+    channel_map = {str(row.get("id") or "").strip(): row for row in visible_channels if isinstance(row, dict)}
+    channel = channel_map.get(selected_channel_id)
+    if not channel or not _can_view_feed_channel(channel, str(username), current_is_admin):
+        return jsonify({"success": False, "error": "invalid channel."}), 400
+    if selected_channel_id == "public_admin" and not current_is_admin:
+        return jsonify({"success": False, "error": "only admin can post to admin channel."}), 403
     author = _build_feed_author_snapshot(username)
     record = prepend_learning_feed_item(
         _cfg,
         {
             "type": "user_post",
+            "channel_id": selected_channel_id,
             "summary": content,
             "content": content,
             "username": username,
@@ -3247,7 +3395,7 @@ def frontend_learning_feeds_create():
             "comments_count": 0,
         },
     )
-    log_event("learning_feed_posted", {"username": username, "chars": len(content), "source": "feed"})
+    log_event("learning_feed_posted", {"username": username, "chars": len(content), "channel_id": selected_channel_id, "source": "feed"})
     return jsonify({"success": True, "item": record})
 
 

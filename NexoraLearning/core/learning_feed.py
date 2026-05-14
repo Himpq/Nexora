@@ -20,8 +20,20 @@ def _feed_path(cfg: Mapping[str, Any]) -> Path:
     return _data_dir(cfg) / "learning_feeds.jsonl"
 
 
+def _channels_path(cfg: Mapping[str, Any]) -> Path:
+    return _data_dir(cfg) / "learning_feeds_channels.jsonl"
+
+
 def ensure_learning_feed_file(cfg: Mapping[str, Any]) -> Path:
     path = _feed_path(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_text("", encoding="utf-8")
+    return path
+
+
+def ensure_learning_feed_channels_file(cfg: Mapping[str, Any]) -> Path:
+    path = _channels_path(cfg)
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
         path.write_text("", encoding="utf-8")
@@ -60,6 +72,8 @@ def _normalize_feed_comment(raw: Any) -> Optional[Dict[str, Any]]:
 def _normalize_feed_record(raw: Mapping[str, Any]) -> Dict[str, Any]:
     payload = dict(raw or {})
     user_id = str(payload.get("username") or payload.get("user_id") or "").strip()
+    channel_id = str(payload.get("channel_id") or "").strip() or "public_all"
+    payload["channel_id"] = channel_id
     payload["author"] = _normalize_feed_author(payload.get("author"), user_id)
     comments = payload.get("comments")
     if isinstance(comments, list):
@@ -76,6 +90,111 @@ def _normalize_feed_record(raw: Mapping[str, Any]) -> Dict[str, Any]:
     payload["liked_user_ids"] = normalized_likes
     payload["likes_count"] = len(normalized_likes)
     return payload
+
+
+def _normalize_channel_record(raw: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, Mapping):
+        return None
+    channel_id = str(raw.get("id") or "").strip()
+    title = str(raw.get("title") or "").strip()
+    if not channel_id or not title:
+        return None
+    channel_type = str(raw.get("type") or "private").strip().lower()
+    if channel_type not in {"public", "private"}:
+        channel_type = "private"
+    member_user_ids = raw.get("member_user_ids")
+    if isinstance(member_user_ids, list):
+        normalized_members = []
+        seen = set()
+        for item in member_user_ids:
+            value = str(item or "").strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            normalized_members.append(value)
+    else:
+        normalized_members = []
+    if channel_type == "public":
+        normalized_members = []
+    created_by = str(raw.get("created_by") or "").strip()
+    created_at = int(raw.get("created_at") or time.time())
+    updated_at = int(raw.get("updated_at") or created_at)
+    return {
+        "id": channel_id,
+        "title": title,
+        "type": channel_type,
+        "member_user_ids": normalized_members,
+        "created_by": created_by,
+        "created_at": created_at,
+        "updated_at": updated_at,
+    }
+
+
+def list_learning_feed_channels(cfg: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    path = ensure_learning_feed_channels_file(cfg)
+    rows: List[Dict[str, Any]] = []
+    try:
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            raw_line = str(raw_line or "").strip()
+            if not raw_line:
+                continue
+            try:
+                row = json.loads(raw_line)
+            except Exception:
+                continue
+            normalized = _normalize_channel_record(row)
+            if normalized:
+                rows.append(normalized)
+    except Exception:
+        return []
+    return rows
+
+
+def upsert_learning_feed_channel(cfg: Mapping[str, Any], record: Mapping[str, Any]) -> Dict[str, Any]:
+    path = ensure_learning_feed_channels_file(cfg)
+    payload = _normalize_channel_record(
+        {
+            **dict(record or {}),
+            "id": str((record or {}).get("id") or f"channel_{uuid.uuid4().hex[:12]}").strip(),
+            "updated_at": int(time.time()),
+        }
+    )
+    if not payload:
+        raise ValueError("invalid channel record")
+    with _LOCK:
+        rows = list_learning_feed_channels(cfg)
+        replaced = False
+        next_rows: List[Dict[str, Any]] = []
+        for row in rows:
+            if str(row.get("id") or "").strip() == payload["id"]:
+                payload["created_at"] = int(row.get("created_at") or payload["created_at"])
+                if not payload.get("created_by"):
+                    payload["created_by"] = str(row.get("created_by") or "").strip()
+                next_rows.append(payload)
+                replaced = True
+            else:
+                next_rows.append(row)
+        if not replaced:
+            next_rows.append(payload)
+        path.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in next_rows), encoding="utf-8")
+    return payload
+
+
+def delete_learning_feed_channel(cfg: Mapping[str, Any], channel_id: str) -> bool:
+    target_id = str(channel_id or "").strip()
+    if not target_id:
+        return False
+    path = ensure_learning_feed_channels_file(cfg)
+    removed = False
+    with _LOCK:
+        rows: List[Dict[str, Any]] = []
+        for row in list_learning_feed_channels(cfg):
+            if str(row.get("id") or "").strip() == target_id:
+                removed = True
+                continue
+            rows.append(row)
+        path.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
+    return removed
 
 
 def prepend_learning_feed_item(cfg: Mapping[str, Any], record: Mapping[str, Any]) -> Dict[str, Any]:
