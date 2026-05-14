@@ -20,6 +20,7 @@
     timePieChart: document.getElementById("timePieChart"),
     learningFeedPanel: document.getElementById("learningFeedPanel"),
     learningFeedComposeBtn: document.getElementById("learningFeedComposeBtn"),
+    feedChannelSelect: document.getElementById("feedChannelSelect"),
     dashboardProgressTabBtn: document.getElementById("dashboardProgressTabBtn"),
     dashboardProgressFeedTabBtn: document.getElementById("dashboardProgressFeedTabBtn"),
     userProfileCard: document.getElementById("userProfileCard"),
@@ -154,6 +155,8 @@
     settingsLogSource: "",
     questionBankItems: [],
     learningFeeds: [],
+    learningFeedChannels: [],
+    selectedFeedChannelId: "public_all",
     dashboardSideTab: "progress",
     feedExpandedMap: {},
     feedCommentDrafts: {},
@@ -823,6 +826,14 @@
     if (el.progressList) el.progressList.hidden = state.dashboardSideTab === "feed";
     el.learningFeedPanel.hidden = state.dashboardSideTab !== "feed";
     if (el.learningFeedComposeBtn) el.learningFeedComposeBtn.hidden = state.dashboardSideTab !== "feed";
+    if (el.feedChannelSelect) {
+      const channels = Array.isArray(state.learningFeedChannels) ? state.learningFeedChannels : [];
+      el.feedChannelSelect.hidden = state.dashboardSideTab !== "feed";
+      el.feedChannelSelect.innerHTML = channels.length
+        ? channels.map((row) => `<option value="${escapeHtml(String((row && row.id) || ""))}">${escapeHtml(String((row && row.title) || ""))}</option>`).join("")
+        : '<option value="public_all">所有用户</option>';
+      el.feedChannelSelect.value = String(state.selectedFeedChannelId || "public_all");
+    }
     if (state.dashboardSideTab !== "feed") return;
     const rows = Array.isArray(state.learningFeeds) ? state.learningFeeds : [];
     if (!rows.length) {
@@ -964,6 +975,10 @@
     if (el.openMaterialsViewBtn) {
       el.openMaterialsViewBtn.hidden = !isProgress;
     }
+    if (el.feedChannelSelect) {
+      el.feedChannelSelect.hidden = isProgress;
+      el.feedChannelSelect.value = String(state.selectedFeedChannelId || "public_all");
+    }
     renderPie();
     renderLearningFeeds();
   }
@@ -1000,6 +1015,7 @@
       body: JSON.stringify({
         summary: text,
         content: text,
+        channel_id: String(state.selectedFeedChannelId || "public_all"),
       }),
     });
     const data = await resp.json().catch(() => ({}));
@@ -1238,6 +1254,7 @@
     const tabs = [
       { id: "refinement", title: "待精读列表", sub: "选择教材并触发精读" },
       { id: "model", title: "模型设置", sub: "设置默认模型与任务模型" },
+      { id: "channels", title: "频道管理", sub: "创建和筛选动态频道" },
       { id: "logs", title: "模型日志", sub: "查看模型调用、工具链与输出" },
       { id: "profile", title: "用户信息", sub: "当前用户与连接状态" },
     ];
@@ -1553,6 +1570,11 @@
     if (state.settingsTab === "model") {
       state.refinementViewBootstrapped = false;
       renderSettingsModel();
+      return;
+    }
+    if (state.settingsTab === "channels") {
+      state.refinementViewBootstrapped = false;
+      renderSettingsChannels();
       return;
     }
     if (state.settingsTab === "logs") {
@@ -2383,14 +2405,60 @@
 
   async function loadLearningFeeds() {
     try {
-      const resp = await fetch(resolveApiUrl("/api/frontend/learning-feeds?limit=50"), { credentials: "same-origin" });
+      const params = new URLSearchParams();
+      params.set("limit", "50");
+      params.set("channel_id", String(state.selectedFeedChannelId || "public_all"));
+      const resp = await fetch(resolveApiUrl(`/api/frontend/learning-feeds?${params.toString()}`), { credentials: "same-origin" });
       const data = await resp.json().catch(() => ({}));
       state.learningFeeds = Array.isArray(data.items) ? data.items : [];
+      state.learningFeedChannels = Array.isArray(data.channels) ? data.channels : [];
+      state.selectedFeedChannelId = String(data.channel_id || state.selectedFeedChannelId || "public_all");
     } catch (_err) {
       state.learningFeeds = [];
+      state.learningFeedChannels = [];
     }
     if (state.dashboardSideTab === "feed") {
       renderLearningFeeds();
+    }
+  }
+
+  async function createLearningFeedChannel() {
+    const titleInput = document.getElementById("settingsChannelTitleInput");
+    const usersInput = document.getElementById("settingsChannelUsersInput");
+    const title = String(titleInput && titleInput.value || "").trim();
+    const rawUsers = String(usersInput && usersInput.value || "").trim();
+    if (!title) throw new Error("频道名不能为空");
+    const member_user_ids = rawUsers
+      ? rawUsers.split(",").map((item) => String(item || "").trim()).filter(Boolean).map((item) => item.startsWith("@") ? item.slice(1).trim() : item)
+      : [];
+    await fetchJson("/api/frontend/settings/feed-channels", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title, member_user_ids }),
+    });
+    await loadLearningFeedChannels();
+  }
+
+  async function removeLearningFeedChannel(channelId) {
+    const id = String(channelId || "").trim();
+    if (!id) return;
+    await fetchJson(`/api/frontend/settings/feed-channels/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
+    await loadLearningFeedChannels();
+  }
+
+  async function loadLearningFeedChannels() {
+    try {
+      const data = await fetchJson("/api/frontend/learning-feeds/channels");
+      state.learningFeedChannels = Array.isArray(data.items) ? data.items : [];
+      const ids = new Set(state.learningFeedChannels.map((row) => String((row && row.id) || "").trim()).filter(Boolean));
+      if (!ids.has(String(state.selectedFeedChannelId || "").trim())) {
+        state.selectedFeedChannelId = "public_all";
+      }
+    } catch (_err) {
+      state.learningFeedChannels = [];
+      state.selectedFeedChannelId = "public_all";
     }
   }
 
@@ -2521,6 +2589,8 @@
     setView("settings");
     if (state.settingsTab === "model") {
       await loadModelSettings();
+    } else if (state.settingsTab === "channels") {
+      await loadLearningFeedChannels();
     } else if (state.settingsTab === "logs") {
       await loadSettingsLogs();
     } else if (state.settingsTab === "refinement") {
@@ -2532,6 +2602,7 @@
   async function refreshAll() {
     await loadMaterialsRows();
     await loadDashboardRows();
+    await loadLearningFeedChannels();
     await loadLearningFeeds();
     renderUserProfile();
     renderProgressList();
@@ -2624,6 +2695,12 @@
       el.dashboardProgressFeedTabBtn.addEventListener("click", () => {
         state.dashboardSideTab = "feed";
         syncDashboardSideTabs();
+      });
+    }
+    if (el.feedChannelSelect) {
+      el.feedChannelSelect.addEventListener("change", () => {
+        state.selectedFeedChannelId = String(el.feedChannelSelect.value || "public_all");
+        loadLearningFeeds().catch((err) => showToast(`加载动态失败：${err.message || "未知错误"}`));
       });
     }
     if (el.learningFeedComposeBtn) {
@@ -3197,6 +3274,12 @@
           .catch((err) => showToast(`加载模型日志失败：${err.message || "未知错误"}`));
         return;
       }
+      if (state.settingsTab === "channels") {
+        loadLearningFeedChannels()
+          .then(() => renderSettingsView())
+          .catch((err) => showToast(`加载频道失败：${err.message || "未知错误"}`));
+        return;
+      }
       if (state.settingsTab === "refinement") {
         loadRefinementSettings()
           .then(() => renderSettingsView())
@@ -3214,6 +3297,33 @@
         saveModelSettings()
           .then(() => showToast("模型设置已保存"))
           .catch((err) => showToast(`保存失败：${err.message || "未知错误"}`));
+        return;
+      }
+      const createChannelBtn = target.closest("#createFeedChannelBtn");
+      if (createChannelBtn) {
+        createLearningFeedChannel()
+          .then(() => {
+            showToast("频道创建成功");
+            renderSettingsView();
+          })
+          .catch((err) => showToast(`创建频道失败：${err.message || "未知错误"}`));
+        return;
+      }
+      const deleteChannelBtn = target.closest("[data-action='delete-feed-channel']");
+      if (deleteChannelBtn) {
+        const channelId = String(deleteChannelBtn.getAttribute("data-channel-id") || "");
+        if (!channelId) return;
+        confirmModalAsync("确认删除该频道？")
+          .then((ok) => {
+            if (!ok) return null;
+            return removeLearningFeedChannel(channelId);
+          })
+          .then((result) => {
+            if (result === null) return;
+            showToast("频道已删除");
+            renderSettingsView();
+          })
+          .catch((err) => showToast(`删除频道失败：${err.message || "未知错误"}`));
         return;
       }
       const startBtn = target.closest("[data-action='start-refinement']");
@@ -3369,3 +3479,42 @@
   });
 })();
 
+  function renderSettingsChannels() {
+    const rows = Array.isArray(state.learningFeedChannels) ? state.learningFeedChannels.filter((row) => row && !row.builtin) : [];
+    el.settingsDetailPane.innerHTML = `
+      <section class="settings-detail-scroll">
+        <article class="settings-card">
+          <div class="settings-title">新建频道</div>
+          <div class="settings-sub">使用 <code>@用户名</code> 添加可见用户。输入 <code>@ALL</code> 后将变为全员公开频道。</div>
+          <div class="settings-inline-form">
+            <div class="materials-form-row settings-model-row">
+              <label class="materials-form-label settings-model-label" for="settingsChannelTitleInput">频道名</label>
+              <input id="settingsChannelTitleInput" class="input-lite settings-model-select" placeholder="例如：春物私有研读">
+            </div>
+            <div class="materials-form-row settings-model-row">
+              <label class="materials-form-label settings-model-label" for="settingsChannelUsersInput">可见用户</label>
+              <input id="settingsChannelUsersInput" class="input-lite settings-model-select" placeholder="@mujica,@alice 或 @ALL">
+            </div>
+            <div class="materials-form-actions materials-form-actions-right">
+              <button id="createFeedChannelBtn" class="nxl-icon-btn nxl-icon-btn-dark" type="button" aria-label="新建频道" title="新建频道">+</button>
+            </div>
+          </div>
+        </article>
+        <article class="settings-card">
+          <div class="settings-title">现有频道</div>
+          <div class="settings-log-list">
+            ${rows.length ? rows.map((row) => `
+              <div class="settings-log-item">
+                <div class="settings-log-head">
+                  <strong>${escapeHtml(String(row.title || ""))}</strong>
+                  <button class="nxl-icon-btn nxl-icon-btn-danger" type="button" data-action="delete-feed-channel" data-channel-id="${escapeHtml(String(row.id || ""))}" title="删除频道" aria-label="删除频道">×</button>
+                </div>
+                <div class="settings-log-meta">${escapeHtml(String(row.type || ""))}</div>
+                <pre class="settings-log-content">${escapeHtml(Array.isArray(row.member_user_ids) && row.member_user_ids.length ? row.member_user_ids.map((userId) => `@${userId}`).join(", ") : "全员可见")}</pre>
+              </div>
+            `).join("") : '<div class="materials-empty">暂无自定义频道</div>'}
+          </div>
+        </article>
+      </section>
+    `;
+  }
