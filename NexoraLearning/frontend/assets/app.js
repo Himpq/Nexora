@@ -1373,6 +1373,7 @@
     const chapters = Array.isArray(state.readerChapters) ? state.readerChapters : [];
     if (!chapters.length) {
       el.readerContent.innerHTML = `<div class="materials-preview-text">${formatReaderText(state.readerFullTextRaw || "")}</div>`;
+      if (el.readerPane) el.readerPane.classList.remove("reader-entering");
       syncReaderSettingsPanel();
       applyReaderTypography();
       return;
@@ -1385,6 +1386,15 @@
     const part = state.readerFullTextRaw.slice(start, end).trim() || state.readerFullTextRaw;
     const prevDisabled = idx <= 0 ? "disabled" : "";
     const nextDisabled = idx >= chapters.length - 1 ? "disabled" : "";
+    if (el.readerPane) {
+      el.readerPane.classList.remove("reader-entering");
+      void el.readerPane.offsetWidth;
+      el.readerPane.classList.add("reader-entering");
+      window.clearTimeout(state.readerEnterAnimationTimer || 0);
+      state.readerEnterAnimationTimer = window.setTimeout(() => {
+        if (el.readerPane) el.readerPane.classList.remove("reader-entering");
+      }, 260);
+    }
     el.readerContent.innerHTML = `
       <div class="materials-preview-text">
         <div class="chapter-header text-center mb-4">
