@@ -257,8 +257,8 @@ body {
   border: 1px solid var(--nxl-line);
   border-radius: 14px;
   background: #ffffff;
-  min-height: 82px;
-  padding: 8px 10px;
+  min-height: 88px;
+  padding: 10px 12px;
   display: grid;
   gap: 4px;
 }
@@ -272,7 +272,7 @@ body {
 
 .nxl-course-title {
   min-width: 0;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 700;
   line-height: 1.2;
   white-space: nowrap;
@@ -282,12 +282,12 @@ body {
 
 .nxl-course-percent {
   flex: 0 0 auto;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
 }
 
 .nxl-course-current {
-  font-size: 10px;
+  font-size: 12px;
   color: var(--nxl-soft);
   line-height: 1.2;
   white-space: nowrap;
@@ -1492,6 +1492,15 @@ body.reader-fullscreen-active .reader-content {
   z-index: 3;
   scroll-behavior: smooth;
   background: #ffffff;
+}
+
+body.reader-fullscreen-active #readerPane.reader-entering .reader-content {
+  opacity: 0.72;
+  transform: translateY(10px) scale(0.985);
+}
+
+body.reader-fullscreen-active #readerPane .reader-content {
+  transition: opacity 220ms ease, transform 220ms ease, padding 220ms ease;
 }
 
 body.reader-fullscreen-active .chapter-list-panel {
