@@ -81,6 +81,18 @@ def _book_text_dir(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Path:
     return _book_dir(cfg, lecture_id, book_id) / "text"
 
 
+def _book_assets_dir(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Path:
+    return _book_dir(cfg, lecture_id, book_id) / "assets"
+
+
+def _book_images_dir(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Path:
+    return _book_assets_dir(cfg, lecture_id, book_id) / "images"
+
+
+def _book_images_meta_path(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Path:
+    return _book_images_dir(cfg, lecture_id, book_id) / "images.json"
+
+
 def _book_original_dir(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> Path:
     return _book_dir(cfg, lecture_id, book_id) / "original"
 
@@ -216,6 +228,7 @@ def create_book(
     book_dir.mkdir(parents=True, exist_ok=True)
     _book_original_dir(cfg, lecture_id, book_id).mkdir(parents=True, exist_ok=True)
     _book_text_dir(cfg, lecture_id, book_id).mkdir(parents=True, exist_ok=True)
+    _book_images_dir(cfg, lecture_id, book_id).mkdir(parents=True, exist_ok=True)
     _book_vectors_dir(cfg, lecture_id, book_id).mkdir(parents=True, exist_ok=True)
 
     now = int(time.time())
@@ -231,6 +244,7 @@ def create_book(
         "text_status": "empty",
         "text_chars": 0,
         "text_filename": "",
+        "images_count": 0,
         "original_filename": "",
         "original_path": "",
         "refinement_status": "empty",
@@ -345,6 +359,53 @@ def save_book_text(
             "error": "",
         },
     ) or book
+
+
+def save_book_images_meta(
+    cfg: Dict[str, Any],
+    lecture_id: str,
+    book_id: str,
+    images: Iterable[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    rows = [dict(item or {}) for item in (images or []) if isinstance(item, dict)]
+    images_dir = _book_images_dir(cfg, lecture_id, book_id)
+    images_dir.mkdir(parents=True, exist_ok=True)
+    path = _book_images_meta_path(cfg, lecture_id, book_id)
+    _write_json(path, rows)
+    update_book(
+        cfg,
+        lecture_id,
+        book_id,
+        {
+            "images_count": len(rows),
+        },
+    )
+    return rows
+
+
+def load_book_images_meta(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> List[Dict[str, Any]]:
+    path = _book_images_meta_path(cfg, lecture_id, book_id)
+    if not path.exists():
+        return []
+    data = _read_json(path)
+    if isinstance(data, list):
+        return [dict(item or {}) for item in data if isinstance(item, dict)]
+    return []
+
+
+def get_book_image_path(cfg: Dict[str, Any], lecture_id: str, book_id: str, image_id: str) -> Optional[Path]:
+    safe_id = str(image_id or "").strip()
+    if not safe_id:
+        return None
+    for item in load_book_images_meta(cfg, lecture_id, book_id):
+        if str(item.get("id") or "").strip() != safe_id:
+            continue
+        file_name = str(item.get("file_name") or "").strip()
+        if not file_name:
+            return None
+        path = _book_images_dir(cfg, lecture_id, book_id) / file_name
+        return path if path.exists() else None
+    return None
 
 
 def save_book_original_file(

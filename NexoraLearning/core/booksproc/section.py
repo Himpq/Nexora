@@ -622,7 +622,7 @@ def run_section_generation_once(
     if book is None:
         raise ValueError(f"Book not found: {lecture_key}/{book_key}")
 
-    full_text = str(resolve_book_text(resolved_cfg, lecture_key, book_key) or "")
+    full_text = str(resolve_book_text(resolved_cfg, lecture_key, book_key, book) or "")
     if not full_text:
         raise ValueError("book text is empty.")
 
@@ -765,4 +765,3 @@ def run_section_generation_once(
         "session_count": total_sessions,
         "model_name": str(getattr(runner, "model_name", "") or ""),
     }
-

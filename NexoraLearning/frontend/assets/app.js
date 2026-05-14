@@ -18,6 +18,10 @@
     uploadBookBlock: document.getElementById("uploadBookBlock"),
     progressList: document.getElementById("progressList"),
     timePieChart: document.getElementById("timePieChart"),
+    learningFeedPanel: document.getElementById("learningFeedPanel"),
+    learningFeedComposeBtn: document.getElementById("learningFeedComposeBtn"),
+    dashboardProgressTabBtn: document.getElementById("dashboardProgressTabBtn"),
+    dashboardProgressFeedTabBtn: document.getElementById("dashboardProgressFeedTabBtn"),
     userProfileCard: document.getElementById("userProfileCard"),
     profileAdminSettingsBtn: document.getElementById("profileAdminSettingsBtn"),
     materialsLayout: document.getElementById("materialsLayout"),
@@ -115,8 +119,9 @@
       default_nexora_model: "",
       rough_reading: {},
       intensive_reading: {},
-      question_generation: {},
       split_chapters: {},
+      memory: {},
+      profile_question: {},
     },
     settingsPollTimer: null,
     refinementScrollTop: 0,
@@ -134,6 +139,7 @@
     readerChapters: [],
     readerActiveChapterIndex: 0,
     readerFullTextRaw: "",
+    readerImages: [],
     readerViewMode: "closed",
     readerMeta: { title: "", subtitle: "" },
     readerUiToggleLockedUntil: 0,
@@ -142,6 +148,19 @@
     catalogContext: null,
     materialsSortBy: "updated_at",
     materialsSortOrder: "desc",
+    settingsLogs: [],
+    settingsLogSources: [],
+    settingsLogCategory: "all",
+    settingsLogSource: "",
+    questionBankItems: [],
+    learningFeeds: [],
+    dashboardSideTab: "progress",
+    feedExpandedMap: {},
+    feedCommentDrafts: {},
+    readerReportedChapterKey: "",
+    readerBookDetailXml: "",
+    dynamicPosting: false,
+    confirmAction: null,
   };
   let readerContextSyncTimer = null;
 
@@ -199,6 +218,103 @@
       .replace(/'/g, "&#039;");
   }
 
+  function getCurrentUserDisplayName() {
+    return String(state.user.nickname || state.user.display_name || state.user.username || state.username || "??").trim() || "??";
+  }
+
+  function getCurrentUserAvatarUrl() {
+    return normalizeFeedAvatarUrl(String(state.user.avatar_url || state.user.avatar || state.user.avatarUrl || "").trim());
+  }
+
+  function getFeedAuthorName(row) {
+    const author = row && typeof row.author === "object" ? row.author : {};
+    return String(author.nickname || author.display_name || author.username || row.username || row.user_id || "??").trim() || "??";
+  }
+
+  function getFeedAuthorAvatarUrl(row) {
+    const author = row && typeof row.author === "object" ? row.author : {};
+    const avatarUrl = normalizeFeedAvatarUrl(String(author.avatar_url || "").trim());
+    if (avatarUrl) return avatarUrl;
+    const handle = getFeedAuthorHandle(row);
+    if (handle && handle === String(state.username || "").trim()) {
+      return getCurrentUserAvatarUrl();
+    }
+    return "";
+  }
+
+  function normalizeFeedAvatarUrl(rawUrl) {
+    const value = String(rawUrl || "").trim();
+    if (!value) return "";
+    try {
+      return new URL(value).toString();
+    } catch (_err) {}
+    const baseUrl = String((state.integration && state.integration.base_url) || "").trim().replace(/\/+$/, "");
+    let safeBaseUrl = "";
+    if (baseUrl) {
+      try {
+        const parsed = new URL(baseUrl);
+        const host = String(parsed.hostname || "").trim().toLowerCase();
+        if (host && !["127.0.0.1", "localhost", "0.0.0.0", "::1"].includes(host)) {
+          safeBaseUrl = parsed.toString().replace(/\/+$/, "");
+        }
+      } catch (_err) {}
+    }
+    if (value.startsWith("/") && safeBaseUrl) {
+      return `${safeBaseUrl}${value}`;
+    }
+    return value;
+  }
+
+  function getFeedAuthorInitial(row) {
+    const name = getFeedAuthorName(row);
+    return (Array.from(name)[0] || "学").toUpperCase();
+  }
+
+  function getFeedAuthorHandle(row) {
+    const author = row && typeof row.author === "object" ? row.author : {};
+    return String(author.user_id || row.username || row.user_id || "").trim();
+  }
+
+  function formatFeedRelativeTime(ts) {
+    const value = Number(ts) || 0;
+    if (!Number.isFinite(value) || value <= 0) return "";
+    const now = Math.floor(Date.now() / 1000);
+    const diff = Math.max(0, now - value);
+    if (diff < 60) return `${diff || 1}s`;
+    if (diff < 3600) return `${Math.floor(diff / 60)}m`;
+    if (diff <= 86400) return `${Math.floor(diff / 3600)}h`;
+    const d = new Date(value * 1000);
+    const month = d.getMonth() + 1;
+    const day = d.getDate();
+    const hour = String(d.getHours()).padStart(2, "0");
+    const minute = String(d.getMinutes()).padStart(2, "0");
+    return `${month}/${day} ${hour}:${minute}`;
+  }
+
+  function renderTrashIcon() {
+    return `
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M9 4.8h6M5.8 7.2h12.4M8.3 7.2l.8 11c.1.7.6 1.2 1.3 1.2h3.2c.7 0 1.2-.5 1.3-1.2l.8-11" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M10.2 10.1v5.7M13.8 10.1v5.7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+      </svg>
+    `;
+  }
+
+  function openConfirm(message, onConfirm) {
+    if (!el.confirmBackdrop || !el.confirmBody || !el.confirmOkBtn || !el.confirmCancelBtn) return;
+    state.confirmAction = typeof onConfirm === "function" ? onConfirm : null;
+    el.confirmBody.textContent = String(message || "确认执行此操作？");
+    el.confirmBackdrop.hidden = false;
+    el.confirmBackdrop.style.display = "flex";
+  }
+
+  function closeConfirm() {
+    if (!el.confirmBackdrop) return;
+    el.confirmBackdrop.hidden = true;
+    el.confirmBackdrop.style.display = "none";
+    state.confirmAction = null;
+  }
+
   function decodeBasicHtmlEntities(src) {
     return String(src || "")
       .replace(/&nbsp;/gi, " ")
@@ -213,16 +329,48 @@
       });
   }
 
+  function resolveApiUrl(path) {
+    const rawPath = String(path || "").trim();
+    if (!rawPath) return rawPath;
+    try {
+      const direct = new URL(rawPath);
+      return direct.toString();
+    } catch (_err) {}
+    const normalizedPath = rawPath.startsWith("/") ? rawPath : `/${rawPath}`;
+    try {
+      const current = new URL(window.location.href);
+      return new URL(normalizedPath, `${current.protocol}//${current.host}`).toString();
+    } catch (_err) {
+      return normalizedPath;
+    }
+  }
+
   function formatReaderText(text) {
     const raw = String(text || "").replace(/\r\n?/g, "\n");
-    const noScripts = raw
+    const withImages = raw.replace(/\{\{nxl_image:([A-Za-z0-9_\-]+):([A-Za-z0-9_\-]+):([A-Za-z0-9._\-]+)(?::([^}]*))?\}\}/g, (_m, lectureId, bookId, imageId, altText) => {
+      const safeLectureId = encodeURIComponent(String(lectureId || "").trim());
+      const safeBookId = encodeURIComponent(String(bookId || "").trim());
+      const safeImageId = encodeURIComponent(String(imageId || "").trim());
+      const alt = escapeHtml(String(altText || imageId || "图片"));
+      if (!safeLectureId || !safeBookId || !safeImageId) return "";
+      const src = resolveApiUrl(`/api/lectures/${safeLectureId}/books/${safeBookId}/images/${safeImageId}`);
+      return `\n\n<figure class="materials-preview-figure"><img class="materials-preview-image" src="${src}" alt="${alt}" loading="lazy"></figure>\n\n`;
+    });
+    const noScripts = withImages
       .replace(/<script[\s\S]*?<\/script>/gi, " ")
       .replace(/<style[\s\S]*?<\/style>/gi, " ");
     const structural = noScripts
+      .replace(/<figure\b[^>]*>[\s\S]*?<\/figure>/gi, (m) => `\n\n${m}\n\n`)
       .replace(/<\/(p|div|h[1-6]|section|article|blockquote|tr|table)>/gi, "\n\n")
       .replace(/<br\s*\/?>/gi, "\n")
       .replace(/<li[^>]*>/gi, "\n- ");
-    const noTags = structural.replace(/<[^>]+>/g, " ");
+    const imageBlocks = [];
+    const masked = structural.replace(/<figure\b[^>]*>[\s\S]*?<\/figure>/gi, (m) => {
+      const token = `@@NXL_FIGURE_${imageBlocks.length}@@`;
+      imageBlocks.push(m);
+      return `\n\n${token}\n\n`;
+    });
+    const noTags = masked.replace(/<[^>]+>/g, " ");
     const readable = decodeBasicHtmlEntities(noTags)
       .replace(/\u00a0/g, " ")
       .replace(/[ \t]+\n/g, "\n")
@@ -242,6 +390,13 @@
           .map((line) => line.trim())
           .filter(Boolean);
         if (!lines.length) return "";
+        if (lines.length === 1) {
+          const figureMatch = lines[0].match(/^@@NXL_FIGURE_(\d+)@@$/);
+          if (figureMatch) {
+            const figureIdx = Number(figureMatch[1]);
+            return imageBlocks[figureIdx] || "";
+          }
+        }
         return `<p class="materials-preview-paragraph">${lines.map(escapeHtml).join("<br>")}</p>`;
       })
       .filter(Boolean)
@@ -605,6 +760,7 @@
 
   
   function renderPie() {
+    if (el.timePieChart) el.timePieChart.hidden = false;
     const courses = buildDashboardCourses(state.dashboardRows).slice(0, 6);
     const totalByRows = courses.reduce((sum, item) => sum + toNumber(item.studyHours, 0), 0);
     const total = toNumber(state.totalStudyHours, 0) > 0 ? toNumber(state.totalStudyHours, 0) : totalByRows;
@@ -662,17 +818,276 @@
     `;
   }
 
+  function renderLearningFeeds() {
+    if (!el.learningFeedPanel) return;
+    if (el.progressList) el.progressList.hidden = state.dashboardSideTab === "feed";
+    el.learningFeedPanel.hidden = state.dashboardSideTab !== "feed";
+    if (el.learningFeedComposeBtn) el.learningFeedComposeBtn.hidden = state.dashboardSideTab !== "feed";
+    if (state.dashboardSideTab !== "feed") return;
+    const rows = Array.isArray(state.learningFeeds) ? state.learningFeeds : [];
+    if (!rows.length) {
+      el.learningFeedPanel.innerHTML = '<div class="materials-empty">暂无学习动态</div>';
+      return;
+    }
+    el.learningFeedPanel.innerHTML = `
+      <div class="feed-stream-list">
+        ${rows.slice(0, 20).map((row) => {
+          const username = getFeedAuthorName(row);
+          const handle = getFeedAuthorHandle(row);
+          const avatar = getFeedAuthorInitial(row);
+          const avatarUrl = getFeedAuthorAvatarUrl(row);
+          const summary = String(row.summary || row.content || "").trim() || "暂无内容";
+          const liked = Array.isArray(row.liked_user_ids) && row.liked_user_ids.includes(state.username);
+          const likesCount = Math.max(0, Number(row.likes_count) || 0);
+          const commentsCount = Math.max(0, Number(row.comments_count) || 0);
+          const timeText = formatFeedRelativeTime(row.timestamp);
+          const feedId = String(row.id || "").trim();
+          const expanded = !!state.feedExpandedMap[feedId];
+          const comments = Array.isArray(row.comments) ? row.comments : [];
+          const draft = String(state.feedCommentDrafts[feedId] || "");
+          const isAdminAuthor = !!row.author_is_admin;
+          const canDeleteFeed = !!row.can_delete;
+          const likeIcon = `
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M7 10h4l2-5c.2-.5.7-.8 1.2-.8.9 0 1.6.7 1.6 1.6v2.2h2.7c1.2 0 2.1 1.1 1.8 2.3l-1.4 7A2 2 0 0 1 17.7 19H7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+              <path d="M4 10h3v9H4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+            </svg>
+          `;
+          const commentIcon = `
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M5 6.5A2.5 2.5 0 0 1 7.5 4h9A2.5 2.5 0 0 1 19 6.5v6A2.5 2.5 0 0 1 16.5 15H11l-4 3v-3H7.5A2.5 2.5 0 0 1 5 12.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+            </svg>
+          `;
+          const timeIcon = `
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.8"/>
+              <path d="M12 7.8v4.6l3.2 1.9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          `;
+          const verifiedIcon = `
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <circle cx="12" cy="12" r="9" fill="#2563eb"/>
+              <path d="M8 12.3l2.3 2.3 5-5" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          `;
+          const trashIcon = renderTrashIcon();
+          const renderComments = expanded ? `
+            <div class="feed-comments">
+              <div class="feed-comment-compose">
+                <input class="feed-comment-input" type="text" data-feed-comment-input="${escapeHtml(feedId)}" placeholder="发表评论..." value="${escapeHtml(draft)}">
+                <button class="feed-comment-send" type="button" data-feed-action="comment-send" data-feed-id="${escapeHtml(feedId)}" aria-label="发送评论" title="发送评论">
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M4 11.5L20 4l-4.6 16-3.1-5.4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+                  </svg>
+                </button>
+              </div>
+              <div class="feed-comment-list">
+                ${comments.length ? comments.map((comment) => {
+                  const commentAuthor = getFeedAuthorName(comment);
+                  const commentHandle = getFeedAuthorHandle(comment);
+                  const commentAvatar = getFeedAuthorAvatarUrl(comment);
+                  const commentInitial = getFeedAuthorInitial(comment);
+                  const commentTime = formatFeedRelativeTime(comment.timestamp);
+                  const isAdminCommentAuthor = !!comment.author_is_admin;
+                  const canDeleteComment = !!comment.can_delete;
+                  const commentId = String(comment.id || "").trim();
+                  return `
+                    <div class="feed-comment-item">
+                      ${commentAvatar
+                        ? `<img class="feed-comment-avatar feed-comment-avatar-image" src="${escapeHtml(commentAvatar)}" alt="${escapeHtml(commentAuthor)}">`
+                        : `<div class="feed-comment-avatar">${escapeHtml(commentInitial)}</div>`}
+                      <div class="feed-comment-main">
+                        <div class="feed-comment-head">
+                          <span class="feed-comment-author">${escapeHtml(commentAuthor)}</span>
+                          ${isAdminCommentAuthor ? `<span class="feed-item-verified feed-comment-verified" title="管理员">${verifiedIcon}</span>` : ""}
+                          ${commentHandle ? `<span class="feed-comment-handle">@${escapeHtml(commentHandle)}</span>` : ""}
+                          ${commentTime ? `<span class="feed-comment-time">${escapeHtml(commentTime)}</span>` : ""}
+                          ${canDeleteComment ? `<button class="feed-comment-delete" type="button" data-feed-action="comment-delete" data-feed-id="${escapeHtml(feedId)}" data-comment-id="${escapeHtml(commentId)}" aria-label="删除评论" title="删除评论">${trashIcon}</button>` : ""}
+                        </div>
+                        <div class="feed-comment-content">${escapeHtml(String(comment.content || "").trim())}</div>
+                      </div>
+                    </div>
+                  `;
+                }).join("") : '<div class="feed-comments-empty">暂无评论</div>'}
+              </div>
+            </div>
+          ` : "";
+          return `
+            <article class="feed-item">
+              ${avatarUrl
+                ? `<img class="feed-item-avatar feed-item-avatar-image" src="${escapeHtml(avatarUrl)}" alt="${escapeHtml(username)}">`
+                : `<div class="feed-item-avatar">${escapeHtml(avatar)}</div>`}
+              <div class="feed-item-body">
+                <div class="feed-item-head">
+                  <div class="feed-item-author-row">
+                    <span class="feed-item-author">${escapeHtml(username)}</span>
+                    ${isAdminAuthor ? `<span class="feed-item-verified" title="管理员">${verifiedIcon}</span>` : ""}
+                    ${handle ? `<span class="feed-item-handle">@${escapeHtml(handle)}</span>` : ""}
+                    ${timeText ? `<span class="feed-item-time"><span class="feed-time-icon">${timeIcon}</span><span>${escapeHtml(timeText)}</span></span>` : ""}
+                  </div>
+                </div>
+                <div class="feed-item-summary">${escapeHtml(summary)}</div>
+                <div class="feed-item-foot">
+                  <div class="feed-item-actions">
+                    <button class="feed-action-btn ${liked ? "is-active" : ""}" type="button" data-feed-action="like" data-feed-id="${escapeHtml(String(row.id || ""))}" aria-label="点赞" title="点赞">
+                      <span class="feed-action-icon">${likeIcon}</span>
+                      <span class="feed-action-count">${likesCount}</span>
+                    </button>
+                    <button class="feed-action-btn" type="button" data-feed-action="comment-toggle" data-feed-id="${escapeHtml(feedId)}" aria-label="评论" title="展开评论" aria-expanded="${expanded ? "true" : "false"}">
+                      <span class="feed-action-icon">${commentIcon}</span>
+                      <span class="feed-action-count">${commentsCount}</span>
+                    </button>
+                    ${canDeleteFeed ? `<button class="feed-action-btn feed-action-btn-danger" type="button" data-feed-action="feed-delete" data-feed-id="${escapeHtml(feedId)}" aria-label="删除动态" title="删除动态"><span class="feed-action-icon">${trashIcon}</span></button>` : ""}
+                  </div>
+                </div>
+                ${renderComments}
+                <div class="feed-item-divider" aria-hidden="true"></div>
+              </div>
+            </article>
+          `;
+        }).join("")}
+      </div>
+    `;
+  }
+
+  function syncDashboardSideTabs() {
+    const isProgress = state.dashboardSideTab !== "feed";
+    state.dashboardSideTab = isProgress ? "progress" : "feed";
+    if (el.dashboardProgressTabBtn) {
+      el.dashboardProgressTabBtn.classList.toggle("is-active", isProgress);
+      el.dashboardProgressTabBtn.setAttribute("aria-selected", isProgress ? "true" : "false");
+    }
+    if (el.dashboardProgressFeedTabBtn) {
+      el.dashboardProgressFeedTabBtn.classList.toggle("is-active", !isProgress);
+      el.dashboardProgressFeedTabBtn.setAttribute("aria-selected", !isProgress ? "true" : "false");
+    }
+    if (el.openMaterialsViewBtn) {
+      el.openMaterialsViewBtn.hidden = !isProgress;
+    }
+    renderPie();
+    renderLearningFeeds();
+  }
+
+  function sendHostMessage(payload) {
+    const data = Object.assign({ source: "nexora-learning" }, payload || {});
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage(data, "*");
+      }
+    } catch (_err) {}
+    try {
+      window.dispatchEvent(new CustomEvent(String(data.type || "nexora:unknown"), { detail: data }));
+    } catch (_err) {}
+  }
+
+  function enterFeedComposeMode() {
+    state.dynamicPosting = true;
+    sendHostMessage({ type: "nexora:feed-compose:toggle", active: true });
+  }
+
+  function exitFeedComposeMode() {
+    state.dynamicPosting = false;
+    sendHostMessage({ type: "nexora:feed-compose:toggle", active: false });
+  }
+
+  async function postLearningFeed(content) {
+    const text = String(content || "").trim();
+    if (!text) throw new Error("动态内容不能为空");
+    const resp = await fetch(resolveApiUrl("/api/frontend/learning-feeds"), {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        summary: text,
+        content: text,
+      }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || data.success === false) {
+      throw new Error(data.error || data.message || `HTTP ${resp.status}`);
+    }
+    await loadLearningFeeds();
+    exitFeedComposeMode();
+    return data;
+  }
+
+  async function deleteLearningFeed(feedId) {
+    const id = String(feedId || "").trim();
+    if (!id) return;
+    const resp = await fetch(resolveApiUrl(`/api/frontend/learning-feeds/${encodeURIComponent(id)}`), {
+      method: "DELETE",
+      credentials: "same-origin",
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || data.success === false) {
+      throw new Error(data.error || data.message || `HTTP ${resp.status}`);
+    }
+    await loadLearningFeeds();
+    renderLearningFeeds();
+  }
+
+  async function deleteLearningFeedComment(feedId, commentId) {
+    const fid = String(feedId || "").trim();
+    const cid = String(commentId || "").trim();
+    if (!fid || !cid) return;
+    const resp = await fetch(resolveApiUrl(`/api/frontend/learning-feeds/${encodeURIComponent(fid)}/comments/${encodeURIComponent(cid)}`), {
+      method: "DELETE",
+      credentials: "same-origin",
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || data.success === false) {
+      throw new Error(data.error || data.message || `HTTP ${resp.status}`);
+    }
+    state.feedExpandedMap[fid] = true;
+    await loadLearningFeeds();
+    renderLearningFeeds();
+  }
+
+  window.addEventListener("message", async (event) => {
+    const data = event && event.data;
+    if (!data || typeof data !== "object") return;
+    if (String(data.source || "").trim().toLowerCase() !== "nexora-learning") return;
+    const msgType = String(data.type || "").trim().toLowerCase();
+    if (msgType !== "nexora:feed-compose:submit") return;
+    const requestId = String(data.requestId || "").trim();
+    try {
+      const result = await postLearningFeed(String(data.content || ""));
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({
+          source: "nexora-learning",
+          type: "nexora:feed-compose:result",
+          requestId,
+          success: true,
+          item: result && result.item ? result.item : null,
+        }, "*");
+      }
+    } catch (err) {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({
+          source: "nexora-learning",
+          type: "nexora:feed-compose:result",
+          requestId,
+          success: false,
+          error: String(err && err.message ? err.message : "发布动态失败"),
+        }, "*");
+      }
+    }
+  });
+
   function renderUserProfile() {
-    const username = String(state.user.username || state.username || "访客");
+    const username = getCurrentUserDisplayName();
     const role = state.isAdmin ? "管理员" : "成员";
     const avatar = (Array.from(username.trim())[0] || "N").toUpperCase();
+    const avatarUrl = getCurrentUserAvatarUrl();
     const booksCount = state.allLectureRows.reduce((sum, row) => sum + toNumber(row && row.books_count, 0), 0);
     const connected = !!(state.integration && state.integration.connected);
     const modelsCount = toNumber(state.integration && state.integration.models_count, 0);
     const totalHours = toNumber(state.totalStudyHours, 0);
 
     el.userProfileCard.innerHTML = `
-      <div class="user-profile-avatar">${escapeHtml(avatar)}</div>
+      ${avatarUrl
+        ? `<img class="user-profile-avatar user-profile-avatar-image" src="${escapeHtml(avatarUrl)}" alt="${escapeHtml(username)}">`
+        : `<div class="user-profile-avatar">${escapeHtml(avatar)}</div>`}
       <div class="user-profile-meta">
         <div class="user-profile-name">${escapeHtml(username)}</div>
         <div class="user-profile-line">角色：${escapeHtml(role)} · 全部课程：${state.allLectureRows.length} · 教材：${booksCount}</div>
@@ -718,21 +1133,18 @@
   }
 
   function canStartQuestion(item) {
-    const intensive = normalizeStatusKey(item && item.intensive_status);
-    const question = normalizeStatusKey(item && item.question_status);
-    const job = normalizeStatusKey(item && item.job_status);
-    if (!["done", "completed", "success"].includes(intensive)) return false;
-    if (["running", "queued"].includes(job)) return false;
-    if (["running", "queued", "done", "completed", "success"].includes(question)) return false;
-    return true;
+    return false;
   }
 
   function canStartSection(item) {
-    const question = normalizeStatusKey(item && item.question_status);
+    const coarse = normalizeStatusKey(item && item.coarse_status);
+    const intensive = normalizeStatusKey(item && item.intensive_status);
     const section = normalizeStatusKey(item && item.section_status);
     const job = normalizeStatusKey(item && item.job_status);
     const sectionJob = normalizeStatusKey(item && item.section_job_status);
-    if (!["done", "completed", "success"].includes(question)) return false;
+    const coarseReady = ["done", "completed", "success"].includes(coarse);
+    const intensiveReady = ["done", "completed", "success"].includes(intensive);
+    if (!coarseReady && !intensiveReady) return false;
     if (["running", "queued"].includes(job) || ["running", "queued"].includes(sectionJob)) return false;
     if (["running", "queued", "done", "completed", "success"].includes(section)) return false;
     return true;
@@ -753,14 +1165,14 @@
   function buildRefineFlow(item) {
     const coarseStatus = normalizeStatusKey(item && item.coarse_status);
     const intensiveStatus = normalizeStatusKey(item && item.intensive_status);
-    const questionStatus = normalizeStatusKey(item && item.question_status);
+    const sectionStatus = normalizeStatusKey(item && item.section_status);
     const hasError = isErrorStatus(coarseStatus)
       || isErrorStatus(intensiveStatus)
-      || isErrorStatus(questionStatus);
+      || isErrorStatus(sectionStatus);
     const steps = [
       { key: "coarse", label: "粗读", done: isDoneStatus(coarseStatus), running: isRunningStatus(coarseStatus) },
       { key: "intensive", label: "精读", done: isDoneStatus(intensiveStatus), running: isRunningStatus(intensiveStatus) },
-      { key: "question", label: "出题", done: isDoneStatus(questionStatus), running: isRunningStatus(questionStatus) },
+      { key: "section", label: "分节", done: isDoneStatus(sectionStatus), running: isRunningStatus(sectionStatus) },
     ];
     const doneCount = steps.filter((row) => row.done).length;
     const activeIndex = steps.findIndex((row) => row.running);
@@ -775,7 +1187,6 @@
   function getRefinementActionMeta(item) {
     const coarseDone = ["done", "completed", "success"].includes(normalizeStatusKey(item && item.coarse_status));
     const intensiveDone = ["done", "completed", "success"].includes(normalizeStatusKey(item && item.intensive_status));
-    const questionDone = ["done", "completed", "success"].includes(normalizeStatusKey(item && item.question_status));
     if (!coarseDone) {
       return {
         action: "start-refinement",
@@ -790,14 +1201,6 @@
         title: "开始精读",
         text: "●",
         enabled: canStartIntensive(item),
-      };
-    }
-    if (!questionDone) {
-      return {
-        action: "start-question",
-        title: "开始出题",
-        text: "?",
-        enabled: canStartQuestion(item),
       };
     }
     const sectionDone = ["done", "completed", "success"].includes(normalizeStatusKey(item && item.section_status));
@@ -834,7 +1237,8 @@
   function renderSettingsNav() {
     const tabs = [
       { id: "refinement", title: "待精读列表", sub: "选择教材并触发精读" },
-      { id: "model", title: "模型设置", sub: "设置默认模型与精读模型" },
+      { id: "model", title: "模型设置", sub: "设置默认模型与任务模型" },
+      { id: "logs", title: "模型日志", sub: "查看模型调用、工具链与输出" },
       { id: "profile", title: "用户信息", sub: "当前用户与连接状态" },
     ];
     el.settingsNavList.innerHTML = tabs.map((tab) => `
@@ -872,6 +1276,71 @@
         </article>
       </section>
     `;
+  }
+
+  function renderSettingsLogs() {
+    const rows = Array.isArray(state.settingsLogs) ? state.settingsLogs : [];
+    const sources = Array.isArray(state.settingsLogSources) ? state.settingsLogSources : [];
+    const sourceOptions = ['<option value="">全部模型</option>']
+      .concat(sources.map((row) => `<option value="${escapeHtml(row)}">${escapeHtml(row)}</option>`))
+      .join("");
+    const categoryOptions = [
+      ["所有日志", "all"],
+      ["模型日志", "model"],
+      ["错误日志", "error"],
+    ].map(([label, value]) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`).join("");
+    const rowHtml = rows.length ? rows.map((row) => {
+      const kind = String((row && row.kind) || "");
+      const source = String((row && row.source) || "unknown");
+      const title = String((row && (row.title || row.event_type || row.tool_name)) || "");
+      const ts = String((row && row.timestamp) || "—");
+      const content = kind === "tool_flow"
+        ? JSON.stringify({
+          arguments: row.arguments || {},
+          tool_output: row.tool_output || {},
+          model_output: row.model_output || "",
+        }, null, 2)
+        : kind === "model_text"
+          ? String(row.content || "")
+          : JSON.stringify({
+            payload: row.payload || {},
+            content: row.content || "",
+          }, null, 2);
+      return `
+        <article class="settings-log-item">
+          <div class="settings-log-head">
+            <div>
+              <div class="settings-log-title">${escapeHtml(title || "日志记录")}</div>
+              <div class="settings-log-meta">${escapeHtml(ts)} · ${escapeHtml(source)} · ${escapeHtml(kind || "event")}</div>
+            </div>
+          </div>
+          <pre class="settings-log-body">${escapeHtml(content)}</pre>
+        </article>
+      `;
+    }).join("") : '<div class="materials-empty">暂无模型日志</div>';
+    el.settingsDetailPane.innerHTML = `
+      <section class="settings-detail-scroll">
+        <article class="settings-card">
+          <div class="settings-title">模型日志</div>
+          <div class="settings-sub">按来源与类型筛选最近的模型执行记录。</div>
+          <div class="settings-inline-form settings-model-form">
+            <div class="materials-form-row settings-model-row">
+              <label class="materials-form-label settings-model-label" for="settingsLogCategorySelect">日志分类</label>
+              <select id="settingsLogCategorySelect" class="input-lite settings-model-select">${categoryOptions}</select>
+            </div>
+            <div class="materials-form-row settings-model-row">
+              <label class="materials-form-label settings-model-label" for="settingsLogSourceSelect">模型来源</label>
+              <select id="settingsLogSourceSelect" class="input-lite settings-model-select" ${state.settingsLogCategory === "model" ? "" : "disabled"}>${sourceOptions}</select>
+            </div>
+          </div>
+        </article>
+        ${rowHtml}
+      </section>
+    `;
+    const categorySelect = document.getElementById("settingsLogCategorySelect");
+    const sourceSelect = document.getElementById("settingsLogSourceSelect");
+    if (categorySelect) categorySelect.value = String(state.settingsLogCategory || "all");
+    if (sourceSelect) sourceSelect.value = String(state.settingsLogSource || "");
   }
 
   function renderSettingsRefinement() {
@@ -1016,8 +1485,9 @@
     const settings = state.modelSettings || {};
     const rough = settings.rough_reading || {};
     const intensive = settings.intensive_reading || {};
-    const question = settings.question_generation || {};
     const splitChapters = settings.split_chapters || {};
+    const memory = settings.memory || {};
+    const profileQuestion = settings.profile_question || {};
     const options = Array.isArray(state.modelOptions) ? state.modelOptions : [];
     const optionHtml = ['<option value="">(空) 手动指定后才启用</option>']
       .concat(options.map((row) => `<option value="${escapeHtml(row.id)}">${escapeHtml(row.label || row.id)}</option>`))
@@ -1042,12 +1512,20 @@
               <select id="settingsIntensiveModelSelect" class="input-lite settings-model-select" ${disabledAttr}>${optionHtml}</select>
             </div>
             <div class="materials-form-row settings-model-row">
-              <label class="materials-form-label settings-model-label" for="settingsQuestionModelSelect">QuestionGenerationModel</label>
-              <select id="settingsQuestionModelSelect" class="input-lite settings-model-select" ${disabledAttr}>${optionHtml}</select>
-            </div>
-            <div class="materials-form-row settings-model-row">
               <label class="materials-form-label settings-model-label" for="settingsSplitChaptersModelSelect">SplitChaptersModel</label>
               <select id="settingsSplitChaptersModelSelect" class="input-lite settings-model-select" ${disabledAttr}>${optionHtml}</select>
+            </div>
+            <div class="materials-form-row settings-model-row">
+              <label class="materials-form-label settings-model-label" for="settingsMemoryModelSelect">MemoryProfileModel</label>
+              <select id="settingsMemoryModelSelect" class="input-lite settings-model-select" ${disabledAttr}>${optionHtml}</select>
+            </div>
+            <div class="materials-form-row settings-model-row">
+              <label class="materials-form-label settings-model-label" for="settingsProfileQuestionModelSelect">ProfileQuestionModel</label>
+              <select id="settingsProfileQuestionModelSelect" class="input-lite settings-model-select" ${disabledAttr}>${optionHtml}</select>
+            </div>
+            <div class="materials-form-row settings-model-row">
+              <label class="materials-form-label settings-model-label" for="settingsMemoryIntervalInput">画像分析轮数</label>
+              <input id="settingsMemoryIntervalInput" class="input-lite settings-model-select" type="number" min="1" step="1" value="${escapeHtml(String(memory.trigger_turn_interval || 10))}" ${disabledAttr} />
             </div>
           </div>
           <div class="settings-actions">
@@ -1060,19 +1538,26 @@
     const defaultSelect = document.getElementById("settingsDefaultModelSelect");
     const roughSelect = document.getElementById("settingsRoughModelSelect");
     const intensiveSelect = document.getElementById("settingsIntensiveModelSelect");
-    const questionSelect = document.getElementById("settingsQuestionModelSelect");
     const splitSelect = document.getElementById("settingsSplitChaptersModelSelect");
+    const memorySelect = document.getElementById("settingsMemoryModelSelect");
+    const profileQuestionSelect = document.getElementById("settingsProfileQuestionModelSelect");
     if (defaultSelect) defaultSelect.value = String(settings.default_nexora_model || "");
     if (roughSelect) roughSelect.value = String(rough.model_name || "");
     if (intensiveSelect) intensiveSelect.value = String(intensive.model_name || "");
-    if (questionSelect) questionSelect.value = String(question.model_name || "");
     if (splitSelect) splitSelect.value = String(splitChapters.model_name || "");
+    if (memorySelect) memorySelect.value = String(memory.model_name || "");
+    if (profileQuestionSelect) profileQuestionSelect.value = String(profileQuestion.model_name || "");
   }
 
   function renderSettingsDetail() {
     if (state.settingsTab === "model") {
       state.refinementViewBootstrapped = false;
       renderSettingsModel();
+      return;
+    }
+    if (state.settingsTab === "logs") {
+      state.refinementViewBootstrapped = false;
+      renderSettingsLogs();
       return;
     }
     if (state.settingsTab === "profile") {
@@ -1210,7 +1695,6 @@
                   <div class="book-badges">
                     <span class="book-badge ${statusBadgeClass(book.vector_status, book.vector_provider)}">向量：${escapeHtml(vectorStatusLabel(book.vector_status, book.vector_provider))}</span>
                     <span class="book-badge ${statusBadgeClass(book.status)}">教材：${escapeHtml(materialStatusLabel(book.status))}</span>
-                    <span class="book-badge ${statusBadgeClass(book.question_status)}">出题：${escapeHtml(normalizeStatusKey(book.question_status) || "idle")}</span>
                     <span class="book-badge ${statusBadgeClass(book.section_status)}">分节：${escapeHtml(normalizeStatusKey(book.section_status) || "idle")}</span>
                   </div>
                 </article>
@@ -1229,8 +1713,10 @@
     if (!lectureId) return "";
     try {
       const data = await fetchJson(`/api/lectures/${encodeURIComponent(lectureId)}/books/${encodeURIComponent(state.selectedBookId)}/text`);
+      state.readerImages = Array.isArray(data.images) ? data.images.slice() : [];
       return String(data.content || "");
     } catch (_err) {
+      state.readerImages = [];
       return "";
     }
   }
@@ -1570,6 +2056,7 @@
     state.readerViewMode = mode;
     state.readerMeta.title = String(title || "教材阅读");
     state.readerMeta.subtitle = String(subtitle || "");
+    state.readerReportedChapterKey = "";
     el.readerTitle.textContent = state.readerMeta.title;
     el.readerSubTitle.textContent = state.readerMeta.subtitle;
     state.readerFullTextRaw = String(content || "");
@@ -1589,6 +2076,9 @@
   }
 
   function closeReader() {
+    if (state.isReaderOpen && Array.isArray(state.readerChapters) && state.readerChapters.length) {
+      reportReaderChapterComplete(state.readerActiveChapterIndex).catch(() => {});
+    }
     state.isReaderOpen = false;
     state.readerRequestToken += 1;
     setReaderFullscreen(false);
@@ -1598,8 +2088,11 @@
     state.readerChapters = [];
     state.readerActiveChapterIndex = 0;
     state.readerFullTextRaw = "";
+    state.readerImages = [];
+    state.readerBookDetailXml = "";
     state.readerViewMode = "closed";
     state.readerMeta = { title: "", subtitle: "" };
+    state.readerReportedChapterKey = "";
     syncReaderModeUI();
     el.readerPane.hidden = true;
     el.materialsLayout.hidden = false;
@@ -1733,7 +2226,7 @@
   }
 
   async function fetchJson(url, init) {
-    const resp = await fetch(url, init);
+    const resp = await fetch(resolveApiUrl(url), init);
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok || data.success === false) {
       throw new Error(data.error || data.message || `HTTP ${resp.status}`);
@@ -1817,12 +2310,114 @@
         default_nexora_model: "",
         rough_reading: {},
         intensive_reading: {},
-        question_generation: {},
         split_chapters: {},
+        memory: {},
+        profile_question: {},
       };
     if (el.settingsView.classList.contains("is-active") && state.settingsTab === "model") {
       renderSettingsDetail();
     }
+  }
+
+  async function fetchBookDetailXml() {
+    const row = getSelectedLectureRow();
+    if (!row || !state.selectedBookId) return "";
+    const lectureId = String((row.lecture || {}).id || "");
+    if (!lectureId) return "";
+    try {
+      const data = await fetchJson(`/api/lectures/${encodeURIComponent(lectureId)}/books/${encodeURIComponent(state.selectedBookId)}/bookdetail`);
+      return String(data.content || "");
+    } catch (_err) {
+      return "";
+    }
+  }
+
+  async function reportReaderChapterComplete(index) {
+    const chapters = Array.isArray(state.readerChapters) ? state.readerChapters : [];
+    if (!chapters.length) return;
+    const idx = Math.max(0, Math.min(chapters.length - 1, Number(index) || 0));
+    const chapter = chapters[idx];
+    const lectureId = String(state.selectedLectureId || "").trim();
+    const bookId = String(state.selectedBookId || "").trim();
+    const chapterName = String((chapter && chapter.title) || "").trim();
+    if (!lectureId || !bookId || !chapterName) return;
+    const chapterRange = `${Math.max(0, Number(chapter.start) || 0)}:${Math.max(0, (Number(chapter.end) || 0) - (Number(chapter.start) || 0))}`;
+    const reportKey = `${lectureId}::${bookId}::${chapterName}::${chapterRange}`;
+    if (state.readerReportedChapterKey === reportKey) return;
+    const start = Math.max(0, Math.min(state.readerFullTextRaw.length, Number(chapter.start) || 0));
+    const end = Math.max(start, Math.min(state.readerFullTextRaw.length, Number(chapter.end) || 0));
+    const chapterContext = String(state.readerFullTextRaw.slice(start, end).trim() || "");
+    if (!chapterContext) return;
+    await fetchJson("/api/frontend/learning/chapter-complete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        lecture_id: lectureId,
+        book_id: bookId,
+        chapter_name: chapterName,
+        chapter_range: chapterRange,
+        chapter_context: chapterContext.slice(0, 12000),
+        chapter_detail_xml: String(state.readerBookDetailXml || ""),
+      }),
+    });
+    state.readerReportedChapterKey = reportKey;
+    await loadDashboardRows();
+    renderProgressList();
+    renderPie();
+    renderLearningFeeds();
+  }
+
+  async function loadSettingsLogs() {
+    const params = new URLSearchParams();
+    params.set("category", String(state.settingsLogCategory || "all"));
+    if (state.settingsLogCategory === "model" && state.settingsLogSource) params.set("source", state.settingsLogSource);
+    params.set("limit", "200");
+    const data = await fetchJson(`/api/frontend/settings/logs?${params.toString()}`);
+    state.settingsLogs = Array.isArray(data.rows) ? data.rows : [];
+    state.settingsLogSources = Array.isArray(data.sources) ? data.sources : [];
+    state.settingsLogs.sort((a, b) => String(b && b.timestamp || "").localeCompare(String(a && a.timestamp || "")));
+    if (el.settingsView.classList.contains("is-active") && state.settingsTab === "logs") {
+      renderSettingsDetail();
+    }
+  }
+
+  async function loadLearningFeeds() {
+    try {
+      const resp = await fetch(resolveApiUrl("/api/frontend/learning-feeds?limit=50"), { credentials: "same-origin" });
+      const data = await resp.json().catch(() => ({}));
+      state.learningFeeds = Array.isArray(data.items) ? data.items : [];
+    } catch (_err) {
+      state.learningFeeds = [];
+    }
+    if (state.dashboardSideTab === "feed") {
+      renderLearningFeeds();
+    }
+  }
+
+  async function toggleLearningFeedLike(feedId) {
+    const id = String(feedId || "").trim();
+    if (!id) return;
+    await fetchJson(`/api/frontend/learning-feeds/${encodeURIComponent(id)}/like`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    await loadLearningFeeds();
+  }
+
+  async function submitLearningFeedComment(feedId) {
+    const id = String(feedId || "").trim();
+    if (!id) return;
+    const content = String(state.feedCommentDrafts[id] || "").trim();
+    if (!content) throw new Error("评论内容不能为空");
+    await fetchJson(`/api/frontend/learning-feeds/${encodeURIComponent(id)}/comments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    });
+    delete state.feedCommentDrafts[id];
+    state.feedExpandedMap[id] = true;
+    await loadLearningFeeds();
   }
 
   async function saveModelSettings() {
@@ -1830,8 +2425,10 @@
     const defaultSelect = document.getElementById("settingsDefaultModelSelect");
     const roughSelect = document.getElementById("settingsRoughModelSelect");
     const intensiveSelect = document.getElementById("settingsIntensiveModelSelect");
-    const questionSelect = document.getElementById("settingsQuestionModelSelect");
     const splitSelect = document.getElementById("settingsSplitChaptersModelSelect");
+    const memorySelect = document.getElementById("settingsMemoryModelSelect");
+    const profileQuestionSelect = document.getElementById("settingsProfileQuestionModelSelect");
+    const memoryIntervalInput = document.getElementById("settingsMemoryIntervalInput");
     const payload = {
       default_nexora_model: defaultSelect ? String(defaultSelect.value || "").trim() : "",
       rough_reading: {
@@ -1840,11 +2437,15 @@
       intensive_reading: {
         model_name: intensiveSelect ? String(intensiveSelect.value || "").trim() : "",
       },
-      question_generation: {
-        model_name: questionSelect ? String(questionSelect.value || "").trim() : "",
-      },
       split_chapters: {
         model_name: splitSelect ? String(splitSelect.value || "").trim() : "",
+      },
+      memory: {
+        model_name: memorySelect ? String(memorySelect.value || "").trim() : "",
+        trigger_turn_interval: Math.max(1, Number(memoryIntervalInput ? memoryIntervalInput.value : 10) || 10),
+      },
+      profile_question: {
+        model_name: profileQuestionSelect ? String(profileQuestionSelect.value || "").trim() : "",
       },
     };
     await fetchJson("/api/frontend/settings/models", {
@@ -1895,19 +2496,6 @@
     await loadRefinementSettings();
   }
 
-  async function startQuestion(lectureId, bookId) {
-    await fetchJson("/api/frontend/settings/refinement/question", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        lecture_id: lectureId,
-        book_id: bookId,
-        actor: state.username || "",
-      }),
-    });
-    await loadRefinementSettings();
-  }
-
   async function startSection(lectureId, bookId) {
     await fetchJson("/api/frontend/settings/refinement/section", {
       method: "POST",
@@ -1933,6 +2521,8 @@
     setView("settings");
     if (state.settingsTab === "model") {
       await loadModelSettings();
+    } else if (state.settingsTab === "logs") {
+      await loadSettingsLogs();
     } else if (state.settingsTab === "refinement") {
       await loadRefinementSettings();
     }
@@ -1942,9 +2532,12 @@
   async function refreshAll() {
     await loadMaterialsRows();
     await loadDashboardRows();
+    await loadLearningFeeds();
     renderUserProfile();
     renderProgressList();
     renderPie();
+    renderLearningFeeds();
+    syncDashboardSideTabs();
     renderLectureList();
     renderLectureDetail();
     renderUploadLectureInputDefault();
@@ -2021,6 +2614,23 @@
       closeReader();
       renderLectureDetail();
     });
+    if (el.dashboardProgressTabBtn) {
+      el.dashboardProgressTabBtn.addEventListener("click", () => {
+        state.dashboardSideTab = "progress";
+        syncDashboardSideTabs();
+      });
+    }
+    if (el.dashboardProgressFeedTabBtn) {
+      el.dashboardProgressFeedTabBtn.addEventListener("click", () => {
+        state.dashboardSideTab = "feed";
+        syncDashboardSideTabs();
+      });
+    }
+    if (el.learningFeedComposeBtn) {
+      el.learningFeedComposeBtn.addEventListener("click", () => {
+        enterFeedComposeMode();
+      });
+    }
 
     el.progressList.addEventListener("click", (event) => {
       const target = event.target;
@@ -2036,8 +2646,80 @@
       renderLectureList();
       renderLectureDetail();
     });
+    if (el.learningFeedPanel) {
+      el.learningFeedPanel.addEventListener("click", async (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        const btn = target.closest("[data-feed-action]");
+        if (!btn) return;
+        event.preventDefault();
+        const action = String(btn.getAttribute("data-feed-action") || "").trim();
+        const feedId = String(btn.getAttribute("data-feed-id") || "").trim();
+        if (!feedId) return;
+        try {
+          if (action === "like") {
+            await toggleLearningFeedLike(feedId);
+            return;
+          }
+          if (action === "comment-toggle") {
+            state.feedExpandedMap[feedId] = !state.feedExpandedMap[feedId];
+            renderLearningFeeds();
+            return;
+          }
+          if (action === "comment-send") {
+            await submitLearningFeedComment(feedId);
+            return;
+          }
+          if (action === "feed-delete") {
+            openConfirm("确认删除这条动态？", async () => {
+              await deleteLearningFeed(feedId);
+            });
+            return;
+          }
+          if (action === "comment-delete") {
+            const commentId = String(btn.getAttribute("data-comment-id") || "").trim();
+            if (!commentId) return;
+            openConfirm("确认删除这条评论？", async () => {
+              await deleteLearningFeedComment(feedId, commentId);
+            });
+            return;
+          }
+        } catch (err) {
+          showToast(String(err && err.message ? err.message : "动态操作失败"));
+        }
+      });
+      el.learningFeedPanel.addEventListener("input", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLInputElement)) return;
+        const feedId = String(target.getAttribute("data-feed-comment-input") || "").trim();
+        if (!feedId) return;
+        state.feedCommentDrafts[feedId] = String(target.value || "");
+      });
+    }
+    if (el.confirmCancelBtn) {
+      el.confirmCancelBtn.addEventListener("click", () => closeConfirm());
+    }
+    if (el.confirmBackdrop) {
+      el.confirmBackdrop.addEventListener("click", (event) => {
+        if (event.target === el.confirmBackdrop) {
+          closeConfirm();
+        }
+      });
+    }
+    if (el.confirmOkBtn) {
+      el.confirmOkBtn.addEventListener("click", async () => {
+        const action = state.confirmAction;
+        closeConfirm();
+        if (typeof action !== "function") return;
+        try {
+          await action();
+        } catch (err) {
+          showToast(String(err && err.message ? err.message : "操作失败"));
+        }
+      });
+    }
 
-    el.backToDashboardBtn.addEventListener("click", () => {
+    el.backToDashboardBtn.addEventListener("click", async () => {
       if (state.materialsDetailMode === "catalog") {
         state.materialsDetailMode = "lecture";
         state.catalogContext = null;
@@ -2046,6 +2728,7 @@
       }
       closeReader();
       setView("dashboard");
+      await refreshAll();
     });
     el.openUploadViewBtn.addEventListener("click", () => {
       closeReader();
@@ -2113,6 +2796,9 @@
         const item = target.closest("[data-reader-chapter-index]");
         if (!item) return;
         const idx = Number(item.getAttribute("data-reader-chapter-index") || "0");
+        if (idx !== state.readerActiveChapterIndex) {
+          reportReaderChapterComplete(state.readerActiveChapterIndex).catch(() => {});
+        }
         openReaderChapter(idx);
         setChapterListPanelOpen(false);
         state.readerViewMode = "reading";
@@ -2226,6 +2912,9 @@
         const nextIndex = dir === "prev"
           ? state.readerActiveChapterIndex - 1
           : state.readerActiveChapterIndex + 1;
+        if (dir === "next" && nextIndex > state.readerActiveChapterIndex) {
+          reportReaderChapterComplete(state.readerActiveChapterIndex).catch(() => {});
+        }
         openReaderChapter(nextIndex);
         return;
       }
@@ -2430,6 +3119,7 @@
       renderLectureDetail();
       const fullText = await fetchBookTextFull();
       const bookInfoXml = await fetchBookInfoXml();
+      const bookDetailXml = await fetchBookDetailXml();
       if (requestToken !== state.readerRequestToken) {
         return;
       }
@@ -2439,6 +3129,7 @@
         subtitle: `${getLectureTitle(lecture)} · ${vectorStatusLabel(book.vector_status, book.vector_provider)} / ${materialStatusLabel(book.status)}`,
         chapters,
         fullTextRaw: String(fullText || "（当前教材暂无可读取文本，可能仍在解析或向量化）"),
+        detailXml: String(bookDetailXml || ""),
         loading: false,
       };
       state.materialsDetailMode = "catalog";
@@ -2453,6 +3144,7 @@
       const idx = Number(item.getAttribute("data-material-catalog-index") || "0");
       state.readerChapters = Array.isArray(state.catalogContext.chapters) ? state.catalogContext.chapters.slice() : [];
       state.readerFullTextRaw = String(state.catalogContext.fullTextRaw || "");
+      state.readerBookDetailXml = String(state.catalogContext.detailXml || "");
       state.readerActiveChapterIndex = Math.max(0, Math.min(state.readerChapters.length - 1, Number.isFinite(idx) ? idx : 0));
       openReader(
         state.catalogContext.title || "教材阅读",
@@ -2497,6 +3189,12 @@
         loadModelSettings()
           .then(() => renderSettingsView())
           .catch((err) => showToast(`加载模型设置失败：${err.message || "未知错误"}`));
+        return;
+      }
+      if (state.settingsTab === "logs") {
+        loadSettingsLogs()
+          .then(() => renderSettingsView())
+          .catch((err) => showToast(`加载模型日志失败：${err.message || "未知错误"}`));
         return;
       }
       if (state.settingsTab === "refinement") {
@@ -2565,18 +3263,6 @@
           .catch((err) => showToast("精读执行失败：" + (err.message || "未知错误")));
         return;
       }
-      const questionBtn = target.closest("[data-action='start-question']");
-      if (questionBtn) {
-        const lectureId = String(questionBtn.getAttribute("data-lecture-id") || "");
-        const bookId = String(questionBtn.getAttribute("data-book-id") || "");
-        if (!lectureId || !bookId) return;
-        startQuestion(lectureId, bookId)
-          .then(() => {
-            showToast("已开始生成题目");
-          })
-          .catch((err) => showToast("出题执行失败：" + (err.message || "未知错误")));
-        return;
-      }
       const sectionBtn = target.closest("[data-action='start-section']");
       if (sectionBtn) {
         const lectureId = String(sectionBtn.getAttribute("data-lecture-id") || "");
@@ -2588,6 +3274,23 @@
           })
           .catch((err) => showToast("分节执行失败：" + (err.message || "未知错误")));
         return;
+      }
+    });
+
+    el.settingsDetailPane.addEventListener("change", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLSelectElement)) return;
+      if (target.id === "settingsLogCategorySelect") {
+        state.settingsLogCategory = String(target.value || "all");
+        if (state.settingsLogCategory !== "model") {
+          state.settingsLogSource = "";
+        }
+        loadSettingsLogs().catch((err) => showToast(`加载模型日志失败：${err.message || "未知错误"}`));
+        return;
+      }
+      if (target.id === "settingsLogSourceSelect") {
+        state.settingsLogSource = String(target.value || "");
+        loadSettingsLogs().catch((err) => showToast(`加载模型日志失败：${err.message || "未知错误"}`));
       }
     });
 

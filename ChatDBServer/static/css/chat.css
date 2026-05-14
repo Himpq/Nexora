@@ -1160,6 +1160,59 @@ body {
     /* Previously defined, making sure it's consistent */
 }
 
+.input-container.learning-feed-compose-mode .input-options,
+.input-container.learning-feed-compose-mode .token-footer-left,
+.input-container .input-options.is-hidden-for-feed,
+.input-container .token-footer-left.is-hidden-for-feed {
+    opacity: 0;
+    max-height: 0;
+    overflow: hidden;
+    pointer-events: none;
+    transform: translateY(6px);
+    margin: 0 !important;
+    padding: 0 !important;
+    transition: opacity 0.18s ease, transform 0.18s ease, max-height 0.18s ease;
+}
+
+.input-wrapper.learning-feed-compose-mode {
+    border-color: #111111;
+    box-shadow: 0 8px 18px rgba(17, 17, 17, 0.08);
+}
+
+.input-container.learning-feed-compose-mode #messageInput {
+    min-height: 88px;
+}
+
+.btn-send.feed-mode {
+    width: auto;
+    min-width: 108px;
+    padding: 0 14px;
+    gap: 8px;
+    background: #111111;
+    box-shadow: 0 2px 8px rgba(17, 17, 17, 0.16);
+}
+
+.btn-send.feed-mode:hover:not(:disabled) {
+    background: #232323;
+    box-shadow: 0 6px 14px rgba(17, 17, 17, 0.18);
+}
+
+.btn-send-cancel.learning-feed-cancel-btn {
+    background: #dc2626;
+    box-shadow: 0 2px 8px rgba(220, 38, 38, 0.18);
+}
+
+.btn-send-cancel.learning-feed-cancel-btn:hover:not(:disabled) {
+    background: #b91c1c;
+    box-shadow: 0 6px 14px rgba(220, 38, 38, 0.22);
+}
+
+.feed-send-label {
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
 /* 知识库内容视图样式 */
 .knowledge-content-view {
     max-width: 900px;

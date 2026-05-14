@@ -6,7 +6,6 @@ NexoraLearning — Flask 入口
 from __future__ import annotations
 
 import json
-import secrets
 import os
 from pathlib import Path
 from typing import Any, Dict
@@ -26,10 +25,14 @@ DEFAULT_CONFIG = {
     "debug": False,
     "data_dir": "data",
     "max_upload_mb": 50,
+    "runtime_api": {
+        "enabled": True,
+        "api_key": "",
+        "request_timeout": 30
+    },
     "nexora": {
         "base_url": "http://127.0.0.1:5000",
         "api_key": "",
-        "public_api_key": "",
         "request_timeout": 90,
         "target_username": "",
         "models_path": "/api/papi/models",
@@ -71,7 +74,6 @@ def ensure_bootstrap():
 
     if not CONFIG_PATH.exists():
         config = json.loads(json.dumps(DEFAULT_CONFIG, ensure_ascii=False))
-        config["auth_token"] = secrets.token_hex(24)
         config = _normalize_config_paths(config)
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=4, ensure_ascii=False)
@@ -81,8 +83,6 @@ def ensure_bootstrap():
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         loaded = json.load(f)
     merged = _deep_merge_defaults(DEFAULT_CONFIG, loaded if isinstance(loaded, dict) else {})
-    if "auth_token" not in merged:
-        merged["auth_token"] = secrets.token_hex(24)
     normalized = _normalize_config_paths(merged)
     if normalized != loaded:
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -97,6 +97,16 @@ def _normalize_config_paths(config):
     if not data_dir.is_absolute():
         data_dir = (ROOT / data_dir).resolve()
     cfg["data_dir"] = str(data_dir)
+    runtime_cfg = cfg.get("runtime_api")
+    if isinstance(runtime_cfg, dict):
+        if "frontend_url" in runtime_cfg:
+            runtime_cfg.pop("frontend_url", None)
+        if "base_path" in runtime_cfg:
+            runtime_cfg.pop("base_path", None)
+    cfg.pop("auth_token", None)
+    nexora_cfg = cfg.get("nexora")
+    if isinstance(nexora_cfg, dict) and "public_api_key" in nexora_cfg:
+        nexora_cfg.pop("public_api_key", None)
     return cfg
 
 
@@ -131,8 +141,7 @@ def create_app():
         return jsonify({
             "status": "ok", 
             "service": "NexoraLearning", 
-            "version": "0.1.0",
-            "auth_token_configured": bool(cfg.get("auth_token"))
+            "version": "0.1.0"
         })
 
     return app, cfg

@@ -12,7 +12,11 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Type
 
-import prompts
+try:
+    from NexoraLearning import prompts as learning_prompts
+except ImportError:
+    import prompts as learning_prompts
+
 from .nexora_proxy import NexoraProxy
 from .runlog import log_event
 
@@ -77,7 +81,7 @@ DEFAULT_SCHEDULER_MODELS_CONFIG: Dict[str, Any] = {
         "prompt_notes": "",
     },
     "question_generation": {
-        "enabled": True,
+        "enabled": False,
         "model_name": "",
         "api_mode": "chat",
         "temperature": 0.2,
@@ -95,6 +99,29 @@ DEFAULT_SCHEDULER_MODELS_CONFIG: Dict[str, Any] = {
         "temperature": 0.2,
         "max_output_tokens": 4000,
         "max_input_chars": 12000,
+        "request_timeout": 240,
+        "stream": True,
+        "think": False,
+        "prompt_notes": "",
+    },
+    "memory": {
+        "enabled": True,
+        "model_name": "",
+        "api_mode": "chat",
+        "temperature": 0.2,
+        "max_output_tokens": 4000,
+        "request_timeout": 240,
+        "stream": True,
+        "think": False,
+        "trigger_turn_interval": 10,
+        "prompt_notes": "",
+    },
+    "profile_question": {
+        "enabled": True,
+        "model_name": "",
+        "api_mode": "chat",
+        "temperature": 0.2,
+        "max_output_tokens": 4000,
         "request_timeout": 240,
         "stream": True,
         "think": False,
@@ -247,6 +274,24 @@ def get_split_chapters_model_config(cfg: Mapping[str, Any]) -> Dict[str, Any]:
     if isinstance(branch, dict):
         return dict(branch)
     return dict(DEFAULT_SCHEDULER_MODELS_CONFIG["split_chapters"])
+
+
+def get_memory_model_config(cfg: Mapping[str, Any]) -> Dict[str, Any]:
+    """Read memory-profile model settings."""
+    data = load_scheduler_models_config(cfg)
+    branch = data.get("memory")
+    if isinstance(branch, dict):
+        return dict(branch)
+    return dict(DEFAULT_SCHEDULER_MODELS_CONFIG["memory"])
+
+
+def get_profile_question_model_config(cfg: Mapping[str, Any]) -> Dict[str, Any]:
+    """Read profile-question model settings."""
+    data = load_scheduler_models_config(cfg)
+    branch = data.get("profile_question")
+    if isinstance(branch, dict):
+        return dict(branch)
+    return dict(DEFAULT_SCHEDULER_MODELS_CONFIG["profile_question"])
 
 
 def update_rough_reading_model_config(cfg: Mapping[str, Any], updates: Mapping[str, Any]) -> Dict[str, Any]:
@@ -448,6 +493,85 @@ def update_split_chapters_model_config(cfg: Mapping[str, Any], updates: Mapping[
     return merged_branch
 
 
+def update_memory_model_config(cfg: Mapping[str, Any], updates: Mapping[str, Any]) -> Dict[str, Any]:
+    """Update memory-profile model settings with basic validation."""
+    current = get_memory_model_config(cfg)
+    allowed_fields = {
+        "enabled",
+        "model_name",
+        "api_mode",
+        "temperature",
+        "max_output_tokens",
+        "request_timeout",
+        "stream",
+        "think",
+        "trigger_turn_interval",
+        "prompt_notes",
+    }
+    sanitized: Dict[str, Any] = {}
+    for key, value in dict(updates or {}).items():
+        if key not in allowed_fields:
+            continue
+        sanitized[key] = value
+    for bool_field in ("enabled", "stream", "think"):
+        if bool_field in sanitized:
+            sanitized[bool_field] = _as_bool(sanitized[bool_field], default=_as_bool(current.get(bool_field), False))
+    for int_field in ("max_output_tokens", "request_timeout", "trigger_turn_interval"):
+        if int_field in sanitized:
+            try:
+                sanitized[int_field] = max(1, int(sanitized[int_field]))
+            except Exception:
+                sanitized[int_field] = current.get(int_field)
+    if "temperature" in sanitized:
+        try:
+            sanitized["temperature"] = float(sanitized["temperature"])
+        except Exception:
+            sanitized["temperature"] = current.get("temperature")
+    merged_branch = dict(current)
+    merged_branch.update(sanitized)
+    save_scheduler_models_config(cfg, {"memory": merged_branch})
+    return merged_branch
+
+
+def update_profile_question_model_config(cfg: Mapping[str, Any], updates: Mapping[str, Any]) -> Dict[str, Any]:
+    """Update profile-question model settings with basic validation."""
+    current = get_profile_question_model_config(cfg)
+    allowed_fields = {
+        "enabled",
+        "model_name",
+        "api_mode",
+        "temperature",
+        "max_output_tokens",
+        "request_timeout",
+        "stream",
+        "think",
+        "prompt_notes",
+    }
+    sanitized: Dict[str, Any] = {}
+    for key, value in dict(updates or {}).items():
+        if key not in allowed_fields:
+            continue
+        sanitized[key] = value
+    for bool_field in ("enabled", "stream", "think"):
+        if bool_field in sanitized:
+            sanitized[bool_field] = _as_bool(sanitized[bool_field], default=_as_bool(current.get(bool_field), False))
+    for int_field in ("max_output_tokens", "request_timeout"):
+        if int_field in sanitized:
+            try:
+                sanitized[int_field] = max(1, int(sanitized[int_field]))
+            except Exception:
+                sanitized[int_field] = current.get(int_field)
+    if "temperature" in sanitized:
+        try:
+            sanitized["temperature"] = float(sanitized["temperature"])
+        except Exception:
+            sanitized["temperature"] = current.get("temperature")
+    merged_branch = dict(current)
+    merged_branch.update(sanitized)
+    save_scheduler_models_config(cfg, {"profile_question": merged_branch})
+    return merged_branch
+
+
 @dataclass(frozen=True)
 class ModelToolSpec:
     """Describes a tool available to a learning model."""
@@ -627,7 +751,7 @@ class BaseLearningModel:
 
     def get_prompt_templates(self) -> Dict[str, str]:
         try:
-            prompt_pack = prompts.MODEL_PROMPTS[self.model_key]
+            prompt_pack = learning_prompts.MODEL_PROMPTS[self.model_key]
         except KeyError as exc:
             raise KeyError(f"Unknown prompt pack: {self.model_key}") from exc
         system_fallback = str(prompt_pack.get("system") or "")
@@ -816,6 +940,12 @@ class MemoryProfileModel(BaseLearningModel):
         )
 
 
+class ProfileQuestionModel(BaseLearningModel):
+    """Model used to generate profile-aware question bank items."""
+
+    model_key = "profile_question"
+
+
 class LearningModelFactory:
     """Factory for model instances by logical task name."""
 
@@ -827,6 +957,7 @@ class LearningModelFactory:
         "split_chapters": SplitChaptersModel,
         "answer": AnswerModel,
         "memory": MemoryProfileModel,
+        "profile_question": ProfileQuestionModel,
     }
 
     @classmethod

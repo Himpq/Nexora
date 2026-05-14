@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib import request as urllib_request, error as urllib_error, parse as urllib_parse
 from email.header import Header
 from email.utils import formatdate, make_msgid
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for, Response, send_file, send_from_directory
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for, Response, send_file, send_from_directory, has_request_context
 from flask_cors import CORS
 from datetime import timedelta, datetime
 import time
@@ -40,7 +40,8 @@ from tools import canonicalize_tool_name
 from secure import normalize_text, resolve_configured_path, safe_filename, safe_join_path
 from timeline import list_entries as list_timeline_entries, record_notes_snapshot_change
 from datastorage import safe_read_json, safe_write_json, get_path_lock
-from learning_runtime import build_learning_context_payload
+from learning_runtime import build_learning_context_payload, build_learning_memory_blocks
+from learning_runtime import get_learning_runtime_config
 from server_quota import (
     get_server_quota_status,
     update_server_quota_config,
@@ -262,6 +263,13 @@ DEFAULT_MAIN_CONFIG = {
         "expire_seconds": 0,
         "storage": "memory",
         "file_path": "./data/temp/ContextTemp.tmp"
+    },
+    "nexora_learning": {
+        "host": "127.0.0.1",
+        "port": 5001,
+        "frontend_url": "http://127.0.0.1:5001",
+        "api_key": "",
+        "request_timeout": 30
     }
 }
 
@@ -924,6 +932,14 @@ def _merge_defaults(dst, src):
 
 
 def ensure_main_config_defaults():
+    def _normalize_learning_base_url(value: Any) -> str:
+        text = str(value or '').strip().rstrip('/')
+        if text.endswith('/api/frontend'):
+            text = text[:-len('/api/frontend')]
+        elif text.endswith('/api/runtime'):
+            text = text[:-len('/api/runtime')]
+        return text.rstrip('/')
+
     cfg = {}
     if os.path.exists(CONFIG_PATH):
         try:
@@ -965,6 +981,51 @@ def ensure_main_config_defaults():
         if old_temp_path in {'./temp/ContextTemp.tmp', 'temp/ContextTemp.tmp'}:
             temp_cache['file_path'] = './data/temp/ContextTemp.tmp'
             changed = True
+    learning_cfg = cfg.get('nexora_learning')
+    if not isinstance(learning_cfg, dict):
+        learning_cfg = {}
+        cfg['nexora_learning'] = learning_cfg
+        changed = True
+    if isinstance(learning_cfg, dict):
+        current_frontend_url = _normalize_learning_base_url(learning_cfg.get('frontend_url'))
+        legacy_service_url = _normalize_learning_base_url(learning_cfg.get('service_url'))
+        legacy_host = str(learning_cfg.get('host') or '').strip()
+        legacy_port = learning_cfg.get('port')
+        if not current_frontend_url:
+            if legacy_service_url:
+                current_frontend_url = legacy_service_url
+            elif legacy_host:
+                scheme = 'https'
+                public_base_url = str(cfg.get('public_base_url') or '').strip()
+                if public_base_url.lower().startswith('http://'):
+                    scheme = 'http'
+                try:
+                    port_value = int(legacy_port or 5001)
+                except Exception:
+                    port_value = 5001
+                default_port = 443 if scheme == 'https' else 80
+                host_part = legacy_host
+                if port_value != default_port:
+                    host_part = f'{host_part}:{port_value}'
+                current_frontend_url = f'{scheme}://{host_part}'
+        normalized_frontend_url = _normalize_learning_base_url(current_frontend_url)
+        if normalized_frontend_url and learning_cfg.get('frontend_url') != normalized_frontend_url:
+            learning_cfg['frontend_url'] = normalized_frontend_url
+            changed = True
+        if not legacy_host:
+            learning_cfg['host'] = '127.0.0.1'
+            changed = True
+        try:
+            normalized_port = int(legacy_port or learning_cfg.get('port') or 5001)
+        except Exception:
+            normalized_port = 5001
+        if int(learning_cfg.get('port') or 0) != normalized_port:
+            learning_cfg['port'] = normalized_port
+            changed = True
+        for legacy_key in ('service_url', 'runtime_base_path'):
+            if legacy_key in learning_cfg:
+                learning_cfg.pop(legacy_key, None)
+                changed = True
     if changed or not os.path.exists(CONFIG_PATH):
         os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
         with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
@@ -1450,7 +1511,15 @@ def build_user_avatar_url(user_id, user_data):
     if not os.path.exists(avatar_file):
         return ''
     stamp = int(user_data.get('avatar_updated_at') or os.path.getmtime(avatar_file))
-    return f'/api/user/avatar/{user_id}?v={stamp}'
+    avatar_path = f'/api/user/avatar/{user_id}?v={stamp}'
+    if has_request_context():
+        try:
+            base_url = get_public_base_url().rstrip('/')
+            if base_url:
+                return f'{base_url}{avatar_path}'
+        except Exception:
+            pass
+    return avatar_path
 
 def get_config_all():
     """获取配置"""
@@ -5913,17 +5982,29 @@ def get_user_preferences():
                     updates.update(legacy_quota_payload)
 
             saved = user.update_preferences(updates)
+            learning_runtime = {}
+            try:
+                learning_runtime = get_learning_runtime_config()
+            except Exception as runtime_error:
+                print(f"[LEARNING_RUNTIME] failed to load runtime config: {runtime_error}")
             return jsonify({
                 'success': True,
                 'preferences': saved,
                 'quota': saved.get('quota', {}) if isinstance(saved, dict) else {},
+                'learning_runtime': learning_runtime,
             })
 
         preferences = user.get_preferences()
+        learning_runtime = {}
+        try:
+            learning_runtime = get_learning_runtime_config()
+        except Exception as runtime_error:
+            print(f"[LEARNING_RUNTIME] failed to load runtime config: {runtime_error}")
         return jsonify({
             'success': True,
             'preferences': preferences,
             'quota': preferences.get('quota', {}) if isinstance(preferences, dict) else {},
+            'learning_runtime': learning_runtime,
         })
     except Exception as e:
         print(f"Error getting user preferences: {e}")
@@ -9007,6 +9088,21 @@ def chat_stream():
                                 merged_payload['system_prompt'] = value
                         else:
                             merged_payload[key] = value
+                    lecture_id = str(merged_payload.get('lecture_id') or '').strip()
+                    if not lecture_id:
+                        lecture_id = str(((merged_payload.get('meta') or {}) if isinstance(merged_payload.get('meta'), dict) else {}).get('lecture_id') or '').strip()
+                    if lecture_id:
+                        memory_blocks = build_learning_memory_blocks(username, lecture_id)
+                        if memory_blocks:
+                            existing_blocks = merged_payload.get('context_blocks', [])
+                            if not isinstance(existing_blocks, list):
+                                existing_blocks = []
+                            merged_payload['context_blocks'] = list(memory_blocks) + existing_blocks
+                        current_meta = merged_payload.get('meta', {})
+                        if not isinstance(current_meta, dict):
+                            current_meta = {}
+                        current_meta['lecture_id'] = lecture_id
+                        merged_payload['meta'] = current_meta
                     raw_conversation_mode_payload = merged_payload
                 except Exception as learning_runtime_error:
                     print(f"[LEARNING_RUNTIME] failed to merge payload: {learning_runtime_error}")

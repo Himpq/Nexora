@@ -4681,6 +4681,68 @@ textarea {
   background: #ff7875;
 }
 
+.input-wrapper.learning-feed-compose-mode {
+  border-color: #111 !important;
+}
+
+.input-wrapper.learning-feed-compose-mode .input-options,
+.input-wrapper.learning-feed-compose-mode .token-footer-left,
+.input-container.learning-feed-compose-mode .input-options,
+.input-container.learning-feed-compose-mode .token-footer-left,
+.input-options.is-hidden-for-feed,
+.token-footer-left.is-hidden-for-feed {
+  display: none !important;
+  opacity: 0 !important;
+  max-height: 0 !important;
+  height: 0 !important;
+  overflow: hidden !important;
+  pointer-events: none !important;
+  margin: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  border: 0 !important;
+  transform: translateY(8px) !important;
+  transition: opacity 0.18s ease, transform 0.18s ease, max-height 0.18s ease, height 0.18s ease !important;
+}
+
+.input-container.learning-feed-compose-mode #messageInput {
+  min-height: 88px;
+}
+
+.input-wrapper.learning-feed-compose-mode .input-container {
+  align-items: flex-end !important;
+}
+
+.btn-send.feed-mode {
+  width: 32px !important;
+  height: 32px !important;
+  min-width: 32px !important;
+  padding: 0 !important;
+  background: #000 !important;
+}
+
+.btn-send.feed-mode .feed-send-label {
+  display: none !important;
+}
+
+.learning-feed-cancel-btn,
+.btn-send.btn-send-cancel.learning-feed-cancel-btn {
+  width: 32px !important;
+  height: 32px !important;
+  min-width: 32px !important;
+  padding: 0 !important;
+  background: #dc2626 !important;
+  color: #fff !important;
+  border-radius: 6px !important;
+  box-shadow: none !important;
+}
+
+.learning-feed-cancel-btn:hover:not(:disabled),
+.btn-send.btn-send-cancel.learning-feed-cancel-btn:hover:not(:disabled) {
+  background: #b91c1c !important;
+  transform: scale(1.05);
+}
+
 /* --- RIGHT SIDEBAR (Knowledge) --- */
 .knowledge-sidebar {
   position: absolute;

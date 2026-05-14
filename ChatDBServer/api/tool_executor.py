@@ -399,7 +399,10 @@ class ToolExecutor:
 
     def _get_learning_executor(self) -> LearningRuntimeExecutor:
         if self._learning_executor is None:
-            self._learning_executor = LearningRuntimeExecutor()
+            cfg = {
+                "_runtime_user_id": str(getattr(self.model, "username", "") or "").strip(),
+            }
+            self._learning_executor = LearningRuntimeExecutor(cfg)
         return self._learning_executor
 
     def _longterm_plan(self, args: Dict[str, Any]) -> str:

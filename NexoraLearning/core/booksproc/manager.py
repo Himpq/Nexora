@@ -17,7 +17,10 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Mapping, Optional, Tuple
 
-import prompts
+try:
+    from NexoraLearning import prompts as learning_prompts
+except ImportError:
+    import prompts as learning_prompts
 
 from ..lectures import (
     get_book,
@@ -506,10 +509,10 @@ def enqueue_book_section(
     book = get_book(resolved_cfg, lecture_key, book_key)
     if book is None:
         raise ValueError(f"Book not found: {lecture_key}/{book_key}")
-
-    question_status = str(book.get("question_status") or "").strip().lower()
-    if question_status not in {"done", "completed", "success"}:
-        raise ValueError("question generation is not completed yet.")
+    coarse_status = str(book.get("coarse_status") or "").strip().lower()
+    intensive_status = str(book.get("intensive_status") or "").strip().lower()
+    if coarse_status not in {"done", "completed", "success"} and intensive_status not in {"done", "completed", "success"}:
+        raise ValueError("coarse or intensive reading must be completed before section generation.")
 
     queued = queue_enqueue_job(
         lecture_key,
@@ -1164,7 +1167,7 @@ def _run_coarse_reading_chunked(
                 )
                 log_model_text(
                     f"[save_chapter:update-by-range]\nchapter_name={name}\nchapter_range={rng}\nchapter_summary={summary}",
-                    source="save_chapter",
+                    source="rough_reading",
                 )
                 return {
                     "ok": True,
@@ -1201,7 +1204,7 @@ def _run_coarse_reading_chunked(
         )
         log_model_text(
             f"[save_chapter]\nchapter_name={name}\nchapter_range={rng}\nchapter_summary={summary}",
-            source="save_chapter",
+            source="rough_reading",
         )
         return {
             "ok": True,
@@ -1262,7 +1265,7 @@ def _run_coarse_reading_chunked(
         )
         log_model_text(
             f"[update_chapter]\nchapter_range={target_range}\nold_name={old_name or old_row.get('chapter_name') or ''}\nchapter_name={new_name}\nchapter_summary={new_summary}",
-            source="update_chapter",
+            source="rough_reading",
         )
         return {
             "ok": True,
@@ -1326,7 +1329,7 @@ def _run_coarse_reading_chunked(
         )
         log_model_text(
             f"[update_summary]\nchapter_range={target_range}\nchapter_name={fixed_name}\nchapter_summary={new_summary}",
-            source="update_summary",
+            source="rough_reading",
         )
         return {
             "ok": True,
@@ -1419,7 +1422,7 @@ def _run_coarse_reading_chunked(
                     f"sections_count={len(planned_sections)}\n"
                     f"{_format_section_plan(planned_sections)}"
                 ),
-                source="section_review_status",
+                source="rough_reading",
             )
         if planned_sections:
             chapters = []
@@ -1467,7 +1470,7 @@ def _run_coarse_reading_chunked(
             f"sections_count={len(planned_sections)}\n"
             f"{_format_section_plan(planned_sections)}"
         ),
-        source="coarse_section_discovery",
+        source="rough_reading",
     )
     section_plan_reliable = plan_mode == "sectioned" and bool(planned_sections)
     if not section_plan_reliable:
@@ -1667,7 +1670,7 @@ def _run_tool_driven_resume_round(
         round_context_chars += len(assistant_content)
         if assistant_content.strip():
             assistant_concat.append(assistant_content)
-            log_model_text(assistant_content, source="assistant_content")
+            log_model_text(assistant_content, source="rough_reading")
         turn_history.append(
             {
                 "role": "assistant",
@@ -1842,6 +1845,7 @@ def _run_tool_driven_resume_round(
                 arguments=args_obj,
                 tool_output=result_obj,
                 model_output=assistant_content,
+                source="rough_reading",
             )
             log_event(
                 "model_tool_result",
@@ -2122,11 +2126,11 @@ def _run_coarse_reading_sectioned_summary_only(
 
         summary_system_tpl = _load_prompt_text(
             "coarse_section_summary.system",
-            str(getattr(prompts, "COARSE_SECTION_SUMMARY_SYSTEM_PROMPT", "") or ""),
+            str(getattr(learning_prompts, "COARSE_SECTION_SUMMARY_SYSTEM_PROMPT", "") or ""),
         )
         summary_user_tpl = _load_prompt_text(
             "coarse_section_summary.user",
-            str(getattr(prompts, "COARSE_SECTION_SUMMARY_USER_PROMPT", "") or ""),
+            str(getattr(learning_prompts, "COARSE_SECTION_SUMMARY_USER_PROMPT", "") or ""),
         )
         system_prompt = _render_prompt(summary_system_tpl, {})
         tools = [
@@ -2500,11 +2504,11 @@ def _run_coarse_section_planning(
     candidate_block = _format_heading_hints(heading_candidates)
     planning_system_tpl = _load_prompt_text(
         "coarse_section_planning.system",
-        str(getattr(prompts, "COARSE_SECTION_PLANNING_SYSTEM_PROMPT", "") or ""),
+        str(getattr(learning_prompts, "COARSE_SECTION_PLANNING_SYSTEM_PROMPT", "") or ""),
     )
     planning_user_tpl = _load_prompt_text(
         "coarse_section_planning.user",
-        str(getattr(prompts, "COARSE_SECTION_PLANNING_USER_PROMPT", "") or ""),
+        str(getattr(learning_prompts, "COARSE_SECTION_PLANNING_USER_PROMPT", "") or ""),
     )
     prompt = _render_prompt(
         planning_system_tpl,
@@ -3885,11 +3889,11 @@ def _review_summary_with_model(
         src_preview = src_preview[:6000]
     review_system_tpl = _load_prompt_text(
         "coarse_summary_review.system",
-        str(getattr(prompts, "COARSE_SUMMARY_REVIEW_SYSTEM_PROMPT", "") or ""),
+        str(getattr(learning_prompts, "COARSE_SUMMARY_REVIEW_SYSTEM_PROMPT", "") or ""),
     )
     review_user_tpl = _load_prompt_text(
         "coarse_summary_review.user",
-        str(getattr(prompts, "COARSE_SUMMARY_REVIEW_USER_PROMPT", "") or ""),
+        str(getattr(learning_prompts, "COARSE_SUMMARY_REVIEW_USER_PROMPT", "") or ""),
     )
     review_prompt = _render_prompt(review_system_tpl, {})
     review_user = _render_prompt(

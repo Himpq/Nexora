@@ -539,6 +539,7 @@ def run_question_with_tools_strict(
                             arguments=args,
                             tool_output=tool_result,
                             model_output=assistant_content[:800],
+                            source="question_generation",
                         )
                         messages.append({"role": "tool", "tool_call_id": call_id, "content": str(tool_result)})
                         continue
@@ -604,6 +605,7 @@ def run_question_with_tools_strict(
                     arguments=args,
                     tool_output=tool_result,
                     model_output=assistant_content[:800],
+                    source="question_generation",
                 )
                 messages.append({"role": "tool", "tool_call_id": call_id, "content": str(tool_result)})
             if wrote_once and turn_has_done:

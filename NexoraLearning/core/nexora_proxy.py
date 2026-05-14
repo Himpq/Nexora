@@ -17,11 +17,7 @@ class NexoraProxy:
         import traceback
         nexora_cfg = dict((cfg or {}).get("nexora") or {})
         self.base_url = str(nexora_cfg.get("base_url") or "http://127.0.0.1:5000").rstrip("/")
-        self.api_key = str(
-            nexora_cfg.get("public_api_key")
-            or nexora_cfg.get("api_key")
-            or ""
-        ).strip()
+        self.api_key = str(nexora_cfg.get("api_key") or "").strip()
         self.default_username = str(
             nexora_cfg.get("username")
             or nexora_cfg.get("target_username")
