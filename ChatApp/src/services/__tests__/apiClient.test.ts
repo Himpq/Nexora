@@ -62,6 +62,23 @@ test("createApiClient injects the current username header without overriding cal
   assert.equal(new Headers(calls[1].init.headers).get("X-Nexora-Username"), "override");
 });
 
+test("createApiClient injects public API keys without overriding callers", async () => {
+  const calls = installFetch({ success: true });
+  const client = createApiClient("https://chat.himpqblog.cn");
+  client.setPublicApiKey("public-test-key");
+
+  await client.postJson("/api/papi/chat/completions", { messages: [] });
+  await client.getJson("/api/papi/models", {
+    headers: {
+      "X-API-Key": "override-key",
+    },
+  });
+
+  assert.equal(calls[0].url, "https://chat.himpqblog.cn/api/papi/chat/completions");
+  assert.equal(new Headers(calls[0].init.headers).get("X-API-Key"), "public-test-key");
+  assert.equal(new Headers(calls[1].init.headers).get("X-API-Key"), "override-key");
+});
+
 test("createApiClient raises ApiClientError for HTTP and success=false payloads", async () => {
   installFetch({ success: false, error: "bad request" }, 200);
   const client = createApiClient("http://127.0.0.1:5001");

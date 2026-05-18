@@ -1,11 +1,19 @@
-import { getJson, postJson } from "./apiClient";
+import { chatApiClient } from "./apiClient";
 import type { ModelOption } from "./types";
 
-export function listNexoraModels(username?: string) {
-  return getJson<{ success: boolean; payload?: unknown; data?: ModelOption[]; models?: unknown }>(
-    "/api/nexora/models",
-    { query: username ? { username } : undefined },
-  );
+const DEFAULT_CHAT_MODEL = "hunyuan-lite";
+
+export async function listNexoraModels(_username?: string) {
+  return {
+    success: true,
+    data: [
+      {
+        id: DEFAULT_CHAT_MODEL,
+        name: DEFAULT_CHAT_MODEL,
+        model: DEFAULT_CHAT_MODEL,
+      },
+    ] satisfies ModelOption[],
+  };
 }
 
 export function chatCompletions(payload: {
@@ -14,13 +22,16 @@ export function chatCompletions(payload: {
   messages: Array<{ role: string; content: string }>;
   [key: string]: unknown;
 }) {
-  return postJson<{
+  return chatApiClient.postJson<{
     success: boolean;
     api_mode: "chat";
     endpoint?: string;
     content: string;
     raw: unknown;
-  }>("/api/nexora/papi/chat/completions", payload);
+  }>("/api/papi/chat/completions", {
+    ...payload,
+    model: DEFAULT_CHAT_MODEL,
+  });
 }
 
 export function responses(payload: {
@@ -30,13 +41,16 @@ export function responses(payload: {
   instructions?: string;
   [key: string]: unknown;
 }) {
-  return postJson<{
+  return chatApiClient.postJson<{
     success: boolean;
     api_mode: "responses";
     endpoint?: string;
     content: string;
     raw: unknown;
-  }>("/api/nexora/papi/responses", payload);
+  }>("/api/papi/responses", {
+    ...payload,
+    model: DEFAULT_CHAT_MODEL,
+  });
 }
 
 export function completions(payload: {
@@ -48,8 +62,11 @@ export function completions(payload: {
   input?: unknown[];
   [key: string]: unknown;
 }) {
-  return postJson<{ success: boolean; content?: string; raw?: unknown; [key: string]: unknown }>(
-    "/api/completions",
-    payload,
+  return chatApiClient.postJson<{ success: boolean; content?: string; raw?: unknown; [key: string]: unknown }>(
+    "/api/papi/completions",
+    {
+      ...payload,
+      model: DEFAULT_CHAT_MODEL,
+    },
   );
 }

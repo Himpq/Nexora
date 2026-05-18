@@ -20,13 +20,13 @@ Nexora 的移动端 App 工作区。项目计划使用 Expo + React Native + Typ
 移动端 API 基地址通过环境变量设置：
 
 ```txt
-EXPO_PUBLIC_NEXORA_LEARNING_BASE_URL=http://127.0.0.1:5001
+EXPO_PUBLIC_NEXORA_LEARNING_BASE_URL=https://chat.himpqblog.cn:5002
 ```
 
 Android 模拟器访问宿主机时使用：
 
 ```txt
-EXPO_PUBLIC_NEXORA_LEARNING_BASE_URL=http://10.0.2.2:5001
+EXPO_PUBLIC_NEXORA_LEARNING_BASE_URL=https://chat.himpqblog.cn:5002
 ```
 
 ## 常用命令

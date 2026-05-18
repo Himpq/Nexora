@@ -1,0 +1,19 @@
+WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://198.18.0.1:5000
+Press CTRL+C to quit
+10.21.168.120 - - [17/May/2026 20:55:26] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [17/May/2026 20:55:26] "GET / HTTP/1.1" 200 -
+10.21.168.120 - - [17/May/2026 20:56:30] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [17/May/2026 20:56:30] "GET /api/papi/user/info/cjbpq HTTP/1.1" 403 -
+127.0.0.1 - - [17/May/2026 20:56:30] "GET /api/papi/models HTTP/1.1" 403 -
+127.0.0.1 - - [18/May/2026 18:28:30] "GET /api/papi/user/info/cjbpq HTTP/1.1" 403 -
+127.0.0.1 - - [18/May/2026 18:28:30] "GET /api/papi/models HTTP/1.1" 403 -
+127.0.0.1 - - [18/May/2026 18:28:41] "GET /api/papi/user/info/cjbpq HTTP/1.1" 403 -
+127.0.0.1 - - [18/May/2026 18:28:57] "GET /api/papi/user/info/cjbpq HTTP/1.1" 403 -
+127.0.0.1 - - [18/May/2026 18:28:57] "GET /api/papi/user/info/cjbpq HTTP/1.1" 403 -
+127.0.0.1 - - [18/May/2026 18:28:57] "GET /api/papi/user/info/cjbpq HTTP/1.1" 403 -
+127.0.0.1 - - [18/May/2026 18:28:58] "GET /api/papi/user/info/cjbpq HTTP/1.1" 403 -
+127.0.0.1 - - [18/May/2026 18:28:59] "GET /api/papi/user/info/cjbpq HTTP/1.1" 403 -
+127.0.0.1 - - [18/May/2026 18:29:34] "GET /api/papi/user/info/cjbpq HTTP/1.1" 403 -

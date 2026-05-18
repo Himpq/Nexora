@@ -1,8 +1,9 @@
-# Flask==3.0.0
-# Flask-CORS==4.0.0
-# volcengine-python-sdk==1.0.96
-# volcenginesdkarkruntime
+flask>=3.0.0
+flask-cors>=4.0.0
 openai
+httpx
+requests
+volcengine-python-sdk[ark]
 python-docx
 pypdf
 python-pptx

@@ -20,6 +20,7 @@ type RequestOptions = RequestInit & {
 type ApiClientState = {
   baseUrl: string;
   username: string;
+  publicApiKey: string;
 };
 
 export type ApiClient = {
@@ -30,6 +31,7 @@ export type ApiClient = {
   deleteJson<T>(path: string, options?: RequestOptions): Promise<T>;
   setBaseUrl(nextBaseUrl: string): void;
   setUsername(username: string): void;
+  setPublicApiKey(publicApiKey: string): void;
   getState(): ApiClientState;
 };
 
@@ -40,6 +42,7 @@ function normalizeBaseUrl(nextBaseUrl: string) {
 export function createApiClient(initialBaseUrl: string): ApiClient {
   let baseUrl = normalizeBaseUrl(initialBaseUrl);
   let currentUsername = "";
+  let currentPublicApiKey = "";
 
   function getBasePathPrefix() {
     const withoutOrigin = baseUrl.replace(/^[a-z][a-z\d+\-.]*:\/\/[^/?#]+/i, "");
@@ -76,6 +79,9 @@ export function createApiClient(initialBaseUrl: string): ApiClient {
     const merged = new Headers(headers);
     if (currentUsername && !merged.has("X-Nexora-Username")) {
       merged.set("X-Nexora-Username", currentUsername);
+    }
+    if (currentPublicApiKey && !merged.has("X-API-Key")) {
+      merged.set("X-API-Key", currentPublicApiKey);
     }
     return merged;
   }
@@ -140,10 +146,14 @@ export function createApiClient(initialBaseUrl: string): ApiClient {
     setUsername(username: string) {
       currentUsername = String(username || "").trim();
     },
+    setPublicApiKey(publicApiKey: string) {
+      currentPublicApiKey = String(publicApiKey || "").trim();
+    },
     getState() {
       return {
         baseUrl,
         username: currentUsername,
+        publicApiKey: currentPublicApiKey,
       };
     },
   };
@@ -151,6 +161,7 @@ export function createApiClient(initialBaseUrl: string): ApiClient {
 
 export const learningApiClient = createApiClient(appEnv.nexoraLearningBaseUrl);
 export const chatApiClient = createApiClient(appEnv.chatDBServerBaseUrl);
+chatApiClient.setPublicApiKey(appEnv.chatDBServerPublicApiKey);
 
 export const requestJson = learningApiClient.requestJson;
 export const getJson = learningApiClient.getJson;
@@ -169,6 +180,10 @@ export function setChatApiBaseUrl(nextBaseUrl: string) {
 export function setApiUsername(username: string) {
   learningApiClient.setUsername(username);
   chatApiClient.setUsername(username);
+}
+
+export function setChatApiPublicApiKey(publicApiKey: string) {
+  chatApiClient.setPublicApiKey(publicApiKey);
 }
 
 export function getApiState() {
