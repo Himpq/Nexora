@@ -119,9 +119,9 @@ const MAIL_LAST_OPEN_TS_KEY = 'nexora_mail_last_open_ts';
 const CHAT_COMPOSER_PREFS_KEY = 'nexora_chat_composer_prefs_v1';
 const CHAT_INPUT_DRAFT_KEY = 'nexora_chat_input_draft_v1';
 const CHAT_INPUT_DRAFT_MAX_LEN = 12000;
-const NEXORA_LEARNING_FRONTEND_URL = `${window.location.protocol}//${window.location.hostname}:5001/api/frontend/`;
-const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260511_02';
-const NEXORA_LEARNING_JS_URL = '/static/js/learning_mode.js?v=20260511_02';
+let NEXORA_LEARNING_FRONTEND_URL = `${window.location.protocol}//${window.location.hostname}:5001/api/frontend/`;
+const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260514_02';
+const NEXORA_LEARNING_JS_URL = '/static/js/learning_mode.js?v=20260514_02';
 const MAIL_POLL_INTERVAL_MS = 5000;
 const AGENT_STATUS_POLL_VISIBLE_MS = 5000;
 const MODAL_STACK_BASE_Z = 12000;
@@ -426,6 +426,10 @@ let learningReaderContextSnapshot = null;
 let learningReaderOpened = false;
 let learningSidebarNotifyTimer = null;
 let learningSidebarSendInFlight = false;
+let learningSidebarDraftValue = '';
+let learningFeedComposeMode = false;
+let learningFeedPostInFlight = false;
+let learningFeedCancelBtn = null;
 
 function notifyLearningSidebarBridge() {
     try {
@@ -442,6 +446,14 @@ function scheduleLearningSidebarBridgeNotify(delayMs = 80) {
         learningSidebarNotifyTimer = null;
         notifyLearningSidebarBridge();
     }, delay);
+}
+
+function releaseLearningSidebarPendingSend(options = {}) {
+    const opts = (options && typeof options === 'object') ? options : {};
+    const shouldNotify = opts.notify !== false;
+    if (!learningSidebarSendInFlight) return;
+    learningSidebarSendInFlight = false;
+    if (shouldNotify) scheduleLearningSidebarBridgeNotify(0);
 }
 
 function getLearningSidebarMessages() {
@@ -684,40 +696,39 @@ async function submitQuestionAnswerFromSidebar(answerText, questionId = '') {
     }
     if (learningSidebarSendInFlight || isGenerating || !els.messageInput) return false;
     learningSidebarSendInFlight = true;
-    notifyLearningSidebarBridge();
-    els.messageInput.value = finalAnswer;
-    els.messageInput.dispatchEvent(new Event('input', { bubbles: true }));
+    learningSidebarDraftValue = '';
+    scheduleLearningSidebarBridgeNotify(0);
     try {
-        await sendMessage();
+        await sendMessage({
+            textOverride: finalAnswer,
+            displayContentOverride: finalAnswer
+        });
         return true;
     } finally {
-        learningSidebarSendInFlight = false;
-        notifyLearningSidebarBridge();
+        releaseLearningSidebarPendingSend();
     }
 }
 
 window.NexoraLearningSidebarBridge = {
     getMessages: () => getLearningSidebarMessages(),
-    getInputValue: () => String((els.messageInput && els.messageInput.value) || ''),
+    getInputValue: () => String(learningSidebarDraftValue || ''),
     setInputValue: (value) => {
-        if (!els.messageInput) return;
-        els.messageInput.value = String(value || '');
-        els.messageInput.dispatchEvent(new Event('input', { bubbles: true }));
+        learningSidebarDraftValue = String(value || '');
     },
     send: async (text) => {
-        if (!els.messageInput) return;
         if (learningSidebarSendInFlight || isGenerating) return;
         const next = String(text || '').trim();
         if (!next) return;
         learningSidebarSendInFlight = true;
-        notifyLearningSidebarBridge();
-        els.messageInput.value = next;
-        els.messageInput.dispatchEvent(new Event('input', { bubbles: true }));
+        learningSidebarDraftValue = '';
+        scheduleLearningSidebarBridgeNotify(0);
         try {
-            await sendMessage();
+            await sendMessage({
+                textOverride: next,
+                displayContentOverride: next
+            });
         } finally {
-            learningSidebarSendInFlight = false;
-            notifyLearningSidebarBridge();
+            releaseLearningSidebarPendingSend();
         }
     },
     subscribe: (listener) => {
@@ -729,9 +740,15 @@ window.NexoraLearningSidebarBridge = {
     },
     submitQuestionAnswer: async (answerText, questionId = '') => submitQuestionAnswerFromSidebar(answerText, questionId),
     stop: async () => {
-        if (!isGenerating) return false;
+        if (learningSidebarSendInFlight) {
+            releaseLearningSidebarPendingSend({ notify: false });
+        }
+        if (!isGenerating) {
+            scheduleLearningSidebarBridgeNotify(0);
+            return false;
+        }
         stopGeneration();
-        notifyLearningSidebarBridge();
+        scheduleLearningSidebarBridgeNotify(0);
         return true;
     },
     isGenerating: () => !!isGenerating,
@@ -4051,6 +4068,7 @@ function openKnowledgePanel() {
     if (!els.knowledgePanel) return;
     if (els.filePanel) setRightSidebarPanelVisible(els.filePanel, false);
     setRightSidebarPanelVisible(els.knowledgePanel, true);
+    void loadKnowledge(currentConversationId);
 }
 
 function toggleKnowledgePanel() {
@@ -4058,6 +4076,12 @@ function toggleKnowledgePanel() {
     const nextVisible = !els.knowledgePanel.classList.contains('visible');
     if (nextVisible) openKnowledgePanel();
     else closeKnowledgePanel();
+}
+
+function isKnowledgeViewerOpen() {
+    const viewer = document.getElementById('knowledgeViewer');
+    if (!viewer) return false;
+    return viewer.style.display !== 'none' && viewer.offsetParent !== null;
 }
 
 function closeCloudFilePanel() {
@@ -4499,6 +4523,87 @@ const els = {
     knowledgeSearchBtn: document.getElementById('knowledgeSearchBtn')
 };
 
+function ensureLearningFeedComposerControls() {
+    if (!els.sendBtn || !els.sendBtn.parentElement) return null;
+    if (learningFeedCancelBtn && learningFeedCancelBtn.isConnected) return learningFeedCancelBtn;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.id = 'learningFeedCancelBtn';
+    btn.className = 'btn-send btn-send-cancel learning-feed-cancel-btn';
+    btn.title = '退出动态发布';
+    btn.setAttribute('aria-label', '退出动态发布');
+    btn.innerHTML = '<i class="fa-regular fa-trash-can"></i>';
+    btn.addEventListener('click', () => {
+        exitLearningFeedComposeMode();
+    });
+    els.sendBtn.parentElement.insertBefore(btn, els.sendBtn);
+    learningFeedCancelBtn = btn;
+    return btn;
+}
+
+function syncLearningFeedComposerUi() {
+    const inputWrapper = document.getElementById('inputWrapper');
+    const inputContainer = inputWrapper ? inputWrapper.querySelector('.input-container') : null;
+    const inputOptions = inputWrapper ? inputWrapper.querySelector('.input-options') : null;
+    const tokenFooterLeft = inputWrapper ? inputWrapper.querySelector('.token-footer-left') : null;
+    const cancelBtn = ensureLearningFeedComposerControls();
+    if (inputWrapper) inputWrapper.classList.toggle('learning-feed-compose-mode', !!learningFeedComposeMode);
+    if (inputContainer) inputContainer.classList.toggle('learning-feed-compose-mode', !!learningFeedComposeMode);
+    if (inputOptions) inputOptions.classList.toggle('is-hidden-for-feed', !!learningFeedComposeMode);
+    if (tokenFooterLeft) tokenFooterLeft.classList.toggle('is-hidden-for-feed', !!learningFeedComposeMode);
+    if (cancelBtn) {
+        cancelBtn.style.display = learningFeedComposeMode ? '' : 'none';
+        cancelBtn.disabled = !!learningFeedPostInFlight;
+    }
+    if (els.messageInput) {
+        els.messageInput.placeholder = learningFeedComposeMode ? '写一条学习动态...' : 'Type a message...';
+    }
+}
+
+function enterLearningFeedComposeMode() {
+    learningFeedComposeMode = true;
+    syncLearningFeedComposerUi();
+    updateSendButtonState();
+    if (els.messageInput) {
+        els.messageInput.focus();
+    }
+}
+
+function exitLearningFeedComposeMode(options = {}) {
+    const shouldClear = !options || options.clear !== false;
+    learningFeedComposeMode = false;
+    learningFeedPostInFlight = false;
+    if (shouldClear && els.messageInput) {
+        els.messageInput.value = '';
+        els.messageInput.style.height = 'auto';
+        saveMessageDraftToStorage('');
+    }
+    syncLearningFeedComposerUi();
+    updateSendButtonState();
+}
+
+async function submitLearningFeedPost(text) {
+    const content = String(text || '').trim();
+    if (!content || learningFeedPostInFlight) return;
+    learningFeedPostInFlight = true;
+    syncLearningFeedComposerUi();
+    updateSendButtonState();
+    try {
+        const api = await ensureLearningModeAssets();
+        if (!api || typeof api.postFeedViaIframe !== 'function') {
+            throw new Error('Learning 动态发布桥未就绪。');
+        }
+        await api.postFeedViaIframe(content);
+        showToast('动态已发布');
+        exitLearningFeedComposeMode();
+    } catch (err) {
+        learningFeedPostInFlight = false;
+        syncLearningFeedComposerUi();
+        updateSendButtonState();
+        showToast(`发布动态失败：${String((err && err.message) || err || '未知错误')}`);
+    }
+}
+
 function ensureStylesheetAsset(id, href) {
     let link = document.getElementById(id);
     if (link) return Promise.resolve(link);
@@ -4581,7 +4686,7 @@ function applyLearningSidebarMode(mode) {
         els.conversationList.style.display = visible ? 'none' : '';
     }
     if (els.newChatBtn) {
-        els.newChatBtn.style.display = visible ? 'none' : '';
+        els.newChatBtn.style.display = '';
         els.newChatBtn.innerHTML = visible
             ? '<span class="icon">+</span> New Learning'
             : '<span class="icon">+</span> New Chat';
@@ -4654,6 +4759,11 @@ function handleLearningHostMessage(payload) {
     }
     if (msgType === 'nexora:layout:request') {
         setLearningEmbedLayoutMode(payload.mode, payload);
+        return true;
+    }
+    if (msgType === 'nexora:feed-compose:toggle') {
+        if (payload.active) enterLearningFeedComposeMode();
+        else exitLearningFeedComposeMode({ clear: false });
         return true;
     }
     if (msgType === 'nexora:reader:state') {
@@ -4746,8 +4856,11 @@ async function renderLearningMainPanel() {
 async function syncLearningHeaderMode() {
     const hasConversation = !!String(currentConversationId || '').trim();
     const showLearning = isLearningConversationView();
+    const knowledgeViewerOpen = isKnowledgeViewerOpen();
+    const viewerOpen = knowledgeViewerOpen;
     const showLearningMain = !!(
         learningModeEnabled
+        && !viewerOpen
         && (
             (String(learningHeaderMode || '').trim().toLowerCase() === 'learning' && !hasConversation)
             || learningReaderOpened
@@ -4871,6 +4984,13 @@ async function loadCurrentUserPreferences() {
     currentUserPreferences = (prefsData && typeof prefsData.preferences === 'object' && prefsData.preferences)
         ? prefsData.preferences
         : {};
+    const learningRuntime = (prefsData && typeof prefsData.learning_runtime === 'object' && prefsData.learning_runtime)
+        ? prefsData.learning_runtime
+        : {};
+    const frontendUrl = String(learningRuntime.frontend_url || '').trim();
+    if (frontendUrl) {
+        NEXORA_LEARNING_FRONTEND_URL = frontendUrl.endsWith('/') ? frontendUrl : `${frontendUrl}/`;
+    }
     return currentUserPreferences;
 }
 
@@ -10813,6 +10933,7 @@ async function createNewConversation(silent = false, targetMode = null) {
     if (viewer && viewer.style.display !== 'none') {
         closeKnowledgeView();
     }
+    exitLearningFeedComposeMode();
     currentConversationHasImageHistory = false;
     const normalizedTargetMode = String(targetMode || '').trim().toLowerCase();
     const preferNexoraChat = normalizedTargetMode === 'chat' && String(learningSidebarMode || '').trim().toLowerCase() === 'nexora';
@@ -10963,19 +11084,32 @@ function updateSendButtonState() {
     if (isGenerating) {
         els.sendBtn.disabled = false;
         els.sendBtn.classList.add('stop-mode');
+        els.sendBtn.classList.remove('feed-mode');
         els.sendBtn.innerHTML = stopIcon;
         els.sendBtn.title = "Stop Generation";
     } else if (isUploadingFiles) {
         els.sendBtn.disabled = true;
         els.sendBtn.classList.remove('stop-mode');
+        els.sendBtn.classList.remove('feed-mode');
         els.sendBtn.innerHTML = sendIcon;
         els.sendBtn.title = "文件上传/向量化进行中";
+    } else if (learningFeedComposeMode) {
+        els.sendBtn.disabled = !!learningFeedPostInFlight;
+        els.sendBtn.classList.remove('stop-mode');
+        els.sendBtn.classList.add('feed-mode');
+        els.sendBtn.innerHTML = learningFeedPostInFlight
+            ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9" stroke-dasharray="42 16" transform="rotate(-90 12 12)"></circle></svg>'
+            : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>';
+        els.sendBtn.title = learningFeedPostInFlight ? "动态发送中" : "发送动态";
     } else {
         els.sendBtn.disabled = false;
         els.sendBtn.classList.remove('stop-mode');
+        els.sendBtn.classList.remove('feed-mode');
         els.sendBtn.innerHTML = sendIcon;
         els.sendBtn.title = "Send Message";
     }
+    syncLearningFeedComposerUi();
+    scheduleLearningSidebarBridgeNotify(0);
 }
 
 function messageHasImageAttachments(msg) {
@@ -11704,6 +11838,7 @@ function stopGeneration() {
         isGenerating = false;
         updateSendButtonState();
     }
+    releaseLearningSidebarPendingSend();
     clearActiveStreamResumeState();
 }
 
@@ -12237,6 +12372,10 @@ async function sendMessage(options = {}) {
     const overrideDisplayContent = String(options && options.displayContentOverride ? options.displayContentOverride : '').trim();
     const overrideText = String(options && options.textOverride ? options.textOverride : '').trim();
     const rawText = isAutoContinue ? '' : (overrideText || els.messageInput.value.trim());
+    if (learningFeedComposeMode && !isAutoContinue && !isGenerating) {
+        await submitLearningFeedPost(rawText);
+        return;
+    }
     const longtermTriggered = !isAutoContinue && /^\s*\/longterm(?:\s+|$)/i.test(rawText);
     let text = rawText;
     let nextConversationMode = (currentConversationMode === 'longterm' || isAutoContinue)
@@ -12432,6 +12571,7 @@ async function sendMessage(options = {}) {
             done_indices: Array.isArray(currentConversationLongtermState.done_indices) ? currentConversationLongtermState.done_indices : [],
         } : (nextConversationMode === 'learning' ? {
             learning: true,
+            lecture_id: String((learningReaderContextSnapshot && learningReaderContextSnapshot.lecture_id) || '').trim(),
             system_prompt: '',
             context_blocks: learningReaderContextBlocks,
             active_tool_skills: [],
@@ -12492,6 +12632,7 @@ async function sendMessage(options = {}) {
     payload.skip_user_message = !!(isAutoContinue || userMessagePersisted);
 
     isGenerating = true;
+    releaseLearningSidebarPendingSend({ notify: false });
     updateSendButtonState();
     beginTokenMiniStreaming();
     
@@ -15539,6 +15680,7 @@ async function startRegenerate(index) {
                 done_indices: Array.isArray(currentConversationLongtermState.done_indices) ? currentConversationLongtermState.done_indices : [],
             } : ((learningModeEnabled && currentConversationMode === 'learning') ? {
                 learning: true,
+                lecture_id: String((learningReaderContextSnapshot && learningReaderContextSnapshot.lecture_id) || '').trim(),
                 system_prompt: '',
                 context_blocks: regenLearningReaderContextBlocks,
                 active_tool_skills: [],
@@ -17878,6 +18020,9 @@ async function viewKnowledge(title, options = {}) {
 
     // 3. UI Switch
     msgs.style.display = 'none';
+    if (els.learningMainPanel) {
+        els.learningMainPanel.style.display = 'none';
+    }
     const inputDock = document.querySelector('.input-dock');
     if (inputDock) inputDock.style.display = 'none';
     if(inputWrapper) inputWrapper.style.display = 'none';
@@ -18135,6 +18280,7 @@ function closeKnowledgeView() {
     const wasMailView = !!(viewer && viewer.querySelector('.mail-workspace'));
     const closingTitle = String(currentViewingKnowledge || '').trim();
 
+    exitLearningFeedComposeMode({ clear: false });
     exitKnowledgeEditorSpecialModes();
     storeKnowledgeEditorScrollPosition();
     if (closingTitle && knowledgeEditorScrollState.byTitle && typeof knowledgeEditorScrollState.byTitle === 'object') {
@@ -18207,11 +18353,13 @@ function closeKnowledgeView() {
     }
     if (wasMailView) clearMailViewUrl();
     originalHeaderState = null;
+    void syncLearningHeaderMode();
 }
 
 window.openMailPlaceholderView = function() {
     closeKnowledgePanel();
     closeCloudFilePanel();
+    exitLearningFeedComposeMode({ clear: false });
     const viewer = document.getElementById('knowledgeViewer');
     const msgs = document.getElementById('messagesContainer');
     const inputWrapper = document.getElementById('inputWrapper');
@@ -18244,6 +18392,7 @@ window.openMailPlaceholderView = function() {
     }
 
     msgs.style.display = 'none';
+    if (els.learningMainPanel) els.learningMainPanel.style.display = 'none';
     const inputDock = document.querySelector('.input-dock');
     if (inputDock) inputDock.style.display = 'none';
     if (inputWrapper) inputWrapper.style.display = 'none';
