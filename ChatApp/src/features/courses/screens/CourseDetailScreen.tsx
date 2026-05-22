@@ -29,6 +29,38 @@ function getBookTitle(book: Book) {
   return String(book.title || "").trim() || "未命名教材";
 }
 
+function getBookSortNumber(book: Book) {
+  const match = getBookTitle(book).match(/\d+/u);
+  if (!match) {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  const value = Number.parseInt(match[0], 10);
+  return Number.isFinite(value) ? value : Number.NEGATIVE_INFINITY;
+}
+
+function compareTextByPinyin(left: string, right: string) {
+  try {
+    return left.localeCompare(right, "zh-Hans-CN-u-co-pinyin");
+  } catch {
+    return left.localeCompare(right, "zh-Hans-CN");
+  }
+}
+
+function compareBooks(left: Book, right: Book) {
+  const numberDiff = getBookSortNumber(right) - getBookSortNumber(left);
+  if (numberDiff !== 0) {
+    return numberDiff;
+  }
+
+  const titleDiff = compareTextByPinyin(getBookTitle(left), getBookTitle(right));
+  if (titleDiff !== 0) {
+    return titleDiff;
+  }
+
+  return String(left.id || "").localeCompare(String(right.id || ""));
+}
+
 export function CourseDetailScreen({ navigation, route }: CourseDetailScreenProps) {
   const { lectureId, lectureTitle } = route.params;
   const [lecture, setLecture] = useState<Lecture | null>(null);
@@ -40,6 +72,7 @@ export function CourseDetailScreen({ navigation, route }: CourseDetailScreenProp
     () => getLectureTitle(lecture, lectureTitle),
     [lecture, lectureTitle],
   );
+  const sortedBooks = useMemo(() => [...books].sort(compareBooks), [books]);
 
   const loadLecture = useCallback(async () => {
     const normalizedLectureId = String(lectureId || "").trim();
@@ -147,7 +180,7 @@ export function CourseDetailScreen({ navigation, route }: CourseDetailScreenProp
           onAction={() => void loadLecture()}
         />
       ) : (
-        books.map((book) => {
+        sortedBooks.map((book) => {
           const bookId = String(book.id || "").trim();
           return (
             <BookListItem

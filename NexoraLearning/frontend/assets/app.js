@@ -78,6 +78,7 @@
 
   const PIE_COLORS = ["#111111", "#373737", "#585858", "#7a7a7a", "#9d9d9d", "#bbbbbb"];
   const READER_SETTINGS_STORAGE_KEY = "nxl_reader_settings_v1";
+  const READER_RESUME_STORAGE_KEY = "nxl_reader_resume_v1";
   const DEFAULT_READER_SETTINGS = Object.freeze({
     fontSize: 18,
     paragraphSpacing: 1.7,
@@ -143,6 +144,7 @@
     readerImages: [],
     readerViewMode: "closed",
     readerMeta: { title: "", subtitle: "" },
+    readerResume: null,
     readerUiToggleLockedUntil: 0,
     readerClosePanelsUntil: 0,
     materialsDetailMode: "lecture",
@@ -243,6 +245,205 @@
       return getCurrentUserAvatarUrl();
     }
     return "";
+  }
+
+  function saveReaderResumeState() {
+    try {
+      if (!state.readerResume || typeof state.readerResume !== "object") {
+        localStorage.removeItem(READER_RESUME_STORAGE_KEY);
+        return;
+      }
+      localStorage.setItem(READER_RESUME_STORAGE_KEY, JSON.stringify(state.readerResume));
+    } catch (_err) {
+      // ignore local persistence errors
+    }
+  }
+
+  function loadReaderResumeState() {
+    try {
+      const raw = localStorage.getItem(READER_RESUME_STORAGE_KEY);
+      if (!raw) {
+        state.readerResume = null;
+        return;
+      }
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") {
+        state.readerResume = null;
+        return;
+      }
+      state.readerResume = {
+        lectureId: String(parsed.lectureId || "").trim(),
+        lectureTitle: String(parsed.lectureTitle || "").trim(),
+        bookId: String(parsed.bookId || "").trim(),
+        bookTitle: String(parsed.bookTitle || "").trim(),
+        subtitle: String(parsed.subtitle || "").trim(),
+        chapterIndex: Math.max(0, Number(parsed.chapterIndex) || 0),
+        chapterTitle: String(parsed.chapterTitle || "").trim(),
+        chapterScrollTop: Math.max(0, Number(parsed.chapterScrollTop) || 0),
+        chapterScrollRatio: Math.max(0, Math.min(1, Number(parsed.chapterScrollRatio) || 0)),
+        readerViewMode: String(parsed.readerViewMode || "reading").trim() || "reading",
+        savedAt: Number(parsed.savedAt) || Date.now(),
+      };
+      if (!state.readerResume.lectureId || !state.readerResume.bookId) {
+        state.readerResume = null;
+      }
+    } catch (_err) {
+      state.readerResume = null;
+    }
+  }
+
+  function rememberReaderExitPosition() {
+    const lectureId = String(state.selectedLectureId || "").trim();
+    const bookId = String(state.selectedBookId || "").trim();
+    if (!lectureId || !bookId) return;
+
+    const row = getSelectedLectureRow();
+    const lecture = row ? (row.lecture || {}) : {};
+    const books = row && Array.isArray(row.books) ? row.books : [];
+    const book = books.find((item) => String((item && item.id) || "") === bookId) || {};
+    const chapters = Array.isArray(state.readerChapters) ? state.readerChapters : [];
+    const chapter = chapters[Math.max(0, Math.min(chapters.length - 1, Number(state.readerActiveChapterIndex) || 0))] || {};
+    const scrollPosition = getReaderScrollPosition();
+
+    state.readerResume = {
+      lectureId,
+      lectureTitle: getLectureTitle(lecture),
+      bookId,
+      bookTitle: String(book.title || state.readerMeta.title || "").trim() || "教材阅读",
+      subtitle: String(state.readerMeta && state.readerMeta.subtitle ? state.readerMeta.subtitle : "").trim(),
+      chapterIndex: Math.max(0, Number(state.readerActiveChapterIndex) || 0),
+      chapterTitle: String(chapter.title || "").trim(),
+      chapterScrollTop: scrollPosition.top,
+      chapterScrollRatio: scrollPosition.ratio,
+      readerViewMode: String(state.readerViewMode || "reading").trim() || "reading",
+      savedAt: Date.now(),
+    };
+    saveReaderResumeState();
+  }
+
+  function getReaderScrollElement() {
+    return el.readerContent ? el.readerContent.querySelector(".materials-preview-text") : null;
+  }
+
+  function getReaderScrollPosition() {
+    const scrollEl = getReaderScrollElement();
+    if (!scrollEl) {
+      return { top: 0, ratio: 0 };
+    }
+    const maxScrollTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+    const top = Math.max(0, Number(scrollEl.scrollTop) || 0);
+    return {
+      top,
+      ratio: maxScrollTop > 0 ? Math.max(0, Math.min(1, top / maxScrollTop)) : 0,
+    };
+  }
+
+  function restoreReaderScrollPosition(savedTop, savedRatio) {
+    const scrollEl = getReaderScrollElement();
+    if (!scrollEl) return;
+    const maxScrollTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+    const normalizedTop = Math.max(0, Number(savedTop) || 0);
+    const normalizedRatio = Math.max(0, Math.min(1, Number(savedRatio) || 0));
+    let targetTop = normalizedTop;
+    if (normalizedRatio > 0 && (!Number.isFinite(targetTop) || targetTop <= 0 || targetTop > maxScrollTop)) {
+      targetTop = maxScrollTop * normalizedRatio;
+    }
+    scrollEl.scrollTop = Math.max(0, Math.min(maxScrollTop, targetTop));
+  }
+
+  function scheduleReaderScrollRestore(savedTop, savedRatio) {
+    window.requestAnimationFrame(() => {
+      restoreReaderScrollPosition(savedTop, savedRatio);
+      window.requestAnimationFrame(() => {
+        restoreReaderScrollPosition(savedTop, savedRatio);
+      });
+    });
+  }
+
+  function getReaderResumeCardMarkup() {
+    const resume = state.readerResume;
+    if (!resume || typeof resume !== "object") return "";
+    const lectureId = String(resume.lectureId || "").trim();
+    const bookId = String(resume.bookId || "").trim();
+    if (!lectureId || !bookId) return "";
+
+    const title = String(resume.bookTitle || "上次阅读").trim() || "上次阅读";
+    const chapterText = String(resume.chapterTitle || "").trim() || "返回上次阅读位置";
+    return `
+      <button class="detail-resume-card" type="button" data-action="resume-reader" title="回到上次退出阅读的位置">
+        <span class="detail-resume-label">回到上次退出阅读的位置</span>
+        <span class="detail-resume-title">${escapeHtml(title)}</span>
+        <span class="detail-resume-chapter">${escapeHtml(chapterText)}</span>
+        <span class="detail-resume-arrow" aria-hidden="true">→</span>
+      </button>
+    `;
+  }
+
+  async function resumeReaderAtLastPosition() {
+    const resume = state.readerResume;
+    if (!resume || typeof resume !== "object") {
+      throw new Error("暂无可恢复的阅读位置");
+    }
+    const lectureId = String(resume.lectureId || "").trim();
+    const bookId = String(resume.bookId || "").trim();
+    if (!lectureId || !bookId) {
+      throw new Error("上次阅读位置无效");
+    }
+
+    state.selectedLectureId = lectureId;
+    state.selectedBookId = bookId;
+    state.materialsDetailMode = "catalog";
+    setView("materials");
+    renderLectureList();
+    renderLectureDetail();
+
+    const row = getSelectedLectureRow();
+    const lecture = row ? (row.lecture || {}) : {};
+    const books = row && Array.isArray(row.books) ? row.books : [];
+    const book = books.find((item) => String((item && item.id) || "") === bookId) || null;
+    if (!row || !book) {
+      throw new Error("未找到上次阅读的教材");
+    }
+
+    const requestToken = state.readerRequestToken + 1;
+    state.readerRequestToken = requestToken;
+    state.catalogContext = {
+      title: String(book.title || resume.bookTitle || "教材目录"),
+      subtitle: `${getLectureTitle(lecture)} · ${vectorStatusLabel(book.vector_status, book.vector_provider)} / ${materialStatusLabel(book.status)}`,
+      chapters: [],
+      fullTextRaw: "",
+      loading: true,
+    };
+    renderLectureDetail();
+
+    const fullText = await fetchBookTextFull();
+    const bookInfoXml = await fetchBookInfoXml();
+    const bookDetailXml = await fetchBookDetailXml();
+    if (requestToken !== state.readerRequestToken) {
+      return;
+    }
+
+    const chapters = parseBookInfoChapters(bookInfoXml, String(fullText || "").length);
+    state.catalogContext = {
+      title: String(book.title || resume.bookTitle || "教材目录"),
+      subtitle: `${getLectureTitle(lecture)} · ${vectorStatusLabel(book.vector_status, book.vector_provider)} / ${materialStatusLabel(book.status)}`,
+      chapters,
+      fullTextRaw: String(fullText || "（当前教材暂无可读取文本，可能仍在解析或向量化）"),
+      detailXml: String(bookDetailXml || ""),
+      loading: false,
+    };
+    renderLectureDetail();
+
+    state.readerChapters = chapters.slice();
+    state.readerFullTextRaw = String(state.catalogContext.fullTextRaw || "");
+    state.readerBookDetailXml = String(state.catalogContext.detailXml || "");
+    state.readerActiveChapterIndex = Math.max(0, Math.min(state.readerChapters.length - 1, Number(resume.chapterIndex) || 0));
+    openReader(
+      state.catalogContext.title || "教材阅读",
+      state.catalogContext.subtitle || "",
+      state.readerFullTextRaw,
+      { chapterIndex: state.readerActiveChapterIndex }
+    );
   }
 
   function normalizeFeedAvatarUrl(rawUrl) {
@@ -1685,24 +1886,29 @@
     el.lectureDetailPane.innerHTML = `
       <section class="materials-detail-scroll">
         <section class="detail-section">
-          <div class="detail-header">
-            <div class="detail-title">${escapeHtml(getLectureTitle(lecture))}</div>
-            <div class="learning-action-group">
-              <span class="${learningPillClass}">${learningPillText}</span>
-              <button class="${toggleBtnClass}" data-action="toggle-learning" data-lecture-id="${escapeHtml(lectureId)}" aria-label="${toggleBtnTitle}" title="${toggleBtnTitle}">${toggleBtnText}</button>
+          <div class="detail-top-row">
+            <div class="detail-main-block">
+              <div class="detail-header">
+                <div class="detail-title">${escapeHtml(getLectureTitle(lecture))}</div>
+                <div class="learning-action-group">
+                  <span class="${learningPillClass}">${learningPillText}</span>
+                  <button class="${toggleBtnClass}" data-action="toggle-learning" data-lecture-id="${escapeHtml(lectureId)}" aria-label="${toggleBtnTitle}" title="${toggleBtnTitle}">${toggleBtnText}</button>
+                </div>
+              </div>
+              <div class="detail-kv-list">
+                <div class="detail-kv-row"><div class="detail-kv-label">分类</div><div class="detail-kv-value">${escapeHtml(String(lecture.category || "暂无分类"))}</div></div>
+                <div class="detail-kv-row"><div class="detail-kv-label">状态</div><div class="detail-kv-value">${escapeHtml(statusText(lecture.status))}</div></div>
+                <div class="detail-kv-row"><div class="detail-kv-label">当前章节</div><div class="detail-kv-value">${escapeHtml(chapter.current)}</div></div>
+                <div class="detail-kv-row"><div class="detail-kv-label">下一章节</div><div class="detail-kv-value">${escapeHtml(chapter.next)}</div></div>
+                <div class="detail-kv-row"><div class="detail-kv-label">教材数量</div><div class="detail-kv-value">${books.length}</div></div>
+                <div class="detail-kv-row"><div class="detail-kv-label">课程进度</div><div class="detail-kv-value">${getCourseProgress(lecture, books)}%</div></div>
+              </div>
+              <div class="detail-description">
+                <div class="detail-description-label">课程描述</div>
+                <div class="detail-description-text">${escapeHtml(String(lecture.description || "暂无描述"))}</div>
+              </div>
             </div>
-          </div>
-          <div class="detail-kv-list">
-            <div class="detail-kv-row"><div class="detail-kv-label">分类</div><div class="detail-kv-value">${escapeHtml(String(lecture.category || "暂无分类"))}</div></div>
-            <div class="detail-kv-row"><div class="detail-kv-label">状态</div><div class="detail-kv-value">${escapeHtml(statusText(lecture.status))}</div></div>
-            <div class="detail-kv-row"><div class="detail-kv-label">当前章节</div><div class="detail-kv-value">${escapeHtml(chapter.current)}</div></div>
-            <div class="detail-kv-row"><div class="detail-kv-label">下一章节</div><div class="detail-kv-value">${escapeHtml(chapter.next)}</div></div>
-            <div class="detail-kv-row"><div class="detail-kv-label">教材数量</div><div class="detail-kv-value">${books.length}</div></div>
-            <div class="detail-kv-row"><div class="detail-kv-label">课程进度</div><div class="detail-kv-value">${getCourseProgress(lecture, books)}%</div></div>
-          </div>
-          <div class="detail-description">
-            <div class="detail-description-label">课程描述</div>
-            <div class="detail-description-text">${escapeHtml(String(lecture.description || "暂无描述"))}</div>
+            ${getReaderResumeCardMarkup()}
           </div>
         </section>
         <section class="detail-section">
@@ -1892,6 +2098,13 @@
     const start = Math.max(0, Math.min(state.readerFullTextRaw.length, chapter.start));
     const end = Math.max(start, Math.min(state.readerFullTextRaw.length, chapter.end));
     const part = state.readerFullTextRaw.slice(start, end).trim() || state.readerFullTextRaw;
+    const resume = state.readerResume && typeof state.readerResume === "object" ? state.readerResume : null;
+    const shouldRestoreSavedScroll = !!(
+      resume
+      && String(resume.lectureId || "").trim() === String(state.selectedLectureId || "").trim()
+      && String(resume.bookId || "").trim() === String(state.selectedBookId || "").trim()
+      && Math.max(0, Number(resume.chapterIndex) || 0) === idx
+    );
     const prevDisabled = idx <= 0 ? "disabled" : "";
     const nextDisabled = idx >= chapters.length - 1 ? "disabled" : "";
     if (el.readerPane) {
@@ -1918,6 +2131,9 @@
     renderChapterList();
     syncReaderSettingsPanel();
     applyReaderTypography();
+    if (shouldRestoreSavedScroll) {
+      scheduleReaderScrollRestore(resume.chapterScrollTop, resume.chapterScrollRatio);
+    }
     scheduleHostReaderContextSync(0);
   }
 
@@ -2110,6 +2326,7 @@
   function closeReader() {
     if (state.isReaderOpen && Array.isArray(state.readerChapters) && state.readerChapters.length) {
       reportReaderChapterComplete(state.readerActiveChapterIndex).catch(() => {});
+      rememberReaderExitPosition();
     }
     state.isReaderOpen = false;
     state.readerRequestToken += 1;
@@ -3160,6 +3377,16 @@
         }
         return;
       }
+
+      const resumeBtn = target.closest("[data-action='resume-reader']");
+      if (resumeBtn) {
+        try {
+          await resumeReaderAtLastPosition();
+        } catch (err) {
+          showToast(`恢复阅读失败：${err.message || "未知错误"}`);
+        }
+        return;
+      }
       
       const deleteBtn = target.closest("[data-action='delete-book']");
       if (deleteBtn) {
@@ -3465,6 +3692,7 @@
   async function init() {
     state.username = getRuntimeUsername();
     loadReaderSettings();
+    loadReaderResumeState();
     setView("dashboard");
     closeReader();
     syncReaderSettingsPanel();
