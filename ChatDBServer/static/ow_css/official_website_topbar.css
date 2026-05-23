@@ -1,0 +1,181 @@
+.ow-topbar {
+  height: 64px;
+  border-bottom: 1px solid rgba(232, 235, 241, 0.92);
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(14px);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 28px;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.ow-topbar .ow-brand {
+  position: relative;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  padding: 8px 0 12px;
+  color: #0f172a;
+  text-decoration: none;
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.045em;
+  line-height: 1;
+  transform-origin: left center;
+  transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1), color 180ms ease;
+}
+
+.ow-topbar .ow-brand::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 4px;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent 0%, currentColor 18%, currentColor 82%, transparent 100%);
+  opacity: 0;
+  transform: scaleX(0.45);
+  transform-origin: center;
+  transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 180ms ease;
+}
+
+.ow-topbar .ow-brand:hover {
+  transform: scale(1.03);
+}
+
+.ow-topbar .ow-brand:hover::after,
+.ow-topbar .ow-brand[aria-current="page"]::after {
+  opacity: 1;
+  transform: scaleX(1);
+}
+
+.ow-topbar .ow-brand[aria-current="page"] {
+  transform: scale(1.05);
+}
+
+.ow-topbar .ow-nav {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: nowrap;
+}
+
+.ow-topbar .ow-nav-link {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 2px 12px;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #475569;
+  text-decoration: none;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  transform-origin: center bottom;
+  transform: translateZ(0) scale(1);
+  transition:
+    transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    color 180ms ease,
+    opacity 180ms ease;
+}
+
+.ow-topbar .ow-nav-link::after {
+  content: "";
+  position: absolute;
+  left: 12%;
+  right: 12%;
+  bottom: 4px;
+  height: 2.5px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent 0%, currentColor 22%, currentColor 78%, transparent 100%);
+  opacity: 0;
+  transform: scaleX(0.35);
+  transform-origin: center;
+  transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1), opacity 180ms ease;
+}
+
+.ow-topbar .ow-nav-link:hover {
+  color: #0f172a;
+  transform: scale(1.08);
+}
+
+.ow-topbar .ow-nav-link:hover::after {
+  opacity: 0.5;
+  transform: scaleX(0.85);
+}
+
+.ow-topbar .ow-nav-link[aria-current="page"] {
+  color: #0f172a;
+  font-size: 17px;
+  font-weight: 700;
+  transform: scale(1.12);
+}
+
+.ow-topbar .ow-nav-link[aria-current="page"]::after {
+  opacity: 1;
+  transform: scaleX(1);
+}
+
+.ow-topbar .ow-nav-link[aria-current="page"]:hover {
+  transform: scale(1.12);
+}
+
+.ow-topbar .ow-nav-link.menu-item,
+.ow-topbar .ow-nav-link.menu-login {
+  height: auto;
+  min-height: 0;
+  padding-left: 2px;
+  padding-right: 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.ow-topbar .ow-nav-link.menu-login:hover {
+  border-color: transparent;
+  background: transparent;
+  color: #0f172a;
+}
+
+@media (max-width: 820px) {
+  .ow-topbar {
+    height: 64px;
+    padding: 0 14px;
+  }
+
+  .ow-topbar .ow-brand {
+    font-size: 24px;
+  }
+
+  .ow-topbar .ow-nav {
+    gap: 6px;
+  }
+
+  .ow-topbar .ow-nav-link {
+    font-size: 14px;
+    padding: 8px 2px 10px;
+  }
+
+  .ow-topbar .ow-nav-link[aria-current="page"] {
+    font-size: 16px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ow-topbar .ow-brand,
+  .ow-topbar .ow-brand::after,
+  .ow-topbar .ow-nav-link,
+  .ow-topbar .ow-nav-link::after {
+    transition: none;
+  }
+}

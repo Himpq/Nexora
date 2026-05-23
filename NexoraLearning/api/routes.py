@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib import error as urllib_error
+from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
 from flask import Blueprint, jsonify, request, send_file, send_from_directory
@@ -56,9 +58,11 @@ from core.learning_feed import list_learning_feed_channels
 from core.learning_feed import upsert_learning_feed_channel
 from core.learning_feed import delete_learning_feed_channel
 from core.learning_feed import toggle_learning_feed_like
+from core.learning_feed import toggle_learning_feed_comment_like
 from core.learning_feed import append_learning_feed_comment
 from core.learning_feed import delete_learning_feed_item
 from core.learning_feed import delete_learning_feed_comment
+from core.user import append_notification
 from core.memory_queue import (
     enqueue_memory_job,
     get_memory_queue_snapshot,
@@ -695,6 +699,11 @@ def frontend_index():
     return send_from_directory(str(_FRONTEND_DIR), "index.html")
 
 
+@bp.route("/frontend/puzzle", methods=["GET"])
+def frontend_puzzle():
+    return send_from_directory(str(_FRONTEND_DIR), "puzzle.html")
+
+
 @bp.route("/frontend/assets/<path:filename>", methods=["GET"])
 def frontend_assets(filename: str):
     return send_from_directory(str(_FRONTEND_ASSETS_DIR), filename)
@@ -834,6 +843,173 @@ def _build_feed_author_snapshot(username: str) -> Dict[str, str]:
     except Exception:
         pass
     return snapshot
+
+
+def _extract_mentioned_user_ids(text: str) -> List[str]:
+    found = re.findall(r"(?<![\w@])@([A-Za-z0-9_][A-Za-z0-9_.-]{0,63})", str(text or ""))
+    seen: set[str] = set()
+    rows: List[str] = []
+    for item in found:
+        key = str(item or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        rows.append(key)
+    return rows
+
+
+def _notify_feed_mentions(author_user_id: str, content: str, *, title: str, jumpto: str = "") -> None:
+    author_key = str(author_user_id or "").strip()
+    for mentioned_user_key in _extract_mentioned_user_ids(content):
+        mention_key = str(mentioned_user_key or "").strip()
+        if not mention_key:
+            continue
+        resolved_username = mention_key
+        resolved_user_id = mention_key
+        if _proxy is not None:
+            try:
+                lookup = _proxy.get_user_info(username=mention_key)
+                if not (isinstance(lookup, dict) and lookup.get("success")):
+                    log_event(
+                        "learning_feed_mention_notify_skipped",
+                        "Skipped learning-feed mention notification because the mentioned user could not be resolved.",
+                        payload={
+                            "author_user_id": author_key,
+                            "mentioned_key": mention_key,
+                            "source": "feed",
+                        },
+                    )
+                    continue
+                user = lookup.get("user") if isinstance(lookup.get("user"), dict) else {}
+                resolved_username = str(user.get("username") or mention_key).strip() or mention_key
+                resolved_user_id = str(user.get("id") or resolved_username).strip() or resolved_username
+            except Exception:
+                log_event(
+                    "learning_feed_mention_notify_error",
+                    "Failed to resolve mentioned user while writing learning-feed notification.",
+                    payload={
+                        "author_user_id": author_key,
+                        "mentioned_key": mention_key,
+                        "source": "feed",
+                    },
+                )
+                continue
+        try:
+            append_notification(
+                _cfg,
+                resolved_username,
+                {
+                    "type": "notification",
+                    "date": int(time.time()),
+                    "title": str(title or "").strip(),
+                    "content": str(content or "").strip(),
+                    "jumpto": str(jumpto or "").strip(),
+                },
+            )
+            log_event(
+                "learning_feed_mention_notified",
+                "Wrote a learning-feed mention notification.",
+                payload={
+                    "author_user_id": author_key,
+                    "mentioned_key": mention_key,
+                    "mentioned_username": resolved_username,
+                    "mentioned_user_id": resolved_user_id,
+                    "source": "feed",
+                },
+            )
+        except Exception:
+            log_event(
+                "learning_feed_mention_notify_error",
+                "Failed to append learning-feed mention notification.",
+                payload={
+                    "author_user_id": author_key,
+                    "mentioned_key": mention_key,
+                    "mentioned_username": resolved_username,
+                    "source": "feed",
+                },
+            )
+            continue
+
+
+def _search_nexora_users(query: str, limit: int = 8) -> List[Dict[str, Any]]:
+    q = str(query or "").strip()
+    if not q or _proxy is None:
+        return []
+    endpoint = f"/api/papi/user/search?q={urllib_parse.quote(q)}&limit={max(1, min(int(limit or 8), 20))}"
+    status, resp, _used_endpoint = _proxy._request_json(endpoint, method="GET", payload=None, username=None)
+    if int(status or 0) < 200 or int(status or 0) >= 300:
+        return []
+    if not isinstance(resp, dict):
+        return []
+    items = resp.get("items")
+    if not isinstance(items, list):
+        return []
+    rows: List[Dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        user_id = str(item.get("user_id") or item.get("username") or "").strip()
+        username = str(item.get("username") or user_id).strip() or user_id
+        if not user_id or not username:
+            continue
+        rows.append(
+            {
+                "user_id": user_id,
+                "username": username,
+                "display_name": str(item.get("display_name") or "").strip(),
+                "nickname": str(item.get("nickname") or "").strip(),
+                "avatar_url": str(item.get("avatar_url") or "").strip(),
+                "role": str(item.get("role") or "member").strip() or "member",
+            }
+        )
+    return rows
+
+
+def _list_recent_feed_user_examples(limit: int = 5) -> List[Dict[str, Any]]:
+    rows = list_learning_feed_items(_cfg, limit=120)
+    seen: set[str] = set()
+    user_ids: List[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        author = row.get("author") if isinstance(row.get("author"), dict) else {}
+        author_id = str(author.get("user_id") or "").strip()
+        if author_id and author_id not in seen:
+            seen.add(author_id)
+            user_ids.append(author_id)
+        comments = row.get("comments") if isinstance(row.get("comments"), list) else []
+        for comment in comments:
+            if not isinstance(comment, dict):
+                continue
+            comment_author = comment.get("author") if isinstance(comment.get("author"), dict) else {}
+            comment_author_id = str(comment_author.get("user_id") or "").strip()
+            if comment_author_id and comment_author_id not in seen:
+                seen.add(comment_author_id)
+                user_ids.append(comment_author_id)
+        if len(user_ids) >= max(1, int(limit or 5)):
+            break
+    result: List[Dict[str, Any]] = []
+    for user_id in user_ids[: max(1, int(limit or 5))]:
+        if _proxy is None:
+            result.append({"user_id": user_id, "username": user_id, "display_name": "", "nickname": "", "avatar_url": "", "role": "member"})
+            continue
+        try:
+            info = _proxy.get_user_info(username=user_id or None)
+            if isinstance(info, dict) and info.get("success"):
+                user = info.get("user") if isinstance(info.get("user"), dict) else {}
+                result.append(
+                    {
+                        "user_id": str(user.get("id") or user_id).strip() or user_id,
+                        "username": str(user.get("username") or user_id).strip() or user_id,
+                        "display_name": str(user.get("display_name") or "").strip(),
+                        "nickname": str(user.get("nickname") or "").strip(),
+                        "avatar_url": str(user.get("avatar_url") or "").strip(),
+                        "role": str(user.get("role") or "member").strip() or "member",
+                    }
+                )
+        except Exception:
+            continue
+    return result
 
 
 @bp.route("/frontend/materials", methods=["GET"])
@@ -2397,6 +2573,7 @@ _RUNTIME_READONLY_TOOL_NAMES = {
     "getBookDetailXml",
     "getBookQuestionsXml",
     "vectorSearch",
+    "puzzle",
     "learning_card",
     "question",
     "read_learning_memory",
@@ -3143,16 +3320,15 @@ def _builtin_feed_channels(username: str, is_admin: bool) -> List[Dict[str, Any]
             "builtin": True,
         }
     ]
-    if is_admin:
-        rows.append(
-            {
-                "id": "public_admin",
-                "title": "公告",
-                "type": "public",
-                "member_user_ids": [],
-                "builtin": True,
-            }
-        )
+    rows.append(
+        {
+            "id": "public_admin",
+            "title": "公告",
+            "type": "public",
+            "member_user_ids": [],
+            "builtin": True,
+        }
+    )
     return rows
 
 
@@ -3194,7 +3370,7 @@ def _can_view_feed_channel(channel: Dict[str, Any], username: str, is_admin: boo
     if channel_id == "public_all":
         return True
     if channel_id == "public_admin":
-        return bool(is_admin)
+        return True
     channel_type = str(channel.get("type") or "private").strip().lower()
     member_user_ids = _normalize_channel_members(channel.get("member_user_ids"))
     return bool(channel_type == "public" or is_admin or (username and username in member_user_ids))
@@ -3341,6 +3517,8 @@ def frontend_learning_feeds():
                         **comment,
                         "author": _build_author_payload(comment_author_view, comment_author_id),
                         "author_is_admin": bool(comment_author_view.get("author_is_admin")),
+                        "likes_count": max(0, _safe_int(comment.get("likes_count"), 0)),
+                        "liked_user_ids": comment.get("liked_user_ids") if isinstance(comment.get("liked_user_ids"), list) else [],
                         "can_delete": bool(
                             current_is_admin
                             or (
@@ -3395,8 +3573,27 @@ def frontend_learning_feeds_create():
             "comments_count": 0,
         },
     )
+    _notify_feed_mentions(
+        username,
+        content,
+        title=f"你在动态中被 @{username} 提到",
+    )
     log_event("learning_feed_posted", {"username": username, "chars": len(content), "channel_id": selected_channel_id, "source": "feed"})
     return jsonify({"success": True, "item": record})
+
+
+@bp.route("/frontend/learning-feeds/users/search", methods=["GET"])
+def frontend_learning_feed_users_search():
+    username = str(_resolve_runtime_user_id() or "").strip()
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+    query = str(request.args.get("q") or "").strip()
+    limit = max(1, min(_safe_int(request.args.get("limit"), 8), 20))
+    if not query:
+        rows = _list_recent_feed_user_examples(limit=min(limit, 5))
+        return jsonify({"success": True, "items": rows, "total": len(rows), "query": ""})
+    rows = _search_nexora_users(query, limit=limit)
+    return jsonify({"success": True, "items": rows, "total": len(rows), "query": query})
 
 
 @bp.route("/frontend/learning-feeds/<feed_id>/like", methods=["POST"])
@@ -3428,7 +3625,27 @@ def frontend_learning_feed_comment(feed_id: str):
     updated = append_learning_feed_comment(_cfg, feed_id, username, comment)
     if not isinstance(updated, dict):
         return jsonify({"success": False, "error": "feed not found."}), 404
+    _notify_feed_mentions(
+        username,
+        content,
+        title=f"你在评论中被 @{username} 提到",
+    )
     log_event("learning_feed_commented", {"feed_id": feed_id, "username": username, "chars": len(content), "source": "feed"})
+    return jsonify({"success": True, "item": updated})
+
+
+@bp.route("/frontend/learning-feeds/<feed_id>/comments/<comment_id>/like", methods=["POST"])
+def frontend_learning_feed_comment_like(feed_id: str, comment_id: str):
+    username = _resolve_runtime_user_id()
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+    updated = toggle_learning_feed_comment_like(_cfg, feed_id, comment_id, username)
+    if not isinstance(updated, dict):
+        return jsonify({"success": False, "error": "comment not found."}), 404
+    log_event(
+        "learning_feed_comment_liked",
+        {"feed_id": feed_id, "comment_id": comment_id, "username": username, "source": "feed"},
+    )
     return jsonify({"success": True, "item": updated})
 
 

@@ -120,8 +120,8 @@ const CHAT_COMPOSER_PREFS_KEY = 'nexora_chat_composer_prefs_v1';
 const CHAT_INPUT_DRAFT_KEY = 'nexora_chat_input_draft_v1';
 const CHAT_INPUT_DRAFT_MAX_LEN = 12000;
 let NEXORA_LEARNING_FRONTEND_URL = `${window.location.protocol}//${window.location.hostname}:5001/api/frontend/`;
-const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260514_02';
-const NEXORA_LEARNING_JS_URL = '/static/js/learning_mode.js?v=20260514_02';
+const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260523_10';
+const NEXORA_LEARNING_JS_URL = '/static/js/learning_mode.js?v=20260523_10';
 const MAIL_POLL_INTERVAL_MS = 5000;
 const AGENT_STATUS_POLL_VISIBLE_MS = 5000;
 const MODAL_STACK_BASE_Z = 12000;
@@ -430,6 +430,232 @@ let learningSidebarDraftValue = '';
 let learningFeedComposeMode = false;
 let learningFeedPostInFlight = false;
 let learningFeedCancelBtn = null;
+let learningFeedMentionState = {
+    query: '',
+    users: [],
+    activeIndex: 0,
+    visible: false,
+    context: null,
+};
+let learningFeedMentionMenuEl = null;
+const learningInteractionLocks = {
+    questions: new Map(),
+    puzzles: new Map(),
+};
+
+function getLearningInteractionLockKey(conversationIdOverride = null) {
+    const raw = conversationIdOverride !== null && conversationIdOverride !== undefined
+        ? conversationIdOverride
+        : currentConversationId;
+    const key = String(raw || '').trim();
+    return key || '__draft__';
+}
+
+function rememberLockedQuestion(questionId, answerText = '') {
+    const qid = String(questionId || '').trim();
+    if (!qid) return;
+    const key = getLearningInteractionLockKey();
+    if (!learningInteractionLocks.questions.has(key)) {
+        learningInteractionLocks.questions.set(key, new Map());
+    }
+    learningInteractionLocks.questions.get(key).set(qid, String(answerText || '').trim());
+}
+
+function getLockedQuestionAnswer(questionId) {
+    const qid = String(questionId || '').trim();
+    if (!qid) return '';
+    const key = getLearningInteractionLockKey();
+    const bucket = learningInteractionLocks.questions.get(key);
+    if (!bucket) return '';
+    return String(bucket.get(qid) || '').trim();
+}
+
+function rememberLockedPuzzle(puzzleId, submission = null) {
+    const pid = String(puzzleId || '').trim();
+    if (!pid) return;
+    const key = getLearningInteractionLockKey();
+    if (!learningInteractionLocks.puzzles.has(key)) {
+        learningInteractionLocks.puzzles.set(key, new Map());
+    }
+    learningInteractionLocks.puzzles.get(key).set(pid, submission && typeof submission === 'object' ? submission : {});
+}
+
+function getLockedPuzzleSubmission(puzzleId) {
+    const pid = String(puzzleId || '').trim();
+    if (!pid) return null;
+    const api = window.NexoraLearningMode;
+    if (api && typeof api.resolveStoredPuzzleSubmissionById === 'function') {
+        const stored = api.resolveStoredPuzzleSubmissionById(pid);
+        if (stored) return stored;
+    }
+    const key = getLearningInteractionLockKey();
+    const bucket = learningInteractionLocks.puzzles.get(key);
+    if (!bucket) return null;
+    const row = bucket.get(pid);
+    return row && typeof row === 'object' ? row : null;
+}
+
+function resetLearningFeedMentionState() {
+    learningFeedMentionState = {
+        query: '',
+        users: [],
+        activeIndex: 0,
+        visible: false,
+        context: null,
+    };
+    renderLearningFeedMentionMenu();
+}
+
+function getLearningFeedMentionContext(inputEl) {
+    if (!(inputEl instanceof HTMLTextAreaElement || inputEl instanceof HTMLInputElement)) return null;
+    const value = String(inputEl.value || '');
+    const caret = Number(inputEl.selectionStart || 0);
+    const before = value.slice(0, caret);
+    const atIndex = before.lastIndexOf('@');
+    if (atIndex < 0) return null;
+    const prefix = before.slice(0, atIndex);
+    if (prefix && !/\s|^/.test(prefix.slice(-1))) return null;
+    const token = before.slice(atIndex + 1);
+    if (/\s/.test(token)) return null;
+    return {
+        start: atIndex,
+        end: caret,
+        query: token,
+        before,
+        after: value.slice(caret),
+    };
+}
+
+function getFeedUserHandleForMention(row) {
+    if (!row || typeof row !== 'object') return '';
+    return String(row.username || row.user_id || '').trim();
+}
+
+function getFeedUserDisplayNameForMention(row) {
+    if (!row || typeof row !== 'object') return '';
+    return String(row.nickname || row.display_name || row.username || row.user_id || '').trim();
+}
+
+function getFeedUserAvatarForMention(row) {
+    if (!row || typeof row !== 'object') return '';
+    return String(row.avatar_url || row.avatar || '').trim();
+}
+
+async function updateLearningFeedMentionCandidates() {
+    if (!learningFeedComposeMode || !els.messageInput) {
+        resetLearningFeedMentionState();
+        return;
+    }
+    const context = getLearningFeedMentionContext(els.messageInput);
+    if (!context) {
+        resetLearningFeedMentionState();
+        return;
+    }
+    try {
+        const api = await ensureLearningModeAssets();
+        if (!api || typeof api.searchFeedUsersViaIframe !== 'function') {
+            resetLearningFeedMentionState();
+            return;
+        }
+        const query = String(context.query || '');
+        const rows = await api.searchFeedUsersViaIframe(query, 8);
+        const users = Array.isArray(rows) ? rows : [];
+        let visible = users.length > 0;
+        if (visible && query) {
+            const q = query.toLowerCase();
+            const exact = users.find((row) => getFeedUserHandleForMention(row).toLowerCase() === q);
+            const prefixRows = users.filter((row) => getFeedUserHandleForMention(row).toLowerCase().startsWith(q));
+            if (!exact && prefixRows.length === 1) {
+                const onlyHandle = getFeedUserHandleForMention(prefixRows[0]).toLowerCase();
+                if (q.length > onlyHandle.length || !onlyHandle.startsWith(q)) {
+                    visible = false;
+                }
+            }
+        }
+        learningFeedMentionState = {
+            query,
+            users,
+            activeIndex: 0,
+            visible,
+            context,
+        };
+        renderLearningFeedMentionMenu();
+    } catch (_) {
+        resetLearningFeedMentionState();
+    }
+}
+
+function applyLearningFeedMentionSelection(row) {
+    if (!els.messageInput || !learningFeedMentionState || !learningFeedMentionState.context) return false;
+    const handle = getFeedUserHandleForMention(row);
+    if (!handle) return false;
+    const ctx = learningFeedMentionState.context;
+    const nextValue = `${ctx.before.slice(0, ctx.start)}@${handle} ${ctx.after}`;
+    els.messageInput.value = nextValue;
+    try {
+        const caret = ctx.before.slice(0, ctx.start).length + handle.length + 2;
+        els.messageInput.setSelectionRange(caret, caret);
+    } catch (_) {}
+    saveMessageDraftToStorage(els.messageInput.value);
+    resetLearningFeedMentionState();
+    return true;
+}
+
+function ensureLearningFeedMentionMenu() {
+    if (!els.messageInput || !els.messageInput.parentElement) return null;
+    if (learningFeedMentionMenuEl && learningFeedMentionMenuEl.isConnected) return learningFeedMentionMenuEl;
+    const menu = document.createElement('div');
+    menu.id = 'learningFeedMentionMenu';
+    menu.className = 'learning-feed-mention-menu';
+    menu.hidden = true;
+    menu.addEventListener('click', (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        const btn = target.closest('[data-feed-mention-index]');
+        if (!btn) return;
+        event.preventDefault();
+        const index = Number(btn.getAttribute('data-feed-mention-index') || 0);
+        const row = Array.isArray(learningFeedMentionState.users) ? learningFeedMentionState.users[index] : null;
+        if (!row) return;
+        applyLearningFeedMentionSelection(row);
+        renderLearningFeedMentionMenu();
+        ensureMessageInputFocus({ onlyIfBlurred: true, preserveSelection: true });
+    });
+    els.messageInput.parentElement.appendChild(menu);
+    learningFeedMentionMenuEl = menu;
+    return menu;
+}
+
+function renderLearningFeedMentionMenu() {
+    const menu = ensureLearningFeedMentionMenu();
+    if (!menu) return;
+    const state = learningFeedMentionState;
+    if (!learningFeedComposeMode || !state || !state.visible || !Array.isArray(state.users) || !state.users.length) {
+        menu.hidden = true;
+        menu.style.display = 'none';
+        menu.innerHTML = '';
+        return;
+    }
+    menu.hidden = false;
+    menu.style.display = 'grid';
+    menu.innerHTML = state.users.map((row, index) => {
+        const handle = getFeedUserHandleForMention(row);
+        const name = getFeedUserDisplayNameForMention(row) || handle || 'User';
+        const avatarUrl = getFeedUserAvatarForMention(row);
+        const initial = (Array.from(String(name || '').trim())[0] || '@').toUpperCase();
+        return `
+            <button type="button" class="learning-feed-mention-item${index === Number(state.activeIndex || 0) ? ' is-active' : ''}" data-feed-mention-index="${index}">
+                ${avatarUrl
+                    ? `<img class="learning-feed-mention-avatar learning-feed-mention-avatar-image" src="${escapeHtml(avatarUrl)}" alt="${escapeHtml(name)}">`
+                    : `<div class="learning-feed-mention-avatar">${escapeHtml(initial)}</div>`}
+                <span class="learning-feed-mention-meta">
+                    <span class="learning-feed-mention-name">${escapeHtml(name)}</span>
+                    <span class="learning-feed-mention-handle">@${escapeHtml(handle)}</span>
+                </span>
+            </button>
+        `;
+    }).join('');
+}
 
 function notifyLearningSidebarBridge() {
     try {
@@ -480,7 +706,7 @@ function getLearningSidebarMessages() {
                 }
                 return false;
             };
-            const orderedNodes = Array.from(body.querySelectorAll('.thinking-block.reasoning-thinking-block, .content-body, .tool-usage, .add-basis-view, .question-tool-card'));
+            const orderedNodes = Array.from(body.querySelectorAll('.thinking-block.reasoning-thinking-block, .content-body, .tool-usage, .add-basis-view, .question-tool-card, .puzzle-tool-card'));
             orderedNodes.forEach((item) => {
                 if (!(item instanceof Element) || isInsideConsumed(item)) return;
                 if (item.classList.contains('thinking-block') && item.classList.contains('reasoning-thinking-block')) {
@@ -576,6 +802,32 @@ function getLearningSidebarMessages() {
                             answer: answerText
                         }
                     });
+                    return;
+                }
+                if (item.classList.contains('puzzle-tool-card')) {
+                    const puzzleBody = item.querySelector('.puzzle-card-body');
+                    const puzzleId = String(
+                        (puzzleBody && puzzleBody.dataset && puzzleBody.dataset.puzzleCardId)
+                        || item.dataset.puzzleId
+                        || ''
+                    ).trim();
+                    const puzzleTitle = String((item.querySelector('.question-card-title') || {}).textContent || '').trim();
+                    const resolved = String(item.dataset.resolved || '').trim().toLowerCase() === 'true';
+                    const answerItems = Array.from(item.querySelectorAll('.puzzle-card-answer li'))
+                        .map((li) => String(li.textContent || '').trim())
+                        .filter(Boolean);
+                    markConsumed(item);
+                    parts.push({
+                        kind: 'puzzle',
+                        format: 'puzzle',
+                        puzzle: {
+                            puzzle_id: puzzleId,
+                            title: puzzleTitle,
+                            resolved,
+                            ordered_steps: answerItems
+                        }
+                    });
+                    return;
                 }
             });
         }
@@ -684,6 +936,31 @@ function findFirstPendingQuestionCard() {
         if (!resolved && pending) return card;
     }
     return null;
+}
+
+async function handlePuzzleIframeSubmit(detail) {
+    const payload = (detail && typeof detail === 'object') ? detail : {};
+    const api = window.NexoraLearningMode;
+    const puzzleCard = (api && typeof api.findPuzzleCardBySourceWindow === 'function')
+        ? (
+            api.findPuzzleCardBySourceWindow(payload.sourceWindow, els.messagesContainer)
+            || api.findPuzzleCardBySourceWindow(payload.sourceWindow)
+        )
+        : null;
+    const orderedSteps = Array.isArray(payload.orderedSteps) ? payload.orderedSteps : [];
+    const submission = (payload.submission && typeof payload.submission === 'object') ? payload.submission : null;
+    const resolvedSteps = orderedSteps.length
+        ? orderedSteps
+        : (Array.isArray(submission && submission.ordered_steps) ? submission.ordered_steps : []);
+    try {
+        console.log('[Chat] handlePuzzleIframeSubmit', {
+            hasCard: !!puzzleCard,
+            steps: resolvedSteps.length,
+            hasSubmission: !!submission
+        });
+    } catch (_) {}
+    await submitPuzzleAnswer(resolvedSteps, puzzleCard, submission);
+    return true;
 }
 
 async function submitQuestionAnswerFromSidebar(answerText, questionId = '') {
@@ -4558,6 +4835,11 @@ function syncLearningFeedComposerUi() {
     if (els.messageInput) {
         els.messageInput.placeholder = learningFeedComposeMode ? '写一条学习动态...' : 'Type a message...';
     }
+    if (!learningFeedComposeMode) {
+        resetLearningFeedMentionState();
+    } else {
+        renderLearningFeedMentionMenu();
+    }
 }
 
 function enterLearningFeedComposeMode() {
@@ -4578,6 +4860,7 @@ function exitLearningFeedComposeMode(options = {}) {
         els.messageInput.style.height = 'auto';
         saveMessageDraftToStorage('');
     }
+    resetLearningFeedMentionState();
     syncLearningFeedComposerUi();
     updateSendButtonState();
 }
@@ -4811,6 +5094,11 @@ function handleLearningHostMessage(payload) {
 window.addEventListener('message', (event) => {
     const data = event && event.data;
     handleLearningHostMessage(data);
+});
+
+window.addEventListener('nexora:learning-puzzle-submit', (event) => {
+    const payload = event && event.detail;
+    void handlePuzzleIframeSubmit(payload);
 });
 
 window.addEventListener('nexora:chat-input:visibility', (event) => {
@@ -8913,6 +9201,38 @@ function initUI() {
         }, { passive: true });
 
         els.messageInput.addEventListener('keydown', (e) => {
+            if (learningFeedComposeMode) {
+                const mentionState = learningFeedMentionState;
+                const hasMention = !!(mentionState && mentionState.visible && Array.isArray(mentionState.users) && mentionState.users.length);
+                if (hasMention) {
+                    if (e.key === 'ArrowDown') {
+                        e.preventDefault();
+                        mentionState.activeIndex = (Number(mentionState.activeIndex || 0) + 1) % mentionState.users.length;
+                        renderLearningFeedMentionMenu();
+                        return;
+                    }
+                    if (e.key === 'ArrowUp') {
+                        e.preventDefault();
+                        mentionState.activeIndex = (Number(mentionState.activeIndex || 0) - 1 + mentionState.users.length) % mentionState.users.length;
+                        renderLearningFeedMentionMenu();
+                        return;
+                    }
+                    if (e.key === 'Escape') {
+                        e.preventDefault();
+                        resetLearningFeedMentionState();
+                        return;
+                    }
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                        const picked = mentionState.users[Number(mentionState.activeIndex || 0)];
+                        if (picked) {
+                            e.preventDefault();
+                            applyLearningFeedMentionSelection(picked);
+                            renderLearningFeedMentionMenu();
+                            return;
+                        }
+                    }
+                }
+            }
             if ((e.isComposing || isMessageInputComposing) && e.key === 'Enter') {
                 return;
             }
@@ -8927,6 +9247,11 @@ function initUI() {
             this.style.height = (this.scrollHeight) + 'px';
             if(this.value === '') this.style.height = 'auto'; // Reset
             saveMessageDraftToStorage(this.value);
+            if (learningFeedComposeMode) {
+                updateLearningFeedMentionCandidates();
+            } else {
+                resetLearningFeedMentionState();
+            }
         });
 
         const inputContainer = document.querySelector('#inputWrapper .input-container');
@@ -11378,6 +11703,33 @@ function createQuestionCardNode(question, options = {}) {
     return wrap;
 }
 
+function createPuzzleCardNode(puzzle, options = {}) {
+    const api = window.NexoraLearningMode;
+    if (api && typeof api.createPuzzleCardNode === 'function') {
+        return api.createPuzzleCardNode(puzzle, {
+            ...options,
+            frontendUrl: NEXORA_LEARNING_FRONTEND_URL,
+        });
+    }
+    return null;
+}
+
+function resolvePuzzleCardId(payload, step, messageDiv) {
+    const rawPayload = (payload && typeof payload === 'object') ? payload : {};
+    const explicitId = String(rawPayload.puzzle_id || '').trim();
+    if (explicitId) return explicitId;
+    const payloadCallId = String(rawPayload.call_id || '').trim();
+    if (payloadCallId) return payloadCallId;
+    const stepCallId = String((step && step.call_id) || '').trim();
+    if (stepCallId) return stepCallId;
+    const messageIndex = Number(messageDiv && messageDiv.dataset ? messageDiv.dataset.index : NaN);
+    const safeIndex = Number.isFinite(messageIndex) ? String(Math.max(0, Math.floor(messageIndex))) : 'x';
+    const existingCount = messageDiv
+        ? Array.from(messageDiv.querySelectorAll('.puzzle-tool-card')).length
+        : 0;
+    return `puzzle_msg_${safeIndex}_${existingCount}`;
+}
+
 function buildQuestionAnswerInjectionText(questionPayload, answerText) {
     const payload = (questionPayload && typeof questionPayload === 'object') ? questionPayload : {};
     const finalAnswer = String(answerText || '').trim();
@@ -11393,6 +11745,35 @@ function buildQuestionAnswerInjectionText(questionPayload, answerText) {
     if (content) lines.push(`Question: ${content}`);
     if (choices.length) lines.push(`Choices: ${choices.join(' | ')}`);
     lines.push(`Answer: ${finalAnswer}`);
+    return lines.join('\n');
+}
+
+function buildPuzzleAnswerInjectionText(orderedSteps, submission = null) {
+    const api = window.NexoraLearningMode;
+    if (api && typeof api.buildPuzzleSubmissionInjectionText === 'function') {
+        return api.buildPuzzleSubmissionInjectionText(orderedSteps, submission);
+    }
+    const rows = Array.isArray(orderedSteps)
+        ? orderedSteps.map((item) => String(item || '').trim()).filter(Boolean)
+        : [];
+    const graph = submission && typeof submission === 'object' && submission.graph && typeof submission.graph === 'object'
+        ? submission.graph
+        : {};
+    const lines = ['[Puzzle Submission]'];
+    if (rows.length) lines.push(`Chain: ${rows.join(' -> ')}`);
+    const edgeCount = Number(graph.edge_count || 0);
+    const nodeCount = Number(graph.node_count || 0);
+    const branchCount = Number(graph.branch_count || 0);
+    lines.push(`Graph: nodes=${nodeCount}, edges=${edgeCount}, branches=${branchCount}, cycle=${graph.has_cycle ? 'yes' : 'no'}, components=${Number(graph.component_count || 0)}`);
+    const connections = Array.isArray(graph.connections) ? graph.connections : [];
+    if (connections.length) {
+        const compactEdges = connections
+            .map((conn) => `${String(conn && conn.from_text || '').trim()} -> ${String(conn && conn.to_text || '').trim()}`)
+            .filter(Boolean)
+            .slice(0, 32);
+        if (compactEdges.length) lines.push(`Edges: ${compactEdges.join(' | ')}`);
+        if (connections.length > 32) lines.push(`MoreEdges: ${connections.length - 32}`);
+    }
     return lines.join('\n');
 }
 
@@ -11416,6 +11797,34 @@ function applyQuestionAnswer(questionCard, answerText) {
     questionCard.dataset.resolved = 'true';
 }
 
+function applyPuzzleAnswer(puzzleCard, orderedSteps) {
+    const api = window.NexoraLearningMode;
+    if (api && typeof api.markPuzzleCardSubmitted === 'function') {
+        api.markPuzzleCardSubmitted(puzzleCard, orderedSteps, null);
+    }
+    if (!puzzleCard) return;
+    const body = puzzleCard.querySelector('.puzzle-card-body');
+    const rows = Array.isArray(orderedSteps)
+        ? orderedSteps.map((item) => String(item || '').trim()).filter(Boolean)
+        : [];
+    if (body) {
+        body.classList.add('answered');
+        const iframe = body.querySelector('.puzzle-card-iframe');
+        if (iframe) iframe.setAttribute('tabindex', '-1');
+        const answer = body.querySelector('.puzzle-card-answer');
+        if (answer) {
+            answer.hidden = false;
+            answer.innerHTML = rows.length
+                ? `<div class="puzzle-card-answer-title">已提交步骤</div><ol>${rows.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ol>`
+                : '<div class="puzzle-card-answer-title">已提交步骤</div><div>无有效步骤</div>';
+        }
+        const pill = body.querySelector('.question-card-pill');
+        if (pill) pill.textContent = 'Submitted';
+    }
+    puzzleCard.dataset.pending = 'false';
+    puzzleCard.dataset.resolved = 'true';
+}
+
 async function submitQuestionAnswer(answerText, questionCard = null) {
     const finalAnswer = String(answerText || '').trim();
     if (!finalAnswer) return;
@@ -11428,6 +11837,9 @@ async function submitQuestionAnswer(answerText, questionCard = null) {
             .map((btn) => String(btn.textContent || '').trim())
             .filter(Boolean),
     } : {};
+    if (payload.question_id) {
+        rememberLockedQuestion(payload.question_id, finalAnswer);
+    }
     if (questionCard) applyQuestionAnswer(questionCard, finalAnswer);
     if (els.messageInput) {
         els.messageInput.value = finalAnswer;
@@ -11440,6 +11852,47 @@ async function submitQuestionAnswer(answerText, questionCard = null) {
     });
 }
 
+async function submitPuzzleAnswer(orderedSteps, puzzleCard = null, submission = null) {
+    const rows = Array.isArray(orderedSteps)
+        ? orderedSteps.map((item) => String(item || '').trim()).filter(Boolean)
+        : [];
+    if (!rows.length) return;
+    const puzzleId = puzzleCard
+        ? String((puzzleCard.dataset && puzzleCard.dataset.puzzleId) || '').trim()
+        : '';
+    if (puzzleId) {
+        rememberLockedPuzzle(puzzleId, submission && typeof submission === 'object' ? submission : { ordered_steps: rows });
+    }
+    if (puzzleCard) {
+        const api = window.NexoraLearningMode;
+        if (api && typeof api.markPuzzleCardSubmitted === 'function') {
+            api.markPuzzleCardSubmitted(puzzleCard, rows, submission);
+        } else {
+            applyPuzzleAnswer(puzzleCard, rows);
+        }
+    }
+    const injected = buildPuzzleAnswerInjectionText(rows, submission);
+    const api = window.NexoraLearningMode;
+    const displayText = (api && typeof api.summarizePuzzleSubmission === 'function')
+        ? api.summarizePuzzleSubmission(rows, submission)
+        : (() => {
+            const graph = submission && typeof submission === 'object' && submission.graph && typeof submission.graph === 'object'
+                ? submission.graph
+                : {};
+            const edgeCount = Number(graph.edge_count || 0);
+            return `已提交拼图结果（${rows.length}步 / ${edgeCount}连线）`;
+        })();
+    if (els.messageInput) {
+        els.messageInput.value = injected;
+        els.messageInput.style.height = 'auto';
+        els.messageInput.style.height = `${els.messageInput.scrollHeight}px`;
+    }
+    await sendMessage({
+        displayContentOverride: displayText,
+        textOverride: injected
+    });
+}
+
 function appendQuestionStep(messageDiv, step) {
     if (!messageDiv || !step || typeof step !== 'object') return;
     const content = messageDiv.querySelector('.message-content');
@@ -11447,6 +11900,64 @@ function appendQuestionStep(messageDiv, step) {
     const payload = (step.question && typeof step.question === 'object') ? step.question : step;
     const node = createQuestionCardNode(payload);
     if (!node) return;
+    const questionId = String(payload.question_id || '').trim();
+    const rememberedAnswer = getLockedQuestionAnswer(questionId);
+    if (rememberedAnswer) {
+        applyQuestionAnswer(node, rememberedAnswer);
+    }
+    content.appendChild(node);
+    placeInteractiveCardsBelowToolChain(messageDiv);
+}
+
+function appendPuzzleStep(messageDiv, step) {
+    if (!messageDiv || !step || typeof step !== 'object') return;
+    const content = messageDiv.querySelector('.message-content');
+    if (!content) return;
+    const rawPayload = (step.puzzle && typeof step.puzzle === 'object') ? step.puzzle : step;
+    const payload = (rawPayload && typeof rawPayload === 'object') ? { ...rawPayload } : {};
+    const fallbackCardId = resolvePuzzleCardId(payload, step, messageDiv);
+    if (!String(payload.puzzle_id || '').trim()) {
+        payload.puzzle_id = fallbackCardId;
+    }
+    try {
+        console.log('[Chat] appendPuzzleStep', {
+            puzzleId: payload.puzzle_id,
+            hasStepCallId: !!String((step && step.call_id) || '').trim(),
+            messageIndex: Number(messageDiv && messageDiv.dataset ? messageDiv.dataset.index : NaN)
+        });
+    } catch (_) {}
+    const node = createPuzzleCardNode(payload, { cardId: fallbackCardId });
+    if (!node) {
+        void ensureLearningModeAssets().then(() => {
+            const retryNode = createPuzzleCardNode(payload, { cardId: fallbackCardId });
+            if (!retryNode) return;
+            const puzzleIdRetry = String((retryNode.dataset && retryNode.dataset.puzzleId) || payload.puzzle_id || '').trim();
+            const rememberedSubmissionRetry = getLockedPuzzleSubmission(puzzleIdRetry);
+            if (rememberedSubmissionRetry) {
+                const ordered = Array.isArray(rememberedSubmissionRetry.ordered_steps) ? rememberedSubmissionRetry.ordered_steps : [];
+                const api = window.NexoraLearningMode;
+                if (api && typeof api.markPuzzleCardSubmitted === 'function') {
+                    api.markPuzzleCardSubmitted(retryNode, ordered, rememberedSubmissionRetry);
+                }
+                retryNode.dataset.pending = 'false';
+                retryNode.dataset.resolved = 'true';
+            }
+            content.appendChild(retryNode);
+            placeInteractiveCardsBelowToolChain(messageDiv);
+        }).catch(() => {});
+        return;
+    }
+    const puzzleId = String((node.dataset && node.dataset.puzzleId) || payload.puzzle_id || '').trim();
+    const rememberedSubmission = getLockedPuzzleSubmission(puzzleId);
+    if (rememberedSubmission) {
+        const ordered = Array.isArray(rememberedSubmission.ordered_steps) ? rememberedSubmission.ordered_steps : [];
+        const api = window.NexoraLearningMode;
+        if (api && typeof api.markPuzzleCardSubmitted === 'function') {
+            api.markPuzzleCardSubmitted(node, ordered, rememberedSubmission);
+        }
+        node.dataset.pending = 'false';
+        node.dataset.resolved = 'true';
+    }
     content.appendChild(node);
     placeInteractiveCardsBelowToolChain(messageDiv);
 }
@@ -11473,7 +11984,7 @@ function appendLearningCardStep(messageDiv, step) {
 function placeInteractiveCardsBelowToolChain(messageDiv) {
     const parent = (messageDiv && (messageDiv.querySelector('.message-content') || messageDiv)) || null;
     if (!parent) return;
-    const cards = Array.from(parent.querySelectorAll('.learning-chat-card-wrap, .question-tool-card'));
+    const cards = Array.from(parent.querySelectorAll('.learning-chat-card-wrap, .question-tool-card, .puzzle-tool-card'));
     if (!cards.length) return;
 
     let anchorNode = null;
@@ -11544,6 +12055,25 @@ function extractQuestionPayload(rawResult) {
         if (parsed && typeof parsed === 'object') {
             if (parsed.question && typeof parsed.question === 'object') return parsed.question;
             if (parsed.question_title || parsed.question_content) return parsed;
+        }
+    } catch (_) {}
+    return null;
+}
+
+function extractPuzzlePayload(rawResult) {
+    if (!rawResult) return null;
+    if (typeof rawResult === 'object') {
+        if (rawResult.puzzle && typeof rawResult.puzzle === 'object') return rawResult.puzzle;
+        if (rawResult.title && Array.isArray(rawResult.steps)) return rawResult;
+        return null;
+    }
+    const text = String(rawResult || '').trim();
+    if (!text) return null;
+    try {
+        const parsed = JSON.parse(text);
+        if (parsed && typeof parsed === 'object') {
+            if (parsed.puzzle && typeof parsed.puzzle === 'object') return parsed.puzzle;
+            if (parsed.title && Array.isArray(parsed.steps)) return parsed;
         }
     } catch (_) {}
     return null;
@@ -12461,6 +12991,11 @@ async function sendMessage(options = {}) {
     const ensuredConversationId = await ensureConversationExistsForStreaming(text, nextConversationMode);
     if (ensuredConversationId) {
         currentConversationId = ensuredConversationId;
+        if (nextConversationMode === 'learning' && !learningReaderOpened) {
+            learningHeaderMode = 'chat';
+            applyLearningSidebarMode('nexora');
+            await syncLearningHeaderMode();
+        }
     }
     // UI Updates
     els.messageInput.value = '';
@@ -13594,7 +14129,7 @@ async function sendMessage(options = {}) {
                             aiMsgDiv.__reasoningSegmentOpen = false;
                             currentContentSpan = null; currentSegmentContent = '';
                             const toolName = resolveToolNameFromEvent(chunk, chunk.name);
-                            if (toolName === 'question' || toolName === 'learning_card') {
+                            if (toolName === 'question' || toolName === 'learning_card' || toolName === 'puzzle') {
                                 continue;
                             }
                             const rawCallId = String(chunk.call_id || chunk.callId || '').trim();
@@ -13619,7 +14154,7 @@ async function sendMessage(options = {}) {
                             aiMsgDiv.__reasoningSegmentOpen = false;
                             currentContentSpan = null; currentSegmentContent = '';
                             const toolName = resolveToolNameFromEvent(chunk, chunk.name);
-                            if (toolName === 'question' || toolName === 'learning_card') {
+                            if (toolName === 'question' || toolName === 'learning_card' || toolName === 'puzzle') {
                                 continue;
                             }
                             const rawCallId = String(chunk.call_id || chunk.callId || '').trim();
@@ -13636,6 +14171,9 @@ async function sendMessage(options = {}) {
                         }
                         else if (chunk.type === 'question') {
                             appendQuestionStep(aiMsgDiv, chunk);
+                        }
+                        else if (chunk.type === 'puzzle') {
+                            appendPuzzleStep(aiMsgDiv, chunk);
                         }
                         else if (chunk.type === 'token_usage') {
                             onTokenStreamUsageChunk(chunk);
@@ -15062,7 +15600,7 @@ function appendMessage(msg, index) {
                 }
                 else if (step.type === 'function_call') {
                     const toolName = resolveToolNameFromEvent(step, step.name);
-                    if (toolName === 'learning_card' || toolName === 'question') return;
+                    if (toolName === 'learning_card' || toolName === 'question' || toolName === 'puzzle') return;
                     if (toolName === 'add_basis' || toolName === 'addBasis') {
                         try {
                             const args = JSON.parse(step.arguments);
@@ -15075,7 +15613,7 @@ function appendMessage(msg, index) {
                 }
                 else if (step.type === 'function_result') {
                     const toolName = resolveToolNameFromEvent(step, step.name);
-                    if (toolName === 'question') return;
+                    if (toolName === 'question' || toolName === 'puzzle') return;
                     if (toolName === 'learning_card') {
                         const cardPayload = extractLearningCardPayload(step.result);
                         if (cardPayload) {
@@ -15114,6 +15652,9 @@ function appendMessage(msg, index) {
                 else if (step.type === 'question') {
                     appendQuestionStep(div, step);
                 }
+                else if (step.type === 'puzzle') {
+                    appendPuzzleStep(div, step);
+                }
             });
         }
         
@@ -15149,6 +15690,15 @@ function appendMessage(msg, index) {
             const hasQuestionStep = processSteps.some((s) => s && s.type === 'question');
             if (!hasQuestionStep) {
                 pendingQuestions.forEach((question) => appendQuestionStep(div, { type: 'question', question }));
+            }
+        }
+        const pendingPuzzles = (msg.metadata && Array.isArray(msg.metadata.pending_puzzles))
+            ? msg.metadata.pending_puzzles
+            : [];
+        if (pendingPuzzles.length > 0) {
+            const hasPuzzleStep = processSteps.some((s) => s && s.type === 'puzzle');
+            if (!hasPuzzleStep) {
+                pendingPuzzles.forEach((puzzle) => appendPuzzleStep(div, { type: 'puzzle', puzzle }));
             }
         }
 
@@ -16219,7 +16769,7 @@ function updateMessageDivTools(index, data, preferredMessageDiv = null) {
         });
     } else if (data.type === 'function_call') {
         const toolName = resolveToolNameFromEvent(data, data.name);
-        if (toolName === 'learning_card') return;
+        if (toolName === 'learning_card' || toolName === 'puzzle') return;
         const rawCallId = String(data.call_id || data.callId || '').trim();
         const toolIndex = (data.index === undefined || data.index === null) ? null : Number(data.index);
         const callId = allocateToolCallId(messageDiv, toolName, 'call', rawCallId, toolIndex);
@@ -16227,7 +16777,7 @@ function updateMessageDivTools(index, data, preferredMessageDiv = null) {
         finalizeToolCallBadge(messageDiv, toolName, callId, data.arguments || '', { toolIndex });
     } else if (data.type === 'function_result') {
         const toolName = resolveToolNameFromEvent(data, data.name);
-        if (toolName === 'question') return;
+        if (toolName === 'question' || toolName === 'puzzle') return;
         if (toolName === 'learning_card') {
             const cardPayload = extractLearningCardPayload(data.result);
             if (cardPayload) {
@@ -16254,6 +16804,8 @@ function updateMessageDivTools(index, data, preferredMessageDiv = null) {
         appendLearningCardStep(messageDiv, data);
     } else if (data.type === 'question') {
         appendQuestionStep(messageDiv, data);
+    } else if (data.type === 'puzzle') {
+        appendPuzzleStep(messageDiv, data);
     }
     scheduleLearningSidebarBridgeNotify();
 }
@@ -16443,16 +16995,19 @@ async function resumeActiveStreamAfterReload() {
                     chunk.type === 'function_call_delta' ||
                     chunk.type === 'function_call' ||
                     chunk.type === 'function_result' ||
-                    chunk.type === 'learning_card'
+                    chunk.type === 'learning_card' ||
+                    chunk.type === 'puzzle'
                 ) {
                     if (chunk.type === 'learning_card') {
                         appendLearningCardStep(assistantDiv, chunk);
+                    } else if (chunk.type === 'puzzle') {
+                        appendPuzzleStep(assistantDiv, chunk);
                     } else if (chunk.type === 'function_call_delta') {
                         onTokenStreamToolArgsChunk(chunk.arguments_delta || chunk.delta || '');
                     } else if (chunk.type === 'function_call') {
                         onTokenStreamToolArgsChunk(chunk.arguments || '');
                     }
-                    if (chunk.type !== 'learning_card') {
+                    if (chunk.type !== 'learning_card' && chunk.type !== 'puzzle') {
                         assistantDiv.__reasoningSegmentOpen = false;
                         currentContentSpan = null; currentSegmentContent = '';
                         updateMessageDivTools(assistantIndex, chunk, assistantDiv);

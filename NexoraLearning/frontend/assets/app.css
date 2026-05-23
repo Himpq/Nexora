@@ -247,6 +247,11 @@ body {
   color: #667085;
 }
 
+.feed-item-handle,
+.feed-comment-handle {
+  color: #2563eb;
+}
+
 .feed-item-summary {
   font-size: 14px;
   line-height: 1.85;
@@ -347,6 +352,8 @@ body {
   margin-left: 18px;
   display: grid;
   gap: 12px;
+  position: relative;
+  overflow: visible;
 }
 
 .feed-comment-compose {
@@ -354,6 +361,15 @@ body {
   grid-template-columns: minmax(0, 1fr) 28px;
   gap: 8px;
   align-items: center;
+  position: relative;
+  overflow: visible;
+}
+
+.feed-comment-compose-main {
+  position: relative;
+  min-width: 0;
+  z-index: 40;
+  overflow: visible;
 }
 
 .feed-comment-input {
@@ -364,6 +380,83 @@ body {
   font-size: 12px;
   color: #111827;
   background: #ffffff;
+}
+
+.feed-mention-menu {
+  position: absolute;
+  left: 0;
+  right: auto;
+  bottom: calc(100% + 8px);
+  z-index: 240;
+  display: grid;
+  gap: 2px;
+  padding: 6px;
+  width: min(280px, calc(100vw - 48px));
+  max-width: 280px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  box-shadow: 0 12px 28px rgba(17, 17, 17, 0.08);
+  pointer-events: auto;
+}
+
+.feed-mention-menu[hidden] {
+  display: none !important;
+}
+
+.feed-mention-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  color: #111827;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.feed-mention-item:hover,
+.feed-mention-item.is-active {
+  background: #f5f6f7;
+}
+
+.feed-mention-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #111111;
+  color: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  overflow: hidden;
+  flex: 0 0 28px;
+}
+
+.feed-mention-avatar-image {
+  object-fit: cover;
+}
+
+.feed-mention-meta {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.feed-mention-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.feed-mention-handle {
+  font-size: 11px;
+  color: #98a2b3;
 }
 
 .feed-comment-send {
@@ -441,6 +534,19 @@ body {
   color: #667085;
 }
 
+.feed-comment-handle {
+  color: #2563eb;
+}
+
+.feed-inline-mention {
+  color: #2563eb;
+  font-weight: 600;
+  display: inline-block;
+  padding: 0 4px;
+  margin: 0 2px;
+  cursor: pointer;
+}
+
 .feed-comment-verified {
   width: 14px;
   height: 14px;
@@ -451,6 +557,40 @@ body {
   font-size: 13px;
   line-height: 1.7;
   color: #334155;
+}
+
+.feed-comment-actions {
+  margin-top: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.feed-comment-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #667085;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.feed-comment-action-btn.is-active {
+  color: #e11d48;
+}
+
+.feed-comment-action-btn .feed-action-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.feed-comment-action-btn .feed-action-label,
+.feed-comment-action-btn .feed-action-count {
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .feed-action-count {
@@ -517,7 +657,7 @@ body {
 
 @media (max-width: 768px) {
   .feed-stream-panel {
-    max-height: 52vh;
+    /* max-height: 52vh; */
   }
 
   .feed-item {

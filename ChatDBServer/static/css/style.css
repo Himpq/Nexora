@@ -4743,6 +4743,78 @@ textarea {
   transform: scale(1.05);
 }
 
+.learning-feed-mention-menu {
+  position: absolute;
+  left: 0;
+  right: auto;
+  bottom: calc(100% + 8px);
+  z-index: 9800;
+  display: grid;
+  gap: 2px;
+  padding: 6px;
+  width: min(280px, calc(100vw - 48px));
+  max-width: 280px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  box-shadow: 0 12px 28px rgba(17, 17, 17, 0.08);
+}
+
+.learning-feed-mention-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  background: transparent;
+  color: #111827;
+  text-align: left;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.learning-feed-mention-item:hover,
+.learning-feed-mention-item.is-active {
+  background: #f5f6f7;
+}
+
+.learning-feed-mention-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #111;
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  overflow: hidden;
+  flex: 0 0 28px;
+}
+
+.learning-feed-mention-avatar-image {
+  object-fit: cover;
+}
+
+.learning-feed-mention-meta {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.learning-feed-mention-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.learning-feed-mention-handle {
+  font-size: 11px;
+  color: #98a2b3;
+}
+
 /* --- RIGHT SIDEBAR (Knowledge) --- */
 .knowledge-sidebar {
   position: absolute;

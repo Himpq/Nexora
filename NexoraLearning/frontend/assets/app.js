@@ -160,6 +160,16 @@
     dashboardSideTab: "progress",
     feedExpandedMap: {},
     feedCommentDrafts: {},
+    feedCommentComposing: {},
+    feedMentionState: {
+      key: "",
+      query: "",
+      users: [],
+      activeIndex: 0,
+      visible: false,
+      anchor: null,
+      context: "",
+    },
     readerReportedChapterKey: "",
     readerBookDetailXml: "",
     dynamicPosting: false,
@@ -221,8 +231,127 @@
       .replace(/'/g, "&#039;");
   }
 
+  function renderTextWithMentions(str) {
+    const raw = String(str || "");
+    const pattern = /@([A-Za-z0-9_][A-Za-z0-9_.-]{0,63})/g;
+    let html = "";
+    let lastIndex = 0;
+    let match = pattern.exec(raw);
+    while (match) {
+      const start = Number(match.index || 0);
+      const whole = String(match[0] || "");
+      const handle = String(match[1] || "").trim();
+      html += escapeHtml(raw.slice(lastIndex, start)).replace(/\n/g, "<br>");
+      html += `<span class="feed-inline-mention" data-mention-handle="${escapeHtml(handle)}"> @${escapeHtml(handle)} </span>`;
+      lastIndex = start + whole.length;
+      match = pattern.exec(raw);
+    }
+    html += escapeHtml(raw.slice(lastIndex)).replace(/\n/g, "<br>");
+    return html;
+  }
+
+  function captureFeedInputSnapshot(inputEl) {
+    if (!(inputEl instanceof HTMLInputElement)) return null;
+    const feedId = String(inputEl.getAttribute("data-feed-comment-input") || "").trim();
+    if (!feedId) return null;
+    return {
+      feedId,
+      selectionStart: Number(inputEl.selectionStart || 0),
+      selectionEnd: Number(inputEl.selectionEnd || 0),
+    };
+  }
+
+  function restoreFeedInputSnapshot(snapshot) {
+    if (!snapshot || !el.learningFeedPanel) return;
+    window.requestAnimationFrame(() => {
+      const target = el.learningFeedPanel.querySelector(`[data-feed-comment-input="${CSS.escape(String(snapshot.feedId || ""))}"]`);
+      if (!(target instanceof HTMLInputElement)) return;
+      target.focus({ preventScroll: true });
+      try {
+        target.setSelectionRange(Number(snapshot.selectionStart || 0), Number(snapshot.selectionEnd || 0));
+      } catch (_err) {}
+    });
+  }
+
+  function renderLearningFeedsPreservingInput(inputEl) {
+    const snapshot = captureFeedInputSnapshot(inputEl);
+    renderLearningFeeds();
+    restoreFeedInputSnapshot(snapshot);
+  }
+
+  function getFeedMentionMenuElement(feedId) {
+    if (!el.learningFeedPanel) return null;
+    const key = String(feedId || "").trim();
+    if (!key) return null;
+    return el.learningFeedPanel.querySelector(`[data-feed-mention-menu="${CSS.escape(key)}"]`);
+  }
+
+  function buildFeedMentionMenuHtml(feedId, mentionState) {
+    const key = String(feedId || "").trim();
+    if (!key || !mentionState || !Array.isArray(mentionState.users) || !mentionState.users.length) return "";
+    return mentionState.users.map((userRow, index) => {
+      const displayName = getUserOptionDisplayName(userRow) || getUserOptionHandle(userRow);
+      const handle = getUserOptionHandle(userRow);
+      const avatarUrl = getUserOptionAvatarUrl(userRow);
+      const initial = getUserOptionInitial(userRow);
+      return `
+        <button class="feed-mention-item${index === Number(mentionState.activeIndex || 0) ? " is-active" : ""}" type="button" data-feed-action="mention-pick" data-feed-id="${escapeHtml(key)}" data-mention-index="${index}">
+          ${avatarUrl
+            ? `<img class="feed-mention-avatar feed-mention-avatar-image" src="${escapeHtml(avatarUrl)}" alt="${escapeHtml(displayName)}">`
+            : `<div class="feed-mention-avatar">${escapeHtml(initial)}</div>`}
+          <span class="feed-mention-meta">
+            <span class="feed-mention-name">${escapeHtml(displayName)}</span>
+            <span class="feed-mention-handle">@${escapeHtml(handle)}</span>
+          </span>
+        </button>
+      `;
+    }).join("");
+  }
+
+  function syncFeedMentionMenus() {
+    if (!el.learningFeedPanel) return;
+    const mentionState = state.feedMentionState;
+    const activeFeedId = mentionState && mentionState.key && String(mentionState.key).startsWith("comment:")
+      ? String(mentionState.key).slice("comment:".length)
+      : "";
+    const menus = el.learningFeedPanel.querySelectorAll("[data-feed-mention-menu]");
+    menus.forEach((menuEl) => {
+      if (!(menuEl instanceof HTMLElement)) return;
+      const feedId = String(menuEl.getAttribute("data-feed-mention-menu") || "").trim();
+      const isActive = !!(
+        activeFeedId &&
+        feedId === activeFeedId &&
+        mentionState &&
+        mentionState.visible &&
+        Array.isArray(mentionState.users) &&
+        mentionState.users.length
+      );
+      if (!isActive) {
+        menuEl.innerHTML = "";
+        syncFeedMentionMenuVisibility(menuEl, false);
+        return;
+      }
+      menuEl.innerHTML = buildFeedMentionMenuHtml(feedId, mentionState);
+      syncFeedMentionMenuVisibility(menuEl, true);
+    });
+  }
+
+  function syncFeedMentionMenuVisibility(menuEl, visible) {
+    if (!(menuEl instanceof HTMLElement)) return;
+    menuEl.hidden = !visible;
+    menuEl.style.display = visible ? "grid" : "none";
+  }
+
   function getCurrentUserDisplayName() {
-    return String(state.user.nickname || state.user.display_name || state.user.username || state.username || "??").trim() || "??";
+    return String(
+      state.user.nickname
+      || state.user.display_name
+      || state.user.username
+      || state.user.id
+      || state.user.user_id
+      || state.username
+      || "用户"
+    ).trim() || "用户";
   }
 
   function getCurrentUserAvatarUrl() {
@@ -231,7 +360,15 @@
 
   function getFeedAuthorName(row) {
     const author = row && typeof row.author === "object" ? row.author : {};
-    return String(author.nickname || author.display_name || author.username || row.username || row.user_id || "??").trim() || "??";
+    return String(
+      author.nickname
+      || author.display_name
+      || author.username
+      || author.user_id
+      || row.username
+      || row.user_id
+      || "用户"
+    ).trim() || "用户";
   }
 
   function getFeedAuthorAvatarUrl(row) {
@@ -273,6 +410,26 @@
     return (Array.from(name)[0] || "学").toUpperCase();
   }
 
+  function getUserOptionDisplayName(row) {
+    if (!row || typeof row !== "object") return "";
+    return String(row.nickname || row.display_name || row.username || row.user_id || "").trim();
+  }
+
+  function getUserOptionHandle(row) {
+    if (!row || typeof row !== "object") return "";
+    return String(row.username || row.user_id || "").trim();
+  }
+
+  function getUserOptionAvatarUrl(row) {
+    if (!row || typeof row !== "object") return "";
+    return normalizeFeedAvatarUrl(String(row.avatar_url || row.avatar || "").trim());
+  }
+
+  function getUserOptionInitial(row) {
+    const name = getUserOptionDisplayName(row);
+    return (Array.from(name)[0] || "@" || "用").toUpperCase();
+  }
+
   function getFeedAuthorHandle(row) {
     const author = row && typeof row.author === "object" ? row.author : {};
     return String(author.user_id || row.username || row.user_id || "").trim();
@@ -292,6 +449,125 @@
     const hour = String(d.getHours()).padStart(2, "0");
     const minute = String(d.getMinutes()).padStart(2, "0");
     return `${month}/${day} ${hour}:${minute}`;
+  }
+
+  async function searchFeedUsers(query, limit = 8) {
+    const params = new URLSearchParams();
+    params.set("q", String(query || ""));
+    params.set("limit", String(Math.max(1, Math.min(Number(limit) || 8, 20))));
+    const data = await fetchJson(`/api/frontend/learning-feeds/users/search?${params.toString()}`, {
+      credentials: "same-origin",
+    });
+    return Array.isArray(data.items) ? data.items : [];
+  }
+
+  function resetFeedMentionState() {
+    state.feedMentionState = {
+      key: "",
+      query: "",
+      users: [],
+      activeIndex: 0,
+      visible: false,
+      anchor: null,
+      context: "",
+    };
+  }
+
+  function resolveFeedMentionContext(inputEl) {
+    if (!(inputEl instanceof HTMLInputElement || inputEl instanceof HTMLTextAreaElement)) {
+      return null;
+    }
+    const value = String(inputEl.value || "");
+    const caret = Number(inputEl.selectionStart || 0);
+    const before = value.slice(0, caret);
+    const atIndex = before.lastIndexOf("@");
+    if (atIndex < 0) return null;
+    const prefix = before.slice(0, atIndex);
+    if (prefix && !/\s|^/.test(prefix.slice(-1))) return null;
+    const token = before.slice(atIndex + 1);
+    if (/\s/.test(token)) return null;
+    return {
+      start: atIndex,
+      end: caret,
+      query: token,
+      before,
+      after: value.slice(caret),
+    };
+  }
+
+  function buildMentionStateKey(inputEl) {
+    if (!(inputEl instanceof Element)) return "";
+    const feedId = String(inputEl.getAttribute("data-feed-comment-input") || "").trim();
+    if (feedId) return `comment:${feedId}`;
+    if (inputEl.id === "messageInput") return "dynamic-post";
+    return "";
+  }
+
+  function applyMentionSelectionToInput(inputEl, userRow) {
+    const context = resolveFeedMentionContext(inputEl);
+    if (!context) return false;
+    const handle = getUserOptionHandle(userRow);
+    if (!handle) return false;
+    const nextValue = `${context.before.slice(0, context.start)}@${handle} ${context.after}`;
+    inputEl.value = nextValue;
+    const caret = context.before.slice(0, context.start).length + handle.length + 2;
+    try {
+      inputEl.setSelectionRange(caret, caret);
+    } catch (_err) {}
+    inputEl.dispatchEvent(new Event("input", { bubbles: true }));
+    resetFeedMentionState();
+    syncFeedMentionMenus();
+    return true;
+  }
+
+  async function updateFeedMentionCandidates(inputEl) {
+    const context = resolveFeedMentionContext(inputEl);
+    const stateKey = buildMentionStateKey(inputEl);
+    if (!context || !stateKey) {
+      resetFeedMentionState();
+      syncFeedMentionMenus();
+      return;
+    }
+    const query = String(context.query || "");
+    const users = await searchFeedUsers(query, 8);
+    const nextContext = resolveFeedMentionContext(inputEl);
+    const nextStateKey = buildMentionStateKey(inputEl);
+    if (!nextContext || nextStateKey !== stateKey || String(nextContext.query || "") !== query) {
+      return;
+    }
+    let visible = users.length > 0;
+    if (visible && query) {
+      const exactHandle = users.find((row) => getUserOptionHandle(row).toLowerCase() === query.toLowerCase());
+      const queryLower = query.toLowerCase();
+      const uniquePrefixRows = users.filter((row) => {
+        const handle = getUserOptionHandle(row).toLowerCase();
+        return handle.startsWith(queryLower);
+      });
+      if (exactHandle) {
+        visible = true;
+      } else if (uniquePrefixRows.length === 1) {
+        const onlyHandle = getUserOptionHandle(uniquePrefixRows[0]).toLowerCase();
+        // If input has already surpassed the only valid handle, hide mention menu.
+        // Example: "@teshello" while only "tes" exists.
+        if (queryLower.length > onlyHandle.length || !onlyHandle.startsWith(queryLower)) {
+          visible = false;
+        }
+      } else if (!uniquePrefixRows.length) {
+        visible = false;
+      }
+    }
+    state.feedMentionState = {
+      key: stateKey,
+      query,
+      users,
+      activeIndex: 0,
+      visible,
+      anchor: {
+        feedId: stateKey.startsWith("comment:") ? stateKey.slice("comment:".length) : "",
+      },
+      context: nextContext,
+    };
+    syncFeedMentionMenus();
   }
 
   function renderTrashIcon() {
@@ -848,6 +1124,7 @@
           const avatar = getFeedAuthorInitial(row);
           const avatarUrl = getFeedAuthorAvatarUrl(row);
           const summary = String(row.summary || row.content || "").trim() || "暂无内容";
+          const summaryHtml = renderTextWithMentions(summary);
           const liked = Array.isArray(row.liked_user_ids) && row.liked_user_ids.includes(state.username);
           const likesCount = Math.max(0, Number(row.likes_count) || 0);
           const commentsCount = Math.max(0, Number(row.comments_count) || 0);
@@ -858,6 +1135,7 @@
           const draft = String(state.feedCommentDrafts[feedId] || "");
           const isAdminAuthor = !!row.author_is_admin;
           const canDeleteFeed = !!row.can_delete;
+          const mentionState = state.feedMentionState && state.feedMentionState.key === `comment:${feedId}` ? state.feedMentionState : null;
           const likeIcon = `
             <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
               <path d="M7 10h4l2-5c.2-.5.7-.8 1.2-.8.9 0 1.6.7 1.6 1.6v2.2h2.7c1.2 0 2.1 1.1 1.8 2.3l-1.4 7A2 2 0 0 1 17.7 19H7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
@@ -885,7 +1163,10 @@
           const renderComments = expanded ? `
             <div class="feed-comments">
               <div class="feed-comment-compose">
-                <input class="feed-comment-input" type="text" data-feed-comment-input="${escapeHtml(feedId)}" placeholder="发表评论..." value="${escapeHtml(draft)}">
+                <div class="feed-comment-compose-main">
+                  <input class="feed-comment-input" type="text" data-feed-comment-input="${escapeHtml(feedId)}" placeholder="发表评论..." value="${escapeHtml(draft)}" autocomplete="off">
+                  <div class="feed-mention-menu" data-feed-mention-menu="${escapeHtml(feedId)}" hidden style="display:none"></div>
+                </div>
                 <button class="feed-comment-send" type="button" data-feed-action="comment-send" data-feed-id="${escapeHtml(feedId)}" aria-label="发送评论" title="发送评论">
                   <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
                     <path d="M4 11.5L20 4l-4.6 16-3.1-5.4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
@@ -915,7 +1196,17 @@
                           ${commentTime ? `<span class="feed-comment-time">${escapeHtml(commentTime)}</span>` : ""}
                           ${canDeleteComment ? `<button class="feed-comment-delete" type="button" data-feed-action="comment-delete" data-feed-id="${escapeHtml(feedId)}" data-comment-id="${escapeHtml(commentId)}" aria-label="删除评论" title="删除评论">${trashIcon}</button>` : ""}
                         </div>
-                        <div class="feed-comment-content">${escapeHtml(String(comment.content || "").trim())}</div>
+                        <div class="feed-comment-content">${renderTextWithMentions(String(comment.content || "").trim())}</div>
+                        <div class="feed-comment-actions">
+                          <button class="feed-comment-action-btn ${Array.isArray(comment.liked_user_ids) && comment.liked_user_ids.includes(state.username) ? "is-active" : ""}" type="button" data-feed-action="comment-like" data-feed-id="${escapeHtml(feedId)}" data-comment-id="${escapeHtml(commentId)}" aria-label="点赞评论" title="点赞评论">
+                            <span class="feed-action-icon">${likeIcon}</span>
+                            <span class="feed-action-count">${Math.max(0, Number(comment.likes_count) || 0)}</span>
+                          </button>
+                          <button class="feed-comment-action-btn" type="button" data-feed-action="comment-reply" data-feed-id="${escapeHtml(feedId)}" data-comment-id="${escapeHtml(commentId)}" data-comment-username="${escapeHtml(commentHandle || String((comment && comment.author && comment.author.user_id) || ''))}" aria-label="回复评论" title="回复评论">
+                            <span class="feed-action-icon">${renderReplyIcon()}</span>
+                            <span class="feed-action-label">回复</span>
+                          </button>
+                        </div>
                       </div>
                     </div>
                   `;
@@ -937,7 +1228,7 @@
                     ${timeText ? `<span class="feed-item-time"><span class="feed-time-icon">${timeIcon}</span><span>${escapeHtml(timeText)}</span></span>` : ""}
                   </div>
                 </div>
-                <div class="feed-item-summary">${escapeHtml(summary)}</div>
+                <div class="feed-item-summary">${summaryHtml}</div>
                 <div class="feed-item-foot">
                   <div class="feed-item-actions">
                     <button class="feed-action-btn ${liked ? "is-active" : ""}" type="button" data-feed-action="like" data-feed-id="${escapeHtml(String(row.id || ""))}" aria-label="点赞" title="点赞">
@@ -981,6 +1272,15 @@
     }
     renderPie();
     renderLearningFeeds();
+  }
+
+  function renderReplyIcon() {
+    return `
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M9 7 4 12l5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M5 12h7.5c4 0 6.5 2 8 5- .2-6.2-4-10-10.2-10H9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    `;
   }
 
   function sendHostMessage(payload) {
@@ -1064,28 +1364,57 @@
     if (!data || typeof data !== "object") return;
     if (String(data.source || "").trim().toLowerCase() !== "nexora-learning") return;
     const msgType = String(data.type || "").trim().toLowerCase();
-    if (msgType !== "nexora:feed-compose:submit") return;
     const requestId = String(data.requestId || "").trim();
-    try {
-      const result = await postLearningFeed(String(data.content || ""));
-      if (window.parent && window.parent !== window) {
-        window.parent.postMessage({
-          source: "nexora-learning",
-          type: "nexora:feed-compose:result",
-          requestId,
-          success: true,
-          item: result && result.item ? result.item : null,
-        }, "*");
+    if (msgType === "nexora:feed-compose:submit") {
+      try {
+        const result = await postLearningFeed(String(data.content || ""));
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage({
+            source: "nexora-learning",
+            type: "nexora:feed-compose:result",
+            requestId,
+            success: true,
+            item: result && result.item ? result.item : null,
+          }, "*");
+        }
+      } catch (err) {
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage({
+            source: "nexora-learning",
+            type: "nexora:feed-compose:result",
+            requestId,
+            success: false,
+            error: String(err && err.message ? err.message : "发布动态失败"),
+          }, "*");
+        }
       }
-    } catch (err) {
-      if (window.parent && window.parent !== window) {
-        window.parent.postMessage({
-          source: "nexora-learning",
-          type: "nexora:feed-compose:result",
-          requestId,
-          success: false,
-          error: String(err && err.message ? err.message : "发布动态失败"),
-        }, "*");
+      return;
+    }
+    if (msgType === "nexora:feed-users:search") {
+      try {
+        const query = String(data.q || "").trim();
+        const limit = Math.max(1, Math.min(Number(data.limit) || 8, 20));
+        const rows = await searchFeedUsers(query, limit);
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage({
+            source: "nexora-learning",
+            type: "nexora:feed-users:search:result",
+            requestId,
+            success: true,
+            items: Array.isArray(rows) ? rows : [],
+          }, "*");
+        }
+      } catch (err) {
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage({
+            source: "nexora-learning",
+            type: "nexora:feed-users:search:result",
+            requestId,
+            success: false,
+            error: String(err && err.message ? err.message : "搜索失败"),
+            items: [],
+          }, "*");
+        }
       }
     }
   });
@@ -2284,7 +2613,47 @@
       state.integration = {};
       state.isAdmin = false;
     }
-    if (!state.isAdmin || !state.user.role) await loadSessionUserFallback();
+    if (!state.user || !state.user.role) await loadSessionUserFallback();
+  }
+
+  function renderSettingsChannels() {
+    const rows = Array.isArray(state.learningFeedChannels) ? state.learningFeedChannels.filter((row) => row && !row.builtin) : [];
+    el.settingsDetailPane.innerHTML = `
+      <section class="settings-detail-scroll">
+        <article class="settings-card">
+          <div class="settings-title">新建频道</div>
+          <div class="settings-sub">使用 <code>@用户名</code> 添加可见用户。输入 <code>@ALL</code> 后将变为全员公开频道。</div>
+          <div class="settings-inline-form">
+            <div class="materials-form-row settings-model-row">
+              <label class="materials-form-label settings-model-label" for="settingsChannelTitleInput">频道名</label>
+              <input id="settingsChannelTitleInput" class="input-lite settings-model-select" placeholder="例如：春物私有研读">
+            </div>
+            <div class="materials-form-row settings-model-row">
+              <label class="materials-form-label settings-model-label" for="settingsChannelUsersInput">可见用户</label>
+              <input id="settingsChannelUsersInput" class="input-lite settings-model-select" placeholder="@mujica,@alice 或 @ALL">
+            </div>
+            <div class="materials-form-actions materials-form-actions-right">
+              <button id="createFeedChannelBtn" class="nxl-icon-btn nxl-icon-btn-dark" type="button" aria-label="新建频道" title="新建频道">+</button>
+            </div>
+          </div>
+        </article>
+        <article class="settings-card">
+          <div class="settings-title">现有频道</div>
+          <div class="settings-log-list">
+            ${rows.length ? rows.map((row) => `
+              <div class="settings-log-item">
+                <div class="settings-log-head">
+                  <strong>${escapeHtml(String(row.title || ""))}</strong>
+                  <button class="nxl-icon-btn nxl-icon-btn-danger" type="button" data-action="delete-feed-channel" data-channel-id="${escapeHtml(String(row.id || ""))}" title="删除频道" aria-label="删除频道">×</button>
+                </div>
+                <div class="settings-log-meta">${escapeHtml(String(row.type || ""))}</div>
+                <pre class="settings-log-content">${escapeHtml(Array.isArray(row.member_user_ids) && row.member_user_ids.length ? row.member_user_ids.map((userId) => `@${userId}`).join(", ") : "全员可见")}</pre>
+              </div>
+            `).join("") : '<div class="materials-empty">暂无自定义频道</div>'}
+          </div>
+        </article>
+      </section>
+    `;
   }
 
   async function loadMaterialsRows() {
@@ -2420,6 +2789,7 @@
     if (state.dashboardSideTab === "feed") {
       renderLearningFeeds();
     }
+    syncFeedMentionMenus();
   }
 
   async function createLearningFeedChannel() {
@@ -2473,6 +2843,19 @@
     await loadLearningFeeds();
   }
 
+  async function toggleLearningFeedCommentLike(feedId, commentId) {
+    const fid = String(feedId || "").trim();
+    const cid = String(commentId || "").trim();
+    if (!fid || !cid) return;
+    await fetchJson(`/api/frontend/learning-feeds/${encodeURIComponent(fid)}/comments/${encodeURIComponent(cid)}/like`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    state.feedExpandedMap[fid] = true;
+    await loadLearningFeeds();
+  }
+
   async function submitLearningFeedComment(feedId) {
     const id = String(feedId || "").trim();
     if (!id) return;
@@ -2485,6 +2868,7 @@
     });
     delete state.feedCommentDrafts[id];
     state.feedExpandedMap[id] = true;
+    resetFeedMentionState();
     await loadLearningFeeds();
   }
 
@@ -2743,6 +3127,41 @@
             renderLearningFeeds();
             return;
           }
+          if (action === "comment-like") {
+            const commentId = String(btn.getAttribute("data-comment-id") || "").trim();
+            if (!commentId) return;
+            await toggleLearningFeedCommentLike(feedId, commentId);
+            return;
+          }
+          if (action === "comment-reply") {
+            const handle = String(btn.getAttribute("data-comment-username") || "").trim();
+            const targetInput = el.learningFeedPanel.querySelector(`[data-feed-comment-input="${CSS.escape(feedId)}"]`);
+            if (!(targetInput instanceof HTMLInputElement) || !handle) return;
+            const prefix = `@${handle} 回复：`;
+            const current = String(targetInput.value || "");
+            if (!current.startsWith(prefix)) {
+              targetInput.value = `${prefix}${current.replace(/^\s+/, "")}`;
+              state.feedCommentDrafts[feedId] = targetInput.value;
+              targetInput.dispatchEvent(new Event("input", { bubbles: true }));
+            }
+            targetInput.focus();
+            try {
+              const caret = targetInput.value.length;
+              targetInput.setSelectionRange(caret, caret);
+            } catch (_err) {}
+            return;
+          }
+          if (action === "mention-pick") {
+            const mentionIndex = Number(btn.getAttribute("data-mention-index") || 0);
+            const mentionState = state.feedMentionState;
+            if (!mentionState || !Array.isArray(mentionState.users)) return;
+            const picked = mentionState.users[mentionIndex];
+            const targetInput = el.learningFeedPanel.querySelector(`[data-feed-comment-input="${CSS.escape(feedId)}"]`);
+            if (!(targetInput instanceof HTMLInputElement) || !picked) return;
+            applyMentionSelectionToInput(targetInput, picked);
+            targetInput.focus();
+            return;
+          }
           if (action === "comment-send") {
             await submitLearningFeedComment(feedId);
             return;
@@ -2771,6 +3190,70 @@
         const feedId = String(target.getAttribute("data-feed-comment-input") || "").trim();
         if (!feedId) return;
         state.feedCommentDrafts[feedId] = String(target.value || "");
+        if (target.dataset.composing === "true") {
+          return;
+        }
+        updateFeedMentionCandidates(target).catch(() => {
+          resetFeedMentionState();
+          syncFeedMentionMenus();
+        });
+      });
+      el.learningFeedPanel.addEventListener("compositionstart", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLInputElement)) return;
+        const feedId = String(target.getAttribute("data-feed-comment-input") || "").trim();
+        if (!feedId) return;
+        target.dataset.composing = "true";
+        state.feedCommentComposing[feedId] = true;
+      });
+      el.learningFeedPanel.addEventListener("compositionend", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLInputElement)) return;
+        const feedId = String(target.getAttribute("data-feed-comment-input") || "").trim();
+        if (!feedId) return;
+        delete state.feedCommentComposing[feedId];
+        delete target.dataset.composing;
+        state.feedCommentDrafts[feedId] = String(target.value || "");
+        updateFeedMentionCandidates(target).catch(() => {
+          resetFeedMentionState();
+          syncFeedMentionMenus();
+        });
+      });
+      el.learningFeedPanel.addEventListener("keydown", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLInputElement)) return;
+        const feedId = String(target.getAttribute("data-feed-comment-input") || "").trim();
+        if (!feedId) return;
+        if (target.dataset.composing === "true" || event.isComposing) {
+          return;
+        }
+        const mentionState = state.feedMentionState;
+        if (!mentionState || !mentionState.visible || mentionState.key !== `comment:${feedId}` || !Array.isArray(mentionState.users) || !mentionState.users.length) {
+          return;
+        }
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          mentionState.activeIndex = (Number(mentionState.activeIndex || 0) + 1) % mentionState.users.length;
+          syncFeedMentionMenus();
+          return;
+        }
+        if (event.key === "ArrowUp") {
+          event.preventDefault();
+          mentionState.activeIndex = (Number(mentionState.activeIndex || 0) - 1 + mentionState.users.length) % mentionState.users.length;
+          syncFeedMentionMenus();
+          return;
+        }
+        if (event.key === "Enter" && !event.shiftKey) {
+          const picked = mentionState.users[Number(mentionState.activeIndex || 0)];
+          if (!picked) return;
+          event.preventDefault();
+          applyMentionSelectionToInput(target, picked);
+          return;
+        }
+        if (event.key === "Escape") {
+          resetFeedMentionState();
+          syncFeedMentionMenus();
+        }
       });
     }
     if (el.confirmCancelBtn) {
@@ -3478,43 +3961,3 @@
     notifyHostInputVisibility(false);
   });
 })();
-
-  function renderSettingsChannels() {
-    const rows = Array.isArray(state.learningFeedChannels) ? state.learningFeedChannels.filter((row) => row && !row.builtin) : [];
-    el.settingsDetailPane.innerHTML = `
-      <section class="settings-detail-scroll">
-        <article class="settings-card">
-          <div class="settings-title">新建频道</div>
-          <div class="settings-sub">使用 <code>@用户名</code> 添加可见用户。输入 <code>@ALL</code> 后将变为全员公开频道。</div>
-          <div class="settings-inline-form">
-            <div class="materials-form-row settings-model-row">
-              <label class="materials-form-label settings-model-label" for="settingsChannelTitleInput">频道名</label>
-              <input id="settingsChannelTitleInput" class="input-lite settings-model-select" placeholder="例如：春物私有研读">
-            </div>
-            <div class="materials-form-row settings-model-row">
-              <label class="materials-form-label settings-model-label" for="settingsChannelUsersInput">可见用户</label>
-              <input id="settingsChannelUsersInput" class="input-lite settings-model-select" placeholder="@mujica,@alice 或 @ALL">
-            </div>
-            <div class="materials-form-actions materials-form-actions-right">
-              <button id="createFeedChannelBtn" class="nxl-icon-btn nxl-icon-btn-dark" type="button" aria-label="新建频道" title="新建频道">+</button>
-            </div>
-          </div>
-        </article>
-        <article class="settings-card">
-          <div class="settings-title">现有频道</div>
-          <div class="settings-log-list">
-            ${rows.length ? rows.map((row) => `
-              <div class="settings-log-item">
-                <div class="settings-log-head">
-                  <strong>${escapeHtml(String(row.title || ""))}</strong>
-                  <button class="nxl-icon-btn nxl-icon-btn-danger" type="button" data-action="delete-feed-channel" data-channel-id="${escapeHtml(String(row.id || ""))}" title="删除频道" aria-label="删除频道">×</button>
-                </div>
-                <div class="settings-log-meta">${escapeHtml(String(row.type || ""))}</div>
-                <pre class="settings-log-content">${escapeHtml(Array.isArray(row.member_user_ids) && row.member_user_ids.length ? row.member_user_ids.map((userId) => `@${userId}`).join(", ") : "全员可见")}</pre>
-              </div>
-            `).join("") : '<div class="materials-empty">暂无自定义频道</div>'}
-          </div>
-        </article>
-      </section>
-    `;
-  }
