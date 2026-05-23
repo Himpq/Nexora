@@ -1038,7 +1038,7 @@
     if (state.dashboardSideTab !== "feed") return;
     const rows = Array.isArray(state.learningFeeds) ? state.learningFeeds : [];
     if (!rows.length) {
-      el.learningFeedPanel.innerHTML = '<div class="materials-empty">暂无学习动态</div>';
+      el.learningFeedPanel.innerHTML = '<div class="materials-empty feed-empty-state">暂无学习动态</div>';
       return;
     }
     el.learningFeedPanel.innerHTML = `
