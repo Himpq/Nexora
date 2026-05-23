@@ -1085,7 +1085,6 @@ def _run_coarse_reading_chunked(
             last_chapter_ordinal = _ordinal
     merged_output = _render_chapters_xml(chapters)
     outline_built = bool(chapters)
-    done_marked = False
     tempmem_key = _job_key(lecture_id, book_id)
     _set_tempmem_rows(tempmem_key, [])
     _set_read_progress(tempmem_key, {"max_end": 0, "calls": 0, "last_offset": 0, "last_length": 0})
@@ -1341,13 +1340,6 @@ def _run_coarse_reading_chunked(
             "completed_chapters": _count_completed_chapters(chapters),
         }
 
-    def _mark_book_done_tool() -> Dict[str, Any]:
-        nonlocal done_marked
-        # `done` tool is treated as current chunk completion only.
-        # Full-book completion should be decided by chunk loop progress or explicit <DONE> marker.
-        done_marked = False
-        return {"ok": True, "done": True}
-
     section_plan = _discover_coarse_sections(full_text)
     planned_sections = list(section_plan.get("sections") or [])
     plan_mode = str(section_plan.get("mode") or "fallback").strip()
@@ -1543,7 +1535,6 @@ def _run_tool_driven_resume_round(
     on_delta,
     on_save_chapter,
     on_update_chapter,
-    on_mark_done,
     section_mode: bool = False,
     current_section: Optional[Mapping[str, Any]] = None,
     rolling_read_window: bool = False,
@@ -1562,7 +1553,7 @@ def _run_tool_driven_resume_round(
     #         content="stream=true downgraded to stream=false for tool-driven round",
     #     )
     max_turns = 18
-    force_done_trigger_turns = 4
+    force_write_trigger_turns = 4
     output_text = ""
     assistant_concat: List[str] = []
     round_context_chars = 0
@@ -1570,16 +1561,16 @@ def _run_tool_driven_resume_round(
     saved_chapter_calls = 0
     total_tool_calls = 0
     chunk_done = False
-    no_done_turn_streak = 0
-    force_done_injected = False
+    no_write_turn_streak = 0
+    force_write_injected = False
     turn_history: List[Dict[str, Any]] = []
     read_seen: Dict[str, int] = {}
     last_read_end = 0
 
     for turn in range(1, max_turns + 1):
-        force_round_active = (no_done_turn_streak >= force_done_trigger_turns) and (not force_done_injected)
+        force_round_active = (no_write_turn_streak >= force_write_trigger_turns) and (not force_write_injected)
         if force_round_active:
-            force_done_injected = True
+            force_write_injected = True
         prompt_vars = {
             "lecture_name": str(lecture_name or ""),
             "book_name": str(book_name or ""),
@@ -1609,18 +1600,17 @@ def _run_tool_driven_resume_round(
         if force_round_active:
             hard_constraint = (
                 "\n\n[HARD_CONSTRAINT_ROUND]\n"
-                "你已经连续多轮未调用 done。"
-                "本轮你必须立刻完成以下三项工具调用并结束：\n"
+                "你已经连续多轮未完成有效写入。"
+                "本轮你必须立刻完成以下两项工具调用并结束：\n"
                 "1) savemem(...)\n"
                 "2) write(...)\n"
-                "3) done(...)\n"
                 "严禁仅输出计划文本；严禁只读不写；本轮未满足将视为失败。"
             )
             user_prompt = f"{user_prompt}{hard_constraint}"
             log_event(
                 "model_hard_constraint_round",
-                "触发硬约束回合（必须 savemem + write + done）",
-                payload={"resume_round": int(resume_round), "turn": int(turn), "streak": int(no_done_turn_streak)},
+                "触发硬约束回合（必须 savemem + write）",
+                payload={"resume_round": int(resume_round), "turn": int(turn), "streak": int(no_write_turn_streak)},
                 content="",
             )
         messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
@@ -1704,7 +1694,6 @@ def _run_tool_driven_resume_round(
         stop_this_round = False
         turn_has_write = False
         turn_has_savemem = False
-        turn_has_done = False
         for call in tool_calls:
             if not isinstance(call, dict):
                 continue
@@ -1773,8 +1762,6 @@ def _run_tool_driven_resume_round(
                     saved_chapter_calls += 1
                     turn_history = []
                     chunk_done = True
-                    turn_has_done = True
-                    done_marked = True
                     log_event(
                         "model_tool_history_trim",
                         "write 后清空工具历史上下文",
@@ -1817,8 +1804,6 @@ def _run_tool_driven_resume_round(
                     saved_chapter_calls += 1
                     turn_history = []
                     chunk_done = True
-                    turn_has_done = True
-                    done_marked = True
                     log_event(
                         "model_tool_history_trim",
                         "update_chapter 后清空工具历史上下文",
@@ -1826,10 +1811,6 @@ def _run_tool_driven_resume_round(
                         content="",
                     )
                 turn_has_write = True
-            elif tool_name in {"mark_book_done", "done"}:
-                result_obj = on_mark_done()
-                chunk_done = True
-                turn_has_done = True
             else:
                 result_obj = {"ok": False, "error": f"unsupported tool: {tool_name}"}
             inject_tool_history = tool_name in {"read", "write", "save_chapter", "update_chapter"}
@@ -1888,14 +1869,12 @@ def _run_tool_driven_resume_round(
                 )
                 break
         if force_round_active:
-            if not (turn_has_savemem and turn_has_write and turn_has_done):
+            if not (turn_has_savemem and turn_has_write):
                 missing = []
                 if not turn_has_savemem:
                     missing.append("savemem")
                 if not turn_has_write:
                     missing.append("write")
-                if not turn_has_done:
-                    missing.append("done")
                 log_event(
                     "model_hard_constraint_miss",
                     "硬约束回合未满足必需工具调用",
@@ -1908,18 +1887,18 @@ def _run_tool_driven_resume_round(
                         "content": (
                             "你刚刚未满足硬约束。"
                             f"缺失工具: {', '.join(missing)}。"
-                            "下一轮必须先调用缺失工具并完成 done。"
+                            "下一轮必须先调用缺失工具并完成有效写入。"
                         ),
                     }
                 )
-                no_done_turn_streak += 1
+                no_write_turn_streak += 1
                 continue
         if stop_this_round:
             break
-        if turn_has_done:
-            no_done_turn_streak = 0
+        if chunk_done:
+            no_write_turn_streak = 0
         else:
-            no_done_turn_streak += 1
+            no_write_turn_streak += 1
         if chunk_done:
             break
     assistant_text = str(output_text).strip() if output_text.strip() else "\n".join([part for part in assistant_concat if str(part or "").strip()]).strip()
@@ -1955,7 +1934,6 @@ def _run_coarse_reading_sectioned(
     on_delta,
     on_save_chapter,
     on_update_chapter,
-    on_mark_done,
     cancel_key: str,
 ) -> str:
     """按已发现的章节区间逐章概读，正常路径优先走这里。"""
@@ -2012,7 +1990,6 @@ def _run_coarse_reading_sectioned(
             on_delta=on_delta,
             on_save_chapter=on_save_chapter,
             on_update_chapter=on_update_chapter,
-            on_mark_done=on_mark_done,
             section_mode=True,
             current_section=section,
             rolling_read_window=False,
@@ -2152,6 +2129,24 @@ def _run_coarse_reading_sectioned_summary_only(
             {
                 "type": "function",
                 "function": {
+                    "name": "find",
+                    "description": "Find keyword in the current chapter range and return exact offsets plus nearby context.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "keyword": {"type": "string"},
+                            "range_start": {"type": "integer"},
+                            "range_end": {"type": "integer"},
+                            "context_range": {"type": "integer"},
+                            "max_hits": {"type": "integer"},
+                        },
+                        "required": ["keyword"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "index",
                     "description": "Find keyword in an optional range and return exact offsets plus nearby context.",
                     "parameters": {
@@ -2193,17 +2188,6 @@ def _run_coarse_reading_sectioned_summary_only(
                     },
                 },
             },
-            {
-                "type": "function",
-                "function": {
-                    "name": "done",
-                    "description": "Finish the current chapter summary task.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {},
-                    },
-                },
-            },
         ]
         turn_history: List[Dict[str, Any]] = []
         section_done = False
@@ -2213,14 +2197,16 @@ def _run_coarse_reading_sectioned_summary_only(
         while not section_done:
             turn += 1
             _set_book_progress(lecture_id, book_id, f"模型正在阅读章节<{chapter_name or '未命名章节'}>...")
+            chapter_preload_for_turn = chapter_preload_text if turn == 1 else ""
+            preload_range_for_turn = f"{preload_start}:{max(1, preload_end - preload_start)}" if turn == 1 else ""
             user_prompt = _render_prompt(
                 summary_user_tpl,
                 {
                     "request": request_text,
                     "chapter_name": chapter_name or "Untitled Chapter",
                     "chapter_range": chapter_range,
-                    "preload_range": f"{preload_start}:{max(1, preload_end - preload_start)}",
-                    "chapter_preload": chapter_preload_text,
+                    "preload_range": preload_range_for_turn,
+                    "chapter_preload": chapter_preload_for_turn,
                     "quality_feedback": latest_quality_feedback,
                 },
             )
@@ -2337,7 +2323,6 @@ def _run_coarse_reading_sectioned_summary_only(
                 )
                 continue
             turn_has_update = False
-            turn_has_done = False
             for call in tool_calls:
                 if not isinstance(call, dict):
                     continue
@@ -2394,6 +2379,22 @@ def _run_coarse_reading_sectioned_summary_only(
                             "preview": _preview_plain_text(args_obj.get("note"), 50),
                         },
                     )
+                elif tool_name in {"find", "index"}:
+                    args_obj = _clamp_to_section(args_obj, chunk_start, chunk_end)
+                    result_obj = _exec_index_book_text_tool(
+                        full_text=full_text,
+                        total_len=total_len,
+                        arguments=args_obj,
+                    )
+                    _push_book_progress_step(
+                        lecture_id,
+                        book_id,
+                        {
+                            "type": "find",
+                            "title": f"定位章节文本 {chapter_range}",
+                            "preview": _preview_plain_text(args_obj.get("keyword"), 50),
+                        },
+                    )
                 elif tool_name == "update_summary":
                     result_obj = on_update_summary(
                         chapter_range=chapter_range,
@@ -2426,24 +2427,10 @@ def _run_coarse_reading_sectioned_summary_only(
                                     ),
                                 }
                             )
-                elif tool_name == "done":
-                    result_obj = {"ok": True, "done": True}
-                    _push_book_progress_step(
-                        lecture_id,
-                        book_id,
-                        {
-                            "type": "done",
-                            "title": "章节处理完成",
-                            "preview": "",
-                        },
-                    )
-                    turn_has_done = True
-                    if turn_has_update:
-                        section_done = True
                 else:
                     # Remove hard restriction on unexpected tool names in summary phase.
                     result_obj = {"ok": True, "skipped": True, "tool_name": tool_name}
-                if tool_name in {"read", "update_summary", "done"}:
+                if tool_name in {"read", "find", "index", "update_summary"}:
                     turn_history.append({"role": "tool", "tool_call_id": call_id, "content": _safe_json_dumps(result_obj)})
                 log_event(
                     "section_summary_tool_result",
@@ -2457,13 +2444,6 @@ def _run_coarse_reading_sectioned_summary_only(
                         "chapter_range": chapter_range,
                     },
                     content=_safe_json_dumps(result_obj)[:2400],
-                )
-            if turn_has_update and not turn_has_done:
-                turn_history.append(
-                    {
-                        "role": "user",
-                        "content": "summary saved; stop extra narration. call done or continue next section.",
-                    }
                 )
             if section_done:
                 merged_output = _render_chapters_xml(_parse_existing_chapters(load_book_info_xml(_CFG, lecture_id, book_id)))
@@ -2598,17 +2578,6 @@ def _run_coarse_section_planning(
                 },
             },
         },
-        {
-            "type": "function",
-            "function": {
-                "name": "done",
-                "description": "Finish phase 1 after submit_outline succeeds.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                },
-            },
-        },
     ]
     messages: List[Dict[str, Any]] = [
         {"role": "system", "content": prompt},
@@ -2689,7 +2658,7 @@ def _run_coarse_section_planning(
                     "role": "user",
                     "content": (
                         "No valid tool call detected. "
-                        "You must call submit_outline(sections=[...]) and then done. "
+                        "You must call submit_outline(sections=[...]) and finish the outline submission. "
                         "Do not answer in plain text."
                     ),
                 }
@@ -2778,8 +2747,6 @@ def _run_coarse_section_planning(
                     result_obj = {"ok": True, "sections_count": len(outline_sections)}
                 else:
                     result_obj = {"ok": False, "error": "sections is empty or invalid"}
-            elif tool_name == "done":
-                result_obj = {"ok": True, "done": True, "outline_submitted": bool(outline_submitted)}
             else:
                 result_obj = {"ok": False, "error": f"unsupported tool: {tool_name}"}
             turn_history.append({"role": "tool", "tool_call_id": call_id, "content": _safe_json_dumps(result_obj)})
@@ -3019,7 +2986,7 @@ def _review_outline_sections_with_model(
         "1) Keep chapter order and chapter count unless boundary is clearly wrong.\n"
         "2) Prefer chapter-level boundaries, avoid tiny fragments.\n"
         "3) Ignore matches in EPUB heading candidates header block.\n"
-        "4) Must call submit_outline(sections=[...]) then done. No plain final text."
+        "4) Must call submit_outline(sections=[...]) and finish the outline submission. No plain final text."
     )
     user_prompt = (
         f"Course: {lecture_name}\n"
@@ -3084,10 +3051,6 @@ def _review_outline_sections_with_model(
                 },
             },
         },
-        {
-            "type": "function",
-            "function": {"name": "done", "description": "Finish after submit_outline.", "parameters": {"type": "object", "properties": {}}},
-        },
     ]
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
     turn_history: List[Dict[str, Any]] = []
@@ -3147,7 +3110,7 @@ def _review_outline_sections_with_model(
             turn_history.append(
                 {
                     "role": "user",
-                    "content": "No valid tool call detected. You must call submit_outline(sections=[...]) then done.",
+                    "content": "No valid tool call detected. You must call submit_outline(sections=[...]) and finish the outline submission.",
                 }
             )
             continue
@@ -3194,8 +3157,6 @@ def _review_outline_sections_with_model(
                 parsed.sort(key=lambda item: int(item.get("start") or 0))
                 submitted = parsed
                 result_obj = {"ok": bool(submitted), "sections_count": len(submitted)}
-            elif tool_name == "done":
-                result_obj = {"ok": True, "done": True}
             else:
                 result_obj = {"ok": False, "error": f"unsupported tool: {tool_name}"}
             turn_history.append({"role": "tool", "tool_call_id": call_id, "content": _safe_json_dumps(result_obj)})
@@ -3419,14 +3380,6 @@ def _build_rough_read_tools() -> List[Dict[str, Any]]:
                     },
                     "required": ["chapter_name", "chapter_range", "chapter_summary"],
                 },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "done",
-                "description": "Call this only when current chunk has completed required persistence.",
-                "parameters": {"type": "object", "properties": {}},
             },
         },
     ]

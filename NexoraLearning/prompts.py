@@ -210,7 +210,7 @@ COARSE_READING_MODEL_USER_PROMPT = """
 强约束：
 1. 你必须先调用 `read` 读取当前 Chunk 范围内文本，再基于读取到的文本定位与提炼。
 2. 本 Chunk 结束前，必须至少调用一次 `savemem` 和一次 `write`。
-3. 如果你已经完成了本 Chunk 的章节总结与写入，后端会自动视为结束，不必强行等待 `done`。
+3. 如果你已经完成了本 Chunk 的章节总结与写入，后端会自动视为结束，不要再追加多余工具调用。
 4. 只有在当前 Chunk 无法完成章节闭环时，才可越界读取；越界时在 `read` 参数传 `allow_out_of_chunk=true`。
 5. 本轮默认读取窗口：`read({{chunk_start}}, {{chunk_length}})`；可在此基础上拆分多次 read，但必须以该范围为主。
 6. 当前 Chunk 即使出现目录或后文章节名，也只能作为线索记录，不允许提前写入尚未真正出现的章节。
@@ -228,8 +228,8 @@ Use candidate headings only as clues, not as final truth.
 Do not search inside the EPUB_HEADING_CANDIDATES header block.
 Prefer index with range_start >= {{body_search_start}} so you search in real body text.
 Use index first, then read nearby text if needed.
-You must submit outline only via tool `submit_outline`.
-After submit_outline succeeds, call done.
+    You must submit outline only via tool `submit_outline`.
+    After submit_outline succeeds, the backend will treat this phase as finished.
 Tool-first policy: do not output conversational text.
 Do not output SECTION_PLAN in plain text.
 """.strip()
@@ -261,7 +261,7 @@ Write one concise Chinese paragraph summary only.
 Summary must be concrete: include key人物/冲突/事件推进, not generic template.
 Do not output labels/list/markdown such as '章节结构', '章节范围', '*', '-', '#'.
 Before using tools, you must first read and understand the injected chapter preload text.
-When summary is ready, call update_summary immediately. done is optional.
+When summary is ready, call update_summary immediately. The backend will treat a successful update_summary as finished.
 """.strip()
 
 
@@ -388,11 +388,14 @@ SPLIT_CHAPTERS_MODEL_SYSTEM_PROMPT = """
 
 强约束:
 1. 只能基于当前章节内容进行分节，不得引入章节外信息。
-2. 你必须通过工具 write(...) 一次性提交完整 sessions 数组。
-3. sessions 必须连续覆盖 chapter_range，不能有重叠和空洞。
-4. 最后一个 session 的结尾必须严格等于 chapter end。
-5. 在调用 write 成功后，再调用 done。
-6. 只做工具调用，不要输出额外解释性文本。
+2. 你必须先调用 `read(offset,length)` 阅读当前章节范围内的原文，再决定如何切分。
+3. 当需要确认某个短语、标题、转场句或边界的精确位置时，必须调用 `find(keyword)` 在当前章节范围内定位；不要凭感觉估算 offset。
+4. 你必须通过工具 write(...) 一次性提交完整 sessions 数组。
+5. sessions 必须连续覆盖 chapter_range，不能有重叠和空洞。第一个 session 必须从 chapter start 开始，后一个 session 必须紧接前一个 session 的 end。
+6. 最后一个 session 的结尾必须严格等于 chapter end。
+7. 在调用 write 成功后，再调用 done。
+8. 只做工具调用，不要输出额外解释性文本。
+9. 如果 write 被拒绝，必须根据返回的 expected_start / chapter_end 等错误信息修正，不能再次提交拍脑袋的范围。
 """.strip()
 
 
@@ -418,6 +421,13 @@ SPLIT_CHAPTERS_MODEL_USER_PROMPT = """
 <REQUEST>
 {{request}}
 </REQUEST>
+
+执行顺序要求:
+1. 先通过 read 阅读当前章节范围。
+2. 如需确定标题、转场句、关键事件或 Session 边界，使用 find(keyword) 精确定位。
+3. 基于 read/find 的结果构造完整的 sessions。
+4. 调用 write(sessions=[...])。
+5. write 成功后本轮直接结束，不要再发额外工具调用。
 """.strip()
 
 

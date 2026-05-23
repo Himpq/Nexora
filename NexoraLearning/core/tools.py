@@ -20,6 +20,14 @@ def _boolean_field(description: str) -> Dict[str, Any]:
     return {"type": "boolean", "description": description}
 
 
+def _string_array_field(description: str) -> Dict[str, Any]:
+    return {
+        "type": "array",
+        "description": description,
+        "items": {"type": "string"},
+    }
+
+
 def _object_tool(
     name: str,
     description: str,
@@ -257,9 +265,29 @@ class NexoraTools:
         ]
 
     @classmethod
+    def interaction_tools(cls) -> List[Dict[str, Any]]:
+        return [
+            _object_tool(
+                "puzzle",
+                "Launch a Learning puzzle board. Pass only a title and the candidate steps for the learner to reorder and connect.",
+                {
+                    "title": _string_field("Puzzle title shown to the learner."),
+                    "steps": _string_array_field("Candidate steps to place into the puzzle workspace."),
+                },
+                ["title", "steps"],
+            ),
+        ]
+
+    @classmethod
     def all(cls) -> List[Dict[str, Any]]:
         tools: List[Dict[str, Any]] = []
-        for group in (cls.lecture_tools(), cls.book_tools(), cls.content_tools(), cls.vector_tools()):
+        for group in (
+            cls.lecture_tools(),
+            cls.book_tools(),
+            cls.content_tools(),
+            cls.vector_tools(),
+            cls.interaction_tools(),
+        ):
             tools.extend(group)
         return tools
 

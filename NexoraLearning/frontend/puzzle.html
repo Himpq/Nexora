@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NexoraLearning Puzzle Lab</title>
+  <link rel="stylesheet" href="/api/frontend/assets/puzzle.css?v=20260523_09">
+</head>
+<body>
+  <main class="puzzle-shell">
+    <section class="puzzle-tool-card">
+      <div class="puzzle-card-body">
+        <header class="puzzle-card-topline">
+          <div class="puzzle-card-kicker">PUZZLE</div>
+          <div class="puzzle-card-pill">思路拼接题</div>
+        </header>
+
+        <section class="puzzle-toolbar" aria-label="拼图工具栏">
+          <div class="puzzle-toolbar-hint">所有拼图块默认出现在画布左侧，拖动到右侧工作区后可从两端连线。</div>
+        </section>
+
+        <section class="puzzle-stage" aria-label="拼图工作区">
+          <section class="puzzle-canvas-wrap">
+            <canvas id="puzzleCanvas" class="puzzle-canvas" aria-label="拼接式解题画布"></canvas>
+          </section>
+        </section>
+
+        <section class="puzzle-actions-bottom" aria-label="拼图操作">
+          <button id="puzzleSubmitBtn" class="puzzle-btn puzzle-btn-dark" type="button">检查</button>
+          <button id="puzzleResetViewBtn" class="puzzle-btn" type="button">重置视图</button>
+          <button id="puzzleResetPuzzleBtn" class="puzzle-btn" type="button">重置拼图</button>
+        </section>
+
+        <footer class="puzzle-foot">
+          <div id="puzzleFeedback" class="puzzle-feedback" aria-live="polite">操作提示：左侧初始区内的拼图块可以直接拖动；工作区空白处可拖动画布，节点两侧端点均可开始或结束连线。</div>
+        </footer>
+      </div>
+    </section>
+  </main>
+
+  <script src="/api/frontend/assets/puzzle.js?v=20260523_09"></script>
+</body>
+</html>

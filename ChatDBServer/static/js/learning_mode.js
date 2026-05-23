@@ -7,6 +7,8 @@
     let sidebarOptionsRef = {};
     const sidebarFoldState = new Map();
     let currentFrontendUrl = '';
+    let activePuzzleFullscreen = null;
+    const puzzleSubmissionRegistryKey = 'nexora_learning_puzzle_registry_v1';
 
     function escapeHtml(value) {
         return String(value || '')
@@ -15,6 +17,464 @@
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#39;');
+    }
+
+    function hashText(value) {
+        const text = String(value || '');
+        let h = 2166136261;
+        for (let i = 0; i < text.length; i += 1) {
+            h ^= text.charCodeAt(i);
+            h += (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24);
+        }
+        return String(h >>> 0);
+    }
+
+    function buildStablePuzzleCardId(payload, fallbackPrefix = 'puzzle') {
+        const raw = payload && typeof payload === 'object' ? payload : {};
+        const explicitId = String(raw.puzzle_id || '').trim();
+        if (explicitId) return explicitId;
+        const title = String(raw.title || '').trim();
+        const steps = Array.isArray(raw.steps)
+            ? raw.steps.map((item) => String(item || '').trim()).filter(Boolean)
+            : [];
+        const fingerprint = `${title}::${steps.join('||')}`;
+        return `${fallbackPrefix}_${hashText(fingerprint)}`;
+    }
+
+    function readPuzzleSubmissionRegistry() {
+        try {
+            const raw = window.localStorage.getItem(puzzleSubmissionRegistryKey);
+            if (!raw) return {};
+            const parsed = JSON.parse(raw);
+            return parsed && typeof parsed === 'object' ? parsed : {};
+        } catch (_) {
+            return {};
+        }
+    }
+
+    function writePuzzleSubmissionRegistry(registry) {
+        try {
+            window.localStorage.setItem(puzzleSubmissionRegistryKey, JSON.stringify(registry && typeof registry === 'object' ? registry : {}));
+        } catch (err) {
+            try {
+                console.warn('[LearningMode] puzzle registry write failed', {
+                    key: puzzleSubmissionRegistryKey,
+                    message: err && err.message ? String(err.message) : String(err || '')
+                });
+            } catch (_) {}
+        }
+    }
+
+    function getStoredPuzzleSubmissionRecord(puzzleId) {
+        const pid = String(puzzleId || '').trim();
+        if (!pid) return null;
+        const registry = readPuzzleSubmissionRegistry();
+        const record = registry[pid];
+        return record && typeof record === 'object' ? record : null;
+    }
+
+    function setStoredPuzzleSubmissionRecord(puzzleId, record) {
+        const pid = String(puzzleId || '').trim();
+        if (!pid) return;
+        const registry = readPuzzleSubmissionRegistry();
+        registry[pid] = record && typeof record === 'object' ? record : {};
+        writePuzzleSubmissionRegistry(registry);
+    }
+
+    function resolveLearningPuzzleUrl(frontendUrl) {
+        const base = String(frontendUrl || currentFrontendUrl || '').trim();
+        if (!base) return '/api/frontend/puzzle';
+        return `${base.replace(/\/+$/, '')}/puzzle`;
+    }
+
+    function syncPuzzleCardLockState(card) {
+        if (!card) return;
+        const iframe = card.querySelector('.puzzle-card-iframe');
+        if (!iframe || !iframe.contentWindow) return;
+        const puzzleId = String((card.dataset && card.dataset.puzzleId) || '').trim();
+        const resolved = String(card.dataset.resolved || '').trim().toLowerCase() === 'true';
+        if (!resolved) {
+            try {
+                iframe.contentWindow.postMessage({ type: 'nexora:puzzle:unlock' }, '*');
+            } catch (_) {}
+            try {
+                console.log('[LearningMode] syncPuzzleCardLockState unlock', { puzzleId });
+            } catch (_) {}
+            return;
+        }
+        let submission = null;
+        const rawSubmission = String(card.dataset.puzzleSubmission || '').trim();
+        if (rawSubmission) {
+            try {
+                submission = JSON.parse(rawSubmission);
+            } catch (_) {
+                submission = null;
+            }
+        }
+        try {
+            iframe.contentWindow.postMessage(
+                {
+                    type: 'nexora:puzzle:lock',
+                    ordered_steps: Array.isArray(submission && submission.ordered_steps) ? submission.ordered_steps : [],
+                    submission: submission && typeof submission === 'object' ? submission : null,
+                },
+                '*'
+            );
+        } catch (_) {}
+        try {
+            console.log('[LearningMode] syncPuzzleCardLockState lock', { puzzleId });
+        } catch (_) {}
+    }
+
+    function createPuzzleCardNode(puzzle, options = {}) {
+        const payload = (puzzle && typeof puzzle === 'object') ? puzzle : {};
+        const wrap = document.createElement('div');
+        wrap.className = 'puzzle-tool-card';
+        wrap.dataset.toolName = 'puzzle';
+        const payloadResolved = !!(payload.resolved || (Array.isArray(payload.ordered_steps) && payload.ordered_steps.length > 0));
+        wrap.dataset.pending = payloadResolved ? 'false' : 'true';
+        wrap.dataset.resolved = payloadResolved ? 'true' : 'false';
+        const title = escapeHtml(String(payload.title || '拼接式解题').trim());
+        const steps = Array.isArray(payload.steps)
+            ? payload.steps.map((item) => String(item || '').trim()).filter(Boolean)
+            : [];
+        const cardId = String(options.cardId || buildStablePuzzleCardId(payload));
+        wrap.dataset.puzzleId = cardId;
+        const storedRecord = getStoredPuzzleSubmissionRecord(cardId);
+        const shouldUseStoredResolved = !!(storedRecord && storedRecord.submission && typeof storedRecord.submission === 'object');
+        try {
+            console.log('[LearningMode] createPuzzleCardNode', {
+                cardId,
+                payloadHasId: !!String(payload.puzzle_id || '').trim(),
+                payloadResolved,
+                shouldUseStoredResolved
+            });
+        } catch (_) {}
+        if (payloadResolved || shouldUseStoredResolved) {
+            const sourceOrdered = shouldUseStoredResolved
+                ? (Array.isArray(storedRecord.ordered_steps) ? storedRecord.ordered_steps : [])
+                : (Array.isArray(payload.ordered_steps) ? payload.ordered_steps : []);
+            const sourceSubmission = shouldUseStoredResolved
+                ? storedRecord.submission
+                : (payload.submission && typeof payload.submission === 'object' ? payload.submission : null);
+            const submissionPayload = normalizePuzzleSubmissionPayload(sourceOrdered, sourceSubmission);
+            wrap.dataset.pending = 'false';
+            wrap.dataset.resolved = 'true';
+            try {
+                wrap.dataset.puzzleSubmission = JSON.stringify(submissionPayload);
+            } catch (_) {
+                wrap.dataset.puzzleSubmission = '';
+            }
+        }
+        wrap.innerHTML = `
+            <div class="puzzle-card-body puzzle-card-body-plain" data-puzzle-card-id="${cardId}">
+                <button type="button" class="puzzle-card-fullscreen-btn" aria-label="展开拼图" title="展开拼图">
+                    <i class="fa-solid fa-expand"></i>
+                </button>
+                <div class="puzzle-card-stage">
+                    <iframe class="puzzle-card-iframe" title="${title}" loading="lazy" referrerpolicy="strict-origin-when-cross-origin"></iframe>
+                </div>
+            </div>
+        `;
+        const iframe = wrap.querySelector('.puzzle-card-iframe');
+        if (iframe) {
+            iframe.src = resolveLearningPuzzleUrl(options.frontendUrl);
+            iframe.addEventListener('load', () => {
+                try {
+                    const initPayload = {
+                        type: 'nexora:puzzle:init',
+                        puzzle_id: cardId,
+                        title: String(payload.title || '拼接式解题').trim(),
+                        steps: steps.slice(),
+                    };
+                    iframe.contentWindow.postMessage(initPayload, '*');
+                    syncPuzzleCardLockState(wrap);
+                } catch (_) {}
+            });
+        }
+        return wrap;
+    }
+
+    function getPuzzleMainContentHost() {
+        return document.querySelector('.main-content');
+    }
+
+    function ensurePuzzleFullscreenLayer(host) {
+        if (!host) return null;
+        let layer = host.querySelector('#learningPuzzleFullscreenLayer');
+        if (layer) return layer;
+        layer = document.createElement('div');
+        layer.id = 'learningPuzzleFullscreenLayer';
+        layer.className = 'learning-puzzle-fullscreen-layer';
+        host.appendChild(layer);
+        return layer;
+    }
+
+    function syncPuzzleFullscreenButton(card, fullscreen) {
+        if (!card) return;
+        const btn = card.querySelector('.puzzle-card-fullscreen-btn');
+        if (!btn) return;
+        btn.setAttribute('aria-label', fullscreen ? '退出全屏' : '展开拼图');
+        btn.title = fullscreen ? '退出全屏' : '展开拼图';
+        btn.innerHTML = fullscreen
+            ? '<i class="fa-solid fa-compress"></i>'
+            : '<i class="fa-solid fa-expand"></i>';
+    }
+
+    function exitPuzzleFullscreen() {
+        const state = activePuzzleFullscreen;
+        if (!state) return false;
+        const card = state.card;
+        const host = state.host;
+        const layer = state.layer;
+        if (card && card.classList) {
+            card.classList.remove('is-puzzle-fullscreen');
+            syncPuzzleFullscreenButton(card, false);
+        }
+        const placeholder = state.placeholder;
+        if (placeholder && placeholder.parentNode && card) {
+            placeholder.parentNode.insertBefore(card, placeholder);
+            placeholder.parentNode.removeChild(placeholder);
+        } else if (card && state.fallbackParent && state.fallbackParent.appendChild) {
+            state.fallbackParent.appendChild(card);
+        }
+        if (layer) {
+            layer.classList.remove('active');
+            const extraNodes = Array.from(layer.childNodes || []).filter((node) => node !== card);
+            extraNodes.forEach((node) => {
+                try { layer.removeChild(node); } catch (_) {}
+            });
+        }
+        if (host) {
+            host.classList.remove('learning-puzzle-fullscreen-host');
+        }
+        activePuzzleFullscreen = null;
+        return true;
+    }
+
+    function enterPuzzleFullscreen(card) {
+        if (!card) return false;
+        const host = getPuzzleMainContentHost();
+        if (!host) return false;
+        if (activePuzzleFullscreen && activePuzzleFullscreen.card === card) {
+            return true;
+        }
+        if (activePuzzleFullscreen) {
+            exitPuzzleFullscreen();
+        }
+        const parent = card.parentNode;
+        const placeholder = document.createComment('learning-puzzle-fullscreen-placeholder');
+        if (parent) {
+            parent.insertBefore(placeholder, card);
+        }
+        const layer = ensurePuzzleFullscreenLayer(host);
+        if (!layer) return false;
+        host.classList.add('learning-puzzle-fullscreen-host');
+        layer.classList.add('active');
+        layer.innerHTML = '';
+        card.classList.add('is-puzzle-fullscreen');
+        syncPuzzleFullscreenButton(card, true);
+        layer.appendChild(card);
+        activePuzzleFullscreen = {
+            card,
+            host,
+            layer,
+            placeholder,
+            fallbackParent: parent || null,
+        };
+        setTimeout(() => {
+            syncPuzzleCardLockState(card);
+        }, 80);
+        return true;
+    }
+
+    function togglePuzzleFullscreen(card) {
+        if (!card) return;
+        if (activePuzzleFullscreen && activePuzzleFullscreen.card === card) {
+            exitPuzzleFullscreen();
+            setTimeout(() => {
+                syncPuzzleCardLockState(card);
+            }, 80);
+            return;
+        }
+        enterPuzzleFullscreen(card);
+    }
+
+    function bindPuzzleFullscreenEvents() {
+        document.addEventListener('click', (event) => {
+            const target = event.target;
+            if (!(target instanceof Element)) return;
+            const btn = target.closest('.puzzle-card-fullscreen-btn');
+            if (btn) {
+                event.preventDefault();
+                event.stopPropagation();
+                const card = btn.closest('.puzzle-tool-card');
+                if (card) {
+                    togglePuzzleFullscreen(card);
+                }
+                return;
+            }
+            if (!activePuzzleFullscreen) return;
+            const autoExitTrigger = target.closest('.conversation-item, #newChatBtn, #sidebarBrandNexoraTab, #sidebarBrandLearningTab');
+            if (autoExitTrigger) {
+                exitPuzzleFullscreen();
+            }
+        }, true);
+        document.addEventListener('keydown', (event) => {
+            if (!activePuzzleFullscreen) return;
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                exitPuzzleFullscreen();
+            }
+        });
+    }
+
+    function findPuzzleCardBySourceWindow(sourceWindow, root) {
+        if (!sourceWindow) return null;
+        const scope = root && root.querySelectorAll ? root : document;
+        const frames = Array.from(scope.querySelectorAll('.puzzle-card-iframe'));
+        for (const frame of frames) {
+            if (!(frame instanceof HTMLIFrameElement)) continue;
+            if (frame.contentWindow === sourceWindow) {
+                const card = frame.closest('.puzzle-tool-card');
+                if (card) return card;
+            }
+        }
+        return null;
+    }
+
+    function normalizePuzzleSubmissionPayload(orderedSteps, submission) {
+        const rows = Array.isArray(orderedSteps)
+            ? orderedSteps.map((item) => String(item || '').trim()).filter(Boolean)
+            : [];
+        const graph = submission && typeof submission === 'object' && submission.graph && typeof submission.graph === 'object'
+            ? submission.graph
+            : {};
+        const connections = Array.isArray(graph.connections)
+            ? graph.connections.map((conn) => ({
+                from_text: String(conn && conn.from_text || '').trim(),
+                to_text: String(conn && conn.to_text || '').trim(),
+            })).filter((conn) => conn.from_text && conn.to_text).slice(0, 64)
+            : [];
+        return {
+            type: 'puzzle_submission',
+            ordered_steps: rows,
+            graph: {
+                node_count: Number(graph.node_count || 0),
+                edge_count: Number(graph.edge_count || 0),
+                branch_count: Number(graph.branch_count || 0),
+                has_cycle: !!graph.has_cycle,
+                component_count: Number(graph.component_count || 0),
+                connections,
+            }
+        };
+    }
+
+    function buildPuzzleSubmissionInjectionText(orderedSteps, submission) {
+        const compact = normalizePuzzleSubmissionPayload(orderedSteps, submission);
+        const lines = ['[Puzzle Submission]'];
+        const steps = Array.isArray(compact.ordered_steps) ? compact.ordered_steps : [];
+        const graph = compact.graph && typeof compact.graph === 'object' ? compact.graph : {};
+        if (steps.length) lines.push(`MainSteps: ${steps.join(' -> ')}`);
+        lines.push(
+            `Graph: n=${Number(graph.node_count || 0)}, e=${Number(graph.edge_count || 0)}, b=${Number(graph.branch_count || 0)}, cyc=${graph.has_cycle ? '1' : '0'}, c=${Number(graph.component_count || 0)}`
+        );
+        const connections = Array.isArray(graph.connections) ? graph.connections : [];
+        if (connections.length) {
+            const edgeLines = [];
+            connections.slice(0, 40).forEach((conn) => {
+                const from = String(conn && conn.from_text || '').trim();
+                const to = String(conn && conn.to_text || '').trim();
+                if (!from || !to) return;
+                edgeLines.push(`${from} -> ${to}`);
+            });
+            if (edgeLines.length) {
+                lines.push(`Edges: ${edgeLines.join(' | ')}`);
+            }
+            if (connections.length > 40) {
+                lines.push(`MoreEdges: ${connections.length - 40}`);
+            }
+        }
+        return lines.join('\n');
+    }
+
+    function summarizePuzzleSubmission(orderedSteps, submission) {
+        const rows = Array.isArray(orderedSteps)
+            ? orderedSteps.map((item) => String(item || '').trim()).filter(Boolean)
+            : [];
+        const graph = submission && typeof submission === 'object' && submission.graph && typeof submission.graph === 'object'
+            ? submission.graph
+            : {};
+        const edgeCount = Number(graph.edge_count || 0);
+        return `已提交拼图结果（${rows.length}步 / ${edgeCount}连线）`;
+    }
+
+    function resolveStoredPuzzleSubmissionById(puzzleId) {
+        const record = getStoredPuzzleSubmissionRecord(String(puzzleId || '').trim());
+        if (!record || typeof record !== 'object') return null;
+        const ordered = Array.isArray(record.ordered_steps) ? record.ordered_steps.map((item) => String(item || '').trim()).filter(Boolean) : [];
+        const submission = record.submission && typeof record.submission === 'object' ? record.submission : null;
+        if (!ordered.length && !submission) return null;
+        return {
+            ordered_steps: ordered,
+            submission,
+            submitted_at: Number(record.submitted_at || 0),
+        };
+    }
+
+    function markPuzzleCardSubmitted(card, orderedSteps, submission) {
+        if (!card) return;
+        const rows = Array.isArray(orderedSteps)
+            ? orderedSteps.map((item) => String(item || '').trim()).filter(Boolean)
+            : [];
+        card.dataset.pending = 'false';
+        card.dataset.resolved = 'true';
+        const submissionPayload = normalizePuzzleSubmissionPayload(rows, submission);
+        const puzzleId = String((card.dataset && card.dataset.puzzleId) || '').trim();
+        if (puzzleId) {
+            setStoredPuzzleSubmissionRecord(puzzleId, {
+                ordered_steps: rows,
+                submission: submissionPayload,
+                submitted_at: Date.now(),
+            });
+        }
+        try {
+            card.dataset.puzzleSubmission = JSON.stringify(submissionPayload);
+        } catch (_) {
+            card.dataset.puzzleSubmission = '';
+        }
+        card.classList.add('is-submitted');
+        const body = card.querySelector('.puzzle-card-body');
+        if (body) {
+            body.classList.add('answered');
+        }
+        const iframe = card.querySelector('.puzzle-card-iframe');
+        if (iframe) syncPuzzleCardLockState(card);
+    }
+
+    function handlePuzzleFramePayload(event) {
+        const data = event && event.data;
+        if (!data || typeof data !== 'object') return false;
+        if (String(data.type || '').trim() !== 'nexora:puzzle:submit') return false;
+        const orderedSteps = Array.isArray(data.ordered_steps)
+            ? data.ordered_steps.map((item) => String(item || '').trim()).filter(Boolean)
+            : [];
+        const submission = (data.submission && typeof data.submission === 'object') ? data.submission : null;
+        try {
+            console.log('[LearningMode] puzzle submit payload', {
+                steps: orderedSteps.length,
+                sourceWindow: !!(event && event.source),
+                hasSubmission: !!submission
+            });
+        } catch (_) {}
+        window.dispatchEvent(new CustomEvent('nexora:learning-puzzle-submit', {
+            detail: {
+                sourceWindow: event.source,
+                orderedSteps,
+                submission,
+            }
+        }));
+        return true;
     }
 
     function ensureSharedIframe(kind, frontendUrl) {
@@ -512,6 +972,9 @@
         if (!payload || typeof payload !== 'object') return;
         if (String(payload.source || '').trim().toLowerCase() !== 'nexora-learning') return;
         if (String(payload.type || '').trim().toLowerCase() !== 'nexora:reader:state') return;
+        if (activePuzzleFullscreen) {
+            exitPuzzleFullscreen();
+        }
         sidebarReaderOpened = !!payload.opened;
         applySidebarByState();
     }
@@ -563,6 +1026,54 @@
         });
     }
 
+    async function searchFeedUsersViaIframe(query, limit = 8) {
+        const win = getSharedMainWindow();
+        if (!win) throw new Error('Learning iframe 未就绪。');
+        const frontendUrl = String(currentFrontendUrl || '').trim();
+        const origin = (() => {
+            try { return frontendUrl ? new URL(frontendUrl).origin : '*'; } catch (_) { return '*'; }
+        })();
+        const requestId = `feed_users_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        return await new Promise((resolve, reject) => {
+            let done = false;
+            const timer = setTimeout(() => {
+                if (done) return;
+                done = true;
+                window.removeEventListener('message', onMessage);
+                reject(new Error('查询用户超时。'));
+            }, 12000);
+            function cleanup() {
+                clearTimeout(timer);
+                window.removeEventListener('message', onMessage);
+            }
+            function onMessage(event) {
+                const data = event && event.data;
+                if (!data || typeof data !== 'object') return;
+                if (String(data.source || '').trim().toLowerCase() !== 'nexora-learning') return;
+                if (String(data.type || '').trim().toLowerCase() !== 'nexora:feed-users:search:result') return;
+                if (String(data.requestId || '') !== requestId) return;
+                if (done) return;
+                done = true;
+                cleanup();
+                if (data.success === false) reject(new Error(String(data.error || '查询用户失败。')));
+                else resolve(Array.isArray(data.items) ? data.items : []);
+            }
+            window.addEventListener('message', onMessage);
+            try {
+                win.postMessage({
+                    source: 'nexora-learning',
+                    type: 'nexora:feed-users:search',
+                    requestId,
+                    q: String(query || ''),
+                    limit: Number(limit) || 8,
+                }, origin === '*' ? '*' : origin);
+            } catch (err) {
+                cleanup();
+                reject(err);
+            }
+        });
+    }
+
     function renderSidebarPanel(container, options = {}) {
         if (!container) return;
         sidebarContainerRef = container;
@@ -579,6 +1090,7 @@
     }
 
     window.addEventListener('message', (event) => {
+        if (handlePuzzleFramePayload(event)) return;
         handleReaderStatePayload(event && event.data);
     });
 
@@ -592,5 +1104,15 @@
         renderSidebarPanel,
         destroySidebarPanel,
         postFeedViaIframe,
+        searchFeedUsersViaIframe,
+        createPuzzleCardNode,
+        findPuzzleCardBySourceWindow,
+        markPuzzleCardSubmitted,
+        buildPuzzleSubmissionInjectionText,
+        summarizePuzzleSubmission,
+        resolveStoredPuzzleSubmissionById,
+        exitPuzzleFullscreen,
     };
+
+    bindPuzzleFullscreenEvents();
 })();

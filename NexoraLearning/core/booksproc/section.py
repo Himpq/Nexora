@@ -268,6 +268,53 @@ def _exec_read_book_text_tool_in_range(
     }
 
 
+def _exec_find_book_text_tool_in_range(
+    *,
+    full_text: str,
+    chapter_start: int,
+    chapter_length: int,
+    arguments: Mapping[str, Any],
+) -> Dict[str, Any]:
+    keyword = str(arguments.get("keyword") or "").strip()
+    if not keyword:
+        return {"ok": False, "error": "keyword is required"}
+    context_range = max(20, min(600, int(arguments.get("context_range") or 80)))
+    max_hits = max(1, min(20, int(arguments.get("max_hits") or 5)))
+    total_len = len(full_text or "")
+    safe_start = max(0, min(int(chapter_start or 0), total_len))
+    safe_end = max(safe_start, min(safe_start + max(0, int(chapter_length or 0)), total_len))
+    source = str(full_text or "")[safe_start:safe_end]
+    cursor = 0
+    hits: List[Dict[str, Any]] = []
+    while cursor < len(source) and len(hits) < max_hits:
+        local_idx = source.find(keyword, cursor)
+        if local_idx < 0:
+            break
+        match_start = safe_start + local_idx
+        match_end = match_start + len(keyword)
+        block_start = max(safe_start, match_start - context_range)
+        block_end = min(safe_end, match_end + context_range)
+        snippet = str(full_text or "")[block_start:block_end]
+        hits.append(
+            {
+                "offset": int(match_start),
+                "match_start": int(match_start),
+                "match_end": int(match_end),
+                "range": f"{block_start}:{max(0, block_end - block_start)}",
+                "text": snippet,
+            }
+        )
+        cursor = local_idx + max(1, len(keyword))
+    return {
+        "ok": True,
+        "keyword": keyword,
+        "chapter_range": f"{safe_start}:{max(0, safe_end - safe_start)}",
+        "hits_count": len(hits),
+        "hits": hits,
+        "text": "\n\n".join([f"[offset={row['offset']}, {row['range']}]\n{row['text']}" for row in hits]),
+    }
+
+
 def run_split_chapters_with_tools(
     *,
     runner: Any,
@@ -336,6 +383,22 @@ def run_split_chapters_with_tools(
                         "memory": {"type": "string"},
                     },
                     "required": ["memory"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "find",
+                "description": "Find exact keyword positions inside the current chapter range only.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "keyword": {"type": "string"},
+                        "context_range": {"type": "integer"},
+                        "max_hits": {"type": "integer"},
+                    },
+                    "required": ["keyword"],
                 },
             },
         },
@@ -481,6 +544,22 @@ def run_split_chapters_with_tools(
                             "preview": chapter_name[:48],
                         },
                     )
+                elif tool_name == "find":
+                    tool_result = _exec_find_book_text_tool_in_range(
+                        full_text=full_text,
+                        chapter_start=chapter_start,
+                        chapter_length=chapter_length,
+                        arguments=args if isinstance(args, dict) else {},
+                    )
+                    push_book_progress_step(
+                        lecture_id,
+                        book_id,
+                        {
+                            "type": "find",
+                            "title": f"定位原文 {chapter_name}",
+                            "preview": str((args or {}).get("keyword") or "")[:50],
+                        },
+                    )
                 elif tool_name == "savemem":
                     memory = str((args or {}).get("memory") or "").strip()
                     if memory:
@@ -569,7 +648,7 @@ def run_split_chapters_with_tools(
         messages.append(
             {
                 "role": "user",
-                "content": "你还没有完成当前章节的 Session 提交。下一轮必须按顺序调用：write(sessions=[...]) 然后 done()；必要时先 read()/savemem()。",
+                "content": "你还没有完成当前章节的 Session 提交。下一轮必须按顺序调用：先 read() 阅读章节范围；必要时调用 find(keyword) 精确定位边界；确认后调用 write(sessions=[...])；write 成功后立即 done()。",
             }
         )
 

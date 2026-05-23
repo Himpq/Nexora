@@ -112,7 +112,7 @@
 
     .page {
       min-height: calc(100% - 64px);
-      padding: 28px;
+      /* padding: 28px; */
       display: block;
     }
 
@@ -138,7 +138,7 @@
       margin-left: calc(50% - 50vw);
       padding-left: var(--hero-side-pad);
       padding-right: var(--hero-side-pad);
-      align-items: flex-start;
+      display: block;
     }
     .hero-media-band {
       --hero-side-pad: clamp(36px, 3vw, 42px);
@@ -157,8 +157,40 @@
     .hero-first .hero-inner {
       position: relative;
       z-index: 2;
-      width: min(860px, 62%);
-      padding-left: clamp(20px, 4vw, 70px);
+      width: min(860px, 100%);
+      margin: 0 auto;
+      margin-top: 50px;     
+      padding-left: 0;
+      padding-right: 0;
+      text-align: center;
+      display: grid;
+      justify-items: center;
+    }
+    .hero-title-wrap {
+      width: 100%;
+      display: grid;
+      justify-items: center;
+    }
+    .hero-title-wrap h1 {
+      margin: 14px 0 0;
+      width: fit-content;
+      max-width: 100%;
+    }
+    .hero-divider {
+      width: min(680px, 100%);
+      height: 1px;
+      margin-top: 24px;
+      background: linear-gradient(90deg, transparent 0%, var(--line) 18%, var(--line) 82%, transparent 100%);
+    }
+    .hero-copy {
+      width: min(680px, 100%);
+      margin-top: 24px;
+      display: grid;
+      justify-items: center;
+    }
+    .hero-copy .desc {
+      margin-top: 0;
+      text-align: center;
     }
     .hero-media-band .hero-inner {
       position: relative;
@@ -196,7 +228,7 @@
 
     h1 {
       margin: 14px 0 0;
-      font-size: clamp(42px, 8vw, 84px);
+      font-size: clamp(42px, 7vw, 75px);
       line-height: 0.98;
       letter-spacing: -0.04em;
       font-weight: 800;
@@ -625,7 +657,6 @@
       .hero-media-band .hero-inner { width: 100%; }
       .hero > .hero-side-media { display: none; }
       .hero-first {
-        flex-direction: column;
         overflow: visible;
       }
       .hero-first .hero-side-media {
@@ -754,6 +785,67 @@
       opacity: 0.6;
     }
 
+    .content {
+        margin-top: 120px;
+        padding-left: 25%;
+        padding-right: 25%;
+        font-size: 18px;
+        /* text-indent: 2em; */
+        line-height: 30px;
+    }
+    .content p {
+      margin: 0 0 14px;
+    }
+    .content p:last-child {
+      margin-bottom: 0;
+    }
+    .content h1,
+    .content h2,
+    .content h3 {
+      margin: 22px 0 10px;
+      line-height: 1.25;
+    }
+    .content ul,
+    .content ol {
+      margin: 0 0 14px;
+      padding-left: 1.4em;
+    }
+    .content li + li {
+      margin-top: 6px;
+    }
+    .content pre {
+      margin: 0 0 14px;
+      padding: 14px 16px;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      background: #f8fafc;
+      overflow-x: auto;
+    }
+    .content code {
+      font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+      background: #f1f5f9;
+      padding: 2px 5px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    .content pre code {
+      background: transparent;
+      padding: 0;
+    }
+    .content blockquote {
+      margin: 16px 0;
+      padding-left: 16px;
+      border-left: 3px solid var(--line);
+      color: var(--muted);
+    }
+    .content a {
+      color: #2563eb;
+      text-decoration: none;
+    }
+    .content a:hover {
+      text-decoration: underline;
+    }
+
     @media (max-width: 520px) {
       h1 {
         font-size: clamp(36px, 12vw, 56px);
@@ -777,286 +869,93 @@
   <header class="topbar ow-topbar">
     <a class="brand ow-brand" href="/" aria-label="Nexora 首页">Nexora<span class="dot"></span></a>
     <nav class="menu ow-nav" aria-label="主导航">
-      <a class="menu-item ow-nav-link" href="/" aria-current="page">首页</a>
+      <a class="menu-item ow-nav-link" href="/">首页</a>
       <a class="menu-item ow-nav-link" href="/docs">文档</a>
       <a class="menu-item ow-nav-link" href="https://github.com/Himpq/Nexora">开源</a>
       <a class="menu-login ow-nav-link" href="/status">模型榜单</a>
       <a class="menu-login ow-nav-link" href="/login">登录</a>
-      <a class="menu-login ow-nav-link" href="/blog">博客</a>
+      <a class="menu-login ow-nav-link" href="/blog" aria-current="page">博客</a>
     </nav>
   </header>
 
+
+  
   <main class="page">
-    <section class="hero hero-first" aria-label="首页主栏目" style="margin-top: 0">
-      <div class="hero-inner">
-        <h1>谁有多余<span class="token-pill">Token</span></h1>
-        <div style="margin-top: 40px">
-          <p class="desc">Nexora 是一个开源的、多平台聚合的平台。</p>
-          <p class="desc">面向个人开发者与小型团队的本地公共模型平台。</p>
-        </div>
-        <div class="placeholder" aria-label="能力清单">
-          <span class="placeholder-chip">Nexora"Claw"</span>
-          <span class="placeholder-chip">NexoraMail 邮件</span>
-          <span class="placeholder-chip">网盘文件管理</span>
-          <span class="placeholder-chip">知识库 / 记忆</span>
-          <span class="placeholder-chip">RAG 检索</span>
-          <span class="placeholder-chip">文件向量化</span>
-        </div>
-        <section class="intro" aria-label="简介">
-          <!-- <h2 class="intro-title">简介</h2> -->
-          <div class="stats">
-            <article class="stat-card">
-              <div class="stat-value">RAG</div>
-              <div class="stat-label">知识库</div>
-            </article>
-            <article class="stat-card">
-              <div class="stat-value">4</div>
-              <div class="stat-label">Provider 适配</div>
-            </article>
-            <article class="stat-card">
-              <div class="stat-value">20+</div>
-              <div class="stat-label">内置工具</div>
-            </article>
-            <article class="stat-card">
-              <div class="stat-value">2</div>
-              <div class="stat-label">部署模式</div>
-            </article>
-          </div>
-        </section>
+        <div class="hero hero-first" aria-label="首页主栏目" style="margin-top: 0">
+            <div class="hero-inner">
+                <div class="hero-title-wrap">
+            <h1 id="heroTitle"></h1>
+                </div>
+                
+                <div class="hero-copy">
+            <p class="desc" id="heroDesc"></p>
+                </div>
+                <div class="hero-divider" aria-hidden="true"></div>
+            </div>
         
+            
 
-      </div>
-      <div class="hero-side-media" aria-hidden="true">
-        <img src="/static/img/w.png" alt="">
-      </div>
-    </section><br><br><br><br>
-
-    <section class="hero hero-media-band" aria-label="首页主栏目">
-      <div class="hero-inner">
-        <h1 class="hero-title-secondary">NexoraCode</h1>
-        <p class="desc">同一账号登陆设备可随时访问，执行远程任务。<br>仅需电脑端下载 NexoraCode 应用后登陆同一账号即可在手机端网页端远程执行命令。</p>
-        <br><br>
-        <span class="placeholder-chip">远程执行Shell</span>
-        <span class="placeholder-chip">计划任务</span>
-        <span class="placeholder-chip">本地渲染页面</span>
-
-        <br><br>
-        <a class="download-button" href="./static/nexoracode_versions/NexoraCode.7z" download>
-          <span class="download-icon">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-              <path d="M3 3h8.5v8.5H3V3zm0 9.5h8.5V21H3v-8.5zm9.5-9.5H21v8.5h-8.5V3zm0 9.5H21V21h-8.5v-8.5z"/>
-            </svg>
-          </span>
-          <span class="download-text">
-            <span class="download-label">下载 NexoraCode v2.0</span>
-            <span class="download-sub">Windows x64 - 110 MB</span>
-          </span>
-          <span class="download-arrow">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12 5v14M5 12l7 7 7-7"/>
-            </svg>
-          </span>
-        </a>
-
-      </div>
-      <div class="hero-side-media" aria-hidden="true">
-        <img src="/static/img/nexora_claw.png" alt="">
-      </div>
-    </section>
-
-    <section class="hero" aria-label="首页主栏目">
-      <div class="hero-inner">
-        <h1 class="hero-title-secondary">工作聚合</h1>
-        <p class="desc">Nexora 可解耦组件包括向量化存储、邮件服务、网盘服务、CLI工具。</p>
-
-        <section class="feature-grid same-row" aria-label="功能卡片">
-          <article class="feature-card feature-card-offset">
-            <div class="feature-visual rag-map">
-              <div class="diag-wrap">
-                <span class="diag-label">数据流</span>
-                <div class="diag-row">
-                  <span class="diag-chip dc-white"><svg class="diag-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 2.5h7l2.5 2.5V13H3V2.5z"/><path d="M9 2.5V5.5H12"/></svg>文件</span>
-                  <span class="diag-arr">→</span>
-                  <span class="diag-chip dc-indigo"><svg class="diag-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2v5l3 3" stroke-linecap="round"/><circle cx="8" cy="11" r="3"/></svg>向量化</span>
-                  <span class="diag-arr">→</span>
-                  <span class="diag-chip dc-violet"><svg class="diag-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="4" width="12" height="2.5" rx="1"/><rect x="2" y="8" width="12" height="2.5" rx="1"/><rect x="2" y="12" width="7" height="2" rx="1"/></svg>知识库</span>
-                </div>
-                <div class="diag-vsep"></div>
-                <div class="diag-row">
-                  <span class="diag-chip dc-sky"><svg class="diag-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="7" cy="7" r="4"/><path d="M10.5 10.5L13 13" stroke-linecap="round"/></svg>查询</span>
-                  <span class="diag-arr">→</span>
-                  <span class="diag-chip dc-emerald"><svg class="diag-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3 3 6-7" stroke-linecap="round" stroke-linejoin="round"/></svg>匹配结果</span>
-                </div>
-              </div>
+        <div class="content" id="heroContent">
+                
             </div>
-            <div class="feature-body">
-              <h3 class="feature-title">RAG 检索</h3>
-              <p class="feature-desc">通过可解耦组件 <span class="inline-pill">NexoraDB</span> 提供知识库、文件的向量化检索功能。</p>
-              <a class="feature-link" href="#">查看适配</a>
-            </div>
-          </article>
 
-          <article class="feature-card feature-card-offset">
-            <div class="feature-visual circuit-map">
-              <div class="diag-wrap">
-                <span class="diag-label">接入层</span>
-                <div class="diag-chip dc-indigo" style="font-size:12px;padding:0 18px;margin-bottom:2px"><svg class="diag-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5"/><path d="M8 3v5l3 2" stroke-linecap="round"/></svg>Nexora</div>
-                <div class="diag-row" style="flex-wrap:wrap;justify-content:center;gap:5px">
-                  <span class="diag-chip dc-white"><svg class="diag-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 9c0-2.8 2-5 5-5s5 2.2 5 5H3z"/><path d="M1.5 9h13"/></svg>Aliyun</span>
-                  <span class="diag-chip dc-white"><svg class="diag-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2l1.8 4h4l-3.2 2.4 1.2 4L8 10l-3.8 2.4 1.2-4L2.2 6h4z"/></svg>Volc</span>
-                  <span class="diag-chip dc-white"><svg class="diag-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="5" width="10" height="7" rx="2"/><circle cx="6" cy="8.5" r="1" fill="currentColor" stroke="none"/><circle cx="10" cy="8.5" r="1" fill="currentColor" stroke="none"/></svg>OpenAI</span>
-                  <span class="diag-chip dc-white"><svg class="diag-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2l1.5 4.5H14l-3.7 2.7 1.4 4.3L8 11l-3.7 2.5 1.4-4.3L2 6.5h4.5z"/></svg>Stepfun</span>
-                </div>
-              </div>
-            </div>
-            <div class="feature-body">
-              <h3 class="feature-title">多平台聚合</h3>
-              <p class="feature-desc">Nexora 提供不同 Provider 的适配接口，确保各个平台的完整 API 能够被接入与调用。</p>
-              <a class="feature-link" href="#">查看适配</a>
-            </div>
-          </article>
+        </div>
+    </main>
 
-          <article class="feature-card feature-card-offset">
-            <div class="feature-visual security-map">
-              <div class="diag-wrap">
-                <span class="diag-label">访问控制</span>
-                <div class="diag-row">
-                  <span class="diag-chip dc-white"><svg class="diag-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="5" r="2.5"/><path d="M3 13c0-2.8 2.2-5 5-5s5 2.2 5 5" stroke-linecap="round"/></svg>用户</span>
-                  <span class="diag-arr">→</span>
-                  <span class="diag-chip dc-emerald"><svg class="diag-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4" y="7" width="8" height="6" rx="1.5"/><path d="M6 7V5a2 2 0 014 0v2" stroke-linecap="round"/></svg>ACL</span>
-                  <span class="diag-arr">→</span>
-                  <span class="diag-chip dc-white"><svg class="diag-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="5" width="10" height="7" rx="2"/><circle cx="6" cy="8.5" r="1" fill="currentColor" stroke="none"/><circle cx="10" cy="8.5" r="1" fill="currentColor" stroke="none"/></svg>模型</span>
-                </div>
-                <div class="diag-vsep"></div>
-                <div class="diag-row">
-                  <span class="diag-chip dc-sky"><svg class="diag-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="10" width="12" height="4" rx="1"/><rect x="4" y="6" width="8" height="4" rx="1"/><rect x="6" y="2" width="4" height="4" rx="1"/></svg>本地存储</span>
-                </div>
-              </div>
-            </div>
-            <div class="feature-body">
-              <h3 class="feature-title">安全性</h3>
-              <p class="feature-desc">Nexora 的文本类文件、向量库文件本地存储，仅在模型调用时提供访问。</p>
-              <a class="feature-link" href="#">查看适配</a>
-            </div>
-          </article>
-        </section>
 
-      </div>
-    </section>
 
-    
+    <footer class="bottom-bar">
+        <span>Nexora · himpqblog.cn</span>
+        <nav class="bottom-links" aria-label="底部导航">
+        <a href="#">Docs</a>
+        <a href="#">Providers</a>
+        <a href="#">Deploy</a>
+        <a href="#">GitHub</a>
+        </nav>
+    </footer>
 
-    <section class="hero hero-media-band" aria-label="人员管理">
-      <div class="hero-inner">
-        <h1 class="hero-title-secondary">笔记</h1>
-        <p class="desc">选中聊天对话、知识库等文本随时记录笔记到云端。</p>
-        <p class="desc">多设备同步、多笔记本切换，随时导出。</p>
-        <br><br>
-        <span class="placeholder-chip">云存储</span>
-        <span class="placeholder-chip">选中文本即添加</span>
-        <span class="placeholder-chip">多端适用</span>
-      </div>
-      <div class="hero-side-media" aria-hidden="true">
-        <img src="/static/img/note.png" alt="">
-      </div>
-    </section>
+      <script src="/static/vendor/marked/marked.min.js"></script>
+      <script src="/static/js/secure_render.js"></script>
+    <script>
+        var title = 'Update <span class="token-pill">Learning Feeds</span>';
+        var desc = 'Himpq | May 17, 2026';
+        var content = `
+We have updated new features -- learning feeds.  
 
-    <section class="hero hero-media-band" aria-label="知识共享">
-      <div class="hero-inner">
-        <h1 class="hero-title-secondary">知识共享</h1>
-        <p class="desc">知识库支持共享与协作编辑，可面向团队开放指定知识内容，减少重复沟通与重复建设。</p>
-        <p class="desc">在共享页中可快速检索、复用和持续更新沉淀内容，让知识沉淀真正服务多人协作。</p>
-        <br><br>
-        <span class="placeholder-chip">知识分享</span>
-        <span class="placeholder-chip">在线文档任务</span>
-        <span class="placeholder-chip">即时同步</span>
-      </div>
-      <div class="hero-side-media" aria-hidden="true">
-        <img src="/static/img/knowledge_share_setting2.png" alt="">
-      </div>
-    </section>
+Now you can:
+  - Create learning feeds to share your learning interests and goals.
+  - Interact with the community by commenting and liking learning feeds.
+        `;
 
-    <section class="hero hero-media-band" aria-label="模型管理">
-      <div class="hero-inner">
-        <h1 class="hero-title-secondary">模型管理</h1>
-        <p class="desc">管理员可集中配置可用模型列表，为不同用户或角色分配访问权限，实现精细化的模型可见性与调用控制。</p>
-        <p class="desc">支持多 Provider 跨平台接入，统一在一处维护模型参数与权限策略，降低多系统运维成本。</p>
-      </div>
-      <div class="hero-side-media" aria-hidden="true">
-        <img src="/static/img/model_manage.png" alt="">
-      </div>
-    </section>
+    var titleEl = document.getElementById('heroTitle');
+    var descEl = document.getElementById('heroDesc');
+    var contentEl = document.getElementById('heroContent');
 
-    <section class="hero hero-media-band" aria-label="人员管理">
-      <div class="hero-inner">
-        <h1 class="hero-title-secondary">人员管理</h1>
-        <p class="desc">将 NexoraMail 账号和 Nexora 用户统一绑定，按成员身份分配可见能力与操作权限。</p>
-        <p class="desc">管理员可以集中维护账号映射、组织结构与权限策略，降低跨系统维护成本。</p>
-      </div>
-      <div class="hero-side-media" aria-hidden="true">
-        <img src="/static/img/member_manage.png" alt="">
-      </div>
-    </section>
+    if (window.marked) {
+      marked.setOptions({
+        gfm: true,
+        breaks: true,
+      });
+    }
 
-    <section class="hero hero-media-band" aria-label="数据监控">
-      <div class="hero-inner">
-        <h1 class="hero-title-secondary">数据监控</h1>
-        <p class="desc">内置 Token 消耗追踪与对话日志，帮助管理员实时掌握平台资源使用情况，及时发现异常调用行为。</p>
-        <p class="desc">可按用户、模型、时间维度细化统计，为配额规划与成本优化提供数据依据。</p>
-      </div>
-      <div class="hero-side-media" aria-hidden="true">
-        <img src="/static/img/data_observability.png" alt="">
-      </div>
-    </section>
+    if (titleEl) {
+      if (window.NexoraSecureRender) {
+        window.NexoraSecureRender.setSafeHTML(titleEl, title);
+      } else {
+        titleEl.innerHTML = title;
+      }
+    }
 
-    <section class="hero hero-media-band" aria-label="数据监控">
-      <div class="hero-inner">
-        <h1 class="hero-title-secondary">Token节省</h1>
-        <p class="desc">将工具选择权交给模型，不一次性注入所有工具。</p>
-        <p class="desc">可选的Auto / Force切换模式。</p>
-      </div>
-      <div class="hero-side-media" aria-hidden="true">
-        <img src="/static/img/tools_mode.png" alt="">
-      </div>
-    </section>
+    if (descEl) {
+      descEl.textContent = desc;
+    }
 
-    <section class="hero hero-media-band" aria-label="数据监控">
-      <div class="hero-inner">
-        <h1 class="hero-title-secondary">文件管理</h1>
-        <p class="desc">通过 Nexora 对 ppt, docx, pdf 等文件进行文本提取，交由 NexoraDB 向量化，便于模型检索。</p>
-        <p class="desc">文件于 Nexora 管理，减少上传到平台的麻烦。</p>
-      </div>
-      <div class="hero-side-media" aria-hidden="true">
-        <img src="/static/img/files_bar.png" alt="">
-      </div>
-    </section>
-
-    <section class="stack" aria-label="Nexora 能力补充">
-      <div class="stack-grid">
-        <article class="stack-item">
-          <h3>Provider 层标准化</h3>
-          <p>将 DashScope、Volcengine、OpenAI 等能力下沉到独立 provider，实现统一协议调用与逐步扩展。</p>
-        </article>
-        <article class="stack-item">
-          <h3>工具链与可观测性</h3>
-          <p>支持工具调用、联网搜索、向量检索日志，便于定位模型行为和 token 消耗问题。</p>
-        </article>
-        <article class="stack-item">
-          <h3>组件化部署</h3>
-          <p>NexoraDB、NexoraMail、主聊天服务可拆分部署，既适合本机运行也适合服务器长期托管。</p>
-        </article>
-      </div>
-    </section>
-
-  </main>
-  <footer class="bottom-bar">
-    <span>Nexora · himpqblog.cn</span>
-    <nav class="bottom-links" aria-label="底部导航">
-      <a href="#">Docs</a>
-      <a href="#">Providers</a>
-      <a href="#">Deploy</a>
-      <a href="#">GitHub</a>
-    </nav>
-  </footer>
+    if (contentEl) {
+      var renderedContent = window.NexoraSecureRender
+        ? window.NexoraSecureRender.safeMarkdownToHtml(content.trim())
+        : (window.marked ? marked.parse(content.trim()) : content.trim());
+      contentEl.innerHTML = renderedContent;
+    }
+    </script>
 </body>
 </html>

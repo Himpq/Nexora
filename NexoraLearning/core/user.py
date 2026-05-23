@@ -6,6 +6,7 @@ Directory layout:
       {user_id}/
         user.json
         learning.jsonl
+        notifications.jsonl
         question_completions.jsonl
         question_bank.jsonl
     questions/
@@ -61,6 +62,10 @@ def _question_completions_jsonl_path(cfg: Dict[str, Any], user_id: str) -> Path:
 
 def _question_bank_jsonl_path(cfg: Dict[str, Any], user_id: str) -> Path:
     return _user_dir(cfg, user_id) / "question_bank.jsonl"
+
+
+def _notifications_jsonl_path(cfg: Dict[str, Any], user_id: str) -> Path:
+    return _user_dir(cfg, user_id) / "notifications.jsonl"
 
 
 def _questions_root(cfg: Dict[str, Any]) -> Path:
@@ -229,6 +234,7 @@ def ensure_user_files(cfg: Dict[str, Any], user_id: str) -> Dict[str, str]:
 
     for jsonl_path in (
         _learning_jsonl_path(cfg, user_id),
+        _notifications_jsonl_path(cfg, user_id),
         _question_completions_jsonl_path(cfg, user_id),
         _question_bank_jsonl_path(cfg, user_id),
     ):
@@ -243,6 +249,7 @@ def ensure_user_files(cfg: Dict[str, Any], user_id: str) -> Dict[str, str]:
     return {
         "user": str(user_json_path),
         "learning": str(_learning_jsonl_path(cfg, user_id)),
+        "notifications": str(_notifications_jsonl_path(cfg, user_id)),
         "question_completions": str(_question_completions_jsonl_path(cfg, user_id)),
         "question_bank": str(_question_bank_jsonl_path(cfg, user_id)),
         "memories": str(memories_dir),
@@ -264,6 +271,30 @@ def append_learning_record(
 
 def list_learning_records(cfg: Dict[str, Any], user_id: str) -> List[Dict[str, Any]]:
     return _read_jsonl(_learning_jsonl_path(cfg, user_id))
+
+
+def append_notification(
+    cfg: Dict[str, Any],
+    user_id: str,
+    record: Dict[str, Any],
+) -> Dict[str, Any]:
+    ensure_user_files(cfg, user_id)
+    payload = dict(record or {})
+    payload.setdefault("type", "notification")
+    payload.setdefault("date", int(time.time()))
+    payload.setdefault("title", "")
+    payload.setdefault("content", "")
+    payload.setdefault("jumpto", "")
+    path = _notifications_jsonl_path(cfg, user_id)
+    serialized = json.dumps(payload, ensure_ascii=False) + "\n"
+    with _lock:
+        previous = path.read_text(encoding="utf-8") if path.exists() else ""
+        path.write_text(serialized + previous, encoding="utf-8")
+    return payload
+
+
+def list_notifications(cfg: Dict[str, Any], user_id: str) -> List[Dict[str, Any]]:
+    return _read_jsonl(_notifications_jsonl_path(cfg, user_id))
 
 
 def append_question_completion(
@@ -372,6 +403,7 @@ def get_user_state(cfg: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     return {
         "user": get_user(cfg, user_id),
         "learning": list_learning_records(cfg, user_id),
+        "notifications": list_notifications(cfg, user_id),
         "question_completions": list_question_completions(cfg, user_id),
         "question_bank": list_question_bank_items(cfg, user_id),
         "memories": {

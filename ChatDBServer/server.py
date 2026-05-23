@@ -4093,6 +4093,11 @@ def index():
 def status_page():
     """公开状态页"""
     return render_template('status.html')
+
+@app.route('/blog')
+def board_page():
+    """公告栏"""
+    return render_template('blog.html')
     
 @app.route('/favicon.ico')
 def favicon():
@@ -4227,6 +4232,62 @@ def get_user_info():
     except Exception as e:
         print(f"Error reading user info: {e}")
         return jsonify({'success': False, 'message': '获取用户信息失败'}), 500
+
+
+@app.route('/api/user/search', methods=['GET'])
+@require_login
+def search_users():
+    """搜索用户，用于 @ 提及自动补全"""
+    try:
+        query = str(request.args.get('q') or '').strip()
+        try:
+            limit = max(1, min(int(request.args.get('limit') or 8), 20))
+        except Exception:
+            limit = 8
+        users = load_users()
+        if not isinstance(users, dict):
+            return jsonify({'success': True, 'items': [], 'total': 0, 'query': query})
+        query_lower = query.lower()
+        rows = []
+        for user_id, user_data in users.items():
+            if not isinstance(user_data, dict):
+                continue
+            uid = str(user_id or '').strip()
+            if not uid:
+                continue
+            display_name = str(user_data.get('display_name') or '').strip()
+            nickname = str(user_data.get('nickname') or '').strip()
+            username = str(user_data.get('username') or uid).strip() or uid
+            haystacks = [uid.lower(), username.lower(), display_name.lower(), nickname.lower()]
+            if query and not any(query_lower in item for item in haystacks if item):
+                continue
+            avatar_url = build_user_avatar_url(uid, user_data)
+            prefix_score = 0
+            for item in haystacks:
+                if item.startswith(query_lower) and query_lower:
+                    prefix_score = 1
+                    break
+            rows.append({
+                'user_id': uid,
+                'username': username,
+                'display_name': display_name,
+                'nickname': nickname,
+                'role': str(user_data.get('role') or 'member').strip() or 'member',
+                'avatar_url': str(avatar_url or '').strip(),
+                '_prefix': prefix_score,
+            })
+        rows.sort(key=lambda item: (-int(item.get('_prefix') or 0), str(item.get('user_id') or '').lower()))
+        items = [{
+            'user_id': str(item.get('user_id') or '').strip(),
+            'username': str(item.get('username') or '').strip(),
+            'display_name': str(item.get('display_name') or '').strip(),
+            'nickname': str(item.get('nickname') or '').strip(),
+            'role': str(item.get('role') or 'member').strip() or 'member',
+            'avatar_url': str(item.get('avatar_url') or '').strip(),
+        } for item in rows[:limit]]
+        return jsonify({'success': True, 'items': items, 'total': len(items), 'query': query})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 
 @app.route('/api/user/profile/update', methods=['POST'])
@@ -4742,9 +4803,7 @@ def mail_me_send():
 @app.route('/api/user/avatar/<user_id>', methods=['GET'])
 @require_login
 def get_user_avatar(user_id):
-    """读取头像（仅本人或管理员）"""
-    if session.get('username') != user_id and session.get('role') != 'admin':
-        return jsonify({'success': False, 'message': '无权限'}), 403
+    """读取头像（登录用户可访问）"""
     avatar_file = get_user_avatar_file(user_id)
     if not os.path.exists(avatar_file):
         return jsonify({'success': False, 'message': '头像不存在'}), 404

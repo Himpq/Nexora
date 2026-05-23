@@ -133,6 +133,78 @@ def papi_user_info(username):
         return jsonify({'success': False, 'message': str(e)})
 
 
+@papi_bp.route('/api/papi/user/search', methods=['GET'])
+@require_papi_key
+def papi_user_search():
+    """PAPI: lightweight user search for mention/autocomplete"""
+    try:
+        query = str(request.args.get('q') or '').strip()
+        limit_raw = request.args.get('limit')
+        try:
+            limit = max(1, min(int(limit_raw or 8), 20))
+        except Exception:
+            limit = 8
+        query_lower = query.lower()
+        users_meta = load_users_meta()
+        if not isinstance(users_meta, dict):
+            return jsonify({'success': True, 'items': [], 'total': 0, 'query': query})
+
+        rows = []
+        for user_id, row in users_meta.items():
+            if not isinstance(row, dict):
+                continue
+            uid = str(user_id or '').strip()
+            if not uid:
+                continue
+            display_name = str(row.get('display_name') or '').strip()
+            nickname = str(row.get('nickname') or '').strip()
+            username = str(row.get('username') or uid).strip() or uid
+            haystacks = [
+                uid.lower(),
+                username.lower(),
+                display_name.lower(),
+                nickname.lower(),
+            ]
+            if query and not any(query_lower in item for item in haystacks if item):
+                continue
+            avatar_url = ''
+            try:
+                avatar_url = str(_server_attr('build_user_avatar_url')(uid, row) or '').strip()
+            except Exception:
+                avatar_url = str(row.get('avatar_url') or '').strip()
+            prefix_score = 0
+            for item in haystacks:
+                if item.startswith(query_lower):
+                    prefix_score = 1
+                    break
+            rows.append(
+                {
+                    'user_id': uid,
+                    'username': username,
+                    'display_name': display_name,
+                    'nickname': nickname,
+                    'role': str(row.get('role') or 'member'),
+                    'avatar_url': avatar_url,
+                    '_prefix': prefix_score,
+                }
+            )
+        rows.sort(key=lambda item: (-int(item.get('_prefix') or 0), str(item.get('user_id') or '').lower()))
+        items = [
+            {
+                'user_id': str(item.get('user_id') or '').strip(),
+                'username': str(item.get('username') or '').strip(),
+                'display_name': str(item.get('display_name') or '').strip(),
+                'nickname': str(item.get('nickname') or '').strip(),
+                'role': str(item.get('role') or 'member').strip() or 'member',
+                'avatar_url': str(item.get('avatar_url') or '').strip(),
+            }
+            for item in rows[:limit]
+        ]
+        return jsonify({'success': True, 'items': items, 'total': len(items), 'query': query})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+
 @papi_bp.route('/api/papi/knowledge/basis/<username>/<path:title>', methods=['GET'])
 @require_papi_key
 def papi_get_knowledge(username, title):
