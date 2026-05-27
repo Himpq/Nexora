@@ -174,6 +174,8 @@
     readerBookDetailXml: "",
     dynamicPosting: false,
     confirmAction: null,
+    readerSessionProgress: {},  // { "lectureId::bookId": { completedIndices: Set, currentChapterIndex: 0 } }
+    readerSectionsData: {},     // { chapterName: { range, sessions: [{name, range, summary}] } }
   };
   let readerContextSyncTimer = null;
 
@@ -2089,6 +2091,52 @@
     }
   }
 
+  async function fetchSectionsXml() {
+    const row = getSelectedLectureRow();
+    if (!row || !state.selectedBookId) return "";
+    const lectureId = String((row.lecture || {}).id || "");
+    if (!lectureId) return "";
+    try {
+      const data = await fetchJson(`/api/lectures/${encodeURIComponent(lectureId)}/books/${encodeURIComponent(state.selectedBookId)}/sections`);
+      return String(data.content || "");
+    } catch (_err) {
+      return "";
+    }
+  }
+
+  function parseSectionsXml(xmlText) {
+    const src = String(xmlText || "");
+    if (!src.trim()) return {};
+    const result = {};
+    const chapterReg = /<chapter_sessions>\s*([\s\S]*?)\s*<\/chapter_sessions>/gi;
+    let chapterMatch = null;
+    while ((chapterMatch = chapterReg.exec(src)) !== null) {
+      const chapterBlock = String(chapterMatch[1] || "");
+      const chapterNameMatch = chapterBlock.match(/<chapter_name>\s*([\s\S]*?)\s*<\/chapter_name>/i);
+      const chapterRangeMatch = chapterBlock.match(/<chapter_range>\s*([\s\S]*?)\s*<\/chapter_range>/i);
+      if (!chapterNameMatch || !chapterRangeMatch) continue;
+      const chapterName = String(chapterNameMatch[1] || "").trim();
+      const chapterRange = String(chapterRangeMatch[1] || "").trim();
+      const sessions = [];
+      const sessionReg = /<session_item>\s*([\s\S]*?)\s*<\/session_item>/gi;
+      let sessionMatch = null;
+      while ((sessionMatch = sessionReg.exec(chapterBlock)) !== null) {
+        const sessionBlock = String(sessionMatch[1] || "");
+        const nameMatch = sessionBlock.match(/<session_name>\s*([\s\S]*?)\s*<\/session_name>/i);
+        const rangeMatch = sessionBlock.match(/<session_range>\s*([\s\S]*?)\s*<\/session_range>/i);
+        const summaryMatch = sessionBlock.match(/<session_summary>\s*([\s\S]*?)\s*<\/session_summary>/i);
+        if (!nameMatch || !rangeMatch) continue;
+        sessions.push({
+          name: String(nameMatch[1] || "").trim(),
+          range: String(rangeMatch[1] || "").trim(),
+          summary: summaryMatch ? String(summaryMatch[1] || "").trim() : ""
+        });
+      }
+      result[chapterName] = { range: chapterRange, sessions };
+    }
+    return result;
+  }
+
   function notifyHostLayout(mode, extra) {
     const payload = Object.assign(
       {
@@ -2129,6 +2177,87 @@
     return entries;
   }
 
+  // Session 进度管理
+  const SESSION_STORAGE_KEY = "nxl_reader_session_v1";
+
+  function getSessionKey() {
+    const lectureId = String(state.selectedLectureId || "").trim();
+    const bookId = String(state.selectedBookId || "").trim();
+    if (!lectureId || !bookId) return "";
+    return `${lectureId}::${bookId}`;
+  }
+
+  function loadSessionProgress() {
+    try {
+      const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        Object.keys(parsed).forEach(key => {
+          const entry = parsed[key];
+          if (entry && Array.isArray(entry.completedIndices)) {
+            state.readerSessionProgress[key] = {
+              completedIndices: new Set(entry.completedIndices),
+              completedSessions: new Set(entry.completedSessions || []),
+              currentChapterIndex: Number(entry.currentChapterIndex) || 0
+            };
+          }
+        });
+      }
+    } catch (_) {}
+  }
+
+  function saveSessionProgress() {
+    try {
+      const toSave = {};
+      Object.keys(state.readerSessionProgress).forEach(key => {
+        const entry = state.readerSessionProgress[key];
+        if (entry) {
+          toSave[key] = {
+            completedIndices: Array.from(entry.completedIndices || []),
+            completedSessions: Array.from(entry.completedSessions || []),
+            currentChapterIndex: entry.currentChapterIndex || 0
+          };
+        }
+      });
+      localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(toSave));
+    } catch (_) {}
+  }
+
+  function markChapterVisited(chapterIndex) {
+    const key = getSessionKey();
+    if (!key) return;
+    if (!state.readerSessionProgress[key]) {
+      state.readerSessionProgress[key] = {
+        completedIndices: new Set(),
+        completedSessions: new Set(),
+        currentChapterIndex: 0
+      };
+    }
+    const session = state.readerSessionProgress[key];
+    session.completedIndices.add(chapterIndex);
+    session.currentChapterIndex = chapterIndex;
+    saveSessionProgress();
+  }
+
+  function isChapterCompleted(chapterIndex) {
+    const key = getSessionKey();
+    if (!key) return false;
+    const session = state.readerSessionProgress[key];
+    if (!session) return false;
+    return session.completedIndices.has(chapterIndex);
+  }
+
+  function getCurrentSessionChapterIndex() {
+    const key = getSessionKey();
+    if (!key) return 0;
+    const session = state.readerSessionProgress[key];
+    return session ? session.currentChapterIndex : 0;
+  }
+
+  // 初始化时加载 session
+  loadSessionProgress();
+
   function renderChapterList() {
     if (!el.chapterListContent) return;
     const chapters = Array.isArray(state.readerChapters) ? state.readerChapters : [];
@@ -2138,8 +2267,59 @@
     }
     el.chapterListContent.innerHTML = chapters.map((item, idx) => {
       const active = idx === state.readerActiveChapterIndex ? "current" : "";
-      return `<div class="chapter-item ${active}" data-reader-chapter-index="${idx}" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</div>`;
+      const completed = isChapterCompleted(idx);
+      
+      // 获取该章节的小节数据
+      const chapterName = String(item.title || "").trim();
+      const sectionData = state.readerSectionsData[chapterName];
+      let sessionsHtml = "";
+      if (sectionData && Array.isArray(sectionData.sessions) && sectionData.sessions.length > 0) {
+        sessionsHtml = `<div class="chapter-sessions">${sectionData.sessions.map((session, sIdx) => {
+          const sessionCompleted = isSessionCompleted(idx, sIdx);
+          const sessionDotClass = sessionCompleted ? "session-dot completed" : "session-dot pending";
+          const sessionDotTitle = sessionCompleted ? "已学习" : "未学习";
+          return `<div class="session-item" data-chapter-index="${idx}" data-session-index="${sIdx}" data-session-range="${escapeHtml(session.range || '')}">
+            <span class="session-item-name">${escapeHtml(session.name)}</span>
+            <span class="${sessionDotClass}" title="${sessionDotTitle}"></span>
+          </div>`;
+        }).join("")}</div>`;
+      }
+      
+      return `<div class="chapter-item-wrapper">
+        <div class="chapter-item ${active}" data-reader-chapter-index="${idx}">
+          <span class="chapter-item-title">${escapeHtml(item.title)}</span>
+        </div>
+        ${sessionsHtml}
+      </div>`;
     }).join("");
+  }
+
+  function isSessionCompleted(chapterIndex, sessionIndex) {
+    const key = getSessionKey();
+    if (!key) return false;
+    const session = state.readerSessionProgress[key];
+    if (!session) return false;
+    const sessionKey = `${chapterIndex}:${sessionIndex}`;
+    return session.completedSessions && session.completedSessions.has(sessionKey);
+  }
+
+  function markSessionVisited(chapterIndex, sessionIndex) {
+    const key = getSessionKey();
+    if (!key) return;
+    if (!state.readerSessionProgress[key]) {
+      state.readerSessionProgress[key] = {
+        completedIndices: new Set(),
+        completedSessions: new Set(),
+        currentChapterIndex: 0
+      };
+    }
+    const session = state.readerSessionProgress[key];
+    if (!session.completedSessions) {
+      session.completedSessions = new Set();
+    }
+    const sessionKey = `${chapterIndex}:${sessionIndex}`;
+    session.completedSessions.add(sessionKey);
+    saveSessionProgress();
   }
 
   function scheduleHostReaderContextSync(delay = 120) {
@@ -2234,10 +2414,174 @@
         </div>
       </div>
     `;
+    markChapterVisited(idx);
     renderChapterList();
     syncReaderSettingsPanel();
     applyReaderTypography();
     scheduleHostReaderContextSync(0);
+    // DEMO: 在第一段注入一个示例批注
+    requestAnimationFrame(function () { injectDemoAnnotation(); });
+    // 滚动到指定偏移量（如果有）
+    if (scrollToOffset !== undefined && scrollToOffset !== null) {
+      scrollToChapterOffset(start, scrollToOffset);
+    }
+  }
+
+  function scrollToChapterOffset(chapterStart, sessionOffset) {
+    requestAnimationFrame(() => {
+      const chapterBody = el.readerContent ? el.readerContent.querySelector(".chapter-body") : null;
+      if (!chapterBody) return;
+      const paragraphs = chapterBody.querySelectorAll("p");
+      if (!paragraphs.length) return;
+      // 计算session在章节内的相对位置
+      const relativeOffset = Math.max(0, Number(sessionOffset) || 0);
+      let accumulatedLength = 0;
+      let targetParagraph = null;
+      for (const p of paragraphs) {
+        const pText = p.textContent || "";
+        accumulatedLength += pText.length + 1; // +1 for newline
+        if (accumulatedLength >= relativeOffset) {
+          targetParagraph = p;
+          break;
+        }
+      }
+      if (!targetParagraph) targetParagraph = paragraphs[0];
+      targetParagraph.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+
+  // 批注气泡定位与显示控制
+  var _annotationHideTimer = null;
+  var _activeAnnotationMarker = null;
+
+  function _showAnnotationBubble(marker) {
+    if (_annotationHideTimer) {
+      clearTimeout(_annotationHideTimer);
+      _annotationHideTimer = null;
+    }
+    if (_activeAnnotationMarker && _activeAnnotationMarker !== marker) {
+      _activeAnnotationMarker.classList.remove("active");
+    }
+    var bubble = marker.querySelector(".annotation-bubble");
+    if (!bubble) return;
+    var rect = marker.getBoundingClientRect();
+    var cx = rect.left + rect.width / 2;
+    var tp = rect.bottom + 8;
+    marker.style.setProperty("--ab-left", cx + "px");
+    marker.style.setProperty("--ab-top", tp + "px");
+    marker.classList.add("active");
+    _activeAnnotationMarker = marker;
+  }
+
+  function _hideAnnotationBubble(marker, immediate) {
+    if (_annotationHideTimer) {
+      clearTimeout(_annotationHideTimer);
+      _annotationHideTimer = null;
+    }
+    if (immediate) {
+      marker.classList.remove("active");
+      if (_activeAnnotationMarker === marker) _activeAnnotationMarker = null;
+      return;
+    }
+    _annotationHideTimer = setTimeout(function () {
+      _annotationHideTimer = null;
+      marker.classList.remove("active");
+      if (_activeAnnotationMarker === marker) _activeAnnotationMarker = null;
+    }, 200);
+  }
+
+  function _annotationMarkerEnter() {
+    _showAnnotationBubble(this);
+  }
+
+  function _annotationMarkerLeave(ev) {
+    var marker = this;
+    var relatedTarget = ev.relatedTarget;
+    if (relatedTarget && (marker.contains(relatedTarget) || relatedTarget.closest(".annotation-bubble"))) {
+      return;
+    }
+    _hideAnnotationBubble(marker);
+  }
+
+  function _annotationBubbleEnter(ev) {
+    var bubble = this;
+    var marker = bubble.closest(".annotation-marker");
+    if (marker) {
+      _showAnnotationBubble(marker);
+    }
+  }
+
+  function _annotationBubbleLeave(ev) {
+    var bubble = this;
+    var marker = bubble.closest(".annotation-marker");
+    if (!marker) return;
+    var relatedTarget = ev.relatedTarget;
+    if (relatedTarget && marker.contains(relatedTarget)) {
+      return;
+    }
+    _hideAnnotationBubble(marker);
+  }
+
+  function _annotationAskClick(anchorText, noteText) {
+    var promptText = "解释「" + anchorText + "」：" + noteText;
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage({ source: "nexora-learning", type: "nexora:reader:ask-annotation", text: promptText }, "*");
+    }
+  }
+
+  function injectDemoAnnotation() {
+    var chapterBody = el.readerContent ? el.readerContent.querySelector(".chapter-body") : null;
+    if (!chapterBody) return;
+    var firstP = chapterBody.querySelector("p.materials-preview-paragraph");
+    if (!firstP || firstP.querySelector(".annotation-marker")) return;
+    firstP.classList.add("has-annotation");
+    var anchorText = (firstP.textContent || "").trim().slice(0, 30);
+    var noteText = "这里作者提出了核心论点，注意与后文的论证逻辑对比阅读。";
+
+    var marker = document.createElement("span");
+    marker.className = "annotation-marker";
+    marker.setAttribute("data-note-type", "思考点");
+    marker.setAttribute("data-anchor-text", anchorText);
+    marker.addEventListener("mouseenter", _annotationMarkerEnter);
+    marker.addEventListener("mouseleave", _annotationMarkerLeave);
+
+    var dot = document.createElement("span");
+    dot.className = "annotation-dot";
+
+    var bubble = document.createElement("span");
+    bubble.className = "annotation-bubble";
+
+    var typeSpan = document.createElement("span");
+    typeSpan.className = "annotation-bubble-type";
+    typeSpan.textContent = "思考点";
+
+    var contentSpan = document.createElement("span");
+    contentSpan.className = "annotation-bubble-content";
+    contentSpan.textContent = noteText;
+
+    var actionRow = document.createElement("span");
+    actionRow.className = "annotation-bubble-action";
+
+    var askBtn = document.createElement("button");
+    askBtn.type = "button";
+    askBtn.className = "annotation-ask-btn";
+    askBtn.textContent = "💡 解释这段";
+    askBtn.addEventListener("click", function (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      ev.stopImmediatePropagation();
+      _annotationAskClick(anchorText, noteText);
+    });
+
+    actionRow.appendChild(askBtn);
+    bubble.appendChild(typeSpan);
+    bubble.appendChild(contentSpan);
+    bubble.appendChild(actionRow);
+    bubble.addEventListener("mouseenter", _annotationBubbleEnter);
+    bubble.addEventListener("mouseleave", _annotationBubbleLeave);
+    marker.appendChild(dot);
+    marker.appendChild(bubble);
+    firstP.appendChild(marker);
   }
 
   function loadReaderSettings() {
@@ -2412,7 +2756,14 @@
     el.readerSubTitle.textContent = state.readerMeta.subtitle;
     state.readerFullTextRaw = String(content || "");
     if (Array.isArray(state.readerChapters) && state.readerChapters.length) {
-      const requestedIndex = Number.isFinite(Number(opts.chapterIndex)) ? Number(opts.chapterIndex) : state.readerActiveChapterIndex;
+      let requestedIndex;
+      if (Number.isFinite(Number(opts.chapterIndex))) {
+        requestedIndex = Number(opts.chapterIndex);
+      } else {
+        // 恢复 session 进度
+        const sessionIndex = getCurrentSessionChapterIndex();
+        requestedIndex = sessionIndex;
+      }
       state.readerActiveChapterIndex = Math.max(0, Math.min(state.readerChapters.length - 1, Number(requestedIndex) || 0));
     } else {
       state.readerActiveChapterIndex = 0;
@@ -2424,6 +2775,16 @@
     applyReaderTypography();
     notifyHostReaderState(true);
     notifyHostReaderContext();
+    // 异步加载 sections.xml
+    loadSectionsData();
+  }
+
+  async function loadSectionsData() {
+    try {
+      const sectionsXml = await fetchSectionsXml();
+      state.readerSectionsData = parseSectionsXml(sectionsXml);
+      renderChapterList();
+    } catch (_) {}
   }
 
   function closeReader() {
@@ -2444,6 +2805,7 @@
     state.readerViewMode = "closed";
     state.readerMeta = { title: "", subtitle: "" };
     state.readerReportedChapterKey = "";
+    state.readerSectionsData = {};
     syncReaderModeUI();
     el.readerPane.hidden = true;
     el.materialsLayout.hidden = false;
@@ -3353,6 +3715,33 @@
       el.chapterListContent.addEventListener("click", (event) => {
         const target = event.target;
         if (!(target instanceof Element)) return;
+        
+        // 检查是否点击了小节
+        const sessionItem = target.closest(".session-item");
+        if (sessionItem) {
+          const chapterIdx = Number(sessionItem.getAttribute("data-chapter-index") || "0");
+          const sessionIdx = Number(sessionItem.getAttribute("data-session-index") || "0");
+          const sessionRange = sessionItem.getAttribute("data-session-range") || "";
+          markSessionVisited(chapterIdx, sessionIdx);
+          renderChapterList();
+          // 解析session range获取偏移量
+          let scrollToOffset = null;
+          if (sessionRange) {
+            const parts = sessionRange.split(":");
+            if (parts.length >= 1) {
+              scrollToOffset = Number(parts[0]) || 0;
+            }
+          }
+          // 打开对应章节并滚动到session位置
+          openReaderChapter(chapterIdx, scrollToOffset);
+          setChapterListPanelOpen(false);
+          state.readerViewMode = "reading";
+          syncReaderModeUI();
+          setReaderFullscreen(true);
+          return;
+        }
+        
+        // 检查是否点击了章节
         const item = target.closest("[data-reader-chapter-index]");
         if (!item) return;
         const idx = Number(item.getAttribute("data-reader-chapter-index") || "0");
@@ -3464,6 +3853,7 @@
     el.readerContent.addEventListener("click", (event) => {
       if (!state.isReaderFullscreen) return;
       const target = event.target instanceof Element ? event.target : null;
+      if (target && target.closest(".annotation-marker")) return;
       const navBtn = target ? target.closest("[data-reader-nav]") : null;
       if (navBtn) {
         event.preventDefault();

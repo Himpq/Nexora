@@ -1540,6 +1540,76 @@ body {
   border-left: 3px solid #2196f3;
 }
 
+.chapter-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.chapter-item-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+
+.session-dot.completed {
+  background-color: #4caf50;
+  box-shadow: 0 0 4px rgba(76, 175, 80, 0.4);
+}
+
+.session-dot.pending {
+  background-color: #2196f3;
+  box-shadow: 0 0 4px rgba(33, 150, 243, 0.4);
+}
+
+.chapter-item-wrapper {
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.chapter-sessions {
+  padding-left: 20px;
+  background-color: #fafafa;
+}
+
+.session-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  font-size: 13px;
+  color: #555;
+  cursor: default;
+  transition: background-color 0.2s;
+}
+
+.session-item:hover {
+  background-color: #f0f0f0;
+}
+
+.session-item-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-item .session-dot {
+  width: 8px;
+  height: 8px;
+}
+
 .reader-content,
 .chapter-list-content,
 .reader-settings-panel {
@@ -3334,4 +3404,165 @@ body.reader-fullscreen-active #readerPane .reader-content .chapter-navigation {
     background: rgba(100, 116, 139, 0.65);
     background-clip: content-box;
   }
+}
+
+/* ==================== 批注 Annotation ==================== */
+.annotation-marker {
+  position: relative;
+  display: inline-block;
+  cursor: pointer;
+  vertical-align: baseline;
+  margin-left: 2px;
+}
+
+.annotation-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  vertical-align: super;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.annotation-marker:hover .annotation-dot {
+  transform: scale(1.4);
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.06);
+}
+
+.annotation-marker[data-note-type="易错点"] .annotation-dot { background: #e74c3c; }
+.annotation-marker[data-note-type="思考点"] .annotation-dot { background: #3498db; }
+.annotation-marker[data-note-type="方法提醒"] .annotation-dot { background: #27ae60; }
+.annotation-marker[data-note-type="教学提醒"] .annotation-dot { background: #f39c12; }
+.annotation-marker[data-note-type="结构观察"] .annotation-dot { background: #9b59b6; }
+.annotation-marker[data-note-type="default"] .annotation-dot { background: #95a5a6; }
+
+/* 悬浮气泡 — fixed 定位向下弹出，CSS 变量由 JS mouseenter 设置 */
+.annotation-bubble {
+  visibility: hidden;
+  opacity: 0;
+  position: fixed;
+  left: var(--ab-left, 50%);
+  top: var(--ab-top, 100%);
+  transform: translateX(-50%);
+  width: 300px;
+  max-width: 80vw;
+  padding: 14px 16px;
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+  z-index: 10000;
+  font-size: 14px;
+  line-height: 1.65;
+  text-align: left;
+  pointer-events: none;
+  transition: opacity 0.15s ease, visibility 0.15s ease;
+}
+
+.annotation-marker.active .annotation-bubble {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* 气泡小三角（朝上） */
+.annotation-bubble::before {
+  content: "";
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-bottom-color: inherit;
+}
+
+.annotation-bubble-type {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  margin-bottom: 8px;
+  color: #fff;
+}
+
+.annotation-marker[data-note-type="易错点"] .annotation-bubble-type { background: #e74c3c; }
+.annotation-marker[data-note-type="思考点"] .annotation-bubble-type { background: #3498db; }
+.annotation-marker[data-note-type="方法提醒"] .annotation-bubble-type { background: #27ae60; }
+.annotation-marker[data-note-type="教学提醒"] .annotation-bubble-type { background: #f39c12; }
+.annotation-marker[data-note-type="结构观察"] .annotation-bubble-type { background: #9b59b6; }
+.annotation-marker[data-note-type="default"] .annotation-bubble-type { background: #95a5a6; }
+
+.annotation-bubble-content {
+  color: inherit;
+  margin-bottom: 10px;
+}
+
+.annotation-bubble-action {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(128, 128, 128, 0.2);
+}
+
+.annotation-ask-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border: 1px solid rgba(52, 152, 219, 0.5);
+  border-radius: 6px;
+  background: rgba(52, 152, 219, 0.08);
+  color: #3498db;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.annotation-ask-btn:hover {
+  background: rgba(52, 152, 219, 0.18);
+}
+
+.has-annotation {
+  position: relative;
+}
+
+/* 主题适配 */
+#readerPane.theme-dark .annotation-bubble {
+  background: #252a31;
+  border: 1px solid #3a3f47;
+  color: #e0e0e0;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+}
+
+#readerPane.theme-dark .annotation-bubble::before {
+  border-bottom-color: #3a3f47;
+}
+
+#readerPane.theme-dark .annotation-ask-btn {
+  border-color: rgba(52, 152, 219, 0.6);
+  background: rgba(52, 152, 219, 0.12);
+  color: #5dade2;
+}
+
+#readerPane.theme-light .annotation-bubble {
+  background: #fff;
+  border: 1px solid #e0e0e0;
+  color: #333;
+}
+
+#readerPane.theme-light .annotation-bubble::before {
+  border-bottom-color: #e0e0e0;
+}
+
+#readerPane.theme-sepia .annotation-bubble {
+  background: #f5e6c8;
+  border: 1px solid #d4c4a0;
+  color: #5b4636;
+}
+
+#readerPane.theme-sepia .annotation-bubble::before {
+  border-bottom-color: #d4c4a0;
 }
