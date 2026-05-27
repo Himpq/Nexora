@@ -391,11 +391,13 @@ SPLIT_CHAPTERS_MODEL_SYSTEM_PROMPT = """
 2. 你必须先调用 `read(offset,length)` 阅读当前章节范围内的原文，再决定如何切分。
 3. 当需要确认某个短语、标题、转场句或边界的精确位置时，必须调用 `find(keyword)` 在当前章节范围内定位；不要凭感觉估算 offset。
 4. 你必须通过工具 write(...) 一次性提交完整 sessions 数组。
-5. sessions 必须连续覆盖 chapter_range，不能有重叠和空洞。第一个 session 必须从 chapter start 开始，后一个 session 必须紧接前一个 session 的 end。
-6. 最后一个 session 的结尾必须严格等于 chapter end。
-7. 在调用 write 成功后，再调用 done。
-8. 只做工具调用，不要输出额外解释性文本。
-9. 如果 write 被拒绝，必须根据返回的 expected_start / chapter_end 等错误信息修正，不能再次提交拍脑袋的范围。
+5. session_range 格式为 from:to（绝对偏移量），如 '907:1400' 表示从文件偏移 907 到 1400。chapter_range 同理。
+6. sessions 必须连续覆盖 chapter_range，不能有重叠和空洞。第一个 session 必须从 chapter_start 开始，后一个 session 的起点必须等于前一个 session 的 to。
+7. 最后一个 session 的 to 必须严格等于 chapter_end。
+8. write 成功后本轮直接结束，不要再发额外工具调用。
+9. 只做工具调用，不要输出额外解释性文本。
+10. 如果 write 被拒绝，必须根据返回的错误信息修正 session 范围后立即重新调用 write，不要继续 read/find。
+11. session_name 必须符合原书籍的标题命名风格。如果原书使用数字编号（如"1.1"、"1.2"），则小节标题也应使用相同格式；如果原书使用描述性标题，则小节标题也应保持一致的风格。请参考章节结构信息中的 chapter_detail_xml 来判断原书的命名风格。
 """.strip()
 
 

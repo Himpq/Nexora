@@ -7143,6 +7143,54 @@ def get_conversation(conv_id):
         return jsonify({'success': False, 'message': str(e)})
 
 
+@app.route('/api/conversations/<conv_id>/puzzle-states', methods=['GET'])
+@require_login
+def get_puzzle_states(conv_id):
+    """获取对话中所有 puzzle 的画布状态"""
+    username = session['username']
+    manager = ConversationManager(username)
+    try:
+        conversation = manager.get_conversation(conv_id)
+        puzzle_states = conversation.get('puzzle_states') if isinstance(conversation, dict) else None
+        return jsonify({'success': True, 'puzzle_states': puzzle_states if isinstance(puzzle_states, dict) else {}})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e), 'puzzle_states': {}})
+
+
+@app.route('/api/conversations/<conv_id>/puzzle-states', methods=['POST'])
+@require_login
+def save_puzzle_state(conv_id):
+    """保存/更新单个 puzzle 的画布状态"""
+    username = session['username']
+    data = request.get_json(silent=True) or {}
+    puzzle_id = str(data.get('puzzle_id') or '').strip()
+    state = data.get('state')
+    if not puzzle_id:
+        return jsonify({'success': False, 'message': 'puzzle_id is required'}), 400
+    if not isinstance(state, dict):
+        return jsonify({'success': False, 'message': 'state must be a dict'}), 400
+    # 容量上限
+    manager = ConversationManager(username)
+    try:
+        conversation = manager.get_conversation(conv_id)
+        existing = conversation.get('puzzle_states') if isinstance(conversation, dict) else None
+        if isinstance(existing, dict) and len(existing) >= 50 and puzzle_id not in existing:
+            return jsonify({'success': False, 'message': 'puzzle_states limit reached (50)'}), 400
+    except Exception:
+        pass
+    # 只保留允许的字段
+    allowed_keys = {'nodes', 'edges', 'zoom', 'viewportX', 'viewportY', 'locked', 'submission', 'submitted_at'}
+    clean_state = {k: v for k, v in state.items() if k in allowed_keys}
+    clean_state['updated_at'] = datetime.now().isoformat()
+    try:
+        manager.update_conversation_fields(conv_id, {
+            'puzzle_states': {puzzle_id: clean_state}
+        })
+        return jsonify({'success': True, 'puzzle_id': puzzle_id})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
 @app.route('/api/conversations/<conv_id>', methods=['DELETE'])
 @require_login
 def delete_conversation(conv_id):
@@ -8881,7 +8929,7 @@ def chat_stream():
         except Exception:
             regenerate_index = None
     
-    if not message and not is_regenerate and len(file_ids) == 0:
+    if not message and not is_regenerate and len(file_ids) == 0 and not data.get('puzzle_submission'):
         return jsonify({'success': False, 'message': '消息不能为空'}), 400
     
     username = session['username']
@@ -9108,6 +9156,41 @@ def chat_stream():
         except Exception:
             pass
 
+    def _build_puzzle_submission_injection(puzzle_state, client_steps=None):
+        """从服务端存储的 puzzle_state 构建注入文本，不信任客户端数据。"""
+        submission = puzzle_state.get('submission') if isinstance(puzzle_state, dict) else None
+        if not isinstance(submission, dict):
+            return None
+        ordered = submission.get('ordered_steps')
+        if not isinstance(ordered, list):
+            ordered = []
+        ordered = [str(s or '').strip() for s in ordered if str(s or '').strip()]
+        graph = submission.get('graph') if isinstance(submission.get('graph'), dict) else {}
+        lines = ['[Puzzle Submission]']
+        if ordered:
+            lines.append(f"MainSteps: {' -> '.join(ordered)}")
+        node_count = int(graph.get('node_count') or 0)
+        edge_count = int(graph.get('edge_count') or 0)
+        branch_count = int(graph.get('branch_count') or 0)
+        has_cycle = bool(graph.get('has_cycle'))
+        component_count = int(graph.get('component_count') or 0)
+        lines.append(f"Graph: n={node_count}, e={edge_count}, b={branch_count}, cyc={'1' if has_cycle else '0'}, c={component_count}")
+        connections = graph.get('connections')
+        if isinstance(connections, list) and connections:
+            edge_lines = []
+            for conn in connections[:40]:
+                if not isinstance(conn, dict):
+                    continue
+                from_text = str(conn.get('from_text') or '').strip()
+                to_text = str(conn.get('to_text') or '').strip()
+                if from_text and to_text:
+                    edge_lines.append(f"{from_text} -> {to_text}")
+            if edge_lines:
+                lines.append(f"Edges: {' | '.join(edge_lines)}")
+        lines.append('')
+        lines.append('以上是用户提交的拼图结果，请评价其正确性并给出反馈，不要再次输出拼图工具。')
+        return '\n'.join(lines)
+
     def _stream_worker(push_chunk, set_conversation_id):
         try:
             request_meta = normalize_longterm_request(
@@ -9163,6 +9246,30 @@ def chat_stream():
                         current_meta['lecture_id'] = lecture_id
                         merged_payload['meta'] = current_meta
                     raw_conversation_mode_payload = merged_payload
+                    # 拼图提交注入（服务端构建，不信任客户端文本）
+                    puzzle_submission = data.get('puzzle_submission')
+                    if isinstance(puzzle_submission, dict):
+                        puzzle_id = str(puzzle_submission.get('puzzle_id') or '').strip()
+                        if puzzle_id:
+                            try:
+                                _mgr = ConversationManager(username)
+                                _conv = _mgr.get_conversation(conversation_id) if conversation_id else None
+                                _puzzle_states = _conv.get('puzzle_states') if isinstance(_conv, dict) else {}
+                                _puzzle_state = (_puzzle_states or {}).get(puzzle_id)
+                                if _puzzle_state and _puzzle_state.get('locked'):
+                                    injection = _build_puzzle_submission_injection(_puzzle_state)
+                                    if injection:
+                                        existing_blocks = raw_conversation_mode_payload.get('context_blocks', [])
+                                        if not isinstance(existing_blocks, list):
+                                            existing_blocks = []
+                                        existing_blocks.append({
+                                            'type': 'puzzle_submission',
+                                            'title': '拼图提交结果',
+                                            'content': injection,
+                                        })
+                                        raw_conversation_mode_payload['context_blocks'] = existing_blocks
+                            except Exception as puzzle_inject_err:
+                                print(f"[PUZZLE_INJECT] failed: {puzzle_inject_err}")
                 except Exception as learning_runtime_error:
                     print(f"[LEARNING_RUNTIME] failed to merge payload: {learning_runtime_error}")
             effective_enable_tools = bool(enable_tools)

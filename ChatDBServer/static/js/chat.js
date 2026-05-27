@@ -442,6 +442,7 @@ const learningInteractionLocks = {
     questions: new Map(),
     puzzles: new Map(),
 };
+let cachedPuzzleStates = {};
 
 function getLearningInteractionLockKey(conversationIdOverride = null) {
     const raw = conversationIdOverride !== null && conversationIdOverride !== undefined
@@ -471,28 +472,18 @@ function getLockedQuestionAnswer(questionId) {
 }
 
 function rememberLockedPuzzle(puzzleId, submission = null) {
-    const pid = String(puzzleId || '').trim();
-    if (!pid) return;
-    const key = getLearningInteractionLockKey();
-    if (!learningInteractionLocks.puzzles.has(key)) {
-        learningInteractionLocks.puzzles.set(key, new Map());
+    const api = window.NexoraLearningMode;
+    if (api && typeof api.rememberLockedPuzzle === 'function') {
+        api.rememberLockedPuzzle(puzzleId, submission);
     }
-    learningInteractionLocks.puzzles.get(key).set(pid, submission && typeof submission === 'object' ? submission : {});
 }
 
 function getLockedPuzzleSubmission(puzzleId) {
-    const pid = String(puzzleId || '').trim();
-    if (!pid) return null;
     const api = window.NexoraLearningMode;
-    if (api && typeof api.resolveStoredPuzzleSubmissionById === 'function') {
-        const stored = api.resolveStoredPuzzleSubmissionById(pid);
-        if (stored) return stored;
+    if (api && typeof api.getLockedPuzzleSubmission === 'function') {
+        return api.getLockedPuzzleSubmission(puzzleId);
     }
-    const key = getLearningInteractionLockKey();
-    const bucket = learningInteractionLocks.puzzles.get(key);
-    if (!bucket) return null;
-    const row = bucket.get(pid);
-    return row && typeof row === 'object' ? row : null;
+    return null;
 }
 
 function resetLearningFeedMentionState() {
@@ -939,28 +930,11 @@ function findFirstPendingQuestionCard() {
 }
 
 async function handlePuzzleIframeSubmit(detail) {
-    const payload = (detail && typeof detail === 'object') ? detail : {};
     const api = window.NexoraLearningMode;
-    const puzzleCard = (api && typeof api.findPuzzleCardBySourceWindow === 'function')
-        ? (
-            api.findPuzzleCardBySourceWindow(payload.sourceWindow, els.messagesContainer)
-            || api.findPuzzleCardBySourceWindow(payload.sourceWindow)
-        )
-        : null;
-    const orderedSteps = Array.isArray(payload.orderedSteps) ? payload.orderedSteps : [];
-    const submission = (payload.submission && typeof payload.submission === 'object') ? payload.submission : null;
-    const resolvedSteps = orderedSteps.length
-        ? orderedSteps
-        : (Array.isArray(submission && submission.ordered_steps) ? submission.ordered_steps : []);
-    try {
-        console.log('[Chat] handlePuzzleIframeSubmit', {
-            hasCard: !!puzzleCard,
-            steps: resolvedSteps.length,
-            hasSubmission: !!submission
-        });
-    } catch (_) {}
-    await submitPuzzleAnswer(resolvedSteps, puzzleCard, submission);
-    return true;
+    if (api && typeof api.handlePuzzleIframeSubmit === 'function') {
+        return api.handlePuzzleIframeSubmit(detail);
+    }
+    return false;
 }
 
 async function submitQuestionAnswerFromSidebar(answerText, questionId = '') {
@@ -4933,6 +4907,22 @@ async function ensureLearningModeAssets() {
     return learningModeAssetsPromise;
 }
 
+function registerLearningModeChatBridge() {
+    const api = window.NexoraLearningMode;
+    if (!api || typeof api.registerChatBridge !== 'function') return;
+    api.registerChatBridge({
+        sendMessage,
+        getCachedPuzzleStates: () => cachedPuzzleStates,
+        ensureLearningModeAssets,
+        placeInteractiveCardsBelowToolChain,
+        learningInteractionLocks,
+        getLearningInteractionLockKey,
+        get messagesContainer() { return els.messagesContainer; },
+        get messageInput() { return els.messageInput; },
+        frontendUrl: NEXORA_LEARNING_FRONTEND_URL,
+    });
+}
+
 function shouldForceLearningSidebarMode() {
     return !!(learningModeEnabled && learningReaderOpened);
 }
@@ -5088,6 +5078,13 @@ function handleLearningHostMessage(payload) {
         hideNotesContextMenu();
         return true;
     }
+    if (msgType === 'nexora:reader:ask-annotation') {
+        const askText = String(payload.text || '').trim();
+        if (askText) {
+            fillMessageInputWithExplainText(askText);
+        }
+        return true;
+    }
     return false;
 }
 
@@ -5156,6 +5153,9 @@ async function syncLearningHeaderMode() {
     );
     if (!showLearningMain) {
         setLearningEmbedLayoutMode('default');
+        if (els.inputDock) {
+            els.inputDock.classList.remove('learning-mode-hidden');
+        }
     }
     if (els.messagesContainer) {
         if (showLearningMain && !hasConversation) {
@@ -5175,6 +5175,13 @@ async function syncLearningHeaderMode() {
     }
     if (els.conversationTitle) {
         els.conversationTitle.textContent = hasConversation ? (els.conversationTitle.textContent || 'Untitled Conversation') : (showLearning ? 'Learning' : 'Nexora');
+    }
+    if (!showLearningMain && els.messageInput && els.messageInput.value) {
+        requestAnimationFrame(() => {
+            els.messageInput.style.height = 'auto';
+            const minHeight = 42;
+            els.messageInput.style.height = Math.max(minHeight, els.messageInput.scrollHeight) + 'px';
+        });
     }
 }
 
@@ -5241,6 +5248,7 @@ async function applyLearningMode(enabled) {
     if (learningModeEnabled) {
         try {
             await ensureLearningModeAssets();
+            registerLearningModeChatBridge();
         } catch (err) {
             console.error('预加载学习模式资源失败:', err);
         }
@@ -7172,7 +7180,13 @@ function fillMessageInputWithExplainText(rawText) {
     if (!text) return false;
     const prompt = `解释 ${text}`;
     input.value = prompt;
+    learningSidebarDraftValue = prompt;
     input.dispatchEvent(new Event('input', { bubbles: true }));
+    requestAnimationFrame(() => {
+        input.style.height = 'auto';
+        const minHeight = 42;
+        input.style.height = Math.max(minHeight, input.scrollHeight) + 'px';
+    });
     try {
         const n = prompt.length;
         input.setSelectionRange(n, n, 'none');
@@ -9244,7 +9258,8 @@ function initUI() {
         // Auto-resize textarea
         els.messageInput.addEventListener('input', function() {
             this.style.height = 'auto';
-            this.style.height = (this.scrollHeight) + 'px';
+            const minHeight = 42;
+            this.style.height = Math.max(minHeight, this.scrollHeight) + 'px';
             if(this.value === '') this.style.height = 'auto'; // Reset
             saveMessageDraftToStorage(this.value);
             if (learningFeedComposeMode) {
@@ -11311,7 +11326,8 @@ async function loadConversation(id) {
     currentSearchQuery = '';
     currentViewingKnowledge = null;
     originalHeaderState = null;
-    
+    cachedPuzzleStates = {};
+
     currentConversationId = id;
     learningHeaderMode = learningReaderOpened ? 'learning' : 'chat';
     void syncLearningHeaderMode();
@@ -11335,6 +11351,9 @@ async function loadConversation(id) {
         const data = await res.json();
         
         if (data.success && data.conversation) {
+            // 缓存服务端 puzzle 状态
+            cachedPuzzleStates = (data.conversation.puzzle_states && typeof data.conversation.puzzle_states === 'object')
+                ? data.conversation.puzzle_states : {};
             refreshConversationImageHistoryFlag(data.conversation.messages || []);
             syncConversationModeFromConversation(data.conversation);
             applyLearningSidebarMode(learningReaderOpened ? 'learning' : 'nexora');
@@ -11715,19 +11734,11 @@ function createPuzzleCardNode(puzzle, options = {}) {
 }
 
 function resolvePuzzleCardId(payload, step, messageDiv) {
-    const rawPayload = (payload && typeof payload === 'object') ? payload : {};
-    const explicitId = String(rawPayload.puzzle_id || '').trim();
-    if (explicitId) return explicitId;
-    const payloadCallId = String(rawPayload.call_id || '').trim();
-    if (payloadCallId) return payloadCallId;
-    const stepCallId = String((step && step.call_id) || '').trim();
-    if (stepCallId) return stepCallId;
-    const messageIndex = Number(messageDiv && messageDiv.dataset ? messageDiv.dataset.index : NaN);
-    const safeIndex = Number.isFinite(messageIndex) ? String(Math.max(0, Math.floor(messageIndex))) : 'x';
-    const existingCount = messageDiv
-        ? Array.from(messageDiv.querySelectorAll('.puzzle-tool-card')).length
-        : 0;
-    return `puzzle_msg_${safeIndex}_${existingCount}`;
+    const api = window.NexoraLearningMode;
+    if (api && typeof api.resolvePuzzleCardId === 'function') {
+        return api.resolvePuzzleCardId(payload, step, messageDiv);
+    }
+    return `puzzle_fallback_${Date.now()}`;
 }
 
 function buildQuestionAnswerInjectionText(questionPayload, answerText) {
@@ -11745,35 +11756,6 @@ function buildQuestionAnswerInjectionText(questionPayload, answerText) {
     if (content) lines.push(`Question: ${content}`);
     if (choices.length) lines.push(`Choices: ${choices.join(' | ')}`);
     lines.push(`Answer: ${finalAnswer}`);
-    return lines.join('\n');
-}
-
-function buildPuzzleAnswerInjectionText(orderedSteps, submission = null) {
-    const api = window.NexoraLearningMode;
-    if (api && typeof api.buildPuzzleSubmissionInjectionText === 'function') {
-        return api.buildPuzzleSubmissionInjectionText(orderedSteps, submission);
-    }
-    const rows = Array.isArray(orderedSteps)
-        ? orderedSteps.map((item) => String(item || '').trim()).filter(Boolean)
-        : [];
-    const graph = submission && typeof submission === 'object' && submission.graph && typeof submission.graph === 'object'
-        ? submission.graph
-        : {};
-    const lines = ['[Puzzle Submission]'];
-    if (rows.length) lines.push(`Chain: ${rows.join(' -> ')}`);
-    const edgeCount = Number(graph.edge_count || 0);
-    const nodeCount = Number(graph.node_count || 0);
-    const branchCount = Number(graph.branch_count || 0);
-    lines.push(`Graph: nodes=${nodeCount}, edges=${edgeCount}, branches=${branchCount}, cycle=${graph.has_cycle ? 'yes' : 'no'}, components=${Number(graph.component_count || 0)}`);
-    const connections = Array.isArray(graph.connections) ? graph.connections : [];
-    if (connections.length) {
-        const compactEdges = connections
-            .map((conn) => `${String(conn && conn.from_text || '').trim()} -> ${String(conn && conn.to_text || '').trim()}`)
-            .filter(Boolean)
-            .slice(0, 32);
-        if (compactEdges.length) lines.push(`Edges: ${compactEdges.join(' | ')}`);
-        if (connections.length > 32) lines.push(`MoreEdges: ${connections.length - 32}`);
-    }
     return lines.join('\n');
 }
 
@@ -11799,30 +11781,9 @@ function applyQuestionAnswer(questionCard, answerText) {
 
 function applyPuzzleAnswer(puzzleCard, orderedSteps) {
     const api = window.NexoraLearningMode;
-    if (api && typeof api.markPuzzleCardSubmitted === 'function') {
-        api.markPuzzleCardSubmitted(puzzleCard, orderedSteps, null);
+    if (api && typeof api.applyPuzzleAnswer === 'function') {
+        return api.applyPuzzleAnswer(puzzleCard, orderedSteps);
     }
-    if (!puzzleCard) return;
-    const body = puzzleCard.querySelector('.puzzle-card-body');
-    const rows = Array.isArray(orderedSteps)
-        ? orderedSteps.map((item) => String(item || '').trim()).filter(Boolean)
-        : [];
-    if (body) {
-        body.classList.add('answered');
-        const iframe = body.querySelector('.puzzle-card-iframe');
-        if (iframe) iframe.setAttribute('tabindex', '-1');
-        const answer = body.querySelector('.puzzle-card-answer');
-        if (answer) {
-            answer.hidden = false;
-            answer.innerHTML = rows.length
-                ? `<div class="puzzle-card-answer-title">已提交步骤</div><ol>${rows.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ol>`
-                : '<div class="puzzle-card-answer-title">已提交步骤</div><div>无有效步骤</div>';
-        }
-        const pill = body.querySelector('.question-card-pill');
-        if (pill) pill.textContent = 'Submitted';
-    }
-    puzzleCard.dataset.pending = 'false';
-    puzzleCard.dataset.resolved = 'true';
 }
 
 async function submitQuestionAnswer(answerText, questionCard = null) {
@@ -11852,45 +11813,11 @@ async function submitQuestionAnswer(answerText, questionCard = null) {
     });
 }
 
-async function submitPuzzleAnswer(orderedSteps, puzzleCard = null, submission = null) {
-    const rows = Array.isArray(orderedSteps)
-        ? orderedSteps.map((item) => String(item || '').trim()).filter(Boolean)
-        : [];
-    if (!rows.length) return;
-    const puzzleId = puzzleCard
-        ? String((puzzleCard.dataset && puzzleCard.dataset.puzzleId) || '').trim()
-        : '';
-    if (puzzleId) {
-        rememberLockedPuzzle(puzzleId, submission && typeof submission === 'object' ? submission : { ordered_steps: rows });
-    }
-    if (puzzleCard) {
-        const api = window.NexoraLearningMode;
-        if (api && typeof api.markPuzzleCardSubmitted === 'function') {
-            api.markPuzzleCardSubmitted(puzzleCard, rows, submission);
-        } else {
-            applyPuzzleAnswer(puzzleCard, rows);
-        }
-    }
-    const injected = buildPuzzleAnswerInjectionText(rows, submission);
+async function submitPuzzleAnswer(orderedSteps, puzzleCard = null, submission = null, puzzleIdHint = '') {
     const api = window.NexoraLearningMode;
-    const displayText = (api && typeof api.summarizePuzzleSubmission === 'function')
-        ? api.summarizePuzzleSubmission(rows, submission)
-        : (() => {
-            const graph = submission && typeof submission === 'object' && submission.graph && typeof submission.graph === 'object'
-                ? submission.graph
-                : {};
-            const edgeCount = Number(graph.edge_count || 0);
-            return `已提交拼图结果（${rows.length}步 / ${edgeCount}连线）`;
-        })();
-    if (els.messageInput) {
-        els.messageInput.value = injected;
-        els.messageInput.style.height = 'auto';
-        els.messageInput.style.height = `${els.messageInput.scrollHeight}px`;
+    if (api && typeof api.submitPuzzleAnswer === 'function') {
+        return api.submitPuzzleAnswer(orderedSteps, puzzleCard, submission, puzzleIdHint);
     }
-    await sendMessage({
-        displayContentOverride: displayText,
-        textOverride: injected
-    });
 }
 
 function appendQuestionStep(messageDiv, step) {
@@ -11910,56 +11837,10 @@ function appendQuestionStep(messageDiv, step) {
 }
 
 function appendPuzzleStep(messageDiv, step) {
-    if (!messageDiv || !step || typeof step !== 'object') return;
-    const content = messageDiv.querySelector('.message-content');
-    if (!content) return;
-    const rawPayload = (step.puzzle && typeof step.puzzle === 'object') ? step.puzzle : step;
-    const payload = (rawPayload && typeof rawPayload === 'object') ? { ...rawPayload } : {};
-    const fallbackCardId = resolvePuzzleCardId(payload, step, messageDiv);
-    if (!String(payload.puzzle_id || '').trim()) {
-        payload.puzzle_id = fallbackCardId;
+    const api = window.NexoraLearningMode;
+    if (api && typeof api.appendPuzzleStep === 'function') {
+        return api.appendPuzzleStep(messageDiv, step);
     }
-    try {
-        console.log('[Chat] appendPuzzleStep', {
-            puzzleId: payload.puzzle_id,
-            hasStepCallId: !!String((step && step.call_id) || '').trim(),
-            messageIndex: Number(messageDiv && messageDiv.dataset ? messageDiv.dataset.index : NaN)
-        });
-    } catch (_) {}
-    const node = createPuzzleCardNode(payload, { cardId: fallbackCardId });
-    if (!node) {
-        void ensureLearningModeAssets().then(() => {
-            const retryNode = createPuzzleCardNode(payload, { cardId: fallbackCardId });
-            if (!retryNode) return;
-            const puzzleIdRetry = String((retryNode.dataset && retryNode.dataset.puzzleId) || payload.puzzle_id || '').trim();
-            const rememberedSubmissionRetry = getLockedPuzzleSubmission(puzzleIdRetry);
-            if (rememberedSubmissionRetry) {
-                const ordered = Array.isArray(rememberedSubmissionRetry.ordered_steps) ? rememberedSubmissionRetry.ordered_steps : [];
-                const api = window.NexoraLearningMode;
-                if (api && typeof api.markPuzzleCardSubmitted === 'function') {
-                    api.markPuzzleCardSubmitted(retryNode, ordered, rememberedSubmissionRetry);
-                }
-                retryNode.dataset.pending = 'false';
-                retryNode.dataset.resolved = 'true';
-            }
-            content.appendChild(retryNode);
-            placeInteractiveCardsBelowToolChain(messageDiv);
-        }).catch(() => {});
-        return;
-    }
-    const puzzleId = String((node.dataset && node.dataset.puzzleId) || payload.puzzle_id || '').trim();
-    const rememberedSubmission = getLockedPuzzleSubmission(puzzleId);
-    if (rememberedSubmission) {
-        const ordered = Array.isArray(rememberedSubmission.ordered_steps) ? rememberedSubmission.ordered_steps : [];
-        const api = window.NexoraLearningMode;
-        if (api && typeof api.markPuzzleCardSubmitted === 'function') {
-            api.markPuzzleCardSubmitted(node, ordered, rememberedSubmission);
-        }
-        node.dataset.pending = 'false';
-        node.dataset.resolved = 'true';
-    }
-    content.appendChild(node);
-    placeInteractiveCardsBelowToolChain(messageDiv);
 }
 
 function appendLearningCardsToContent(contentEl, cards) {
@@ -12061,21 +11942,10 @@ function extractQuestionPayload(rawResult) {
 }
 
 function extractPuzzlePayload(rawResult) {
-    if (!rawResult) return null;
-    if (typeof rawResult === 'object') {
-        if (rawResult.puzzle && typeof rawResult.puzzle === 'object') return rawResult.puzzle;
-        if (rawResult.title && Array.isArray(rawResult.steps)) return rawResult;
-        return null;
+    const api = window.NexoraLearningMode;
+    if (api && typeof api.extractPuzzlePayload === 'function') {
+        return api.extractPuzzlePayload(rawResult);
     }
-    const text = String(rawResult || '').trim();
-    if (!text) return null;
-    try {
-        const parsed = JSON.parse(text);
-        if (parsed && typeof parsed === 'object') {
-            if (parsed.puzzle && typeof parsed.puzzle === 'object') return parsed.puzzle;
-            if (parsed.title && Array.isArray(parsed.steps)) return parsed;
-        }
-    } catch (_) {}
     return null;
 }
 
@@ -12939,7 +12809,7 @@ async function sendMessage(options = {}) {
             return;
         }
     }
-    if (!text && !isGenerating && uploadedFileIds.length === 0 && !isAutoContinue) return;
+    if (!text && !isGenerating && uploadedFileIds.length === 0 && !isAutoContinue && !(options && options.puzzle_submission)) return;
     if (isUploadingFiles && !isGenerating) {
         showToast('文件上传或向量化处理中，请稍候或手动中断后再发送');
         return;
@@ -13127,6 +12997,9 @@ async function sendMessage(options = {}) {
         include_context: !!tokenBudgetState.includeContext,
         skip_user_message: isAutoContinue
     };
+    if (options && options.puzzle_submission) {
+        payload.puzzle_submission = options.puzzle_submission;
+    }
     if (forceContextCompression) {
         payload.force_context_compression = true;
     }
@@ -16270,10 +16143,10 @@ async function startRegenerate(index) {
             const content = regenMessageDiv.querySelector('.message-content');
             // 清理旧内容/工具链，避免重新生成时复用历史展示节点
             if (content) {
-                content.querySelectorAll('.content-body,.thinking-block,.tool-usage,.add-basis-view,.model-badge').forEach(el => el.remove());
+                content.querySelectorAll('.content-body,.thinking-block,.tool-usage,.add-basis-view,.model-badge,.puzzle-tool-card,.question-tool-card').forEach(el => el.remove());
             } else {
                 // fallback
-                regenMessageDiv.querySelectorAll('.content-body,.thinking-block,.tool-usage,.add-basis-view,.model-badge').forEach(el => el.remove());
+                regenMessageDiv.querySelectorAll('.content-body,.thinking-block,.tool-usage,.add-basis-view,.model-badge,.puzzle-tool-card,.question-tool-card').forEach(el => el.remove());
             }
             regenMessageDiv.__citationUrlMap = {};
             regenMessageDiv.__toolCallState = {
@@ -18899,6 +18772,13 @@ function closeKnowledgeView() {
     const inputDock = document.querySelector('.input-dock');
     if (inputDock) inputDock.style.display = 'block';
     if(inputWrapper) inputWrapper.style.display = 'block';
+    if (els.messageInput && els.messageInput.value) {
+        requestAnimationFrame(() => {
+            els.messageInput.style.height = 'auto';
+            const minHeight = 42;
+            els.messageInput.style.height = Math.max(minHeight, els.messageInput.scrollHeight) + 'px';
+        });
+    }
     navigationStack = []; // 清空栈
 
     if (originalHeaderState) {
@@ -20529,6 +20409,13 @@ function closeKnowledgeSearchResultView() {
     const inputDock = document.querySelector('.input-dock');
     if (inputDock) inputDock.style.display = 'block';
     if(inputWrapper) inputWrapper.style.display = 'block';
+    if (els.messageInput && els.messageInput.value) {
+        requestAnimationFrame(() => {
+            els.messageInput.style.height = 'auto';
+            const minHeight = 42;
+            els.messageInput.style.height = Math.max(minHeight, els.messageInput.scrollHeight) + 'px';
+        });
+    }
 
     // 清除导航栈和搜索状态
     navigationStack = [];

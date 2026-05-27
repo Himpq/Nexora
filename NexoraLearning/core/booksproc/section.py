@@ -33,6 +33,31 @@ def _parse_range(value: str) -> Tuple[int, int]:
     return max(0, start), max(0, length)
 
 
+def _parse_model_range(value: str, chapter_start: int, chapter_end: int) -> Tuple[int, int]:
+    """Parse a model-submitted range string. Accepts both from:to and start:length.
+
+    Heuristic: if right > left and right <= chapter_end, treat as from:to;
+    otherwise treat as start:length (legacy).
+    Returns (start, length) in internal format.
+    """
+    text = str(value or "").strip()
+    if ":" not in text:
+        return 0, 0
+    left_str, right_str = text.split(":", 1)
+    try:
+        left = int(str(left_str).strip())
+        right = int(str(right_str).strip())
+    except Exception:
+        return 0, 0
+    if right <= 0:
+        return max(0, left), 0
+    # If right looks like a valid end offset (right > left and within chapter bounds), treat as from:to
+    if right > left and right <= chapter_end:
+        return max(0, left), max(0, right - left)
+    # Otherwise treat as start:length (legacy)
+    return max(0, left), max(0, right)
+
+
 def _extract_detail_chapters(bookdetail_xml: str) -> List[Dict[str, Any]]:
     text = str(bookdetail_xml or "")
     if not text.strip():
@@ -183,16 +208,16 @@ def _validate_sessions(
         session_name = str(row.get("session_name") or "").strip()
         session_range = str(row.get("session_range") or "").strip()
         session_summary = str(row.get("session_summary") or "").strip()
-        start, length = _parse_range(session_range)
+        start, length = _parse_model_range(session_range, chapter_start, chapter_end)
         end = start + length
         if not session_name:
             return False, f"{chapter_name} 第 {idx} 个 session 缺少 session_name", []
         if length <= 0:
-            return False, f"{chapter_name} 第 {idx} 个 session_range 无效: {session_range}", []
+            return False, f"{chapter_name} 第 {idx} 个 session_range 无效: {session_range}。格式应为 from:to（如 {chapter_start}:{chapter_end}），from 和 to 都是文件绝对偏移量。", []
         if start != cursor:
-            return False, f"{chapter_name} 第 {idx} 个 session 起点应为 {cursor}，实际为 {start}", []
+            return False, f"{chapter_name} 第 {idx} 个 session 起点应为 {cursor}，实际为 {start}。session_range 格式为 from:to（绝对偏移），当前 chapter 为 {chapter_start}:{chapter_end}。", []
         if end > chapter_end:
-            return False, f"{chapter_name} 第 {idx} 个 session 超出 chapter 末尾 {chapter_end}", []
+            return False, f"{chapter_name} 第 {idx} 个 session 结束于 {end}，超出 chapter 末尾 {chapter_end}。session_range 格式为 from:to（绝对偏移），当前 chapter 为 {chapter_start}:{chapter_end}。", []
         normalized.append(
             {
                 "session_index": idx,
@@ -207,7 +232,7 @@ def _validate_sessions(
         cursor = end
 
     if cursor != chapter_end:
-        return False, f"{chapter_name} 最后一个 session 必须以 chapter end {chapter_end} 结尾，当前为 {cursor}", []
+        return False, f"{chapter_name} 最后一个 session 必须在 {chapter_end} 结尾，当前结束于 {cursor}。session_range 格式为 from:to（绝对偏移），当前 chapter 为 {chapter_start}:{chapter_end}。", []
     return True, "", normalized
 
 
@@ -263,7 +288,7 @@ def _exec_read_book_text_tool_in_range(
         "ok": True,
         "offset": offset,
         "length": length,
-        "chapter_range": f"{safe_start}:{max(0, safe_end - safe_start)}",
+        "chapter_range": f"{safe_start}:{safe_end}",
         "text": text,
     }
 
@@ -300,7 +325,7 @@ def _exec_find_book_text_tool_in_range(
                 "offset": int(match_start),
                 "match_start": int(match_start),
                 "match_end": int(match_end),
-                "range": f"{block_start}:{max(0, block_end - block_start)}",
+                "range": f"{block_start}:{block_end}",
                 "text": snippet,
             }
         )
@@ -308,7 +333,7 @@ def _exec_find_book_text_tool_in_range(
     return {
         "ok": True,
         "keyword": keyword,
-        "chapter_range": f"{safe_start}:{max(0, safe_end - safe_start)}",
+        "chapter_range": f"{safe_start}:{safe_end}",
         "hits_count": len(hits),
         "hits": hits,
         "text": "\n\n".join([f"[offset={row['offset']}, {row['range']}]\n{row['text']}" for row in hits]),
@@ -406,7 +431,7 @@ def run_split_chapters_with_tools(
             "type": "function",
             "function": {
                 "name": "write",
-                "description": "Submit the full session split of the current chapter. Sessions must cover the whole chapter contiguously and the last session must end at chapter end.",
+                "description": "Submit the full session split of the current chapter. Sessions must cover the whole chapter contiguously and the last session must end at chapter end. session_range format is from:to (absolute file offsets, e.g. '907:1400' means from offset 907 to offset 1400).",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -429,21 +454,14 @@ def run_split_chapters_with_tools(
                 },
             },
         },
-        {
-            "type": "function",
-            "function": {
-                "name": "done",
-                "description": "Mark current chapter splitting done after write succeeds.",
-                "parameters": {"type": "object", "properties": {}},
-            },
-        },
     ]
 
     saved_text = ""
     wrote_once = False
     saved_lengths: List[int] = []
     tempmem: List[str] = []
-    max_turns = 20
+    max_turns = 40
+    write_rejected_count = 0
     log_event(
         "section_turn_loop_start",
         "分节章节循环开始",
@@ -514,7 +532,7 @@ def run_split_chapters_with_tools(
         tool_calls = msg.get("tool_calls") if isinstance(msg, dict) and isinstance(msg.get("tool_calls"), list) else []
         messages.append({"role": "assistant", "content": assistant_content if assistant_content else None, "tool_calls": tool_calls if tool_calls else None})
 
-        turn_has_done = False
+        turn_write_reject_error = ""
         if tool_calls:
             for call in tool_calls:
                 if not isinstance(call, dict):
@@ -587,6 +605,7 @@ def run_split_chapters_with_tools(
                         saved_lengths = [int(item.get("length") or 0) for item in normalized_sessions if int(item.get("length") or 0) > 0]
                         saved_text = _build_chapter_sessions_block(out_chapter_name, out_chapter_range, normalized_sessions)
                         wrote_once = True
+                        write_rejected_count = 0
                         tool_result = {
                             "ok": True,
                             "session_count": len(normalized_sessions),
@@ -602,7 +621,9 @@ def run_split_chapters_with_tools(
                             },
                         )
                     else:
-                        tool_result = {"ok": False, "error": error_text}
+                        write_rejected_count += 1
+                        turn_write_reject_error = error_text
+                        tool_result = {"ok": False, "error": error_text, "chapter_range": out_chapter_range, "hint": f"第一个 session 必须从 {chapter_start} 开始，session_range 格式为 from:to（绝对偏移）"}
                         push_book_progress_step(
                             lecture_id,
                             book_id,
@@ -612,18 +633,6 @@ def run_split_chapters_with_tools(
                                 "preview": error_text[:80],
                             },
                         )
-                elif tool_name == "done":
-                    turn_has_done = True
-                    tool_result = {"ok": True, "done": True, "wrote": bool(wrote_once)}
-                    push_book_progress_step(
-                        lecture_id,
-                        book_id,
-                        {
-                            "type": "done",
-                            "title": f"完成章节分节 {chapter_name}",
-                            "preview": chapter_range,
-                        },
-                    )
                 else:
                     tool_result = {"ok": False, "error": f"unsupported tool: {tool_name}"}
                 messages.append({"role": "tool", "tool_call_id": call_id, "content": __import__("json").dumps(tool_result, ensure_ascii=False)})
@@ -642,18 +651,26 @@ def run_split_chapters_with_tools(
                     content=__import__("json").dumps(tool_result, ensure_ascii=False)[:1200],
                 )
 
-        if wrote_once and turn_has_done:
+        if wrote_once:
             break
 
-        messages.append(
-            {
-                "role": "user",
-                "content": "你还没有完成当前章节的 Session 提交。下一轮必须按顺序调用：先 read() 阅读章节范围；必要时调用 find(keyword) 精确定位边界；确认后调用 write(sessions=[...])；write 成功后立即 done()。",
-            }
-        )
+        if turn_write_reject_error:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": f"write 被拒绝: {turn_write_reject_error}\n请根据错误信息修正后立即重新调用 write(sessions=[...])，不要再调用 read/find。session_range 格式为 from:to（绝对偏移），如 '{chapter_start}:{chapter_start + chapter_length}'。",
+                }
+            )
+        else:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": f"你还没有完成当前章节的 Session 提交。chapter 为 {chapter_start}:{chapter_start + chapter_length}。请调用 write(sessions=[...])，session_range 使用 from:to 格式（绝对偏移），第一个 session 必须从 {chapter_start} 开始。",
+                }
+            )
 
     if not str(saved_text or "").strip():
-        raise RuntimeError("Split chapter model did not complete write+done within strict loop")
+        raise RuntimeError(f"Split chapter model did not complete write within {max_turns} turns (write rejected {write_rejected_count} times)")
 
     return {
         "sections_xml": saved_text,
@@ -743,7 +760,7 @@ def run_section_generation_once(
         "请把当前精读章节拆成若干学习 Session。"
         "每个 Session 必须逻辑完整、长度尽量均匀，并完整覆盖整个 chapter。"
         "最后一个 Session 的结尾必须严格等于 chapter end。"
-        "必须通过工具 write(sessions=[...]) 提交全部 Session，再调用 done。"
+        "必须通过工具 write(sessions=[...]) 提交全部 Session。"
     )
     if prompt_notes:
         request_text = f"{request_text}\n附加要求：{prompt_notes}"

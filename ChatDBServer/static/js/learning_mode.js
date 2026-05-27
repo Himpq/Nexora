@@ -10,6 +10,12 @@
     let activePuzzleFullscreen = null;
     const puzzleSubmissionRegistryKey = 'nexora_learning_puzzle_registry_v1';
 
+    // ---- Chat bridge (registered by chat.js) ----
+    let chatBridge = null;
+    function registerChatBridge(bridge) {
+        chatBridge = bridge && typeof bridge === 'object' ? bridge : null;
+    }
+
     function escapeHtml(value) {
         return String(value || '')
             .replace(/&/g, '&amp;')
@@ -79,6 +85,59 @@
         const registry = readPuzzleSubmissionRegistry();
         registry[pid] = record && typeof record === 'object' ? record : {};
         writePuzzleSubmissionRegistry(registry);
+    }
+
+    // ---- Server-side puzzle state persistence ----
+    const _puzzleSaveTimers = {};
+
+    async function fetchPuzzleStatesFromServer(convId) {
+        const cid = String(convId || '').trim();
+        if (!cid) return {};
+        try {
+            const res = await fetch(`/api/conversations/${cid}/puzzle-states`);
+            const data = await res.json();
+            return (data && data.success && data.puzzle_states && typeof data.puzzle_states === 'object')
+                ? data.puzzle_states : {};
+        } catch (_) { return {}; }
+    }
+
+    function savePuzzleStateToServer(convId, puzzleId, state, immediate = false) {
+        const cid = String(convId || '').trim();
+        const pid = String(puzzleId || '').trim();
+        if (!cid || !pid || !state || typeof state !== 'object') return;
+        const key = `${cid}::${pid}`;
+        if (!immediate) {
+            if (_puzzleSaveTimers[key]) clearTimeout(_puzzleSaveTimers[key]);
+            _puzzleSaveTimers[key] = setTimeout(() => {
+                delete _puzzleSaveTimers[key];
+                _doSavePuzzleState(cid, pid, state);
+            }, 300);
+            return;
+        }
+        if (_puzzleSaveTimers[key]) { clearTimeout(_puzzleSaveTimers[key]); delete _puzzleSaveTimers[key]; }
+        _doSavePuzzleState(cid, pid, state);
+    }
+
+    function _doSavePuzzleState(convId, puzzleId, state) {
+        fetch(`/api/conversations/${convId}/puzzle-states`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ puzzle_id: puzzleId, state }),
+        }).catch(() => {});
+    }
+
+    function handlePuzzleStateUpdateFromIframe(event) {
+        const data = event && event.data;
+        if (!data || typeof data !== 'object') return false;
+        if (String(data.type || '').trim() !== 'nexora:puzzle:state-update') return false;
+        const pid = String(data.puzzle_id || '').trim();
+        const snap = data.state;
+        if (!pid || !snap || typeof snap !== 'object') return true;
+        const convId = (typeof currentConversationId !== 'undefined') ? currentConversationId : null;
+        if (convId) {
+            savePuzzleStateToServer(convId, pid, snap, false);
+        }
+        return true;
     }
 
     function resolveLearningPuzzleUrl(frontendUrl) {
@@ -188,6 +247,11 @@
                         steps: steps.slice(),
                     };
                     iframe.contentWindow.postMessage(initPayload, '*');
+                    // 发送服务端保存的画布状态（如有）
+                    const serverState = options.serverState;
+                    if (serverState && typeof serverState === 'object') {
+                        iframe.contentWindow.postMessage({ type: 'nexora:puzzle:restore', state: serverState }, '*');
+                    }
                     syncPuzzleCardLockState(wrap);
                 } catch (_) {}
             });
@@ -395,6 +459,8 @@
                 lines.push(`MoreEdges: ${connections.length - 40}`);
             }
         }
+        lines.push('');
+        lines.push('以上是用户提交的拼图结果，请评价其正确性并给出反馈，不要再次输出拼图工具。');
         return lines.join('\n');
     }
 
@@ -450,6 +516,15 @@
         }
         const iframe = card.querySelector('.puzzle-card-iframe');
         if (iframe) syncPuzzleCardLockState(card);
+        // 提交时立即保存到服务端（锁定状态）
+        const convId = (typeof currentConversationId !== 'undefined') ? currentConversationId : null;
+        if (convId && puzzleId) {
+            savePuzzleStateToServer(convId, puzzleId, {
+                locked: true,
+                submission: submissionPayload,
+                submitted_at: Date.now(),
+            }, true);
+        }
     }
 
     function handlePuzzleFramePayload(event) {
@@ -470,6 +545,7 @@
         window.dispatchEvent(new CustomEvent('nexora:learning-puzzle-submit', {
             detail: {
                 sourceWindow: event.source,
+                puzzle_id: String(data.puzzle_id || '').trim(),
                 orderedSteps,
                 submission,
             }
@@ -1090,6 +1166,7 @@
     }
 
     window.addEventListener('message', (event) => {
+        if (handlePuzzleStateUpdateFromIframe(event)) return;
         if (handlePuzzleFramePayload(event)) return;
         handleReaderStatePayload(event && event.data);
     });
@@ -1098,7 +1175,221 @@
         handleReaderStatePayload(event && event.detail);
     });
 
+    // ---- Puzzle functions (migrated from chat.js) ----
+
+    function resolvePuzzleCardId(payload, step, messageDiv) {
+        const rawPayload = (payload && typeof payload === 'object') ? payload : {};
+        const explicitId = String(rawPayload.puzzle_id || '').trim();
+        if (explicitId) return explicitId;
+        const payloadCallId = String(rawPayload.call_id || '').trim();
+        if (payloadCallId) return payloadCallId;
+        const stepCallId = String((step && step.call_id) || '').trim();
+        if (stepCallId) return stepCallId;
+        const messageIndex = Number(messageDiv && messageDiv.dataset ? messageDiv.dataset.index : NaN);
+        const safeIndex = Number.isFinite(messageIndex) ? String(Math.max(0, Math.floor(messageIndex))) : 'x';
+        const existingCount = messageDiv
+            ? Array.from(messageDiv.querySelectorAll('.puzzle-tool-card')).length
+            : 0;
+        return `puzzle_msg_${safeIndex}_${existingCount}`;
+    }
+
+    function extractPuzzlePayload(rawResult) {
+        if (!rawResult) return null;
+        if (typeof rawResult === 'object') {
+            if (rawResult.puzzle && typeof rawResult.puzzle === 'object') return rawResult.puzzle;
+            if (rawResult.title && Array.isArray(rawResult.steps)) return rawResult;
+            return null;
+        }
+        const text = String(rawResult || '').trim();
+        if (!text) return null;
+        try {
+            const parsed = JSON.parse(text);
+            if (parsed && typeof parsed === 'object') {
+                if (parsed.puzzle && typeof parsed.puzzle === 'object') return parsed.puzzle;
+                if (parsed.title && Array.isArray(parsed.steps)) return parsed;
+            }
+        } catch (_) {}
+        return null;
+    }
+
+    function rememberLockedPuzzle(puzzleId, submission = null) {
+        if (!chatBridge) return;
+        const locks = chatBridge.learningInteractionLocks;
+        if (!locks) return;
+        const pid = String(puzzleId || '').trim();
+        if (!pid) return;
+        const key = chatBridge.getLearningInteractionLockKey();
+        if (!locks.puzzles.has(key)) {
+            locks.puzzles.set(key, new Map());
+        }
+        locks.puzzles.get(key).set(pid, submission && typeof submission === 'object' ? submission : {});
+    }
+
+    function getLockedPuzzleSubmission(puzzleId) {
+        const pid = String(puzzleId || '').trim();
+        if (!pid) return null;
+        // 优先检查服务端缓存
+        if (chatBridge) {
+            const cached = (chatBridge.getCachedPuzzleStates ? chatBridge.getCachedPuzzleStates() : {})[pid];
+            if (cached && typeof cached === 'object' && cached.locked && cached.submission) {
+                return {
+                    ordered_steps: Array.isArray(cached.submission.ordered_steps) ? cached.submission.ordered_steps : [],
+                    submission: cached.submission,
+                    submitted_at: cached.submitted_at || 0,
+                };
+            }
+        }
+        const stored = resolveStoredPuzzleSubmissionById(pid);
+        if (stored) return stored;
+        if (!chatBridge) return null;
+        const locks = chatBridge.learningInteractionLocks;
+        if (!locks) return null;
+        const key = chatBridge.getLearningInteractionLockKey();
+        const bucket = locks.puzzles.get(key);
+        if (!bucket) return null;
+        const row = bucket.get(pid);
+        return row && typeof row === 'object' ? row : null;
+    }
+
+    function applyPuzzleAnswer(puzzleCard, orderedSteps) {
+        markPuzzleCardSubmitted(puzzleCard, orderedSteps, null);
+        if (!puzzleCard) return;
+        const body = puzzleCard.querySelector('.puzzle-card-body');
+        const rows = Array.isArray(orderedSteps)
+            ? orderedSteps.map((item) => String(item || '').trim()).filter(Boolean)
+            : [];
+        if (body) {
+            body.classList.add('answered');
+            const iframe = body.querySelector('.puzzle-card-iframe');
+            if (iframe) iframe.setAttribute('tabindex', '-1');
+            const answer = body.querySelector('.puzzle-card-answer');
+            if (answer) {
+                answer.hidden = false;
+                answer.innerHTML = rows.length
+                    ? `<div class="puzzle-card-answer-title">已提交步骤</div><ol>${rows.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ol>`
+                    : '<div class="puzzle-card-answer-title">已提交步骤</div><div>无有效步骤</div>';
+            }
+            const pill = body.querySelector('.question-card-pill');
+            if (pill) pill.textContent = 'Submitted';
+        }
+        puzzleCard.dataset.pending = 'false';
+        puzzleCard.dataset.resolved = 'true';
+    }
+
+    async function submitPuzzleAnswer(orderedSteps, puzzleCard = null, submission = null, puzzleIdHint = '') {
+        const rows = Array.isArray(orderedSteps)
+            ? orderedSteps.map((item) => String(item || '').trim()).filter(Boolean)
+            : [];
+        if (!rows.length) return;
+        const puzzleId = (puzzleCard
+            ? String((puzzleCard.dataset && puzzleCard.dataset.puzzleId) || '').trim()
+            : '')
+            || String(puzzleIdHint || '').trim()
+            || (submission && typeof submission === 'object' ? String(submission.puzzle_id || '').trim() : '');
+        if (puzzleId) {
+            rememberLockedPuzzle(puzzleId, submission && typeof submission === 'object' ? submission : { ordered_steps: rows });
+        }
+        if (puzzleCard) {
+            markPuzzleCardSubmitted(puzzleCard, rows, submission);
+        }
+        const displayText = summarizePuzzleSubmission(rows, submission);
+        if (chatBridge && typeof chatBridge.sendMessage === 'function') {
+            await chatBridge.sendMessage({
+                displayContentOverride: displayText,
+                puzzle_submission: { puzzle_id: puzzleId, ordered_steps: rows },
+            });
+        }
+    }
+
+    async function handlePuzzleIframeSubmit(detail) {
+        const payload = (detail && typeof detail === 'object') ? detail : {};
+        const puzzleCard = findPuzzleCardBySourceWindow(payload.sourceWindow, chatBridge && chatBridge.messagesContainer)
+            || findPuzzleCardBySourceWindow(payload.sourceWindow);
+        const orderedSteps = Array.isArray(payload.orderedSteps) ? payload.orderedSteps : [];
+        const submission = (payload.submission && typeof payload.submission === 'object') ? payload.submission : null;
+        const resolvedSteps = orderedSteps.length
+            ? orderedSteps
+            : (Array.isArray(submission && submission.ordered_steps) ? submission.ordered_steps : []);
+        const puzzleIdHint = String(payload.puzzle_id || (submission && submission.puzzle_id) || '').trim();
+        try {
+            console.log('[LearningMode] handlePuzzleIframeSubmit', {
+                hasCard: !!puzzleCard,
+                steps: resolvedSteps.length,
+                hasSubmission: !!submission,
+                puzzleIdHint
+            });
+        } catch (_) {}
+        await submitPuzzleAnswer(resolvedSteps, puzzleCard, submission, puzzleIdHint);
+        return true;
+    }
+
+    function appendPuzzleStep(messageDiv, step) {
+        if (!messageDiv || !step || typeof step !== 'object') return;
+        const content = messageDiv.querySelector('.message-content');
+        if (!content) return;
+        const rawPayload = (step.puzzle && typeof step.puzzle === 'object') ? step.puzzle : step;
+        const payload = (rawPayload && typeof rawPayload === 'object') ? { ...rawPayload } : {};
+        const fallbackCardId = resolvePuzzleCardId(payload, step, messageDiv);
+        if (!String(payload.puzzle_id || '').trim()) {
+            payload.puzzle_id = fallbackCardId;
+        }
+        // 从服务端缓存取画布状态
+        const serverState = chatBridge
+            ? ((chatBridge.getCachedPuzzleStates ? chatBridge.getCachedPuzzleStates() : {})[fallbackCardId] || (chatBridge.getCachedPuzzleStates ? chatBridge.getCachedPuzzleStates() : {})[payload.puzzle_id] || null)
+            : null;
+        // 如果服务端有提交记录，同步到内存锁
+        if (serverState && serverState.locked && serverState.submission) {
+            rememberLockedPuzzle(fallbackCardId, serverState.submission);
+        }
+        try {
+            console.log('[LearningMode] appendPuzzleStep', {
+                puzzleId: payload.puzzle_id,
+                hasStepCallId: !!String((step && step.call_id) || '').trim(),
+                hasServerState: !!serverState,
+                messageIndex: Number(messageDiv && messageDiv.dataset ? messageDiv.dataset.index : NaN)
+            });
+        } catch (_) {}
+        const frontendUrl = chatBridge ? chatBridge.frontendUrl : '';
+        const node = createPuzzleCardNode(payload, { cardId: fallbackCardId, serverState, frontendUrl });
+        if (!node) {
+            const ensureAssets = chatBridge && typeof chatBridge.ensureLearningModeAssets === 'function'
+                ? chatBridge.ensureLearningModeAssets
+                : null;
+            if (!ensureAssets) return;
+            void ensureAssets().then(() => {
+                const retryNode = createPuzzleCardNode(payload, { cardId: fallbackCardId, serverState, frontendUrl });
+                if (!retryNode) return;
+                const puzzleIdRetry = String((retryNode.dataset && retryNode.dataset.puzzleId) || payload.puzzle_id || '').trim();
+                const rememberedSubmissionRetry = getLockedPuzzleSubmission(puzzleIdRetry);
+                if (rememberedSubmissionRetry) {
+                    const ordered = Array.isArray(rememberedSubmissionRetry.ordered_steps) ? rememberedSubmissionRetry.ordered_steps : [];
+                    markPuzzleCardSubmitted(retryNode, ordered, rememberedSubmissionRetry);
+                    retryNode.dataset.pending = 'false';
+                    retryNode.dataset.resolved = 'true';
+                }
+                content.appendChild(retryNode);
+                if (chatBridge && typeof chatBridge.placeInteractiveCardsBelowToolChain === 'function') {
+                    chatBridge.placeInteractiveCardsBelowToolChain(messageDiv);
+                }
+            }).catch(() => {});
+            return;
+        }
+        const puzzleId = String((node.dataset && node.dataset.puzzleId) || payload.puzzle_id || '').trim();
+        const rememberedSubmission = getLockedPuzzleSubmission(puzzleId);
+        if (rememberedSubmission) {
+            const ordered = Array.isArray(rememberedSubmission.ordered_steps) ? rememberedSubmission.ordered_steps : [];
+            markPuzzleCardSubmitted(node, ordered, rememberedSubmission);
+            node.dataset.pending = 'false';
+            node.dataset.resolved = 'true';
+        }
+        content.appendChild(node);
+        if (chatBridge && typeof chatBridge.placeInteractiveCardsBelowToolChain === 'function') {
+            chatBridge.placeInteractiveCardsBelowToolChain(messageDiv);
+        }
+    }
+
     window.NexoraLearningMode = {
+        registerChatBridge,
         renderWelcome,
         renderMainPanel,
         renderSidebarPanel,
@@ -1112,6 +1403,16 @@
         summarizePuzzleSubmission,
         resolveStoredPuzzleSubmissionById,
         exitPuzzleFullscreen,
+        fetchPuzzleStatesFromServer,
+        savePuzzleStateToServer,
+        resolvePuzzleCardId,
+        extractPuzzlePayload,
+        rememberLockedPuzzle,
+        getLockedPuzzleSubmission,
+        applyPuzzleAnswer,
+        submitPuzzleAnswer,
+        handlePuzzleIframeSubmit,
+        appendPuzzleStep,
     };
 
     bindPuzzleFullscreenEvents();

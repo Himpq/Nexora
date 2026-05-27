@@ -180,42 +180,61 @@
     }
   }
 
+  function buildPersistPayload() {
+    return {
+      version: 1,
+      saved_at: Date.now(),
+      runtime_mode: String(state.runtimeMode || ""),
+      signature: getDefinitionSignature(state.definition),
+      zoom: Number(state.zoom || 1),
+      viewportX: Number(state.viewportX || 0),
+      viewportY: Number(state.viewportY || 0),
+      locked: !!state.locked,
+      submission: state.submissionSnapshot && typeof state.submissionSnapshot === "object"
+        ? state.submissionSnapshot
+        : null,
+      nodes: (Array.isArray(state.nodes) ? state.nodes : []).map(function (node) {
+        return {
+          id: String(node && node.id || ""),
+          pieceId: String(node && node.pieceId || ""),
+          x: Number(node && node.x || 0),
+          y: Number(node && node.y || 0)
+        };
+      }),
+      edges: (Array.isArray(state.edges) ? state.edges : []).map(function (edge) {
+        return {
+          from: String(edge && edge.from || ""),
+          fromSide: String(edge && edge.fromSide || ""),
+          to: String(edge && edge.to || ""),
+          toSide: String(edge && edge.toSide || "")
+        };
+      })
+    };
+  }
+
+  function notifyHostStateChange() {
+    if (state.runtimeMode !== "embedded" || !state.puzzleId) {
+      return;
+    }
+    try {
+      var payload = buildPersistPayload();
+      window.parent.postMessage({
+        type: "nexora:puzzle:state-update",
+        puzzle_id: state.puzzleId,
+        state: payload
+      }, "*");
+    } catch (_) {}
+  }
+
   function writePersistedStateNow() {
     clearPersistTimer();
     if (!state.storageKey) {
       return;
     }
     try {
-      const payload = {
-        version: 1,
-        saved_at: Date.now(),
-        runtime_mode: String(state.runtimeMode || ""),
-        signature: getDefinitionSignature(state.definition),
-        zoom: Number(state.zoom || 1),
-        viewportX: Number(state.viewportX || 0),
-        viewportY: Number(state.viewportY || 0),
-        locked: !!state.locked,
-        submission: state.submissionSnapshot && typeof state.submissionSnapshot === "object"
-          ? state.submissionSnapshot
-          : null,
-        nodes: (Array.isArray(state.nodes) ? state.nodes : []).map(function (node) {
-          return {
-            id: String(node && node.id || ""),
-            pieceId: String(node && node.pieceId || ""),
-            x: Number(node && node.x || 0),
-            y: Number(node && node.y || 0)
-          };
-        }),
-        edges: (Array.isArray(state.edges) ? state.edges : []).map(function (edge) {
-          return {
-            from: String(edge && edge.from || ""),
-            fromSide: String(edge && edge.fromSide || ""),
-            to: String(edge && edge.to || ""),
-            toSide: String(edge && edge.toSide || "")
-          };
-        })
-      };
+      var payload = buildPersistPayload();
       window.localStorage.setItem(state.storageKey, JSON.stringify(payload));
+      notifyHostStateChange();
     } catch (err) {
       try {
         console.warn("[Puzzle] persist write failed", {
@@ -898,13 +917,7 @@
       if (!rawFrom || !rawTo || rawFrom.id === rawTo.id) {
         continue;
       }
-      let from = rawFrom;
-      let to = rawTo;
-      if (from.x > to.x || (Math.abs(from.x - to.x) < 1 && from.y > to.y)) {
-        from = rawTo;
-        to = rawFrom;
-      }
-      normalizedDirected.push({ from: from.id, to: to.id });
+      normalizedDirected.push({ from: rawFrom.id, to: rawTo.id });
     }
     if (!normalizedDirected.length) {
       return [];
@@ -990,17 +1003,11 @@
       if (!rawFrom || !rawTo || rawFrom.id === rawTo.id) {
         continue;
       }
-      let from = rawFrom;
-      let to = rawTo;
-      if (from.x > to.x || (Math.abs(from.x - to.x) < 1 && from.y > to.y)) {
-        from = rawTo;
-        to = rawFrom;
-      }
       list.push({
-        from: from.id,
-        to: to.id,
-        from_side: from.id === edge.from ? edge.fromSide : edge.toSide,
-        to_side: to.id === edge.to ? edge.toSide : edge.fromSide
+        from: rawFrom.id,
+        to: rawTo.id,
+        from_side: edge.fromSide || "",
+        to_side: edge.toSide || ""
       });
     }
     return list;
@@ -1167,6 +1174,7 @@
     window.parent.postMessage(
       {
         type: "nexora:puzzle:submit",
+        puzzle_id: state.puzzleId || "",
         ordered_steps: orderedSteps,
         submission: submission
       },
@@ -1480,6 +1488,8 @@
       return;
     }
     state.runtimeMode = "embedded";
+    state.pendingServerRestore = null;
+    state.restoreApplied = false;
     if (document.body) {
       document.body.classList.add("puzzle-embedded");
     }
@@ -1495,11 +1505,42 @@
     }
     const syncLayoutAndRestore = function () {
       resizeCanvas();
-      const restored = applyPersistedState(readPersistedState());
+      var hostLocked = state.locked;
+      var hostSubmission = hostLocked ? state.submissionSnapshot : null;
+      // 优先使用服务端状态，其次 localStorage
+      var serverSnap = state.pendingServerRestore;
+      state.pendingServerRestore = null;
+      var restored = false;
+      if (serverSnap && typeof serverSnap === "object") {
+        restored = applyPersistedState(serverSnap);
+      }
       if (!restored) {
-        setLockedState(false, null);
-        resetPuzzle({ clearCache: false });
+        restored = applyPersistedState(readPersistedState());
+      }
+      state.restoreApplied = true;
+      if (!restored) {
+        state.nodes = createInitialNodes();
+        state.edges = [];
+        state.zoom = 1;
+        state.viewportX = 0;
+        state.viewportY = 0;
+        state.drag = null;
+        state.connectFrom = null;
+        state.hoverPort = null;
+        state.hoverEdgeIndex = -1;
+        setLockedState(hostLocked, hostSubmission);
+        writePersistedStateNow();
+        draw();
+        if (hostLocked) {
+          setFeedback("success", "已恢复已提交拼图。");
+        } else {
+          setFeedback("default", "操作提示：把步骤拖入右侧工作区，拖动端点连线后提交当前拼接顺序。");
+        }
       } else {
+        if (hostLocked && !state.locked) {
+          setLockedState(true, hostSubmission);
+        }
+        writePersistedStateNow();
         draw();
         if (state.locked) {
           setFeedback("success", "已恢复已提交拼图。");
@@ -1508,13 +1549,20 @@
         }
       }
     };
-    if (window.requestAnimationFrame) {
-      requestAnimationFrame(function () {
-        requestAnimationFrame(syncLayoutAndRestore);
-      });
-    } else {
-      syncLayoutAndRestore();
-    }
+    // 等待宿主发送 restore 消息（最多 500ms），超时则用 localStorage
+    var restoreTimer = setTimeout(function () {
+      state.pendingServerRestore = null;
+      if (!state.restoreApplied) {
+        if (window.requestAnimationFrame) {
+          requestAnimationFrame(function () {
+            requestAnimationFrame(syncLayoutAndRestore);
+          });
+        } else {
+          syncLayoutAndRestore();
+        }
+      }
+    }, 500);
+    state._restoreTimer = restoreTimer;
   }
 
   function bindRuntimeMessages() {
@@ -1524,15 +1572,51 @@
         return;
       }
       const msgType = String(data.type || "").trim();
+      if (msgType === "nexora:puzzle:restore") {
+        var snap = data.state && typeof data.state === "object" ? data.state : null;
+        if (!snap) return;
+        // 如果还没开始 restore 流程，暂存；如果已经完成，直接应用
+        if (!state.restoreApplied) {
+          state.pendingServerRestore = snap;
+          // 如果 restore timer 还在等，触发它
+          if (state._restoreTimer) {
+            clearTimeout(state._restoreTimer);
+            state._restoreTimer = null;
+          }
+          if (state.runtimeMode === "embedded" && state.storageKey) {
+            resizeCanvas();
+            var hostLocked = state.locked;
+            var hostSubmission = hostLocked ? state.submissionSnapshot : null;
+            var restored = applyPersistedState(snap);
+            state.restoreApplied = true;
+            if (!restored) {
+              restored = applyPersistedState(readPersistedState());
+            }
+            if (!restored) {
+              state.nodes = createInitialNodes();
+              state.edges = [];
+              setLockedState(hostLocked, hostSubmission);
+            } else if (hostLocked && !state.locked) {
+              setLockedState(true, hostSubmission);
+            }
+            writePersistedStateNow();
+            draw();
+            if (state.locked) {
+              setFeedback("success", "已恢复已提交拼图。");
+            } else {
+              setFeedback("default", "已恢复上次未完成拼图。");
+            }
+          }
+        }
+        return;
+      }
       if (msgType === "nexora:puzzle:lock") {
         setLockedState(true, data.submission && typeof data.submission === "object" ? data.submission : null);
-        writePersistedStateNow();
         draw();
         return;
       }
       if (msgType === "nexora:puzzle:unlock") {
         setLockedState(false, null);
-        writePersistedStateNow();
         draw();
         return;
       }

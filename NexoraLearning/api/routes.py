@@ -2471,6 +2471,15 @@ def set_book_detail_xml(lecture_id: str, book_id: str):
     return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, "path": path})
 
 
+@bp.route("/lectures/<lecture_id>/books/<book_id>/sections", methods=["GET"])
+def get_book_sections_xml(lecture_id: str, book_id: str):
+    _, _, error_response = _book_or_404(lecture_id, book_id)
+    if error_response is not None:
+        return error_response
+    content = load_book_sections_xml(_cfg, lecture_id, book_id)
+    return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, "content": content})
+
+
 @bp.route("/lectures/<lecture_id>/books/<book_id>/vectorize", methods=["GET"])
 def get_book_vectorize_status(lecture_id: str, book_id: str):
     _, book, error_response = _book_or_404(lecture_id, book_id)
@@ -3711,8 +3720,18 @@ def frontend_learning_chapter_complete():
     book = get_lecture_book(_cfg, lecture_id, book_id)
     if not isinstance(lecture, dict) or not isinstance(book, dict):
         return jsonify({"success": False, "error": "lecture or book not found."}), 404
+
+    existing_records = user_store.list_learning_records(_cfg, username)
+    already_completed = any(
+        str(r.get("type") or "").strip() == "chapter_completed"
+        and str(r.get("lecture_id") or "").strip() == lecture_id
+        and str(r.get("book_id") or "").strip() == book_id
+        and str(r.get("chapter_name") or "").strip() == chapter_name
+        for r in (existing_records or [])
+    )
+
     progress = max(0, min(100, _safe_int(lecture.get("progress"), 0)))
-    if progress < 100:
+    if progress < 100 and not already_completed:
         progress = min(100, progress + 5)
     next_chapter = ""
     if chapter_range:
