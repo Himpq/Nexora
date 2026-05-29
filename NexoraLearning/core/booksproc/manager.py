@@ -44,10 +44,12 @@ from .modeling import (
     build_intensive_reading_runner,
     build_question_generation_runner,
     build_split_chapters_runner,
+    build_annotation_runner,
     get_intensive_reading_settings,
     get_question_generation_settings,
     get_rough_reading_settings,
     get_split_chapters_settings,
+    get_annotation_settings,
 )
 from .coarse import run_rough_model as _run_rough_model_flow
 from .intensive import (
@@ -59,6 +61,7 @@ from .question import (
     run_question_with_tools_strict as _run_question_with_tools_strict,
 )
 from .section import run_section_generation_once as _run_section_generation_once_flow
+from .annotation import run_annotation_generation_once as _run_annotation_generation_once_flow
 from .queue import (
     cancel_job as queue_cancel_job,
     enqueue_job as queue_enqueue_job,
@@ -553,6 +556,71 @@ def enqueue_book_section(
     return queued
 
 
+def enqueue_book_annotation(
+    cfg: Mapping[str, Any],
+    lecture_id: str,
+    book_id: str,
+    *,
+    actor: str = "",
+    model_name: str = "",
+) -> Dict[str, Any]:
+    """将教材加入批注队列。"""
+    resolved_cfg = dict(cfg or {})
+    lecture_key = str(lecture_id or "").strip()
+    book_key = str(book_id or "").strip()
+    selected_model = str(model_name or "").strip()
+    if not lecture_key or not book_key:
+        raise ValueError("lecture_id and book_id are required.")
+
+    lecture = get_lecture(resolved_cfg, lecture_key)
+    if lecture is None:
+        raise ValueError(f"Lecture not found: {lecture_key}")
+    book = get_book(resolved_cfg, lecture_key, book_key)
+    if book is None:
+        raise ValueError(f"Book not found: {lecture_key}/{book_key}")
+    section_status = str(book.get("section_status") or "").strip().lower()
+    if section_status not in {"done", "completed", "success"}:
+        raise ValueError("section generation must be completed before annotation generation.")
+
+    queued = queue_enqueue_job(
+        lecture_key,
+        book_key,
+        actor=actor,
+        force=False,
+        job_type="annotation",
+        model_name=selected_model,
+    )
+    job = dict(queued.get("job") or {})
+    job_id = str(job.get("job_id") or "")
+    now = int(job.get("created_at") or time.time())
+
+    update_book(
+        resolved_cfg,
+        lecture_key,
+        book_key,
+        {
+            "annotation_status": "queued",
+            "annotation_error": "",
+            "annotation_model": selected_model,
+            "annotation_job_id": job_id,
+            "annotation_requested_at": now,
+        },
+    )
+    _set_book_progress(lecture_key, book_key, "批注任务排队中...")
+    log_event(
+        "book_annotation_queue",
+        "教材已加入批注队列",
+        payload={
+            "lecture_id": lecture_key,
+            "book_id": book_key,
+            "job_id": job_id,
+            "actor": actor,
+            "model_name": selected_model,
+        },
+    )
+    return queued
+
+
 def get_refinement_queue_snapshot() -> Dict[str, Any]:
     """获取当前提炼队列快照。"""
     return queue_get_snapshot()
@@ -677,6 +745,23 @@ def _run_job(job: Dict[str, Any]) -> None:
             "教材开始分节（分节阶段）",
             payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id, "model_name": model_name},
         )
+    elif job_type == "annotation":
+        update_book(
+            _CFG,
+            lecture_id,
+            book_id,
+            {
+                "annotation_status": "running",
+                "annotation_error": "",
+                "annotation_model": model_name,
+            },
+        )
+        _set_book_progress(lecture_id, book_id, "模型正在生成批注...")
+        log_event(
+            "book_annotation_start",
+            "教材开始批注（批注阶段）",
+            payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id, "model_name": model_name},
+        )
     else:
         update_book(
             _CFG,
@@ -756,6 +841,26 @@ def _run_job(job: Dict[str, Any]) -> None:
                 "教材提炼完成（分节阶段）",
                 payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id},
                 content=f"sections_chars={int(result.get('sections_chars') or 0)}; session_count={int(result.get('session_count') or 0)}",
+            )
+        elif job_type == "annotation":
+            result = run_annotation_generation_once(_CFG, lecture_id, book_id, actor=str(job.get("actor") or ""), model_name=model_name)
+            finished_at = int(time.time())
+            _set_book_progress(lecture_id, book_id, "批注完成")
+            _update_job(
+                job_id,
+                {
+                    "status": "done",
+                    "finished_at": finished_at,
+                    "error": "",
+                    "annotation_status": "done",
+                    "model_name": str(result.get("model_name") or model_name),
+                },
+            )
+            log_event(
+                "book_annotation_done",
+                "教材提炼完成（批注阶段）",
+                payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id},
+                content=f"annotations_chars={int(result.get('annotations_chars') or 0)}; annotation_count={int(result.get('annotation_count') or 0)}",
             )
         else:
             lecture = get_lecture(_CFG, lecture_id)
@@ -863,6 +968,24 @@ def _run_job(job: Dict[str, Any]) -> None:
             log_event(
                 "book_section_error",
                 "教材提炼失败（分节阶段）",
+                payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id},
+                content=message,
+            )
+        elif job_type == "annotation":
+            update_book(
+                _CFG,
+                lecture_id,
+                book_id,
+                {
+                    "annotation_status": "error",
+                    "annotation_error": message,
+                },
+            )
+            _set_book_progress(lecture_id, book_id, f"批注执行失败：{message[:120]}")
+            _update_job(job_id, {"status": "error", "finished_at": int(time.time()), "error": message, "annotation_status": "error"})
+            log_event(
+                "book_annotation_error",
+                "教材提炼失败（批注阶段）",
                 payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id},
                 content=message,
             )
@@ -1032,6 +1155,61 @@ def run_section_generation_once(
         resolve_book_text=_resolve_book_text,
         get_split_chapters_settings=get_split_chapters_settings,
         build_split_chapters_runner=build_split_chapters_runner,
+        as_bool=_as_bool,
+        log_event=log_event,
+        append_log_text=append_log_text,
+        push_book_progress_step=_push_book_progress_step,
+    )
+
+
+def run_annotation_generation_once(
+    cfg: Mapping[str, Any],
+    lecture_id: str,
+    book_id: str,
+    *,
+    actor: str = "",
+    model_name: str = "",
+) -> Dict[str, Any]:
+    """手动触发批注生成（委托 annotation.py，为章节生成学习批注）。"""
+    # Load annotations.xml path helper
+    from ..lectures import _book_sections_xml_path
+    from pathlib import Path
+
+    def _book_annotations_xml_path(cfg: Mapping[str, Any], lecture_id: str, book_id: str) -> Path:
+        data_dir = Path(str(cfg.get("data_dir") or "data"))
+        return data_dir / "lectures" / lecture_id / "books" / book_id / "annotations.xml"
+
+    def load_book_annotations_xml(cfg: Mapping[str, Any], lecture_id: str, book_id: str) -> str:
+        path = _book_annotations_xml_path(cfg, lecture_id, book_id)
+        if not path.exists():
+            return ""
+        try:
+            return path.read_text(encoding="utf-8")
+        except Exception:
+            return ""
+
+    def save_book_annotations_xml(cfg: Mapping[str, Any], lecture_id: str, book_id: str, content: str) -> str:
+        path = _book_annotations_xml_path(cfg, lecture_id, book_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(content or ""), encoding="utf-8")
+        return str(path)
+
+    return _run_annotation_generation_once_flow(
+        cfg,
+        lecture_id,
+        book_id,
+        actor=actor,
+        model_name=model_name,
+        get_lecture=get_lecture,
+        get_book=get_book,
+        load_book_info_xml=load_book_info_xml,
+        load_book_detail_xml=load_book_detail_xml,
+        load_book_annotations_xml=load_book_annotations_xml,
+        save_book_annotations_xml=save_book_annotations_xml,
+        update_book=update_book,
+        resolve_book_text=_resolve_book_text,
+        get_annotation_settings=get_annotation_settings,
+        build_annotation_runner=build_annotation_runner,
         as_bool=_as_bool,
         log_event=log_event,
         append_log_text=append_log_text,

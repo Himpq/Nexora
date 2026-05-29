@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Mapping
 
-from .booksproc import build_memory_runner, get_memory_settings
+from core.booksproc import build_memory_runner, get_memory_settings
 from .memory_queue import mark_analysis_completed
-from .runlog import log_event
-from .user import (
+from core.runlog import log_event
+from core.user import (
     ensure_user_files,
     list_learning_records,
     read_lecture_context_memory,

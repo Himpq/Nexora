@@ -136,6 +136,10 @@ def create_app():
     init_routes(cfg)
     app.register_blueprint(bp)
 
+    from api.telemetry import telemetry_bp, init_telemetry
+    init_telemetry(cfg)
+    app.register_blueprint(telemetry_bp)
+
     @app.route("/health")
     def health():
         return jsonify({

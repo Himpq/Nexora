@@ -168,6 +168,18 @@ DEFAULT_SCHEDULER_MODELS_CONFIG: Dict[str, Any] = {
         "think": False,
         "prompt_notes": "",
     },
+    "annotation": {
+        "enabled": True,
+        "model_name": "",
+        "api_mode": "chat",
+        "temperature": 0.3,
+        "max_output_tokens": 4000,
+        "max_input_chars": 15000,
+        "request_timeout": 240,
+        "stream": True,
+        "think": False,
+        "prompt_notes": "",
+    },
 }
 
 
@@ -331,6 +343,15 @@ def get_profile_question_model_config(cfg: Mapping[str, Any]) -> Dict[str, Any]:
     if isinstance(branch, dict):
         return dict(branch)
     return dict(DEFAULT_SCHEDULER_MODELS_CONFIG["profile_question"])
+
+
+def get_annotation_model_config(cfg: Mapping[str, Any]) -> Dict[str, Any]:
+    """Read annotation model settings."""
+    data = load_scheduler_models_config(cfg)
+    branch = data.get("annotation")
+    if isinstance(branch, dict):
+        return dict(branch)
+    return dict(DEFAULT_SCHEDULER_MODELS_CONFIG["annotation"])
 
 
 def update_rough_reading_model_config(cfg: Mapping[str, Any], updates: Mapping[str, Any]) -> Dict[str, Any]:
@@ -641,6 +662,51 @@ def update_profile_question_model_config(cfg: Mapping[str, Any], updates: Mappin
     merged_branch = dict(current)
     merged_branch.update(sanitized)
     save_scheduler_models_config(cfg, {"profile_question": merged_branch})
+    return merged_branch
+
+
+def update_annotation_model_config(cfg: Mapping[str, Any], updates: Mapping[str, Any]) -> Dict[str, Any]:
+    """Update annotation model settings with basic validation."""
+    current = get_annotation_model_config(cfg)
+    allowed_fields = {
+        "enabled",
+        "model_name",
+        "api_mode",
+        "temperature",
+        "max_output_tokens",
+        "max_input_chars",
+        "request_timeout",
+        "stream",
+        "think",
+        "prompt_notes",
+    }
+    sanitized: Dict[str, Any] = {}
+    for key, value in dict(updates or {}).items():
+        if key not in allowed_fields:
+            continue
+        sanitized[key] = value
+    for bool_field in ("enabled", "stream", "think"):
+        if bool_field in sanitized:
+            sanitized[bool_field] = _as_bool(sanitized[bool_field], default=_as_bool(current.get(bool_field), False))
+    for int_field in ("max_output_tokens", "max_input_chars", "request_timeout"):
+        if int_field in sanitized:
+            try:
+                upper_bound = {
+                    "max_output_tokens": _MAX_MODEL_OUTPUT_TOKENS,
+                    "max_input_chars": _MAX_MODEL_INPUT_CHARS,
+                    "request_timeout": _MAX_REQUEST_TIMEOUT,
+                }.get(int_field)
+                sanitized[int_field] = _clamp_int(sanitized[int_field], default=current.get(int_field) or 1, minimum=1, maximum=upper_bound)
+            except Exception:
+                sanitized[int_field] = current.get(int_field)
+    if "temperature" in sanitized:
+        try:
+            sanitized["temperature"] = float(sanitized["temperature"])
+        except Exception:
+            sanitized["temperature"] = current.get("temperature")
+    merged_branch = dict(current)
+    merged_branch.update(sanitized)
+    save_scheduler_models_config(cfg, {"annotation": merged_branch})
     return merged_branch
 
 
@@ -970,6 +1036,12 @@ class SplitChaptersModel(BaseLearningModel):
     model_key = "split_chapters"
 
 
+class AnnotationModel(BaseLearningModel):
+    """Model used to generate annotations for chapter paragraphs."""
+
+    model_key = "annotation"
+
+
 class AnswerModel(BaseLearningModel):
     """Placeholder model for learning-oriented answers."""
 
@@ -1027,6 +1099,7 @@ class LearningModelFactory:
         "question_verify": QuestionVerifyModel,
         "intensive_reading": IntensiveReadingModel,
         "split_chapters": SplitChaptersModel,
+        "annotation": AnnotationModel,
         "answer": AnswerModel,
         "memory": MemoryProfileModel,
         "profile_question": ProfileQuestionModel,

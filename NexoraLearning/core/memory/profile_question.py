@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping
 
-from .booksproc import build_profile_question_runner, get_profile_question_settings
-from .lectures import get_book, get_lecture, load_book_detail_xml, load_book_info_xml, load_book_text
-from .learning_feed import prepend_learning_feed_item
-from .runlog import log_event
-from .user import (
+from core.booksproc import build_profile_question_runner, get_profile_question_settings
+from core.lectures import get_book, get_lecture, load_book_detail_xml, load_book_info_xml, load_book_text
+from core.runlog import log_event
+from core.user import (
     append_question_bank_item,
     ensure_user_files,
     read_lecture_context_memory,

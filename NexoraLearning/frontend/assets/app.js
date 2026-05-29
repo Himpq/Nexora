@@ -1,4 +1,5 @@
 ﻿(function () {
+// ─────── Constants & DOM References ───────────────────────────────────
   "use strict";
 
   const el = {
@@ -18,6 +19,7 @@
     uploadBookBlock: document.getElementById("uploadBookBlock"),
     progressList: document.getElementById("progressList"),
     timePieChart: document.getElementById("timePieChart"),
+    dashboardSidePanelTitle: document.getElementById("dashboardSidePanelTitle"),
     learningFeedPanel: document.getElementById("learningFeedPanel"),
     learningFeedComposeBtn: document.getElementById("learningFeedComposeBtn"),
     feedChannelSelect: document.getElementById("feedChannelSelect"),
@@ -76,7 +78,6 @@
     confirmCancelBtn: document.getElementById("confirmCancelBtn"),
   };
 
-  const PIE_COLORS = ["#111111", "#373737", "#585858", "#7a7a7a", "#9d9d9d", "#bbbbbb"];
   const READER_SETTINGS_STORAGE_KEY = "nxl_reader_settings_v1";
   const DEFAULT_READER_SETTINGS = Object.freeze({
     fontSize: 18,
@@ -87,14 +88,18 @@
     enableKeyNavigation: true,
     preferredTranslator: "auto",
   });
-  const STATUS_LABELS = {
-    draft: "草稿",
-    active: "开放学习",
-    ready: "已准备",
-    archived: "归档",
-    paused: "暂停",
-  };
 
+// ─────── NXLU Utils Destructuring ─────────────────────────────────────
+  const {
+    escapeHtml, decodeBasicHtmlEntities, toNumber, clamp, renderTextWithMentions,
+    formatTs, normalizeReaderSelectionText, resolveApiUrl, formatReaderText,
+    normalizeStatusKey, statusText, vectorStatusLabel, materialStatusLabel, statusBadgeClass,
+    getLectureTitle, getCourseProgress, getStudyHours, getChapterInfo, buildDashboardCourses,
+    polarToCartesian, donutPath, formatFeedRelativeTime,
+    STATUS_LABELS, PIE_COLORS,
+  } = window.NXLU || {};
+
+// ─────── App State ────────────────────────────────────────────────────
   const state = {
     username: "",
     user: {},
@@ -115,6 +120,11 @@
     settingsTab: "refinement",
     refinementRows: [],
     refinementQueue: { queue_size: 0, running_count: 0 },
+    settingsUsers: [],
+    settingsUsersSummary: { total: 0, admins: 0, teachers: 0, students: 0 },
+    settingsUsersQuery: "",
+    settingsUsersLoading: false,
+    settingsUsersError: "",
     modelOptions: [],
     modelSettings: {
       default_nexora_model: "",
@@ -176,9 +186,18 @@
     confirmAction: null,
     readerSessionProgress: {},  // { "lectureId::bookId": { completedIndices: Set, currentChapterIndex: 0 } }
     readerSectionsData: {},     // { chapterName: { range, sessions: [{name, range, summary}] } }
+    readerAnnotations: [],      // [{ chapterName, offset, length, type, content, anchorText }]
   };
   let readerContextSyncTimer = null;
+  const readerSelectionTelemetryState = {
+    pointerActive: false,
+    pointerDownKey: "",
+    timer: null,
+    lastKey: "",
+    lastAt: 0,
+  };
 
+// ─────── Telemetry Integration ────────────────────────────────────────
   function logReaderDebug(eventName, extra) {
     try {
       const payload = {
@@ -224,34 +243,151 @@
     }
   }
 
-  function escapeHtml(str) {
-    return String(str || "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#039;");
+  function emitTelemetry(eventName, payload) {
+    const telemetry = window.NXLTelemetry;
+    if (!telemetry || typeof telemetry.emit !== "function") return;
+    telemetry.emit(eventName, payload || {});
   }
 
-  function renderTextWithMentions(str) {
-    const raw = String(str || "");
-    const pattern = /@([A-Za-z0-9_][A-Za-z0-9_.-]{0,63})/g;
-    let html = "";
-    let lastIndex = 0;
-    let match = pattern.exec(raw);
-    while (match) {
-      const start = Number(match.index || 0);
-      const whole = String(match[0] || "");
-      const handle = String(match[1] || "").trim();
-      html += escapeHtml(raw.slice(lastIndex, start)).replace(/\n/g, "<br>");
-      html += `<span class="feed-inline-mention" data-mention-handle="${escapeHtml(handle)}"> @${escapeHtml(handle)} </span>`;
-      lastIndex = start + whole.length;
-      match = pattern.exec(raw);
+  function emitKnowledgePointHoverTelemetry(marker, triggerSource) {
+    if (!(marker instanceof Element) || !state.isReaderOpen) return;
+    const chapterMeta = getReaderCurrentChapterMeta();
+    const noteType = String(marker.getAttribute("data-note-type") || "").trim();
+    const anchorText = String(marker.getAttribute("data-anchor-text") || "").trim();
+    const offset = Number(marker.getAttribute("data-offset") || 0) || 0;
+    const length = Number(marker.getAttribute("data-length") || 0) || 0;
+    const bubbleContent = marker.querySelector(".annotation-bubble-content");
+    const noteText = bubbleContent ? String(bubbleContent.textContent || "").trim() : "";
+    const rect = marker.getBoundingClientRect();
+    emitTelemetry("reader_knowledge_point_hover", {
+      lecture_id: String(state.selectedLectureId || "").trim(),
+      book_id: String(state.selectedBookId || "").trim(),
+      chapter_index: chapterMeta.chapterIndex,
+      chapter_title: chapterMeta.chapterTitle,
+      note_type: noteType,
+      anchor_text: anchorText,
+      note_text: noteText,
+      offset,
+      length,
+      trigger_source: String(triggerSource || "marker").trim() || "marker",
+      hover_rect: {
+        left: Number(rect.left.toFixed(2)),
+        top: Number(rect.top.toFixed(2)),
+        width: Number(rect.width.toFixed(2)),
+        height: Number(rect.height.toFixed(2)),
+      },
+      telemetry_key: [
+        String(state.selectedLectureId || "").trim(),
+        String(state.selectedBookId || "").trim(),
+        chapterMeta.chapterIndex,
+        chapterMeta.chapterTitle,
+        noteType,
+        anchorText,
+        offset,
+        length,
+      ].join("::"),
+    });
+  }
+
+  function resetReaderSelectionTelemetry() {
+    readerSelectionTelemetryState.pointerActive = false;
+    readerSelectionTelemetryState.pointerDownKey = "";
+    if (readerSelectionTelemetryState.timer) {
+      clearTimeout(readerSelectionTelemetryState.timer);
+      readerSelectionTelemetryState.timer = null;
     }
-    html += escapeHtml(raw.slice(lastIndex)).replace(/\n/g, "<br>");
-    return html;
   }
 
+  function getReaderSelectionSignature() {
+    if (!state.isReaderOpen || !el.readerContent) return "";
+    const sel = window.getSelection ? window.getSelection() : null;
+    if (!sel || sel.rangeCount <= 0) return "";
+    const text = normalizeReaderSelectionText(sel.toString(), 1600);
+    if (!text) return "";
+    const range = sel.getRangeAt(0);
+    const anchorOffset = Number(sel.anchorOffset || 0);
+    const focusOffset = Number(sel.focusOffset || 0);
+    let startOffset = 0;
+    let endOffset = 0;
+    try {
+      startOffset = Number(range.startOffset || 0);
+      endOffset = Number(range.endOffset || 0);
+    } catch (_err) {}
+    return [text, anchorOffset, focusOffset, startOffset, endOffset].join("::");
+  }
+
+  function buildReaderSelectionTelemetryPayload(trigger) {
+    if (!state.isReaderOpen || !el.readerContent) return null;
+    const sel = window.getSelection ? window.getSelection() : null;
+    if (!sel || sel.rangeCount <= 0 || sel.isCollapsed) return null;
+    const text = normalizeReaderSelectionText(sel.toString(), 1600);
+    if (!text) return null;
+    const anchorNode = sel.anchorNode || sel.focusNode;
+    const anchorElement = anchorNode && anchorNode.nodeType === Node.TEXT_NODE ? anchorNode.parentElement : anchorNode;
+    if (!anchorElement || !el.readerContent.contains(anchorElement)) return null;
+    const chapterMeta = getReaderCurrentChapterMeta();
+    let selectionRect = null;
+    try {
+      const range = sel.getRangeAt(0);
+      const rect = range && typeof range.getBoundingClientRect === "function" ? range.getBoundingClientRect() : null;
+      if (rect) {
+        selectionRect = {
+          left: Number(rect.left.toFixed(2)),
+          top: Number(rect.top.toFixed(2)),
+          width: Number(rect.width.toFixed(2)),
+          height: Number(rect.height.toFixed(2)),
+        };
+      }
+    } catch (_err) {}
+    return {
+      lecture_id: String(state.selectedLectureId || "").trim(),
+      book_id: String(state.selectedBookId || "").trim(),
+      chapter_index: chapterMeta.chapterIndex,
+      chapter_title: chapterMeta.chapterTitle,
+      text,
+      text_length: text.length,
+      trigger: String(trigger || "").trim() || "pointerup",
+      selection_rect: selectionRect,
+      source_meta: buildReaderSelectionSourceMeta(text),
+    };
+  }
+
+  function scheduleReaderSelectionTelemetry(trigger, allowEmit) {
+    if (!readerSelectionTelemetryState.pointerActive) return;
+    if (readerSelectionTelemetryState.timer) {
+      clearTimeout(readerSelectionTelemetryState.timer);
+      readerSelectionTelemetryState.timer = null;
+    }
+    readerSelectionTelemetryState.timer = window.setTimeout(() => {
+      readerSelectionTelemetryState.timer = null;
+      if (!allowEmit) return;
+      const payload = buildReaderSelectionTelemetryPayload(trigger);
+      readerSelectionTelemetryState.pointerActive = false;
+      if (!payload) return;
+      const finalSignature = getReaderSelectionSignature();
+      if (!finalSignature) return;
+      if (readerSelectionTelemetryState.pointerDownKey && finalSignature === readerSelectionTelemetryState.pointerDownKey) {
+        return;
+      }
+      const key = [
+        payload.lecture_id,
+        payload.book_id,
+        payload.chapter_index,
+        payload.chapter_title,
+        payload.text,
+      ].join("::");
+      const now = Date.now();
+      if (key === readerSelectionTelemetryState.lastKey && (now - readerSelectionTelemetryState.lastAt) < 250) {
+        return;
+      }
+      readerSelectionTelemetryState.lastKey = key;
+      readerSelectionTelemetryState.lastAt = now;
+      emitTelemetry("reader_text_selection", payload);
+    }, 120);
+  }
+
+// ─────── HTML & Formatting Utilities ──────────────────────────────────
+// ─────── Feed Mention System ──────────────────────────────────────────
   function captureFeedInputSnapshot(inputEl) {
     if (!(inputEl instanceof HTMLInputElement)) return null;
     const feedId = String(inputEl.getAttribute("data-feed-comment-input") || "").trim();
@@ -344,6 +480,7 @@
     menuEl.style.display = visible ? "grid" : "none";
   }
 
+// ─────── Feed Author & Avatar Helpers ─────────────────────────────────
   function getCurrentUserDisplayName() {
     return String(
       state.user.nickname
@@ -435,22 +572,6 @@
   function getFeedAuthorHandle(row) {
     const author = row && typeof row.author === "object" ? row.author : {};
     return String(author.user_id || row.username || row.user_id || "").trim();
-  }
-
-  function formatFeedRelativeTime(ts) {
-    const value = Number(ts) || 0;
-    if (!Number.isFinite(value) || value <= 0) return "";
-    const now = Math.floor(Date.now() / 1000);
-    const diff = Math.max(0, now - value);
-    if (diff < 60) return `${diff || 1}s`;
-    if (diff < 3600) return `${Math.floor(diff / 60)}m`;
-    if (diff <= 86400) return `${Math.floor(diff / 3600)}h`;
-    const d = new Date(value * 1000);
-    const month = d.getMonth() + 1;
-    const day = d.getDate();
-    const hour = String(d.getHours()).padStart(2, "0");
-    const minute = String(d.getMinutes()).padStart(2, "0");
-    return `${month}/${day} ${hour}:${minute}`;
   }
 
   async function searchFeedUsers(query, limit = 8) {
@@ -572,6 +693,7 @@
     syncFeedMentionMenus();
   }
 
+// ─────── UI Confirm & Toast ───────────────────────────────────────────
   function renderTrashIcon() {
     return `
       <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -596,140 +718,9 @@
     state.confirmAction = null;
   }
 
-  function decodeBasicHtmlEntities(src) {
-    return String(src || "")
-      .replace(/&nbsp;/gi, " ")
-      .replace(/&lt;/gi, "<")
-      .replace(/&gt;/gi, ">")
-      .replace(/&quot;/gi, "\"")
-      .replace(/&#39;/gi, "'")
-      .replace(/&amp;/gi, "&")
-      .replace(/&#(\d+);/g, (_m, n) => {
-        const code = Number(n);
-        return Number.isFinite(code) ? String.fromCharCode(code) : "";
-      });
-  }
+// ─────── API & Text Parsing Utilities ─────────────────────────────────
 
-  function resolveApiUrl(path) {
-    const rawPath = String(path || "").trim();
-    if (!rawPath) return rawPath;
-    try {
-      const direct = new URL(rawPath);
-      return direct.toString();
-    } catch (_err) {}
-    const normalizedPath = rawPath.startsWith("/") ? rawPath : `/${rawPath}`;
-    try {
-      const current = new URL(window.location.href);
-      return new URL(normalizedPath, `${current.protocol}//${current.host}`).toString();
-    } catch (_err) {
-      return normalizedPath;
-    }
-  }
-
-  function formatReaderText(text) {
-    const raw = String(text || "").replace(/\r\n?/g, "\n");
-    const withImages = raw.replace(/\{\{nxl_image:([A-Za-z0-9_\-]+):([A-Za-z0-9_\-]+):([A-Za-z0-9._\-]+)(?::([^}]*))?\}\}/g, (_m, lectureId, bookId, imageId, altText) => {
-      const safeLectureId = encodeURIComponent(String(lectureId || "").trim());
-      const safeBookId = encodeURIComponent(String(bookId || "").trim());
-      const safeImageId = encodeURIComponent(String(imageId || "").trim());
-      const alt = escapeHtml(String(altText || imageId || "图片"));
-      if (!safeLectureId || !safeBookId || !safeImageId) return "";
-      const src = resolveApiUrl(`/api/lectures/${safeLectureId}/books/${safeBookId}/images/${safeImageId}`);
-      return `\n\n<figure class="materials-preview-figure"><img class="materials-preview-image" src="${src}" alt="${alt}" loading="lazy"></figure>\n\n`;
-    });
-    const noScripts = withImages
-      .replace(/<script[\s\S]*?<\/script>/gi, " ")
-      .replace(/<style[\s\S]*?<\/style>/gi, " ");
-    const structural = noScripts
-      .replace(/<figure\b[^>]*>[\s\S]*?<\/figure>/gi, (m) => `\n\n${m}\n\n`)
-      .replace(/<\/(p|div|h[1-6]|section|article|blockquote|tr|table)>/gi, "\n\n")
-      .replace(/<br\s*\/?>/gi, "\n")
-      .replace(/<li[^>]*>/gi, "\n- ");
-    const imageBlocks = [];
-    const masked = structural.replace(/<figure\b[^>]*>[\s\S]*?<\/figure>/gi, (m) => {
-      const token = `@@NXL_FIGURE_${imageBlocks.length}@@`;
-      imageBlocks.push(m);
-      return `\n\n${token}\n\n`;
-    });
-    const noTags = masked.replace(/<[^>]+>/g, " ");
-    const readable = decodeBasicHtmlEntities(noTags)
-      .replace(/\u00a0/g, " ")
-      .replace(/[ \t]+\n/g, "\n")
-      .replace(/\n[ \t]+/g, "\n")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim();
-
-    if (!readable) {
-      return `<p class="materials-preview-paragraph">（暂无文本内容）</p>`;
-    }
-
-    return readable
-      .split(/\n{2,}/)
-      .map((block) => {
-        const lines = block
-          .split("\n")
-          .map((line) => line.trim())
-          .filter(Boolean);
-        if (!lines.length) return "";
-        if (lines.length === 1) {
-          const figureMatch = lines[0].match(/^@@NXL_FIGURE_(\d+)@@$/);
-          if (figureMatch) {
-            const figureIdx = Number(figureMatch[1]);
-            return imageBlocks[figureIdx] || "";
-          }
-        }
-        return `<p class="materials-preview-paragraph">${lines.map(escapeHtml).join("<br>")}</p>`;
-      })
-      .filter(Boolean)
-      .join("");
-  }
-
-  function toNumber(value, fallback) {
-    const n = Number(value);
-    return Number.isFinite(n) ? n : fallback;
-  }
-
-  function clamp(value, min, max) {
-    return Math.max(min, Math.min(max, value));
-  }
-
-  function statusText(status) {
-    const key = String(status || "").trim().toLowerCase();
-    return STATUS_LABELS[key] || key || "未知状态";
-  }
-
-  function normalizeStatusKey(value) {
-    return String(value || "").trim().toLowerCase();
-  }
-
-  function vectorStatusLabel(value, provider) {
-    const key = normalizeStatusKey(value);
-    const providerKey = normalizeStatusKey(provider);
-    if (key === "done" && providerKey.includes("placeholder")) return "占位完成(未入库)";
-    if (["done", "success", "indexed", "ready"].includes(key)) return "已向量化";
-    if (["running", "processing", "pending", "queued"].includes(key)) return "向量化中";
-    if (["failed", "error"].includes(key)) return "向量化失败";
-    return key || "未开始";
-  }
-
-  function materialStatusLabel(value) {
-    const key = normalizeStatusKey(value);
-    if (["active", "ready", "published"].includes(key)) return "可用";
-    if (["draft", "new"].includes(key)) return "草稿";
-    if (["archived"].includes(key)) return "归档";
-    return key || "未知";
-  }
-
-  function statusBadgeClass(value, provider) {
-    const key = normalizeStatusKey(value);
-    const providerKey = normalizeStatusKey(provider);
-    if (key === "done" && providerKey.includes("placeholder")) return "is-placeholder";
-    if (["done", "success", "indexed", "ready", "active", "published"].includes(key)) return "is-ready";
-    if (["running", "processing", "pending", "queued"].includes(key)) return "is-processing";
-    if (["failed", "error"].includes(key)) return "is-error";
-    return "is-idle";
-  }
-
+// ─────── Host / Parent-Window Bridge ──────────────────────────────────
   function notifyHostInputVisibility(hidden) {
     emitHostPayload("nexora:chat-input:visibility", {
       hidden: !!hidden,
@@ -758,6 +749,17 @@
     return String(q.get("username") || window.NEXORA_USERNAME || window.nexoraUsername || "").trim();
   }
 
+  function syncTelemetryUserId() {
+    const username = String(state.username || "").trim();
+    window.NEXORA_USERNAME = username;
+    window.nexoraUsername = username;
+    const telemetry = window.NXLTelemetry;
+    if (telemetry && typeof telemetry.setUserId === "function") {
+      telemetry.setUserId(username);
+    }
+  }
+
+// ─────── Toast, Confirm Modal & View Management ───────────────────────
   function showToast(msg) {
     let toast = document.querySelector(".toast-notification");
     if (!toast) {
@@ -831,15 +833,7 @@
     });
   }
 
-  function normalizeReaderSelectionText(raw, maxLen = 1600) {
-    return String(raw || "")
-      .replace(/\r\n?/g, "\n")
-      .replace(/[ \t]+/g, " ")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim()
-      .slice(0, Math.max(0, Number(maxLen) || 0));
-  }
-
+// ─────── Reader Telemetry Helpers ─────────────────────────────────────
   function getReaderHostPointer(x, y) {
     let baseX = 0;
     let baseY = 0;
@@ -867,6 +861,107 @@
     };
   }
 
+  /**
+   * 解析 session_range 绝对偏移范围，转换为章节内相对偏移。
+   * 实际数据格式：session_range 与 chapter_range 均为 START:LENGTH（非 from:to），如：
+   *   chapter_range=60475:11893，session_range=60475:1777 表示从绝对偏移 60475 开始长度 1777 的区间。
+   */
+// ─────── Reader Session Range Parsing ─────────────────────────────────
+  function parseReaderSessionRange(chapter, rawRange) {
+    if (!chapter || typeof rawRange !== "string") return null;
+    const parts = String(rawRange || "").split(":");
+    if (parts.length < 2) return null;
+    const absStart = Number(parts[0]);
+    const length   = Number(parts[1]);
+    if (!Number.isFinite(absStart) || !Number.isFinite(length)) return null;
+    const chapterStart = Number(chapter.start || 0);
+    const chapterEnd   = Number(chapter.end || chapterStart);
+    const chapterLength = Math.max(0, chapterEnd - chapterStart);
+    const absEnd = absStart + Math.max(0, length);
+    const startRelative = Math.max(0, Math.min(chapterLength, absStart - chapterStart));
+    const endRelative   = Math.max(startRelative, Math.min(chapterLength, absEnd - chapterStart));
+    return { startRelative, endRelative };
+  }
+
+  function getReaderScrollContainer() {
+    return el.readerContent ? el.readerContent.querySelector(".materials-preview-text") : null;
+  }
+
+  // Resolve the current chapter-session from scroll position so telemetry can track duration without exact offsets.
+  function getReaderCurrentSessionMeta(triggerSource) {
+    if (!state.isReaderOpen || !Array.isArray(state.readerChapters) || !state.readerChapters.length) return null;
+    const scrollContainer = getReaderScrollContainer();
+    if (!scrollContainer) return null;
+
+    const chapterMeta = getReaderCurrentChapterMeta();
+    if (chapterMeta.chapterIndex === null || chapterMeta.chapterIndex === undefined) return null;
+
+    const chapter = state.readerChapters[chapterMeta.chapterIndex];
+    if (!chapter) return null;
+
+    const chapterName = String(chapter.title || "").trim();
+    const sectionData = state.readerSectionsData[chapterName];
+    const sessions = sectionData && Array.isArray(sectionData.sessions) ? sectionData.sessions : [];
+    if (!sessions.length) return null;
+
+    const scrollTop = Number(scrollContainer.scrollTop || 0);
+    const clientHeight = Number(scrollContainer.clientHeight || 0);
+    const scrollHeight = Number(scrollContainer.scrollHeight || 0);
+    const minScrollable = Math.max(1, scrollHeight - clientHeight);
+    const atBottom = scrollTop >= minScrollable - 2;
+    const chapterLength = Math.max(1, Number(chapter.end || 0) - Number(chapter.start || 0));
+    const scrollPercent = atBottom ? 1.0 : (scrollTop / minScrollable);
+    let currentRelativePos = Math.floor(chapterLength * scrollPercent);
+    if (atBottom) currentRelativePos = chapterLength;
+
+    let sessionIndex = sessions.length - 1;
+    let foundRange = false;
+    for (let i = 0; i < sessions.length; i += 1) {
+      const parsedRange = parseReaderSessionRange(chapter, sessions[i].range);
+      if (!parsedRange) continue;
+      sessionIndex = i;
+      foundRange = true;
+      if (currentRelativePos < parsedRange.endRelative) break;
+    }
+    if (!foundRange) {
+      sessionIndex = 0;
+    }
+
+    const session = sessions[sessionIndex];
+    if (!session) return null;
+
+    const lectureId = String(state.selectedLectureId || "").trim();
+    const bookId = String(state.selectedBookId || "").trim();
+    return {
+      lecture_id: lectureId,
+      book_id: bookId,
+      chapter_index: chapterMeta.chapterIndex,
+      chapter_title: chapterMeta.chapterTitle,
+      chapter_name: chapterName,
+      session_index: sessionIndex,
+      session_name: String(session.name || "").trim(),
+      session_range: String(session.range || "").trim(),
+      session_summary: String(session.summary || "").trim(),
+      session_key: [lectureId, bookId, chapterMeta.chapterIndex, sessionIndex].join(":"),
+      trigger_source: String(triggerSource || "scroll").trim() || "scroll",
+    };
+  }
+
+  function syncReaderTelemetrySessionContext(triggerSource) {
+    const telemetry = window.NXLTelemetry;
+    if (!telemetry || typeof telemetry.setReaderSessionContext !== "function") return;
+    const context = getReaderCurrentSessionMeta(triggerSource);
+    if (!context) return;
+    telemetry.setReaderSessionContext(context);
+  }
+
+  function clearReaderTelemetrySessionContext(reason) {
+    const telemetry = window.NXLTelemetry;
+    if (!telemetry || typeof telemetry.clearReaderSessionContext !== "function") return;
+    telemetry.clearReaderSessionContext(reason);
+  }
+
+// ─────── Reader Context & Layout Helpers ──────────────────────────────
   function collectReaderVisibleText(maxLen = 2800) {
     const root = el.readerContent ? el.readerContent.querySelector(".materials-preview-text") : null;
     if (!root) return "";
@@ -916,6 +1011,7 @@
     });
   }
 
+// ─────── Dashboard Utilities & Rendering ──────────────────────────────
   function setUploadTab(tab) {
     state.uploadTab = tab === "upload" ? "upload" : "create";
     const isCreate = state.uploadTab === "create";
@@ -925,73 +1021,6 @@
     el.kickerUploadTabBtn.classList.toggle("is-active", !isCreate);
     el.kickerCreateTabBtn.setAttribute("aria-selected", isCreate ? "true" : "false");
     el.kickerUploadTabBtn.setAttribute("aria-selected", isCreate ? "false" : "true");
-  }
-
-  function getLectureTitle(lecture) {
-    if (!lecture || typeof lecture !== "object") return "未命名课程";
-    return String(lecture.title || lecture.name || lecture.id || "未命名课程");
-  }
-
-  function getCourseProgress(lecture, books) {
-    const list = Array.isArray(books) ? books : [];
-    const direct = toNumber((lecture && (lecture.progress ?? lecture.study_progress ?? lecture.learning_progress)) ?? NaN, NaN);
-    const currentChapter = String((lecture && lecture.current_chapter) || "").trim();
-    const nextChapter = String((lecture && lecture.next_chapter) || "").trim();
-    if (!list.length && !currentChapter && !nextChapter) return 0;
-    if (Number.isFinite(direct)) {
-      if (direct >= 100 && !currentChapter && !nextChapter) {
-        const hasReadyBook = list.some((book) => ["done", "success", "indexed", "ready"].includes(normalizeStatusKey(book && book.vector_status)));
-        if (!hasReadyBook) return 0;
-      }
-      return clamp(Math.round(direct), 0, 100);
-    }
-    if (!list.length) return 0;
-    let ready = 0;
-    list.forEach((book) => {
-      const status = String((book && book.vector_status) || "").trim().toLowerCase();
-      if (["done", "success", "indexed", "ready"].includes(status)) ready += 1;
-    });
-    return clamp(Math.round((ready / list.length) * 100), 0, 100);
-  }
-
-  function getStudyHours(lecture) {
-    const hours = toNumber(lecture && lecture.study_hours, NaN);
-    if (Number.isFinite(hours) && hours > 0) return hours;
-    return 0;
-  }
-
-  function getChapterInfo(lecture, books) {
-    const lectureCurrent = String((lecture && lecture.current_chapter) || "").trim();
-    const lectureNext = String((lecture && lecture.next_chapter) || "").trim();
-    if (lectureCurrent || lectureNext) {
-      return { current: lectureCurrent || "待开始", next: lectureNext || "待规划" };
-    }
-    const list = Array.isArray(books) ? books : [];
-    const first = list.find((book) => String(book.current_chapter || "").trim() || String(book.next_chapter || "").trim());
-    if (first) {
-      return {
-        current: String(first.current_chapter || "").trim() || "待开始",
-        next: String(first.next_chapter || "").trim() || "待规划",
-      };
-    }
-    return { current: "待开始", next: "待规划" };
-  }
-
-  function buildDashboardCourses(rows) {
-    return (Array.isArray(rows) ? rows : []).map((row, index) => {
-      const lecture = row && typeof row === "object" ? (row.lecture || {}) : {};
-      const books = Array.isArray(row && row.books) ? row.books : [];
-      const chapter = getChapterInfo(lecture, books);
-      return {
-        id: String(lecture.id || `lecture-${index + 1}`),
-        title: getLectureTitle(lecture),
-        progress: getCourseProgress(lecture, books),
-        studyHours: getStudyHours(lecture),
-        chapterCurrent: chapter.current,
-        chapterNext: chapter.next,
-        color: PIE_COLORS[index % PIE_COLORS.length],
-      };
-    });
   }
 
   function renderProgressList() {
@@ -1019,29 +1048,34 @@
     `).join("");
   }
 
-  function polarToCartesian(cx, cy, radius, angleDeg) {
-    const angleRad = ((angleDeg - 90) * Math.PI) / 180;
-    return { x: cx + radius * Math.cos(angleRad), y: cy + radius * Math.sin(angleRad) };
+  function isTeacherPanelMode() {
+    const identity = String((state.user && (state.user.identity || state.user.role)) || "").trim().toLowerCase();
+    return !!state.isAdmin || identity === "teacher";
   }
 
-  function donutPath(cx, cy, outerR, innerR, startAngle, endAngle) {
-    const outerStart = polarToCartesian(cx, cy, outerR, startAngle);
-    const outerEnd = polarToCartesian(cx, cy, outerR, endAngle);
-    const innerStart = polarToCartesian(cx, cy, innerR, endAngle);
-    const innerEnd = polarToCartesian(cx, cy, innerR, startAngle);
-    const largeArc = endAngle - startAngle > 180 ? 1 : 0;
-    return [
-      `M ${outerStart.x} ${outerStart.y}`,
-      `A ${outerR} ${outerR} 0 ${largeArc} 1 ${outerEnd.x} ${outerEnd.y}`,
-      `L ${innerStart.x} ${innerStart.y}`,
-      `A ${innerR} ${innerR} 0 ${largeArc} 0 ${innerEnd.x} ${innerEnd.y}`,
-      "Z",
-    ].join(" ");
+  function renderTeacherPanel() {
+    el.timePieChart.innerHTML = `
+      <div class="teacher-panel-shell">
+        <div class="teacher-panel-hero">
+          <div class="teacher-panel-subtitle">内容占位</div>
+        </div>
+      </div>
+    `;
   }
 
-  
   function renderPie() {
     if (el.timePieChart) el.timePieChart.hidden = false;
+    const teacherMode = isTeacherPanelMode();
+    if (el.dashboardSidePanelTitle) {
+      el.dashboardSidePanelTitle.textContent = teacherMode ? "教师Panel" : "学习时长数据";
+    }
+    if (el.timePieChart) {
+      el.timePieChart.setAttribute("aria-label", teacherMode ? "教师工作台" : "学习时间占比");
+    }
+    if (teacherMode) {
+      renderTeacherPanel();
+      return;
+    }
     const courses = buildDashboardCourses(state.dashboardRows).slice(0, 6);
     const totalByRows = courses.reduce((sum, item) => sum + toNumber(item.studyHours, 0), 0);
     const total = toNumber(state.totalStudyHours, 0) > 0 ? toNumber(state.totalStudyHours, 0) : totalByRows;
@@ -1099,6 +1133,7 @@
     `;
   }
 
+// ─────── Feed Rendering & Compose ─────────────────────────────────────
   function renderLearningFeeds() {
     if (!el.learningFeedPanel) return;
     if (el.progressList) el.progressList.hidden = state.dashboardSideTab === "feed";
@@ -1421,9 +1456,11 @@
     }
   });
 
+// ─────── User Profile ─────────────────────────────────────────────────
   function renderUserProfile() {
     const username = getCurrentUserDisplayName();
-    const role = state.isAdmin ? "管理员" : "成员";
+    const identity = String((state.user && (state.user.identity || state.user.role)) || "").trim().toLowerCase();
+    const role = state.isAdmin ? "管理员" : (identity === "teacher" ? "教师" : "成员");
     const avatar = (Array.from(username.trim())[0] || "N").toUpperCase();
     const avatarUrl = getCurrentUserAvatarUrl();
     const booksCount = state.allLectureRows.reduce((sum, row) => sum + toNumber(row && row.books_count, 0), 0);
@@ -1443,6 +1480,7 @@
     `;
   }
 
+// ─────── Refinement Helpers ───────────────────────────────────────────
   function refinementStatusText(item) {
     const progress = String(item && item.progress_text || "").trim();
     if (progress) return progress;
@@ -1497,6 +1535,18 @@
     return true;
   }
 
+  function canStartAnnotation(item) {
+    const section = normalizeStatusKey(item && item.section_status);
+    const annotation = normalizeStatusKey(item && item.annotation_status);
+    const job = normalizeStatusKey(item && item.job_status);
+    const annotationJob = normalizeStatusKey(item && item.annotation_job_status);
+    const sectionReady = ["done", "completed", "success"].includes(section);
+    if (!sectionReady) return false;
+    if (["running", "queued"].includes(job) || ["running", "queued"].includes(annotationJob)) return false;
+    if (["running", "queued", "done", "completed", "success"].includes(annotation)) return false;
+    return true;
+  }
+
   function isDoneStatus(value) {
     return ["done", "completed", "success"].includes(normalizeStatusKey(value));
   }
@@ -1513,13 +1563,16 @@
     const coarseStatus = normalizeStatusKey(item && item.coarse_status);
     const intensiveStatus = normalizeStatusKey(item && item.intensive_status);
     const sectionStatus = normalizeStatusKey(item && item.section_status);
+    const annotationStatus = normalizeStatusKey(item && item.annotation_status);
     const hasError = isErrorStatus(coarseStatus)
       || isErrorStatus(intensiveStatus)
-      || isErrorStatus(sectionStatus);
+      || isErrorStatus(sectionStatus)
+      || isErrorStatus(annotationStatus);
     const steps = [
       { key: "coarse", label: "粗读", done: isDoneStatus(coarseStatus), running: isRunningStatus(coarseStatus) },
       { key: "intensive", label: "精读", done: isDoneStatus(intensiveStatus), running: isRunningStatus(intensiveStatus) },
       { key: "section", label: "分节", done: isDoneStatus(sectionStatus), running: isRunningStatus(sectionStatus) },
+      { key: "annotation", label: "批注", done: isDoneStatus(annotationStatus), running: isRunningStatus(annotationStatus) },
     ];
     const doneCount = steps.filter((row) => row.done).length;
     const activeIndex = steps.findIndex((row) => row.running);
@@ -1534,6 +1587,8 @@
   function getRefinementActionMeta(item) {
     const coarseDone = ["done", "completed", "success"].includes(normalizeStatusKey(item && item.coarse_status));
     const intensiveDone = ["done", "completed", "success"].includes(normalizeStatusKey(item && item.intensive_status));
+    const sectionDone = ["done", "completed", "success"].includes(normalizeStatusKey(item && item.section_status));
+    const annotationDone = ["done", "completed", "success"].includes(normalizeStatusKey(item && item.annotation_status));
     if (!coarseDone) {
       return {
         action: "start-refinement",
@@ -1550,7 +1605,6 @@
         enabled: canStartIntensive(item),
       };
     }
-    const sectionDone = ["done", "completed", "success"].includes(normalizeStatusKey(item && item.section_status));
     if (!sectionDone) {
       return {
         action: "start-section",
@@ -1559,33 +1613,29 @@
         enabled: canStartSection(item),
       };
     }
+    if (!annotationDone) {
+      return {
+        action: "start-annotation",
+        title: "开始批注",
+        text: "✎",
+        enabled: canStartAnnotation(item),
+      };
+    }
     return {
-      action: "start-section",
-      title: "分节已完成",
+      action: "start-annotation",
+      title: "全部完成",
       text: "✓",
       enabled: false,
     };
   }
 
-  function formatTs(ts) {
-    const n = Number(ts);
-    if (!Number.isFinite(n) || n <= 0) return "—";
-    const d = new Date(n * 1000);
-    if (Number.isNaN(d.getTime())) return "—";
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    const hh = String(d.getHours()).padStart(2, "0");
-    const mm = String(d.getMinutes()).padStart(2, "0");
-    const ss = String(d.getSeconds()).padStart(2, "0");
-    return `${y}-${m}-${day} ${hh}:${mm}:${ss}`;
-  }
-
+// ─────── Settings: Rendering ──────────────────────────────────────────
   function renderSettingsNav() {
     const tabs = [
       { id: "refinement", title: "待精读列表", sub: "选择教材并触发精读" },
       { id: "model", title: "模型设置", sub: "设置默认模型与任务模型" },
       { id: "channels", title: "频道管理", sub: "创建和筛选动态频道" },
+      { id: "users", title: "用户管理", sub: "查看用户信息并设置身份" },
       { id: "logs", title: "模型日志", sub: "查看模型调用、工具链与输出" },
       { id: "profile", title: "用户信息", sub: "当前用户与连接状态" },
     ];
@@ -1597,9 +1647,163 @@
     `).join("");
   }
 
+  function getSettingsUserRoleLabel(role) {
+    const value = String(role || "").trim().toLowerCase();
+    if (value === "admin") return "管理员";
+    if (value === "teacher") return "教师";
+    if (value === "student") return "学生";
+    if (value === "member") return "成员";
+    return value ? value : "成员";
+  }
+
+  function getSettingsUserIdentityLabel(identity) {
+    const value = String(identity || "").trim().toLowerCase();
+    if (value === "admin") return "锁定";
+    if (value === "teacher") return "教师";
+    if (value === "student") return "学生";
+    return "未设置";
+  }
+
+  function recalcSettingsUsersSummary(rows) {
+    const items = Array.isArray(rows) ? rows : [];
+    return {
+      total: items.length,
+      admins: items.filter((row) => String(row.role || "").trim().toLowerCase() === "admin").length,
+      teachers: items.filter((row) => String(row.identity || "").trim().toLowerCase() === "teacher").length,
+      students: items.filter((row) => String(row.identity || "").trim().toLowerCase() === "student").length,
+    };
+  }
+
+  function patchSettingsUsersSummary(summary) {
+    const source = summary && typeof summary === "object" ? summary : recalcSettingsUsersSummary(state.settingsUsers);
+    const map = {
+      total: source.total || 0,
+      admins: source.admins || 0,
+      teachers: source.teachers || 0,
+      students: source.students || 0,
+    };
+    Object.keys(map).forEach((key) => {
+      const node = el.settingsDetailPane.querySelector(`[data-settings-users-summary="${key}"]`);
+      if (node) node.textContent = String(map[key] || 0);
+    });
+  }
+
+  function patchSettingsUserCardIdentity(userId, user) {
+    const resolvedUserId = String(userId || "").trim();
+    if (!resolvedUserId) return;
+    const escapedUserId = window.CSS && typeof window.CSS.escape === "function"
+      ? window.CSS.escape(resolvedUserId)
+      : resolvedUserId.replace(/["\\]/g, "\\$&");
+    const card = el.settingsDetailPane.querySelector(`.settings-user-card[data-user-id="${escapedUserId}"]`);
+    if (!card) return;
+    const identity = String((user && user.identity) || "").trim().toLowerCase() === "teacher" ? "teacher" : "student";
+    const identityLabel = getSettingsUserIdentityLabel(identity);
+    const select = card.querySelector("[data-user-identity-select]");
+    if (select instanceof HTMLSelectElement) {
+      select.value = identity;
+      select.dataset.currentIdentity = identity;
+    }
+    const pill = card.querySelector(".settings-user-pill-identity");
+    if (pill) pill.textContent = identityLabel;
+    const saveBtn = card.querySelector("[data-action='save-user-identity']");
+    if (saveBtn instanceof HTMLButtonElement) {
+      saveBtn.classList.remove("is-saving");
+      saveBtn.disabled = !!saveBtn.dataset.locked;
+      saveBtn.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>`;
+      saveBtn.title = "保存身份";
+    }
+  }
+
+  function renderSettingsUsers() {
+    const safeIdentity = (v) => {
+      const s = String(v || "").trim().toLowerCase();
+      return s === "teacher" || s === "student" ? s : "student";
+    };
+    const rows = Array.isArray(state.settingsUsers) ? state.settingsUsers : [];
+    const summary = state.settingsUsersSummary && typeof state.settingsUsersSummary === "object"
+      ? state.settingsUsersSummary
+      : { total: 0, admins: 0, teachers: 0, students: 0 };
+    const loading = !!state.settingsUsersLoading;
+    const error = String(state.settingsUsersError || "").trim();
+    const emptyHtml = loading
+      ? '<div class="materials-empty">用户列表加载中...</div>'
+      : '<div class="materials-empty">暂无用户</div>';
+    const listHtml = loading
+      ? emptyHtml
+      : (rows.length ? rows.map((row) => {
+        const userId = String(row.user_id || "").trim();
+        const username = String(row.username || userId || "").trim() || userId;
+        const displayName = String(row.display_name || "").trim();
+        const nickname = String(row.nickname || "").trim();
+        const description = String(row.description || "").trim();
+        const identity = safeIdentity(row.identity);
+        const role = String(row.role || "member").trim().toLowerCase() || "member";
+        const isAdmin = !!row.is_admin || role === "admin";
+        const isSelf = userId === String(state.username || "").trim();
+        const isLocked = isAdmin && !isSelf;
+        const identityLabel = getSettingsUserIdentityLabel(identity);
+        const avatarUrl = normalizeFeedAvatarUrl(String(row.avatar_url || "").trim());
+        const avatarText = String((displayName || nickname || username || userId || "U").trim().slice(0, 1) || "U").toUpperCase();
+        const identitySelectId = `settingsUserIdentity_${userId.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+        const displayTitle = displayName || nickname || username || userId || "未命名用户";
+        const roleLabel = getSettingsUserRoleLabel(role) + (nickname && nickname !== displayName ? `（${escapeHtml(nickname)}）` : "");
+        return `
+          <article class="settings-user-card" data-user-id="${escapeHtml(userId)}">
+            <div class="settings-user-main">
+              ${avatarUrl
+                ? `<img class="settings-user-avatar settings-user-avatar-img" src="${escapeHtml(avatarUrl)}" alt="${escapeHtml(displayTitle)}">`
+                : `<div class="settings-user-avatar">${escapeHtml(avatarText)}</div>`}
+              <div class="settings-user-meta">
+                <div class="settings-user-title">
+                  <span>${escapeHtml(displayTitle)}</span>
+                  <span class="settings-user-pill settings-user-pill-role">${escapeHtml(roleLabel)}</span>
+                  <span class="settings-user-pill settings-user-pill-identity">${escapeHtml(identityLabel)}</span>
+                </div>
+                <div class="settings-user-sub">ID：${escapeHtml(userId)} · 账号：${escapeHtml(username || "—")}</div>
+                ${description ? `<div class="settings-user-desc">${escapeHtml(description)}</div>` : ""}
+              </div>
+            </div>
+            <div class="settings-user-actions">
+              <label class="settings-user-ctl-label" for="${escapeHtml(identitySelectId)}">身份</label>
+              <select id="${escapeHtml(identitySelectId)}" class="input-lite settings-user-select" data-user-identity-select="${escapeHtml(userId)}" data-current-identity="${escapeHtml(identity)}" ${isLocked ? "disabled" : ""}>
+                <option value="student" ${identity === "student" ? "selected" : ""}>学生</option>
+                <option value="teacher" ${identity === "teacher" ? "selected" : ""}>教师</option>
+              </select>
+              <button class="nxl-icon-btn settings-user-save-btn" type="button" data-action="save-user-identity" data-user-id="${escapeHtml(userId)}" ${isLocked ? "disabled data-locked=\"1\" title=\"不可修改其他管理员身份\"" : "title=\"保存身份\""} aria-label="保存身份"><svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg></button>
+            </div>
+          </article>
+        `;
+      }).join("") : emptyHtml);
+
+    el.settingsDetailPane.innerHTML = `
+      <section class="settings-detail-scroll">
+        <article class="settings-card">
+          <div class="settings-title">用户管理</div>
+          <div class="settings-sub">查看用户信息，并把身份切换为学生或教师。管理员账号在这里保持锁定。</div>
+          <div class="settings-users-summary-grid">
+            <div class="settings-users-summary-item"><div class="settings-kv-label">用户总数</div><div class="settings-kv-value" data-settings-users-summary="total">${escapeHtml(String(summary.total || 0))}</div></div>
+            <div class="settings-users-summary-item"><div class="settings-kv-label">管理员</div><div class="settings-kv-value" data-settings-users-summary="admins">${escapeHtml(String(summary.admins || 0))}</div></div>
+            <div class="settings-users-summary-item"><div class="settings-kv-label">教师</div><div class="settings-kv-value" data-settings-users-summary="teachers">${escapeHtml(String(summary.teachers || 0))}</div></div>
+            <div class="settings-users-summary-item"><div class="settings-kv-label">学生</div><div class="settings-kv-value" data-settings-users-summary="students">${escapeHtml(String(summary.students || 0))}</div></div>
+          </div>
+        </article>
+        ${error ? `
+          <article class="settings-card">
+            <div class="settings-title" style="color:#b91c1c;">加载失败</div>
+            <div class="settings-sub">${escapeHtml(error)}</div>
+          </article>
+        ` : ""}
+        <section class="settings-user-list">
+          ${listHtml}
+        </section>
+      </section>
+    `;
+  }
+
   function renderSettingsProfile() {
     const username = String(state.user.username || state.username || "访客");
-    const role = state.isAdmin ? "管理员" : "成员";
+    const identity = String((state.user && (state.user.identity || state.user.role)) || "").trim().toLowerCase();
+    const role = state.isAdmin ? "管理员" : (identity === "teacher" ? "教师" : "成员");
     const connected = !!(state.integration && state.integration.connected);
     const modelsCount = toNumber(state.integration && state.integration.models_count, 0);
     el.settingsDetailPane.innerHTML = `
@@ -1908,6 +2112,11 @@
       renderSettingsChannels();
       return;
     }
+    if (state.settingsTab === "users") {
+      state.refinementViewBootstrapped = false;
+      renderSettingsUsers();
+      return;
+    }
     if (state.settingsTab === "logs") {
       state.refinementViewBootstrapped = false;
       renderSettingsLogs();
@@ -1926,6 +2135,7 @@
     renderSettingsDetail();
   }
 
+// ─────── Settings: Polling & Data Refresh ─────────────────────────────
   function stopSettingsPolling() {
     if (state.settingsPollTimer) {
       clearInterval(state.settingsPollTimer);
@@ -1942,6 +2152,7 @@
     }, 3000);
   }
 
+// ─────── Materials & Lecture Rendering ────────────────────────────────
   function getSelectedLectureRow() {
     return state.allLectureRows.find((row) => String((row.lecture || {}).id || "") === state.selectedLectureId) || null;
   }
@@ -2049,6 +2260,7 @@
                     <span class="book-badge ${statusBadgeClass(book.vector_status, book.vector_provider)}">向量：${escapeHtml(vectorStatusLabel(book.vector_status, book.vector_provider))}</span>
                     <span class="book-badge ${statusBadgeClass(book.status)}">教材：${escapeHtml(materialStatusLabel(book.status))}</span>
                     <span class="book-badge ${statusBadgeClass(book.section_status)}">分节：${escapeHtml(normalizeStatusKey(book.section_status) || "idle")}</span>
+                    <span class="book-badge ${statusBadgeClass(book.annotation_status)}">批注：${escapeHtml(normalizeStatusKey(book.annotation_status) || "idle")}</span>
                   </div>
                 </article>
               `;
@@ -2074,6 +2286,7 @@
     }
   }
 
+// ─────── Reader: Chapter Parsing & Text Layout ────────────────────────
   function renderReaderPlaceholder(msg) {
     el.readerContent.innerHTML = `<div class="materials-empty">${escapeHtml(msg || "阅读内容加载中")}</div>`;
   }
@@ -2104,6 +2317,204 @@
     }
   }
 
+  async function fetchAnnotationsXml() {
+    const row = getSelectedLectureRow();
+    if (!row || !state.selectedBookId) return "";
+    const lectureId = String((row.lecture || {}).id || "");
+    if (!lectureId) return "";
+    try {
+      const data = await fetchJson(`/api/lectures/${encodeURIComponent(lectureId)}/books/${encodeURIComponent(state.selectedBookId)}/annotations`);
+      return String(data.content || "");
+    } catch (_err) {
+      return "";
+    }
+  }
+
+  function parseAnnotationsXml(xmlText) {
+    const src = String(xmlText || "");
+    if (!src.trim()) return [];
+    const annotations = [];
+    const reg = /<annotation>\s*([\s\S]*?)\s*<\/annotation>/gi;
+    let match = null;
+    while ((match = reg.exec(src)) !== null) {
+      const block = String(match[1] || "");
+      const chapterMatch = block.match(/<chapter_name>\s*([\s\S]*?)\s*<\/chapter_name>/i);
+      const offsetMatch = block.match(/<offset>\s*([\s\S]*?)\s*<\/offset>/i);
+      const lengthMatch = block.match(/<length>\s*([\s\S]*?)\s*<\/length>/i);
+      const typeMatch = block.match(/<annotation_type>\s*([\s\S]*?)\s*<\/annotation_type>/i);
+      const contentMatch = block.match(/<annotation_content>\s*([\s\S]*?)\s*<\/annotation_content>/i);
+      const anchorMatch = block.match(/<anchor_text>\s*([\s\S]*?)\s*<\/anchor_text>/i);
+      if (!chapterMatch || !offsetMatch) continue;
+      annotations.push({
+        chapterName: String(chapterMatch[1] || "").trim(),
+        offset: Number(String(offsetMatch[1] || "0").trim()) || 0,
+        length: lengthMatch ? (Number(String(lengthMatch[1] || "0").trim()) || 0) : 0,
+        type: typeMatch ? String(typeMatch[1] || "思考点").trim() : "思考点",
+        content: contentMatch ? String(contentMatch[1] || "").trim() : "",
+        anchorText: anchorMatch ? String(anchorMatch[1] || "").trim() : "",
+      });
+    }
+    return annotations;
+  }
+
+  function normalizeChapterNameForCompare(name) {
+    return String(name || "")
+      .toLowerCase()
+      .replace(/\s+/g, "")
+      .replace(/[【】\[\]（）()《》<>「」『』"'“”‘’`~!@#$%^&*+=|\\/:;,.?！？、。·\-—_]/g, "");
+  }
+
+  function renderChapterAnnotations(chapterIndex) {
+    const chapters = Array.isArray(state.readerChapters) ? state.readerChapters : [];
+    const chapter = chapters[chapterIndex];
+    if (!chapter) return;
+    const chapterName = String(chapter.title || "").trim();
+    const chapterStart = Number(chapter.start) || 0;
+    const chapterEnd = Math.max(chapterStart, Number(chapter.end) || chapterStart);
+    const chapterRawLength = Math.max(1, chapterEnd - chapterStart);
+    const chapterNameNorm = normalizeChapterNameForCompare(chapterName);
+    const chapterAnnotations = (state.readerAnnotations || []).filter(a => {
+      const annName = String(a && a.chapterName || "").trim();
+      if (!annName) return false;
+      if (annName === chapterName) return true;
+      return normalizeChapterNameForCompare(annName) === chapterNameNorm;
+    });
+    if (!chapterAnnotations.length) return;
+
+    const chapterBody = el.readerContent ? el.readerContent.querySelector(".chapter-body") : null;
+    if (!chapterBody) return;
+
+    const paragraphs = chapterBody.querySelectorAll("p.materials-preview-paragraph");
+    if (!paragraphs.length) return;
+
+    const paragraphRows = Array.from(paragraphs).map((p) => ({
+      el: p,
+      text: String(p.textContent || ""),
+      length: String(p.textContent || "").length + 1,
+    }));
+    const visibleTotalLength = Math.max(1, paragraphRows.reduce((sum, row) => sum + row.length, 0));
+
+    const annotationToParagraph = new Map();
+    let currentOffset = chapterStart;
+    paragraphRows.forEach((row, paragraphIndex) => {
+      const pLength = row.length;
+      const pStart = currentOffset;
+      const pEnd = currentOffset + pLength;
+
+      // Strict offset match (absolute offset in same coordinate system)
+      const pAnnotations = chapterAnnotations.filter((a) => {
+        return a.offset >= pStart && a.offset < pEnd;
+      });
+
+      if (pAnnotations.length > 0) {
+        row.el.classList.add("has-annotation");
+        pAnnotations.forEach((annotation) => {
+          annotationToParagraph.set(annotation, paragraphIndex);
+          const marker = createAnnotationMarker(annotation);
+          row.el.appendChild(marker);
+        });
+      }
+
+      currentOffset = pEnd;
+    });
+
+    // Fallback path: when strict mapping misses, try anchor_text, then relative offset mapping.
+    const unmatched = chapterAnnotations.filter((a) => !annotationToParagraph.has(a));
+    if (unmatched.length > 0) {
+      unmatched.forEach((annotation) => {
+        let targetIndex = -1;
+        const anchor = String(annotation.anchorText || "").trim();
+        if (anchor) {
+          const anchorNorm = anchor.replace(/\s+/g, "");
+          targetIndex = paragraphRows.findIndex((row) => row.text.replace(/\s+/g, "").includes(anchorNorm));
+        }
+        if (targetIndex < 0) {
+          const rel = (Number(annotation.offset) - chapterStart) / chapterRawLength;
+          const safeRel = Math.max(0, Math.min(1, Number.isFinite(rel) ? rel : 0));
+          const targetVisiblePos = safeRel * visibleTotalLength;
+          let cursor = 0;
+          for (let i = 0; i < paragraphRows.length; i += 1) {
+            cursor += paragraphRows[i].length;
+            if (cursor >= targetVisiblePos) {
+              targetIndex = i;
+              break;
+            }
+          }
+          if (targetIndex < 0) targetIndex = paragraphRows.length - 1;
+        }
+        if (targetIndex < 0 || !paragraphRows[targetIndex]) return;
+        const target = paragraphRows[targetIndex].el;
+        target.classList.add("has-annotation");
+        const marker = createAnnotationMarker(annotation);
+        target.appendChild(marker);
+        annotationToParagraph.set(annotation, targetIndex);
+      });
+    }
+
+    try {
+      console.log("[Reader] annotation render", {
+        chapter: chapterName,
+        chapterStart,
+        chapterEnd,
+        annotations: chapterAnnotations.length,
+        strictMatched: chapterAnnotations.length - unmatched.length,
+        fallbackMatched: unmatched.length,
+      });
+    } catch (_err) {}
+  }
+
+// ─────── Reader: Annotation Markers & Bubbles ─────────────────────────
+  function createAnnotationMarker(annotation) {
+    var marker = document.createElement("span");
+    marker.className = "annotation-marker";
+    marker.setAttribute("data-note-type", annotation.type);
+    marker.setAttribute("data-anchor-text", annotation.anchorText || "");
+    marker.setAttribute("data-offset", String(Number(annotation.offset) || 0));
+    marker.setAttribute("data-length", String(Number(annotation.length) || 0));
+    marker.addEventListener("mouseenter", _annotationMarkerEnter);
+    marker.addEventListener("mouseleave", _annotationMarkerLeave);
+
+    var dot = document.createElement("span");
+    dot.className = "annotation-dot";
+
+    var bubble = document.createElement("span");
+    bubble.className = "annotation-bubble";
+
+    var typeSpan = document.createElement("span");
+    typeSpan.className = "annotation-bubble-type";
+    typeSpan.textContent = annotation.type;
+
+    var contentSpan = document.createElement("span");
+    contentSpan.className = "annotation-bubble-content";
+    contentSpan.textContent = annotation.content;
+
+    var actionRow = document.createElement("span");
+    actionRow.className = "annotation-bubble-action";
+
+    var askBtn = document.createElement("button");
+    askBtn.type = "button";
+    askBtn.className = "annotation-ask-btn";
+    askBtn.textContent = "💡 解释这段";
+    askBtn.addEventListener("click", function (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      ev.stopImmediatePropagation();
+      _annotationAskClick(annotation.anchorText || "", annotation.content || "");
+    });
+
+    actionRow.appendChild(askBtn);
+    bubble.appendChild(typeSpan);
+    bubble.appendChild(contentSpan);
+    bubble.appendChild(actionRow);
+    bubble.addEventListener("mouseenter", _annotationBubbleEnter);
+    bubble.addEventListener("mouseleave", _annotationBubbleLeave);
+    marker.appendChild(dot);
+    marker.appendChild(bubble);
+
+    return marker;
+  }
+
+// ─────── Reader: Sections & Chapter Parsing ───────────────────────────
   function parseSectionsXml(xmlText) {
     const src = String(xmlText || "");
     if (!src.trim()) return {};
@@ -2180,6 +2591,7 @@
   // Session 进度管理
   const SESSION_STORAGE_KEY = "nxl_reader_session_v1";
 
+// ─────── Reader: Session Progress & Completion ────────────────────────
   function getSessionKey() {
     const lectureId = String(state.selectedLectureId || "").trim();
     const bookId = String(state.selectedBookId || "").trim();
@@ -2240,6 +2652,74 @@
     saveSessionProgress();
   }
 
+  function ensureReaderSessionProgress() {
+    const key = getSessionKey();
+    if (!key) return null;
+    if (!state.readerSessionProgress[key]) {
+      state.readerSessionProgress[key] = {
+        completedIndices: new Set(),
+        completedSessions: new Set(),
+        currentChapterIndex: 0
+      };
+    }
+    return state.readerSessionProgress[key];
+  }
+
+  function checkSessionProgressByScroll() {
+    if (!state.isReaderOpen || !state.readerChapters.length) return;
+    const chapterIndex = state.readerActiveChapterIndex;
+    const chapters = state.readerChapters;
+    const chapter = chapters[chapterIndex];
+    if (!chapter) return;
+    
+    const chapterName = String(chapter.title || "").trim();
+    const sectionData = state.readerSectionsData[chapterName];
+    if (!sectionData || !Array.isArray(sectionData.sessions) || !sectionData.sessions.length) return;
+    
+    const scrollContainer = getReaderScrollContainer();
+    const chapterBody = scrollContainer ? scrollContainer.querySelector(".chapter-body") : null;
+    if (!chapterBody) return;
+    
+    const scrollTop     = Number(scrollContainer.scrollTop || 0);
+    const clientHeight  = Number(scrollContainer.clientHeight || 0);
+    const scrollHeight  = Number(scrollContainer.scrollHeight || 0);
+    const minScrollable = Math.max(1, scrollHeight - clientHeight);   // 至少为1，避免除零
+    const atBottom      = scrollTop >= minScrollable - 2;              // 滚到底或内容不超出均视为底
+    const chapterLength = Math.max(1, Number(chapter.end || 0) - Number(chapter.start || 0));
+    
+    //:
+    // ・内容超出容器: scrollTop / minScrollable 映射到 0 → chapterLength
+    // ・内容不超出：直接视作已读完整章（所有 session 立即标记完成）
+    //:
+    const scrollPercent     = atBottom ? 1.0 : (scrollTop / minScrollable);
+    let currentRelativeEnd  = Math.floor(chapterLength * scrollPercent);
+    if (atBottom) currentRelativeEnd = chapterLength;   // 兜底，确保浮点精度不上浮
+    
+    let changed = false;
+    const progress = ensureReaderSessionProgress();
+    if (!progress || !progress.completedSessions) return;
+    
+    sectionData.sessions.forEach((s, sIdx) => {
+      const sessionKey = `${chapterIndex}:${sIdx}`;
+      if (progress.completedSessions.has(sessionKey)) return;
+      
+      const parsedRange = parseReaderSessionRange(chapter, s.range);
+      if (!parsedRange) return;
+      
+      if (currentRelativeEnd >= parsedRange.endRelative) {
+        progress.completedSessions.add(sessionKey);
+        reportSessionComplete(chapterIndex, sIdx).catch(() => {});
+        changed = true;
+      }
+    });
+    
+    if (changed) {
+      saveSessionProgress();
+      renderChapterList();
+    }
+    syncReaderTelemetrySessionContext("scroll");
+  }
+
   function isChapterCompleted(chapterIndex) {
     const key = getSessionKey();
     if (!key) return false;
@@ -2258,6 +2738,7 @@
   // 初始化时加载 session
   loadSessionProgress();
 
+// ─────── Reader: Chapter List Rendering ───────────────────────────────
   function renderChapterList() {
     if (!el.chapterListContent) return;
     const chapters = Array.isArray(state.readerChapters) ? state.readerChapters : [];
@@ -2306,22 +2787,52 @@
   function markSessionVisited(chapterIndex, sessionIndex) {
     const key = getSessionKey();
     if (!key) return;
-    if (!state.readerSessionProgress[key]) {
-      state.readerSessionProgress[key] = {
-        completedIndices: new Set(),
-        completedSessions: new Set(),
-        currentChapterIndex: 0
-      };
-    }
-    const session = state.readerSessionProgress[key];
-    if (!session.completedSessions) {
-      session.completedSessions = new Set();
-    }
-    const sessionKey = `${chapterIndex}:${sessionIndex}`;
-    session.completedSessions.add(sessionKey);
-    saveSessionProgress();
+    // 本函数只用于导航（点击目录跳到当前 session），不做“完成”标记。
+    // scroll-based completion 会在滚动到达 session 末尾时自动触发完成。
   }
 
+  async function reportSessionComplete(chapterIndex, sessionIndex) {
+    const row = getSelectedLectureRow();
+    if (!row || !state.selectedBookId) return;
+    const lectureId = String((row.lecture || {}).id || "");
+    if (!lectureId) return;
+    const chapters = Array.isArray(state.readerChapters) ? state.readerChapters : [];
+    const chapter = chapters[chapterIndex];
+    if (!chapter) return;
+    const chapterName = String(chapter.title || "").trim();
+    if (!chapterName) return;
+    const sectionData = state.readerSectionsData[chapterName];
+    if (!sectionData || !Array.isArray(sectionData.sessions) || !sectionData.sessions[sessionIndex]) return;
+    const s = sectionData.sessions[sessionIndex];
+    const sessionName = String(s.name || "").trim();
+    const sessionRange = String(s.range || "").trim();
+    if (!sessionName) return;
+    emitTelemetry("reader_session_complete", {
+      lecture_id: lectureId,
+      book_id: String(state.selectedBookId || "").trim(),
+      chapter_index: Number(chapterIndex) || 0,
+      chapter_title: chapterName,
+      session_index: Number(sessionIndex) || 0,
+      session_name: sessionName,
+      session_range: sessionRange,
+    });
+    try {
+      await fetchJson("/api/frontend/learning/session-complete", {
+        method: "POST",
+        body: JSON.stringify({
+          lecture_id: lectureId,
+          book_id: String(state.selectedBookId),
+          chapter_name: chapterName,
+          chapter_index: Number(chapterIndex) || 0,
+          session_name: sessionName,
+          session_index: Number(sessionIndex) || 0,
+          session_range: sessionRange,
+        }),
+      });
+    } catch (_) {}
+  }
+
+// ─────── Reader: Context Menu & Selection ─────────────────────────────
   function scheduleHostReaderContextSync(delay = 120) {
     if (readerContextSyncTimer) {
       clearTimeout(readerContextSyncTimer);
@@ -2378,6 +2889,16 @@
     }
     event.preventDefault();
     const hostPoint = getReaderHostPointer(event.clientX, event.clientY);
+    const chapterMeta = getReaderCurrentChapterMeta();
+    emitTelemetry("reader_selection_contextmenu", {
+      lecture_id: String(state.selectedLectureId || "").trim(),
+      book_id: String(state.selectedBookId || "").trim(),
+      chapter_index: chapterMeta.chapterIndex,
+      chapter_title: chapterMeta.chapterTitle,
+      text_length: text.length,
+      pointer_x: hostPoint.x,
+      pointer_y: hostPoint.y,
+    });
     emitHostPayload("nexora:reader:selection-context-menu", {
       x: hostPoint.x,
       y: hostPoint.y,
@@ -2386,7 +2907,9 @@
     });
   }
 
-  function openReaderChapter(index) {
+// ─────── Reader: Chapter Navigation ───────────────────────────────────
+  function openReaderChapter(index, scrollToOffset) {
+    resetReaderSelectionTelemetry();
     const chapters = Array.isArray(state.readerChapters) ? state.readerChapters : [];
     if (!chapters.length) {
       el.readerContent.innerHTML = `<div class="materials-preview-text">${formatReaderText(state.readerFullTextRaw || "")}</div>`;
@@ -2418,23 +2941,24 @@
     renderChapterList();
     syncReaderSettingsPanel();
     applyReaderTypography();
+    syncReaderTelemetrySessionContext("chapter_render");
     scheduleHostReaderContextSync(0);
-    // DEMO: 在第一段注入一个示例批注
-    requestAnimationFrame(function () { injectDemoAnnotation(); });
+    // 渲染批注
+    renderChapterAnnotations(idx);
     // 滚动到指定偏移量（如果有）
     if (scrollToOffset !== undefined && scrollToOffset !== null) {
       scrollToChapterOffset(start, scrollToOffset);
     }
   }
 
-  function scrollToChapterOffset(chapterStart, sessionOffset) {
+  function scrollToChapterOffset(chapterStart, sessionAbsoluteOffset) {
     requestAnimationFrame(() => {
       const chapterBody = el.readerContent ? el.readerContent.querySelector(".chapter-body") : null;
       if (!chapterBody) return;
       const paragraphs = chapterBody.querySelectorAll("p");
       if (!paragraphs.length) return;
-      // 计算session在章节内的相对位置
-      const relativeOffset = Math.max(0, Number(sessionOffset) || 0);
+      // 计算session在章节内的相对位置（session绝对偏移 - 章节起始偏移）
+      const relativeOffset = Math.max(0, Number(sessionAbsoluteOffset) - Number(chapterStart));
       let accumulatedLength = 0;
       let targetParagraph = null;
       for (const p of paragraphs) {
@@ -2454,6 +2978,7 @@
   var _annotationHideTimer = null;
   var _activeAnnotationMarker = null;
 
+// ─────── Reader: Annotation Bubble Logic ──────────────────────────────
   function _showAnnotationBubble(marker) {
     if (_annotationHideTimer) {
       clearTimeout(_annotationHideTimer);
@@ -2491,6 +3016,7 @@
   }
 
   function _annotationMarkerEnter() {
+    emitKnowledgePointHoverTelemetry(this, "marker");
     _showAnnotationBubble(this);
   }
 
@@ -2507,6 +3033,7 @@
     var bubble = this;
     var marker = bubble.closest(".annotation-marker");
     if (marker) {
+      emitKnowledgePointHoverTelemetry(marker, "bubble");
       _showAnnotationBubble(marker);
     }
   }
@@ -2584,6 +3111,7 @@
     firstP.appendChild(marker);
   }
 
+// ─────── Reader: Settings & UI Controls ───────────────────────────────
   function loadReaderSettings() {
     try {
       const raw = localStorage.getItem(READER_SETTINGS_STORAGE_KEY);
@@ -2697,6 +3225,14 @@
     el.chapterListPanel.classList.toggle("show", shouldOpen);
     if (!shouldOpen) {
       state.readerClosePanelsUntil = Date.now() + 180;
+      return;
+    }
+    // 打开目录后自动把当前章节滚动到可见位置
+    const activeChapter = el.chapterListContent
+      ? el.chapterListContent.querySelector(".chapter-item.current")
+      : null;
+    if (activeChapter) {
+      activeChapter.scrollIntoView({ block: "center", behavior: "instant" });
     }
   }
 
@@ -2737,12 +3273,12 @@
     logReaderDebug("toggleReaderUI:headerToggled", { nextVisible: hidden });
   }
 
+// ─────── Reader: Lifecycle (Open / Close / Fullscreen) ────────────────
   function openReader(title, subtitle, content, options) {
     const opts = (options && typeof options === "object") ? options : {};
     const mode = opts.mode === "catalog" ? "catalog" : "reading";
     state.isReaderOpen = true;
     state.readerRequestToken += 1;
-    setReaderFullscreen(false);
     setReaderHeaderVisible(true);
     setReaderSettingsPanelOpen(false);
     setChapterListPanelOpen(false);
@@ -2755,6 +3291,7 @@
     el.readerTitle.textContent = state.readerMeta.title;
     el.readerSubTitle.textContent = state.readerMeta.subtitle;
     state.readerFullTextRaw = String(content || "");
+    resetReaderSelectionTelemetry();
     if (Array.isArray(state.readerChapters) && state.readerChapters.length) {
       let requestedIndex;
       if (Number.isFinite(Number(opts.chapterIndex))) {
@@ -2773,6 +3310,13 @@
     setReaderFullscreen(true);
     syncReaderSettingsPanel();
     applyReaderTypography();
+    emitTelemetry("reader_open", {
+      lecture_id: String(state.selectedLectureId || "").trim(),
+      book_id: String(state.selectedBookId || "").trim(),
+      view_mode: mode,
+      chapter_index: Number(state.readerActiveChapterIndex) || 0,
+      chapter_title: String((state.readerChapters[state.readerActiveChapterIndex] || {}).title || "").trim(),
+    });
     notifyHostReaderState(true);
     notifyHostReaderContext();
     // 异步加载 sections.xml
@@ -2781,16 +3325,30 @@
 
   async function loadSectionsData() {
     try {
-      const sectionsXml = await fetchSectionsXml();
+      const [sectionsXml, annotationsXml] = await Promise.all([
+        fetchSectionsXml(),
+        fetchAnnotationsXml()
+      ]);
       state.readerSectionsData = parseSectionsXml(sectionsXml);
+      state.readerAnnotations = parseAnnotationsXml(annotationsXml);
       renderChapterList();
+      renderChapterAnnotations(state.readerActiveChapterIndex);
+      syncReaderTelemetrySessionContext("sections_loaded");
     } catch (_) {}
   }
 
   function closeReader() {
+    resetReaderSelectionTelemetry();
     if (state.isReaderOpen && Array.isArray(state.readerChapters) && state.readerChapters.length) {
       reportReaderChapterComplete(state.readerActiveChapterIndex).catch(() => {});
     }
+    clearReaderTelemetrySessionContext("close");
+    emitTelemetry("reader_close", {
+      lecture_id: String(state.selectedLectureId || "").trim(),
+      book_id: String(state.selectedBookId || "").trim(),
+      chapter_index: Number(state.readerActiveChapterIndex) || 0,
+      chapter_title: String((state.readerChapters[state.readerActiveChapterIndex] || {}).title || "").trim(),
+    });
     state.isReaderOpen = false;
     state.readerRequestToken += 1;
     setReaderFullscreen(false);
@@ -2806,6 +3364,7 @@
     state.readerMeta = { title: "", subtitle: "" };
     state.readerReportedChapterKey = "";
     state.readerSectionsData = {};
+    state.readerAnnotations = [];
     syncReaderModeUI();
     el.readerPane.hidden = true;
     el.materialsLayout.hidden = false;
@@ -2832,6 +3391,7 @@
     applyReaderTypography();
   }
 
+// ─────── Upload & Materials Actions ───────────────────────────────────
   function setSelectedUploadLecture(lectureId) {
     const id = String(lectureId || "").trim();
     const row = state.allLectureRows.find((it) => String((it.lecture || {}).id || "") === id);
@@ -2939,7 +3499,17 @@
   }
 
   async function fetchJson(url, init) {
-    const resp = await fetch(resolveApiUrl(url), init);
+    const options = init ? { ...init } : {};
+    const headers = new Headers(options.headers || {});
+    const body = options.body;
+    if (body != null && !headers.has("Content-Type")) {
+      if (!(body instanceof FormData) && !(body instanceof Blob) && !(body instanceof ArrayBuffer) && !(body instanceof URLSearchParams)) {
+        headers.set("Content-Type", "application/json");
+      }
+    }
+    if (!headers.has("Accept")) headers.set("Accept", "application/json");
+    options.headers = headers;
+    const resp = await fetch(resolveApiUrl(url), options);
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok || data.success === false) {
       throw new Error(data.error || data.message || `HTTP ${resp.status}`);
@@ -2956,6 +3526,7 @@
         if (!state.username) {
           state.username = String(user.id || user.username || "").trim();
         }
+        syncTelemetryUserId();
         state.isAdmin = String(user.role || "").trim().toLowerCase() === "admin";
       }
     } catch (_err) {}
@@ -2968,6 +3539,7 @@
       state.user = data && typeof data.user === "object" ? data.user : {};
       state.integration = data && typeof data.integration === "object" ? data.integration : {};
       if (!state.username) state.username = String(data.username || "").trim();
+      syncTelemetryUserId();
       const role = String(state.user.role || "").trim().toLowerCase();
       state.isAdmin = !!data.is_admin || role === "admin";
     } catch (_err) {
@@ -2978,6 +3550,7 @@
     if (!state.user || !state.user.role) await loadSessionUserFallback();
   }
 
+// ─────── Settings Channels ────────────────────────────────────────────
   function renderSettingsChannels() {
     const rows = Array.isArray(state.learningFeedChannels) ? state.learningFeedChannels.filter((row) => row && !row.builtin) : [];
     el.settingsDetailPane.innerHTML = `
@@ -3072,6 +3645,64 @@
     }
   }
 
+// ─────── Settings Data Fetching & Actions ─────────────────────────────
+  async function loadSettingsUsers(query) {
+    const nextQuery = typeof query === "string" ? query : String(state.settingsUsersQuery || "");
+    state.settingsUsersQuery = nextQuery;
+    state.settingsUsersLoading = true;
+    state.settingsUsersError = "";
+    if (el.settingsView.classList.contains("is-active") && state.settingsTab === "users") {
+      renderSettingsUsers();
+    }
+    try {
+      const params = new URLSearchParams();
+      if (nextQuery.trim()) params.set("q", nextQuery.trim());
+      params.set("limit", "200");
+      const data = await fetchJson(`/api/frontend/settings/users?${params.toString()}`);
+      state.settingsUsers = Array.isArray(data.items) ? data.items : [];
+      state.settingsUsersSummary = data.summary && typeof data.summary === "object"
+        ? data.summary
+        : { total: state.settingsUsers.length, admins: 0, teachers: 0, students: 0 };
+      state.settingsUsersQuery = String(data.query || nextQuery || "").trim();
+    } catch (err) {
+      state.settingsUsers = [];
+      state.settingsUsersSummary = { total: 0, admins: 0, teachers: 0, students: 0 };
+      state.settingsUsersError = err && err.message ? err.message : "加载用户列表失败";
+    } finally {
+      state.settingsUsersLoading = false;
+      if (el.settingsView.classList.contains("is-active") && state.settingsTab === "users") {
+        renderSettingsUsers();
+      }
+    }
+  }
+
+  async function updateSettingsUserIdentity(userId, identity) {
+    const resolvedUserId = String(userId || "").trim();
+    const resolvedIdentity = String(identity || "").trim().toLowerCase();
+    if (!resolvedUserId) throw new Error("user_id is required");
+    if (resolvedIdentity !== "student" && resolvedIdentity !== "teacher") {
+      throw new Error("identity must be student or teacher");
+    }
+    const data = await fetchJson(`/api/frontend/settings/users/${encodeURIComponent(resolvedUserId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identity: resolvedIdentity }),
+    });
+    const updated = data && data.user && typeof data.user === "object" ? data.user : null;
+    if (updated && state.settingsUsers.length) {
+      state.settingsUsers = state.settingsUsers.map((row) => {
+        const rowUserId = String(row.user_id || "").trim();
+        const rowRemoteUserId = String(row.remote_user_id || "").trim();
+        const rowUsername = String(row.username || "").trim();
+        if (rowUserId !== resolvedUserId && rowRemoteUserId !== resolvedUserId && rowUsername !== resolvedUserId) return row;
+        return Object.assign({}, row, updated);
+      });
+      state.settingsUsersSummary = recalcSettingsUsersSummary(state.settingsUsers);
+      if (el.settingsView.classList.contains("is-active") && state.settingsTab === "users") patchSettingsUsersSummary(state.settingsUsersSummary);
+    }
+    return updated;
+  }
+
   async function fetchBookDetailXml() {
     const row = getSelectedLectureRow();
     if (!row || !state.selectedBookId) return "";
@@ -3101,6 +3732,13 @@
     const end = Math.max(start, Math.min(state.readerFullTextRaw.length, Number(chapter.end) || 0));
     const chapterContext = String(state.readerFullTextRaw.slice(start, end).trim() || "");
     if (!chapterContext) return;
+    emitTelemetry("reader_chapter_complete", {
+      lecture_id: lectureId,
+      book_id: bookId,
+      chapter_index: idx,
+      chapter_name: chapterName,
+      chapter_range: chapterRange,
+    });
     await fetchJson("/api/frontend/learning/chapter-complete", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -3228,6 +3866,7 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content }),
     });
+// ─────── Data Loading & Initial Fetch ─────────────────────────────────
     delete state.feedCommentDrafts[id];
     state.feedExpandedMap[id] = true;
     resetFeedMentionState();
@@ -3298,6 +3937,7 @@
   }
 
   async function startIntensive(lectureId, bookId) {
+// ─────── Refinement & Processing Actions ──────────────────────────────
     await fetchJson("/api/frontend/settings/refinement/intensive", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -3324,6 +3964,20 @@
     await loadMaterialsRows();
   }
 
+  async function startAnnotation(lectureId, bookId) {
+    await fetchJson("/api/frontend/settings/refinement/annotation", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        lecture_id: lectureId,
+        book_id: bookId,
+        actor: state.username || "",
+      }),
+    });
+    await loadRefinementSettings();
+    await loadMaterialsRows();
+  }
+
   async function deleteBook(lectureId, bookId) {
     await fetchJson(`/api/lectures/${encodeURIComponent(lectureId)}/books/${encodeURIComponent(bookId)}`, {
       method: "DELETE",
@@ -3337,6 +3991,8 @@
       await loadModelSettings();
     } else if (state.settingsTab === "channels") {
       await loadLearningFeedChannels();
+    } else if (state.settingsTab === "users") {
+      await loadSettingsUsers();
     } else if (state.settingsTab === "logs") {
       await loadSettingsLogs();
     } else if (state.settingsTab === "refinement") {
@@ -3372,6 +4028,7 @@
       body: JSON.stringify({ title, category, status, description }),
     });
     const lecture = payload.lecture || {};
+// ─────── Download & Raw API Actions ───────────────────────────────────
     state.selectedLectureId = String(lecture.id || "");
     el.createLectureTitleInput.value = "";
     el.createLectureCategoryInput.value = "";
@@ -3424,6 +4081,7 @@
     el.materialsFileInput.value = "";
   }
 
+// ─────── Event Bindings ───────────────────────────────────────────────
   function bindEvents() {
     el.openMaterialsViewBtn.addEventListener("click", () => {
       setView("materials");
@@ -3883,13 +4541,53 @@
       toggleReaderUI();
     });
     el.readerContent.addEventListener("contextmenu", handleReaderContextMenu);
-    el.readerContent.addEventListener("pointerdown", () => {
+    el.readerContent.addEventListener("pointerdown", (event) => {
       hideHostReaderSelectionContextMenu();
+      if (!state.isReaderOpen || event.button !== 0) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target || !el.readerContent || !el.readerContent.contains(target)) return;
+      readerSelectionTelemetryState.pointerDownKey = getReaderSelectionSignature();
+      readerSelectionTelemetryState.pointerActive = true;
+    }, { capture: true });
+    document.addEventListener("selectionchange", () => {
+      if (!state.isReaderOpen || !readerSelectionTelemetryState.pointerActive) return;
+      scheduleReaderSelectionTelemetry("selectionchange", false);
+    }, { capture: true });
+    document.addEventListener("pointerup", (event) => {
+      if (!state.isReaderOpen || !readerSelectionTelemetryState.pointerActive) return;
+      if (event.button !== 0) {
+        resetReaderSelectionTelemetry();
+        return;
+      }
+      scheduleReaderSelectionTelemetry("pointerup", true);
+    }, { capture: true });
+    document.addEventListener("pointercancel", () => {
+      if (!readerSelectionTelemetryState.pointerActive) return;
+      resetReaderSelectionTelemetry();
     }, { capture: true });
     el.readerContent.addEventListener("scroll", () => {
       if (!state.isReaderOpen) return;
       hideHostReaderSelectionContextMenu();
+      const chapterMeta = getReaderCurrentChapterMeta();
+      const scrollContainer = getReaderScrollContainer();
+      if (!scrollContainer) return;
+      const scrollHeight = Number(scrollContainer.scrollHeight || 0);
+      const clientHeight = Number(scrollContainer.clientHeight || 0);
+      const maxScroll = Math.max(0, scrollHeight - clientHeight);
+      const scrollTop = Number(scrollContainer.scrollTop || 0);
+      const scrollPercent = maxScroll > 0 ? (scrollTop / maxScroll) : 0;
+      emitTelemetry("reader_scroll", {
+        lecture_id: String(state.selectedLectureId || "").trim(),
+        book_id: String(state.selectedBookId || "").trim(),
+        chapter_index: chapterMeta.chapterIndex,
+        chapter_title: chapterMeta.chapterTitle,
+        scroll_top: scrollTop,
+        scroll_height: scrollHeight,
+        client_height: clientHeight,
+        scroll_percent: Number(scrollPercent.toFixed(4)),
+      });
       scheduleHostReaderContextSync(120);
+      checkSessionProgressByScroll();
     }, { passive: true, capture: true });
     if (el.readerClickLeft) {
       el.readerClickLeft.addEventListener("click", (event) => {
@@ -3975,7 +4673,7 @@
     el.kickerUploadTabBtn.addEventListener("click", () => setUploadTab("upload"));
 
     el.profileAdminSettingsBtn.addEventListener("click", () => {
-      openSettingsView("model").catch((err) => showToast(`打开设置失败：${err.message || "未知错误"}`));
+      openSettingsView("users").catch((err) => showToast(`打开设置失败：${err.message || "未知错误"}`));
     });
 
     el.openCoursePickerBtn.addEventListener("click", () => {
@@ -4153,6 +4851,12 @@
           .catch((err) => showToast(`加载频道失败：${err.message || "未知错误"}`));
         return;
       }
+      if (state.settingsTab === "users") {
+        loadSettingsUsers()
+          .then(() => renderSettingsView())
+          .catch((err) => showToast(`加载用户列表失败：${err.message || "未知错误"}`));
+        return;
+      }
       if (state.settingsTab === "refinement") {
         loadRefinementSettings()
           .then(() => renderSettingsView())
@@ -4170,6 +4874,56 @@
         saveModelSettings()
           .then(() => showToast("模型设置已保存"))
           .catch((err) => showToast(`保存失败：${err.message || "未知错误"}`));
+        return;
+      }
+      const refreshUsersBtn = target.closest("#refreshSettingsUsersBtn");
+      if (refreshUsersBtn) {
+        loadSettingsUsers(state.settingsUsersQuery)
+          .then(() => showToast("用户列表已刷新"))
+          .catch((err) => showToast(`刷新用户列表失败：${err.message || "未知错误"}`));
+        return;
+      }
+      const saveUserIdentityBtn = target.closest("[data-action='save-user-identity']");
+      if (saveUserIdentityBtn) {
+        if (saveUserIdentityBtn instanceof HTMLButtonElement && saveUserIdentityBtn.disabled) return;
+        const userId = String(saveUserIdentityBtn.getAttribute("data-user-id") || "").trim();
+        if (!userId) return;
+        const card = saveUserIdentityBtn.closest(".settings-user-card");
+        const select = card ? card.querySelector("[data-user-identity-select]") : null;
+        // 在点击瞬间同步当前选中值到 dataset，确保后续读取时不会因异步事件错位而回退
+        if (select instanceof HTMLSelectElement) {
+          const localIdentity = String(select.value || "").trim().toLowerCase();
+          if (localIdentity === "student" || localIdentity === "teacher") {
+            select.dataset.currentIdentity = localIdentity;
+          }
+        }
+        let identity = select instanceof HTMLSelectElement
+          ? String(select.dataset.currentIdentity || select.value || "").trim().toLowerCase()
+          : "";
+        if (identity !== "student" && identity !== "teacher") identity = "student";
+        const previousinnerHTML = saveUserIdentityBtn.innerHTML;
+        if (saveUserIdentityBtn instanceof HTMLButtonElement) {
+          saveUserIdentityBtn.disabled = true;
+          saveUserIdentityBtn.classList.add("is-saving");
+          saveUserIdentityBtn.innerHTML = ""; /* CSS border spinner via ::before/::after */
+        }
+        updateSettingsUserIdentity(userId, identity)
+          .then((updated) => {
+            if (updated) {
+              patchSettingsUserCardIdentity(userId, updated);
+              return;
+            }
+            return loadSettingsUsers(state.settingsUsersQuery);
+          })
+          .then(() => showToast("用户身份已更新"))
+          .catch((err) => {
+            if (saveUserIdentityBtn instanceof HTMLButtonElement) {
+              saveUserIdentityBtn.disabled = false;
+              saveUserIdentityBtn.classList.remove("is-saving");
+              saveUserIdentityBtn.innerHTML = previousinnerHTML;
+            }
+            showToast(`更新用户身份失败：${err.message || "未知错误"}`);
+          });
         return;
       }
       const createChannelBtn = target.closest("#createFeedChannelBtn");
@@ -4258,11 +5012,27 @@
           .catch((err) => showToast("分节执行失败：" + (err.message || "未知错误")));
         return;
       }
+      const annotationBtn = target.closest("[data-action='start-annotation']");
+      if (annotationBtn) {
+        const lectureId = String(annotationBtn.getAttribute("data-lecture-id") || "");
+        const bookId = String(annotationBtn.getAttribute("data-book-id") || "");
+        if (!lectureId || !bookId) return;
+        startAnnotation(lectureId, bookId)
+          .then(() => {
+            showToast("已开始批注生成");
+          })
+          .catch((err) => showToast("批注执行失败：" + (err.message || "未知错误")));
+        return;
+      }
     });
 
     el.settingsDetailPane.addEventListener("change", (event) => {
       const target = event.target;
       if (!(target instanceof HTMLSelectElement)) return;
+      if (target.matches("[data-user-identity-select]")) {
+        target.dataset.currentIdentity = String(target.value || "").trim().toLowerCase();
+        return;
+      }
       if (target.id === "settingsLogCategorySelect") {
         state.settingsLogCategory = String(target.value || "all");
         if (state.settingsLogCategory !== "model") {
@@ -4273,6 +5043,7 @@
       }
       if (target.id === "settingsLogSourceSelect") {
         state.settingsLogSource = String(target.value || "");
+// ─────── Admin Utilities ──────────────────────────────────────────────
         loadSettingsLogs().catch((err) => showToast(`加载模型日志失败：${err.message || "未知错误"}`));
       }
     });
@@ -4320,6 +5091,7 @@
 
   }
 
+// ─────── Init & Bootstrap ─────────────────────────────────────────────
   function updateAdminVisibility() {
     el.profileAdminSettingsBtn.hidden = !state.isAdmin;
     el.openUploadViewBtn.hidden = !state.isAdmin;
@@ -4327,6 +5099,7 @@
 
   async function init() {
     state.username = getRuntimeUsername();
+    syncTelemetryUserId();
     loadReaderSettings();
     setView("dashboard");
     closeReader();

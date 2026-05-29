@@ -930,11 +930,29 @@ def _papi_stream_openai_chat(
         role_emitted = False
         usage_payload = None
         saw_tool_calls = False
+        reasoning_started = False
+        reasoning_ended = False
         for ev in event_iter:
             if not isinstance(ev, dict):
                 continue
             ev_type = str(ev.get('type') or '').strip()
             if ev_type == 'content_delta':
+                # 如果 reasoning 还没结束，先关闭 <think> 标签
+                if reasoning_started and not reasoning_ended:
+                    reasoning_ended = True
+                    delta_payload: Dict[str, Any] = {}
+                    if not role_emitted:
+                        delta_payload['role'] = 'assistant'
+                        role_emitted = True
+                    delta_payload['content'] = '</think>'
+                    chunk = {
+                        'id': completion_id,
+                        'object': 'chat.completion.chunk',
+                        'created': created_ts,
+                        'model': model_name,
+                        'choices': [{'index': 0, 'delta': delta_payload, 'finish_reason': None}],
+                    }
+                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
                 delta_payload: Dict[str, Any] = {}
                 if not role_emitted:
                     delta_payload['role'] = 'assistant'
@@ -949,12 +967,25 @@ def _papi_stream_openai_chat(
                 }
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
             elif ev_type == 'reasoning_delta':
-                # 对外保持 chat.completions 兼容：把 reasoning 也映射到 delta.content，
-                # 避免上游仅输出 thinking 时客户端看到空流。
+                # 对外保持 chat.completions 兼容：把 reasoning 映射到 delta.content，
+                # 并用 <think> 标签包裹，让客户端能够识别 thinking 内容。
                 delta_payload: Dict[str, Any] = {}
                 if not role_emitted:
                     delta_payload['role'] = 'assistant'
                     role_emitted = True
+                # 如果 reasoning 还没开始，先发送 <think> 标签
+                if not reasoning_started:
+                    reasoning_started = True
+                    delta_payload['content'] = '<think>'
+                    chunk = {
+                        'id': completion_id,
+                        'object': 'chat.completion.chunk',
+                        'created': created_ts,
+                        'model': model_name,
+                        'choices': [{'index': 0, 'delta': delta_payload, 'finish_reason': None}],
+                    }
+                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                    delta_payload = {}
                 delta_payload['content'] = str(ev.get('delta') or '')
                 chunk = {
                     'id': completion_id,
@@ -1027,6 +1058,19 @@ def _papi_stream_openai_chat(
                     'completion_tokens': int(ev.get('output_tokens', 0) or 0),
                     'total_tokens': int(ev.get('total_tokens', 0) or 0),
                 }
+
+        # 如果 reasoning 已经开始但还没结束，关闭 <think> 标签
+        if reasoning_started and not reasoning_ended:
+            reasoning_ended = True
+            delta_payload = {'content': '</think>'}
+            chunk = {
+                'id': completion_id,
+                'object': 'chat.completion.chunk',
+                'created': created_ts,
+                'model': model_name,
+                'choices': [{'index': 0, 'delta': delta_payload, 'finish_reason': None}],
+            }
+            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
         final_chunk = {
             'id': completion_id,
@@ -1637,6 +1681,8 @@ def _papi_stream_openai_responses(
             native_web_search_enabled=False,
         )
         first_event_seen = False
+        reasoning_started = False
+        reasoning_ended = False
         try:
             for ev in event_iter:
                 if not isinstance(ev, dict):
@@ -1651,6 +1697,18 @@ def _papi_stream_openai_responses(
                         response_id_box[0] = rid if rid.startswith('resp_') else f'resp_{rid}'
                     continue
                 if ev_type == 'content_delta':
+                    # 如果 reasoning 还没结束，先关闭 <think> 标签
+                    if reasoning_started and not reasoning_ended:
+                        reasoning_ended = True
+                        text_parts.append('</think>')
+                        yield _emit({
+                            'type': 'response.output_text.delta',
+                            'response_id': response_id_box[0],
+                            'item_id': message_item_id,
+                            'output_index': message_output_index,
+                            'content_index': message_content_index,
+                            'delta': '</think>',
+                        })
                     delta = str(ev.get('delta') or '')
                     if delta:
                         text_parts.append(delta)
@@ -1665,8 +1723,21 @@ def _papi_stream_openai_responses(
                     continue
                 if ev_type == 'reasoning_delta':
                     # 与 content 统一通道输出，避免上游仅 thinking 时客户端拿不到文本。
+                    # 用 <think> 标签包裹，让客户端能够识别 thinking 内容。
                     delta = str(ev.get('delta') or '')
                     if delta:
+                        # 如果 reasoning 还没开始，先发送 <think> 标签
+                        if not reasoning_started:
+                            reasoning_started = True
+                            text_parts.append('<think>')
+                            yield _emit({
+                                'type': 'response.output_text.delta',
+                                'response_id': response_id_box[0],
+                                'item_id': message_item_id,
+                                'output_index': message_output_index,
+                                'content_index': message_content_index,
+                                'delta': '<think>',
+                            })
                         text_parts.append(delta)
                         yield _emit({
                             'type': 'response.output_text.delta',
@@ -1775,6 +1846,19 @@ def _papi_stream_openai_responses(
             })
             yield "data: [DONE]\n\n"
             return
+
+        # 如果 reasoning 已经开始但还没结束，关闭 <think> 标签
+        if reasoning_started and not reasoning_ended:
+            reasoning_ended = True
+            text_parts.append('</think>')
+            yield _emit({
+                'type': 'response.output_text.delta',
+                'response_id': response_id_box[0],
+                'item_id': message_item_id,
+                'output_index': message_output_index,
+                'content_index': message_content_index,
+                'delta': '</think>',
+            })
 
         final_text = ''.join(text_parts)
         yield _emit({

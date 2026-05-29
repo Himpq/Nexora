@@ -27,14 +27,14 @@
         <div class="side-column">
           <article class="panel-card pie-panel">
             <header class="panel-head materials-head">
-              <p class="panel-kicker panel-kicker-zh">学习时长数据</p>
+              <p id="dashboardSidePanelTitle" class="panel-kicker panel-kicker-zh">学习时长数据</p>
             </header>
             <div id="timePieChart" class="time-pie-chart" aria-label="学习时间占比"></div>
           </article>
 
           <article class="panel-card profile-panel">
             <section id="userProfileCard" class="user-profile-card" aria-label="用户资料"></section>
-            <button id="profileAdminSettingsBtn" class="profile-admin-settings-icon" type="button" hidden aria-label="管理员设置" title="管理员设置">⚙</button>
+            <button id="profileAdminSettingsBtn" class="profile-admin-settings-icon" type="button" hidden aria-label="用户管理" title="用户管理">⚙</button>
           </article>
         </div>
       </section>
@@ -285,7 +285,9 @@
       </div>
     </div>
   </div>
-  <script src="/api/frontend/assets/app.js?v=20260522_01"></script>
+  <script src="/api/frontend/assets/utils.js?v=20260530_01"></script>
+  <script src="/api/frontend/assets/telemetry.js?v=20260529_01"></script>
+  <script src="/api/frontend/assets/app.js?v=20260529_01"></script>
 </body>
 </html>
 

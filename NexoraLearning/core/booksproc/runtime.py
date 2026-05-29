@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
-from ..epub_assets import extract_epub_with_assets
+from ..bookextract import extract_epub_with_assets
 from ..lectures import load_book_text, save_book_images_meta, save_book_text
 from ..utils import extract_text
 

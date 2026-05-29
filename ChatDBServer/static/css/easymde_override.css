@@ -456,6 +456,7 @@
 #knowledgeViewer .editor-preview table,
 #knowledgeViewer .editor-preview-side table {
     border-collapse: collapse;
+    table-layout: auto;
     width: fit-content !important;
     max-width: none !important;
     margin: 16px 0;
