@@ -1714,6 +1714,168 @@ _ASSET_IMAGE_MIME_TO_EXT = {
     "image/heif": ".heif",
 }
 
+_KNOWLEDGE_IMAGE_ALLOWED_MIME = set(_ASSET_IMAGE_MIME_TO_EXT.keys())
+_KNOWLEDGE_IMAGE_MAX_BYTES = 12 * 1024 * 1024  # 12MB
+_KNOWLEDGE_IMAGE_ID_RE = re.compile(r"^kimg_[a-z0-9]{16}$")
+
+
+def _knowledge_image_root(username: str) -> str:
+    return safe_join_path(_resolve_user_root_dir(username), 'database', 'static', 'images')
+
+
+def _knowledge_image_index_path(username: str) -> str:
+    return safe_join_path(_knowledge_image_root(username), 'index.json')
+
+
+def _load_knowledge_image_index(username: str) -> Dict[str, Any]:
+    idx_path = _knowledge_image_index_path(username)
+    if not os.path.exists(idx_path):
+        return {"images": {}}
+    try:
+        with open(idx_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {"images": {}}
+        images = data.get("images")
+        if not isinstance(images, dict):
+            images = {}
+        data["images"] = images
+        return data
+    except Exception:
+        return {"images": {}}
+
+
+def _save_knowledge_image_index(username: str, data: Dict[str, Any]) -> None:
+    root = _knowledge_image_root(username)
+    os.makedirs(root, exist_ok=True)
+    idx_path = _knowledge_image_index_path(username)
+    payload = data if isinstance(data, dict) else {"images": {}}
+    if "images" not in payload or not isinstance(payload.get("images"), dict):
+        payload["images"] = {}
+    with open(idx_path, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def _normalize_knowledge_image_id(raw: Any) -> str:
+    text = str(raw or '').strip().lower()
+    if _KNOWLEDGE_IMAGE_ID_RE.match(text):
+        return text
+    return ""
+
+
+def _guess_image_mime_from_name(file_name: str) -> str:
+    name = str(file_name or '').strip().lower()
+    if name.endswith('.png'):
+        return 'image/png'
+    if name.endswith('.jpg') or name.endswith('.jpeg'):
+        return 'image/jpeg'
+    if name.endswith('.webp'):
+        return 'image/webp'
+    if name.endswith('.gif'):
+        return 'image/gif'
+    if name.endswith('.bmp'):
+        return 'image/bmp'
+    if name.endswith('.tiff') or name.endswith('.tif'):
+        return 'image/tiff'
+    if name.endswith('.heic'):
+        return 'image/heic'
+    if name.endswith('.heif'):
+        return 'image/heif'
+    return ''
+
+
+def _decode_knowledge_image_base64(raw_base64: str, mime_hint: str = "") -> Tuple[str, bytes]:
+    text = str(raw_base64 or "").strip()
+    if not text:
+        raise ValueError("empty image_base64")
+    if text.startswith('data:image/'):
+        mime, raw = _parse_image_data_url(text)
+        return mime, raw
+    mime = str(mime_hint or '').strip().lower() or 'image/png'
+    if mime not in _KNOWLEDGE_IMAGE_ALLOWED_MIME:
+        raise ValueError("unsupported image mime")
+    try:
+        raw = base64.b64decode(text, validate=True)
+    except Exception as e:
+        raise ValueError(f"invalid base64: {str(e)}")
+    return mime, raw
+
+
+def _download_knowledge_image_from_url(source_url: str) -> Tuple[str, bytes]:
+    raw_url = str(source_url or '').strip()
+    if not raw_url:
+        raise ValueError("source_url is required")
+    parsed = urllib_parse.urlparse(raw_url)
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError("only http/https source_url is allowed")
+    req = urllib_request.Request(raw_url, headers={"User-Agent": "NexoraKnowledgeImageFetcher/1.0"})
+    try:
+        with urllib_request.urlopen(req, timeout=15) as resp:
+            content_type = str(resp.headers.get('Content-Type') or '').split(';', 1)[0].strip().lower()
+            raw = resp.read(_KNOWLEDGE_IMAGE_MAX_BYTES + 1)
+    except Exception as e:
+        raise ValueError(f"download failed: {str(e)}")
+    if len(raw) > _KNOWLEDGE_IMAGE_MAX_BYTES:
+        raise ValueError(f"image too large (max {_KNOWLEDGE_IMAGE_MAX_BYTES} bytes)")
+    mime = content_type if content_type in _KNOWLEDGE_IMAGE_ALLOWED_MIME else ''
+    if not mime:
+        guessed = _guess_image_mime_from_name(parsed.path)
+        mime = guessed if guessed in _KNOWLEDGE_IMAGE_ALLOWED_MIME else ''
+    if not mime:
+        raise ValueError("unsupported source image mime")
+    return mime, raw
+
+
+def _persist_knowledge_image_bytes(
+    *,
+    owner_username: str,
+    image_id: str,
+    image_bytes: bytes,
+    mime: str,
+    original_name: str = "",
+    basis_title: str = "",
+) -> Dict[str, Any]:
+    owner = str(owner_username or '').strip()
+    if not owner:
+        raise ValueError("owner username is required")
+    safe_id = _normalize_knowledge_image_id(image_id)
+    if not safe_id:
+        raise ValueError("invalid image_id")
+    raw = bytes(image_bytes or b"")
+    if not raw:
+        raise ValueError("empty image content")
+    if len(raw) > _KNOWLEDGE_IMAGE_MAX_BYTES:
+        raise ValueError(f"image too large (max {_KNOWLEDGE_IMAGE_MAX_BYTES} bytes)")
+    mt = str(mime or '').strip().lower()
+    if mt not in _KNOWLEDGE_IMAGE_ALLOWED_MIME:
+        raise ValueError("unsupported image mime")
+    ext = _safe_asset_ext(mt)
+    file_name = f"{safe_id}{ext}"
+    root = _knowledge_image_root(owner)
+    os.makedirs(root, exist_ok=True)
+    fpath = safe_join_path(root, file_name)
+    with open(fpath, 'wb') as f:
+        f.write(raw)
+    now_ts = int(time.time())
+    idx = _load_knowledge_image_index(owner)
+    images = idx.get("images", {})
+    current = images.get(safe_id, {}) if isinstance(images.get(safe_id), dict) else {}
+    images[safe_id] = {
+        "image_id": safe_id,
+        "owner": owner,
+        "file_name": file_name,
+        "mime": mt,
+        "size": len(raw),
+        "original_name": str(original_name or current.get("original_name") or '').strip(),
+        "basis_title": str(basis_title or current.get("basis_title") or '').strip(),
+        "created_at": int(current.get("created_at") or now_ts),
+        "updated_at": now_ts,
+        "status": "ready",
+    }
+    idx["images"] = images
+    _save_knowledge_image_index(owner, idx)
+    return images[safe_id]
+
 
 def _conversation_asset_root(username: str) -> str:
     return safe_join_path(
@@ -9895,6 +10057,143 @@ def knowledge():
     return render_template('knowledge.html', username=session['username'])
 
 
+@app.route('/api/knowledge/image/allocate', methods=['POST'])
+@require_login
+def allocate_knowledge_image():
+    owner = str(session.get('username') or '').strip()
+    if not owner:
+        return jsonify({'success': False, 'message': 'Unauthorized'}), 401
+    data = request.get_json(silent=True) or {}
+    original_name = str(data.get('file_name') or data.get('name') or '').strip()
+    basis_title = str(data.get('basis_title') or '').strip()
+    image_id = f"kimg_{secrets.token_hex(8)}"
+    now_ts = int(time.time())
+    idx = _load_knowledge_image_index(owner)
+    images = idx.get("images", {})
+    images[image_id] = {
+        "image_id": image_id,
+        "owner": owner,
+        "file_name": "",
+        "mime": "",
+        "size": 0,
+        "original_name": original_name,
+        "basis_title": basis_title,
+        "created_at": now_ts,
+        "updated_at": now_ts,
+        "status": "allocated",
+    }
+    idx["images"] = images
+    _save_knowledge_image_index(owner, idx)
+    image_url = url_for('serve_knowledge_image', username=owner, image_id=image_id)
+    return jsonify({
+        'success': True,
+        'image_id': image_id,
+        'username': owner,
+        'image_url': image_url,
+        'max_bytes': _KNOWLEDGE_IMAGE_MAX_BYTES,
+    })
+
+
+@app.route('/api/knowledge/image/upload', methods=['POST'])
+@require_login
+def upload_knowledge_image():
+    owner = str(session.get('username') or '').strip()
+    if not owner:
+        return jsonify({'success': False, 'message': 'Unauthorized'}), 401
+
+    image_id = _normalize_knowledge_image_id(request.form.get('image_id'))
+    original_name = str(request.form.get('file_name') or '').strip()
+    basis_title = str(request.form.get('basis_title') or '').strip()
+    source_url = str(request.form.get('source_url') or '').strip()
+    image_base64 = str(request.form.get('image_base64') or '').strip()
+    mime_hint = str(request.form.get('mime') or '').strip().lower()
+    upload_file = request.files.get('file')
+
+    if not image_id and request.is_json:
+        payload = request.get_json(silent=True) or {}
+        image_id = _normalize_knowledge_image_id(payload.get('image_id'))
+        original_name = str(payload.get('file_name') or payload.get('name') or original_name).strip()
+        basis_title = str(payload.get('basis_title') or basis_title).strip()
+        source_url = str(payload.get('source_url') or source_url).strip()
+        image_base64 = str(payload.get('image_base64') or image_base64).strip()
+        mime_hint = str(payload.get('mime') or mime_hint).strip().lower()
+
+    if not image_id:
+        return jsonify({'success': False, 'message': 'image_id is required'}), 400
+
+    raw_bytes = b""
+    mime = ""
+    try:
+        if upload_file:
+            mime = str(upload_file.mimetype or upload_file.content_type or '').strip().lower()
+            if not mime:
+                mime = _guess_image_mime_from_name(upload_file.filename)
+            if mime not in _KNOWLEDGE_IMAGE_ALLOWED_MIME:
+                return jsonify({'success': False, 'message': '不支持的图片类型'}), 400
+            raw_bytes = upload_file.read(_KNOWLEDGE_IMAGE_MAX_BYTES + 1)
+            if len(raw_bytes) > _KNOWLEDGE_IMAGE_MAX_BYTES:
+                return jsonify({'success': False, 'message': f'图片过大，最大 {int(_KNOWLEDGE_IMAGE_MAX_BYTES / (1024 * 1024))}MB'}), 400
+            if not original_name:
+                original_name = str(upload_file.filename or '').strip()
+        elif image_base64:
+            mime, raw_bytes = _decode_knowledge_image_base64(image_base64, mime_hint=mime_hint)
+        elif source_url:
+            mime, raw_bytes = _download_knowledge_image_from_url(source_url)
+        else:
+            return jsonify({'success': False, 'message': 'missing image payload'}), 400
+
+        meta = _persist_knowledge_image_bytes(
+            owner_username=owner,
+            image_id=image_id,
+            image_bytes=raw_bytes,
+            mime=mime,
+            original_name=original_name,
+            basis_title=basis_title,
+        )
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+
+    image_url = url_for('serve_knowledge_image', username=owner, image_id=image_id)
+    return jsonify({
+        'success': True,
+        'image_id': image_id,
+        'username': owner,
+        'image_url': image_url,
+        'mime': str(meta.get('mime') or mime),
+        'size': int(meta.get('size') or len(raw_bytes)),
+    })
+
+
+@app.route('/api/knowledge/image/<username>/<image_id>', methods=['GET'])
+@require_login
+def serve_knowledge_image(username, image_id):
+    owner = str(username or '').strip()
+    safe_image_id = _normalize_knowledge_image_id(image_id)
+    if not owner or not safe_image_id:
+        return jsonify({'success': False, 'message': 'invalid image path'}), 400
+    viewer = str(session.get('username') or '').strip()
+    if (viewer != owner) and (str(session.get('role') or '').strip().lower() != 'admin'):
+        return jsonify({'success': False, 'message': 'Forbidden'}), 403
+
+    idx = _load_knowledge_image_index(owner)
+    images = idx.get("images", {})
+    row = images.get(safe_image_id) if isinstance(images, dict) else None
+    if not isinstance(row, dict):
+        return jsonify({'success': False, 'message': 'image not found'}), 404
+    file_name = str(row.get('file_name') or '').strip()
+    if not file_name:
+        return jsonify({'success': False, 'message': 'image not ready'}), 404
+
+    root = _knowledge_image_root(owner)
+    fpath = safe_join_path(root, file_name)
+    if not os.path.exists(fpath):
+        return jsonify({'success': False, 'message': 'image file missing'}), 404
+    mime = str(row.get('mime') or '').strip().lower() or _guess_image_mime_from_name(file_name) or 'application/octet-stream'
+    resp = send_file(fpath, mimetype=mime)
+    resp.headers['Cache-Control'] = 'private, max-age=86400'
+    return resp
+
+
 @app.route('/api/knowledge/list', methods=['GET'])
 @require_login
 def list_knowledge():
@@ -10222,6 +10521,173 @@ def public_api_edit_knowledge(username, share_id):
         
     success, msg = user.updateBasisContent(title, content)
     return jsonify({'success': success, 'message': msg})
+
+
+def _resolve_public_collab_basis(username: str, share_id: str) -> Tuple[Optional[User], Optional[str], Optional[Dict[str, Any]], Optional[Response]]:
+    owner = str(username or '').strip()
+    sid = str(share_id or '').strip()
+    if not owner or not sid:
+        return None, None, None, (jsonify({'success': False, 'message': 'invalid path'}), 400)
+    user = User(owner)
+    title, meta = user.getBasisByShareId(sid)
+    if not meta or not meta.get("public"):
+        return None, None, None, (jsonify({'success': False, 'message': 'Forbidden'}), 403)
+    if not meta.get("collaborative"):
+        return None, None, None, (jsonify({'success': False, 'message': 'Forbidden'}), 403)
+    if not title:
+        return None, None, None, (jsonify({'success': False, 'message': 'Not Found'}), 404)
+    return user, str(title), dict(meta), None
+
+
+@app.route('/api/public/knowledge/<username>/<share_id>/image/allocate', methods=['POST'])
+def public_allocate_knowledge_image(username, share_id):
+    user, title, _meta, err = _resolve_public_collab_basis(username, share_id)
+    if err is not None:
+        return err
+    data = request.get_json(silent=True) or {}
+    original_name = str(data.get('file_name') or data.get('name') or '').strip()
+    image_id = f"kimg_{secrets.token_hex(8)}"
+    now_ts = int(time.time())
+    idx = _load_knowledge_image_index(user.user)
+    images = idx.get("images", {})
+    images[image_id] = {
+        "image_id": image_id,
+        "owner": user.user,
+        "file_name": "",
+        "mime": "",
+        "size": 0,
+        "original_name": original_name,
+        "basis_title": str(title),
+        "share_id": str(share_id or '').strip(),
+        "created_at": now_ts,
+        "updated_at": now_ts,
+        "status": "allocated",
+    }
+    idx["images"] = images
+    _save_knowledge_image_index(user.user, idx)
+    image_url = url_for('public_serve_knowledge_image', username=user.user, image_id=image_id, share_id=str(share_id or '').strip())
+    return jsonify({
+        'success': True,
+        'image_id': image_id,
+        'username': user.user,
+        'image_url': image_url,
+        'max_bytes': _KNOWLEDGE_IMAGE_MAX_BYTES,
+    })
+
+
+@app.route('/api/public/knowledge/<username>/<share_id>/image/upload', methods=['POST'])
+def public_upload_knowledge_image(username, share_id):
+    user, title, _meta, err = _resolve_public_collab_basis(username, share_id)
+    if err is not None:
+        return err
+
+    image_id = _normalize_knowledge_image_id(request.form.get('image_id'))
+    original_name = str(request.form.get('file_name') or '').strip()
+    source_url = str(request.form.get('source_url') or '').strip()
+    image_base64 = str(request.form.get('image_base64') or '').strip()
+    mime_hint = str(request.form.get('mime') or '').strip().lower()
+    upload_file = request.files.get('file')
+
+    if not image_id and request.is_json:
+        payload = request.get_json(silent=True) or {}
+        image_id = _normalize_knowledge_image_id(payload.get('image_id'))
+        original_name = str(payload.get('file_name') or payload.get('name') or original_name).strip()
+        source_url = str(payload.get('source_url') or source_url).strip()
+        image_base64 = str(payload.get('image_base64') or image_base64).strip()
+        mime_hint = str(payload.get('mime') or mime_hint).strip().lower()
+
+    if not image_id:
+        return jsonify({'success': False, 'message': 'image_id is required'}), 400
+
+    raw_bytes = b""
+    mime = ""
+    try:
+        if upload_file:
+            mime = str(upload_file.mimetype or upload_file.content_type or '').strip().lower()
+            if not mime:
+                mime = _guess_image_mime_from_name(upload_file.filename)
+            if mime not in _KNOWLEDGE_IMAGE_ALLOWED_MIME:
+                return jsonify({'success': False, 'message': '不支持的图片类型'}), 400
+            raw_bytes = upload_file.read(_KNOWLEDGE_IMAGE_MAX_BYTES + 1)
+            if len(raw_bytes) > _KNOWLEDGE_IMAGE_MAX_BYTES:
+                return jsonify({'success': False, 'message': f'图片过大，最大 {int(_KNOWLEDGE_IMAGE_MAX_BYTES / (1024 * 1024))}MB'}), 400
+            if not original_name:
+                original_name = str(upload_file.filename or '').strip()
+        elif image_base64:
+            mime, raw_bytes = _decode_knowledge_image_base64(image_base64, mime_hint=mime_hint)
+        elif source_url:
+            mime, raw_bytes = _download_knowledge_image_from_url(source_url)
+        else:
+            return jsonify({'success': False, 'message': 'missing image payload'}), 400
+
+        meta = _persist_knowledge_image_bytes(
+            owner_username=user.user,
+            image_id=image_id,
+            image_bytes=raw_bytes,
+            mime=mime,
+            original_name=original_name,
+            basis_title=title,
+        )
+        idx = _load_knowledge_image_index(user.user)
+        images = idx.get("images", {})
+        row = images.get(image_id) if isinstance(images, dict) else None
+        if isinstance(row, dict):
+            row["share_id"] = str(share_id or '').strip()
+            row["basis_title"] = str(title)
+            row["updated_at"] = int(time.time())
+            images[image_id] = row
+            idx["images"] = images
+            _save_knowledge_image_index(user.user, idx)
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+
+    image_url = url_for('public_serve_knowledge_image', username=user.user, image_id=image_id, share_id=str(share_id or '').strip())
+    return jsonify({
+        'success': True,
+        'image_id': image_id,
+        'username': user.user,
+        'image_url': image_url,
+        'mime': str(meta.get('mime') or mime),
+        'size': int(meta.get('size') or len(raw_bytes)),
+    })
+
+
+@app.route('/api/public/knowledge/image/<username>/<image_id>', methods=['GET'])
+def public_serve_knowledge_image(username, image_id):
+    owner = str(username or '').strip()
+    sid = str(request.args.get('share_id') or '').strip()
+    safe_image_id = _normalize_knowledge_image_id(image_id)
+    if not owner or not sid or not safe_image_id:
+        return jsonify({'success': False, 'message': 'invalid image path'}), 400
+    user = User(owner)
+    title, meta = user.getBasisByShareId(sid)
+    if not meta or not meta.get("public"):
+        return jsonify({'success': False, 'message': 'Forbidden'}), 403
+
+    idx = _load_knowledge_image_index(owner)
+    images = idx.get("images", {})
+    row = images.get(safe_image_id) if isinstance(images, dict) else None
+    if not isinstance(row, dict):
+        return jsonify({'success': False, 'message': 'image not found'}), 404
+
+    if str(row.get('owner') or '').strip() != owner:
+        return jsonify({'success': False, 'message': 'Forbidden'}), 403
+    row_basis_title = str(row.get('basis_title') or '').strip()
+    if row_basis_title and str(title or '').strip() and (row_basis_title != str(title).strip()):
+        return jsonify({'success': False, 'message': 'Forbidden'}), 403
+
+    file_name = str(row.get('file_name') or '').strip()
+    if not file_name:
+        return jsonify({'success': False, 'message': 'image not ready'}), 404
+
+    root = _knowledge_image_root(owner)
+    fpath = safe_join_path(root, file_name)
+    if not os.path.exists(fpath):
+        return jsonify({'success': False, 'message': 'image file missing'}), 404
+    mime = str(row.get('mime') or '').strip().lower() or _guess_image_mime_from_name(file_name) or 'application/octet-stream'
+    resp = send_file(fpath, mimetype=mime)
+    resp.headers['Cache-Control'] = 'public, max-age=86400'
+    return resp
 
 
 @app.route('/api/knowledge/short', methods=['GET'])

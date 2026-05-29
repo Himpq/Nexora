@@ -959,6 +959,21 @@
             ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"></rect></svg>'
             : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>';
 
+        if (!log.dataset.autoScrollBound) {
+            log.dataset.autoScrollBound = 'true';
+            log.dataset.atBottom = 'true';
+            log.addEventListener('scroll', () => {
+                // 实时采集：用户在底部附近时（阈值 20px）重新激活自动跟底
+                const maxScroll = log.scrollHeight - log.clientHeight;
+                log.dataset.atBottom = maxScroll <= 0 || log.scrollTop >= maxScroll - 20 ? 'true' : 'false';
+            }, { passive: true });
+        }
+
+        // replaceChildren 之前测量旧滚动位置
+        const oldMaxScroll = log.scrollHeight - log.clientHeight;
+        const wasAtBottom = log.dataset.atBottom !== 'false' &&
+            (oldMaxScroll <= 0 || log.scrollTop >= oldMaxScroll - 45);
+
         log.replaceChildren();
         if (!messages.length) {
             const empty = document.createElement('div');
@@ -989,8 +1004,11 @@
                 }
                 log.appendChild(msg);
             });
+
+            if (wasAtBottom) {
+                log.scrollTop = log.scrollHeight;
+            }
         }
-        log.scrollTop = log.scrollHeight;
 
         if (hadFocus) {
             try {

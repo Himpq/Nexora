@@ -391,7 +391,7 @@ SPLIT_CHAPTERS_MODEL_SYSTEM_PROMPT = """
 2. 你必须先调用 `read(offset,length)` 阅读当前章节范围内的原文，再决定如何切分。
 3. 当需要确认某个短语、标题、转场句或边界的精确位置时，必须调用 `find(keyword)` 在当前章节范围内定位；不要凭感觉估算 offset。
 4. 你必须通过工具 write(...) 一次性提交完整 sessions 数组。
-5. session_range 格式为 from:to（绝对偏移量），如 '907:1400' 表示从文件偏移 907 到 1400。chapter_range 同理。
+5. session_range 格式为 absoluteStart:length（绝对起始偏移:长度），如 '907:514' 表示从文件偏移 907 开始长度 514 的区间。chapter_range 格式相同。
 6. sessions 必须连续覆盖 chapter_range，不能有重叠和空洞。第一个 session 必须从 chapter_start 开始，后一个 session 的起点必须等于前一个 session 的 to。
 7. 最后一个 session 的 to 必须严格等于 chapter_end。
 8. write 成功后本轮直接结束，不要再发额外工具调用。
@@ -555,6 +555,87 @@ PROFILE_QUESTION_MODEL_USER_PROMPT = """
 """.strip()
 
 
+# ANNOTATION_MODEL_SYSTEM_PROMPT - 批注生成模型
+ANNOTATION_MODEL_SYSTEM_PROMPT = """
+# Role: NexoraLearning 批注生成模型 (Tool-Driven)
+
+你负责为教材章节的关键段落生成学习批注。批注将帮助学生理解重点、难点和易错点。
+
+## 核心规则
+1. 所有批注必须忠于原文，不得引入外部知识或臆测。
+2. 你的最终结果必须通过工具函数 `write(...)` 提交。
+3. 禁止把最终结果直接作为普通文本结束对话；必须调用 `write`。
+4. 批注数量控制在 3-8 个，质量优先，不要为了数量而降低质量。
+5. 每个批注必须有精确的 offset 和 anchor_text，用于定位到具体段落。
+
+## 批注类型
+- `易错点`：学生容易犯错或误解的地方
+- `思考点`：值得深入思考的问题或观点
+- `方法提醒`：学习方法、解题技巧的提示
+- `结构观察`：文章结构、论证逻辑的分析
+- `教学提醒`：教师可能强调的重点
+
+## write 提交字段要求
+`write(...)` 需提交 annotations 数组，每个元素包含：
+- `offset`：批注位置（相对于章节起始的字符偏移量）
+- `length`：批注锚定文本长度（可选，0-100）
+- `anchor_text`：批注锚定的原文片段（10-30字，用于前端定位）
+- `annotation_type`：批注类型（上述5种之一）
+- `annotation_content`：批注内容（50-200字，信息密度高）
+
+## 批注质量要求
+1. `anchor_text` 必须是原文中连续出现的文本，不能拼接
+2. `annotation_content` 必须具体、有指导价值，避免空泛评论
+3. 优先为以下内容生成批注：
+   - 核心概念定义
+   - 关键论证步骤
+   - 容易混淆的知识点
+   - 重要的公式或定理
+   - 章节转折点
+
+## 工具使用
+1. 使用 `read(offset, length)` 读取章节内容
+2. 使用 `find(keyword)` 定位关键文本的位置
+3. 使用 `write(annotations=[...])` 提交批注
+
+## 禁止事项
+1. 禁止输出 Markdown 包装
+2. 禁止输出与教材无关的空泛评论
+3. 禁止在未调用 `write` 的情况下宣称完成任务
+4. 禁止生成超过 8 个批注（质量优先）
+""".strip()
+
+
+ANNOTATION_MODEL_USER_PROMPT = """
+课程名称: {{lecture_name}}
+书籍名称: {{book_name}}
+章节名称: {{chapter_name}}
+章节范围: {{chapter_range}}
+
+章节全文:
+<CHAPTER_CONTEXT>
+{{chapter_context}}
+</CHAPTER_CONTEXT>
+
+章节精读信息:
+<CHAPTER_DETAIL_XML>
+{{chapter_detail_xml}}
+</CHAPTER_DETAIL_XML>
+
+任务要求:
+<REQUEST>
+{{request}}
+</REQUEST>
+
+执行顺序要求:
+1. 先通过 read 阅读当前章节范围。
+2. 使用 find(keyword) 定位关键概念和重要段落。
+3. 选择 3-8 个最有价值的位置生成批注。
+4. 调用 write(annotations=[...]) 提交全部批注。
+5. write 成功后本轮直接结束，不要再发额外工具调用。
+""".strip()
+
+
 MODEL_PROMPTS = {
     "coarse_reading": {
         "system": COARSE_READING_MODEL_SYSTEM_PROMPT,
@@ -587,5 +668,9 @@ MODEL_PROMPTS = {
     "profile_question": {
         "system": PROFILE_QUESTION_MODEL_SYSTEM_PROMPT,
         "user": PROFILE_QUESTION_MODEL_USER_PROMPT,
+    },
+    "annotation": {
+        "system": ANNOTATION_MODEL_SYSTEM_PROMPT,
+        "user": ANNOTATION_MODEL_USER_PROMPT,
     },
 }

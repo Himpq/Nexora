@@ -6,58 +6,234 @@
     <title>{{ title }} - 协作编辑</title>
     <link rel="stylesheet" href="/static/vendor/fonts/fonts.css">
     <link rel="stylesheet" href="/static/vendor/fontawesome/css/all.min.css">
-    <link rel="stylesheet" href="/static/vendor/easymde/easymde.min.css">
+    <link rel="stylesheet" href="https://uicdn.toast.com/editor/latest/toastui-editor.min.css">
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/easymde_override.css?v=20260416_13">
     <script src="/static/vendor/marked/marked.min.js"></script>
-    <script src="/static/vendor/easymde/easymde.min.js"></script>
+    <script src="https://uicdn.toast.com/editor/latest/toastui-editor-all.min.js"></script>
     <script src="/static/js/secure_render.js"></script>
     <style>
         :root {
-            --bg: #fdfdfd; --surface: #ffffff; --text: #1e293b; 
-            --text-muted: #64748b; --border: #e2e8f0; --primary: #3b82f6;
+            --bg: #f3f4f6;
+            --surface: #ffffff;
+            --text: #0f172a;
+            --text-muted: #64748b;
+            --border: #dbe2ea;
+            --ok-bg: #dcfce7;
+            --ok-ink: #166534;
+            --warn-bg: #fef9c3;
+            --warn-ink: #854d0e;
+            --err-bg: #fee2e2;
+            --err-ink: #991b1b;
+            --radius: 8px;
         }
-        body { 
-            font-family: var(--nc-font-sans); background: var(--bg); color: var(--text);
-            margin: 0; padding: 20px; display: flex; flex-direction: column; height: 100vh;
+        * { box-sizing: border-box; }
+        body {
+            font-family: var(--nc-font-sans);
+            margin: 0;
+            min-height: 100vh !important;
+            height: auto !important;
+            background: var(--bg) !important;
+            color: var(--text);
+            padding: 16px !important;
+            overflow-y: auto !important;
         }
-        .header { margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center; }
-        .header h1 { margin: 0; font-size: 24px; font-weight: 600; }
-        .meta { font-size: 13px; color: var(--text-muted); }
-        .editor-wrapper { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: #fff; border:1px solid var(--border); border-radius: 8px; }
-        .EasyMDEContainer { flex: 1; display: flex; flex-direction: column; }
-        .CodeMirror { flex: 1; height: auto !important; border:none !important; }
-        .badge { padding: 4px 10px; border-radius: 20px; background: #dcfce7; color: #166534; font-weight: 500; font-size: 12px; }
-        .editor-preview table,
-        .editor-preview-side table {
-            border-collapse: collapse;
-            width: 100%;
+        .public-edit-shell {
+            max-width: 1280px;
+            margin: 0 auto;
+            height: calc(100vh - 32px);
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
         }
-        .editor-preview th,
-        .editor-preview td,
-        .editor-preview-side th,
-        .editor-preview-side td {
+        .public-edit-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 14px 18px;
             border: 1px solid var(--border);
-            padding: 6px 8px;
+            border-radius: var(--radius);
+            background: var(--surface);
         }
-        .editor-preview th,
-        .editor-preview-side th {
-            background: #f8fafc;
-            text-align: left;
+        .public-edit-title {
+            margin: 0;
+            font-size: 22px;
+            font-weight: 800;
+            line-height: 1.2;
+        }
+        .public-edit-meta {
+            margin-top: 4px;
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 11px;
+            border-radius: 999px;
+            border: 1px solid transparent;
+            font-size: 12px;
+            font-weight: 700;
+            line-height: 1;
+            user-select: none;
+        }
+        .status-ok {
+            background: var(--ok-bg);
+            color: var(--ok-ink);
+            border-color: #bbf7d0;
+        }
+        .status-saving {
+            background: var(--warn-bg);
+            color: var(--warn-ink);
+            border-color: #fde68a;
+        }
+        .status-error {
+            background: var(--err-bg);
+            color: var(--err-ink);
+            border-color: #fecaca;
+        }
+        .public-editor-wrap {
+            flex: 1;
+            min-height: 0;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            background: var(--surface);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        #knowledgeViewer {
+            display: flex;
+            flex: 1;
+            flex-direction: column;
+            overflow: hidden;
+            min-height: 0;
+        }
+        #knowledgeViewer .public-edit-host {
+            display: flex;
+            flex: 1;
+            min-height: 0;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        #knowledgeViewer .knowledge-toast-editor {
+            flex: 1 1 auto;
+            min-height: 0;
+            height: 100% !important;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        /* 隐藏 ToastUI 原生工具栏，因为我们使用上方自定义的 Nexora 风格工具栏 */
+        #knowledgeViewer .toastui-editor-toolbar {
+            display: none !important;
+        }
+        /* 修复预览面板中的表格列宽不随内容自适应的问题 */
+        #knowledgeViewer .toastui-editor-contents table,
+        #knowledgeViewer .editor-preview table {
+            table-layout: auto;
+            width: fit-content;
+            max-width: none;
+        }
+
+        /* --- Toast UI 视图模式控制 (完全匹配 EasyMDE 视窗切换状态机) --- */
+        #knowledgeViewer .public-edit-host.mode-edit .toastui-editor-md-container .toastui-editor { display: flex !important; width: 100% !important; flex: 1 1 100% !important; }
+        #knowledgeViewer .public-edit-host.mode-edit .toastui-editor-md-container .toastui-editor-md-preview { display: none !important; }
+        #knowledgeViewer .public-edit-host.mode-edit .toastui-editor-md-container .toastui-editor-md-splitter { display: none !important; }
+
+        #knowledgeViewer .public-edit-host.mode-preview .toastui-editor-md-container .toastui-editor { display: none !important; }
+        #knowledgeViewer .public-edit-host.mode-preview .toastui-editor-md-container .toastui-editor-md-preview { display: flex !important; width: 100% !important; flex: 1 1 100% !important; }
+        #knowledgeViewer .public-edit-host.mode-preview .toastui-editor-md-container .toastui-editor-md-splitter { display: none !important; }
+
+        #knowledgeViewer .public-edit-host.mode-split .toastui-editor-md-container .toastui-editor { display: flex !important; }
+        #knowledgeViewer .public-edit-host.mode-split .toastui-editor-md-container .toastui-editor-md-preview { display: flex !important; }
+        #knowledgeViewer .public-edit-host.mode-split .toastui-editor-md-container .toastui-editor-md-splitter { display: flex !important; }
+
+        /* 隐藏或修正选中行/选中域自带的黄色高亮背景 */
+        #knowledgeViewer .toastui-editor-md-active-line {
+            background-color: transparent !important;
+        }
+        #knowledgeViewer .toastui-editor-md-container .CodeMirror-selected {
+            background-color: #e2e8f0 !important;
+        }
+
+        /* 纯文本全屏时的样式覆写 - 匹配原版 EasyMDE 的固定全屏行为 */
+        .public-edit-shell.is-fullscreen {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            width: 100vw; height: 100vh;
+            margin: 0; padding: 0 !important;
+            max-width: none !important;
+            border-radius: 0;
+            z-index: 9999;
+            background: var(--bg) !important;
+        }
+        .public-edit-shell.is-fullscreen .public-edit-head {
+            border-radius: 0;
+            border-top: none;
+            border-left: none;
+            border-right: none;
+        }
+        .public-edit-shell.is-fullscreen .public-editor-wrap {
+            border-radius: 0;
+            border-left: none;
+            border-right: none;
+            border-bottom: none;
+        }
+
+        @media (max-width: 960px) {
+            body { padding: 10px; }
+            .public-edit-shell { height: calc(100vh - 20px); }
+            .public-edit-head { padding: 12px; }
+            .public-edit-title { font-size: 18px; }
         }
     </style>
 </head>
 <body>
-    <div class="header">
-        <div>
-            <h1>{{ title | e }}</h1>
-            <div class="meta">由 @{{ username | e }} 开启协作</div>
-        </div>
-        <div id="saveStatus"><span class="badge">已同步</span></div>
-    </div>
-    <div class="editor-wrapper">
-        <textarea id="editor">{{ content | e }}</textarea>
+    <div id="publicEditShell" class="public-edit-shell">
+        <header class="public-edit-head">
+            <div>
+                <h1 class="public-edit-title">{{ title | e }}</h1>
+                <div class="public-edit-meta">由 @{{ username | e }} 开启协作 · `Ctrl+S` 可立即同步</div>
+            </div>
+            <div id="saveStatus" class="status-badge status-ok">已同步</div>
+        </header>
+        <section class="public-editor-wrap">
+            <div id="knowledgeViewer">
+                <div class="public-edit-host knowledge-toast-editor">
+                    <textarea id="editorContent" style="display:none;">{{ content | e }}</textarea>
+                    
+                    <!-- 自定义 Nexora 风格工具栏 -->
+                    <div id="customToolbar" class="editor-toolbar" style="border-radius: 0; border: none; border-bottom: 1px solid #ddd; flex-shrink: 0; background: #fff;">
+                        <button type="button" tabindex="-1" class="heading" data-cmd="heading" title="标题 (Ctrl-H)"><i class="fa fa-header"></i></button>
+                        <button type="button" tabindex="-1" class="bold" data-cmd="bold" title="加粗 (Ctrl-B)"><i class="fa fa-bold"></i></button>
+                        <button type="button" tabindex="-1" class="italic" data-cmd="italic" title="斜体 (Ctrl-I)"><i class="fa fa-italic"></i></button>
+                        <button type="button" tabindex="-1" class="strikethrough" data-cmd="strike" title="删除线"><i class="fa fa-strikethrough"></i></button>
+                        <i class="separator"></i>
+                        <button type="button" tabindex="-1" class="quote" data-cmd="quote" title="引用 (Ctrl-')"><i class="fa fa-quote-left"></i></button>
+                        <button type="button" tabindex="-1" class="unordered-list" data-cmd="ul" title="无序列表 (Ctrl-L)"><i class="fa fa-list-ul"></i></button>
+                        <button type="button" tabindex="-1" class="ordered-list" data-cmd="ol" title="有序列表 (Ctrl-Alt-L)"><i class="fa fa-list-ol"></i></button>
+                        <button type="button" tabindex="-1" class="link" data-cmd="link" title="创建链接 (Ctrl-K)"><i class="fa fa-link"></i></button>
+                        <button type="button" tabindex="-1" class="image" data-cmd="image" title="插入图片 (Ctrl-Alt-I)"><i class="fa-solid fa-image"></i></button>
+                        <button type="button" tabindex="-1" class="table" data-cmd="table" title="插入表格"><i class="fa fa-table"></i></button>
+                        <i class="separator"></i>
+                        <button type="button" tabindex="-1" class="preview" data-action="preview" title="预览 (Ctrl-P)"><i class="fa fa-eye"></i></button>
+                        <button type="button" tabindex="-1" class="side-by-side active" data-action="split" title="分屏 (F9)"><i class="fa fa-columns"></i></button>
+                        <button type="button" tabindex="-1" class="fullscreen" data-action="fullscreen" title="全屏 (F11)"><i class="fa fa-arrows-alt"></i></button>
+                    </div>
+                    
+                    <div id="editor" style="flex: 1 1 auto; overflow: hidden; min-height: 0; display: flex; flex-direction: column;"></div>
+                </div>
+            </div>
+        </section>
     </div>
 
     <script>
+        const OWNER_USERNAME = {{ username | tojson }};
+        const SHARE_ID = {{ share_id | tojson }};
+
         function rewriteHtmlFragmentLinksToNewTab(html) {
             const div = document.createElement('div');
             div.innerHTML = String(html || '');
@@ -68,66 +244,271 @@
             return div.innerHTML;
         }
 
-        const easyMDE = new EasyMDE({
-            element: document.getElementById('editor'),
-            spellChecker: false,
-            autosave: { enabled: false },
-            status: false,
-            previewRender: function(plainText) {
-                const html = window.NexoraSecureRender
-                    ? window.NexoraSecureRender.safeMarkdownToHtml(plainText || '')
-                    : marked.parse(plainText || '');
-                return rewriteHtmlFragmentLinksToNewTab(html);
-            },
-            toolbar: ["bold", "italic", "heading", "|", "quote", "unordered-list", "ordered-list", "|", "link", "image", "table", "|", "preview", "side-by-side", "fullscreen"]
-        });
+        function renderMarkdownSecure(markdown) {
+            const raw = String(markdown || '');
+            const html = window.NexoraSecureRender
+                ? window.NexoraSecureRender.safeMarkdownToHtml(raw)
+                : marked.parse(raw);
+            return rewriteHtmlFragmentLinksToNewTab(html);
+        }
 
-        const saveStatus = document.getElementById('saveStatus');
-        let timer = null;
-        let lastValue = easyMDE.value();
+        function setSaveStatus(kind, text) {
+            const status = document.getElementById('saveStatus');
+            if (!status) return;
+            status.className = 'status-badge';
+            if (kind === 'saving') status.classList.add('status-saving');
+            else if (kind === 'error') status.classList.add('status-error');
+            else status.classList.add('status-ok');
+            status.textContent = String(text || '');
+        }
 
-        async function saveData() {
-            const val = easyMDE.value();
-            if (val === lastValue) return;
-            
-            saveStatus.innerHTML = '<span class="badge" style="background:#fef9c3;color:#854d0e">同步中...</span>';
+        function normalizeKnowledgeImageFileName(file, fallback = '') {
+            if (file && typeof file.name === 'string' && file.name.trim()) return file.name.trim();
+            const mime = String((file && file.type) || '').toLowerCase();
+            const ext = mime.includes('png') ? 'png'
+                : mime.includes('jpeg') || mime.includes('jpg') ? 'jpg'
+                : mime.includes('gif') ? 'gif'
+                : mime.includes('webp') ? 'webp'
+                : mime.includes('bmp') ? 'bmp'
+                : mime.includes('tiff') ? 'tiff'
+                : 'png';
+            return `${String(fallback || 'image').trim() || 'image'}.${ext}`;
+        }
+
+        async function allocatePublicKnowledgeImageSlot(fileName = '') {
+            const res = await fetch(`/api/public/knowledge/${encodeURIComponent(OWNER_USERNAME)}/${encodeURIComponent(SHARE_ID)}/image/allocate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ file_name: String(fileName || '').trim() })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data || !data.success) {
+                throw new Error(String((data && data.message) || `allocate failed (${res.status})`));
+            }
+            return data;
+        }
+
+        async function uploadPublicKnowledgeImageByFile({ imageId, file, fileName = '' }) {
+            const form = new FormData();
+            form.append('image_id', String(imageId || '').trim());
+            if (fileName) form.append('file_name', String(fileName || '').trim());
+            form.append('file', file);
+            const res = await fetch(`/api/public/knowledge/${encodeURIComponent(OWNER_USERNAME)}/${encodeURIComponent(SHARE_ID)}/image/upload`, {
+                method: 'POST',
+                body: form
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data || !data.success) {
+                throw new Error(String((data && data.message) || `upload failed (${res.status})`));
+            }
+            return data;
+        }
+
+        let toastEditor = null;
+        let saveTimer = null;
+        let savingNow = false;
+        let lastValue = '';
+        let currentMode = 'split'; // 'edit', 'preview', 'split'
+
+        async function uploadImageForEditor(file, onSuccess, onError) {
             try {
-                const res = await fetch(`/api/public/knowledge/{{ username }}/{{ share_id }}`, {
+                const picked = file;
+                const mime = String((picked && picked.type) || '').toLowerCase();
+                if (!mime.startsWith('image/')) throw new Error('仅支持图片文件');
+                const size = Number((picked && picked.size) || 0);
+                if (size > 12 * 1024 * 1024) throw new Error('图片过大，请控制在 12MB 以内');
+                const fileName = normalizeKnowledgeImageFileName(picked, `share-image-${Date.now()}`);
+                setSaveStatus('saving', `图片上传中：${fileName}`);
+                const allocated = await allocatePublicKnowledgeImageSlot(fileName);
+                const imageId = String(allocated.image_id || '').trim().toLowerCase();
+                if (!imageId) throw new Error('图片分配失败：image_id 为空');
+                const uploaded = await uploadPublicKnowledgeImageByFile({ imageId, file: picked, fileName });
+                const finalUrl = String(uploaded.image_url || '').trim();
+                if (!finalUrl) throw new Error('上传成功但返回地址为空');
+                onSuccess(finalUrl);
+                setSaveStatus('saving', `图片已上传：${fileName}`);
+            } catch (err) {
+                const message = String((err && err.message) || err || '图片上传失败');
+                onError(message);
+                setSaveStatus('error', message);
+            }
+        }
+
+        async function saveData(force = false) {
+            if (!toastEditor || savingNow) return;
+            const val = toastEditor.getMarkdown();
+            if (!force && val === lastValue) return;
+            savingNow = true;
+            setSaveStatus('saving', '同步中...');
+            try {
+                const res = await fetch(`/api/public/knowledge/${encodeURIComponent(OWNER_USERNAME)}/${encodeURIComponent(SHARE_ID)}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ content: val })
                 });
-                const data = await res.json();
-                if (data.success) {
-                    saveStatus.innerHTML = '<span class="badge">已同步</span>';
+                const data = await res.json().catch(() => ({}));
+                if (res.ok && data && data.success) {
                     lastValue = val;
+                    setSaveStatus('ok', '已同步');
                 } else {
-                    saveStatus.innerHTML = '<span class="badge" style="background:#fee2e2;color:#991b1b">同步失败</span>';
+                    setSaveStatus('error', `同步失败: ${String((data && data.message) || '未知错误')}`);
                 }
             } catch (e) {
-                saveStatus.innerHTML = '<span class="badge" style="background:#fee2e2;color:#991b1b">离线</span>';
+                setSaveStatus('error', `离线: ${String((e && e.message) || e || '网络错误')}`);
+            } finally {
+                savingNow = false;
             }
         }
 
-        easyMDE.codemirror.on('change', () => {
-            if (timer) clearTimeout(timer);
-            timer = setTimeout(saveData, 1500); 
-        });
-
-        // 定时拉取
-        setInterval(async () => {
-            if (easyMDE.codemirror.hasFocus()) return; 
+        function initEditor() {
             try {
-                const res = await fetch(`/api/public/knowledge/{{ username }}/{{ share_id }}`);
-                const data = await res.json();
-                if (data.success && data.content !== easyMDE.value()) {
-                    const cursor = easyMDE.codemirror.getCursor();
-                    easyMDE.value(data.content);
-                    easyMDE.codemirror.setCursor(cursor);
-                    lastValue = data.content;
+                // 初始化阶段附加模式类以匹配 currentMode (默认 split)
+                document.querySelector('.public-edit-host').classList.add('mode-split');
+
+                const Editor = window.toastui.Editor;
+                const initialContent = document.getElementById('editorContent').value;
+                toastEditor = new Editor({
+                    el: document.getElementById('editor'),
+                    initialEditType: 'markdown',
+                    previewStyle: 'vertical',
+                    height: '100%',
+                    initialValue: initialContent,
+                    hideModeSwitch: true,
+                    toolbarItems: [], // 隐藏自带工具栏，使用上方自定义的 Nexora 风格
+                    hooks: {
+                        addImageBlobHook: async (blob, callback) => {
+                            await uploadImageForEditor(blob, 
+                                (url) => callback(url, blob.name || 'image'),
+                                (err) => console.error(err)
+                            );
+                        }
+                    },
+                    customHTMLRenderer: {
+                        htmlBlock: {
+                            iframe(node) {
+                                return [
+                                    { type: 'openTag', tagName: 'iframe', outerNewLine: true, attributes: node.attrs },
+                                    { type: 'html', content: node.childrenHTML },
+                                    { type: 'closeTag', tagName: 'iframe', outerNewLine: true }
+                                ];
+                            }
+                        }
+                    }
+                });
+                
+                // 将 Toast UI 原生预览区域加上 Nexora 统一排版样式类
+                const previewEl = document.querySelector('#editor .toastui-editor-contents');
+                if (previewEl) {
+                    previewEl.classList.add('content-body');
+                    previewEl.classList.add('editor-preview');
                 }
-            } catch (e) {}
+
+                // 绑定自定义工具栏事件
+                const tb = document.getElementById('customToolbar');
+                if (tb) {
+                    tb.addEventListener('click', (e) => {
+                        const btn = e.target.closest('[data-cmd], [data-action]');
+                        if (!btn) return;
+                        const cmd = btn.getAttribute('data-cmd');
+                        const action = btn.getAttribute('data-action');
+                        
+                        if (cmd) {
+                            const mapping = {
+                                'bold': 'bold', 'italic': 'italic', 'strike': 'strike',
+                                'heading': 'heading', 'quote': 'blockQuote',
+                                'ul': 'bulletList', 'ol': 'orderedList',
+                                'link': 'addLink', 'image': 'addImage', 'table': 'addTable'
+                            };
+                            if (mapping[cmd]) {
+                                toastEditor.exec(mapping[cmd]);
+                            }
+                        } else if (action) {
+                            try {
+                                const host = document.querySelector('.public-edit-host');
+                                const shell = document.querySelector('.public-edit-shell');
+                                
+                                if (action === 'fullscreen') {
+                                    // 模拟 EasyMDE 全屏 (CSS Fixed 罩层)，不使用受限的 HTML5 Fullscreen
+                                    shell.classList.toggle('is-fullscreen');
+                                    const isFS = shell.classList.contains('is-fullscreen');
+                                    btn.classList.toggle('active', isFS);
+                                    btn.innerHTML = isFS ? '<i class="fa fa-compress"></i>' : '<i class="fa fa-arrows-alt"></i>';
+                                    if (toastEditor) setTimeout(() => toastEditor.focus(), 50);
+                                    return;
+                                }
+
+                                if (action === 'preview') {
+                                    // EasyMDE 原版逻辑: 切换 纯预览 与 纯编辑
+                                    currentMode = (currentMode === 'preview') ? 'edit' : 'preview';
+                                } else if (action === 'split') {
+                                    // EasyMDE 原版逻辑: 切换 分屏 与 纯编辑
+                                    currentMode = (currentMode === 'split') ? 'edit' : 'split';
+                                }
+
+                                // 强制使得底层保持 vertical/markdown 渲染布局，靠上层 CSS 的 display 来控制视窗
+                                toastEditor.changeMode('markdown');
+                                toastEditor.changePreviewStyle('vertical');
+
+                                // 更新 CSS 状态机来决定哪个面板显示
+                                host.classList.remove('mode-edit', 'mode-preview', 'mode-split');
+                                host.classList.add('mode-' + currentMode);
+
+                                tb.querySelector('.preview').classList.toggle('active', currentMode === 'preview');
+                                tb.querySelector('.side-by-side').classList.toggle('active', currentMode === 'split');
+                            } catch (_) {}
+                        }
+                    });
+                }
+
+                // 覆盖默认的 Markdown 渲染以确保安全和统一
+                if (window.NexoraSecureRender) {
+                    toastEditor.setMarkdown = (function(original) {
+                        return function(md) {
+                            return original.call(this, md);
+                        };
+                    })(toastEditor.setMarkdown);
+                }
+            } catch (err) {
+                setSaveStatus('error', `编辑器初始化失败: ${String((err && err.message) || err || 'unknown')}`);
+                return;
+            }
+            lastValue = toastEditor.getMarkdown();
+            toastEditor.on('change', () => {
+                if (saveTimer) clearTimeout(saveTimer);
+                saveTimer = setTimeout(() => saveData(false), 1500);
+            });
+        }
+
+        document.addEventListener('keydown', async (e) => {
+            const key = String(e.key || '').toLowerCase();
+            if ((e.ctrlKey || e.metaKey) && key === 's') {
+                e.preventDefault();
+                e.stopPropagation();
+                await saveData(true);
+            }
+        }, true);
+
+        setInterval(async () => {
+            if (!toastEditor || savingNow) return;
+            // 粗略判断光标专注，若正在输入则跳过远程拉取，避免中断
+            try {
+                if (toastEditor.mdEditor && toastEditor.mdEditor.el && toastEditor.mdEditor.el.contains(document.activeElement)) return;
+            } catch (_) {}
+            
+            try {
+                const res = await fetch(`/api/public/knowledge/${encodeURIComponent(OWNER_USERNAME)}/${encodeURIComponent(SHARE_ID)}`);
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || !data || !data.success) return;
+                const remote = String(data.content || '');
+                if (remote !== toastEditor.getMarkdown()) {
+                    toastEditor.setMarkdown(remote);
+                    lastValue = remote;
+                    setSaveStatus('ok', '已同步（远端更新）');
+                }
+            } catch (_) {}
         }, 5000);
+
+        initEditor();
     </script>
 </body>
 </html>

@@ -50,8 +50,8 @@ from core.nexora_proxy import NexoraProxy
 from core.runlog import log_event
 from core.runlog import available_log_sources, list_structured_logs
 from core import user as user_store
-from core.memory_analysis import run_memory_analysis_job
-from core.profile_question import run_profile_question_job
+from core.memory.memory_analysis import run_memory_analysis_job
+from core.memory.profile_question import run_profile_question_job
 from core.learning_feed import prepend_learning_feed_item
 from core.learning_feed import list_learning_feed_items
 from core.learning_feed import list_learning_feed_channels
@@ -63,7 +63,7 @@ from core.learning_feed import append_learning_feed_comment
 from core.learning_feed import delete_learning_feed_item
 from core.learning_feed import delete_learning_feed_comment
 from core.user import append_notification
-from core.memory_queue import (
+from core.memory.memory_queue import (
     enqueue_memory_job,
     get_memory_queue_snapshot,
     get_memory_state,
@@ -80,6 +80,7 @@ from core.booksproc import (
     enqueue_book_question,
     enqueue_book_refinement,
     enqueue_book_section,
+    enqueue_book_annotation,
     get_book_progress_steps,
     get_book_progress_text,
     get_intensive_reading_settings,
@@ -88,6 +89,7 @@ from core.booksproc import (
     get_refinement_queue_snapshot,
     get_rough_reading_settings,
     get_split_chapters_settings,
+    get_annotation_settings,
     init_booksproc,
     list_refinement_candidates,
     mark_book_uploaded,
@@ -96,6 +98,7 @@ from core.booksproc import (
     update_profile_question_settings,
     update_rough_reading_settings,
     update_split_chapters_settings,
+    update_annotation_settings,
 )
 from core.vector import (
     collection_stats as vector_collection_stats,
@@ -108,7 +111,7 @@ from core.vector import (
     vectorize_book,
 )
 from core.utils import extract_text
-from core.epub_assets import extract_epub_with_assets
+from core.bookextract import extract_epub_with_assets
 
 bp = Blueprint("learning", __name__, url_prefix="/api")
 _cfg: Dict[str, Any] = {}
@@ -1494,6 +1497,36 @@ def frontend_settings_refinement_section():
         return jsonify({"success": False, "error": str(exc)}), 500
 
 
+@bp.route("/frontend/settings/refinement/annotation", methods=["POST"])
+def frontend_settings_refinement_annotation():
+    """设置页：手动触发教材批注生成（输出写入 annotations.xml）。"""
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    actor = str(data.get("actor") or _resolve_runtime_user_id()).strip()
+    model_name = str(data.get("model_name") or "").strip()
+    log_event(
+        "frontend_annotation_request",
+        "收到前端批注请求",
+        payload={
+            "lecture_id": lecture_id,
+            "book_id": book_id,
+            "actor": actor,
+            "model_name": model_name,
+            "is_admin": bool(_is_runtime_admin()),
+        },
+    )
+    if not _is_runtime_admin():
+        return jsonify({"success": False, "error": "Only admin can start annotation generation."}), 403
+    if not lecture_id or not book_id:
+        return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+    try:
+        result = enqueue_book_annotation(_cfg, lecture_id, book_id, actor=actor, model_name=model_name)
+        return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, **result}), 202
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
 @bp.route("/frontend/settings/refinement/stop", methods=["POST"])
 def frontend_settings_refinement_stop():
     """设置页：停止教材精读并重置状态。"""
@@ -1507,6 +1540,150 @@ def frontend_settings_refinement_stop():
         return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
     result = cancel_book_refinement(_cfg, lecture_id, book_id, actor=actor)
     return jsonify({"success": True, **result}), 200
+
+
+def _serialize_settings_user(user: Dict[str, Any], *, remote: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    user_data = dict(user or {})
+    remote = dict(remote or {})
+    role = str(remote.get("role") or user_data.get("role") or "member").strip().lower() or "member"
+    identity = str(user_data.get("identity") or "").strip().lower()
+    if identity not in {"student", "teacher"}:
+        identity = "student"
+    created_at = user_data.get("created_at") or 0
+    local_user_id = str(user_data.get("id") or user_data.get("user_id") or remote.get("username") or remote.get("id") or "").strip()
+    return {
+        "user_id": local_user_id,
+        "remote_user_id": str(remote.get("id") or "").strip(),
+        "username": str(remote.get("username") or user_data.get("username") or "").strip(),
+        "display_name": str(remote.get("display_name") or user_data.get("display_name") or "").strip(),
+        "nickname": str(remote.get("nickname") or user_data.get("nickname") or "").strip(),
+        "description": str(user_data.get("description") or "").strip(),
+        "avatar_url": str(remote.get("avatar_url") or remote.get("avatar") or "").strip(),
+        "role": role,
+        "identity": identity,
+        "is_admin": role == "admin",
+        "created_at": _safe_int(created_at, 0),
+    }
+
+
+def _list_settings_users(query: str = "", limit: int = 200) -> List[Dict[str, Any]]:
+    q = str(query or "").strip().lower()
+    rows: List[Dict[str, Any]] = []
+    for user in user_store.list_users(_cfg):
+        if not isinstance(user, dict):
+            continue
+        user_id = str(user.get("id") or user.get("username") or "").strip()
+        if not user_id:
+            continue
+        # Enrich from Nexora so avatar/role/nickname are always current.
+        remote: Dict[str, Any] = {}
+        if _proxy is not None:
+            try:
+                result = _proxy.get_user_info(username=user_id or None)
+                if isinstance(result, dict) and result.get("success"):
+                    remote = result.get("user") if isinstance(result.get("user"), dict) else {}
+            except Exception:
+                pass
+        row = _serialize_settings_user(user, remote=remote)
+        if not row.get("user_id"):
+            continue
+        if q:
+            haystack = " ".join(
+                str(row.get(val) or "")
+                for val in ("user_id", "username", "display_name", "nickname", "description", "role", "identity")
+            ).lower()
+            if q not in haystack:
+                continue
+        rows.append(row)
+
+    def _sort_key(item: Dict[str, Any]) -> Tuple[int, int, str]:
+        role = str(item.get("role") or "").strip().lower()
+        identity = str(item.get("identity") or "").strip().lower()
+        if role == "admin":
+            priority = 0
+        elif identity == "teacher" or role == "teacher":
+            priority = 1
+        else:
+            priority = 2
+        try:
+            updated_value = int(item.get("updated_at") or item.get("created_at") or 0)
+        except (TypeError, ValueError):
+            updated_value = 0
+        return (priority, -updated_value, str(item.get("user_id") or ""))
+
+    rows.sort(key=_sort_key)
+    return rows[: max(1, min(int(limit or 200), 500))]
+
+
+@bp.route("/frontend/settings/users", methods=["GET"])
+def frontend_settings_users():
+    """设置页：读取用户列表与身份信息。"""
+    if not _is_runtime_admin():
+        return jsonify({"success": False, "error": "Only admin can view user settings."}), 403
+    query = str(request.args.get("q") or "").strip()
+    limit = _safe_int(request.args.get("limit"), 200)
+    rows = _list_settings_users(query, limit)
+    summary = {
+        "total": len(rows),
+        "admins": sum(1 for row in rows if str(row.get("role") or "").strip().lower() == "admin"),
+        "teachers": sum(1 for row in rows if str(row.get("identity") or "").strip().lower() == "teacher"),
+        "students": sum(1 for row in rows if str(row.get("identity") or "").strip().lower() == "student"),
+    }
+    return jsonify(
+        {
+            "success": True,
+            "query": query,
+            "items": rows,
+            "total": len(rows),
+            "summary": summary,
+        }
+    )
+
+
+@bp.route("/frontend/settings/users/<user_id>", methods=["PATCH"])
+def frontend_settings_users_patch(user_id: str):
+    """设置页：更新用户身份标签。"""
+    if not _is_runtime_admin():
+        return jsonify({"success": False, "error": "Only admin can update user settings."}), 403
+    resolved_user_id = str(user_id or "").strip()
+    if not resolved_user_id:
+        return jsonify({"success": False, "error": "user_id is required."}), 400
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "error": "JSON body is required."}), 400
+    identity = str(data.get("identity") or "").strip().lower()
+    if identity not in {"student", "teacher"}:
+        return jsonify({"success": False, "error": "identity must be student or teacher."}), 400
+
+    current = user_store.get_user(_cfg, resolved_user_id)
+    if not current:
+        return jsonify({"success": False, "error": "user not found."}), 404
+    actor = str(_resolve_runtime_user_id() or "").strip()
+    is_target_admin = str(current.get("role") or "").strip().lower() == "admin"
+    if is_target_admin and actor != resolved_user_id:
+        return jsonify({"success": False, "error": "不允许修改其他管理员的身份。"}), 400
+
+    updated = user_store.update_user(_cfg, resolved_user_id, {"identity": identity})
+    if not isinstance(updated, dict):
+        return jsonify({"success": False, "error": "user not found."}), 404
+    remote: Dict[str, Any] = {}
+    if _proxy is not None:
+        try:
+            result = _proxy.get_user_info(username=resolved_user_id or None)
+            if isinstance(result, dict) and result.get("success"):
+                remote = result.get("user") if isinstance(result.get("user"), dict) else {}
+        except Exception:
+            pass
+    log_event(
+        "settings_user_identity_updated",
+        "Updated user identity from Settings.",
+        payload={
+            "user_id": resolved_user_id,
+            "identity": identity,
+            "actor": _resolve_runtime_user_id(),
+        },
+    )
+    return jsonify({"success": True, "user": _serialize_settings_user(updated, remote=remote)})
 
 
 @bp.route("/frontend/settings/models", methods=["GET"])
@@ -1531,6 +1708,7 @@ def frontend_settings_models():
                 "rough_reading": rough,
                 "intensive_reading": get_intensive_reading_settings(_cfg),
                 "split_chapters": get_split_chapters_settings(_cfg),
+                "annotation": get_annotation_settings(_cfg),
                 "memory": get_memory_settings(_cfg),
                 "profile_question": get_profile_question_settings(_cfg),
             },
@@ -1550,6 +1728,7 @@ def frontend_settings_models_patch():
     rough_updates = data.get("rough_reading")
     intensive_updates = data.get("intensive_reading")
     split_chapters_updates = data.get("split_chapters")
+    annotation_updates = data.get("annotation")
     memory_updates = data.get("memory")
     profile_question_updates = data.get("profile_question")
     listed = _list_nexora_models_payload(_resolve_runtime_user_id())
@@ -1558,6 +1737,7 @@ def frontend_settings_models_patch():
     updated_rough = get_rough_reading_settings(_cfg)
     updated_intensive = get_intensive_reading_settings(_cfg)
     updated_split_chapters = get_split_chapters_settings(_cfg)
+    updated_annotation = get_annotation_settings(_cfg)
     updated_memory = get_memory_settings(_cfg)
     updated_profile_question = get_profile_question_settings(_cfg)
     if default_model is not None:
@@ -1580,6 +1760,11 @@ def frontend_settings_models_patch():
         if split_model_name and split_model_name not in available_ids:
             return jsonify({"success": False, "error": "split_chapters.model_name is not in available models."}), 400
         updated_split_chapters = update_split_chapters_settings(_cfg, split_chapters_updates)
+    if isinstance(annotation_updates, dict):
+        annotation_model_name = str(annotation_updates.get("model_name") or "").strip()
+        if annotation_model_name and annotation_model_name not in available_ids:
+            return jsonify({"success": False, "error": "annotation.model_name is not in available models."}), 400
+        updated_annotation = update_annotation_settings(_cfg, annotation_updates)
     if isinstance(memory_updates, dict):
         memory_model_name = str(memory_updates.get("model_name") or "").strip()
         if memory_model_name and memory_model_name not in available_ids:
@@ -1598,6 +1783,7 @@ def frontend_settings_models_patch():
                 "rough_reading": updated_rough,
                 "intensive_reading": updated_intensive,
                 "split_chapters": updated_split_chapters,
+                "annotation": updated_annotation,
                 "memory": updated_memory,
                 "profile_question": updated_profile_question,
             },
@@ -2477,6 +2663,23 @@ def get_book_sections_xml(lecture_id: str, book_id: str):
     if error_response is not None:
         return error_response
     content = load_book_sections_xml(_cfg, lecture_id, book_id)
+    return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, "content": content})
+
+
+@bp.route("/lectures/<lecture_id>/books/<book_id>/annotations", methods=["GET"])
+def get_book_annotations(lecture_id: str, book_id: str):
+    _, _, error_response = _book_or_404(lecture_id, book_id)
+    if error_response is not None:
+        return error_response
+    from pathlib import Path
+    data_dir = Path(str(_cfg.get("data_dir") or "data"))
+    annotations_path = data_dir / "lectures" / lecture_id / "books" / book_id / "annotations.xml"
+    content = ""
+    if annotations_path.exists():
+        try:
+            content = annotations_path.read_text(encoding="utf-8")
+        except Exception:
+            content = ""
     return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, "content": content})
 
 
@@ -3789,3 +3992,66 @@ def frontend_learning_chapter_complete():
         },
     )
     return jsonify({"success": True, "enqueue": job, "progress": progress, "next_chapter": next_chapter})
+
+
+@bp.route("/frontend/learning/session-complete", methods=["POST"])
+def frontend_learning_session_complete():
+    data = request.get_json(silent=True) or {}
+    username = _resolve_runtime_user_id()
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    chapter_name = str(data.get("chapter_name") or "").strip()
+    chapter_index = _safe_int(data.get("chapter_index"), -1)
+    session_name = str(data.get("session_name") or "").strip()
+    session_index = _safe_int(data.get("session_index"), -1)
+    session_range = str(data.get("session_range") or "").strip()
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+    if not lecture_id or not book_id or not chapter_name or not session_name:
+        return jsonify({"success": False, "error": "lecture_id, book_id, chapter_name and session_name are required."}), 400
+    if chapter_index < 0 or session_index < 0:
+        return jsonify({"success": False, "error": "chapter_index and session_index are required."}), 400
+    lecture = get_learning_lecture(_cfg, lecture_id)
+    book = get_lecture_book(_cfg, lecture_id, book_id)
+    if not isinstance(lecture, dict) or not isinstance(book, dict):
+        return jsonify({"success": False, "error": "lecture or book not found."}), 404
+
+    existing_records = user_store.list_learning_records(_cfg, username)
+    already_completed = any(
+        str(r.get("type") or "").strip() == "session_completed"
+        and str(r.get("lecture_id") or "").strip() == lecture_id
+        and str(r.get("book_id") or "").strip() == book_id
+        and _safe_int(r.get("chapter_index"), -1) == chapter_index
+        and _safe_int(r.get("session_index"), -1) == session_index
+        for r in (existing_records or [])
+    )
+
+    if not already_completed:
+        user_store.append_learning_record(
+            _cfg,
+            username,
+            {
+                "type": "session_completed",
+                "lecture_id": lecture_id,
+                "book_id": book_id,
+                "chapter_name": chapter_name,
+                "chapter_index": chapter_index,
+                "session_name": session_name,
+                "session_index": session_index,
+                "session_range": session_range,
+            },
+        )
+    log_event(
+        "frontend_session_complete",
+        "用户完成小节学习",
+        payload={
+            "username": username,
+            "lecture_id": lecture_id,
+            "book_id": book_id,
+            "chapter_name": chapter_name,
+            "chapter_index": chapter_index,
+            "session_name": session_name,
+            "session_index": session_index,
+        },
+    )
+    return jsonify({"success": True, "already_completed": already_completed})

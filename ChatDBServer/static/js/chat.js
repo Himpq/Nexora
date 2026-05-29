@@ -5011,10 +5011,13 @@ function setLearningEmbedLayoutMode(mode, options = {}) {
         els.mainContent.classList.toggle('learning-embed-immersive', active);
     }
     if (els.inputDock) {
-        if (options && options.hasOwnProperty('hideInputDock')) {
+        if (active) {
+            // immersive 模式下，inputDock 由 CSS body.learning-embed-immersive .input-dock 控制
+            els.inputDock.classList.remove('learning-mode-hidden');
+        } else if (options && options.hasOwnProperty('hideInputDock')) {
             const shouldHide = !!options.hideInputDock;
             els.inputDock.classList.toggle('learning-mode-hidden', shouldHide);
-        } else if (!active) {
+        } else {
             els.inputDock.classList.remove('learning-mode-hidden');
         }
     }
@@ -9466,6 +9469,20 @@ function initUI() {
         if (mobileHeaderMenu && !mobileHeaderMenu.contains(e.target)) {
             closeMobileHeaderMenu();
         }
+        if (els.knowledgePanel && els.knowledgePanel.classList.contains('visible')) {
+            const target = e.target;
+            const clickInPanel = !!(target && els.knowledgePanel.contains(target));
+            const clickOnToggle = !!(
+                target &&
+                (
+                    (els.toggleKnowledgePanel && els.toggleKnowledgePanel.contains(target)) ||
+                    (els.btnTogglePanel && els.btnTogglePanel.contains(target))
+                )
+            );
+            if (!clickInPanel && !clickOnToggle) {
+                closeKnowledgePanel();
+            }
+        }
 
         // Mobile: tap blank area to close sidebar / knowledge panel
         if (isChatMobileLayout()) {
@@ -9481,15 +9498,6 @@ function initUI() {
                     (mobileToggleBtn && mobileToggleBtn.contains(target));
                 if (!clickInSidebar && !clickOnToggle) {
                     closeMobileSidebar();
-                }
-            }
-
-            if (els.knowledgePanel && els.knowledgePanel.classList.contains('visible')) {
-                const clickInPanel = els.knowledgePanel.contains(target);
-                const clickOnToggle = (els.toggleKnowledgePanel && els.toggleKnowledgePanel.contains(target)) ||
-                    (els.btnTogglePanel && els.btnTogglePanel.contains(target));
-                if (!clickInPanel && !clickOnToggle) {
-                    closeKnowledgePanel();
                 }
             }
 
@@ -17506,6 +17514,82 @@ let knowledgeEditorScrollState = {
 };
 let knowledgeEditorPreviewHooksInstalled = false;
 let knowledgeEditorToolbarHooksInstalled = false;
+const KNOWLEDGE_IMAGE_PLACEHOLDER_SCHEME = 'nexora-upload://';
+const KNOWLEDGE_IMAGE_PENDING_ALT = '上传中...';
+const KNOWLEDGE_IMAGE_FAILED_ALT = '上传失败';
+const knowledgeImageUploadRuntime = {
+    pending: new Map()
+};
+
+function escapeRegexPattern(value) {
+    return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function buildKnowledgeImagePlaceholderToken(imageId) {
+    const safeId = String(imageId || '').trim().toLowerCase();
+    if (!safeId) return '';
+    return `${KNOWLEDGE_IMAGE_PLACEHOLDER_SCHEME}${safeId}`;
+}
+
+function buildKnowledgeImagePlaceholderMarkdown(token, fileName = '') {
+    const label = String(fileName || '').trim() || KNOWLEDGE_IMAGE_PENDING_ALT;
+    return `![${label}](${token})`;
+}
+
+function normalizeKnowledgeImageAltText(rawName = '') {
+    const text = String(rawName || '').trim();
+    if (!text) return '图片';
+    let normalized = text.replace(/[\r\n\[\]]+/g, ' ').trim();
+    normalized = normalized.replace(/^上传中(?:\.{3}|…)?\s*/u, '').trim();
+    normalized = normalized.replace(/^上传失败\s*/u, '').trim();
+    return normalized || '图片';
+}
+
+function normalizeKnowledgeImageFileName(file, fallback = '') {
+    if (file && typeof file.name === 'string' && file.name.trim()) return file.name.trim();
+    const mime = String((file && file.type) || '').toLowerCase();
+    const ext = mime.includes('png') ? 'png'
+        : mime.includes('jpeg') || mime.includes('jpg') ? 'jpg'
+        : mime.includes('gif') ? 'gif'
+        : mime.includes('webp') ? 'webp'
+        : mime.includes('bmp') ? 'bmp'
+        : mime.includes('tiff') ? 'tiff'
+        : 'png';
+    return `${String(fallback || 'image').trim() || 'image'}.${ext}`;
+}
+
+async function allocateKnowledgeImageSlot(fileName = '', basisTitle = '') {
+    const res = await fetch('/api/knowledge/image/allocate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            file_name: String(fileName || '').trim(),
+            basis_title: String(basisTitle || '').trim()
+        })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data || !data.success) {
+        throw new Error(String((data && data.message) || `allocate failed (${res.status})`));
+    }
+    return data;
+}
+
+async function uploadKnowledgeImageByFile({ imageId, file, fileName = '', basisTitle = '' }) {
+    const form = new FormData();
+    form.append('image_id', String(imageId || '').trim());
+    form.append('basis_title', String(basisTitle || '').trim());
+    if (fileName) form.append('file_name', String(fileName || '').trim());
+    form.append('file', file);
+    const res = await fetch('/api/knowledge/image/upload', {
+        method: 'POST',
+        body: form
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data || !data.success) {
+        throw new Error(String((data && data.message) || `upload failed (${res.status})`));
+    }
+    return data;
+}
 
 function destroyKnowledgeMarkdownEditor() {
     if (easyMDE && typeof easyMDE.__cleanupPreviewBridge === 'function') {
@@ -17865,7 +17949,147 @@ function createToastUiKnowledgeEditor(initialValue = '') {
         } catch (_) {}
     };
 
-    const handleToolbarCommand = (cmd) => {
+    const replaceKnowledgeImagePlaceholder = (placeholderToken, resolveMarkdown) => {
+        const token = String(placeholderToken || '').trim();
+        if (!token) return false;
+        const markdown = String(editor.getMarkdown() || '');
+        if (!markdown.includes(token)) return false;
+        const cm = getToastCodeMirror();
+        const scroller = getToastEditorScroller();
+        const windowScrollY = Number(window.scrollY || window.pageYOffset || 0);
+        const cmScrollInfo = cm && typeof cm.getScrollInfo === 'function' ? cm.getScrollInfo() : null;
+        const cmSelections = cm && typeof cm.listSelections === 'function' ? cm.listSelections() : null;
+        const cmCursor = cm && typeof cm.getCursor === 'function' ? cm.getCursor() : null;
+        const scrollerTop = scroller ? Number(scroller.scrollTop || 0) : 0;
+        const scrollerLeft = scroller ? Number(scroller.scrollLeft || 0) : 0;
+        const escapedToken = escapeRegexPattern(token);
+        const pattern = new RegExp(`!\\[([^\\]]*)\\]\\(${escapedToken}\\)`, 'g');
+        let changed = false;
+        const next = markdown.replace(pattern, (_, altText) => {
+            changed = true;
+            const safeAlt = String(altText || '').trim();
+            const out = resolveMarkdown(safeAlt);
+            return String(out || '');
+        });
+        if (!changed) return false;
+        editor.setMarkdown(next, false);
+        if (cm) {
+            try {
+                if (cmSelections && cmSelections.length > 0 && typeof cm.setSelections === 'function') {
+                    cm.setSelections(cmSelections);
+                } else if (cmCursor && typeof cm.setCursor === 'function') {
+                    cm.setCursor(cmCursor);
+                }
+            } catch (_) {}
+        }
+        if (cm && cmScrollInfo && typeof cm.scrollTo === 'function') {
+            cm.scrollTo(Number(cmScrollInfo.left || 0), Number(cmScrollInfo.top || 0));
+        }
+        if (scroller) {
+            scroller.scrollTop = scrollerTop;
+            scroller.scrollLeft = scrollerLeft;
+        }
+        requestAnimationFrame(() => {
+            if (cm) {
+                try {
+                    if (cmSelections && cmSelections.length > 0 && typeof cm.setSelections === 'function') {
+                        cm.setSelections(cmSelections);
+                    } else if (cmCursor && typeof cm.setCursor === 'function') {
+                        cm.setCursor(cmCursor);
+                    }
+                } catch (_) {}
+            }
+            if (scroller) {
+                scroller.scrollTop = scrollerTop;
+                scroller.scrollLeft = scrollerLeft;
+            }
+            window.scrollTo(window.scrollX || 0, windowScrollY);
+        });
+        queueToastPreviewRender(true, 0);
+        return true;
+    };
+
+    const allocateAndUploadKnowledgeImage = async (file) => {
+        const picked = normalizeUploadFile(file, 0) || file;
+        const mime = String((picked && picked.type) || '').toLowerCase();
+        if (!mime.startsWith('image/')) {
+            throw new Error('仅支持图片文件');
+        }
+        const size = Number((picked && picked.size) || 0);
+        if (size > 12 * 1024 * 1024) {
+            throw new Error('图片过大，请控制在 12MB 以内');
+        }
+        const fileName = normalizeKnowledgeImageFileName(picked, `knowledge-image-${Date.now()}`);
+        const basisTitle = String(currentViewingKnowledge || '').trim();
+        const allocated = await allocateKnowledgeImageSlot(fileName, basisTitle);
+        const imageId = String(allocated.image_id || '').trim().toLowerCase();
+        if (!imageId) {
+            throw new Error('图片分配失败：image_id 为空');
+        }
+        const placeholderToken = buildKnowledgeImagePlaceholderToken(imageId);
+        if (!placeholderToken) {
+            throw new Error('图片分配失败：占位符无效');
+        }
+        const placeholderMarkdown = buildKnowledgeImagePlaceholderMarkdown(placeholderToken, `${KNOWLEDGE_IMAGE_PENDING_ALT} ${fileName}`);
+        insertMarkdownFallback(`${placeholderMarkdown}\n`);
+        queueToastPreviewRender(false, 0);
+        knowledgeImageUploadRuntime.pending.set(imageId, {
+            imageId,
+            fileName,
+            placeholderToken,
+            startedAt: Date.now()
+        });
+
+        try {
+            const uploaded = await uploadKnowledgeImageByFile({
+                imageId,
+                file: picked,
+                fileName,
+                basisTitle
+            });
+            const finalUrl = String(uploaded.image_url || '').trim();
+            if (!finalUrl) {
+                throw new Error('上传成功但返回地址为空');
+            }
+            const replaced = replaceKnowledgeImagePlaceholder(placeholderToken, (existingAlt) => {
+                const alt = normalizeKnowledgeImageAltText(existingAlt || fileName);
+                return `![${alt}](${finalUrl})`;
+            });
+            if (!replaced) {
+                showToast(`图片已上传：${fileName}（占位符已被删除，可手动插入）`);
+            } else {
+                showToast(`图片已上传：${fileName}`);
+            }
+            return uploaded;
+        } catch (err) {
+            const errText = String((err && err.message) || err || '上传失败').trim() || '上传失败';
+            replaceKnowledgeImagePlaceholder(placeholderToken, () => {
+                const failedAlt = `${KNOWLEDGE_IMAGE_FAILED_ALT} ${normalizeKnowledgeImageAltText(fileName)}`;
+                return `![${failedAlt}](${placeholderToken})`;
+            });
+            throw new Error(errText);
+        } finally {
+            knowledgeImageUploadRuntime.pending.delete(imageId);
+        }
+    };
+
+    const handleKnowledgeImageFiles = async (files) => {
+        const items = Array.isArray(files) ? files : [];
+        const imageFiles = items.filter((f) => {
+            const mime = String((f && f.type) || '').toLowerCase();
+            return mime.startsWith('image/');
+        });
+        if (!imageFiles.length) return;
+        for (let i = 0; i < imageFiles.length; i++) {
+            try {
+                await allocateAndUploadKnowledgeImage(imageFiles[i]);
+            } catch (err) {
+                showToast(String((err && err.message) || err || '图片上传失败'));
+            }
+        }
+    };
+
+    const handleToolbarCommand = async (cmd) => {
         const command = String(cmd || '').trim();
         if (!command) return;
 
@@ -17895,12 +18119,31 @@ function createToastUiKnowledgeEditor(initialValue = '') {
         }
 
         if (command === 'image') {
-            const imageUrl = 'https://';
-            const altText = getSelectedMarkdownText() || '图片描述';
-            if (!runToastCommand(commandAliases.image, { imageUrl, altText })) {
-                insertMarkdownFallback(`![${altText}](${imageUrl})`);
+            const picker = document.createElement('input');
+            picker.type = 'file';
+            picker.accept = 'image/*';
+            picker.multiple = true;
+            picker.style.display = 'none';
+            document.body.appendChild(picker);
+            const cleanupPicker = () => {
+                if (picker.parentNode) picker.parentNode.removeChild(picker);
+            };
+            picker.addEventListener('change', async () => {
+                const files = picker.files ? Array.from(picker.files) : [];
+                try {
+                    await handleKnowledgeImageFiles(files);
+                } finally {
+                    cleanupPicker();
+                }
+            }, { once: true });
+            setTimeout(cleanupPicker, 60000);
+            picker.click();
+            if (!picker.parentNode) {
+                const altText = getSelectedMarkdownText() || '图片描述';
+                if (!runToastCommand(commandAliases.image, { imageUrl: 'https://', altText })) {
+                    insertMarkdownFallback(`![${altText}](https://)`);
+                }
             }
-            showToast('已插入图片模板');
             return;
         }
 
@@ -17981,7 +18224,7 @@ function createToastUiKnowledgeEditor(initialValue = '') {
         });
         if (cmd) {
             if (viewMode === 'preview') return;
-            handleToolbarCommand(cmd);
+            void handleToolbarCommand(cmd);
             requestAnimationFrame(() => renderToastPreview(false));
             return;
         }
@@ -18052,6 +18295,54 @@ function createToastUiKnowledgeEditor(initialValue = '') {
         }
     } catch (_) {}
 
+    const handlePasteImageUploadEvent = (evt) => {
+        const files = extractFilesFromClipboardEvent(evt).filter((f) => {
+            const mime = String((f && f.type) || '').toLowerCase();
+            return mime.startsWith('image/');
+        });
+        if (!files.length) return false;
+        evt.preventDefault();
+        evt.stopPropagation();
+        void handleKnowledgeImageFiles(files);
+        return true;
+    };
+
+    const handleDropImageUploadEvent = (evt) => {
+        const dt = evt && evt.dataTransfer ? evt.dataTransfer : null;
+        if (!dt || !dt.files || dt.files.length <= 0) return false;
+        const files = Array.from(dt.files)
+            .map((f, idx) => normalizeUploadFile(f, idx))
+            .filter((f) => {
+                const mime = String((f && f.type) || '').toLowerCase();
+                return mime.startsWith('image/');
+            });
+        if (!files.length) return false;
+        evt.preventDefault();
+        evt.stopPropagation();
+        void handleKnowledgeImageFiles(files);
+        return true;
+    };
+
+    const bindKnowledgeImageUploadBridge = () => {
+        const targets = [];
+        const scroller = getToastEditorScroller();
+        if (scroller) targets.push(scroller);
+        if (host && !targets.includes(host)) targets.push(host);
+        if (!targets.length) return;
+        const onPaste = (evt) => { handlePasteImageUploadEvent(evt); };
+        const onDrop = (evt) => { handleDropImageUploadEvent(evt); };
+        targets.forEach((target) => {
+            target.addEventListener('paste', onPaste, true);
+            target.addEventListener('drop', onDrop, true);
+        });
+        previewBridgeCleanupFns.push(() => {
+            targets.forEach((target) => {
+                target.removeEventListener('paste', onPaste, true);
+                target.removeEventListener('drop', onDrop, true);
+            });
+        });
+    };
+
     const bindPreviewBridge = () => {
         const proseMirror = getToastProseMirrorEl();
         if (!proseMirror) return;
@@ -18076,7 +18367,10 @@ function createToastUiKnowledgeEditor(initialValue = '') {
             observer.disconnect();
         });
     };
-    requestAnimationFrame(bindPreviewBridge);
+    requestAnimationFrame(() => {
+        bindPreviewBridge();
+        bindKnowledgeImageUploadBridge();
+    });
 
     const codemirrorCompat = {
         on: (eventName, handler) => {
@@ -21681,6 +21975,10 @@ function installKnowledgeEditorPreviewHooks() {
 
 async function saveKnowledge(title) {
     if(!easyMDE) return;
+    if (knowledgeImageUploadRuntime.pending.size > 0) {
+        showToast('仍有图片上传中，请稍候再保存');
+        return;
+    }
     const content = easyMDE.value();
     
     try {
@@ -22724,6 +23022,26 @@ function dragEventHasFiles(e) {
     return types.includes('Files');
 }
 
+function dragEventInKnowledgeScope(e) {
+    const target = e && e.target;
+    if (target && typeof target.closest === 'function') {
+        if (target.closest('#knowledgeViewer, #knowledgeEditor, .knowledge-toast-editor, .knowledge-view-body, .knowledge-view-content, .toastui-editor-defaultUI, #publicEditShell')) {
+            return true;
+        }
+    }
+    const path = e && typeof e.composedPath === 'function' ? e.composedPath() : [];
+    if (Array.isArray(path) && path.length > 0) {
+        for (let i = 0; i < path.length; i++) {
+            const node = path[i];
+            if (!node || typeof node.closest !== 'function') continue;
+            if (node.closest('#knowledgeViewer, #knowledgeEditor, .knowledge-toast-editor, .knowledge-view-body, .knowledge-view-content, .toastui-editor-defaultUI, #publicEditShell')) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 function bindGlobalFileDropUpload() {
     if (document.body && document.body.dataset.fileDropBound === '1') return;
     if (document.body) document.body.dataset.fileDropBound = '1';
@@ -22731,6 +23049,10 @@ function bindGlobalFileDropUpload() {
 
     const onDragEnter = (e) => {
         if (!dragEventHasFiles(e)) return;
+        if (dragEventInKnowledgeScope(e)) {
+            resetFileDropOverlayState();
+            return;
+        }
         e.preventDefault();
         e.stopPropagation();
         fileDragDepth += 1;
@@ -22739,6 +23061,10 @@ function bindGlobalFileDropUpload() {
 
     const onDragOver = (e) => {
         if (!dragEventHasFiles(e)) return;
+        if (dragEventInKnowledgeScope(e)) {
+            resetFileDropOverlayState();
+            return;
+        }
         e.preventDefault();
         e.stopPropagation();
         if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
@@ -22759,6 +23085,10 @@ function bindGlobalFileDropUpload() {
 
     const onDrop = async (e) => {
         if (!dragEventHasFiles(e)) return;
+        if (dragEventInKnowledgeScope(e)) {
+            resetFileDropOverlayState();
+            return;
+        }
         e.preventDefault();
         e.stopPropagation();
         const files = Array.from((e.dataTransfer && e.dataTransfer.files) ? e.dataTransfer.files : []);
