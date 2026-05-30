@@ -7,7 +7,7 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Mapping
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
@@ -63,6 +63,10 @@ from core.learning_feed import append_learning_feed_comment
 from core.learning_feed import delete_learning_feed_item
 from core.learning_feed import delete_learning_feed_comment
 from core.user import append_notification
+from core.user.learning_progress import (
+    build_user_study_hours_map as _build_user_study_hours_map,
+    compute_user_lecture_progress as _compute_user_lecture_progress,
+)
 from core.memory.memory_queue import (
     enqueue_memory_job,
     get_memory_queue_snapshot,
@@ -484,43 +488,6 @@ def _resolve_runtime_user_id() -> str:
             return default_username
 
     return "guest"
-
-
-def _build_user_study_hours_map(user_id: str) -> Dict[str, float]:
-    """Aggregate per-lecture study hours from user learning records."""
-    rows = user_store.list_learning_records(_cfg, user_id)
-    hours_map: Dict[str, float] = {}
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        lecture_id = str(row.get("lecture_id") or "").strip()
-        if not lecture_id:
-            continue
-
-        # 支持 seconds / minutes / hours 三种字段
-        seconds = row.get("study_seconds")
-        minutes = row.get("study_minutes")
-        hours = row.get("study_hours")
-
-        amount_hours = 0.0
-        try:
-            if hours is not None:
-                amount_hours = max(0.0, float(hours))
-            elif minutes is not None:
-                amount_hours = max(0.0, float(minutes) / 60.0)
-            elif seconds is not None:
-                amount_hours = max(0.0, float(seconds) / 3600.0)
-            elif str(row.get("type") or "").strip() in {"study_time", "study_session", "learning_time"}:
-                # 兜底: duration 字段按秒
-                duration = row.get("duration")
-                if duration is not None:
-                    amount_hours = max(0.0, float(duration) / 3600.0)
-        except Exception:
-            amount_hours = 0.0
-
-        if amount_hours > 0:
-            hours_map[lecture_id] = float(hours_map.get(lecture_id, 0.0) + amount_hours)
-    return hours_map
 
 
 def _escape_card_html(value: Any) -> str:
@@ -1093,6 +1060,10 @@ def frontend_dashboard():
         total_study_hours += lecture_hours
         books = list_lecture_books(_cfg, lecture_id)
         total_books += len(books)
+        user_progress = _compute_user_lecture_progress(user_id, lecture_id, books)
+        lecture_with_user_state["progress"] = user_progress["progress"]
+        lecture_with_user_state["current_chapter"] = user_progress["current_chapter"]
+        lecture_with_user_state["next_chapter"] = user_progress["next_chapter"]
         selected_rows.append(
             {
                 "lecture": lecture_with_user_state,
@@ -3903,155 +3874,3 @@ def frontend_learning_feed_comment_delete(feed_id: str, comment_id: str):
         return jsonify({"success": False, "error": "comment not found."}), 404
     log_event("learning_feed_comment_deleted", {"feed_id": feed_id, "comment_id": comment_id, "username": username, "source": "feed"})
     return jsonify({"success": True, "item": updated})
-
-
-@bp.route("/frontend/learning/chapter-complete", methods=["POST"])
-def frontend_learning_chapter_complete():
-    data = request.get_json(silent=True) or {}
-    username = _resolve_runtime_user_id()
-    lecture_id = str(data.get("lecture_id") or "").strip()
-    book_id = str(data.get("book_id") or "").strip()
-    chapter_name = str(data.get("chapter_name") or "").strip()
-    chapter_range = str(data.get("chapter_range") or "").strip()
-    chapter_context = str(data.get("chapter_context") or "")
-    chapter_detail_xml = str(data.get("chapter_detail_xml") or "")
-    if not username:
-        return jsonify({"success": False, "error": "username is required."}), 400
-    if not lecture_id or not book_id or not chapter_name:
-        return jsonify({"success": False, "error": "lecture_id, book_id and chapter_name are required."}), 400
-    lecture = get_learning_lecture(_cfg, lecture_id)
-    book = get_lecture_book(_cfg, lecture_id, book_id)
-    if not isinstance(lecture, dict) or not isinstance(book, dict):
-        return jsonify({"success": False, "error": "lecture or book not found."}), 404
-
-    existing_records = user_store.list_learning_records(_cfg, username)
-    already_completed = any(
-        str(r.get("type") or "").strip() == "chapter_completed"
-        and str(r.get("lecture_id") or "").strip() == lecture_id
-        and str(r.get("book_id") or "").strip() == book_id
-        and str(r.get("chapter_name") or "").strip() == chapter_name
-        for r in (existing_records or [])
-    )
-
-    progress = max(0, min(100, _safe_int(lecture.get("progress"), 0)))
-    if progress < 100 and not already_completed:
-        progress = min(100, progress + 5)
-    next_chapter = ""
-    if chapter_range:
-        info_xml = str(load_book_info_xml(_cfg, lecture_id, book_id) or "")
-        parsed = parse_book_info_xml_chapters(info_xml, len(str(load_book_text(_cfg, lecture_id, book_id) or "")))
-        found_index = -1
-        for idx, row in enumerate(parsed):
-            if str(row.get("title") or "").strip() == chapter_name:
-                found_index = idx
-                break
-        if found_index >= 0 and found_index + 1 < len(parsed):
-            next_chapter = str(parsed[found_index + 1].get("title") or "").strip()
-    update_learning_lecture(
-        _cfg,
-        lecture_id,
-        {
-            "current_chapter": chapter_name,
-            "next_chapter": next_chapter,
-            "progress": progress,
-        },
-    )
-    user_store.append_learning_record(
-        _cfg,
-        username,
-        {
-            "type": "chapter_completed",
-            "lecture_id": lecture_id,
-            "book_id": book_id,
-            "chapter_name": chapter_name,
-            "chapter_range": chapter_range,
-        },
-    )
-    job = enqueue_memory_job(
-        _cfg,
-        user_id=username,
-        lecture_id=lecture_id,
-        reason="profile_question",
-        payload={
-            "book_id": book_id,
-            "chapter_name": chapter_name,
-            "chapter_range": chapter_range,
-            "chapter_context": chapter_context,
-            "chapter_detail_xml": chapter_detail_xml,
-        },
-    )
-    log_event(
-        "frontend_chapter_complete",
-        "用户完成章节并触发画像出题",
-        payload={
-            "username": username,
-            "lecture_id": lecture_id,
-            "book_id": book_id,
-            "chapter_name": chapter_name,
-            "question_job": dict(job or {}),
-        },
-    )
-    return jsonify({"success": True, "enqueue": job, "progress": progress, "next_chapter": next_chapter})
-
-
-@bp.route("/frontend/learning/session-complete", methods=["POST"])
-def frontend_learning_session_complete():
-    data = request.get_json(silent=True) or {}
-    username = _resolve_runtime_user_id()
-    lecture_id = str(data.get("lecture_id") or "").strip()
-    book_id = str(data.get("book_id") or "").strip()
-    chapter_name = str(data.get("chapter_name") or "").strip()
-    chapter_index = _safe_int(data.get("chapter_index"), -1)
-    session_name = str(data.get("session_name") or "").strip()
-    session_index = _safe_int(data.get("session_index"), -1)
-    session_range = str(data.get("session_range") or "").strip()
-    if not username:
-        return jsonify({"success": False, "error": "username is required."}), 400
-    if not lecture_id or not book_id or not chapter_name or not session_name:
-        return jsonify({"success": False, "error": "lecture_id, book_id, chapter_name and session_name are required."}), 400
-    if chapter_index < 0 or session_index < 0:
-        return jsonify({"success": False, "error": "chapter_index and session_index are required."}), 400
-    lecture = get_learning_lecture(_cfg, lecture_id)
-    book = get_lecture_book(_cfg, lecture_id, book_id)
-    if not isinstance(lecture, dict) or not isinstance(book, dict):
-        return jsonify({"success": False, "error": "lecture or book not found."}), 404
-
-    existing_records = user_store.list_learning_records(_cfg, username)
-    already_completed = any(
-        str(r.get("type") or "").strip() == "session_completed"
-        and str(r.get("lecture_id") or "").strip() == lecture_id
-        and str(r.get("book_id") or "").strip() == book_id
-        and _safe_int(r.get("chapter_index"), -1) == chapter_index
-        and _safe_int(r.get("session_index"), -1) == session_index
-        for r in (existing_records or [])
-    )
-
-    if not already_completed:
-        user_store.append_learning_record(
-            _cfg,
-            username,
-            {
-                "type": "session_completed",
-                "lecture_id": lecture_id,
-                "book_id": book_id,
-                "chapter_name": chapter_name,
-                "chapter_index": chapter_index,
-                "session_name": session_name,
-                "session_index": session_index,
-                "session_range": session_range,
-            },
-        )
-    log_event(
-        "frontend_session_complete",
-        "用户完成小节学习",
-        payload={
-            "username": username,
-            "lecture_id": lecture_id,
-            "book_id": book_id,
-            "chapter_name": chapter_name,
-            "chapter_index": chapter_index,
-            "session_name": session_name,
-            "session_index": session_index,
-        },
-    )
-    return jsonify({"success": True, "already_completed": already_completed})

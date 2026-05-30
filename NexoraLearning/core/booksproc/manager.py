@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import threading
 import time
@@ -218,6 +219,96 @@ def _push_book_progress_step(lecture_id: str, book_id: str, step: Mapping[str, A
 
 def get_book_progress_steps(lecture_id: str, book_id: str) -> List[Dict[str, Any]]:
     """读取教材进度步骤列表。"""
+    return state_get_book_progress_steps(lecture_id, book_id)
+
+
+def _book_progress_steps_path(lecture_id: str, book_id: str) -> Path:
+    base_dir = Path(str((_CFG or {}).get("data_dir") or "./data")).resolve()
+    return base_dir / "lectures" / str(lecture_id or "").strip() / "books" / str(book_id or "").strip() / "progress_steps.jsonl"
+
+
+def _append_persisted_book_progress_step(lecture_id: str, book_id: str, row: Mapping[str, Any]) -> None:
+    lecture_key = str(lecture_id or "").strip()
+    book_key = str(book_id or "").strip()
+    if not lecture_key or not book_key:
+        return
+    path = _book_progress_steps_path(lecture_key, book_key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = dict(row or {})
+    payload.setdefault("ts", int(time.time()))
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(payload, ensure_ascii=False))
+        f.write("\n")
+
+
+def _load_persisted_book_progress_steps(lecture_id: str, book_id: str, limit: int = 60) -> List[Dict[str, Any]]:
+    lecture_key = str(lecture_id or "").strip()
+    book_key = str(book_id or "").strip()
+    if not lecture_key or not book_key:
+        return []
+    path = _book_progress_steps_path(lecture_key, book_key)
+    if not path.exists():
+        return []
+    rows: List[Dict[str, Any]] = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            text = str(line or "").strip()
+            if not text:
+                continue
+            try:
+                item = json.loads(text)
+            except Exception:
+                continue
+            if isinstance(item, dict):
+                rows.append(item)
+    except Exception:
+        return []
+    if limit > 0 and len(rows) > limit:
+        return rows[-limit:]
+    return rows
+
+
+def _clear_persisted_book_progress_steps(lecture_id: str, book_id: str) -> None:
+    lecture_key = str(lecture_id or "").strip()
+    book_key = str(book_id or "").strip()
+    if not lecture_key or not book_key:
+        return
+    path = _book_progress_steps_path(lecture_key, book_key)
+    try:
+        if path.exists():
+            path.unlink()
+    except Exception:
+        pass
+
+
+def _set_book_progress(lecture_id: str, book_id: str, text: str) -> None:
+    state_set_book_progress(lecture_id, book_id, text)
+    if not str(text or "").strip():
+        _clear_persisted_book_progress_steps(lecture_id, book_id)
+
+
+def _push_book_progress_step(lecture_id: str, book_id: str, step: Mapping[str, Any]) -> None:
+    row = dict(step or {})
+    row["ts"] = int(time.time())
+    state_push_book_progress_step(lecture_id, book_id, row)
+    try:
+        _append_persisted_book_progress_step(lecture_id, book_id, row)
+    except Exception as exc:
+        log_event(
+            "book_progress_step_persist_error",
+            "保存教材模型步骤失败",
+            payload={
+                "lecture_id": str(lecture_id or ""),
+                "book_id": str(book_id or ""),
+                "error": str(exc),
+            },
+        )
+
+
+def get_book_progress_steps(lecture_id: str, book_id: str) -> List[Dict[str, Any]]:
+    persisted = _load_persisted_book_progress_steps(lecture_id, book_id, limit=60)
+    if persisted:
+        return persisted
     return state_get_book_progress_steps(lecture_id, book_id)
 
 

@@ -328,6 +328,24 @@
 
   /** 生成甜甜圈图扇区 SVG path（用于学习时长统计） */
   function donutPath(cx, cy, outerR, innerR, startAngle, endAngle) {
+    const sweep = endAngle - startAngle;
+    const normalizedSweep = Math.abs(sweep % 360);
+    if (normalizedSweep < 0.0001 && Math.abs(sweep) > 0.0001) {
+      const outerStart = polarToCartesian(cx, cy, outerR, startAngle);
+      const outerMid = polarToCartesian(cx, cy, outerR, startAngle + 180);
+      const innerStart = polarToCartesian(cx, cy, innerR, startAngle + 180);
+      const innerMid = polarToCartesian(cx, cy, innerR, startAngle);
+      return [
+        `M ${outerStart.x} ${outerStart.y}`,
+        `A ${outerR} ${outerR} 0 1 1 ${outerMid.x} ${outerMid.y}`,
+        `A ${outerR} ${outerR} 0 1 1 ${outerStart.x} ${outerStart.y}`,
+        "Z",
+        `M ${innerStart.x} ${innerStart.y}`,
+        `A ${innerR} ${innerR} 0 1 0 ${innerMid.x} ${innerMid.y}`,
+        `A ${innerR} ${innerR} 0 1 0 ${innerStart.x} ${innerStart.y}`,
+        "Z",
+      ].join(" ");
+    }
     const outerStart = polarToCartesian(cx, cy, outerR, startAngle);
     const outerEnd = polarToCartesian(cx, cy, outerR, endAngle);
     const innerStart = polarToCartesian(cx, cy, innerR, endAngle);

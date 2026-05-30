@@ -114,8 +114,6 @@ def _csv_path(user_id: str, stream: str) -> Path:
     return _telemetry_dir(user_id) / f"{stream}.csv"
 
 
-def _meta_path(user_id: str) -> Path:
-    return _telemetry_dir(user_id) / "_meta.json"
 
 
 # ────────────────────────────────────────────────────────────
@@ -137,21 +135,6 @@ def _is_known_stream(stream: str) -> bool:
 # File I/O (thread-safe)
 # ────────────────────────────────────────────────────────────
 
-def _ensure_meta(user_id: str) -> None:
-    """Write _meta.json if missing or stale."""
-    meta_p = _meta_path(user_id)
-    if meta_p.exists():
-        return
-    meta_p.parent.mkdir(parents=True, exist_ok=True)
-    registry = {}
-    for stream, schema in _STREAM_SCHEMAS.items():
-        registry[stream] = {
-            "label": schema["label"],
-            "columns": schema["columns"],
-            "column_labels": schema.get("column_labels", {}),
-        }
-    meta_p.write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8")
-
 
 def _ensure_csv_header(user_id: str, stream: str) -> None:
     """Create CSV file with header row if it does not exist."""
@@ -165,7 +148,8 @@ def _ensure_csv_header(user_id: str, stream: str) -> None:
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(columns)
-    p.write_text(buf.getvalue(), encoding="utf-8")
+    with p.open("w", encoding="utf-8", newline="") as f:
+        f.write(buf.getvalue())
 
 
 def _append_rows(user_id: str, stream: str, rows: List[List[Any]]) -> int:
@@ -187,7 +171,7 @@ def _append_rows(user_id: str, stream: str, rows: List[List[Any]]) -> int:
     with _LOCK:
         _ensure_csv_header(user_id, stream)
         p = _csv_path(user_id, stream)
-        with open(p, "a", encoding="utf-8") as f:
+        with open(p, "a", encoding="utf-8", newline="") as f:
             f.write(payload)
     return len(rows)
 
@@ -300,7 +284,6 @@ def ingest_batch(user_id: str, events: List[Mapping[str, Any]]) -> IngestResult:
     uid = str(user_id or "").strip()
     if not uid:
         raise ValueError("user_id is required")
-    _ensure_meta(uid)
 
     result = IngestResult()
     # Group by stream
