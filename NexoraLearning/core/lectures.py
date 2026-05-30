@@ -25,7 +25,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 from .utils import read_chunks_jsonl, write_chunks_jsonl
 
 _lock = threading.RLock()
@@ -35,6 +35,25 @@ _BOOK_SUMMARY_KEYS = {
     "current_chapter",
     "next_chapter",
 }
+
+
+def _normalize_teacher_list(value: Any) -> List[str]:
+    if isinstance(value, str):
+        raw_items = [value]
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        raw_items = list(value)
+    else:
+        raw_items = []
+
+    rows: List[str] = []
+    seen = set()
+    for item in raw_items:
+        teacher_id = str(item or "").strip()
+        if not teacher_id or teacher_id in seen:
+            continue
+        seen.add(teacher_id)
+        rows.append(teacher_id)
+    return rows
 
 
 def _lectures_root(cfg: Dict[str, Any]) -> Path:
@@ -141,6 +160,7 @@ def create_lecture(
     description: str = "",
     category: str = "",
     status: str = "draft",
+    teacher: Any = None,
 ) -> Dict[str, Any]:
     lecture_id = f"l_{uuid.uuid4().hex[:12]}"
     lecture_dir = _lecture_dir(cfg, lecture_id)
@@ -154,6 +174,7 @@ def create_lecture(
         "description": description.strip(),
         "category": category.strip(),
         "status": status.strip() or "draft",
+        "teacher": _normalize_teacher_list(teacher),
         "created_at": now,
         "updated_at": now,
         "book_count": 0,
@@ -175,7 +196,10 @@ def update_lecture(
     sanitized = dict(updates or {})
     sanitized.pop("id", None)
     sanitized.pop("created_at", None)
+    if "teacher" in sanitized:
+        sanitized["teacher"] = _normalize_teacher_list(sanitized.get("teacher"))
     lecture.update(sanitized)
+    lecture["teacher"] = _normalize_teacher_list(lecture.get("teacher"))
     lecture["updated_at"] = int(time.time())
     _write_json(_lecture_json_path(cfg, lecture_id), lecture)
     return lecture

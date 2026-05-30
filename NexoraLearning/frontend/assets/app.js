@@ -168,6 +168,18 @@
     learningFeedChannels: [],
     selectedFeedChannelId: "public_all",
     dashboardSideTab: "progress",
+    // ── 教师 Panel 状态 ──
+    teacherOverview: null,
+    teacherLoadingOverview: false,
+    teacherView: "home",
+    teacherReturnView: "home",
+    teacherSelectedUid: "",
+    teacherStudentAnalysis: null,
+    teacherLoadingAnalysis: false,
+    teacherLectureId: "",
+    teacherSortKey: "progress_desc",
+    teacherScope: "in_course",
+    _teacherEventFilter: null,  // Set 实例，null 表示无筛选（显示全部）
     feedExpandedMap: {},
     feedCommentDrafts: {},
     feedCommentComposing: {},
@@ -1053,14 +1065,601 @@
     return !!state.isAdmin || identity === "teacher";
   }
 
+  function getCurrentTeacherKeys() {
+    const user = state.user && typeof state.user === "object" ? state.user : {};
+    const keys = [
+      state.username,
+      user.id,
+      user.user_id,
+      user.username,
+      user.display_name,
+      user.nickname,
+    ]
+      .map((value) => String(value || "").trim().toLowerCase())
+      .filter(Boolean);
+    return Array.from(new Set(keys));
+  }
+
+  function lectureManagedByCurrentTeacher(lecture) {
+    const teacherList = Array.isArray(lecture && lecture.teacher) ? lecture.teacher : [];
+    if (!teacherList.length) return false;
+    const teacherSet = new Set(teacherList.map((value) => String(value || "").trim().toLowerCase()).filter(Boolean));
+    return getCurrentTeacherKeys().some((key) => teacherSet.has(key));
+  }
+
+  function getLectureProgressTrail(lecture, books) {
+    const list = Array.isArray(books) ? books : [];
+    const selectedBookId = String(state.selectedBookId || "").trim().toLowerCase();
+    const book = list.find((item) => String((item && item.id) || "").trim().toLowerCase() === selectedBookId) || list[0] || {};
+    const bookTitle = String(book && (book.title || book.name || book.id) || "").trim() || "暂无教材";
+    const chapter = getChapterInfo(lecture, list);
+    let sessionTitle = "";
+
+    if (String(book.id || "").trim() && String(book.id || "").trim().toLowerCase() === selectedBookId) {
+      const sessionMeta = getReaderCurrentSessionMeta("teacher_panel");
+      if (sessionMeta && String(sessionMeta.book_id || "").trim().toLowerCase() === String(book.id || "").trim().toLowerCase()) {
+        sessionTitle = String(sessionMeta.session_name || "").trim();
+      }
+    }
+
+    if (!sessionTitle) {
+      const chapterName = String(chapter.current || "").trim();
+      const sectionData = chapterName ? state.readerSectionsData[chapterName] : null;
+      const sessions = sectionData && Array.isArray(sectionData.sessions) ? sectionData.sessions : [];
+      if (sessions.length) {
+        sessionTitle = String(sessions[0].name || "").trim();
+      }
+    }
+
+    return {
+      progress: getCourseProgress(lecture, list),
+      bookTitle,
+      chapterTitle: String(chapter.current || "").trim() || "未开始",
+      sessionTitle: sessionTitle || "未进入 Session",
+    };
+  }
+
+  // ── 教师 Panel：数据加载 ──
+  async function loadTeacherOverview() {
+    if (state.teacherLoadingOverview) return;
+    state.teacherLoadingOverview = true;
+    state.teacherSelectedUid = "";
+    state.teacherStudentAnalysis = null;
+    renderTeacherPanel();
+    try {
+      const qs = new URLSearchParams();
+      if (state.teacherLectureId) qs.set("lecture_id", state.teacherLectureId);
+      const data = await fetchJson(`/api/frontend/teacher/class-overview?${qs.toString()}`);
+      state.teacherOverview = data && data.success ? data : null;
+      if (state.teacherOverview && state.teacherOverview.lecture_id) {
+        state.teacherLectureId = state.teacherOverview.lecture_id;
+      }
+    } catch (_e) {
+      state.teacherOverview = null;
+    } finally {
+      state.teacherLoadingOverview = false;
+    }
+    renderTeacherPanel();
+  }
+
+  async function loadTeacherStudentAnalysis(uid) {
+    if (!uid) return;
+    if (state.teacherLoadingAnalysis) return;
+    state.teacherLoadingAnalysis = true;
+    state.teacherReturnView = String(state.teacherView || "home");
+    state.teacherSelectedUid = uid;
+    state.teacherStudentAnalysis = null;
+    state._teacherEventFilter = null;
+    renderTeacherPanel();
+    try {
+      const qs = new URLSearchParams();
+      qs.set("user_id", uid);
+      if (state.teacherLectureId) qs.set("lecture_id", state.teacherLectureId);
+      const data = await fetchJson(`/api/frontend/teacher/student-analysis?${qs.toString()}`);
+      state.teacherStudentAnalysis = data && data.success ? data.analysis : null;
+    } catch (_e) {
+      state.teacherStudentAnalysis = null;
+    } finally {
+      state.teacherLoadingAnalysis = false;
+    }
+    renderTeacherPanel();
+  }
+
   function renderTeacherPanel() {
+    renderTeacherHomePanel();
+  }
+
+  function renderTeacherHomePanel() {
+    const lectureRows = Array.isArray(state.allLectureRows) ? state.allLectureRows : [];
+    const managedRows = lectureRows.filter((row) => lectureManagedByCurrentTeacher(row && row.lecture ? row.lecture : {}));
+    const cardsHtml = managedRows.map((row) => {
+      const lecture = row && row.lecture && typeof row.lecture === "object" ? row.lecture : {};
+      const books = Array.isArray(row && row.books) ? row.books : [];
+      const lectureId = String(lecture.id || "").trim();
+      const trail = getLectureProgressTrail(lecture, books);
+      const progress = Math.max(0, Math.min(100, Number(trail.progress) || 0));
+      const bookCount = Number(row && row.books_count) || books.length || 0;
+      return `
+        <article class="nxl-course-item" data-lecture-id="${escapeHtml(lectureId)}">
+          <div class="nxl-course-top">
+            <div class="nxl-course-title">${escapeHtml(getLectureTitle(lecture))}</div>
+            <div class="nxl-course-percent">${progress}%</div>
+          </div>
+          <div class="nxl-course-current">${escapeHtml(`${bookCount} 本教材 · ${trail.bookTitle} - ${trail.chapterTitle} - ${trail.sessionTitle}`)}</div>
+          <div class="nxl-course-bar"><div class="nxl-course-bar-fill" style="width:${progress}%"></div></div>
+        </article>
+      `;
+    }).join("");
     el.timePieChart.innerHTML = `
-      <div class="teacher-panel-shell">
-        <div class="teacher-panel-hero">
-          <div class="teacher-panel-subtitle">内容占位</div>
+      ${managedRows.length ? `<div class="materials-list">${cardsHtml}</div>` : '<div class="materials-empty">暂无可管理课程</div>'}
+    `;
+  }
+
+  function renderTeacherClassOverview() {
+    const data = state.teacherOverview || {};
+    const chapters = data.chapters || [];
+    const students = data.students || [];
+
+    if (!students.length) {
+      el.timePieChart.innerHTML = '<div class="teacher-panel-empty"><div class="empty-msg">暂无学生数据</div></div>';
+      return;
+    }
+
+    const lectureRows = Array.isArray(state.dashboardRows) ? state.dashboardRows : [];
+    const lectureOptions = lectureRows.map((row) => {
+      const lecture = row && row.lecture && typeof row.lecture === "object" ? row.lecture : {};
+      const lectureId = String(lecture.id || "").trim();
+      const lectureTitle = String(lecture.title || lecture.name || lectureId || "").trim();
+      if (!lectureId) return null;
+      return { id: lectureId, title: lectureTitle || lectureId };
+    }).filter(Boolean);
+
+    const inCourseRows = students.filter((s) => !!s.is_in_course);
+    const totalCount = students.length;
+    const inCourseCount = inCourseRows.length;
+    const active24hCount = students.filter((s) => {
+      const ts = Number(s.last_active_ts) || 0;
+      if (!ts) return false;
+      return (Math.floor(Date.now() / 1000) - ts) <= 86400;
+    }).length;
+    const avgProgress = inCourseCount
+      ? Math.round(inCourseRows.reduce((sum, s) => sum + (Number(s.progress) || 0), 0) / inCourseCount)
+      : 0;
+    const avgHours = inCourseCount
+      ? (inCourseRows.reduce((sum, s) => sum + (Number(s.study_hours) || 0), 0) / inCourseCount).toFixed(1)
+      : "0.0";
+
+    const scope = String(state.teacherScope || "in_course");
+    let filteredRows = students.slice();
+    if (scope === "in_course") filteredRows = filteredRows.filter((s) => !!s.is_in_course);
+    if (scope === "not_started") filteredRows = filteredRows.filter((s) => !!s.is_in_course && (Number(s.progress) || 0) <= 0 && (Number(s.study_hours) || 0) <= 0);
+
+    const sortKey = String(state.teacherSortKey || "progress_desc");
+    filteredRows.sort((a, b) => {
+      if (sortKey === "hours_desc") return (Number(b.study_hours) || 0) - (Number(a.study_hours) || 0);
+      if (sortKey === "activity_desc") return (Number(b.last_active_ts) || 0) - (Number(a.last_active_ts) || 0);
+      if (sortKey === "risk_desc") {
+        const aRisk = ((100 - (Number(a.progress) || 0)) * 10) + ((Number(a.study_hours) || 0) <= 0 ? 100 : 0);
+        const bRisk = ((100 - (Number(b.progress) || 0)) * 10) + ((Number(b.study_hours) || 0) <= 0 ? 100 : 0);
+        return bRisk - aRisk;
+      }
+      return (Number(b.progress) || 0) - (Number(a.progress) || 0);
+    });
+
+    const riskRows = inCourseRows
+      .filter((s) => (Number(s.progress) || 0) < 30 || (Number(s.study_hours) || 0) <= 0)
+      .sort((a, b) => (Number(a.progress) || 0) - (Number(b.progress) || 0))
+      .slice(0, 5);
+
+    const compareRowsHtml = filteredRows.map((s, idx) => {
+      const progress = Math.max(0, Math.min(100, Number(s.progress) || 0));
+      const chaptersDone = Number(s.chapter_count) || 0;
+      const chaptersTotal = Number(s.total_chapters) || 0;
+      const hoursText = (Number(s.study_hours) || 0) > 0 ? `${Number(s.study_hours).toFixed(1)}h` : "0h";
+      const activeText = s.last_active_ts ? formatFeedRelativeTime(s.last_active_ts) : "无记录";
+      const statusClass = s.is_in_course ? "is-in-course" : "is-not-in-course";
+      const statusText = s.is_in_course ? "已选课" : "未选课";
+      const heatCells = (Array.isArray(s.chapter_status) && s.chapter_status.length)
+        ? `<div class="teacher-heatmap">${s.chapter_status.map((done, i) => {
+          const title = chapters[i] ? escapeHtml(chapters[i].name || "") : "";
+          return `<span class="teacher-heatmap-cell" data-done="${done ? "true" : "false"}" title="${title}"></span>`;
+        }).join("")}</div>`
+        : '<div class="teacher-heatmap-none">暂无章节</div>';
+      return `
+        <article class="teacher-compare-row" data-teacher-student-uid="${escapeHtml(String(s.user_id || ""))}">
+          <div class="teacher-compare-col teacher-compare-name">
+            <div class="teacher-compare-rank">${idx + 1}</div>
+            <div class="teacher-compare-ident">
+              <div class="teacher-compare-display">${escapeHtml(String(s.display_name || s.username || s.user_id || ""))}</div>
+              <div class="teacher-compare-handle">@${escapeHtml(String(s.username || s.user_id || ""))}</div>
+            </div>
+          </div>
+          <div class="teacher-compare-col teacher-compare-progress">
+            <div class="teacher-compare-progress-value">${progress}%</div>
+            <div class="teacher-compare-progress-bar"><span style="width:${progress}%"></span></div>
+          </div>
+          <div class="teacher-compare-col teacher-compare-chapters">${chaptersDone}/${chaptersTotal || 0}章</div>
+          <div class="teacher-compare-col teacher-compare-hours">${hoursText}</div>
+          <div class="teacher-compare-col teacher-compare-active">${escapeHtml(String(activeText || ""))}</div>
+          <div class="teacher-compare-col teacher-compare-status"><span class="teacher-status-badge ${statusClass}">${statusText}</span></div>
+          <div class="teacher-compare-col teacher-compare-heat">${heatCells}</div>
+        </article>
+      `;
+    }).join("");
+
+    const riskHtml = riskRows.length
+      ? riskRows.map((s) => `<div class="teacher-risk-item" data-teacher-student-uid="${escapeHtml(String(s.user_id || ""))}">
+          <span class="teacher-risk-name">${escapeHtml(String(s.display_name || s.username || s.user_id || ""))}</span>
+          <span class="teacher-risk-meta">${Math.max(0, Number(s.progress) || 0)}% · ${(Number(s.study_hours) || 0).toFixed(1)}h</span>
+        </div>`).join("")
+      : '<div class="teacher-risk-empty">当前无高风险学生</div>';
+
+    const lectureSelectHtml = lectureOptions.length
+      ? lectureOptions.map((row) => `<option value="${escapeHtml(String(row.id || ""))}" ${String(row.id) === String(data.lecture_id || state.teacherLectureId || "") ? "selected" : ""}>${escapeHtml(String(row.title || row.id || ""))}</option>`).join("")
+      : '<option value="">当前无课程</option>';
+
+    el.timePieChart.innerHTML = `
+      <div class="teacher-panel-shell teacher-panel-overview">
+        <div class="teacher-page-head">
+          <div>
+            <div class="teacher-page-title">班级概览</div>
+            <div class="teacher-page-subtitle">查看班级整体状态，并进入学生详情。</div>
+          </div>
+          <button class="teacher-page-back" id="teacherBackHomeBtn" type="button">返回首页</button>
+        </div>
+        <div class="teacher-overview-toolbar">
+          <div class="teacher-overview-toolbar-left">
+            <select id="teacherLectureSelect" class="input-lite teacher-select">${lectureSelectHtml}</select>
+            <select id="teacherScopeSelect" class="input-lite teacher-select">
+              <option value="all" ${scope === "all" ? "selected" : ""}>全部用户</option>
+              <option value="in_course" ${scope === "in_course" ? "selected" : ""}>仅已选课</option>
+              <option value="not_started" ${scope === "not_started" ? "selected" : ""}>未开始学习</option>
+            </select>
+            <select id="teacherSortSelect" class="input-lite teacher-select">
+              <option value="progress_desc" ${sortKey === "progress_desc" ? "selected" : ""}>按进度</option>
+              <option value="hours_desc" ${sortKey === "hours_desc" ? "selected" : ""}>按时长</option>
+              <option value="activity_desc" ${sortKey === "activity_desc" ? "selected" : ""}>按活跃</option>
+              <option value="risk_desc" ${sortKey === "risk_desc" ? "selected" : ""}>按风险</option>
+            </select>
+          </div>
+          <button id="teacherRefreshBtn" class="nxl-icon-btn" type="button" title="刷新">↻</button>
+        </div>
+
+        <div class="teacher-kpi-grid">
+          <article class="teacher-kpi-card"><div class="teacher-kpi-label">已选课人数</div><div class="teacher-kpi-value">${inCourseCount}/${totalCount}</div></article>
+          <article class="teacher-kpi-card"><div class="teacher-kpi-label">近24h活跃</div><div class="teacher-kpi-value">${active24hCount}</div></article>
+          <article class="teacher-kpi-card"><div class="teacher-kpi-label">平均进度</div><div class="teacher-kpi-value">${avgProgress}%</div></article>
+          <article class="teacher-kpi-card"><div class="teacher-kpi-label">平均时长</div><div class="teacher-kpi-value">${avgHours}h</div></article>
+        </div>
+
+        <div class="teacher-panel-grid">
+          <div class="teacher-panel-main">
+            <div class="teacher-compare-panel">
+              <header class="teacher-compare-head">
+                <span>学生</span><span>进度</span><span>章节</span><span>时长</span><span>活跃</span><span>状态</span><span>章节分布</span>
+              </header>
+              <div class="teacher-compare-list" id="teacherCompareList">${compareRowsHtml || '<div class="teacher-panel-empty"><div class="empty-msg">暂无可比较数据</div></div>'}</div>
+            </div>
+          </div>
+          <div class="teacher-panel-side">
+            <div class="teacher-risk-panel">
+              <div class="teacher-risk-title">重点关注</div>
+              <div class="teacher-risk-list" id="teacherRiskList">${riskHtml}</div>
+            </div>
+          </div>
         </div>
       </div>
     `;
+
+    const lectureSelectEl = document.getElementById("teacherLectureSelect");
+    if (lectureSelectEl) {
+      lectureSelectEl.addEventListener("change", () => {
+        state.teacherLectureId = String(lectureSelectEl.value || "").trim();
+        state.teacherSelectedUid = "";
+        state.teacherStudentAnalysis = null;
+        loadTeacherOverview().catch(() => {});
+      });
+    }
+
+    const scopeEl = document.getElementById("teacherScopeSelect");
+    if (scopeEl) {
+      scopeEl.addEventListener("change", () => {
+        state.teacherScope = String(scopeEl.value || "in_course");
+        renderTeacherClassOverview();
+      });
+    }
+
+    const sortEl = document.getElementById("teacherSortSelect");
+    if (sortEl) {
+      sortEl.addEventListener("change", () => {
+        state.teacherSortKey = String(sortEl.value || "progress_desc");
+        renderTeacherClassOverview();
+      });
+    }
+
+    const refreshBtn = document.getElementById("teacherRefreshBtn");
+    if (refreshBtn) {
+      refreshBtn.addEventListener("click", () => {
+        loadTeacherOverview().catch(() => {});
+      });
+    }
+
+    const backHomeBtn = document.getElementById("teacherBackHomeBtn");
+    if (backHomeBtn) {
+      backHomeBtn.addEventListener("click", () => {
+        state.teacherView = "home";
+        renderTeacherPanel();
+      });
+    }
+
+    const openStudentDetail = (ev) => {
+      const item = ev.target.closest("[data-teacher-student-uid]");
+      if (!item) return;
+      const uid = item.getAttribute("data-teacher-student-uid");
+      if (!uid) return;
+      loadTeacherStudentAnalysis(uid);
+    };
+    const compareList = document.getElementById("teacherCompareList");
+    const riskList = document.getElementById("teacherRiskList");
+    if (compareList) compareList.addEventListener("click", openStudentDetail);
+    if (riskList) riskList.addEventListener("click", openStudentDetail);
+  }
+
+  function renderTeacherRiskPanel() {
+    const data = state.teacherOverview || {};
+    const students = Array.isArray(data.students) ? data.students : [];
+    const riskRows = students
+      .filter((s) => (Number(s.progress) || 0) < 30 || (Number(s.study_hours) || 0) <= 0 || (Number(s.last_active_ts) || 0) <= 0)
+      .sort((a, b) => {
+        const aScore = (Number(a.progress) || 0) + ((Number(a.study_hours) || 0) > 0 ? 30 : 0) + ((Number(a.last_active_ts) || 0) > 0 ? 10 : 0);
+        const bScore = (Number(b.progress) || 0) + ((Number(b.study_hours) || 0) > 0 ? 30 : 0) + ((Number(b.last_active_ts) || 0) > 0 ? 10 : 0);
+        return aScore - bScore;
+      });
+
+    const riskHtml = riskRows.length
+      ? riskRows.map((s) => {
+        const progress = Math.max(0, Math.min(100, Number(s.progress) || 0));
+        const activeText = s.last_active_ts ? formatFeedRelativeTime(s.last_active_ts) : "无记录";
+        const reasonParts = [];
+        if (progress < 30) reasonParts.push("进度偏低");
+        if ((Number(s.study_hours) || 0) <= 0) reasonParts.push("时长为零");
+        if (!s.is_in_course) reasonParts.push("未选课");
+        if ((Number(s.last_active_ts) || 0) <= 0) reasonParts.push("无活跃");
+        return `
+          <button class="teacher-risk-item" type="button" data-teacher-student-uid="${escapeHtml(String(s.user_id || ""))}">
+            <span class="teacher-risk-name">${escapeHtml(String(s.display_name || s.username || s.user_id || ""))}</span>
+            <span class="teacher-risk-meta">${escapeHtml(reasonParts.join(" · ") || "需要关注")} · ${progress}% · ${(Number(s.study_hours) || 0).toFixed(1)}h · ${escapeHtml(String(activeText || ""))}</span>
+          </button>
+        `;
+      }).join("")
+      : '<div class="teacher-risk-empty">当前没有明显需要关注的学生</div>';
+
+    el.timePieChart.innerHTML = `
+      <div class="teacher-panel-shell teacher-home-panel">
+        <div class="teacher-page-head">
+          <div>
+            <div class="teacher-page-title">重点关注</div>
+            <div class="teacher-page-subtitle">只保留需要干预的学生，减少噪音。</div>
+          </div>
+          <button class="teacher-page-back" id="teacherBackRiskBtn" type="button">返回首页</button>
+        </div>
+        <div class="teacher-risk-panel teacher-risk-panel-large">
+          <div class="teacher-risk-list" id="teacherRiskList">${riskHtml}</div>
+        </div>
+      </div>
+    `;
+
+    const backRiskBtn = document.getElementById("teacherBackRiskBtn");
+    if (backRiskBtn) {
+      backRiskBtn.addEventListener("click", () => {
+        state.teacherView = "home";
+        renderTeacherPanel();
+      });
+    }
+
+    const riskList = document.getElementById("teacherRiskList");
+    if (riskList) {
+      riskList.addEventListener("click", (ev) => {
+        const item = ev.target.closest("[data-teacher-student-uid]");
+        if (!item) return;
+        const uid = item.getAttribute("data-teacher-student-uid");
+        if (uid) loadTeacherStudentAnalysis(uid);
+      });
+    }
+  }
+
+  function renderTeacherStudentDetail() {
+    const uid = state.teacherSelectedUid;
+    const overview = state.teacherOverview || {};
+    const students = overview.students || [];
+    const student = students.find((s) => s.user_id === uid) || {};
+
+    if (state.teacherLoadingAnalysis) {
+      el.timePieChart.innerHTML = `<div class="teacher-loading">加载${escapeHtml(student.display_name || uid)}…</div>`;
+      return;
+    }
+
+    const analysis = state.teacherStudentAnalysis || {};
+    const reading = analysis.reading || {};
+    const annotation = analysis.annotation || {};
+    const question = analysis.question || {};
+    const displayName = escapeHtml(student.display_name || uid);
+
+    // 更新标题行：左侧 ← + 学生名
+    if (el.dashboardSidePanelTitle) {
+      el.dashboardSidePanelTitle.innerHTML =
+        `<span class="teacher-back-btn" id="teacherBackBtn" title="返回学生列表" style="cursor:pointer;margin-right:6px;font-size:16px;vertical-align:middle;opacity:0.7;transition:opacity 0.15s">←</span>` +
+        `<span style="vertical-align:middle">${displayName}</span>`;
+    }
+
+    // ── 统计卡片（4项，精简） ──
+    const quizCorrect = question.correct || 0;
+    const quizTotal = question.total_attempts || 0;
+    const quizRate = quizTotal ? Math.round((quizCorrect / quizTotal) * 100) : 0;
+
+    const statCards = [
+      { value: student.study_hours > 0 ? `${student.study_hours}h` : "—", label: "选课学习时间" },
+      { value: quizTotal > 0 ? `${quizRate}%` : "—", label: "答题正确率" },
+      { value: annotation.ask_count || 0, label: "批注提问" },
+      { value: quizTotal || 0, label: "答题总数" },
+    ].map((s) => `
+      <div class="teacher-stat-card">
+        <div class="stat-value">${escapeHtml(String(s.value))}</div>
+        <div class="stat-label">${escapeHtml(s.label)}</div>
+      </div>
+    `).join("");
+
+    // ── 事件记录（核心） ──
+    const sessions = reading.sessions || [];
+    const allEvents = sessions.map((s) => ({
+      ts: s.start_ts || 0,
+      end_ts: s.end_ts || 0,
+      dur: s.duration_sec || 0,
+      bid: s.bid || "",
+      ci: s.ci_raw || "",
+      event: "reading",
+    }));
+
+    const idleGaps = reading.idle_gaps || [];
+    for (const g of idleGaps) {
+      allEvents.push({
+        ts: g.start_ts || 0,
+        end_ts: g.end_ts || 0,
+        dur: g.idle_sec || 0,
+        bid: "",
+        ci: "",
+        event: "idle",
+      });
+    }
+
+    allEvents.sort((a, b) => b.ts - a.ts);
+
+    const eventTypes = ["reading", "idle", "session_complete", "chapter_complete", "selection", "snapshot", "scroll", "focus_in", "focus_out"];
+    const eventLabels = {
+      reading: "阅读",
+      idle: "空档",
+      session_complete: "完成小节",
+      chapter_complete: "完成章节",
+      selection: "选中文本",
+      snapshot: "心跳",
+      scroll: "滚动",
+      focus_in: "进入阅读",
+      focus_out: "离开阅读",
+    };
+
+    const filterTags = eventTypes.map((et) => {
+      const active = !state._teacherEventFilter || state._teacherEventFilter.has(et);
+      const count = allEvents.filter((e) => e.event === et).length;
+      if (!count) return "";
+      return `<span class="teacher-filter-tag ${active ? "is-active" : ""}" data-filter-event="${et}">${eventLabels[et] || et}(${count})</span>`;
+    }).filter(Boolean).join("");
+
+    let filtered = allEvents;
+    if (state._teacherEventFilter && state._teacherEventFilter.size > 0) {
+      filtered = allEvents.filter((e) => state._teacherEventFilter.has(e.event));
+    }
+
+    const rows = filtered.slice(0, 200).map((e) => {
+      const tsStr = e.ts ? formatTs(e.ts) : "";
+      const durText = e.dur ? formatSecondsToHMS(e.dur) : "";
+      const ciText = e.ci !== "" && e.ci !== "-1" ? `ch${Number(e.ci) + 1}` : "";
+      return `<div class="teacher-event-row">
+        <span class="teacher-event-time">${tsStr}</span>
+        <span class="teacher-event-type" data-type="${escapeHtml(e.event)}">${eventLabels[e.event] || e.event}</span>
+        <span class="teacher-event-info">${durText ? `${durText}` : ""}${ciText ? ` · ${ciText}` : ""}</span>
+      </div>`;
+    }).join("");
+
+    const eventListHtml = `
+      <div class="teacher-section-title">事件记录 · ${filtered.length}条</div>
+      <div class="teacher-filter-bar">${filterTags}</div>
+      <div class="teacher-event-list" id="teacherEventList">
+        ${rows || '<div class="teacher-idle-item">暂无匹配事件</div>'}
+      </div>
+    `;
+
+    // 答题详情（有数据时才展示）
+    let quizDetailHtml = "";
+    if (quizTotal > 0) {
+      const byDiff = question.by_difficulty || {};
+      const diffRows = Object.entries(byDiff).map(([diff, v]) => {
+        const total = (v.correct || 0) + (v.incorrect || 0) + (v.unknown || 0);
+        const rate = total > 0 ? Math.round(((v.correct || 0) / total) * 100) : 0;
+        return `<div class="teacher-event-row">
+          <span class="teacher-event-type" data-type="difficulty">${diff}</span>
+          <span class="teacher-event-info">${v.correct || 0}对/${v.incorrect || 0}错 · ${rate}%</span>
+        </div>`;
+      }).join("");
+      quizDetailHtml = `
+        <div class="teacher-section-title">答题难度分布</div>
+        <div class="teacher-event-list">${diffRows}</div>
+      `;
+    }
+
+    el.timePieChart.innerHTML = `
+      <div class="teacher-panel-shell">
+        <div class="teacher-detail-panel">
+          <div class="teacher-stat-grid">${statCards}</div>
+          ${eventListHtml}
+          ${quizDetailHtml}
+        </div>
+      </div>
+    `;
+
+    // ── 事件绑定 ──
+    // 返回按钮
+    const backBtnEl = document.getElementById("teacherBackBtn");
+    if (backBtnEl) {
+      backBtnEl.addEventListener("click", () => {
+        state.teacherSelectedUid = "";
+        state.teacherStudentAnalysis = null;
+        state._teacherEventFilter = null;
+        state.teacherView = String(state.teacherReturnView || "home");
+        renderTeacherPanel();
+        if (el.dashboardSidePanelTitle) {
+          el.dashboardSidePanelTitle.textContent = "教师Panel";
+        }
+      });
+      backBtnEl.addEventListener("mouseenter", () => { backBtnEl.style.opacity = "1"; });
+      backBtnEl.addEventListener("mouseleave", () => { backBtnEl.style.opacity = "0.7"; });
+    }
+
+    // 事件类型筛选
+    const filterBar = el.timePieChart.querySelector(".teacher-filter-bar");
+    if (filterBar) {
+      filterBar.addEventListener("click", (ev) => {
+        const tag = ev.target.closest("[data-filter-event]");
+        if (!tag) return;
+        const eventType = tag.getAttribute("data-filter-event");
+        if (!state._teacherEventFilter) state._teacherEventFilter = new Set();
+        if (state._teacherEventFilter.has(eventType)) {
+          state._teacherEventFilter.delete(eventType);
+        } else {
+          state._teacherEventFilter.add(eventType);
+        }
+        // 全选等于无筛选
+        if (state._teacherEventFilter.size >= eventTypes.length) {
+          state._teacherEventFilter.clear();
+        }
+        renderTeacherStudentDetail();
+      });
+    }
+  }
+
+  function formatSecondsToHMS(sec) {
+    const s = Math.round(Number(sec) || 0);
+    if (s < 60) return `${s}秒`;
+    const m = Math.floor(s / 60);
+    const rem = s % 60;
+    if (m < 60) return rem ? `${m}分${rem}秒` : `${m}分`;
+    const h = Math.floor(m / 60);
+    const min = m % 60;
+    return min ? `${h}时${min}分` : `${h}时`;
+  }
+
+  function focusLabel(focus) {
+    const map = { reader: "阅读", blur: "离开", chat: "聊天" };
+    return map[focus] || focus;
   }
 
   function renderPie() {
@@ -1070,7 +1669,7 @@
       el.dashboardSidePanelTitle.textContent = teacherMode ? "教师Panel" : "学习时长数据";
     }
     if (el.timePieChart) {
-      el.timePieChart.setAttribute("aria-label", teacherMode ? "教师工作台" : "学习时间占比");
+      el.timePieChart.setAttribute("aria-label", teacherMode ? "教师课程列表" : "学习时间占比");
     }
     if (teacherMode) {
       renderTeacherPanel();
@@ -2267,37 +2866,53 @@
     const lectureId = String(lecture.id || "");
     const isLearning = state.selectedLearningLectureIds.includes(lectureId);
     const books = Array.isArray(row.books) ? row.books : [];
-    const chapter = getChapterInfo(lecture, books);
+    const progressTrail = getLectureProgressTrail(lecture, books);
     if (!state.selectedBookId && books.length) {
       state.selectedBookId = String(books[0].id || "");
     }
-    const toggleBtnClass = isLearning ? "nxl-icon-btn nxl-icon-btn-danger" : "nxl-icon-btn nxl-icon-btn-dark";
-    const toggleBtnTitle = isLearning ? "退出学习" : "加入学习";
-    const toggleBtnText = isLearning ? "−" : "+";
+    const toggleBtnClass = isLearning ? "btn btn-outline-danger btn-sm" : "btn btn-outline-secondary btn-sm";
+    const toggleBtnTitle = isLearning ? "退课" : "主动学习";
+    const toggleBtnText = toggleBtnTitle;
     const learningPillClass = isLearning ? "learning-state-pill is-on" : "learning-state-pill is-off";
     const learningPillText = isLearning ? "学习中" : "未加入";
+    const progressPercent = Math.max(0, Math.min(100, Number(progressTrail.progress) || 0));
+    const progressText = `${progressTrail.bookTitle} - ${progressTrail.chapterTitle} - ${progressTrail.sessionTitle}`;
+    const lectureDescription = escapeHtml(String(lecture.description || "暂无描述"));
 
     el.lectureDetailPane.innerHTML = `
       <section class="materials-detail-scroll">
-        <section class="detail-section">
-          <div class="detail-header">
-            <div class="detail-title">${escapeHtml(getLectureTitle(lecture))}</div>
-            <div class="learning-action-group">
-              <span class="${learningPillClass}">${learningPillText}</span>
-              <button class="${toggleBtnClass}" data-action="toggle-learning" data-lecture-id="${escapeHtml(lectureId)}" aria-label="${toggleBtnTitle}" title="${toggleBtnTitle}">${toggleBtnText}</button>
+        <section class="detail-section" style="padding-top:0;">
+          <div style="display:flex;gap:28px;align-items:stretch;min-height:228px;padding:8px 0 6px;">
+            <div style="flex:0 0 228px;min-height:228px;clip-path:polygon(0 0,100% 0,82% 100%,0 100%);background:linear-gradient(135deg,#111827 0%,#374151 100%);border-radius:20px 20px 20px 0;"></div>
+            <div style="min-width:0;flex:1 1 auto;display:flex;flex-direction:column;justify-content:space-between;padding:4px 0;">
+              <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:20px;">
+                <div style="min-width:0;flex:1 1 auto;display:grid;gap:10px;">
+                  <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+                    <div class="detail-title" style="margin-top:0;font-size:36px;line-height:1.02;font-weight:800;">${escapeHtml(getLectureTitle(lecture))}</div>
+                    <span class="${learningPillClass}">${learningPillText}</span>
+                  </div>
+                </div>
+                <div class="learning-action-group" style="justify-content:flex-end;flex:0 0 auto;">
+                  <button class="${toggleBtnClass}" data-action="toggle-learning" data-lecture-id="${escapeHtml(lectureId)}" aria-label="${toggleBtnTitle}" title="${toggleBtnTitle}">${toggleBtnText}</button>
+                </div>
+              </div>
+              <div style="display:grid;gap:18px;margin-top:18px;">
+                <div style="display:grid;gap:6px;">
+                  <div class="detail-description-label" style="margin-bottom:0;">课程简介</div>
+                  <div class="detail-description-text">${lectureDescription}</div>
+                </div>
+                <div style="display:grid;gap:8px;">
+                  <div style="display:flex;align-items:baseline;justify-content:space-between;gap:16px;flex-wrap:wrap;">
+                    <div style="display:flex;align-items:baseline;gap:10px;min-width:0;flex-wrap:wrap;">
+                      <div class="detail-description-label" style="margin-bottom:0;">当前推进</div>
+                      <div class="detail-line" style="margin-top:0;font-size:14px;color:#111827;">${escapeHtml(progressText)}</div>
+                    </div>
+                    <div class="detail-line" style="margin-top:0;font-size:22px;font-weight:800;color:#111827;line-height:1;">${escapeHtml(String(progressPercent))}%</div>
+                  </div>
+                  <div class="nxl-course-bar"><div class="nxl-course-bar-fill" style="width:${progressPercent}%"></div></div>
+                </div>
+              </div>
             </div>
-          </div>
-          <div class="detail-kv-list">
-            <div class="detail-kv-row"><div class="detail-kv-label">分类</div><div class="detail-kv-value">${escapeHtml(String(lecture.category || "暂无分类"))}</div></div>
-            <div class="detail-kv-row"><div class="detail-kv-label">状态</div><div class="detail-kv-value">${escapeHtml(statusText(lecture.status))}</div></div>
-            <div class="detail-kv-row"><div class="detail-kv-label">当前章节</div><div class="detail-kv-value">${escapeHtml(chapter.current)}</div></div>
-            <div class="detail-kv-row"><div class="detail-kv-label">下一章节</div><div class="detail-kv-value">${escapeHtml(chapter.next)}</div></div>
-            <div class="detail-kv-row"><div class="detail-kv-label">教材数量</div><div class="detail-kv-value">${books.length}</div></div>
-            <div class="detail-kv-row"><div class="detail-kv-label">课程进度</div><div class="detail-kv-value">${getCourseProgress(lecture, books)}%</div></div>
-          </div>
-          <div class="detail-description">
-            <div class="detail-description-label">课程描述</div>
-            <div class="detail-description-text">${escapeHtml(String(lecture.description || "暂无描述"))}</div>
           </div>
         </section>
         <section class="detail-section">
