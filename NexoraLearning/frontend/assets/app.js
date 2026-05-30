@@ -1078,7 +1078,7 @@
     }
     const courses = buildDashboardCourses(state.dashboardRows).slice(0, 6);
     const totalByRows = courses.reduce((sum, item) => sum + toNumber(item.studyHours, 0), 0);
-    const total = toNumber(state.totalStudyHours, 0) > 0 ? toNumber(state.totalStudyHours, 0) : totalByRows;
+    const total = totalByRows;
     if (!courses.length || total <= 0) {
       el.timePieChart.innerHTML = '<div class="materials-empty">暂无学习时长数据</div>';
       return;
@@ -1106,31 +1106,87 @@
       const ratio = Math.round((value / safeTotal) * 100);
       return {
         ...course,
+        id: `seg-${course.id}`,
         path: donutPath(cx, cy, outer, inner, startAngle, endAngle),
         line: `${anchor.x},${anchor.y} ${bend.x},${bend.y} ${labelX},${bend.y}`,
+        labelLine: {
+          x1: anchor.x,
+          y1: anchor.y,
+          x2: bend.x,
+          y2: bend.y,
+          x3: labelX,
+          y3: bend.y,
+        },
         labelX,
         labelY: bend.y - 6,
         subY: bend.y + 12,
         ratio,
         textAnchor,
+        offsetX: Math.cos(((mid - 90) * Math.PI) / 180) * 8,
+        offsetY: Math.sin(((mid - 90) * Math.PI) / 180) * 8,
       };
     });
 
     el.timePieChart.innerHTML = `
       <svg class="nxl-pie-svg" viewBox="0 0 380 300" role="img" aria-label="学习时间占比">
-        ${segments.map((seg) => `<g class="nxl-pie-segment"><path d="${seg.path}" fill="${seg.color}"></path></g>`).join("")}
+        ${segments
+          .map(
+            (seg) => `
+              <g class="nxl-pie-segment" data-segment-id="${escapeHtml(seg.id)}">
+                <path d="${seg.path}" fill="${seg.color}" fill-rule="evenodd"></path>
+              </g>
+            `
+          )
+          .join("")}
         <circle cx="${cx}" cy="${cy}" r="${inner - 1}" fill="#ffffff"></circle>
-        <text x="${cx}" y="${cy - 8}" text-anchor="middle" style="font-size:10px;fill:#666;">总学习时长</text>
-        <text x="${cx}" y="${cy + 18}" text-anchor="middle" style="font-size:24px;font-weight:700;fill:#111;">${escapeHtml(total.toFixed(1))}h</text>
-        ${segments.map((seg) => `
-          <g>
-            <polyline points="${seg.line}" stroke="#c6c6c6" stroke-width="1.5" fill="none"></polyline>
-            <text x="${seg.labelX}" y="${seg.labelY}" text-anchor="${seg.textAnchor}" style="font-size:12px;fill:#3a3a3a;">${escapeHtml(seg.title)}</text>
-            <text x="${seg.labelX}" y="${seg.subY}" text-anchor="${seg.textAnchor}" style="font-size:10px;fill:#777;">${escapeHtml(`${seg.ratio}% · 进度 ${seg.progress}%`)}</text>
-          </g>
-        `).join("")}
+        <text x="${cx}" y="${cy - 8}" text-anchor="middle" class="nxl-pie-center-label">总学习时长</text>
+        <text x="${cx}" y="${cy + 18}" text-anchor="middle" class="nxl-pie-center-value">${escapeHtml(total.toFixed(1))}h</text>
+        ${segments
+          .map(
+            (seg) => `
+              <g class="nxl-pie-callout" data-segment-id="${escapeHtml(seg.id)}">
+                <polyline points="${seg.labelLine.x1},${seg.labelLine.y1} ${seg.labelLine.x2},${seg.labelLine.y2} ${seg.labelLine.x3},${seg.labelLine.y3}"></polyline>
+                <text x="${seg.labelX}" y="${seg.labelY}" text-anchor="${seg.textAnchor}">${escapeHtml(seg.title)}</text>
+                <text x="${seg.labelX}" y="${seg.subY}" text-anchor="${seg.textAnchor}" class="nxl-pie-callout-sub">${escapeHtml(`${seg.ratio}% · 进度 ${seg.progress}%`)}</text>
+              </g>
+            `
+          )
+          .join("")}
       </svg>
     `;
+
+    const segmentEls = Array.from(el.timePieChart.querySelectorAll(".nxl-pie-segment"));
+    const calloutEls = Array.from(el.timePieChart.querySelectorAll(".nxl-pie-callout"));
+    function setActive(segmentId) {
+      segmentEls.forEach((node) => {
+        const active = node.getAttribute("data-segment-id") === segmentId;
+        node.classList.toggle("is-active", active);
+        const path = node.querySelector("path");
+        if (!path) return;
+        const segment = segments.find((item) => item.id === node.getAttribute("data-segment-id"));
+        if (!segment) return;
+        path.style.transform = active ? `translate(${segment.offsetX}px, ${segment.offsetY}px) scale(1.035)` : "";
+      });
+      calloutEls.forEach((node) => {
+        node.classList.toggle("is-active", node.getAttribute("data-segment-id") === segmentId);
+      });
+    }
+    function clearActive() {
+      segmentEls.forEach((node) => {
+        node.classList.remove("is-active");
+        const path = node.querySelector("path");
+        if (path) path.style.transform = "";
+      });
+      calloutEls.forEach((node) => node.classList.remove("is-active"));
+    }
+    segmentEls.forEach((node) => {
+      node.addEventListener("mouseenter", () => setActive(node.getAttribute("data-segment-id") || ""));
+      node.addEventListener("mouseleave", clearActive);
+    });
+    calloutEls.forEach((node) => {
+      node.addEventListener("mouseenter", () => setActive(node.getAttribute("data-segment-id") || ""));
+      node.addEventListener("mouseleave", clearActive);
+    });
   }
 
 // ─────── Feed Rendering & Compose ─────────────────────────────────────
@@ -1699,17 +1755,14 @@
     const identity = String((user && user.identity) || "").trim().toLowerCase() === "teacher" ? "teacher" : "student";
     const identityLabel = getSettingsUserIdentityLabel(identity);
     const select = card.querySelector("[data-user-identity-select]");
-    if (select instanceof HTMLSelectElement) {
-      select.value = identity;
-      select.dataset.currentIdentity = identity;
-    }
+    if (select instanceof HTMLSelectElement) select.value = identity;
     const pill = card.querySelector(".settings-user-pill-identity");
     if (pill) pill.textContent = identityLabel;
     const saveBtn = card.querySelector("[data-action='save-user-identity']");
     if (saveBtn instanceof HTMLButtonElement) {
       saveBtn.classList.remove("is-saving");
       saveBtn.disabled = !!saveBtn.dataset.locked;
-      saveBtn.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>`;
+      saveBtn.textContent = "✓";
       saveBtn.title = "保存身份";
     }
   }
@@ -1765,11 +1818,11 @@
             </div>
             <div class="settings-user-actions">
               <label class="settings-user-ctl-label" for="${escapeHtml(identitySelectId)}">身份</label>
-              <select id="${escapeHtml(identitySelectId)}" class="input-lite settings-user-select" data-user-identity-select="${escapeHtml(userId)}" data-current-identity="${escapeHtml(identity)}" ${isLocked ? "disabled" : ""}>
+              <select id="${escapeHtml(identitySelectId)}" class="input-lite settings-user-select" data-user-identity-select="${escapeHtml(userId)}" ${isLocked ? "disabled" : ""}>
                 <option value="student" ${identity === "student" ? "selected" : ""}>学生</option>
                 <option value="teacher" ${identity === "teacher" ? "selected" : ""}>教师</option>
               </select>
-              <button class="nxl-icon-btn settings-user-save-btn" type="button" data-action="save-user-identity" data-user-id="${escapeHtml(userId)}" ${isLocked ? "disabled data-locked=\"1\" title=\"不可修改其他管理员身份\"" : "title=\"保存身份\""} aria-label="保存身份"><svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg></button>
+              <button class="nxl-icon-btn nxl-icon-btn-dark settings-user-save-btn" type="button" data-action="save-user-identity" data-user-id="${escapeHtml(userId)}" ${isLocked ? "disabled data-locked=\"1\" title=\"不可修改其他管理员身份\"" : "title=\"保存身份\""} aria-label="保存身份">✓</button>
             </div>
           </article>
         `;
@@ -3310,13 +3363,16 @@
     setReaderFullscreen(true);
     syncReaderSettingsPanel();
     applyReaderTypography();
-    emitTelemetry("reader_open", {
-      lecture_id: String(state.selectedLectureId || "").trim(),
-      book_id: String(state.selectedBookId || "").trim(),
-      view_mode: mode,
-      chapter_index: Number(state.readerActiveChapterIndex) || 0,
-      chapter_title: String((state.readerChapters[state.readerActiveChapterIndex] || {}).title || "").trim(),
-    });
+    // 仅当 selectedBookId 已设置时才发射 telemetry，避免未选择书籍时产生噪声事件
+    if (String(state.selectedBookId || "").trim()) {
+      emitTelemetry("reader_open", {
+        lecture_id: String(state.selectedLectureId || "").trim(),
+        book_id: String(state.selectedBookId || "").trim(),
+        view_mode: mode,
+        chapter_index: Number(state.readerActiveChapterIndex) || 0,
+        chapter_title: String((state.readerChapters[state.readerActiveChapterIndex] || {}).title || "").trim(),
+      });
+    }
     notifyHostReaderState(true);
     notifyHostReaderContext();
     // 异步加载 sections.xml
@@ -3343,12 +3399,15 @@
       reportReaderChapterComplete(state.readerActiveChapterIndex).catch(() => {});
     }
     clearReaderTelemetrySessionContext("close");
-    emitTelemetry("reader_close", {
-      lecture_id: String(state.selectedLectureId || "").trim(),
-      book_id: String(state.selectedBookId || "").trim(),
-      chapter_index: Number(state.readerActiveChapterIndex) || 0,
-      chapter_title: String((state.readerChapters[state.readerActiveChapterIndex] || {}).title || "").trim(),
-    });
+    // 仅当 selectedBookId 已设置时才发射 telemetry，避免未选择书籍时产生噪声事件
+    if (String(state.selectedBookId || "").trim()) {
+      emitTelemetry("reader_close", {
+        lecture_id: String(state.selectedLectureId || "").trim(),
+        book_id: String(state.selectedBookId || "").trim(),
+        chapter_index: Number(state.readerActiveChapterIndex) || 0,
+        chapter_title: String((state.readerChapters[state.readerActiveChapterIndex] || {}).title || "").trim(),
+      });
+    }
     state.isReaderOpen = false;
     state.readerRequestToken += 1;
     setReaderFullscreen(false);
@@ -3499,17 +3558,7 @@
   }
 
   async function fetchJson(url, init) {
-    const options = init ? { ...init } : {};
-    const headers = new Headers(options.headers || {});
-    const body = options.body;
-    if (body != null && !headers.has("Content-Type")) {
-      if (!(body instanceof FormData) && !(body instanceof Blob) && !(body instanceof ArrayBuffer) && !(body instanceof URLSearchParams)) {
-        headers.set("Content-Type", "application/json");
-      }
-    }
-    if (!headers.has("Accept")) headers.set("Accept", "application/json");
-    options.headers = headers;
-    const resp = await fetch(resolveApiUrl(url), options);
+    const resp = await fetch(resolveApiUrl(url), init);
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok || data.success === false) {
       throw new Error(data.error || data.message || `HTTP ${resp.status}`);
@@ -4890,22 +4939,13 @@
         if (!userId) return;
         const card = saveUserIdentityBtn.closest(".settings-user-card");
         const select = card ? card.querySelector("[data-user-identity-select]") : null;
-        // 在点击瞬间同步当前选中值到 dataset，确保后续读取时不会因异步事件错位而回退
-        if (select instanceof HTMLSelectElement) {
-          const localIdentity = String(select.value || "").trim().toLowerCase();
-          if (localIdentity === "student" || localIdentity === "teacher") {
-            select.dataset.currentIdentity = localIdentity;
-          }
-        }
-        let identity = select instanceof HTMLSelectElement
-          ? String(select.dataset.currentIdentity || select.value || "").trim().toLowerCase()
-          : "";
+        let identity = select instanceof HTMLSelectElement ? String(select.value || "").trim().toLowerCase() : "";
         if (identity !== "student" && identity !== "teacher") identity = "student";
-        const previousinnerHTML = saveUserIdentityBtn.innerHTML;
+        const previousText = saveUserIdentityBtn.textContent;
         if (saveUserIdentityBtn instanceof HTMLButtonElement) {
           saveUserIdentityBtn.disabled = true;
           saveUserIdentityBtn.classList.add("is-saving");
-          saveUserIdentityBtn.innerHTML = ""; /* CSS border spinner via ::before/::after */
+          saveUserIdentityBtn.textContent = "…";
         }
         updateSettingsUserIdentity(userId, identity)
           .then((updated) => {
@@ -4920,7 +4960,7 @@
             if (saveUserIdentityBtn instanceof HTMLButtonElement) {
               saveUserIdentityBtn.disabled = false;
               saveUserIdentityBtn.classList.remove("is-saving");
-              saveUserIdentityBtn.innerHTML = previousinnerHTML;
+              saveUserIdentityBtn.textContent = previousText || "✓";
             }
             showToast(`更新用户身份失败：${err.message || "未知错误"}`);
           });
@@ -5029,10 +5069,6 @@
     el.settingsDetailPane.addEventListener("change", (event) => {
       const target = event.target;
       if (!(target instanceof HTMLSelectElement)) return;
-      if (target.matches("[data-user-identity-select]")) {
-        target.dataset.currentIdentity = String(target.value || "").trim().toLowerCase();
-        return;
-      }
       if (target.id === "settingsLogCategorySelect") {
         state.settingsLogCategory = String(target.value || "all");
         if (state.settingsLogCategory !== "model") {

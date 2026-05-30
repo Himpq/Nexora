@@ -140,6 +140,10 @@ def create_app():
     init_telemetry(cfg)
     app.register_blueprint(telemetry_bp)
 
+    from api.learning_progress import learning_progress_bp, init_learning_progress
+    init_learning_progress(cfg)
+    app.register_blueprint(learning_progress_bp)
+
     @app.route("/health")
     def health():
         return jsonify({
