@@ -13,6 +13,7 @@ from ..models import (
     get_rough_reading_model_config,
     get_split_chapters_model_config,
     get_annotation_model_config,
+    get_book_summary_model_config,
     update_intensive_reading_model_config,
     update_memory_model_config,
     update_profile_question_model_config,
@@ -20,6 +21,7 @@ from ..models import (
     update_rough_reading_model_config,
     update_split_chapters_model_config,
     update_annotation_model_config,
+    update_book_summary_model_config,
 )
 
 
@@ -112,3 +114,16 @@ def update_annotation_settings(cfg: Mapping[str, Any], updates: Mapping[str, Any
 def build_annotation_runner(cfg: Mapping[str, Any], model_name: str = ""):
     resolved = str(model_name or "").strip() or None
     return LearningModelFactory.create("annotation", cfg, model_name=resolved)
+
+
+def get_book_summary_settings(cfg: Mapping[str, Any]) -> Dict[str, Any]:
+    return get_book_summary_model_config(cfg)
+
+
+def update_book_summary_settings(cfg: Mapping[str, Any], updates: Mapping[str, Any]) -> Dict[str, Any]:
+    return update_book_summary_model_config(cfg, updates)
+
+
+def build_book_summary_runner(cfg: Mapping[str, Any], model_name: str = ""):
+    resolved = str(model_name or "").strip() or None
+    return LearningModelFactory.create("book_summary", cfg, model_name=resolved)

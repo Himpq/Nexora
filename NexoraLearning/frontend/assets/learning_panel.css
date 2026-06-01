@@ -1,0 +1,1015 @@
+.materials-layout {
+  width: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+}
+
+.materials-layout.is-shelf-mode .materials-detail-pane {
+  border: 0;
+  background: transparent;
+}
+
+.materials-layout .materials-list-pane {
+  display: none;
+}
+
+.materials-course-pane {
+  width: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.materials-course-pane .materials-detail-pane {
+  height: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.materials-course-pane .materials-detail-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.materials-course-pane .materials-detail-scroll > .detail-section {
+  width: min(100%, 1180px);
+  max-width: 1180px;
+  margin: 0 auto;
+}
+
+.materials-layout.is-shelf-mode .materials-detail-scroll {
+  padding: 0;
+}
+
+.materials-layout.is-shelf-mode .detail-section {
+  padding: 0;
+}
+
+.materials-layout.is-shelf-mode .materials-list {
+  padding: 0;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 14px;
+}
+
+.materials-layout.is-shelf-mode .nxl-course-item {
+  min-height: 156px;
+  padding: 16px;
+  align-content: space-between;
+}
+
+.materials-layout.is-shelf-mode .nxl-course-title {
+  font-size: 18px;
+  line-height: 1.25;
+}
+
+.materials-layout.is-shelf-mode .nxl-course-meta {
+  font-size: 13px;
+}
+
+.materials-course-pane .book-list {
+  align-items: start;
+}
+
+.materials-course-pane .book-badges {
+  gap: 6px;
+}
+
+.materials-course-pane .book-badge {
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+.materials-course-pane .detail-description-text {
+  line-height: 1.55;
+}
+
+.materials-course-pane .detail-line {
+  line-height: 1.45;
+}
+
+.learning-panel-page {
+  padding: 10px 18px 20px;
+  gap: 12px;
+}
+
+.learning-panel-section {
+  padding-top: 0;
+}
+
+.learning-panel-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 18px 12px;
+}
+
+.learning-panel-titlebar-left,
+.learning-panel-titlebar-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.learning-panel-toolbar,
+.learning-panel-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.learning-panel-toolbar {
+  margin-bottom: 12px;
+}
+
+.learning-panel-section-head {
+  padding: 0 18px 10px;
+}
+
+.learning-panel-section-body {
+  padding: 0 18px;
+}
+
+.learning-panel-subtitle {
+  max-width: 640px;
+}
+
+.learning-panel-catalog-list {
+  max-width: 720px;
+}
+
+.learning-panel-hero-body {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: 16px;
+  align-items: stretch;
+  padding: 0 18px 0;
+}
+
+.learning-panel-cover {
+  width: 100%;
+  height: 200px;
+  clip-path: polygon(0 0, 100% 0, 92% 100%, 0 100%);
+  background: linear-gradient(145deg, #111827 0%, #344054 52%, #475467 100%);
+  border-radius: 22px 22px 22px 8px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 16px 32px rgba(17, 24, 39, 0.12);
+}
+
+.learning-panel-hero-content {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  min-height: auto;
+  max-width: none;
+}
+
+.learning-panel-hero-title {
+  margin-top: 0;
+  font-size: 26px;
+  line-height: 1.1;
+  font-weight: 800;
+}
+
+.learning-panel-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.learning-panel-summary-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 260px;
+  gap: 14px;
+  align-items: start;
+}
+
+.learning-panel-summary-copy,
+.learning-panel-teacher-card {
+  /* Remove framing per design: no border or background */
+  border: none;
+  background: transparent;
+  padding: 0;
+}
+
+.learning-panel-info-card {
+  border: 1px solid var(--nxl-line);
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 12px;
+}
+
+.learning-panel-summary-text {
+  font-size: 13px;
+  line-height: 1.6;
+  color: #1f2937;
+}
+
+.learning-panel-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.learning-panel-copy-label {
+  margin-bottom: 0;
+}
+
+.learning-panel-copy-actions {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding-top: 12px;
+}
+
+.learning-panel-teacher-card {
+  display: grid;
+  gap: 10px;
+}
+
+.learning-panel-teacher-list,
+.learning-panel-teacher-list-compact {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.learning-panel-teacher-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid #e5e7eb;
+  background: #f8fafc;
+  color: #111827;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.learning-panel-teacher-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: #f9fafb;
+  border: 1px solid #f0f1f3;
+}
+
+.learning-panel-teacher-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  background: #f9fafb;
+}
+
+.learning-panel-teacher-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.learning-panel-teacher-avatar-img {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  object-fit: cover;
+  background: #e5e7eb;
+}
+
+.learning-panel-teacher-avatar-placeholder {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.learning-panel-teacher-avatar-fallback {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+}
+
+.learning-panel-teacher-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #111827;
+  line-height: 1;
+}
+
+.learning-panel-inline-edit-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid #d0d5dd;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #667085;
+  font-size: 12px;
+  cursor: pointer;
+  margin-left: 4px;
+  vertical-align: middle;
+  line-height: 1;
+  padding: 0;
+}
+
+.learning-panel-inline-edit-btn:hover {
+  background: #f3f4f6;
+  color: #111827;
+  border-color: #111827;
+}
+
+.learning-panel-empty-note {
+  font-size: 12px;
+  color: #667085;
+}
+
+.learning-panel-progress {
+  display: grid;
+  gap: 6px;
+  max-width: none;
+  padding: 12px;
+  border: 1px solid var(--nxl-line);
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.learning-panel-progress-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.learning-panel-progress-text {
+  margin-top: 0;
+  font-size: 11px;
+  color: #4b5563;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.learning-panel-progress-percent {
+  margin-top: 0;
+  font-size: 13px;
+  font-weight: 800;
+  color: #111827;
+  line-height: 1;
+}
+
+.learning-panel-progress-bar {
+  max-width: none;
+  height: 8px;
+}
+
+.learning-panel-split-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 16px;
+  align-items: start;
+  padding: 0 18px;
+}
+
+.learning-panel-books-column {
+  min-width: 0;
+}
+
+.learning-panel-info-column {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.learning-panel-info-card {
+  display: grid;
+  gap: 10px;
+}
+
+.learning-panel-info-list {
+  display: grid;
+  gap: 10px;
+}
+
+.learning-panel-info-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.learning-panel-info-label {
+  font-size: 12px;
+  color: #667085;
+}
+
+.learning-panel-info-value {
+  font-size: 12px;
+  color: #111827;
+  font-weight: 600;
+  text-align: right;
+}
+
+.learning-panel-section-title {
+  font-size: 16px;
+}
+
+.learning-panel-books-grid {
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+  margin-top: 0;
+}
+
+.learning-panel-book-item {
+  border: 1px solid var(--nxl-line);
+  border-left-width: 1px;
+  padding: 14px 16px;
+  min-height: 104px;
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  background: linear-gradient(180deg, #ffffff 0%, #fafafa 100%);
+  box-shadow: 0 6px 16px rgba(17, 17, 17, 0.03);
+}
+
+.learning-panel-book-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.learning-panel-book-head-main {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.learning-panel-book-title {
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.learning-panel-book-meta {
+  font-size: 12px;
+  color: #667085;
+  line-height: 1.35;
+}
+
+.learning-panel-book-state {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.learning-panel-copy-actions.learning-panel-action-row {
+  display: flex;
+  padding: 14px 18px 0;
+}
+
+.learning-panel-catalog-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 16px;
+  align-items: start;
+  padding: 0 18px;
+}
+
+.learning-panel-catalog-left {
+  min-width: 0;
+}
+
+.learning-panel-catalog-right {
+  min-width: 0;
+}
+
+.learning-panel-rough-content {
+  display: grid;
+  gap: 12px;
+  max-height: none;
+  overflow-y: auto;
+  padding: 12px;
+  border: 1px solid var(--nxl-line);
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.learning-panel-intro-content {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  border-radius: 0;
+  font-size: 14px;
+  line-height: 1.75;
+  color: var(--nxl-text);
+  white-space: pre-line;
+}
+
+.learning-panel-hero-block {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+  padding: 0 18px 8px;
+}
+
+.learning-panel-cover-placeholder {
+  width: 100%;
+  height: 200px;
+  border-radius: 14px;
+  background: linear-gradient(145deg, #f3f4f6 0%, #e5e7eb 100%);
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.04);
+}
+
+.learning-panel-hero-info {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.learning-panel-hero-block .learning-panel-hero-title {
+  margin-top: 2px;
+  font-size: 22px;
+  line-height: 1.3;
+  font-weight: 700;
+}
+
+.learning-panel-hero-subtitle {
+  font-size: 13px;
+  color: var(--nxl-soft);
+  line-height: 1.4;
+}
+
+.learning-panel-rough-chapter {
+  display: grid;
+  gap: 4px;
+}
+
+.learning-panel-rough-chapter-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #111827;
+  line-height: 1.4;
+}
+
+.learning-panel-rough-chapter-text {
+  font-size: 12px;
+  color: #475569;
+  line-height: 1.6;
+  white-space: pre-line;
+}
+
+.nxl-course-shelf-card {
+  min-height: 142px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, #ffffff 0%, #f9fafb 100%);
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.04);
+  gap: 10px;
+  cursor: pointer;
+}
+
+.materials-layout.is-shelf-mode .nxl-course-shelf-card {
+  min-height: 142px;
+  padding: 14px 16px;
+  gap: 10px;
+  align-content: start;
+}
+
+.materials-layout.is-shelf-mode .nxl-course-shelf-card .nxl-course-top {
+  align-items: flex-start;
+}
+
+.nxl-course-shelf-card .nxl-course-title {
+  font-size: 14px;
+  line-height: 1.35;
+  white-space: normal;
+}
+
+.nxl-course-shelf-card .nxl-course-percent {
+  font-size: 12px;
+}
+
+.nxl-course-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.nxl-course-meta-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: #f3f4f6;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.nxl-course-current {
+  font-size: 12px;
+  color: var(--nxl-soft);
+  line-height: 1.4;
+  white-space: normal;
+}
+
+.nxl-course-shelf-card .nxl-course-bar {
+  height: 6px;
+}
+
+.materials-layout.is-shelf-mode .materials-list {
+  padding: 0;
+  grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+  gap: 14px;
+}
+
+/* ─── Teacher Inline Edit Panel ───── */
+.teacher-edit-panel {
+  display: grid;
+  gap: 18px;
+}
+
+.teacher-edit-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.teacher-edit-head-text {
+  min-width: 0;
+}
+
+.teacher-edit-title {
+  font-size: 17px;
+  font-weight: 700;
+  color: #111827;
+  line-height: 1.25;
+}
+
+.teacher-edit-subtitle {
+  font-size: 12px;
+  color: #667085;
+  line-height: 1.35;
+  margin-top: 2px;
+}
+
+.teacher-edit-section-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #344054;
+  margin-bottom: 6px;
+}
+
+/* ── 左右分栏 ── */
+.teacher-edit-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  align-items: start;
+}
+
+.teacher-edit-left,
+.teacher-edit-right {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.teacher-edit-search-input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #111827;
+  background: #ffffff;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.teacher-edit-search-input:focus {
+  outline: none;
+  border-color: #111111;
+  box-shadow: 0 0 0 3px rgba(17, 17, 17, 0.08);
+}
+
+/* ── 用户列表（左侧当前教师 + 右侧搜索结果） ── */
+.teacher-edit-user-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 360px;
+  overflow-y: auto;
+  min-height: 80px;
+}
+
+.teacher-edit-search-results {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 360px;
+  overflow-y: auto;
+  min-height: 80px;
+}
+
+.teacher-edit-user-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: #f9fafb;
+  border: 1px solid #f0f1f3;
+  font-size: 13px;
+}
+
+.teacher-edit-user-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  object-fit: cover;
+  background: #e5e7eb;
+}
+
+.teacher-edit-user-avatar-ph {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.teacher-edit-user-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 600;
+  font-size: 13px;
+  color: #111827;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.teacher-edit-remove-btn {
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #667085;
+  font-size: 14px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s;
+}
+
+.teacher-edit-remove-btn:hover {
+  background: #fef2f2;
+  color: #dc2626;
+}
+
+/* ── 搜索结果项 ── */
+.teacher-edit-search-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+  width: 100%;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.teacher-edit-search-item:hover {
+  background: #f0f5ff;
+  border-color: #b2d4ff;
+}
+
+.teacher-edit-search-item.is-already-added {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.teacher-edit-search-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.teacher-edit-user-handle {
+  font-size: 11px;
+  color: #667085;
+  line-height: 1.2;
+}
+
+.teacher-edit-search-add {
+  font-size: 11px;
+  color: #16a34a;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.teacher-edit-search-status {
+  font-size: 11px;
+  color: #98a2b3;
+  flex-shrink: 0;
+}
+
+.teacher-edit-empty-note {
+  font-size: 12px;
+  color: #98a2b3;
+  padding: 12px 0;
+  text-align: center;
+}
+
+.teacher-edit-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+@media (max-width: 760px) {
+  .teacher-edit-split {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 1100px) {
+  .learning-panel-hero-body {
+    grid-template-columns: 200px minmax(0, 1fr);
+    gap: 14px;
+    padding: 0 18px;
+  }
+
+  .learning-panel-summary-grid,
+  .learning-panel-split-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .learning-panel-split-grid {
+    padding: 0 18px;
+  }
+
+  .learning-panel-copy-actions {
+    display: none;
+  }
+
+  .learning-panel-action-row {
+    display: flex;
+  }
+
+  .learning-panel-catalog-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .learning-panel-catalog-right {
+    order: -1;
+  }
+
+  .learning-panel-rough-content {
+    max-height: 600px;
+  }
+
+  .learning-panel-progress-bar {
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 760px) {
+  .materials-course-pane .materials-detail-scroll > .detail-section {
+    width: 100%;
+    max-width: none;
+  }
+
+  .learning-panel-hero-body {
+    grid-template-columns: 1fr;
+    gap: 12px;
+    padding: 0 16px;
+  }
+
+  .learning-panel-cover {
+    display: none;
+  }
+
+  .learning-panel-hero-content {
+    min-height: auto;
+  }
+
+  .learning-panel-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .learning-panel-copy-actions {
+    display: none;
+  }
+
+  .learning-panel-action-row {
+    display: flex;
+    padding-top: 10px;
+  }
+
+  .learning-panel-split-grid {
+    padding: 0 16px;
+  }
+
+  .learning-panel-books-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .learning-panel-catalog-layout {
+    grid-template-columns: 1fr;
+    padding: 0 16px;
+  }
+
+  .learning-panel-catalog-right {
+    order: -1;
+  }
+
+  .learning-panel-rough-content {
+    max-height: 400px;
+  }
+
+  .nxl-course-shelf-card {
+    min-height: 132px;
+  }
+
+  .learning-panel-book-head,
+  .learning-panel-info-row {
+    flex-direction: column;
+  }
+
+  .learning-panel-book-state,
+  .learning-panel-info-value {
+    text-align: left;
+  }
+}

@@ -27,9 +27,17 @@
     dashboardProgressFeedTabBtn: document.getElementById("dashboardProgressFeedTabBtn"),
     userProfileCard: document.getElementById("userProfileCard"),
     profileAdminSettingsBtn: document.getElementById("profileAdminSettingsBtn"),
+    materialsHeadKicker: document.querySelector("#materialsMainHeader .panel-kicker"),
     materialsLayout: document.getElementById("materialsLayout"),
     lectureList: document.getElementById("lectureList"),
     lectureDetailPane: document.getElementById("lectureDetailPane"),
+    courseHomePane: document.getElementById("courseHomePane"),
+    courseHomeHeader: document.getElementById("courseHomeHeader"),
+    courseHomeContent: document.getElementById("courseHomeContent"),
+    backFromCourseHomeBtn: document.getElementById("backFromCourseHomeBtn"),
+    courseHomeSubtitle: document.getElementById("courseHomeSubtitle"),
+    courseHomeUploadBtn: document.getElementById("courseHomeUploadBtn"),
+    courseHomeSettingsBtn: document.getElementById("courseHomeSettingsBtn"),
     readerPane: document.getElementById("readerPane"),
     readerHeader: document.getElementById("readerHeader"),
     backFromReaderBtn: document.getElementById("backFromReaderBtn"),
@@ -117,6 +125,7 @@
     isReaderOpen: false,
     isReaderFullscreen: false,
     readerRequestToken: 0,
+    lastSessionMeta: null,
     settingsTab: "refinement",
     refinementRows: [],
     refinementQueue: { queue_size: 0, running_count: 0 },
@@ -155,8 +164,10 @@
     readerMeta: { title: "", subtitle: "" },
     readerUiToggleLockedUntil: 0,
     readerClosePanelsUntil: 0,
+    materialsPageMode: "shelf",
     materialsDetailMode: "lecture",
     catalogContext: null,
+    teacherEditContext: null,
     materialsSortBy: "updated_at",
     materialsSortOrder: "desc",
     settingsLogs: [],
@@ -964,6 +975,7 @@
     if (!telemetry || typeof telemetry.setReaderSessionContext !== "function") return;
     const context = getReaderCurrentSessionMeta(triggerSource);
     if (!context) return;
+    state.lastSessionMeta = context;
     telemetry.setReaderSessionContext(context);
   }
 
@@ -1087,6 +1099,141 @@
     return getCurrentTeacherKeys().some((key) => teacherSet.has(key));
   }
 
+  function getLectureTeacherEntries(lecture) {
+    return Array.isArray(lecture && lecture.teacher) ? lecture.teacher : [];
+  }
+
+  function getLectureTeacherLabel(entry) {
+    if (entry && typeof entry === "object") {
+      return String(entry.display_name || entry.nickname || entry.name || entry.username || entry.user_id || entry.id || entry.uid || "").trim();
+    }
+    return String(entry || "").trim();
+  }
+
+  function getLectureTeacherUserId(entry) {
+    if (entry && typeof entry === "object") {
+      return String(entry.user_id || entry.username || entry.id || entry.uid || "").trim();
+    }
+    return String(entry || "").trim();
+  }
+
+  function renderLectureTeacherTags(lecture) {
+    const teacherEntries = getLectureTeacherEntries(lecture);
+    const teacherInfo = Array.isArray(lecture && lecture.teacher_info) ? lecture.teacher_info : [];
+    const validEntries = teacherEntries.filter((entry) => !!getLectureTeacherLabel(entry));
+    if (!validEntries.length && !teacherInfo.length) {
+      return '<div class="learning-panel-empty-note">暂无教师信息</div>';
+    }
+
+    const items = teacherInfo.length ? teacherInfo : validEntries;
+    return items.map((entry, idx) => {
+      const name = entry.display_name || entry.nickname || getLectureTeacherLabel(entry) || "";
+      const avatarUrl = normalizeFeedAvatarUrl(String(entry.avatar_url || "").trim());
+      const initials = (name || "?")[0] || "?";
+      const hue = (name || "").split("").reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 0);
+      const bgColor = `hsl(${hue}, 45%, 72%)`;
+      const avatarHtml = avatarUrl
+        ? `<img class="learning-panel-teacher-avatar-img" src="${escapeHtml(avatarUrl)}" alt="" onerror="this.style.display='none'">`
+        : `<span class="learning-panel-teacher-avatar-placeholder" style="background:${bgColor}">${escapeHtml(initials)}</span>`;
+      return `<div class="learning-panel-teacher-row">
+        ${avatarHtml}
+        <span class="learning-panel-teacher-name">${escapeHtml(name)}</span>
+      </div>`;
+    }).join("");
+  }
+
+  function getLectureRowById(lectureId) {
+    const id = String(lectureId || "").trim();
+    if (!id) return null;
+    return state.allLectureRows.find((row) => String((row.lecture || {}).id || "") === id) || null;
+  }
+
+  function closeTeacherEditPanel() {
+    state.materialsDetailMode = "lecture";
+    state.teacherEditContext = null;
+    renderLectureDetail();
+  }
+
+  function updateTeacherEditSearchResults() {
+    const ctx = state.teacherEditContext;
+    if (!ctx || state.materialsDetailMode !== "teacher-edit") return false;
+    const container = document.getElementById("teacherEditSearchResults");
+    if (!container) return false;
+    if (ctx.searchLoading) {
+      container.innerHTML = '<div class="teacher-edit-empty-note">搜索中...</div>';
+      return true;
+    }
+    if (!ctx.searchResults.length) {
+      container.innerHTML = '<div class="teacher-edit-empty-note">输入关键词搜索用户，留空显示最近用户</div>';
+      return true;
+    }
+    const pending = Array.isArray(ctx.pendingTeachers) ? ctx.pendingTeachers : [];
+    container.innerHTML = ctx.searchResults.map((user) => {
+      const name = getUserOptionDisplayName(user) || getUserOptionHandle(user);
+      const handle = getUserOptionHandle(user);
+      const avatarUrl = getUserOptionAvatarUrl(user);
+      const initial = getUserOptionInitial(user);
+      const alreadyAdded = pending.some((t) => String(t.user_id || "") === String(user.user_id || ""));
+      const hue = (name || "").split("").reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 0);
+      const bgColor = `hsl(${hue}, 45%, 72%)`;
+      const avatarImg = avatarUrl
+        ? `<img class="teacher-edit-user-avatar" src="${escapeHtml(avatarUrl)}" alt="" onerror="this.style.display='none'">`
+        : `<span class="teacher-edit-user-avatar-ph" style="background:${bgColor}">${escapeHtml(initial)}</span>`;
+      return `<button class="teacher-edit-search-item${alreadyAdded ? " is-already-added" : ""}" type="button" data-add-user-id="${escapeHtml(String(user.user_id || ""))}" ${alreadyAdded ? "disabled" : ""}>
+        ${avatarImg}
+        <div class="teacher-edit-search-meta">
+          <span class="teacher-edit-user-name">${escapeHtml(name)}</span>
+          <span class="teacher-edit-user-handle">@${escapeHtml(handle)}</span>
+        </div>
+        ${alreadyAdded ? '<span class="teacher-edit-search-status">已添加</span>' : '<span class="teacher-edit-search-add">添加</span>'}
+      </button>`;
+    }).join("");
+    return true;
+  }
+
+  function updateTeacherEditPendingList() {
+    const ctx = state.teacherEditContext;
+    if (!ctx || state.materialsDetailMode !== "teacher-edit") return;
+    const container = document.getElementById("teacherEditPendingList");
+    const countEl = document.getElementById("teacherEditPendingCount");
+    const pending = Array.isArray(ctx.pendingTeachers) ? ctx.pendingTeachers : [];
+    if (countEl) countEl.textContent = `(${pending.length})`;
+    if (!container) return;
+    if (!pending.length) {
+      container.innerHTML = '<div class="teacher-edit-empty-note">暂无教师，请从右侧搜索添加</div>';
+    } else {
+      container.innerHTML = pending.map((t, idx) => {
+        const name = t.display_name || t.nickname || t.username || t.user_id || "";
+        const avatarUrl = normalizeFeedAvatarUrl(String(t.avatar_url || "").trim());
+        const hue = (name || "").split("").reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 0);
+        const bgColor = `hsl(${hue}, 45%, 72%)`;
+        const avatarHtml = avatarUrl
+          ? `<img class="teacher-edit-user-avatar" src="${escapeHtml(avatarUrl)}" alt="" onerror="this.style.display='none'">`
+          : `<span class="teacher-edit-user-avatar-ph" style="background:${bgColor}">${escapeHtml((name || "?")[0] || "?")}</span>`;
+        return `<div class="teacher-edit-user-item">
+          ${avatarHtml}
+          <span class="teacher-edit-user-name">${escapeHtml(name)}</span>
+          <button class="teacher-edit-remove-btn" type="button" data-remove-teacher-index="${idx}" title="移除">✕</button>
+        </div>`;
+      }).join("");
+    }
+  }
+
+  function openTeacherEditPanel(lectureId) {
+    if (!state.isAdmin) {
+      showToast("仅管理员可用");
+      return;
+    }
+    const row = getLectureRowById(lectureId);
+    if (!row) {
+      showToast("课程不存在");
+      return;
+    }
+    state.materialsDetailMode = "teacher-edit";
+    state.teacherEditContext = { lectureId };
+    renderLectureDetail();
+  }
+
   function getLectureProgressTrail(lecture, books) {
     const list = Array.isArray(books) ? books : [];
     const selectedBookId = String(state.selectedBookId || "").trim().toLowerCase();
@@ -1108,6 +1255,16 @@
       const sessions = sectionData && Array.isArray(sectionData.sessions) ? sectionData.sessions : [];
       if (sessions.length) {
         sessionTitle = String(sessions[0].name || "").trim();
+      }
+    }
+
+    if (!sessionTitle && state.lastSessionMeta) {
+      const lsLecture = String(state.lastSessionMeta.lecture_id || "").trim().toLowerCase();
+      const lsBook = String(state.lastSessionMeta.book_id || "").trim().toLowerCase();
+      const curLecture = String(lecture && lecture.id || "").trim().toLowerCase();
+      const curBook = String(book && book.id || "").trim().toLowerCase();
+      if (lsLecture === curLecture && (!curBook || lsBook === curBook)) {
+        sessionTitle = String(state.lastSessionMeta.session_name || "").trim();
       }
     }
 
@@ -2202,6 +2359,20 @@
     return true;
   }
 
+  function canStartSummary(item) {
+    const coarse = normalizeStatusKey(item && item.coarse_status);
+    const section = normalizeStatusKey(item && item.section_status);
+    const summary = normalizeStatusKey(item && item.summary_status);
+    const job = normalizeStatusKey(item && item.job_status);
+    const summaryJob = normalizeStatusKey(item && item.summary_job_status);
+    const coarseReady = ["done", "completed", "success"].includes(coarse);
+    const sectionReady = ["done", "completed", "success"].includes(section);
+    if (!coarseReady && !sectionReady) return false;
+    if (["running", "queued"].includes(job) || ["running", "queued"].includes(summaryJob)) return false;
+    if (["running", "queued", "done", "completed", "success"].includes(summary)) return false;
+    return true;
+  }
+
   function isDoneStatus(value) {
     return ["done", "completed", "success"].includes(normalizeStatusKey(value));
   }
@@ -2219,14 +2390,17 @@
     const intensiveStatus = normalizeStatusKey(item && item.intensive_status);
     const sectionStatus = normalizeStatusKey(item && item.section_status);
     const annotationStatus = normalizeStatusKey(item && item.annotation_status);
+    const summaryStatus = normalizeStatusKey(item && item.summary_status);
     const hasError = isErrorStatus(coarseStatus)
       || isErrorStatus(intensiveStatus)
       || isErrorStatus(sectionStatus)
-      || isErrorStatus(annotationStatus);
+      || isErrorStatus(annotationStatus)
+      || isErrorStatus(summaryStatus);
     const steps = [
       { key: "coarse", label: "粗读", done: isDoneStatus(coarseStatus), running: isRunningStatus(coarseStatus) },
       { key: "intensive", label: "精读", done: isDoneStatus(intensiveStatus), running: isRunningStatus(intensiveStatus) },
       { key: "section", label: "分节", done: isDoneStatus(sectionStatus), running: isRunningStatus(sectionStatus) },
+      { key: "summary", label: "概述", done: isDoneStatus(summaryStatus), running: isRunningStatus(summaryStatus) },
       { key: "annotation", label: "批注", done: isDoneStatus(annotationStatus), running: isRunningStatus(annotationStatus) },
     ];
     const doneCount = steps.filter((row) => row.done).length;
@@ -2241,6 +2415,7 @@
 
   function getRefinementActionMeta(item) {
     const coarseDone = ["done", "completed", "success"].includes(normalizeStatusKey(item && item.coarse_status));
+    const summaryDone = ["done", "completed", "success"].includes(normalizeStatusKey(item && item.summary_status));
     const intensiveDone = ["done", "completed", "success"].includes(normalizeStatusKey(item && item.intensive_status));
     const sectionDone = ["done", "completed", "success"].includes(normalizeStatusKey(item && item.section_status));
     const annotationDone = ["done", "completed", "success"].includes(normalizeStatusKey(item && item.annotation_status));
@@ -2252,20 +2427,20 @@
         enabled: canStartRefinement(item),
       };
     }
-    if (!intensiveDone) {
-      return {
-        action: "start-intensive",
-        title: "开始精读",
-        text: "●",
-        enabled: canStartIntensive(item),
-      };
-    }
     if (!sectionDone) {
       return {
         action: "start-section",
         title: "开始分节",
         text: "§",
         enabled: canStartSection(item),
+      };
+    }
+    if (!summaryDone) {
+      return {
+        action: "start-summary",
+        title: "生成全书概述",
+        text: "◆",
+        enabled: canStartSummary(item),
       };
     }
     if (!annotationDone) {
@@ -2680,7 +2855,7 @@
         <div class="refine-steps ${expanded ? "is-open" : ""}">
           ${stepHtml || '<div class="refine-step-preview">暂无工具链步骤</div>'}
         </div>
-        ${item.question_error || item.intensive_error || item.coarse_error || item.section_error || item.refinement_error ? `<div class="refine-item-meta" style="color:#b91c1c;">错误：${escapeHtml(item.question_error || item.intensive_error || item.coarse_error || item.section_error || item.refinement_error)}</div>` : ""}
+        ${item.question_error || item.intensive_error || item.coarse_error || item.section_error || item.annotation_error || item.summary_error || item.refinement_error ? `<div class="refine-item-meta" style="color:#b91c1c;">错误：${escapeHtml(item.question_error || item.intensive_error || item.coarse_error || item.section_error || item.annotation_error || item.summary_error || item.refinement_error)}</div>` : ""}
       `;
     });
   }
@@ -2809,6 +2984,197 @@
     return state.allLectureRows.find((row) => String((row.lecture || {}).id || "") === state.selectedLectureId) || null;
   }
 
+  function syncMaterialsPageMode() {
+    const shelfMode = state.materialsPageMode === "shelf";
+    const catalogMode = state.materialsDetailMode === "catalog";
+    if (el.materialsHeadKicker) {
+      el.materialsHeadKicker.textContent = shelfMode ? "COURSES" : (catalogMode ? "CATALOG" : "COURSE");
+    }
+    if (el.materialsMainHeader) {
+      el.materialsMainHeader.hidden = state.isReaderOpen || !shelfMode;
+    }
+    if (el.backToDashboardBtn) {
+      const backText = shelfMode ? "返回首页" : (catalogMode ? "返回课程主页" : "返回首页");
+      el.backToDashboardBtn.setAttribute("title", backText);
+      el.backToDashboardBtn.setAttribute("aria-label", backText);
+    }
+    if (el.materialsLayout) {
+      el.materialsLayout.hidden = !shelfMode;
+      el.materialsLayout.classList.toggle("is-shelf-mode", shelfMode);
+      el.materialsLayout.classList.toggle("is-lecture-mode", false);
+      el.materialsLayout.classList.toggle("is-catalog-mode", catalogMode);
+    }
+    if (el.courseHomePane) {
+      el.courseHomePane.hidden = shelfMode;
+    }
+    const teacherEditMode = state.materialsDetailMode === "teacher-edit";
+    if (el.courseHomeHeader) {
+      el.courseHomeHeader.hidden = shelfMode;
+      const headerTitle = el.courseHomeHeader.querySelector(".reader-title");
+      if (headerTitle) headerTitle.textContent = teacherEditMode ? "课程教师管理" : "课程主页";
+    }
+    if (el.courseHomeSubtitle) {
+      const row = getSelectedLectureRow();
+      const lecture = row ? (row.lecture || {}) : {};
+      el.courseHomeSubtitle.textContent = shelfMode ? "Learning" : getLectureTitle(lecture);
+    }
+    if (el.courseHomeUploadBtn) {
+      el.courseHomeUploadBtn.hidden = !state.isAdmin || shelfMode || teacherEditMode;
+    }
+    if (el.courseHomeSettingsBtn) {
+      el.courseHomeSettingsBtn.hidden = !state.isAdmin || shelfMode || teacherEditMode;
+    }
+    if (el.lectureList && el.lectureList.parentElement) {
+      el.lectureList.parentElement.hidden = true;
+    }
+  }
+
+  function openMaterialsShelf() {
+    state.materialsPageMode = "shelf";
+    state.materialsDetailMode = "lecture";
+    state.catalogContext = null;
+    state.selectedBookId = "";
+    closeReader();
+    syncMaterialsPageMode();
+    renderLectureList();
+    renderLectureDetail();
+  }
+
+  function openLectureHome(lectureId) {
+    state.selectedLectureId = String(lectureId || "").trim();
+    state.selectedBookId = "";
+    state.materialsPageMode = "lecture";
+    state.materialsDetailMode = "lecture";
+    state.catalogContext = null;
+    closeReader();
+    syncMaterialsPageMode();
+    renderLectureList();
+    renderLectureDetail();
+  }
+
+  async function handleCourseHomeClick(event) {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+
+    const lectureCard = target.closest("[data-lecture-home-id]");
+    if (lectureCard) {
+      openLectureHome(String(lectureCard.getAttribute("data-lecture-home-id") || ""));
+      return;
+    }
+
+    const actionBtn = target.closest("[data-action='toggle-learning']");
+    if (actionBtn) {
+      const lectureId = String(actionBtn.getAttribute("data-lecture-id") || "");
+      if (!lectureId) return;
+      const selected = !state.selectedLearningLectureIds.includes(lectureId);
+      if (!selected) {
+        const ok = await confirmExitLearningAsync();
+        if (!ok) return;
+      }
+      try {
+        await toggleLearningSelection(lectureId, selected);
+        await refreshAll();
+        renderLectureList();
+        renderLectureDetail();
+        showToast(selected ? "已加入学习课程" : "已退出学习课程");
+      } catch (err) {
+        showToast(`操作失败：${err.message || "未知错误"}`);
+      }
+      return;
+    }
+
+    const editTeacherBtn = target.closest("[data-action='edit-teacher']");
+    if (editTeacherBtn) {
+      event.stopPropagation();
+      openTeacherEditPanel(state.selectedLectureId);
+      return;
+    }
+
+    const deleteBtn = target.closest("[data-action='delete-book']");
+    if (deleteBtn) {
+      event.stopPropagation();
+      const lectureId = String(deleteBtn.getAttribute("data-lecture-id") || "");
+      const bookId = String(deleteBtn.getAttribute("data-book-id") || "");
+      if (!lectureId || !bookId) return;
+      const ok = await confirmModalAsync("确认删除该教材？此操作不可撤销。");
+      if (!ok) return;
+      try {
+        await deleteBook(lectureId, bookId);
+        if (state.selectedBookId === bookId) state.selectedBookId = "";
+        await refreshAll();
+        renderLectureList();
+        renderLectureDetail();
+        showToast("教材已删除");
+      } catch (err) {
+        showToast(`删除失败：${err.message || "未知错误"}`);
+      }
+      return;
+    }
+
+    const bookItem = target.closest(".book-item");
+    if (!bookItem) return;
+    const requestToken = state.readerRequestToken + 1;
+    state.readerRequestToken = requestToken;
+    bookItem.classList.remove("book-item-enter");
+    void bookItem.offsetWidth;
+    bookItem.classList.add("book-item-enter");
+    state.selectedBookId = String(bookItem.getAttribute("data-book-id") || "");
+    renderLectureDetail();
+    const row = getSelectedLectureRow();
+    const lecture = row ? (row.lecture || {}) : {};
+    const books = row && Array.isArray(row.books) ? row.books : [];
+    const book = books.find((it) => String((it && it.id) || "") === state.selectedBookId) || {};
+    state.materialsDetailMode = "catalog";
+    state.catalogContext = {
+      title: String(book.title || "教材目录"),
+      subtitle: getLectureTitle(lecture),
+      chapters: [],
+      fullTextRaw: "",
+      summaryBrief: "",
+      summaryDetail: "",
+      loading: true,
+    };
+    renderLectureDetail();
+    const fullText = await fetchBookTextFull();
+    const bookInfoXml = await fetchBookInfoXml();
+    const bookDetailXml = await fetchBookDetailXml();
+    const summaryData = await fetchBookSummary();
+    if (requestToken !== state.readerRequestToken) {
+      return;
+    }
+    const chapters = parseBookInfoChapters(bookInfoXml, String(fullText || "").length);
+    state.catalogContext = {
+      title: String(book.title || "教材目录"),
+      subtitle: getLectureTitle(lecture),
+      chapters,
+      fullTextRaw: String(fullText || "（当前教材暂无可读取文本，可能仍在解析或向量化）"),
+      detailXml: String(bookDetailXml || ""),
+      summaryBrief: String(summaryData.summary_brief || ""),
+      summaryDetail: String(summaryData.summary_detail || ""),
+      loading: false,
+    };
+    state.materialsDetailMode = "catalog";
+    renderLectureDetail();
+  }
+
+  function handleCatalogClick(event) {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const item = target.closest("[data-material-catalog-index]");
+    if (!item || !state.catalogContext) return;
+    const idx = Number(item.getAttribute("data-material-catalog-index") || "0");
+    state.readerChapters = Array.isArray(state.catalogContext.chapters) ? state.catalogContext.chapters.slice() : [];
+    state.readerFullTextRaw = String(state.catalogContext.fullTextRaw || "");
+    state.readerBookDetailXml = String(state.catalogContext.detailXml || "");
+    state.readerActiveChapterIndex = Math.max(0, Math.min(state.readerChapters.length - 1, Number.isFinite(idx) ? idx : 0));
+    openReader(
+      state.catalogContext.title || "教材阅读",
+      state.catalogContext.subtitle || "",
+      state.readerFullTextRaw,
+      { chapterIndex: state.readerActiveChapterIndex }
+    );
+  }
+
   function renderLectureList() {
     if (!state.allLectureRows.length) {
       el.lectureList.innerHTML = '<div class="materials-empty">暂无课程</div>';
@@ -2831,108 +3197,387 @@
     }).join("");
   }
 
+  function renderMaterialsShelf() {
+    if (!state.allLectureRows.length) {
+      el.lectureDetailPane.innerHTML = '<div class="materials-empty">暂无课程</div>';
+      return;
+    }
+
+    const cardsHtml = state.allLectureRows.map((row) => {
+      const lecture = row.lecture || {};
+      const lectureId = String(lecture.id || "");
+      const selected = state.selectedLearningLectureIds.includes(lectureId);
+      const booksCount = toNumber(row.books_count, 0);
+      const progress = getCourseProgress(lecture, row.books || []);
+      const trail = getLectureProgressTrail(lecture, row.books || []);
+      return `
+        <article class="nxl-course-item nxl-course-shelf-card" data-lecture-home-id="${escapeHtml(lectureId)}">
+          <div class="nxl-course-top">
+            <div class="nxl-course-title">${escapeHtml(getLectureTitle(lecture))}</div>
+            <span class="nxl-course-percent">${escapeHtml(String(progress))}%</span>
+          </div>
+          <div class="nxl-course-meta-row">
+            <span class="nxl-course-meta-pill">${escapeHtml(lecture.category || "未分类")}</span>
+            <span class="nxl-course-meta-pill">${escapeHtml(booksCount ? `${booksCount} 本教材` : "暂无教材")}</span>
+          </div>
+          <div class="nxl-course-current">${escapeHtml(selected ? "已加入学习" : "未加入学习")}${trail.bookTitle ? ` · ${trail.bookTitle}` : ""}</div>
+          <div class="nxl-course-bar"><div class="nxl-course-bar-fill" style="width:${Math.max(0, Math.min(100, Number(progress) || 0))}%"></div></div>
+        </article>
+      `;
+    }).join("");
+
+    el.lectureDetailPane.innerHTML = `
+      <section class="materials-detail-scroll">
+        <section class="detail-section" style="padding-top:0;border-bottom:0;">
+          <div class="materials-list">${cardsHtml}</div>
+        </section>
+      </section>
+    `;
+  }
+
   function renderLectureDetail() {
+    syncMaterialsPageMode();
+
+    if (state.materialsPageMode === "shelf") {
+      renderMaterialsShelf();
+      return;
+    }
+
+    const detailPane = el.courseHomeContent;
+    if (!detailPane) {
+      return;
+    }
+
+    if (state.materialsDetailMode === "teacher-edit" && state.teacherEditContext) {
+      const editLectureId = String(state.teacherEditContext.lectureId || "");
+      const editRow = getLectureRowById(editLectureId);
+      const editLecture = editRow ? (editRow.lecture || {}) : {};
+      const ctx = state.teacherEditContext;
+
+      // 初始化待保存教师列表（从 lecture.teacher_info 或 lecture.teacher）
+      if (!Array.isArray(ctx.pendingTeachers)) {
+        const teacherInfo = Array.isArray(editLecture.teacher_info) && editLecture.teacher_info.length
+          ? editLecture.teacher_info
+          : getLectureTeacherEntries(editLecture).map((entry) => ({
+              user_id: getLectureTeacherLabel(entry),
+              display_name: getLectureTeacherLabel(entry),
+            }));
+        ctx.pendingTeachers = teacherInfo.slice();
+      }
+      if (!Array.isArray(ctx.searchResults)) ctx.searchResults = [];
+
+      const pending = ctx.pendingTeachers;
+
+      // 左侧：当前教师列表
+      const pendingHtml = pending.length
+        ? pending.map((t, idx) => {
+            const name = t.display_name || t.nickname || t.username || t.user_id || "";
+            const avatarUrl = normalizeFeedAvatarUrl(String(t.avatar_url || "").trim());
+            const hue = (name || "").split("").reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 0);
+            const bgColor = `hsl(${hue}, 45%, 72%)`;
+            const avatarHtml = avatarUrl
+              ? `<img class="teacher-edit-user-avatar" src="${escapeHtml(avatarUrl)}" alt="" onerror="this.style.display='none'">`
+              : `<span class="teacher-edit-user-avatar-ph" style="background:${bgColor}">${escapeHtml((name || "?")[0] || "?")}</span>`;
+            return `<div class="teacher-edit-user-item">
+              ${avatarHtml}
+              <span class="teacher-edit-user-name">${escapeHtml(name)}</span>
+              <button class="teacher-edit-remove-btn" type="button" data-remove-teacher-index="${idx}" title="移除">✕</button>
+            </div>`;
+          }).join("")
+        : '<div class="teacher-edit-empty-note">暂无教师，请从右侧搜索添加</div>';
+
+      detailPane.innerHTML = `
+        <section class="materials-detail-scroll learning-panel-page">
+          <div class="teacher-edit-panel">
+            <div class="teacher-edit-split">
+              <div class="teacher-edit-left">
+                <div class="teacher-edit-section-title">当前教师 <span id="teacherEditPendingCount">(${pending.length})</span></div>
+                <div class="teacher-edit-user-list" id="teacherEditPendingList">${pendingHtml}</div>
+              </div>
+              <div class="teacher-edit-right">
+                <div class="teacher-edit-section-title">搜索用户</div>
+                <input type="text" id="teacherEditSearchInput" class="teacher-edit-search-input" placeholder="输入名称或 UID 搜索..." value="${escapeHtml(String(ctx.searchQuery || ""))}" autocomplete="off" />
+                <div class="teacher-edit-search-results" id="teacherEditSearchResults"><div class="teacher-edit-empty-note">输入关键词搜索用户，留空显示最近用户</div></div>
+              </div>
+            </div>
+            <div class="teacher-edit-actions">
+              <button class="btn btn-primary" id="teacherEditSaveBtn" type="button">保存</button>
+              <button class="btn btn-secondary" id="teacherEditCancelBtn" type="button">取消</button>
+            </div>
+          </div>
+        </section>
+      `;
+
+      // 绑定事件
+      const saveBtn = document.getElementById("teacherEditSaveBtn");
+      const cancelBtn = document.getElementById("teacherEditCancelBtn");
+      const searchInput = document.getElementById("teacherEditSearchInput");
+      const pendingList = document.getElementById("teacherEditPendingList");
+      const searchResults = document.getElementById("teacherEditSearchResults");
+
+      if (cancelBtn) cancelBtn.addEventListener("click", () => closeTeacherEditPanel());
+
+      // 搜索输入防抖
+      if (searchInput) {
+        let _teacherSearchTimer = null;
+        const doSearch = () => {
+          const q = String(searchInput.value || "").trim();
+          ctx.searchQuery = q;
+          ctx.searchLoading = true;
+          if (searchResults) {
+            searchResults.innerHTML = '<div class="teacher-edit-empty-note">搜索中...</div>';
+          }
+          const url = `/api/frontend/users/search?q=${encodeURIComponent(q)}&limit=10`;
+          fetchJson(url).then((data) => {
+            ctx.searchResults = Array.isArray(data && data.items) ? data.items : [];
+            ctx.searchLoading = false;
+            updateTeacherEditSearchResults();
+          }).catch(() => {
+            ctx.searchResults = [];
+            ctx.searchLoading = false;
+            updateTeacherEditSearchResults();
+          });
+        };
+        searchInput.addEventListener("input", () => {
+          if (_teacherSearchTimer) clearTimeout(_teacherSearchTimer);
+          _teacherSearchTimer = setTimeout(doSearch, 300);
+        });
+        // 初始加载（空查询=最近用户）
+        if (!ctx.searchResults.length && !ctx.searchLoading) doSearch();
+        else if (ctx.searchResults.length) updateTeacherEditSearchResults();
+      }
+
+      // 移除教师
+      if (pendingList) {
+        pendingList.addEventListener("click", (ev) => {
+          const btn = ev.target.closest("[data-remove-teacher-index]");
+          if (!btn) return;
+          const idx = Number(btn.getAttribute("data-remove-teacher-index"));
+          if (idx >= 0 && idx < ctx.pendingTeachers.length) {
+            ctx.pendingTeachers.splice(idx, 1);
+            updateTeacherEditPendingList();
+          }
+        });
+      }
+
+      // 添加教师
+      if (searchResults) {
+        searchResults.addEventListener("click", (ev) => {
+          const btn = ev.target.closest("[data-add-user-id]");
+          if (!btn || btn.disabled) return;
+          const uid = String(btn.getAttribute("data-add-user-id") || "").trim();
+          if (!uid) return;
+          const user = ctx.searchResults.find((u) => String(u.user_id || "") === uid);
+          if (!user) return;
+          if (ctx.pendingTeachers.some((t) => String(t.user_id || "") === uid)) return;
+          ctx.pendingTeachers.push({
+            user_id: String(user.user_id || uid),
+            username: String(user.username || "").trim(),
+            display_name: String(user.display_name || "").trim(),
+            nickname: String(user.nickname || "").trim(),
+            avatar_url: String(user.avatar_url || "").trim(),
+          });
+          updateTeacherEditPendingList();
+          updateTeacherEditSearchResults();
+        });
+      }
+
+      // 保存
+      if (saveBtn) {
+        saveBtn.addEventListener("click", async () => {
+          const teacherList = ctx.pendingTeachers
+            .map((t) => String(t.user_id || t.username || "").trim())
+            .filter(Boolean);
+          saveBtn.disabled = true;
+          try {
+            await fetchJson(`/api/lectures/${encodeURIComponent(editLectureId)}/teacher`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ teacher: teacherList }),
+            });
+            await refreshAll();
+            showToast("教师列表已更新");
+            closeTeacherEditPanel();
+          } catch (err) {
+            saveBtn.disabled = false;
+            showToast(`保存失败：${err.message || "未知错误"}`);
+          }
+        });
+      }
+      return;
+    }
+
     if (state.materialsDetailMode === "catalog" && state.catalogContext) {
       const ctx = state.catalogContext;
       const chapters = Array.isArray(ctx.chapters) ? ctx.chapters : [];
       const isLoading = !!ctx.loading;
-      el.lectureDetailPane.innerHTML = `
-        <section class="materials-detail-scroll materials-catalog-page">
-          <section class="detail-section">
-            <div class="detail-title">${escapeHtml(ctx.title || "教材目录")}</div>
-            <p class="detail-line">${escapeHtml(ctx.subtitle || "")}</p>
-          </section>
-          <section class="detail-section">
-            <div class="detail-title">目录</div>
-            <div class="materials-catalog-list">
-              ${isLoading ? '<div class="materials-loading">目录加载中...</div>' : (chapters.length ? chapters.map((item, idx) => `
-                <button class="materials-catalog-item" type="button" data-material-catalog-index="${idx}">
-                  <span class="materials-catalog-index">${idx + 1}.</span>
-                  <span class="materials-catalog-text">${escapeHtml(item.title || `章节 ${idx + 1}`)}</span>
-                </button>
-              `).join("") : '<div class="materials-empty">暂无目录</div>')}
+      const summaryBrief = escapeHtml(ctx.summaryBrief || "");
+      const summaryBriefHtml = (ctx.summaryBrief || "").replace(/\n/g, "<br>");
+
+      detailPane.innerHTML = `
+        <section class="materials-detail-scroll materials-catalog-page learning-panel-page">
+          <div class="learning-panel-hero-block">
+            <div class="learning-panel-cover-placeholder"></div>
+            <div class="learning-panel-hero-info">
+              <div class="learning-panel-hero-title">${escapeHtml(ctx.title || "教材目录")}</div>
+              <div class="learning-panel-hero-subtitle">${escapeHtml(ctx.subtitle || "")}</div>
             </div>
-          </section>
+          </div>
+          <div class="learning-panel-catalog-layout">
+            <div class="learning-panel-catalog-left">
+              <div class="learning-panel-section-head">
+                <div class="detail-title">书籍简介</div>
+              </div>
+              <div class="learning-panel-section-body">
+                ${isLoading ? '<div class="materials-loading">加载中...</div>' : (summaryBrief ? `<div class="learning-panel-intro-content">${summaryBriefHtml}</div>` : '<div class="materials-empty">暂无简介内容</div>')}
+              </div>
+            </div>
+            <div class="learning-panel-catalog-right">
+              <div class="learning-panel-section-head">
+                <div class="detail-title">目录</div>
+              </div>
+              <div class="learning-panel-section-body">
+                <div class="materials-catalog-list learning-panel-catalog-list">
+                ${isLoading ? '<div class="materials-loading">目录加载中...</div>' : (chapters.length ? chapters.map((item, idx) => `
+                  <button class="materials-catalog-item" type="button" data-material-catalog-index="${idx}">
+                    <span class="materials-catalog-index">${idx + 1}.</span>
+                    <span class="materials-catalog-text">${escapeHtml(item.title || `章节 ${idx + 1}`)}</span>
+                  </button>
+                `).join("") : '<div class="materials-empty">暂无目录</div>')}
+                </div>
+              </div>
+            </div>
+          </div>
         </section>
       `;
       return;
     }
+
     const row = getSelectedLectureRow();
     if (!row) {
-      el.lectureDetailPane.innerHTML = '<div class="materials-empty">请选择课程</div>';
+      detailPane.innerHTML = '<div class="materials-empty">请选择课程</div>';
       return;
     }
+
     const lecture = row.lecture || {};
     const lectureId = String(lecture.id || "");
     const isLearning = state.selectedLearningLectureIds.includes(lectureId);
     const books = Array.isArray(row.books) ? row.books : [];
     const progressTrail = getLectureProgressTrail(lecture, books);
+
     if (!state.selectedBookId && books.length) {
       state.selectedBookId = String(books[0].id || "");
     }
+
     const toggleBtnClass = isLearning ? "btn btn-outline-danger btn-sm" : "btn btn-outline-secondary btn-sm";
     const toggleBtnTitle = isLearning ? "退课" : "主动学习";
     const toggleBtnText = toggleBtnTitle;
     const learningPillClass = isLearning ? "learning-state-pill is-on" : "learning-state-pill is-off";
     const learningPillText = isLearning ? "学习中" : "未加入";
     const progressPercent = Math.max(0, Math.min(100, Number(progressTrail.progress) || 0));
-    const progressText = `${progressTrail.bookTitle} - ${progressTrail.chapterTitle} - ${progressTrail.sessionTitle}`;
+    const progressText = [progressTrail.bookTitle, progressTrail.chapterTitle, progressTrail.sessionTitle]
+      .filter((part) => String(part || "").trim())
+      .join(" · ");
     const lectureDescription = escapeHtml(String(lecture.description || "暂无描述"));
+    const lectureTeachers = renderLectureTeacherTags(lecture);
+    const lectureInfoRows = [
+      ["课程分类", lecture.category || "未分类"],
+      ["教材数量", `${books.length} 本`],
+      ["学习状态", isLearning ? "学习中" : "未加入学习"],
+    ];
 
-    el.lectureDetailPane.innerHTML = `
-      <section class="materials-detail-scroll">
-        <section class="detail-section" style="padding-top:0;">
-          <div style="display:flex;gap:28px;align-items:stretch;min-height:228px;padding:8px 0 6px;">
-            <div style="flex:0 0 228px;min-height:228px;clip-path:polygon(0 0,100% 0,82% 100%,0 100%);background:linear-gradient(135deg,#111827 0%,#374151 100%);border-radius:20px 20px 20px 0;"></div>
-            <div style="min-width:0;flex:1 1 auto;display:flex;flex-direction:column;justify-content:space-between;padding:4px 0;">
-              <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:20px;">
-                <div style="min-width:0;flex:1 1 auto;display:grid;gap:10px;">
-                  <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-                    <div class="detail-title" style="margin-top:0;font-size:36px;line-height:1.02;font-weight:800;">${escapeHtml(getLectureTitle(lecture))}</div>
-                    <span class="${learningPillClass}">${learningPillText}</span>
+    detailPane.innerHTML = `
+      <section class="materials-detail-scroll learning-panel-page">
+        <section class="detail-section learning-panel-section learning-panel-hero">
+          <div class="learning-panel-section-body">
+            <div class="learning-panel-hero-body">
+              <div class="learning-panel-cover"></div>
+              <div class="learning-panel-hero-content">
+                <div class="learning-panel-title-row">
+                  <div class="detail-title learning-panel-hero-title">${escapeHtml(getLectureTitle(lecture))}</div>
+                  <span class="${learningPillClass}">${learningPillText}</span>
+                </div>
+
+                <div class="learning-panel-summary-grid">
+                  <div class="learning-panel-copy learning-panel-summary-copy">
+                    <div class="detail-description-label learning-panel-copy-label">课程简介</div>
+                    <div class="detail-description-text learning-panel-summary-text">${lectureDescription}</div>
                   </div>
-                </div>
-                <div class="learning-action-group" style="justify-content:flex-end;flex:0 0 auto;">
-                  <button class="${toggleBtnClass}" data-action="toggle-learning" data-lecture-id="${escapeHtml(lectureId)}" aria-label="${toggleBtnTitle}" title="${toggleBtnTitle}">${toggleBtnText}</button>
-                </div>
-              </div>
-              <div style="display:grid;gap:18px;margin-top:18px;">
-                <div style="display:grid;gap:6px;">
-                  <div class="detail-description-label" style="margin-bottom:0;">课程简介</div>
-                  <div class="detail-description-text">${lectureDescription}</div>
-                </div>
-                <div style="display:grid;gap:8px;">
-                  <div style="display:flex;align-items:baseline;justify-content:space-between;gap:16px;flex-wrap:wrap;">
-                    <div style="display:flex;align-items:baseline;gap:10px;min-width:0;flex-wrap:wrap;">
-                      <div class="detail-description-label" style="margin-bottom:0;">当前推进</div>
-                      <div class="detail-line" style="margin-top:0;font-size:14px;color:#111827;">${escapeHtml(progressText)}</div>
+                  <aside class="learning-panel-teacher-card">
+                    <div class="detail-description-label learning-panel-copy-label">教师列表</div>
+                    <div class="learning-panel-teacher-list">
+                      ${lectureTeachers}
                     </div>
-                    <div class="detail-line" style="margin-top:0;font-size:22px;font-weight:800;color:#111827;line-height:1;">${escapeHtml(String(progressPercent))}%</div>
-                  </div>
-                  <div class="nxl-course-bar"><div class="nxl-course-bar-fill" style="width:${progressPercent}%"></div></div>
+                  </aside>
+                </div>
+                <div class="learning-panel-copy-actions learning-panel-action-row">
+                  <button class="${toggleBtnClass}" data-action="toggle-learning" data-lecture-id="${escapeHtml(lectureId)}" aria-label="${toggleBtnTitle}" title="${toggleBtnTitle}">${toggleBtnText}</button>
                 </div>
               </div>
             </div>
           </div>
         </section>
-        <section class="detail-section">
-          <div class="detail-title">教材列表</div>
-          <div class="book-list">
-            ${books.length ? books.map((book) => {
+
+        <section class="detail-section learning-panel-section">
+          <div class="learning-panel-split-grid">
+            <div class="learning-panel-books-column">
+              <div class="learning-panel-section-head">
+                <div class="detail-title learning-panel-section-title">教材列表</div>
+              </div>
+              <div class="learning-panel-section-body">
+                <div class="book-list learning-panel-books-grid">
+                ${books.length ? books.map((book) => {
               const bookId = String(book.id || "");
               const active = bookId === state.selectedBookId ? "is-active" : "";
+              const bookMeta = [
+                vectorStatusLabel(book.vector_status, book.vector_provider),
+                materialStatusLabel(book.status),
+              ].filter(Boolean).join(" · ");
+              const bookHint = active ? "当前教材" : "点击进入阅读";
               return `
-                <article class="book-item ${active}" data-book-id="${escapeHtml(bookId)}">
-                  <div class="book-title">${escapeHtml(book.title || bookId)}</div>
-                  <div class="book-badges">
-                    <span class="book-badge ${statusBadgeClass(book.vector_status, book.vector_provider)}">向量：${escapeHtml(vectorStatusLabel(book.vector_status, book.vector_provider))}</span>
-                    <span class="book-badge ${statusBadgeClass(book.status)}">教材：${escapeHtml(materialStatusLabel(book.status))}</span>
-                    <span class="book-badge ${statusBadgeClass(book.section_status)}">分节：${escapeHtml(normalizeStatusKey(book.section_status) || "idle")}</span>
-                    <span class="book-badge ${statusBadgeClass(book.annotation_status)}">批注：${escapeHtml(normalizeStatusKey(book.annotation_status) || "idle")}</span>
-                  </div>
-                </article>
+                  <article class="book-item ${active} learning-panel-book-item" data-book-id="${escapeHtml(bookId)}">
+                    <div class="book-item-head learning-panel-book-head">
+                      <div class="learning-panel-book-head-main">
+                        <div class="book-title learning-panel-book-title">${escapeHtml(book.title || bookId)}</div>
+                        <div class="book-meta learning-panel-book-meta">${escapeHtml(bookMeta || bookHint)}</div>
+                      </div>
+                      <span class="learning-panel-book-state">${escapeHtml(bookHint)}</span>
+                    </div>
+                  </article>
               `;
             }).join("") : '<div class="materials-empty">暂无教材</div>'}
+                </div>
+              </div>
+            </div>
+            <aside class="learning-panel-info-column">
+              <div class="learning-panel-progress">
+                <div class="learning-panel-progress-top">
+                  <div class="detail-description-label learning-panel-copy-label">当前推进</div>
+                  <div class="learning-panel-progress-percent">${escapeHtml(String(progressPercent))}%</div>
+                </div>
+                <div class="learning-panel-progress-text" title="${escapeHtml(progressText)}">${escapeHtml(progressText || "暂无推进信息")}</div>
+                <div class="nxl-course-bar learning-panel-progress-bar"><div class="nxl-course-bar-fill" style="width:${progressPercent}%"></div></div>
+              </div>
+
+              <div class="learning-panel-info-card">
+                <div class="detail-description-label learning-panel-copy-label">学习信息</div>
+                <div class="learning-panel-info-list">
+                  ${lectureInfoRows.map(([label, value]) => `
+                    <div class="learning-panel-info-row">
+                      <span class="learning-panel-info-label">${escapeHtml(label)}</span>
+                      <span class="learning-panel-info-value">${escapeHtml(String(value || ""))}</span>
+                    </div>
+                  `).join("")}
+                </div>
+              </div>
+
+              <div class="learning-panel-info-card">
+                <div class="detail-description-label learning-panel-copy-label">教师信息${state.isAdmin ? ` <button class="learning-panel-inline-edit-btn" type="button" data-action="edit-teacher" title="编辑教师">✎</button>` : ""}</div>
+                <div class="learning-panel-teacher-list learning-panel-teacher-list-compact">
+                  ${lectureTeachers}
+                </div>
+              </div>
+            </aside>
           </div>
         </section>
       </section>
@@ -2940,6 +3585,8 @@
   }
 
   async function fetchBookTextFull() {
+
+
     const row = getSelectedLectureRow();
     if (!row || !state.selectedBookId) return "";
     const lectureId = String((row.lecture || {}).id || "");
@@ -2995,6 +3642,22 @@
       return String(data.content || "");
     } catch (_err) {
       return "";
+    }
+  }
+
+  async function fetchBookSummary() {
+    const row = getSelectedLectureRow();
+    if (!row || !state.selectedBookId) return { summary_brief: "", summary_detail: "" };
+    const lectureId = String((row.lecture || {}).id || "");
+    if (!lectureId) return { summary_brief: "", summary_detail: "" };
+    try {
+      const data = await fetchJson(`/api/lectures/${encodeURIComponent(lectureId)}/books/${encodeURIComponent(state.selectedBookId)}/summary`);
+      return {
+        summary_brief: String(data.summary_brief || ""),
+        summary_detail: String(data.summary_detail || ""),
+      };
+    } catch (_err) {
+      return { summary_brief: "", summary_detail: "" };
     }
   }
 
@@ -3254,6 +3917,26 @@
     }
     entries.sort((a, b) => a.start - b.start);
     return entries;
+  }
+
+  function parseBookInfoRoughContent(xmlText) {
+    const src = String(xmlText || "");
+    if (!src.trim()) return "";
+    const blocks = [];
+    const reg = /<chapter_name>([\s\S]*?)<\/chapter_name>[\s\S]*?<chapter_summary>([\s\S]*?)<\/chapter_summary>/gi;
+    let m = null;
+    while ((m = reg.exec(src)) !== null) {
+      const name = String(m[1] || "").trim();
+      const summary = String(m[2] || "").trim();
+      if (!name || !summary) continue;
+      blocks.push(
+        "<div class=\"learning-panel-rough-chapter\">" +
+        "<div class=\"learning-panel-rough-chapter-title\">" + escapeHtml(name) + "</div>" +
+        "<div class=\"learning-panel-rough-chapter-text\">" + escapeHtml(summary) + "</div>" +
+        "</div>"
+      );
+    }
+    return blocks.join("");
   }
 
   // Session 进度管理
@@ -3919,7 +4602,11 @@
     const isReading = state.readerViewMode === "reading";
     if (el.readerChapterListBtn) el.readerChapterListBtn.hidden = !isReading;
     if (el.readerSettingsBtn) el.readerSettingsBtn.hidden = !isReading;
-    if (el.materialsMainHeader) el.materialsMainHeader.hidden = state.isReaderOpen;
+    if (!state.isReaderOpen) {
+      syncMaterialsPageMode();
+    } else if (el.materialsMainHeader) {
+      el.materialsMainHeader.hidden = true;
+    }
     if (el.readerHeader) el.readerHeader.hidden = !state.isReaderOpen;
   }
 
@@ -3951,6 +4638,9 @@
     setReaderSettingsPanelOpen(false);
     setChapterListPanelOpen(false);
     el.materialsLayout.hidden = true;
+    if (el.courseHomePane) {
+      el.courseHomePane.hidden = true;
+    }
     el.readerPane.hidden = false;
     state.readerViewMode = mode;
     state.readerMeta.title = String(title || "教材阅读");
@@ -4041,7 +4731,7 @@
     state.readerAnnotations = [];
     syncReaderModeUI();
     el.readerPane.hidden = true;
-    el.materialsLayout.hidden = false;
+    syncMaterialsPageMode();
     notifyHostLayout("default", { hideInputDock: true });
     notifyHostReaderState(false);
     notifyHostReaderContext();
@@ -4642,6 +5332,20 @@
     await loadMaterialsRows();
   }
 
+  async function startSummary(lectureId, bookId) {
+    await fetchJson("/api/frontend/settings/refinement/summary", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        lecture_id: lectureId,
+        book_id: bookId,
+        actor: state.username || "",
+      }),
+    });
+    await loadRefinementSettings();
+    await loadMaterialsRows();
+  }
+
   async function deleteBook(lectureId, bookId) {
     await fetchJson(`/api/lectures/${encodeURIComponent(lectureId)}/books/${encodeURIComponent(bookId)}`, {
       method: "DELETE",
@@ -4749,9 +5453,7 @@
   function bindEvents() {
     el.openMaterialsViewBtn.addEventListener("click", () => {
       setView("materials");
-      renderLectureList();
-      closeReader();
-      renderLectureDetail();
+      openMaterialsShelf();
     });
     if (el.dashboardProgressTabBtn) {
       el.dashboardProgressTabBtn.addEventListener("click", () => {
@@ -4784,12 +5486,8 @@
       if (!item) return;
       const lectureId = String(item.getAttribute("data-progress-lecture-id") || "");
       if (!lectureId) return;
-      state.selectedLectureId = lectureId;
-      state.selectedBookId = "";
-      closeReader();
       setView("materials");
-      renderLectureList();
-      renderLectureDetail();
+      openLectureHome(lectureId);
     });
     if (el.learningFeedPanel) {
       el.learningFeedPanel.addEventListener("click", async (event) => {
@@ -4970,18 +5668,50 @@
         renderLectureDetail();
         return;
       }
+      if (state.materialsPageMode === "lecture") {
+        openMaterialsShelf();
+        return;
+      }
       closeReader();
       setView("dashboard");
       await refreshAll();
     });
+    if (el.backFromCourseHomeBtn) {
+      el.backFromCourseHomeBtn.addEventListener("click", () => {
+        if (state.materialsDetailMode === "teacher-edit") {
+          closeTeacherEditPanel();
+          return;
+        }
+        if (state.materialsDetailMode === "catalog") {
+          state.materialsDetailMode = "lecture";
+          state.catalogContext = null;
+          renderLectureDetail();
+          return;
+        }
+        openMaterialsShelf();
+      });
+    }
     el.openUploadViewBtn.addEventListener("click", () => {
       closeReader();
       setView("upload");
       setUploadTab("upload");
     });
+    if (el.courseHomeUploadBtn) {
+      el.courseHomeUploadBtn.addEventListener("click", () => {
+        closeReader();
+        setView("upload");
+        setUploadTab("upload");
+      });
+    }
+    if (el.courseHomeSettingsBtn) {
+      el.courseHomeSettingsBtn.addEventListener("click", () => {
+        openTeacherEditPanel(state.selectedLectureId);
+      });
+    }
     el.backToMaterialsBtn.addEventListener("click", () => {
       closeReader();
       setView("materials");
+      syncMaterialsPageMode();
     });
     el.backFromSettingsBtn.addEventListener("click", () => {
       setView("dashboard");
@@ -5352,119 +6082,24 @@
       if (!(target instanceof Element)) return;
       const item = target.closest(".lecture-item");
       if (!item) return;
-      state.selectedLectureId = String(item.getAttribute("data-lecture-id") || "");
-      state.selectedBookId = "";
-      state.materialsDetailMode = "lecture";
-      state.catalogContext = null;
-      closeReader();
-      renderLectureList();
-      renderLectureDetail();
+      openLectureHome(String(item.getAttribute("data-lecture-id") || ""));
     });
 
     el.lectureDetailPane.addEventListener("click", async (event) => {
       const target = event.target;
       if (!(target instanceof Element)) return;
 
-      const actionBtn = target.closest("[data-action='toggle-learning']");
-      if (actionBtn) {
-        const lectureId = String(actionBtn.getAttribute("data-lecture-id") || "");
-        if (!lectureId) return;
-        const selected = !state.selectedLearningLectureIds.includes(lectureId);
-        if (!selected) {
-          const ok = await confirmExitLearningAsync();
-          if (!ok) return;
-        }
-        try {
-          await toggleLearningSelection(lectureId, selected);
-          await refreshAll();
-          renderLectureList();
-          renderLectureDetail();
-          showToast(selected ? "已加入学习课程" : "已退出学习课程");
-        } catch (err) {
-          showToast(`操作失败：${err.message || "未知错误"}`);
-        }
+      const lectureCard = target.closest("[data-lecture-home-id]");
+      if (lectureCard) {
+        openLectureHome(String(lectureCard.getAttribute("data-lecture-home-id") || ""));
         return;
       }
-      
-      const deleteBtn = target.closest("[data-action='delete-book']");
-      if (deleteBtn) {
-        event.stopPropagation();
-        const lectureId = String(deleteBtn.getAttribute("data-lecture-id") || "");
-        const bookId = String(deleteBtn.getAttribute("data-book-id") || "");
-        if (!lectureId || !bookId) return;
-        const ok = await confirmModalAsync("确认删除该教材？此操作不可撤销。");
-        if (!ok) return;
-        try {
-          await deleteBook(lectureId, bookId);
-          if (state.selectedBookId === bookId) state.selectedBookId = "";
-          await refreshAll();
-          renderLectureList();
-          renderLectureDetail();
-          showToast("教材已删除");
-        } catch (err) {
-          showToast(`删除失败：${err.message || "未知错误"}`);
-        }
-        return;
-      }
-
-      const bookItem = target.closest(".book-item");
-      if (!bookItem) return;
-      const requestToken = state.readerRequestToken + 1;
-      state.readerRequestToken = requestToken;
-      bookItem.classList.remove("book-item-enter");
-      void bookItem.offsetWidth;
-      bookItem.classList.add("book-item-enter");
-      state.selectedBookId = String(bookItem.getAttribute("data-book-id") || "");
-      renderLectureDetail();
-      const row = getSelectedLectureRow();
-      const lecture = row ? (row.lecture || {}) : {};
-      const books = row && Array.isArray(row.books) ? row.books : [];
-      const book = books.find((it) => String((it && it.id) || "") === state.selectedBookId) || {};
-      state.materialsDetailMode = "catalog";
-      state.catalogContext = {
-        title: String(book.title || "教材目录"),
-        subtitle: `${getLectureTitle(lecture)} · ${vectorStatusLabel(book.vector_status, book.vector_provider)} / ${materialStatusLabel(book.status)}`,
-        chapters: [],
-        fullTextRaw: "",
-        loading: true,
-      };
-      renderLectureDetail();
-      const fullText = await fetchBookTextFull();
-      const bookInfoXml = await fetchBookInfoXml();
-      const bookDetailXml = await fetchBookDetailXml();
-      if (requestToken !== state.readerRequestToken) {
-        return;
-      }
-      const chapters = parseBookInfoChapters(bookInfoXml, String(fullText || "").length);
-      state.catalogContext = {
-        title: String(book.title || "教材目录"),
-        subtitle: `${getLectureTitle(lecture)} · ${vectorStatusLabel(book.vector_status, book.vector_provider)} / ${materialStatusLabel(book.status)}`,
-        chapters,
-        fullTextRaw: String(fullText || "（当前教材暂无可读取文本，可能仍在解析或向量化）"),
-        detailXml: String(bookDetailXml || ""),
-        loading: false,
-      };
-      state.materialsDetailMode = "catalog";
-      renderLectureDetail();
     });
 
-    el.lectureDetailPane.addEventListener("click", (event) => {
-      const target = event.target;
-      if (!(target instanceof Element)) return;
-      const item = target.closest("[data-material-catalog-index]");
-      if (!item || !state.catalogContext) return;
-      const idx = Number(item.getAttribute("data-material-catalog-index") || "0");
-      state.readerChapters = Array.isArray(state.catalogContext.chapters) ? state.catalogContext.chapters.slice() : [];
-      state.readerFullTextRaw = String(state.catalogContext.fullTextRaw || "");
-      state.readerBookDetailXml = String(state.catalogContext.detailXml || "");
-      state.readerActiveChapterIndex = Math.max(0, Math.min(state.readerChapters.length - 1, Number.isFinite(idx) ? idx : 0));
-      openReader(
-        state.catalogContext.title || "教材阅读",
-        state.catalogContext.subtitle || "",
-        state.readerFullTextRaw,
-        { chapterIndex: state.readerActiveChapterIndex }
-      );
-    });
+    if (el.courseHomeContent) {
+      el.courseHomeContent.addEventListener("click", handleCourseHomeClick);
+      el.courseHomeContent.addEventListener("click", handleCatalogClick);
+    }
 
     el.materialsPreviewPane.addEventListener("input", (event) => {
       const target = event.target;
@@ -5679,6 +6314,18 @@
           .catch((err) => showToast("批注执行失败：" + (err.message || "未知错误")));
         return;
       }
+      const summaryBtn = target.closest("[data-action='start-summary']");
+      if (summaryBtn) {
+        const lectureId = String(summaryBtn.getAttribute("data-lecture-id") || "");
+        const bookId = String(summaryBtn.getAttribute("data-book-id") || "");
+        if (!lectureId || !bookId) return;
+        startSummary(lectureId, bookId)
+          .then(() => {
+            showToast("已开始全书概述生成");
+          })
+          .catch((err) => showToast("全书概述执行失败：" + (err.message || "未知错误")));
+        return;
+      }
     });
 
     el.settingsDetailPane.addEventListener("change", (event) => {
@@ -5746,6 +6393,12 @@
   function updateAdminVisibility() {
     el.profileAdminSettingsBtn.hidden = !state.isAdmin;
     el.openUploadViewBtn.hidden = !state.isAdmin;
+    if (el.courseHomeUploadBtn) {
+      el.courseHomeUploadBtn.hidden = !state.isAdmin || state.materialsPageMode === "shelf";
+    }
+    if (el.courseHomeSettingsBtn) {
+      el.courseHomeSettingsBtn.hidden = !state.isAdmin || state.materialsPageMode === "shelf";
+    }
   }
 
   async function init() {

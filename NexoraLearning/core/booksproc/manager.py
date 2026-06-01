@@ -46,11 +46,13 @@ from .modeling import (
     build_question_generation_runner,
     build_split_chapters_runner,
     build_annotation_runner,
+    build_book_summary_runner,
     get_intensive_reading_settings,
     get_question_generation_settings,
     get_rough_reading_settings,
     get_split_chapters_settings,
     get_annotation_settings,
+    get_book_summary_settings,
 )
 from .coarse import run_rough_model as _run_rough_model_flow
 from .intensive import (
@@ -63,6 +65,7 @@ from .question import (
 )
 from .section import run_section_generation_once as _run_section_generation_once_flow
 from .annotation import run_annotation_generation_once as _run_annotation_generation_once_flow
+from .summary import run_book_summary_once as _run_book_summary_once_flow
 from .queue import (
     cancel_job as queue_cancel_job,
     enqueue_job as queue_enqueue_job,
@@ -219,96 +222,6 @@ def _push_book_progress_step(lecture_id: str, book_id: str, step: Mapping[str, A
 
 def get_book_progress_steps(lecture_id: str, book_id: str) -> List[Dict[str, Any]]:
     """读取教材进度步骤列表。"""
-    return state_get_book_progress_steps(lecture_id, book_id)
-
-
-def _book_progress_steps_path(lecture_id: str, book_id: str) -> Path:
-    base_dir = Path(str((_CFG or {}).get("data_dir") or "./data")).resolve()
-    return base_dir / "lectures" / str(lecture_id or "").strip() / "books" / str(book_id or "").strip() / "progress_steps.jsonl"
-
-
-def _append_persisted_book_progress_step(lecture_id: str, book_id: str, row: Mapping[str, Any]) -> None:
-    lecture_key = str(lecture_id or "").strip()
-    book_key = str(book_id or "").strip()
-    if not lecture_key or not book_key:
-        return
-    path = _book_progress_steps_path(lecture_key, book_key)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = dict(row or {})
-    payload.setdefault("ts", int(time.time()))
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(payload, ensure_ascii=False))
-        f.write("\n")
-
-
-def _load_persisted_book_progress_steps(lecture_id: str, book_id: str, limit: int = 60) -> List[Dict[str, Any]]:
-    lecture_key = str(lecture_id or "").strip()
-    book_key = str(book_id or "").strip()
-    if not lecture_key or not book_key:
-        return []
-    path = _book_progress_steps_path(lecture_key, book_key)
-    if not path.exists():
-        return []
-    rows: List[Dict[str, Any]] = []
-    try:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            text = str(line or "").strip()
-            if not text:
-                continue
-            try:
-                item = json.loads(text)
-            except Exception:
-                continue
-            if isinstance(item, dict):
-                rows.append(item)
-    except Exception:
-        return []
-    if limit > 0 and len(rows) > limit:
-        return rows[-limit:]
-    return rows
-
-
-def _clear_persisted_book_progress_steps(lecture_id: str, book_id: str) -> None:
-    lecture_key = str(lecture_id or "").strip()
-    book_key = str(book_id or "").strip()
-    if not lecture_key or not book_key:
-        return
-    path = _book_progress_steps_path(lecture_key, book_key)
-    try:
-        if path.exists():
-            path.unlink()
-    except Exception:
-        pass
-
-
-def _set_book_progress(lecture_id: str, book_id: str, text: str) -> None:
-    state_set_book_progress(lecture_id, book_id, text)
-    if not str(text or "").strip():
-        _clear_persisted_book_progress_steps(lecture_id, book_id)
-
-
-def _push_book_progress_step(lecture_id: str, book_id: str, step: Mapping[str, Any]) -> None:
-    row = dict(step or {})
-    row["ts"] = int(time.time())
-    state_push_book_progress_step(lecture_id, book_id, row)
-    try:
-        _append_persisted_book_progress_step(lecture_id, book_id, row)
-    except Exception as exc:
-        log_event(
-            "book_progress_step_persist_error",
-            "保存教材模型步骤失败",
-            payload={
-                "lecture_id": str(lecture_id or ""),
-                "book_id": str(book_id or ""),
-                "error": str(exc),
-            },
-        )
-
-
-def get_book_progress_steps(lecture_id: str, book_id: str) -> List[Dict[str, Any]]:
-    persisted = _load_persisted_book_progress_steps(lecture_id, book_id, limit=60)
-    if persisted:
-        return persisted
     return state_get_book_progress_steps(lecture_id, book_id)
 
 
@@ -712,6 +625,71 @@ def enqueue_book_annotation(
     return queued
 
 
+def enqueue_book_summary(
+    cfg: Mapping[str, Any],
+    lecture_id: str,
+    book_id: str,
+    *,
+    actor: str = "",
+    model_name: str = "",
+) -> Dict[str, Any]:
+    """将教材加入全书概述队列。"""
+    resolved_cfg = dict(cfg or {})
+    lecture_key = str(lecture_id or "").strip()
+    book_key = str(book_id or "").strip()
+    selected_model = str(model_name or "").strip()
+    if not lecture_key or not book_key:
+        raise ValueError("lecture_id and book_id are required.")
+
+    lecture = get_lecture(resolved_cfg, lecture_key)
+    if lecture is None:
+        raise ValueError(f"Lecture not found: {lecture_key}")
+    book = get_book(resolved_cfg, lecture_key, book_key)
+    if book is None:
+        raise ValueError(f"Book not found: {lecture_key}/{book_key}")
+    section_status = str(book.get("section_status") or "").strip().lower()
+    if section_status not in {"done", "completed", "success"}:
+        raise ValueError("section generation must be completed before book summary generation.")
+
+    queued = queue_enqueue_job(
+        lecture_key,
+        book_key,
+        actor=actor,
+        force=False,
+        job_type="summary",
+        model_name=selected_model,
+    )
+    job = dict(queued.get("job") or {})
+    job_id = str(job.get("job_id") or "")
+    now = int(job.get("created_at") or time.time())
+
+    update_book(
+        resolved_cfg,
+        lecture_key,
+        book_key,
+        {
+            "summary_status": "queued",
+            "summary_error": "",
+            "summary_model": selected_model,
+            "summary_job_id": job_id,
+            "summary_requested_at": now,
+        },
+    )
+    _set_book_progress(lecture_key, book_key, "全书概述任务排队中...")
+    log_event(
+        "book_summary_queue",
+        "教材已加入全书概述队列",
+        payload={
+            "lecture_id": lecture_key,
+            "book_id": book_key,
+            "job_id": job_id,
+            "actor": actor,
+            "model_name": selected_model,
+        },
+    )
+    return queued
+
+
 def get_refinement_queue_snapshot() -> Dict[str, Any]:
     """获取当前提炼队列快照。"""
     return queue_get_snapshot()
@@ -853,6 +831,23 @@ def _run_job(job: Dict[str, Any]) -> None:
             "教材开始批注（批注阶段）",
             payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id, "model_name": model_name},
         )
+    elif job_type == "summary":
+        update_book(
+            _CFG,
+            lecture_id,
+            book_id,
+            {
+                "summary_status": "running",
+                "summary_error": "",
+                "summary_model": model_name,
+            },
+        )
+        _set_book_progress(lecture_id, book_id, "模型正在生成全书概述...")
+        log_event(
+            "book_summary_start",
+            "教材开始全书概述（概述阶段）",
+            payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id, "model_name": model_name},
+        )
     else:
         update_book(
             _CFG,
@@ -952,6 +947,26 @@ def _run_job(job: Dict[str, Any]) -> None:
                 "教材提炼完成（批注阶段）",
                 payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id},
                 content=f"annotations_chars={int(result.get('annotations_chars') or 0)}; annotation_count={int(result.get('annotation_count') or 0)}",
+            )
+        elif job_type == "summary":
+            result = run_book_summary_once(_CFG, lecture_id, book_id, actor=str(job.get("actor") or ""), model_name=model_name)
+            finished_at = int(time.time())
+            _set_book_progress(lecture_id, book_id, "全书概述完成")
+            _update_job(
+                job_id,
+                {
+                    "status": "done",
+                    "finished_at": finished_at,
+                    "error": "",
+                    "summary_status": "done",
+                    "model_name": str(result.get("model_name") or model_name),
+                },
+            )
+            log_event(
+                "book_summary_done",
+                "教材提炼完成（全书概述阶段）",
+                payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id},
+                content=f"summary_chars={int(result.get('summary_chars') or 0)}; chapter_count={int(result.get('chapter_count') or 0)}",
             )
         else:
             lecture = get_lecture(_CFG, lecture_id)
@@ -1077,6 +1092,24 @@ def _run_job(job: Dict[str, Any]) -> None:
             log_event(
                 "book_annotation_error",
                 "教材提炼失败（批注阶段）",
+                payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id},
+                content=message,
+            )
+        elif job_type == "summary":
+            update_book(
+                _CFG,
+                lecture_id,
+                book_id,
+                {
+                    "summary_status": "error",
+                    "summary_error": message,
+                },
+            )
+            _set_book_progress(lecture_id, book_id, f"全书概述执行失败：{message[:120]}")
+            _update_job(job_id, {"status": "error", "finished_at": int(time.time()), "error": message, "summary_status": "error"})
+            log_event(
+                "book_summary_error",
+                "教材提炼失败（全书概述阶段）",
                 payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id},
                 content=message,
             )
@@ -1306,6 +1339,58 @@ def run_annotation_generation_once(
         append_log_text=append_log_text,
         push_book_progress_step=_push_book_progress_step,
     )
+
+
+def run_book_summary_once(
+    cfg: Mapping[str, Any],
+    lecture_id: str,
+    book_id: str,
+    *,
+    actor: str = "",
+    model_name: str = "",
+) -> Dict[str, Any]:
+    """手动触发全书概述生成（委托 summary.py）。"""
+    from pathlib import Path
+
+    resolved_cfg = dict(cfg or {})
+    lecture_key = str(lecture_id or "").strip()
+    book_key = str(book_id or "").strip()
+    data_dir = Path(str(resolved_cfg.get("data_dir") or "data")).resolve()
+    summary_path = data_dir / "lectures" / lecture_key / "books" / book_key / "summary.xml"
+
+    def save_book_summary(cfg: Mapping[str, Any], lecture_id: str, book_id: str, content: str) -> str:
+        path = summary_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(content or ""), encoding="utf-8")
+        return str(path)
+
+    return _run_book_summary_once_flow(
+        cfg,
+        lecture_id,
+        book_id,
+        actor=actor,
+        model_name=model_name,
+        get_lecture=get_lecture,
+        get_book=get_book,
+        load_book_info_xml=load_book_info_xml,
+        load_book_detail_xml=load_book_detail_xml,
+        save_book_summary=save_book_summary,
+        update_book=update_book,
+        get_book_summary_settings=get_book_summary_settings,
+        build_book_summary_runner=build_book_summary_runner,
+        as_bool=_as_bool,
+        log_event=log_event,
+        append_log_text=append_log_text,
+    )
+
+
+def load_book_summary_from_storage(lecture_id: str, book_id: str) -> Dict[str, str]:
+    """从 summary.xml 加载概述数据（供前端 API 调用）。"""
+    from .summary import load_book_summary as _load_book_summary
+    from pathlib import Path
+
+    data_dir = str(Path(str((_CFG or {}).get("data_dir") or "./data")).resolve())
+    return _load_book_summary(data_dir, lecture_id, book_id)
 
 
 def _run_coarse_reading_chunked(
