@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NexoraLearning 学习看板</title>
-  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260522_01">
+  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260601_02">
+  <link rel="stylesheet" href="/api/frontend/assets/learning_panel.css?v=20260601_02">
 </head>
 <body>
   <main class="learning-shell" id="learningPanel">
@@ -48,7 +49,7 @@
             <p class="panel-kicker">COURSES</p>
           </div>
           <div class="materials-head-right">
-            <button id="openUploadViewBtn" class="nxl-icon-btn nxl-icon-btn-dark" type="button" hidden aria-label="上传教材" title="上传教材">⤴</button>
+            <button id="openUploadViewBtn" class="nxl-icon-btn nxl-icon-btn-darker" type="button" hidden aria-label="上传教材" title="上传教材">⤴</button>
           </div>
         </header>
 
@@ -57,6 +58,23 @@
             <div id="lectureList" class="materials-list"></div>
           </aside>
           <section id="lectureDetailPane" class="materials-detail-pane"></section>
+        </section>
+
+        <section id="courseHomePane" class="materials-course-pane" hidden>
+          <header id="courseHomeHeader" class="panel-head materials-head reader-head">
+            <div class="materials-head-left">
+              <button id="backFromCourseHomeBtn" class="nxl-icon-btn" type="button" aria-label="返回课程书架" title="返回课程书架">←</button>
+              <div class="reader-head-text">
+                <div class="reader-title">课程主页</div>
+                <div id="courseHomeSubtitle" class="reader-subtitle">Learning</div>
+              </div>
+            </div>
+            <div class="materials-head-right">
+              <button id="courseHomeUploadBtn" class="nxl-icon-btn nxl-icon-btn-darker" type="button" hidden aria-label="上传教材" title="上传教材">⤴</button>
+              <button id="courseHomeSettingsBtn" class="nxl-icon-btn" type="button" hidden aria-label="课程教师管理" title="课程教师管理">⚙</button>
+            </div>
+          </header>
+          <section id="courseHomeContent" class="materials-detail-pane"></section>
         </section>
 
         <section id="readerPane" class="materials-reader-pane" hidden>
@@ -287,7 +305,7 @@
   </div>
   <script src="/api/frontend/assets/utils.js?v=20260530_01"></script>
   <script src="/api/frontend/assets/telemetry.js?v=20260529_01"></script>
-  <script src="/api/frontend/assets/app.js?v=20260529_01"></script>
+  <script src="/api/frontend/assets/app.js?v=20260601_02"></script>
 </body>
 </html>
 

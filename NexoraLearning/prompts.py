@@ -607,24 +607,24 @@ ANNOTATION_MODEL_SYSTEM_PROMPT = """
 
 
 ANNOTATION_MODEL_USER_PROMPT = """
-课程名称: {{lecture_name}}
-书籍名称: {{book_name}}
-章节名称: {{chapter_name}}
-章节范围: {{chapter_range}}
+课程名称: {lecture_name}
+书籍名称: {book_name}
+章节名称: {chapter_name}
+章节范围: {chapter_range}
 
 章节全文:
 <CHAPTER_CONTEXT>
-{{chapter_context}}
+{chapter_context}
 </CHAPTER_CONTEXT>
 
 章节精读信息:
 <CHAPTER_DETAIL_XML>
-{{chapter_detail_xml}}
+{chapter_detail_xml}
 </CHAPTER_DETAIL_XML>
 
 任务要求:
 <REQUEST>
-{{request}}
+{request}
 </REQUEST>
 
 执行顺序要求:
@@ -633,6 +633,49 @@ ANNOTATION_MODEL_USER_PROMPT = """
 3. 选择 3-8 个最有价值的位置生成批注。
 4. 调用 write(annotations=[...]) 提交全部批注。
 5. write 成功后本轮直接结束，不要再发额外工具调用。
+""".strip()
+
+
+# BOOK_SUMMARY_SYSTEM_PROMPT - 全书总结生成模型
+BOOK_SUMMARY_SYSTEM_PROMPT = """
+你是 NexoraLearning 的书籍简介生成模型。
+
+你的任务：根据粗读摘要和精读关键点，提炼出一份简明扼要的书籍简介，用于课程教材介绍页展示。
+不要完全照抄粗读章节摘要，需要重新组织语言、提炼核心脉络和主要学习主题。
+
+核心规则：
+1. 使用 write(summary_brief) 工具提交简介。
+2. 简介 = 一段精炼概述（本书讲了什么、适合谁）+ 一个简要大纲（列出主要学习主题或内容脉络，每项一句话）。
+3. 以第三人称客观视角撰写，语言简练凝练，避免口语化、套话和引导语。
+4. 忠于原始内容，不引入外部臆测。
+
+write 字段说明：
+- summary_brief（200-400字）：书籍简介，包含概述段落 + 大纲条目，直接展示给学生。
+
+禁止输出 Markdown 围栏、无序/有序列表符号，禁止输出 "```" 代码块标记。只输出 write 工具调用。
+""".strip()
+
+
+BOOK_SUMMARY_USER_PROMPT = """
+课程名称: {lecture_name}
+教材名称: {book_name}
+
+各章节摘要（粗读）:
+<CHAPTER_SUMMARIES>
+{chapter_summaries}
+</CHAPTER_SUMMARIES>
+
+精读关键点（可选补充）:
+<INTENSIVE_KEY_POINTS>
+{intensive_key_points}
+</INTENSIVE_KEY_POINTS>
+
+章节总数: {chapter_count}
+
+任务要求:
+<REQUEST>
+{request}
+</REQUEST>
 """.strip()
 
 
@@ -672,5 +715,9 @@ MODEL_PROMPTS = {
     "annotation": {
         "system": ANNOTATION_MODEL_SYSTEM_PROMPT,
         "user": ANNOTATION_MODEL_USER_PROMPT,
+    },
+    "book_summary": {
+        "system": BOOK_SUMMARY_SYSTEM_PROMPT,
+        "user": BOOK_SUMMARY_USER_PROMPT,
     },
 }

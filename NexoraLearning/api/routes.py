@@ -85,6 +85,7 @@ from core.booksproc import (
     enqueue_book_refinement,
     enqueue_book_section,
     enqueue_book_annotation,
+    enqueue_book_summary,
     get_book_progress_steps,
     get_book_progress_text,
     get_intensive_reading_settings,
@@ -94,6 +95,7 @@ from core.booksproc import (
     get_rough_reading_settings,
     get_split_chapters_settings,
     get_annotation_settings,
+    get_book_summary_settings,
     init_booksproc,
     list_refinement_candidates,
     mark_book_uploaded,
@@ -103,6 +105,7 @@ from core.booksproc import (
     update_rough_reading_settings,
     update_split_chapters_settings,
     update_annotation_settings,
+    update_book_summary_settings,
 )
 from core.vector import (
     collection_stats as vector_collection_stats,
@@ -906,7 +909,35 @@ def _notify_feed_mentions(author_user_id: str, content: str, *, title: str, jump
             continue
 
 
+def _resolve_teacher_infos(teacher_ids: List[str]) -> List[Dict[str, Any]]:
+    """Resolve teacher user IDs to full user objects (with avatar_url)."""
+    if not teacher_ids or _proxy is None:
+        return [{"user_id": uid, "display_name": uid} for uid in teacher_ids]
+    resolved: List[Dict[str, Any]] = []
+    for uid in teacher_ids:
+        uid_str = str(uid or "").strip()
+        if not uid_str:
+            continue
+        try:
+            info = _proxy.get_user_info(username=uid_str)
+            if isinstance(info, dict) and info.get("success"):
+                user = info.get("user") if isinstance(info.get("user"), dict) else {}
+                resolved.append({
+                    "user_id": str(user.get("id") or uid_str).strip() or uid_str,
+                    "username": str(user.get("username") or uid_str).strip() or uid_str,
+                    "display_name": str(user.get("display_name") or "").strip(),
+                    "nickname": str(user.get("nickname") or "").strip(),
+                    "avatar_url": str(user.get("avatar_url") or "").strip(),
+                })
+            else:
+                resolved.append({"user_id": uid_str, "display_name": uid_str})
+        except Exception:
+            resolved.append({"user_id": uid_str, "display_name": uid_str})
+    return resolved
+
+
 def _search_nexora_users(query: str, limit: int = 8) -> List[Dict[str, Any]]:
+    """Search users from Nexora via proxy."""
     q = str(query or "").strip()
     if not q or _proxy is None:
         return []
@@ -993,6 +1024,9 @@ def frontend_materials():
     order = str(request.args.get("order") or "desc").strip().lower() or "desc"
     desc = order != "asc"
 
+    user_id = _resolve_runtime_user_id()
+    study_hours_map = _build_user_study_hours_map(user_id) if user_id else {}
+
     lectures = list_learning_lectures(_cfg)
     rows = []
     total_books = 0
@@ -1000,9 +1034,22 @@ def frontend_materials():
         lecture_id = str((lecture or {}).get("id") or "").strip()
         books = list_lecture_books(_cfg, lecture_id) if lecture_id else []
         total_books += len(books)
+        lecture_with_user = dict(lecture or {})
+        # Resolve teacher user IDs to objects with avatar_url
+        raw_teacher = lecture_with_user.get("teacher") or []
+        if isinstance(raw_teacher, list) and raw_teacher:
+            lecture_with_user["teacher_info"] = _resolve_teacher_infos([
+                str(t or "") for t in raw_teacher
+            ])
+        if user_id and lecture_id:
+            user_progress = _compute_user_lecture_progress(user_id, lecture_id, books)
+            lecture_with_user["progress"] = user_progress["progress"]
+            lecture_with_user["current_chapter"] = user_progress["current_chapter"]
+            lecture_with_user["next_chapter"] = user_progress["next_chapter"]
+            lecture_with_user["study_hours"] = float(study_hours_map.get(lecture_id, 0.0))
         rows.append(
             {
-                "lecture": lecture,
+                "lecture": lecture_with_user,
                 "books": books,
                 "books_count": len(books),
             }
@@ -1619,6 +1666,36 @@ def frontend_settings_refinement_annotation():
         return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
     try:
         result = enqueue_book_annotation(_cfg, lecture_id, book_id, actor=actor, model_name=model_name)
+        return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, **result}), 202
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@bp.route("/frontend/settings/refinement/summary", methods=["POST"])
+def frontend_settings_refinement_summary():
+    """设置页：手动触发全书概述生成（输出写入 booksummary.md）。"""
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    actor = str(data.get("actor") or _resolve_runtime_user_id()).strip()
+    model_name = str(data.get("model_name") or "").strip()
+    log_event(
+        "frontend_summary_request",
+        "收到前端全书概述请求",
+        payload={
+            "lecture_id": lecture_id,
+            "book_id": book_id,
+            "actor": actor,
+            "model_name": model_name,
+            "is_admin": bool(_is_runtime_admin()),
+        },
+    )
+    if not _is_runtime_admin():
+        return jsonify({"success": False, "error": "Only admin can start book summary generation."}), 403
+    if not lecture_id or not book_id:
+        return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+    try:
+        result = enqueue_book_summary(_cfg, lecture_id, book_id, actor=actor, model_name=model_name)
         return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, **result}), 202
     except Exception as exc:
         return jsonify({"success": False, "error": str(exc)}), 500
@@ -2386,6 +2463,23 @@ def update_lecture(lecture_id: str):
     return jsonify({"success": True, "lecture": updated})
 
 
+@bp.route("/lectures/<lecture_id>/teacher", methods=["PATCH"])
+def update_lecture_teacher(lecture_id: str):
+    if not _is_runtime_admin():
+        return jsonify({"success": False, "error": "Only admin can modify lecture teachers."}), 403
+
+    lecture, error_response = _lecture_or_404(lecture_id)
+    if error_response is not None:
+        return error_response
+
+    data = request.get_json(silent=True) or {}
+    if "teacher" not in data:
+        return jsonify({"success": False, "error": "teacher field is required."}), 400
+
+    updated = update_learning_lecture(_cfg, lecture_id, {"teacher": data.get("teacher")}) or lecture
+    return jsonify({"success": True, "lecture": updated})
+
+
 @bp.route("/lectures/<lecture_id>", methods=["DELETE"])
 def delete_lecture(lecture_id: str):
     lecture, error_response = _lecture_or_404(lecture_id)
@@ -2779,6 +2873,23 @@ def get_book_annotations(lecture_id: str, book_id: str):
         except Exception:
             content = ""
     return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, "content": content})
+
+
+@bp.route("/lectures/<lecture_id>/books/<book_id>/summary", methods=["GET"])
+def get_book_summary(lecture_id: str, book_id: str):
+    """加载 summary.xml 并返回解析后的 summary_brief 和 summary_detail。"""
+    _, _, error_response = _book_or_404(lecture_id, book_id)
+    if error_response is not None:
+        return error_response
+    from core.booksproc import load_book_summary_from_storage
+    summary = load_book_summary_from_storage(lecture_id, book_id)
+    return jsonify({
+        "success": True,
+        "lecture_id": lecture_id,
+        "book_id": book_id,
+        "summary_brief": summary.get("summary_brief", ""),
+        "summary_detail": summary.get("summary_detail", ""),
+    })
 
 
 @bp.route("/lectures/<lecture_id>/books/<book_id>/vectorize", methods=["GET"])
@@ -3902,6 +4013,33 @@ def frontend_learning_feed_users_search():
     if not query:
         rows = _list_recent_feed_user_examples(limit=min(limit, 5))
         return jsonify({"success": True, "items": rows, "total": len(rows), "query": ""})
+    rows = _search_nexora_users(query, limit=limit)
+    return jsonify({"success": True, "items": rows, "total": len(rows), "query": query})
+
+
+@bp.route("/frontend/users/search", methods=["GET"])
+def frontend_users_search():
+    """通用用户搜索接口 (教师管理等场景)"""
+    query = str(request.args.get("q") or "").strip()
+    limit = max(1, min(_safe_int(request.args.get("limit"), 10), 30))
+    if not query:
+        # 空查询：优先获取最近活跃用户，不足时用通用搜索补充
+        rows = _list_recent_feed_user_examples(limit=limit)
+        if len(rows) < limit and _proxy is not None:
+            seen = {str(r.get("user_id") or "").strip() for r in rows}
+            # 用常见字符做宽泛搜索，补充更多用户
+            for filler_q in ["a", "e", "1", "2"]:
+                extra = _search_nexora_users(filler_q, limit=limit)
+                for u in extra:
+                    uid = str(u.get("user_id") or "").strip()
+                    if uid and uid not in seen:
+                        seen.add(uid)
+                        rows.append(u)
+                    if len(rows) >= limit:
+                        break
+                if len(rows) >= limit:
+                    break
+        return jsonify({"success": True, "items": rows[:limit], "total": len(rows[:limit]), "query": ""})
     rows = _search_nexora_users(query, limit=limit)
     return jsonify({"success": True, "items": rows, "total": len(rows), "query": query})
 
