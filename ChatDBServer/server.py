@@ -10165,21 +10165,30 @@ def upload_knowledge_image():
 
 
 @app.route('/api/knowledge/image/<username>/<image_id>', methods=['GET'])
-@require_login
 def serve_knowledge_image(username, image_id):
     owner = str(username or '').strip()
     safe_image_id = _normalize_knowledge_image_id(image_id)
     if not owner or not safe_image_id:
         return jsonify({'success': False, 'message': 'invalid image path'}), 400
-    viewer = str(session.get('username') or '').strip()
-    if (viewer != owner) and (str(session.get('role') or '').strip().lower() != 'admin'):
-        return jsonify({'success': False, 'message': 'Forbidden'}), 403
 
     idx = _load_knowledge_image_index(owner)
     images = idx.get("images", {})
     row = images.get(safe_image_id) if isinstance(images, dict) else None
     if not isinstance(row, dict):
         return jsonify({'success': False, 'message': 'image not found'}), 404
+
+    viewer = str(session.get('username') or '').strip()
+    is_owner_or_admin = (viewer == owner) or (str(session.get('role') or '').strip().lower() == 'admin')
+    if not is_owner_or_admin:
+        basis_title = str(row.get('basis_title') or '').strip()
+        if not basis_title:
+            return jsonify({'success': False, 'message': 'Forbidden'}), 403
+        user_obj = User(owner)
+        db = safe_read_json(user_obj.path + "database.json", default={})
+        basis_meta = (db.get("data_basis") or {}).get(basis_title) or {}
+        if not basis_meta.get("public"):
+            return jsonify({'success': False, 'message': 'Forbidden'}), 403
+
     file_name = str(row.get('file_name') or '').strip()
     if not file_name:
         return jsonify({'success': False, 'message': 'image not ready'}), 404
@@ -10190,7 +10199,7 @@ def serve_knowledge_image(username, image_id):
         return jsonify({'success': False, 'message': 'image file missing'}), 404
     mime = str(row.get('mime') or '').strip().lower() or _guess_image_mime_from_name(file_name) or 'application/octet-stream'
     resp = send_file(fpath, mimetype=mime)
-    resp.headers['Cache-Control'] = 'private, max-age=86400'
+    resp.headers['Cache-Control'] = 'public, max-age=86400'
     return resp
 
 
