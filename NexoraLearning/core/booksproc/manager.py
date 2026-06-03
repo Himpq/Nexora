@@ -66,6 +66,7 @@ from .question import (
 from .section import run_section_generation_once as _run_section_generation_once_flow
 from .annotation import run_annotation_generation_once as _run_annotation_generation_once_flow
 from .summary import run_book_summary_once as _run_book_summary_once_flow
+from .compress import build_llm_compress_func as _build_llm_compress_func
 from .queue import (
     cancel_job as queue_cancel_job,
     enqueue_job as queue_enqueue_job,
@@ -516,10 +517,10 @@ def enqueue_book_section(
     book = get_book(resolved_cfg, lecture_key, book_key)
     if book is None:
         raise ValueError(f"Book not found: {lecture_key}/{book_key}")
-    coarse_status = str(book.get("coarse_status") or "").strip().lower()
     intensive_status = str(book.get("intensive_status") or "").strip().lower()
-    if coarse_status not in {"done", "completed", "success"} and intensive_status not in {"done", "completed", "success"}:
-        raise ValueError("coarse or intensive reading must be completed before section generation.")
+
+    if intensive_status not in {"done", "completed", "success"}:
+        raise ValueError("intensive reading must be completed before section generation.")
 
     queued = queue_enqueue_job(
         lecture_key,
@@ -1297,6 +1298,7 @@ def run_annotation_generation_once(
     """手动触发批注生成（委托 annotation.py，为章节生成学习批注）。"""
     # Load annotations.xml path helper
     from ..lectures import _book_sections_xml_path
+    from .context import ContextPolicy
     from pathlib import Path
 
     def _book_annotations_xml_path(cfg: Mapping[str, Any], lecture_id: str, book_id: str) -> Path:
@@ -1318,6 +1320,11 @@ def run_annotation_generation_once(
         path.write_text(str(content or ""), encoding="utf-8")
         return str(path)
 
+    # 创建 LLM 压缩函数（简化版，批注流程不需要复杂压缩）
+    def _llm_compress_func(text: str) -> str:
+        """简单的文本截取压缩"""
+        return text[:500] + "..." if len(text) > 500 else text
+
     return _run_annotation_generation_once_flow(
         cfg,
         lecture_id,
@@ -1338,6 +1345,8 @@ def run_annotation_generation_once(
         log_event=log_event,
         append_log_text=append_log_text,
         push_book_progress_step=_push_book_progress_step,
+        policy=ContextPolicy.LLM_COMPRESS,
+        llm_compress_func=_llm_compress_func,
     )
 
 
@@ -1892,378 +1901,83 @@ def _run_tool_driven_resume_round(
     section_mode: bool = False,
     current_section: Optional[Mapping[str, Any]] = None,
     rolling_read_window: bool = False,
+    max_input_chars: int = 15000,
+    lecture_id: str = "",
+    book_id: str = "",
 ) -> Dict[str, Any]:
-    """单轮粗读：使用工具读书并写章节，输出文本仅作调试。"""
+    """单轮粗读：使用工具读书并写章节，输出文本仅作调试。
+    
+    使用 Context Manager 管理上下文，自动处理截断。
+    """
+    from .coarse_loop import run_tool_driven_round_with_context
+    from .context import ContextPolicy
+    
     tools = _build_rough_read_tools()
-    effective_stream = bool(stream)
-    # if effective_stream:
-    #     # 工具调用在部分上游（尤其 OpenAI-compatible + 本地模型）对 stream 支持不稳定：
-    #     # 可能只返回规划文本而不返回 tool_calls。这里强制降级到非流式，优先保证工具可用性。
-    #     effective_stream = False
-    #     log_event(
-    #         "model_tool_stream_downgrade",
-    #         "工具模式自动禁用 stream",
-    #         payload={"resume_round": int(resume_round), "reason": "tool_calls_reliability"},
-    #         content="stream=true downgraded to stream=false for tool-driven round",
-    #     )
-    max_turns = 18
-    force_write_trigger_turns = 4
-    output_text = ""
-    assistant_concat: List[str] = []
-    round_context_chars = 0
-    context_rolled = False
-    saved_chapter_calls = 0
-    total_tool_calls = 0
-    chunk_done = False
-    no_write_turn_streak = 0
-    force_write_injected = False
-    turn_history: List[Dict[str, Any]] = []
-    read_seen: Dict[str, int] = {}
-    last_read_end = 0
-
-    for turn in range(1, max_turns + 1):
-        force_round_active = (no_write_turn_streak >= force_write_trigger_turns) and (not force_write_injected)
-        if force_round_active:
-            force_write_injected = True
-        prompt_vars = {
-            "lecture_name": str(lecture_name or ""),
-            "book_name": str(book_name or ""),
-            "book_total_chars": str(total_len),
-            "resume_round": str(resume_round),
-            "resume_reason": str(resume_reason),
-            "chunk_start": str(int(chunk_start)),
-            "chunk_end": str(int(chunk_end)),
-            "chunk_length": str(max(0, int(chunk_end) - int(chunk_start))),
-            "chunk_index": str(int(chunk_index)),
-            "chunk_count": str(int(chunk_count)),
-            "previous_rough_summary": str(previous_rough_summary or ""),
-            "tempmem_dump": _format_tempmem_dump(_get_tempmem_rows(tempmem_key)),
-        }
-        if section_mode and current_section:
-            prompt_vars["section_mode"] = "sectioned"
-            prompt_vars["section_title_hint"] = str(current_section.get("chapter_name") or "").strip()
-            prompt_vars["section_range_hint"] = str(current_section.get("range") or "").strip()
-        else:
-            prompt_vars["section_mode"] = "fallback_fulltext"
-            prompt_vars["section_title_hint"] = ""
-            prompt_vars["section_range_hint"] = ""
-        context = runner.context_manager.build_context({"lecture_name": lecture_name, "book_name": book_name})
-        prompt_pack = runner.get_prompt_templates()
-        system_prompt = runner.context_manager.render(prompt_pack["system"], context, {"request": request_text, **prompt_vars})
-        user_prompt = runner.context_manager.render(prompt_pack["user"], context, {"request": request_text, **prompt_vars})
-        if force_round_active:
-            hard_constraint = (
-                "\n\n[HARD_CONSTRAINT_ROUND]\n"
-                "你已经连续多轮未完成有效写入。"
-                "本轮你必须立刻完成以下两项工具调用并结束：\n"
-                "1) savemem(...)\n"
-                "2) write(...)\n"
-                "严禁仅输出计划文本；严禁只读不写；本轮未满足将视为失败。"
-            )
-            user_prompt = f"{user_prompt}{hard_constraint}"
-            log_event(
-                "model_hard_constraint_round",
-                "触发硬约束回合（必须 savemem + write）",
-                payload={"resume_round": int(resume_round), "turn": int(turn), "streak": int(no_write_turn_streak)},
-                content="",
-            )
-        messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
-        if turn_history:
-            messages.extend(turn_history)
-        response = runner.nexora_client.proxy.chat_completions(
-            messages=messages,
-            model=model_name or runner.model_name,
-            username=None,
-            options={
-                "temperature": temperature,
-                "max_tokens": max_output_tokens,
-                "stream": bool(effective_stream),
-                "think": bool(think),
-                "tools": tools,
-                "tool_choice": "auto",
-            },
-            use_chat_path=False,
-            request_timeout=request_timeout,
-            on_delta=on_delta,
-        )
-        if not bool(response.get("ok")):
-            raise RuntimeError(f"Nexora API Error: {response.get('message') or 'request failed'}")
-        payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
-        choices = payload.get("choices")
-        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-            break
-        msg = choices[0].get("message") if isinstance(choices[0].get("message"), dict) else {}
-        assistant_content = str(msg.get("content") or "")
-        raw_tool_calls = msg.get("tool_calls") if isinstance(msg.get("tool_calls"), list) else []
-        tool_calls: List[Dict[str, Any]] = []
-        for raw_call in raw_tool_calls:
-            if not isinstance(raw_call, dict):
-                continue
-            raw_func = raw_call.get("function") if isinstance(raw_call.get("function"), dict) else {}
-            normalized_name = str(raw_func.get("name") or "").strip()
-            normalized_args_obj = _safe_json_obj(str(raw_func.get("arguments") or "{}"))
-            normalized_call: Dict[str, Any] = {
-                "id": str(raw_call.get("id") or ""),
-                "type": "function",
-                "function": {
-                    "name": normalized_name,
-                    "arguments": _safe_json_dumps(normalized_args_obj),
-                },
-            }
-            tool_calls.append(normalized_call)
-        round_context_chars += len(assistant_content)
-        if assistant_content.strip():
-            assistant_concat.append(assistant_content)
-            log_model_text(assistant_content, source="rough_reading")
-        turn_history.append(
-            {
-                "role": "assistant",
-                "content": assistant_content if assistant_content else None,
-                "tool_calls": tool_calls if tool_calls else None,
-            }
-        )
-        log_event(
-            "model_tool_round",
-            "粗读工具轮次",
-            payload={
-                "resume_round": int(resume_round),
-                "turn": int(turn),
-                "tool_call_count": len(tool_calls),
-                "assistant_content_len": len(assistant_content),
-            },
-            content=assistant_content[:2000],
-        )
-        if not tool_calls:
-            # Assistant-only planning text is not accepted as valid progress in tool-driven mode.
-            if assistant_content.strip():
-                log_event(
-                    "model_no_tool_progress",
-                    "模型未调用工具，仅返回规划文本",
-                    payload={"resume_round": int(resume_round), "turn": int(turn)},
-                    content=assistant_content[:1200],
-                )
-            output_text = ""
-            continue
-
-        stop_this_round = False
-        turn_has_write = False
-        turn_has_savemem = False
-        for call in tool_calls:
-            if not isinstance(call, dict):
-                continue
-            total_tool_calls += 1
-            call_id = str(call.get("id") or "")
-            func = call.get("function") if isinstance(call.get("function"), dict) else {}
-            tool_name = str(func.get("name") or "").strip()
-            args_raw = str(func.get("arguments") or "{}")
-            args_obj = _safe_json_obj(args_raw)
-            log_event(
-                "model_tool_call",
-                "粗读模型工具调用",
-                payload={"resume_round": int(resume_round), "turn": int(turn), "tool_name": tool_name, "tool_call_id": call_id},
-                content=str(args_raw)[:1200],
-            )
-            if tool_name in {"read", "read_book_text"}:
-                req_offset = int(args_obj.get("offset") or 0)
-                req_length = int(args_obj.get("length") or 0)
-                allow_out_of_chunk = bool(args_obj.get("allow_out_of_chunk") is True)
-                if not allow_out_of_chunk:
-                    if req_offset < chunk_start:
-                        req_offset = chunk_start
-                    if req_offset >= chunk_end:
-                        req_offset = max(chunk_start, chunk_end - 1)
-                    max_len_in_chunk = max(1, chunk_end - req_offset)
-                    if req_length > max_len_in_chunk:
-                        req_length = max_len_in_chunk
-                    args_obj["offset"] = req_offset
-                    args_obj["length"] = req_length
-                read_key = f"{req_offset}:{req_length}"
-                read_seen[read_key] = int(read_seen.get(read_key) or 0) + 1
-                if read_seen[read_key] >= 2:
-                    # Backend guard: auto-advance when model repeatedly reads same range.
-                    safe_next_offset = max(last_read_end, req_offset + max(1, min(req_length, 5000)))
-                    if safe_next_offset < total_len:
-                        args_obj["offset"] = safe_next_offset
-                        log_event(
-                            "model_read_guard_shift",
-                            "检测到重复读取同一区间，后端自动推进 offset",
-                            payload={
-                                "resume_round": int(resume_round),
-                                "turn": int(turn),
-                                "from_offset": int(req_offset),
-                                "to_offset": int(safe_next_offset),
-                                "length": int(req_length),
-                            },
-                            content="",
-                        )
-                result_obj = _exec_read_book_text_tool(full_text=full_text, total_len=total_len, arguments=args_obj)
-                _update_read_progress(
-                    tempmem_key,
-                    offset=int(result_obj.get("offset") or 0),
-                    length=int(result_obj.get("length") or 0),
-                )
-                last_read_end = max(last_read_end, int(result_obj.get("offset") or 0) + int(result_obj.get("length") or 0))
-            elif tool_name in {"savemem", "save_tempmem"}:
-                result_obj = _exec_save_tempmem_tool(tempmem_key=tempmem_key, arguments=args_obj)
-                turn_has_savemem = True
-            elif tool_name in {"write", "save_chapter"}:
-                result_obj = on_save_chapter(
-                    str(args_obj.get("chapter_name") or ""),
-                    str(args_obj.get("chapter_range") or ""),
-                    str(args_obj.get("chapter_summary") or ""),
-                )
-                if bool(result_obj.get("ok")):
-                    saved_chapter_calls += 1
-                    turn_history = []
-                    chunk_done = True
-                    log_event(
-                        "model_tool_history_trim",
-                        "write 后清空工具历史上下文",
-                        payload={"resume_round": int(resume_round), "turn": int(turn)},
-                        content="",
-                    )
-                turn_has_write = True
-                if bool(result_obj.get("dedup")) or str(result_obj.get("action_required") or "").strip() == "update_chapter":
-                    turn_history = []
-                    turn_history.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "你刚刚对已存在章节重复 write 了。"
-                                "不要再次 write 相同章节。"
-                                "如果要修改已有章节，下一轮必须调用 update_chapter，"
-                                "并使用同一个 chapter_range 更新标题或摘要。"
-                            ),
-                        }
-                    )
-                    log_event(
-                        "model_duplicate_write_guidance",
-                        "检测到重复 write，明确要求模型改用 update_chapter",
-                        payload={
-                            "resume_round": int(resume_round),
-                            "turn": int(turn),
-                            "chapter_range": str(result_obj.get("chapter_range") or ""),
-                            "chapter_name": str(result_obj.get("chapter_name") or ""),
-                        },
-                        content=str(result_obj.get("error") or ""),
-                    )
-            elif tool_name in {"update_chapter"}:
-                result_obj = on_update_chapter(
-                    str(args_obj.get("chapter_range") or ""),
-                    str(args_obj.get("chapter_name") or ""),
-                    str(args_obj.get("chapter_summary") or ""),
-                    str(args_obj.get("old_chapter_name") or ""),
-                )
-                if bool(result_obj.get("ok")):
-                    saved_chapter_calls += 1
-                    turn_history = []
-                    chunk_done = True
-                    log_event(
-                        "model_tool_history_trim",
-                        "update_chapter 后清空工具历史上下文",
-                        payload={"resume_round": int(resume_round), "turn": int(turn)},
-                        content="",
-                    )
-                turn_has_write = True
-            else:
-                result_obj = {"ok": False, "error": f"unsupported tool: {tool_name}"}
-            inject_tool_history = tool_name in {"read", "write", "save_chapter", "update_chapter"}
-            if inject_tool_history:
-                if rolling_read_window and tool_name in {"read", "read_book_text"}:
-                    turn_history = [msg for msg in turn_history if not _is_read_tool_message(msg)]
-                turn_history.append({"role": "tool", "tool_call_id": call_id, "content": _safe_json_dumps(result_obj)})
-            if tool_name in {"read"}:
-                text_part = str(result_obj.get("text") or "")
-                round_context_chars += len(text_part)
-            log_tool_flow(
-                tool_name=tool_name,
-                arguments=args_obj,
-                tool_output=result_obj,
-                model_output=assistant_content,
-                source="rough_reading",
-            )
-            log_event(
-                "model_tool_result",
-                "粗读模型工具结果",
-                payload={"resume_round": int(resume_round), "turn": int(turn), "tool_name": tool_name, "tool_call_id": call_id},
-                content=_safe_json_dumps(result_obj)[:2400],
-            )
-            next_messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
-            if turn_history:
-                next_messages.extend(turn_history)
-            try:
-                next_context_chars = len(_safe_json_dumps(next_messages))
-            except Exception:
-                next_context_chars = 0
-            log_event(
-                "model_context_size",
-                "current context size (with tool outputs)",
-                payload={
-                    "resume_round": int(resume_round),
-                    "turn": int(turn),
-                    "tool_name": tool_name,
-                    "messages_count": len(next_messages),
-                    "context_chars": int(next_context_chars),
-                },
-                content="",
-            )
-            if round_context_chars >= _MAX_ROUND_CONTEXT_CHARS:
-                context_rolled = True
-                stop_this_round = True
-                log_event(
-                    "model_context_rollover",
-                    "单轮上下文预算已满，触发续传换轮",
-                    payload={
-                        "resume_round": int(resume_round),
-                        "turn": int(turn),
-                        "context_chars": int(round_context_chars),
-                        "budget_chars": int(_MAX_ROUND_CONTEXT_CHARS),
-                    },
-                    content="",
-                )
-                break
-        if force_round_active:
-            if not (turn_has_savemem and turn_has_write):
-                missing = []
-                if not turn_has_savemem:
-                    missing.append("savemem")
-                if not turn_has_write:
-                    missing.append("write")
-                log_event(
-                    "model_hard_constraint_miss",
-                    "硬约束回合未满足必需工具调用",
-                    payload={"resume_round": int(resume_round), "turn": int(turn), "missing": missing},
-                    content="",
-                )
-                turn_history.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "你刚刚未满足硬约束。"
-                            f"缺失工具: {', '.join(missing)}。"
-                            "下一轮必须先调用缺失工具并完成有效写入。"
-                        ),
-                    }
-                )
-                no_write_turn_streak += 1
-                continue
-        if stop_this_round:
-            break
-        if chunk_done:
-            no_write_turn_streak = 0
-        else:
-            no_write_turn_streak += 1
-        if chunk_done:
-            break
-    assistant_text = str(output_text).strip() if output_text.strip() else "\n".join([part for part in assistant_concat if str(part or "").strip()]).strip()
-    return {
-        "assistant_text": assistant_text,
-        "context_rolled": context_rolled,
-        "saved_chapter_calls": saved_chapter_calls,
-        "tool_calls": total_tool_calls,
-        "context_chars": round_context_chars,
-        "chunk_done": bool(chunk_done),
+    
+    _llm_compress_func = _build_llm_compress_func(runner, _CFG)
+    
+    # 构建提示词
+    prompt_vars = {
+        "lecture_name": str(lecture_name or ""),
+        "book_name": str(book_name or ""),
+        "book_total_chars": str(total_len),
+        "resume_round": str(resume_round),
+        "resume_reason": str(resume_reason),
+        "chunk_start": str(int(chunk_start)),
+        "chunk_end": str(int(chunk_end)),
+        "chunk_length": str(max(0, int(chunk_end) - int(chunk_start))),
+        "chunk_index": str(int(chunk_index)),
+        "chunk_count": str(int(chunk_count)),
+        "previous_rough_summary": str(previous_rough_summary or ""),
+        "tempmem_dump": _format_tempmem_dump(_get_tempmem_rows(tempmem_key)),
     }
+    if section_mode and current_section:
+        prompt_vars["section_mode"] = "sectioned"
+        prompt_vars["section_title_hint"] = str(current_section.get("chapter_name") or "").strip()
+        prompt_vars["section_range_hint"] = str(current_section.get("range") or "").strip()
+    else:
+        prompt_vars["section_mode"] = "fallback_fulltext"
+        prompt_vars["section_title_hint"] = ""
+        prompt_vars["section_range_hint"] = ""
+    
+    context = runner.context_manager.build_context({"lecture_name": lecture_name, "book_name": book_name})
+    prompt_pack = runner.get_prompt_templates()
+    system_prompt = runner.context_manager.render(prompt_pack["system"], context, {"request": request_text, **prompt_vars})
+    user_prompt = runner.context_manager.render(prompt_pack["user"], context, {"request": request_text, **prompt_vars})
+    
+    # 使用新的 Context Manager 执行工具循环
+    return run_tool_driven_round_with_context(
+        runner=runner,
+        tools=tools,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        full_text=full_text,
+        total_len=total_len,
+        chunk_start=chunk_start,
+        chunk_end=chunk_end,
+        max_input_chars=max_input_chars,
+        max_turns=18,
+        force_write_trigger_turns=4,
+        temperature=temperature,
+        max_output_tokens=max_output_tokens,
+        request_timeout=request_timeout,
+        stream=stream,
+        think=think,
+        on_delta=on_delta,
+        on_save_chapter=on_save_chapter,
+        on_update_chapter=on_update_chapter,
+        log_event=log_event,
+        log_model_text=log_model_text,
+        log_tool_flow=log_tool_flow,
+        push_book_progress_step=_push_book_progress_step,
+        rolling_read_window=rolling_read_window,
+        resume_round=resume_round,
+        tempmem_key=tempmem_key,
+        lecture_id=lecture_id,
+        book_id=book_id,
+        policy=ContextPolicy.LLM_COMPRESS,
+        llm_compress_func=_llm_compress_func,
+    )
 
 
 def _run_coarse_reading_sectioned(
@@ -2347,6 +2061,8 @@ def _run_coarse_reading_sectioned(
             section_mode=True,
             current_section=section,
             rolling_read_window=False,
+            lecture_id=lecture_id,
+            book_id=book_id,
         )
         assistant_piece = str((round_result or {}).get("assistant_text") or "").strip()
         if assistant_piece:
@@ -2377,62 +2093,30 @@ def _run_coarse_reading_sectioned_summary_only(
     on_delta,
     on_update_summary,
     cancel_key: str,
+    max_input_chars: int = 15000,
 ) -> str:
-    """Strict phase-2 summary filler: only update summary/status for existing outline rows."""
+    """Strict phase-2 summary filler: only update summary/status for existing outline rows.
+    
+    使用 Context Manager 管理上下文，自动处理截断。
+    """
+    from .summary_loop import run_summary_tool_loop
+    from .context import ContextPolicy
+    
     total_len = len(full_text)
     merged_output = str(previous_rough_summary or "")
     resume_round = 1
-    effective_stream = bool(stream)
 
-    def _clamp_to_section(args: Dict[str, Any], start: int, end: int) -> Dict[str, Any]:
-        safe = dict(args or {})
-        try:
-            offset = int(safe.get("offset") or start)
-        except Exception:
-            offset = start
-        try:
-            length = int(safe.get("length") or min(1500, max(1, end - start)))
-        except Exception:
-            length = min(1500, max(1, end - start))
-        offset = max(start, min(max(start, end - 1), offset))
-        max_len = max(1, end - offset)
-        length = max(1, min(length, max_len))
-        safe["offset"] = offset
-        safe["length"] = length
-        try:
-            range_start = int(safe.get("range_start") or start)
-        except Exception:
-            range_start = start
-        try:
-            range_end = int(safe.get("range_end") or end)
-        except Exception:
-            range_end = end
-        range_start = max(start, min(end, range_start))
-        range_end = max(range_start, min(end, range_end))
-        safe["range_start"] = range_start
-        safe["range_end"] = range_end
-        return safe
+    def _exec_read(args: Dict[str, Any]) -> Dict[str, Any]:
+        return _exec_read_book_text_tool(full_text=full_text, total_len=total_len, arguments=args)
 
-    def _merge_covered_range(ranges: List[Tuple[int, int]], start: int, end: int) -> None:
-        if end <= start:
-            return
-        ranges.append((int(start), int(end)))
-        ranges.sort(key=lambda row: row[0])
-        merged: List[Tuple[int, int]] = []
-        for cur_start, cur_end in ranges:
-            if not merged or cur_start > merged[-1][1]:
-                merged.append((cur_start, cur_end))
-            else:
-                prev_start, prev_end = merged[-1]
-                merged[-1] = (prev_start, max(prev_end, cur_end))
-        ranges.clear()
-        ranges.extend(merged)
+    def _exec_index(args: Dict[str, Any]) -> Dict[str, Any]:
+        return _exec_index_book_text_tool(full_text=full_text, total_len=total_len, arguments=args)
 
-    def _covered_chars(ranges: List[Tuple[int, int]]) -> int:
-        total = 0
-        for start, end in ranges:
-            total += max(0, int(end) - int(start))
-        return total
+    def _exec_savemem(args: Dict[str, Any]) -> Dict[str, Any]:
+        return _exec_save_tempmem_tool(tempmem_key=tempmem_key, arguments=args)
+
+    _llm_compress_func = _build_llm_compress_func(runner, _CFG)
+
     for section_index, section in enumerate(planned_sections):
         if _is_cancelled_key(cancel_key):
             raise RuntimeError("cancelled by admin")
@@ -2464,6 +2148,7 @@ def _run_coarse_reading_sectioned_summary_only(
             str(getattr(learning_prompts, "COARSE_SECTION_SUMMARY_USER_PROMPT", "") or ""),
         )
         system_prompt = _render_prompt(summary_system_tpl, {})
+        user_prompt_template = summary_user_tpl
         tools = [
             {
                 "type": "function",
@@ -2543,265 +2228,47 @@ def _run_coarse_reading_sectioned_summary_only(
                 },
             },
         ]
-        turn_history: List[Dict[str, Any]] = []
-        section_done = False
-        queried_ranges: List[Tuple[int, int]] = []
-        latest_quality_feedback = ""
-        turn = 0
-        while not section_done:
-            turn += 1
-            _set_book_progress(lecture_id, book_id, f"模型正在阅读章节<{chapter_name or '未命名章节'}>...")
-            chapter_preload_for_turn = chapter_preload_text if turn == 1 else ""
-            preload_range_for_turn = f"{preload_start}:{max(1, preload_end - preload_start)}" if turn == 1 else ""
-            user_prompt = _render_prompt(
-                summary_user_tpl,
-                {
-                    "request": request_text,
-                    "chapter_name": chapter_name or "Untitled Chapter",
-                    "chapter_range": chapter_range,
-                    "preload_range": preload_range_for_turn,
-                    "chapter_preload": chapter_preload_for_turn,
-                    "quality_feedback": latest_quality_feedback,
-                },
-            )
-            request_messages: List[Dict[str, Any]] = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ]
-            if turn_history:
-                request_messages.extend(turn_history)
-            log_event(
-                "section_summary_round",
-                "第二阶段章节摘要轮次",
-                payload={
-                    "resume_round": int(resume_round),
-                    "section_index": int(section_index),
-                    "turn": int(turn),
-                    "chapter_name": chapter_name,
-                    "chapter_range": chapter_range,
-                    "stream": bool(effective_stream),
-                },
-                content="",
-            )
-            response = runner.nexora_client.proxy.chat_completions(
-                messages=request_messages,
-                model=model_name or runner.model_name,
-                username=None,
-                options={
-                    "temperature": float(temperature),
-                    "max_tokens": int(max_output_tokens),
-                    "stream": bool(effective_stream),
-                    "think": bool(think),
-                    "tools": tools,
-                    "tool_choice": "auto",
-                },
-                use_chat_path=False,
-                request_timeout=int(request_timeout),
-                on_delta=on_delta,
-            )
-            if not bool(response.get("ok")):
-                raise RuntimeError(f"Nexora API Error: {response.get('message') or 'request failed'}")
-            payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
-            choices = payload.get("choices") if isinstance(payload.get("choices"), list) else []
-            if not choices:
-                break
-            msg = choices[0].get("message") if isinstance(choices[0], dict) else {}
-            assistant_content = str((msg or {}).get("content") or "")
-            raw_tool_calls = (msg or {}).get("tool_calls") if isinstance((msg or {}).get("tool_calls"), list) else []
-            tool_calls: List[Dict[str, Any]] = []
-            for raw_call in raw_tool_calls:
-                if not isinstance(raw_call, dict):
-                    continue
-                raw_func = raw_call.get("function") if isinstance(raw_call.get("function"), dict) else {}
-                normalized_name = str(raw_func.get("name") or "").strip()
-                normalized_args_obj = _safe_json_obj(str(raw_func.get("arguments") or "{}"))
-                tool_calls.append(
-                    {
-                        "id": str(raw_call.get("id") or ""),
-                        "type": "function",
-                        "function": {
-                            "name": normalized_name,
-                            "arguments": _safe_json_dumps(normalized_args_obj),
-                        },
-                    }
-                )
-            turn_history.append({"role": "assistant", "content": assistant_content if assistant_content else None, "tool_calls": tool_calls if tool_calls else None})
-            if not tool_calls:
-                # Relax tool-call hard restriction:
-                # if model already produced a plain summary text, persist it directly.
-                plain_summary = _normalize_chapter_summary(assistant_content)
-                if plain_summary:
-                    result_obj = on_update_summary(
-                        chapter_range=chapter_range,
-                        chapter_summary=plain_summary,
-                    )
-                    log_event(
-                        "section_summary_plain_commit",
-                        "第二阶段无工具直出摘要提交",
-                        payload={
-                            "resume_round": int(resume_round),
-                            "section_index": int(section_index),
-                            "turn": int(turn),
-                            "chapter_range": chapter_range,
-                        },
-                        content=_safe_json_dumps(result_obj)[:2400],
-                    )
-                    if bool(result_obj.get("ok")):
-                        section_done = True
-                        merged_output = _render_chapters_xml(_parse_existing_chapters(load_book_info_xml(_CFG, lecture_id, book_id)))
-                        continue
-                    latest_quality_feedback = str(
-                        result_obj.get("quality_feedback")
-                        or result_obj.get("error")
-                        or ""
-                    ).strip()
-                    if latest_quality_feedback:
-                        turn_history.append(
-                            {
-                                "role": "user",
-                                "content": (
-                                    "summary quality rejected. "
-                                    f"feedback: {latest_quality_feedback}. "
-                                    "rewrite with concrete details and call update_summary again."
-                                ),
-                            }
-                        )
-                turn_history.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "No valid tool call detected. "
-                            "Please continue and call update_summary when ready."
-                        ),
-                    }
-                )
-                continue
-            turn_has_update = False
-            for call in tool_calls:
-                if not isinstance(call, dict):
-                    continue
-                call_id = str(call.get("id") or "")
-                func = call.get("function") if isinstance(call.get("function"), dict) else {}
-                tool_name = str(func.get("name") or "").strip()
-                args_obj = _safe_json_obj(str(func.get("arguments") or "{}"))
-                if tool_name in {"read", "read_book_text"}:
-                    args_obj = _clamp_to_section(args_obj, chunk_start, chunk_end)
-                    # Enforce minimal read size to reduce tiny fragmented reads.
-                    try:
-                        req_len = int(args_obj.get("length") or 0)
-                    except Exception:
-                        req_len = 0
-                    if (chunk_end - chunk_start) >= 2000 and req_len < 2000:
-                        args_obj["length"] = 2000
-                        args_obj = _clamp_to_section(args_obj, chunk_start, chunk_end)
-                    result_obj = _exec_read_book_text_tool(full_text=full_text, total_len=total_len, arguments=args_obj)
-                    read_start = int(result_obj.get("offset") or 0)
-                    read_len = int(result_obj.get("length") or 0)
-                    _merge_covered_range(queried_ranges, read_start, read_start + read_len)
-                    _push_book_progress_step(
-                        lecture_id,
-                        book_id,
-                        {
-                            "type": "read",
-                            "title": f"读取内容 [{read_start}, {read_start + max(0, read_len)}]",
-                            "preview": _preview_plain_text(result_obj.get("text"), 50),
-                        },
-                    )
-                elif tool_name in {"index", "index_book_text"}:
-                    args_obj = _clamp_to_section(args_obj, chunk_start, chunk_end)
-                    result_obj = _exec_index_book_text_tool(full_text=full_text, total_len=total_len, arguments=args_obj)
-                    index_start = int(args_obj.get("range_start") or chunk_start)
-                    index_end = int(args_obj.get("range_end") or chunk_end)
-                    _merge_covered_range(queried_ranges, index_start, index_end)
-                    _push_book_progress_step(
-                        lecture_id,
-                        book_id,
-                        {
-                            "type": "index",
-                            "title": f"检索关键词 [{index_start}, {index_end}]",
-                            "preview": _preview_plain_text(args_obj.get("keyword"), 50),
-                        },
-                    )
-                elif tool_name in {"savemem", "save_tempmem"}:
-                    result_obj = _exec_save_tempmem_tool(tempmem_key=tempmem_key, arguments=args_obj)
-                    _push_book_progress_step(
-                        lecture_id,
-                        book_id,
-                        {
-                            "type": "savemem",
-                            "title": "保存临时记忆",
-                            "preview": _preview_plain_text(args_obj.get("note"), 50),
-                        },
-                    )
-                elif tool_name in {"find", "index"}:
-                    args_obj = _clamp_to_section(args_obj, chunk_start, chunk_end)
-                    result_obj = _exec_index_book_text_tool(
-                        full_text=full_text,
-                        total_len=total_len,
-                        arguments=args_obj,
-                    )
-                    _push_book_progress_step(
-                        lecture_id,
-                        book_id,
-                        {
-                            "type": "find",
-                            "title": f"定位章节文本 {chapter_range}",
-                            "preview": _preview_plain_text(args_obj.get("keyword"), 50),
-                        },
-                    )
-                elif tool_name == "update_summary":
-                    result_obj = on_update_summary(
-                        chapter_range=chapter_range,
-                        chapter_summary=str(args_obj.get("chapter_summary") or "").strip(),
-                    )
-                    _push_book_progress_step(
-                        lecture_id,
-                        book_id,
-                        {
-                            "type": "update_summary",
-                            "title": f"写入章节摘要 {chapter_range}",
-                            "preview": _preview_plain_text(args_obj.get("chapter_summary"), 50),
-                        },
-                    )
-                    if bool(result_obj.get("ok")):
-                        turn_has_update = True
-                        section_done = True
-                        latest_quality_feedback = ""
-                    else:
-                        quality_feedback = str(result_obj.get("quality_feedback") or "")
-                        if quality_feedback:
-                            latest_quality_feedback = quality_feedback
-                            turn_history.append(
-                                {
-                                    "role": "user",
-                                    "content": (
-                                        "summary quality rejected. "
-                                        f"feedback: {quality_feedback}. "
-                                        "rewrite with concrete events and人物, then call update_summary again."
-                                    ),
-                                }
-                            )
-                else:
-                    # Remove hard restriction on unexpected tool names in summary phase.
-                    result_obj = {"ok": True, "skipped": True, "tool_name": tool_name}
-                if tool_name in {"read", "find", "index", "update_summary"}:
-                    turn_history.append({"role": "tool", "tool_call_id": call_id, "content": _safe_json_dumps(result_obj)})
-                log_event(
-                    "section_summary_tool_result",
-                    "第二阶段章节摘要工具结果",
-                    payload={
-                        "resume_round": int(resume_round),
-                        "section_index": int(section_index),
-                        "turn": int(turn),
-                        "tool_name": tool_name,
-                        "tool_call_id": call_id,
-                        "chapter_range": chapter_range,
-                    },
-                    content=_safe_json_dumps(result_obj)[:2400],
-                )
-            if section_done:
-                merged_output = _render_chapters_xml(_parse_existing_chapters(load_book_info_xml(_CFG, lecture_id, book_id)))
-                continue
+
+        _set_book_progress(lecture_id, book_id, f"模型正在阅读章节<{chapter_name or '未命名章节'}>...")
+
+        # 使用 Context Manager 执行工具循环
+        result = run_summary_tool_loop(
+            runner=runner,
+            system_prompt=system_prompt,
+            user_prompt_template=user_prompt_template,
+            tools=tools,
+            full_text=full_text,
+            total_len=total_len,
+            chunk_start=chunk_start,
+            chunk_end=chunk_end,
+            chapter_name=chapter_name,
+            chapter_range=chapter_range,
+            chapter_preload_text=chapter_preload_text,
+            preload_start=preload_start,
+            preload_end=preload_end,
+            max_input_chars=max_input_chars,
+            max_turns=40,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            request_timeout=request_timeout,
+            stream=stream,
+            think=think,
+            on_delta=on_delta,
+            on_update_summary=on_update_summary,
+            on_read=_exec_read,
+            on_index=_exec_index,
+            on_savemem=_exec_savemem,
+            log_event=log_event,
+            is_cancelled=lambda: _is_cancelled_key(cancel_key),
+            push_book_progress_step=_push_book_progress_step,
+            resume_round=resume_round,
+            section_index=section_index,
+            lecture_id=lecture_id,
+            book_id=book_id,
+            policy=ContextPolicy.LLM_COMPRESS,
+            llm_compress_func=_llm_compress_func,
+        )
+
         merged_output = _render_chapters_xml(_parse_existing_chapters(load_book_info_xml(_CFG, lecture_id, book_id)))
         resume_round += 1
     return merged_output

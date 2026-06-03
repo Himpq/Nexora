@@ -160,12 +160,40 @@
 }
 
 .learning-panel-cover {
-  width: 100%;
+  width: fit-content;
+  max-width: 100%;
   height: 200px;
   clip-path: polygon(0 0, 100% 0, 92% 100%, 0 100%);
   background: linear-gradient(145deg, #111827 0%, #344054 52%, #475467 100%);
   border-radius: 22px 22px 22px 8px;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 16px 32px rgba(17, 24, 39, 0.12);
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.learning-panel-cover-image {
+  width: auto;
+  height: 100%;
+  max-width: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.learning-panel-cover-empty {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-align: center;
 }
 
 .learning-panel-hero-content {
@@ -569,6 +597,7 @@
   border-radius: 14px;
   background: linear-gradient(145deg, #f3f4f6 0%, #e5e7eb 100%);
   box-shadow: inset 0 0 0 1px rgba(0,0,0,0.04);
+  clip-path: none;
 }
 
 .learning-panel-hero-info {
@@ -898,9 +927,90 @@
   gap: 10px;
 }
 
+.teacher-edit-manage-split {
+  padding-top: 4px;
+  border-top: 1px solid #eaecf0;
+}
+
+.teacher-edit-cover-split {
+  padding-top: 4px;
+}
+
+.teacher-edit-cover-stage {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.teacher-edit-cover-preview {
+  clip-path: none;
+  border-radius: 14px;
+  height: 200px;
+  width: auto;
+  max-width: 100%;
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.10);
+}
+
+.teacher-edit-cover-hint {
+  font-size: 12px;
+  color: #667085;
+  line-height: 1.5;
+}
+
+.teacher-edit-cover-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  max-height: 420px;
+  overflow-y: auto;
+  min-height: 120px;
+  padding-right: 4px;
+}
+
+.teacher-edit-cover-item {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 6px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+
+.teacher-edit-cover-item:hover {
+  border-color: #98a2b3;
+  background: #f8fafc;
+}
+
+.teacher-edit-cover-item.is-active {
+  border-color: #111827;
+  background: #f5f7fa;
+  box-shadow: 0 0 0 1px rgba(17, 24, 39, 0.12);
+}
+
+.teacher-edit-cover-thumb {
+  width: 100%;
+  height: 92px;
+  border-radius: 10px;
+  object-fit: contain;
+  display: block;
+  background: #e5e7eb;
+}
+
 @media (max-width: 760px) {
   .teacher-edit-split {
     grid-template-columns: 1fr;
+  }
+
+  .teacher-edit-cover-preview {
+    height: 200px;
+  }
+
+  .teacher-edit-cover-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -959,6 +1069,10 @@
 
   .learning-panel-cover {
     display: none;
+  }
+
+  .teacher-edit-cover-preview {
+    display: flex;
   }
 
   .learning-panel-hero-content {
