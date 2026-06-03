@@ -1,18 +1,30 @@
-"""通用上下文管理器 - 用于 booksproc 中所有模型调用的上下文管理。
+"""通用上下文管理器 - 使用策略模式管理上下文。
 
-提供：
-1. Context 类 - 消息列表管理（add/get/remove/insert/replace/clean/build）
-2. ToolTask 类 - 工具任务定义和执行
-3. 滑动窗口截断策略
-4. 工具调用结果保留策略
-5. TempMem 暂存记忆功能
+策略模式：
+- LLM_Compress: 使用 LLM 压缩上下文
+- Truncate: 直接截断
+- Sliding_Window: 滑动窗口截断
+- None: 不处理
+
+用户选择一个策略后，必须走这条路，不要回退。
 """
 
 from __future__ import annotations
 
 import json
 import time
+from enum import Enum
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
+
+from ..runlog import append_llm_compress_log
+
+
+class ContextPolicy(Enum):
+    """上下文管理策略"""
+    LLM_COMPRESS = "llm_compress"  # 使用 LLM 压缩
+    TRUNCATE = "truncate"  # 直接截断
+    SLIDING_WINDOW = "sliding_window"  # 滑动窗口截断
+    NONE = "none"  # 不处理
 
 
 class Message:
@@ -38,100 +50,116 @@ class Message:
 
 
 class Context:
-    """上下文管理器
-    
+    """上下文管理器 - 使用策略模式
+
     Example:
-        ctx = Context(max_chars=15000)
-        ctx.add(role="system", content="你是一个助手")
-        ctx.add(role="user", content="你好")
-        print(ctx.build())  # 构建消息列表
-        print(ctx.get(-1))  # 获取最后一条消息
-        ctx.remove(-1)      # 移除最后一条消息
-        ctx.clean()         # 清空所有消息
+        # 使用 LLM 压缩策略
+        ctx = Context(
+            max_chars=15000,
+            policy=ContextPolicy.LLM_COMPRESS,
+            llm_compress_func=my_compress_func
+        )
+
+        # 使用截断策略
+        ctx = Context(max_chars=15000, policy=ContextPolicy.TRUNCATE)
+
+        # 使用滑动窗口策略
+        ctx = Context(max_chars=15000, policy=ContextPolicy.SLIDING_WINDOW)
     """
 
-    def __init__(self, max_chars: int = 15000, max_messages: int = 100):
+    def __init__(
+        self,
+        max_chars: int = 15000,
+        max_messages: int = 100,
+        policy: ContextPolicy = ContextPolicy.LLM_COMPRESS,
+        llm_compress_func: Optional[Callable[[str], str]] = None,
+        trace_meta: Optional[Mapping[str, Any]] = None,
+    ):
         self.max_chars = max_chars
         self.max_messages = max_messages
+        self.policy = policy
         self._messages: List[Message] = []
         self._tempmem: List[str] = []
+        self._llm_compress_func = llm_compress_func
+        self._trace_meta = dict(trace_meta or {})
         self._stats = {
             "total_input_chars": 0,
             "total_output_chars": 0,
+            "compression_count": 0,
             "truncation_count": 0,
         }
 
-    def add(self, role: str, content: str, **kwargs) -> Message:
-        """添加消息
-        
-        Args:
-            role: 消息角色 (system/user/assistant/tool)
-            content: 消息内容
-            **kwargs: 额外参数 (tool_calls, tool_call_id 等)
-            
-        Returns:
-            创建的 Message 对象
+    def _select_active_tail_messages(self, messages: List[Message]) -> List[Message]:
+        """选择压缩后必须保留的极少量活动尾巴。
+
+        目标不是保留最近很多轮历史，而是只保留下一轮继续工作所必需的原始消息：
+        - 最新 user 指令
+        - 最新 assistant tool_calls 及其后续 tool 结果
+        其他历史都应交给 LLM 压缩为摘要。
         """
+        if not messages:
+            return []
+
+        last_msg = messages[-1]
+
+        if last_msg.role == "user":
+            return [last_msg]
+
+        if last_msg.role == "assistant" and bool(last_msg.extra.get("tool_calls")):
+            return [last_msg]
+
+        if last_msg.role == "tool":
+            tail_start = len(messages) - 1
+
+            while tail_start - 1 >= 0 and messages[tail_start - 1].role == "tool":
+                tail_start -= 1
+
+            if tail_start - 1 >= 0:
+                prev_msg = messages[tail_start - 1]
+                if prev_msg.role == "assistant" and bool(prev_msg.extra.get("tool_calls")):
+                    tail_start -= 1
+
+            return messages[tail_start:]
+
+        return []
+
+    def _normalize_tail_messages(self, messages: List[Message]) -> List[Message]:
+        """清理尾巴消息，避免压缩后出现无前置 assistant 的孤立 tool 消息。"""
+        normalized = list(messages or [])
+
+        while normalized and normalized[0].role == "tool":
+            normalized.pop(0)
+
+        return normalized
+
+    def add(self, role: str, content: str, **kwargs) -> Message:
+        """添加消息"""
         msg = Message(role=role, content=content, **kwargs)
         self._messages.append(msg)
         return msg
 
     def get(self, index: int) -> Optional[Message]:
-        """获取消息
-        
-        Args:
-            index: 消息索引，支持负数（-1 表示最后一条）
-            
-        Returns:
-            Message 对象，如果索引无效则返回 None
-        """
+        """获取消息"""
         try:
             return self._messages[index]
         except IndexError:
             return None
 
     def remove(self, index: int) -> Optional[Message]:
-        """移除消息
-        
-        Args:
-            index: 消息索引，支持负数
-            
-        Returns:
-            被移除的 Message 对象，如果索引无效则返回 None
-        """
+        """移除消息"""
         try:
             return self._messages.pop(index)
         except IndexError:
             return None
 
     def insert(self, index: int, role: str, content: str, **kwargs) -> Message:
-        """插入消息
-        
-        Args:
-            index: 插入位置索引
-            role: 消息角色
-            content: 消息内容
-            **kwargs: 额外参数
-            
-        Returns:
-            创建的 Message 对象
-        """
+        """插入消息"""
         msg = Message(role=role, content=content, **kwargs)
         self._messages.insert(index, msg)
         return msg
 
     def replace(self, index: int, role: str = None, content: str = None, **kwargs) -> Optional[Message]:
-        """替换消息
-        
-        Args:
-            index: 消息索引
-            role: 新角色（如果为 None 则保持原角色）
-            content: 新内容（如果为 None 则保持原内容）
-            **kwargs: 新的额外参数
-            
-        Returns:
-            更新后的 Message 对象，如果索引无效则返回 None
-        """
+        """替换消息"""
         msg = self.get(index)
         if msg is None:
             return None
@@ -152,11 +180,7 @@ class Context:
         self.clean()
 
     def build(self) -> List[Dict[str, Any]]:
-        """构建消息列表（用于 API 调用）
-        
-        Returns:
-            消息字典列表
-        """
+        """构建消息列表（用于 API 调用）"""
         return [msg.to_dict() for msg in self._messages]
 
     def chars(self) -> int:
@@ -209,28 +233,141 @@ class Context:
         """获取暂存记忆数量"""
         return len(self._tempmem)
 
-    # ==================== 截断策略 ====================
+    # ==================== 策略执行 ====================
 
-    def truncate_sliding_window(self, keep_system: bool = True) -> bool:
-        """滑动窗口截断策略
-        
-        当消息列表超过 max_chars 时，截断最早的消息。
-        
-        Args:
-            keep_system: 是否保留系统提示词
-            
-        Returns:
-            是否进行了截断
-        """
-        if self.chars() <= self.max_chars:
-            return False
-
+    def _get_system_and_other_msgs(self, keep_system: bool = True) -> Tuple[List[Message], List[Message]]:
+        """分离系统消息和其他消息"""
         if keep_system:
             system_msgs = [m for m in self._messages if m.role == "system"]
             other_msgs = [m for m in self._messages if m.role != "system"]
         else:
             system_msgs = []
             other_msgs = list(self._messages)
+        return system_msgs, other_msgs
+
+    def _find_split_index(self, system_msgs: List[Message], other_msgs: List[Message]) -> int:
+        """从后往前找到分割点"""
+        system_chars = sum(len(m) for m in system_msgs)
+        remaining_chars = self.max_chars - system_chars
+        split_index = len(other_msgs)
+
+        accumulated = 0
+        for i in range(len(other_msgs) - 1, -1, -1):
+            accumulated += len(other_msgs[i])
+            if accumulated > remaining_chars:
+                split_index = i + 1
+                break
+        else:
+            # 所有消息都能放下
+            return -1
+
+        # 至少保留最后一条消息
+        if split_index >= len(other_msgs):
+            split_index = len(other_msgs) - 1
+
+        return split_index
+
+    def _build_compress_text(self, msgs: List[Message]) -> str:
+        """构建压缩文本"""
+        return "\n".join(
+            f"[{msg.role}]: {msg.content}" for msg in msgs if msg.content
+        )
+
+    def _serialize_messages(self, msgs: List[Message]) -> List[Dict[str, Any]]:
+        """序列化消息列表用于日志记录。"""
+        return [msg.to_dict() for msg in msgs]
+
+    def _execute_llm_compress(self, keep_system: bool = True) -> bool:
+        """执行 LLM 压缩策略 - 将旧消息压缩为摘要并插入对话
+
+        压缩后的摘要以消息形式插入到对话历史中，取代被压缩的旧消息。
+        这样下次压缩时会连同摘要一起处理，避免系统提示词无限增长。
+        """
+        if not self._llm_compress_func:
+            raise RuntimeError("LLM compress function is not set. Cannot execute LLM compression.")
+
+        if self.chars() <= self.max_chars:
+            return False
+
+        before_messages = self._serialize_messages(self._messages)
+        before_chars = self.chars()
+        before_count = len(self._messages)
+        system_msgs, other_msgs = self._get_system_and_other_msgs(keep_system)
+        if len(other_msgs) <= 1:
+            return False
+
+        retained_tail = self._normalize_tail_messages(self._select_active_tail_messages(other_msgs))
+        retained_tail_count = len(retained_tail)
+        if retained_tail_count > 0:
+            msgs_to_compress = other_msgs[:-retained_tail_count]
+        else:
+            msgs_to_compress = list(other_msgs)
+
+        msgs_to_keep = list(retained_tail)
+
+        if not msgs_to_compress:
+            return False
+
+        compress_text = self._build_compress_text(msgs_to_compress)
+        if not compress_text.strip():
+            return False
+
+        # 调用 LLM 压缩 - 必须成功
+        compressed = self._llm_compress_func(compress_text)
+        if not compressed or not compressed.strip():
+            raise RuntimeError("LLM compression returned empty result.")
+
+        # 将压缩结果作为普通消息插入到对话中，替代被压缩的旧消息
+        # 使用 assistant 角色以便下次压缩时被一并处理，避免系统提示词无限增长
+        summary_msg = Message(
+            role="assistant",
+            content=f"[上下文压缩摘要]\n{compressed}",
+        )
+        self._messages = system_msgs + [summary_msg] + msgs_to_keep
+
+        # 如果插入摘要后仍超出限制，只允许继续丢弃保留尾巴，直到变成真正的小上下文。
+        while self.chars() > self.max_chars and len(msgs_to_keep) > 0:
+            msgs_to_keep.pop(0)
+            msgs_to_keep = self._normalize_tail_messages(msgs_to_keep)
+            self._messages = system_msgs + [summary_msg] + msgs_to_keep
+
+        self._stats["compression_count"] += 1
+        append_llm_compress_log(
+            {
+                "trace_meta": dict(self._trace_meta),
+                "policy": self.policy.value,
+                "max_chars": int(self.max_chars),
+                "before": {
+                    "chars": int(before_chars),
+                    "messages_count": int(before_count),
+                    "messages": before_messages,
+                },
+                "compress_scope": {
+                    "split_index": -1,
+                    "system_messages_count": int(len(system_msgs)),
+                    "compressed_messages_count": int(len(msgs_to_compress)),
+                    "kept_messages_count": int(len(msgs_to_keep)),
+                    "tail_strategy": "system + summary + minimal_active_tail",
+                    "messages": self._serialize_messages(msgs_to_compress),
+                    "text": compress_text,
+                },
+                "compressed_summary": str(compressed),
+                "after": {
+                    "chars": int(self.chars()),
+                    "messages_count": int(len(self._messages)),
+                    "messages": self._serialize_messages(self._messages),
+                },
+                "stats": self.stats(),
+            }
+        )
+        return True
+
+    def _execute_truncate(self, keep_system: bool = True) -> bool:
+        """执行直接截断策略"""
+        if self.chars() <= self.max_chars:
+            return False
+
+        system_msgs, other_msgs = self._get_system_and_other_msgs(keep_system)
 
         # 从最早的消息开始截断
         while other_msgs and (sum(len(m) for m in system_msgs) + sum(len(m) for m in other_msgs)) > self.max_chars:
@@ -242,68 +379,100 @@ class Context:
         self._stats["truncation_count"] += 1
         return True
 
-    def truncate_keep_recent_tools(self, keep_count: int = 3) -> bool:
-        """保留最近N个工具调用的截断策略
-        
-        Args:
-            keep_count: 保留的最近工具调用数量
-            
-        Returns:
-            是否进行了截断
-        """
+    def _execute_sliding_window(self, keep_system: bool = True) -> bool:
+        """执行滑动窗口截断策略"""
         if self.chars() <= self.max_chars:
             return False
 
-        # 找出所有工具结果消息的索引
-        tool_indices = [i for i, msg in enumerate(self._messages) if msg.role == "tool"]
+        system_msgs, other_msgs = self._get_system_and_other_msgs(keep_system)
+        if len(other_msgs) <= 1:
+            return False
 
-        # 如果工具调用数量超过保留数量，移除最早的
-        if len(tool_indices) > keep_count:
-            indices_to_remove = tool_indices[:-keep_count]
-            # 从后往前移除，避免索引变化
-            for idx in reversed(indices_to_remove):
-                self._messages.pop(idx)
-            self._stats["truncation_count"] += 1
-            return True
+        split_index = self._find_split_index(system_msgs, other_msgs)
+        if split_index < 0:
+            return False
 
-        return False
+        # 移除分割点之前的消息
+        other_msgs = other_msgs[split_index:]
+        self._messages = system_msgs + other_msgs
+        self._stats["truncation_count"] += 1
+        return True
 
-    def auto_truncate(self) -> str:
-        """自动截断，使用多种策略
-        
+    def execute_policy(self) -> bool:
+        """执行当前策略
+
         Returns:
-            截断操作的描述，如果没有截断则返回空字符串
+            是否进行了处理
         """
-        # 首先尝试滑动窗口
-        if self.truncate_sliding_window():
-            return "sliding_window"
+        if self.policy == ContextPolicy.LLM_COMPRESS:
+            return self._execute_llm_compress()
+        elif self.policy == ContextPolicy.TRUNCATE:
+            return self._execute_truncate()
+        elif self.policy == ContextPolicy.SLIDING_WINDOW:
+            return self._execute_sliding_window()
+        elif self.policy == ContextPolicy.NONE:
+            return False
+        else:
+            raise ValueError(f"Unknown policy: {self.policy}")
 
-        # 然后尝试保留最近工具
-        if self.truncate_keep_recent_tools():
-            return "keep_recent_tools"
+    def inject_tempmem(self) -> None:
+        """将 TempMem 内容注入到系统提示词中
 
-        return ""
+        TempMem 内容会作为历史上下文摘要注入到第一条系统消息之后。
+        注入后清空 TempMem，避免下一轮重复注入。
+        """
+        if not self._tempmem:
+            return
 
-    def inject_truncation_notice(self) -> None:
-        """注入截断通知提示词"""
-        notice = "[系统提示] 由于上下文长度限制，部分早期内容已被截断。请基于当前可见的内容继续工作。"
+        tempmem_text = self.tempmem_get()
+        injection = f"\n[历史上下文摘要]\n以下是之前对话的压缩摘要，请结合这些上下文继续工作：\n{tempmem_text}\n"
+
+        # 注入后立即清空，避免下一轮重复注入
+        self._tempmem.clear()
+
+        # 找到第一条系统消息并在其后注入
+        for i, msg in enumerate(self._messages):
+            if msg.role == "system":
+                self._messages[i].content += injection
+                return
+
+        # 如果没有系统消息，在最前面插入一条
+        self.insert(0, role="system", content=injection.strip())
+
+    def inject_policy_notice(self) -> None:
+        """注入策略通知提示词"""
+        if self.policy == ContextPolicy.LLM_COMPRESS:
+            notice = "[系统提示] 由于上下文长度限制，部分早期内容已被压缩，请参考上文中 [上下文压缩摘要] 中的历史上下文继续工作。"
+        elif self.policy == ContextPolicy.TRUNCATE:
+            notice = "[系统提示] 由于上下文长度限制，部分早期内容已被截断。请基于当前可见的内容继续工作。"
+        elif self.policy == ContextPolicy.SLIDING_WINDOW:
+            notice = "[系统提示] 由于上下文长度限制，使用滑动窗口策略移除了部分早期内容。请基于当前可见的内容继续工作。"
+        else:
+            return
+
         # 在最后一条用户消息之前插入通知
         for i in range(len(self._messages) - 1, -1, -1):
             if self._messages[i].role == "user":
                 self.insert(i, role="user", content=notice)
                 break
 
-    def prepare(self) -> str:
+    def prepare(self) -> bool:
         """准备请求前的上下文处理
-        
+
+        1. 执行策略（压缩/截断）
+        2. 注入策略通知（如果进行了处理）
+
         Returns:
-            截断操作的描述
+            是否进行了处理
         """
-        truncation_type = self.auto_truncate()
-        if truncation_type:
-            self.inject_truncation_notice()
+        # 执行策略
+        executed = self.execute_policy()
+
+        if executed:
+            self.inject_policy_notice()
+
         self._stats["total_input_chars"] += self.chars()
-        return truncation_type
+        return executed
 
     # ==================== 统计 ====================
 
@@ -314,10 +483,11 @@ class Context:
             "current_chars": self.chars(),
             "current_messages": self.count(),
             "tempmem_count": self.tempmem_count(),
+            "policy": self.policy.value,
         }
 
     def __repr__(self) -> str:
-        return f"Context(messages={len(self._messages)}, chars={self.chars()}, max_chars={self.max_chars})"
+        return f"Context(messages={len(self._messages)}, chars={self.chars()}, max_chars={self.max_chars}, policy={self.policy.value})"
 
     def __len__(self) -> int:
         return len(self._messages)
@@ -364,23 +534,7 @@ class ToolDef:
 
 
 class ToolTask:
-    """工具任务 - 定义和执行工具调用
-    
-    Example:
-        read_tool = ToolDef(
-            name="read",
-            description="读取文本",
-            parameters={
-                "offset": {"type": "integer", "description": "起始位置"},
-                "length": {"type": "integer", "description": "读取长度"},
-            },
-            required=["offset", "length"],
-        )
-        
-        task = ToolTask(tools=[read_tool])
-        task.register("read", lambda args: {"content": "..."})
-        result = task.execute("read", {"offset": 0, "length": 100})
-    """
+    """工具任务 - 定义和执行工具调用"""
 
     def __init__(self, tools: List[ToolDef] = None):
         self.tools = tools or []
@@ -392,28 +546,11 @@ class ToolTask:
         self.tools.append(tool)
 
     def register(self, name: str, handler: Callable[[Dict[str, Any]], Any]) -> None:
-        """注册工具处理器
-        
-        Args:
-            name: 工具名称
-            handler: 处理函数，接收参数字典，返回结果
-        """
+        """注册工具处理器"""
         self._handlers[name] = handler
 
     def execute(self, name: str, args: Dict[str, Any]) -> Any:
-        """执行工具调用
-        
-        Args:
-            name: 工具名称
-            args: 工具参数
-            
-        Returns:
-            工具执行结果
-            
-        Raises:
-            ValueError: 未知的工具名称
-            Exception: 工具执行错误
-        """
+        """执行工具调用"""
         if name not in self._handlers:
             return {"error": f"Unknown tool: {name}"}
 
@@ -462,9 +599,19 @@ class ToolTask:
 
 # ==================== 便捷函数 ====================
 
-def create_context(max_chars: int = 15000) -> Context:
+def create_context(
+    max_chars: int = 15000,
+    policy: ContextPolicy = ContextPolicy.LLM_COMPRESS,
+    llm_compress_func: Optional[Callable[[str], str]] = None,
+    trace_meta: Optional[Mapping[str, Any]] = None,
+) -> Context:
     """创建上下文管理器"""
-    return Context(max_chars=max_chars)
+    return Context(
+        max_chars=max_chars,
+        policy=policy,
+        llm_compress_func=llm_compress_func,
+        trace_meta=trace_meta,
+    )
 
 
 def create_tool_task() -> ToolTask:
@@ -507,163 +654,3 @@ def create_write_tool(description: str = "提交结果") -> ToolDef:
         },
         required=["content"],
     )
-
-
-# ==================== 测试代码 ====================
-
-if __name__ == "__main__":
-    print("=" * 60)
-    print("Context Manager 测试")
-    print("=" * 60)
-
-    # 创建上下文
-    ctx = Context(max_chars=1000)
-    print(f"\n1. 创建上下文: {ctx}")
-
-    # 添加消息
-    ctx.add(role="system", content="你是一个AI助手")
-    ctx.add(role="user", content="你好")
-    ctx.add(role="assistant", content="你好！有什么可以帮助你的吗？")
-    print(f"\n2. 添加3条消息后: {ctx}")
-    print(f"   消息数量: {ctx.count()}")
-    print(f"   字符数: {ctx.chars()}")
-
-    # 获取消息
-    msg = ctx.get(-1)
-    print(f"\n3. 获取最后一条消息: {msg}")
-
-    msg = ctx.get(0)
-    print(f"   获取第一条消息: {msg}")
-
-    # 构建消息列表
-    messages = ctx.build()
-    print(f"\n4. 构建消息列表: {json.dumps(messages, ensure_ascii=False, indent=2)}")
-
-    # 插入消息
-    ctx.insert(1, role="user", content="这是插入的消息")
-    print(f"\n5. 在位置1插入消息后: {ctx}")
-    print(f"   消息列表:")
-    for i, msg in enumerate(ctx):
-        print(f"     [{i}] {msg}")
-
-    # 替换消息
-    ctx.replace(-1, role="system", content="这是替换后的系统消息")
-    print(f"\n6. 替换最后一条消息后:")
-    for i, msg in enumerate(ctx):
-        print(f"     [{i}] {msg}")
-
-    # 移除消息
-    removed = ctx.remove(1)
-    print(f"\n7. 移除位置1的消息: {removed}")
-    print(f"   移除后的消息列表:")
-    for i, msg in enumerate(ctx):
-        print(f"     [{i}] {msg}")
-
-    # 按角色查找
-    system_msgs = ctx.find_by_role("system")
-    print(f"\n8. 查找所有system消息: {system_msgs}")
-
-    last_user = ctx.find_last_by_role("user")
-    print(f"   查找最后一条user消息: {last_user}")
-
-    # TempMem 测试
-    ctx.tempmem_add("这是一条暂存记忆")
-    ctx.tempmem_add("这是另一条暂存记忆")
-    print(f"\n9. TempMem: {ctx.tempmem_get()}")
-    print(f"   TempMem数量: {ctx.tempmem_count()}")
-
-    # 清空
-    ctx.clean()
-    print(f"\n10. 清空后: {ctx}")
-    print(f"    是否为空: {ctx.is_empty()}")
-
-    # 统计信息
-    print(f"\n11. 统计信息: {ctx.stats()}")
-
-    print("\n" + "=" * 60)
-    print("ToolTask 测试")
-    print("=" * 60)
-
-    # 创建工具任务
-    task = ToolTask()
-    print(f"\n1. 创建工具任务: {task}")
-
-    # 添加工具定义
-    read_tool = create_read_tool()
-    find_tool = create_find_tool()
-    write_tool = create_write_tool("提交批注")
-
-    task.add(read_tool)
-    task.add(find_tool)
-    task.add(write_tool)
-    print(f"\n2. 添加工具后: {task}")
-    print(f"   工具定义: {json.dumps(task.get_definitions(), ensure_ascii=False, indent=2)}")
-
-    # 注册处理器
-    def handle_read(args):
-        offset = args.get("offset", 0)
-        length = args.get("length", 100)
-        return {"content": f"读取的内容[{offset}:{offset+length}]", "offset": offset, "length": length}
-
-    def handle_find(args):
-        keyword = args.get("keyword", "")
-        return {"keyword": keyword, "positions": [10, 20, 30], "count": 3}
-
-    def handle_write(args):
-        content = args.get("content", "")
-        return {"status": "ok", "count": len(content)}
-
-    task.register("read", handle_read)
-    task.register("find", handle_find)
-    task.register("write", handle_write)
-    print(f"\n3. 注册处理器后: {task}")
-
-    # 执行工具
-    result = task.execute("read", {"offset": 0, "length": 100})
-    print(f"\n4. 执行 read 工具: {result}")
-
-    result = task.execute("find", {"keyword": "测试"})
-    print(f"   执行 find 工具: {result}")
-
-    result = task.execute("write", {"content": "这是批注内容"})
-    print(f"   执行 write 工具: {result}")
-
-    # 工具历史
-    print(f"\n5. 工具调用历史:")
-    for h in task.get_history():
-        print(f"   {h['tool']}: success={h['success']}, elapsed={h['elapsed']:.3f}s")
-
-    print("\n" + "=" * 60)
-    print("完整流程测试")
-    print("=" * 60)
-
-    # 模拟一个完整的工具循环
-    ctx = Context(max_chars=500)
-    ctx.add(role="system", content="你是一个批注生成助手")
-    ctx.add(role="user", content="请为以下文本生成批注：这是一段测试文本...")
-
-    print(f"\n1. 初始上下文: {ctx}")
-
-    # 模拟模型响应（包含工具调用）
-    ctx.add(
-        role="assistant",
-        content="我需要先读取文本内容",
-        tool_calls=[{"id": "call_1", "function": {"name": "read", "arguments": '{"offset":0,"length":50}'}}],
-    )
-
-    # 模拟工具结果
-    ctx.add(role="tool", content=json.dumps({"content": "这是一段测试文本..."}, ensure_ascii=False), tool_call_id="call_1")
-
-    print(f"\n2. 添加工具调用后: {ctx}")
-    print(f"   消息列表:")
-    for i, msg in enumerate(ctx):
-        print(f"     [{i}] {msg}")
-
-    # 准备请求
-    truncation = ctx.prepare()
-    print(f"\n3. 准备请求: truncation={truncation}")
-    print(f"   统计信息: {ctx.stats()}")
-
-    print("\n" + "=" * 60)
-    print("测试完成!")
-    print("=" * 60)

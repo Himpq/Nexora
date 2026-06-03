@@ -11,6 +11,9 @@ import re
 import time
 from typing import Any, Callable, Dict, List, Mapping, Tuple
 
+from .compress import build_llm_compress_func
+from .context import Context, ContextPolicy
+
 
 def _xml_escape(value: Any) -> str:
     """Escape text for XML node content."""
@@ -351,6 +354,7 @@ def run_intensive_reading_once(
             on_delta=lambda delta: append_log_text(str(delta or "")),
             log_tool_flow=log_tool_flow,
             push_book_progress_step=push_book_progress_step,
+            cfg=resolved_cfg,
         )
         chapter_xml = str(result.get("bookdetail_xml") or "").strip()
         if chapter_xml:
@@ -425,6 +429,7 @@ def run_intensive_with_tools_strict(
     exec_read_book_text_tool: Callable[..., Dict[str, Any]],
     exec_search_book_text_tool: Callable[..., Dict[str, Any]],
     log_event: Callable[..., None],
+    cfg: Mapping[str, Any],
 ) -> Dict[str, Any]:
     """强循环版精读流程：未调用 write 时继续循环，最多 24 轮。"""
     def _validate_write_payload(arguments: Dict[str, Any]) -> Tuple[bool, Dict[str, Any], str]:
@@ -471,6 +476,21 @@ def run_intensive_with_tools_strict(
     user_prompt = runner.context_manager.render(prompt_pack["user"], context, prompt_vars)
 
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+    llm_compress_func = build_llm_compress_func(runner, cfg)
+    ctx = Context(
+        max_chars=15000,
+        policy=ContextPolicy.LLM_COMPRESS,
+        llm_compress_func=llm_compress_func,
+        trace_meta={
+            "flow": "intensive_loop",
+            "lecture_id": str(lecture_id or ""),
+            "book_id": str(book_id or ""),
+            "chapter_name": str(chapter_name or ""),
+            "chapter_range": str(chapter_range or ""),
+        },
+    )
+    for msg in messages:
+        ctx.add(str(msg.get("role") or ""), str(msg.get("content") or ""))
     tools = [
         {
             "type": "function",
@@ -591,6 +611,25 @@ def run_intensive_with_tools_strict(
         },
     )
     for turn in range(1, max_turns + 1):
+        executed = ctx.prepare()
+
+        if executed:
+            log_event(
+                "context_operation",
+                "上下文压缩",
+                payload={
+                    "lecture_id": lecture_id,
+                    "book_id": book_id,
+                    "chapter_name": chapter_name,
+                    "chapter_range": chapter_range,
+                    "turn": int(turn),
+                    "policy": ctx.policy.value,
+                    "context_chars": ctx.chars(),
+                    "messages_count": ctx.count(),
+                },
+            )
+
+        messages = ctx.build()
         req_started = time.time()
         log_event(
             "intensive_turn_request",
@@ -658,7 +697,11 @@ def run_intensive_with_tools_strict(
         msg = choices[0].get("message") if isinstance(choices[0], dict) else {}
         assistant_content = str((msg or {}).get("content") or "")
         tool_calls = msg.get("tool_calls") if isinstance(msg, dict) and isinstance(msg.get("tool_calls"), list) else []
-        messages.append({"role": "assistant", "content": assistant_content if assistant_content else None, "tool_calls": tool_calls if tool_calls else None})
+        ctx.add(
+            "assistant",
+            assistant_content if assistant_content else "",
+            tool_calls=tool_calls if tool_calls else None,
+        )
 
         wrote = False
         if tool_calls:
@@ -681,7 +724,7 @@ def run_intensive_with_tools_strict(
                         model_output=assistant_content[:800],
                         source="intensive_reading",
                     )
-                    messages.append({"role": "tool", "tool_call_id": call_id, "content": str(tool_result)})
+                    ctx.add("tool", str(tool_result), tool_call_id=call_id)
                     continue
                 if tool_name == "write":
                     valid_write, normalized_write, write_error = _validate_write_payload(args)
@@ -694,7 +737,7 @@ def run_intensive_with_tools_strict(
                             model_output=assistant_content[:800],
                             source="intensive_reading",
                         )
-                        messages.append({"role": "tool", "tool_call_id": call_id, "content": str(tool_result)})
+                        ctx.add("tool", str(tool_result), tool_call_id=call_id)
                         continue
                     out_chapter_name = str(args.get("chapter_name") or chapter_name).strip() or str(chapter_name or "")
                     out_chapter_range = str(args.get("chapter_range") or chapter_range).strip() or str(chapter_range or "")
@@ -772,7 +815,7 @@ def run_intensive_with_tools_strict(
                     model_output=assistant_content[:800],
                     source="intensive_reading",
                 )
-                messages.append({"role": "tool", "tool_call_id": call_id, "content": str(tool_result)})
+                ctx.add("tool", str(tool_result), tool_call_id=call_id)
             if wrote_once:
                 break
 
@@ -791,12 +834,7 @@ def run_intensive_with_tools_strict(
         )
         if not wrote_once:
             next_step_hint = "你还没有完成章节提交。下一轮必须直接调用 write(...)；必要时先 read/grep/savemem。"
-            messages.append(
-                {
-                    "role": "user",
-                    "content": next_step_hint,
-                }
-            )
+            ctx.add("user", next_step_hint)
 
     if not str(saved_text or "").strip():
         raise RuntimeError("Intensive model did not produce any valid write() result")

@@ -12,6 +12,8 @@ import re
 import time
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
+from .context import Context, ContextPolicy, ToolDef, ToolTask
+
 
 def _xml_escape(value: Any) -> str:
     text = str(value or "")
@@ -469,13 +471,38 @@ def run_annotation_with_tools(
     on_delta: Optional[Callable[[str], None]] = None,
     log_event: Optional[Callable[..., None]] = None,
     push_book_progress_step: Optional[Callable[[str, str, Mapping[str, Any]], None]] = None,
+    max_input_chars: int = 15000,
+    policy: ContextPolicy = ContextPolicy.LLM_COMPRESS,
+    llm_compress_func: Optional[Callable[[str], str]] = None,
 ) -> Dict[str, Any]:
-    """Run annotation generation with tool loop."""
+    """Run annotation generation with tool loop using Context Manager."""
     try:
         from NexoraLearning import prompts as learning_prompts
     except ImportError:
         import prompts as learning_prompts
 
+    # 解析章节范围
+    chapter_start, chapter_len = _parse_range(chapter_range)
+    chapter_end = chapter_start + max(0, chapter_len)
+    max_read_chars_per_call = 2400
+    max_tool_payload_chars = 3200
+    result_annotations_text = ""
+
+    def _clip_text(text: Any, limit: int) -> str:
+        raw = str(text or "")
+        safe_limit = max(200, int(limit or 0))
+        if len(raw) <= safe_limit:
+            return raw
+        return f"{raw[:safe_limit]}\n...[truncated:{len(raw) - safe_limit}]"
+
+    # 创建上下文管理器
+    ctx = Context(
+        max_chars=max_input_chars,
+        policy=policy,
+        llm_compress_func=llm_compress_func,
+    )
+
+    # 设置提示词
     system_prompt = learning_prompts.ANNOTATION_MODEL_SYSTEM_PROMPT
     user_prompt = learning_prompts.ANNOTATION_MODEL_USER_PROMPT.format(
         lecture_name=lecture_name,
@@ -486,112 +513,138 @@ def run_annotation_with_tools(
         chapter_detail_xml=chapter_detail_xml,
         request=request_text,
     )
+    ctx.add(role="system", content=system_prompt)
+    ctx.add(role="user", content=user_prompt)
 
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt},
-    ]
+    # 创建工具定义
+    read_tool = ToolDef(
+        name="read",
+        description="读取教材指定范围的文本内容",
+        parameters={
+            "offset": {"type": "integer", "description": "起始位置（字符偏移量）"},
+            "length": {"type": "integer", "description": "读取长度（字符数）"},
+        },
+        required=["offset", "length"],
+    )
 
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "read",
-                "description": "读取教材指定范围的文本内容",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "offset": {"type": "integer", "description": "起始位置（字符偏移量）"},
-                        "length": {"type": "integer", "description": "读取长度（字符数）"},
-                    },
-                    "required": ["offset", "length"],
-                },
-            },
+    find_tool = ToolDef(
+        name="find",
+        description="在教材中搜索指定关键词，返回匹配位置",
+        parameters={
+            "keyword": {"type": "string", "description": "要搜索的关键词"},
         },
-        {
-            "type": "function",
-            "function": {
-                "name": "find",
-                "description": "在教材中搜索指定关键词，返回匹配位置",
-                "parameters": {
+        required=["keyword"],
+    )
+
+    write_tool = ToolDef(
+        name="write",
+        description="提交生成的批注",
+        parameters={
+            "annotations": {
+                "type": "array",
+                "description": "批注数组",
+                "items": {
                     "type": "object",
                     "properties": {
-                        "keyword": {"type": "string", "description": "要搜索的关键词"},
-                    },
-                    "required": ["keyword"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "write",
-                "description": "提交生成的批注",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "annotations": {
-                            "type": "array",
-                            "description": "批注数组",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "offset": {"type": "integer", "description": "批注位置（相对于章节起始的偏移量）"},
-                                    "length": {"type": "integer", "description": "批注锚定文本长度"},
-                                    "anchor_text": {"type": "string", "description": "批注锚定的原文片段（10-30字）"},
-                                    "annotation_type": {
-                                        "type": "string",
-                                        "enum": ["易错点", "思考点", "方法提醒", "结构观察", "教学提醒"],
-                                        "description": "批注类型"
-                                    },
-                                    "annotation_content": {"type": "string", "description": "批注内容（50-200字）"},
-                                },
-                                "required": ["offset", "anchor_text", "annotation_type", "annotation_content"],
-                            },
+                        "offset": {"type": "integer", "description": "批注位置（相对于章节起始的偏移量）"},
+                        "length": {"type": "integer", "description": "批注锚定文本长度"},
+                        "anchor_text": {"type": "string", "description": "批注锚定的原文片段（10-30字）"},
+                        "annotation_type": {
+                            "type": "string",
+                            "enum": ["易错点", "思考点", "方法提醒", "结构观察", "教学提醒"],
+                            "description": "批注类型"
                         },
+                        "annotation_content": {"type": "string", "description": "批注内容（50-200字）"},
                     },
-                    "required": ["annotations"],
+                    "required": ["offset", "anchor_text", "annotation_type", "annotation_content"],
                 },
             },
         },
-    ]
+        required=["annotations"],
+    )
 
-    max_rounds = 10
-    max_retries = 3
-    max_read_chars_per_call = 2400
-    max_tool_payload_chars = 3200
-    result_annotations_text = ""
-    tool_call_count = 0
-    chapter_start, chapter_len = _parse_range(chapter_range)
-    chapter_end = chapter_start + max(0, chapter_len)
+    # 创建工具任务
+    task = ToolTask(tools=[read_tool, find_tool, write_tool])
 
-    def _clip_text(text: Any, limit: int) -> str:
-        raw = str(text or "")
-        safe_limit = max(200, int(limit or 0))
-        if len(raw) <= safe_limit:
-            return raw
-        return f"{raw[:safe_limit]}\n...[truncated:{len(raw) - safe_limit}]"
+    # 注册工具处理器
+    def handle_read(args: Dict[str, Any]) -> Dict[str, Any]:
+        offset = int(args.get("offset") or 0)
+        length = int(args.get("length") or 1000)
+        safe_offset = max(chapter_start, min(offset, chapter_end))
+        allowed = max(0, chapter_end - safe_offset)
+        requested = max(1, length)
+        safe_length = min(requested, allowed, max_read_chars_per_call)
+        text_content = full_text[safe_offset:safe_offset + safe_length] if safe_length > 0 else ""
+        return {
+            "content": _clip_text(text_content, max_tool_payload_chars),
+            "offset": safe_offset,
+            "length": safe_length,
+            "requested_length": requested,
+            "truncated": bool(allowed > safe_length or requested > safe_length),
+        }
 
-    for round_num in range(max_rounds):
+    def handle_find(args: Dict[str, Any]) -> Dict[str, Any]:
+        keyword = str(args.get("keyword") or "")
+        chapter_text = full_text[chapter_start:chapter_start + chapter_len]
+        positions = []
+        start = 0
+        while True:
+            pos = chapter_text.find(keyword, start)
+            if pos == -1:
+                break
+            positions.append(chapter_start + pos)
+            start = pos + 1
+            if len(positions) >= 20:
+                break
+        return {"keyword": keyword, "positions": positions, "count": len(positions)}
+
+    def handle_write(args: Dict[str, Any]) -> Dict[str, Any]:
+        nonlocal result_annotations_text
+        if log_event:
+            log_event(
+                "annotation_write_call",
+                "批注写入调用",
+                payload={"annotations_count": len(args.get("annotations") or [])},
+            )
+        annotations = _sanitize_write_annotations(
+            raw_annotations=args.get("annotations", []),
+            full_text=full_text,
+            chapter_start=chapter_start,
+            chapter_len=chapter_len,
+        )
+        result_annotations_text = _format_annotations_xml(annotations, chapter_name)
+        return {"status": "ok", "count": len(annotations)}
+
+    task.register("read", handle_read)
+    task.register("find", handle_find)
+    task.register("write", handle_write)
+
+    # 执行工具循环
+    for round_num in range(10):  # max_rounds
         if log_event:
             log_event(
                 "annotation_round_start",
                 "批注轮次开始",
                 payload={
                     "round": round_num + 1,
-                    "message_count": len(messages),
+                    "message_count": ctx.count(),
                     "chapter_name": chapter_name,
                     "chapter_range": chapter_range,
                 },
             )
+
+        # 准备上下文（自动截断）
+        ctx.prepare()
+
+        # 调用模型
         response = None
         last_error = None
-        for retry in range(max_retries):
+        for retry in range(3):  # max_retries
             try:
                 response = _invoke_runner_completion(
                     runner=runner,
-                    messages=messages,
-                    tools=tools,
+                    messages=ctx.build(),
+                    tools=task.get_definitions(),
                     temperature=temperature,
                     max_output_tokens=max_output_tokens,
                     request_timeout=request_timeout,
@@ -599,22 +652,20 @@ def run_annotation_with_tools(
                     think=think,
                     on_delta=on_delta,
                 )
-                break  # 成功则跳出重试循环
+                break
             except Exception as e:
                 last_error = e
                 error_str = str(e).lower()
-                # 只对连接错误进行重试
                 if any(keyword in error_str for keyword in ["connection", "timeout", "rate limit", "429", "503"]):
-                    if retry < max_retries - 1:
+                    if retry < 2:  # max_retries - 1
                         if log_event:
                             log_event(
                                 "annotation_retry",
                                 "批注生成重试",
                                 payload={"round": round_num + 1, "retry": retry + 1, "error": str(e)},
                             )
-                        time.sleep(2 * (retry + 1))  # 指数退避
+                        time.sleep(2 * (retry + 1))
                         continue
-                # 其他错误或重试次数用尽，直接抛出
                 if log_event:
                     log_event(
                         "annotation_round_error",
@@ -622,14 +673,15 @@ def run_annotation_with_tools(
                         payload={"round": round_num + 1, "retry": retry + 1, "error": str(e)},
                     )
                 raise
-        
+
         if response is None:
-            # 所有重试都失败了
             raise last_error if last_error else Exception("annotation completion failed after retries")
 
-        # Process response
+        # 处理响应
         message = _extract_choice_message(response)
         tool_calls = message.get("tool_calls") or []
+        assistant_content = str(message.get("content") or "")
+
         if log_event:
             log_event(
                 "annotation_round_response",
@@ -637,109 +689,72 @@ def run_annotation_with_tools(
                 payload={
                     "round": round_num + 1,
                     "tool_calls": len(tool_calls) if isinstance(tool_calls, list) else 0,
-                    "assistant_content_chars": len(str(message.get("content") or "")),
+                    "assistant_content_chars": len(assistant_content),
                 },
             )
-        if isinstance(tool_calls, list):
-            if tool_calls:
-                tool_call_count += len(tool_calls)
-                messages.append({
-                    "role": "assistant",
-                    "content": str(message.get("content") or ""),
-                    "tool_calls": [
-                        {
-                            "id": str(tc.get("id") or ""),
-                            "type": "function",
-                            "function": {
-                                "name": str(_as_dict(tc.get("function")).get("name") or ""),
-                                "arguments": str(_as_dict(tc.get("function")).get("arguments") or ""),
-                            },
-                        }
-                        for tc in tool_calls
-                    ],
-                })
 
-                for tc in tool_calls:
-                    tc_function = _as_dict(tc.get("function"))
-                    func_name = str(tc_function.get("name") or "")
+        if isinstance(tool_calls, list) and tool_calls:
+            # 有工具调用
+            ctx.add(
+                role="assistant",
+                content=assistant_content,
+                tool_calls=[
+                    {
+                        "id": str(tc.get("id") or ""),
+                        "type": "function",
+                        "function": {
+                            "name": str(_as_dict(tc.get("function")).get("name") or ""),
+                            "arguments": str(_as_dict(tc.get("function")).get("arguments") or ""),
+                        },
+                    }
+                    for tc in tool_calls
+                ],
+            )
+
+            # 执行工具
+            for tc in tool_calls:
+                tc_function = _as_dict(tc.get("function"))
+                func_name = str(tc_function.get("name") or "")
+                try:
+                    func_args = json.loads(str(tc_function.get("arguments") or ""))
+                except json.JSONDecodeError:
+                    func_args = {}
+
+                if task.has_handler(func_name):
                     try:
-                        func_args = json.loads(str(tc_function.get("arguments") or ""))
-                    except json.JSONDecodeError:
-                        func_args = {}
-
-                    if func_name == "read":
-                        offset = int(func_args.get("offset") or 0)
-                        length = int(func_args.get("length") or 1000)
-                        # Clamp to chapter bounds + hard cap per-call to prevent context blow-up.
-                        safe_offset = max(chapter_start, min(offset, chapter_end))
-                        allowed = max(0, chapter_end - safe_offset)
-                        requested = max(1, length)
-                        safe_length = min(requested, allowed, max_read_chars_per_call)
-                        text_content = full_text[safe_offset:safe_offset + safe_length] if safe_length > 0 else ""
-                        tool_result = {
-                            "content": _clip_text(text_content, max_tool_payload_chars),
-                            "offset": safe_offset,
-                            "length": safe_length,
-                            "requested_length": requested,
-                            "truncated": bool(allowed > safe_length or requested > safe_length),
-                        }
-                    elif func_name == "find":
-                        keyword = str(func_args.get("keyword") or "")
-                        chapter_text = full_text[chapter_start:chapter_start + chapter_len]
-                        positions = []
-                        start = 0
-                        while True:
-                            pos = chapter_text.find(keyword, start)
-                            if pos == -1:
-                                break
-                            positions.append(chapter_start + pos)
-                            start = pos + 1
-                            if len(positions) >= 20:
-                                break
-                        tool_result = {"keyword": keyword, "positions": positions, "count": len(positions)}
-                    elif func_name == "write":
-                        if log_event:
-                            log_event(
-                                "annotation_write_call",
-                                "批注写入调用",
-                                payload={
-                                    "round": round_num + 1,
-                                    "annotations_count": len(func_args.get("annotations") or []),
-                                },
-                            )
-                        annotations = _sanitize_write_annotations(
-                            raw_annotations=func_args.get("annotations", []),
-                            full_text=full_text,
-                            chapter_start=chapter_start,
-                            chapter_len=chapter_len,
+                        result = task.execute(func_name, func_args)
+                        ctx.add(
+                            role="tool",
+                            content=json.dumps(result, ensure_ascii=False),
+                            tool_call_id=str(tc.get("id") or ""),
                         )
-                        result_annotations_text = _format_annotations_xml(annotations, chapter_name)
-                        tool_result = {"status": "ok", "count": len(annotations)}
-                    else:
-                        tool_result = {"error": f"Unknown tool: {func_name}"}
+                    except Exception as e:
+                        ctx.add(
+                            role="tool",
+                            content=json.dumps({"error": str(e)}, ensure_ascii=False),
+                            tool_call_id=str(tc.get("id") or ""),
+                        )
+                else:
+                    ctx.add(
+                        role="tool",
+                        content=json.dumps({"error": f"Unknown tool: {func_name}"}, ensure_ascii=False),
+                        tool_call_id=str(tc.get("id") or ""),
+                    )
 
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": str(tc.get("id") or ""),
-                        "content": json.dumps(tool_result, ensure_ascii=False),
-                    })
-
-                # If write was called, we're done
-                if result_annotations_text:
-                    break
-            else:
-                # No tool calls, check if there's content
-                content = str(message.get("content") or "")
-                if content and on_delta:
-                    on_delta(content)
+            # 如果 write 被调用，结束循环
+            if result_annotations_text:
                 break
         else:
+            # 没有工具调用，检查内容
+            if assistant_content and on_delta:
+                on_delta(assistant_content)
             break
 
     return {
         "annotations_text": result_annotations_text,
-        "tool_call_count": tool_call_count,
+        "tool_call_count": task.get_history().__len__(),
         "rounds": round_num + 1,
+        "context_stats": ctx.stats(),
     }
 
 
@@ -779,6 +794,8 @@ def run_annotation_generation_once(
     log_event: Callable[..., None],
     append_log_text: Callable[[str], None],
     push_book_progress_step: Callable[[str, str, Mapping[str, Any]], None],
+    policy: ContextPolicy = ContextPolicy.LLM_COMPRESS,
+    llm_compress_func: Optional[Callable[[str], str]] = None,
 ) -> Dict[str, Any]:
     resolved_cfg = dict(cfg or {})
     lecture_key = str(lecture_id or "").strip()
@@ -911,6 +928,8 @@ def run_annotation_generation_once(
                 on_delta=lambda delta: append_log_text(str(delta or "")),
                 log_event=log_event,
                 push_book_progress_step=push_book_progress_step,
+                policy=policy,
+                llm_compress_func=llm_compress_func,
             )
 
             model_annotations = _parse_model_annotations(

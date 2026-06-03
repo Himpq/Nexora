@@ -8,6 +8,12 @@ import time
 import uuid
 from typing import Any, Callable, Dict, List, Mapping, Tuple
 
+from .compress import build_llm_compress_func
+from .context import Context, ContextPolicy
+
+
+_MAX_SECTION_READ_CHARS_PER_CALL = 8000
+
 
 def _xml_escape(value: Any) -> str:
     text = str(value or "")
@@ -274,13 +280,18 @@ def _exec_read_book_text_tool_in_range(
     safe_start = max(0, min(int(chapter_start or 0), total_len))
     safe_end = max(safe_start, min(safe_start + max(0, int(chapter_length or 0)), total_len))
     offset = int(arguments.get("offset") or safe_start)
-    length = int(arguments.get("length") or 0)
+    requested_length = int(arguments.get("length") or 0)
+    length = requested_length
     if length < 0:
         length = 0
     if offset < safe_start:
         offset = safe_start
     if offset > safe_end:
         offset = safe_end
+    if length == 0:
+        length = min(_MAX_SECTION_READ_CHARS_PER_CALL, max(0, safe_end - offset))
+    if length > _MAX_SECTION_READ_CHARS_PER_CALL:
+        length = _MAX_SECTION_READ_CHARS_PER_CALL
     if offset + length > safe_end:
         length = max(0, safe_end - offset)
     text = str(full_text or "")[offset:offset + length]
@@ -288,6 +299,9 @@ def _exec_read_book_text_tool_in_range(
         "ok": True,
         "offset": offset,
         "length": length,
+        "requested_length": requested_length,
+        "truncated": bool(length < max(0, requested_length)) if requested_length > 0 else bool(length < max(0, safe_end - offset)),
+        "max_chars_per_call": _MAX_SECTION_READ_CHARS_PER_CALL,
         "chapter_range": f"{safe_start}:{safe_end}",
         "text": text,
     }
@@ -363,6 +377,7 @@ def run_split_chapters_with_tools(
     on_delta: Callable[[str], None],
     log_event: Callable[..., None],
     push_book_progress_step: Callable[[str, str, Mapping[str, Any]], None],
+    cfg: Mapping[str, Any],
 ) -> Dict[str, Any]:
     chapter_start, chapter_length = _parse_range(chapter_range)
     prompt_vars = {
@@ -381,6 +396,21 @@ def run_split_chapters_with_tools(
     system_prompt = runner.context_manager.render(prompt_pack["system"], context, prompt_vars)
     user_prompt = runner.context_manager.render(prompt_pack["user"], context, prompt_vars)
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+    llm_compress_func = build_llm_compress_func(runner, cfg)
+    ctx = Context(
+        max_chars=15000,
+        policy=ContextPolicy.LLM_COMPRESS,
+        llm_compress_func=llm_compress_func,
+        trace_meta={
+            "flow": "section_loop",
+            "lecture_id": str(lecture_id or ""),
+            "book_id": str(book_id or ""),
+            "chapter_name": str(chapter_name or ""),
+            "chapter_range": str(chapter_range or ""),
+        },
+    )
+    for msg in messages:
+        ctx.add(str(msg.get("role") or ""), str(msg.get("content") or ""))
     tools = [
         {
             "type": "function",
@@ -431,12 +461,10 @@ def run_split_chapters_with_tools(
             "type": "function",
             "function": {
                 "name": "write",
-                "description": "Submit the full session split of the current chapter. Sessions must cover the whole chapter contiguously and the last session must end at chapter end. session_range format is from:to (absolute file offsets, e.g. '907:1400' means from offset 907 to offset 1400).",
+                "description": "Submit the full session split of the current chapter. Sessions must cover the whole chapter contiguously and the last session must end at chapter end. session_range format is from:to (absolute file offsets, e.g. '907:1400' means from offset 907 to offset 1400). Do not submit chapter_name or chapter_range again; the server will bind this write to the current chapter automatically.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "chapter_name": {"type": "string"},
-                        "chapter_range": {"type": "string"},
                         "sessions": {
                             "type": "array",
                             "items": {
@@ -450,7 +478,7 @@ def run_split_chapters_with_tools(
                             },
                         },
                     },
-                    "required": ["chapter_name", "chapter_range", "sessions"],
+                    "required": ["sessions"],
                 },
             },
         },
@@ -460,7 +488,8 @@ def run_split_chapters_with_tools(
     wrote_once = False
     saved_lengths: List[int] = []
     tempmem: List[str] = []
-    max_turns = 40
+    read_seen: set[tuple[int, int]] = set()
+    max_turns = 100
     write_rejected_count = 0
     log_event(
         "section_turn_loop_start",
@@ -475,6 +504,25 @@ def run_split_chapters_with_tools(
         },
     )
     for turn in range(1, max_turns + 1):
+        executed = ctx.prepare()
+
+        if executed:
+            log_event(
+                "context_operation",
+                "上下文压缩",
+                payload={
+                    "lecture_id": lecture_id,
+                    "book_id": book_id,
+                    "chapter_name": chapter_name,
+                    "chapter_range": chapter_range,
+                    "turn": int(turn),
+                    "policy": ctx.policy.value,
+                    "context_chars": ctx.chars(),
+                    "messages_count": ctx.count(),
+                },
+            )
+
+        messages = ctx.build()
         req_started = time.time()
         log_event(
             "section_turn_request",
@@ -530,7 +578,11 @@ def run_split_chapters_with_tools(
         msg = choices[0].get("message") if isinstance(choices[0], dict) else {}
         assistant_content = str((msg or {}).get("content") or "")
         tool_calls = msg.get("tool_calls") if isinstance(msg, dict) and isinstance(msg.get("tool_calls"), list) else []
-        messages.append({"role": "assistant", "content": assistant_content if assistant_content else None, "tool_calls": tool_calls if tool_calls else None})
+        ctx.add(
+            "assistant",
+            assistant_content if assistant_content else "",
+            tool_calls=tool_calls if tool_calls else None,
+        )
 
         turn_write_reject_error = ""
         if tool_calls:
@@ -547,11 +599,31 @@ def run_split_chapters_with_tools(
                     args = {}
                 tool_result: Dict[str, Any]
                 if tool_name == "read":
+                    requested_offset = int((args if isinstance(args, dict) else {}).get("offset") or chapter_start)
+                    requested_length = int((args if isinstance(args, dict) else {}).get("length") or 0)
+                    if requested_length <= 0:
+                        requested_length = _MAX_SECTION_READ_CHARS_PER_CALL
+                    request_signature = (requested_offset, requested_length)
+                    if request_signature in read_seen:
+                        advanced_offset = min(
+                            chapter_start + chapter_length,
+                            max(chapter_start, requested_offset) + max(1, requested_length),
+                        )
+                        args = dict(args if isinstance(args, dict) else {})
+                        args["offset"] = int(advanced_offset)
+                        args["length"] = int(requested_length)
+
                     tool_result = _exec_read_book_text_tool_in_range(
                         full_text=full_text,
                         chapter_start=chapter_start,
                         chapter_length=chapter_length,
                         arguments=args if isinstance(args, dict) else {},
+                    )
+                    read_seen.add(
+                        (
+                            int(tool_result.get("offset") or 0),
+                            int(tool_result.get("length") or 0),
+                        )
                     )
                     push_book_progress_step(
                         lecture_id,
@@ -593,37 +665,36 @@ def run_split_chapters_with_tools(
                         },
                     )
                 elif tool_name == "write":
-                    out_chapter_name = str((args or {}).get("chapter_name") or chapter_name).strip() or chapter_name
-                    out_chapter_range = str((args or {}).get("chapter_range") or chapter_range).strip() or chapter_range
                     raw_sessions = _normalize_sessions((args or {}).get("sessions"))
                     ok, error_text, normalized_sessions = _validate_sessions(
                         raw_sessions,
-                        chapter_name=out_chapter_name,
-                        chapter_range=out_chapter_range,
+                        chapter_name=chapter_name,
+                        chapter_range=chapter_range,
                     )
+
                     if ok:
                         saved_lengths = [int(item.get("length") or 0) for item in normalized_sessions if int(item.get("length") or 0) > 0]
-                        saved_text = _build_chapter_sessions_block(out_chapter_name, out_chapter_range, normalized_sessions)
+                        saved_text = _build_chapter_sessions_block(chapter_name, chapter_range, normalized_sessions)
                         wrote_once = True
                         write_rejected_count = 0
                         tool_result = {
                             "ok": True,
                             "session_count": len(normalized_sessions),
-                            "chapter_range": out_chapter_range,
+                            "chapter_range": chapter_range,
                         }
                         push_book_progress_step(
                             lecture_id,
                             book_id,
                             {
                                 "type": "write",
-                                "title": f"写入 Session 划分 {out_chapter_range}",
+                                "title": f"写入 Session 划分 {chapter_range}",
                                 "preview": f"{len(normalized_sessions)} 个 Session",
                             },
                         )
                     else:
                         write_rejected_count += 1
                         turn_write_reject_error = error_text
-                        tool_result = {"ok": False, "error": error_text, "chapter_range": out_chapter_range, "hint": f"第一个 session 必须从 {chapter_start} 开始，session_range 格式为 from:to（绝对偏移）"}
+                        tool_result = {"ok": False, "error": error_text, "chapter_range": chapter_range, "hint": f"第一个 session 必须从 {chapter_start} 开始，session_range 格式为 from:to（绝对偏移）"}
                         push_book_progress_step(
                             lecture_id,
                             book_id,
@@ -635,7 +706,11 @@ def run_split_chapters_with_tools(
                         )
                 else:
                     tool_result = {"ok": False, "error": f"unsupported tool: {tool_name}"}
-                messages.append({"role": "tool", "tool_call_id": call_id, "content": __import__("json").dumps(tool_result, ensure_ascii=False)})
+                ctx.add(
+                    "tool",
+                    __import__("json").dumps(tool_result, ensure_ascii=False),
+                    tool_call_id=call_id,
+                )
                 log_event(
                     "section_tool_result",
                     "分节工具结果",
@@ -655,18 +730,14 @@ def run_split_chapters_with_tools(
             break
 
         if turn_write_reject_error:
-            messages.append(
-                {
-                    "role": "user",
-                    "content": f"write 被拒绝: {turn_write_reject_error}\n请根据错误信息修正后立即重新调用 write(sessions=[...])，不要再调用 read/find。session_range 格式为 from:to（绝对偏移），如 '{chapter_start}:{chapter_start + chapter_length}'。",
-                }
+            ctx.add(
+                "user",
+                f"write 被拒绝: {turn_write_reject_error}\n请根据错误信息修正后立即重新调用 write(sessions=[...])，不要再调用 read/find。session_range 格式为 from:to（绝对偏移），如 '{chapter_start}:{chapter_start + chapter_length}'。",
             )
         else:
-            messages.append(
-                {
-                    "role": "user",
-                    "content": f"你还没有完成当前章节的 Session 提交。chapter 为 {chapter_start}:{chapter_start + chapter_length}。请调用 write(sessions=[...])，session_range 使用 from:to 格式（绝对偏移），第一个 session 必须从 {chapter_start} 开始。",
-                }
+            ctx.add(
+                "user",
+                f"你还没有完成当前章节的 Session 提交。chapter 为 {chapter_start}:{chapter_start + chapter_length}。请调用 write(sessions=[...])，session_range 使用 from:to 格式（绝对偏移），第一个 session 必须从 {chapter_start} 开始。",
             )
 
     if not str(saved_text or "").strip():
@@ -816,6 +887,7 @@ def run_section_generation_once(
             on_delta=lambda delta: append_log_text(str(delta or "")),
             log_event=log_event,
             push_book_progress_step=push_book_progress_step,
+            cfg=resolved_cfg,
         )
 
         chapter_xml = str(result.get("sections_xml") or "").strip()

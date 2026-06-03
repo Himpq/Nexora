@@ -28,6 +28,8 @@ from core.lectures import (
     get_book_image_path,
     load_book_text,
     load_book_images_meta,
+    list_book_cover_assets,
+    list_lecture_cover_assets,
     load_book_info_xml,
     load_book_detail_xml,
     load_book_sections_xml,
@@ -1508,17 +1510,25 @@ def frontend_settings_refinement():
                 "intensive_status": str(book.get("intensive_status") or ""),
                 "question_status": str(book.get("question_status") or ""),
                 "section_status": str(book.get("section_status") or ""),
+                "summary_status": str(book.get("summary_status") or ""),
+                "annotation_status": str(book.get("annotation_status") or ""),
                 "coarse_model": str(book.get("coarse_model") or ""),
                 "intensive_model": str(book.get("intensive_model") or ""),
                 "question_model": str(book.get("question_model") or ""),
                 "section_model": str(book.get("section_model") or ""),
+                "summary_model": str(book.get("summary_model") or ""),
+                "annotation_model": str(book.get("annotation_model") or ""),
                 "coarse_error": str(book.get("coarse_error") or ""),
                 "intensive_error": str(book.get("intensive_error") or ""),
                 "question_error": str(book.get("question_error") or ""),
                 "section_error": str(book.get("section_error") or ""),
+                "summary_error": str(book.get("summary_error") or ""),
+                "annotation_error": str(book.get("annotation_error") or ""),
                 "refinement_error": str(book.get("refinement_error") or ""),
                 "job_status": running_by_book.get(key, ""),
                 "section_job_status": running_by_book.get(f"{key}::section", ""),
+                "summary_job_status": running_by_book.get(f"{key}::summary", ""),
+                "annotation_job_status": running_by_book.get(f"{key}::annotation", ""),
                 "progress_text": get_book_progress_text(lecture_id, book_id),
                 "progress_steps": get_book_progress_steps(lecture_id, book_id),
                 "updated_at": int(book.get("updated_at") or 0),
@@ -2428,6 +2438,7 @@ def create_lecture():
         category=str(data.get("category") or "").strip(),
         status=str(data.get("status") or "draft").strip() or "draft",
         teacher=data.get("teacher"),
+        cover_path=str(data.get("cover_path") or "").strip(),
     )
     return jsonify({"success": True, "lecture": lecture}), 201
 
@@ -2454,7 +2465,7 @@ def update_lecture(lecture_id: str):
         return error_response
 
     data = request.get_json(silent=True) or {}
-    allowed_fields = {"title", "description", "category", "status", "teacher"}
+    allowed_fields = {"title", "description", "category", "status", "teacher", "cover_path"}
     updates = {key: value for key, value in data.items() if key in allowed_fields}
     if not updates:
         return jsonify({"success": False, "error": "No valid lecture fields provided."}), 400
@@ -2587,7 +2598,29 @@ def get_book_image(lecture_id: str, book_id: str, image_id: str):
     image_path = get_book_image_path(_cfg, lecture_id, book_id, image_id)
     if image_path is None or not image_path.exists():
         return jsonify({"success": False, "error": "image not found."}), 404
-    return send_file(str(image_path))
+    response = send_file(str(image_path))
+    response.headers["Cache-Control"] = "public, max-age=86400"
+    return response
+
+
+@bp.route("/lectures/<lecture_id>/cover-assets", methods=["GET"])
+def get_lecture_cover_assets(lecture_id: str):
+    _, error_response = _lecture_or_404(lecture_id)
+    if error_response is not None:
+        return error_response
+
+    items = list_lecture_cover_assets(_cfg, lecture_id)
+    return jsonify({"success": True, "items": items, "total": len(items)})
+
+
+@bp.route("/lectures/<lecture_id>/books/<book_id>/cover-assets", methods=["GET"])
+def get_book_cover_assets(lecture_id: str, book_id: str):
+    _, _, error_response = _book_or_404(lecture_id, book_id)
+    if error_response is not None:
+        return error_response
+
+    items = list_book_cover_assets(_cfg, lecture_id, book_id)
+    return jsonify({"success": True, "items": items, "total": len(items)})
 
 
 @bp.route("/books/refinement/list", methods=["GET"])
