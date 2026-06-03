@@ -46,6 +46,7 @@
     padding: 9px 10px;
     flex-shrink: 0;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 2px;
     background: #fafafa;

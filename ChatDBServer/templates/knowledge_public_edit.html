@@ -223,6 +223,7 @@
                         <button type="button" tabindex="-1" class="side-by-side active" data-action="split" title="分屏 (F9)"><i class="fa fa-columns"></i></button>
                         <button type="button" tabindex="-1" class="fullscreen" data-action="fullscreen" title="全屏 (F11)"><i class="fa fa-arrows-alt"></i></button>
                     </div>
+                    <input type="file" id="imageFileInput" accept="image/*" style="display:none;">
                     
                     <div id="editor" style="flex: 1 1 auto; overflow: hidden; min-height: 0; display: flex; flex-direction: column;"></div>
                 </div>
@@ -308,6 +309,7 @@
         let saveTimer = null;
         let savingNow = false;
         let lastValue = '';
+        let lastSyncedValue = ''; // 上次从服务端拉取的原始内容，用于三方合并
         let currentMode = 'split'; // 'edit', 'preview', 'split'
 
         async function uploadImageForEditor(file, onSuccess, onError) {
@@ -334,6 +336,96 @@
             }
         }
 
+        // ── 行级三方合并 ──
+        // base: 上次同步的服务端内容, local: 当前编辑器内容, remote: 新拉取的服务端内容
+        function mergeContent(base, local, remote) {
+            if (!remote) return local;
+            if (!base || base === remote) return remote;
+            if (local === remote) return remote;
+            if (local === base) return remote;
+
+            const baseLines = base.split('\n');
+            const localLines = local.split('\n');
+            const remoteLines = remote.split('\n');
+
+            // 简单场景：行数相同，逐行比对合并
+            const maxLen = Math.max(baseLines.length, localLines.length, remoteLines.length);
+            const merged = [];
+            let hasConflict = false;
+
+            for (let i = 0; i < maxLen; i++) {
+                const b = i < baseLines.length ? baseLines[i] : undefined;
+                const l = i < localLines.length ? localLines[i] : undefined;
+                const r = i < remoteLines.length ? remoteLines[i] : undefined;
+
+                const localChanged = (l !== b);
+                const remoteChanged = (r !== b);
+
+                if (!localChanged && !remoteChanged) {
+                    // 都没改：取 base（或 remote，相同）
+                    merged.push(b !== undefined ? r : '');
+                } else if (remoteChanged && !localChanged) {
+                    // 只有远端改了：取远端
+                    merged.push(r !== undefined ? r : '');
+                } else if (localChanged && !remoteChanged) {
+                    // 只有本地改了：取本地
+                    merged.push(l !== undefined ? l : '');
+                } else {
+                    // 都改了：本地优先
+                    hasConflict = true;
+                    merged.push(l !== undefined ? l : '');
+                }
+            }
+
+            return merged.join('\n');
+        }
+
+        // ── 光标位置辅助 ──
+        function getEditorCursorOffset() {
+            try {
+                if (!toastEditor) return null;
+                // ToastUI v3 markdown editor: try getSelection
+                const sel = toastEditor.getSelection && toastEditor.getSelection();
+                if (sel && typeof sel[0] === 'number') return sel[0];
+                // Fallback: 通过底层 ProseMirror
+                const view = toastEditor.mdEditor && toastEditor.mdEditor.view;
+                if (view && view.state) {
+                    return view.state.selection.from;
+                }
+            } catch (_) {}
+            return null;
+        }
+
+        function setEditorCursorOffset(offset) {
+            try {
+                if (!toastEditor || offset == null) return;
+                if (typeof toastEditor.setSelection === 'function') {
+                    toastEditor.setSelection(offset, offset);
+                    return;
+                }
+                const view = toastEditor.mdEditor && toastEditor.mdEditor.view;
+                if (view && view.dispatch) {
+                    const pos = Math.min(offset, view.state.doc.content.size);
+                    view.dispatch(view.state.tr.setSelection(
+                        view.state.selection.constructor.near(view.state.doc.resolve(pos))
+                    ));
+                    view.focus();
+                }
+            } catch (_) {}
+        }
+
+        // 计算 oldOffset 在 oldText 中的位置，映射到 newText 中的对应位置
+        function mapOffsetAfterMerge(oldText, newText, oldOffset) {
+            if (oldOffset == null || oldOffset <= 0) return 0;
+            if (oldOffset >= oldText.length) return newText.length;
+            // 取偏移前后的上下文片段做定位
+            const before = oldText.slice(Math.max(0, oldOffset - 40), oldOffset);
+            const idx = newText.indexOf(before);
+            if (idx >= 0) return idx + before.length;
+            // fallback: 按比例缩放
+            return Math.min(Math.round(newText.length * oldOffset / oldText.length), newText.length);
+        }
+
         async function saveData(force = false) {
             if (!toastEditor || savingNow) return;
             const val = toastEditor.getMarkdown();
@@ -349,6 +441,7 @@
                 const data = await res.json().catch(() => ({}));
                 if (res.ok && data && data.success) {
                     lastValue = val;
+                    lastSyncedValue = val;
                     setSaveStatus('ok', '已同步');
                 } else {
                     setSaveStatus('error', `同步失败: ${String((data && data.message) || '未知错误')}`);
@@ -413,11 +506,15 @@
                         const action = btn.getAttribute('data-action');
                         
                         if (cmd) {
+                            if (cmd === 'image') {
+                                document.getElementById('imageFileInput').click();
+                                return;
+                            }
                             const mapping = {
                                 'bold': 'bold', 'italic': 'italic', 'strike': 'strike',
                                 'heading': 'heading', 'quote': 'blockQuote',
                                 'ul': 'bulletList', 'ol': 'orderedList',
-                                'link': 'addLink', 'image': 'addImage', 'table': 'addTable'
+                                'link': 'addLink', 'table': 'addTable'
                             };
                             if (mapping[cmd]) {
                                 toastEditor.exec(mapping[cmd]);
@@ -460,6 +557,29 @@
                     });
                 }
 
+                // 图片文件选择器
+                const imageInput = document.getElementById('imageFileInput');
+                if (imageInput) {
+                    imageInput.addEventListener('change', async () => {
+                        const file = imageInput.files && imageInput.files[0];
+                        imageInput.value = '';
+                        if (!file || !toastEditor) return;
+                        await uploadImageForEditor(file,
+                            (url) => {
+                                const alt = file.name || 'image';
+                                const imgMd = `![${alt}](${url})`;
+                                if (typeof toastEditor.insertText === 'function') {
+                                    toastEditor.insertText(imgMd);
+                                } else {
+                                    const md = toastEditor.getMarkdown();
+                                    toastEditor.setMarkdown(md + '\n' + imgMd);
+                                }
+                            },
+                            (err) => { /* error already shown in status */ }
+                        );
+                    });
+                }
+
                 // 覆盖默认的 Markdown 渲染以确保安全和统一
                 if (window.NexoraSecureRender) {
                     toastEditor.setMarkdown = (function(original) {
@@ -473,6 +593,7 @@
                 return;
             }
             lastValue = toastEditor.getMarkdown();
+            lastSyncedValue = lastValue;
             toastEditor.on('change', () => {
                 if (saveTimer) clearTimeout(saveTimer);
                 saveTimer = setTimeout(() => saveData(false), 1500);
@@ -490,23 +611,36 @@
 
         setInterval(async () => {
             if (!toastEditor || savingNow) return;
-            // 粗略判断光标专注，若正在输入则跳过远程拉取，避免中断
-            try {
-                if (toastEditor.mdEditor && toastEditor.mdEditor.el && toastEditor.mdEditor.el.contains(document.activeElement)) return;
-            } catch (_) {}
-            
+
             try {
                 const res = await fetch(`/api/public/knowledge/${encodeURIComponent(OWNER_USERNAME)}/${encodeURIComponent(SHARE_ID)}`);
                 const data = await res.json().catch(() => ({}));
                 if (!res.ok || !data || !data.success) return;
                 const remote = String(data.content || '');
-                if (remote !== toastEditor.getMarkdown()) {
-                    toastEditor.setMarkdown(remote);
+                if (remote === lastSyncedValue) return; // 远端无变化
+
+                const local = toastEditor.getMarkdown();
+                if (remote === local) {
+                    // 内容一致，仅更新基准
+                    lastSyncedValue = remote;
                     lastValue = remote;
-                    setSaveStatus('ok', '已同步（远端更新）');
+                    return;
                 }
+
+                // 三方合并：保留本地编辑 + 远端变更
+                const cursorOffset = getEditorCursorOffset();
+                const merged = mergeContent(lastSyncedValue, local, remote);
+                lastSyncedValue = remote;
+                lastValue = merged;
+                toastEditor.setMarkdown(merged);
+
+                // 恢复光标位置
+                const newOffset = mapOffsetAfterMerge(local, merged, cursorOffset);
+                setEditorCursorOffset(newOffset);
+
+                setSaveStatus('ok', '已同步（远端更新）');
             } catch (_) {}
-        }, 5000);
+        }, 2500);
 
         initEditor();
     </script>
