@@ -209,6 +209,8 @@ def apply_auth_response_cache_policy(resp: Response):
 
 
 DEFAULT_MAIN_CONFIG = {
+    "port": 5000,
+    "debug": False,
     "public_base_url": "",
     "default_model": "doubao-seed-1-6-250615",
     "conclusion_model": "doubao-seed-1-6-flash-250828",
@@ -216,6 +218,10 @@ DEFAULT_MAIN_CONFIG = {
     "websearch_model": "doubao-seed-1-6-flash-250828",
     "continuous_summary": False,
     "log_status": "silent",
+    "recent_dialogue_memory_count": 3,
+    "recent_dialogue_item_max_chars": 12000,
+    "user_knowledge_prompt_max_items": 24,
+    "user_knowledge_prompt_max_chars": 6000,
     "api": {
         "public_api_key": "",
         "public_api_enabled": False,
@@ -256,6 +262,14 @@ DEFAULT_MAIN_CONFIG = {
         "cache_detail_ttl": 3600,
         "cache_max_entries": 800,
         "default_group": "default"
+    },
+    "nexora_search": {
+        "host": "127.0.0.1",
+        "port": 45678,
+        "api_key": "",
+        "nexora_search_enabled": False,
+        "service_url": "http://127.0.0.1:45678",
+        "timeout": 15
     },
     "temp_context_cache": {
         "enabled": True,
@@ -1034,6 +1048,7 @@ def ensure_main_config_defaults():
 
 
 def save_main_config(cfg):
+    global _config_cache
     if not isinstance(cfg, dict):
         cfg = {}
     payload = json.loads(json.dumps(cfg, ensure_ascii=False))
@@ -1041,6 +1056,7 @@ def save_main_config(cfg):
     os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
     with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
         json.dump(payload, f, indent=4, ensure_ascii=False)
+    _config_cache = None
     return payload
 
 
@@ -1521,8 +1537,21 @@ def build_user_avatar_url(user_id, user_data):
             pass
     return avatar_path
 
+_config_cache = None
+_config_cache_mtime = (0.0, 0.0)  # (config.json mtime, models.json mtime)
+
+
 def get_config_all():
-    """获取配置"""
+    """获取配置（带 mtime 缓存，文件未变时直接返回内存副本）"""
+    global _config_cache, _config_cache_mtime
+    try:
+        cfg_mtime = os.path.getmtime(CONFIG_PATH) if os.path.exists(CONFIG_PATH) else 0.0
+        mdl_mtime = os.path.getmtime(MODELS_PATH) if os.path.exists(MODELS_PATH) else 0.0
+        if _config_cache is not None and (cfg_mtime, mdl_mtime) == _config_cache_mtime:
+            return dict(_config_cache)  # 返回浅拷贝，防止调用方修改缓存
+    except OSError:
+        pass
+
     try:
         config = ensure_main_config_defaults()
     except Exception as e:
@@ -1537,7 +1566,16 @@ def get_config_all():
                 config["providers"] = models_cfg.get("providers", {})
         except Exception as e:
             print(f"Error loading models config: {e}")
-    return config
+
+    try:
+        cfg_mtime = os.path.getmtime(CONFIG_PATH) if os.path.exists(CONFIG_PATH) else 0.0
+        mdl_mtime = os.path.getmtime(MODELS_PATH) if os.path.exists(MODELS_PATH) else 0.0
+        _config_cache = config
+        _config_cache_mtime = (cfg_mtime, mdl_mtime)
+    except OSError:
+        _config_cache = config
+
+    return dict(config)
 
 
 def get_public_base_url() -> str:
@@ -2734,12 +2772,14 @@ def load_models_config():
 
 def save_models_config(models_cfg):
     """保存 models.json"""
+    global _config_cache
     payload = {
         "models": models_cfg.get("models", {}),
         "providers": models_cfg.get("providers", {})
     }
     with open(MODELS_PATH, 'w', encoding='utf-8') as f:
         json.dump(payload, f, indent=4, ensure_ascii=False)
+    _config_cache = None
 
 
 def _normalize_model_status_text(raw_status: Any) -> str:
@@ -4331,6 +4371,36 @@ def logout():
     return resp
 
 
+# Global session validation: if a session claims a username, verify it actually
+# exists in the user database.  This prevents forged session cookies from
+# granting access to non-existent users (which would auto-create directories,
+# databases, etc. via User(username) constructors).
+_PUBLIC_PATHS = {'/login', '/logout', '/static', '/api/health'}
+
+
+@app.before_request
+def _validate_session_user():
+    username = str(session.get('username') or '').strip()
+    if not username:
+        return  # no session → let downstream handle it (401 or redirect)
+    # Skip validation for public / static paths
+    req_path = request.path or '/'
+    if any(req_path == p or req_path.startswith(p + '/') for p in _PUBLIC_PATHS):
+        return
+    try:
+        users = load_users()
+        if username not in users:
+            session.clear()
+            if req_path.startswith('/api/'):
+                return jsonify({'success': False, 'message': '用户不存在，请重新登录'}), 401
+            return redirect(url_for('login'))
+    except Exception:
+        session.clear()
+        if req_path.startswith('/api/'):
+            return jsonify({'success': False, 'message': '认证验证失败，请重新登录'}), 401
+        return redirect(url_for('login'))
+
+
 def require_login(f):
     """登录装饰器"""
     from functools import wraps
@@ -4338,6 +4408,16 @@ def require_login(f):
     def decorated_function(*args, **kwargs):
         if 'username' not in session:
             return jsonify({'success': False, 'message': '请先登录'}), 401
+        # Verify the user actually exists in the database — prevents
+        # forged session cookies from granting access to non-existent users.
+        try:
+            users = load_users()
+            if session.get('username') not in users:
+                session.clear()
+                return jsonify({'success': False, 'message': '用户不存在，请重新登录'}), 401
+        except Exception:
+            session.clear()
+            return jsonify({'success': False, 'message': '认证验证失败，请重新登录'}), 401
         return f(*args, **kwargs)
     return decorated_function
 
@@ -4349,6 +4429,14 @@ def require_admin(f):
     def decorated_function(*args, **kwargs):
         if 'username' not in session:
             return jsonify({'success': False, 'message': '请先登录'}), 401
+        try:
+            users = load_users()
+            if session.get('username') not in users:
+                session.clear()
+                return jsonify({'success': False, 'message': '用户不存在，请重新登录'}), 401
+        except Exception:
+            session.clear()
+            return jsonify({'success': False, 'message': '认证验证失败，请重新登录'}), 401
         if session.get('role') != 'admin':
             return jsonify({'success': False, 'message': '权限不足，仅管理员可访问'}), 403
         return f(*args, **kwargs)
@@ -6949,6 +7037,14 @@ def admin_chroma_stats():
 def chat():
     """聊天页面"""
     if 'username' not in session:
+        return redirect(url_for('login'))
+    try:
+        users = load_users()
+        if session.get('username') not in users:
+            session.clear()
+            return redirect(url_for('login'))
+    except Exception:
+        session.clear()
         return redirect(url_for('login'))
     cfg = get_config_all()
     mail_cfg = cfg.get('nexora_mail', {}) if isinstance(cfg, dict) else {}
@@ -11838,8 +11934,13 @@ if __name__ == '__main__':
     os.makedirs('./static/css', exist_ok=True)
     os.makedirs('./static/js', exist_ok=True)
     
-    print("🚀 ChatDB Web Server Starting...")
-    print("📍 访问地址: http://localhost:5000")
-    print("💡 使用 Ctrl+C 停止服务器")
+    # 从配置文件读取端口
+    config = ensure_main_config_defaults()
+    port = int(config.get('port', 5000) or 5000)
+    debug = bool(config.get('debug', False))
     
-    app.run(debug=False, host='0.0.0.0', port=5000, threaded=True)
+    print(f"🚀 ChatDB Web Server Starting...")
+    print(f"📍 访问地址: http://localhost:{port}")
+    print(f"💡 使用 Ctrl+C 停止服务器")
+    
+    app.run(debug=debug, host='0.0.0.0', port=port, threaded=True)

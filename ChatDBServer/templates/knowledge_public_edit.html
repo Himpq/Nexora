@@ -381,49 +381,56 @@
         }
 
         // ── 光标位置辅助 ──
-        function getEditorCursorOffset() {
+        function getEditorLineCol() {
             try {
                 if (!toastEditor) return null;
-                // ToastUI v3 markdown editor: try getSelection
-                const sel = toastEditor.getSelection && toastEditor.getSelection();
-                if (sel && typeof sel[0] === 'number') return sel[0];
-                // Fallback: 通过底层 ProseMirror
+                const md = toastEditor.getMarkdown();
+                let offset = null;
+                // 优先 ToastUI getSelection
+                if (typeof toastEditor.getSelection === 'function') {
+                    const sel = toastEditor.getSelection();
+                    if (Array.isArray(sel) && typeof sel[0] === 'number') offset = sel[0];
+                }
+                // fallback: ProseMirror view
+                if (offset == null) {
+                    const view = toastEditor.mdEditor && toastEditor.mdEditor.view;
+                    if (view && view.state) offset = view.state.selection.from;
+                }
+                if (offset == null) return null;
+                const before = md.slice(0, offset);
+                const lines = before.split('\n');
+                return { line: lines.length - 1, col: (lines[lines.length - 1] || '').length };
+            } catch (_) { return null; }
+        }
+
+        function restoreEditorLineCol(lc) {
+            try {
+                if (!toastEditor || !lc) return;
+                const md = toastEditor.getMarkdown();
+                const allLines = md.split('\n');
+                const line = Math.min(Math.max(0, lc.line), allLines.length - 1);
+                let offset = 0;
+                for (let i = 0; i < line; i++) offset += allLines[i].length + 1;
+                offset += Math.min(lc.col, (allLines[line] || '').length);
+
+                // ProseMirror view（ToastUI markdown 模式的底层编辑器）
                 const view = toastEditor.mdEditor && toastEditor.mdEditor.view;
                 if (view && view.state) {
-                    return view.state.selection.from;
+                    const docSize = view.state.doc.content.size;
+                    const pos = Math.min(Math.max(1, offset + 1), docSize);
+                    try {
+                        const $pos = view.state.doc.resolve(pos);
+                        const sel = view.state.selection.constructor.near($pos);
+                        view.dispatch(view.state.tr.setSelection(sel));
+                        view.focus();
+                        return;
+                    } catch (_) {}
                 }
-            } catch (_) {}
-            return null;
-        }
-
-        function setEditorCursorOffset(offset) {
-            try {
-                if (!toastEditor || offset == null) return;
+                // fallback: ToastUI API
                 if (typeof toastEditor.setSelection === 'function') {
                     toastEditor.setSelection(offset, offset);
-                    return;
-                }
-                const view = toastEditor.mdEditor && toastEditor.mdEditor.view;
-                if (view && view.dispatch) {
-                    const pos = Math.min(offset, view.state.doc.content.size);
-                    view.dispatch(view.state.tr.setSelection(
-                        view.state.selection.constructor.near(view.state.doc.resolve(pos))
-                    ));
-                    view.focus();
                 }
             } catch (_) {}
-        }
-
-        // 计算 oldOffset 在 oldText 中的位置，映射到 newText 中的对应位置
-        function mapOffsetAfterMerge(oldText, newText, oldOffset) {
-            if (oldOffset == null || oldOffset <= 0) return 0;
-            if (oldOffset >= oldText.length) return newText.length;
-            // 取偏移前后的上下文片段做定位
-            const before = oldText.slice(Math.max(0, oldOffset - 40), oldOffset);
-            const idx = newText.indexOf(before);
-            if (idx >= 0) return idx + before.length;
-            // fallback: 按比例缩放
-            return Math.min(Math.round(newText.length * oldOffset / oldText.length), newText.length);
         }
 
         async function saveData(force = false) {
@@ -628,15 +635,24 @@
                 }
 
                 // 三方合并：保留本地编辑 + 远端变更
-                const cursorOffset = getEditorCursorOffset();
+                const cursorLC = getEditorLineCol();
                 const merged = mergeContent(lastSyncedValue, local, remote);
                 lastSyncedValue = remote;
                 lastValue = merged;
+
+                // 记录滚动位置，setMarkdown 后恢复
+                const editorEl = document.querySelector('#editor .ProseMirror')
+                    || document.querySelector('#editor .toastui-editor-ww-mode')
+                    || document.querySelector('#editor');
+                const scrollTop = editorEl ? editorEl.scrollTop : 0;
+
                 toastEditor.setMarkdown(merged);
 
-                // 恢复光标位置
-                const newOffset = mapOffsetAfterMerge(local, merged, cursorOffset);
-                setEditorCursorOffset(newOffset);
+                // 恢复光标 + 滚动位置
+                requestAnimationFrame(() => {
+                    if (cursorLC) restoreEditorLineCol(cursorLC);
+                    if (editorEl) editorEl.scrollTop = scrollTop;
+                });
 
                 setSaveStatus('ok', '已同步（远端更新）');
             } catch (_) {}

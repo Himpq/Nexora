@@ -250,14 +250,52 @@ def stats():
 def is_admin():
     return bool(session.get("admin_user"))
 
+def _has_admin_account():
+    """Check if at least one admin account is configured."""
+    admin_cfg = CONFIG.get("admin") or {}
+    # New format: admin.users list
+    users = admin_cfg.get("users")
+    if isinstance(users, list) and len(users) > 0:
+        return True
+    # Legacy format: admin.username + admin.password
+    if admin_cfg.get("username") and admin_cfg.get("password"):
+        return True
+    return False
+
 @app.route("/admin", methods=["GET"])
 def admin_index():
     if not is_admin():
         return redirect(url_for("admin_login"))
     return render_template("admin.html")
 
+@app.route("/admin/setup", methods=["GET", "POST"])
+def admin_setup():
+    """First-run setup: create the initial admin account."""
+    if _has_admin_account():
+        return redirect(url_for("admin_login"))
+    if request.method == "GET":
+        return render_template("admin_setup.html")
+    data = request.get_json() or {}
+    username = str(data.get("username") or "").strip()
+    password = str(data.get("password") or "")
+    if not username or not password:
+        return jsonify({"success": False, "message": "用户名和密码不能为空"}), 400
+    if len(password) < 6:
+        return jsonify({"success": False, "message": "密码长度至少 6 位"}), 400
+    admin_cfg = CONFIG.setdefault("admin", {})
+    admin_cfg["users"] = [{"username": username, "password": password}]
+    # Generate a secret key for sessions if not present
+    if not admin_cfg.get("secret_key"):
+        admin_cfg["secret_key"] = secrets.token_hex(32)
+    app.secret_key = admin_cfg["secret_key"]
+    save_config()
+    session["admin_user"] = username
+    return jsonify({"success": True})
+
 @app.route("/admin/login", methods=["GET", "POST"])
 def admin_login():
+    if not _has_admin_account():
+        return redirect(url_for("admin_setup"))
     if request.method == "GET":
         return render_template("admin_login.html")
     data = request.get_json() or {}

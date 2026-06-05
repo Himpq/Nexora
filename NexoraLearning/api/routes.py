@@ -2851,6 +2851,47 @@ def get_book_info_xml(lecture_id: str, book_id: str):
     return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, "content": content})
 
 
+@bp.route("/lectures/<lecture_id>/books/<book_id>/chapter/<int:chapter_index>", methods=["GET"])
+def get_book_chapter_text(lecture_id: str, book_id: str, chapter_index: int):
+    """按章节获取文本内容，支持按需加载。"""
+    _, book, error_response = _book_or_404(lecture_id, book_id)
+    if error_response is not None:
+        return error_response
+
+    content = load_book_text(_cfg, lecture_id, book_id)
+    if not content:
+        return jsonify({"success": True, "content": "", "chapter_index": chapter_index})
+
+    # 解析章节信息
+    bookinfo_xml = load_book_info_xml(_cfg, lecture_id, book_id)
+    from core.user.learning_progress import parse_book_info_xml_chapters
+    chapters = parse_book_info_xml_chapters(bookinfo_xml, len(content))
+
+    if not chapters or chapter_index < 0 or chapter_index >= len(chapters):
+        # 如果没有章节信息或索引无效，返回全部内容
+        return jsonify({
+            "success": True,
+            "content": content,
+            "chapter_index": chapter_index,
+            "total_chars": len(content),
+        })
+
+    chapter = chapters[chapter_index]
+    start = max(0, min(len(content), chapter.get("start", 0)))
+    end = max(start, min(len(content), chapter.get("end", len(content))))
+    chapter_content = content[start:end].strip()
+
+    return jsonify({
+        "success": True,
+        "content": chapter_content,
+        "chapter_index": chapter_index,
+        "chapter_title": chapter.get("title", ""),
+        "chapter_start": start,
+        "chapter_end": end,
+        "total_chars": len(chapter_content),
+    })
+
+
 @bp.route("/lectures/<lecture_id>/books/<book_id>/bookinfo", methods=["POST"])
 def set_book_info_xml(lecture_id: str, book_id: str):
     _, _, error_response = _book_or_404(lecture_id, book_id)
@@ -2889,6 +2930,39 @@ def get_book_sections_xml(lecture_id: str, book_id: str):
         return error_response
     content = load_book_sections_xml(_cfg, lecture_id, book_id)
     return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, "content": content})
+
+
+@bp.route("/frontend/quiz/generate", methods=["POST"])
+def frontend_quiz_generate():
+    """为指定session生成测验题目。"""
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    chapter_index = int(data.get("chapter_index") or 0)
+    session_index = int(data.get("session_index") or 0)
+    chapter_name = str(data.get("chapter_name") or "").strip()
+    session_name = str(data.get("session_name") or "").strip()
+    session_range = str(data.get("session_range") or "").strip()
+
+    if not lecture_id or not book_id:
+        return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+
+    try:
+        from core.booksproc.question import generate_session_quiz
+        result = generate_session_quiz(
+            _cfg,
+            lecture_id=lecture_id,
+            book_id=book_id,
+            chapter_index=chapter_index,
+            session_index=session_index,
+            chapter_name=chapter_name,
+            session_name=session_name,
+            session_range=session_range,
+        )
+        return jsonify({"success": True, **result}), 200
+    except Exception as exc:
+        log_event("quiz_generate_error", str(exc), payload={"lecture_id": lecture_id, "book_id": book_id})
+        return jsonify({"success": False, "error": str(exc)}), 500
 
 
 @bp.route("/lectures/<lecture_id>/books/<book_id>/annotations", methods=["GET"])

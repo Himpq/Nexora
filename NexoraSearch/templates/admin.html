@@ -1,0 +1,1134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NexoraSearch Admin</title>
+  <style>
+    :root {
+      --bg: #0b0b0b;
+      --panel: #111;
+      --ink: #f5f5f5;
+      --muted: #9ca3af;
+      --line: #1f2937;
+      --accent: #fff;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--ink);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+
+    /* ── Layout ── */
+    .layout { display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; }
+    aside {
+      background: #000; border-right: 1px solid #111;
+      padding: 18px 14px; display: flex; flex-direction: column; gap: 18px;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; padding: 6px 8px; }
+    .brand-mark { width: 28px; height: 28px; color: #fff; flex-shrink: 0; }
+    .brand-title {
+      font-size: 18px; font-weight: 600; letter-spacing: -0.5px;
+      display: flex; align-items: baseline; gap: 4px;
+    }
+    .brand-title .dot { color: #444; }
+    .brand-title .dot::after { content: "."; animation: dots 4.5s infinite; display: inline-block; }
+    @keyframes dots {
+      0%{content:".";opacity:1}10%{content:".";opacity:.3}20%{content:"..";opacity:1}
+      40%{content:"...";opacity:1}60%{content:"...";opacity:.7}80%{content:"..";opacity:1}100%{content:".";opacity:1}
+    }
+    .nav { display: flex; flex-direction: column; gap: 6px; }
+    .nav button {
+      width: 100%; text-align: left; padding: 10px 12px;
+      background: transparent; color: var(--muted);
+      border: 1px solid transparent; border-radius: 6px;
+      font-size: 13px; font-weight: 600; cursor: pointer; transition: all .2s;
+    }
+    .nav button.active, .nav button:hover { color: #fff; background: #101010; border-color: #1c1c1c; }
+    .nav .section-label {
+      font-size: 11px; text-transform: uppercase; letter-spacing: .18em;
+      color: #6b7280; padding: 6px 10px; margin-top: 6px;
+    }
+    .main { display: flex; flex-direction: column; min-height: 100vh; }
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 18px 26px; border-bottom: 1px solid #161616; background: #0f0f0f;
+    }
+    header .title { font-size: 18px; font-weight: 600; letter-spacing: -.3px; }
+    .row { display: flex; align-items: center; gap: 10px; }
+    .wrap { padding: 22px 26px 40px; }
+
+    /* ── Cards & Grid ── */
+    .grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 16px; margin-bottom: 24px; }
+    .card { background: var(--panel); border: 1px solid #1b1b1b; border-radius: 6px; padding: 16px; }
+    .card h3 {
+      margin: 0 0 10px; font-size: 11px; text-transform: uppercase;
+      letter-spacing: .2em; color: var(--muted); font-weight: 700;
+    }
+    .card .value { font-size: 22px; font-weight: 600; color: #fff; }
+    .muted { color: var(--muted); }
+    .key { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+    .status-dot {
+      width: 8px; height: 8px; border-radius: 50%; background: #16a34a;
+      display: inline-block; margin-right: 8px; box-shadow: 0 0 0 4px rgba(22,163,74,.15);
+    }
+    .pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 10px; border: 1px solid #1f1f1f; border-radius: 999px;
+      font-size: 12px; background: #0d0d0d; color: #cbd5f5;
+    }
+    .section-title { display: flex; align-items: center; justify-content: space-between; margin: 18px 0 12px; }
+    .section-title h2 { margin: 0; font-size: 15px; font-weight: 600; }
+
+    /* ── Table ── */
+    .table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .table th, .table td { text-align: left; padding: 12px 8px; border-bottom: 1px solid #1c1c1c; }
+    .table th { color: var(--muted); font-weight: 700; text-transform: uppercase; font-size: 11px; letter-spacing: .12em; }
+
+    /* ── Buttons ── */
+    .btn {
+      padding: 10px 14px; background: #fff; color: #000; border: none;
+      border-radius: 4px; font-size: 13px; font-weight: 700; cursor: pointer; transition: all .2s;
+    }
+    .btn:hover { transform: translateY(-1px); }
+    .btn-outline { background: transparent; color: #fff; border: 1px solid #333; }
+    .btn-dark {
+      padding: 10px 18px; background: #1a1a1a; color: #e5e5e5;
+      border: 1px solid #333; border-radius: 4px;
+      font-size: 13px; font-weight: 600; cursor: pointer; transition: all .2s;
+    }
+    .btn-dark:hover { background: #2a2a2a; border-color: #555; }
+
+    /* ── Inline Form Rows ── */
+    .form-grid {
+      display: grid;
+      grid-template-columns: 160px 1fr;
+      gap: 0;
+      align-items: center;
+    }
+    .form-row {
+      display: contents;
+    }
+    .form-row label {
+      padding: 12px 16px 12px 0;
+      font-size: 13px;
+      color: var(--muted);
+      font-weight: 500;
+      text-align: right;
+      border-bottom: 1px solid #1a1a1a;
+      white-space: nowrap;
+    }
+    .form-row .form-cell {
+      padding: 10px 0;
+      border-bottom: 1px solid #1a1a1a;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .form-row:last-child label,
+    .form-row:last-child .form-cell {
+      border-bottom: none;
+    }
+    .form-cell .input,
+    .form-cell select {
+      flex: 1;
+      max-width: 400px;
+    }
+    .form-cell .input-short {
+      width: 120px;
+    }
+    .form-hint {
+      font-size: 11px;
+      color: #6b7280;
+      margin-left: 4px;
+      white-space: nowrap;
+    }
+
+    /* ── Inputs ── */
+    .input {
+      width: 100%; padding: 10px 12px;
+      border: 1px solid #1f1f1f; border-radius: 4px;
+      font-size: 13px; background: #0b0b0b; color: #fff;
+      transition: border-color .2s;
+    }
+    .input:focus { outline: none; border-color: #fff; background: #000; box-shadow: 0 0 0 3px rgba(255,255,255,.05); }
+    select.input { width: auto; min-width: 100px; cursor: pointer; }
+    textarea.input { resize: vertical; font-family: inherit; }
+
+    /* ── Tabs ── */
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* ── Toast ── */
+    .toast {
+      position: fixed; bottom: 24px; right: 24px;
+      background: #16a34a; color: #fff;
+      padding: 12px 20px; border-radius: 6px;
+      font-size: 13px; font-weight: 600;
+      opacity: 0; transform: translateY(10px); transition: all .3s;
+      z-index: 100; pointer-events: none;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast.error { background: #dc2626; }
+
+    /* ── Responsive ── */
+    @media (max-width: 1100px) {
+      .layout { grid-template-columns: 180px 1fr; }
+      .grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
+    }
+    @media (max-width: 680px) {
+      .layout { grid-template-columns: 1fr; }
+      aside { flex-direction: row; overflow-x: auto; }
+      header { flex-direction: column; align-items: flex-start; gap: 12px; }
+      .grid { grid-template-columns: 1fr; }
+      .form-grid { grid-template-columns: 1fr; }
+      .form-row label { text-align: left; padding: 8px 0 0; border-bottom: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside>
+      <div class="brand">
+        <svg class="brand-mark" viewBox="0 0 24 24">
+          <path d="M4 7.5L12 3l8 4.5v9L12 21l-8-4.5v-9Z" fill="none" stroke="currentColor" stroke-width="1.7"/>
+          <path d="M12 7v10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+          <path d="M8.2 9.2 12 12l3.8-2.8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <div class="brand-title">NexoraSearch<span class="dot"></span></div>
+      </div>
+      <div class="nav">
+        <div class="section-label">Menu</div>
+        <button class="active" onclick="switchTab('status')">状态</button>
+        <button onclick="switchTab('test')">测试</button>
+        <button onclick="switchTab('skills')">技能</button>
+        <button onclick="switchTab('config')">配置</button>
+        <button onclick="switchTab('models')">模型</button>
+        <button onclick="switchTab('settings')">设置</button>
+      </div>
+    </aside>
+
+    <div class="main">
+      <header>
+        <div class="title" id="pageTitle">状态</div>
+        <div class="row">
+          <button class="btn btn-outline" onclick="logout()">退出登录</button>
+        </div>
+      </header>
+
+      <div class="wrap">
+
+        <!-- ═══ Skills ═══ -->
+        <div id="tab-skills" class="tab-panel">
+          <div class="section-title">
+            <h2>技能管理</h2>
+            <button class="btn-dark" onclick="addSkill()" style="font-size:12px;padding:6px 12px;">＋ 新增</button>
+          </div>
+          <div style="display:grid;grid-template-columns:220px 1fr;gap:16px;min-height:420px;">
+            <div class="card" style="padding:8px;overflow-y:auto;">
+              <div id="skillList"></div>
+            </div>
+            <div class="card" id="skillEditor" style="display:flex;flex-direction:column;">
+              <div id="skillEditorEmpty" style="flex:1;display:flex;align-items:center;justify-content:center;">
+                <div class="muted" style="text-align:center;font-size:13px;">选择左侧技能进行编辑<br>或点击「新增」创建</div>
+              </div>
+              <div id="skillEditorForm" style="display:none;flex:1;flex-direction:column;">
+                <div class="form-grid" style="flex:none;">
+                  <div class="form-row">
+                    <label>标题</label>
+                    <div class="form-cell">
+                      <input id="skillTitle" class="input" placeholder="技能名称" />
+                    </div>
+                  </div>
+                </div>
+                <div style="flex:1;display:flex;flex-direction:column;margin-top:12px;">
+                  <label style="font-size:11px;text-transform:uppercase;letter-spacing:.18em;color:var(--muted);font-weight:700;margin-bottom:8px;">内容</label>
+                  <textarea id="skillContent" class="input" style="flex:1;min-height:200px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;line-height:1.6;" placeholder="技能提示词或指令内容..."></textarea>
+                </div>
+                <div style="display:flex;justify-content:space-between;margin-top:12px;">
+                  <button class="btn-dark" onclick="deleteSkill()" style="background:#7f1d1d;border-color:#991b1b;">删除</button>
+                  <button class="btn-dark" onclick="saveSkill()">保存</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ═══ Test ═══ -->
+        <div id="tab-test" class="tab-panel">
+          <div class="section-title"><h2>网页渲染测试</h2></div>
+          <div class="card">
+            <div class="form-grid">
+              <div class="form-row">
+                <label>目标网址</label>
+                <div class="form-cell">
+                  <input id="testUrl" class="input" placeholder="https://example.com" />
+                  <button class="btn-dark" id="btnRender" onclick="testRender()">渲染</button>
+                  <button class="btn-dark" id="btnClean" onclick="testClean()">预览清理</button>
+                  <button class="btn-dark" id="btnParse" onclick="testParse()" style="background:#2563eb;">模型解析</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div style="margin-top:12px;">
+            <div class="card" style="position:relative;">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+                <h3 style="margin:0;" id="testResultTitle">渲染结果</h3>
+                <span class="muted" id="testStatus" style="font-size:12px;"></span>
+              </div>
+              <textarea id="testResult" class="input" rows="24" readonly style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.5;background:#080808;resize:vertical;"></textarea>
+            </div>
+          </div>
+
+          <div class="section-title" style="margin-top:28px;"><h2>全网搜索测试</h2></div>
+          <div class="card">
+            <div class="form-grid">
+              <div class="form-row">
+                <label>搜索提示词</label>
+                <div class="form-cell">
+                  <input id="searchPrompt" class="input" placeholder="输入你想搜索的问题..." />
+                  <button class="btn-dark" id="btnSearch" onclick="testSearch()" style="background:#7c3aed;border-color:#6d28d9;">开始搜索</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div style="margin-top:12px;">
+            <div class="card">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+                <h3 style="margin:0;">搜索结果</h3>
+                <span class="muted" id="searchStatus" style="font-size:12px;"></span>
+              </div>
+              <textarea id="searchResult" class="input" rows="20" readonly style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.5;background:#080808;resize:vertical;"></textarea>
+            </div>
+          </div>
+        </div>
+
+        <!-- ═══ Status ═══ -->
+        <div id="tab-status" class="tab-panel active">
+          <div class="grid">
+            <div class="card">
+              <h3>服务状态</h3>
+              <div class="row"><span class="status-dot"></span><div class="value">运行中</div></div>
+              <div class="muted" id="uptimeText" style="margin-top:6px;font-size:12px;"></div>
+            </div>
+            <div class="card">
+              <h3>Nexora 连接</h3>
+              <div class="row" id="nexoraStatusRow"><span class="status-dot" id="nexoraDot" style="background:#6b7280;box-shadow:0 0 0 4px rgba(107,114,128,.15);"></span><div class="value" id="nexoraStatus" style="font-size:16px;">检测中...</div></div>
+              <div class="muted" id="nexoraStatusHint" style="margin-top:6px;font-size:12px;">PAPI 可达性</div>
+            </div>
+            <div class="card">
+              <h3>渲染引擎</h3>
+              <div class="value" id="playwrightStatus" style="font-size:16px;">-</div>
+              <div class="muted" style="margin-top:6px;font-size:12px;">Playwright 状态</div>
+            </div>
+          </div>
+
+          <div class="section-title"><h2>服务信息</h2></div>
+          <div class="card">
+            <table class="table">
+              <tbody>
+                <tr><td class="muted" style="width:160px;">监听地址</td><td id="infoHost">-</td></tr>
+                <tr><td class="muted">端口</td><td id="infoPort">-</td></tr>
+                <tr><td class="muted">Nexora 地址</td><td id="infoBaseUrl">-</td></tr>
+                <tr><td class="muted">认证令牌</td><td><span class="key" id="infoToken">-</span></td></tr>
+                <tr><td class="muted">最大并发</td><td id="infoConcurrency">-</td></tr>
+                <tr><td class="muted">默认超时</td><td id="infoTimeout">-</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- ═══ Config ═══ -->
+        <div id="tab-config" class="tab-panel">
+
+          <div class="section-title"><h2>认证配置</h2></div>
+          <div class="card">
+            <div class="form-grid">
+              <div class="form-row">
+                <label>启用认证</label>
+                <div class="form-cell">
+                  <select id="cfgAuthRequired" class="input">
+                    <option value="true">是</option>
+                    <option value="false">否</option>
+                  </select>
+                </div>
+              </div>
+              <div class="form-row">
+                <label>认证令牌</label>
+                <div class="form-cell">
+                  <input id="cfgAuthToken" class="input" placeholder="Bearer Token" />
+                  <button class="btn-dark" onclick="rotateToken()">重新生成</button>
+                </div>
+              </div>
+            </div>
+            <div style="padding:12px 0 0;text-align:right;">
+              <button class="btn-dark" onclick="saveAuthConfig()">保存认证配置</button>
+            </div>
+          </div>
+
+          <div class="section-title"><h2>渲染配置</h2></div>
+          <div class="card">
+            <div class="form-grid">
+              <div class="form-row">
+                <label>最大并发数</label>
+                <div class="form-cell">
+                  <input id="cfgMaxConcurrency" type="number" class="input input-short" min="1" max="20" />
+                  <span class="form-hint">同时渲染页面数</span>
+                </div>
+              </div>
+              <div class="form-row">
+                <label>默认超时</label>
+                <div class="form-cell">
+                  <input id="cfgDefaultTimeout" type="number" class="input input-short" min="1000" step="1000" />
+                  <span class="form-hint">毫秒</span>
+                </div>
+              </div>
+              <div class="form-row">
+                <label>失败降级</label>
+                <div class="form-cell">
+                  <select id="cfgFallback" class="input">
+                    <option value="true">启用</option>
+                    <option value="false">禁用</option>
+                  </select>
+                  <span class="form-hint">渲染失败时回退到纯文本</span>
+                </div>
+              </div>
+            </div>
+            <div style="padding:12px 0 0;text-align:right;">
+              <button class="btn-dark" onclick="saveRenderConfig()">保存渲染配置</button>
+            </div>
+          </div>
+
+          <div class="section-title"><h2>Nexora 连接</h2></div>
+          <div class="card">
+            <div class="form-grid">
+              <div class="form-row">
+                <label>服务地址</label>
+                <div class="form-cell">
+                  <input id="cfgNexoraUrl" class="input" placeholder="http://127.0.0.1:5000" />
+                </div>
+              </div>
+              <div class="form-row">
+                <label>API 密钥</label>
+                <div class="form-cell">
+                  <input id="cfgNexoraKey" class="input" placeholder="PAPI Key" />
+                </div>
+              </div>
+              <div class="form-row">
+                <label>请求超时</label>
+                <div class="form-cell">
+                  <input id="cfgNexoraTimeout" type="number" class="input input-short" min="10" />
+                  <span class="form-hint">秒</span>
+                </div>
+              </div>
+            </div>
+            <div style="padding:12px 0 0;text-align:right;">
+              <button class="btn-dark" onclick="saveNexoraConfig()">保存连接配置</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ═══ Models ═══ -->
+        <div id="tab-models" class="tab-panel">
+
+          <div class="section-title"><h2>默认模型</h2></div>
+          <div class="card">
+            <div class="form-grid">
+              <div class="form-row">
+                <label>默认模型</label>
+                <div class="form-cell">
+                  <select id="defaultModelName" class="input"><option value="">加载中...</option></select>
+                  <button class="btn-dark" onclick="loadModelList()" style="flex-shrink:0;">刷新</button>
+                </div>
+              </div>
+            </div>
+            <div class="muted" style="font-size:11px;margin-top:8px;">各分栏模型名称选择「默认模型」时使用此配置</div>
+            <div style="padding:12px 0 0;text-align:right;">
+              <button class="btn-dark" onclick="saveDefaultModel()">保存默认模型</button>
+            </div>
+          </div>
+
+          <div class="section-title" style="margin-top:24px;">
+            <h2>页面解析模型</h2>
+            <span class="pill" id="modelStatus">-</span>
+          </div>
+          <div class="card">
+            <div class="form-grid">
+              <div class="form-row">
+                <label>启用</label>
+                <div class="form-cell">
+                  <select id="mdlEnabled" class="input"><option value="true">是</option><option value="false">否</option></select>
+                </div>
+              </div>
+              <div class="form-row">
+                <label>模型名称</label>
+                <div class="form-cell">
+                  <select id="mdlName" class="input"><option value="">加载中...</option></select>
+                </div>
+              </div>
+              <div class="form-row">
+                <label>接口模式</label>
+                <div class="form-cell">
+                  <select id="mdlApiMode" class="input"><option value="responses">Responses</option><option value="chat">Chat</option></select>
+                </div>
+              </div>
+              <div class="form-row"><label>温度</label><div class="form-cell"><input id="mdlTemp" type="number" class="input input-short" min="0" max="2" step="0.1" /></div></div>
+              <div class="form-row"><label>最大输出</label><div class="form-cell"><input id="mdlMaxTokens" type="number" class="input input-short" min="100" /><span class="form-hint">tokens</span></div></div>
+              <div class="form-row"><label>请求超时</label><div class="form-cell"><input id="mdlTimeout" type="number" class="input input-short" min="10" /><span class="form-hint">秒</span></div></div>
+              <div class="form-row"><label>最大输入</label><div class="form-cell"><input id="mdlMaxInput" type="number" class="input input-short" min="1000" /><span class="form-hint">字符</span></div></div>
+              <div class="form-row"><label>系统提示词</label><div class="form-cell"><textarea id="mdlPrompt" class="input" rows="3"></textarea></div></div>
+              <div class="form-row"><label>解析提示词</label><div class="form-cell"><textarea id="mdlParsePrompt" class="input" rows="3" placeholder="用于测试面板的页面解析，留空则使用系统提示词"></textarea></div></div>
+            </div>
+            <div style="padding:12px 0 0;text-align:right;">
+              <button class="btn-dark" onclick="saveModelConfig()">保存模型配置</button>
+            </div>
+          </div>
+
+          <div class="section-title" style="margin-top:24px;">
+            <h2>搜索 Agent</h2>
+            <span class="pill" id="searchModelStatus">-</span>
+          </div>
+          <div class="card">
+            <div class="form-grid">
+              <div class="form-row"><label>启用</label><div class="form-cell"><select id="wsEnabled" class="input"><option value="true">是</option><option value="false">否</option></select></div></div>
+              <div class="form-row"><label>模型名称</label><div class="form-cell"><select id="wsName" class="input"><option value="">加载中...</option></select></div></div>
+              <div class="form-row"><label>接口模式</label><div class="form-cell"><select id="wsApiMode" class="input"><option value="chat">Chat</option><option value="responses">Responses</option></select></div></div>
+              <div class="form-row"><label>温度</label><div class="form-cell"><input id="wsTemp" type="number" class="input input-short" min="0" max="2" step="0.1" /></div></div>
+              <div class="form-row"><label>最大输出</label><div class="form-cell"><input id="wsMaxTokens" type="number" class="input input-short" min="100" /><span class="form-hint">tokens</span></div></div>
+              <div class="form-row"><label>请求超时</label><div class="form-cell"><input id="wsTimeout" type="number" class="input input-short" min="10" /><span class="form-hint">秒</span></div></div>
+            </div>
+            <div class="form-grid" style="margin-top:4px;">
+              <div class="form-row"><label>搜索提示词</label><div class="form-cell"><textarea id="wsPrompt" class="input" rows="6" placeholder="搜索 Agent 的系统提示词"></textarea></div></div>
+            </div>
+            <div style="padding:12px 0 0;text-align:right;">
+              <button class="btn-dark" onclick="saveSearchAgentConfig()">保存搜索 Agent</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ═══ Settings ═══ -->
+        <div id="tab-settings" class="tab-panel">
+          <div class="card">
+            <h3>说明</h3>
+            <div class="muted" style="font-size:12px;line-height:1.8;">
+              所有配置保存在 <code>config/config.json</code>，修改后立即生效，无需重启。<br><br>
+              <strong>认证令牌</strong> 用于保护 API 端点。禁用后任何人都可以调用搜索和渲染接口。<br>
+              <strong>Nexora 连接</strong> 用于页面解析功能，需连接到 Nexora 主服务的 PAPI 接口。
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    let currentConfig = {};
+
+    function switchTab(tab) {
+      const titles = { status: '状态', test: '测试', skills: '技能', config: '配置', models: '模型', settings: '设置' };
+      document.getElementById('pageTitle').textContent = titles[tab] || '状态';
+      document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+      document.getElementById('tab-' + tab).classList.add('active');
+      document.querySelectorAll('.nav button').forEach(b => b.classList.remove('active'));
+      const idx = { status: 0, test: 1, skills: 2, config: 3, models: 4, settings: 5 }[tab] || 0;
+      document.querySelectorAll('.nav button')[idx].classList.add('active');
+      if (tab === 'skills') loadSkills();
+    }
+
+    function showToast(msg, isError) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.className = 'toast show' + (isError ? ' error' : '');
+      setTimeout(() => t.className = 'toast', 2500);
+    }
+
+    function formatUptime(sec) {
+      const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+      if (d > 0) return d + 'd ' + h + 'h';
+      if (h > 0) return h + 'h ' + m + 'm';
+      return m + 'm';
+    }
+
+    async function loadStatus() {
+      try {
+        const res = await fetch('/admin/api/status');
+        const data = await res.json();
+        if (!data.success) return;
+        currentConfig = data.config || {};
+
+        document.getElementById('uptimeText').textContent = '运行时间: ' + formatUptime(data.uptime_sec || 0);
+        document.getElementById('playwrightStatus').textContent = data.playwright_available ? '可用' : '未安装';
+
+        const s = currentConfig.server || {}, a = currentConfig.auth || {}, r = currentConfig.render || {}, n = currentConfig.nexora || {};
+        document.getElementById('infoHost').textContent = s.host || '-';
+        document.getElementById('infoPort').textContent = s.port || '-';
+        document.getElementById('infoBaseUrl').textContent = n.base_url || '-';
+        document.getElementById('infoToken').textContent = a.token || '-';
+        document.getElementById('infoConcurrency').textContent = r.max_concurrency || '-';
+        document.getElementById('infoTimeout').textContent = (r.default_timeout_ms || '-') + ' ms';
+
+        document.getElementById('cfgAuthRequired').value = String(a.required !== false);
+        document.getElementById('cfgAuthToken').value = a.token || '';
+        document.getElementById('cfgMaxConcurrency').value = r.max_concurrency || 3;
+        document.getElementById('cfgDefaultTimeout').value = r.default_timeout_ms || 15000;
+        document.getElementById('cfgFallback').value = String(r.fallback_on_fail !== false);
+        document.getElementById('cfgNexoraUrl').value = n.base_url || '';
+        document.getElementById('cfgNexoraKey').value = n.api_key || '';
+        document.getElementById('cfgNexoraTimeout').value = n.request_timeout || 90;
+
+        const mdl = (currentConfig.models || {}).page_parse_agent || {};
+        document.getElementById('modelStatus').textContent = mdl.model_name ? '已配置' : '默认';
+        document.getElementById('mdlEnabled').value = String(mdl.enabled !== false);
+        document.getElementById('mdlApiMode').value = mdl.api_mode || 'responses';
+        document.getElementById('mdlTemp').value = mdl.temperature ?? 0.2;
+        document.getElementById('mdlMaxTokens').value = mdl.max_output_tokens || 4000;
+        document.getElementById('mdlTimeout').value = mdl.request_timeout || 120;
+        document.getElementById('mdlMaxInput').value = mdl.max_input_chars || 32000;
+        document.getElementById('mdlPrompt').value = mdl.system_prompt || '';
+        document.getElementById('mdlParsePrompt').value = mdl.parse_prompt || '';
+
+        const ws = (currentConfig.models || {}).web_search_agent || {};
+        document.getElementById('searchModelStatus').textContent = ws.model_name ? '已配置' : '默认';
+        document.getElementById('wsEnabled').value = String(ws.enabled !== false);
+        document.getElementById('wsApiMode').value = ws.api_mode || 'chat';
+        document.getElementById('wsTemp').value = ws.temperature ?? 0.3;
+        document.getElementById('wsMaxTokens').value = ws.max_output_tokens || 8000;
+        document.getElementById('wsTimeout').value = ws.request_timeout || 180;
+        document.getElementById('wsPrompt').value = currentConfig.web_search_prompt || '';
+
+        checkNexoraConnection();
+        loadModelList();  // async, will call _restoreModelValues when done
+      } catch (e) { console.error(e); }
+    }
+
+    async function checkNexoraConnection() {
+      const dot = document.getElementById('nexoraDot');
+      const status = document.getElementById('nexoraStatus');
+      const hint = document.getElementById('nexoraStatusHint');
+      try {
+        const res = await fetch('/admin/api/nexora/status');
+        const data = await res.json();
+        if (data.reachable) {
+          dot.style.background = '#16a34a';
+          dot.style.boxShadow = '0 0 0 4px rgba(22,163,74,.15)';
+          status.textContent = '已连接';
+          status.style.color = '#16a34a';
+          hint.textContent = 'PAPI 接口正常';
+        } else {
+          dot.style.background = '#dc2626';
+          dot.style.boxShadow = '0 0 0 4px rgba(220,38,38,.15)';
+          status.textContent = '不可用';
+          status.style.color = '#dc2626';
+          hint.textContent = data.message || '无法连接到 Nexora';
+        }
+      } catch (e) {
+        dot.style.background = '#dc2626';
+        dot.style.boxShadow = '0 0 0 4px rgba(220,38,38,.15)';
+        status.textContent = '检测失败';
+        status.style.color = '#dc2626';
+        hint.textContent = '请求异常';
+      }
+    }
+
+    let _modelListCache = [];
+
+    async function loadModelList() {
+      const sels = [
+        document.getElementById('defaultModelName'),
+        document.getElementById('mdlName'),
+        document.getElementById('wsName'),
+      ];
+      try {
+        const res = await fetch('/admin/api/nexora/models');
+        const data = await res.json();
+        _modelListCache = (data.success && Array.isArray(data.models)) ? data.models : [];
+      } catch (_) {
+        _modelListCache = [];
+      }
+      _populateModelSelects();
+      _restoreModelValues();
+    }
+
+    function _populateModelSelects() {
+      const selDefault = document.getElementById('defaultModelName');
+      const selMdl = document.getElementById('mdlName');
+      const selWs = document.getElementById('wsName');
+
+      // Default model: no "use default" option
+      selDefault.innerHTML = '';
+      if (_modelListCache.length) {
+        _modelListCache.forEach(m => {
+          const name = typeof m === 'string' ? m : (m.id || m.name || '');
+          if (!name) return;
+          const opt = document.createElement('option');
+          opt.value = name; opt.textContent = name;
+          selDefault.appendChild(opt);
+        });
+      } else {
+        selDefault.innerHTML = '<option value="">无法加载模型列表</option>';
+      }
+
+      // Sub-models: "use default" as first option
+      [selMdl, selWs].forEach(sel => {
+        sel.innerHTML = '';
+        const opt0 = document.createElement('option');
+        opt0.value = ''; opt0.textContent = '（默认模型）';
+        sel.appendChild(opt0);
+        _modelListCache.forEach(m => {
+          const name = typeof m === 'string' ? m : (m.id || m.name || '');
+          if (!name) return;
+          const opt = document.createElement('option');
+          opt.value = name; opt.textContent = name;
+          sel.appendChild(opt);
+        });
+      });
+    }
+
+    function _restoreModelValues() {
+      const cfg = currentConfig || {};
+      const defaultName = cfg.default_model || '';
+      const mdlName = ((cfg.models || {}).page_parse_agent || {}).model_name || '';
+      const wsName = ((cfg.models || {}).web_search_agent || {}).model_name || '';
+
+      const selDefault = document.getElementById('defaultModelName');
+      const selMdl = document.getElementById('mdlName');
+      const selWs = document.getElementById('wsName');
+
+      // Restore default model - if saved value not in list, add it
+      if (defaultName && !_hasOption(selDefault, defaultName)) {
+        const opt = document.createElement('option');
+        opt.value = defaultName; opt.textContent = defaultName + ' (当前配置)';
+        selDefault.insertBefore(opt, selDefault.firstChild);
+      }
+      selDefault.value = defaultName;
+
+      // Restore sub-models
+      _setSelectOrFallback(selMdl, mdlName);
+      _setSelectOrFallback(selWs, wsName);
+    }
+
+    function _hasOption(sel, value) {
+      for (const opt of sel.options) { if (opt.value === value) return true; }
+      return false;
+    }
+
+    function _setSelectOrFallback(sel, value) {
+      if (!value) { sel.value = ''; return; }
+      if (_hasOption(sel, value)) {
+        sel.value = value;
+      } else {
+        // Saved model not in current list - add it
+        const opt = document.createElement('option');
+        opt.value = value; opt.textContent = value + ' (当前配置)';
+        sel.insertBefore(opt, sel.options[1] || null);
+        sel.value = value;
+      }
+    }
+
+    async function saveSection(section, data) {
+      try {
+        const res = await fetch('/admin/api/config', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ section, data })
+        });
+        const r = await res.json();
+        if (r.success) { showToast('已保存'); loadStatus(); }
+        else showToast(r.message || '保存失败', true);
+      } catch (e) { showToast('网络错误', true); }
+    }
+
+    function saveAuthConfig() {
+      saveSection('auth', {
+        required: document.getElementById('cfgAuthRequired').value === 'true',
+        token: document.getElementById('cfgAuthToken').value.trim()
+      });
+    }
+    function saveRenderConfig() {
+      saveSection('render', {
+        max_concurrency: parseInt(document.getElementById('cfgMaxConcurrency').value) || 3,
+        default_timeout_ms: parseInt(document.getElementById('cfgDefaultTimeout').value) || 15000,
+        fallback_on_fail: document.getElementById('cfgFallback').value === 'true'
+      });
+    }
+    function saveNexoraConfig() {
+      saveSection('nexora', {
+        base_url: document.getElementById('cfgNexoraUrl').value.trim(),
+        api_key: document.getElementById('cfgNexoraKey').value.trim(),
+        request_timeout: parseInt(document.getElementById('cfgNexoraTimeout').value) || 90
+      });
+    }
+    function saveModelConfig() {
+      saveSection('models', {
+        page_parse_agent: {
+          enabled: document.getElementById('mdlEnabled').value === 'true',
+          model_name: document.getElementById('mdlName').value,
+          api_mode: document.getElementById('mdlApiMode').value,
+          temperature: parseFloat(document.getElementById('mdlTemp').value) || 0.2,
+          max_output_tokens: parseInt(document.getElementById('mdlMaxTokens').value) || 4000,
+          request_timeout: parseInt(document.getElementById('mdlTimeout').value) || 120,
+          max_input_chars: parseInt(document.getElementById('mdlMaxInput').value) || 32000,
+          system_prompt: document.getElementById('mdlPrompt').value,
+          parse_prompt: document.getElementById('mdlParsePrompt').value
+        }
+      });
+    }
+
+    async function rotateToken() {
+      try {
+        const res = await fetch('/admin/api/token/rotate', { method: 'POST' });
+        const d = await res.json();
+        if (d.success) { document.getElementById('cfgAuthToken').value = d.token; showToast('已重新生成'); }
+        else showToast(d.message || '生成失败', true);
+      } catch (e) { showToast('网络错误', true); }
+    }
+
+    async function testRender() {
+      const url = document.getElementById('testUrl').value.trim();
+      if (!url) { showToast('请输入网址', true); return; }
+      const btn = document.getElementById('btnRender');
+      const status = document.getElementById('testStatus');
+      const result = document.getElementById('testResult');
+      btn.disabled = true;
+      btn.textContent = '渲染中...';
+      status.textContent = '请求中...';
+      result.value = '';
+      try {
+        const start = performance.now();
+        const token = (currentConfig.auth || {}).token || '';
+        const res = await fetch('/api/render/webview?url=' + encodeURIComponent(url), {
+          headers: token ? { 'Authorization': 'Bearer ' + token } : {}
+        });
+        const ms = Math.round(performance.now() - start);
+        const data = await res.json();
+        if (data.success) {
+          result.value = data.full_html || data.content || '(空)';
+          status.textContent = `${ms}ms · ${data.mode || 'ok'}`;
+        } else {
+          result.value = '错误: ' + (data.error || JSON.stringify(data));
+          status.textContent = `${ms}ms · 失败`;
+        }
+      } catch (e) {
+        result.value = '网络错误: ' + e.message;
+        status.textContent = '失败';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '渲染';
+      }
+    }
+
+    let _searchAborted = false;
+
+    async function testSearch() {
+      const prompt = document.getElementById('searchPrompt').value.trim();
+      if (!prompt) { showToast('请输入搜索提示词', true); return; }
+      const btn = document.getElementById('btnSearch');
+      const status = document.getElementById('searchStatus');
+      const result = document.getElementById('searchResult');
+      btn.disabled = true;
+      btn.textContent = '搜索中...';
+      _searchAborted = false;
+      status.textContent = '连接中...';
+      result.value = '';
+      try {
+        const start = performance.now();
+        const skillsRes = await fetch('/admin/api/skills');
+        const skillsData = await skillsRes.json();
+        const skills = skillsData.success ? (skillsData.skills || []) : [];
+
+        const res = await fetch('/admin/api/test/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt, skills })
+        });
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let fullText = '';
+        while (!_searchAborted) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith('data: ')) continue;
+            const jsonStr = trimmed.slice(6);
+            if (jsonStr === '[DONE]') continue;
+            try {
+              const obj = JSON.parse(jsonStr);
+              if (obj.type === 'think') {
+                fullText += obj.content;
+              } else if (obj.type === 'content') {
+                fullText += obj.content;
+              } else if (obj.type === 'tool_call') {
+                fullText += `\n\n───── 工具调用: ${obj.name}(${JSON.stringify(obj.args)}) ─────\n`;
+              } else if (obj.type === 'tool_progress') {
+                fullText += `\n  ⏳ ${obj.content}\n`;
+              } else if (obj.type === 'tool_result') {
+                fullText += obj.content;
+              } else if (obj.type === 'tool_result_end') {
+                fullText += `\n\n  ✓ 工具完成\n`;
+              } else if (obj.type === 'debug') {
+                fullText += `\n[DEBUG] ${obj.content}\n`;
+              } else if (obj.type === 'error') {
+                fullText += `\n[错误] ${obj.content}`;
+              }
+              result.value = fullText;
+              result.scrollTop = result.scrollHeight;
+              const ms = Math.round(performance.now() - start);
+              status.textContent = `${(ms / 1000).toFixed(1)}s · 输出中...`;
+            } catch (_) {}
+          }
+        }
+        const ms = Math.round(performance.now() - start);
+        status.textContent = `${(ms / 1000).toFixed(1)}s · 完成`;
+      } catch (e) {
+        result.value = '请求失败: ' + e.message;
+        status.textContent = '失败';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '开始搜索';
+      }
+    }
+
+    async function testClean() {
+      const html = document.getElementById('testResult').value.trim();
+      if (!html || html.startsWith('错误') || html.startsWith('网络错误')) {
+        showToast('请先渲染一个网页', true);
+        return;
+      }
+      const btn = document.getElementById('btnClean');
+      const status = document.getElementById('testStatus');
+      const result = document.getElementById('testResult');
+      const title = document.getElementById('testResultTitle');
+      btn.disabled = true;
+      btn.textContent = '清理中...';
+      try {
+        const res = await fetch('/admin/api/test/clean', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ html })
+        });
+        const data = await res.json();
+        if (data.success) {
+          title.textContent = '清理后 HTML';
+          result.value = data.html;
+          status.textContent = `${data.html.length} 字符`;
+        } else {
+          showToast(data.message || '失败', true);
+        }
+      } catch (e) {
+        showToast('请求失败', true);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '预览清理';
+      }
+    }
+
+    async function testParse() {
+      const html = document.getElementById('testResult').value.trim();
+      if (!html || html.startsWith('错误') || html.startsWith('网络错误')) {
+        showToast('请先渲染一个网页', true);
+        return;
+      }
+      const btn = document.getElementById('btnParse');
+      const status = document.getElementById('testStatus');
+      const result = document.getElementById('testResult');
+      const title = document.getElementById('testResultTitle');
+      btn.disabled = true;
+      btn.textContent = '解析中...';
+      title.textContent = '模型解析结果';
+      status.textContent = '流式输出中...';
+      result.value = '';
+      try {
+        const start = performance.now();
+        const res = await fetch('/admin/api/test/parse', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ html })
+        });
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let fullText = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith('data: ')) continue;
+            const jsonStr = trimmed.slice(6);
+            if (jsonStr === '[DONE]') continue;
+            try {
+              const obj = JSON.parse(jsonStr);
+              if (obj.think) {
+                fullText += obj.think;
+              }
+              if (obj.content) {
+                fullText += obj.content;
+              }
+              if (obj.error) {
+                fullText += '\n[错误] ' + obj.error;
+              }
+              result.value = fullText;
+              result.scrollTop = result.scrollHeight;
+            } catch (_) {}
+          }
+        }
+        const ms = Math.round(performance.now() - start);
+        status.textContent = `${ms}ms · 完成`;
+      } catch (e) {
+        result.value = '请求失败: ' + e.message;
+        status.textContent = '失败';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '模型解析';
+      }
+    }
+
+    async function saveDefaultModel() {
+      const name = document.getElementById('defaultModelName').value;
+      try {
+        const res = await fetch('/admin/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ section: 'default_model', data: name, is_string: true })
+        });
+        const d = await res.json();
+        if (d.success) { showToast('已保存'); currentConfig.default_model = name; }
+        else showToast(d.message || '保存失败', true);
+      } catch (e) { showToast('网络错误', true); }
+    }
+
+    function saveSearchAgentConfig() {
+      // Save model config
+      const models = { ...(currentConfig.models || {}) };
+      models.web_search_agent = {
+        enabled: document.getElementById('wsEnabled').value === 'true',
+        model_name: document.getElementById('wsName').value,
+        api_mode: document.getElementById('wsApiMode').value,
+        temperature: parseFloat(document.getElementById('wsTemp').value) || 0.3,
+        max_output_tokens: parseInt(document.getElementById('wsMaxTokens').value) || 8000,
+        request_timeout: parseInt(document.getElementById('wsTimeout').value) || 180,
+      };
+      saveSection('models', models);
+      // Save prompt
+      fetch('/admin/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ section: 'web_search_prompt', data: document.getElementById('wsPrompt').value, is_string: true })
+      }).then(r => r.json()).then(d => {
+        if (d.success) showToast('搜索 Agent 已保存');
+      }).catch(() => {});
+    }
+
+    let skillsData = [];
+    let activeSkillIndex = -1;
+
+    async function loadSkills() {
+      try {
+        const res = await fetch('/admin/api/skills');
+        const data = await res.json();
+        if (data.success) {
+          skillsData = data.skills || [];
+          renderSkillList();
+        }
+      } catch (e) { console.error(e); }
+    }
+
+    function renderSkillList() {
+      const list = document.getElementById('skillList');
+      list.innerHTML = '';
+      if (!skillsData.length) {
+        list.innerHTML = '<div class="muted" style="padding:16px;text-align:center;font-size:12px;">暂无技能</div>';
+        return;
+      }
+      skillsData.forEach((s, i) => {
+        const div = document.createElement('div');
+        div.style.cssText = 'padding:10px 12px;cursor:pointer;border-radius:4px;font-size:13px;color:var(--muted);transition:all .15s;border:1px solid transparent;';
+        div.textContent = s.title || '(未命名)';
+        if (i === activeSkillIndex) {
+          div.style.color = '#fff';
+          div.style.background = '#1a1a1a';
+          div.style.borderColor = '#333';
+        }
+        div.onmouseenter = () => { if (i !== activeSkillIndex) div.style.background = '#151515'; };
+        div.onmouseleave = () => { if (i !== activeSkillIndex) div.style.background = ''; };
+        div.onclick = () => selectSkill(i);
+        list.appendChild(div);
+      });
+    }
+
+    function selectSkill(index) {
+      activeSkillIndex = index;
+      const s = skillsData[index];
+      if (!s) return;
+      document.getElementById('skillEditorEmpty').style.display = 'none';
+      const form = document.getElementById('skillEditorForm');
+      form.style.display = 'flex';
+      document.getElementById('skillTitle').value = s.title || '';
+      document.getElementById('skillContent').value = s.content || '';
+      renderSkillList();
+    }
+
+    function addSkill() {
+      skillsData.push({ title: '新技能', content: '' });
+      activeSkillIndex = skillsData.length - 1;
+      renderSkillList();
+      selectSkill(activeSkillIndex);
+    }
+
+    async function saveSkill() {
+      if (activeSkillIndex < 0 || activeSkillIndex >= skillsData.length) return;
+      skillsData[activeSkillIndex] = {
+        title: document.getElementById('skillTitle').value.trim() || '未命名',
+        content: document.getElementById('skillContent').value
+      };
+      try {
+        const res = await fetch('/admin/api/skills', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ skills: skillsData })
+        });
+        const data = await res.json();
+        if (data.success) { showToast('已保存'); renderSkillList(); }
+        else showToast(data.message || '保存失败', true);
+      } catch (e) { showToast('网络错误', true); }
+    }
+
+    async function deleteSkill() {
+      if (activeSkillIndex < 0) return;
+      if (!confirm('确认删除该技能？')) return;
+      skillsData.splice(activeSkillIndex, 1);
+      activeSkillIndex = -1;
+      document.getElementById('skillEditorEmpty').style.display = '';
+      document.getElementById('skillEditorForm').style.display = 'none';
+      try {
+        const res = await fetch('/admin/api/skills', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ skills: skillsData })
+        });
+        const data = await res.json();
+        if (data.success) { showToast('已删除'); renderSkillList(); }
+        else showToast(data.message || '删除失败', true);
+      } catch (e) { showToast('网络错误', true); }
+    }
+
+    async function logout() {
+      await fetch('/admin/logout', { method: 'POST' });
+      location.href = '/admin/login';
+    }
+
+    loadStatus();
+  </script>
+</body>
+</html>

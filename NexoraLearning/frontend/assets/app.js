@@ -3312,9 +3312,11 @@
       loading: true,
     };
     renderLectureDetail();
-    const bookInfoXml = await fetchBookInfoXml();
-    const bookDetailXml = await fetchBookDetailXml();
-    const summaryData = await fetchBookSummary();
+    const [bookInfoXml, bookDetailXml, summaryData] = await Promise.all([
+      fetchBookInfoXml(),
+      fetchBookDetailXml(),
+      fetchBookSummary(),
+    ]);
     if (requestToken !== state.readerRequestToken) {
       return;
     }
@@ -3345,15 +3347,15 @@
     state.readerChapters = Array.isArray(state.catalogContext.chapters) ? state.catalogContext.chapters.slice() : [];
     state.readerBookDetailXml = String(state.catalogContext.detailXml || "");
     state.readerActiveChapterIndex = Math.max(0, Math.min(state.readerChapters.length - 1, Number.isFinite(idx) ? idx : 0));
-    const fullText = await fetchBookTextFull();
-    if (requestToken !== state.readerRequestToken) return;
-    state.readerFullTextRaw = String(fullText || "");
+    // 先打开Reader并显示加载状态
     openReader(
       state.catalogContext.title || "教材阅读",
       state.catalogContext.subtitle || "",
-      state.readerFullTextRaw,
-      { chapterIndex: state.readerActiveChapterIndex }
+      "",
+      { chapterIndex: state.readerActiveChapterIndex, loading: true }
     );
+    // 按章节加载内容
+    await loadChapterContent(state.readerActiveChapterIndex);
   }
 
   function renderLectureList() {
@@ -3856,6 +3858,84 @@
     }
   }
 
+  async function fetchChapterText(chapterIndex) {
+    const row = getSelectedLectureRow();
+    if (!row || !state.selectedBookId) return "";
+    const lectureId = String((row.lecture || {}).id || "");
+    if (!lectureId) return "";
+    try {
+      const data = await fetchJson(`/api/lectures/${encodeURIComponent(lectureId)}/books/${encodeURIComponent(state.selectedBookId)}/chapter/${chapterIndex}`);
+      return String(data.content || "");
+    } catch (_err) {
+      return "";
+    }
+  }
+
+  async function loadChapterContent(chapterIndex, scrollToOffset) {
+    const requestToken = state.readerRequestToken;
+    showChapterLoading(chapterIndex);
+    const content = await fetchChapterText(chapterIndex);
+    if (requestToken !== state.readerRequestToken) return;
+    // 缓存章节内容
+    if (!state.readerChapterCache) state.readerChapterCache = {};
+    state.readerChapterCache[chapterIndex] = content;
+    // 如果是第一次加载，设置完整文本（用于兼容旧逻辑）
+    if (!state.readerFullTextRaw) {
+      state.readerFullTextRaw = content;
+    }
+    renderChapterContent(chapterIndex, content, scrollToOffset);
+  }
+
+  function showChapterLoading(chapterIndex) {
+    const chapters = Array.isArray(state.readerChapters) ? state.readerChapters : [];
+    const chapter = chapters[chapterIndex];
+    const title = chapter ? (chapter.title || `第 ${chapterIndex + 1} 章`) : "加载中";
+    el.readerContent.innerHTML = `
+      <div class="materials-preview-text">
+        <div class="chapter-header text-center mb-4">
+          <h2>${escapeHtml(title)}</h2>
+        </div>
+        <div class="chapter-loading">
+          <div class="chapter-loading-spinner"></div>
+          <div class="chapter-loading-text">加载文本中...</div>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderChapterContent(chapterIndex, content, scrollToOffset) {
+    const chapters = Array.isArray(state.readerChapters) ? state.readerChapters : [];
+    const idx = Math.max(0, Math.min(chapters.length - 1, chapterIndex));
+    state.readerActiveChapterIndex = idx;
+    const chapter = chapters[idx];
+    const prevDisabled = idx <= 0 ? "disabled" : "";
+    const nextDisabled = idx >= chapters.length - 1 ? "disabled" : "";
+    el.readerContent.innerHTML = `
+      <div class="materials-preview-text">
+        <div class="chapter-header text-center mb-4">
+          <h2>${escapeHtml(chapter ? (chapter.title || `第 ${idx + 1} 章`) : "")}</h2>
+        </div>
+        <div class="chapter-body">${formatReaderText(content || "")}</div>
+        <div class="chapter-navigation mt-5 d-flex justify-content-between">
+          <button class="btn btn-outline-secondary btn-sm" data-reader-nav="prev" ${prevDisabled}>上一章</button>
+          <button class="btn btn-outline-secondary btn-sm" data-reader-nav="next" ${nextDisabled}>下一章</button>
+        </div>
+      </div>
+    `;
+    markChapterVisited(idx);
+    renderChapterList();
+    syncReaderSettingsPanel();
+    applyReaderTypography();
+    syncReaderTelemetrySessionContext("chapter_render");
+    scheduleHostReaderContextSync(0);
+    renderChapterAnnotations(idx);
+    // 滚动到指定偏移量（如果有）
+    if (scrollToOffset !== undefined && scrollToOffset !== null) {
+      const chapterStart = chapter ? chapter.start : 0;
+      scrollToChapterOffset(chapterStart, scrollToOffset);
+    }
+  }
+
 // ─────── Reader: Chapter Parsing & Text Layout ────────────────────────
   function renderReaderPlaceholder(msg) {
     el.readerContent.innerHTML = `<div class="materials-empty">${escapeHtml(msg || "阅读内容加载中")}</div>`;
@@ -4302,6 +4382,7 @@
     if (atBottom) currentRelativeEnd = chapterLength;   // 兜底，确保浮点精度不上浮
     
     let changed = false;
+    let lastCompletedSession = null;
     const progress = ensureReaderSessionProgress();
     if (!progress || !progress.completedSessions) return;
     
@@ -4316,12 +4397,24 @@
         progress.completedSessions.add(sessionKey);
         reportSessionComplete(chapterIndex, sIdx).catch(() => {});
         changed = true;
+        // 记录最新完成的session
+        lastCompletedSession = { index: sIdx, ...s };
       }
     });
     
     if (changed) {
       saveSessionProgress();
       renderChapterList();
+      // Auto-open floating panel and generate quiz when session completed by scroll
+      if (lastCompletedSession && typeof generateSessionQuiz === "function") {
+        generateSessionQuiz(
+          chapterIndex,
+          lastCompletedSession.index,
+          chapterName,
+          lastCompletedSession.name || "",
+          lastCompletedSession.range || ""
+        );
+      }
     }
     syncReaderTelemetrySessionContext("scroll");
   }
@@ -4525,35 +4618,13 @@
     }
     const idx = Math.max(0, Math.min(chapters.length - 1, Number(index) || 0));
     state.readerActiveChapterIndex = idx;
-    const chapter = chapters[idx];
-    const start = Math.max(0, Math.min(state.readerFullTextRaw.length, chapter.start));
-    const end = Math.max(start, Math.min(state.readerFullTextRaw.length, chapter.end));
-    const part = state.readerFullTextRaw.slice(start, end).trim() || state.readerFullTextRaw;
-    const prevDisabled = idx <= 0 ? "disabled" : "";
-    const nextDisabled = idx >= chapters.length - 1 ? "disabled" : "";
-    el.readerContent.innerHTML = `
-      <div class="materials-preview-text">
-        <div class="chapter-header text-center mb-4">
-          <h2>${escapeHtml(chapter.title || `第 ${idx + 1} 章`)}</h2>
-        </div>
-        <div class="chapter-body">${formatReaderText(part || "")}</div>
-        <div class="chapter-navigation mt-5 d-flex justify-content-between">
-          <button class="btn btn-outline-secondary btn-sm" data-reader-nav="prev" ${prevDisabled}>上一章</button>
-          <button class="btn btn-outline-secondary btn-sm" data-reader-nav="next" ${nextDisabled}>下一章</button>
-        </div>
-      </div>
-    `;
-    markChapterVisited(idx);
-    renderChapterList();
-    syncReaderSettingsPanel();
-    applyReaderTypography();
-    syncReaderTelemetrySessionContext("chapter_render");
-    scheduleHostReaderContextSync(0);
-    // 渲染批注
-    renderChapterAnnotations(idx);
-    // 滚动到指定偏移量（如果有）
-    if (scrollToOffset !== undefined && scrollToOffset !== null) {
-      scrollToChapterOffset(start, scrollToOffset);
+
+    // 检查缓存中是否有该章节内容
+    if (state.readerChapterCache && state.readerChapterCache[idx]) {
+      renderChapterContent(idx, state.readerChapterCache[idx], scrollToOffset);
+    } else {
+      // 按需加载章节内容
+      loadChapterContent(idx, scrollToOffset);
     }
   }
 
@@ -4798,6 +4869,9 @@
       el.readerPane.classList.add(`theme-${state.readerSettings.theme || "light"}`);
       el.readerPane.style.setProperty("--reader-edge-width", `${edgeW}px`);
       el.readerPane.style.setProperty("--reader-edge-width-effective", `${effectiveEdgeW}px`);
+      // Sync theme to body for floating panel
+      document.body.classList.remove("reader-theme-light", "reader-theme-dark", "reader-theme-sepia");
+      document.body.classList.add(`reader-theme-${state.readerSettings.theme || "light"}`);
     }
   }
 
@@ -4904,7 +4978,10 @@
     el.readerTitle.textContent = state.readerMeta.title;
     el.readerSubTitle.textContent = state.readerMeta.subtitle;
     state.readerFullTextRaw = String(content || "");
+    // 初始化章节缓存
+    state.readerChapterCache = {};
     resetReaderSelectionTelemetry();
+    syncFloatingBtnVisibility();
     if (Array.isArray(state.readerChapters) && state.readerChapters.length) {
       let requestedIndex;
       if (Number.isFinite(Number(opts.chapterIndex))) {
@@ -4919,10 +4996,15 @@
       state.readerActiveChapterIndex = 0;
     }
     syncReaderModeUI();
-    openReaderChapter(state.readerActiveChapterIndex);
     setReaderFullscreen(true);
     syncReaderSettingsPanel();
     applyReaderTypography();
+
+    // 如果是加载模式，显示加载状态（章节内容由外部异步加载）
+    if (!opts.loading) {
+      openReaderChapter(state.readerActiveChapterIndex);
+    }
+
     // 仅当 selectedBookId 已设置时才发射 telemetry，避免未选择书籍时产生噪声事件
     if (String(state.selectedBookId || "").trim()) {
       emitTelemetry("reader_open", {
@@ -4953,12 +5035,498 @@
     } catch (_) {}
   }
 
+// ─────── Reader Floating Panel ────────────────────────────────────────
+  const floatingPanelState = {
+    open: false,
+    activeTab: "quiz",
+    bound: false,
+    dragging: false,
+    resizing: false,
+    pointerId: null,
+    startClientX: 0,
+    startClientY: 0,
+    startLeft: 0,
+    startTop: 0,
+    startWidth: 0,
+    startHeight: 0,
+    left: null,
+    top: null,
+    width: null,
+    height: null,
+  };
+
+  const FLOATING_PANEL_LAYOUT_KEY = "nxl_floating_panel_layout_v1";
+
+  function loadFloatingPanelPosition() {
+    try {
+      const raw = localStorage.getItem(FLOATING_PANEL_LAYOUT_KEY);
+      if (!raw) return null;
+      const obj = JSON.parse(raw);
+      const left = Number(obj && obj.left);
+      const top = Number(obj && obj.top);
+      const width = Number(obj && obj.width);
+      const height = Number(obj && obj.height);
+      if (Number.isFinite(left) && Number.isFinite(top) && Number.isFinite(width) && Number.isFinite(height)) {
+        return { left, top, width, height };
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  function saveFloatingPanelPosition(left, top, width, height) {
+    try {
+      localStorage.setItem(FLOATING_PANEL_LAYOUT_KEY, JSON.stringify({
+        left: Math.round(Number(left || 0)),
+        top: Math.round(Number(top || 0)),
+        width: Math.round(Number(width || 0)),
+        height: Math.round(Number(height || 0)),
+      }));
+    } catch (_) {}
+  }
+
+  function applyFloatingPanelPosition(forceDefault) {
+    const panel = document.getElementById("readerFloatingPanel");
+    if (!panel) return;
+    const saved = loadFloatingPanelPosition();
+    if (!saved && !forceDefault) return;
+    if (saved) {
+      const minWidth = 280;
+      const minHeight = 240;
+      const maxWidth = Math.max(minWidth, window.innerWidth - 24);
+      const maxHeight = Math.max(minHeight, window.innerHeight - 24);
+      const width = Math.max(minWidth, Math.min(maxWidth, Number(saved.width || minWidth)));
+      const height = Math.max(minHeight, Math.min(maxHeight, Number(saved.height || minHeight)));
+      const maxLeft = Math.max(8, window.innerWidth - width - 8);
+      const maxTop = Math.max(8, window.innerHeight - height - 8);
+      floatingPanelState.left = Math.max(8, Math.min(maxLeft, Number(saved.left || 0)));
+      floatingPanelState.top = Math.max(8, Math.min(maxTop, Number(saved.top || 0)));
+      floatingPanelState.width = width;
+      floatingPanelState.height = height;
+      panel.style.left = `${floatingPanelState.left}px`;
+      panel.style.top = `${floatingPanelState.top}px`;
+      panel.style.right = "auto";
+      panel.style.bottom = "auto";
+      panel.style.width = `${floatingPanelState.width}px`;
+      panel.style.height = `${floatingPanelState.height}px`;
+      return;
+    }
+  }
+
+  function bindFloatingPanelDrag() {
+    if (floatingPanelState.bound) return;
+    floatingPanelState.bound = true;
+    const panel = document.getElementById("readerFloatingPanel");
+    const head = document.getElementById("floatingPanelHead");
+    const resizeHandle = document.getElementById("floatingResizeHandle");
+    if (!panel || !head) return;
+
+    const clampRect = (left, top, width, height) => {
+      const minWidth = 280;
+      const minHeight = 240;
+      const maxWidth = Math.max(minWidth, window.innerWidth - 24);
+      const maxHeight = Math.max(minHeight, window.innerHeight - 24);
+      const safeWidth = Math.max(minWidth, Math.min(maxWidth, Number(width || minWidth)));
+      const safeHeight = Math.max(minHeight, Math.min(maxHeight, Number(height || minHeight)));
+      const maxLeft = Math.max(8, window.innerWidth - safeWidth - 8);
+      const maxTop = Math.max(8, window.innerHeight - safeHeight - 8);
+      return {
+        left: Math.max(8, Math.min(maxLeft, Number(left || 0))),
+        top: Math.max(8, Math.min(maxTop, Number(top || 0))),
+        width: safeWidth,
+        height: safeHeight,
+      };
+    };
+
+    const stop = () => {
+      if (!floatingPanelState.dragging && !floatingPanelState.resizing) return;
+      floatingPanelState.dragging = false;
+      floatingPanelState.resizing = false;
+      floatingPanelState.pointerId = null;
+      saveFloatingPanelPosition(
+        floatingPanelState.left,
+        floatingPanelState.top,
+        floatingPanelState.width,
+        floatingPanelState.height
+      );
+      panel.classList.remove("dragging");
+      panel.classList.remove("resizing");
+      try { panel.releasePointerCapture(floatingPanelState.pointerId); } catch (_) {}
+    };
+
+    head.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      if (e.target.closest(".floating-panel-close") || e.target.closest(".floating-tab")) return;
+      const rect = panel.getBoundingClientRect();
+      floatingPanelState.dragging = true;
+      floatingPanelState.pointerId = e.pointerId;
+      floatingPanelState.startClientX = e.clientX;
+      floatingPanelState.startClientY = e.clientY;
+      floatingPanelState.startLeft = rect.left;
+      floatingPanelState.startTop = rect.top;
+      floatingPanelState.startWidth = rect.width;
+      floatingPanelState.startHeight = rect.height;
+      panel.classList.add("dragging");
+      try { panel.setPointerCapture(e.pointerId); } catch (_) {}
+      e.preventDefault();
+    });
+
+    panel.addEventListener("pointermove", (e) => {
+      if (floatingPanelState.dragging) {
+        const dx = e.clientX - floatingPanelState.startClientX;
+        const dy = e.clientY - floatingPanelState.startClientY;
+        const clamped = clampRect(
+          floatingPanelState.startLeft + dx,
+          floatingPanelState.startTop + dy,
+          floatingPanelState.startWidth,
+          floatingPanelState.startHeight
+        );
+        floatingPanelState.left = clamped.left;
+        floatingPanelState.top = clamped.top;
+        panel.style.left = `${clamped.left}px`;
+        panel.style.top = `${clamped.top}px`;
+        panel.style.right = "auto";
+        panel.style.bottom = "auto";
+      } else if (floatingPanelState.resizing) {
+        const dx = e.clientX - floatingPanelState.startClientX;
+        const dy = e.clientY - floatingPanelState.startClientY;
+        const clamped = clampRect(
+          floatingPanelState.startLeft,
+          floatingPanelState.startTop,
+          floatingPanelState.startWidth + dx,
+          floatingPanelState.startHeight + dy
+        );
+        floatingPanelState.width = clamped.width;
+        floatingPanelState.height = clamped.height;
+        panel.style.width = `${clamped.width}px`;
+        panel.style.height = `${clamped.height}px`;
+      }
+    });
+
+    panel.addEventListener("pointerup", stop);
+    panel.addEventListener("pointercancel", stop);
+
+    if (resizeHandle) {
+      resizeHandle.addEventListener("pointerdown", (e) => {
+        if (e.button !== 0) return;
+        const rect = panel.getBoundingClientRect();
+        floatingPanelState.resizing = true;
+        floatingPanelState.pointerId = e.pointerId;
+        floatingPanelState.startClientX = e.clientX;
+        floatingPanelState.startClientY = e.clientY;
+        floatingPanelState.startLeft = rect.left;
+        floatingPanelState.startTop = rect.top;
+        floatingPanelState.startWidth = rect.width;
+        floatingPanelState.startHeight = rect.height;
+        panel.classList.add("resizing");
+        try { resizeHandle.setPointerCapture(e.pointerId); } catch (_) {}
+        e.preventDefault();
+        e.stopPropagation();
+      });
+    }
+  }
+
+  function setFloatingTab(tabName) {
+    const panel = document.getElementById("readerFloatingPanel");
+    if (!panel) return;
+    floatingPanelState.activeTab = tabName;
+    const tabs = panel.querySelectorAll(".floating-tab");
+    const contents = panel.querySelectorAll(".floating-tab-content");
+    tabs.forEach((tab) => {
+      tab.classList.toggle("is-active", tab.dataset.tab === tabName);
+    });
+    contents.forEach((content) => {
+      const isTarget = content.dataset.tab === tabName;
+      content.hidden = !isTarget;
+      content.classList.toggle("is-active", isTarget);
+    });
+  }
+
+  function openFloatingPanel() {
+    const panel = document.getElementById("readerFloatingPanel");
+    const btn = document.getElementById("readerFloatingBtn");
+    if (!panel) return;
+    floatingPanelState.open = true;
+    panel.classList.add("active");
+    panel.setAttribute("aria-hidden", "false");
+    if (btn) btn.hidden = true;
+    bindFloatingPanelDrag();
+    applyFloatingPanelPosition(false);
+    setFloatingTab(floatingPanelState.activeTab);
+  }
+
+  function closeFloatingPanel() {
+    const panel = document.getElementById("readerFloatingPanel");
+    const btn = document.getElementById("readerFloatingBtn");
+    if (!panel) return;
+    floatingPanelState.open = false;
+    panel.classList.remove("active");
+    panel.classList.remove("dragging");
+    panel.classList.remove("resizing");
+    panel.setAttribute("aria-hidden", "true");
+    if (btn && state.isReaderOpen) btn.hidden = false;
+  }
+
+  function toggleFloatingPanel() {
+    if (floatingPanelState.open) closeFloatingPanel();
+    else openFloatingPanel();
+  }
+
+  function syncFloatingBtnVisibility() {
+    const btn = document.getElementById("readerFloatingBtn");
+    if (!btn) return;
+    btn.hidden = !state.isReaderOpen || floatingPanelState.open;
+  }
+
+  // Quiz state management
+  const QUIZ_STATE_KEY = "nxl_quiz_state_v1";
+  let quizState = {
+    loading: false,
+    currentChapter: "",
+    currentSession: "",
+    questions: [],
+    error: null,
+  };
+
+  function loadQuizState() {
+    try {
+      const raw = localStorage.getItem(QUIZ_STATE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object") {
+          quizState.questions = Array.isArray(parsed.questions) ? parsed.questions : [];
+          quizState.currentChapter = String(parsed.currentChapter || "");
+          quizState.currentSession = String(parsed.currentSession || "");
+        }
+      }
+    } catch (_) {}
+  }
+
+  function saveQuizState() {
+    try {
+      localStorage.setItem(QUIZ_STATE_KEY, JSON.stringify({
+        questions: quizState.questions,
+        currentChapter: quizState.currentChapter,
+        currentSession: quizState.currentSession,
+      }));
+    } catch (_) {}
+  }
+
+  function renderQuizPanel() {
+    const content = document.querySelector('.floating-tab-content[data-tab="quiz"]');
+    if (!content) return;
+
+    if (quizState.loading) {
+      content.innerHTML = `
+        <div class="quiz-loading">
+          <div class="quiz-loading-spinner"></div>
+          <div class="quiz-loading-text">正在生成测验题目...</div>
+          <div class="quiz-loading-hint">AI正在分析学习内容</div>
+        </div>
+      `;
+      return;
+    }
+
+    if (quizState.error) {
+      content.innerHTML = `
+        <div class="quiz-error">
+          <div class="quiz-error-icon">⚠</div>
+          <div class="quiz-error-text">${escapeHtml(quizState.error)}</div>
+          <button class="quiz-retry-btn" onclick="retryQuiz()">重试</button>
+        </div>
+      `;
+      return;
+    }
+
+    if (!quizState.questions || quizState.questions.length === 0) {
+      content.innerHTML = `
+        <div class="floating-empty-hint">
+          <div class="quiz-empty-icon">📝</div>
+          <div>完成章节阅读后开启测验</div>
+        </div>
+      `;
+      return;
+    }
+
+    let html = '<div class="quiz-list">';
+    quizState.questions.forEach((q, idx) => {
+      const difficultyClass = q.difficulty === "简单" ? "easy" : q.difficulty === "中等" ? "medium" : "hard";
+      html += `
+        <div class="quiz-item" data-index="${idx}">
+          <div class="quiz-item-header">
+            <span class="quiz-item-index">${idx + 1}</span>
+            <span class="quiz-item-difficulty ${difficultyClass}">${escapeHtml(q.difficulty || "")}</span>
+          </div>
+          <div class="quiz-item-title">${escapeHtml(q.title || q.content || "")}</div>
+          <div class="quiz-item-content" hidden>${escapeHtml(q.content || "")}</div>
+          <div class="quiz-item-hint" hidden>${escapeHtml(q.hint || "")}</div>
+          <div class="quiz-item-answer" hidden>${escapeHtml(q.answer || "")}</div>
+          <div class="quiz-item-actions">
+            <button class="quiz-show-hint-btn" onclick="showQuizHint(${idx})">提示</button>
+            <button class="quiz-show-answer-btn" onclick="showQuizAnswer(${idx})">查看答案</button>
+          </div>
+        </div>
+      `;
+    });
+    html += "</div>";
+    content.innerHTML = html;
+  }
+
+  function showQuizHint(idx) {
+    const item = document.querySelector(`.quiz-item[data-index="${idx}"]`);
+    if (!item) return;
+    const hint = item.querySelector(".quiz-item-hint");
+    if (hint) {
+      hint.hidden = !hint.hidden;
+    }
+  }
+
+  function showQuizAnswer(idx) {
+    const item = document.querySelector(`.quiz-item[data-index="${idx}"]`);
+    if (!item) return;
+    const answer = item.querySelector(".quiz-item-answer");
+    if (answer) {
+      answer.hidden = !answer.hidden;
+    }
+  }
+
+  async function generateSessionQuiz(chapterIndex, sessionIndex, chapterName, sessionName, sessionRange) {
+    const lectureId = String(state.selectedLectureId || "").trim();
+    const bookId = String(state.selectedBookId || "").trim();
+    if (!lectureId || !bookId) return;
+
+    // 检查是否已经为这个session出过题
+    const quizKey = `${lectureId}::${bookId}::${chapterIndex}::${sessionIndex}`;
+    const storedQuizzes = JSON.parse(localStorage.getItem("nxl_quiz_generated_v1") || "{}");
+    if (storedQuizzes[quizKey]) {
+      quizState.questions = storedQuizzes[quizKey].questions || [];
+      quizState.currentChapter = chapterName;
+      quizState.currentSession = sessionName;
+      renderQuizPanel();
+      return;
+    }
+
+    quizState.loading = true;
+    quizState.error = null;
+    quizState.currentChapter = chapterName;
+    quizState.currentSession = sessionName;
+    renderQuizPanel();
+    openFloatingPanel();
+    setFloatingTab("quiz");
+
+    try {
+      const result = await fetchJson("/api/frontend/quiz/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lecture_id: lectureId,
+          book_id: bookId,
+          chapter_index: chapterIndex,
+          session_index: sessionIndex,
+          chapter_name: chapterName,
+          session_name: sessionName,
+          session_range: sessionRange,
+        }),
+      });
+
+      if (result && result.success && Array.isArray(result.questions)) {
+        quizState.questions = result.questions;
+        // 保存到localStorage
+        storedQuizzes[quizKey] = {
+          questions: result.questions,
+          timestamp: Date.now(),
+        };
+        localStorage.setItem("nxl_quiz_generated_v1", JSON.stringify(storedQuizzes));
+      } else {
+        quizState.error = result.error || "生成题目失败";
+      }
+    } catch (err) {
+      quizState.error = err.message || "网络错误";
+    } finally {
+      quizState.loading = false;
+      renderQuizPanel();
+    }
+  }
+
+  function retryQuiz() {
+    // 获取当前session信息并重新生成
+    const chapterIndex = state.readerActiveChapterIndex;
+    const chapter = state.readerChapters[chapterIndex];
+    if (!chapter) return;
+
+    const chapterName = String(chapter.title || "").trim();
+    const sectionData = state.readerSectionsData[chapterName];
+    if (!sectionData || !Array.isArray(sectionData.sessions) || !sectionData.sessions.length) return;
+
+    // 找到最近完成的session
+    const progress = ensureReaderSessionProgress();
+    if (!progress || !progress.completedSessions) return;
+
+    let lastCompletedSession = null;
+    sectionData.sessions.forEach((s, sIdx) => {
+      const sessionKey = `${chapterIndex}:${sIdx}`;
+      if (progress.completedSessions.has(sessionKey)) {
+        lastCompletedSession = { index: sIdx, ...s };
+      }
+    });
+
+    if (lastCompletedSession) {
+      // 清除缓存
+      const lectureId = String(state.selectedLectureId || "").trim();
+      const bookId = String(state.selectedBookId || "").trim();
+      const quizKey = `${lectureId}::${bookId}::${chapterIndex}::${lastCompletedSession.index}`;
+      const storedQuizzes = JSON.parse(localStorage.getItem("nxl_quiz_generated_v1") || "{}");
+      delete storedQuizzes[quizKey];
+      localStorage.setItem("nxl_quiz_generated_v1", JSON.stringify(storedQuizzes));
+
+      generateSessionQuiz(
+        chapterIndex,
+        lastCompletedSession.index,
+        chapterName,
+        lastCompletedSession.name || "",
+        lastCompletedSession.range || ""
+      );
+    }
+  }
+
+  // 暴露全局函数
+  window.showQuizHint = showQuizHint;
+  window.showQuizAnswer = showQuizAnswer;
+  window.retryQuiz = retryQuiz;
+
+  loadQuizState();
+
+  function initFloatingPanel() {
+    const btn = document.getElementById("readerFloatingBtn");
+    const closeBtn = document.getElementById("closeFloatingPanelBtn");
+    const panel = document.getElementById("readerFloatingPanel");
+
+    if (btn) {
+      btn.addEventListener("click", () => toggleFloatingPanel());
+    }
+
+    if (closeBtn) {
+      closeBtn.addEventListener("click", () => closeFloatingPanel());
+    }
+
+    if (panel) {
+      const tabs = panel.querySelectorAll(".floating-tab");
+      tabs.forEach((tab) => {
+        tab.addEventListener("click", () => {
+          setFloatingTab(tab.dataset.tab);
+        });
+      });
+    }
+  }
+
+  initFloatingPanel();
+
   function closeReader() {
     resetReaderSelectionTelemetry();
     if (state.isReaderOpen && Array.isArray(state.readerChapters) && state.readerChapters.length) {
       reportReaderChapterComplete(state.readerActiveChapterIndex).catch(() => {});
     }
     clearReaderTelemetrySessionContext("close");
+    closeFloatingPanel();
     // 仅当 selectedBookId 已设置时才发射 telemetry，避免未选择书籍时产生噪声事件
     if (String(state.selectedBookId || "").trim()) {
       emitTelemetry("reader_close", {
@@ -4984,6 +5552,7 @@
     state.readerReportedChapterKey = "";
     state.readerSectionsData = {};
     state.readerAnnotations = [];
+    state.readerChapterCache = {};
     syncReaderModeUI();
     el.readerPane.hidden = true;
     syncMaterialsPageMode();
@@ -5625,10 +6194,12 @@
   }
 
   async function refreshAll() {
-    await loadMaterialsRows();
-    await loadDashboardRows();
-    await loadLearningFeedChannels();
-    await loadLearningFeeds();
+    await Promise.all([
+      loadMaterialsRows(),
+      loadDashboardRows(),
+      loadLearningFeedChannels(),
+      loadLearningFeeds(),
+    ]);
     renderUserProfile();
     renderProgressList();
     renderPie();

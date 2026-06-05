@@ -65,6 +65,7 @@ let currentAbortController = null;
 let isGenerating = false;
 
 let shouldAutoScroll = true; // Auto-scroll control
+let _isJumping = false; // Temporarily block scroll listener during jump
 let uploadedFileIds = []; // Uploaded files {id, name}
 let isUploadingFiles = false;
 let currentUploadXhr = null;
@@ -372,6 +373,7 @@ let conversationRenameState = {
     saving: false
 };
 let conversationListCache = [];
+let conversationListRenderSignature = '';
 let basisKnowledgeListCache = [];
 let trashViewState = {
     loading: false,
@@ -4616,6 +4618,7 @@ const els = {
     inputDock: document.querySelector('.input-dock'),
     messagesContainer: document.getElementById('messagesContainer'),
     learningMainPanel: document.getElementById('learningMainPanel'),
+    turnIndicatorLines: document.getElementById('turnIndicatorLines'),
     messageInput: document.getElementById('messageInput'),
     longtermPlanPanel: document.getElementById('longtermPlanPanel'),
     longtermPlanToggle: document.getElementById('longtermPlanToggle'),
@@ -5190,6 +5193,9 @@ async function syncLearningHeaderMode() {
 
 async function renderWelcomeScreen() {
     if (!els.messagesContainer) return;
+    // Hide turn indicator when no conversation
+    const turnPanel = document.getElementById('turnIndicatorPanel');
+    if (turnPanel) turnPanel.classList.remove('visible');
     if (
         learningModeEnabled
         && !String(currentConversationId || '').trim()
@@ -5272,6 +5278,7 @@ async function applyLearningMode(enabled) {
     if (!currentConversationId) {
         await renderWelcomeScreen();
     }
+    _syncTurnIndicatorVisibility();
 }
 
 async function loadCurrentUserPreferences() {
@@ -8966,9 +8973,25 @@ function bindImageViewerEvents() {
 }
 
 // --- Initialization ---
+// ── Long Task observer (temporary perf debugging) ──────────────────────────
+try {
+    if (typeof PerformanceObserver !== 'undefined') {
+        const _ltObs = new PerformanceObserver((list) => {
+            for (const entry of list.getEntries()) {
+                console.warn(`[LongTask] duration=${entry.duration.toFixed(1)}ms start=${entry.startTime.toFixed(1)}ms name=${entry.name} attribution=${JSON.stringify(entry.attribution?.map(a => a.name) || [])}`);
+            }
+        });
+        _ltObs.observe({ type: 'longtask', buffered: true });
+    }
+} catch (_) {}
+
 document.addEventListener('DOMContentLoaded', async () => {
     installAuthFetchGuard();
-    const authed = await ensureAuthenticatedSession();
+    // 认证检查 + 偏好加载并行
+    const [authed, prefs] = await Promise.all([
+        ensureAuthenticatedSession(),
+        loadCurrentUserPreferences().catch(() => null),
+    ]);
     if (!authed) return;
     initUI();
     if (NOTES_COMPANION_MODE) {
@@ -8978,18 +9001,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
     }
     loadModels();
-    try {
-        const prefs = await loadCurrentUserPreferences();
-        await applyLearningMode(!!(prefs && prefs.learning_mode));
-    } catch (err) {
-        console.error('初始化学习模式失败:', err);
-    }
+    // applyLearningMode 内部同步部分会立即设置 learningModeEnabled 等状态，
+    // 异步部分（资产加载）在后台进行，不阻塞对话加载。
+    const learningPromise = applyLearningMode(!!(prefs && prefs.learning_mode))
+        .catch(err => console.error('初始化学习模式失败:', err));
 
     // Check URL param for conversation ID
     const urlParams = new URLSearchParams(window.location.search);
     let cid = urlParams.get('cid');
     const shouldRestoreMailView = isMailViewUrl() && !!document.getElementById('toggleMailView');
-    
+
     // Check if there is an active stream resume state that needs a specific conversation
     const resumeState = loadActiveStreamResumeState();
     const resumeCid = resumeState ? String(resumeState.conversation_id || '').trim() : '';
@@ -9010,6 +9031,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (learningModeEnabled) {
                 await createNewConversation(false, 'learning');
                 await renderWelcomeScreen();
+                await learningPromise;
                 return;
             }
             loadConversations();
@@ -9021,6 +9043,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             await loadKnowledge(null);
         }
     }
+    await learningPromise;
     await resumeActiveStreamAfterReload();
 });
 
@@ -9333,6 +9356,9 @@ function initUI() {
                 cancelAnimationFrame(__messagesBottomPinRaf);
                 __messagesBottomPinRaf = null;
             }
+            if (__messagesBottomResizeObs) {
+                try { __messagesBottomResizeObs.disconnect(); } catch (_) {}
+            }
             const restoreBehavior = __messagesBottomPinPendingRestoreBehavior !== null
                 ? __messagesBottomPinPendingRestoreBehavior
                 : __messagesBottomPinPrevInlineBehavior;
@@ -9373,15 +9399,19 @@ function initUI() {
                 shouldAutoScroll = true;
                 return;
             }
+            if (_isJumping) return; // Skip during jump
             const { scrollTop, scrollHeight, clientHeight } = els.messagesContainer;
             const distance = scrollHeight - scrollTop - clientHeight;
             
-            // [Optimization] Relaxed threshold (100px)
-            // Latch to bottom to give leeway when model outputs very fast.
-            // If the user scrolls up more than 100px, we break the auto-scroll.
-            if (distance <= 100) {
+            // Re-enable auto-scroll if user scrolls to bottom (within 50px)
+            if (distance <= 50) {
+                shouldAutoScroll = true;
+            } else {
                 shouldAutoScroll = false;
             }
+
+            // Turn indicator 跟随滚动只更新激活态，不再每次强制滚动面板内部，避免额外重排。
+            scheduleTurnIndicatorActiveUpdate({ animate: false, forceScroll: false });
         });
 
         // Hover proxy: 鼠标在容器内时，按纵向位置匹配最近消息，显示该条操作栏
@@ -10700,19 +10730,60 @@ async function loadConversations() {
     try {
         const res = await fetch('/api/conversations');
         const data = await res.json();
-        // Assuming data is array or object with list
-// 说明
-        // Let's assume list for now or adapt.
         const list = Array.isArray(data) ? data : (data.conversations || []);
         conversationListCache = Array.isArray(list) ? [...list] : [];
-        renderConversationList(list);
+        renderConversationList(conversationListCache);
     } catch (e) {
         console.error("Failed to load conversations", e);
     }
 }
 
+function buildConversationListSignature(conversations) {
+    const currentId = String(currentConversationId || '').trim();
+    const orderedConversations = Array.isArray(conversations) ? [...conversations] : [];
+    const toUpdatedTs = (raw) => {
+        const t = Date.parse(String(raw || ''));
+        return Number.isFinite(t) ? t : 0;
+    };
+
+    orderedConversations.sort((a, b) => {
+        const aPin = !!(a && a.pin);
+        const bPin = !!(b && b.pin);
+        if (aPin !== bPin) return aPin ? -1 : 1;
+        return toUpdatedTs((b && b.updated_at) || '') - toUpdatedTs((a && a.updated_at) || '');
+    });
+
+    return JSON.stringify({
+        currentId,
+        items: orderedConversations.map((item) => {
+            const src = (item && typeof item === 'object') ? item : {};
+            return {
+                conversation_id: String(src.conversation_id || src.id || ''),
+                title: String(src.title || src.preview || ''),
+                updated_at: String(src.updated_at || ''),
+                pin: !!src.pin,
+                conversation_mode: String(src.conversation_mode || ''),
+                longterm_active: !!src.longterm_active,
+                longterm_task: String(src.longterm_task || ''),
+                longterm_step: String(src.longterm_step || ''),
+                message_count: Number(src.message_count || 0),
+                tags: Array.isArray(src.tags) ? src.tags.map((tag) => String(tag || '').trim().toLowerCase()) : [],
+                preview: String(src.preview || ''),
+            };
+        }),
+    });
+}
+
 function renderConversationList(conversations) {
     if(!els.conversationList) return;
+
+    const normalized = Array.isArray(conversations) ? conversations : [];
+    const signature = buildConversationListSignature(normalized);
+    if (signature === conversationListRenderSignature) {
+        return;
+    }
+    conversationListRenderSignature = signature;
+
     els.conversationList.innerHTML = '';
 
     const toUpdatedTs = (raw) => {
@@ -11342,6 +11413,14 @@ async function loadConversation(id) {
     clearLearningWelcomeState();
     syncNotesForConversation(id);
     els.messagesContainer.innerHTML = ''; // Loading state
+    // Clear turn indicator
+    const turnIndicatorLines = document.getElementById('turnIndicatorLines');
+    if (turnIndicatorLines) {
+        turnIndicatorLines.innerHTML = '';
+        turnIndicatorLines._turnsData = null;
+    }
+    turnIndicatorState.userMessages = [];
+    hideTurnListPopup();
     tokenMiniState.conversationId = id ? String(id) : null;
     tokenMiniState.baseInput = 0;
     tokenMiniState.baseOutput = 0;
@@ -15650,6 +15729,11 @@ function appendMessage(msg, index) {
         refreshLastUserPromptEditButtons();
     }
 
+    // Update turn indicator
+    if (!isBatchRenderingMessages) {
+        appendTurnIndicatorLine(msg.role, msg);
+    }
+
     // Scroll
     if (shouldAutoScroll && !isBatchRenderingMessages) {
         els.messagesContainer.scrollTop = els.messagesContainer.scrollHeight;
@@ -15669,6 +15753,7 @@ let __messagesBottomPinRaf = null;
 let __messagesBottomPinUntilTs = 0;
 let __messagesBottomPinPrevInlineBehavior = null;
 let __messagesBottomPinPendingRestoreBehavior = null;
+let __messagesBottomResizeObs = null;
 
 function pinMessagesToBottomFor(durationMs = 900) {
     const container = els.messagesContainer;
@@ -15682,33 +15767,35 @@ function pinMessagesToBottomFor(durationMs = 900) {
     }
     container.style.scrollBehavior = 'auto';
 
-    if (__messagesBottomPinRaf) return;
-    const tick = () => {
-        const c = els.messagesContainer;
-        if (!c) {
-            __messagesBottomPinRaf = null;
-            __messagesBottomPinUntilTs = 0;
-            __messagesBottomPinPrevInlineBehavior = null;
-            __messagesBottomPinPendingRestoreBehavior = null;
-            return;
-        }
-        if (!shouldAutoScroll || Date.now() > __messagesBottomPinUntilTs) {
-            __messagesBottomPinRaf = null;
-            __messagesBottomPinUntilTs = 0;
-            const restoreBehavior = __messagesBottomPinPendingRestoreBehavior !== null
-                ? __messagesBottomPinPendingRestoreBehavior
-                : __messagesBottomPinPrevInlineBehavior;
-            if (restoreBehavior !== null) {
-                c.style.scrollBehavior = String(restoreBehavior || '');
+    // Scroll to bottom immediately (single read + write, not a loop).
+    container.scrollTop = container.scrollHeight;
+
+    // Use a ResizeObserver instead of a rAF loop.  The observer fires only
+    // when content size actually changes (e.g. KaTeX expansion), so it
+    // avoids the per-frame scrollHeight-read reflow that the old rAF tick
+    // caused on complex DOMs.
+    if (!__messagesBottomResizeObs) {
+        __messagesBottomResizeObs = new ResizeObserver(() => {
+            if (!shouldAutoScroll || Date.now() > __messagesBottomPinUntilTs) {
+                // Pin expired — restore scrollBehavior and disconnect.
+                const c = els.messagesContainer;
+                if (c) {
+                    const restore = __messagesBottomPinPendingRestoreBehavior !== null
+                        ? __messagesBottomPinPendingRestoreBehavior
+                        : __messagesBottomPinPrevInlineBehavior;
+                    if (restore !== null) c.style.scrollBehavior = String(restore || '');
+                }
+                __messagesBottomPinPrevInlineBehavior = null;
+                __messagesBottomPinPendingRestoreBehavior = null;
+                __messagesBottomPinUntilTs = 0;
+                try { __messagesBottomResizeObs.disconnect(); } catch (_) {}
+                return;
             }
-            __messagesBottomPinPrevInlineBehavior = null;
-            __messagesBottomPinPendingRestoreBehavior = null;
-            return;
-        }
-        c.scrollTop = c.scrollHeight;
-        __messagesBottomPinRaf = requestAnimationFrame(tick);
-    };
-    __messagesBottomPinRaf = requestAnimationFrame(tick);
+            const c = els.messagesContainer;
+            if (c) c.scrollTop = c.scrollHeight;
+        });
+    }
+    try { __messagesBottomResizeObs.observe(container); } catch (_) {}
 }
 
 function variantSignature(v) {
@@ -15874,18 +15961,23 @@ function renderMessages(messages, noScroll, options = {}) {
     isBatchRenderingMessages = true;
     try {
         els.messagesContainer.innerHTML = '';
+        const _tRender0 = performance.now();
         messages.forEach((m, i) => appendMessage(m, i));
+        const _tRender1 = performance.now();
+        console.log(`[renderMessages] appendMessage ×${messages.length} = ${(_tRender1-_tRender0).toFixed(1)}ms`);
     } finally {
         isBatchRenderingMessages = false;
         renderLastUserMessageIndexHint = -1;
     }
+
+    let _tStep = performance.now();
     refreshLastUserPromptEditButtons();
-    
+    console.log(`[renderMessages] refreshEditBtns = ${(performance.now()-_tStep).toFixed(1)}ms`);
+    _tStep = performance.now();
+
     // Restore or scroll
     let shouldPinBottom = false;
     if (noScroll) {
-        // Try to maintain the relative scroll position if desired, 
-        // but usually for delete/version-switch we just want to stay where we are
         if (wasNearBottom || shouldAutoScroll) {
             els.messagesContainer.scrollTop = els.messagesContainer.scrollHeight;
             shouldPinBottom = true;
@@ -15896,11 +15988,13 @@ function renderMessages(messages, noScroll, options = {}) {
         els.messagesContainer.scrollTop = els.messagesContainer.scrollHeight;
         shouldPinBottom = true;
     }
+    console.log(`[renderMessages] scrollToBottom = ${(performance.now()-_tStep).toFixed(1)}ms`);
+    _tStep = performance.now();
 
-    // LaTeX/Katex may expand layout asynchronously after initial paint; keep bottom anchored briefly.
     if (shouldPinBottom) {
         pinMessagesToBottomFor(4200);
     }
+    console.log(`[renderMessages] pinBottom = ${(performance.now()-_tStep).toFixed(1)}ms`);
 
     if (instant) {
         // Instant render should stay `auto` while bottom-pin is active.
@@ -15913,6 +16007,569 @@ function renderMessages(messages, noScroll, options = {}) {
         }
     }
     notifyLearningSidebarBridge();
+
+    // Render turn indicator lines (deferred so math/code renders settle first).
+    console.log(`[renderMessages] all sync work done, scheduling turnIndicator in 200ms`);
+    setTimeout(() => {
+        const _tTI = performance.now();
+        renderTurnIndicator(messages, { animate: false });
+        console.log(`[renderTurnIndicator] total = ${(performance.now()-_tTI).toFixed(1)}ms`);
+    }, 200);
+}
+
+// Turn Indicator State
+const turnIndicatorState = {
+    popupHideTimer: null,
+    userMessages: [],
+    activeTurnIndex: -1,
+    visibleTurnCount: 7,
+    activeLineEl: null,
+    activeUpdateRaf: null,
+    layoutDirty: true,
+    layoutBuildToken: 0,
+    layoutRefreshRaf: null,
+    layoutRefreshInProgress: false,
+    layoutRefreshIndex: 0,
+    layoutRefreshOptions: {
+        animate: false,
+        forceScroll: false,
+    },
+    messageCenters: [],
+};
+
+function markTurnIndicatorLayoutDirty() {
+    turnIndicatorState.layoutDirty = true;
+    turnIndicatorState.layoutBuildToken += 1;
+    turnIndicatorState.layoutRefreshIndex = 0;
+
+    if (turnIndicatorState.layoutRefreshRaf) {
+        cancelAnimationFrame(turnIndicatorState.layoutRefreshRaf);
+        turnIndicatorState.layoutRefreshRaf = null;
+    }
+
+    turnIndicatorState.layoutRefreshInProgress = false;
+}
+
+function scheduleTurnIndicatorLayoutRefresh(options = {}) {
+    turnIndicatorState.layoutRefreshOptions = {
+        animate: !!options.animate,
+        forceScroll: !!options.forceScroll,
+    };
+
+    if (turnIndicatorState.layoutRefreshRaf || turnIndicatorState.layoutRefreshInProgress) {
+        return;
+    }
+
+    const buildToken = turnIndicatorState.layoutBuildToken;
+    turnIndicatorState.layoutRefreshRaf = requestAnimationFrame(() => {
+        turnIndicatorState.layoutRefreshRaf = null;
+        turnIndicatorState.layoutRefreshInProgress = true;
+        rebuildTurnIndicatorLayoutCacheChunked(buildToken, 0);
+    });
+}
+
+function rebuildTurnIndicatorLayoutCacheChunked(buildToken, startIndex) {
+    const _tRebuild0 = performance.now();
+    const messagesContainer = els.messagesContainer;
+    const userMsgs = turnIndicatorState.userMessages || [];
+
+    if (buildToken !== turnIndicatorState.layoutBuildToken) {
+        turnIndicatorState.layoutRefreshInProgress = false;
+        if (turnIndicatorState.layoutDirty) {
+            scheduleTurnIndicatorLayoutRefresh(turnIndicatorState.layoutRefreshOptions || {});
+        }
+        return;
+    }
+
+    if (!messagesContainer || !userMsgs.length) {
+        turnIndicatorState.messageCenters = [];
+        turnIndicatorState.layoutDirty = false;
+        turnIndicatorState.layoutRefreshInProgress = false;
+        updateTurnIndicatorActive(turnIndicatorState.layoutRefreshOptions || {});
+        return;
+    }
+
+    const centers = Array.isArray(turnIndicatorState.messageCenters) && turnIndicatorState.messageCenters.length === userMsgs.length
+        ? turnIndicatorState.messageCenters.slice()
+        : new Array(userMsgs.length);
+
+    // Batch-read all offsetTop/offsetHeight in one synchronous pass to trigger
+    // exactly one reflow instead of one-per-chunk.  Typical conversations have
+    // well under a few hundred user messages; a single pass is faster than
+    // splitting across multiple rAF frames where each frame forces its own
+    // full-page reflow.
+    for (let index = 0; index < userMsgs.length; index++) {
+        if (buildToken !== turnIndicatorState.layoutBuildToken) {
+            turnIndicatorState.layoutRefreshInProgress = false;
+            if (turnIndicatorState.layoutDirty) {
+                scheduleTurnIndicatorLayoutRefresh(turnIndicatorState.layoutRefreshOptions || {});
+            }
+            return;
+        }
+
+        let msgEl = userMsgs[index].domElement;
+
+        if (!msgEl || !msgEl.isConnected) {
+            const messageIndex = Number(userMsgs[index].messageIndex);
+            msgEl = (messageIndex >= 0 && messageIndex < messagesContainer.children.length)
+                ? messagesContainer.children[messageIndex]
+                : null;
+        }
+
+        if (msgEl) {
+            userMsgs[index].domElement = msgEl;
+            centers[index] = msgEl.offsetTop + (msgEl.offsetHeight / 2);
+        } else {
+            centers[index] = null;
+        }
+    }
+
+    turnIndicatorState.messageCenters = centers;
+    turnIndicatorState.layoutDirty = false;
+    turnIndicatorState.layoutRefreshInProgress = false;
+    turnIndicatorState.layoutRefreshIndex = 0;
+    const _tRebuild1 = performance.now();
+    console.log(`[rebuildLayout] msgs=${userMsgs.length} readOffsetTop=${(_tRebuild1-_tRebuild0).toFixed(1)}ms`);
+    updateTurnIndicatorActive(turnIndicatorState.layoutRefreshOptions || {});
+}
+
+function rebuildTurnIndicatorLayoutCache() {
+    scheduleTurnIndicatorLayoutRefresh(turnIndicatorState.layoutRefreshOptions || {});
+}
+
+function findActiveTurnIndexByViewportMiddle(viewportMiddle) {
+    const centers = turnIndicatorState.messageCenters || [];
+    if (!centers.length) return -1;
+
+    let low = 0;
+    let high = centers.length - 1;
+    let activeIndex = 0;
+
+    while (low <= high) {
+        const mid = Math.floor((low + high) / 2);
+        const center = centers[mid];
+
+        if (center === null || center === undefined) {
+            break;
+        }
+
+        if (center <= viewportMiddle) {
+            activeIndex = mid;
+            low = mid + 1;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    return activeIndex;
+}
+
+function _shouldShowTurnIndicator() {
+    if (!String(currentConversationId || '').trim()) return false;
+    if (typeof isKnowledgeViewerOpen === 'function' && isKnowledgeViewerOpen()) return false;
+    return true;
+}
+
+function _syncTurnIndicatorVisibility() {
+    const panel = document.getElementById('turnIndicatorPanel');
+    if (!panel) return;
+    if (!_shouldShowTurnIndicator()) {
+        panel.classList.remove('visible');
+    }
+}
+
+function renderTurnIndicator(messages, options = {}) {
+    const container = document.getElementById('turnIndicatorLines');
+    const messagesContainer = els.messagesContainer;
+    const panel = document.getElementById('turnIndicatorPanel');
+    if (!container) return;
+
+    container.innerHTML = '';
+    container.scrollTop = 0;
+    turnIndicatorState.activeTurnIndex = -1;
+    turnIndicatorState.activeLineEl = null;
+
+    if (!messages || !messages.length || !_shouldShowTurnIndicator()) {
+        if (panel) panel.classList.remove('visible');
+        return;
+    }
+
+    // Collect user messages from data (no DOM query needed)
+    const userMsgs = [];
+    for (let i = 0; i < messages.length; i++) {
+        const msg = messages[i];
+        if (String(msg.role || '').toLowerCase() === 'user') {
+            userMsgs.push({ msg, messageIndex: i, domElement: null });
+        }
+    }
+
+    if (messagesContainer) {
+        const messageEls = messagesContainer.children;
+        for (let i = 0; i < userMsgs.length; i++) {
+            const messageIndex = Number(userMsgs[i].messageIndex);
+            if (messageIndex >= 0 && messageIndex < messageEls.length) {
+                userMsgs[i].domElement = messageEls[messageIndex] || null;
+            }
+        }
+    }
+
+    turnIndicatorState.userMessages = userMsgs;
+
+    // Use DocumentFragment for batch DOM insert
+    const frag = document.createDocumentFragment();
+    for (let i = 0; i < userMsgs.length; i++) {
+        const line = document.createElement('div');
+        line.className = 'turn-indicator-line';
+        line.dataset.turnIndex = i;
+        frag.appendChild(line);
+    }
+    container.appendChild(frag);
+
+    // Show panel
+    if (panel) panel.classList.add('visible');
+
+    // Bind panel hover events for popup (only once)
+    if (panel && !panel._hoverBound) {
+        panel._hoverBound = true;
+        panel.addEventListener('mouseenter', () => {
+            if (turnIndicatorState.popupHideTimer) {
+                clearTimeout(turnIndicatorState.popupHideTimer);
+                turnIndicatorState.popupHideTimer = null;
+            }
+            showTurnListPopup();
+        });
+        panel.addEventListener('mouseleave', () => {
+            scheduleHideTurnListPopup();
+        });
+    }
+
+    markTurnIndicatorLayoutDirty();
+    scheduleTurnIndicatorLayoutRefresh({ animate: !!options.animate, forceScroll: true });
+}
+
+function appendTurnIndicatorLine(role, msg) {
+    const container = document.getElementById('turnIndicatorLines');
+    if (!container) return;
+
+    const roleLower = String(role || '').toLowerCase();
+
+    if (roleLower === 'user') {
+        turnIndicatorState.userMessages.push({
+            msg: msg,
+            messageIndex: Math.max(0, els.messagesContainer ? (els.messagesContainer.children.length - 1) : 0),
+            domElement: null
+        });
+        markTurnIndicatorLayoutDirty();
+
+        const line = document.createElement('div');
+        line.className = 'turn-indicator-line';
+        line.dataset.turnIndex = container.children.length;
+        container.appendChild(line);
+
+        // Keep the latest user turn centered inside the 7-line window.
+        setActiveTurnLine(container.children.length - 1, { animate: false, forceScroll: true });
+        scheduleTurnIndicatorLayoutRefresh({ animate: false, forceScroll: true });
+    } else {
+        // Assistant turns may change the visible context after streaming finishes.
+        scheduleTurnIndicatorActiveUpdate({ animate: false, forceScroll: false });
+    }
+}
+
+function setActiveTurnLine(index, options = {}) {
+    const container = document.getElementById('turnIndicatorLines');
+    if (!container) return;
+
+    const nextIndex = Number.isFinite(Number(index)) ? Number(index) : -1;
+    const nextLine = nextIndex >= 0 ? container.children[nextIndex] : null;
+
+    if (turnIndicatorState.activeLineEl && turnIndicatorState.activeLineEl !== nextLine) {
+        turnIndicatorState.activeLineEl.classList.remove('active');
+    }
+
+    if (nextLine && nextLine !== turnIndicatorState.activeLineEl) {
+        nextLine.classList.add('active');
+    }
+
+    turnIndicatorState.activeTurnIndex = nextIndex;
+    turnIndicatorState.activeLineEl = nextLine || null;
+
+    if (options.forceScroll) {
+        scrollActiveTurnIndicatorIntoView(nextIndex, !!options.animate);
+    }
+}
+
+function scrollActiveTurnIndicatorIntoView(index, animate = false) {
+    const container = document.getElementById('turnIndicatorLines');
+    if (!container) return;
+
+    // Use children[index] instead of querySelector for better performance
+    const activeLine = container.children[index];
+    if (!activeLine) return;
+
+    requestAnimationFrame(() => {
+        const targetTop = Math.max(
+            0,
+            activeLine.offsetTop - ((container.clientHeight - activeLine.offsetHeight) / 2)
+        );
+
+        if (Math.abs(container.scrollTop - targetTop) < 1) {
+            return;
+        }
+
+        container.scrollTo({
+            top: targetTop,
+            behavior: animate ? 'smooth' : 'auto'
+        });
+    });
+}
+
+function showTurnListPopup() {
+    const _t0 = performance.now();
+    let popup = document.getElementById('turnIndicatorPopup');
+    if (!popup) {
+        popup = document.createElement('div');
+        popup.id = 'turnIndicatorPopup';
+        popup.className = 'turn-indicator-popup';
+        document.body.appendChild(popup);
+
+        popup.addEventListener('mouseenter', () => {
+            if (turnIndicatorState.popupHideTimer) {
+                clearTimeout(turnIndicatorState.popupHideTimer);
+                turnIndicatorState.popupHideTimer = null;
+            }
+        });
+        popup.addEventListener('mouseleave', () => {
+            scheduleHideTurnListPopup();
+        });
+    }
+
+    popup.innerHTML = '';
+    const userMsgs = turnIndicatorState.userMessages || [];
+    const _t1 = performance.now();
+
+    // Use cached activeTurnIndex instead of querying DOM
+    const activeIdx = turnIndicatorState.activeTurnIndex >= 0
+        ? turnIndicatorState.activeTurnIndex
+        : userMsgs.length - 1;
+
+    // Use DocumentFragment for batch insert
+    const frag = document.createDocumentFragment();
+    let activeItem = null;
+
+    for (let idx = 0; idx < userMsgs.length; idx++) {
+        const item = userMsgs[idx];
+        const text = extractMessageText(item.msg);
+        const displayText = text || '(空消息)';
+        const div = document.createElement('div');
+        div.className = 'turn-indicator-popup-item';
+        if (idx === activeIdx) {
+            div.classList.add('active');
+            activeItem = div;
+        }
+        div.textContent = displayText;
+        div.title = displayText;
+
+        div.addEventListener('click', () => {
+            jumpToUserMessage(idx);
+            hideTurnListPopup();
+        });
+
+        frag.appendChild(div);
+    }
+    const _t2 = performance.now();
+    popup.appendChild(frag);
+
+    popup.classList.add('visible');
+    const _t3 = performance.now();
+
+    // Center active item in popup without reading layout properties.
+    if (activeItem && activeIdx >= 0) {
+        const ITEM_H = 34;
+        const PAD = 8;
+        const itemTop = PAD + activeIdx * ITEM_H;
+        const popupHeight = 360;
+        popup.scrollTop = itemTop - (popupHeight / 2) + (ITEM_H / 2);
+    }
+    const _t4 = performance.now();
+    console.log(`[TurnPopup] msgs=${userMsgs.length} clear=${(_t1-_t0).toFixed(1)}ms build=${(_t2-_t1).toFixed(1)}ms append+visible=${(_t3-_t2).toFixed(1)}ms scroll=${(_t4-_t3).toFixed(1)}ms total=${(_t4-_t0).toFixed(1)}ms`);
+}
+
+function hideTurnListPopup() {
+    const popup = document.getElementById('turnIndicatorPopup');
+    if (popup) {
+        popup.classList.remove('visible');
+    }
+}
+
+function scheduleHideTurnListPopup() {
+    if (turnIndicatorState.popupHideTimer) {
+        clearTimeout(turnIndicatorState.popupHideTimer);
+    }
+    turnIndicatorState.popupHideTimer = setTimeout(() => {
+        hideTurnListPopup();
+        turnIndicatorState.popupHideTimer = null;
+    }, 300);
+}
+
+function jumpToUserMessage(turnIndex) {
+    const userMsgs = turnIndicatorState.userMessages || [];
+    const item = userMsgs[turnIndex];
+    if (!item) return;
+
+    const root = els.messagesContainer;
+    if (!root) return;
+
+    // Immediately update the active turn indicator before scrolling,
+    // so the user gets instant visual feedback.
+    setActiveTurnLine(turnIndex, { animate: false, forceScroll: true });
+
+    // Try cached DOM element first
+    let targetEl = item.domElement;
+    if (targetEl && targetEl.isConnected && targetEl.classList.contains('user')) {
+        scrollToAndHighlight(targetEl);
+        return;
+    }
+
+    // Fallback: find by messageIndex
+    const allMessageEls = root.children;
+    if (item.messageIndex >= 0 && item.messageIndex < allMessageEls.length) {
+        const candidate = allMessageEls[item.messageIndex];
+        if (candidate && candidate.classList.contains('message') && candidate.classList.contains('user')) {
+            item.domElement = candidate;
+            scrollToAndHighlight(candidate);
+            return;
+        }
+    }
+
+    // Last fallback: find the Nth user message
+    const userEls = root.querySelectorAll('.message.user');
+    let userCount = 0;
+    for (let i = 0; i < userMsgs.length; i++) {
+        if (userMsgs[i] === item) {
+            targetEl = userEls[userCount] || null;
+            break;
+        }
+        userCount++;
+    }
+
+    if (targetEl) {
+        item.domElement = targetEl;
+        scrollToAndHighlight(targetEl);
+    }
+}
+
+function scrollToAndHighlight(messageEl) {
+    if (!messageEl) return;
+    const container = els.messagesContainer;
+    if (!container) return;
+
+    const messageOffsetTop = messageEl.offsetTop;
+    const containerHeight = container.clientHeight;
+    const targetTop = Math.max(0, messageOffsetTop - (containerHeight / 2) + (messageEl.offsetHeight / 2));
+
+    // Cancel pin-to-bottom RAF loop
+    if (__messagesBottomPinRaf) {
+        cancelAnimationFrame(__messagesBottomPinRaf);
+        __messagesBottomPinRaf = null;
+    }
+    if (__messagesBottomResizeObs) {
+        try { __messagesBottomResizeObs.disconnect(); } catch (_) {}
+    }
+    __messagesBottomPinUntilTs = 0;
+    shouldAutoScroll = false;
+
+    // Block scroll listener from interfering during jump
+    _isJumping = true;
+    container.scrollTo({
+        top: targetTop,
+        behavior: 'smooth'
+    });
+    // Unblock after scroll completes
+    setTimeout(() => { _isJumping = false; }, 500);
+
+    // Highlight
+    if (notesJumpHighlightTimer) {
+        clearTimeout(notesJumpHighlightTimer);
+        notesJumpHighlightTimer = null;
+    }
+    messageEl.classList.add('note-source-highlight');
+    notesJumpHighlightTimer = setTimeout(() => {
+        messageEl.classList.remove('note-source-highlight');
+        notesJumpHighlightTimer = null;
+    }, 2200);
+}
+
+function extractMessageText(msg) {
+    if (!msg) return '';
+    const content = msg.content || '';
+    // If content is a string, return it directly
+    if (typeof content === 'string') {
+        return content.trim().substring(0, 200);
+    }
+    // If content is an array (multi-modal), extract text parts
+    if (Array.isArray(content)) {
+        return content
+            .filter(part => part.type === 'text')
+            .map(part => part.text || '')
+            .join(' ')
+            .trim()
+            .substring(0, 200);
+    }
+    return '';
+}
+
+function scheduleTurnIndicatorActiveUpdate(options = {}) {
+    const nextOptions = {
+        animate: !!options.animate,
+        forceScroll: !!options.forceScroll,
+    };
+
+    if (turnIndicatorState.activeUpdateRaf) {
+        cancelAnimationFrame(turnIndicatorState.activeUpdateRaf);
+    }
+
+    turnIndicatorState.activeUpdateRaf = requestAnimationFrame(() => {
+        turnIndicatorState.activeUpdateRaf = null;
+        updateTurnIndicatorActive(nextOptions);
+    });
+}
+
+function updateTurnIndicatorActive(options = {}) {
+    const container = document.getElementById('turnIndicatorLines');
+    const messagesContainer = els.messagesContainer;
+    if (!container || !messagesContainer) return;
+
+    if (!container.children.length) return;
+
+    // Use cached user messages instead of querying DOM
+    const userMsgs = turnIndicatorState.userMessages || [];
+    if (!userMsgs.length) return;
+
+    if (turnIndicatorState.layoutDirty || turnIndicatorState.layoutRefreshInProgress || turnIndicatorState.layoutRefreshRaf) {
+        console.log(`[updateActive] layout dirty → scheduling rebuild (dirty=${turnIndicatorState.layoutDirty} inProgress=${turnIndicatorState.layoutRefreshInProgress})`);
+        scheduleTurnIndicatorLayoutRefresh({
+            animate: !!options.animate,
+            forceScroll: !!options.forceScroll,
+        });
+        return;
+    }
+
+    const scrollTop = messagesContainer.scrollTop;
+    const viewportHeight = messagesContainer.clientHeight;
+    // Use the bottom edge of the viewport to determine the active turn,
+    // so the indicator reflects the message area the user is currently reading.
+    const viewportBottom = scrollTop + viewportHeight;
+
+    const activeTurnIndex = findActiveTurnIndexByViewportMiddle(viewportBottom);
+
+    // Keep the active line centered in the 7-line window.
+    if (activeTurnIndex !== turnIndicatorState.activeTurnIndex || !turnIndicatorState.activeLineEl) {
+        setActiveTurnLine(activeTurnIndex, {
+            animate: !!options.animate,
+            forceScroll: !!options.forceScroll,
+        });
+        return;
+    }
 }
 
 // Global modal functions
@@ -18887,6 +19544,7 @@ async function viewKnowledge(title, options = {}) {
             setTimeout(() => highlightWhenReady(0), 200);
         }
     }, 150);
+    _syncTurnIndicatorVisibility();
 }
 
 function highlightTextInPreview(text, meta = {}) {
@@ -19083,6 +19741,7 @@ function closeKnowledgeView() {
     if (wasMailView) clearMailViewUrl();
     originalHeaderState = null;
     void syncLearningHeaderMode();
+    _syncTurnIndicatorVisibility();
 }
 
 window.openMailPlaceholderView = function() {
@@ -19201,6 +19860,7 @@ window.openMailPlaceholderView = function() {
     `;
     setMailMobileDetailMode(false);
     initMailWorkspace();
+    _syncTurnIndicatorVisibility();
 };
 
 const WORKFLOW_GRAPH_BASE_WIDTH = 1520;
