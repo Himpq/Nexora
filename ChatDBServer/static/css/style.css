@@ -11554,3 +11554,131 @@ body:not(.settings-companion-mode) #settingsModal #settings-admin-models-tab.adm
     border: 1px solid #e5e7eb !important;
     border-radius: 10px !important;
 }
+
+/* ── Turn Indicator Popup ────────────────────────── */
+.turn-indicator-popup {
+    position: fixed;
+    right: 52px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 101;
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+    padding: 8px 0;
+    width: 280px;
+    max-height: 360px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.2s ease, visibility 0.2s ease;
+    pointer-events: none;
+}
+
+.turn-indicator-popup.visible {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+}
+
+.turn-indicator-popup::-webkit-scrollbar {
+    width: 4px;
+}
+
+.turn-indicator-popup::-webkit-scrollbar-thumb {
+    background: #d1d5db;
+    border-radius: 2px;
+}
+
+.turn-indicator-popup-item {
+    padding: 8px 14px;
+    font-size: 13px;
+    color: #374151;
+    line-height: 1.4;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.turn-indicator-popup-item:hover {
+    background-color: #f3f4f6;
+}
+
+.turn-indicator-popup-item.active {
+    background-color: #eff6ff;
+    color: #2563eb;
+}
+
+/* ── Turn Indicator Panel ────────────────────────── */
+
+.turn-indicator-panel {
+    position: fixed;
+    right: 16px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 100;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 8px 6px;
+    background: rgba(255, 255, 255, 0.9);
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+    max-height: 69px;
+    overflow: hidden;
+}
+
+.turn-indicator-panel.visible {
+    display: flex;
+}
+
+.turn-indicator-lines {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    width: 24px;
+    max-height: 53px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    scroll-behavior: smooth;
+    scroll-snap-type: y proximity;
+}
+
+.turn-indicator-lines::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+}
+
+.turn-indicator-line {
+    width: 100%;
+    height: 3px;
+    background: #d1d5db;
+    border-radius: 1px;
+    transition: background-color 0.4s ease;
+    cursor: pointer;
+    flex: 0 0 auto;
+    scroll-snap-align: center;
+}
+
+.turn-indicator-line.active {
+    background: #111111;
+}
+
+.turn-indicator-line:hover {
+    background: #9ca3af;
+}
+
+/* Responsive: Hide turn indicator on small screens */
+@media (max-width: 768px) {
+    .turn-indicator-panel,
+    .turn-indicator-popup {
+        display: none !important;
+    }
+}

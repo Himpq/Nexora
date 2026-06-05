@@ -24,9 +24,11 @@ class ConversationManager:
         """
         self.username = username
         self.base_path = f"./data/users/{username}/conversations"
+        self.index_path = os.path.join(self.base_path, "conversation_index.json")
         
         # 确保对话目录存在
         os.makedirs(self.base_path, exist_ok=True)
+        self._ensure_conversation_index()
 
     @contextmanager
     def _conversation_update_session(self, conversation_id):
@@ -79,6 +81,155 @@ class ConversationManager:
     def _save_json_atomic(self, file_path, payload):
         """原子写入包裹"""
         safe_write_json(file_path, payload, indent=2)
+
+        if os.path.normpath(os.path.abspath(file_path)) == os.path.normpath(os.path.abspath(self.index_path)):
+            return
+
+        self._sync_conversation_index_from_file(file_path, payload)
+
+    def _compact_preview_text(self, text, limit=120):
+        value = " ".join(str(text or "").split())
+        if len(value) <= limit:
+            return value
+
+        return value[:limit].rstrip() + "..."
+
+    def _conversation_id_from_path(self, file_path):
+        filename = os.path.basename(str(file_path or "").strip())
+        if not filename.endswith(".json"):
+            return ""
+        if filename == os.path.basename(self.index_path):
+            return ""
+        return filename[:-5].strip()
+
+    def _load_conversation_index(self):
+        if not os.path.exists(self.index_path):
+            return None
+
+        index_data = self._load_json_data(self.index_path, default=None)
+        if not isinstance(index_data, dict):
+            return None
+
+        conversations = index_data.get("conversations", {})
+        if isinstance(conversations, list):
+            normalized = {}
+            for item in conversations:
+                if not isinstance(item, dict):
+                    continue
+                conversation_id = str(item.get("conversation_id") or item.get("id") or "").strip()
+                if not conversation_id:
+                    continue
+                normalized[conversation_id] = item
+            conversations = normalized
+        elif not isinstance(conversations, dict):
+            conversations = {}
+
+        index_data["conversations"] = conversations
+        return index_data
+
+    def _build_conversation_index_item(self, conversation_id, conversation_data):
+        messages = conversation_data.get("messages", [])
+        if not isinstance(messages, list):
+            messages = []
+
+        preview = ""
+        for msg in reversed(messages):
+            if not isinstance(msg, dict):
+                continue
+
+            role = str(msg.get("role") or "").strip().lower()
+            if role not in {"assistant", "user"}:
+                continue
+
+            exchange_summary = str(msg.get("exchange_summary") or "").strip()
+            content = str(msg.get("content") or "").strip()
+            raw_text = exchange_summary if exchange_summary else content
+            if raw_text:
+                preview = self._compact_preview_text(raw_text)
+                break
+
+        longterm = normalize_longterm_state(conversation_data.get("longterm", {}))
+        tags = conversation_data.get("tags", [])
+        if not isinstance(tags, list):
+            tags = []
+
+        return {
+            "conversation_id": str(conversation_id),
+            "title": str(conversation_data.get("title", "未命名对话") or "未命名对话"),
+            "created_at": conversation_data.get("created_at"),
+            "updated_at": conversation_data.get("updated_at"),
+            "pin": bool(conversation_data.get("pin", False)),
+            "message_count": len(messages),
+            "conversation_mode": str(conversation_data.get("conversation_mode", "chat") or "chat"),
+            "tags": list(tags),
+            "longterm_active": bool(longterm.get("active", False)),
+            "longterm_task": str(longterm.get("task", "") or ""),
+            "longterm_step": str(longterm.get("step", "") or ""),
+            "preview": preview,
+        }
+
+    def _write_conversation_index(self, index_data):
+        safe_write_json(self.index_path, index_data, indent=2)
+
+    def _rebuild_conversation_index(self):
+        conversations = {}
+
+        if os.path.exists(self.base_path):
+            for filename in os.listdir(self.base_path):
+                if not filename.endswith(".json"):
+                    continue
+                if filename == os.path.basename(self.index_path):
+                    continue
+
+                conversation_id = filename[:-5].strip()
+                if not conversation_id:
+                    continue
+
+                conversation_path = os.path.join(self.base_path, filename)
+                data = self._load_json_data(conversation_path, default=None)
+                if not isinstance(data, dict):
+                    continue
+
+                conversations[conversation_id] = self._build_conversation_index_item(conversation_id, data)
+
+        index_data = {
+            "version": 1,
+            "updated_at": datetime.now().isoformat(),
+            "conversations": conversations,
+        }
+        self._write_conversation_index(index_data)
+        return index_data
+
+    def _ensure_conversation_index(self):
+        index_data = self._load_conversation_index()
+        if isinstance(index_data, dict):
+            return index_data
+        return self._rebuild_conversation_index()
+
+    def _sync_conversation_index_from_file(self, file_path, payload):
+        conversation_id = self._conversation_id_from_path(file_path)
+        if not conversation_id:
+            return
+        if not isinstance(payload, dict):
+            return
+
+        index_data = self._load_conversation_index()
+        if not isinstance(index_data, dict):
+            index_data = {
+                "version": 1,
+                "updated_at": datetime.now().isoformat(),
+                "conversations": {},
+            }
+
+        conversations = index_data.get("conversations", {})
+        if not isinstance(conversations, dict):
+            conversations = {}
+
+        conversations[conversation_id] = self._build_conversation_index_item(conversation_id, payload)
+        index_data["version"] = 1
+        index_data["updated_at"] = datetime.now().isoformat()
+        index_data["conversations"] = conversations
+        self._write_conversation_index(index_data)
     
     def create_conversation(
         self,
@@ -595,37 +746,32 @@ class ConversationManager:
     
     def list_conversations(self):
         """
-        列出所有对话
+        列出所有对话。
+
+        这里直接读取轻量索引，避免把每个会话的完整 messages 全量加载进内存。
         
         Returns:
             list: 对话ID列表，按创建时间倒序排列
         """
         if not os.path.exists(self.base_path):
             return []
-        
+
+        index_data = self._load_conversation_index()
+        if not isinstance(index_data, dict):
+            index_data = self._rebuild_conversation_index()
+
+        conversation_map = index_data.get("conversations", {})
+        if not isinstance(conversation_map, dict):
+            conversation_map = {}
+
         conversations = []
-        for filename in os.listdir(self.base_path):
-            if filename.endswith('.json'):
-                conversation_id = filename[:-5]  # 去掉.json后缀
-                conversation_path = os.path.join(self.base_path, filename)
-                
-                data = self._load_json_data(conversation_path, default=None)
-                if not isinstance(data, dict):
-                    continue
-                longterm = normalize_longterm_state(data.get('longterm', {}))
-                conversations.append({
-                    'conversation_id': conversation_id,
-                    'title': data.get('title', '未命名对话'),
-                    'created_at': data.get('created_at'),
-                    'updated_at': data.get('updated_at'),
-                    'pin': bool(data.get('pin', False)),
-                    'message_count': len(data.get('messages', [])),
-                    'conversation_mode': str(data.get('conversation_mode', 'chat') or 'chat'),
-                    'tags': list(data.get('tags', [])) if isinstance(data.get('tags', []), list) else [],
-                    'longterm_active': bool(longterm.get('active', False)),
-                    'longterm_task': str(longterm.get('task', '') or ''),
-                    'longterm_step': str(longterm.get('step', '') or '')
-                })
+        for conversation_id, item in conversation_map.items():
+            if not isinstance(item, dict):
+                continue
+
+            snapshot = dict(item)
+            snapshot["conversation_id"] = str(snapshot.get("conversation_id") or conversation_id)
+            conversations.append(snapshot)
         
         # 置顶优先，其次按更新时间倒序
         conversations.sort(
@@ -661,7 +807,30 @@ class ConversationManager:
             return False
         
         os.remove(conversation_path)
+        self._remove_conversation_index(conversation_id)
         return True
+
+    def _remove_conversation_index(self, conversation_id):
+        cid = str(conversation_id or "").strip()
+        if not cid:
+            return
+
+        with get_path_lock(self.index_path):
+            index_data = self._load_conversation_index()
+            if not isinstance(index_data, dict):
+                return
+
+            conversations = index_data.get("conversations", {})
+            if not isinstance(conversations, dict):
+                conversations = {}
+
+            if cid not in conversations:
+                return
+
+            del conversations[cid]
+            index_data["updated_at"] = datetime.now().isoformat()
+            index_data["conversations"] = conversations
+            self._write_conversation_index(index_data)
     
     def get_messages(self, conversation_id, limit=None):
         """

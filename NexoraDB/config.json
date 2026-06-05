@@ -1,0 +1,23 @@
+{
+    "api_key": "nexoradb-123456",
+    "host": "0.0.0.0",
+    "port": 8100,
+    "data_path": "./chroma_data",
+    "collection_prefix": "knowledge",
+    "distance": "cosine",
+    "embedding": {
+        "type": "sentence-transformers",
+        "model": "BAAI/bge-small-zh-v1.5",
+        "device": "cpu",
+        "normalize": true
+    },
+    "admin": {
+        "users": [
+            {
+                "username": "test123",
+                "password": "test123123@"
+            }
+        ],
+        "secret_key": "c1cf20c36688e52608af749f4087db97b09cb4dd4d522676cb8b5ca7d06ff943"
+    }
+}
