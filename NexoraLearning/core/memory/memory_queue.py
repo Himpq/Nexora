@@ -16,7 +16,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
-from .runlog import log_event
+from core.runlog import log_event
 
 _LOCK = threading.RLock()
 _CFG: Dict[str, Any] = {}

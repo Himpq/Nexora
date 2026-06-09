@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from typing import Any, Callable, Dict, List, Mapping, Tuple
@@ -639,3 +640,190 @@ def run_question_with_tools_strict(
         "lecture_id": lecture_id,
         "book_id": book_id,
     }
+
+
+def generate_session_quiz(
+    cfg: Mapping[str, Any],
+    lecture_id: str,
+    book_id: str,
+    chapter_index: int = 0,
+    session_index: int = 0,
+    chapter_name: str = "",
+    session_name: str = "",
+    session_range: str = "",
+) -> Dict[str, Any]:
+    """为指定session生成测验题目。
+
+    返回 {"questions": [...], "model_name": "...", "chapter_name": "...", "session_name": "..."}
+    """
+    from .modeling import get_question_generation_settings, build_question_generation_runner
+    from .runtime import as_bool, safe_json_obj
+    from ..lectures import load_book_info_xml, load_book_detail_xml, load_book_text, get_lecture, get_book
+    from ..runlog import log_event
+
+    resolved_cfg = dict(cfg or {})
+    lecture = get_lecture(resolved_cfg, lecture_id)
+    book = get_book(resolved_cfg, lecture_id, book_id)
+    if lecture is None or book is None:
+        raise ValueError(f"Book not found: {lecture_id}/{book_id}")
+
+    text = load_book_text(resolved_cfg, lecture_id, book_id)
+    if not text or not text.strip():
+        raise ValueError("Book text is empty.")
+
+    bookinfo_xml = str(load_book_info_xml(resolved_cfg, lecture_id, book_id) or "")
+    bookdetail_xml = str(load_book_detail_xml(resolved_cfg, lecture_id, book_id) or "")
+
+    # 解析session范围
+    start, length = _parse_range(session_range)
+    if length <= 0:
+        # 如果没有session_range，尝试从章节信息中获取
+        coarse_map = _extract_chapter_summaries(bookinfo_xml)
+        for range_key, info in coarse_map.items():
+            if info.get("chapter_name") == chapter_name:
+                start, length = _parse_range(range_key)
+                break
+
+    # 提取session内容
+    session_content = text[start:start + min(length, 8000)] if length > 0 else ""
+
+    # 提取精读内容
+    detail_map = _extract_book_details(bookdetail_xml)
+    chapter_detail = ""
+    for range_key, detail in detail_map.items():
+        if chapter_name in detail or str(start) in range_key:
+            chapter_detail = detail[:4000]
+            break
+
+    # 构建prompt
+    prompt = f"""你是一个教育出题专家。请基于以下学习内容，为学生生成3道测验题目。
+
+## 课程信息
+- 课程：{lecture.get('title', '')}
+- 教材：{book.get('title', '')}
+- 章节：{chapter_name}
+- 小节：{session_name}
+
+## 学习内容
+{session_content[:4000]}
+
+## 精读知识点
+{chapter_detail[:2000]}
+
+## 出题要求
+1. 生成3道题目，难度分布：1道简单、1道中等、1道进阶
+2. 题目类型：选择题或简答题
+3. 必须基于上述学习内容，不要凭空捏造
+4. 每道题包含：标题、难度、题目内容、提示、答案
+
+请以JSON格式返回，格式如下：
+```json
+{{
+  "questions": [
+    {{
+      "title": "题目标题",
+      "difficulty": "简单|中等|进阶",
+      "content": "题目内容",
+      "hint": "提示",
+      "answer": "答案"
+    }}
+  ]
+}}
+```"""
+
+    settings = get_question_generation_settings(resolved_cfg)
+    runner = build_question_generation_runner(resolved_cfg)
+
+    log_event(
+        "session_quiz_start",
+        "Session测验生成开始",
+        payload={
+            "lecture_id": lecture_id,
+            "book_id": book_id,
+            "chapter_name": chapter_name,
+            "session_name": session_name,
+            "session_range": session_range,
+        },
+    )
+
+    try:
+        # 使用 runner.run() 方法，返回字符串内容
+        content = runner.run(
+            request=prompt,
+            api_mode="chat",
+            options={
+                "temperature": float(settings.get("temperature") or 0.3),
+                "max_tokens": 2000,
+            },
+            request_timeout=float(settings.get("request_timeout") or 240),
+        )
+
+        if not content:
+            raise RuntimeError("Model returned empty content")
+
+        # 解析JSON
+        questions = _parse_quiz_json(content)
+
+        log_event(
+            "session_quiz_done",
+            "Session测验生成完成",
+            payload={
+                "lecture_id": lecture_id,
+                "book_id": book_id,
+                "chapter_name": chapter_name,
+                "session_name": session_name,
+                "questions_count": len(questions),
+            },
+        )
+
+        return {
+            "questions": questions,
+            "model_name": str(runner.model_name or ""),
+            "chapter_name": chapter_name,
+            "session_name": session_name,
+        }
+
+    except Exception as e:
+        log_event(
+            "session_quiz_error",
+            f"Session测验生成失败: {str(e)}",
+            payload={
+                "lecture_id": lecture_id,
+                "book_id": book_id,
+                "chapter_name": chapter_name,
+                "session_name": session_name,
+            },
+        )
+        raise
+
+
+def _parse_quiz_json(content: str) -> List[Dict[str, str]]:
+    """从模型输出中解析题目JSON。"""
+    text = str(content or "").strip()
+
+    # 尝试提取JSON块
+    json_match = re.search(r"```json\s*(.*?)\s*```", text, flags=re.DOTALL | re.IGNORECASE)
+    if json_match:
+        text = json_match.group(1).strip()
+
+    # 尝试直接解析
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict) and isinstance(data.get("questions"), list):
+            return _normalize_questions(data["questions"])
+        if isinstance(data, list):
+            return _normalize_questions(data)
+    except json.JSONDecodeError:
+        pass
+
+    # 尝试从文本中提取JSON对象
+    obj_match = re.search(r"\{[\s\S]*\}", text)
+    if obj_match:
+        try:
+            data = json.loads(obj_match.group(0))
+            if isinstance(data, dict) and isinstance(data.get("questions"), list):
+                return _normalize_questions(data["questions"])
+        except json.JSONDecodeError:
+            pass
+
+    return []

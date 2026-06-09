@@ -27,11 +27,12 @@ _LOCK = threading.RLock()
 _LOG_PATH: Optional[Path] = None
 _MODEL_LOG_PATH: Optional[Path] = None
 _STRUCTURED_LOG_PATH: Optional[Path] = None
+_LLM_COMPRESS_LOG_PATH: Optional[Path] = None
 
 
 def init_run_logger(cfg: Mapping[str, Any]) -> str:
     """初始化本次启动日志文件并返回文件路径。"""
-    global _LOG_PATH, _MODEL_LOG_PATH, _STRUCTURED_LOG_PATH
+    global _LOG_PATH, _MODEL_LOG_PATH, _STRUCTURED_LOG_PATH, _LLM_COMPRESS_LOG_PATH
     data_dir = Path(str((cfg or {}).get("data_dir") or "data"))
     logs_dir = data_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
@@ -39,10 +40,12 @@ def init_run_logger(cfg: Mapping[str, Any]) -> str:
     _LOG_PATH = logs_dir / f"server_{ts}.log"
     _MODEL_LOG_PATH = logs_dir / f"models_{ts}.log"
     _STRUCTURED_LOG_PATH = logs_dir / f"events_{ts}.jsonl"
+    _LLM_COMPRESS_LOG_PATH = logs_dir / f"LLM_Compress_{ts}.log"
     with _LOCK:
         _LOG_PATH.write_text("", encoding="utf-8")
         _MODEL_LOG_PATH.write_text("", encoding="utf-8")
         _STRUCTURED_LOG_PATH.write_text("", encoding="utf-8")
+        _LLM_COMPRESS_LOG_PATH.write_text("", encoding="utf-8")
     log_event(
         "server_start",
         "NexoraLearning server started",
@@ -129,6 +132,24 @@ def append_log_text(text: str) -> None:
     with _LOCK:
         with path.open("a", encoding="utf-8") as fh:
             fh.write(body)
+
+
+def append_llm_compress_log(record: Mapping[str, Any]) -> None:
+    """写入独立 LLM_Compress 日志，记录压缩前后完整上下文。"""
+    path = _LLM_COMPRESS_LOG_PATH
+    if path is None:
+        return
+
+    payload = dict(record or {})
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines = [
+        f"===== {now} LLM_COMPRESS =====",
+        json.dumps(_safe_json_value(payload), ensure_ascii=False, indent=2),
+        "",
+    ]
+    with _LOCK:
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write("\n".join(lines))
 
 
 def log_model_text(text: str, *, source: str = "") -> None:

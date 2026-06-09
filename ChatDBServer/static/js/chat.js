@@ -65,6 +65,7 @@ let currentAbortController = null;
 let isGenerating = false;
 
 let shouldAutoScroll = true; // Auto-scroll control
+let _isJumping = false; // Temporarily block scroll listener during jump
 let uploadedFileIds = []; // Uploaded files {id, name}
 let isUploadingFiles = false;
 let currentUploadXhr = null;
@@ -120,8 +121,8 @@ const CHAT_COMPOSER_PREFS_KEY = 'nexora_chat_composer_prefs_v1';
 const CHAT_INPUT_DRAFT_KEY = 'nexora_chat_input_draft_v1';
 const CHAT_INPUT_DRAFT_MAX_LEN = 12000;
 let NEXORA_LEARNING_FRONTEND_URL = `${window.location.protocol}//${window.location.hostname}:5001/api/frontend/`;
-const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260514_02';
-const NEXORA_LEARNING_JS_URL = '/static/js/learning_mode.js?v=20260514_02';
+const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260523_10';
+const NEXORA_LEARNING_JS_URL = '/static/js/learning_mode.js?v=20260523_10';
 const MAIL_POLL_INTERVAL_MS = 5000;
 const AGENT_STATUS_POLL_VISIBLE_MS = 5000;
 const MODAL_STACK_BASE_Z = 12000;
@@ -372,6 +373,7 @@ let conversationRenameState = {
     saving: false
 };
 let conversationListCache = [];
+let conversationListRenderSignature = '';
 let basisKnowledgeListCache = [];
 let trashViewState = {
     loading: false,
@@ -430,6 +432,223 @@ let learningSidebarDraftValue = '';
 let learningFeedComposeMode = false;
 let learningFeedPostInFlight = false;
 let learningFeedCancelBtn = null;
+let learningFeedMentionState = {
+    query: '',
+    users: [],
+    activeIndex: 0,
+    visible: false,
+    context: null,
+};
+let learningFeedMentionMenuEl = null;
+const learningInteractionLocks = {
+    questions: new Map(),
+    puzzles: new Map(),
+};
+let cachedPuzzleStates = {};
+
+function getLearningInteractionLockKey(conversationIdOverride = null) {
+    const raw = conversationIdOverride !== null && conversationIdOverride !== undefined
+        ? conversationIdOverride
+        : currentConversationId;
+    const key = String(raw || '').trim();
+    return key || '__draft__';
+}
+
+function rememberLockedQuestion(questionId, answerText = '') {
+    const qid = String(questionId || '').trim();
+    if (!qid) return;
+    const key = getLearningInteractionLockKey();
+    if (!learningInteractionLocks.questions.has(key)) {
+        learningInteractionLocks.questions.set(key, new Map());
+    }
+    learningInteractionLocks.questions.get(key).set(qid, String(answerText || '').trim());
+}
+
+function getLockedQuestionAnswer(questionId) {
+    const qid = String(questionId || '').trim();
+    if (!qid) return '';
+    const key = getLearningInteractionLockKey();
+    const bucket = learningInteractionLocks.questions.get(key);
+    if (!bucket) return '';
+    return String(bucket.get(qid) || '').trim();
+}
+
+function rememberLockedPuzzle(puzzleId, submission = null) {
+    const api = window.NexoraLearningMode;
+    if (api && typeof api.rememberLockedPuzzle === 'function') {
+        api.rememberLockedPuzzle(puzzleId, submission);
+    }
+}
+
+function getLockedPuzzleSubmission(puzzleId) {
+    const api = window.NexoraLearningMode;
+    if (api && typeof api.getLockedPuzzleSubmission === 'function') {
+        return api.getLockedPuzzleSubmission(puzzleId);
+    }
+    return null;
+}
+
+function resetLearningFeedMentionState() {
+    learningFeedMentionState = {
+        query: '',
+        users: [],
+        activeIndex: 0,
+        visible: false,
+        context: null,
+    };
+    renderLearningFeedMentionMenu();
+}
+
+function getLearningFeedMentionContext(inputEl) {
+    if (!(inputEl instanceof HTMLTextAreaElement || inputEl instanceof HTMLInputElement)) return null;
+    const value = String(inputEl.value || '');
+    const caret = Number(inputEl.selectionStart || 0);
+    const before = value.slice(0, caret);
+    const atIndex = before.lastIndexOf('@');
+    if (atIndex < 0) return null;
+    const prefix = before.slice(0, atIndex);
+    if (prefix && !/\s|^/.test(prefix.slice(-1))) return null;
+    const token = before.slice(atIndex + 1);
+    if (/\s/.test(token)) return null;
+    return {
+        start: atIndex,
+        end: caret,
+        query: token,
+        before,
+        after: value.slice(caret),
+    };
+}
+
+function getFeedUserHandleForMention(row) {
+    if (!row || typeof row !== 'object') return '';
+    return String(row.username || row.user_id || '').trim();
+}
+
+function getFeedUserDisplayNameForMention(row) {
+    if (!row || typeof row !== 'object') return '';
+    return String(row.nickname || row.display_name || row.username || row.user_id || '').trim();
+}
+
+function getFeedUserAvatarForMention(row) {
+    if (!row || typeof row !== 'object') return '';
+    return String(row.avatar_url || row.avatar || '').trim();
+}
+
+async function updateLearningFeedMentionCandidates() {
+    if (!learningFeedComposeMode || !els.messageInput) {
+        resetLearningFeedMentionState();
+        return;
+    }
+    const context = getLearningFeedMentionContext(els.messageInput);
+    if (!context) {
+        resetLearningFeedMentionState();
+        return;
+    }
+    try {
+        const api = await ensureLearningModeAssets();
+        if (!api || typeof api.searchFeedUsersViaIframe !== 'function') {
+            resetLearningFeedMentionState();
+            return;
+        }
+        const query = String(context.query || '');
+        const rows = await api.searchFeedUsersViaIframe(query, 8);
+        const users = Array.isArray(rows) ? rows : [];
+        let visible = users.length > 0;
+        if (visible && query) {
+            const q = query.toLowerCase();
+            const exact = users.find((row) => getFeedUserHandleForMention(row).toLowerCase() === q);
+            const prefixRows = users.filter((row) => getFeedUserHandleForMention(row).toLowerCase().startsWith(q));
+            if (!exact && prefixRows.length === 1) {
+                const onlyHandle = getFeedUserHandleForMention(prefixRows[0]).toLowerCase();
+                if (q.length > onlyHandle.length || !onlyHandle.startsWith(q)) {
+                    visible = false;
+                }
+            }
+        }
+        learningFeedMentionState = {
+            query,
+            users,
+            activeIndex: 0,
+            visible,
+            context,
+        };
+        renderLearningFeedMentionMenu();
+    } catch (_) {
+        resetLearningFeedMentionState();
+    }
+}
+
+function applyLearningFeedMentionSelection(row) {
+    if (!els.messageInput || !learningFeedMentionState || !learningFeedMentionState.context) return false;
+    const handle = getFeedUserHandleForMention(row);
+    if (!handle) return false;
+    const ctx = learningFeedMentionState.context;
+    const nextValue = `${ctx.before.slice(0, ctx.start)}@${handle} ${ctx.after}`;
+    els.messageInput.value = nextValue;
+    try {
+        const caret = ctx.before.slice(0, ctx.start).length + handle.length + 2;
+        els.messageInput.setSelectionRange(caret, caret);
+    } catch (_) {}
+    saveMessageDraftToStorage(els.messageInput.value);
+    resetLearningFeedMentionState();
+    return true;
+}
+
+function ensureLearningFeedMentionMenu() {
+    if (!els.messageInput || !els.messageInput.parentElement) return null;
+    if (learningFeedMentionMenuEl && learningFeedMentionMenuEl.isConnected) return learningFeedMentionMenuEl;
+    const menu = document.createElement('div');
+    menu.id = 'learningFeedMentionMenu';
+    menu.className = 'learning-feed-mention-menu';
+    menu.hidden = true;
+    menu.addEventListener('click', (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        const btn = target.closest('[data-feed-mention-index]');
+        if (!btn) return;
+        event.preventDefault();
+        const index = Number(btn.getAttribute('data-feed-mention-index') || 0);
+        const row = Array.isArray(learningFeedMentionState.users) ? learningFeedMentionState.users[index] : null;
+        if (!row) return;
+        applyLearningFeedMentionSelection(row);
+        renderLearningFeedMentionMenu();
+        ensureMessageInputFocus({ onlyIfBlurred: true, preserveSelection: true });
+    });
+    els.messageInput.parentElement.appendChild(menu);
+    learningFeedMentionMenuEl = menu;
+    return menu;
+}
+
+function renderLearningFeedMentionMenu() {
+    const menu = ensureLearningFeedMentionMenu();
+    if (!menu) return;
+    const state = learningFeedMentionState;
+    if (!learningFeedComposeMode || !state || !state.visible || !Array.isArray(state.users) || !state.users.length) {
+        menu.hidden = true;
+        menu.style.display = 'none';
+        menu.innerHTML = '';
+        return;
+    }
+    menu.hidden = false;
+    menu.style.display = 'grid';
+    menu.innerHTML = state.users.map((row, index) => {
+        const handle = getFeedUserHandleForMention(row);
+        const name = getFeedUserDisplayNameForMention(row) || handle || 'User';
+        const avatarUrl = getFeedUserAvatarForMention(row);
+        const initial = (Array.from(String(name || '').trim())[0] || '@').toUpperCase();
+        return `
+            <button type="button" class="learning-feed-mention-item${index === Number(state.activeIndex || 0) ? ' is-active' : ''}" data-feed-mention-index="${index}">
+                ${avatarUrl
+                    ? `<img class="learning-feed-mention-avatar learning-feed-mention-avatar-image" src="${escapeHtml(avatarUrl)}" alt="${escapeHtml(name)}">`
+                    : `<div class="learning-feed-mention-avatar">${escapeHtml(initial)}</div>`}
+                <span class="learning-feed-mention-meta">
+                    <span class="learning-feed-mention-name">${escapeHtml(name)}</span>
+                    <span class="learning-feed-mention-handle">@${escapeHtml(handle)}</span>
+                </span>
+            </button>
+        `;
+    }).join('');
+}
 
 function notifyLearningSidebarBridge() {
     try {
@@ -480,7 +699,7 @@ function getLearningSidebarMessages() {
                 }
                 return false;
             };
-            const orderedNodes = Array.from(body.querySelectorAll('.thinking-block.reasoning-thinking-block, .content-body, .tool-usage, .add-basis-view, .question-tool-card'));
+            const orderedNodes = Array.from(body.querySelectorAll('.thinking-block.reasoning-thinking-block, .content-body, .tool-usage, .add-basis-view, .question-tool-card, .puzzle-tool-card'));
             orderedNodes.forEach((item) => {
                 if (!(item instanceof Element) || isInsideConsumed(item)) return;
                 if (item.classList.contains('thinking-block') && item.classList.contains('reasoning-thinking-block')) {
@@ -576,6 +795,32 @@ function getLearningSidebarMessages() {
                             answer: answerText
                         }
                     });
+                    return;
+                }
+                if (item.classList.contains('puzzle-tool-card')) {
+                    const puzzleBody = item.querySelector('.puzzle-card-body');
+                    const puzzleId = String(
+                        (puzzleBody && puzzleBody.dataset && puzzleBody.dataset.puzzleCardId)
+                        || item.dataset.puzzleId
+                        || ''
+                    ).trim();
+                    const puzzleTitle = String((item.querySelector('.question-card-title') || {}).textContent || '').trim();
+                    const resolved = String(item.dataset.resolved || '').trim().toLowerCase() === 'true';
+                    const answerItems = Array.from(item.querySelectorAll('.puzzle-card-answer li'))
+                        .map((li) => String(li.textContent || '').trim())
+                        .filter(Boolean);
+                    markConsumed(item);
+                    parts.push({
+                        kind: 'puzzle',
+                        format: 'puzzle',
+                        puzzle: {
+                            puzzle_id: puzzleId,
+                            title: puzzleTitle,
+                            resolved,
+                            ordered_steps: answerItems
+                        }
+                    });
+                    return;
                 }
             });
         }
@@ -684,6 +929,14 @@ function findFirstPendingQuestionCard() {
         if (!resolved && pending) return card;
     }
     return null;
+}
+
+async function handlePuzzleIframeSubmit(detail) {
+    const api = window.NexoraLearningMode;
+    if (api && typeof api.handlePuzzleIframeSubmit === 'function') {
+        return api.handlePuzzleIframeSubmit(detail);
+    }
+    return false;
 }
 
 async function submitQuestionAnswerFromSidebar(answerText, questionId = '') {
@@ -4365,6 +4618,7 @@ const els = {
     inputDock: document.querySelector('.input-dock'),
     messagesContainer: document.getElementById('messagesContainer'),
     learningMainPanel: document.getElementById('learningMainPanel'),
+    turnIndicatorLines: document.getElementById('turnIndicatorLines'),
     messageInput: document.getElementById('messageInput'),
     longtermPlanPanel: document.getElementById('longtermPlanPanel'),
     longtermPlanToggle: document.getElementById('longtermPlanToggle'),
@@ -4558,6 +4812,11 @@ function syncLearningFeedComposerUi() {
     if (els.messageInput) {
         els.messageInput.placeholder = learningFeedComposeMode ? '写一条学习动态...' : 'Type a message...';
     }
+    if (!learningFeedComposeMode) {
+        resetLearningFeedMentionState();
+    } else {
+        renderLearningFeedMentionMenu();
+    }
 }
 
 function enterLearningFeedComposeMode() {
@@ -4578,6 +4837,7 @@ function exitLearningFeedComposeMode(options = {}) {
         els.messageInput.style.height = 'auto';
         saveMessageDraftToStorage('');
     }
+    resetLearningFeedMentionState();
     syncLearningFeedComposerUi();
     updateSendButtonState();
 }
@@ -4648,6 +4908,22 @@ async function ensureLearningModeAssets() {
         ensureScriptAsset('nexoraLearningModeJs', NEXORA_LEARNING_JS_URL),
     ]).then(() => window.NexoraLearningMode || null);
     return learningModeAssetsPromise;
+}
+
+function registerLearningModeChatBridge() {
+    const api = window.NexoraLearningMode;
+    if (!api || typeof api.registerChatBridge !== 'function') return;
+    api.registerChatBridge({
+        sendMessage,
+        getCachedPuzzleStates: () => cachedPuzzleStates,
+        ensureLearningModeAssets,
+        placeInteractiveCardsBelowToolChain,
+        learningInteractionLocks,
+        getLearningInteractionLockKey,
+        get messagesContainer() { return els.messagesContainer; },
+        get messageInput() { return els.messageInput; },
+        frontendUrl: NEXORA_LEARNING_FRONTEND_URL,
+    });
 }
 
 function shouldForceLearningSidebarMode() {
@@ -4738,10 +5014,13 @@ function setLearningEmbedLayoutMode(mode, options = {}) {
         els.mainContent.classList.toggle('learning-embed-immersive', active);
     }
     if (els.inputDock) {
-        if (options && options.hasOwnProperty('hideInputDock')) {
+        if (active) {
+            // immersive 模式下，inputDock 由 CSS body.learning-embed-immersive .input-dock 控制
+            els.inputDock.classList.remove('learning-mode-hidden');
+        } else if (options && options.hasOwnProperty('hideInputDock')) {
             const shouldHide = !!options.hideInputDock;
             els.inputDock.classList.toggle('learning-mode-hidden', shouldHide);
-        } else if (!active) {
+        } else {
             els.inputDock.classList.remove('learning-mode-hidden');
         }
     }
@@ -4805,12 +5084,24 @@ function handleLearningHostMessage(payload) {
         hideNotesContextMenu();
         return true;
     }
+    if (msgType === 'nexora:reader:ask-annotation') {
+        const askText = String(payload.text || '').trim();
+        if (askText) {
+            fillMessageInputWithExplainText(askText);
+        }
+        return true;
+    }
     return false;
 }
 
 window.addEventListener('message', (event) => {
     const data = event && event.data;
     handleLearningHostMessage(data);
+});
+
+window.addEventListener('nexora:learning-puzzle-submit', (event) => {
+    const payload = event && event.detail;
+    void handlePuzzleIframeSubmit(payload);
 });
 
 window.addEventListener('nexora:chat-input:visibility', (event) => {
@@ -4868,6 +5159,9 @@ async function syncLearningHeaderMode() {
     );
     if (!showLearningMain) {
         setLearningEmbedLayoutMode('default');
+        if (els.inputDock) {
+            els.inputDock.classList.remove('learning-mode-hidden');
+        }
     }
     if (els.messagesContainer) {
         if (showLearningMain && !hasConversation) {
@@ -4888,10 +5182,20 @@ async function syncLearningHeaderMode() {
     if (els.conversationTitle) {
         els.conversationTitle.textContent = hasConversation ? (els.conversationTitle.textContent || 'Untitled Conversation') : (showLearning ? 'Learning' : 'Nexora');
     }
+    if (!showLearningMain && els.messageInput && els.messageInput.value) {
+        requestAnimationFrame(() => {
+            els.messageInput.style.height = 'auto';
+            const minHeight = 42;
+            els.messageInput.style.height = Math.max(minHeight, els.messageInput.scrollHeight) + 'px';
+        });
+    }
 }
 
 async function renderWelcomeScreen() {
     if (!els.messagesContainer) return;
+    // Hide turn indicator when no conversation
+    const turnPanel = document.getElementById('turnIndicatorPanel');
+    if (turnPanel) turnPanel.classList.remove('visible');
     if (
         learningModeEnabled
         && !String(currentConversationId || '').trim()
@@ -4953,6 +5257,7 @@ async function applyLearningMode(enabled) {
     if (learningModeEnabled) {
         try {
             await ensureLearningModeAssets();
+            registerLearningModeChatBridge();
         } catch (err) {
             console.error('预加载学习模式资源失败:', err);
         }
@@ -4973,6 +5278,7 @@ async function applyLearningMode(enabled) {
     if (!currentConversationId) {
         await renderWelcomeScreen();
     }
+    _syncTurnIndicatorVisibility();
 }
 
 async function loadCurrentUserPreferences() {
@@ -6884,7 +7190,13 @@ function fillMessageInputWithExplainText(rawText) {
     if (!text) return false;
     const prompt = `解释 ${text}`;
     input.value = prompt;
+    learningSidebarDraftValue = prompt;
     input.dispatchEvent(new Event('input', { bubbles: true }));
+    requestAnimationFrame(() => {
+        input.style.height = 'auto';
+        const minHeight = 42;
+        input.style.height = Math.max(minHeight, input.scrollHeight) + 'px';
+    });
     try {
         const n = prompt.length;
         input.setSelectionRange(n, n, 'none');
@@ -8661,9 +8973,25 @@ function bindImageViewerEvents() {
 }
 
 // --- Initialization ---
+// ── Long Task observer (temporary perf debugging) ──────────────────────────
+try {
+    if (typeof PerformanceObserver !== 'undefined') {
+        const _ltObs = new PerformanceObserver((list) => {
+            for (const entry of list.getEntries()) {
+                console.warn(`[LongTask] duration=${entry.duration.toFixed(1)}ms start=${entry.startTime.toFixed(1)}ms name=${entry.name} attribution=${JSON.stringify(entry.attribution?.map(a => a.name) || [])}`);
+            }
+        });
+        _ltObs.observe({ type: 'longtask', buffered: true });
+    }
+} catch (_) {}
+
 document.addEventListener('DOMContentLoaded', async () => {
     installAuthFetchGuard();
-    const authed = await ensureAuthenticatedSession();
+    // 认证检查 + 偏好加载并行
+    const [authed, prefs] = await Promise.all([
+        ensureAuthenticatedSession(),
+        loadCurrentUserPreferences().catch(() => null),
+    ]);
     if (!authed) return;
     initUI();
     if (NOTES_COMPANION_MODE) {
@@ -8673,18 +9001,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
     }
     loadModels();
-    try {
-        const prefs = await loadCurrentUserPreferences();
-        await applyLearningMode(!!(prefs && prefs.learning_mode));
-    } catch (err) {
-        console.error('初始化学习模式失败:', err);
-    }
+    // applyLearningMode 内部同步部分会立即设置 learningModeEnabled 等状态，
+    // 异步部分（资产加载）在后台进行，不阻塞对话加载。
+    const learningPromise = applyLearningMode(!!(prefs && prefs.learning_mode))
+        .catch(err => console.error('初始化学习模式失败:', err));
 
     // Check URL param for conversation ID
     const urlParams = new URLSearchParams(window.location.search);
     let cid = urlParams.get('cid');
     const shouldRestoreMailView = isMailViewUrl() && !!document.getElementById('toggleMailView');
-    
+
     // Check if there is an active stream resume state that needs a specific conversation
     const resumeState = loadActiveStreamResumeState();
     const resumeCid = resumeState ? String(resumeState.conversation_id || '').trim() : '';
@@ -8705,6 +9031,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (learningModeEnabled) {
                 await createNewConversation(false, 'learning');
                 await renderWelcomeScreen();
+                await learningPromise;
                 return;
             }
             loadConversations();
@@ -8716,6 +9043,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             await loadKnowledge(null);
         }
     }
+    await learningPromise;
     await resumeActiveStreamAfterReload();
 });
 
@@ -8913,6 +9241,38 @@ function initUI() {
         }, { passive: true });
 
         els.messageInput.addEventListener('keydown', (e) => {
+            if (learningFeedComposeMode) {
+                const mentionState = learningFeedMentionState;
+                const hasMention = !!(mentionState && mentionState.visible && Array.isArray(mentionState.users) && mentionState.users.length);
+                if (hasMention) {
+                    if (e.key === 'ArrowDown') {
+                        e.preventDefault();
+                        mentionState.activeIndex = (Number(mentionState.activeIndex || 0) + 1) % mentionState.users.length;
+                        renderLearningFeedMentionMenu();
+                        return;
+                    }
+                    if (e.key === 'ArrowUp') {
+                        e.preventDefault();
+                        mentionState.activeIndex = (Number(mentionState.activeIndex || 0) - 1 + mentionState.users.length) % mentionState.users.length;
+                        renderLearningFeedMentionMenu();
+                        return;
+                    }
+                    if (e.key === 'Escape') {
+                        e.preventDefault();
+                        resetLearningFeedMentionState();
+                        return;
+                    }
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                        const picked = mentionState.users[Number(mentionState.activeIndex || 0)];
+                        if (picked) {
+                            e.preventDefault();
+                            applyLearningFeedMentionSelection(picked);
+                            renderLearningFeedMentionMenu();
+                            return;
+                        }
+                    }
+                }
+            }
             if ((e.isComposing || isMessageInputComposing) && e.key === 'Enter') {
                 return;
             }
@@ -8924,9 +9284,15 @@ function initUI() {
         // Auto-resize textarea
         els.messageInput.addEventListener('input', function() {
             this.style.height = 'auto';
-            this.style.height = (this.scrollHeight) + 'px';
+            const minHeight = 42;
+            this.style.height = Math.max(minHeight, this.scrollHeight) + 'px';
             if(this.value === '') this.style.height = 'auto'; // Reset
             saveMessageDraftToStorage(this.value);
+            if (learningFeedComposeMode) {
+                updateLearningFeedMentionCandidates();
+            } else {
+                resetLearningFeedMentionState();
+            }
         });
 
         const inputContainer = document.querySelector('#inputWrapper .input-container');
@@ -8990,6 +9356,9 @@ function initUI() {
                 cancelAnimationFrame(__messagesBottomPinRaf);
                 __messagesBottomPinRaf = null;
             }
+            if (__messagesBottomResizeObs) {
+                try { __messagesBottomResizeObs.disconnect(); } catch (_) {}
+            }
             const restoreBehavior = __messagesBottomPinPendingRestoreBehavior !== null
                 ? __messagesBottomPinPendingRestoreBehavior
                 : __messagesBottomPinPrevInlineBehavior;
@@ -9030,15 +9399,19 @@ function initUI() {
                 shouldAutoScroll = true;
                 return;
             }
+            if (_isJumping) return; // Skip during jump
             const { scrollTop, scrollHeight, clientHeight } = els.messagesContainer;
             const distance = scrollHeight - scrollTop - clientHeight;
             
-            // [Optimization] Relaxed threshold (100px)
-            // Latch to bottom to give leeway when model outputs very fast.
-            // If the user scrolls up more than 100px, we break the auto-scroll.
-            if (distance <= 100) {
+            // Re-enable auto-scroll if user scrolls to bottom (within 50px)
+            if (distance <= 50) {
+                shouldAutoScroll = true;
+            } else {
                 shouldAutoScroll = false;
             }
+
+            // Turn indicator 跟随滚动只更新激活态，不再每次强制滚动面板内部，避免额外重排。
+            scheduleTurnIndicatorActiveUpdate({ animate: false, forceScroll: false });
         });
 
         // Hover proxy: 鼠标在容器内时，按纵向位置匹配最近消息，显示该条操作栏
@@ -9126,6 +9499,20 @@ function initUI() {
         if (mobileHeaderMenu && !mobileHeaderMenu.contains(e.target)) {
             closeMobileHeaderMenu();
         }
+        if (els.knowledgePanel && els.knowledgePanel.classList.contains('visible')) {
+            const target = e.target;
+            const clickInPanel = !!(target && els.knowledgePanel.contains(target));
+            const clickOnToggle = !!(
+                target &&
+                (
+                    (els.toggleKnowledgePanel && els.toggleKnowledgePanel.contains(target)) ||
+                    (els.btnTogglePanel && els.btnTogglePanel.contains(target))
+                )
+            );
+            if (!clickInPanel && !clickOnToggle) {
+                closeKnowledgePanel();
+            }
+        }
 
         // Mobile: tap blank area to close sidebar / knowledge panel
         if (isChatMobileLayout()) {
@@ -9141,15 +9528,6 @@ function initUI() {
                     (mobileToggleBtn && mobileToggleBtn.contains(target));
                 if (!clickInSidebar && !clickOnToggle) {
                     closeMobileSidebar();
-                }
-            }
-
-            if (els.knowledgePanel && els.knowledgePanel.classList.contains('visible')) {
-                const clickInPanel = els.knowledgePanel.contains(target);
-                const clickOnToggle = (els.toggleKnowledgePanel && els.toggleKnowledgePanel.contains(target)) ||
-                    (els.btnTogglePanel && els.btnTogglePanel.contains(target));
-                if (!clickInPanel && !clickOnToggle) {
-                    closeKnowledgePanel();
                 }
             }
 
@@ -10352,19 +10730,60 @@ async function loadConversations() {
     try {
         const res = await fetch('/api/conversations');
         const data = await res.json();
-        // Assuming data is array or object with list
-// 说明
-        // Let's assume list for now or adapt.
         const list = Array.isArray(data) ? data : (data.conversations || []);
         conversationListCache = Array.isArray(list) ? [...list] : [];
-        renderConversationList(list);
+        renderConversationList(conversationListCache);
     } catch (e) {
         console.error("Failed to load conversations", e);
     }
 }
 
+function buildConversationListSignature(conversations) {
+    const currentId = String(currentConversationId || '').trim();
+    const orderedConversations = Array.isArray(conversations) ? [...conversations] : [];
+    const toUpdatedTs = (raw) => {
+        const t = Date.parse(String(raw || ''));
+        return Number.isFinite(t) ? t : 0;
+    };
+
+    orderedConversations.sort((a, b) => {
+        const aPin = !!(a && a.pin);
+        const bPin = !!(b && b.pin);
+        if (aPin !== bPin) return aPin ? -1 : 1;
+        return toUpdatedTs((b && b.updated_at) || '') - toUpdatedTs((a && a.updated_at) || '');
+    });
+
+    return JSON.stringify({
+        currentId,
+        items: orderedConversations.map((item) => {
+            const src = (item && typeof item === 'object') ? item : {};
+            return {
+                conversation_id: String(src.conversation_id || src.id || ''),
+                title: String(src.title || src.preview || ''),
+                updated_at: String(src.updated_at || ''),
+                pin: !!src.pin,
+                conversation_mode: String(src.conversation_mode || ''),
+                longterm_active: !!src.longterm_active,
+                longterm_task: String(src.longterm_task || ''),
+                longterm_step: String(src.longterm_step || ''),
+                message_count: Number(src.message_count || 0),
+                tags: Array.isArray(src.tags) ? src.tags.map((tag) => String(tag || '').trim().toLowerCase()) : [],
+                preview: String(src.preview || ''),
+            };
+        }),
+    });
+}
+
 function renderConversationList(conversations) {
     if(!els.conversationList) return;
+
+    const normalized = Array.isArray(conversations) ? conversations : [];
+    const signature = buildConversationListSignature(normalized);
+    if (signature === conversationListRenderSignature) {
+        return;
+    }
+    conversationListRenderSignature = signature;
+
     els.conversationList.innerHTML = '';
 
     const toUpdatedTs = (raw) => {
@@ -10986,13 +11405,22 @@ async function loadConversation(id) {
     currentSearchQuery = '';
     currentViewingKnowledge = null;
     originalHeaderState = null;
-    
+    cachedPuzzleStates = {};
+
     currentConversationId = id;
     learningHeaderMode = learningReaderOpened ? 'learning' : 'chat';
     void syncLearningHeaderMode();
     clearLearningWelcomeState();
     syncNotesForConversation(id);
     els.messagesContainer.innerHTML = ''; // Loading state
+    // Clear turn indicator
+    const turnIndicatorLines = document.getElementById('turnIndicatorLines');
+    if (turnIndicatorLines) {
+        turnIndicatorLines.innerHTML = '';
+        turnIndicatorLines._turnsData = null;
+    }
+    turnIndicatorState.userMessages = [];
+    hideTurnListPopup();
     tokenMiniState.conversationId = id ? String(id) : null;
     tokenMiniState.baseInput = 0;
     tokenMiniState.baseOutput = 0;
@@ -11010,6 +11438,9 @@ async function loadConversation(id) {
         const data = await res.json();
         
         if (data.success && data.conversation) {
+            // 缓存服务端 puzzle 状态
+            cachedPuzzleStates = (data.conversation.puzzle_states && typeof data.conversation.puzzle_states === 'object')
+                ? data.conversation.puzzle_states : {};
             refreshConversationImageHistoryFlag(data.conversation.messages || []);
             syncConversationModeFromConversation(data.conversation);
             applyLearningSidebarMode(learningReaderOpened ? 'learning' : 'nexora');
@@ -11378,6 +11809,25 @@ function createQuestionCardNode(question, options = {}) {
     return wrap;
 }
 
+function createPuzzleCardNode(puzzle, options = {}) {
+    const api = window.NexoraLearningMode;
+    if (api && typeof api.createPuzzleCardNode === 'function') {
+        return api.createPuzzleCardNode(puzzle, {
+            ...options,
+            frontendUrl: NEXORA_LEARNING_FRONTEND_URL,
+        });
+    }
+    return null;
+}
+
+function resolvePuzzleCardId(payload, step, messageDiv) {
+    const api = window.NexoraLearningMode;
+    if (api && typeof api.resolvePuzzleCardId === 'function') {
+        return api.resolvePuzzleCardId(payload, step, messageDiv);
+    }
+    return `puzzle_fallback_${Date.now()}`;
+}
+
 function buildQuestionAnswerInjectionText(questionPayload, answerText) {
     const payload = (questionPayload && typeof questionPayload === 'object') ? questionPayload : {};
     const finalAnswer = String(answerText || '').trim();
@@ -11416,6 +11866,13 @@ function applyQuestionAnswer(questionCard, answerText) {
     questionCard.dataset.resolved = 'true';
 }
 
+function applyPuzzleAnswer(puzzleCard, orderedSteps) {
+    const api = window.NexoraLearningMode;
+    if (api && typeof api.applyPuzzleAnswer === 'function') {
+        return api.applyPuzzleAnswer(puzzleCard, orderedSteps);
+    }
+}
+
 async function submitQuestionAnswer(answerText, questionCard = null) {
     const finalAnswer = String(answerText || '').trim();
     if (!finalAnswer) return;
@@ -11428,6 +11885,9 @@ async function submitQuestionAnswer(answerText, questionCard = null) {
             .map((btn) => String(btn.textContent || '').trim())
             .filter(Boolean),
     } : {};
+    if (payload.question_id) {
+        rememberLockedQuestion(payload.question_id, finalAnswer);
+    }
     if (questionCard) applyQuestionAnswer(questionCard, finalAnswer);
     if (els.messageInput) {
         els.messageInput.value = finalAnswer;
@@ -11440,6 +11900,13 @@ async function submitQuestionAnswer(answerText, questionCard = null) {
     });
 }
 
+async function submitPuzzleAnswer(orderedSteps, puzzleCard = null, submission = null, puzzleIdHint = '') {
+    const api = window.NexoraLearningMode;
+    if (api && typeof api.submitPuzzleAnswer === 'function') {
+        return api.submitPuzzleAnswer(orderedSteps, puzzleCard, submission, puzzleIdHint);
+    }
+}
+
 function appendQuestionStep(messageDiv, step) {
     if (!messageDiv || !step || typeof step !== 'object') return;
     const content = messageDiv.querySelector('.message-content');
@@ -11447,8 +11914,20 @@ function appendQuestionStep(messageDiv, step) {
     const payload = (step.question && typeof step.question === 'object') ? step.question : step;
     const node = createQuestionCardNode(payload);
     if (!node) return;
+    const questionId = String(payload.question_id || '').trim();
+    const rememberedAnswer = getLockedQuestionAnswer(questionId);
+    if (rememberedAnswer) {
+        applyQuestionAnswer(node, rememberedAnswer);
+    }
     content.appendChild(node);
     placeInteractiveCardsBelowToolChain(messageDiv);
+}
+
+function appendPuzzleStep(messageDiv, step) {
+    const api = window.NexoraLearningMode;
+    if (api && typeof api.appendPuzzleStep === 'function') {
+        return api.appendPuzzleStep(messageDiv, step);
+    }
 }
 
 function appendLearningCardsToContent(contentEl, cards) {
@@ -11473,7 +11952,7 @@ function appendLearningCardStep(messageDiv, step) {
 function placeInteractiveCardsBelowToolChain(messageDiv) {
     const parent = (messageDiv && (messageDiv.querySelector('.message-content') || messageDiv)) || null;
     if (!parent) return;
-    const cards = Array.from(parent.querySelectorAll('.learning-chat-card-wrap, .question-tool-card'));
+    const cards = Array.from(parent.querySelectorAll('.learning-chat-card-wrap, .question-tool-card, .puzzle-tool-card'));
     if (!cards.length) return;
 
     let anchorNode = null;
@@ -11546,6 +12025,14 @@ function extractQuestionPayload(rawResult) {
             if (parsed.question_title || parsed.question_content) return parsed;
         }
     } catch (_) {}
+    return null;
+}
+
+function extractPuzzlePayload(rawResult) {
+    const api = window.NexoraLearningMode;
+    if (api && typeof api.extractPuzzlePayload === 'function') {
+        return api.extractPuzzlePayload(rawResult);
+    }
     return null;
 }
 
@@ -12409,7 +12896,7 @@ async function sendMessage(options = {}) {
             return;
         }
     }
-    if (!text && !isGenerating && uploadedFileIds.length === 0 && !isAutoContinue) return;
+    if (!text && !isGenerating && uploadedFileIds.length === 0 && !isAutoContinue && !(options && options.puzzle_submission)) return;
     if (isUploadingFiles && !isGenerating) {
         showToast('文件上传或向量化处理中，请稍候或手动中断后再发送');
         return;
@@ -12461,6 +12948,11 @@ async function sendMessage(options = {}) {
     const ensuredConversationId = await ensureConversationExistsForStreaming(text, nextConversationMode);
     if (ensuredConversationId) {
         currentConversationId = ensuredConversationId;
+        if (nextConversationMode === 'learning' && !learningReaderOpened) {
+            learningHeaderMode = 'chat';
+            applyLearningSidebarMode('nexora');
+            await syncLearningHeaderMode();
+        }
     }
     // UI Updates
     els.messageInput.value = '';
@@ -12592,6 +13084,9 @@ async function sendMessage(options = {}) {
         include_context: !!tokenBudgetState.includeContext,
         skip_user_message: isAutoContinue
     };
+    if (options && options.puzzle_submission) {
+        payload.puzzle_submission = options.puzzle_submission;
+    }
     if (forceContextCompression) {
         payload.force_context_compression = true;
     }
@@ -13594,7 +14089,7 @@ async function sendMessage(options = {}) {
                             aiMsgDiv.__reasoningSegmentOpen = false;
                             currentContentSpan = null; currentSegmentContent = '';
                             const toolName = resolveToolNameFromEvent(chunk, chunk.name);
-                            if (toolName === 'question' || toolName === 'learning_card') {
+                            if (toolName === 'question' || toolName === 'learning_card' || toolName === 'puzzle') {
                                 continue;
                             }
                             const rawCallId = String(chunk.call_id || chunk.callId || '').trim();
@@ -13619,7 +14114,7 @@ async function sendMessage(options = {}) {
                             aiMsgDiv.__reasoningSegmentOpen = false;
                             currentContentSpan = null; currentSegmentContent = '';
                             const toolName = resolveToolNameFromEvent(chunk, chunk.name);
-                            if (toolName === 'question' || toolName === 'learning_card') {
+                            if (toolName === 'question' || toolName === 'learning_card' || toolName === 'puzzle') {
                                 continue;
                             }
                             const rawCallId = String(chunk.call_id || chunk.callId || '').trim();
@@ -13636,6 +14131,9 @@ async function sendMessage(options = {}) {
                         }
                         else if (chunk.type === 'question') {
                             appendQuestionStep(aiMsgDiv, chunk);
+                        }
+                        else if (chunk.type === 'puzzle') {
+                            appendPuzzleStep(aiMsgDiv, chunk);
                         }
                         else if (chunk.type === 'token_usage') {
                             onTokenStreamUsageChunk(chunk);
@@ -15062,7 +15560,7 @@ function appendMessage(msg, index) {
                 }
                 else if (step.type === 'function_call') {
                     const toolName = resolveToolNameFromEvent(step, step.name);
-                    if (toolName === 'learning_card' || toolName === 'question') return;
+                    if (toolName === 'learning_card' || toolName === 'question' || toolName === 'puzzle') return;
                     if (toolName === 'add_basis' || toolName === 'addBasis') {
                         try {
                             const args = JSON.parse(step.arguments);
@@ -15075,7 +15573,7 @@ function appendMessage(msg, index) {
                 }
                 else if (step.type === 'function_result') {
                     const toolName = resolveToolNameFromEvent(step, step.name);
-                    if (toolName === 'question') return;
+                    if (toolName === 'question' || toolName === 'puzzle') return;
                     if (toolName === 'learning_card') {
                         const cardPayload = extractLearningCardPayload(step.result);
                         if (cardPayload) {
@@ -15114,6 +15612,9 @@ function appendMessage(msg, index) {
                 else if (step.type === 'question') {
                     appendQuestionStep(div, step);
                 }
+                else if (step.type === 'puzzle') {
+                    appendPuzzleStep(div, step);
+                }
             });
         }
         
@@ -15149,6 +15650,15 @@ function appendMessage(msg, index) {
             const hasQuestionStep = processSteps.some((s) => s && s.type === 'question');
             if (!hasQuestionStep) {
                 pendingQuestions.forEach((question) => appendQuestionStep(div, { type: 'question', question }));
+            }
+        }
+        const pendingPuzzles = (msg.metadata && Array.isArray(msg.metadata.pending_puzzles))
+            ? msg.metadata.pending_puzzles
+            : [];
+        if (pendingPuzzles.length > 0) {
+            const hasPuzzleStep = processSteps.some((s) => s && s.type === 'puzzle');
+            if (!hasPuzzleStep) {
+                pendingPuzzles.forEach((puzzle) => appendPuzzleStep(div, { type: 'puzzle', puzzle }));
             }
         }
 
@@ -15219,6 +15729,11 @@ function appendMessage(msg, index) {
         refreshLastUserPromptEditButtons();
     }
 
+    // Update turn indicator
+    if (!isBatchRenderingMessages) {
+        appendTurnIndicatorLine(msg.role, msg);
+    }
+
     // Scroll
     if (shouldAutoScroll && !isBatchRenderingMessages) {
         els.messagesContainer.scrollTop = els.messagesContainer.scrollHeight;
@@ -15238,6 +15753,7 @@ let __messagesBottomPinRaf = null;
 let __messagesBottomPinUntilTs = 0;
 let __messagesBottomPinPrevInlineBehavior = null;
 let __messagesBottomPinPendingRestoreBehavior = null;
+let __messagesBottomResizeObs = null;
 
 function pinMessagesToBottomFor(durationMs = 900) {
     const container = els.messagesContainer;
@@ -15251,33 +15767,35 @@ function pinMessagesToBottomFor(durationMs = 900) {
     }
     container.style.scrollBehavior = 'auto';
 
-    if (__messagesBottomPinRaf) return;
-    const tick = () => {
-        const c = els.messagesContainer;
-        if (!c) {
-            __messagesBottomPinRaf = null;
-            __messagesBottomPinUntilTs = 0;
-            __messagesBottomPinPrevInlineBehavior = null;
-            __messagesBottomPinPendingRestoreBehavior = null;
-            return;
-        }
-        if (!shouldAutoScroll || Date.now() > __messagesBottomPinUntilTs) {
-            __messagesBottomPinRaf = null;
-            __messagesBottomPinUntilTs = 0;
-            const restoreBehavior = __messagesBottomPinPendingRestoreBehavior !== null
-                ? __messagesBottomPinPendingRestoreBehavior
-                : __messagesBottomPinPrevInlineBehavior;
-            if (restoreBehavior !== null) {
-                c.style.scrollBehavior = String(restoreBehavior || '');
+    // Scroll to bottom immediately (single read + write, not a loop).
+    container.scrollTop = container.scrollHeight;
+
+    // Use a ResizeObserver instead of a rAF loop.  The observer fires only
+    // when content size actually changes (e.g. KaTeX expansion), so it
+    // avoids the per-frame scrollHeight-read reflow that the old rAF tick
+    // caused on complex DOMs.
+    if (!__messagesBottomResizeObs) {
+        __messagesBottomResizeObs = new ResizeObserver(() => {
+            if (!shouldAutoScroll || Date.now() > __messagesBottomPinUntilTs) {
+                // Pin expired — restore scrollBehavior and disconnect.
+                const c = els.messagesContainer;
+                if (c) {
+                    const restore = __messagesBottomPinPendingRestoreBehavior !== null
+                        ? __messagesBottomPinPendingRestoreBehavior
+                        : __messagesBottomPinPrevInlineBehavior;
+                    if (restore !== null) c.style.scrollBehavior = String(restore || '');
+                }
+                __messagesBottomPinPrevInlineBehavior = null;
+                __messagesBottomPinPendingRestoreBehavior = null;
+                __messagesBottomPinUntilTs = 0;
+                try { __messagesBottomResizeObs.disconnect(); } catch (_) {}
+                return;
             }
-            __messagesBottomPinPrevInlineBehavior = null;
-            __messagesBottomPinPendingRestoreBehavior = null;
-            return;
-        }
-        c.scrollTop = c.scrollHeight;
-        __messagesBottomPinRaf = requestAnimationFrame(tick);
-    };
-    __messagesBottomPinRaf = requestAnimationFrame(tick);
+            const c = els.messagesContainer;
+            if (c) c.scrollTop = c.scrollHeight;
+        });
+    }
+    try { __messagesBottomResizeObs.observe(container); } catch (_) {}
 }
 
 function variantSignature(v) {
@@ -15443,18 +15961,23 @@ function renderMessages(messages, noScroll, options = {}) {
     isBatchRenderingMessages = true;
     try {
         els.messagesContainer.innerHTML = '';
+        const _tRender0 = performance.now();
         messages.forEach((m, i) => appendMessage(m, i));
+        const _tRender1 = performance.now();
+        console.log(`[renderMessages] appendMessage ×${messages.length} = ${(_tRender1-_tRender0).toFixed(1)}ms`);
     } finally {
         isBatchRenderingMessages = false;
         renderLastUserMessageIndexHint = -1;
     }
+
+    let _tStep = performance.now();
     refreshLastUserPromptEditButtons();
-    
+    console.log(`[renderMessages] refreshEditBtns = ${(performance.now()-_tStep).toFixed(1)}ms`);
+    _tStep = performance.now();
+
     // Restore or scroll
     let shouldPinBottom = false;
     if (noScroll) {
-        // Try to maintain the relative scroll position if desired, 
-        // but usually for delete/version-switch we just want to stay where we are
         if (wasNearBottom || shouldAutoScroll) {
             els.messagesContainer.scrollTop = els.messagesContainer.scrollHeight;
             shouldPinBottom = true;
@@ -15465,11 +15988,13 @@ function renderMessages(messages, noScroll, options = {}) {
         els.messagesContainer.scrollTop = els.messagesContainer.scrollHeight;
         shouldPinBottom = true;
     }
+    console.log(`[renderMessages] scrollToBottom = ${(performance.now()-_tStep).toFixed(1)}ms`);
+    _tStep = performance.now();
 
-    // LaTeX/Katex may expand layout asynchronously after initial paint; keep bottom anchored briefly.
     if (shouldPinBottom) {
         pinMessagesToBottomFor(4200);
     }
+    console.log(`[renderMessages] pinBottom = ${(performance.now()-_tStep).toFixed(1)}ms`);
 
     if (instant) {
         // Instant render should stay `auto` while bottom-pin is active.
@@ -15482,6 +16007,569 @@ function renderMessages(messages, noScroll, options = {}) {
         }
     }
     notifyLearningSidebarBridge();
+
+    // Render turn indicator lines (deferred so math/code renders settle first).
+    console.log(`[renderMessages] all sync work done, scheduling turnIndicator in 200ms`);
+    setTimeout(() => {
+        const _tTI = performance.now();
+        renderTurnIndicator(messages, { animate: false });
+        console.log(`[renderTurnIndicator] total = ${(performance.now()-_tTI).toFixed(1)}ms`);
+    }, 200);
+}
+
+// Turn Indicator State
+const turnIndicatorState = {
+    popupHideTimer: null,
+    userMessages: [],
+    activeTurnIndex: -1,
+    visibleTurnCount: 7,
+    activeLineEl: null,
+    activeUpdateRaf: null,
+    layoutDirty: true,
+    layoutBuildToken: 0,
+    layoutRefreshRaf: null,
+    layoutRefreshInProgress: false,
+    layoutRefreshIndex: 0,
+    layoutRefreshOptions: {
+        animate: false,
+        forceScroll: false,
+    },
+    messageCenters: [],
+};
+
+function markTurnIndicatorLayoutDirty() {
+    turnIndicatorState.layoutDirty = true;
+    turnIndicatorState.layoutBuildToken += 1;
+    turnIndicatorState.layoutRefreshIndex = 0;
+
+    if (turnIndicatorState.layoutRefreshRaf) {
+        cancelAnimationFrame(turnIndicatorState.layoutRefreshRaf);
+        turnIndicatorState.layoutRefreshRaf = null;
+    }
+
+    turnIndicatorState.layoutRefreshInProgress = false;
+}
+
+function scheduleTurnIndicatorLayoutRefresh(options = {}) {
+    turnIndicatorState.layoutRefreshOptions = {
+        animate: !!options.animate,
+        forceScroll: !!options.forceScroll,
+    };
+
+    if (turnIndicatorState.layoutRefreshRaf || turnIndicatorState.layoutRefreshInProgress) {
+        return;
+    }
+
+    const buildToken = turnIndicatorState.layoutBuildToken;
+    turnIndicatorState.layoutRefreshRaf = requestAnimationFrame(() => {
+        turnIndicatorState.layoutRefreshRaf = null;
+        turnIndicatorState.layoutRefreshInProgress = true;
+        rebuildTurnIndicatorLayoutCacheChunked(buildToken, 0);
+    });
+}
+
+function rebuildTurnIndicatorLayoutCacheChunked(buildToken, startIndex) {
+    const _tRebuild0 = performance.now();
+    const messagesContainer = els.messagesContainer;
+    const userMsgs = turnIndicatorState.userMessages || [];
+
+    if (buildToken !== turnIndicatorState.layoutBuildToken) {
+        turnIndicatorState.layoutRefreshInProgress = false;
+        if (turnIndicatorState.layoutDirty) {
+            scheduleTurnIndicatorLayoutRefresh(turnIndicatorState.layoutRefreshOptions || {});
+        }
+        return;
+    }
+
+    if (!messagesContainer || !userMsgs.length) {
+        turnIndicatorState.messageCenters = [];
+        turnIndicatorState.layoutDirty = false;
+        turnIndicatorState.layoutRefreshInProgress = false;
+        updateTurnIndicatorActive(turnIndicatorState.layoutRefreshOptions || {});
+        return;
+    }
+
+    const centers = Array.isArray(turnIndicatorState.messageCenters) && turnIndicatorState.messageCenters.length === userMsgs.length
+        ? turnIndicatorState.messageCenters.slice()
+        : new Array(userMsgs.length);
+
+    // Batch-read all offsetTop/offsetHeight in one synchronous pass to trigger
+    // exactly one reflow instead of one-per-chunk.  Typical conversations have
+    // well under a few hundred user messages; a single pass is faster than
+    // splitting across multiple rAF frames where each frame forces its own
+    // full-page reflow.
+    for (let index = 0; index < userMsgs.length; index++) {
+        if (buildToken !== turnIndicatorState.layoutBuildToken) {
+            turnIndicatorState.layoutRefreshInProgress = false;
+            if (turnIndicatorState.layoutDirty) {
+                scheduleTurnIndicatorLayoutRefresh(turnIndicatorState.layoutRefreshOptions || {});
+            }
+            return;
+        }
+
+        let msgEl = userMsgs[index].domElement;
+
+        if (!msgEl || !msgEl.isConnected) {
+            const messageIndex = Number(userMsgs[index].messageIndex);
+            msgEl = (messageIndex >= 0 && messageIndex < messagesContainer.children.length)
+                ? messagesContainer.children[messageIndex]
+                : null;
+        }
+
+        if (msgEl) {
+            userMsgs[index].domElement = msgEl;
+            centers[index] = msgEl.offsetTop + (msgEl.offsetHeight / 2);
+        } else {
+            centers[index] = null;
+        }
+    }
+
+    turnIndicatorState.messageCenters = centers;
+    turnIndicatorState.layoutDirty = false;
+    turnIndicatorState.layoutRefreshInProgress = false;
+    turnIndicatorState.layoutRefreshIndex = 0;
+    const _tRebuild1 = performance.now();
+    console.log(`[rebuildLayout] msgs=${userMsgs.length} readOffsetTop=${(_tRebuild1-_tRebuild0).toFixed(1)}ms`);
+    updateTurnIndicatorActive(turnIndicatorState.layoutRefreshOptions || {});
+}
+
+function rebuildTurnIndicatorLayoutCache() {
+    scheduleTurnIndicatorLayoutRefresh(turnIndicatorState.layoutRefreshOptions || {});
+}
+
+function findActiveTurnIndexByViewportMiddle(viewportMiddle) {
+    const centers = turnIndicatorState.messageCenters || [];
+    if (!centers.length) return -1;
+
+    let low = 0;
+    let high = centers.length - 1;
+    let activeIndex = 0;
+
+    while (low <= high) {
+        const mid = Math.floor((low + high) / 2);
+        const center = centers[mid];
+
+        if (center === null || center === undefined) {
+            break;
+        }
+
+        if (center <= viewportMiddle) {
+            activeIndex = mid;
+            low = mid + 1;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    return activeIndex;
+}
+
+function _shouldShowTurnIndicator() {
+    if (!String(currentConversationId || '').trim()) return false;
+    if (typeof isKnowledgeViewerOpen === 'function' && isKnowledgeViewerOpen()) return false;
+    return true;
+}
+
+function _syncTurnIndicatorVisibility() {
+    const panel = document.getElementById('turnIndicatorPanel');
+    if (!panel) return;
+    if (!_shouldShowTurnIndicator()) {
+        panel.classList.remove('visible');
+    }
+}
+
+function renderTurnIndicator(messages, options = {}) {
+    const container = document.getElementById('turnIndicatorLines');
+    const messagesContainer = els.messagesContainer;
+    const panel = document.getElementById('turnIndicatorPanel');
+    if (!container) return;
+
+    container.innerHTML = '';
+    container.scrollTop = 0;
+    turnIndicatorState.activeTurnIndex = -1;
+    turnIndicatorState.activeLineEl = null;
+
+    if (!messages || !messages.length || !_shouldShowTurnIndicator()) {
+        if (panel) panel.classList.remove('visible');
+        return;
+    }
+
+    // Collect user messages from data (no DOM query needed)
+    const userMsgs = [];
+    for (let i = 0; i < messages.length; i++) {
+        const msg = messages[i];
+        if (String(msg.role || '').toLowerCase() === 'user') {
+            userMsgs.push({ msg, messageIndex: i, domElement: null });
+        }
+    }
+
+    if (messagesContainer) {
+        const messageEls = messagesContainer.children;
+        for (let i = 0; i < userMsgs.length; i++) {
+            const messageIndex = Number(userMsgs[i].messageIndex);
+            if (messageIndex >= 0 && messageIndex < messageEls.length) {
+                userMsgs[i].domElement = messageEls[messageIndex] || null;
+            }
+        }
+    }
+
+    turnIndicatorState.userMessages = userMsgs;
+
+    // Use DocumentFragment for batch DOM insert
+    const frag = document.createDocumentFragment();
+    for (let i = 0; i < userMsgs.length; i++) {
+        const line = document.createElement('div');
+        line.className = 'turn-indicator-line';
+        line.dataset.turnIndex = i;
+        frag.appendChild(line);
+    }
+    container.appendChild(frag);
+
+    // Show panel
+    if (panel) panel.classList.add('visible');
+
+    // Bind panel hover events for popup (only once)
+    if (panel && !panel._hoverBound) {
+        panel._hoverBound = true;
+        panel.addEventListener('mouseenter', () => {
+            if (turnIndicatorState.popupHideTimer) {
+                clearTimeout(turnIndicatorState.popupHideTimer);
+                turnIndicatorState.popupHideTimer = null;
+            }
+            showTurnListPopup();
+        });
+        panel.addEventListener('mouseleave', () => {
+            scheduleHideTurnListPopup();
+        });
+    }
+
+    markTurnIndicatorLayoutDirty();
+    scheduleTurnIndicatorLayoutRefresh({ animate: !!options.animate, forceScroll: true });
+}
+
+function appendTurnIndicatorLine(role, msg) {
+    const container = document.getElementById('turnIndicatorLines');
+    if (!container) return;
+
+    const roleLower = String(role || '').toLowerCase();
+
+    if (roleLower === 'user') {
+        turnIndicatorState.userMessages.push({
+            msg: msg,
+            messageIndex: Math.max(0, els.messagesContainer ? (els.messagesContainer.children.length - 1) : 0),
+            domElement: null
+        });
+        markTurnIndicatorLayoutDirty();
+
+        const line = document.createElement('div');
+        line.className = 'turn-indicator-line';
+        line.dataset.turnIndex = container.children.length;
+        container.appendChild(line);
+
+        // Keep the latest user turn centered inside the 7-line window.
+        setActiveTurnLine(container.children.length - 1, { animate: false, forceScroll: true });
+        scheduleTurnIndicatorLayoutRefresh({ animate: false, forceScroll: true });
+    } else {
+        // Assistant turns may change the visible context after streaming finishes.
+        scheduleTurnIndicatorActiveUpdate({ animate: false, forceScroll: false });
+    }
+}
+
+function setActiveTurnLine(index, options = {}) {
+    const container = document.getElementById('turnIndicatorLines');
+    if (!container) return;
+
+    const nextIndex = Number.isFinite(Number(index)) ? Number(index) : -1;
+    const nextLine = nextIndex >= 0 ? container.children[nextIndex] : null;
+
+    if (turnIndicatorState.activeLineEl && turnIndicatorState.activeLineEl !== nextLine) {
+        turnIndicatorState.activeLineEl.classList.remove('active');
+    }
+
+    if (nextLine && nextLine !== turnIndicatorState.activeLineEl) {
+        nextLine.classList.add('active');
+    }
+
+    turnIndicatorState.activeTurnIndex = nextIndex;
+    turnIndicatorState.activeLineEl = nextLine || null;
+
+    if (options.forceScroll) {
+        scrollActiveTurnIndicatorIntoView(nextIndex, !!options.animate);
+    }
+}
+
+function scrollActiveTurnIndicatorIntoView(index, animate = false) {
+    const container = document.getElementById('turnIndicatorLines');
+    if (!container) return;
+
+    // Use children[index] instead of querySelector for better performance
+    const activeLine = container.children[index];
+    if (!activeLine) return;
+
+    requestAnimationFrame(() => {
+        const targetTop = Math.max(
+            0,
+            activeLine.offsetTop - ((container.clientHeight - activeLine.offsetHeight) / 2)
+        );
+
+        if (Math.abs(container.scrollTop - targetTop) < 1) {
+            return;
+        }
+
+        container.scrollTo({
+            top: targetTop,
+            behavior: animate ? 'smooth' : 'auto'
+        });
+    });
+}
+
+function showTurnListPopup() {
+    const _t0 = performance.now();
+    let popup = document.getElementById('turnIndicatorPopup');
+    if (!popup) {
+        popup = document.createElement('div');
+        popup.id = 'turnIndicatorPopup';
+        popup.className = 'turn-indicator-popup';
+        document.body.appendChild(popup);
+
+        popup.addEventListener('mouseenter', () => {
+            if (turnIndicatorState.popupHideTimer) {
+                clearTimeout(turnIndicatorState.popupHideTimer);
+                turnIndicatorState.popupHideTimer = null;
+            }
+        });
+        popup.addEventListener('mouseleave', () => {
+            scheduleHideTurnListPopup();
+        });
+    }
+
+    popup.innerHTML = '';
+    const userMsgs = turnIndicatorState.userMessages || [];
+    const _t1 = performance.now();
+
+    // Use cached activeTurnIndex instead of querying DOM
+    const activeIdx = turnIndicatorState.activeTurnIndex >= 0
+        ? turnIndicatorState.activeTurnIndex
+        : userMsgs.length - 1;
+
+    // Use DocumentFragment for batch insert
+    const frag = document.createDocumentFragment();
+    let activeItem = null;
+
+    for (let idx = 0; idx < userMsgs.length; idx++) {
+        const item = userMsgs[idx];
+        const text = extractMessageText(item.msg);
+        const displayText = text || '(空消息)';
+        const div = document.createElement('div');
+        div.className = 'turn-indicator-popup-item';
+        if (idx === activeIdx) {
+            div.classList.add('active');
+            activeItem = div;
+        }
+        div.textContent = displayText;
+        div.title = displayText;
+
+        div.addEventListener('click', () => {
+            jumpToUserMessage(idx);
+            hideTurnListPopup();
+        });
+
+        frag.appendChild(div);
+    }
+    const _t2 = performance.now();
+    popup.appendChild(frag);
+
+    popup.classList.add('visible');
+    const _t3 = performance.now();
+
+    // Center active item in popup without reading layout properties.
+    if (activeItem && activeIdx >= 0) {
+        const ITEM_H = 34;
+        const PAD = 8;
+        const itemTop = PAD + activeIdx * ITEM_H;
+        const popupHeight = 360;
+        popup.scrollTop = itemTop - (popupHeight / 2) + (ITEM_H / 2);
+    }
+    const _t4 = performance.now();
+    console.log(`[TurnPopup] msgs=${userMsgs.length} clear=${(_t1-_t0).toFixed(1)}ms build=${(_t2-_t1).toFixed(1)}ms append+visible=${(_t3-_t2).toFixed(1)}ms scroll=${(_t4-_t3).toFixed(1)}ms total=${(_t4-_t0).toFixed(1)}ms`);
+}
+
+function hideTurnListPopup() {
+    const popup = document.getElementById('turnIndicatorPopup');
+    if (popup) {
+        popup.classList.remove('visible');
+    }
+}
+
+function scheduleHideTurnListPopup() {
+    if (turnIndicatorState.popupHideTimer) {
+        clearTimeout(turnIndicatorState.popupHideTimer);
+    }
+    turnIndicatorState.popupHideTimer = setTimeout(() => {
+        hideTurnListPopup();
+        turnIndicatorState.popupHideTimer = null;
+    }, 300);
+}
+
+function jumpToUserMessage(turnIndex) {
+    const userMsgs = turnIndicatorState.userMessages || [];
+    const item = userMsgs[turnIndex];
+    if (!item) return;
+
+    const root = els.messagesContainer;
+    if (!root) return;
+
+    // Immediately update the active turn indicator before scrolling,
+    // so the user gets instant visual feedback.
+    setActiveTurnLine(turnIndex, { animate: false, forceScroll: true });
+
+    // Try cached DOM element first
+    let targetEl = item.domElement;
+    if (targetEl && targetEl.isConnected && targetEl.classList.contains('user')) {
+        scrollToAndHighlight(targetEl);
+        return;
+    }
+
+    // Fallback: find by messageIndex
+    const allMessageEls = root.children;
+    if (item.messageIndex >= 0 && item.messageIndex < allMessageEls.length) {
+        const candidate = allMessageEls[item.messageIndex];
+        if (candidate && candidate.classList.contains('message') && candidate.classList.contains('user')) {
+            item.domElement = candidate;
+            scrollToAndHighlight(candidate);
+            return;
+        }
+    }
+
+    // Last fallback: find the Nth user message
+    const userEls = root.querySelectorAll('.message.user');
+    let userCount = 0;
+    for (let i = 0; i < userMsgs.length; i++) {
+        if (userMsgs[i] === item) {
+            targetEl = userEls[userCount] || null;
+            break;
+        }
+        userCount++;
+    }
+
+    if (targetEl) {
+        item.domElement = targetEl;
+        scrollToAndHighlight(targetEl);
+    }
+}
+
+function scrollToAndHighlight(messageEl) {
+    if (!messageEl) return;
+    const container = els.messagesContainer;
+    if (!container) return;
+
+    const messageOffsetTop = messageEl.offsetTop;
+    const containerHeight = container.clientHeight;
+    const targetTop = Math.max(0, messageOffsetTop - (containerHeight / 2) + (messageEl.offsetHeight / 2));
+
+    // Cancel pin-to-bottom RAF loop
+    if (__messagesBottomPinRaf) {
+        cancelAnimationFrame(__messagesBottomPinRaf);
+        __messagesBottomPinRaf = null;
+    }
+    if (__messagesBottomResizeObs) {
+        try { __messagesBottomResizeObs.disconnect(); } catch (_) {}
+    }
+    __messagesBottomPinUntilTs = 0;
+    shouldAutoScroll = false;
+
+    // Block scroll listener from interfering during jump
+    _isJumping = true;
+    container.scrollTo({
+        top: targetTop,
+        behavior: 'smooth'
+    });
+    // Unblock after scroll completes
+    setTimeout(() => { _isJumping = false; }, 500);
+
+    // Highlight
+    if (notesJumpHighlightTimer) {
+        clearTimeout(notesJumpHighlightTimer);
+        notesJumpHighlightTimer = null;
+    }
+    messageEl.classList.add('note-source-highlight');
+    notesJumpHighlightTimer = setTimeout(() => {
+        messageEl.classList.remove('note-source-highlight');
+        notesJumpHighlightTimer = null;
+    }, 2200);
+}
+
+function extractMessageText(msg) {
+    if (!msg) return '';
+    const content = msg.content || '';
+    // If content is a string, return it directly
+    if (typeof content === 'string') {
+        return content.trim().substring(0, 200);
+    }
+    // If content is an array (multi-modal), extract text parts
+    if (Array.isArray(content)) {
+        return content
+            .filter(part => part.type === 'text')
+            .map(part => part.text || '')
+            .join(' ')
+            .trim()
+            .substring(0, 200);
+    }
+    return '';
+}
+
+function scheduleTurnIndicatorActiveUpdate(options = {}) {
+    const nextOptions = {
+        animate: !!options.animate,
+        forceScroll: !!options.forceScroll,
+    };
+
+    if (turnIndicatorState.activeUpdateRaf) {
+        cancelAnimationFrame(turnIndicatorState.activeUpdateRaf);
+    }
+
+    turnIndicatorState.activeUpdateRaf = requestAnimationFrame(() => {
+        turnIndicatorState.activeUpdateRaf = null;
+        updateTurnIndicatorActive(nextOptions);
+    });
+}
+
+function updateTurnIndicatorActive(options = {}) {
+    const container = document.getElementById('turnIndicatorLines');
+    const messagesContainer = els.messagesContainer;
+    if (!container || !messagesContainer) return;
+
+    if (!container.children.length) return;
+
+    // Use cached user messages instead of querying DOM
+    const userMsgs = turnIndicatorState.userMessages || [];
+    if (!userMsgs.length) return;
+
+    if (turnIndicatorState.layoutDirty || turnIndicatorState.layoutRefreshInProgress || turnIndicatorState.layoutRefreshRaf) {
+        console.log(`[updateActive] layout dirty → scheduling rebuild (dirty=${turnIndicatorState.layoutDirty} inProgress=${turnIndicatorState.layoutRefreshInProgress})`);
+        scheduleTurnIndicatorLayoutRefresh({
+            animate: !!options.animate,
+            forceScroll: !!options.forceScroll,
+        });
+        return;
+    }
+
+    const scrollTop = messagesContainer.scrollTop;
+    const viewportHeight = messagesContainer.clientHeight;
+    // Use the bottom edge of the viewport to determine the active turn,
+    // so the indicator reflects the message area the user is currently reading.
+    const viewportBottom = scrollTop + viewportHeight;
+
+    const activeTurnIndex = findActiveTurnIndexByViewportMiddle(viewportBottom);
+
+    // Keep the active line centered in the 7-line window.
+    if (activeTurnIndex !== turnIndicatorState.activeTurnIndex || !turnIndicatorState.activeLineEl) {
+        setActiveTurnLine(activeTurnIndex, {
+            animate: !!options.animate,
+            forceScroll: !!options.forceScroll,
+        });
+        return;
+    }
 }
 
 // Global modal functions
@@ -15720,10 +16808,10 @@ async function startRegenerate(index) {
             const content = regenMessageDiv.querySelector('.message-content');
             // 清理旧内容/工具链，避免重新生成时复用历史展示节点
             if (content) {
-                content.querySelectorAll('.content-body,.thinking-block,.tool-usage,.add-basis-view,.model-badge').forEach(el => el.remove());
+                content.querySelectorAll('.content-body,.thinking-block,.tool-usage,.add-basis-view,.model-badge,.puzzle-tool-card,.question-tool-card').forEach(el => el.remove());
             } else {
                 // fallback
-                regenMessageDiv.querySelectorAll('.content-body,.thinking-block,.tool-usage,.add-basis-view,.model-badge').forEach(el => el.remove());
+                regenMessageDiv.querySelectorAll('.content-body,.thinking-block,.tool-usage,.add-basis-view,.model-badge,.puzzle-tool-card,.question-tool-card').forEach(el => el.remove());
             }
             regenMessageDiv.__citationUrlMap = {};
             regenMessageDiv.__toolCallState = {
@@ -16219,7 +17307,7 @@ function updateMessageDivTools(index, data, preferredMessageDiv = null) {
         });
     } else if (data.type === 'function_call') {
         const toolName = resolveToolNameFromEvent(data, data.name);
-        if (toolName === 'learning_card') return;
+        if (toolName === 'learning_card' || toolName === 'puzzle') return;
         const rawCallId = String(data.call_id || data.callId || '').trim();
         const toolIndex = (data.index === undefined || data.index === null) ? null : Number(data.index);
         const callId = allocateToolCallId(messageDiv, toolName, 'call', rawCallId, toolIndex);
@@ -16227,7 +17315,7 @@ function updateMessageDivTools(index, data, preferredMessageDiv = null) {
         finalizeToolCallBadge(messageDiv, toolName, callId, data.arguments || '', { toolIndex });
     } else if (data.type === 'function_result') {
         const toolName = resolveToolNameFromEvent(data, data.name);
-        if (toolName === 'question') return;
+        if (toolName === 'question' || toolName === 'puzzle') return;
         if (toolName === 'learning_card') {
             const cardPayload = extractLearningCardPayload(data.result);
             if (cardPayload) {
@@ -16254,6 +17342,8 @@ function updateMessageDivTools(index, data, preferredMessageDiv = null) {
         appendLearningCardStep(messageDiv, data);
     } else if (data.type === 'question') {
         appendQuestionStep(messageDiv, data);
+    } else if (data.type === 'puzzle') {
+        appendPuzzleStep(messageDiv, data);
     }
     scheduleLearningSidebarBridgeNotify();
 }
@@ -16443,16 +17533,19 @@ async function resumeActiveStreamAfterReload() {
                     chunk.type === 'function_call_delta' ||
                     chunk.type === 'function_call' ||
                     chunk.type === 'function_result' ||
-                    chunk.type === 'learning_card'
+                    chunk.type === 'learning_card' ||
+                    chunk.type === 'puzzle'
                 ) {
                     if (chunk.type === 'learning_card') {
                         appendLearningCardStep(assistantDiv, chunk);
+                    } else if (chunk.type === 'puzzle') {
+                        appendPuzzleStep(assistantDiv, chunk);
                     } else if (chunk.type === 'function_call_delta') {
                         onTokenStreamToolArgsChunk(chunk.arguments_delta || chunk.delta || '');
                     } else if (chunk.type === 'function_call') {
                         onTokenStreamToolArgsChunk(chunk.arguments || '');
                     }
-                    if (chunk.type !== 'learning_card') {
+                    if (chunk.type !== 'learning_card' && chunk.type !== 'puzzle') {
                         assistantDiv.__reasoningSegmentOpen = false;
                         currentContentSpan = null; currentSegmentContent = '';
                         updateMessageDivTools(assistantIndex, chunk, assistantDiv);
@@ -17078,6 +18171,82 @@ let knowledgeEditorScrollState = {
 };
 let knowledgeEditorPreviewHooksInstalled = false;
 let knowledgeEditorToolbarHooksInstalled = false;
+const KNOWLEDGE_IMAGE_PLACEHOLDER_SCHEME = 'nexora-upload://';
+const KNOWLEDGE_IMAGE_PENDING_ALT = '上传中...';
+const KNOWLEDGE_IMAGE_FAILED_ALT = '上传失败';
+const knowledgeImageUploadRuntime = {
+    pending: new Map()
+};
+
+function escapeRegexPattern(value) {
+    return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function buildKnowledgeImagePlaceholderToken(imageId) {
+    const safeId = String(imageId || '').trim().toLowerCase();
+    if (!safeId) return '';
+    return `${KNOWLEDGE_IMAGE_PLACEHOLDER_SCHEME}${safeId}`;
+}
+
+function buildKnowledgeImagePlaceholderMarkdown(token, fileName = '') {
+    const label = String(fileName || '').trim() || KNOWLEDGE_IMAGE_PENDING_ALT;
+    return `![${label}](${token})`;
+}
+
+function normalizeKnowledgeImageAltText(rawName = '') {
+    const text = String(rawName || '').trim();
+    if (!text) return '图片';
+    let normalized = text.replace(/[\r\n\[\]]+/g, ' ').trim();
+    normalized = normalized.replace(/^上传中(?:\.{3}|…)?\s*/u, '').trim();
+    normalized = normalized.replace(/^上传失败\s*/u, '').trim();
+    return normalized || '图片';
+}
+
+function normalizeKnowledgeImageFileName(file, fallback = '') {
+    if (file && typeof file.name === 'string' && file.name.trim()) return file.name.trim();
+    const mime = String((file && file.type) || '').toLowerCase();
+    const ext = mime.includes('png') ? 'png'
+        : mime.includes('jpeg') || mime.includes('jpg') ? 'jpg'
+        : mime.includes('gif') ? 'gif'
+        : mime.includes('webp') ? 'webp'
+        : mime.includes('bmp') ? 'bmp'
+        : mime.includes('tiff') ? 'tiff'
+        : 'png';
+    return `${String(fallback || 'image').trim() || 'image'}.${ext}`;
+}
+
+async function allocateKnowledgeImageSlot(fileName = '', basisTitle = '') {
+    const res = await fetch('/api/knowledge/image/allocate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            file_name: String(fileName || '').trim(),
+            basis_title: String(basisTitle || '').trim()
+        })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data || !data.success) {
+        throw new Error(String((data && data.message) || `allocate failed (${res.status})`));
+    }
+    return data;
+}
+
+async function uploadKnowledgeImageByFile({ imageId, file, fileName = '', basisTitle = '' }) {
+    const form = new FormData();
+    form.append('image_id', String(imageId || '').trim());
+    form.append('basis_title', String(basisTitle || '').trim());
+    if (fileName) form.append('file_name', String(fileName || '').trim());
+    form.append('file', file);
+    const res = await fetch('/api/knowledge/image/upload', {
+        method: 'POST',
+        body: form
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data || !data.success) {
+        throw new Error(String((data && data.message) || `upload failed (${res.status})`));
+    }
+    return data;
+}
 
 function destroyKnowledgeMarkdownEditor() {
     if (easyMDE && typeof easyMDE.__cleanupPreviewBridge === 'function') {
@@ -17437,7 +18606,147 @@ function createToastUiKnowledgeEditor(initialValue = '') {
         } catch (_) {}
     };
 
-    const handleToolbarCommand = (cmd) => {
+    const replaceKnowledgeImagePlaceholder = (placeholderToken, resolveMarkdown) => {
+        const token = String(placeholderToken || '').trim();
+        if (!token) return false;
+        const markdown = String(editor.getMarkdown() || '');
+        if (!markdown.includes(token)) return false;
+        const cm = getToastCodeMirror();
+        const scroller = getToastEditorScroller();
+        const windowScrollY = Number(window.scrollY || window.pageYOffset || 0);
+        const cmScrollInfo = cm && typeof cm.getScrollInfo === 'function' ? cm.getScrollInfo() : null;
+        const cmSelections = cm && typeof cm.listSelections === 'function' ? cm.listSelections() : null;
+        const cmCursor = cm && typeof cm.getCursor === 'function' ? cm.getCursor() : null;
+        const scrollerTop = scroller ? Number(scroller.scrollTop || 0) : 0;
+        const scrollerLeft = scroller ? Number(scroller.scrollLeft || 0) : 0;
+        const escapedToken = escapeRegexPattern(token);
+        const pattern = new RegExp(`!\\[([^\\]]*)\\]\\(${escapedToken}\\)`, 'g');
+        let changed = false;
+        const next = markdown.replace(pattern, (_, altText) => {
+            changed = true;
+            const safeAlt = String(altText || '').trim();
+            const out = resolveMarkdown(safeAlt);
+            return String(out || '');
+        });
+        if (!changed) return false;
+        editor.setMarkdown(next, false);
+        if (cm) {
+            try {
+                if (cmSelections && cmSelections.length > 0 && typeof cm.setSelections === 'function') {
+                    cm.setSelections(cmSelections);
+                } else if (cmCursor && typeof cm.setCursor === 'function') {
+                    cm.setCursor(cmCursor);
+                }
+            } catch (_) {}
+        }
+        if (cm && cmScrollInfo && typeof cm.scrollTo === 'function') {
+            cm.scrollTo(Number(cmScrollInfo.left || 0), Number(cmScrollInfo.top || 0));
+        }
+        if (scroller) {
+            scroller.scrollTop = scrollerTop;
+            scroller.scrollLeft = scrollerLeft;
+        }
+        requestAnimationFrame(() => {
+            if (cm) {
+                try {
+                    if (cmSelections && cmSelections.length > 0 && typeof cm.setSelections === 'function') {
+                        cm.setSelections(cmSelections);
+                    } else if (cmCursor && typeof cm.setCursor === 'function') {
+                        cm.setCursor(cmCursor);
+                    }
+                } catch (_) {}
+            }
+            if (scroller) {
+                scroller.scrollTop = scrollerTop;
+                scroller.scrollLeft = scrollerLeft;
+            }
+            window.scrollTo(window.scrollX || 0, windowScrollY);
+        });
+        queueToastPreviewRender(true, 0);
+        return true;
+    };
+
+    const allocateAndUploadKnowledgeImage = async (file) => {
+        const picked = normalizeUploadFile(file, 0) || file;
+        const mime = String((picked && picked.type) || '').toLowerCase();
+        if (!mime.startsWith('image/')) {
+            throw new Error('仅支持图片文件');
+        }
+        const size = Number((picked && picked.size) || 0);
+        if (size > 12 * 1024 * 1024) {
+            throw new Error('图片过大，请控制在 12MB 以内');
+        }
+        const fileName = normalizeKnowledgeImageFileName(picked, `knowledge-image-${Date.now()}`);
+        const basisTitle = String(currentViewingKnowledge || '').trim();
+        const allocated = await allocateKnowledgeImageSlot(fileName, basisTitle);
+        const imageId = String(allocated.image_id || '').trim().toLowerCase();
+        if (!imageId) {
+            throw new Error('图片分配失败：image_id 为空');
+        }
+        const placeholderToken = buildKnowledgeImagePlaceholderToken(imageId);
+        if (!placeholderToken) {
+            throw new Error('图片分配失败：占位符无效');
+        }
+        const placeholderMarkdown = buildKnowledgeImagePlaceholderMarkdown(placeholderToken, `${KNOWLEDGE_IMAGE_PENDING_ALT} ${fileName}`);
+        insertMarkdownFallback(`${placeholderMarkdown}\n`);
+        queueToastPreviewRender(false, 0);
+        knowledgeImageUploadRuntime.pending.set(imageId, {
+            imageId,
+            fileName,
+            placeholderToken,
+            startedAt: Date.now()
+        });
+
+        try {
+            const uploaded = await uploadKnowledgeImageByFile({
+                imageId,
+                file: picked,
+                fileName,
+                basisTitle
+            });
+            const finalUrl = String(uploaded.image_url || '').trim();
+            if (!finalUrl) {
+                throw new Error('上传成功但返回地址为空');
+            }
+            const replaced = replaceKnowledgeImagePlaceholder(placeholderToken, (existingAlt) => {
+                const alt = normalizeKnowledgeImageAltText(existingAlt || fileName);
+                return `![${alt}](${finalUrl})`;
+            });
+            if (!replaced) {
+                showToast(`图片已上传：${fileName}（占位符已被删除，可手动插入）`);
+            } else {
+                showToast(`图片已上传：${fileName}`);
+            }
+            return uploaded;
+        } catch (err) {
+            const errText = String((err && err.message) || err || '上传失败').trim() || '上传失败';
+            replaceKnowledgeImagePlaceholder(placeholderToken, () => {
+                const failedAlt = `${KNOWLEDGE_IMAGE_FAILED_ALT} ${normalizeKnowledgeImageAltText(fileName)}`;
+                return `![${failedAlt}](${placeholderToken})`;
+            });
+            throw new Error(errText);
+        } finally {
+            knowledgeImageUploadRuntime.pending.delete(imageId);
+        }
+    };
+
+    const handleKnowledgeImageFiles = async (files) => {
+        const items = Array.isArray(files) ? files : [];
+        const imageFiles = items.filter((f) => {
+            const mime = String((f && f.type) || '').toLowerCase();
+            return mime.startsWith('image/');
+        });
+        if (!imageFiles.length) return;
+        for (let i = 0; i < imageFiles.length; i++) {
+            try {
+                await allocateAndUploadKnowledgeImage(imageFiles[i]);
+            } catch (err) {
+                showToast(String((err && err.message) || err || '图片上传失败'));
+            }
+        }
+    };
+
+    const handleToolbarCommand = async (cmd) => {
         const command = String(cmd || '').trim();
         if (!command) return;
 
@@ -17467,12 +18776,31 @@ function createToastUiKnowledgeEditor(initialValue = '') {
         }
 
         if (command === 'image') {
-            const imageUrl = 'https://';
-            const altText = getSelectedMarkdownText() || '图片描述';
-            if (!runToastCommand(commandAliases.image, { imageUrl, altText })) {
-                insertMarkdownFallback(`![${altText}](${imageUrl})`);
+            const picker = document.createElement('input');
+            picker.type = 'file';
+            picker.accept = 'image/*';
+            picker.multiple = true;
+            picker.style.display = 'none';
+            document.body.appendChild(picker);
+            const cleanupPicker = () => {
+                if (picker.parentNode) picker.parentNode.removeChild(picker);
+            };
+            picker.addEventListener('change', async () => {
+                const files = picker.files ? Array.from(picker.files) : [];
+                try {
+                    await handleKnowledgeImageFiles(files);
+                } finally {
+                    cleanupPicker();
+                }
+            }, { once: true });
+            setTimeout(cleanupPicker, 60000);
+            picker.click();
+            if (!picker.parentNode) {
+                const altText = getSelectedMarkdownText() || '图片描述';
+                if (!runToastCommand(commandAliases.image, { imageUrl: 'https://', altText })) {
+                    insertMarkdownFallback(`![${altText}](https://)`);
+                }
             }
-            showToast('已插入图片模板');
             return;
         }
 
@@ -17553,7 +18881,7 @@ function createToastUiKnowledgeEditor(initialValue = '') {
         });
         if (cmd) {
             if (viewMode === 'preview') return;
-            handleToolbarCommand(cmd);
+            void handleToolbarCommand(cmd);
             requestAnimationFrame(() => renderToastPreview(false));
             return;
         }
@@ -17624,6 +18952,54 @@ function createToastUiKnowledgeEditor(initialValue = '') {
         }
     } catch (_) {}
 
+    const handlePasteImageUploadEvent = (evt) => {
+        const files = extractFilesFromClipboardEvent(evt).filter((f) => {
+            const mime = String((f && f.type) || '').toLowerCase();
+            return mime.startsWith('image/');
+        });
+        if (!files.length) return false;
+        evt.preventDefault();
+        evt.stopPropagation();
+        void handleKnowledgeImageFiles(files);
+        return true;
+    };
+
+    const handleDropImageUploadEvent = (evt) => {
+        const dt = evt && evt.dataTransfer ? evt.dataTransfer : null;
+        if (!dt || !dt.files || dt.files.length <= 0) return false;
+        const files = Array.from(dt.files)
+            .map((f, idx) => normalizeUploadFile(f, idx))
+            .filter((f) => {
+                const mime = String((f && f.type) || '').toLowerCase();
+                return mime.startsWith('image/');
+            });
+        if (!files.length) return false;
+        evt.preventDefault();
+        evt.stopPropagation();
+        void handleKnowledgeImageFiles(files);
+        return true;
+    };
+
+    const bindKnowledgeImageUploadBridge = () => {
+        const targets = [];
+        const scroller = getToastEditorScroller();
+        if (scroller) targets.push(scroller);
+        if (host && !targets.includes(host)) targets.push(host);
+        if (!targets.length) return;
+        const onPaste = (evt) => { handlePasteImageUploadEvent(evt); };
+        const onDrop = (evt) => { handleDropImageUploadEvent(evt); };
+        targets.forEach((target) => {
+            target.addEventListener('paste', onPaste, true);
+            target.addEventListener('drop', onDrop, true);
+        });
+        previewBridgeCleanupFns.push(() => {
+            targets.forEach((target) => {
+                target.removeEventListener('paste', onPaste, true);
+                target.removeEventListener('drop', onDrop, true);
+            });
+        });
+    };
+
     const bindPreviewBridge = () => {
         const proseMirror = getToastProseMirrorEl();
         if (!proseMirror) return;
@@ -17648,7 +19024,10 @@ function createToastUiKnowledgeEditor(initialValue = '') {
             observer.disconnect();
         });
     };
-    requestAnimationFrame(bindPreviewBridge);
+    requestAnimationFrame(() => {
+        bindPreviewBridge();
+        bindKnowledgeImageUploadBridge();
+    });
 
     const codemirrorCompat = {
         on: (eventName, handler) => {
@@ -18165,6 +19544,7 @@ async function viewKnowledge(title, options = {}) {
             setTimeout(() => highlightWhenReady(0), 200);
         }
     }, 150);
+    _syncTurnIndicatorVisibility();
 }
 
 function highlightTextInPreview(text, meta = {}) {
@@ -18344,6 +19724,13 @@ function closeKnowledgeView() {
     const inputDock = document.querySelector('.input-dock');
     if (inputDock) inputDock.style.display = 'block';
     if(inputWrapper) inputWrapper.style.display = 'block';
+    if (els.messageInput && els.messageInput.value) {
+        requestAnimationFrame(() => {
+            els.messageInput.style.height = 'auto';
+            const minHeight = 42;
+            els.messageInput.style.height = Math.max(minHeight, els.messageInput.scrollHeight) + 'px';
+        });
+    }
     navigationStack = []; // 清空栈
 
     if (originalHeaderState) {
@@ -18354,6 +19741,7 @@ function closeKnowledgeView() {
     if (wasMailView) clearMailViewUrl();
     originalHeaderState = null;
     void syncLearningHeaderMode();
+    _syncTurnIndicatorVisibility();
 }
 
 window.openMailPlaceholderView = function() {
@@ -18472,6 +19860,7 @@ window.openMailPlaceholderView = function() {
     `;
     setMailMobileDetailMode(false);
     initMailWorkspace();
+    _syncTurnIndicatorVisibility();
 };
 
 const WORKFLOW_GRAPH_BASE_WIDTH = 1520;
@@ -19974,6 +21363,13 @@ function closeKnowledgeSearchResultView() {
     const inputDock = document.querySelector('.input-dock');
     if (inputDock) inputDock.style.display = 'block';
     if(inputWrapper) inputWrapper.style.display = 'block';
+    if (els.messageInput && els.messageInput.value) {
+        requestAnimationFrame(() => {
+            els.messageInput.style.height = 'auto';
+            const minHeight = 42;
+            els.messageInput.style.height = Math.max(minHeight, els.messageInput.scrollHeight) + 'px';
+        });
+    }
 
     // 清除导航栈和搜索状态
     navigationStack = [];
@@ -21239,6 +22635,10 @@ function installKnowledgeEditorPreviewHooks() {
 
 async function saveKnowledge(title) {
     if(!easyMDE) return;
+    if (knowledgeImageUploadRuntime.pending.size > 0) {
+        showToast('仍有图片上传中，请稍候再保存');
+        return;
+    }
     const content = easyMDE.value();
     
     try {
@@ -22282,6 +23682,26 @@ function dragEventHasFiles(e) {
     return types.includes('Files');
 }
 
+function dragEventInKnowledgeScope(e) {
+    const target = e && e.target;
+    if (target && typeof target.closest === 'function') {
+        if (target.closest('#knowledgeViewer, #knowledgeEditor, .knowledge-toast-editor, .knowledge-view-body, .knowledge-view-content, .toastui-editor-defaultUI, #publicEditShell')) {
+            return true;
+        }
+    }
+    const path = e && typeof e.composedPath === 'function' ? e.composedPath() : [];
+    if (Array.isArray(path) && path.length > 0) {
+        for (let i = 0; i < path.length; i++) {
+            const node = path[i];
+            if (!node || typeof node.closest !== 'function') continue;
+            if (node.closest('#knowledgeViewer, #knowledgeEditor, .knowledge-toast-editor, .knowledge-view-body, .knowledge-view-content, .toastui-editor-defaultUI, #publicEditShell')) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 function bindGlobalFileDropUpload() {
     if (document.body && document.body.dataset.fileDropBound === '1') return;
     if (document.body) document.body.dataset.fileDropBound = '1';
@@ -22289,6 +23709,10 @@ function bindGlobalFileDropUpload() {
 
     const onDragEnter = (e) => {
         if (!dragEventHasFiles(e)) return;
+        if (dragEventInKnowledgeScope(e)) {
+            resetFileDropOverlayState();
+            return;
+        }
         e.preventDefault();
         e.stopPropagation();
         fileDragDepth += 1;
@@ -22297,6 +23721,10 @@ function bindGlobalFileDropUpload() {
 
     const onDragOver = (e) => {
         if (!dragEventHasFiles(e)) return;
+        if (dragEventInKnowledgeScope(e)) {
+            resetFileDropOverlayState();
+            return;
+        }
         e.preventDefault();
         e.stopPropagation();
         if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
@@ -22317,6 +23745,10 @@ function bindGlobalFileDropUpload() {
 
     const onDrop = async (e) => {
         if (!dragEventHasFiles(e)) return;
+        if (dragEventInKnowledgeScope(e)) {
+            resetFileDropOverlayState();
+            return;
+        }
         e.preventDefault();
         e.stopPropagation();
         const files = Array.from((e.dataTransfer && e.dataTransfer.files) ? e.dataTransfer.files : []);

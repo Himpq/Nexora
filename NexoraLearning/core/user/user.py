@@ -6,6 +6,7 @@ Directory layout:
       {user_id}/
         user.json
         learning.jsonl
+        notifications.jsonl
         question_completions.jsonl
         question_bank.jsonl
     questions/
@@ -63,6 +64,10 @@ def _question_bank_jsonl_path(cfg: Dict[str, Any], user_id: str) -> Path:
     return _user_dir(cfg, user_id) / "question_bank.jsonl"
 
 
+def _notifications_jsonl_path(cfg: Dict[str, Any], user_id: str) -> Path:
+    return _user_dir(cfg, user_id) / "notifications.jsonl"
+
+
 def _questions_root(cfg: Dict[str, Any]) -> Path:
     return Path(cfg.get("data_dir") or "data") / "questions"
 
@@ -96,6 +101,21 @@ def _memory_path(cfg: Dict[str, Any], user_id: str, memory_type: str) -> Path:
     if not filename:
         raise ValueError(f"Unsupported memory type: {memory_type}")
     return _memories_dir(cfg, user_id) / filename
+
+
+def _normalize_user_record(data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    user = dict(data or {})
+    user["id"] = str(user.get("id") or "").strip()
+    user["username"] = str(user.get("username") or "").strip()
+    user["display_name"] = str(user.get("display_name") or "").strip()
+    user["description"] = str(user.get("description") or "").strip()
+    role = str(user.get("role") or "member").strip().lower() or "member"
+    user["role"] = role
+    identity = str(user.get("identity") or "").strip().lower()
+    if identity not in {"student", "teacher"}:
+        identity = "student"
+    user["identity"] = identity
+    return user
 
 
 def _lecture_context_memory_path(cfg: Dict[str, Any], user_id: str, lecture_id: str) -> Path:
@@ -147,12 +167,13 @@ def list_users(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
         if entry.is_dir() and user_path.exists():
             data = _read_json(user_path)
             if data:
-                users.append(data)
+                users.append(_normalize_user_record(data))
     return users
 
 
 def get_user(cfg: Dict[str, Any], user_id: str) -> Optional[Dict[str, Any]]:
-    return _read_json(_user_json_path(cfg, user_id))
+    data = _read_json(_user_json_path(cfg, user_id))
+    return _normalize_user_record(data) if data else None
 
 
 def create_user(
@@ -162,6 +183,7 @@ def create_user(
     username: str = "",
     display_name: str = "",
     description: str = "",
+    identity: str = "student",
 ) -> Dict[str, Any]:
     resolved_user_id = (user_id or f"u_{uuid.uuid4().hex[:12]}").strip()
     if not resolved_user_id:
@@ -178,9 +200,11 @@ def create_user(
         "username": username.strip(),
         "display_name": display_name.strip(),
         "description": description.strip(),
+        "identity": str(identity or "student").strip().lower() or "student",
         "created_at": now,
         "updated_at": now,
     }
+    user = _normalize_user_record(user)
     _write_json(_user_json_path(cfg, resolved_user_id), user)
     return user
 
@@ -191,6 +215,7 @@ def update_user(cfg: Dict[str, Any], user_id: str, updates: Dict[str, Any]) -> O
         return None
 
     user.update(dict(updates or {}))
+    user = _normalize_user_record(user)
     user["updated_at"] = int(time.time())
     _write_json(_user_json_path(cfg, user_id), user)
     return user
@@ -222,6 +247,7 @@ def ensure_user_files(cfg: Dict[str, Any], user_id: str) -> Dict[str, str]:
                 "username": "",
                 "display_name": "",
                 "description": "",
+                "identity": "student",
                 "created_at": int(time.time()),
                 "updated_at": int(time.time()),
             },
@@ -229,6 +255,7 @@ def ensure_user_files(cfg: Dict[str, Any], user_id: str) -> Dict[str, str]:
 
     for jsonl_path in (
         _learning_jsonl_path(cfg, user_id),
+        _notifications_jsonl_path(cfg, user_id),
         _question_completions_jsonl_path(cfg, user_id),
         _question_bank_jsonl_path(cfg, user_id),
     ):
@@ -243,6 +270,7 @@ def ensure_user_files(cfg: Dict[str, Any], user_id: str) -> Dict[str, str]:
     return {
         "user": str(user_json_path),
         "learning": str(_learning_jsonl_path(cfg, user_id)),
+        "notifications": str(_notifications_jsonl_path(cfg, user_id)),
         "question_completions": str(_question_completions_jsonl_path(cfg, user_id)),
         "question_bank": str(_question_bank_jsonl_path(cfg, user_id)),
         "memories": str(memories_dir),
@@ -264,6 +292,30 @@ def append_learning_record(
 
 def list_learning_records(cfg: Dict[str, Any], user_id: str) -> List[Dict[str, Any]]:
     return _read_jsonl(_learning_jsonl_path(cfg, user_id))
+
+
+def append_notification(
+    cfg: Dict[str, Any],
+    user_id: str,
+    record: Dict[str, Any],
+) -> Dict[str, Any]:
+    ensure_user_files(cfg, user_id)
+    payload = dict(record or {})
+    payload.setdefault("type", "notification")
+    payload.setdefault("date", int(time.time()))
+    payload.setdefault("title", "")
+    payload.setdefault("content", "")
+    payload.setdefault("jumpto", "")
+    path = _notifications_jsonl_path(cfg, user_id)
+    serialized = json.dumps(payload, ensure_ascii=False) + "\n"
+    with _lock:
+        previous = path.read_text(encoding="utf-8") if path.exists() else ""
+        path.write_text(serialized + previous, encoding="utf-8")
+    return payload
+
+
+def list_notifications(cfg: Dict[str, Any], user_id: str) -> List[Dict[str, Any]]:
+    return _read_jsonl(_notifications_jsonl_path(cfg, user_id))
 
 
 def append_question_completion(
@@ -372,6 +424,7 @@ def get_user_state(cfg: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     return {
         "user": get_user(cfg, user_id),
         "learning": list_learning_records(cfg, user_id),
+        "notifications": list_notifications(cfg, user_id),
         "question_completions": list_question_completions(cfg, user_id),
         "question_bank": list_question_bank_items(cfg, user_id),
         "memories": {
@@ -426,29 +479,35 @@ def _read_json(path: Path) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _write_json(path: Path, data: Any) -> None:
-    with _lock:
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def _append_jsonl(path: Path, data: Dict[str, Any]) -> None:
-    with _lock:
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(data, ensure_ascii=False) + "\n")
-
-
 def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
     if not path.exists():
         return []
     rows: List[Dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            data = json.loads(line)
-        except Exception:
-            continue
-        if isinstance(data, dict):
-            rows.append(data)
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(data, dict):
+                rows.append(data)
+    except Exception:
+        return []
     return rows
+
+
+def _append_jsonl(path: Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    serialized = json.dumps(payload, ensure_ascii=False) + "\n"
+    with _lock:
+        previous = path.read_text(encoding="utf-8") if path.exists() else ""
+        path.write_text(previous + serialized, encoding="utf-8")
+
+
+def _write_json(path: Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _lock:
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

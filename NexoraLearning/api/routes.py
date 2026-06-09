@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Mapping
 from urllib import error as urllib_error
+from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
 from flask import Blueprint, jsonify, request, send_file, send_from_directory
@@ -26,6 +28,8 @@ from core.lectures import (
     get_book_image_path,
     load_book_text,
     load_book_images_meta,
+    list_book_cover_assets,
+    list_lecture_cover_assets,
     load_book_info_xml,
     load_book_detail_xml,
     load_book_sections_xml,
@@ -48,18 +52,24 @@ from core.nexora_proxy import NexoraProxy
 from core.runlog import log_event
 from core.runlog import available_log_sources, list_structured_logs
 from core import user as user_store
-from core.memory_analysis import run_memory_analysis_job
-from core.profile_question import run_profile_question_job
+from core.memory.memory_analysis import run_memory_analysis_job
+from core.memory.profile_question import run_profile_question_job
 from core.learning_feed import prepend_learning_feed_item
 from core.learning_feed import list_learning_feed_items
 from core.learning_feed import list_learning_feed_channels
 from core.learning_feed import upsert_learning_feed_channel
 from core.learning_feed import delete_learning_feed_channel
 from core.learning_feed import toggle_learning_feed_like
+from core.learning_feed import toggle_learning_feed_comment_like
 from core.learning_feed import append_learning_feed_comment
 from core.learning_feed import delete_learning_feed_item
 from core.learning_feed import delete_learning_feed_comment
-from core.memory_queue import (
+from core.user import append_notification
+from core.user.learning_progress import (
+    build_user_study_hours_map as _build_user_study_hours_map,
+    compute_user_lecture_progress as _compute_user_lecture_progress,
+)
+from core.memory.memory_queue import (
     enqueue_memory_job,
     get_memory_queue_snapshot,
     get_memory_state,
@@ -76,6 +86,8 @@ from core.booksproc import (
     enqueue_book_question,
     enqueue_book_refinement,
     enqueue_book_section,
+    enqueue_book_annotation,
+    enqueue_book_summary,
     get_book_progress_steps,
     get_book_progress_text,
     get_intensive_reading_settings,
@@ -84,6 +96,8 @@ from core.booksproc import (
     get_refinement_queue_snapshot,
     get_rough_reading_settings,
     get_split_chapters_settings,
+    get_annotation_settings,
+    get_book_summary_settings,
     init_booksproc,
     list_refinement_candidates,
     mark_book_uploaded,
@@ -92,6 +106,8 @@ from core.booksproc import (
     update_profile_question_settings,
     update_rough_reading_settings,
     update_split_chapters_settings,
+    update_annotation_settings,
+    update_book_summary_settings,
 )
 from core.vector import (
     collection_stats as vector_collection_stats,
@@ -104,7 +120,7 @@ from core.vector import (
     vectorize_book,
 )
 from core.utils import extract_text
-from core.epub_assets import extract_epub_with_assets
+from core.bookextract import extract_epub_with_assets
 
 bp = Blueprint("learning", __name__, url_prefix="/api")
 _cfg: Dict[str, Any] = {}
@@ -479,43 +495,6 @@ def _resolve_runtime_user_id() -> str:
     return "guest"
 
 
-def _build_user_study_hours_map(user_id: str) -> Dict[str, float]:
-    """Aggregate per-lecture study hours from user learning records."""
-    rows = user_store.list_learning_records(_cfg, user_id)
-    hours_map: Dict[str, float] = {}
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        lecture_id = str(row.get("lecture_id") or "").strip()
-        if not lecture_id:
-            continue
-
-        # 支持 seconds / minutes / hours 三种字段
-        seconds = row.get("study_seconds")
-        minutes = row.get("study_minutes")
-        hours = row.get("study_hours")
-
-        amount_hours = 0.0
-        try:
-            if hours is not None:
-                amount_hours = max(0.0, float(hours))
-            elif minutes is not None:
-                amount_hours = max(0.0, float(minutes) / 60.0)
-            elif seconds is not None:
-                amount_hours = max(0.0, float(seconds) / 3600.0)
-            elif str(row.get("type") or "").strip() in {"study_time", "study_session", "learning_time"}:
-                # 兜底: duration 字段按秒
-                duration = row.get("duration")
-                if duration is not None:
-                    amount_hours = max(0.0, float(duration) / 3600.0)
-        except Exception:
-            amount_hours = 0.0
-
-        if amount_hours > 0:
-            hours_map[lecture_id] = float(hours_map.get(lecture_id, 0.0) + amount_hours)
-    return hours_map
-
-
 def _escape_card_html(value: Any) -> str:
     text = str(value or "")
     return (
@@ -614,6 +593,11 @@ def _is_runtime_admin() -> bool:
     return _resolve_runtime_role() == "admin"
 
 
+def _is_runtime_teacher() -> bool:
+    """判断当前请求是否教师角色。"""
+    return _resolve_runtime_role() in ("admin", "teacher")
+
+
 def _extract_model_options(payload: Dict[str, Any]) -> List[Dict[str, str]]:
     """从 Nexora model list 响应中抽取模型选项。"""
     rows: List[Dict[str, str]] = []
@@ -693,6 +677,11 @@ def _book_or_404(
 @bp.route("/frontend/", methods=["GET"])
 def frontend_index():
     return send_from_directory(str(_FRONTEND_DIR), "index.html")
+
+
+@bp.route("/frontend/puzzle", methods=["GET"])
+def frontend_puzzle():
+    return send_from_directory(str(_FRONTEND_DIR), "puzzle.html")
 
 
 @bp.route("/frontend/assets/<path:filename>", methods=["GET"])
@@ -836,11 +825,209 @@ def _build_feed_author_snapshot(username: str) -> Dict[str, str]:
     return snapshot
 
 
+def _extract_mentioned_user_ids(text: str) -> List[str]:
+    found = re.findall(r"(?<![\w@])@([A-Za-z0-9_][A-Za-z0-9_.-]{0,63})", str(text or ""))
+    seen: set[str] = set()
+    rows: List[str] = []
+    for item in found:
+        key = str(item or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        rows.append(key)
+    return rows
+
+
+def _notify_feed_mentions(author_user_id: str, content: str, *, title: str, jumpto: str = "") -> None:
+    author_key = str(author_user_id or "").strip()
+    for mentioned_user_key in _extract_mentioned_user_ids(content):
+        mention_key = str(mentioned_user_key or "").strip()
+        if not mention_key:
+            continue
+        resolved_username = mention_key
+        resolved_user_id = mention_key
+        if _proxy is not None:
+            try:
+                lookup = _proxy.get_user_info(username=mention_key)
+                if not (isinstance(lookup, dict) and lookup.get("success")):
+                    log_event(
+                        "learning_feed_mention_notify_skipped",
+                        "Skipped learning-feed mention notification because the mentioned user could not be resolved.",
+                        payload={
+                            "author_user_id": author_key,
+                            "mentioned_key": mention_key,
+                            "source": "feed",
+                        },
+                    )
+                    continue
+                user = lookup.get("user") if isinstance(lookup.get("user"), dict) else {}
+                resolved_username = str(user.get("username") or mention_key).strip() or mention_key
+                resolved_user_id = str(user.get("id") or resolved_username).strip() or resolved_username
+            except Exception:
+                log_event(
+                    "learning_feed_mention_notify_error",
+                    "Failed to resolve mentioned user while writing learning-feed notification.",
+                    payload={
+                        "author_user_id": author_key,
+                        "mentioned_key": mention_key,
+                        "source": "feed",
+                    },
+                )
+                continue
+        try:
+            append_notification(
+                _cfg,
+                resolved_username,
+                {
+                    "type": "notification",
+                    "date": int(time.time()),
+                    "title": str(title or "").strip(),
+                    "content": str(content or "").strip(),
+                    "jumpto": str(jumpto or "").strip(),
+                },
+            )
+            log_event(
+                "learning_feed_mention_notified",
+                "Wrote a learning-feed mention notification.",
+                payload={
+                    "author_user_id": author_key,
+                    "mentioned_key": mention_key,
+                    "mentioned_username": resolved_username,
+                    "mentioned_user_id": resolved_user_id,
+                    "source": "feed",
+                },
+            )
+        except Exception:
+            log_event(
+                "learning_feed_mention_notify_error",
+                "Failed to append learning-feed mention notification.",
+                payload={
+                    "author_user_id": author_key,
+                    "mentioned_key": mention_key,
+                    "mentioned_username": resolved_username,
+                    "source": "feed",
+                },
+            )
+            continue
+
+
+def _resolve_teacher_infos(teacher_ids: List[str]) -> List[Dict[str, Any]]:
+    """Resolve teacher user IDs to full user objects (with avatar_url)."""
+    if not teacher_ids or _proxy is None:
+        return [{"user_id": uid, "display_name": uid} for uid in teacher_ids]
+    resolved: List[Dict[str, Any]] = []
+    for uid in teacher_ids:
+        uid_str = str(uid or "").strip()
+        if not uid_str:
+            continue
+        try:
+            info = _proxy.get_user_info(username=uid_str)
+            if isinstance(info, dict) and info.get("success"):
+                user = info.get("user") if isinstance(info.get("user"), dict) else {}
+                resolved.append({
+                    "user_id": str(user.get("id") or uid_str).strip() or uid_str,
+                    "username": str(user.get("username") or uid_str).strip() or uid_str,
+                    "display_name": str(user.get("display_name") or "").strip(),
+                    "nickname": str(user.get("nickname") or "").strip(),
+                    "avatar_url": str(user.get("avatar_url") or "").strip(),
+                })
+            else:
+                resolved.append({"user_id": uid_str, "display_name": uid_str})
+        except Exception:
+            resolved.append({"user_id": uid_str, "display_name": uid_str})
+    return resolved
+
+
+def _search_nexora_users(query: str, limit: int = 8) -> List[Dict[str, Any]]:
+    """Search users from Nexora via proxy."""
+    q = str(query or "").strip()
+    if not q or _proxy is None:
+        return []
+    endpoint = f"/api/papi/user/search?q={urllib_parse.quote(q)}&limit={max(1, min(int(limit or 8), 20))}"
+    status, resp, _used_endpoint = _proxy._request_json(endpoint, method="GET", payload=None, username=None)
+    if int(status or 0) < 200 or int(status or 0) >= 300:
+        return []
+    if not isinstance(resp, dict):
+        return []
+    items = resp.get("items")
+    if not isinstance(items, list):
+        return []
+    rows: List[Dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        user_id = str(item.get("user_id") or item.get("username") or "").strip()
+        username = str(item.get("username") or user_id).strip() or user_id
+        if not user_id or not username:
+            continue
+        rows.append(
+            {
+                "user_id": user_id,
+                "username": username,
+                "display_name": str(item.get("display_name") or "").strip(),
+                "nickname": str(item.get("nickname") or "").strip(),
+                "avatar_url": str(item.get("avatar_url") or "").strip(),
+                "role": str(item.get("role") or "member").strip() or "member",
+            }
+        )
+    return rows
+
+
+def _list_recent_feed_user_examples(limit: int = 5) -> List[Dict[str, Any]]:
+    rows = list_learning_feed_items(_cfg, limit=120)
+    seen: set[str] = set()
+    user_ids: List[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        author = row.get("author") if isinstance(row.get("author"), dict) else {}
+        author_id = str(author.get("user_id") or "").strip()
+        if author_id and author_id not in seen:
+            seen.add(author_id)
+            user_ids.append(author_id)
+        comments = row.get("comments") if isinstance(row.get("comments"), list) else []
+        for comment in comments:
+            if not isinstance(comment, dict):
+                continue
+            comment_author = comment.get("author") if isinstance(comment.get("author"), dict) else {}
+            comment_author_id = str(comment_author.get("user_id") or "").strip()
+            if comment_author_id and comment_author_id not in seen:
+                seen.add(comment_author_id)
+                user_ids.append(comment_author_id)
+        if len(user_ids) >= max(1, int(limit or 5)):
+            break
+    result: List[Dict[str, Any]] = []
+    for user_id in user_ids[: max(1, int(limit or 5))]:
+        if _proxy is None:
+            result.append({"user_id": user_id, "username": user_id, "display_name": "", "nickname": "", "avatar_url": "", "role": "member"})
+            continue
+        try:
+            info = _proxy.get_user_info(username=user_id or None)
+            if isinstance(info, dict) and info.get("success"):
+                user = info.get("user") if isinstance(info.get("user"), dict) else {}
+                result.append(
+                    {
+                        "user_id": str(user.get("id") or user_id).strip() or user_id,
+                        "username": str(user.get("username") or user_id).strip() or user_id,
+                        "display_name": str(user.get("display_name") or "").strip(),
+                        "nickname": str(user.get("nickname") or "").strip(),
+                        "avatar_url": str(user.get("avatar_url") or "").strip(),
+                        "role": str(user.get("role") or "member").strip() or "member",
+                    }
+                )
+        except Exception:
+            continue
+    return result
+
+
 @bp.route("/frontend/materials", methods=["GET"])
 def frontend_materials():
     sort_by = str(request.args.get("sort_by") or "updated_at").strip().lower() or "updated_at"
     order = str(request.args.get("order") or "desc").strip().lower() or "desc"
     desc = order != "asc"
+
+    user_id = _resolve_runtime_user_id()
+    study_hours_map = _build_user_study_hours_map(user_id) if user_id else {}
 
     lectures = list_learning_lectures(_cfg)
     rows = []
@@ -849,9 +1036,22 @@ def frontend_materials():
         lecture_id = str((lecture or {}).get("id") or "").strip()
         books = list_lecture_books(_cfg, lecture_id) if lecture_id else []
         total_books += len(books)
+        lecture_with_user = dict(lecture or {})
+        # Resolve teacher user IDs to objects with avatar_url
+        raw_teacher = lecture_with_user.get("teacher") or []
+        if isinstance(raw_teacher, list) and raw_teacher:
+            lecture_with_user["teacher_info"] = _resolve_teacher_infos([
+                str(t or "") for t in raw_teacher
+            ])
+        if user_id and lecture_id:
+            user_progress = _compute_user_lecture_progress(user_id, lecture_id, books)
+            lecture_with_user["progress"] = user_progress["progress"]
+            lecture_with_user["current_chapter"] = user_progress["current_chapter"]
+            lecture_with_user["next_chapter"] = user_progress["next_chapter"]
+            lecture_with_user["study_hours"] = float(study_hours_map.get(lecture_id, 0.0))
         rows.append(
             {
-                "lecture": lecture,
+                "lecture": lecture_with_user,
                 "books": books,
                 "books_count": len(books),
             }
@@ -914,6 +1114,10 @@ def frontend_dashboard():
         total_study_hours += lecture_hours
         books = list_lecture_books(_cfg, lecture_id)
         total_books += len(books)
+        user_progress = _compute_user_lecture_progress(user_id, lecture_id, books)
+        lecture_with_user_state["progress"] = user_progress["progress"]
+        lecture_with_user_state["current_chapter"] = user_progress["current_chapter"]
+        lecture_with_user_state["next_chapter"] = user_progress["next_chapter"]
         selected_rows.append(
             {
                 "lecture": lecture_with_user_state,
@@ -933,6 +1137,127 @@ def frontend_dashboard():
             "total_study_hours": round(total_study_hours, 3),
         }
     )
+
+
+@bp.route("/frontend/teacher/class-overview", methods=["GET"])
+def frontend_teacher_class_overview():
+    """教师 Panel 数据接口：返回全班学生的阅读状态与章节进度。"""
+    if not _is_runtime_teacher():
+        return jsonify({"success": False, "error": "Only admin or teacher can access this endpoint."}), 403
+
+    lecture_id = str(request.args.get("lecture_id") or "").strip()
+    lectures = list_learning_lectures(_cfg)
+    if not lecture_id and lectures:
+        lecture_id = str(lectures[0].get("id") or "").strip()
+
+    # ── 章节列表（热力图列头） ──
+    lecture_chapters: List[Dict[str, Any]] = []
+    if lecture_id:
+        books = list_lecture_books(_cfg, lecture_id)
+        from core.user.learning_progress import list_lecture_chapters as _list_lp_chapters, \
+            list_completed_chapter_names as _list_completed_names
+        lecture_chapters = _list_lp_chapters(lecture_id, books)
+
+    chapter_names = [str(c.get("title") or "").strip() for c in lecture_chapters if c.get("title")]
+
+    # ── 遍历全班学生 ──
+    students: List[Dict[str, Any]] = []
+    for u in user_store.list_users(_cfg):
+        if not isinstance(u, dict):
+            continue
+        uid = str(u.get("id") or "").strip()
+        identity = str(u.get("identity") or "").strip().lower()
+        if not uid or identity not in ("student", ""):
+            continue
+        # identity 为空也算学生（兼容旧行为）
+
+        username = str(u.get("username") or uid).strip()
+        display_name = str(u.get("display_name") or u.get("nickname") or "").strip() or username
+
+        selected_ids = user_store.list_selected_lecture_ids(_cfg, uid)
+        is_in_course = lecture_id in selected_ids if lecture_id else False
+
+        # 学习时长
+        study_hours_map = _build_user_study_hours_map(uid)
+        lecture_hours = float(study_hours_map.get(lecture_id, 0.0)) if lecture_id else 0.0
+
+        # 章节完成情况
+        records = user_store.list_learning_records(_cfg, uid)
+        completed_set = _list_completed_names(records, lecture_id) if lecture_id else set()
+
+        # 最近活动时间
+        last_active_ts = 0
+        for r in (records or []):
+            try:
+                t = int(r.get("timestamp") or r.get("ts") or 0)
+                if t > last_active_ts:
+                    last_active_ts = t
+            except Exception:
+                pass
+
+        # 用户进度
+        progress_info = {"progress": 0, "current_chapter": "", "next_chapter": ""}
+        if lecture_id and is_in_course:
+            try:
+                books = list_lecture_books(_cfg, lecture_id)
+                progress_info = _compute_user_lecture_progress(uid, lecture_id, books)
+            except Exception:
+                pass
+
+        # 章节完成状态 (热力图数据)
+        chapter_status: List[bool] = []
+        for ch_name in chapter_names:
+            chapter_status.append(ch_name in completed_set)
+
+        students.append({
+            "user_id": uid,
+            "username": username,
+            "display_name": display_name,
+            "is_in_course": is_in_course,
+            "study_hours": round(lecture_hours, 2),
+            "chapter_count": len(completed_set),
+            "total_chapters": len(chapter_names),
+            "progress": int(progress_info.get("progress") or 0),
+            "current_chapter": progress_info.get("current_chapter", ""),
+            "last_active_ts": last_active_ts,
+            "chapter_status": chapter_status,
+        })
+
+    # 按学习时长降序
+    students.sort(key=lambda s: (-s.get("study_hours", 0), s.get("display_name", "")))
+
+    return jsonify({
+        "success": True,
+        "lecture_id": lecture_id,
+        "chapters": [{"name": n} for n in chapter_names],
+        "students": students,
+    })
+
+
+@bp.route("/frontend/teacher/student-analysis", methods=["GET"])
+def frontend_teacher_student_analysis():
+    """教师 Panel 学生详情接口：返回单个学生的 telemetry 分析数据。"""
+    if not _is_runtime_teacher():
+        return jsonify({"success": False, "error": "Only admin or teacher can access this endpoint."}), 403
+
+    target_uid = str(request.args.get("user_id") or "").strip()
+    if not target_uid:
+        return jsonify({"success": False, "error": "user_id is required."}), 400
+
+    book_id = str(request.args.get("book_id") or "").strip()
+    lecture_id = str(request.args.get("lecture_id") or "").strip()
+    since_ts_str = request.args.get("since_ts")
+    since_ts = int(since_ts_str) if since_ts_str else None
+
+    from api.telemetry import query_user_analysis
+    analysis = query_user_analysis(
+        target_uid,
+        book_id=book_id,
+        lecture_id=lecture_id,
+        since_ts=since_ts,
+    )
+
+    return jsonify({"success": True, "analysis": analysis})
 
 
 def _legacy_frontend_chat_context_removed():
@@ -1185,17 +1510,25 @@ def frontend_settings_refinement():
                 "intensive_status": str(book.get("intensive_status") or ""),
                 "question_status": str(book.get("question_status") or ""),
                 "section_status": str(book.get("section_status") or ""),
+                "summary_status": str(book.get("summary_status") or ""),
+                "annotation_status": str(book.get("annotation_status") or ""),
                 "coarse_model": str(book.get("coarse_model") or ""),
                 "intensive_model": str(book.get("intensive_model") or ""),
                 "question_model": str(book.get("question_model") or ""),
                 "section_model": str(book.get("section_model") or ""),
+                "summary_model": str(book.get("summary_model") or ""),
+                "annotation_model": str(book.get("annotation_model") or ""),
                 "coarse_error": str(book.get("coarse_error") or ""),
                 "intensive_error": str(book.get("intensive_error") or ""),
                 "question_error": str(book.get("question_error") or ""),
                 "section_error": str(book.get("section_error") or ""),
+                "summary_error": str(book.get("summary_error") or ""),
+                "annotation_error": str(book.get("annotation_error") or ""),
                 "refinement_error": str(book.get("refinement_error") or ""),
                 "job_status": running_by_book.get(key, ""),
                 "section_job_status": running_by_book.get(f"{key}::section", ""),
+                "summary_job_status": running_by_book.get(f"{key}::summary", ""),
+                "annotation_job_status": running_by_book.get(f"{key}::annotation", ""),
                 "progress_text": get_book_progress_text(lecture_id, book_id),
                 "progress_steps": get_book_progress_steps(lecture_id, book_id),
                 "updated_at": int(book.get("updated_at") or 0),
@@ -1318,6 +1651,66 @@ def frontend_settings_refinement_section():
         return jsonify({"success": False, "error": str(exc)}), 500
 
 
+@bp.route("/frontend/settings/refinement/annotation", methods=["POST"])
+def frontend_settings_refinement_annotation():
+    """设置页：手动触发教材批注生成（输出写入 annotations.xml）。"""
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    actor = str(data.get("actor") or _resolve_runtime_user_id()).strip()
+    model_name = str(data.get("model_name") or "").strip()
+    log_event(
+        "frontend_annotation_request",
+        "收到前端批注请求",
+        payload={
+            "lecture_id": lecture_id,
+            "book_id": book_id,
+            "actor": actor,
+            "model_name": model_name,
+            "is_admin": bool(_is_runtime_admin()),
+        },
+    )
+    if not _is_runtime_admin():
+        return jsonify({"success": False, "error": "Only admin can start annotation generation."}), 403
+    if not lecture_id or not book_id:
+        return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+    try:
+        result = enqueue_book_annotation(_cfg, lecture_id, book_id, actor=actor, model_name=model_name)
+        return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, **result}), 202
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@bp.route("/frontend/settings/refinement/summary", methods=["POST"])
+def frontend_settings_refinement_summary():
+    """设置页：手动触发全书概述生成（输出写入 booksummary.md）。"""
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    actor = str(data.get("actor") or _resolve_runtime_user_id()).strip()
+    model_name = str(data.get("model_name") or "").strip()
+    log_event(
+        "frontend_summary_request",
+        "收到前端全书概述请求",
+        payload={
+            "lecture_id": lecture_id,
+            "book_id": book_id,
+            "actor": actor,
+            "model_name": model_name,
+            "is_admin": bool(_is_runtime_admin()),
+        },
+    )
+    if not _is_runtime_admin():
+        return jsonify({"success": False, "error": "Only admin can start book summary generation."}), 403
+    if not lecture_id or not book_id:
+        return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+    try:
+        result = enqueue_book_summary(_cfg, lecture_id, book_id, actor=actor, model_name=model_name)
+        return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, **result}), 202
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
 @bp.route("/frontend/settings/refinement/stop", methods=["POST"])
 def frontend_settings_refinement_stop():
     """设置页：停止教材精读并重置状态。"""
@@ -1331,6 +1724,150 @@ def frontend_settings_refinement_stop():
         return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
     result = cancel_book_refinement(_cfg, lecture_id, book_id, actor=actor)
     return jsonify({"success": True, **result}), 200
+
+
+def _serialize_settings_user(user: Dict[str, Any], *, remote: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    user_data = dict(user or {})
+    remote = dict(remote or {})
+    role = str(remote.get("role") or user_data.get("role") or "member").strip().lower() or "member"
+    identity = str(user_data.get("identity") or "").strip().lower()
+    if identity not in {"student", "teacher"}:
+        identity = "student"
+    created_at = user_data.get("created_at") or 0
+    local_user_id = str(user_data.get("id") or user_data.get("user_id") or remote.get("username") or remote.get("id") or "").strip()
+    return {
+        "user_id": local_user_id,
+        "remote_user_id": str(remote.get("id") or "").strip(),
+        "username": str(remote.get("username") or user_data.get("username") or "").strip(),
+        "display_name": str(remote.get("display_name") or user_data.get("display_name") or "").strip(),
+        "nickname": str(remote.get("nickname") or user_data.get("nickname") or "").strip(),
+        "description": str(user_data.get("description") or "").strip(),
+        "avatar_url": str(remote.get("avatar_url") or remote.get("avatar") or "").strip(),
+        "role": role,
+        "identity": identity,
+        "is_admin": role == "admin",
+        "created_at": _safe_int(created_at, 0),
+    }
+
+
+def _list_settings_users(query: str = "", limit: int = 200) -> List[Dict[str, Any]]:
+    q = str(query or "").strip().lower()
+    rows: List[Dict[str, Any]] = []
+    for user in user_store.list_users(_cfg):
+        if not isinstance(user, dict):
+            continue
+        user_id = str(user.get("id") or user.get("username") or "").strip()
+        if not user_id:
+            continue
+        # Enrich from Nexora so avatar/role/nickname are always current.
+        remote: Dict[str, Any] = {}
+        if _proxy is not None:
+            try:
+                result = _proxy.get_user_info(username=user_id or None)
+                if isinstance(result, dict) and result.get("success"):
+                    remote = result.get("user") if isinstance(result.get("user"), dict) else {}
+            except Exception:
+                pass
+        row = _serialize_settings_user(user, remote=remote)
+        if not row.get("user_id"):
+            continue
+        if q:
+            haystack = " ".join(
+                str(row.get(val) or "")
+                for val in ("user_id", "username", "display_name", "nickname", "description", "role", "identity")
+            ).lower()
+            if q not in haystack:
+                continue
+        rows.append(row)
+
+    def _sort_key(item: Dict[str, Any]) -> Tuple[int, int, str]:
+        role = str(item.get("role") or "").strip().lower()
+        identity = str(item.get("identity") or "").strip().lower()
+        if role == "admin":
+            priority = 0
+        elif identity == "teacher" or role == "teacher":
+            priority = 1
+        else:
+            priority = 2
+        try:
+            updated_value = int(item.get("updated_at") or item.get("created_at") or 0)
+        except (TypeError, ValueError):
+            updated_value = 0
+        return (priority, -updated_value, str(item.get("user_id") or ""))
+
+    rows.sort(key=_sort_key)
+    return rows[: max(1, min(int(limit or 200), 500))]
+
+
+@bp.route("/frontend/settings/users", methods=["GET"])
+def frontend_settings_users():
+    """设置页：读取用户列表与身份信息。"""
+    if not _is_runtime_admin():
+        return jsonify({"success": False, "error": "Only admin can view user settings."}), 403
+    query = str(request.args.get("q") or "").strip()
+    limit = _safe_int(request.args.get("limit"), 200)
+    rows = _list_settings_users(query, limit)
+    summary = {
+        "total": len(rows),
+        "admins": sum(1 for row in rows if str(row.get("role") or "").strip().lower() == "admin"),
+        "teachers": sum(1 for row in rows if str(row.get("identity") or "").strip().lower() == "teacher"),
+        "students": sum(1 for row in rows if str(row.get("identity") or "").strip().lower() == "student"),
+    }
+    return jsonify(
+        {
+            "success": True,
+            "query": query,
+            "items": rows,
+            "total": len(rows),
+            "summary": summary,
+        }
+    )
+
+
+@bp.route("/frontend/settings/users/<user_id>", methods=["PATCH"])
+def frontend_settings_users_patch(user_id: str):
+    """设置页：更新用户身份标签。"""
+    if not _is_runtime_admin():
+        return jsonify({"success": False, "error": "Only admin can update user settings."}), 403
+    resolved_user_id = str(user_id or "").strip()
+    if not resolved_user_id:
+        return jsonify({"success": False, "error": "user_id is required."}), 400
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "error": "JSON body is required."}), 400
+    identity = str(data.get("identity") or "").strip().lower()
+    if identity not in {"student", "teacher"}:
+        return jsonify({"success": False, "error": "identity must be student or teacher."}), 400
+
+    current = user_store.get_user(_cfg, resolved_user_id)
+    if not current:
+        return jsonify({"success": False, "error": "user not found."}), 404
+    actor = str(_resolve_runtime_user_id() or "").strip()
+    is_target_admin = str(current.get("role") or "").strip().lower() == "admin"
+    if is_target_admin and actor != resolved_user_id:
+        return jsonify({"success": False, "error": "不允许修改其他管理员的身份。"}), 400
+
+    updated = user_store.update_user(_cfg, resolved_user_id, {"identity": identity})
+    if not isinstance(updated, dict):
+        return jsonify({"success": False, "error": "user not found."}), 404
+    remote: Dict[str, Any] = {}
+    if _proxy is not None:
+        try:
+            result = _proxy.get_user_info(username=resolved_user_id or None)
+            if isinstance(result, dict) and result.get("success"):
+                remote = result.get("user") if isinstance(result.get("user"), dict) else {}
+        except Exception:
+            pass
+    log_event(
+        "settings_user_identity_updated",
+        "Updated user identity from Settings.",
+        payload={
+            "user_id": resolved_user_id,
+            "identity": identity,
+            "actor": _resolve_runtime_user_id(),
+        },
+    )
+    return jsonify({"success": True, "user": _serialize_settings_user(updated, remote=remote)})
 
 
 @bp.route("/frontend/settings/models", methods=["GET"])
@@ -1355,6 +1892,7 @@ def frontend_settings_models():
                 "rough_reading": rough,
                 "intensive_reading": get_intensive_reading_settings(_cfg),
                 "split_chapters": get_split_chapters_settings(_cfg),
+                "annotation": get_annotation_settings(_cfg),
                 "memory": get_memory_settings(_cfg),
                 "profile_question": get_profile_question_settings(_cfg),
             },
@@ -1374,6 +1912,7 @@ def frontend_settings_models_patch():
     rough_updates = data.get("rough_reading")
     intensive_updates = data.get("intensive_reading")
     split_chapters_updates = data.get("split_chapters")
+    annotation_updates = data.get("annotation")
     memory_updates = data.get("memory")
     profile_question_updates = data.get("profile_question")
     listed = _list_nexora_models_payload(_resolve_runtime_user_id())
@@ -1382,6 +1921,7 @@ def frontend_settings_models_patch():
     updated_rough = get_rough_reading_settings(_cfg)
     updated_intensive = get_intensive_reading_settings(_cfg)
     updated_split_chapters = get_split_chapters_settings(_cfg)
+    updated_annotation = get_annotation_settings(_cfg)
     updated_memory = get_memory_settings(_cfg)
     updated_profile_question = get_profile_question_settings(_cfg)
     if default_model is not None:
@@ -1404,6 +1944,11 @@ def frontend_settings_models_patch():
         if split_model_name and split_model_name not in available_ids:
             return jsonify({"success": False, "error": "split_chapters.model_name is not in available models."}), 400
         updated_split_chapters = update_split_chapters_settings(_cfg, split_chapters_updates)
+    if isinstance(annotation_updates, dict):
+        annotation_model_name = str(annotation_updates.get("model_name") or "").strip()
+        if annotation_model_name and annotation_model_name not in available_ids:
+            return jsonify({"success": False, "error": "annotation.model_name is not in available models."}), 400
+        updated_annotation = update_annotation_settings(_cfg, annotation_updates)
     if isinstance(memory_updates, dict):
         memory_model_name = str(memory_updates.get("model_name") or "").strip()
         if memory_model_name and memory_model_name not in available_ids:
@@ -1422,6 +1967,7 @@ def frontend_settings_models_patch():
                 "rough_reading": updated_rough,
                 "intensive_reading": updated_intensive,
                 "split_chapters": updated_split_chapters,
+                "annotation": updated_annotation,
                 "memory": updated_memory,
                 "profile_question": updated_profile_question,
             },
@@ -1891,6 +2437,8 @@ def create_lecture():
         description=str(data.get("description") or "").strip(),
         category=str(data.get("category") or "").strip(),
         status=str(data.get("status") or "draft").strip() or "draft",
+        teacher=data.get("teacher"),
+        cover_path=str(data.get("cover_path") or "").strip(),
     )
     return jsonify({"success": True, "lecture": lecture}), 201
 
@@ -1917,12 +2465,29 @@ def update_lecture(lecture_id: str):
         return error_response
 
     data = request.get_json(silent=True) or {}
-    allowed_fields = {"title", "description", "category", "status"}
+    allowed_fields = {"title", "description", "category", "status", "teacher", "cover_path"}
     updates = {key: value for key, value in data.items() if key in allowed_fields}
     if not updates:
         return jsonify({"success": False, "error": "No valid lecture fields provided."}), 400
 
     updated = update_learning_lecture(_cfg, lecture_id, updates) or lecture
+    return jsonify({"success": True, "lecture": updated})
+
+
+@bp.route("/lectures/<lecture_id>/teacher", methods=["PATCH"])
+def update_lecture_teacher(lecture_id: str):
+    if not _is_runtime_admin():
+        return jsonify({"success": False, "error": "Only admin can modify lecture teachers."}), 403
+
+    lecture, error_response = _lecture_or_404(lecture_id)
+    if error_response is not None:
+        return error_response
+
+    data = request.get_json(silent=True) or {}
+    if "teacher" not in data:
+        return jsonify({"success": False, "error": "teacher field is required."}), 400
+
+    updated = update_learning_lecture(_cfg, lecture_id, {"teacher": data.get("teacher")}) or lecture
     return jsonify({"success": True, "lecture": updated})
 
 
@@ -2033,7 +2598,29 @@ def get_book_image(lecture_id: str, book_id: str, image_id: str):
     image_path = get_book_image_path(_cfg, lecture_id, book_id, image_id)
     if image_path is None or not image_path.exists():
         return jsonify({"success": False, "error": "image not found."}), 404
-    return send_file(str(image_path))
+    response = send_file(str(image_path))
+    response.headers["Cache-Control"] = "public, max-age=86400"
+    return response
+
+
+@bp.route("/lectures/<lecture_id>/cover-assets", methods=["GET"])
+def get_lecture_cover_assets(lecture_id: str):
+    _, error_response = _lecture_or_404(lecture_id)
+    if error_response is not None:
+        return error_response
+
+    items = list_lecture_cover_assets(_cfg, lecture_id)
+    return jsonify({"success": True, "items": items, "total": len(items)})
+
+
+@bp.route("/lectures/<lecture_id>/books/<book_id>/cover-assets", methods=["GET"])
+def get_book_cover_assets(lecture_id: str, book_id: str):
+    _, _, error_response = _book_or_404(lecture_id, book_id)
+    if error_response is not None:
+        return error_response
+
+    items = list_book_cover_assets(_cfg, lecture_id, book_id)
+    return jsonify({"success": True, "items": items, "total": len(items)})
 
 
 @bp.route("/books/refinement/list", methods=["GET"])
@@ -2264,6 +2851,47 @@ def get_book_info_xml(lecture_id: str, book_id: str):
     return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, "content": content})
 
 
+@bp.route("/lectures/<lecture_id>/books/<book_id>/chapter/<int:chapter_index>", methods=["GET"])
+def get_book_chapter_text(lecture_id: str, book_id: str, chapter_index: int):
+    """按章节获取文本内容，支持按需加载。"""
+    _, book, error_response = _book_or_404(lecture_id, book_id)
+    if error_response is not None:
+        return error_response
+
+    content = load_book_text(_cfg, lecture_id, book_id)
+    if not content:
+        return jsonify({"success": True, "content": "", "chapter_index": chapter_index})
+
+    # 解析章节信息
+    bookinfo_xml = load_book_info_xml(_cfg, lecture_id, book_id)
+    from core.user.learning_progress import parse_book_info_xml_chapters
+    chapters = parse_book_info_xml_chapters(bookinfo_xml, len(content))
+
+    if not chapters or chapter_index < 0 or chapter_index >= len(chapters):
+        # 如果没有章节信息或索引无效，返回全部内容
+        return jsonify({
+            "success": True,
+            "content": content,
+            "chapter_index": chapter_index,
+            "total_chars": len(content),
+        })
+
+    chapter = chapters[chapter_index]
+    start = max(0, min(len(content), chapter.get("start", 0)))
+    end = max(start, min(len(content), chapter.get("end", len(content))))
+    chapter_content = content[start:end].strip()
+
+    return jsonify({
+        "success": True,
+        "content": chapter_content,
+        "chapter_index": chapter_index,
+        "chapter_title": chapter.get("title", ""),
+        "chapter_start": start,
+        "chapter_end": end,
+        "total_chars": len(chapter_content),
+    })
+
+
 @bp.route("/lectures/<lecture_id>/books/<book_id>/bookinfo", methods=["POST"])
 def set_book_info_xml(lecture_id: str, book_id: str):
     _, _, error_response = _book_or_404(lecture_id, book_id)
@@ -2293,6 +2921,82 @@ def set_book_detail_xml(lecture_id: str, book_id: str):
     content = str(data.get("content") or "")
     path = save_book_detail_xml(_cfg, lecture_id, book_id, content)
     return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, "path": path})
+
+
+@bp.route("/lectures/<lecture_id>/books/<book_id>/sections", methods=["GET"])
+def get_book_sections_xml(lecture_id: str, book_id: str):
+    _, _, error_response = _book_or_404(lecture_id, book_id)
+    if error_response is not None:
+        return error_response
+    content = load_book_sections_xml(_cfg, lecture_id, book_id)
+    return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, "content": content})
+
+
+@bp.route("/frontend/quiz/generate", methods=["POST"])
+def frontend_quiz_generate():
+    """为指定session生成测验题目。"""
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    chapter_index = int(data.get("chapter_index") or 0)
+    session_index = int(data.get("session_index") or 0)
+    chapter_name = str(data.get("chapter_name") or "").strip()
+    session_name = str(data.get("session_name") or "").strip()
+    session_range = str(data.get("session_range") or "").strip()
+
+    if not lecture_id or not book_id:
+        return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+
+    try:
+        from core.booksproc.question import generate_session_quiz
+        result = generate_session_quiz(
+            _cfg,
+            lecture_id=lecture_id,
+            book_id=book_id,
+            chapter_index=chapter_index,
+            session_index=session_index,
+            chapter_name=chapter_name,
+            session_name=session_name,
+            session_range=session_range,
+        )
+        return jsonify({"success": True, **result}), 200
+    except Exception as exc:
+        log_event("quiz_generate_error", str(exc), payload={"lecture_id": lecture_id, "book_id": book_id})
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@bp.route("/lectures/<lecture_id>/books/<book_id>/annotations", methods=["GET"])
+def get_book_annotations(lecture_id: str, book_id: str):
+    _, _, error_response = _book_or_404(lecture_id, book_id)
+    if error_response is not None:
+        return error_response
+    from pathlib import Path
+    data_dir = Path(str(_cfg.get("data_dir") or "data"))
+    annotations_path = data_dir / "lectures" / lecture_id / "books" / book_id / "annotations.xml"
+    content = ""
+    if annotations_path.exists():
+        try:
+            content = annotations_path.read_text(encoding="utf-8")
+        except Exception:
+            content = ""
+    return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, "content": content})
+
+
+@bp.route("/lectures/<lecture_id>/books/<book_id>/summary", methods=["GET"])
+def get_book_summary(lecture_id: str, book_id: str):
+    """加载 summary.xml 并返回解析后的 summary_brief 和 summary_detail。"""
+    _, _, error_response = _book_or_404(lecture_id, book_id)
+    if error_response is not None:
+        return error_response
+    from core.booksproc import load_book_summary_from_storage
+    summary = load_book_summary_from_storage(lecture_id, book_id)
+    return jsonify({
+        "success": True,
+        "lecture_id": lecture_id,
+        "book_id": book_id,
+        "summary_brief": summary.get("summary_brief", ""),
+        "summary_detail": summary.get("summary_detail", ""),
+    })
 
 
 @bp.route("/lectures/<lecture_id>/books/<book_id>/vectorize", methods=["GET"])
@@ -2397,6 +3101,7 @@ _RUNTIME_READONLY_TOOL_NAMES = {
     "getBookDetailXml",
     "getBookQuestionsXml",
     "vectorSearch",
+    "puzzle",
     "learning_card",
     "question",
     "read_learning_memory",
@@ -3143,16 +3848,15 @@ def _builtin_feed_channels(username: str, is_admin: bool) -> List[Dict[str, Any]
             "builtin": True,
         }
     ]
-    if is_admin:
-        rows.append(
-            {
-                "id": "public_admin",
-                "title": "公告",
-                "type": "public",
-                "member_user_ids": [],
-                "builtin": True,
-            }
-        )
+    rows.append(
+        {
+            "id": "public_admin",
+            "title": "公告",
+            "type": "public",
+            "member_user_ids": [],
+            "builtin": True,
+        }
+    )
     return rows
 
 
@@ -3194,7 +3898,7 @@ def _can_view_feed_channel(channel: Dict[str, Any], username: str, is_admin: boo
     if channel_id == "public_all":
         return True
     if channel_id == "public_admin":
-        return bool(is_admin)
+        return True
     channel_type = str(channel.get("type") or "private").strip().lower()
     member_user_ids = _normalize_channel_members(channel.get("member_user_ids"))
     return bool(channel_type == "public" or is_admin or (username and username in member_user_ids))
@@ -3344,6 +4048,8 @@ def frontend_learning_feeds():
                         **comment,
                         "author": _build_author_payload(comment_author_view, comment_author_id),
                         "author_is_admin": bool(comment_author_view.get("author_is_admin")),
+                        "likes_count": max(0, _safe_int(comment.get("likes_count"), 0)),
+                        "liked_user_ids": comment.get("liked_user_ids") if isinstance(comment.get("liked_user_ids"), list) else [],
                         "can_delete": bool(
                             current_is_admin
                             or (
@@ -3398,8 +4104,54 @@ def frontend_learning_feeds_create():
             "comments_count": 0,
         },
     )
+    _notify_feed_mentions(
+        username,
+        content,
+        title=f"你在动态中被 @{username} 提到",
+    )
     log_event("learning_feed_posted", {"username": username, "chars": len(content), "channel_id": selected_channel_id, "source": "feed"})
     return jsonify({"success": True, "item": record})
+
+
+@bp.route("/frontend/learning-feeds/users/search", methods=["GET"])
+def frontend_learning_feed_users_search():
+    username = str(_resolve_runtime_user_id() or "").strip()
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+    query = str(request.args.get("q") or "").strip()
+    limit = max(1, min(_safe_int(request.args.get("limit"), 8), 20))
+    if not query:
+        rows = _list_recent_feed_user_examples(limit=min(limit, 5))
+        return jsonify({"success": True, "items": rows, "total": len(rows), "query": ""})
+    rows = _search_nexora_users(query, limit=limit)
+    return jsonify({"success": True, "items": rows, "total": len(rows), "query": query})
+
+
+@bp.route("/frontend/users/search", methods=["GET"])
+def frontend_users_search():
+    """通用用户搜索接口 (教师管理等场景)"""
+    query = str(request.args.get("q") or "").strip()
+    limit = max(1, min(_safe_int(request.args.get("limit"), 10), 30))
+    if not query:
+        # 空查询：优先获取最近活跃用户，不足时用通用搜索补充
+        rows = _list_recent_feed_user_examples(limit=limit)
+        if len(rows) < limit and _proxy is not None:
+            seen = {str(r.get("user_id") or "").strip() for r in rows}
+            # 用常见字符做宽泛搜索，补充更多用户
+            for filler_q in ["a", "e", "1", "2"]:
+                extra = _search_nexora_users(filler_q, limit=limit)
+                for u in extra:
+                    uid = str(u.get("user_id") or "").strip()
+                    if uid and uid not in seen:
+                        seen.add(uid)
+                        rows.append(u)
+                    if len(rows) >= limit:
+                        break
+                if len(rows) >= limit:
+                    break
+        return jsonify({"success": True, "items": rows[:limit], "total": len(rows[:limit]), "query": ""})
+    rows = _search_nexora_users(query, limit=limit)
+    return jsonify({"success": True, "items": rows, "total": len(rows), "query": query})
 
 
 @bp.route("/frontend/learning-feeds/<feed_id>/like", methods=["POST"])
@@ -3431,7 +4183,27 @@ def frontend_learning_feed_comment(feed_id: str):
     updated = append_learning_feed_comment(_cfg, feed_id, username, comment)
     if not isinstance(updated, dict):
         return jsonify({"success": False, "error": "feed not found."}), 404
+    _notify_feed_mentions(
+        username,
+        content,
+        title=f"你在评论中被 @{username} 提到",
+    )
     log_event("learning_feed_commented", {"feed_id": feed_id, "username": username, "chars": len(content), "source": "feed"})
+    return jsonify({"success": True, "item": updated})
+
+
+@bp.route("/frontend/learning-feeds/<feed_id>/comments/<comment_id>/like", methods=["POST"])
+def frontend_learning_feed_comment_like(feed_id: str, comment_id: str):
+    username = _resolve_runtime_user_id()
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+    updated = toggle_learning_feed_comment_like(_cfg, feed_id, comment_id, username)
+    if not isinstance(updated, dict):
+        return jsonify({"success": False, "error": "comment not found."}), 404
+    log_event(
+        "learning_feed_comment_liked",
+        {"feed_id": feed_id, "comment_id": comment_id, "username": username, "source": "feed"},
+    )
     return jsonify({"success": True, "item": updated})
 
 
@@ -3477,82 +4249,3 @@ def frontend_learning_feed_comment_delete(feed_id: str, comment_id: str):
         return jsonify({"success": False, "error": "comment not found."}), 404
     log_event("learning_feed_comment_deleted", {"feed_id": feed_id, "comment_id": comment_id, "username": username, "source": "feed"})
     return jsonify({"success": True, "item": updated})
-
-
-@bp.route("/frontend/learning/chapter-complete", methods=["POST"])
-def frontend_learning_chapter_complete():
-    data = request.get_json(silent=True) or {}
-    username = _resolve_runtime_user_id()
-    lecture_id = str(data.get("lecture_id") or "").strip()
-    book_id = str(data.get("book_id") or "").strip()
-    chapter_name = str(data.get("chapter_name") or "").strip()
-    chapter_range = str(data.get("chapter_range") or "").strip()
-    chapter_context = str(data.get("chapter_context") or "")
-    chapter_detail_xml = str(data.get("chapter_detail_xml") or "")
-    if not username:
-        return jsonify({"success": False, "error": "username is required."}), 400
-    if not lecture_id or not book_id or not chapter_name:
-        return jsonify({"success": False, "error": "lecture_id, book_id and chapter_name are required."}), 400
-    lecture = get_learning_lecture(_cfg, lecture_id)
-    book = get_lecture_book(_cfg, lecture_id, book_id)
-    if not isinstance(lecture, dict) or not isinstance(book, dict):
-        return jsonify({"success": False, "error": "lecture or book not found."}), 404
-    progress = max(0, min(100, _safe_int(lecture.get("progress"), 0)))
-    if progress < 100:
-        progress = min(100, progress + 5)
-    next_chapter = ""
-    if chapter_range:
-        info_xml = str(load_book_info_xml(_cfg, lecture_id, book_id) or "")
-        parsed = parse_book_info_xml_chapters(info_xml, len(str(load_book_text(_cfg, lecture_id, book_id) or "")))
-        found_index = -1
-        for idx, row in enumerate(parsed):
-            if str(row.get("title") or "").strip() == chapter_name:
-                found_index = idx
-                break
-        if found_index >= 0 and found_index + 1 < len(parsed):
-            next_chapter = str(parsed[found_index + 1].get("title") or "").strip()
-    update_learning_lecture(
-        _cfg,
-        lecture_id,
-        {
-            "current_chapter": chapter_name,
-            "next_chapter": next_chapter,
-            "progress": progress,
-        },
-    )
-    user_store.append_learning_record(
-        _cfg,
-        username,
-        {
-            "type": "chapter_completed",
-            "lecture_id": lecture_id,
-            "book_id": book_id,
-            "chapter_name": chapter_name,
-            "chapter_range": chapter_range,
-        },
-    )
-    job = enqueue_memory_job(
-        _cfg,
-        user_id=username,
-        lecture_id=lecture_id,
-        reason="profile_question",
-        payload={
-            "book_id": book_id,
-            "chapter_name": chapter_name,
-            "chapter_range": chapter_range,
-            "chapter_context": chapter_context,
-            "chapter_detail_xml": chapter_detail_xml,
-        },
-    )
-    log_event(
-        "frontend_chapter_complete",
-        "用户完成章节并触发画像出题",
-        payload={
-            "username": username,
-            "lecture_id": lecture_id,
-            "book_id": book_id,
-            "chapter_name": chapter_name,
-            "question_job": dict(job or {}),
-        },
-    )
-    return jsonify({"success": True, "enqueue": job, "progress": progress, "next_chapter": next_chapter})

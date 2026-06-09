@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{ service_name }} Console</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}" />
+</head>
+<body
+    data-auth-required="{{ '1' if auth_required else '0' }}"
+    data-api-base-url="{{ api_base_url }}"
+    data-service-name="{{ service_name }}"
+>
+    <div class="layout">
+        <aside class="sidebar">
+            <div class="brand">
+                <div class="brand-mark" aria-hidden="true">
+                    <svg viewBox="0 0 24 24">
+                        <path d="M4 7.5L12 3l8 4.5v9L12 21l-8-4.5v-9Z" fill="none" stroke="currentColor" stroke-width="1.7"></path>
+                        <path d="M12 7v10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"></path>
+                        <path d="M8.2 9.2 12 12l3.8-2.8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"></path>
+                    </svg>
+                </div>
+                <div>
+                    <div class="brand-title">{{ service_name }}</div>
+                    <div class="brand-subtitle">Search / Render / Parse</div>
+                </div>
+            </div>
+
+            <nav class="nav" aria-label="Page sections">
+                <div class="nav-label">Menu</div>
+                <button class="nav-btn active" type="button" data-target="section-connection">连接</button>
+                <button class="nav-btn" type="button" data-target="section-search">搜索</button>
+                <button class="nav-btn" type="button" data-target="section-render">渲染</button>
+                <button class="nav-btn" type="button" data-target="section-parse">解析</button>
+                <button class="nav-btn" type="button" data-target="section-result">结果</button>
+                <button class="nav-btn" type="button" data-target="section-log">日志</button>
+            </nav>
+
+            <div class="sidebar-note">
+                控制台只保留必需动作，所有请求都会落到右侧结果区和日志区。
+            </div>
+        </aside>
+
+        <div class="main">
+            <header class="topbar">
+                <div class="topbar-copy">
+                    <div class="page-kicker">NEXORASEARCH CONTROL</div>
+                    <div class="page-title">把搜索、渲染和页面解析放在同一块控制台里</div>
+                </div>
+                <div class="status-row">
+                    <span class="chip chip-soft" id="authChip">Auth: {{ 'Required' if auth_required else 'Open' }}</span>
+                    <span class="chip chip-soft" id="baseUrlChip">Base: {{ api_base_url or 'same-origin' }}</span>
+                    <span class="chip" id="requestChip">Idle</span>
+                </div>
+            </header>
+
+            <main class="content">
+                <section class="intro card">
+                    <div class="intro-copy">
+                        <p class="eyebrow">NEXORASEARCH</p>
+                        <h1>简洁、克制、直接可用。</h1>
+                        <p class="intro-desc">
+                            这个前端只负责把 API 操作清晰地摆出来，不做额外装饰，也不把关键功能藏进复杂交互里。
+                        </p>
+                    </div>
+                    <div class="hero-actions">
+                        <button class="ghost-btn" id="btnClearLog" type="button">清空日志</button>
+                        <button class="primary-btn" id="btnLoadExample" type="button">填充示例</button>
+                    </div>
+                </section>
+
+                <section class="controls-grid">
+                    <article class="card panel" id="section-connection">
+                        <div class="panel-head">
+                            <h2>连接</h2>
+                            <span class="mini-tag">Token / Header</span>
+                        </div>
+                        <label class="field">
+                            <span>Auth Token</span>
+                            <input id="authToken" type="password" placeholder="粘贴 token 后保存到本地浏览器" />
+                        </label>
+                        <div class="inline-actions">
+                            <button class="primary-btn" id="btnSaveToken" type="button">保存 Token</button>
+                            <button class="ghost-btn" id="btnClearToken" type="button">清空 Token</button>
+                        </div>
+                        <p class="hint" id="tokenHint">Token 只会保存在当前浏览器本地存储中。</p>
+                    </article>
+
+                    <article class="card panel" id="section-search">
+                        <div class="panel-head">
+                            <h2>搜索</h2>
+                            <span class="mini-tag">DuckDuckGo</span>
+                        </div>
+                        <label class="field">
+                            <span>Query</span>
+                            <input id="searchQuery" type="text" placeholder="输入搜索词" />
+                        </label>
+                        <div class="two-up">
+                            <label class="field">
+                                <span>Max Results</span>
+                                <input id="searchMaxResults" type="number" min="1" max="20" value="5" />
+                            </label>
+                            <label class="field field-check">
+                                <span>Fetch Content</span>
+                                <div class="check-wrap">
+                                    <input id="searchFetchContent" type="checkbox" />
+                                    <span>抓正文</span>
+                                </div>
+                            </label>
+                        </div>
+                        <div class="inline-actions">
+                            <button class="primary-btn" id="btnSearchDdg" type="button">DDG 搜索</button>
+                            <button class="ghost-btn" id="btnSearchRender" type="button">渲染式搜索</button>
+                        </div>
+                    </article>
+
+                    <article class="card panel" id="section-render">
+                        <div class="panel-head">
+                            <h2>渲染</h2>
+                            <span class="mini-tag">WebView</span>
+                        </div>
+                        <label class="field">
+                            <span>URL</span>
+                            <input id="renderUrl" type="text" placeholder="https://example.com" />
+                        </label>
+                        <div class="two-up">
+                            <label class="field">
+                                <span>Timeout ms</span>
+                                <input id="renderTimeout" type="number" min="1000" step="1000" value="15000" />
+                            </label>
+                            <label class="field field-check">
+                                <span>Mode</span>
+                                <div class="check-wrap">
+                                    <input id="renderSogouFix" type="checkbox" checked />
+                                    <span>Sogou Fix</span>
+                                </div>
+                            </label>
+                        </div>
+                        <div class="inline-actions">
+                            <button class="primary-btn" id="btnRenderWebview" type="button">抓取网页</button>
+                        </div>
+                    </article>
+
+                    <article class="card panel" id="section-parse">
+                        <div class="panel-head">
+                            <h2>解析</h2>
+                            <span class="mini-tag">Nexora Model</span>
+                        </div>
+                        <label class="field">
+                            <span>Model</span>
+                            <input id="parseModel" type="text" placeholder="留空则使用后端默认模型" />
+                        </label>
+                        <label class="field">
+                            <span>Instructions</span>
+                            <textarea id="parseInstructions" rows="4" placeholder="例如：只输出 JSON，提取标题、摘要、关键词和 source_url"></textarea>
+                        </label>
+                        <div class="inline-actions">
+                            <button class="primary-btn" id="btnAgentParse" type="button">开始解析</button>
+                        </div>
+                    </article>
+                </section>
+
+                <section class="result-grid">
+                    <article class="card output-card" id="section-result">
+                        <div class="panel-head">
+                            <h2>结果</h2>
+                            <span class="mini-tag" id="resultTypeTag">等待操作</span>
+                        </div>
+                        <div class="result-view" id="resultView">
+                            <div class="empty-state">
+                                <div class="empty-icon" aria-hidden="true">
+                                    <svg viewBox="0 0 24 24">
+                                        <path d="M5 7h14M5 12h14M5 17h10" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"></path>
+                                    </svg>
+                                </div>
+                                <h3>准备就绪</h3>
+                                <p>先填 token，再执行搜索、渲染或解析。结果会显示在这里。</p>
+                            </div>
+                        </div>
+                    </article>
+
+                    <article class="card output-card" id="section-log">
+                        <div class="panel-head">
+                            <h2>日志</h2>
+                            <span class="mini-tag">Request Trace</span>
+                        </div>
+                        <div class="log-list" id="logList"></div>
+                    </article>
+                </section>
+            </main>
+        </div>
+    </div>
+
+    <template id="searchResultTemplate">
+        <article class="search-result">
+            <div class="result-title-row">
+                <a class="result-title" target="_blank" rel="noreferrer noopener"></a>
+                <span class="result-index"></span>
+            </div>
+            <div class="result-url"></div>
+            <div class="result-snippet"></div>
+            <div class="result-content"></div>
+        </article>
+    </template>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

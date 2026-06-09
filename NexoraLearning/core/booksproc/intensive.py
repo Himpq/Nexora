@@ -11,6 +11,9 @@ import re
 import time
 from typing import Any, Callable, Dict, List, Mapping, Tuple
 
+from .compress import build_llm_compress_func
+from .context import Context, ContextPolicy
+
 
 def _xml_escape(value: Any) -> str:
     """Escape text for XML node content."""
@@ -306,7 +309,7 @@ def run_intensive_reading_once(
         "请对当前章节执行精读。"
         "你只能聚焦当前章节范围，不要跳章。"
         "必须通过工具 write 提交结构化精读字段；"
-        "如果信息不足，先 read/grep，再 write，最后 done。"
+        "如果信息不足，先 read/grep，再 write。"
     )
     existing_detail_xml = str(load_book_detail_xml(resolved_cfg, lecture_id, book_id) or "")
     chapter_fragments: List[str] = _extract_book_detail_blocks(existing_detail_xml)
@@ -351,6 +354,7 @@ def run_intensive_reading_once(
             on_delta=lambda delta: append_log_text(str(delta or "")),
             log_tool_flow=log_tool_flow,
             push_book_progress_step=push_book_progress_step,
+            cfg=resolved_cfg,
         )
         chapter_xml = str(result.get("bookdetail_xml") or "").strip()
         if chapter_xml:
@@ -425,8 +429,38 @@ def run_intensive_with_tools_strict(
     exec_read_book_text_tool: Callable[..., Dict[str, Any]],
     exec_search_book_text_tool: Callable[..., Dict[str, Any]],
     log_event: Callable[..., None],
+    cfg: Mapping[str, Any],
 ) -> Dict[str, Any]:
     """强循环版精读流程：未调用 write 时继续循环，最多 24 轮。"""
+    def _validate_write_payload(arguments: Dict[str, Any]) -> Tuple[bool, Dict[str, Any], str]:
+        normalized_key_points = _normalize_object_list(
+            arguments.get("key_points"),
+            title_keys=["title", "key_point_title", "point_title", "name"],
+            content_keys=["content", "key_point_content", "point_content", "description"],
+        )
+        normalized_vocab = _normalize_vocab_list(arguments.get("specialized_vocabulary"))
+        normalized_notes = _normalize_object_list(
+            arguments.get("chapter_notes"),
+            title_keys=["type", "note_type", "title", "label"],
+            content_keys=["content", "note_content", "description"],
+        )
+        normalized_summary = str(arguments.get("chapter_summary") or "").strip()
+        normalized = {
+            "key_points": normalized_key_points,
+            "specialized_vocabulary": normalized_vocab,
+            "chapter_notes": normalized_notes,
+            "chapter_summary": normalized_summary,
+        }
+        has_meaningful_content = bool(
+            normalized_summary
+            or normalized_key_points
+            or normalized_vocab
+            or normalized_notes
+        )
+        if not has_meaningful_content:
+            return False, normalized, "write 参数为空。必须至少提供 chapter_summary 或任一结构化字段。"
+        return True, normalized, ""
+
     prompt_vars = {
         "lecture_name": str(lecture_name or ""),
         "book_name": str(book_name or ""),
@@ -442,6 +476,21 @@ def run_intensive_with_tools_strict(
     user_prompt = runner.context_manager.render(prompt_pack["user"], context, prompt_vars)
 
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+    llm_compress_func = build_llm_compress_func(runner, cfg)
+    ctx = Context(
+        max_chars=15000,
+        policy=ContextPolicy.LLM_COMPRESS,
+        llm_compress_func=llm_compress_func,
+        trace_meta={
+            "flow": "intensive_loop",
+            "lecture_id": str(lecture_id or ""),
+            "book_id": str(book_id or ""),
+            "chapter_name": str(chapter_name or ""),
+            "chapter_range": str(chapter_range or ""),
+        },
+    )
+    for msg in messages:
+        ctx.add(str(msg.get("role") or ""), str(msg.get("content") or ""))
     tools = [
         {
             "type": "function",
@@ -541,17 +590,6 @@ def run_intensive_with_tools_strict(
                 },
             },
         },
-        {
-            "type": "function",
-            "function": {
-                "name": "done",
-                "description": "Mark current chapter done after write has succeeded.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                },
-            },
-        },
     ]
 
     saved_text = ""
@@ -573,6 +611,25 @@ def run_intensive_with_tools_strict(
         },
     )
     for turn in range(1, max_turns + 1):
+        executed = ctx.prepare()
+
+        if executed:
+            log_event(
+                "context_operation",
+                "上下文压缩",
+                payload={
+                    "lecture_id": lecture_id,
+                    "book_id": book_id,
+                    "chapter_name": chapter_name,
+                    "chapter_range": chapter_range,
+                    "turn": int(turn),
+                    "policy": ctx.policy.value,
+                    "context_chars": ctx.chars(),
+                    "messages_count": ctx.count(),
+                },
+            )
+
+        messages = ctx.build()
         req_started = time.time()
         log_event(
             "intensive_turn_request",
@@ -640,10 +697,13 @@ def run_intensive_with_tools_strict(
         msg = choices[0].get("message") if isinstance(choices[0], dict) else {}
         assistant_content = str((msg or {}).get("content") or "")
         tool_calls = msg.get("tool_calls") if isinstance(msg, dict) and isinstance(msg.get("tool_calls"), list) else []
-        messages.append({"role": "assistant", "content": assistant_content if assistant_content else None, "tool_calls": tool_calls if tool_calls else None})
+        ctx.add(
+            "assistant",
+            assistant_content if assistant_content else "",
+            tool_calls=tool_calls if tool_calls else None,
+        )
 
         wrote = False
-        turn_has_done = False
         if tool_calls:
             for call in tool_calls:
                 if not isinstance(call, dict):
@@ -652,13 +712,39 @@ def run_intensive_with_tools_strict(
                 func = call.get("function") if isinstance(call.get("function"), dict) else {}
                 tool_name = str(func.get("name") or "")
                 args = safe_json_obj(str(func.get("arguments") or "{}"))
+                if wrote_once:
+                    tool_result = {
+                        "ok": False,
+                        "error": "本章节已经 write 成功。不要再调用任何工具，当前章节已经结束。",
+                    }
+                    log_tool_flow(
+                        tool_name=str(tool_name or ""),
+                        arguments=args,
+                        tool_output=tool_result,
+                        model_output=assistant_content[:800],
+                        source="intensive_reading",
+                    )
+                    ctx.add("tool", str(tool_result), tool_call_id=call_id)
+                    continue
                 if tool_name == "write":
+                    valid_write, normalized_write, write_error = _validate_write_payload(args)
+                    if not valid_write:
+                        tool_result = {"ok": False, "error": write_error}
+                        log_tool_flow(
+                            tool_name=str(tool_name or ""),
+                            arguments=args,
+                            tool_output=tool_result,
+                            model_output=assistant_content[:800],
+                            source="intensive_reading",
+                        )
+                        ctx.add("tool", str(tool_result), tool_call_id=call_id)
+                        continue
                     out_chapter_name = str(args.get("chapter_name") or chapter_name).strip() or str(chapter_name or "")
                     out_chapter_range = str(args.get("chapter_range") or chapter_range).strip() or str(chapter_range or "")
-                    out_key_points = args.get("key_points")
-                    out_vocab = args.get("specialized_vocabulary")
-                    out_notes = args.get("chapter_notes")
-                    out_summary = str(args.get("chapter_summary") or "").strip()
+                    out_key_points = normalized_write.get("key_points")
+                    out_vocab = normalized_write.get("specialized_vocabulary")
+                    out_notes = normalized_write.get("chapter_notes")
+                    out_summary = str(normalized_write.get("chapter_summary") or "").strip()
                     xml_text = (
                         "<book_detail>\n"
                         f"  <chapter_name>{_xml_escape(out_chapter_name)}</chapter_name>\n"
@@ -696,18 +782,6 @@ def run_intensive_with_tools_strict(
                             "preview": str(memory or "")[:50],
                         },
                     )
-                elif tool_name == "done":
-                    turn_has_done = True
-                    tool_result = {"ok": True, "done": True, "wrote": bool(wrote_once)}
-                    push_book_progress_step(
-                        lecture_id,
-                        book_id,
-                        {
-                            "type": "done",
-                            "title": "章节处理完成",
-                            "preview": "",
-                        },
-                    )
                 elif tool_name in {"read", "read_book_text"}:
                     tool_result = exec_read_book_text_tool(full_text=full_text, total_len=len(full_text), arguments=args)
                     r_off = int(tool_result.get("offset") or 0)
@@ -741,8 +815,8 @@ def run_intensive_with_tools_strict(
                     model_output=assistant_content[:800],
                     source="intensive_reading",
                 )
-                messages.append({"role": "tool", "tool_call_id": call_id, "content": str(tool_result)})
-            if wrote_once and turn_has_done:
+                ctx.add("tool", str(tool_result), tool_call_id=call_id)
+            if wrote_once:
                 break
 
         log_event(
@@ -753,21 +827,17 @@ def run_intensive_with_tools_strict(
                 "book_id": book_id,
                 "turn": int(turn),
                 "wrote": bool(wrote),
-                "done": bool(turn_has_done),
+                "completed": bool(wrote_once),
                 "tempmem_count": len(tempmem),
             },
             content=assistant_content[:1200],
         )
-        if not (wrote_once and turn_has_done):
-            messages.append(
-                {
-                    "role": "user",
-                    "content": "你还没有完成章节提交。下一轮必须按顺序调用：write(...) 然后 done(...)；必要时先 read/grep/savemem。",
-                }
-            )
+        if not wrote_once:
+            next_step_hint = "你还没有完成章节提交。下一轮必须直接调用 write(...)；必要时先 read/grep/savemem。"
+            ctx.add("user", next_step_hint)
 
     if not str(saved_text or "").strip():
-        raise RuntimeError("Intensive model did not complete write+done within strict loop")
+        raise RuntimeError("Intensive model did not produce any valid write() result")
 
     return {
         "bookdetail_xml": saved_text,

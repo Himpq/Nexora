@@ -25,7 +25,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 from .utils import read_chunks_jsonl, write_chunks_jsonl
 
 _lock = threading.RLock()
@@ -35,6 +35,25 @@ _BOOK_SUMMARY_KEYS = {
     "current_chapter",
     "next_chapter",
 }
+
+
+def _normalize_teacher_list(value: Any) -> List[str]:
+    if isinstance(value, str):
+        raw_items = [value]
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        raw_items = list(value)
+    else:
+        raw_items = []
+
+    rows: List[str] = []
+    seen = set()
+    for item in raw_items:
+        teacher_id = str(item or "").strip()
+        if not teacher_id or teacher_id in seen:
+            continue
+        seen.add(teacher_id)
+        rows.append(teacher_id)
+    return rows
 
 
 def _lectures_root(cfg: Dict[str, Any]) -> Path:
@@ -141,6 +160,8 @@ def create_lecture(
     description: str = "",
     category: str = "",
     status: str = "draft",
+    teacher: Any = None,
+    cover_path: str = "",
 ) -> Dict[str, Any]:
     lecture_id = f"l_{uuid.uuid4().hex[:12]}"
     lecture_dir = _lecture_dir(cfg, lecture_id)
@@ -154,6 +175,8 @@ def create_lecture(
         "description": description.strip(),
         "category": category.strip(),
         "status": status.strip() or "draft",
+        "teacher": _normalize_teacher_list(teacher),
+        "cover_path": str(cover_path or "").strip(),
         "created_at": now,
         "updated_at": now,
         "book_count": 0,
@@ -175,7 +198,12 @@ def update_lecture(
     sanitized = dict(updates or {})
     sanitized.pop("id", None)
     sanitized.pop("created_at", None)
+    if "teacher" in sanitized:
+        sanitized["teacher"] = _normalize_teacher_list(sanitized.get("teacher"))
+    if "cover_path" in sanitized:
+        sanitized["cover_path"] = str(sanitized.get("cover_path") or "").strip()
     lecture.update(sanitized)
+    lecture["teacher"] = _normalize_teacher_list(lecture.get("teacher"))
     lecture["updated_at"] = int(time.time())
     _write_json(_lecture_json_path(cfg, lecture_id), lecture)
     return lecture
@@ -263,6 +291,10 @@ def create_book(
         "section_status": "idle",
         "section_error": "",
         "section_model": "",
+        "summary_status": "idle",
+        "summary_error": "",
+        "summary_model": "",
+        "summary_at": None,
         "vector_status": "idle",
         "vector_provider": "nexoradb_service",
         "chunks_count": 0,
@@ -406,6 +438,56 @@ def get_book_image_path(cfg: Dict[str, Any], lecture_id: str, book_id: str, imag
         path = _book_images_dir(cfg, lecture_id, book_id) / file_name
         return path if path.exists() else None
     return None
+
+
+def list_book_cover_assets(cfg: Dict[str, Any], lecture_id: str, book_id: str) -> List[Dict[str, Any]]:
+    book = get_book(cfg, lecture_id, book_id) or {}
+    book_title = str(book.get("title") or book_id or "").strip()
+    rows: List[Dict[str, Any]] = []
+
+    for item in load_book_images_meta(cfg, lecture_id, book_id):
+        image_id = str(item.get("id") or "").strip()
+        file_name = str(item.get("file_name") or "").strip()
+
+        if not image_id or not file_name:
+            continue
+
+        image_path = _book_images_dir(cfg, lecture_id, book_id) / file_name
+        if not image_path.exists():
+            continue
+
+        cover_path = f"/api/lectures/{lecture_id}/books/{book_id}/images/{image_id}"
+        rows.append(
+            {
+                "asset_key": f"{book_id}:{image_id}",
+                "lecture_id": lecture_id,
+                "book_id": book_id,
+                "book_title": book_title,
+                "image_id": image_id,
+                "name": str(item.get("name") or file_name).strip() or file_name,
+                "file_name": file_name,
+                "source_path": str(item.get("source_path") or "").strip(),
+                "mime_type": str(item.get("mime_type") or "").strip(),
+                "size": int(item.get("size") or image_path.stat().st_size or 0),
+                "alt": str(item.get("alt") or item.get("name") or image_id).strip() or image_id,
+                "cover_path": cover_path,
+                "image_url": cover_path,
+            }
+        )
+
+    return rows
+
+
+def list_lecture_cover_assets(cfg: Dict[str, Any], lecture_id: str) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+
+    for book in list_books(cfg, lecture_id):
+        book_id = str((book or {}).get("id") or "").strip()
+        if not book_id:
+            continue
+        rows.extend(list_book_cover_assets(cfg, lecture_id, book_id))
+
+    return rows
 
 
 def save_book_original_file(

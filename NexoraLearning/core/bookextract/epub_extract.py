@@ -1,3 +1,9 @@
+"""EPUB extraction helpers.
+
+Keep book-format-specific parsers here so additional extractors like
+pdf_extract.py or docx_extract.py can be added without growing core/utils.py.
+"""
+
 from __future__ import annotations
 
 import html
@@ -5,12 +11,40 @@ import mimetypes
 import re
 import zipfile
 from pathlib import Path, PurePosixPath
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Optional
 
 
 IMAGE_TOKEN_RE = re.compile(
     r"\{\{nxl_image:([A-Za-z0-9_\-]+):([A-Za-z0-9_\-]+):([A-Za-z0-9._\-]+)(?::([^}]*))?\}\}"
 )
+
+
+def extract_epub_text(epub_path: str) -> str:
+    """Parse EPUB content into plain text with optional heading candidates."""
+    text_parts: List[str] = []
+    heading_candidates: List[str] = []
+    try:
+        with zipfile.ZipFile(epub_path, "r") as zf:
+            for name in _iter_epub_html_names(zf):
+                try:
+                    raw = zf.read(name).decode("utf-8", errors="ignore")
+                except Exception:
+                    continue
+                for row in _extract_heading_candidates(raw):
+                    heading_candidates.append(row)
+                parsed = _preserve_html_for_model(raw)
+                if parsed:
+                    text_parts.append(parsed)
+    except Exception as exc:
+        raise RuntimeError(f"EPUB 解析失败: {exc}") from exc
+
+    uniq_headings = _dedupe_keep_order(heading_candidates)
+    if uniq_headings:
+        heading_block = ["[EPUB_HEADING_CANDIDATES]"]
+        heading_block.extend([f"- {item}" for item in uniq_headings[:400]])
+        heading_block.append("[/EPUB_HEADING_CANDIDATES]")
+        return "\n".join(heading_block) + "\n\n" + "\n\n".join(text_parts)
+    return "\n\n".join(text_parts)
 
 
 def extract_epub_with_assets(
@@ -28,15 +62,7 @@ def extract_epub_with_assets(
     assets_dir.mkdir(parents=True, exist_ok=True)
 
     with zipfile.ZipFile(epub_path, "r") as zf:
-        names = list(zf.namelist())
-        candidates = sorted(
-            [
-                name
-                for name in names
-                if name.lower().endswith((".xhtml", ".html", ".htm", ".xml"))
-            ]
-        )
-        for name in candidates:
+        for name in _iter_epub_html_names(zf):
             try:
                 raw = zf.read(name).decode("utf-8", errors="ignore")
             except Exception:
@@ -96,6 +122,28 @@ def render_reader_image_tokens(text: str, base_url: str = "") -> str:
     return IMAGE_TOKEN_RE.sub(repl, src)
 
 
+def _iter_epub_html_names(archive: zipfile.ZipFile) -> List[str]:
+    return sorted(
+        [
+            name
+            for name in archive.namelist()
+            if name.lower().endswith((".xhtml", ".html", ".htm", ".xml"))
+        ]
+    )
+
+
+def _dedupe_keep_order(rows: List[str]) -> List[str]:
+    seen = set()
+    uniq: List[str] = []
+    for row in rows:
+        key = str(row or "").strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        uniq.append(str(row).strip())
+    return uniq
+
+
 def _build_image_url(base_url: str, lecture_id: str, book_id: str, image_id: str) -> str:
     if not lecture_id or not book_id or not image_id:
         return ""
@@ -122,6 +170,18 @@ def _extract_heading_candidates(raw: str) -> List[str]:
         if _is_reasonable_heading(text):
             rows.append(text)
     return rows
+
+
+def _preserve_html_for_model(raw: str) -> str:
+    text = str(raw or "")
+    if not text:
+        return ""
+    text = re.sub(r"(?is)<script.*?>.*?</script>", " ", text)
+    text = re.sub(r"(?is)<style.*?>.*?</style>", " ", text)
+    text = text.replace("\r", "\n")
+    text = re.sub(r"[ \t\f\v]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 def _preserve_html_with_image_tokens(
