@@ -1187,7 +1187,32 @@
         if (handlePuzzleStateUpdateFromIframe(event)) return;
         if (handlePuzzleFramePayload(event)) return;
         handleReaderStatePayload(event && event.data);
+        // 处理来自 NexoraLearning iframe 的提示词注入请求
+        const data = event && event.data;
+        if (data && typeof data === 'object'
+            && String(data.source || '').trim().toLowerCase() === 'nexora-learning'
+            && String(data.type || '').trim().toLowerCase() === 'nexora:inject-prompt') {
+            injectPromptToMainInput(String(data.text || '').trim());
+        }
     });
+
+    // 同页面 CustomEvent 兜底（非 iframe 场景）
+    window.addEventListener('nexora:inject-prompt', (event) => {
+        const data = event && event.detail;
+        if (data && typeof data === 'object') {
+            injectPromptToMainInput(String(data.text || '').trim());
+        }
+    });
+
+    function injectPromptToMainInput(text) {
+        if (!text) return;
+        const textarea = document.getElementById('messageInput');
+        if (!textarea) return;
+        textarea.value = text;
+        textarea.focus();
+        // 触发 input 事件让框架感知到值变化
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    }
 
     window.addEventListener('nexora:reader:state', (event) => {
         handleReaderStatePayload(event && event.detail);

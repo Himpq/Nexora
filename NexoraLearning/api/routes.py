@@ -16,6 +16,7 @@ from flask import Blueprint, jsonify, request, send_file, send_from_directory
 from werkzeug.utils import secure_filename
 
 from core import storage
+from prompts import PROFILE_INTERVIEW_PROMPT, PROFILE_UPDATE_PROMPT
 from core.lectures import (
     create_book as create_lecture_book,
     create_lecture as create_learning_lecture,
@@ -53,6 +54,7 @@ from core.runlog import log_event
 from core.runlog import available_log_sources, list_structured_logs
 from core import user as user_store
 from core.memory.memory_analysis import run_memory_analysis_job
+from core.memory.profile_extract import parse_profile_dimensions, run_profile_extraction_job
 from core.memory.profile_question import run_profile_question_job
 from core.learning_feed import prepend_learning_feed_item
 from core.learning_feed import list_learning_feed_items
@@ -200,6 +202,32 @@ def _run_background_memory_job(cfg: Mapping[str, Any], job: Mapping[str, Any]) -
         run_profile_question_job(cfg, job)
         return
     run_memory_analysis_job(cfg, job)
+    # 章节完成触发完整链：记忆分析 → 画像提取 → 画像出题
+    if reason == "chapter_complete":
+        try:
+            run_profile_extraction_job(cfg, job)
+        except Exception as exc:
+            log_event(
+                "profile_extraction_chain_error",
+                "画像提取串联执行失败",
+                payload={
+                    "job_id": str(job.get("job_id") or "").strip(),
+                    "user_id": str(job.get("user_id") or "").strip(),
+                    "error": str(exc),
+                },
+            )
+        try:
+            run_profile_question_job(cfg, job)
+        except Exception as exc:
+            log_event(
+                "profile_question_chain_error",
+                "画像出题串联执行失败",
+                payload={
+                    "job_id": str(job.get("job_id") or "").strip(),
+                    "user_id": str(job.get("user_id") or "").strip(),
+                    "error": str(exc),
+                },
+            )
 
 
 def _allowed(filename: str) -> bool:
@@ -1139,6 +1167,247 @@ def frontend_dashboard():
     )
 
 
+@bp.route("/frontend/profile", methods=["GET"])
+def frontend_profile():
+    """返回用户画像的结构化维度数据。"""
+    user_id = _resolve_runtime_user_id()
+    user_store.ensure_user_files(_cfg, user_id)
+
+    from core.memory import PROFILE_DIMENSIONS, parse_profile_dimensions, parse_profile_timeline
+
+    user_md = str(user_store.read_memory(_cfg, user_id, "user") or "")
+    dimensions = parse_profile_dimensions(user_md)
+    timeline = parse_profile_timeline(user_md)
+
+    filled_count = sum(1 for d in dimensions.values() if d.get("filled"))
+    total_count = len(PROFILE_DIMENSIONS)
+    completion_rate = round(filled_count / total_count, 3) if total_count > 0 else 0.0
+
+    return jsonify(
+        {
+            "success": True,
+            "user_id": user_id,
+            "dimensions": dimensions,
+            "timeline": timeline,
+            "completion_rate": completion_rate,
+            "filled_count": filled_count,
+            "total_count": total_count,
+        }
+    )
+
+
+
+
+def _learning_path_cache_path(lecture_id: str, book_id: str) -> Path:
+    data_dir = Path(str(_cfg.get("data_dir") or "data")).resolve()
+    return data_dir / "lectures" / lecture_id / "books" / book_id / "learning_path.json"
+
+
+@bp.route("/frontend/learning-path", methods=["POST"])
+def frontend_learning_path():
+    """生成个性化学习路径。基于章节结构 + 用户画像，用 LLM 生成推荐顺序和原因。"""
+    user_id = _resolve_runtime_user_id()
+    user_store.ensure_user_files(_cfg, user_id)
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    force = bool(data.get("force"))
+
+    if not lecture_id or not book_id:
+        return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+
+    # 检查持久化缓存
+    cache_path = _learning_path_cache_path(lecture_id, book_id)
+    if not force and cache_path.exists():
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            if isinstance(cached, dict) and isinstance(cached.get("path"), list):
+                return jsonify({"success": True, "advice": cached.get("advice", ""), "path": cached["path"], "cached": True})
+        except Exception:
+            pass
+
+    from core.memory import PROFILE_DIMENSIONS, parse_profile_dimensions
+    from core.booksproc import build_memory_runner, get_memory_settings
+
+    # 读取章节结构
+    bookinfo_xml = str(load_book_info_xml(_cfg, lecture_id, book_id) or "")
+    if not bookinfo_xml:
+        return jsonify({"success": False, "error": "Book info not found. Please run coarse reading first."}), 404
+
+    # 解析章节列表
+    import re as _re
+    all_chapters = []
+    for m in _re.finditer(
+        r"<chapter_name>\s*(.*?)\s*</chapter_name>[\s\S]*?<chapter_range>\s*(.*?)\s*</chapter_range>[\s\S]*?<chapter_summary>\s*(.*?)\s*</chapter_summary>",
+        bookinfo_xml, flags=_re.IGNORECASE | _re.DOTALL,
+    ):
+        all_chapters.append({
+            "name": str(m.group(1) or "").strip(),
+            "range": str(m.group(2) or "").strip(),
+            "summary": str(m.group(3) or "").strip()[:200],
+        })
+
+    if not all_chapters:
+        return jsonify({"success": False, "error": "No chapters found in bookinfo."}), 404
+
+    # 读取用户画像
+    user_md = str(user_store.read_memory(_cfg, user_id, "user") or "")
+    profile_dims = parse_profile_dimensions(user_md)
+    weak_areas = profile_dims.get("weak_areas", {}).get("value", "")
+    interest = profile_dims.get("interest_direction", {}).get("value", "")
+    learning_pace = profile_dims.get("learning_pace", {}).get("value", "")
+
+    # 读取已完成章节
+    records = user_store.list_learning_records(_cfg, user_id)
+    completed = set()
+    for r in (records or []):
+        if isinstance(r, dict) and str(r.get("type") or "").strip() == "chapter_completed" and str(r.get("lecture_id") or "").strip() == lecture_id:
+            completed.add(str(r.get("chapter_name") or "").strip())
+
+    # 只把未完成的章节传给模型，已完成的不参与路径规划
+    incomplete_chapters = [c for c in all_chapters if c["name"] not in completed]
+
+    chapters_json = json.dumps(incomplete_chapters, ensure_ascii=False)
+    profile_summary = json.dumps({
+        "weak_areas": weak_areas,
+        "interest_direction": interest,
+        "learning_pace": learning_pace,
+        "completed_count": len(completed),
+        "total_count": len(all_chapters),
+    }, ensure_ascii=False)
+
+    # 调用 LLM 生成路径（直接用 completions API，避免 memory model 的 system prompt 干扰）
+    chapters_brief = [{"name": c["name"], "summary": c["summary"][:100]} for c in incomplete_chapters]
+    chapters_brief_json = json.dumps(chapters_brief, ensure_ascii=False)
+
+    from prompts import LEARNING_PATH_SYSTEM_PROMPT, LEARNING_PATH_USER_PROMPT
+    user_prompt = LEARNING_PATH_USER_PROMPT.replace(
+        "{{chapters_json}}", chapters_brief_json
+    ).replace(
+        "{{profile_summary}}", profile_summary
+    )
+
+    try:
+        proxy = _cfg.get("__proxy__")
+        if proxy is None:
+            from core.nexora_proxy import NexoraProxy as _NP
+            proxy = _NP(_cfg)
+            _cfg["__proxy__"] = proxy
+        messages = [
+            {"role": "system", "content": LEARNING_PATH_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ]
+        default_model = get_default_nexora_model(_cfg)
+        result = proxy.complete_raw(
+            messages=messages,
+            model=default_model or None,
+            username=user_id,
+            api_mode="chat",
+            options={"temperature": 0.3, "max_output_tokens": 2000},
+            request_timeout=120,
+        )
+        if not result.get("success"):
+            raise RuntimeError(str(result.get("message") or "API调用失败"))
+        result_text = str(result.get("content") or "")
+        # 提取建议文本
+        advice_match = _re.search(r"<advice>\s*(.*?)\s*</advice>", result_text, flags=_re.DOTALL)
+        advice_text = str(advice_match.group(1) or "").strip() if advice_match else ""
+        # 提取 JSON
+        json_match = _re.search(r"\[[\s\S]*\]", str(result_text or ""))
+        if json_match:
+            path_items = json.loads(json_match.group(0))
+        else:
+            path_items = []
+    except Exception as exc:
+        log_event("learning_path_error", "学习路径生成失败", payload={"error": str(exc)})
+        path_items = []
+
+    # 兜底：如果 LLM 没返回有效数据，按原始顺序生成
+    if not path_items:
+        path_items = []
+        for idx, ch in enumerate(incomplete_chapters):
+            name = ch["name"]
+            status = "current" if idx == 0 else "pending"
+            path_items.append({"name": name, "priority": idx + 1, "status": status, "reason": ""})
+        if not advice_text:
+            advice_text = "根据章节顺序为你规划了学习路径。"
+
+    # 附加每个章节的粗读概要
+    chapter_summaries = {c["name"]: c["summary"] for c in all_chapters}
+    for item in path_items:
+        item["summary"] = chapter_summaries.get(item.get("name", ""), "")
+
+    # 持久化缓存
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps({"advice": advice_text, "path": path_items}, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+    return jsonify({"success": True, "advice": advice_text, "path": path_items})
+
+
+
+@bp.route("/frontend/videos", methods=["GET"])
+def frontend_videos():
+    """获取课程相关视频（从缓存读取，粗读时自动生成）。"""
+    lecture_id = str(request.args.get("lecture_id") or "").strip()
+    book_id = str(request.args.get("book_id") or "").strip()
+    if not lecture_id or not book_id:
+        return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+
+    from core.video_search import load_cached_videos, search_and_cache_videos
+
+    items = load_cached_videos(_cfg, lecture_id, book_id)
+    if items:
+        return jsonify({"success": True, "items": items, "cached": True})
+
+    # 无缓存：可能粗读还没跑完，尝试即时搜索
+    lecture = get_learning_lecture(_cfg, lecture_id)
+    book = get_lecture_book(_cfg, lecture_id, book_id)
+    lecture_title = str((lecture or {}).get("title") or "").strip()
+    book_title = str((book or {}).get("title") or "").strip()
+    bookinfo_xml = str(load_book_info_xml(_cfg, lecture_id, book_id) or "")
+    items = search_and_cache_videos(
+        _cfg, lecture_id, book_id,
+        lecture_title=lecture_title,
+        book_title=book_title,
+        bookinfo_xml=bookinfo_xml,
+    )
+    return jsonify({"success": True, "items": items, "cached": False})
+
+
+@bp.route("/frontend/videos/refresh", methods=["POST"])
+def frontend_videos_refresh():
+    """强制刷新视频（删除缓存后重新搜索）。"""
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    if not lecture_id or not book_id:
+        return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+
+    from core.video_search import search_and_cache_videos, _videos_path
+
+    # 删除缓存文件
+    from core.video_search import _videos_path as _vp
+    cache_path = _vp(_cfg, lecture_id, book_id)
+    if cache_path.exists():
+        cache_path.unlink()
+
+    lecture = get_learning_lecture(_cfg, lecture_id)
+    book = get_lecture_book(_cfg, lecture_id, book_id)
+    lecture_title = str((lecture or {}).get("title") or "").strip()
+    book_title = str((book or {}).get("title") or "").strip()
+    bookinfo_xml = str(load_book_info_xml(_cfg, lecture_id, book_id) or "")
+    items = search_and_cache_videos(
+        _cfg, lecture_id, book_id,
+        lecture_title=lecture_title,
+        book_title=book_title,
+        bookinfo_xml=bookinfo_xml,
+    )
+    return jsonify({"success": True, "items": items, "cached": False})
+
+
 @bp.route("/frontend/teacher/class-overview", methods=["GET"])
 def frontend_teacher_class_overview():
     """教师 Panel 数据接口：返回全班学生的阅读状态与章节进度。"""
@@ -1706,6 +1975,25 @@ def frontend_settings_refinement_summary():
         return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
     try:
         result = enqueue_book_summary(_cfg, lecture_id, book_id, actor=actor, model_name=model_name)
+        return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, **result}), 202
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@bp.route("/frontend/settings/refinement/video", methods=["POST"])
+def frontend_settings_refinement_video():
+    """设置页：手动触发视频搜索。"""
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    actor = str(data.get("actor") or _resolve_runtime_user_id()).strip()
+    if not _is_runtime_admin():
+        return jsonify({"success": False, "error": "Only admin can start video search."}), 403
+    if not lecture_id or not book_id:
+        return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+    try:
+        from core.booksproc import enqueue_book_video
+        result = enqueue_book_video(_cfg, lecture_id, book_id, actor=actor)
         return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, **result}), 202
     except Exception as exc:
         return jsonify({"success": False, "error": str(exc)}), 500
@@ -3512,13 +3800,40 @@ def _build_runtime_context_payload(username: str, payload: Optional[Dict[str, An
         f"- {row['title'] or row['id']} | progress {max(0, min(100, _safe_int(row.get('progress'), 0)))}% | current_chapter {row.get('current_chapter') or '-'} | books {row.get('books_count', 0)}"
         for row in lecture_rows
     ]
+    from core.memory import PROFILE_DIMENSIONS, parse_profile_dimensions, parse_profile_timeline
+
+    user_md = str(user_store.read_memory(_cfg, user_id, "user") or "")
+    profile_dims = parse_profile_dimensions(user_md)
+    profile_timeline = parse_profile_timeline(user_md)
+    profile_rate = sum(1 for d in profile_dims.values() if d.get("filled"))
+    profile_total = len(PROFILE_DIMENSIONS)
+    empty_dims = [d["name"] for d in PROFILE_DIMENSIONS if not profile_dims.get(d["key"], {}).get("filled")]
+    interview_active = bool(payload_map.get("interview"))
+
+    base_system_prompt = (
+        "You are in NexoraLearning mode. Use NexoraLearning tools to inspect lectures, books, overview XML, detail XML, questions XML, "
+        "and only read raw text when needed. Prefer structured learning materials over direct full-text reads."
+    )
+
+    if interview_active:
+        filled_list = [
+            d["name"] for d in PROFILE_DIMENSIONS if profile_dims.get(d["key"], {}).get("filled")
+        ]
+        filled_summary = "、".join(filled_list) or "无"
+        empty_summary = "、".join(empty_dims) or "无"
+
+        if empty_dims:
+            template = PROFILE_INTERVIEW_PROMPT
+        else:
+            template = PROFILE_UPDATE_PROMPT
+
+        interview_instruction = template.replace("{{filled_summary}}", filled_summary).replace("{{empty_list}}", empty_summary)
+        base_system_prompt += "\n\n## 画像访谈模式（已激活）\n\n" + interview_instruction
+
     return {
         "learning": True,
         "lecture_id": active_lecture_id,
-        "system_prompt": (
-            "You are in NexoraLearning mode. Use NexoraLearning tools to inspect lectures, books, overview XML, detail XML, questions XML, "
-            "and only read raw text when needed. Prefer structured learning materials over direct full-text reads."
-        ),
+        "system_prompt": base_system_prompt,
         "context_blocks": [
             {
                 "type": "learning_profile",
@@ -3541,6 +3856,22 @@ def _build_runtime_context_payload(username: str, payload: Optional[Dict[str, An
                 "type": "learning_recent_records",
                 "title": "Recent Learning Records",
                 "content": json.dumps(recent_learning, ensure_ascii=False),
+            },
+            {
+                "type": "learning_profile_dimensions",
+                "title": "学习画像",
+                "content": (
+                    f"画像完整度：{profile_rate}/{profile_total}\n"
+                    + "\n".join(
+                        f"- {d['name']}（{d['key']}）：{'已填写 — ' + profile_dims[d['key']]['value'] if profile_dims.get(d['key'], {}).get('filled') else '未填写'}"
+                        for d in PROFILE_DIMENSIONS
+                    )
+                    + ("\n\n待填写维度：" + "、".join(empty_dims) if empty_dims else "\n\n所有维度已填写完毕。")
+                    + "\n\n## 最近进步\n"
+                    + ("\n".join(f"- [{e['date']}] {e['text']}" for e in profile_timeline["progress"]) if profile_timeline["progress"] else "- 暂无记录")
+                    + "\n\n## 需要注意\n"
+                    + ("\n".join(f"- [{e['date']}] {e['text']}" for e in profile_timeline["attention"]) if profile_timeline["attention"] else "- 暂无")
+                ),
             },
         ],
         "meta": {

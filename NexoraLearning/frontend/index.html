@@ -28,9 +28,13 @@
         <div class="side-column">
           <article class="panel-card pie-panel">
             <header class="panel-head materials-head">
-              <p id="dashboardSidePanelTitle" class="panel-kicker panel-kicker-zh">学习时长数据</p>
+              <div class="panel-kicker-switch">
+                <button id="dashboardPieTabBtn" class="kicker-tab is-active" type="button">学习时长</button>
+                <button id="dashboardProfileTabBtn" class="kicker-tab" type="button">用户画像</button>
+              </div>
             </header>
             <div id="timePieChart" class="time-pie-chart" aria-label="学习时间占比"></div>
+            <div id="userProfileDimensions" class="profile-dimensions-panel" hidden></div>
           </article>
 
           <article class="panel-card profile-panel">

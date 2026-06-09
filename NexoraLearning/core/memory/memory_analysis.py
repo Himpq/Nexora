@@ -38,16 +38,19 @@ def _normalize_markdown(text: str) -> str:
 
 
 def _analysis_prompt(memory_type: str, reason: str, lecture_id: str, recent_rows: List[Dict[str, Any]]) -> str:
+    from datetime import datetime
     recent_json = json.dumps(recent_rows, ensure_ascii=False, indent=2)
+    today = datetime.now().strftime("%Y-%m-%d")
     if memory_type == "user":
-        return (
-            "Update the global `user.md` memory for this learner.\n"
-            "Keep only durable cross-course user profile facts: study habits, stable preferences, long-term strengths, and repeated weaknesses.\n"
-            "Do not include temporary dialogue state or lecture-specific details.\n"
-            "Return the full updated markdown file only.\n\n"
-            f"Trigger reason: {reason}\n"
-            f"Lecture ID: {lecture_id}\n"
-            f"Recent lecture records (JSON): {recent_json}"
+        from prompts import MEMORY_USER_ANALYSIS_PROMPT
+        return MEMORY_USER_ANALYSIS_PROMPT.replace(
+            "{{today}}", today
+        ).replace(
+            "{{reason}}", reason
+        ).replace(
+            "{{lecture_id}}", lecture_id
+        ).replace(
+            "{{recent_json}}", recent_json
         )
     if memory_type == "soul":
         return (

@@ -727,6 +727,223 @@ BOOK_SUMMARY_USER_PROMPT = """
 """.strip()
 
 
+# PROFILE_INTERVIEW_PROMPT - 画像访谈（有未填写维度时）
+PROFILE_INTERVIEW_PROMPT = """
+当前处于画像访谈模式。你必须严格按以下流程执行：
+
+### 第一步：总结已有画像（必须先做）
+查看下方「学习画像」context block，用列表总结用户已填写的维度及内容摘要。
+已填写：{{filled_summary}}。未填写：{{empty_list}}。
+告知用户接下来将针对未填写的维度逐个提问。
+
+### 第二步：逐个提问未填写维度（必须使用 question 工具）
+只针对「未填写」的维度提问。已填写的维度不要重复询问。
+每次调用 question 工具：
+- question_title: 维度名称（如「学习节奏」）
+- question_content: 针对该维度的具体问题，可结合已有画像信息来提问
+- choices: 提供 3-4 个选项，allow_other=true
+
+### 第三步：写入画像（必须调用工具）
+用户回答后，你必须立即调用 append_learning_memory 工具写入（memory_type="user", content="## 维度名\\n用户回答内容"）。
+没有调用工具 = 数据丢失。绝对不要只口头确认。
+
+### 第四步：继续或结束
+写入成功后，继续提问下一个未填写维度。全部完成后总结更新结果。
+""".strip()
+
+
+# PROFILE_UPDATE_PROMPT - 画像更新（所有维度已填写时）
+PROFILE_UPDATE_PROMPT = """
+所有画像维度已填写完毕。当前处于画像更新模式。你必须严格按以下流程执行：
+
+### 第一步：总结当前画像（必须先做）
+查看下方「学习画像」context block，用列表完整展示用户当前所有维度的内容。
+然后询问用户：最近学习中有哪些新收获、新发现，或者哪些维度的内容需要更新？
+
+### 第二步：根据用户回答更新（使用 question 工具）
+如果用户提到了某些维度需要更新，用 question 工具确认：
+- question_title: 维度名称
+- question_content: 询问该维度的新内容
+- choices: 基于用户提到的变化提供选项，allow_other=true
+如果用户说没有变化，直接结束并确认画像保持不变。
+
+### 第三步：写入更新（必须调用工具）
+用户确认更新后，你必须立即调用 append_learning_memory 工具写入（memory_type="user", content="## 维度名\\n更新后的内容"）。
+没有调用工具 = 数据丢失。
+
+### 第四步：总结
+更新完成后，总结哪些维度被更新了，哪些保持不变。
+""".strip()
+
+
+# MEMORY_USER_ANALYSIS_PROMPT - 用户画像记忆分析（user.md 更新）
+MEMORY_USER_ANALYSIS_PROMPT = """
+Update the global `user.md` memory for this learner.
+Keep only durable cross-course user profile facts: study habits, stable preferences, long-term strengths, and repeated weaknesses.
+Do not include temporary dialogue state or lecture-specific details.
+Return the full updated markdown file only.
+
+## Required sections
+
+In addition to existing profile dimensions, you MUST include two timeline sections:
+
+### 最近进步
+- Each entry must have format: - [YYYY-MM-DD] progress description
+- Keep ALL existing entries from the current file, do NOT delete old entries.
+- If you find new progress from recent records, append a new entry with today's date.
+- Examples of progress: completed a chapter, mastered a concept, improved quiz score, learned a new skill.
+- Limit to the most recent 10 entries total.
+
+### 需要注意
+- Each entry must have format: - [YYYY-MM-DD] attention point description
+- Keep ALL existing entries from the current file, do NOT delete old entries.
+- If you find new attention points, append a new entry with today's date.
+- Examples of attention: repeated mistakes on a topic, long time no study on a weak area, declining performance.
+- If no attention points, write: - 暂无
+- Limit to the most recent 10 entries total.
+
+Today's date: {{today}}
+Trigger reason: {{reason}}
+Lecture ID: {{lecture_id}}
+Recent lecture records (JSON): {{recent_json}}
+""".strip()
+
+
+# LEARNING_PATH_SYSTEM_PROMPT - 学习路径规划系统提示词
+LEARNING_PATH_SYSTEM_PROMPT = """
+你是学习路径规划助手。先输出<advice>建议</advice>，再输出JSON数组。不要其他内容。
+""".strip()
+
+
+# LEARNING_PATH_USER_PROMPT - 学习路径规划用户提示词
+LEARNING_PATH_USER_PROMPT = """
+你是学习路径规划助手。根据教材章节结构和用户画像，生成个性化学习建议。
+
+## 输出格式
+先输出一段2-3句的整体学习建议（用<advice>标签包裹），然后输出JSON数组。
+JSON每项：name(章节名)/priority(序号)/status/reason(20字内)
+status: completed/current/recommended/pending
+
+## 规则
+- 已完成的章节status=completed，排最后
+- 根据兴趣方向和薄弱环节，推荐最相关的章节status=recommended
+- current只1个，是当前最该学的
+- 其余pending
+- 只输出<advice>和JSON，不要其他内容
+
+## 章节
+{{chapters_json}}
+
+## 用户画像
+{{profile_summary}}
+""".strip()
+
+
+# PROFILE_EXTRACTION_PROMPT - 画像维度提取提示词
+PROFILE_EXTRACTION_PROMPT = """
+你是一个学习画像分析助手。请根据以下学习记录，提取或更新该学生的画像维度。
+
+## 需要提取的维度
+
+{{dim_list}}
+
+## 输出格式
+
+请严格按以下 markdown 格式输出，每个维度用 ## 标题，内容为该维度的值。如果某个维度无法从记录中推断，保留原有值或留空。
+
+```
+## 专业方向
+（该维度的值）
+
+## 知识基础
+（该维度的值）
+
+## 认知风格
+（该维度的值）
+
+## 兴趣方向
+（该维度的值）
+
+## 薄弱环节
+（该维度的值）
+
+## 学习节奏
+（该维度的值）
+
+## 易错点
+（该维度的值）
+
+## 学习目标
+（该维度的值）
+```
+
+## 当前画像
+
+{{current_profile}}
+
+## 最近学习记录
+
+{{records_json}}
+""".strip()
+
+
+# VIDEO_KEYWORD_PROMPT - 视频搜索关键词生成
+VIDEO_KEYWORD_PROMPT = """
+根据以下课程和教材信息，生成最适合在B站搜索教学视频的关键词列表。
+
+## 课程信息
+课程：{{lecture_title}}
+教材：{{book_title}}
+
+## 章节摘要
+{{chapter_summaries}}
+
+## 要求
+1. 生成 3-5 个搜索关键词
+2. 关键词应该是B站用户会搜索的教学视频关键词
+3. 优先使用课程名+核心概念的组合（如"机器学习 梯度下降"）
+4. 不要太宽泛（如"编程"），也不要太具体（如某一页的内容）
+5. 每个关键词指定搜索数量 count（10~20），核心概念多搜，边缘概念少搜
+6. 所有关键词的 count 总和应在 15~40 之间
+7. 只输出 JSON 数组，如 [{"keyword": "机器学习 梯度下降", "count": 15}, {"keyword": "神经网络 入门", "count": 10}]
+""".strip()
+
+
+# VIDEO_BOOK_OVERVIEW_PROMPT - 书籍概括生成
+VIDEO_BOOK_OVERVIEW_PROMPT = """
+根据以下书籍的章节信息，用2-3句话概括这本书的核心身份：它是什么类型的作品、围绕什么展开、面向什么读者。
+
+不要列举章节内容，而是给出对这本书的整体理解。
+
+## 课程
+{{lecture_title}}
+
+## 章节信息
+{{bookinfo_content}}
+
+只输出概括文本，不要其他内容。
+""".strip()
+
+
+# VIDEO_FILTER_PROMPT - 视频搜索结果筛选
+VIDEO_FILTER_PROMPT = """
+根据以下书籍概括和搜索结果，筛选出对这本书的读者最有价值的视频。
+
+## 书籍概括
+{{book_overview}}
+
+## 搜索结果
+{{video_list}}
+
+## 筛选规则
+1. 基于书籍概括理解这本书是什么，筛选对阅读/学习这本书有帮助的视频
+2. 保留与这本书直接相关的视频（原作相关、同类型推荐、核心概念讲解等）
+3. 去掉与这本书无关的视频（仅主题词相似但语境不同的内容）
+4. 保留 10~20 个最相关的视频
+5. 只输出保留的视频序号 JSON 数组，如 [1, 3, 5, 7, 9, 11, 13]
+""".strip()
+
+
 MODEL_PROMPTS = {
     "coarse_reading": {
         "system": COARSE_READING_MODEL_SYSTEM_PROMPT,

@@ -207,7 +207,19 @@ def run_summary_tool_loop(
         msg = choices[0].get("message") if isinstance(choices[0], dict) else {}
         assistant_content = str((msg or {}).get("content") or "")
         raw_tool_calls = (msg or {}).get("tool_calls") if isinstance((msg or {}).get("tool_calls"), list) else []
-        
+
+        # 推送模型文本输出到活动日志
+        if assistant_content.strip() and push_book_progress_step and lecture_id and book_id:
+            push_book_progress_step(
+                lecture_id,
+                book_id,
+                {
+                    "type": "model_text",
+                    "title": "模型输出",
+                    "preview": assistant_content[:200],
+                },
+            )
+
         # 处理工具调用
         tool_calls = []
         for raw_call in raw_tool_calls:

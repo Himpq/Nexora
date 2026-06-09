@@ -160,6 +160,17 @@
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
 
+    /* ── Test Sub-nav ── */
+    .test-nav-item {
+      padding: 10px 12px; cursor: pointer; border-radius: 4px;
+      font-size: 13px; color: var(--muted); transition: all .15s;
+      border: 1px solid transparent;
+    }
+    .test-nav-item:hover { background: #151515; color: #e5e5e5; }
+    .test-nav-item.active { color: #fff; background: #1a1a1a; border-color: #333; }
+    .test-panel { display: none; }
+    .test-panel.active { display: block; }
+
     /* ── Toast ── */
     .toast {
       position: fixed; bottom: 24px; right: 24px;
@@ -257,49 +268,228 @@
 
         <!-- ═══ Test ═══ -->
         <div id="tab-test" class="tab-panel">
-          <div class="section-title"><h2>网页渲染测试</h2></div>
-          <div class="card">
-            <div class="form-grid">
-              <div class="form-row">
-                <label>目标网址</label>
-                <div class="form-cell">
-                  <input id="testUrl" class="input" placeholder="https://example.com" />
-                  <button class="btn-dark" id="btnRender" onclick="testRender()">渲染</button>
-                  <button class="btn-dark" id="btnClean" onclick="testClean()">预览清理</button>
-                  <button class="btn-dark" id="btnParse" onclick="testParse()" style="background:#2563eb;">模型解析</button>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div style="margin-top:12px;">
-            <div class="card" style="position:relative;">
-              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-                <h3 style="margin:0;" id="testResultTitle">渲染结果</h3>
-                <span class="muted" id="testStatus" style="font-size:12px;"></span>
-              </div>
-              <textarea id="testResult" class="input" rows="24" readonly style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.5;background:#080808;resize:vertical;"></textarea>
-            </div>
-          </div>
+          <div style="display:grid;grid-template-columns:200px 1fr;gap:16px;min-height:520px;">
 
-          <div class="section-title" style="margin-top:28px;"><h2>全网搜索测试</h2></div>
-          <div class="card">
-            <div class="form-grid">
-              <div class="form-row">
-                <label>搜索提示词</label>
-                <div class="form-cell">
-                  <input id="searchPrompt" class="input" placeholder="输入你想搜索的问题..." />
-                  <button class="btn-dark" id="btnSearch" onclick="testSearch()" style="background:#7c3aed;border-color:#6d28d9;">开始搜索</button>
-                </div>
+            <!-- ── 左侧: 测试功能列表 ── -->
+            <div class="card" style="padding:8px;overflow-y:auto;">
+              <div class="muted" style="padding:8px 10px;font-size:11px;text-transform:uppercase;letter-spacing:.15em;font-weight:700;">测试项目</div>
+              <div id="testNav">
+                <div class="test-nav-item active" data-test="render" onclick="switchTestPanel('render')">网页渲染</div>
+                <div class="test-nav-item" data-test="search" onclick="switchTestPanel('search')">全网搜索</div>
+                <div class="test-nav-item" data-test="bilibili" onclick="switchTestPanel('bilibili')">B站爬虫</div>
+                <div class="test-nav-item" data-test="bilibili-api" onclick="switchTestPanel('bilibili-api')">B站API</div>
+                <div class="test-nav-item" data-test="icourse163" onclick="switchTestPanel('icourse163')">MOOC爬虫</div>
+                <div class="test-nav-item" data-test="universal" onclick="switchTestPanel('universal')">通用页面爬虫</div>
               </div>
             </div>
-          </div>
-          <div style="margin-top:12px;">
-            <div class="card">
-              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-                <h3 style="margin:0;">搜索结果</h3>
-                <span class="muted" id="searchStatus" style="font-size:12px;"></span>
+
+            <!-- ── 右侧: 测试内容面板 ── -->
+            <div style="display:flex;flex-direction:column;gap:16px;">
+
+              <!-- 网页渲染测试 -->
+              <div id="testPanel-render" class="test-panel active">
+                <div class="card">
+                  <div class="form-grid">
+                    <div class="form-row">
+                      <label>目标网址</label>
+                      <div class="form-cell">
+                        <input id="testUrl" class="input" placeholder="https://example.com" />
+                        <button class="btn-dark" id="btnRender" onclick="testRender()">渲染</button>
+                        <button class="btn-dark" id="btnClean" onclick="testClean()">预览清理</button>
+                        <button class="btn-dark" id="btnParse" onclick="testParse()" style="background:#2563eb;">模型解析</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div style="margin-top:12px;">
+                  <div class="card" style="position:relative;">
+                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+                      <h3 style="margin:0;" id="testResultTitle">渲染结果</h3>
+                      <span class="muted" id="testStatus" style="font-size:12px;"></span>
+                    </div>
+                    <textarea id="testResult" class="input" rows="22" readonly style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.5;background:#080808;resize:vertical;"></textarea>
+                  </div>
+                </div>
               </div>
-              <textarea id="searchResult" class="input" rows="20" readonly style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.5;background:#080808;resize:vertical;"></textarea>
+
+              <!-- 全网搜索测试 -->
+              <div id="testPanel-search" class="test-panel">
+                <div class="card">
+                  <div class="form-grid">
+                    <div class="form-row">
+                      <label>搜索提示词</label>
+                      <div class="form-cell">
+                        <input id="searchPrompt" class="input" placeholder="输入你想搜索的问题..." />
+                        <button class="btn-dark" id="btnSearch" onclick="testSearch()" style="background:#7c3aed;border-color:#6d28d9;">开始搜索</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div style="margin-top:12px;">
+                  <div class="card">
+                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+                      <h3 style="margin:0;">搜索结果</h3>
+                      <span class="muted" id="searchStatus" style="font-size:12px;"></span>
+                    </div>
+                    <textarea id="searchResult" class="input" rows="20" readonly style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.5;background:#080808;resize:vertical;"></textarea>
+                  </div>
+                </div>
+              </div>
+
+              <!-- B站爬虫测试 -->
+              <div id="testPanel-bilibili" class="test-panel">
+                <div class="card">
+                  <div class="form-grid">
+                    <div class="form-row">
+                      <label>爬取模式</label>
+                      <div class="form-cell">
+                        <select id="biliMode" class="input" onchange="toggleBiliKeyword()">
+                          <option value="popular">热门视频</option>
+                          <option value="search">关键词搜索</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div class="form-row" id="biliKeywordRow" style="display:none;">
+                      <label>搜索关键词</label>
+                      <div class="form-cell">
+                        <input id="biliKeyword" class="input" placeholder="输入B站搜索关键词..." />
+                      </div>
+                    </div>
+                    <div class="form-row">
+                      <label>最大数量</label>
+                      <div class="form-cell">
+                        <input id="biliMaxResults" type="number" class="input input-short" min="1" max="50" value="20" />
+                        <span class="form-hint">条</span>
+                        <button class="btn-dark" id="btnBiliCrawl" onclick="testBiliCrawl()" style="background:#00a1d6;border-color:#0091c2;">开始爬取</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div style="margin-top:12px;">
+                  <div class="card">
+                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+                      <h3 style="margin:0;">爬取结果</h3>
+                      <span class="muted" id="biliStatus" style="font-size:12px;"></span>
+                    </div>
+                    <textarea id="biliResult" class="input" rows="20" readonly style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.5;background:#080808;resize:vertical;"></textarea>
+                  </div>
+                </div>
+              </div>
+
+              <!-- B站API测试 -->
+              <div id="testPanel-bilibili-api" class="test-panel">
+                <div class="card">
+                  <div class="form-grid">
+                    <div class="form-row">
+                      <label>搜索关键词</label>
+                      <div class="form-cell">
+                        <input id="biliApiKeyword" class="input" placeholder="输入视频关键词，如：Python、线性代数..." />
+                      </div>
+                    </div>
+                    <div class="form-row">
+                      <label>最大数量</label>
+                      <div class="form-cell">
+                        <input id="biliApiMaxResults" type="number" class="input input-short" min="1" max="50" value="20" />
+                        <span class="form-hint">个视频</span>
+                        <button class="btn-dark" id="btnBiliApiSearch" onclick="testBiliApiSearch()" style="background:#00a1d6;border-color:#0091c2;">开始搜索</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div style="margin-top:12px;">
+                  <div class="card">
+                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+                      <h3 style="margin:0;">搜索结果</h3>
+                      <span class="muted" id="biliApiStatus" style="font-size:12px;"></span>
+                    </div>
+                    <div id="biliApiResultCards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;margin-bottom:12px;"></div>
+                    <textarea id="biliApiResult" class="input" rows="16" readonly style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.5;background:#080808;resize:vertical;"></textarea>
+                  </div>
+                </div>
+              </div>
+
+              <!-- MOOC爬虫测试 -->
+              <div id="testPanel-icourse163" class="test-panel">
+                <div class="card">
+                  <div class="form-grid">
+                    <div class="form-row">
+                      <label>搜索关键词</label>
+                      <div class="form-cell">
+                        <input id="moocKeyword" class="input" placeholder="输入课程关键词，如：Python、人工智能..." />
+                      </div>
+                    </div>
+                    <div class="form-row">
+                      <label>最大数量</label>
+                      <div class="form-cell">
+                        <input id="moocMaxResults" type="number" class="input input-short" min="1" max="50" value="20" />
+                        <span class="form-hint">门课程</span>
+                      </div>
+                    </div>
+                    <div class="form-row">
+                      <label>爬取方式</label>
+                      <div class="form-cell">
+                        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);cursor:pointer;">
+                          <input type="checkbox" id="moocUseApi" /> 使用API模式（备用）
+                        </label>
+                        <button class="btn-dark" id="btnMoocCrawl" onclick="testMoocCrawl()" style="background:#e74c3b;border-color:#c0392b;">开始搜索</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div style="margin-top:12px;">
+                  <div class="card">
+                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+                      <h3 style="margin:0;">搜索结果</h3>
+                      <span class="muted" id="moocStatus" style="font-size:12px;"></span>
+                    </div>
+                    <div id="moocResultCards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;margin-bottom:12px;"></div>
+                    <textarea id="moocResult" class="input" rows="16" readonly style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.5;background:#080808;resize:vertical;"></textarea>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 通用页面爬虫测试 -->
+              <div id="testPanel-universal" class="test-panel">
+                <div class="card">
+                  <div class="form-grid">
+                    <div class="form-row">
+                      <label>目标网址</label>
+                      <div class="form-cell">
+                        <input id="uniUrl" class="input" placeholder="https://example.com" />
+                      </div>
+                    </div>
+                    <div class="form-row">
+                      <label>等待选择器</label>
+                      <div class="form-cell">
+                        <input id="uniSelector" class="input" placeholder="可选，如 .content、#main" />
+                        <span class="form-hint">等待特定元素出现后再提取</span>
+                      </div>
+                    </div>
+                    <div class="form-row">
+                      <label>选项</label>
+                      <div class="form-cell">
+                        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);cursor:pointer;">
+                          <input type="checkbox" id="uniScroll" checked /> 模拟滚动
+                        </label>
+                        <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);cursor:pointer;margin-left:16px;">
+                          <input type="checkbox" id="uniHtml" checked /> 提取 HTML
+                        </label>
+                        <button class="btn-dark" id="btnUniCrawl" onclick="testUniCrawl()" style="background:#e67e22;border-color:#d35400;">开始爬取</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div style="margin-top:12px;">
+                  <div class="card">
+                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+                      <h3 style="margin:0;">爬取结果</h3>
+                      <span class="muted" id="uniStatus" style="font-size:12px;"></span>
+                    </div>
+                    <textarea id="uniResult" class="input" rows="20" readonly style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.5;background:#080808;resize:vertical;"></textarea>
+                  </div>
+                </div>
+              </div>
+
             </div>
           </div>
         </div>
@@ -537,6 +727,21 @@
       const idx = { status: 0, test: 1, skills: 2, config: 3, models: 4, settings: 5 }[tab] || 0;
       document.querySelectorAll('.nav button')[idx].classList.add('active');
       if (tab === 'skills') loadSkills();
+      if (tab === 'test') switchTestPanel('render');
+    }
+
+    function switchTestPanel(name) {
+      document.querySelectorAll('#tab-test .test-panel').forEach(p => p.classList.remove('active'));
+      document.querySelectorAll('#tab-test .test-nav-item').forEach(n => n.classList.remove('active'));
+      const panel = document.getElementById('testPanel-' + name);
+      if (panel) panel.classList.add('active');
+      const nav = document.querySelector('#tab-test .test-nav-item[data-test="' + name + '"]');
+      if (nav) nav.classList.add('active');
+    }
+
+    function toggleBiliKeyword() {
+      const mode = document.getElementById('biliMode').value;
+      document.getElementById('biliKeywordRow').style.display = mode === 'search' ? '' : 'none';
     }
 
     function showToast(msg, isError) {
@@ -991,6 +1196,346 @@
       } finally {
         btn.disabled = false;
         btn.textContent = '模型解析';
+      }
+    }
+
+    async function testBiliCrawl() {
+      const mode = document.getElementById('biliMode').value;
+      const keyword = document.getElementById('biliKeyword').value.trim();
+      const maxResults = parseInt(document.getElementById('biliMaxResults').value) || 20;
+
+      if (mode === 'search' && !keyword) { showToast('搜索模式需要输入关键词', true); return; }
+
+      const btn = document.getElementById('btnBiliCrawl');
+      const status = document.getElementById('biliStatus');
+      const result = document.getElementById('biliResult');
+      btn.disabled = true;
+      btn.textContent = '爬取中...';
+      status.textContent = '连接中...';
+      result.value = '';
+
+      try {
+        const start = performance.now();
+        const res = await fetch('/admin/api/test/crawlee/bilibili', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode, keyword, max_results: maxResults })
+        });
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let fullText = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith('data: ')) continue;
+            const jsonStr = trimmed.slice(6);
+            if (jsonStr === '[DONE]') continue;
+            try {
+              const obj = JSON.parse(jsonStr);
+              if (obj.type === 'log') {
+                fullText += `[LOG] ${obj.content}\n`;
+              } else if (obj.type === 'progress') {
+                fullText += `⏳ ${obj.content}\n`;
+              } else if (obj.type === 'result') {
+                const src = obj.source === 'popular' ? '热门' : '搜索';
+                fullText += `\n[#${obj.index}] [${src}] ${obj.title}\n`;
+                fullText += `  UP主: ${obj.up_name} | 播放: ${obj.play_count} | 弹幕: ${obj.danmaku_count}`;
+                if (obj.duration) fullText += ` | 时长: ${obj.duration}`;
+                fullText += `\n  ${obj.url}\n`;
+              } else if (obj.type === 'error') {
+                fullText += `[错误] ${obj.content}\n`;
+              } else if (obj.type === 'done') {
+                fullText += `\n═══ 爬取完成: ${obj.count} 条结果 ═══\n`;
+              }
+              result.value = fullText;
+              result.scrollTop = result.scrollHeight;
+              const ms = Math.round(performance.now() - start);
+              status.textContent = `${(ms / 1000).toFixed(1)}s · 输出中...`;
+            } catch (_) {}
+          }
+        }
+        const ms = Math.round(performance.now() - start);
+        status.textContent = `${(ms / 1000).toFixed(1)}s · 完成`;
+      } catch (e) {
+        result.value = '请求失败: ' + e.message;
+        status.textContent = '失败';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '开始爬取';
+      }
+    }
+
+    async function testBiliApiSearch() {
+      const keyword = document.getElementById('biliApiKeyword').value.trim();
+      const maxResults = parseInt(document.getElementById('biliApiMaxResults').value) || 20;
+
+      if (!keyword) { showToast('请输入视频关键词', true); return; }
+
+      const btn = document.getElementById('btnBiliApiSearch');
+      const status = document.getElementById('biliApiStatus');
+      const result = document.getElementById('biliApiResult');
+      const cards = document.getElementById('biliApiResultCards');
+      btn.disabled = true;
+      btn.textContent = '搜索中...';
+      status.textContent = '连接中...';
+      result.value = '';
+      cards.innerHTML = '';
+
+      try {
+        const start = performance.now();
+        const res = await fetch('/admin/api/test/bilibili/api', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ keyword, max_results: maxResults })
+        });
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let fullText = '';
+        let videoCards = [];
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith('data: ')) continue;
+            const jsonStr = trimmed.slice(6);
+            if (jsonStr === '[DONE]') continue;
+            try {
+              const obj = JSON.parse(jsonStr);
+              if (obj.type === 'log') {
+                fullText += `[LOG] ${obj.content}\n`;
+              } else if (obj.type === 'progress') {
+                fullText += `⏳ ${obj.content}\n`;
+              } else if (obj.type === 'result') {
+                fullText += `\n[#${obj.index}] ${obj.title}\n`;
+                fullText += `  UP主: ${obj.author} | 播放: ${obj.play?.toLocaleString()} | 弹幕: ${obj.danmaku?.toLocaleString()}`;
+                if (obj.duration) fullText += ` | 时长: ${obj.duration}`;
+                fullText += `\n  ${obj.url}\n`;
+                videoCards.push(obj);
+                renderBiliApiCards(videoCards);
+              } else if (obj.type === 'error') {
+                fullText += `[错误] ${obj.content}\n`;
+              } else if (obj.type === 'done') {
+                fullText += `\n═══ 搜索完成: ${obj.count} 个视频 ═══\n`;
+              }
+              result.value = fullText;
+              result.scrollTop = result.scrollHeight;
+              const ms = Math.round(performance.now() - start);
+              status.textContent = `${(ms / 1000).toFixed(1)}s · 输出中...`;
+            } catch (_) {}
+          }
+        }
+        const ms = Math.round(performance.now() - start);
+        status.textContent = `${(ms / 1000).toFixed(1)}s · 完成`;
+      } catch (e) {
+        result.value = '请求失败: ' + e.message;
+        status.textContent = '失败';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '开始搜索';
+      }
+    }
+
+    function renderBiliApiCards(videos) {
+      const container = document.getElementById('biliApiResultCards');
+      if (!container) return;
+      container.innerHTML = videos.map(v => `
+        <div style="background:#1a1a1a;border:1px solid #333;border-radius:8px;overflow:hidden;">
+          ${v.cover ? `<img src="${v.cover}" referrerpolicy="no-referrer" style="width:100%;height:140px;object-fit:cover;" onerror="this.style.display='none'" />` : ''}
+          <div style="padding:12px;">
+            <div style="font-weight:600;font-size:14px;margin-bottom:6px;color:#fff;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;">${v.title || '未知视频'}</div>
+            <div style="font-size:12px;color:#9ca3af;margin-bottom:4px;">${v.author || ''}</div>
+            <div style="font-size:11px;color:#6b7280;">
+              ${v.play != null ? `▶ ${v.play.toLocaleString()}` : ''}
+              ${v.danmaku != null ? ` · 💬 ${v.danmaku.toLocaleString()}` : ''}
+              ${v.duration ? ` · ${v.duration}` : ''}
+            </div>
+            ${v.url ? `<a href="${v.url}" target="_blank" style="display:block;margin-top:8px;font-size:11px;color:#00a1d6;text-decoration:none;">观看视频 →</a>` : ''}
+          </div>
+        </div>
+      `).join('');
+    }
+
+    async function testMoocCrawl() {
+      const keyword = document.getElementById('moocKeyword').value.trim();
+      const maxResults = parseInt(document.getElementById('moocMaxResults').value) || 20;
+      const useApi = document.getElementById('moocUseApi').checked;
+
+      if (!keyword) { showToast('请输入课程关键词', true); return; }
+
+      const btn = document.getElementById('btnMoocCrawl');
+      const status = document.getElementById('moocStatus');
+      const result = document.getElementById('moocResult');
+      const cards = document.getElementById('moocResultCards');
+      btn.disabled = true;
+      btn.textContent = '搜索中...';
+      status.textContent = '连接中...';
+      result.value = '';
+      cards.innerHTML = '';
+
+      try {
+        const start = performance.now();
+        const res = await fetch('/admin/api/test/crawlee/icourse163', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ keyword, max_results: maxResults, use_api: useApi })
+        });
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let fullText = '';
+        let courseCards = [];
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith('data: ')) continue;
+            const jsonStr = trimmed.slice(6);
+            if (jsonStr === '[DONE]') continue;
+            try {
+              const obj = JSON.parse(jsonStr);
+              if (obj.type === 'log') {
+                fullText += `[LOG] ${obj.content}\n`;
+              } else if (obj.type === 'progress') {
+                fullText += `⏳ ${obj.content}\n`;
+              } else if (obj.type === 'result') {
+                fullText += `\n[#${obj.index}] ${obj.title}\n`;
+                fullText += `  学校: ${obj.school} | 教师: ${obj.teacher}`;
+                if (obj.cover_url) fullText += `\n  封面: ${obj.cover_url}`;
+                fullText += `\n  ${obj.url}\n`;
+                courseCards.push(obj);
+                renderMoocCards(courseCards);
+              } else if (obj.type === 'error') {
+                fullText += `[错误] ${obj.content}\n`;
+              } else if (obj.type === 'done') {
+                fullText += `\n═══ 搜索完成: ${obj.count} 门课程 ═══\n`;
+              }
+              result.value = fullText;
+              result.scrollTop = result.scrollHeight;
+              const ms = Math.round(performance.now() - start);
+              status.textContent = `${(ms / 1000).toFixed(1)}s · 输出中...`;
+            } catch (_) {}
+          }
+        }
+        const ms = Math.round(performance.now() - start);
+        status.textContent = `${(ms / 1000).toFixed(1)}s · 完成`;
+      } catch (e) {
+        result.value = '请求失败: ' + e.message;
+        status.textContent = '失败';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '开始搜索';
+      }
+    }
+
+    function renderMoocCards(courses) {
+      const container = document.getElementById('moocResultCards');
+      if (!container) return;
+      container.innerHTML = courses.map(c => {
+        const enrollment = c.enrollment ? `${c.enrollment.toLocaleString()}人选课` : '';
+        const lessons = c.lessons_count ? `${c.lessons_count}节课` : '';
+        const price = c.price > 0 ? `¥${c.price}` : '免费';
+        const meta = [enrollment, lessons, price].filter(Boolean).join(' · ');
+        return `
+        <div style="background:#1a1a1a;border:1px solid #333;border-radius:8px;overflow:hidden;">
+          ${c.cover_url ? `<img src="${c.cover_url}" referrerpolicy="no-referrer" style="width:100%;height:140px;object-fit:cover;" onerror="this.style.display='none'" />` : ''}
+          <div style="padding:12px;">
+            <div style="font-weight:600;font-size:14px;margin-bottom:6px;color:#fff;">${c.title || '未知课程'}</div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+              ${c.school_img ? `<img src="${c.school_img}" referrerpolicy="no-referrer" style="width:16px;height:16px;border-radius:2px;" onerror="this.style.display='none'" />` : ''}
+              <span style="font-size:12px;color:#9ca3af;">${c.school || 'MOOC平台'}</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+              ${c.teacher_photo ? `<img src="${c.teacher_photo}" referrerpolicy="no-referrer" style="width:16px;height:16px;border-radius:50%;" onerror="this.style.display='none'" />` : ''}
+              <span style="font-size:12px;color:#6b7280;">${c.teacher || ''}</span>
+            </div>
+            ${meta ? `<div style="font-size:11px;color:#60a5fa;margin-top:6px;">${meta}</div>` : ''}
+            ${c.url ? `<a href="${c.url}" target="_blank" style="display:block;margin-top:8px;font-size:11px;color:#3b82f6;text-decoration:none;">查看课程 →</a>` : ''}
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    async function testUniCrawl() {
+      const url = document.getElementById('uniUrl').value.trim();
+      if (!url) { showToast('请输入网址', true); return; }
+
+      const waitSelector = document.getElementById('uniSelector').value.trim();
+      const scroll = document.getElementById('uniScroll').checked;
+      const extractHtml = document.getElementById('uniHtml').checked;
+
+      const btn = document.getElementById('btnUniCrawl');
+      const status = document.getElementById('uniStatus');
+      const result = document.getElementById('uniResult');
+      btn.disabled = true;
+      btn.textContent = '爬取中...';
+      status.textContent = '连接中...';
+      result.value = '';
+
+      try {
+        const start = performance.now();
+        const res = await fetch('/admin/api/test/crawlee/universal', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, wait_selector: waitSelector, scroll, extract_html: extractHtml })
+        });
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let fullText = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith('data: ')) continue;
+            const jsonStr = trimmed.slice(6);
+            if (jsonStr === '[DONE]') continue;
+            try {
+              const obj = JSON.parse(jsonStr);
+              if (obj.type === 'log') {
+                fullText += `[LOG] ${obj.content}\n`;
+              } else if (obj.type === 'progress') {
+                fullText += `⏳ ${obj.content}\n`;
+              } else if (obj.type === 'error') {
+                fullText += `[错误] ${obj.content}\n`;
+              } else if (obj.type === 'done') {
+                fullText += `\n═══ 爬取完成 ═══\n`;
+                if (obj.title) fullText += `标题: ${obj.title}\n`;
+                fullText += `文本长度: ${obj.text_length} 字符 | HTML长度: ${obj.html_length} 字符\n`;
+              }
+              result.value = fullText;
+              result.scrollTop = result.scrollHeight;
+              const ms = Math.round(performance.now() - start);
+              status.textContent = `${(ms / 1000).toFixed(1)}s · 输出中...`;
+            } catch (_) {}
+          }
+        }
+        const ms = Math.round(performance.now() - start);
+        status.textContent = `${(ms / 1000).toFixed(1)}s · 完成`;
+      } catch (e) {
+        result.value = '请求失败: ' + e.message;
+        status.textContent = '失败';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '开始爬取';
       }
     }
 
