@@ -703,6 +703,18 @@ def run_intensive_with_tools_strict(
             tool_calls=tool_calls if tool_calls else None,
         )
 
+        # 推送模型文本输出到活动日志
+        if assistant_content.strip() and push_book_progress_step:
+            push_book_progress_step(
+                lecture_id,
+                book_id,
+                {
+                    "type": "model_text",
+                    "title": "模型输出",
+                    "preview": assistant_content[:200],
+                },
+            )
+
         wrote = False
         if tool_calls:
             for call in tool_calls:

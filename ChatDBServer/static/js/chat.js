@@ -122,7 +122,7 @@ const CHAT_INPUT_DRAFT_KEY = 'nexora_chat_input_draft_v1';
 const CHAT_INPUT_DRAFT_MAX_LEN = 12000;
 let NEXORA_LEARNING_FRONTEND_URL = `${window.location.protocol}//${window.location.hostname}:5001/api/frontend/`;
 const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260523_10';
-const NEXORA_LEARNING_JS_URL = '/static/js/learning_mode.js?v=20260523_10';
+const NEXORA_LEARNING_JS_URL = '/static/js/learning_mode.js?v=20260607_01';
 const MAIL_POLL_INTERVAL_MS = 5000;
 const AGENT_STATUS_POLL_VISIBLE_MS = 5000;
 const MODAL_STACK_BASE_Z = 12000;
@@ -5038,6 +5038,23 @@ function handleLearningHostMessage(payload) {
     }
     if (msgType === 'nexora:layout:request') {
         setLearningEmbedLayoutMode(payload.mode, payload);
+        return true;
+    }
+    if (msgType === 'nexora:inject-prompt') {
+        const text = String(payload.text || '').trim();
+        if (text && els.messageInput) {
+            els.messageInput.value = text;
+            els.messageInput.focus();
+            els.messageInput.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        return true;
+    }
+    if (msgType === 'nexora:send-message') {
+        const text = String(payload.text || '').trim();
+        if (text) {
+            if (payload.interview) window.__nexoraInterviewPending = true;
+            sendMessage({ textOverride: text, displayContentOverride: text });
+        }
         return true;
     }
     if (msgType === 'nexora:feed-compose:toggle') {
@@ -13064,6 +13081,7 @@ async function sendMessage(options = {}) {
         } : (nextConversationMode === 'learning' ? {
             learning: true,
             lecture_id: String((learningReaderContextSnapshot && learningReaderContextSnapshot.lecture_id) || '').trim(),
+            interview: !!window.__nexoraInterviewPending,
             system_prompt: '',
             context_blocks: learningReaderContextBlocks,
             active_tool_skills: [],
@@ -13084,6 +13102,7 @@ async function sendMessage(options = {}) {
         include_context: !!tokenBudgetState.includeContext,
         skip_user_message: isAutoContinue
     };
+    window.__nexoraInterviewPending = false;
     if (options && options.puzzle_submission) {
         payload.puzzle_submission = options.puzzle_submission;
     }

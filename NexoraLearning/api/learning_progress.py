@@ -118,11 +118,12 @@ def frontend_learning_chapter_complete():
             },
         )
 
+    # 章节完成触发完整画像更新链：记忆分析 → 画像提取 → 画像出题
     job = enqueue_memory_job(
         _cfg,
         user_id=username,
         lecture_id=lecture_id,
-        reason="profile_question",
+        reason="chapter_complete",
         payload={
             "book_id": book_id,
             "chapter_name": chapter_name,
@@ -133,13 +134,13 @@ def frontend_learning_chapter_complete():
     )
     log_event(
         "frontend_chapter_complete",
-        "用户完成章节并触发画像出题",
+        "用户完成章节并触发记忆分析+画像提取+画像出题",
         payload={
             "username": username,
             "lecture_id": lecture_id,
             "book_id": book_id,
             "chapter_name": chapter_name,
-            "question_job": dict(job or {}),
+            "memory_job": dict(job or {}),
         },
     )
     return jsonify({"success": True, "enqueue": job, "already_completed": already_completed})
@@ -199,9 +200,23 @@ def frontend_learning_session_complete():
             },
         )
 
+    # 小节完成触发记忆分析更新
+    memory_job = enqueue_memory_job(
+        _cfg,
+        user_id=username,
+        lecture_id=lecture_id,
+        reason="session_complete",
+        payload={
+            "book_id": book_id,
+            "chapter_name": chapter_name,
+            "session_name": session_name,
+            "session_index": session_index,
+        },
+    )
+
     log_event(
         "frontend_session_complete",
-        "用户完成小节学习",
+        "用户完成小节学习并触发记忆分析",
         payload={
             "username": username,
             "lecture_id": lecture_id,
@@ -210,6 +225,7 @@ def frontend_learning_session_complete():
             "chapter_index": chapter_index,
             "session_name": session_name,
             "session_index": session_index,
+            "memory_job": dict(memory_job or {}),
         },
     )
-    return jsonify({"success": True, "already_completed": already_completed})
+    return jsonify({"success": True, "already_completed": already_completed, "memory_enqueue": memory_job})

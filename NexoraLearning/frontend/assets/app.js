@@ -25,6 +25,9 @@
     feedChannelSelect: document.getElementById("feedChannelSelect"),
     dashboardProgressTabBtn: document.getElementById("dashboardProgressTabBtn"),
     dashboardProgressFeedTabBtn: document.getElementById("dashboardProgressFeedTabBtn"),
+    dashboardPieTabBtn: document.getElementById("dashboardPieTabBtn"),
+    dashboardProfileTabBtn: document.getElementById("dashboardProfileTabBtn"),
+    userProfileDimensions: document.getElementById("userProfileDimensions"),
     userProfileCard: document.getElementById("userProfileCard"),
     profileAdminSettingsBtn: document.getElementById("profileAdminSettingsBtn"),
     materialsHeadKicker: document.querySelector("#materialsMainHeader .panel-kicker"),
@@ -179,6 +182,8 @@
     learningFeedChannels: [],
     selectedFeedChannelId: "public_all",
     dashboardSideTab: "progress",
+    dashboardPieTab: "pie",
+    userProfile: null,
     // ── 教师 Panel 状态 ──
     teacherOverview: null,
     teacherLoadingOverview: false,
@@ -1986,7 +1991,7 @@
   }
 
   function renderPie() {
-    if (el.timePieChart) el.timePieChart.hidden = false;
+    if (el.timePieChart) el.timePieChart.hidden = state.dashboardPieTab === "profile";
     const teacherMode = isTeacherPanelMode();
     if (el.dashboardSidePanelTitle) {
       el.dashboardSidePanelTitle.textContent = teacherMode ? "教师Panel" : "学习时长数据";
@@ -2289,6 +2294,153 @@
     renderLearningFeeds();
   }
 
+  function syncPieProfileTabs() {
+    const isPie = state.dashboardPieTab !== "profile";
+    state.dashboardPieTab = isPie ? "pie" : "profile";
+    if (el.dashboardPieTabBtn) {
+      el.dashboardPieTabBtn.classList.toggle("is-active", isPie);
+      el.dashboardPieTabBtn.setAttribute("aria-selected", isPie ? "true" : "false");
+    }
+    if (el.dashboardProfileTabBtn) {
+      el.dashboardProfileTabBtn.classList.toggle("is-active", !isPie);
+      el.dashboardProfileTabBtn.setAttribute("aria-selected", !isPie ? "true" : "false");
+    }
+    if (el.timePieChart) {
+      el.timePieChart.hidden = !isPie;
+    }
+    if (el.userProfileDimensions) {
+      el.userProfileDimensions.hidden = isPie;
+    }
+    if (!isPie) {
+      renderProfileDimensions();
+    }
+  }
+
+  async function loadUserProfile() {
+    try {
+      const resp = await fetch("/api/frontend/profile", { credentials: "same-origin" });
+      const data = await resp.json();
+      if (data && data.success) {
+        state.userProfile = data;
+      }
+    } catch (_err) {
+      state.userProfile = null;
+    }
+  }
+
+  function renderProfileDimensions() {
+    if (!el.userProfileDimensions) return;
+    const profile = state.userProfile;
+    if (!profile || !profile.dimensions) {
+      el.userProfileDimensions.innerHTML = '<div class="materials-empty">暂无画像数据</div>';
+      return;
+    }
+
+    const dims = profile.dimensions;
+    const rate = Math.round((profile.completion_rate || 0) * 100);
+    const dimOrder = [
+      "major", "knowledge_base", "cognitive_style", "interest_direction",
+      "weak_areas", "learning_pace", "error_patterns", "learning_goal",
+    ];
+
+    const filledIcon = '<svg class="profile-dim-icon profile-dim-icon-done" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg>';
+    const emptyIcon = '<svg class="profile-dim-icon profile-dim-icon-empty" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg>';
+
+    let html = '<div class="profile-dim-grid">';
+    for (const key of dimOrder) {
+      const dim = dims[key];
+      if (!dim) continue;
+      const filled = dim.filled;
+      const truncated = filled && dim.value.length > 20 ? dim.value.slice(0, 20) + "…" : dim.value;
+      html += `
+        <div class="profile-dim-cell${filled ? " is-filled" : ""}" data-dim-key="${escapeHtml(key)}" style="cursor:pointer">
+          <div class="profile-dim-cell-head">
+            ${filled ? filledIcon : emptyIcon}
+            <span class="profile-dim-name">${escapeHtml(dim.name)}</span>
+          </div>
+          <div class="profile-dim-cell-value">${filled ? escapeHtml(truncated) : '<span class="profile-dim-placeholder">未填写</span>'}</div>
+          <div class="profile-dim-detail" hidden>${filled ? escapeHtml(dim.value) : "暂无数据"}</div>
+        </div>`;
+    }
+    html += "</div>";
+
+    const emptyCount = dimOrder.length - (profile.filled_count || 0);
+    const btnLabel = emptyCount > 0 ? `完善画像（${emptyCount}项待填）` : "更新画像";
+    const btnClass = "profile-refine-btn";
+    html += `
+      <div class="profile-dim-bar-wrap">
+        <div class="profile-dim-bar-head">
+          <span class="profile-dim-bar-label">画像完整度</span>
+          <span class="profile-dim-bar-rate">${rate}%</span>
+        </div>
+        <div class="profile-dim-bar">
+          <div class="profile-dim-bar-fill" style="width:${rate}%"></div>
+        </div>
+      </div>
+      <button class="${btnClass}" type="button">${escapeHtml(btnLabel)}</button>`;
+
+    // 时间线：进步点 + 注意点
+    const timeline = profile.timeline || {};
+    const progressEntries = Array.isArray(timeline.progress) ? timeline.progress : [];
+    const attentionEntries = Array.isArray(timeline.attention) ? timeline.attention : [];
+    if (progressEntries.length || attentionEntries.length) {
+      html += '<div class="profile-timeline">';
+      html += '<div class="profile-timeline-title">学习动态</div>';
+      const allEntries = [
+        ...progressEntries.map((e) => ({ ...e, kind: "progress" })),
+        ...attentionEntries.map((e) => ({ ...e, kind: "attention" })),
+      ].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 8);
+      for (const entry of allEntries) {
+        const icon = entry.kind === "progress"
+          ? '<svg class="profile-timeline-icon tl-progress" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>'
+          : '<svg class="profile-timeline-icon tl-attention" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>';
+        html += `
+          <div class="profile-timeline-entry tl-${entry.kind}">
+            ${icon}
+            <div class="profile-timeline-body">
+              <span class="profile-timeline-date">${escapeHtml(entry.date)}</span>
+              <span class="profile-timeline-text">${escapeHtml(entry.text)}</span>
+            </div>
+          </div>`;
+      }
+      html += '</div>';
+    }
+
+    el.userProfileDimensions.innerHTML = html;
+
+    // 维度卡片点击展开/收起详情
+    el.userProfileDimensions.querySelectorAll(".profile-dim-cell").forEach((cell) => {
+      cell.addEventListener("click", () => {
+        const detail = cell.querySelector(".profile-dim-detail");
+        if (!detail) return;
+        const isExpanded = !detail.hidden;
+        // 先收起所有
+        el.userProfileDimensions.querySelectorAll(".profile-dim-detail").forEach((d) => { d.hidden = true; });
+        el.userProfileDimensions.querySelectorAll(".profile-dim-cell").forEach((c) => { c.classList.remove("is-expanded"); });
+        // 再切换当前
+        if (!isExpanded) {
+          detail.hidden = false;
+          cell.classList.add("is-expanded");
+        }
+      });
+    });
+
+    // 画像访谈按钮
+    const refineBtn = el.userProfileDimensions.querySelector(".profile-refine-btn");
+    if (refineBtn) {
+      refineBtn.addEventListener("click", async () => {
+        const emptyCount2 = dimOrder.filter((k) => dims[k] && !dims[k].filled).length;
+        const msg = emptyCount2 > 0
+          ? `AI 将先总结你的已有画像，再逐个询问 ${emptyCount2} 个未填写的维度。是否开始？`
+          : "所有维度已填写。AI 将先总结已有画像，再确认各维度是否需要更新。是否开始？";
+        const ok = await confirmModalAsync(msg);
+        if (!ok) return;
+        sendHostMessage({ type: "nexora:send-message", text: "开始画像访谈", interview: true });
+        showToast("画像访谈已开始");
+      });
+    }
+  }
+
   function renderReplyIcon() {
     return `
       <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -2525,6 +2677,20 @@
     return true;
   }
 
+  function canStartVideo(item) {
+    const summary = normalizeStatusKey(item && item.summary_status);
+    const video = normalizeStatusKey(item && item.video_status);
+    const videoJob = normalizeStatusKey(item && item.video_job_status);
+    // 概述完成，或概述跳过（已有其他步骤完成），都可以搜视频
+    const anyStepDone = ["coarse", "section", "intensive", "question", "annotation", "summary"].some(
+      (k) => ["done", "completed", "success"].includes(normalizeStatusKey(item && item[`${k}_status`]))
+    );
+    if (!anyStepDone) return false;
+    if (["running", "queued"].includes(videoJob)) return false;
+    if (["running", "queued", "done", "completed", "success"].includes(video)) return false;
+    return true;
+  }
+
   function canStartSummary(item) {
     const coarse = normalizeStatusKey(item && item.coarse_status);
     const section = normalizeStatusKey(item && item.section_status);
@@ -2551,24 +2717,42 @@
     return ["error", "failed"].includes(normalizeStatusKey(value));
   }
 
+  // Agent 定义：按实际管线顺序排列
+  const AGENT_PIPELINE = [
+    { key: "coarse",     label: "概读", desc: "分析教材结构" },
+    { key: "section",    label: "分节", desc: "拆分章节单元" },
+    { key: "intensive",  label: "精读", desc: "深度分析内容" },
+    { key: "question",   label: "出题", desc: "生成练习题目" },
+    { key: "annotation", label: "批注", desc: "生成学习批注" },
+    { key: "summary",    label: "概述", desc: "生成全书概述" },
+    { key: "video",      label: "视频", desc: "搜索相关视频" },
+  ];
+
+  function getAgentStatus(item, agentKey) {
+    const status = normalizeStatusKey(item && item[`${agentKey}_status`]);
+    return {
+      status,
+      done: isDoneStatus(status),
+      running: isRunningStatus(status),
+      error: isErrorStatus(status),
+    };
+  }
+
+  function getCurrentAgentKey(item) {
+    for (const agent of AGENT_PIPELINE) {
+      const s = getAgentStatus(item, agent.key);
+      if (s.running) return agent.key;
+      if (!s.done && !s.error) return agent.key;
+    }
+    return "summary";
+  }
+
   function buildRefineFlow(item) {
-    const coarseStatus = normalizeStatusKey(item && item.coarse_status);
-    const intensiveStatus = normalizeStatusKey(item && item.intensive_status);
-    const sectionStatus = normalizeStatusKey(item && item.section_status);
-    const annotationStatus = normalizeStatusKey(item && item.annotation_status);
-    const summaryStatus = normalizeStatusKey(item && item.summary_status);
-    const hasError = isErrorStatus(coarseStatus)
-      || isErrorStatus(intensiveStatus)
-      || isErrorStatus(sectionStatus)
-      || isErrorStatus(annotationStatus)
-      || isErrorStatus(summaryStatus);
-    const steps = [
-      { key: "coarse", label: "粗读", done: isDoneStatus(coarseStatus), running: isRunningStatus(coarseStatus) },
-      { key: "intensive", label: "精读", done: isDoneStatus(intensiveStatus), running: isRunningStatus(intensiveStatus) },
-      { key: "section", label: "分节", done: isDoneStatus(sectionStatus), running: isRunningStatus(sectionStatus) },
-      { key: "summary", label: "概述", done: isDoneStatus(summaryStatus), running: isRunningStatus(summaryStatus) },
-      { key: "annotation", label: "批注", done: isDoneStatus(annotationStatus), running: isRunningStatus(annotationStatus) },
-    ];
+    const hasError = AGENT_PIPELINE.some((a) => isErrorStatus(normalizeStatusKey(item && item[`${a.key}_status`])));
+    const steps = AGENT_PIPELINE.map((agent) => {
+      const s = getAgentStatus(item, agent.key);
+      return { key: agent.key, label: agent.label, icon: agent.icon, desc: agent.desc, done: s.done, running: s.running, error: s.error };
+    });
     const doneCount = steps.filter((row) => row.done).length;
     const activeIndex = steps.findIndex((row) => row.running);
     let percent = (doneCount / steps.length) * 100;
@@ -2627,8 +2811,19 @@
         enabled: canStartAnnotation(item),
       };
     }
+
+    const videoDone = ["done", "completed", "success"].includes(normalizeStatusKey(item && item.video_status));
+    if (!videoDone) {
+      return {
+        action: "start-video",
+        title: "搜索视频",
+        text: "📺",
+        enabled: canStartVideo(item),
+      };
+    }
+
     return {
-      action: "start-annotation",
+      action: "",
       title: "全部完成",
       text: "✓",
       enabled: false,
@@ -2903,137 +3098,182 @@
     const runningCount = toNumber(state.refinementQueue.running_count, 0);
     const rows = Array.isArray(state.refinementRows) ? state.refinementRows : [];
 
-    let container = document.getElementById("refineItemsContainer");
-    if (state.refinementViewBootstrapped && !container) {
-      state.refinementViewBootstrapped = false;
-    }
-
     if (!state.refinementViewBootstrapped) {
       el.settingsDetailPane.innerHTML = `
-        <section class="settings-detail-scroll">
-          <article class="settings-card">
-            <div class="settings-title">精读队列状态</div>
-            <div class="settings-grid">
-              <div><div class="settings-kv-label">排队数量</div><div class="settings-kv-value" id="refineQueueCountValue">0</div></div>
-              <div><div class="settings-kv-label">执行中</div><div class="settings-kv-value" id="refineRunningCountValue">0</div></div>
-            </div>
-            <div class="settings-sub">状态会自动刷新</div>
-          </article>
-          <section id="refineItemsContainer"></section>
-        </section>
+        <div class="agent-panel-layout">
+          <div class="agent-panel-sidebar" id="agentBookList"></div>
+          <div class="agent-panel-main" id="agentFlowchart"></div>
+        </div>
       `;
-      const scrollEl0 = el.settingsDetailPane.querySelector(".settings-detail-scroll");
-      if (scrollEl0) {
-        scrollEl0.addEventListener("scroll", () => {
-          state.refinementScrollTop = scrollEl0.scrollTop;
-        }, { passive: true });
+      if (!state.selectedAgentBookKey && rows.length) {
+        const first = rows[0];
+        state.selectedAgentBookKey = `${first.lecture_id || ""}::${first.book_id || ""}`;
       }
       state.refinementViewBootstrapped = true;
-      container = document.getElementById("refineItemsContainer");
     }
 
-    const queueEl = document.getElementById("refineQueueCountValue");
-    const runningEl = document.getElementById("refineRunningCountValue");
-    if (queueEl) queueEl.textContent = String(queueSize);
-    if (runningEl) runningEl.textContent = String(runningCount);
-
-    container = document.getElementById("refineItemsContainer");
-    if (!container) return;
-
-    const desiredKeys = new Set(rows.map((item) => `${String(item.lecture_id || "")}::${String(item.book_id || "")}`));
-    Array.from(container.querySelectorAll("[data-refine-key]")).forEach((node) => {
-      const key = String(node.getAttribute("data-refine-key") || "");
-      if (!desiredKeys.has(key)) node.remove();
-    });
+    const sidebar = document.getElementById("agentBookList");
+    const main = document.getElementById("agentFlowchart");
+    if (!sidebar || !main) return;
 
     if (!rows.length) {
-      container.innerHTML = '<div class="materials-empty">暂无待精读教材</div>';
+      sidebar.innerHTML = "";
+      main.innerHTML = '<div class="materials-empty">暂无教材，上传教材后在此展示多智能体处理管线</div>';
       return;
     }
 
-    rows.forEach((item) => {
+    // 左侧教材列表
+    sidebar.innerHTML = rows.map((item) => {
+      const key = `${item.lecture_id || ""}::${item.book_id || ""}`;
+      const title = String(item.book_title || item.book_id || "未命名");
+      const lecture = String(item.lecture_title || "");
+      const flow = buildRefineFlow(item);
+      const isSelected = key === state.selectedAgentBookKey;
       const lectureId = String(item.lecture_id || "");
       const bookId = String(item.book_id || "");
-      const key = `${lectureId}::${bookId}`;
-      const title = `${String(item.book_title || item.book_id || "未命名教材")} - ${String(item.lecture_title || item.lecture_id || "未命名课程")}`;
-      const progress = refinementStatusText(item);
-      const flow = buildRefineFlow(item);
-      const actionMeta = getRefinementActionMeta(item);
-      const btnAction = actionMeta.action;
-      const btnTitle = actionMeta.title;
-      const btnText = actionMeta.text;
-      const btnEnabled = actionMeta.enabled;
-      const steps = Array.isArray(item.progress_steps) ? item.progress_steps : [];
-      const expanded = !!state.refinementExpandedMap[key];
-      const flowStepsHtml = flow.steps.map((step, idx) => {
-        let cls = "pending";
-        if (step.done) {
-          cls = "done";
-        } else if (step.running || idx === flow.activeIndex) {
-          cls = "active";
-        } else if (flow.hasError && idx === Math.max(flow.doneCount, 0)) {
-          cls = "error";
-        }
-        return `<span class="refine-flow-step is-${cls}">${escapeHtml(step.label)}</span>`;
-      }).join("");
-      const stepHtml = steps.slice(-12).map((step) => {
-        const sTitle = String(step && step.title || "步骤");
-        const sPreview = String(step && step.preview || "");
-        return `<div class="refine-step-row">
-          <div class="refine-step-title">- ${escapeHtml(sTitle)}</div>
-          ${sPreview ? `<div class="refine-step-preview">${escapeHtml(sPreview)}</div>` : ""}
+      return `
+        <div class="agent-book-item${isSelected ? " is-selected" : ""}" data-book-key="${escapeHtml(key)}">
+          <div class="agent-book-info">
+            <div class="agent-book-title">${escapeHtml(title)}</div>
+            <div class="agent-book-meta">${escapeHtml(lecture)} · ${flow.doneCount}/${flow.steps.length}</div>
+          </div>
+          ${isSelected ? `<button class="agent-book-reset" data-action="stop-refinement" data-lecture-id="${escapeHtml(lectureId)}" data-book-id="${escapeHtml(bookId)}" type="button" title="重置"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="1"/></svg></button>` : ""}
         </div>`;
-      }).join("");
+    }).join("");
 
-      let card = container.querySelector(`[data-refine-key="${CSS.escape(key)}"]`);
-      if (!card) {
-        card = document.createElement("article");
-        card.className = "refine-item";
-        card.setAttribute("data-refine-key", key);
-        container.appendChild(card);
-      }
-      card.innerHTML = `
-        <div class="refine-item-head">
-          <div>
-            <div class="refine-item-title">${escapeHtml(title)}</div>
-            <div class="refine-item-date">${escapeHtml(formatTs(item.updated_at))}</div>
-          </div>
-          <div class="refine-item-actions">
-            <button
-              class="nxl-icon-btn ${btnEnabled ? "nxl-icon-btn-dark" : ""}"
-              data-action="${btnAction}"
-              data-lecture-id="${escapeHtml(lectureId)}"
-              data-book-id="${escapeHtml(bookId)}"
-              ${btnEnabled ? "" : "disabled"}
-              type="button"
-              title="${escapeHtml(btnTitle)}"
-            >${btnText}</button>
-            <button
-              class="nxl-icon-btn nxl-icon-btn-danger"
-              data-action="stop-refinement"
-              data-lecture-id="${escapeHtml(lectureId)}"
-              data-book-id="${escapeHtml(bookId)}"
-              type="button"
-              title="重置状态"
-            >■</button>
-          </div>
-        </div>
-        <div class="refine-progress-box ${expanded ? "is-expanded" : ""}" data-action="toggle-refine-steps" data-refine-key="${escapeHtml(key)}" title="点击展开/收起模型工具链">
-          <span class="refine-thinking-dot"></span>
-          <span class="refine-progress-text">${escapeHtml(progress)}</span>
-        </div>
-        <div class="refine-flow-wrap">
-          <div class="refine-flow-bar">
-            <span class="refine-flow-fill ${flow.hasError ? "is-error" : ""}" style="width:${flow.percent.toFixed(2)}%"></span>
-          </div>
-          <div class="refine-flow-steps">${flowStepsHtml}</div>
-        </div>
-        <div class="refine-steps ${expanded ? "is-open" : ""}">
-          ${stepHtml || '<div class="refine-step-preview">暂无工具链步骤</div>'}
-        </div>
-        ${item.question_error || item.intensive_error || item.coarse_error || item.section_error || item.annotation_error || item.summary_error || item.refinement_error ? `<div class="refine-item-meta" style="color:#b91c1c;">错误：${escapeHtml(item.question_error || item.intensive_error || item.coarse_error || item.section_error || item.annotation_error || item.summary_error || item.refinement_error)}</div>` : ""}
-      `;
+    // 绑定教材选择
+    sidebar.querySelectorAll(".agent-book-item").forEach((el) => {
+      el.addEventListener("click", () => {
+        state.selectedAgentBookKey = String(el.getAttribute("data-book-key") || "");
+        renderSettingsRefinement();
+      });
     });
+
+    // 右侧流程图
+    const selected = rows.find((r) => `${r.lecture_id || ""}::${r.book_id || ""}` === state.selectedAgentBookKey) || rows[0];
+    if (!selected) {
+      main.innerHTML = '<div class="materials-empty">请选择教材</div>';
+      return;
+    }
+    renderAgentFlowchart(main, selected);
+  }
+
+  function renderAgentFlowchart(container, item) {
+    const flow = buildRefineFlow(item);
+    const lectureId = String(item.lecture_id || "");
+    const bookId = String(item.book_id || "");
+    const bookTitle = String(item.book_title || item.book_id || "未命名教材");
+    const progressSteps = Array.isArray(item.progress_steps) ? item.progress_steps : [];
+
+    const SVG_ICONS = {
+      play: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21"/></svg>',
+      warn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>',
+      tool: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>',
+    };
+
+    const AGENT_SVG = {
+      coarse: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>',
+      section: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3v18M18 3v18M3 6h18M3 12h18M3 18h18"/></svg>',
+      intensive: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>',
+      question: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9 9a3 3 0 0 1 5.12 2.13c0 2-3 2-3 4.87M12 17h.01"/></svg>',
+      annotation: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
+      summary: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>',
+      video: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>',
+    };
+
+    // 增量更新：已有结构则只更新状态和日志，否则全量渲染
+    const existingNodes = container.querySelectorAll(".flow-node[data-agent-key]");
+    if (existingNodes.length === flow.steps.length) {
+      _updateFlowchartIncremental(container, item, flow, progressSteps, SVG_ICONS, AGENT_SVG, lectureId, bookId);
+      return;
+    }
+
+    // 全量渲染
+    let html = `<div class="flow-title">${escapeHtml(bookTitle)}</div>`;
+    html += '<div class="flow-nodes">';
+    for (let i = 0; i < flow.steps.length; i++) {
+      const step = flow.steps[i];
+      const isLast = i === flow.steps.length - 1;
+      const status = step.running ? "running" : step.error ? "error" : step.done ? "done" : "pending";
+      const icon = AGENT_SVG[step.key] || AGENT_SVG.coarse;
+      const { action, enabled } = _getAgentAction(item, step.key);
+      const btnHtml = enabled
+        ? `<button class="flow-node-btn" data-action="${action}" data-lecture-id="${escapeHtml(lectureId)}" data-book-id="${escapeHtml(bookId)}" type="button" title="执行">${SVG_ICONS.play}</button>`
+        : "";
+      html += `<div class="flow-node is-${status}" data-agent-key="${step.key}">
+          <div class="flow-node-icon">${icon}</div>
+          <div class="flow-node-label">${escapeHtml(step.label)}</div>
+          ${btnHtml}${!isLast ? '<div class="flow-connector"></div>' : ""}
+        </div>`;
+    }
+    html += '</div>';
+    html += '<div class="flow-log"><div class="flow-log-title">模型活动</div><div class="flow-log-body" id="flowLogBody"></div></div>';
+    container.innerHTML = html;
+    _appendLogLines(container, item, flow, progressSteps, SVG_ICONS);
+  }
+
+  function _getAgentAction(item, key) {
+    if (key === "coarse") return { action: "start-refinement", enabled: canStartRefinement(item) };
+    if (key === "video") return { action: "start-video", enabled: canStartVideo(item) };
+    if (key === "intensive") return { action: "start-intensive", enabled: canStartIntensive(item) };
+    if (key === "section") return { action: "start-section", enabled: canStartSection(item) };
+    if (key === "question") return { action: "start-question", enabled: canStartQuestion(item) };
+    if (key === "annotation") return { action: "start-annotation", enabled: canStartAnnotation(item) };
+    if (key === "summary") return { action: "start-summary", enabled: canStartSummary(item) };
+    return { action: "", enabled: false };
+  }
+
+  function _updateFlowchartIncremental(container, item, flow, progressSteps, SVG_ICONS, AGENT_SVG, lectureId, bookId) {
+    // 只更新节点状态 class 和按钮
+    for (const step of flow.steps) {
+      const node = container.querySelector(`.flow-node[data-agent-key="${step.key}"]`);
+      if (!node) continue;
+      const status = step.running ? "running" : step.error ? "error" : step.done ? "done" : "pending";
+      node.className = `flow-node is-${status}`;
+      // 更新按钮
+      const { action, enabled } = _getAgentAction(item, step.key);
+      let btn = node.querySelector(".flow-node-btn");
+      if (enabled) {
+        if (!btn) {
+          btn = document.createElement("button");
+          btn.className = "flow-node-btn";
+          btn.type = "button";
+          btn.title = "执行";
+          btn.innerHTML = SVG_ICONS.play;
+          node.appendChild(btn);
+        }
+        btn.setAttribute("data-action", action);
+        btn.setAttribute("data-lecture-id", lectureId);
+        btn.setAttribute("data-book-id", bookId);
+      } else if (btn) {
+        btn.remove();
+      }
+    }
+    // 更新活动日志
+    _appendLogLines(container, item, flow, progressSteps, SVG_ICONS);
+  }
+
+  function _appendLogLines(container, item, flow, progressSteps, SVG_ICONS) {
+    const logBody = container.querySelector(".flow-log-body");
+    if (!logBody) return;
+    const logLines = [];
+    for (const step of flow.steps) {
+      const err = String(item[`${step.key}_error`] || "").trim();
+      if (err) logLines.push({ type: "error", text: `${step.label}：${err}` });
+    }
+    for (const s of progressSteps.slice(-15).reverse()) {
+      const stype = String(s && s.type || "").trim();
+      const title = String(s && s.title || "");
+      const preview = String(s && s.preview || "");
+      if (stype === "model_text") logLines.push({ type: "model", text: preview });
+      else if (stype) logLines.push({ type: "tool", text: title, detail: preview });
+    }
+    logBody.innerHTML = logLines.map((line) => {
+      if (line.type === "error") return `<div class="flow-log-line is-error">${SVG_ICONS.warn}<span>${escapeHtml(line.text)}</span></div>`;
+      if (line.type === "model") return `<div class="flow-log-line is-model"><pre>${escapeHtml(line.text)}</pre></div>`;
+      if (line.type === "tool") return `<div class="flow-log-line is-tool">${SVG_ICONS.tool}<span>${escapeHtml(line.text)}</span>${line.detail ? `<span class="flow-log-detail">${escapeHtml(line.detail.slice(0, 50))}</span>` : ""}</div>`;
+      return "";
+    }).join("");
   }
 
   function renderSettingsModel() {
@@ -3339,6 +3579,17 @@
   async function handleCatalogClick(event) {
     const target = event.target;
     if (!(target instanceof Element)) return;
+
+    // 学习路径生成按钮
+    const pathBtn = target.closest("#generateLearningPathBtn");
+    if (pathBtn) {
+      const lectureId = String(pathBtn.getAttribute("data-lecture-id") || "");
+      const bookId = String(pathBtn.getAttribute("data-book-id") || "");
+      if (!lectureId || !bookId) return;
+      await generateLearningPath(lectureId, bookId);
+      return;
+    }
+
     const item = target.closest("[data-material-catalog-index]");
     if (!item || !state.catalogContext) return;
     const idx = Number(item.getAttribute("data-material-catalog-index") || "0");
@@ -3356,6 +3607,133 @@
     );
     // 按章节加载内容
     await loadChapterContent(state.readerActiveChapterIndex);
+  }
+
+  async function loadVideos(lectureId, bookId) {
+    const container = document.getElementById("videoPanelContainer");
+    if (!container) return;
+    container.innerHTML = '<div class="lp-video-loading">正在加载视频...</div>';
+    try {
+      const data = await fetchJson(`/api/frontend/videos?lecture_id=${encodeURIComponent(lectureId)}&book_id=${encodeURIComponent(bookId)}`);
+      if (!data.success || !Array.isArray(data.items) || !data.items.length) {
+        container.innerHTML = '<div class="lp-video-empty">暂无相关视频</div>';
+        return;
+      }
+      const cached = !!data.cached;
+      renderVideoList(container, data.items, cached);
+    } catch (_err) {
+      container.innerHTML = '<div class="lp-video-empty">视频加载失败</div>';
+    }
+  }
+
+  function renderVideoList(container, videos, cached) {
+    let html = '';
+    // 日志
+    html += `<div class="lp-video-log">${cached ? `缓存 · ${videos.length} 个视频` : `搜索完成 · ${videos.length} 个视频`}</div>`;
+
+    html += '<div class="lp-video-grid">';
+    for (const v of videos) {
+      const title = String(v.title || "").replace(/<[^>]*>/g, "").trim();
+      if (!title) continue;
+      const url = String(v.url || "").trim();
+      const upName = String(v.up_name || "").trim();
+      const playCount = String(v.play_count || "0").trim();
+      const duration = String(v.duration || "").trim();
+      const cover = String(v.cover || "").trim();
+      html += `
+        <a class="lp-video-card" href="${escapeHtml(url)}" target="_blank" rel="noopener">
+          ${cover ? `<img class="lp-video-cover" src="${escapeHtml(cover)}" referrerpolicy="no-referrer" onerror="this.style.display='none'" />` : ""}
+          <div class="lp-video-body">
+            <div class="lp-video-title">${escapeHtml(title)}</div>
+            ${upName ? `<div class="lp-video-author">${escapeHtml(upName)}</div>` : ""}
+            <div class="lp-video-stats">
+              ${playCount && playCount !== "0" ? `<span>▶ ${escapeHtml(playCount)}</span>` : ""}
+              ${duration ? `<span>${escapeHtml(duration)}</span>` : ""}
+            </div>
+          </div>
+        </a>`;
+    }
+    html += '</div>';
+    container.innerHTML = html;
+
+    // 横向滚动：滚轮事件转为横向
+    const grid = container.querySelector(".lp-video-grid");
+    if (grid) {
+      grid.addEventListener("wheel", (e) => {
+        if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+          e.preventDefault();
+          grid.scrollLeft += e.deltaY;
+        }
+      }, { passive: false });
+    }
+  }
+
+  async function generateLearningPath(lectureId, bookId, force) {
+    const container = document.getElementById("learningPathContainer");
+    if (!container) return;
+
+    container.innerHTML = '<div class="materials-loading">正在生成学习路径...</div>';
+    try {
+      const data = await fetchJson("/api/frontend/learning-path", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lecture_id: lectureId, book_id: bookId, force: !!force }),
+      });
+      if (!data.success || !Array.isArray(data.path)) {
+        container.innerHTML = `<div class="materials-empty">${escapeHtml(data.error || "生成失败")}</div>`;
+        return;
+      }
+      renderLearningPath(container, data, lectureId, bookId);
+    } catch (err) {
+      container.innerHTML = `<div class="materials-empty">生成失败：${escapeHtml(err.message || "未知错误")}</div>`;
+    }
+  }
+
+  function renderLearningPath(container, data, lectureId, bookId) {
+    const pathItems = Array.isArray(data.path) ? data.path : [];
+    const advice = String(data.advice || "").trim();
+    if (!pathItems.length) {
+      container.innerHTML = '<div class="materials-empty">暂无路径数据</div>';
+      return;
+    }
+
+    const statusLabels = { completed: "已完成", current: "当前", recommended: "推荐", pending: "待学习" };
+
+    let html = '';
+
+    // AI 建议文本
+    if (advice) {
+      html += `<div class="lp-advice">${escapeHtml(advice)}</div>`;
+    }
+
+    // 章节卡片列表
+    html += '<div class="lp-list">';
+    for (let i = 0; i < pathItems.length; i++) {
+      const item = pathItems[i];
+      const status = String(item.status || "pending").toLowerCase();
+      const label = statusLabels[status] || "待学习";
+      const isHighlight = status === "current" || status === "recommended";
+      const summary = String(item.summary || "").trim();
+      const reason = String(item.reason || "").trim();
+
+      html += `
+        <div class="lp-card${isHighlight ? " is-highlight" : ""} lp-${status}">
+          <div class="lp-card-head">
+            <span class="lp-card-badge lp-badge-${status}">${escapeHtml(label)}</span>
+            <span class="lp-card-name">${escapeHtml(item.name || `章节 ${i + 1}`)}</span>
+          </div>
+          ${reason ? `<div class="lp-card-reason">${escapeHtml(reason)}</div>` : ""}
+          ${summary ? `<div class="lp-card-summary">${escapeHtml(summary)}</div>` : ""}
+        </div>`;
+    }
+    html += '</div>';
+
+    html += '<button class="lp-regen" type="button">↻ 重新生成</button>';
+    container.innerHTML = html;
+
+    container.querySelector(".lp-regen").addEventListener("click", () => {
+      generateLearningPath(lectureId, bookId, true);
+    });
   }
 
   function renderLectureList() {
@@ -3677,15 +4055,22 @@
             <div class="learning-panel-hero-info">
               <div class="learning-panel-hero-title">${escapeHtml(ctx.title || "教材目录")}</div>
               <div class="learning-panel-hero-subtitle">${escapeHtml(ctx.subtitle || "")}</div>
+              ${summaryBrief ? `<div class="learning-panel-hero-brief">${summaryBriefHtml}</div>` : ""}
             </div>
           </div>
           <div class="learning-panel-catalog-layout">
             <div class="learning-panel-catalog-left">
               <div class="learning-panel-section-head">
-                <div class="detail-title">书籍简介</div>
+                <div class="detail-title">推荐视频</div>
+                <button class="lp-video-refresh" id="refreshVideosBtn" type="button" title="刷新视频">↻</button>
               </div>
-              <div class="learning-panel-section-body">
-                ${isLoading ? '<div class="materials-loading">加载中...</div>' : (summaryBrief ? `<div class="learning-panel-intro-content">${summaryBriefHtml}</div>` : '<div class="materials-empty">暂无简介内容</div>')}
+              <div class="learning-panel-section-body lp-video-container" id="videoPanelContainer" data-lecture-id="${escapeHtml(state.selectedLectureId || "")}" data-book-id="${escapeHtml(ctx.bookId || "")}">
+                <div class="materials-loading">加载视频...</div>
+              </div>
+              <div class="learning-panel-section-head" style="margin-top:8px;">
+                <div class="detail-title">个性化学习路径</div>
+              </div>
+              <div class="learning-panel-section-body" id="learningPathContainer" data-lecture-id="${escapeHtml(state.selectedLectureId || "")}" data-book-id="${escapeHtml(ctx.bookId || "")}">
               </div>
             </div>
             <div class="learning-panel-catalog-right">
@@ -3706,6 +4091,49 @@
           </div>
         </section>
       `;
+
+      // 初始化视频面板
+      const lid = state.selectedLectureId || "";
+      const bid = ctx.bookId || "";
+      loadVideos(lid, bid);
+      const refreshBtn = document.getElementById("refreshVideosBtn");
+      if (refreshBtn) {
+        refreshBtn.addEventListener("click", async () => {
+          const vc = document.getElementById("videoPanelContainer");
+          if (vc) vc.innerHTML = '<div class="lp-video-loading">正在搜索视频（模型分析中）...</div>';
+          try {
+            const data = await fetchJson("/api/frontend/videos/refresh", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ lecture_id: lid, book_id: bid }),
+            });
+            if (data.success && Array.isArray(data.items)) {
+              renderVideoList(document.getElementById("videoPanelContainer"), data.items, false);
+            } else {
+              vc.innerHTML = '<div class="lp-video-empty">暂无相关视频</div>';
+            }
+          } catch (_err) {
+            vc.innerHTML = '<div class="lp-video-empty">刷新失败</div>';
+          }
+        });
+      }
+
+      // 初始化学习路径：尝试加载缓存，无则显示按钮
+      const lpContainer = document.getElementById("learningPathContainer");
+      if (lpContainer) {
+        const _lpBtn = `<button class="learning-path-gen-btn" id="generateLearningPathBtn" type="button" data-lecture-id="${escapeHtml(lid)}" data-book-id="${escapeHtml(bid)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M12 3v18m-6-6 6 6 6-6"/></svg>生成学习路径</button><div class="learning-path-hint">根据章节结构和你的学习画像，为你规划个性化学习路线</div>`;
+        fetchJson("/api/frontend/learning-path", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ lecture_id: lid, book_id: bid }),
+        }).then((lpData) => {
+          if (lpData && lpData.success && Array.isArray(lpData.path) && lpData.path.length) {
+            renderLearningPath(lpContainer, lpData, lid, bid);
+          } else {
+            lpContainer.innerHTML = _lpBtn;
+          }
+        }).catch(() => { lpContainer.innerHTML = _lpBtn; });
+      }
       return;
     }
 
@@ -5402,6 +5830,8 @@
       quizState.currentChapter = chapterName;
       quizState.currentSession = sessionName;
       renderQuizPanel();
+      openFloatingPanel();
+      setFloatingTab("quiz");
       return;
     }
 
@@ -6167,7 +6597,19 @@
       }),
     });
     await loadRefinementSettings();
-    await loadMaterialsRows();
+  }
+
+  async function startVideo(lectureId, bookId) {
+    await fetchJson("/api/frontend/settings/refinement/video", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        lecture_id: lectureId,
+        book_id: bookId,
+        actor: state.username || "",
+      }),
+    });
+    await loadRefinementSettings();
   }
 
   async function deleteBook(lectureId, bookId) {
@@ -6199,6 +6641,7 @@
       loadDashboardRows(),
       loadLearningFeedChannels(),
       loadLearningFeeds(),
+      loadUserProfile(),
     ]);
     renderUserProfile();
     renderProgressList();
@@ -6297,6 +6740,18 @@
       el.feedChannelSelect.addEventListener("change", () => {
         state.selectedFeedChannelId = String(el.feedChannelSelect.value || "public_all");
         loadLearningFeeds().catch((err) => showToast(`加载动态失败：${err.message || "未知错误"}`));
+      });
+    }
+    if (el.dashboardPieTabBtn) {
+      el.dashboardPieTabBtn.addEventListener("click", () => {
+        state.dashboardPieTab = "pie";
+        syncPieProfileTabs();
+      });
+    }
+    if (el.dashboardProfileTabBtn) {
+      el.dashboardProfileTabBtn.addEventListener("click", () => {
+        state.dashboardPieTab = "profile";
+        syncPieProfileTabs();
       });
     }
     if (el.learningFeedComposeBtn) {
@@ -7157,6 +7612,19 @@
             showToast("已开始全书概述生成");
           })
           .catch((err) => showToast("全书概述执行失败：" + (err.message || "未知错误")));
+        return;
+      }
+      const videoBtn = target.closest("[data-action='start-video']");
+      if (videoBtn) {
+        const lectureId = String(videoBtn.getAttribute("data-lecture-id") || "");
+        const bookId = String(videoBtn.getAttribute("data-book-id") || "");
+        if (!lectureId || !bookId) return;
+        startVideo(lectureId, bookId)
+          .then(() => {
+            showToast("已开始视频搜索");
+            renderSettingsView();
+          })
+          .catch((err) => showToast("视频搜索启动失败：" + (err.message || "未知错误")));
         return;
       }
     });

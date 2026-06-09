@@ -691,6 +691,66 @@ def enqueue_book_summary(
     return queued
 
 
+def enqueue_book_video(
+    cfg: Mapping[str, Any],
+    lecture_id: str,
+    book_id: str,
+    *,
+    actor: str = "",
+) -> Dict[str, Any]:
+    """将教材加入视频搜索队列（粗读完成后可执行）。"""
+    resolved_cfg = dict(cfg or {})
+    lecture_key = str(lecture_id or "").strip()
+    book_key = str(book_id or "").strip()
+    if not lecture_key or not book_key:
+        raise ValueError("lecture_id and book_id are required.")
+
+    lecture = get_lecture(resolved_cfg, lecture_key)
+    if lecture is None:
+        raise ValueError(f"Lecture not found: {lecture_key}")
+    book = get_book(resolved_cfg, lecture_key, book_key)
+    if book is None:
+        raise ValueError(f"Book not found: {lecture_key}/{book_key}")
+
+    # 视频搜索在管线最后，任何步骤完成后都可以触发
+    any_done = any(
+        str(book.get(f"{step}_status") or "").strip().lower() in {"done", "completed", "success"}
+        for step in ("coarse", "section", "intensive", "question", "annotation", "summary")
+    )
+    if not any_done:
+        raise ValueError("at least one processing step must be completed before video search.")
+
+    queued = queue_enqueue_job(
+        lecture_key,
+        book_key,
+        actor=actor,
+        force=False,
+        job_type="video",
+    )
+    job = dict(queued.get("job") or {})
+    job_id = str(job.get("job_id") or "")
+    now = int(job.get("created_at") or time.time())
+
+    update_book(
+        resolved_cfg,
+        lecture_key,
+        book_key,
+        {
+            "video_status": "queued",
+            "video_error": "",
+            "video_job_id": job_id,
+            "video_requested_at": now,
+        },
+    )
+    _set_book_progress(lecture_key, book_key, "视频搜索任务排队中...")
+    log_event(
+        "book_video_queue",
+        "教材已加入视频搜索队列",
+        payload={"lecture_id": lecture_key, "book_id": book_key, "job_id": job_id, "actor": actor},
+    )
+    return queued
+
+
 def get_refinement_queue_snapshot() -> Dict[str, Any]:
     """获取当前提炼队列快照。"""
     return queue_get_snapshot()
@@ -849,6 +909,22 @@ def _run_job(job: Dict[str, Any]) -> None:
             "教材开始全书概述（概述阶段）",
             payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id, "model_name": model_name},
         )
+    elif job_type == "video":
+        update_book(
+            _CFG,
+            lecture_id,
+            book_id,
+            {
+                "video_status": "running",
+                "video_error": "",
+            },
+        )
+        _set_book_progress(lecture_id, book_id, "正在搜索相关视频...")
+        log_event(
+            "book_video_start",
+            "教材开始视频搜索",
+            payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id},
+        )
     else:
         update_book(
             _CFG,
@@ -968,6 +1044,28 @@ def _run_job(job: Dict[str, Any]) -> None:
                 "教材提炼完成（全书概述阶段）",
                 payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id},
                 content=f"summary_chars={int(result.get('summary_chars') or 0)}; chapter_count={int(result.get('chapter_count') or 0)}",
+            )
+        elif job_type == "video":
+            from core.video_search import search_and_cache_videos
+            lecture = get_lecture(_CFG, lecture_id)
+            book = get_book(_CFG, lecture_id, book_id)
+            lecture_title = str((lecture or {}).get("title") or "").strip()
+            book_title = str((book or {}).get("title") or "").strip()
+            bookinfo_xml = str(load_book_info_xml(_CFG, lecture_id, book_id) or "")
+            items = search_and_cache_videos(
+                _CFG, lecture_id, book_id,
+                lecture_title=lecture_title,
+                book_title=book_title,
+                bookinfo_xml=bookinfo_xml,
+            )
+            finished_at = int(time.time())
+            _set_book_progress(lecture_id, book_id, f"视频搜索完成，找到 {len(items)} 个视频")
+            update_book(_CFG, lecture_id, book_id, {"video_status": "done", "video_error": ""})
+            _update_job(job_id, {"status": "done", "finished_at": finished_at, "error": ""})
+            log_event(
+                "book_video_done",
+                "视频搜索完成",
+                payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id, "count": len(items)},
             )
         else:
             lecture = get_lecture(_CFG, lecture_id)
@@ -1111,6 +1209,16 @@ def _run_job(job: Dict[str, Any]) -> None:
             log_event(
                 "book_summary_error",
                 "教材提炼失败（全书概述阶段）",
+                payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id},
+                content=message,
+            )
+        elif job_type == "video":
+            update_book(_CFG, lecture_id, book_id, {"video_status": "error", "video_error": message})
+            _set_book_progress(lecture_id, book_id, f"视频搜索失败：{message[:120]}")
+            _update_job(job_id, {"status": "error", "finished_at": int(time.time()), "error": message})
+            log_event(
+                "book_video_error",
+                "视频搜索失败",
                 payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id},
                 content=message,
             )
@@ -2449,6 +2557,18 @@ def _run_coarse_section_planning(
         msg = choices[0].get("message") if isinstance(choices[0], dict) else {}
         content = str((msg or {}).get("content") or "")
         assistant_text = content or assistant_text
+
+        # 推送模型文本输出到活动日志
+        if content.strip():
+            _push_book_progress_step(
+                lecture_id,
+                book_id,
+                {
+                    "type": "model_text",
+                    "title": "模型输出",
+                    "preview": content[:200],
+                },
+            )
         log_event(
             "section_planning_model_output",
             "分节规划模型输出",

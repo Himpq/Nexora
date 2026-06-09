@@ -333,13 +333,24 @@ def run_tool_driven_round_with_context(
         msg = choices[0].get("message") if isinstance(choices[0].get("message"), dict) else {}
         assistant_content = str(msg.get("content") or "")
         raw_tool_calls = msg.get("tool_calls") if isinstance(msg.get("tool_calls"), list) else []
-        
+
         # 记录助手内容
         if assistant_content.strip():
             assistant_concat.append(assistant_content)
             if log_model_text:
                 log_model_text(assistant_content, source="rough_reading")
-        
+            # 推送模型文本输出到活动日志
+            if push_book_progress_step and lecture_id and book_id:
+                push_book_progress_step(
+                    lecture_id,
+                    book_id,
+                    {
+                        "type": "model_text",
+                        "title": "模型输出",
+                        "preview": assistant_content[:200],
+                    },
+                )
+
         # 处理工具调用
         tool_calls = []
         for raw_call in raw_tool_calls:

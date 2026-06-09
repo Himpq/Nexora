@@ -6,9 +6,11 @@ focus on orchestration instead of owning all globals directly.
 
 from __future__ import annotations
 
+import json
 import threading
 from collections import deque
-from typing import Any, Deque, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Deque, Dict, List, Optional, Mapping
 
 LOCK = threading.RLock()
 QUEUE: Deque[Dict[str, Any]] = deque()
@@ -28,8 +30,41 @@ def job_key(lecture_id: str, book_id: str) -> str:
     return f"{str(lecture_id or '').strip()}::{str(book_id or '').strip()}"
 
 
+def _book_json_path(lecture_id: str, book_id: str) -> Path:
+    data_dir = Path(str(CFG.get("data_dir") or "data")).resolve()
+    return data_dir / "lectures" / lecture_id / "books" / book_id / "book.json"
+
+
+def _save_steps_to_book(lecture_id: str, book_id: str, steps: List[Dict[str, Any]]) -> None:
+    """Persist progress steps to book.json."""
+    path = _book_json_path(lecture_id, book_id)
+    if not path.exists():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["progress_steps"] = steps[-30:]  # keep last 30
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _load_steps_from_book(lecture_id: str, book_id: str) -> List[Dict[str, Any]]:
+    """Load persisted progress steps from book.json."""
+    path = _book_json_path(lecture_id, book_id)
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        steps = data.get("progress_steps")
+        if isinstance(steps, list):
+            return [dict(s) for s in steps if isinstance(s, dict)]
+    except Exception:
+        pass
+    return []
+
+
 def set_book_progress(lecture_id: str, book_id: str, text: str) -> None:
-    """Update one book's short progress line."""
+    """Update one book's short progress line. Persists steps on clear."""
     key = job_key(lecture_id, book_id)
     value = str(text or "").strip()
     with LOCK:
@@ -37,7 +72,19 @@ def set_book_progress(lecture_id: str, book_id: str, text: str) -> None:
             BOOK_PROGRESS[key] = value
         else:
             BOOK_PROGRESS.pop(key, None)
-            BOOK_PROGRESS_STEPS.pop(key, None)
+            # Persist steps before clearing from memory
+            steps = BOOK_PROGRESS_STEPS.pop(key, None)
+            if steps:
+                _save_steps_to_book(lecture_id, book_id, steps)
+
+
+def flush_book_progress_steps(lecture_id: str, book_id: str) -> None:
+    """Persist current in-memory steps to disk without clearing."""
+    key = job_key(lecture_id, book_id)
+    with LOCK:
+        steps = list(BOOK_PROGRESS_STEPS.get(key) or [])
+        if steps:
+            _save_steps_to_book(lecture_id, book_id, steps)
 
 
 def get_book_progress_text(lecture_id: str, book_id: str) -> str:
@@ -58,9 +105,13 @@ def push_book_progress_step(lecture_id: str, book_id: str, step: Dict[str, Any])
 
 
 def get_book_progress_steps(lecture_id: str, book_id: str) -> List[Dict[str, Any]]:
-    """Return a copy of progress steps for frontend rendering."""
+    """Return a copy of progress steps. Falls back to persisted book.json."""
     with LOCK:
-        return [dict(item) for item in (BOOK_PROGRESS_STEPS.get(job_key(lecture_id, book_id)) or [])]
+        memory_steps = BOOK_PROGRESS_STEPS.get(job_key(lecture_id, book_id))
+        if memory_steps:
+            return [dict(item) for item in memory_steps]
+    # Fallback: load from disk
+    return _load_steps_from_book(lecture_id, book_id)
 
 
 def update_job(job_id: str, patch: Dict[str, Any]) -> None:
