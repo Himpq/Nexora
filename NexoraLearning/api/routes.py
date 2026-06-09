@@ -1356,25 +1356,52 @@ def frontend_videos():
     if not lecture_id or not book_id:
         return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
 
-    from core.video_search import load_cached_videos, search_and_cache_videos
+    from core.video_search import load_cached_videos
 
     items = load_cached_videos(_cfg, lecture_id, book_id)
     if items:
         return jsonify({"success": True, "items": items, "cached": True})
 
-    # 无缓存：可能粗读还没跑完，尝试即时搜索
+    try:
+        items = _run_frontend_video_search(lecture_id, book_id)
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc), "items": []}), 500
+
+    return jsonify({"success": True, "items": items, "cached": False})
+
+
+def _run_frontend_video_search(lecture_id: str, book_id: str) -> List[Dict[str, Any]]:
+    """执行前端视频搜索，并把失败原因写入结构化日志。"""
+    from core.video_search import search_and_cache_videos
+
     lecture = get_learning_lecture(_cfg, lecture_id)
     book = get_lecture_book(_cfg, lecture_id, book_id)
     lecture_title = str((lecture or {}).get("title") or "").strip()
     book_title = str((book or {}).get("title") or "").strip()
     bookinfo_xml = str(load_book_info_xml(_cfg, lecture_id, book_id) or "")
-    items = search_and_cache_videos(
-        _cfg, lecture_id, book_id,
-        lecture_title=lecture_title,
-        book_title=book_title,
-        bookinfo_xml=bookinfo_xml,
-    )
-    return jsonify({"success": True, "items": items, "cached": False})
+
+    try:
+        return search_and_cache_videos(
+            _cfg,
+            lecture_id,
+            book_id,
+            lecture_title=lecture_title,
+            book_title=book_title,
+            bookinfo_xml=bookinfo_xml,
+        )
+    except Exception as exc:
+        log_event(
+            "frontend_video_search_error",
+            "前端视频搜索失败",
+            payload={
+                "lecture_id": lecture_id,
+                "book_id": book_id,
+                "lecture_title": lecture_title,
+                "book_title": book_title,
+                "error": str(exc),
+            },
+        )
+        raise
 
 
 @bp.route("/frontend/videos/refresh", methods=["POST"])
@@ -1386,25 +1413,16 @@ def frontend_videos_refresh():
     if not lecture_id or not book_id:
         return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
 
-    from core.video_search import search_and_cache_videos, _videos_path
-
-    # 删除缓存文件
     from core.video_search import _videos_path as _vp
     cache_path = _vp(_cfg, lecture_id, book_id)
     if cache_path.exists():
         cache_path.unlink()
 
-    lecture = get_learning_lecture(_cfg, lecture_id)
-    book = get_lecture_book(_cfg, lecture_id, book_id)
-    lecture_title = str((lecture or {}).get("title") or "").strip()
-    book_title = str((book or {}).get("title") or "").strip()
-    bookinfo_xml = str(load_book_info_xml(_cfg, lecture_id, book_id) or "")
-    items = search_and_cache_videos(
-        _cfg, lecture_id, book_id,
-        lecture_title=lecture_title,
-        book_title=book_title,
-        bookinfo_xml=bookinfo_xml,
-    )
+    try:
+        items = _run_frontend_video_search(lecture_id, book_id)
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc), "items": []}), 500
+
     return jsonify({"success": True, "items": items, "cached": False})
 
 
