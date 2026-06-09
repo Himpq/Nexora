@@ -19,7 +19,7 @@
     <script src="https://uicdn.toast.com/editor/latest/toastui-editor-all.min.js"></script>
 
     <!-- App Styles -->
-    <link rel="stylesheet" href="/static/css/style.css?v=20260514_02">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260522_03">
     <link rel="stylesheet" href="/static/css/easymde_override.css?v=20260416_12">
 </head>
 <body>
@@ -177,6 +177,11 @@
                 </div>
             </div>
             <div id="learningMainPanel" class="messages-area learning-main-panel" style="display:none;"></div>
+
+            <!-- Turn Indicator Panel -->
+            <div id="turnIndicatorPanel" class="turn-indicator-panel">
+                <div id="turnIndicatorLines" class="turn-indicator-lines"></div>
+            </div>
 
             <!-- Knowledge Viewer -->
             <div id="knowledgeViewer" style="display:none; flex:1; flex-direction: column; overflow: hidden; min-height: 0;">
@@ -618,7 +623,7 @@
     </div>
     
     <!-- Scripts -->
-    <script src="/static/js/chat.js?v=20260514_02"></script>
+    <script src="/static/js/chat.js?v=20260528_01"></script>
 
     <!-- 添加用户表单 -->
     <div id="addUserModal" class="modal-backdrop" style="z-index: 2200;">
@@ -1281,5 +1286,6 @@
             </div>
         </div>
     </div>
+
 </body>
 </html>

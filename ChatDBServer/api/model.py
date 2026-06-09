@@ -5990,6 +5990,36 @@ class Model:
                                 pending_function_outputs_for_text = []
                                 awaiting_question_response = True
                                 break
+                            if func_name == "puzzle":
+                                puzzle_payload = None
+                                try:
+                                    parsed_puzzle = json.loads(result) if isinstance(result, str) else result
+                                    if isinstance(parsed_puzzle, dict):
+                                        if isinstance(parsed_puzzle.get("puzzle"), dict):
+                                            puzzle_payload = parsed_puzzle.get("puzzle")
+                                        elif parsed_puzzle.get("title") and isinstance(parsed_puzzle.get("steps"), list):
+                                            puzzle_payload = parsed_puzzle
+                                except Exception:
+                                    puzzle_payload = None
+                                if isinstance(puzzle_payload, dict):
+                                    puzzle_payload = dict(puzzle_payload)
+                                    if call_id and not str(puzzle_payload.get("puzzle_id") or "").strip():
+                                        puzzle_payload["puzzle_id"] = call_id
+                                puzzle_step = {
+                                    "type": "puzzle",
+                                    "puzzle": puzzle_payload or {},
+                                    "call_id": call_id,
+                                    "await": True,
+                                    "reasoning_content": accumulated_reasoning or "",
+                                }
+                                process_steps.append(puzzle_step)
+                                yield puzzle_step
+                                accumulated_content = accumulated_content or ""
+                                function_calls = []
+                                current_function_outputs = []
+                                pending_function_outputs_for_text = []
+                                awaiting_question_response = True
+                                break
                             yield step_result
                             
                             # 收集函数输出（provider adapter 统一构建）
@@ -6001,7 +6031,7 @@ class Model:
                                 )
                             )
 
-                        if process_steps and process_steps[-1].get("type") == "question":
+                        if process_steps and process_steps[-1].get("type") in {"question", "puzzle"}:
                             break
 
                         # [FIX] 工具调用结束后的过渡提示（由 provider adapter 决定是否需要）
@@ -6316,6 +6346,7 @@ class Model:
                     if normalized_conversation_mode == "learning":
                         learning_cards = []
                         pending_questions = []
+                        pending_puzzles = []
                         for step in process_steps:
                             if not isinstance(step, dict):
                                 continue
@@ -6339,6 +6370,37 @@ class Model:
                                             question_payload = None
                                 if isinstance(question_payload, dict):
                                     pending_questions.append(question_payload)
+                                continue
+                            if step_name == "puzzle":
+                                raw_result = step.get("result")
+                                puzzle_payload = None
+                                if isinstance(raw_result, dict):
+                                    if isinstance(raw_result.get("puzzle"), dict):
+                                        puzzle_payload = raw_result.get("puzzle")
+                                    elif raw_result.get("title") and isinstance(raw_result.get("steps"), list):
+                                        puzzle_payload = raw_result
+                                else:
+                                    raw_text = str(raw_result or "").strip()
+                                    if raw_text:
+                                        try:
+                                            parsed = json.loads(raw_text)
+                                            if isinstance(parsed, dict):
+                                                if isinstance(parsed.get("puzzle"), dict):
+                                                    puzzle_payload = parsed.get("puzzle")
+                                                elif parsed.get("title") and isinstance(parsed.get("steps"), list):
+                                                    puzzle_payload = parsed
+                                        except Exception:
+                                            puzzle_payload = None
+                                if isinstance(puzzle_payload, dict):
+                                    puzzle_payload = dict(puzzle_payload)
+                                    if not str(puzzle_payload.get("puzzle_id") or "").strip():
+                                        fallback_call_id = str(step.get("call_id") or "").strip()
+                                        if fallback_call_id:
+                                            puzzle_payload["puzzle_id"] = fallback_call_id
+                                    fallback_call_id = str(step.get("call_id") or "").strip()
+                                    if fallback_call_id and not str(puzzle_payload.get("call_id") or "").strip():
+                                        puzzle_payload["call_id"] = fallback_call_id
+                                    pending_puzzles.append(puzzle_payload)
                                 continue
                             if step_name != "learning_card":
                                 continue
@@ -6367,6 +6429,8 @@ class Model:
                             metadata["learning_cards"] = learning_cards
                         if pending_questions:
                             metadata["pending_questions"] = pending_questions
+                        if pending_puzzles:
+                            metadata["pending_puzzles"] = pending_puzzles
                     if str(terminal_error_content or "").strip():
                         metadata["terminal_error"] = {
                             "content": str(terminal_error_content or "").strip(),

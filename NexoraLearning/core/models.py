@@ -25,6 +25,11 @@ DEFAULT_NEXORA_MODEL = ""
 PLACEHOLDER_PATTERN = re.compile(r"{{\s*([^{}]+?)\s*}}")
 _MODEL_CONFIG_LOCK = threading.RLock()
 _PROMPT_FILE_LOCK = threading.RLock()
+_MAX_MODEL_OUTPUT_TOKENS = 32768
+_MAX_MODEL_INPUT_CHARS = 240000
+_MAX_MODEL_OUTPUT_CHARS = 240000
+_MAX_REQUEST_TIMEOUT = 3600
+_MAX_TRIGGER_TURN_INTERVAL = 1000
 
 def _as_bool(value: Any, default: bool = False) -> bool:
     """Parse bool-like values from JSON/UI payloads safely."""
@@ -40,6 +45,42 @@ def _as_bool(value: Any, default: bool = False) -> bool:
     if text in {"0", "false", "no", "n", "off", ""}:
         return False
     return bool(default)
+
+
+def _clamp_int(value: Any, *, default: int, minimum: int = 1, maximum: Optional[int] = None) -> int:
+    """Parse integer-like value and clamp it into a safe range."""
+    try:
+        parsed = int(value)
+    except Exception:
+        parsed = int(default)
+    if parsed < minimum:
+        parsed = minimum
+    if maximum is not None and parsed > maximum:
+        parsed = maximum
+    return parsed
+
+
+def _sanitize_model_branch(branch: Mapping[str, Any], defaults: Mapping[str, Any]) -> Dict[str, Any]:
+    """Normalize model config branch and clamp dangerous numeric values."""
+    merged = dict(defaults or {})
+    if isinstance(branch, dict):
+        merged.update(branch)
+
+    int_limits = {
+        "max_output_tokens": (int(defaults.get("max_output_tokens") or 4000), 1, _MAX_MODEL_OUTPUT_TOKENS),
+        "max_input_chars": (int(defaults.get("max_input_chars") or 12000), 1, _MAX_MODEL_INPUT_CHARS),
+        "max_output_chars": (int(defaults.get("max_output_chars") or 240000), 1, _MAX_MODEL_OUTPUT_CHARS),
+        "request_timeout": (int(defaults.get("request_timeout") or 240), 1, _MAX_REQUEST_TIMEOUT),
+        "summary_review_max_output_tokens": (int(defaults.get("summary_review_max_output_tokens") or 900), 1, _MAX_MODEL_OUTPUT_TOKENS),
+        "summary_review_request_timeout": (int(defaults.get("summary_review_request_timeout") or 120), 1, _MAX_REQUEST_TIMEOUT),
+        "section_review_max_output_tokens": (int(defaults.get("section_review_max_output_tokens") or 1200), 1, _MAX_MODEL_OUTPUT_TOKENS),
+        "section_review_request_timeout": (int(defaults.get("section_review_request_timeout") or 120), 1, _MAX_REQUEST_TIMEOUT),
+        "trigger_turn_interval": (int(defaults.get("trigger_turn_interval") or 10), 1, _MAX_TRIGGER_TURN_INTERVAL),
+    }
+    for key, (default, minimum, maximum) in int_limits.items():
+        if key in merged:
+            merged[key] = _clamp_int(merged.get(key), default=default, minimum=minimum, maximum=maximum)
+    return merged
 
 
 DEFAULT_SCHEDULER_MODELS_CONFIG: Dict[str, Any] = {
@@ -127,6 +168,30 @@ DEFAULT_SCHEDULER_MODELS_CONFIG: Dict[str, Any] = {
         "think": False,
         "prompt_notes": "",
     },
+    "annotation": {
+        "enabled": True,
+        "model_name": "",
+        "api_mode": "chat",
+        "temperature": 0.3,
+        "max_output_tokens": 4000,
+        "max_input_chars": 15000,
+        "request_timeout": 240,
+        "stream": True,
+        "think": False,
+        "prompt_notes": "",
+    },
+    "book_summary": {
+        "enabled": True,
+        "model_name": "",
+        "api_mode": "chat",
+        "temperature": 0.2,
+        "max_output_tokens": 4000,
+        "max_input_chars": 20000,
+        "request_timeout": 240,
+        "stream": True,
+        "think": False,
+        "prompt_notes": "",
+    },
 }
 
 
@@ -194,9 +259,7 @@ def load_scheduler_models_config(cfg: Mapping[str, Any]) -> Dict[str, Any]:
     merged = dict(base)
     for key, value in models_branch.items():
         if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
-            branch = dict(merged[key])
-            branch.update(value)
-            merged[key] = branch
+            merged[key] = _sanitize_model_branch(value, merged[key])
         else:
             merged[key] = value
     return merged
@@ -294,6 +357,24 @@ def get_profile_question_model_config(cfg: Mapping[str, Any]) -> Dict[str, Any]:
     return dict(DEFAULT_SCHEDULER_MODELS_CONFIG["profile_question"])
 
 
+def get_annotation_model_config(cfg: Mapping[str, Any]) -> Dict[str, Any]:
+    """Read annotation model settings."""
+    data = load_scheduler_models_config(cfg)
+    branch = data.get("annotation")
+    if isinstance(branch, dict):
+        return dict(branch)
+    return dict(DEFAULT_SCHEDULER_MODELS_CONFIG["annotation"])
+
+
+def get_book_summary_model_config(cfg: Mapping[str, Any]) -> Dict[str, Any]:
+    """读取全书概述模型配置。"""
+    data = load_scheduler_models_config(cfg)
+    branch = data.get("book_summary")
+    if isinstance(branch, dict):
+        return dict(branch)
+    return dict(DEFAULT_SCHEDULER_MODELS_CONFIG["book_summary"])
+
+
 def update_rough_reading_model_config(cfg: Mapping[str, Any], updates: Mapping[str, Any]) -> Dict[str, Any]:
     """更新粗读模型配置并做基础类型校验。"""
     current = get_rough_reading_model_config(cfg)
@@ -350,7 +431,17 @@ def update_rough_reading_model_config(cfg: Mapping[str, Any], updates: Mapping[s
     ):
         if int_field in sanitized:
             try:
-                sanitized[int_field] = max(1, int(sanitized[int_field]))
+                upper_bound = {
+                    "max_input_chars": _MAX_MODEL_INPUT_CHARS,
+                    "max_output_tokens": _MAX_MODEL_OUTPUT_TOKENS,
+                    "max_output_chars": _MAX_MODEL_OUTPUT_CHARS,
+                    "request_timeout": _MAX_REQUEST_TIMEOUT,
+                    "summary_review_max_output_tokens": _MAX_MODEL_OUTPUT_TOKENS,
+                    "summary_review_request_timeout": _MAX_REQUEST_TIMEOUT,
+                    "section_review_max_output_tokens": _MAX_MODEL_OUTPUT_TOKENS,
+                    "section_review_request_timeout": _MAX_REQUEST_TIMEOUT,
+                }.get(int_field)
+                sanitized[int_field] = _clamp_int(sanitized[int_field], default=current.get(int_field) or 1, minimum=1, maximum=upper_bound)
             except Exception:
                 sanitized[int_field] = current.get(int_field)
     if "temperature" in sanitized:
@@ -399,7 +490,11 @@ def update_intensive_reading_model_config(cfg: Mapping[str, Any], updates: Mappi
     for int_field in ("max_output_tokens", "request_timeout"):
         if int_field in sanitized:
             try:
-                sanitized[int_field] = max(1, int(sanitized[int_field]))
+                upper_bound = {
+                    "max_output_tokens": _MAX_MODEL_OUTPUT_TOKENS,
+                    "request_timeout": _MAX_REQUEST_TIMEOUT,
+                }.get(int_field)
+                sanitized[int_field] = _clamp_int(sanitized[int_field], default=current.get(int_field) or 1, minimum=1, maximum=upper_bound)
             except Exception:
                 sanitized[int_field] = current.get(int_field)
     if "temperature" in sanitized:
@@ -439,7 +534,12 @@ def update_question_generation_model_config(cfg: Mapping[str, Any], updates: Map
     for int_field in ("max_output_tokens", "max_input_chars", "request_timeout"):
         if int_field in sanitized:
             try:
-                sanitized[int_field] = max(1, int(sanitized[int_field]))
+                upper_bound = {
+                    "max_output_tokens": _MAX_MODEL_OUTPUT_TOKENS,
+                    "max_input_chars": _MAX_MODEL_INPUT_CHARS,
+                    "request_timeout": _MAX_REQUEST_TIMEOUT,
+                }.get(int_field)
+                sanitized[int_field] = _clamp_int(sanitized[int_field], default=current.get(int_field) or 1, minimum=1, maximum=upper_bound)
             except Exception:
                 sanitized[int_field] = current.get(int_field)
     if "temperature" in sanitized:
@@ -479,7 +579,12 @@ def update_split_chapters_model_config(cfg: Mapping[str, Any], updates: Mapping[
     for int_field in ("max_output_tokens", "max_input_chars", "request_timeout"):
         if int_field in sanitized:
             try:
-                sanitized[int_field] = max(1, int(sanitized[int_field]))
+                upper_bound = {
+                    "max_output_tokens": _MAX_MODEL_OUTPUT_TOKENS,
+                    "max_input_chars": _MAX_MODEL_INPUT_CHARS,
+                    "request_timeout": _MAX_REQUEST_TIMEOUT,
+                }.get(int_field)
+                sanitized[int_field] = _clamp_int(sanitized[int_field], default=current.get(int_field) or 1, minimum=1, maximum=upper_bound)
             except Exception:
                 sanitized[int_field] = current.get(int_field)
     if "temperature" in sanitized:
@@ -519,7 +624,12 @@ def update_memory_model_config(cfg: Mapping[str, Any], updates: Mapping[str, Any
     for int_field in ("max_output_tokens", "request_timeout", "trigger_turn_interval"):
         if int_field in sanitized:
             try:
-                sanitized[int_field] = max(1, int(sanitized[int_field]))
+                upper_bound = {
+                    "max_output_tokens": _MAX_MODEL_OUTPUT_TOKENS,
+                    "request_timeout": _MAX_REQUEST_TIMEOUT,
+                    "trigger_turn_interval": _MAX_TRIGGER_TURN_INTERVAL,
+                }.get(int_field)
+                sanitized[int_field] = _clamp_int(sanitized[int_field], default=current.get(int_field) or 1, minimum=1, maximum=upper_bound)
             except Exception:
                 sanitized[int_field] = current.get(int_field)
     if "temperature" in sanitized:
@@ -558,7 +668,11 @@ def update_profile_question_model_config(cfg: Mapping[str, Any], updates: Mappin
     for int_field in ("max_output_tokens", "request_timeout"):
         if int_field in sanitized:
             try:
-                sanitized[int_field] = max(1, int(sanitized[int_field]))
+                upper_bound = {
+                    "max_output_tokens": _MAX_MODEL_OUTPUT_TOKENS,
+                    "request_timeout": _MAX_REQUEST_TIMEOUT,
+                }.get(int_field)
+                sanitized[int_field] = _clamp_int(sanitized[int_field], default=current.get(int_field) or 1, minimum=1, maximum=upper_bound)
             except Exception:
                 sanitized[int_field] = current.get(int_field)
     if "temperature" in sanitized:
@@ -569,6 +683,96 @@ def update_profile_question_model_config(cfg: Mapping[str, Any], updates: Mappin
     merged_branch = dict(current)
     merged_branch.update(sanitized)
     save_scheduler_models_config(cfg, {"profile_question": merged_branch})
+    return merged_branch
+
+
+def update_annotation_model_config(cfg: Mapping[str, Any], updates: Mapping[str, Any]) -> Dict[str, Any]:
+    """Update annotation model settings with basic validation."""
+    current = get_annotation_model_config(cfg)
+    allowed_fields = {
+        "enabled",
+        "model_name",
+        "api_mode",
+        "temperature",
+        "max_output_tokens",
+        "max_input_chars",
+        "request_timeout",
+        "stream",
+        "think",
+        "prompt_notes",
+    }
+    sanitized: Dict[str, Any] = {}
+    for key, value in dict(updates or {}).items():
+        if key not in allowed_fields:
+            continue
+        sanitized[key] = value
+    for bool_field in ("enabled", "stream", "think"):
+        if bool_field in sanitized:
+            sanitized[bool_field] = _as_bool(sanitized[bool_field], default=_as_bool(current.get(bool_field), False))
+    for int_field in ("max_output_tokens", "max_input_chars", "request_timeout"):
+        if int_field in sanitized:
+            try:
+                upper_bound = {
+                    "max_output_tokens": _MAX_MODEL_OUTPUT_TOKENS,
+                    "max_input_chars": _MAX_MODEL_INPUT_CHARS,
+                    "request_timeout": _MAX_REQUEST_TIMEOUT,
+                }.get(int_field)
+                sanitized[int_field] = _clamp_int(sanitized[int_field], default=current.get(int_field) or 1, minimum=1, maximum=upper_bound)
+            except Exception:
+                sanitized[int_field] = current.get(int_field)
+    if "temperature" in sanitized:
+        try:
+            sanitized["temperature"] = float(sanitized["temperature"])
+        except Exception:
+            sanitized["temperature"] = current.get("temperature")
+    merged_branch = dict(current)
+    merged_branch.update(sanitized)
+    save_scheduler_models_config(cfg, {"annotation": merged_branch})
+    return merged_branch
+
+
+def update_book_summary_model_config(cfg: Mapping[str, Any], updates: Mapping[str, Any]) -> Dict[str, Any]:
+    """更新全书概述模型配置。"""
+    current = get_book_summary_model_config(cfg)
+    allowed_fields = {
+        "enabled",
+        "model_name",
+        "api_mode",
+        "temperature",
+        "max_output_tokens",
+        "max_input_chars",
+        "request_timeout",
+        "stream",
+        "think",
+        "prompt_notes",
+    }
+    sanitized: Dict[str, Any] = {}
+    for key, value in dict(updates or {}).items():
+        if key not in allowed_fields:
+            continue
+        sanitized[key] = value
+    for bool_field in ("enabled", "stream", "think"):
+        if bool_field in sanitized:
+            sanitized[bool_field] = _as_bool(sanitized[bool_field], default=_as_bool(current.get(bool_field), False))
+    for int_field in ("max_output_tokens", "max_input_chars", "request_timeout"):
+        if int_field in sanitized:
+            try:
+                upper_bound = {
+                    "max_output_tokens": _MAX_MODEL_OUTPUT_TOKENS,
+                    "max_input_chars": _MAX_MODEL_INPUT_CHARS,
+                    "request_timeout": _MAX_REQUEST_TIMEOUT,
+                }.get(int_field)
+                sanitized[int_field] = _clamp_int(sanitized[int_field], default=current.get(int_field) or 1, minimum=1, maximum=upper_bound)
+            except Exception:
+                sanitized[int_field] = current.get(int_field)
+    if "temperature" in sanitized:
+        try:
+            sanitized["temperature"] = float(sanitized["temperature"])
+        except Exception:
+            sanitized["temperature"] = current.get("temperature")
+    merged_branch = dict(current)
+    merged_branch.update(sanitized)
+    save_scheduler_models_config(cfg, {"book_summary": merged_branch})
     return merged_branch
 
 
@@ -898,6 +1102,12 @@ class SplitChaptersModel(BaseLearningModel):
     model_key = "split_chapters"
 
 
+class AnnotationModel(BaseLearningModel):
+    """Model used to generate annotations for chapter paragraphs."""
+
+    model_key = "annotation"
+
+
 class AnswerModel(BaseLearningModel):
     """Placeholder model for learning-oriented answers."""
 
@@ -946,6 +1156,12 @@ class ProfileQuestionModel(BaseLearningModel):
     model_key = "profile_question"
 
 
+class BookSummaryModel(BaseLearningModel):
+    """Model used to generate whole-book summary from chapter summaries."""
+
+    model_key = "book_summary"
+
+
 class LearningModelFactory:
     """Factory for model instances by logical task name."""
 
@@ -955,6 +1171,8 @@ class LearningModelFactory:
         "question_verify": QuestionVerifyModel,
         "intensive_reading": IntensiveReadingModel,
         "split_chapters": SplitChaptersModel,
+        "annotation": AnnotationModel,
+        "book_summary": BookSummaryModel,
         "answer": AnswerModel,
         "memory": MemoryProfileModel,
         "profile_question": ProfileQuestionModel,

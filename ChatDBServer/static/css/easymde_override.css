@@ -46,6 +46,7 @@
     padding: 9px 10px;
     flex-shrink: 0;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 2px;
     background: #fafafa;
@@ -456,6 +457,7 @@
 #knowledgeViewer .editor-preview table,
 #knowledgeViewer .editor-preview-side table {
     border-collapse: collapse;
+    table-layout: auto;
     width: fit-content !important;
     max-width: none !important;
     margin: 16px 0;

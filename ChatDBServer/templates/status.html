@@ -124,6 +124,16 @@
       font-size: 16px;
       line-height: 1.7;
     }
+    .hero-snapshot {
+      margin-top: 16px;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 600;
+    }
     .summary-grid {
       margin-top: 28px;
       display: grid;
@@ -578,14 +588,6 @@
         font-size: clamp(32px, 12vw, 42px);
         letter-spacing: -0.04em;
       }
-      .hero-desc {
-        margin-top: 12px;
-        font-size: 14px;
-        line-height: 1.65;
-      }
-      .summary-grid {
-        margin-top: 16px;
-      }
       .summary-grid,
       .complexity-grid {
         grid-template-columns: 1fr;
@@ -779,16 +781,19 @@
       background: #f8faff;
     }
   </style>
+  <link rel="stylesheet" href="/static/ow_css/official_website_topbar.css">
 </head>
 <body>
-  <header class="topbar">
-    <a class="brand" href="/">
-      <span>Nexora</span><span class="dot"></span>
-    </a>
-    <div class="topbar-meta">
-      <a class="menu-login" href="/">首页</a>
-      <span class="meta-pill" id="snapshotMeta">--</span>
-    </div>
+  <header class="topbar ow-topbar">
+    <a class="brand ow-brand" href="/" aria-label="Nexora 首页">Nexora<span class="dot"></span></a>
+    <nav class="menu ow-nav" aria-label="主导航">
+      <a class="menu-item ow-nav-link" href="/">首页</a>
+      <a class="menu-item ow-nav-link" href="/docs">文档</a>
+      <a class="menu-item ow-nav-link" href="https://github.com/Himpq/Nexora">开源</a>
+      <a class="menu-login ow-nav-link" href="/status" aria-current="page">模型榜单</a>
+      <a class="menu-login ow-nav-link" href="/login">登录</a>
+      <a class="menu-login ow-nav-link" href="/blog">博客</a>
+    </nav>
   </header>
 
   <main class="page">
@@ -796,6 +801,10 @@
       <span class="kicker">Nexora</span>
       <h1>模型榜单</h1>
       <p class="hero-desc" id="heroDesc"></p>
+      <div class="hero-snapshot">
+        <span>快照时间</span>
+        <span class="meta-pill" id="snapshotMeta">--</span>
+      </div>
       <div class="summary-grid" id="summaryGrid"></div>
     </section>
 

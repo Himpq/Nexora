@@ -209,6 +209,8 @@ def apply_auth_response_cache_policy(resp: Response):
 
 
 DEFAULT_MAIN_CONFIG = {
+    "port": 5000,
+    "debug": False,
     "public_base_url": "",
     "default_model": "doubao-seed-1-6-250615",
     "conclusion_model": "doubao-seed-1-6-flash-250828",
@@ -216,6 +218,10 @@ DEFAULT_MAIN_CONFIG = {
     "websearch_model": "doubao-seed-1-6-flash-250828",
     "continuous_summary": False,
     "log_status": "silent",
+    "recent_dialogue_memory_count": 3,
+    "recent_dialogue_item_max_chars": 12000,
+    "user_knowledge_prompt_max_items": 24,
+    "user_knowledge_prompt_max_chars": 6000,
     "api": {
         "public_api_key": "",
         "public_api_enabled": False,
@@ -256,6 +262,14 @@ DEFAULT_MAIN_CONFIG = {
         "cache_detail_ttl": 3600,
         "cache_max_entries": 800,
         "default_group": "default"
+    },
+    "nexora_search": {
+        "host": "127.0.0.1",
+        "port": 45678,
+        "api_key": "",
+        "nexora_search_enabled": False,
+        "service_url": "http://127.0.0.1:45678",
+        "timeout": 15
     },
     "temp_context_cache": {
         "enabled": True,
@@ -1034,6 +1048,7 @@ def ensure_main_config_defaults():
 
 
 def save_main_config(cfg):
+    global _config_cache
     if not isinstance(cfg, dict):
         cfg = {}
     payload = json.loads(json.dumps(cfg, ensure_ascii=False))
@@ -1041,6 +1056,7 @@ def save_main_config(cfg):
     os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
     with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
         json.dump(payload, f, indent=4, ensure_ascii=False)
+    _config_cache = None
     return payload
 
 
@@ -1521,8 +1537,21 @@ def build_user_avatar_url(user_id, user_data):
             pass
     return avatar_path
 
+_config_cache = None
+_config_cache_mtime = (0.0, 0.0)  # (config.json mtime, models.json mtime)
+
+
 def get_config_all():
-    """获取配置"""
+    """获取配置（带 mtime 缓存，文件未变时直接返回内存副本）"""
+    global _config_cache, _config_cache_mtime
+    try:
+        cfg_mtime = os.path.getmtime(CONFIG_PATH) if os.path.exists(CONFIG_PATH) else 0.0
+        mdl_mtime = os.path.getmtime(MODELS_PATH) if os.path.exists(MODELS_PATH) else 0.0
+        if _config_cache is not None and (cfg_mtime, mdl_mtime) == _config_cache_mtime:
+            return dict(_config_cache)  # 返回浅拷贝，防止调用方修改缓存
+    except OSError:
+        pass
+
     try:
         config = ensure_main_config_defaults()
     except Exception as e:
@@ -1537,7 +1566,16 @@ def get_config_all():
                 config["providers"] = models_cfg.get("providers", {})
         except Exception as e:
             print(f"Error loading models config: {e}")
-    return config
+
+    try:
+        cfg_mtime = os.path.getmtime(CONFIG_PATH) if os.path.exists(CONFIG_PATH) else 0.0
+        mdl_mtime = os.path.getmtime(MODELS_PATH) if os.path.exists(MODELS_PATH) else 0.0
+        _config_cache = config
+        _config_cache_mtime = (cfg_mtime, mdl_mtime)
+    except OSError:
+        _config_cache = config
+
+    return dict(config)
 
 
 def get_public_base_url() -> str:
@@ -1713,6 +1751,168 @@ _ASSET_IMAGE_MIME_TO_EXT = {
     "image/heic": ".heic",
     "image/heif": ".heif",
 }
+
+_KNOWLEDGE_IMAGE_ALLOWED_MIME = set(_ASSET_IMAGE_MIME_TO_EXT.keys())
+_KNOWLEDGE_IMAGE_MAX_BYTES = 12 * 1024 * 1024  # 12MB
+_KNOWLEDGE_IMAGE_ID_RE = re.compile(r"^kimg_[a-z0-9]{16}$")
+
+
+def _knowledge_image_root(username: str) -> str:
+    return safe_join_path(_resolve_user_root_dir(username), 'database', 'static', 'images')
+
+
+def _knowledge_image_index_path(username: str) -> str:
+    return safe_join_path(_knowledge_image_root(username), 'index.json')
+
+
+def _load_knowledge_image_index(username: str) -> Dict[str, Any]:
+    idx_path = _knowledge_image_index_path(username)
+    if not os.path.exists(idx_path):
+        return {"images": {}}
+    try:
+        with open(idx_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {"images": {}}
+        images = data.get("images")
+        if not isinstance(images, dict):
+            images = {}
+        data["images"] = images
+        return data
+    except Exception:
+        return {"images": {}}
+
+
+def _save_knowledge_image_index(username: str, data: Dict[str, Any]) -> None:
+    root = _knowledge_image_root(username)
+    os.makedirs(root, exist_ok=True)
+    idx_path = _knowledge_image_index_path(username)
+    payload = data if isinstance(data, dict) else {"images": {}}
+    if "images" not in payload or not isinstance(payload.get("images"), dict):
+        payload["images"] = {}
+    with open(idx_path, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def _normalize_knowledge_image_id(raw: Any) -> str:
+    text = str(raw or '').strip().lower()
+    if _KNOWLEDGE_IMAGE_ID_RE.match(text):
+        return text
+    return ""
+
+
+def _guess_image_mime_from_name(file_name: str) -> str:
+    name = str(file_name or '').strip().lower()
+    if name.endswith('.png'):
+        return 'image/png'
+    if name.endswith('.jpg') or name.endswith('.jpeg'):
+        return 'image/jpeg'
+    if name.endswith('.webp'):
+        return 'image/webp'
+    if name.endswith('.gif'):
+        return 'image/gif'
+    if name.endswith('.bmp'):
+        return 'image/bmp'
+    if name.endswith('.tiff') or name.endswith('.tif'):
+        return 'image/tiff'
+    if name.endswith('.heic'):
+        return 'image/heic'
+    if name.endswith('.heif'):
+        return 'image/heif'
+    return ''
+
+
+def _decode_knowledge_image_base64(raw_base64: str, mime_hint: str = "") -> Tuple[str, bytes]:
+    text = str(raw_base64 or "").strip()
+    if not text:
+        raise ValueError("empty image_base64")
+    if text.startswith('data:image/'):
+        mime, raw = _parse_image_data_url(text)
+        return mime, raw
+    mime = str(mime_hint or '').strip().lower() or 'image/png'
+    if mime not in _KNOWLEDGE_IMAGE_ALLOWED_MIME:
+        raise ValueError("unsupported image mime")
+    try:
+        raw = base64.b64decode(text, validate=True)
+    except Exception as e:
+        raise ValueError(f"invalid base64: {str(e)}")
+    return mime, raw
+
+
+def _download_knowledge_image_from_url(source_url: str) -> Tuple[str, bytes]:
+    raw_url = str(source_url or '').strip()
+    if not raw_url:
+        raise ValueError("source_url is required")
+    parsed = urllib_parse.urlparse(raw_url)
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError("only http/https source_url is allowed")
+    req = urllib_request.Request(raw_url, headers={"User-Agent": "NexoraKnowledgeImageFetcher/1.0"})
+    try:
+        with urllib_request.urlopen(req, timeout=15) as resp:
+            content_type = str(resp.headers.get('Content-Type') or '').split(';', 1)[0].strip().lower()
+            raw = resp.read(_KNOWLEDGE_IMAGE_MAX_BYTES + 1)
+    except Exception as e:
+        raise ValueError(f"download failed: {str(e)}")
+    if len(raw) > _KNOWLEDGE_IMAGE_MAX_BYTES:
+        raise ValueError(f"image too large (max {_KNOWLEDGE_IMAGE_MAX_BYTES} bytes)")
+    mime = content_type if content_type in _KNOWLEDGE_IMAGE_ALLOWED_MIME else ''
+    if not mime:
+        guessed = _guess_image_mime_from_name(parsed.path)
+        mime = guessed if guessed in _KNOWLEDGE_IMAGE_ALLOWED_MIME else ''
+    if not mime:
+        raise ValueError("unsupported source image mime")
+    return mime, raw
+
+
+def _persist_knowledge_image_bytes(
+    *,
+    owner_username: str,
+    image_id: str,
+    image_bytes: bytes,
+    mime: str,
+    original_name: str = "",
+    basis_title: str = "",
+) -> Dict[str, Any]:
+    owner = str(owner_username or '').strip()
+    if not owner:
+        raise ValueError("owner username is required")
+    safe_id = _normalize_knowledge_image_id(image_id)
+    if not safe_id:
+        raise ValueError("invalid image_id")
+    raw = bytes(image_bytes or b"")
+    if not raw:
+        raise ValueError("empty image content")
+    if len(raw) > _KNOWLEDGE_IMAGE_MAX_BYTES:
+        raise ValueError(f"image too large (max {_KNOWLEDGE_IMAGE_MAX_BYTES} bytes)")
+    mt = str(mime or '').strip().lower()
+    if mt not in _KNOWLEDGE_IMAGE_ALLOWED_MIME:
+        raise ValueError("unsupported image mime")
+    ext = _safe_asset_ext(mt)
+    file_name = f"{safe_id}{ext}"
+    root = _knowledge_image_root(owner)
+    os.makedirs(root, exist_ok=True)
+    fpath = safe_join_path(root, file_name)
+    with open(fpath, 'wb') as f:
+        f.write(raw)
+    now_ts = int(time.time())
+    idx = _load_knowledge_image_index(owner)
+    images = idx.get("images", {})
+    current = images.get(safe_id, {}) if isinstance(images.get(safe_id), dict) else {}
+    images[safe_id] = {
+        "image_id": safe_id,
+        "owner": owner,
+        "file_name": file_name,
+        "mime": mt,
+        "size": len(raw),
+        "original_name": str(original_name or current.get("original_name") or '').strip(),
+        "basis_title": str(basis_title or current.get("basis_title") or '').strip(),
+        "created_at": int(current.get("created_at") or now_ts),
+        "updated_at": now_ts,
+        "status": "ready",
+    }
+    idx["images"] = images
+    _save_knowledge_image_index(owner, idx)
+    return images[safe_id]
 
 
 def _conversation_asset_root(username: str) -> str:
@@ -2572,12 +2772,14 @@ def load_models_config():
 
 def save_models_config(models_cfg):
     """保存 models.json"""
+    global _config_cache
     payload = {
         "models": models_cfg.get("models", {}),
         "providers": models_cfg.get("providers", {})
     }
     with open(MODELS_PATH, 'w', encoding='utf-8') as f:
         json.dump(payload, f, indent=4, ensure_ascii=False)
+    _config_cache = None
 
 
 def _normalize_model_status_text(raw_status: Any) -> str:
@@ -4093,6 +4295,11 @@ def index():
 def status_page():
     """公开状态页"""
     return render_template('status.html')
+
+@app.route('/blog')
+def board_page():
+    """公告栏"""
+    return render_template('blog.html')
     
 @app.route('/favicon.ico')
 def favicon():
@@ -4164,6 +4371,36 @@ def logout():
     return resp
 
 
+# Global session validation: if a session claims a username, verify it actually
+# exists in the user database.  This prevents forged session cookies from
+# granting access to non-existent users (which would auto-create directories,
+# databases, etc. via User(username) constructors).
+_PUBLIC_PATHS = {'/login', '/logout', '/static', '/api/health'}
+
+
+@app.before_request
+def _validate_session_user():
+    username = str(session.get('username') or '').strip()
+    if not username:
+        return  # no session → let downstream handle it (401 or redirect)
+    # Skip validation for public / static paths
+    req_path = request.path or '/'
+    if any(req_path == p or req_path.startswith(p + '/') for p in _PUBLIC_PATHS):
+        return
+    try:
+        users = load_users()
+        if username not in users:
+            session.clear()
+            if req_path.startswith('/api/'):
+                return jsonify({'success': False, 'message': '用户不存在，请重新登录'}), 401
+            return redirect(url_for('login'))
+    except Exception:
+        session.clear()
+        if req_path.startswith('/api/'):
+            return jsonify({'success': False, 'message': '认证验证失败，请重新登录'}), 401
+        return redirect(url_for('login'))
+
+
 def require_login(f):
     """登录装饰器"""
     from functools import wraps
@@ -4171,6 +4408,16 @@ def require_login(f):
     def decorated_function(*args, **kwargs):
         if 'username' not in session:
             return jsonify({'success': False, 'message': '请先登录'}), 401
+        # Verify the user actually exists in the database — prevents
+        # forged session cookies from granting access to non-existent users.
+        try:
+            users = load_users()
+            if session.get('username') not in users:
+                session.clear()
+                return jsonify({'success': False, 'message': '用户不存在，请重新登录'}), 401
+        except Exception:
+            session.clear()
+            return jsonify({'success': False, 'message': '认证验证失败，请重新登录'}), 401
         return f(*args, **kwargs)
     return decorated_function
 
@@ -4182,6 +4429,14 @@ def require_admin(f):
     def decorated_function(*args, **kwargs):
         if 'username' not in session:
             return jsonify({'success': False, 'message': '请先登录'}), 401
+        try:
+            users = load_users()
+            if session.get('username') not in users:
+                session.clear()
+                return jsonify({'success': False, 'message': '用户不存在，请重新登录'}), 401
+        except Exception:
+            session.clear()
+            return jsonify({'success': False, 'message': '认证验证失败，请重新登录'}), 401
         if session.get('role') != 'admin':
             return jsonify({'success': False, 'message': '权限不足，仅管理员可访问'}), 403
         return f(*args, **kwargs)
@@ -4227,6 +4482,62 @@ def get_user_info():
     except Exception as e:
         print(f"Error reading user info: {e}")
         return jsonify({'success': False, 'message': '获取用户信息失败'}), 500
+
+
+@app.route('/api/user/search', methods=['GET'])
+@require_login
+def search_users():
+    """搜索用户，用于 @ 提及自动补全"""
+    try:
+        query = str(request.args.get('q') or '').strip()
+        try:
+            limit = max(1, min(int(request.args.get('limit') or 8), 20))
+        except Exception:
+            limit = 8
+        users = load_users()
+        if not isinstance(users, dict):
+            return jsonify({'success': True, 'items': [], 'total': 0, 'query': query})
+        query_lower = query.lower()
+        rows = []
+        for user_id, user_data in users.items():
+            if not isinstance(user_data, dict):
+                continue
+            uid = str(user_id or '').strip()
+            if not uid:
+                continue
+            display_name = str(user_data.get('display_name') or '').strip()
+            nickname = str(user_data.get('nickname') or '').strip()
+            username = str(user_data.get('username') or uid).strip() or uid
+            haystacks = [uid.lower(), username.lower(), display_name.lower(), nickname.lower()]
+            if query and not any(query_lower in item for item in haystacks if item):
+                continue
+            avatar_url = build_user_avatar_url(uid, user_data)
+            prefix_score = 0
+            for item in haystacks:
+                if item.startswith(query_lower) and query_lower:
+                    prefix_score = 1
+                    break
+            rows.append({
+                'user_id': uid,
+                'username': username,
+                'display_name': display_name,
+                'nickname': nickname,
+                'role': str(user_data.get('role') or 'member').strip() or 'member',
+                'avatar_url': str(avatar_url or '').strip(),
+                '_prefix': prefix_score,
+            })
+        rows.sort(key=lambda item: (-int(item.get('_prefix') or 0), str(item.get('user_id') or '').lower()))
+        items = [{
+            'user_id': str(item.get('user_id') or '').strip(),
+            'username': str(item.get('username') or '').strip(),
+            'display_name': str(item.get('display_name') or '').strip(),
+            'nickname': str(item.get('nickname') or '').strip(),
+            'role': str(item.get('role') or 'member').strip() or 'member',
+            'avatar_url': str(item.get('avatar_url') or '').strip(),
+        } for item in rows[:limit]]
+        return jsonify({'success': True, 'items': items, 'total': len(items), 'query': query})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 
 @app.route('/api/user/profile/update', methods=['POST'])
@@ -4742,9 +5053,7 @@ def mail_me_send():
 @app.route('/api/user/avatar/<user_id>', methods=['GET'])
 @require_login
 def get_user_avatar(user_id):
-    """读取头像（仅本人或管理员）"""
-    if session.get('username') != user_id and session.get('role') != 'admin':
-        return jsonify({'success': False, 'message': '无权限'}), 403
+    """读取头像（登录用户可访问）"""
     avatar_file = get_user_avatar_file(user_id)
     if not os.path.exists(avatar_file):
         return jsonify({'success': False, 'message': '头像不存在'}), 404
@@ -6729,6 +7038,14 @@ def chat():
     """聊天页面"""
     if 'username' not in session:
         return redirect(url_for('login'))
+    try:
+        users = load_users()
+        if session.get('username') not in users:
+            session.clear()
+            return redirect(url_for('login'))
+    except Exception:
+        session.clear()
+        return redirect(url_for('login'))
     cfg = get_config_all()
     mail_cfg = cfg.get('nexora_mail', {}) if isinstance(cfg, dict) else {}
     mail_enabled = bool(mail_cfg.get('nexora_mail_enabled', False))
@@ -7082,6 +7399,54 @@ def get_conversation(conv_id):
         return jsonify({'success': True, 'conversation': conversation})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
+
+
+@app.route('/api/conversations/<conv_id>/puzzle-states', methods=['GET'])
+@require_login
+def get_puzzle_states(conv_id):
+    """获取对话中所有 puzzle 的画布状态"""
+    username = session['username']
+    manager = ConversationManager(username)
+    try:
+        conversation = manager.get_conversation(conv_id)
+        puzzle_states = conversation.get('puzzle_states') if isinstance(conversation, dict) else None
+        return jsonify({'success': True, 'puzzle_states': puzzle_states if isinstance(puzzle_states, dict) else {}})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e), 'puzzle_states': {}})
+
+
+@app.route('/api/conversations/<conv_id>/puzzle-states', methods=['POST'])
+@require_login
+def save_puzzle_state(conv_id):
+    """保存/更新单个 puzzle 的画布状态"""
+    username = session['username']
+    data = request.get_json(silent=True) or {}
+    puzzle_id = str(data.get('puzzle_id') or '').strip()
+    state = data.get('state')
+    if not puzzle_id:
+        return jsonify({'success': False, 'message': 'puzzle_id is required'}), 400
+    if not isinstance(state, dict):
+        return jsonify({'success': False, 'message': 'state must be a dict'}), 400
+    # 容量上限
+    manager = ConversationManager(username)
+    try:
+        conversation = manager.get_conversation(conv_id)
+        existing = conversation.get('puzzle_states') if isinstance(conversation, dict) else None
+        if isinstance(existing, dict) and len(existing) >= 50 and puzzle_id not in existing:
+            return jsonify({'success': False, 'message': 'puzzle_states limit reached (50)'}), 400
+    except Exception:
+        pass
+    # 只保留允许的字段
+    allowed_keys = {'nodes', 'edges', 'zoom', 'viewportX', 'viewportY', 'locked', 'submission', 'submitted_at'}
+    clean_state = {k: v for k, v in state.items() if k in allowed_keys}
+    clean_state['updated_at'] = datetime.now().isoformat()
+    try:
+        manager.update_conversation_fields(conv_id, {
+            'puzzle_states': {puzzle_id: clean_state}
+        })
+        return jsonify({'success': True, 'puzzle_id': puzzle_id})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 
 @app.route('/api/conversations/<conv_id>', methods=['DELETE'])
@@ -8822,7 +9187,7 @@ def chat_stream():
         except Exception:
             regenerate_index = None
     
-    if not message and not is_regenerate and len(file_ids) == 0:
+    if not message and not is_regenerate and len(file_ids) == 0 and not data.get('puzzle_submission'):
         return jsonify({'success': False, 'message': '消息不能为空'}), 400
     
     username = session['username']
@@ -9049,6 +9414,41 @@ def chat_stream():
         except Exception:
             pass
 
+    def _build_puzzle_submission_injection(puzzle_state, client_steps=None):
+        """从服务端存储的 puzzle_state 构建注入文本，不信任客户端数据。"""
+        submission = puzzle_state.get('submission') if isinstance(puzzle_state, dict) else None
+        if not isinstance(submission, dict):
+            return None
+        ordered = submission.get('ordered_steps')
+        if not isinstance(ordered, list):
+            ordered = []
+        ordered = [str(s or '').strip() for s in ordered if str(s or '').strip()]
+        graph = submission.get('graph') if isinstance(submission.get('graph'), dict) else {}
+        lines = ['[Puzzle Submission]']
+        if ordered:
+            lines.append(f"MainSteps: {' -> '.join(ordered)}")
+        node_count = int(graph.get('node_count') or 0)
+        edge_count = int(graph.get('edge_count') or 0)
+        branch_count = int(graph.get('branch_count') or 0)
+        has_cycle = bool(graph.get('has_cycle'))
+        component_count = int(graph.get('component_count') or 0)
+        lines.append(f"Graph: n={node_count}, e={edge_count}, b={branch_count}, cyc={'1' if has_cycle else '0'}, c={component_count}")
+        connections = graph.get('connections')
+        if isinstance(connections, list) and connections:
+            edge_lines = []
+            for conn in connections[:40]:
+                if not isinstance(conn, dict):
+                    continue
+                from_text = str(conn.get('from_text') or '').strip()
+                to_text = str(conn.get('to_text') or '').strip()
+                if from_text and to_text:
+                    edge_lines.append(f"{from_text} -> {to_text}")
+            if edge_lines:
+                lines.append(f"Edges: {' | '.join(edge_lines)}")
+        lines.append('')
+        lines.append('以上是用户提交的拼图结果，请评价其正确性并给出反馈，不要再次输出拼图工具。')
+        return '\n'.join(lines)
+
     def _stream_worker(push_chunk, set_conversation_id):
         try:
             request_meta = normalize_longterm_request(
@@ -9104,6 +9504,30 @@ def chat_stream():
                         current_meta['lecture_id'] = lecture_id
                         merged_payload['meta'] = current_meta
                     raw_conversation_mode_payload = merged_payload
+                    # 拼图提交注入（服务端构建，不信任客户端文本）
+                    puzzle_submission = data.get('puzzle_submission')
+                    if isinstance(puzzle_submission, dict):
+                        puzzle_id = str(puzzle_submission.get('puzzle_id') or '').strip()
+                        if puzzle_id:
+                            try:
+                                _mgr = ConversationManager(username)
+                                _conv = _mgr.get_conversation(conversation_id) if conversation_id else None
+                                _puzzle_states = _conv.get('puzzle_states') if isinstance(_conv, dict) else {}
+                                _puzzle_state = (_puzzle_states or {}).get(puzzle_id)
+                                if _puzzle_state and _puzzle_state.get('locked'):
+                                    injection = _build_puzzle_submission_injection(_puzzle_state)
+                                    if injection:
+                                        existing_blocks = raw_conversation_mode_payload.get('context_blocks', [])
+                                        if not isinstance(existing_blocks, list):
+                                            existing_blocks = []
+                                        existing_blocks.append({
+                                            'type': 'puzzle_submission',
+                                            'title': '拼图提交结果',
+                                            'content': injection,
+                                        })
+                                        raw_conversation_mode_payload['context_blocks'] = existing_blocks
+                            except Exception as puzzle_inject_err:
+                                print(f"[PUZZLE_INJECT] failed: {puzzle_inject_err}")
                 except Exception as learning_runtime_error:
                     print(f"[LEARNING_RUNTIME] failed to merge payload: {learning_runtime_error}")
             effective_enable_tools = bool(enable_tools)
@@ -9729,6 +10153,152 @@ def knowledge():
     return render_template('knowledge.html', username=session['username'])
 
 
+@app.route('/api/knowledge/image/allocate', methods=['POST'])
+@require_login
+def allocate_knowledge_image():
+    owner = str(session.get('username') or '').strip()
+    if not owner:
+        return jsonify({'success': False, 'message': 'Unauthorized'}), 401
+    data = request.get_json(silent=True) or {}
+    original_name = str(data.get('file_name') or data.get('name') or '').strip()
+    basis_title = str(data.get('basis_title') or '').strip()
+    image_id = f"kimg_{secrets.token_hex(8)}"
+    now_ts = int(time.time())
+    idx = _load_knowledge_image_index(owner)
+    images = idx.get("images", {})
+    images[image_id] = {
+        "image_id": image_id,
+        "owner": owner,
+        "file_name": "",
+        "mime": "",
+        "size": 0,
+        "original_name": original_name,
+        "basis_title": basis_title,
+        "created_at": now_ts,
+        "updated_at": now_ts,
+        "status": "allocated",
+    }
+    idx["images"] = images
+    _save_knowledge_image_index(owner, idx)
+    image_url = url_for('serve_knowledge_image', username=owner, image_id=image_id)
+    return jsonify({
+        'success': True,
+        'image_id': image_id,
+        'username': owner,
+        'image_url': image_url,
+        'max_bytes': _KNOWLEDGE_IMAGE_MAX_BYTES,
+    })
+
+
+@app.route('/api/knowledge/image/upload', methods=['POST'])
+@require_login
+def upload_knowledge_image():
+    owner = str(session.get('username') or '').strip()
+    if not owner:
+        return jsonify({'success': False, 'message': 'Unauthorized'}), 401
+
+    image_id = _normalize_knowledge_image_id(request.form.get('image_id'))
+    original_name = str(request.form.get('file_name') or '').strip()
+    basis_title = str(request.form.get('basis_title') or '').strip()
+    source_url = str(request.form.get('source_url') or '').strip()
+    image_base64 = str(request.form.get('image_base64') or '').strip()
+    mime_hint = str(request.form.get('mime') or '').strip().lower()
+    upload_file = request.files.get('file')
+
+    if not image_id and request.is_json:
+        payload = request.get_json(silent=True) or {}
+        image_id = _normalize_knowledge_image_id(payload.get('image_id'))
+        original_name = str(payload.get('file_name') or payload.get('name') or original_name).strip()
+        basis_title = str(payload.get('basis_title') or basis_title).strip()
+        source_url = str(payload.get('source_url') or source_url).strip()
+        image_base64 = str(payload.get('image_base64') or image_base64).strip()
+        mime_hint = str(payload.get('mime') or mime_hint).strip().lower()
+
+    if not image_id:
+        return jsonify({'success': False, 'message': 'image_id is required'}), 400
+
+    raw_bytes = b""
+    mime = ""
+    try:
+        if upload_file:
+            mime = str(upload_file.mimetype or upload_file.content_type or '').strip().lower()
+            if not mime:
+                mime = _guess_image_mime_from_name(upload_file.filename)
+            if mime not in _KNOWLEDGE_IMAGE_ALLOWED_MIME:
+                return jsonify({'success': False, 'message': '不支持的图片类型'}), 400
+            raw_bytes = upload_file.read(_KNOWLEDGE_IMAGE_MAX_BYTES + 1)
+            if len(raw_bytes) > _KNOWLEDGE_IMAGE_MAX_BYTES:
+                return jsonify({'success': False, 'message': f'图片过大，最大 {int(_KNOWLEDGE_IMAGE_MAX_BYTES / (1024 * 1024))}MB'}), 400
+            if not original_name:
+                original_name = str(upload_file.filename or '').strip()
+        elif image_base64:
+            mime, raw_bytes = _decode_knowledge_image_base64(image_base64, mime_hint=mime_hint)
+        elif source_url:
+            mime, raw_bytes = _download_knowledge_image_from_url(source_url)
+        else:
+            return jsonify({'success': False, 'message': 'missing image payload'}), 400
+
+        meta = _persist_knowledge_image_bytes(
+            owner_username=owner,
+            image_id=image_id,
+            image_bytes=raw_bytes,
+            mime=mime,
+            original_name=original_name,
+            basis_title=basis_title,
+        )
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+
+    image_url = url_for('serve_knowledge_image', username=owner, image_id=image_id)
+    return jsonify({
+        'success': True,
+        'image_id': image_id,
+        'username': owner,
+        'image_url': image_url,
+        'mime': str(meta.get('mime') or mime),
+        'size': int(meta.get('size') or len(raw_bytes)),
+    })
+
+
+@app.route('/api/knowledge/image/<username>/<image_id>', methods=['GET'])
+def serve_knowledge_image(username, image_id):
+    owner = str(username or '').strip()
+    safe_image_id = _normalize_knowledge_image_id(image_id)
+    if not owner or not safe_image_id:
+        return jsonify({'success': False, 'message': 'invalid image path'}), 400
+
+    idx = _load_knowledge_image_index(owner)
+    images = idx.get("images", {})
+    row = images.get(safe_image_id) if isinstance(images, dict) else None
+    if not isinstance(row, dict):
+        return jsonify({'success': False, 'message': 'image not found'}), 404
+
+    viewer = str(session.get('username') or '').strip()
+    is_owner_or_admin = (viewer == owner) or (str(session.get('role') or '').strip().lower() == 'admin')
+    if not is_owner_or_admin:
+        basis_title = str(row.get('basis_title') or '').strip()
+        if not basis_title:
+            return jsonify({'success': False, 'message': 'Forbidden'}), 403
+        user_obj = User(owner)
+        db = safe_read_json(user_obj.path + "database.json", default={})
+        basis_meta = (db.get("data_basis") or {}).get(basis_title) or {}
+        if not basis_meta.get("public"):
+            return jsonify({'success': False, 'message': 'Forbidden'}), 403
+
+    file_name = str(row.get('file_name') or '').strip()
+    if not file_name:
+        return jsonify({'success': False, 'message': 'image not ready'}), 404
+
+    root = _knowledge_image_root(owner)
+    fpath = safe_join_path(root, file_name)
+    if not os.path.exists(fpath):
+        return jsonify({'success': False, 'message': 'image file missing'}), 404
+    mime = str(row.get('mime') or '').strip().lower() or _guess_image_mime_from_name(file_name) or 'application/octet-stream'
+    resp = send_file(fpath, mimetype=mime)
+    resp.headers['Cache-Control'] = 'public, max-age=86400'
+    return resp
+
+
 @app.route('/api/knowledge/list', methods=['GET'])
 @require_login
 def list_knowledge():
@@ -10056,6 +10626,173 @@ def public_api_edit_knowledge(username, share_id):
         
     success, msg = user.updateBasisContent(title, content)
     return jsonify({'success': success, 'message': msg})
+
+
+def _resolve_public_collab_basis(username: str, share_id: str) -> Tuple[Optional[User], Optional[str], Optional[Dict[str, Any]], Optional[Response]]:
+    owner = str(username or '').strip()
+    sid = str(share_id or '').strip()
+    if not owner or not sid:
+        return None, None, None, (jsonify({'success': False, 'message': 'invalid path'}), 400)
+    user = User(owner)
+    title, meta = user.getBasisByShareId(sid)
+    if not meta or not meta.get("public"):
+        return None, None, None, (jsonify({'success': False, 'message': 'Forbidden'}), 403)
+    if not meta.get("collaborative"):
+        return None, None, None, (jsonify({'success': False, 'message': 'Forbidden'}), 403)
+    if not title:
+        return None, None, None, (jsonify({'success': False, 'message': 'Not Found'}), 404)
+    return user, str(title), dict(meta), None
+
+
+@app.route('/api/public/knowledge/<username>/<share_id>/image/allocate', methods=['POST'])
+def public_allocate_knowledge_image(username, share_id):
+    user, title, _meta, err = _resolve_public_collab_basis(username, share_id)
+    if err is not None:
+        return err
+    data = request.get_json(silent=True) or {}
+    original_name = str(data.get('file_name') or data.get('name') or '').strip()
+    image_id = f"kimg_{secrets.token_hex(8)}"
+    now_ts = int(time.time())
+    idx = _load_knowledge_image_index(user.user)
+    images = idx.get("images", {})
+    images[image_id] = {
+        "image_id": image_id,
+        "owner": user.user,
+        "file_name": "",
+        "mime": "",
+        "size": 0,
+        "original_name": original_name,
+        "basis_title": str(title),
+        "share_id": str(share_id or '').strip(),
+        "created_at": now_ts,
+        "updated_at": now_ts,
+        "status": "allocated",
+    }
+    idx["images"] = images
+    _save_knowledge_image_index(user.user, idx)
+    image_url = url_for('public_serve_knowledge_image', username=user.user, image_id=image_id, share_id=str(share_id or '').strip())
+    return jsonify({
+        'success': True,
+        'image_id': image_id,
+        'username': user.user,
+        'image_url': image_url,
+        'max_bytes': _KNOWLEDGE_IMAGE_MAX_BYTES,
+    })
+
+
+@app.route('/api/public/knowledge/<username>/<share_id>/image/upload', methods=['POST'])
+def public_upload_knowledge_image(username, share_id):
+    user, title, _meta, err = _resolve_public_collab_basis(username, share_id)
+    if err is not None:
+        return err
+
+    image_id = _normalize_knowledge_image_id(request.form.get('image_id'))
+    original_name = str(request.form.get('file_name') or '').strip()
+    source_url = str(request.form.get('source_url') or '').strip()
+    image_base64 = str(request.form.get('image_base64') or '').strip()
+    mime_hint = str(request.form.get('mime') or '').strip().lower()
+    upload_file = request.files.get('file')
+
+    if not image_id and request.is_json:
+        payload = request.get_json(silent=True) or {}
+        image_id = _normalize_knowledge_image_id(payload.get('image_id'))
+        original_name = str(payload.get('file_name') or payload.get('name') or original_name).strip()
+        source_url = str(payload.get('source_url') or source_url).strip()
+        image_base64 = str(payload.get('image_base64') or image_base64).strip()
+        mime_hint = str(payload.get('mime') or mime_hint).strip().lower()
+
+    if not image_id:
+        return jsonify({'success': False, 'message': 'image_id is required'}), 400
+
+    raw_bytes = b""
+    mime = ""
+    try:
+        if upload_file:
+            mime = str(upload_file.mimetype or upload_file.content_type or '').strip().lower()
+            if not mime:
+                mime = _guess_image_mime_from_name(upload_file.filename)
+            if mime not in _KNOWLEDGE_IMAGE_ALLOWED_MIME:
+                return jsonify({'success': False, 'message': '不支持的图片类型'}), 400
+            raw_bytes = upload_file.read(_KNOWLEDGE_IMAGE_MAX_BYTES + 1)
+            if len(raw_bytes) > _KNOWLEDGE_IMAGE_MAX_BYTES:
+                return jsonify({'success': False, 'message': f'图片过大，最大 {int(_KNOWLEDGE_IMAGE_MAX_BYTES / (1024 * 1024))}MB'}), 400
+            if not original_name:
+                original_name = str(upload_file.filename or '').strip()
+        elif image_base64:
+            mime, raw_bytes = _decode_knowledge_image_base64(image_base64, mime_hint=mime_hint)
+        elif source_url:
+            mime, raw_bytes = _download_knowledge_image_from_url(source_url)
+        else:
+            return jsonify({'success': False, 'message': 'missing image payload'}), 400
+
+        meta = _persist_knowledge_image_bytes(
+            owner_username=user.user,
+            image_id=image_id,
+            image_bytes=raw_bytes,
+            mime=mime,
+            original_name=original_name,
+            basis_title=title,
+        )
+        idx = _load_knowledge_image_index(user.user)
+        images = idx.get("images", {})
+        row = images.get(image_id) if isinstance(images, dict) else None
+        if isinstance(row, dict):
+            row["share_id"] = str(share_id or '').strip()
+            row["basis_title"] = str(title)
+            row["updated_at"] = int(time.time())
+            images[image_id] = row
+            idx["images"] = images
+            _save_knowledge_image_index(user.user, idx)
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+
+    image_url = url_for('public_serve_knowledge_image', username=user.user, image_id=image_id, share_id=str(share_id or '').strip())
+    return jsonify({
+        'success': True,
+        'image_id': image_id,
+        'username': user.user,
+        'image_url': image_url,
+        'mime': str(meta.get('mime') or mime),
+        'size': int(meta.get('size') or len(raw_bytes)),
+    })
+
+
+@app.route('/api/public/knowledge/image/<username>/<image_id>', methods=['GET'])
+def public_serve_knowledge_image(username, image_id):
+    owner = str(username or '').strip()
+    sid = str(request.args.get('share_id') or '').strip()
+    safe_image_id = _normalize_knowledge_image_id(image_id)
+    if not owner or not sid or not safe_image_id:
+        return jsonify({'success': False, 'message': 'invalid image path'}), 400
+    user = User(owner)
+    title, meta = user.getBasisByShareId(sid)
+    if not meta or not meta.get("public"):
+        return jsonify({'success': False, 'message': 'Forbidden'}), 403
+
+    idx = _load_knowledge_image_index(owner)
+    images = idx.get("images", {})
+    row = images.get(safe_image_id) if isinstance(images, dict) else None
+    if not isinstance(row, dict):
+        return jsonify({'success': False, 'message': 'image not found'}), 404
+
+    if str(row.get('owner') or '').strip() != owner:
+        return jsonify({'success': False, 'message': 'Forbidden'}), 403
+    row_basis_title = str(row.get('basis_title') or '').strip()
+    if row_basis_title and str(title or '').strip() and (row_basis_title != str(title).strip()):
+        return jsonify({'success': False, 'message': 'Forbidden'}), 403
+
+    file_name = str(row.get('file_name') or '').strip()
+    if not file_name:
+        return jsonify({'success': False, 'message': 'image not ready'}), 404
+
+    root = _knowledge_image_root(owner)
+    fpath = safe_join_path(root, file_name)
+    if not os.path.exists(fpath):
+        return jsonify({'success': False, 'message': 'image file missing'}), 404
+    mime = str(row.get('mime') or '').strip().lower() or _guess_image_mime_from_name(file_name) or 'application/octet-stream'
+    resp = send_file(fpath, mimetype=mime)
+    resp.headers['Cache-Control'] = 'public, max-age=86400'
+    return resp
 
 
 @app.route('/api/knowledge/short', methods=['GET'])
@@ -11197,8 +11934,13 @@ if __name__ == '__main__':
     os.makedirs('./static/css', exist_ok=True)
     os.makedirs('./static/js', exist_ok=True)
     
-    print("🚀 ChatDB Web Server Starting...")
-    print("📍 访问地址: http://localhost:5000")
-    print("💡 使用 Ctrl+C 停止服务器")
+    # 从配置文件读取端口
+    config = ensure_main_config_defaults()
+    port = int(config.get('port', 5000) or 5000)
+    debug = bool(config.get('debug', False))
     
-    app.run(debug=False, host='0.0.0.0', port=5000, threaded=True)
+    print(f"🚀 ChatDB Web Server Starting...")
+    print(f"📍 访问地址: http://localhost:{port}")
+    print(f"💡 使用 Ctrl+C 停止服务器")
+    
+    app.run(debug=debug, host='0.0.0.0', port=port, threaded=True)

@@ -1,0 +1,41 @@
+{
+    "auth": {
+        "required": true,
+        "token": "change-me"
+    },
+    "render": {
+        "max_concurrency": 3,
+        "default_timeout_ms": 15000,
+        "fallback_on_fail": true
+    },
+    "nexora": {
+        "base_url": "http://127.0.0.1:5000",
+        "api_key": "public-api-key",
+        "username": "",
+        "models_path": "/api/papi/models",
+        "completions_path": "/api/papi/completions",
+        "responses_path": "/api/papi/responses",
+        "chat_completions_path": "/api/papi/chat/completions",
+        "request_timeout": 90
+    },
+    "models": {
+        "page_parse_agent": {
+            "enabled": true,
+            "model_name": "your-nexora-model-id",
+            "api_mode": "responses",
+            "temperature": 0.2,
+            "max_output_tokens": 4000,
+            "request_timeout": 120,
+            "stream": false,
+            "think": false,
+            "max_input_chars": 32000,
+            "system_prompt": "You are a webpage parsing agent. Read the provided page content and return a strict JSON object only.",
+            "prompt_notes": ""
+        }
+    },
+    "server": {
+        "host": "127.0.0.1",
+        "port": 8080,
+        "debug": false
+    }
+}

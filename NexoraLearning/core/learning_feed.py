@@ -66,6 +66,8 @@ def _normalize_feed_comment(raw: Any) -> Optional[Dict[str, Any]]:
         "username": user_id,
         "author": author,
         "content": content,
+        "liked_user_ids": [str(item or "").strip() for item in (raw.get("liked_user_ids") if isinstance(raw.get("liked_user_ids"), list) else []) if str(item or "").strip()],
+        "likes_count": len([str(item or "").strip() for item in (raw.get("liked_user_ids") if isinstance(raw.get("liked_user_ids"), list) else []) if str(item or "").strip()]),
     }
 
 
@@ -316,6 +318,49 @@ def append_learning_feed_comment(
         comments.append(normalized)
         row["comments"] = comments
         row["comments_count"] = len(comments)
+        return row
+
+    return update_learning_feed_item(cfg, feed_id, _updater)
+
+
+def toggle_learning_feed_comment_like(
+    cfg: Mapping[str, Any],
+    feed_id: str,
+    comment_id: str,
+    username: str,
+) -> Optional[Dict[str, Any]]:
+    actor = str(username or "").strip()
+    target_comment_id = str(comment_id or "").strip()
+    if not actor or not target_comment_id:
+        return None
+
+    def _updater(row: Dict[str, Any]) -> Dict[str, Any]:
+        comments = row.get("comments")
+        if not isinstance(comments, list):
+            return row
+        next_comments = []
+        changed = False
+        for comment in comments:
+            if not isinstance(comment, dict):
+                continue
+            current = dict(comment)
+            if str(current.get("id") or "").strip() == target_comment_id:
+                liked_user_ids = current.get("liked_user_ids")
+                if not isinstance(liked_user_ids, list):
+                    liked_user_ids = []
+                normalized = [str(item or "").strip() for item in liked_user_ids if str(item or "").strip()]
+                if actor in normalized:
+                    normalized = [item for item in normalized if item != actor]
+                else:
+                    normalized.append(actor)
+                current["liked_user_ids"] = normalized
+                current["likes_count"] = len(normalized)
+                changed = True
+            next_comments.append(current)
+        if not changed:
+            return row
+        row["comments"] = next_comments
+        row["comments_count"] = len(next_comments)
         return row
 
     return update_learning_feed_item(cfg, feed_id, _updater)

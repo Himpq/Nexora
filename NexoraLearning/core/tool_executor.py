@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import uuid
 from typing import Any, Callable, Dict, List, Mapping
 
 from .lectures import (
@@ -58,6 +59,7 @@ class ToolExecutor:
             "saveBookQuestionsXml": self.save_book_questions_xml,
             "triggerBookVectorization": self.trigger_book_vectorization,
             "vectorSearch": self.vector_search,
+            "puzzle": self.launch_puzzle,
         }
 
     @property
@@ -527,6 +529,29 @@ class ToolExecutor:
             "count": min(len(rows), limit),
             "placeholder": True,
             "summary": f"向量检索返回 {min(len(rows), limit)} 条与“{query_text}”最相关的片段",
+        }
+
+    def launch_puzzle(
+        self,
+        title: str,
+        steps: List[Any],
+    ) -> Dict[str, Any]:
+        puzzle_title = str(title or "").strip()
+        if not puzzle_title:
+            raise ValueError("title is required.")
+        raw_steps = list(steps or [])
+        normalized_steps = [str(item or "").strip() for item in raw_steps if str(item or "").strip()]
+        if len(normalized_steps) < 2:
+            raise ValueError("steps must contain at least 2 non-empty items.")
+        payload = {
+            "puzzle_id": f"puzzle_{uuid.uuid4().hex[:12]}",
+            "title": puzzle_title,
+            "steps": normalized_steps,
+        }
+        return {
+            "success": True,
+            "puzzle": payload,
+            "summary": f"已创建拼接题“{puzzle_title}”，共 {len(normalized_steps)} 个步骤。",
         }
 
 
