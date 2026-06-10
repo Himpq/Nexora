@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NexoraLearning 学习看板</title>
-  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260601_02">
-  <link rel="stylesheet" href="/api/frontend/assets/learning_panel.css?v=20260601_02">
+  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260609_25">
+  <link rel="stylesheet" href="/api/frontend/assets/learning_panel.css?v=20260609_20">
 </head>
 <body>
   <main class="learning-shell" id="learningPanel">
@@ -20,6 +20,7 @@
             <select id="feedChannelSelect" class="input-lite feed-channel-select" hidden aria-label="选择频道"></select>
             <button id="openMaterialsViewBtn" class="nxl-icon-btn" type="button" aria-label="打开课程页" title="打开课程页">☰</button>
           </header>
+          <section id="dashboardFocusPanel" class="dashboard-focus-panel"></section>
           <div id="progressList" class="progress-list"></div>
           <div id="learningFeedPanel" class="feed-stream-panel" hidden></div>
           <button id="learningFeedComposeBtn" class="nxl-floating-feed-btn" type="button" aria-label="发布动态" title="发布动态" hidden>+</button>
@@ -29,12 +30,11 @@
           <article class="panel-card pie-panel">
             <header class="panel-head materials-head">
               <div class="panel-kicker-switch">
-                <button id="dashboardPieTabBtn" class="kicker-tab is-active" type="button">学习时长</button>
-                <button id="dashboardProfileTabBtn" class="kicker-tab" type="button">用户画像</button>
+                <button id="dashboardProfileTabBtn" class="kicker-tab is-active" type="button">通知</button>
               </div>
             </header>
-            <div id="timePieChart" class="time-pie-chart" aria-label="学习时间占比"></div>
-            <div id="userProfileDimensions" class="profile-dimensions-panel" hidden></div>
+            <div id="timePieChart" class="time-pie-chart" aria-label="学习时间占比" hidden></div>
+            <div id="userProfileDimensions" class="profile-dimensions-panel notifications-panel"></div>
           </article>
 
           <article class="panel-card profile-panel">
@@ -317,7 +317,8 @@
   <div id="readerFloatingPanel" class="reader-floating-panel" aria-hidden="true">
     <div class="floating-panel-head" id="floatingPanelHead">
       <div class="floating-panel-tabs">
-        <button class="floating-tab is-active" data-tab="quiz" type="button">测验</button>
+        <button class="floating-tab is-active" data-tab="guide" type="button">导读</button>
+        <button class="floating-tab" data-tab="quiz" type="button">测验</button>
         <button class="floating-tab" data-tab="knowledge" type="button">知识点</button>
         <button class="floating-tab" data-tab="progress" type="button">进度</button>
       </div>
@@ -329,7 +330,10 @@
       </button>
     </div>
     <div class="floating-panel-body">
-      <div class="floating-tab-content is-active" data-tab="quiz">
+      <div class="floating-tab-content is-active" data-tab="guide">
+        <div class="floating-empty-hint">进入章节后生成本节导读</div>
+      </div>
+      <div class="floating-tab-content" data-tab="quiz" hidden>
         <div class="floating-empty-hint">完成章节阅读后开启测验</div>
       </div>
       <div class="floating-tab-content" data-tab="knowledge" hidden>
@@ -341,9 +345,9 @@
     </div>
     <div id="floatingResizeHandle" class="floating-resize-handle"></div>
   </div>
-  <script src="/api/frontend/assets/utils.js?v=20260530_01"></script>
+  <script src="/api/frontend/assets/utils.js?v=20260609_08"></script>
   <script src="/api/frontend/assets/telemetry.js?v=20260529_01"></script>
-  <script src="/api/frontend/assets/app.js?v=20260601_02"></script>
+  <script src="/api/frontend/assets/app.js?v=20260609_35"></script>
 </body>
 </html>
 

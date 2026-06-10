@@ -635,6 +635,7 @@
         const item = (part && typeof part === 'object') ? part : {};
         const question = (item.question && typeof item.question === 'object') ? item.question : {};
         const questionId = String(question.question_id || '').trim();
+        const questionCardId = String(question.question_card_id || questionId || '').trim();
         const title = String(question.question_title || 'Question').trim();
         const content = String(question.question_content || '').trim();
         const choices = Array.isArray(question.choices) ? question.choices : [];
@@ -671,7 +672,7 @@
             const finalAnswer = String(rawAnswer || '').trim();
             if (!finalAnswer || resolved) return;
             if (bridge && typeof bridge.submitQuestionAnswer === 'function') {
-                await bridge.submitQuestionAnswer(finalAnswer, questionId);
+                await bridge.submitQuestionAnswer(finalAnswer, questionCardId);
                 return;
             }
             if (bridge && typeof bridge.send === 'function') {
@@ -723,13 +724,6 @@
             otherWrap.appendChild(input);
             otherWrap.appendChild(submit);
             card.appendChild(otherWrap);
-        }
-
-        if (questionId) {
-            const meta = document.createElement('div');
-            meta.className = 'learning-sidebar-question-meta';
-            meta.textContent = `Question ID: ${questionId}`;
-            card.appendChild(meta);
         }
 
         if (resolved && answer) {
@@ -833,7 +827,8 @@
             const foldKey = buildSidebarFoldKey(messageIndex, partIndex, part);
             const details = document.createElement('details');
             details.className = `learning-sidebar-fold learning-sidebar-fold-${kind}`;
-            const shouldAutoOpen = kind === 'thinking' || (kind === 'tool' && !!(part && part.pending));
+            const pending = !!(part && part.pending);
+            const shouldAutoOpen = pending;
             if (sidebarFoldState.has(foldKey)) {
                 details.open = sidebarFoldState.get(foldKey) === true;
             } else {
@@ -1049,7 +1044,8 @@
             try { sidebarUnmount(); } catch (_) {}
             sidebarUnmount = null;
         }
-        if (sidebarReaderOpened) {
+        const sidebarMode = String((sidebarOptionsRef || {}).sidebarMode || '').trim().toLowerCase();
+        if (sidebarMode === 'learning') {
             renderSidebarChat(sidebarContainerRef);
             const bridge = window.NexoraLearningSidebarBridge;
             if (bridge && typeof bridge.subscribe === 'function') {

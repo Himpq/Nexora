@@ -127,3 +127,8 @@ def update_book_summary_settings(cfg: Mapping[str, Any], updates: Mapping[str, A
 def build_book_summary_runner(cfg: Mapping[str, Any], model_name: str = ""):
     resolved = str(model_name or "").strip() or None
     return LearningModelFactory.create("book_summary", cfg, model_name=resolved)
+
+
+def build_video_keyword_runner(cfg: Mapping[str, Any], model_name: str = ""):
+    resolved = str(model_name or "").strip() or None
+    return LearningModelFactory.create("video_keyword", cfg, model_name=resolved)

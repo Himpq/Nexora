@@ -280,6 +280,17 @@
     return 0;
   }
 
+  /** 获取课程封面路径 */
+  function getCourseCoverPath(lecture) {
+    return String((lecture && lecture.cover_path) || "").trim();
+  }
+
+  /** 获取课程最近学习时间 */
+  function getCourseLastActiveTs(lecture) {
+    const ts = toNumber(lecture && lecture.last_active_ts, 0);
+    return Number.isFinite(ts) && ts > 0 ? Math.floor(ts) : 0;
+  }
+
   /** 获取章节当前/下一章节描述 */
   function getChapterInfo(lecture, books) {
     const lectureCurrent = String((lecture && lecture.current_chapter) || "").trim();
@@ -309,6 +320,8 @@
         title: getLectureTitle(lecture),
         progress: getCourseProgress(lecture, books),
         studyHours: getStudyHours(lecture),
+        coverPath: getCourseCoverPath(lecture),
+        lastActiveTs: getCourseLastActiveTs(lecture),
         chapterCurrent: chapter.current,
         chapterNext: chapter.next,
         color: PIE_COLORS[index % PIE_COLORS.length],
@@ -410,6 +423,8 @@
     getLectureTitle,
     getCourseProgress,
     getStudyHours,
+    getCourseCoverPath,
+    getCourseLastActiveTs,
     getChapterInfo,
     buildDashboardCourses,
     // chart helpers

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+import ssl
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -26,6 +27,43 @@ _BILIBILI_PAGE_SIZE = 20
 _BILIBILI_MAX_PAGES = 3
 _ICOURSE163_PAGE_SIZE = 12
 _FILTER_INPUT_LIMIT = 80
+_VIDEO_CONTEXT_BLOCK_CHARS = 1400
+_VIDEO_KEYWORD_CONTEXT_CHARS = 9000
+_VIDEO_OVERVIEW_CONTEXT_CHARS = 10000
+_VIDEO_FILTER_CONTEXT_CHARS = 16000
+_VIDEO_CHAPTER_SUMMARY_LIMIT = 24
+_VIDEO_CHAPTER_SUMMARY_CHARS = 260
+
+
+def _build_ssl_context() -> ssl.SSLContext:
+    """构建 SSL 上下文，优先使用 certifi 证书，验证失败时回退到不验证模式。"""
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        pass
+
+    try:
+        return ssl.create_default_context()
+    except Exception:
+        return ssl._create_unverified_context()
+
+
+def _urlopen_with_ssl_fallback(req: urllib.request.Request, timeout: int = 15):
+    """打开 URL 请求，SSL 验证失败时自动回退到不验证模式。"""
+    try:
+        return urllib.request.urlopen(req, timeout=timeout, context=_build_ssl_context())
+    except Exception as exc:
+        error_text = str(exc)
+        if "CERTIFICATE_VERIFY_FAILED" not in error_text and "certificate verify failed" not in error_text.lower():
+            raise
+        log_event(
+            "video_ssl_fallback",
+            "SSL 证书验证失败，回退到不验证模式",
+            payload={"url": str(getattr(req, 'full_url', '')), "error": error_text},
+        )
+        fallback_ctx = ssl._create_unverified_context()
+        return urllib.request.urlopen(req, timeout=timeout, context=fallback_ctx)
 
 
 def _videos_path(cfg: Mapping[str, Any], lecture_id: str, book_id: str) -> Path:
@@ -96,6 +134,181 @@ def _preview_titles(items: List[Dict[str, Any]], limit: int = 3) -> List[str]:
     return titles
 
 
+def _extract_chapter_summary_rows(
+    bookinfo_xml: str,
+    *,
+    limit: int = _VIDEO_CHAPTER_SUMMARY_LIMIT,
+    summary_chars: int = _VIDEO_CHAPTER_SUMMARY_CHARS,
+) -> List[Dict[str, str]]:
+    rows = []
+
+    for match in re.finditer(
+        r"<chapter_name>\s*(.*?)\s*</chapter_name>[\s\S]*?<chapter_summary>\s*(.*?)\s*</chapter_summary>",
+        str(bookinfo_xml or ""),
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        name = _strip_html(match.group(1))
+        summary = _strip_html(match.group(2))[:summary_chars]
+
+        if name and summary:
+            rows.append({"name": name, "summary": summary})
+
+        if len(rows) >= limit:
+            break
+
+    return rows
+
+
+def _split_text_blocks(title: str, text: str, *, max_chars: int = _VIDEO_CONTEXT_BLOCK_CHARS) -> List[Dict[str, str]]:
+    value = str(text or "").strip()
+    if not value:
+        return []
+
+    blocks = []
+    block_index = 1
+
+    for start in range(0, len(value), max_chars):
+        chunk = value[start:start + max_chars].strip()
+
+        if chunk:
+            blocks.append({"title": f"{title} {block_index}", "content": chunk})
+            block_index += 1
+
+    return blocks
+
+
+def _split_line_blocks(title: str, lines: List[str], *, max_chars: int = _VIDEO_CONTEXT_BLOCK_CHARS) -> List[Dict[str, str]]:
+    blocks = []
+    current_lines = []
+    current_chars = 0
+    block_index = 1
+
+    for line in lines:
+        text = str(line or "").strip()
+
+        if not text:
+            continue
+
+        projected = current_chars + len(text) + 1
+
+        if current_lines and projected > max_chars:
+            blocks.append({"title": f"{title} {block_index}", "content": "\n".join(current_lines)})
+            block_index += 1
+            current_lines = []
+            current_chars = 0
+
+        current_lines.append(text)
+        current_chars += len(text) + 1
+
+    if current_lines:
+        blocks.append({"title": f"{title} {block_index}", "content": "\n".join(current_lines)})
+
+    return blocks
+
+
+def _build_video_llm_context(
+    *,
+    lecture_title: str = "",
+    book_title: str = "",
+    bookinfo_xml: str = "",
+    book_overview: str = "",
+    videos: Optional[List[Dict[str, Any]]] = None,
+    include_raw_bookinfo: bool = False,
+) -> List[Dict[str, str]]:
+    """构建视频搜索模型上下文块，具体长度控制交给 Context 管理。"""
+    blocks: List[Dict[str, str]] = []
+    course_lines = [
+        f"课程：{str(lecture_title or '').strip()}",
+        f"教材：{str(book_title or '').strip()}",
+    ]
+    blocks.append({"title": "课程与教材", "content": "\n".join(course_lines)})
+
+    overview = str(book_overview or "").strip()
+
+    if overview:
+        blocks.append({"title": "书籍概括", "content": overview})
+
+    chapter_rows = _extract_chapter_summary_rows(bookinfo_xml)
+
+    if chapter_rows:
+        chapter_lines = [
+            f"{index + 1}. {row['name']}：{row['summary']}"
+            for index, row in enumerate(chapter_rows)
+        ]
+        blocks.extend(_split_line_blocks("章节摘要", chapter_lines))
+    elif include_raw_bookinfo and str(bookinfo_xml or "").strip():
+        blocks.extend(_split_text_blocks("章节信息", str(bookinfo_xml or "").strip()))
+
+    video_rows = list(videos or [])
+
+    if video_rows:
+        video_lines = []
+
+        for index, video in enumerate(video_rows):
+            title = _strip_html(video.get("title"))
+            up_name = _strip_html(video.get("up_name"))
+            play_count = _strip_html(video.get("play_count"))
+            source = _strip_html(video.get("source"))
+            keyword = _strip_html(video.get("keyword"))
+            meta_parts = [part for part in [source, up_name, f"播放:{play_count}" if play_count else "", f"关键词:{keyword}" if keyword else ""] if part]
+            video_lines.append(f"{index + 1}. {title} - {' / '.join(meta_parts)}")
+
+        blocks.extend(_split_line_blocks("候选视频", video_lines, max_chars=1800))
+
+    return blocks
+
+
+def _prepare_video_prompt(
+    task_name: str,
+    instruction: str,
+    context_blocks: List[Dict[str, str]],
+    *,
+    max_chars: int,
+) -> str:
+    """把视频业务上下文接入通用 Context 管理层，并输出模型可读提示词。"""
+    from core.booksproc.context import Context, ContextPolicy
+
+    ctx = Context(
+        max_chars=max_chars,
+        policy=ContextPolicy.TRUNCATE,
+        trace_meta={"source": "video_search", "task": task_name},
+    )
+    ctx.add("system", "你是学习资源检索助手，只根据给定上下文生成可执行的视频资源检索结果。")
+
+    for block in context_blocks:
+        title = str(block.get("title") or "").strip()
+        content = str(block.get("content") or "").strip()
+
+        if title and content:
+            ctx.add("user", f"## {title}\n{content}")
+
+    ctx.add("user", str(instruction or "").strip())
+    before_chars = ctx.chars()
+    before_messages = ctx.count()
+    executed = ctx.prepare()
+    messages = ctx.build()
+    prepared_prompt = "\n\n".join(
+        str(message.get("content") or "").strip()
+        for message in messages
+        if str(message.get("content") or "").strip()
+    )
+    log_event(
+        "video_context_prepared",
+        "视频模型上下文已准备",
+        payload={
+            "task": task_name,
+            "executed": bool(executed),
+            "before_chars": int(before_chars),
+            "after_chars": int(ctx.chars()),
+            "before_messages": int(before_messages),
+            "after_messages": int(ctx.count()),
+            "context_blocks": len(context_blocks),
+            "policy": ContextPolicy.TRUNCATE.value,
+        },
+    )
+    return prepared_prompt
+
+
 def generate_search_keywords(
     cfg: Mapping[str, Any],
     lecture_title: str,
@@ -107,30 +320,34 @@ def generate_search_keywords(
     Returns:
         List of {"keyword": str, "count": int} dicts.
     """
-    from core.booksproc import build_memory_runner, get_memory_settings
+    from core.booksproc import build_video_keyword_runner, get_memory_settings
     from prompts import VIDEO_KEYWORD_PROMPT
 
-    summaries = []
-    for m in re.finditer(
-        r"<chapter_name>\s*(.*?)\s*</chapter_name>[\s\S]*?<chapter_summary>\s*(.*?)\s*</chapter_summary>",
-        str(bookinfo_xml or ""), flags=re.IGNORECASE | re.DOTALL,
-    ):
-        name = str(m.group(1) or "").strip()
-        summary = str(m.group(2) or "").strip()[:150]
-        if name and summary:
-            summaries.append(f"{name}: {summary}")
-    summaries_text = "\n".join(summaries[:10])
-
-    prompt = VIDEO_KEYWORD_PROMPT.replace(
+    instruction = VIDEO_KEYWORD_PROMPT.replace(
         "{{lecture_title}}", lecture_title
     ).replace(
         "{{book_title}}", book_title
     ).replace(
-        "{{chapter_summaries}}", summaries_text or "（无摘要）"
+        "{{chapter_summaries}}", "请参考上方章节摘要上下文。"
+    )
+    context_blocks = _build_video_llm_context(
+        lecture_title=lecture_title,
+        book_title=book_title,
+        bookinfo_xml=bookinfo_xml,
+    )
+
+    if not any(str(block.get("title") or "").startswith("章节摘要") for block in context_blocks):
+        raise RuntimeError("视频关键词生成缺少章节摘要上下文，请先完成教材概读。")
+
+    prompt = _prepare_video_prompt(
+        "keyword",
+        instruction,
+        context_blocks,
+        max_chars=_VIDEO_KEYWORD_CONTEXT_CHARS,
     )
 
     settings = dict(get_memory_settings(cfg) or {})
-    runner = build_memory_runner(cfg, str(settings.get("model_name") or "").strip())
+    runner = build_video_keyword_runner(cfg, str(settings.get("model_name") or "").strip())
 
     try:
         result = runner.run(
@@ -177,13 +394,23 @@ def generate_book_overview(
     from prompts import VIDEO_BOOK_OVERVIEW_PROMPT
 
     bookinfo_text = str(bookinfo_content or "").strip()
-    if len(bookinfo_text) > 6000:
-        bookinfo_text = bookinfo_text[:6000] + "\n...(已截断)"
+    if not bookinfo_text:
+        raise RuntimeError("视频书籍概括缺少章节信息，请先完成教材概读。")
 
-    prompt = VIDEO_BOOK_OVERVIEW_PROMPT.replace(
+    instruction = VIDEO_BOOK_OVERVIEW_PROMPT.replace(
         "{{lecture_title}}", lecture_title
     ).replace(
-        "{{bookinfo_content}}", bookinfo_text or "（无章节信息）"
+        "{{bookinfo_content}}", "请参考上方章节信息上下文。"
+    )
+    prompt = _prepare_video_prompt(
+        "overview",
+        instruction,
+        _build_video_llm_context(
+            lecture_title=lecture_title,
+            bookinfo_xml=bookinfo_text,
+            include_raw_bookinfo=True,
+        ),
+        max_chars=_VIDEO_OVERVIEW_CONTEXT_CHARS,
     )
 
     settings = dict(get_memory_settings(cfg) or {})
@@ -219,6 +446,10 @@ def filter_videos_with_llm(
     from core.booksproc import build_memory_runner, get_memory_settings
     from prompts import VIDEO_FILTER_PROMPT
 
+    overview_text = str(book_overview or "").strip()
+    if not overview_text:
+        raise RuntimeError("视频筛选缺少书籍概括上下文。")
+
     ranked_videos = videos[:_FILTER_INPUT_LIMIT]
     if len(videos) > len(ranked_videos):
         log_event(
@@ -227,15 +458,19 @@ def filter_videos_with_llm(
             payload={"before": len(videos), "used": len(ranked_videos)},
         )
 
-    video_list = "\n".join(
-        f"{i+1}. {v.get('title', '')} - {v.get('up_name', '')} (播放: {v.get('play_count', '0')})"
-        for i, v in enumerate(ranked_videos)
-    )
-
-    prompt = VIDEO_FILTER_PROMPT.replace(
-        "{{book_overview}}", book_overview or "（无概括信息）"
+    instruction = VIDEO_FILTER_PROMPT.replace(
+        "{{book_overview}}", overview_text
     ).replace(
-        "{{video_list}}", video_list
+        "{{video_list}}", "请参考上方候选视频列表，序号必须使用候选视频前面的编号。"
+    )
+    prompt = _prepare_video_prompt(
+        "filter",
+        instruction,
+        _build_video_llm_context(
+            book_overview=overview_text,
+            videos=ranked_videos,
+        ),
+        max_chars=_VIDEO_FILTER_CONTEXT_CHARS,
     )
 
     settings = dict(get_memory_settings(cfg) or {})
@@ -308,7 +543,7 @@ def search_bilibili(keyword: str, max_results: int = 10, max_pages: int = _BILIB
         )
         req = urllib.request.Request(url, headers=headers)
 
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with _urlopen_with_ssl_fallback(req, timeout=15) as resp:
             content = resp.read().decode("utf-8")
             data = json.loads(content)
 
@@ -360,8 +595,11 @@ def search_icourse163(keyword: str, max_results: int = 10) -> List[Dict[str, Any
     import http.cookiejar
 
     cookie_jar = http.cookiejar.CookieJar()
+    ssl_context = _build_ssl_context()
+    https_handler = urllib.request.HTTPSHandler(context=ssl_context)
     session = urllib.request.build_opener(
-        urllib.request.HTTPCookieProcessor(cookie_jar)
+        urllib.request.HTTPCookieProcessor(cookie_jar),
+        https_handler,
     )
     session.addheaders = [
         ("User-Agent", _USER_AGENT),
@@ -369,8 +607,31 @@ def search_icourse163(keyword: str, max_results: int = 10) -> List[Dict[str, Any
         ("Accept-Language", "zh-CN,zh;q=0.9"),
     ]
 
-    home_resp = session.open("https://www.icourse163.org/", timeout=10)
-    home_resp.read()
+    try:
+        home_resp = session.open("https://www.icourse163.org/", timeout=10)
+        home_resp.read()
+    except Exception as exc:
+        error_text = str(exc)
+        if "CERTIFICATE_VERIFY_FAILED" in error_text or "certificate verify failed" in error_text.lower():
+            log_event(
+                "video_ssl_fallback",
+                "慕课首页 SSL 证书验证失败，回退到不验证模式",
+                payload={"error": error_text},
+            )
+            fallback_handler = urllib.request.HTTPSHandler(context=ssl._create_unverified_context())
+            session = urllib.request.build_opener(
+                urllib.request.HTTPCookieProcessor(cookie_jar),
+                fallback_handler,
+            )
+            session.addheaders = [
+                ("User-Agent", _USER_AGENT),
+                ("Accept", "*/*"),
+                ("Accept-Language", "zh-CN,zh;q=0.9"),
+            ]
+            home_resp = session.open("https://www.icourse163.org/", timeout=10)
+            home_resp.read()
+        else:
+            raise
 
     # 提取 csrfKey
     csrf_key = ""
@@ -408,7 +669,7 @@ def search_icourse163(keyword: str, max_results: int = 10) -> List[Dict[str, Any
         method="POST",
     )
 
-    with urllib.request.urlopen(req, timeout=15) as resp:
+    with _urlopen_with_ssl_fallback(req, timeout=15) as resp:
         data = json.loads(resp.read().decode("utf-8"))
 
     if data.get("code") != 0:

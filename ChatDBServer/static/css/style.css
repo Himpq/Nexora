@@ -14,6 +14,14 @@
   
   --bg-user-msg: #f4f4f4;
   --bg-ai-msg: #ffffff;
+  --sidebar-width-normal: 260px;
+  --sidebar-width-learning: clamp(400px, 28vw, 520px);
+  --learning-sidebar-bg: #f5f6f8;
+  --learning-sidebar-surface: #ffffff;
+  --learning-sidebar-border: #e1e5ea;
+  --learning-sidebar-text: #20242c;
+  --learning-sidebar-muted: #6b7280;
+  --learning-sidebar-accent: #3f4654;
 }
 
 * { box-sizing: border-box; outline: none; }
@@ -42,14 +50,34 @@ body {
 
 /* --- SIDEBAR --- */
 .sidebar {
-  width: 260px;
+  width: var(--sidebar-width-normal);
   background-color: var(--bg-sidebar);
   color: var(--text-sidebar);
   display: flex;
   flex-direction: column;
-  transition: width 0.3s ease, transform 0.24s ease;
+  border-right: 1px solid transparent;
+  box-shadow: none;
+  transition: width 0.32s cubic-bezier(0.22, 1, 0.36, 1), transform 0.24s ease, background-color 0.28s ease, color 0.28s ease, border-color 0.28s ease, box-shadow 0.28s ease;
   flex-shrink: 0;
 }
+
+body.learning-workspace-active .sidebar {
+  width: var(--sidebar-width-learning);
+  background-color: var(--learning-sidebar-bg);
+  color: var(--learning-sidebar-text);
+  border-right-color: var(--learning-sidebar-border);
+  box-shadow: 1px 0 0 rgba(17, 24, 39, 0.04);
+}
+
+body.learning-workspace-active .sidebar.collapsed {
+  width: 0;
+  padding: 0;
+  overflow: hidden;
+  opacity: 0;
+  border-right-color: transparent;
+  box-shadow: none;
+}
+
 .sidebar-header {
   padding: 20px;
   display: flex;
@@ -93,6 +121,36 @@ body:not(.learning-mode-enabled) .sidebar-brand-tab.active {
 }
 .logo { font-weight: 600; font-size: 18px; color: #fff; letter-spacing: -0.5px; display: flex; align-items: baseline; }
 .logo .dot { color: #555; margin-left: 2px; }
+
+body.learning-workspace-active .sidebar-brand-tab {
+  color: #667085;
+}
+
+body.learning-workspace-active .sidebar-brand-tab.active {
+  color: var(--learning-sidebar-text);
+  border-bottom-color: #20242c;
+}
+
+body.learning-workspace-active .sidebar-brand-tab:not(.active):hover {
+  color: #344054;
+}
+
+body.learning-workspace-active .logo {
+  color: var(--learning-sidebar-text);
+}
+
+body.learning-workspace-active .logo .dot {
+  color: #20242c;
+}
+
+body.learning-workspace-active .sidebar .btn-icon {
+  color: #526274;
+}
+
+body.learning-workspace-active .sidebar .btn-icon:hover {
+  background: rgba(31, 35, 42, 0.07);
+  color: var(--learning-sidebar-accent);
+}
 .logo .dot::after {
     content: ".";
     animation: multiPhaseDots 4.5s infinite;
@@ -162,6 +220,19 @@ body:not(.learning-mode-enabled) .sidebar-brand-tab.active {
 }
 .btn-primary-outline:hover { border-color: #666; background: #111; }
 
+body.learning-workspace-active .sidebar .btn-primary-outline {
+  background: var(--learning-sidebar-surface);
+  border-color: var(--learning-sidebar-border);
+  color: var(--learning-sidebar-text);
+  box-shadow: none;
+}
+
+body.learning-workspace-active .sidebar .btn-primary-outline:hover {
+  background: #ffffff;
+  border-color: #c9ced6;
+  box-shadow: none;
+}
+
 /* Admin button override for tables */
 .admin-table .btn-primary-outline,
 .admin-table .btn-danger-small {
@@ -217,6 +288,22 @@ body:not(.learning-mode-enabled) .sidebar-brand-tab.active {
 }
 .sidebar-content::-webkit-scrollbar-thumb:hover {
   background: #4a4a4a;
+}
+
+body.learning-workspace-active .sidebar-content {
+  scrollbar-color: rgba(148, 163, 184, 0.58) transparent;
+}
+
+body.learning-workspace-active .sidebar-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+body.learning-workspace-active .sidebar-content::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.48);
+}
+
+body.learning-workspace-active .sidebar-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.62);
 }
 /* Conversation Item */
 .conversation-item {
@@ -278,6 +365,10 @@ body:not(.learning-mode-enabled) .sidebar-brand-tab.active {
 .sidebar-footer { padding: 15px; border-top: 1px solid #1a1a1a; display: flex; flex-direction: column; gap: 8px; }
 .footer-link { color: var(--text-sidebar); text-decoration: none; display: flex; align-items: center; gap: 10px; font-size: 14px; padding: 8px; border-radius: 6px; transition: background 0.2s; }
 .footer-link:hover { color: #fff; background: rgba(255,255,255,0.05); }
+
+body.learning-workspace-active .sidebar-footer {
+  display: none;
+}
 
 .user-profile { 
     display: flex; 
@@ -430,6 +521,14 @@ body:not(.learning-mode-enabled) .sidebar-brand-tab.active {
 }
 .learning-main-panel {
   background: var(--bg-main);
+}
+
+body.learning-workspace-active #learningMainPanel.learning-main-panel {
+  margin: 0 !important;
+  padding: 0 !important;
+  align-items: stretch !important;
+  justify-content: stretch !important;
+  overflow: hidden !important;
 }
 
 .message {
@@ -3893,15 +3992,16 @@ body.settings-companion-mode #adminPublicApiDeleteModal {
 }
 
 .question-card-body {
-    border: 1px solid #111;
-    border-radius: 8px;
-    background: #fff;
-    color: #111;
-    padding: 16px;
+    border: none;
+    border-left: 2px solid #d4d8de;
+    border-radius: 0;
+    background: transparent;
+    color: #20242c;
+    padding: 10px 0 10px 14px;
 }
 
 .question-card-topline {
-    display: flex;
+    display: none;
     align-items: center;
     justify-content: space-between;
     gap: 10px;
@@ -3926,16 +4026,16 @@ body.settings-companion-mode #adminPublicApiDeleteModal {
 }
 
 .question-card-title {
-    margin-top: 8px;
-    font-size: 17px;
-    font-weight: 700;
-    line-height: 1.35;
+    margin-top: 0;
+    font-size: 14px;
+    font-weight: 650;
+    line-height: 1.45;
 }
 
 .question-card-content {
-    margin-top: 8px;
-    color: #333;
-    font-size: 14px;
+    margin-top: 6px;
+    color: #3f4654;
+    font-size: 13px;
     line-height: 1.65;
 }
 
@@ -3948,12 +4048,12 @@ body.settings-companion-mode #adminPublicApiDeleteModal {
 
 .question-choice-btn,
 .question-other-submit {
-    border: 1px solid #111;
-    border-radius: 6px;
-    background: #111;
-    color: #fff;
-    min-height: 36px;
-    padding: 9px 12px;
+    border: 1px solid #d8dde4;
+    border-radius: 4px;
+    background: #ffffff;
+    color: #20242c;
+    min-height: 34px;
+    padding: 8px 11px;
     font-size: 13px;
     line-height: 1.35;
     white-space: normal;
@@ -3962,7 +4062,8 @@ body.settings-companion-mode #adminPublicApiDeleteModal {
 
 .question-choice-btn:hover,
 .question-other-submit:hover {
-    background: #333;
+    border-color: #b8c0ca;
+    background: #f7f8fa;
 }
 
 .question-card-other {
@@ -3975,10 +4076,10 @@ body.settings-companion-mode #adminPublicApiDeleteModal {
 .question-other-input {
     flex: 1;
     min-width: 0;
-    border: 1px solid #111;
-    border-radius: 6px;
+    border: 1px solid #d8dde4;
+    border-radius: 4px;
     background: #fff;
-    color: #111;
+    color: #20242c;
     padding: 8px 10px;
     font-size: 13px;
 }
@@ -3992,9 +4093,7 @@ body.settings-companion-mode #adminPublicApiDeleteModal {
 }
 
 .question-card-meta {
-    margin-top: 10px;
-    color: #94a3b8;
-    font-size: 11px;
+    display: none;
 }
 
 .question-card-body.answered button,
@@ -4123,6 +4222,11 @@ body.settings-companion-mode #adminPublicApiDeleteModal {
         position: relative;
         width: 100%;
         margin-top: -30px;
+}
+
+.input-dock.learning-mode-hidden,
+body.learning-workspace-active .input-dock {
+  display: none !important;
 }
 .input-wrapper {
     position: relative;
@@ -5202,6 +5306,17 @@ textarea {
 .learning-sidebar-panel {
   padding: 16px 14px 18px;
   overflow: auto;
+}
+
+body.learning-workspace-active .learning-sidebar-panel {
+  color: var(--learning-sidebar-text);
+  padding: 10px 14px 16px;
+}
+
+.learning-sidebar-panel.learning-workspace-panel-active {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 .settings-pref-card.settings-pref-card-wide {
   grid-column: 1 / -1;
@@ -9730,6 +9845,11 @@ body.is-admin .menu-item.admin-only {
         transition: transform 0.24s ease !important;
         z-index: 7600 !important;
         box-shadow: none !important
+    }
+
+    body.learning-workspace-active .sidebar {
+        width: min(92vw, 420px) !important;
+        max-width: 420px !important;
     }
 
     .sidebar.mobile-open {
