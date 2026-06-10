@@ -17,6 +17,7 @@
     kickerUploadTabBtn: document.getElementById("kickerUploadTabBtn"),
     createLectureBlock: document.getElementById("createLectureBlock"),
     uploadBookBlock: document.getElementById("uploadBookBlock"),
+    dashboardFocusPanel: document.getElementById("dashboardFocusPanel"),
     progressList: document.getElementById("progressList"),
     timePieChart: document.getElementById("timePieChart"),
     dashboardSidePanelTitle: document.getElementById("dashboardSidePanelTitle"),
@@ -169,7 +170,9 @@
     readerClosePanelsUntil: 0,
     materialsPageMode: "shelf",
     materialsDetailMode: "lecture",
+    courseHomeReturnTarget: "shelf",
     catalogContext: null,
+    learningPathCache: {},
     teacherEditContext: null,
     materialsSortBy: "updated_at",
     materialsSortOrder: "desc",
@@ -182,8 +185,10 @@
     learningFeedChannels: [],
     selectedFeedChannelId: "public_all",
     dashboardSideTab: "progress",
-    dashboardPieTab: "pie",
+    dashboardPieTab: "profile",
     userProfile: null,
+    notifications: [],
+    adminPendingParse: { count: 0, items: [] },
     // ── 教师 Panel 状态 ──
     teacherOverview: null,
     teacherLoadingOverview: false,
@@ -209,7 +214,10 @@
       context: "",
     },
     readerReportedChapterKey: "",
+    readerReportingChapterKey: "",
+    readerChapterQuizLoadingKey: "",
     readerBookDetailXml: "",
+    readerGuidePromptedKey: "",
     dynamicPosting: false,
     confirmAction: null,
     readerSessionProgress: {},  // { "lectureId::bookId": { completedIndices: Set, currentChapterIndex: 0 } }
@@ -774,7 +782,16 @@
 
   function getRuntimeUsername() {
     const q = new URLSearchParams(window.location.search);
-    return String(q.get("username") || window.NEXORA_USERNAME || window.nexoraUsername || "").trim();
+    const stateUser = state && state.user && typeof state.user === "object" ? state.user : {};
+    return String(
+      state.username ||
+      stateUser.id ||
+      stateUser.username ||
+      q.get("username") ||
+      window.NEXORA_USERNAME ||
+      window.nexoraUsername ||
+      ""
+    ).trim();
   }
 
   function syncTelemetryUserId() {
@@ -1052,8 +1069,85 @@
     el.kickerUploadTabBtn.setAttribute("aria-selected", isCreate ? "false" : "true");
   }
 
+  function pickDashboardFocusCourse(courses) {
+    const rows = Array.isArray(courses) ? courses : [];
+    if (!rows.length) return null;
+
+    const recent = rows
+      .filter((course) => Number(course.lastActiveTs) > 0)
+      .sort((a, b) => Number(b.lastActiveTs) - Number(a.lastActiveTs));
+    if (recent.length) return recent[0];
+
+    const active = rows
+      .filter((course) => Number(course.progress) > 0 && Number(course.progress) < 100)
+      .sort((a, b) => Number(b.progress) - Number(a.progress));
+    if (active.length) return active[0];
+
+    const notStarted = rows.find((course) => Number(course.progress) <= 0);
+    if (notStarted) return notStarted;
+
+    return rows[0];
+  }
+
+  function renderDashboardFocusPanel(courses) {
+    if (!el.dashboardFocusPanel) return;
+
+    const rows = Array.isArray(courses) ? courses : [];
+    const focus = pickDashboardFocusCourse(rows);
+    if (!focus) {
+      el.dashboardFocusPanel.innerHTML = `
+        <div class="dashboard-focus-empty">
+          <span class="dashboard-focus-label">当前焦点</span>
+          <span class="dashboard-focus-empty-text">加入课程后，这里会显示下一步学习入口。</span>
+        </div>
+      `;
+      return;
+    }
+
+    const progress = Math.max(0, Math.min(100, Number(focus.progress) || 0));
+    const hours = Number(focus.studyHours) > 0 ? `${Number(focus.studyHours).toFixed(1)}h` : "0h";
+    const recent = Number(focus.lastActiveTs) > 0 ? formatFeedRelativeTime(focus.lastActiveTs) : "";
+    const nextLabel = progress >= 100 ? "回顾课程" : (progress > 0 ? "继续学习" : "开始学习");
+
+    el.dashboardFocusPanel.innerHTML = `
+      <button class="dashboard-focus-card" type="button" data-dashboard-focus-lecture-id="${escapeHtml(focus.id)}">
+        <span class="dashboard-focus-main">
+          <span class="dashboard-focus-label">当前焦点</span>
+          <span class="dashboard-focus-title">${escapeHtml(focus.title)}</span>
+          <span class="dashboard-focus-subtitle">当前：${escapeHtml(focus.chapterCurrent || "待开始")}</span>
+        </span>
+        <span class="dashboard-focus-meta">
+          <span class="dashboard-focus-stat"><strong>${progress}%</strong><span>进度</span></span>
+          <span class="dashboard-focus-stat"><strong>${escapeHtml(recent || hours)}</strong><span>${recent ? "最近" : "时长"}</span></span>
+          <span class="dashboard-focus-action">${escapeHtml(nextLabel)}</span>
+        </span>
+      </button>
+    `;
+  }
+
+  function renderDashboardCourseCover(course) {
+    const title = String((course && course.title) || "课程").trim();
+    const coverPath = String((course && course.coverPath) || "").trim();
+    if (coverPath) {
+      return `
+        <div class="nxl-course-cover">
+          <img src="${escapeHtml(resolveApiUrl(coverPath))}" alt="${escapeHtml(title)}" loading="lazy">
+        </div>
+      `;
+    }
+
+    const mark = title ? title.slice(0, 1) : "课";
+    return `
+      <div class="nxl-course-cover is-empty" aria-label="${escapeHtml(title)}">
+        <span>${escapeHtml(mark)}</span>
+      </div>
+    `;
+  }
+
   function renderProgressList() {
     const courses = buildDashboardCourses(state.dashboardRows);
+    renderDashboardFocusPanel(courses);
+
     if (!courses.length) {
       el.progressList.classList.add("is-empty");
       el.progressList.innerHTML = `
@@ -1066,13 +1160,16 @@
     }
     el.progressList.classList.remove("is-empty");
     el.progressList.innerHTML = courses.map((course) => `
-      <article class="nxl-course-item" data-progress-lecture-id="${escapeHtml(course.id)}">
-        <div class="nxl-course-top">
-          <div class="nxl-course-title">${escapeHtml(course.title)}</div>
-          <div class="nxl-course-percent">${course.progress}%</div>
+      <article class="nxl-course-item has-cover" data-progress-lecture-id="${escapeHtml(course.id)}">
+        ${renderDashboardCourseCover(course)}
+        <div class="nxl-course-body">
+          <div class="nxl-course-top">
+            <div class="nxl-course-title">${escapeHtml(course.title)}</div>
+            <div class="nxl-course-percent">${course.progress}%</div>
+          </div>
+          <div class="nxl-course-current">当前：${escapeHtml(course.chapterCurrent)}</div>
+          <div class="nxl-course-bar"><div class="nxl-course-bar-fill" style="width:${course.progress}%"></div></div>
         </div>
-        <div class="nxl-course-current">当前：${escapeHtml(course.chapterCurrent)}</div>
-        <div class="nxl-course-bar"><div class="nxl-course-bar-fill" style="width:${course.progress}%"></div></div>
       </article>
     `).join("");
   }
@@ -1128,6 +1225,26 @@
 
   function getBookCoverPath(book) {
     return String((book && book.cover_path) || "").trim();
+  }
+
+  function renderCourseDetailBookCover(book, title) {
+    const resolvedTitle = String(title || "教材").trim();
+    const coverPath = getBookCoverPath(book);
+
+    if (coverPath) {
+      return `
+        <div class="learning-panel-book-cover">
+          <img class="learning-panel-book-cover-image" src="${escapeHtml(resolveApiUrl(coverPath))}" alt="${escapeHtml(resolvedTitle)}" loading="lazy">
+        </div>
+      `;
+    }
+
+    const mark = resolvedTitle ? resolvedTitle.slice(0, 1) : "书";
+    return `
+      <div class="learning-panel-book-cover is-empty" aria-label="${escapeHtml(resolvedTitle)}">
+        <span>${escapeHtml(mark)}</span>
+      </div>
+    `;
   }
 
   function getBookRowById(lectureId, bookId) {
@@ -1650,7 +1767,7 @@
               <option value="risk_desc" ${sortKey === "risk_desc" ? "selected" : ""}>按风险</option>
             </select>
           </div>
-          <button id="teacherRefreshBtn" class="nxl-icon-btn" type="button" title="刷新">↻</button>
+          <button id="teacherRefreshBtn" class="nxl-icon-btn" type="button" title="刷新" aria-label="刷新"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button>
         </div>
 
         <div class="teacher-kpi-grid">
@@ -1991,129 +2108,12 @@
   }
 
   function renderPie() {
-    if (el.timePieChart) el.timePieChart.hidden = state.dashboardPieTab === "profile";
-    const teacherMode = isTeacherPanelMode();
-    if (el.dashboardSidePanelTitle) {
-      el.dashboardSidePanelTitle.textContent = teacherMode ? "教师Panel" : "学习时长数据";
-    }
     if (el.timePieChart) {
-      el.timePieChart.setAttribute("aria-label", teacherMode ? "教师课程列表" : "学习时间占比");
+      el.timePieChart.hidden = true;
+      el.timePieChart.innerHTML = "";
     }
-    if (teacherMode) {
-      renderTeacherPanel();
-      return;
-    }
-    const courses = buildDashboardCourses(state.dashboardRows).slice(0, 6);
-    const totalByRows = courses.reduce((sum, item) => sum + toNumber(item.studyHours, 0), 0);
-    const total = totalByRows;
-    if (!courses.length || total <= 0) {
-      el.timePieChart.innerHTML = '<div class="materials-empty">暂无学习时长数据</div>';
-      return;
-    }
-
-    const safeTotal = total;
-    const cx = 192;
-    const cy = 148;
-    const outer = 94;
-    const inner = 50;
-    let currentAngle = 0;
-
-    const segments = courses.map((course) => {
-      const value = toNumber(course.studyHours, 0);
-      const angle = (value / safeTotal) * 360;
-      const startAngle = currentAngle;
-      const endAngle = currentAngle + angle;
-      const mid = startAngle + angle / 2;
-      currentAngle = endAngle;
-      const anchor = polarToCartesian(cx, cy, outer + 14, mid);
-      const bend = polarToCartesian(cx, cy, outer + 34, mid);
-      const isRight = bend.x >= cx;
-      const labelX = isRight ? 332 : 48;
-      const textAnchor = isRight ? "start" : "end";
-      const ratio = Math.round((value / safeTotal) * 100);
-      return {
-        ...course,
-        id: `seg-${course.id}`,
-        path: donutPath(cx, cy, outer, inner, startAngle, endAngle),
-        line: `${anchor.x},${anchor.y} ${bend.x},${bend.y} ${labelX},${bend.y}`,
-        labelLine: {
-          x1: anchor.x,
-          y1: anchor.y,
-          x2: bend.x,
-          y2: bend.y,
-          x3: labelX,
-          y3: bend.y,
-        },
-        labelX,
-        labelY: bend.y - 6,
-        subY: bend.y + 12,
-        ratio,
-        textAnchor,
-        offsetX: Math.cos(((mid - 90) * Math.PI) / 180) * 8,
-        offsetY: Math.sin(((mid - 90) * Math.PI) / 180) * 8,
-      };
-    });
-
-    el.timePieChart.innerHTML = `
-      <svg class="nxl-pie-svg" viewBox="0 0 380 300" role="img" aria-label="学习时间占比">
-        ${segments
-          .map(
-            (seg) => `
-              <g class="nxl-pie-segment" data-segment-id="${escapeHtml(seg.id)}">
-                <path d="${seg.path}" fill="${seg.color}" fill-rule="evenodd"></path>
-              </g>
-            `
-          )
-          .join("")}
-        <circle cx="${cx}" cy="${cy}" r="${inner - 1}" fill="#ffffff"></circle>
-        <text x="${cx}" y="${cy - 8}" text-anchor="middle" class="nxl-pie-center-label">总学习时长</text>
-        <text x="${cx}" y="${cy + 18}" text-anchor="middle" class="nxl-pie-center-value">${escapeHtml(total.toFixed(1))}h</text>
-        ${segments
-          .map(
-            (seg) => `
-              <g class="nxl-pie-callout" data-segment-id="${escapeHtml(seg.id)}">
-                <polyline points="${seg.labelLine.x1},${seg.labelLine.y1} ${seg.labelLine.x2},${seg.labelLine.y2} ${seg.labelLine.x3},${seg.labelLine.y3}"></polyline>
-                <text x="${seg.labelX}" y="${seg.labelY}" text-anchor="${seg.textAnchor}">${escapeHtml(seg.title)}</text>
-                <text x="${seg.labelX}" y="${seg.subY}" text-anchor="${seg.textAnchor}" class="nxl-pie-callout-sub">${escapeHtml(`${seg.ratio}% · 进度 ${seg.progress}%`)}</text>
-              </g>
-            `
-          )
-          .join("")}
-      </svg>
-    `;
-
-    const segmentEls = Array.from(el.timePieChart.querySelectorAll(".nxl-pie-segment"));
-    const calloutEls = Array.from(el.timePieChart.querySelectorAll(".nxl-pie-callout"));
-    function setActive(segmentId) {
-      segmentEls.forEach((node) => {
-        const active = node.getAttribute("data-segment-id") === segmentId;
-        node.classList.toggle("is-active", active);
-        const path = node.querySelector("path");
-        if (!path) return;
-        const segment = segments.find((item) => item.id === node.getAttribute("data-segment-id"));
-        if (!segment) return;
-        path.style.transform = active ? `translate(${segment.offsetX}px, ${segment.offsetY}px) scale(1.035)` : "";
-      });
-      calloutEls.forEach((node) => {
-        node.classList.toggle("is-active", node.getAttribute("data-segment-id") === segmentId);
-      });
-    }
-    function clearActive() {
-      segmentEls.forEach((node) => {
-        node.classList.remove("is-active");
-        const path = node.querySelector("path");
-        if (path) path.style.transform = "";
-      });
-      calloutEls.forEach((node) => node.classList.remove("is-active"));
-    }
-    segmentEls.forEach((node) => {
-      node.addEventListener("mouseenter", () => setActive(node.getAttribute("data-segment-id") || ""));
-      node.addEventListener("mouseleave", clearActive);
-    });
-    calloutEls.forEach((node) => {
-      node.addEventListener("mouseenter", () => setActive(node.getAttribute("data-segment-id") || ""));
-      node.addEventListener("mouseleave", clearActive);
-    });
+    state.dashboardPieTab = "profile";
+    syncPieProfileTabs();
   }
 
 // ─────── Feed Rendering & Compose ─────────────────────────────────────
@@ -2286,6 +2286,9 @@
     if (el.openMaterialsViewBtn) {
       el.openMaterialsViewBtn.hidden = !isProgress;
     }
+    if (el.dashboardFocusPanel) {
+      el.dashboardFocusPanel.hidden = !isProgress;
+    }
     if (el.feedChannelSelect) {
       el.feedChannelSelect.hidden = isProgress;
       el.feedChannelSelect.value = String(state.selectedFeedChannelId || "public_all");
@@ -2295,25 +2298,22 @@
   }
 
   function syncPieProfileTabs() {
-    const isPie = state.dashboardPieTab !== "profile";
-    state.dashboardPieTab = isPie ? "pie" : "profile";
+    state.dashboardPieTab = "profile";
     if (el.dashboardPieTabBtn) {
-      el.dashboardPieTabBtn.classList.toggle("is-active", isPie);
-      el.dashboardPieTabBtn.setAttribute("aria-selected", isPie ? "true" : "false");
+      el.dashboardPieTabBtn.classList.remove("is-active");
+      el.dashboardPieTabBtn.setAttribute("aria-selected", "false");
     }
     if (el.dashboardProfileTabBtn) {
-      el.dashboardProfileTabBtn.classList.toggle("is-active", !isPie);
-      el.dashboardProfileTabBtn.setAttribute("aria-selected", !isPie ? "true" : "false");
+      el.dashboardProfileTabBtn.classList.add("is-active");
+      el.dashboardProfileTabBtn.setAttribute("aria-selected", "true");
     }
     if (el.timePieChart) {
-      el.timePieChart.hidden = !isPie;
+      el.timePieChart.hidden = true;
     }
     if (el.userProfileDimensions) {
-      el.userProfileDimensions.hidden = isPie;
+      el.userProfileDimensions.hidden = false;
     }
-    if (!isPie) {
-      renderProfileDimensions();
-    }
+    renderDashboardNotifications();
   }
 
   async function loadUserProfile() {
@@ -2328,117 +2328,126 @@
     }
   }
 
-  function renderProfileDimensions() {
-    if (!el.userProfileDimensions) return;
-    const profile = state.userProfile;
-    if (!profile || !profile.dimensions) {
-      el.userProfileDimensions.innerHTML = '<div class="materials-empty">暂无画像数据</div>';
-      return;
-    }
+  async function loadDashboardNotifications() {
+    const data = await fetchJson("/api/frontend/notifications?limit=20");
+    state.notifications = Array.isArray(data.items) ? data.items : [];
+    state.adminPendingParse = data.admin_pending_parse && typeof data.admin_pending_parse === "object"
+      ? data.admin_pending_parse
+      : { count: 0, items: [] };
+  }
 
-    const dims = profile.dimensions;
-    const rate = Math.round((profile.completion_rate || 0) * 100);
-    const dimOrder = [
-      "major", "knowledge_base", "cognitive_style", "interest_direction",
-      "weak_areas", "learning_pace", "error_patterns", "learning_goal",
-    ];
+  function renderNotificationTime(row) {
+    const ts = Number(row && row.date);
+    return Number.isFinite(ts) && ts > 0 ? formatTs(ts) : "";
+  }
 
-    const filledIcon = '<svg class="profile-dim-icon profile-dim-icon-done" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg>';
-    const emptyIcon = '<svg class="profile-dim-icon profile-dim-icon-empty" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg>';
+  function getNotificationId(row) {
+    return String(row && (row.notification_id || row.id) || "").trim();
+  }
 
-    let html = '<div class="profile-dim-grid">';
-    for (const key of dimOrder) {
-      const dim = dims[key];
-      if (!dim) continue;
-      const filled = dim.filled;
-      const truncated = filled && dim.value.length > 20 ? dim.value.slice(0, 20) + "…" : dim.value;
-      html += `
-        <div class="profile-dim-cell${filled ? " is-filled" : ""}" data-dim-key="${escapeHtml(key)}" style="cursor:pointer">
-          <div class="profile-dim-cell-head">
-            ${filled ? filledIcon : emptyIcon}
-            <span class="profile-dim-name">${escapeHtml(dim.name)}</span>
-          </div>
-          <div class="profile-dim-cell-value">${filled ? escapeHtml(truncated) : '<span class="profile-dim-placeholder">未填写</span>'}</div>
-          <div class="profile-dim-detail" hidden>${filled ? escapeHtml(dim.value) : "暂无数据"}</div>
-        </div>`;
-    }
-    html += "</div>";
+  function isFeedNotification(row) {
+    return String(row && row.source || "").trim().toLowerCase() === "feed";
+  }
 
-    const emptyCount = dimOrder.length - (profile.filled_count || 0);
-    const btnLabel = emptyCount > 0 ? `完善画像（${emptyCount}项待填）` : "更新画像";
-    const btnClass = "profile-refine-btn";
-    html += `
-      <div class="profile-dim-bar-wrap">
-        <div class="profile-dim-bar-head">
-          <span class="profile-dim-bar-label">画像完整度</span>
-          <span class="profile-dim-bar-rate">${rate}%</span>
-        </div>
-        <div class="profile-dim-bar">
-          <div class="profile-dim-bar-fill" style="width:${rate}%"></div>
-        </div>
-      </div>
-      <button class="${btnClass}" type="button">${escapeHtml(btnLabel)}</button>`;
+  function getNotificationActor(row) {
+    return row && typeof row.actor === "object" ? row.actor : {};
+  }
 
-    // 时间线：进步点 + 注意点
-    const timeline = profile.timeline || {};
-    const progressEntries = Array.isArray(timeline.progress) ? timeline.progress : [];
-    const attentionEntries = Array.isArray(timeline.attention) ? timeline.attention : [];
-    if (progressEntries.length || attentionEntries.length) {
-      html += '<div class="profile-timeline">';
-      html += '<div class="profile-timeline-title">学习动态</div>';
-      const allEntries = [
-        ...progressEntries.map((e) => ({ ...e, kind: "progress" })),
-        ...attentionEntries.map((e) => ({ ...e, kind: "attention" })),
-      ].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 8);
-      for (const entry of allEntries) {
-        const icon = entry.kind === "progress"
-          ? '<svg class="profile-timeline-icon tl-progress" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>'
-          : '<svg class="profile-timeline-icon tl-attention" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>';
-        html += `
-          <div class="profile-timeline-entry tl-${entry.kind}">
-            ${icon}
-            <div class="profile-timeline-body">
-              <span class="profile-timeline-date">${escapeHtml(entry.date)}</span>
-              <span class="profile-timeline-text">${escapeHtml(entry.text)}</span>
-            </div>
-          </div>`;
-      }
-      html += '</div>';
-    }
+  function getNotificationActorName(row) {
+    const actor = getNotificationActor(row);
+    return String(
+      actor.nickname
+      || actor.display_name
+      || actor.username
+      || actor.user_id
+      || row.actor_user_id
+      || "用户"
+    ).trim() || "用户";
+  }
 
-    el.userProfileDimensions.innerHTML = html;
+  function renderNotificationActorAvatar(row) {
+    if (!isFeedNotification(row)) return "";
 
-    // 维度卡片点击展开/收起详情
-    el.userProfileDimensions.querySelectorAll(".profile-dim-cell").forEach((cell) => {
-      cell.addEventListener("click", () => {
-        const detail = cell.querySelector(".profile-dim-detail");
-        if (!detail) return;
-        const isExpanded = !detail.hidden;
-        // 先收起所有
-        el.userProfileDimensions.querySelectorAll(".profile-dim-detail").forEach((d) => { d.hidden = true; });
-        el.userProfileDimensions.querySelectorAll(".profile-dim-cell").forEach((c) => { c.classList.remove("is-expanded"); });
-        // 再切换当前
-        if (!isExpanded) {
-          detail.hidden = false;
-          cell.classList.add("is-expanded");
-        }
-      });
+    const actorName = getNotificationActorName(row);
+    const actor = getNotificationActor(row);
+    const avatarUrl = normalizeFeedAvatarUrl(String(actor.avatar_url || actor.avatar || "").trim());
+    const initial = (Array.from(actorName)[0] || "动").toUpperCase();
+
+    return avatarUrl
+      ? `<img class="dashboard-notice-avatar" src="${escapeHtml(avatarUrl)}" alt="${escapeHtml(actorName)}">`
+      : `<div class="dashboard-notice-avatar dashboard-notice-avatar-fallback">${escapeHtml(initial)}</div>`;
+  }
+
+  function renderNotificationRemoveIcon() {
+    return `
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M7 7l10 10M17 7 7 17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+      </svg>
+    `;
+  }
+
+  async function removeDashboardNotification(notificationId) {
+    const targetId = String(notificationId || "").trim();
+
+    if (!targetId) return;
+
+    await fetchJson(`/api/frontend/notifications/${encodeURIComponent(targetId)}/remove`, {
+      method: "POST",
     });
 
-    // 画像访谈按钮
-    const refineBtn = el.userProfileDimensions.querySelector(".profile-refine-btn");
-    if (refineBtn) {
-      refineBtn.addEventListener("click", async () => {
-        const emptyCount2 = dimOrder.filter((k) => dims[k] && !dims[k].filled).length;
-        const msg = emptyCount2 > 0
-          ? `AI 将先总结你的已有画像，再逐个询问 ${emptyCount2} 个未填写的维度。是否开始？`
-          : "所有维度已填写。AI 将先总结已有画像，再确认各维度是否需要更新。是否开始？";
-        const ok = await confirmModalAsync(msg);
-        if (!ok) return;
-        sendHostMessage({ type: "nexora:send-message", text: "开始画像访谈", interview: true });
-        showToast("画像访谈已开始");
-      });
-    }
+    state.notifications = (Array.isArray(state.notifications) ? state.notifications : [])
+      .filter((row) => getNotificationId(row) !== targetId);
+    renderDashboardNotifications();
+  }
+
+  function renderDashboardNotifications() {
+    if (!el.userProfileDimensions) return;
+    const notifications = Array.isArray(state.notifications) ? state.notifications : [];
+    const pending = state.adminPendingParse && typeof state.adminPendingParse === "object"
+      ? state.adminPendingParse
+      : { count: 0, items: [] };
+    const pendingCount = Number(pending.count) || 0;
+    const pendingItems = Array.isArray(pending.items) ? pending.items : [];
+    const pendingHtml = state.isAdmin && pendingCount > 0 ? `
+      <button class="dashboard-notice-admin-alert" type="button" data-view="settings" data-settings-tab="refinement">
+        <div class="dashboard-notice-alert-title">待解析教材</div>
+        <div class="dashboard-notice-alert-count">${pendingCount}</div>
+        <div class="dashboard-notice-alert-sub">${escapeHtml(pendingItems.slice(0, 2).map((item) => String(item.book_title || "").trim()).filter(Boolean).join("、") || "有教材等待解析")}</div>
+      </button>
+    ` : "";
+
+    const notificationHtml = notifications.length ? notifications.map((row) => {
+      const title = String(row.title || "通知").trim();
+      const content = String(row.content || "").trim();
+      const timeText = renderNotificationTime(row);
+      const jumpto = String(row.jumpto || "").trim();
+      const notificationId = getNotificationId(row);
+      const actorAvatarHtml = renderNotificationActorAvatar(row);
+      const itemClass = actorAvatarHtml ? "dashboard-notice-item has-avatar" : "dashboard-notice-item";
+
+      return `
+        <article class="${itemClass}" ${jumpto ? `data-notice-jumpto="${escapeHtml(jumpto)}"` : ""} ${notificationId ? `data-notification-id="${escapeHtml(notificationId)}"` : ""}>
+          ${actorAvatarHtml}
+          <div class="dashboard-notice-main">
+            <div class="dashboard-notice-title">${escapeHtml(title)}</div>
+            ${content ? `<div class="dashboard-notice-content">${escapeHtml(content)}</div>` : ""}
+            ${timeText ? `<div class="dashboard-notice-time">${escapeHtml(timeText)}</div>` : ""}
+          </div>
+          ${notificationId ? `
+            <button class="dashboard-notice-remove" type="button" data-notice-remove-id="${escapeHtml(notificationId)}" aria-label="移除通知" title="移除通知">
+              ${renderNotificationRemoveIcon()}
+            </button>
+          ` : ""}
+        </article>
+      `;
+    }).join("") : '<div class="dashboard-notice-empty">暂无通知</div>';
+
+    el.userProfileDimensions.innerHTML = `
+      <section class="dashboard-notice-list">
+        ${pendingHtml}
+        ${notificationHtml}
+      </section>
+    `;
   }
 
   function renderReplyIcon() {
@@ -3429,6 +3438,13 @@
       const headerTitle = el.courseHomeHeader.querySelector(".reader-title");
       if (headerTitle) headerTitle.textContent = teacherEditMode ? "教材课程管理界面" : "课程主页";
     }
+    if (el.backFromCourseHomeBtn) {
+      const backText = teacherEditMode
+        ? "返回课程主页"
+        : (catalogMode ? "返回课程主页" : (state.courseHomeReturnTarget === "dashboard" ? "返回首页" : "返回课程书架"));
+      el.backFromCourseHomeBtn.setAttribute("title", backText);
+      el.backFromCourseHomeBtn.setAttribute("aria-label", backText);
+    }
     if (el.courseHomeSubtitle) {
       const row = getSelectedLectureRow();
       const lecture = row ? (row.lecture || {}) : {};
@@ -3448,6 +3464,7 @@
   function openMaterialsShelf() {
     state.materialsPageMode = "shelf";
     state.materialsDetailMode = "lecture";
+    state.courseHomeReturnTarget = "shelf";
     state.catalogContext = null;
     state.selectedBookId = "";
     closeReader();
@@ -3456,16 +3473,47 @@
     renderLectureDetail();
   }
 
-  function openLectureHome(lectureId) {
+  function openLectureHome(lectureId, options) {
+    const opts = options && typeof options === "object" ? options : {};
+    const returnTarget = String(opts.returnTarget || "shelf").trim();
     state.selectedLectureId = String(lectureId || "").trim();
     state.selectedBookId = "";
     state.materialsPageMode = "lecture";
     state.materialsDetailMode = "lecture";
+    state.courseHomeReturnTarget = returnTarget === "dashboard" ? "dashboard" : "shelf";
     state.catalogContext = null;
     closeReader();
     syncMaterialsPageMode();
     renderLectureList();
     renderLectureDetail();
+  }
+
+  function returnFromCourseHome() {
+    if (state.materialsDetailMode === "teacher-edit") {
+      closeTeacherEditPanel();
+      return;
+    }
+
+    if (state.materialsDetailMode === "catalog") {
+      state.materialsDetailMode = "lecture";
+      state.catalogContext = null;
+      renderLectureDetail();
+      return;
+    }
+
+    if (state.courseHomeReturnTarget === "dashboard") {
+      state.materialsPageMode = "shelf";
+      state.materialsDetailMode = "lecture";
+      state.courseHomeReturnTarget = "shelf";
+      state.catalogContext = null;
+      state.selectedBookId = "";
+      closeReader();
+      syncMaterialsPageMode();
+      setView("dashboard");
+      return;
+    }
+
+    openMaterialsShelf();
   }
 
   async function handleCourseHomeClick(event) {
@@ -3580,13 +3628,24 @@
     const target = event.target;
     if (!(target instanceof Element)) return;
 
+    const completedBadge = target.closest(".catalog-completed-badge");
+    if (completedBadge) {
+      const completedItem = completedBadge.closest("[data-material-catalog-index]");
+      if (!completedItem || !state.catalogContext) return;
+      event.preventDefault();
+      event.stopPropagation();
+      await confirmClearCatalogChapterProgress(Number(completedItem.getAttribute("data-material-catalog-index") || "0"));
+      return;
+    }
+
     // 学习路径生成按钮
     const pathBtn = target.closest("#generateLearningPathBtn");
     if (pathBtn) {
       const lectureId = String(pathBtn.getAttribute("data-lecture-id") || "");
       const bookId = String(pathBtn.getAttribute("data-book-id") || "");
       if (!lectureId || !bookId) return;
-      await generateLearningPath(lectureId, bookId);
+      const force = String(pathBtn.getAttribute("data-force") || "") === "1";
+      await generateLearningPath(lectureId, bookId, force);
       return;
     }
 
@@ -3626,6 +3685,34 @@
     }
   }
 
+  async function loadCourseCachedVideos(lectureId) {
+    const container = document.getElementById("courseVideoPanelContainer");
+    if (!container) return;
+
+    const resolvedLectureId = String(lectureId || "").trim();
+    if (!resolvedLectureId) {
+      container.innerHTML = '<div class="lp-video-empty">暂无已缓存视频</div>';
+      return;
+    }
+
+    container.dataset.lectureId = resolvedLectureId;
+    container.innerHTML = '<div class="lp-video-loading">正在加载已缓存视频...</div>';
+
+    try {
+      const data = await fetchJson(`/api/frontend/lecture-videos?lecture_id=${encodeURIComponent(resolvedLectureId)}`);
+      if (String(container.dataset.lectureId || "") !== resolvedLectureId) return;
+
+      if (!data.success || !Array.isArray(data.items) || !data.items.length) {
+        container.innerHTML = '<div class="lp-video-empty">暂无已缓存视频</div>';
+        return;
+      }
+
+      renderVideoList(container, data.items, true);
+    } catch (_err) {
+      container.innerHTML = '<div class="lp-video-empty">视频加载失败</div>';
+    }
+  }
+
   function renderVideoList(container, videos, cached) {
     let html = '';
     // 日志
@@ -3647,7 +3734,7 @@
             <div class="lp-video-title">${escapeHtml(title)}</div>
             ${upName ? `<div class="lp-video-author">${escapeHtml(upName)}</div>` : ""}
             <div class="lp-video-stats">
-              ${playCount && playCount !== "0" ? `<span>▶ ${escapeHtml(playCount)}</span>` : ""}
+              ${playCount && playCount !== "0" ? `<span>播放 ${escapeHtml(playCount)}</span>` : ""}
               ${duration ? `<span>${escapeHtml(duration)}</span>` : ""}
             </div>
           </div>
@@ -3669,71 +3756,387 @@
   }
 
   async function generateLearningPath(lectureId, bookId, force) {
-    const container = document.getElementById("learningPathContainer");
-    if (!container) return;
+    const catalogList = document.querySelector(".learning-panel-catalog-list");
+    if (!catalogList) return;
 
-    container.innerHTML = '<div class="materials-loading">正在生成学习路径...</div>';
+    const cacheKey = getLearningPathCacheKey(lectureId, bookId);
+    if (!force && cacheKey && state.learningPathCache[cacheKey]) {
+      renderLearningPath(catalogList, state.learningPathCache[cacheKey], lectureId, bookId);
+      return;
+    }
+
+    setCatalogRecommendationStatus(force ? "推荐阅读生成中..." : "读取推荐阅读...");
     try {
       const data = await fetchJson("/api/frontend/learning-path", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lecture_id: lectureId, book_id: bookId, force: !!force }),
+        body: JSON.stringify({ username: getRuntimeUsername(), lecture_id: lectureId, book_id: bookId, force: !!force }),
       });
       if (!data.success || !Array.isArray(data.path)) {
-        container.innerHTML = `<div class="materials-empty">${escapeHtml(data.error || "生成失败")}</div>`;
+        setCatalogRecommendationStatus(data.error || "推荐阅读生成失败");
         return;
       }
-      renderLearningPath(container, data, lectureId, bookId);
+      if (cacheKey) {
+        state.learningPathCache[cacheKey] = data;
+      }
+      renderLearningPath(catalogList, data, lectureId, bookId);
     } catch (err) {
-      container.innerHTML = `<div class="materials-empty">生成失败：${escapeHtml(err.message || "未知错误")}</div>`;
+      setCatalogRecommendationStatus(`生成失败：${err.message || "未知错误"}`);
     }
   }
 
   function renderLearningPath(container, data, lectureId, bookId) {
     const pathItems = Array.isArray(data.path) ? data.path : [];
-    const advice = String(data.advice || "").trim();
     if (!pathItems.length) {
-      container.innerHTML = '<div class="materials-empty">暂无路径数据</div>';
+      clearCatalogRecommendations(container);
+      setCatalogRecommendationStatus("暂无推荐阅读");
       return;
     }
 
-    const statusLabels = { completed: "已完成", current: "当前", recommended: "推荐", pending: "待学习" };
+    const statusLabels = { completed: "已读完", current: "当前", recommended: "推荐", pending: "待学习" };
+    const recommendationMap = new Map();
 
-    let html = '';
-
-    // AI 建议文本
-    if (advice) {
-      html += `<div class="lp-advice">${escapeHtml(advice)}</div>`;
-    }
-
-    // 章节卡片列表
-    html += '<div class="lp-list">';
-    for (let i = 0; i < pathItems.length; i++) {
-      const item = pathItems[i];
-      const status = String(item.status || "pending").toLowerCase();
-      const label = statusLabels[status] || "待学习";
-      const isHighlight = status === "current" || status === "recommended";
-      const summary = String(item.summary || "").trim();
-      const reason = String(item.reason || "").trim();
-
-      html += `
-        <div class="lp-card${isHighlight ? " is-highlight" : ""} lp-${status}">
-          <div class="lp-card-head">
-            <span class="lp-card-badge lp-badge-${status}">${escapeHtml(label)}</span>
-            <span class="lp-card-name">${escapeHtml(item.name || `章节 ${i + 1}`)}</span>
-          </div>
-          ${reason ? `<div class="lp-card-reason">${escapeHtml(reason)}</div>` : ""}
-          ${summary ? `<div class="lp-card-summary">${escapeHtml(summary)}</div>` : ""}
-        </div>`;
-    }
-    html += '</div>';
-
-    html += '<button class="lp-regen" type="button">↻ 重新生成</button>';
-    container.innerHTML = html;
-
-    container.querySelector(".lp-regen").addEventListener("click", () => {
-      generateLearningPath(lectureId, bookId, true);
+    pathItems.forEach((item) => {
+      const key = normalizeCatalogRecommendationName(item && item.name);
+      if (!key) return;
+      recommendationMap.set(key, item);
     });
+
+    let appliedCount = 0;
+    let completedCount = 0;
+    let scrollTarget = null;
+    container.querySelectorAll(".materials-catalog-item").forEach((node) => {
+      const slot = node.querySelector(".catalog-recommendation-inline");
+      if (!slot) return;
+
+      const key = String(node.getAttribute("data-catalog-title") || "").trim();
+      const item = recommendationMap.get(key);
+      const alreadyCompleted = resetCatalogItemMarker(node);
+
+      if (alreadyCompleted) {
+        completedCount += 1;
+        return;
+      }
+
+      if (!item) return;
+
+      const rawStatus = String(item.status || "").toLowerCase();
+      if (!Object.prototype.hasOwnProperty.call(statusLabels, rawStatus)) return;
+
+      const status = rawStatus;
+      const label = statusLabels[status];
+      const reason = String(item.reason || "").trim();
+      node.classList.add("has-recommendation", `catalog-status-${status}`);
+      if (status === "completed") {
+        node.classList.add("is-catalog-completed");
+      }
+      slot.innerHTML = `
+        <span class="catalog-recommendation-badge${status === "completed" ? " catalog-completed-badge" : ""}"${status === "completed" ? ' title="清空该章节阅读记录"' : ""}>${escapeHtml(label)}</span>
+        ${reason ? `<span class="catalog-recommendation-reason">${escapeHtml(reason)}</span>` : ""}
+      `;
+      if (status === "current") {
+        scrollTarget = node;
+      } else if (status === "recommended" && !scrollTarget) {
+        scrollTarget = node;
+      }
+      appliedCount += 1;
+    });
+
+    const statusText = appliedCount
+      ? `已融合 ${appliedCount} 条推荐`
+      : (completedCount ? `已读完 ${completedCount} 章` : "暂无匹配章节推荐");
+    setCatalogRecommendationStatus(statusText);
+    scrollCatalogRecommendationIntoView(scrollTarget);
+  }
+
+  function normalizeCatalogRecommendationName(value) {
+    return String(value || "").trim().replace(/\s+/g, "");
+  }
+
+  function getLearningPathCacheKey(lectureId, bookId) {
+    const lid = String(lectureId || "").trim();
+    const bid = String(bookId || "").trim();
+    if (!lid || !bid) return "";
+
+    return `${lid}::${bid}`;
+  }
+
+  function clearCatalogRecommendations(container) {
+    if (!container) return;
+
+    container.querySelectorAll(".materials-catalog-item").forEach((node) => {
+      resetCatalogItemMarker(node);
+    });
+  }
+
+  function setCatalogRecommendationStatus(text) {
+    const node = document.getElementById("catalogRecommendationStatus");
+    if (node) node.textContent = String(text || "").trim();
+  }
+
+  function scrollCatalogRecommendationIntoView(node) {
+    if (!node) return;
+
+    const scroller = node.closest(".learning-panel-catalog-scroll");
+    if (!scroller) return;
+
+    requestAnimationFrame(() => {
+      const scrollerRect = scroller.getBoundingClientRect();
+      const nodeRect = node.getBoundingClientRect();
+      const nextTop = scroller.scrollTop + nodeRect.top - scrollerRect.top - 28;
+      scroller.scrollTo({ top: Math.max(0, nextTop), behavior: "smooth" });
+    });
+  }
+
+  function isCatalogChapterCompleted(lectureId, bookId, chapterIndex) {
+    const key = `${String(lectureId || "").trim()}::${String(bookId || "").trim()}`;
+    if (!key || key === "::") return false;
+
+    const progress = state.readerSessionProgress[key];
+    if (!progress || !(progress.completedIndices instanceof Set)) return false;
+
+    return progress.completedIndices.has(Number(chapterIndex) || 0);
+  }
+
+  function renderCatalogCompletedBadge() {
+    return '<span class="catalog-recommendation-badge catalog-completed-badge" title="清空该章节阅读记录">已读完</span>';
+  }
+
+  function resetCatalogItemMarker(node) {
+    const slot = node ? node.querySelector(".catalog-recommendation-inline") : null;
+    const completed = String(node && node.getAttribute("data-catalog-completed") || "") === "1";
+    if (!node || !slot) return false;
+
+    node.classList.remove("has-recommendation", "catalog-status-current", "catalog-status-recommended", "catalog-status-pending");
+
+    if (completed) {
+      node.classList.add("is-catalog-completed", "catalog-status-completed");
+      slot.innerHTML = renderCatalogCompletedBadge();
+      return true;
+    }
+
+    node.classList.remove("is-catalog-completed", "catalog-status-completed");
+    slot.innerHTML = "";
+    return false;
+  }
+
+  async function confirmClearCatalogChapterProgress(chapterIndex) {
+    const idx = Number(chapterIndex) || 0;
+    const chapters = state.catalogContext && Array.isArray(state.catalogContext.chapters) ? state.catalogContext.chapters : [];
+    const chapter = chapters[idx];
+    const title = String((chapter && chapter.title) || `第 ${idx + 1} 章`).trim();
+    const ok = await confirmModalAsync(`确认清空「${title}」的阅读记录？已生成的小测验文件会保留，但本章节将不再指向该小测，导读缓存也会清空。`);
+    if (!ok) return;
+
+    await clearCatalogChapterProgress(idx);
+  }
+
+  async function clearCatalogChapterProgress(chapterIndex) {
+    const lectureId = String(state.selectedLectureId || "").trim();
+    const bookId = String(state.catalogContext && state.catalogContext.bookId || state.selectedBookId || "").trim();
+    const idx = Number(chapterIndex) || 0;
+    const chapters = state.catalogContext && Array.isArray(state.catalogContext.chapters) ? state.catalogContext.chapters : [];
+    const chapter = chapters[idx];
+    const chapterName = String((chapter && chapter.title) || "").trim();
+    if (!lectureId || !bookId) {
+      showToast("当前课程或教材上下文不完整，不能清空记录");
+      return;
+    }
+    if (!chapterName) {
+      showToast("当前章节上下文不完整，不能清空记录");
+      return;
+    }
+
+    try {
+      await fetchJson("/api/frontend/learning/chapter-record/clear", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: getRuntimeUsername(),
+          lecture_id: lectureId,
+          book_id: bookId,
+          chapter_name: chapterName,
+          chapter_index: idx,
+        }),
+      });
+    } catch (err) {
+      console.warn("[NXL-Reader] clear chapter record failed", err);
+      showToast(err && err.message ? err.message : "清空阅读记录失败");
+      return;
+    }
+
+    const sessionKey = `${lectureId}::${bookId}`;
+    const progress = state.readerSessionProgress[sessionKey];
+    if (progress) {
+      if (progress.completedIndices instanceof Set) {
+        progress.completedIndices.delete(idx);
+      }
+
+      if (progress.completedSessions instanceof Set) {
+        const sessionPrefix = `${idx}:`;
+        Array.from(progress.completedSessions).forEach((item) => {
+          if (String(item || "").startsWith(sessionPrefix)) {
+            progress.completedSessions.delete(item);
+          }
+        });
+      }
+
+      clearChapterCompleteReportsForIndex(lectureId, bookId, idx);
+
+      if (Number(progress.currentChapterIndex) === idx) {
+        progress.currentChapterIndex = 0;
+      }
+
+      saveSessionProgress();
+    }
+
+    clearReaderGuideCacheForChapter(lectureId, bookId, idx);
+    clearChapterQuizReference(lectureId, bookId, idx);
+    clearLearningPathCompletedStatusForChapter(lectureId, bookId, idx);
+
+    state.readerReportedChapterKey = "";
+    state.readerReportingChapterKey = "";
+    state.readerChapterQuizLoadingKey = "";
+
+    const item = document.querySelector(`.materials-catalog-item[data-material-catalog-index="${idx}"]`);
+    if (item) {
+      item.setAttribute("data-catalog-completed", "0");
+      resetCatalogItemMarker(item);
+    }
+
+    renderChapterList();
+    showToast("已清空该章节阅读记录");
+  }
+
+  function clearLearningPathCompletedStatusForChapter(lectureId, bookId, chapterIndex) {
+    const cacheKey = getLearningPathCacheKey(lectureId, bookId);
+    const cache = cacheKey ? state.learningPathCache[cacheKey] : null;
+    const path = cache && Array.isArray(cache.path) ? cache.path : [];
+    const chapters = state.catalogContext && Array.isArray(state.catalogContext.chapters) ? state.catalogContext.chapters : [];
+    const chapter = chapters[Number(chapterIndex) || 0];
+    const chapterKey = normalizeCatalogRecommendationName(chapter && chapter.title);
+    if (!chapterKey) return;
+
+    path.forEach((item) => {
+      const itemKey = normalizeCatalogRecommendationName(item && item.name);
+      if (itemKey === chapterKey && String(item.status || "").toLowerCase() === "completed") {
+        item.status = "pending";
+        item.reason = "";
+      }
+    });
+  }
+
+  function clearReaderGuideCacheForChapter(lectureId, bookId, chapterIndex) {
+    const lid = String(lectureId || "").trim();
+    const bid = String(bookId || "").trim();
+    const idx = Number(chapterIndex) || 0;
+    const cache = readReaderGuideCache();
+    let changed = false;
+
+    Object.keys(cache).forEach((key) => {
+      const item = cache[key] && typeof cache[key] === "object" ? cache[key] : {};
+      const target = item.target && typeof item.target === "object" ? item.target : {};
+      const parts = String(key || "").split("::");
+      const matchesTarget = String(target.lectureId || "").trim() === lid
+        && String(target.bookId || "").trim() === bid
+        && Number(target.chapterIndex) === idx;
+      const matchesKey = parts.length >= 4
+        && parts[0] === lid
+        && parts[1] === bid
+        && Number(parts[3]) === idx;
+
+      if (matchesTarget || matchesKey) {
+        delete cache[key];
+        changed = true;
+      }
+    });
+
+    if (changed) {
+      writeReaderGuideCache(cache);
+    }
+
+    clearReaderGuideCardStateForChapter(lid, bid, idx);
+
+    const activeTarget = readerGuideState.target || {};
+    if (
+      String(activeTarget.lectureId || "").trim() === lid &&
+      String(activeTarget.bookId || "").trim() === bid &&
+      Number(activeTarget.chapterIndex) === idx
+    ) {
+      state.readerGuidePromptedKey = "";
+      readerGuideState = { status: "empty", target: null, guide: null, error: "", draft: "" };
+      renderReaderGuidePanel();
+    }
+  }
+
+  function clearReaderGuideCardStateForChapter(lectureId, bookId, chapterIndex) {
+    const lid = String(lectureId || "").trim();
+    const bid = String(bookId || "").trim();
+    const idx = Number(chapterIndex) || 0;
+    const stateMap = readReaderGuideCardState();
+    let changed = false;
+
+    Object.keys(stateMap).forEach((key) => {
+      const parts = String(key || "").split("::");
+      const matchesKey = parts.length >= 4
+        && parts[0] === lid
+        && parts[1] === bid
+        && Number(parts[3]) === idx;
+
+      if (matchesKey) {
+        delete stateMap[key];
+        changed = true;
+      }
+    });
+
+    if (changed) {
+      writeReaderGuideCardState(stateMap);
+    }
+  }
+
+  function clearChapterQuizReference(lectureId, bookId, chapterIndex) {
+    const lid = String(lectureId || "").trim();
+    const bid = String(bookId || "").trim();
+    const idx = Number(chapterIndex) || 0;
+    const storedQuizzes = JSON.parse(localStorage.getItem("nxl_quiz_generated_v1") || "{}");
+    let changed = false;
+
+    Object.keys(storedQuizzes).forEach((key) => {
+      const item = storedQuizzes[key] && typeof storedQuizzes[key] === "object" ? storedQuizzes[key] : {};
+      const meta = item.meta && typeof item.meta === "object" ? item.meta : {};
+
+      if (
+        String(meta.quizType || "") === "chapter" &&
+        String(meta.lectureId || "").trim() === lid &&
+        String(meta.bookId || "").trim() === bid &&
+        Number(meta.chapterIndex) === idx
+      ) {
+        delete storedQuizzes[key];
+        changed = true;
+      }
+    });
+
+    if (changed) {
+      localStorage.setItem("nxl_quiz_generated_v1", JSON.stringify(storedQuizzes));
+    }
+
+    const meta = quizState.currentMeta || {};
+    if (
+      String(meta.quizType || "") === "chapter" &&
+      String(meta.lectureId || "").trim() === lid &&
+      String(meta.bookId || "").trim() === bid &&
+      Number(meta.chapterIndex) === idx
+    ) {
+      quizState.loading = false;
+      quizState.currentChapter = "";
+      quizState.currentSession = "";
+      quizState.currentMeta = null;
+      quizState.questions = [];
+      quizState.answers = {};
+      quizState.error = null;
+      saveQuizState();
+      renderQuizPanel();
+    }
   }
 
   function renderLectureList() {
@@ -4041,12 +4444,25 @@
       const chapters = Array.isArray(ctx.chapters) ? ctx.chapters : [];
       const isLoading = !!ctx.loading;
       const summaryBrief = escapeHtml(ctx.summaryBrief || "");
-      const summaryBriefHtml = (ctx.summaryBrief || "").replace(/\n/g, "<br>");
+      const summaryBriefHtml = summaryBrief.replace(/\n/g, "<br>");
       const catalogCoverHtml = renderLearningPanelCover(
         String(ctx.coverPath || "").trim(),
         String(ctx.title || "教材目录"),
         "learning-panel-cover-placeholder"
       );
+      const completedCatalogCount = chapters.reduce((count, _item, idx) => (
+        count + (isCatalogChapterCompleted(state.selectedLectureId || "", ctx.bookId || "", idx) ? 1 : 0)
+      ), 0);
+      const unreadCatalogCount = Math.max(0, chapters.length - completedCatalogCount);
+      const nextCatalogItem = chapters.find((_item, idx) => !isCatalogChapterCompleted(state.selectedLectureId || "", ctx.bookId || "", idx));
+      const catalogOverviewHtml = (!isLoading && chapters.length) ? `
+        <div class="learning-panel-hero-metrics">
+          <span><strong>${escapeHtml(String(chapters.length))}</strong>章节</span>
+          <span><strong>${escapeHtml(String(completedCatalogCount))}</strong>已读</span>
+          <span><strong>${escapeHtml(String(unreadCatalogCount))}</strong>待读</span>
+          <span class="learning-panel-hero-next" title="${escapeHtml(nextCatalogItem ? nextCatalogItem.title || "" : "全部章节已读完")}">下一章：${escapeHtml(nextCatalogItem ? nextCatalogItem.title || "未命名章节" : "全部章节已读完")}</span>
+        </div>
+      ` : "";
 
       detailPane.innerHTML = `
         <section class="materials-detail-scroll materials-catalog-page learning-panel-page">
@@ -4056,38 +4472,50 @@
               <div class="learning-panel-hero-title">${escapeHtml(ctx.title || "教材目录")}</div>
               <div class="learning-panel-hero-subtitle">${escapeHtml(ctx.subtitle || "")}</div>
               ${summaryBrief ? `<div class="learning-panel-hero-brief">${summaryBriefHtml}</div>` : ""}
+              ${catalogOverviewHtml}
             </div>
           </div>
           <div class="learning-panel-catalog-layout">
-            <div class="learning-panel-catalog-left">
-              <div class="learning-panel-section-head">
-                <div class="detail-title">推荐视频</div>
-                <button class="lp-video-refresh" id="refreshVideosBtn" type="button" title="刷新视频">↻</button>
-              </div>
-              <div class="learning-panel-section-body lp-video-container" id="videoPanelContainer" data-lecture-id="${escapeHtml(state.selectedLectureId || "")}" data-book-id="${escapeHtml(ctx.bookId || "")}">
-                <div class="materials-loading">加载视频...</div>
-              </div>
-              <div class="learning-panel-section-head" style="margin-top:8px;">
-                <div class="detail-title">个性化学习路径</div>
-              </div>
-              <div class="learning-panel-section-body" id="learningPathContainer" data-lecture-id="${escapeHtml(state.selectedLectureId || "")}" data-book-id="${escapeHtml(ctx.bookId || "")}">
-              </div>
-            </div>
-            <div class="learning-panel-catalog-right">
-              <div class="learning-panel-section-head">
+            <div class="learning-panel-catalog-main">
+              <div class="learning-panel-catalog-panel-head">
                 <div class="detail-title">目录</div>
-              </div>
-              <div class="learning-panel-section-body">
-                <div class="materials-catalog-list learning-panel-catalog-list">
-                ${isLoading ? '<div class="materials-loading">目录加载中...</div>' : (chapters.length ? chapters.map((item, idx) => `
-                  <button class="materials-catalog-item" type="button" data-material-catalog-index="${idx}">
-                    <span class="materials-catalog-index">${idx + 1}.</span>
-                    <span class="materials-catalog-text">${escapeHtml(item.title || `章节 ${idx + 1}`)}</span>
-                  </button>
-                `).join("") : '<div class="materials-empty">暂无目录</div>')}
+                <div class="catalog-head-tools">
+                  <span class="catalog-recommendation-status" id="catalogRecommendationStatus">推荐阅读加载中...</span>
+                  <button class="catalog-recommendation-refresh" id="generateLearningPathBtn" type="button" data-force="1" data-lecture-id="${escapeHtml(state.selectedLectureId || "")}" data-book-id="${escapeHtml(ctx.bookId || "")}" title="刷新推荐阅读" aria-label="刷新推荐阅读"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button>
                 </div>
               </div>
+
+              <div class="learning-panel-catalog-scroll">
+                <section class="learning-panel-catalog-group">
+                  <div class="materials-catalog-list learning-panel-catalog-list">
+                  ${isLoading ? '<div class="materials-loading">目录加载中...</div>' : (chapters.length ? chapters.map((item, idx) => {
+                    const catalogCompleted = isCatalogChapterCompleted(state.selectedLectureId || "", ctx.bookId || "", idx);
+                    const catalogCompletedClass = catalogCompleted ? " is-catalog-completed catalog-status-completed" : "";
+                    const catalogCompletedMarker = catalogCompleted ? renderCatalogCompletedBadge() : "";
+                    return `
+                    <button class="materials-catalog-item${catalogCompletedClass}" type="button" data-material-catalog-index="${idx}" data-catalog-title="${escapeHtml(normalizeCatalogRecommendationName(item.title || `章节 ${idx + 1}`))}" data-catalog-completed="${catalogCompleted ? "1" : "0"}">
+                      <span class="materials-catalog-index">${idx + 1}.</span>
+                      <span class="materials-catalog-main">
+                        <span class="materials-catalog-text">${escapeHtml(item.title || `章节 ${idx + 1}`)}</span>
+                        <span class="catalog-recommendation-inline">${catalogCompletedMarker}</span>
+                      </span>
+                    </button>
+                  `;
+                  }).join("") : '<div class="materials-empty">暂无目录</div>')}
+                  </div>
+                </section>
+              </div>
             </div>
+
+            <aside class="learning-panel-catalog-media">
+              <div class="learning-panel-catalog-panel-head">
+                <div class="detail-title">推荐视频</div>
+                <button class="lp-video-refresh" id="refreshVideosBtn" type="button" title="刷新视频" aria-label="刷新视频"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button>
+              </div>
+              <div class="lp-video-container" id="videoPanelContainer" data-lecture-id="${escapeHtml(state.selectedLectureId || "")}" data-book-id="${escapeHtml(ctx.bookId || "")}">
+                <div class="materials-loading">加载视频...</div>
+              </div>
+            </aside>
           </div>
         </section>
       `;
@@ -4118,21 +4546,17 @@
         });
       }
 
-      // 初始化学习路径：尝试加载缓存，无则显示按钮
-      const lpContainer = document.getElementById("learningPathContainer");
-      if (lpContainer) {
-        const _lpBtn = `<button class="learning-path-gen-btn" id="generateLearningPathBtn" type="button" data-lecture-id="${escapeHtml(lid)}" data-book-id="${escapeHtml(bid)}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M12 3v18m-6-6 6 6 6-6"/></svg>生成学习路径</button><div class="learning-path-hint">根据章节结构和你的学习画像，为你规划个性化学习路线</div>`;
-        fetchJson("/api/frontend/learning-path", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ lecture_id: lid, book_id: bid }),
-        }).then((lpData) => {
-          if (lpData && lpData.success && Array.isArray(lpData.path) && lpData.path.length) {
-            renderLearningPath(lpContainer, lpData, lid, bid);
-          } else {
-            lpContainer.innerHTML = _lpBtn;
-          }
-        }).catch(() => { lpContainer.innerHTML = _lpBtn; });
+      // 初始化推荐阅读：接口返回后直接融合进目录条目。
+      const catalogList = document.querySelector(".learning-panel-catalog-list");
+      if (catalogList && chapters.length && !isLoading) {
+        const learningPathCacheKey = getLearningPathCacheKey(lid, bid);
+        if (learningPathCacheKey && state.learningPathCache[learningPathCacheKey]) {
+          renderLearningPath(catalogList, state.learningPathCache[learningPathCacheKey], lid, bid);
+        } else {
+          void generateLearningPath(lid, bid, false);
+        }
+      } else {
+        setCatalogRecommendationStatus(chapters.length ? "目录加载中" : "暂无目录");
       }
       return;
     }
@@ -4170,6 +4594,37 @@
       ["教材数量", `${books.length} 本`],
       ["学习状态", isLearning ? "学习中" : "未加入学习"],
     ];
+    const lectureInfoPanelHtml = `
+      <aside class="learning-panel-info-column learning-panel-hero-info-column">
+        <div class="learning-panel-progress">
+          <div class="learning-panel-progress-top">
+            <div class="detail-description-label learning-panel-copy-label">当前推进</div>
+            <div class="learning-panel-progress-percent">${escapeHtml(String(progressPercent))}%</div>
+          </div>
+          <div class="learning-panel-progress-text" title="${escapeHtml(progressText)}">${escapeHtml(progressText || "暂无推进信息")}</div>
+          <div class="nxl-course-bar learning-panel-progress-bar"><div class="nxl-course-bar-fill" style="width:${progressPercent}%"></div></div>
+        </div>
+
+        <div class="learning-panel-info-card">
+          <div class="detail-description-label learning-panel-copy-label">学习信息</div>
+          <div class="learning-panel-info-list">
+            ${lectureInfoRows.map(([label, value]) => `
+              <div class="learning-panel-info-row">
+                <span class="learning-panel-info-label">${escapeHtml(label)}</span>
+                <span class="learning-panel-info-value">${escapeHtml(String(value || ""))}</span>
+              </div>
+            `).join("")}
+          </div>
+        </div>
+
+        <div class="learning-panel-info-card">
+          <div class="detail-description-label learning-panel-copy-label">教师信息${state.isAdmin ? ` <button class="learning-panel-inline-edit-btn" type="button" data-action="edit-teacher" title="编辑教师" aria-label="编辑教师"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>` : ""}</div>
+          <div class="learning-panel-teacher-list learning-panel-teacher-list-compact">
+            ${lectureTeachers}
+          </div>
+        </div>
+      </aside>
+    `;
 
     detailPane.innerHTML = `
       <section class="materials-detail-scroll learning-panel-page">
@@ -4188,17 +4643,12 @@
                     <div class="detail-description-label learning-panel-copy-label">课程简介</div>
                     <div class="detail-description-text learning-panel-summary-text">${lectureDescription}</div>
                   </div>
-                  <aside class="learning-panel-teacher-card">
-                    <div class="detail-description-label learning-panel-copy-label">教师列表</div>
-                    <div class="learning-panel-teacher-list">
-                      ${lectureTeachers}
-                    </div>
-                  </aside>
                 </div>
                 <div class="learning-panel-copy-actions learning-panel-action-row">
                   <button class="${toggleBtnClass}" data-action="toggle-learning" data-lecture-id="${escapeHtml(lectureId)}" aria-label="${toggleBtnTitle}" title="${toggleBtnTitle}">${toggleBtnText}</button>
                 </div>
               </div>
+              ${lectureInfoPanelHtml}
             </div>
           </div>
         </section>
@@ -4214,59 +4664,37 @@
                 ${books.length ? books.map((book) => {
               const bookId = String(book.id || "");
               const active = bookId === state.selectedBookId ? "is-active" : "";
-              const bookMeta = [
-                vectorStatusLabel(book.vector_status, book.vector_provider),
-                materialStatusLabel(book.status),
-              ].filter(Boolean).join(" · ");
-              const bookHint = active ? "当前教材" : "点击进入阅读";
+              const bookTitle = String(book.title || bookId || "教材").trim();
+              const bookState = active ? '<div class="learning-panel-book-current">当前教材</div>' : "";
               return `
-                  <article class="book-item ${active} learning-panel-book-item" data-book-id="${escapeHtml(bookId)}">
-                    <div class="book-item-head learning-panel-book-head">
-                      <div class="learning-panel-book-head-main">
-                        <div class="book-title learning-panel-book-title">${escapeHtml(book.title || bookId)}</div>
-                        <div class="book-meta learning-panel-book-meta">${escapeHtml(bookMeta || bookHint)}</div>
-                      </div>
-                      <span class="learning-panel-book-state">${escapeHtml(bookHint)}</span>
+                  <article class="book-item ${active} learning-panel-book-item" data-book-id="${escapeHtml(bookId)}" title="${escapeHtml(bookTitle)}">
+                    ${renderCourseDetailBookCover(book, bookTitle)}
+                    <div class="learning-panel-book-head">
+                      <div class="book-title learning-panel-book-title">${escapeHtml(bookTitle)}</div>
+                      ${bookState}
                     </div>
                   </article>
               `;
             }).join("") : '<div class="materials-empty">暂无教材</div>'}
-                </div>
               </div>
             </div>
-            <aside class="learning-panel-info-column">
-              <div class="learning-panel-progress">
-                <div class="learning-panel-progress-top">
-                  <div class="detail-description-label learning-panel-copy-label">当前推进</div>
-                  <div class="learning-panel-progress-percent">${escapeHtml(String(progressPercent))}%</div>
-                </div>
-                <div class="learning-panel-progress-text" title="${escapeHtml(progressText)}">${escapeHtml(progressText || "暂无推进信息")}</div>
-                <div class="nxl-course-bar learning-panel-progress-bar"><div class="nxl-course-bar-fill" style="width:${progressPercent}%"></div></div>
-              </div>
+          </div>
 
-              <div class="learning-panel-info-card">
-                <div class="detail-description-label learning-panel-copy-label">学习信息</div>
-                <div class="learning-panel-info-list">
-                  ${lectureInfoRows.map(([label, value]) => `
-                    <div class="learning-panel-info-row">
-                      <span class="learning-panel-info-label">${escapeHtml(label)}</span>
-                      <span class="learning-panel-info-value">${escapeHtml(String(value || ""))}</span>
-                    </div>
-                  `).join("")}
-                </div>
+          <div class="learning-panel-course-video-block">
+            <div class="learning-panel-section-head learning-panel-course-video-head">
+              <div class="detail-title learning-panel-section-title">推荐视频</div>
+            </div>
+            <div class="learning-panel-section-body">
+              <div class="lp-video-container" id="courseVideoPanelContainer" data-lecture-id="${escapeHtml(lectureId)}">
+                <div class="lp-video-loading">正在加载已缓存视频...</div>
               </div>
-
-              <div class="learning-panel-info-card">
-                <div class="detail-description-label learning-panel-copy-label">教师信息${state.isAdmin ? ` <button class="learning-panel-inline-edit-btn" type="button" data-action="edit-teacher" title="编辑教师">✎</button>` : ""}</div>
-                <div class="learning-panel-teacher-list learning-panel-teacher-list-compact">
-                  ${lectureTeachers}
-                </div>
-              </div>
-            </aside>
+            </div>
+          </div>
           </div>
         </section>
       </section>
     `;
+    loadCourseCachedVideos(lectureId);
   }
 
   async function fetchBookTextFull() {
@@ -4299,7 +4727,7 @@
     }
   }
 
-  async function loadChapterContent(chapterIndex, scrollToOffset) {
+  async function loadChapterContent(chapterIndex, scrollToOffset, guideOptions) {
     const requestToken = state.readerRequestToken;
     showChapterLoading(chapterIndex);
     const content = await fetchChapterText(chapterIndex);
@@ -4311,7 +4739,7 @@
     if (!state.readerFullTextRaw) {
       state.readerFullTextRaw = content;
     }
-    renderChapterContent(chapterIndex, content, scrollToOffset);
+    renderChapterContent(chapterIndex, content, scrollToOffset, guideOptions);
   }
 
   function showChapterLoading(chapterIndex) {
@@ -4331,7 +4759,7 @@
     `;
   }
 
-  function renderChapterContent(chapterIndex, content, scrollToOffset) {
+  function renderChapterContent(chapterIndex, content, scrollToOffset, guideOptions) {
     const chapters = Array.isArray(state.readerChapters) ? state.readerChapters : [];
     const idx = Math.max(0, Math.min(chapters.length - 1, chapterIndex));
     state.readerActiveChapterIndex = idx;
@@ -4357,6 +4785,8 @@
     syncReaderTelemetrySessionContext("chapter_render");
     scheduleHostReaderContextSync(0);
     renderChapterAnnotations(idx);
+    applyReaderGuidePatches();
+    scheduleReaderGuidePrompt(idx, content, guideOptions);
     // 滚动到指定偏移量（如果有）
     if (scrollToOffset !== undefined && scrollToOffset !== null) {
       const chapterStart = chapter ? chapter.start : 0;
@@ -4725,6 +5155,7 @@
             state.readerSessionProgress[key] = {
               completedIndices: new Set(entry.completedIndices),
               completedSessions: new Set(entry.completedSessions || []),
+              reportedChapterKeys: new Set(entry.reportedChapterKeys || []),
               currentChapterIndex: Number(entry.currentChapterIndex) || 0
             };
           }
@@ -4742,6 +5173,7 @@
           toSave[key] = {
             completedIndices: Array.from(entry.completedIndices || []),
             completedSessions: Array.from(entry.completedSessions || []),
+            reportedChapterKeys: Array.from(entry.reportedChapterKeys || []),
             currentChapterIndex: entry.currentChapterIndex || 0
           };
         }
@@ -4757,11 +5189,11 @@
       state.readerSessionProgress[key] = {
         completedIndices: new Set(),
         completedSessions: new Set(),
+        reportedChapterKeys: new Set(),
         currentChapterIndex: 0
       };
     }
     const session = state.readerSessionProgress[key];
-    session.completedIndices.add(chapterIndex);
     session.currentChapterIndex = chapterIndex;
     saveSessionProgress();
   }
@@ -4773,10 +5205,58 @@
       state.readerSessionProgress[key] = {
         completedIndices: new Set(),
         completedSessions: new Set(),
+        reportedChapterKeys: new Set(),
         currentChapterIndex: 0
       };
     }
+    if (!(state.readerSessionProgress[key].reportedChapterKeys instanceof Set)) {
+      state.readerSessionProgress[key].reportedChapterKeys = new Set();
+    }
     return state.readerSessionProgress[key];
+  }
+
+  function getChapterCompleteReportKey(lectureId, bookId, chapterIndex, chapterName, chapterRange) {
+    const lid = String(lectureId || "").trim();
+    const bid = String(bookId || "").trim();
+    const name = String(chapterName || "").trim();
+    const range = String(chapterRange || "").trim();
+    if (!lid || !bid || !name || !range) return "";
+    return `${lid}::${bid}::${Number(chapterIndex) || 0}::${name}::${range}`;
+  }
+
+  function hasChapterCompleteReport(reportKey) {
+    if (!reportKey) return false;
+    const key = getSessionKey();
+    if (!key) return false;
+    const progress = state.readerSessionProgress[key];
+    if (!progress || !(progress.reportedChapterKeys instanceof Set)) return false;
+    return progress.reportedChapterKeys.has(reportKey);
+  }
+
+  function markChapterCompleteReport(reportKey, chapterIndex) {
+    if (!reportKey) return;
+    const progress = ensureReaderSessionProgress();
+    if (!progress) return;
+    if (!(progress.reportedChapterKeys instanceof Set)) {
+      progress.reportedChapterKeys = new Set();
+    }
+    progress.reportedChapterKeys.add(reportKey);
+    progress.completedIndices.add(Number(chapterIndex) || 0);
+    progress.currentChapterIndex = Number(chapterIndex) || 0;
+    saveSessionProgress();
+  }
+
+  function clearChapterCompleteReportsForIndex(lectureId, bookId, chapterIndex) {
+    const key = `${String(lectureId || "").trim()}::${String(bookId || "").trim()}`;
+    const progress = state.readerSessionProgress[key];
+    if (!progress || !(progress.reportedChapterKeys instanceof Set)) return;
+
+    const prefix = `${key}::${Number(chapterIndex) || 0}::`;
+    Array.from(progress.reportedChapterKeys).forEach((item) => {
+      if (String(item || "").startsWith(prefix)) {
+        progress.reportedChapterKeys.delete(item);
+      }
+    });
   }
 
   function checkSessionProgressByScroll() {
@@ -4785,11 +5265,8 @@
     const chapters = state.readerChapters;
     const chapter = chapters[chapterIndex];
     if (!chapter) return;
-    
+
     const chapterName = String(chapter.title || "").trim();
-    const sectionData = state.readerSectionsData[chapterName];
-    if (!sectionData || !Array.isArray(sectionData.sessions) || !sectionData.sessions.length) return;
-    
     const scrollContainer = getReaderScrollContainer();
     const chapterBody = scrollContainer ? scrollContainer.querySelector(".chapter-body") : null;
     if (!chapterBody) return;
@@ -4800,7 +5277,20 @@
     const minScrollable = Math.max(1, scrollHeight - clientHeight);   // 至少为1，避免除零
     const atBottom      = scrollTop >= minScrollable - 2;              // 滚到底或内容不超出均视为底
     const chapterLength = Math.max(1, Number(chapter.end || 0) - Number(chapter.start || 0));
-    
+
+    if (atBottom) {
+      reportReaderChapterComplete(chapterIndex).catch((err) => {
+        console.warn("[NXL-Reader] chapter complete by scroll failed", err);
+      });
+    }
+
+    const sectionData = state.readerSectionsData[chapterName];
+
+    if (!sectionData || !Array.isArray(sectionData.sessions) || !sectionData.sessions.length) {
+      syncReaderTelemetrySessionContext("scroll");
+      return;
+    }
+
     //:
     // ・内容超出容器: scrollTop / minScrollable 映射到 0 → chapterLength
     // ・内容不超出：直接视作已读完整章（所有 session 立即标记完成）
@@ -4834,7 +5324,7 @@
       saveSessionProgress();
       renderChapterList();
       // Auto-open floating panel and generate quiz when session completed by scroll
-      if (lastCompletedSession && typeof generateSessionQuiz === "function") {
+      if (lastCompletedSession && floatingPanelState.activeTab === "quiz" && typeof generateSessionQuiz === "function") {
         generateSessionQuiz(
           chapterIndex,
           lastCompletedSession.index,
@@ -4947,6 +5437,7 @@
       await fetchJson("/api/frontend/learning/session-complete", {
         method: "POST",
         body: JSON.stringify({
+          username: getRuntimeUsername(),
           lecture_id: lectureId,
           book_id: String(state.selectedBookId),
           chapter_name: chapterName,
@@ -5035,7 +5526,7 @@
   }
 
 // ─────── Reader: Chapter Navigation ───────────────────────────────────
-  function openReaderChapter(index, scrollToOffset) {
+  function openReaderChapter(index, scrollToOffset, guideOptions) {
     resetReaderSelectionTelemetry();
     const chapters = Array.isArray(state.readerChapters) ? state.readerChapters : [];
     if (!chapters.length) {
@@ -5049,10 +5540,10 @@
 
     // 检查缓存中是否有该章节内容
     if (state.readerChapterCache && state.readerChapterCache[idx]) {
-      renderChapterContent(idx, state.readerChapterCache[idx], scrollToOffset);
+      renderChapterContent(idx, state.readerChapterCache[idx], scrollToOffset, guideOptions);
     } else {
       // 按需加载章节内容
-      loadChapterContent(idx, scrollToOffset);
+      loadChapterContent(idx, scrollToOffset, guideOptions);
     }
   }
 
@@ -5466,7 +5957,7 @@
 // ─────── Reader Floating Panel ────────────────────────────────────────
   const floatingPanelState = {
     open: false,
-    activeTab: "quiz",
+    activeTab: "guide",
     bound: false,
     dragging: false,
     resizing: false,
@@ -5667,6 +6158,10 @@
       content.hidden = !isTarget;
       content.classList.toggle("is-active", isTarget);
     });
+
+    if (tabName === "quiz") {
+      renderQuizPanel();
+    }
   }
 
   function openFloatingPanel() {
@@ -5684,14 +6179,13 @@
 
   function closeFloatingPanel() {
     const panel = document.getElementById("readerFloatingPanel");
-    const btn = document.getElementById("readerFloatingBtn");
     if (!panel) return;
     floatingPanelState.open = false;
     panel.classList.remove("active");
     panel.classList.remove("dragging");
     panel.classList.remove("resizing");
     panel.setAttribute("aria-hidden", "true");
-    if (btn && state.isReaderOpen) btn.hidden = false;
+    syncFloatingBtnVisibility();
   }
 
   function toggleFloatingPanel() {
@@ -5702,7 +6196,715 @@
   function syncFloatingBtnVisibility() {
     const btn = document.getElementById("readerFloatingBtn");
     if (!btn) return;
-    btn.hidden = !state.isReaderOpen || floatingPanelState.open;
+    const isReadingView = !!(
+      state.isReaderOpen
+      && state.readerViewMode === "reading"
+      && el.readerPane
+      && !el.readerPane.hidden
+    );
+    btn.hidden = !isReadingView || floatingPanelState.open;
+  }
+
+  // Reader guide state management
+  const READER_GUIDE_CACHE_KEY = "nxl_reader_guide_cache_v1";
+  const READER_GUIDE_CARD_STATE_KEY = "nxl_reader_guide_card_state_v1";
+  let readerGuideState = {
+    status: "empty",
+    target: null,
+    guide: null,
+    error: "",
+    draft: "",
+  };
+
+  function readReaderGuideCache() {
+    try {
+      const raw = localStorage.getItem(READER_GUIDE_CACHE_KEY);
+      const parsed = raw ? JSON.parse(raw) : {};
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch (_err) {
+      return {};
+    }
+  }
+
+  function writeReaderGuideCache(cache) {
+    const input = cache && typeof cache === "object" ? cache : {};
+    const rows = Object.entries(input)
+      .filter(([, value]) => value && typeof value === "object")
+      .sort((a, b) => Number((b[1] || {}).timestamp || 0) - Number((a[1] || {}).timestamp || 0))
+      .slice(0, 80);
+    const nextCache = {};
+
+    rows.forEach(([key, value]) => {
+      nextCache[key] = value;
+    });
+
+    localStorage.setItem(READER_GUIDE_CACHE_KEY, JSON.stringify(nextCache));
+  }
+
+  function readReaderGuideCardState() {
+    try {
+      const raw = localStorage.getItem(READER_GUIDE_CARD_STATE_KEY);
+      const parsed = raw ? JSON.parse(raw) : {};
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch (_err) {
+      return {};
+    }
+  }
+
+  function writeReaderGuideCardState(stateMap) {
+    const input = stateMap && typeof stateMap === "object" ? stateMap : {};
+    localStorage.setItem(READER_GUIDE_CARD_STATE_KEY, JSON.stringify(input));
+  }
+
+  function getReaderGuideCardStateKey() {
+    return getReaderGuideKey(readerGuideState.target);
+  }
+
+  function getReaderGuideCardState(index) {
+    const key = getReaderGuideCardStateKey();
+    const stateMap = readReaderGuideCardState();
+    const guideState = key && stateMap[key] && typeof stateMap[key] === "object" ? stateMap[key] : {};
+    const row = guideState[String(index)] && typeof guideState[String(index)] === "object" ? guideState[String(index)] : {};
+
+    return {
+      completed: !!row.completed,
+      collapsed: !!row.collapsed,
+    };
+  }
+
+  function setReaderGuideCardState(index, nextState) {
+    const key = getReaderGuideCardStateKey();
+    if (!key) return;
+
+    const stateMap = readReaderGuideCardState();
+    const guideState = stateMap[key] && typeof stateMap[key] === "object" ? stateMap[key] : {};
+    guideState[String(index)] = {
+      ...getReaderGuideCardState(index),
+      ...(nextState && typeof nextState === "object" ? nextState : {}),
+    };
+    stateMap[key] = guideState;
+    writeReaderGuideCardState(stateMap);
+  }
+
+  function hashReaderGuideText(text) {
+    const value = String(text || "");
+    let hash = 2166136261;
+
+    for (let i = 0; i < value.length; i += 1) {
+      hash ^= value.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+
+    return (hash >>> 0).toString(16);
+  }
+
+  function getReaderGuideKey(target) {
+    const row = target && typeof target === "object" ? target : {};
+    const parts = [
+      row.lectureId,
+      row.bookId,
+      row.targetType,
+      row.chapterIndex,
+      row.sessionIndex,
+      row.sessionRange,
+      row.contentHash,
+    ].map((item) => String(item === undefined || item === null ? "" : item).trim());
+
+    if (parts.some((item) => !item)) return "";
+
+    return parts.join("::");
+  }
+
+  function getReaderGuideTargetTitle(target) {
+    if (!target) return "本节导读";
+    const chapterTitle = String(target.chapterName || "").trim();
+    const sessionTitle = String(target.sessionName || "").trim();
+
+    if (target.targetType === "session" && sessionTitle) {
+      return `${chapterTitle} · ${sessionTitle}`;
+    }
+
+    return chapterTitle || "当前章节";
+  }
+
+  function buildReaderGuideTarget(chapterIndex, content, options) {
+    const opts = options && typeof options === "object" ? options : {};
+    const lectureId = String(state.selectedLectureId || "").trim();
+    const bookId = String(state.selectedBookId || "").trim();
+    const chapters = Array.isArray(state.readerChapters) ? state.readerChapters : [];
+    const idx = Math.max(0, Math.min(chapters.length - 1, Number(chapterIndex) || 0));
+    const chapter = chapters[idx];
+    const chapterContent = String(content || "").trim();
+
+    if (!lectureId || !bookId || !chapter || !chapterContent) return null;
+
+    const chapterName = String(chapter.title || `第 ${idx + 1} 章`).trim();
+    const rawSessionIndex = Number(opts.sessionIndex);
+    let targetType = "chapter";
+    let sessionIndex = -1;
+    let sessionName = "";
+    let sessionRange = "chapter";
+    let guideContext = chapterContent;
+
+    if (Number.isInteger(rawSessionIndex) && rawSessionIndex >= 0) {
+      const sectionData = state.readerSectionsData[chapterName];
+      const sessions = sectionData && Array.isArray(sectionData.sessions) ? sectionData.sessions : [];
+      const session = sessions[rawSessionIndex] || {};
+      const selectedRange = String(session.range || opts.sessionRange || "").trim();
+
+      if (!selectedRange) return null;
+
+      const parsedRange = parseReaderSessionRange(chapter, selectedRange);
+      if (!parsedRange) return null;
+
+      const selectedContent = chapterContent.slice(parsedRange.startRelative, parsedRange.endRelative).trim();
+      if (!selectedContent) return null;
+
+      targetType = "session";
+      sessionIndex = rawSessionIndex;
+      sessionName = String(session.name || opts.sessionName || `小节 ${rawSessionIndex + 1}`).trim();
+      sessionRange = selectedRange;
+      guideContext = selectedContent;
+    }
+
+    const compactContext = guideContext.slice(0, 10000);
+    return {
+      lectureId,
+      bookId,
+      targetType,
+      chapterIndex: idx,
+      chapterName,
+      sessionIndex,
+      sessionName,
+      sessionRange,
+      contentHash: hashReaderGuideText(compactContext),
+      guideContext: compactContext,
+    };
+  }
+
+  function renderReaderGuidePanel() {
+    const content = document.querySelector('.floating-tab-content[data-tab="guide"]');
+    if (!content) return;
+
+    const target = readerGuideState.target;
+    const title = getReaderGuideTargetTitle(target);
+
+    if (readerGuideState.status === "prompt") {
+      content.innerHTML = `
+        <section class="reader-guide-prompt">
+          <div class="reader-guide-kicker">阅读导读</div>
+          <h3>${escapeHtml(title)}</h3>
+          <p>是否根据当前内容生成一组阅读引导？导读会保存在本地缓存，不写入左侧对话历史。</p>
+          <div class="reader-guide-actions">
+            <button type="button" class="reader-guide-primary" data-reader-guide-action="generate">生成导读</button>
+            <button type="button" class="reader-guide-secondary" data-reader-guide-action="dismiss">稍后</button>
+          </div>
+        </section>
+      `;
+      return;
+    }
+
+    if (readerGuideState.status === "loading") {
+      const draft = String(readerGuideState.draft || "").trim();
+      content.innerHTML = `
+        <div class="reader-guide-loading">
+          <div class="quiz-loading-spinner"></div>
+          <div class="quiz-loading-text">正在生成导读...</div>
+          <div class="quiz-loading-hint">模型正在阅读当前小节内容</div>
+          <section class="reader-guide-stream">
+            <div class="reader-guide-stream-label">实时输出</div>
+            <pre class="reader-guide-draft">${escapeHtml(draft || "等待模型开始输出...")}</pre>
+          </section>
+        </div>
+      `;
+      return;
+    }
+
+    if (readerGuideState.status === "error") {
+      const draft = String(readerGuideState.draft || "").trim();
+      content.innerHTML = `
+        <div class="reader-guide-error">
+          <div class="quiz-error-text">${escapeHtml(readerGuideState.error || "导读生成失败")}</div>
+          ${draft ? `<pre class="reader-guide-error-draft">${escapeHtml(draft)}</pre>` : ""}
+          <button class="quiz-retry-btn" type="button" data-reader-guide-action="generate-force">重试</button>
+        </div>
+      `;
+      return;
+    }
+
+    if (readerGuideState.status === "ready" && readerGuideState.guide) {
+      const guide = readerGuideState.guide || {};
+      const focusPoints = Array.isArray(guide.focus_points) ? guide.focus_points : [];
+      const questions = Array.isArray(guide.questions) ? guide.questions : [];
+      const focusHtml = focusPoints.length ? `
+        <div class="reader-guide-focus">
+          ${focusPoints.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
+        </div>
+      ` : "";
+      const questionHtml = questions.map((item, idx) => {
+        const cardState = getReaderGuideCardState(idx);
+        const collapsed = cardState.completed && cardState.collapsed;
+        const completed = cardState.completed;
+
+        return `
+        <article class="reader-guide-card${completed ? " is-completed" : ""}${collapsed ? " is-collapsed" : ""}" data-reader-guide-card-index="${idx}">
+          <div class="reader-guide-card-top">
+            <span>${escapeHtml(item.stage || "导读")}</span>
+            <label class="reader-guide-done">
+              <input type="checkbox" data-reader-guide-action="toggle-complete" data-reader-guide-index="${idx}" ${completed ? "checked" : ""}>
+              <span>完成</span>
+            </label>
+            ${completed ? `<button type="button" data-reader-guide-action="toggle-card" data-reader-guide-index="${idx}">${collapsed ? "展开" : "折叠"}</button>` : ""}
+            ${item.question ? `<button type="button" data-reader-guide-action="ask" data-reader-guide-index="${idx}">追问</button>` : ""}
+          </div>
+          ${item.title ? `<div class="reader-guide-title">${escapeHtml(item.title)}</div>` : ""}
+          <div class="reader-guide-card-body" ${collapsed ? "hidden" : ""}>
+            ${item.guidance ? `<div class="reader-guide-guidance">${escapeHtml(item.guidance)}</div>` : ""}
+            ${item.anchor ? `<div class="reader-guide-anchor">${escapeHtml(item.anchor)}</div>` : ""}
+            ${item.question ? `<div class="reader-guide-question">${escapeHtml(item.question)}</div>` : ""}
+            ${item.reason ? `<div class="reader-guide-reason">${escapeHtml(item.reason)}</div>` : ""}
+          </div>
+        </article>
+      `;
+      }).join("");
+
+      content.innerHTML = `
+        <section class="reader-guide-ready">
+          <header class="reader-guide-head">
+            <div>
+              <div class="reader-guide-kicker">本节导读</div>
+              <h3>${escapeHtml(title)}</h3>
+            </div>
+            <button class="reader-guide-refresh" type="button" data-reader-guide-action="generate-force" title="重新生成导读" aria-label="重新生成导读">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+            </button>
+          </header>
+          ${guide.overview ? `<p class="reader-guide-overview">${escapeHtml(guide.overview)}</p>` : ""}
+          ${guide.reading_strategy ? `<div class="reader-guide-strategy">${escapeHtml(guide.reading_strategy)}</div>` : ""}
+          ${focusHtml}
+          <div class="reader-guide-list">${questionHtml}</div>
+        </section>
+      `;
+      applyReaderGuidePatches();
+      return;
+    }
+
+    content.innerHTML = '<div class="floating-empty-hint">进入章节后生成本节导读</div>';
+  }
+
+  function openReaderGuideTarget(target) {
+    const key = getReaderGuideKey(target);
+    if (!key) return;
+
+    state.readerGuidePromptedKey = key;
+    const cache = readReaderGuideCache();
+    const cached = cache[key];
+    readerGuideState = {
+      status: cached && cached.guide ? "ready" : "prompt",
+      target,
+      guide: cached && cached.guide ? cached.guide : null,
+      error: "",
+      draft: "",
+    };
+    renderReaderGuidePanel();
+    openFloatingPanel();
+    setFloatingTab("guide");
+  }
+
+  function scheduleReaderGuidePrompt(chapterIndex, content, options) {
+    window.setTimeout(() => {
+      if (!state.isReaderOpen) return;
+
+      const target = buildReaderGuideTarget(chapterIndex, content, options);
+      const key = getReaderGuideKey(target);
+
+      if (!target || !key || state.readerGuidePromptedKey === key) return;
+
+      openReaderGuideTarget(target);
+    }, 80);
+  }
+
+  function buildReaderGuideRequestBody(target) {
+    return {
+      username: getRuntimeUsername(),
+      lecture_id: target.lectureId,
+      book_id: target.bookId,
+      chapter_index: target.chapterIndex,
+      session_index: target.sessionIndex,
+      chapter_name: target.chapterName,
+      session_name: target.sessionName,
+      session_range: target.sessionRange,
+      content_hash: target.contentHash,
+      guide_context: target.guideContext,
+    };
+  }
+
+  function updateReaderGuideDraftView(draftText) {
+    const draftEl = document.querySelector('.floating-tab-content[data-tab="guide"] .reader-guide-draft');
+    if (!draftEl) return;
+
+    draftEl.textContent = String(draftText || "").trim() || "等待模型开始输出...";
+    draftEl.scrollTop = draftEl.scrollHeight;
+  }
+
+  function parseReaderGuideSseBlock(block) {
+    const raw = String(block || "").trim();
+
+    if (!raw) return null;
+
+    const lines = raw.split(/\r?\n/);
+    let eventName = "message";
+    const dataLines = [];
+
+    lines.forEach((line) => {
+      if (line.startsWith("event:")) {
+        eventName = line.slice(6).trim() || "message";
+      } else if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).trimStart());
+      }
+    });
+
+    if (!dataLines.length) return null;
+
+    return {
+      eventName,
+      data: JSON.parse(dataLines.join("\n")),
+    };
+  }
+
+  async function fetchReaderGuideStream(target, onDelta) {
+    const response = await fetch(resolveApiUrl("/api/frontend/reader-guide/stream"), {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-Nexora-Username": getRuntimeUsername() },
+      body: JSON.stringify(buildReaderGuideRequestBody(target)),
+    });
+
+    if (!response.ok) {
+      let message = `HTTP ${response.status}`;
+
+      try {
+        const data = await response.json();
+        message = String((data && (data.error || data.message)) || message);
+      } catch (_err) {}
+
+      throw new Error(message);
+    }
+
+    if (!response.body) {
+      throw new Error("导读流没有返回响应体");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+    let finalResult = null;
+
+    const handleBlock = (block) => {
+      const parsed = parseReaderGuideSseBlock(block);
+
+      if (!parsed) return;
+
+      if (parsed.eventName === "delta") {
+        const piece = String((parsed.data && parsed.data.content) || "");
+
+        if (piece && typeof onDelta === "function") {
+          onDelta(piece);
+        }
+      } else if (parsed.eventName === "done") {
+        finalResult = parsed.data;
+      } else if (parsed.eventName === "error") {
+        throw new Error(String((parsed.data && parsed.data.error) || "导读生成失败"));
+      }
+    };
+
+    while (true) {
+      const result = await reader.read();
+
+      if (result.done) {
+        break;
+      }
+
+      buffer += decoder.decode(result.value, { stream: true });
+      buffer = buffer.replace(/\r\n/g, "\n");
+
+      const blocks = buffer.split("\n\n");
+      buffer = blocks.pop() || "";
+
+      blocks.forEach(handleBlock);
+    }
+
+    buffer += decoder.decode();
+
+    if (buffer.trim()) {
+      handleBlock(buffer);
+    }
+
+    if (!finalResult || !finalResult.success || !finalResult.guide) {
+      throw new Error("导读流没有返回完整导读");
+    }
+
+    return finalResult;
+  }
+
+  async function generateReaderGuide(force) {
+    const target = readerGuideState.target;
+    const key = getReaderGuideKey(target);
+
+    if (!target || !key) {
+      readerGuideState = {
+        status: "error",
+        target,
+        guide: null,
+        error: "当前阅读上下文不完整，不能生成导读。",
+        draft: "",
+      };
+      renderReaderGuidePanel();
+      return;
+    }
+
+    const cache = readReaderGuideCache();
+    if (!force && cache[key] && cache[key].guide) {
+      readerGuideState = {
+        status: "ready",
+        target,
+        guide: cache[key].guide,
+        error: "",
+        draft: "",
+      };
+      renderReaderGuidePanel();
+      return;
+    }
+
+    readerGuideState = {
+      status: "loading",
+      target,
+      guide: null,
+      error: "",
+      draft: "",
+    };
+    renderReaderGuidePanel();
+    openFloatingPanel();
+    setFloatingTab("guide");
+
+    try {
+      const result = await fetchReaderGuideStream(target, (delta) => {
+        readerGuideState.draft = `${String(readerGuideState.draft || "")}${String(delta || "")}`;
+        updateReaderGuideDraftView(readerGuideState.draft);
+      });
+
+      if (!result || !result.success || !result.guide) {
+        throw new Error((result && (result.error || result.message)) || "模型未返回导读");
+      }
+
+      cache[key] = {
+        guide: result.guide,
+        target: {
+          lectureId: target.lectureId,
+          bookId: target.bookId,
+          targetType: target.targetType,
+          chapterIndex: target.chapterIndex,
+          chapterName: target.chapterName,
+          sessionIndex: target.sessionIndex,
+          sessionName: target.sessionName,
+          sessionRange: target.sessionRange,
+          contentHash: target.contentHash,
+        },
+        model_name: String(result.model_name || ""),
+        timestamp: Date.now(),
+      };
+      writeReaderGuideCache(cache);
+
+      readerGuideState = {
+        status: "ready",
+        target,
+        guide: result.guide,
+        error: "",
+        draft: "",
+      };
+    } catch (err) {
+      readerGuideState = {
+        status: "error",
+        target,
+        guide: null,
+        error: String(err && err.message ? err.message : "导读生成失败"),
+        draft: String(readerGuideState.draft || ""),
+      };
+    }
+
+    renderReaderGuidePanel();
+  }
+
+  function askReaderGuideQuestion(index) {
+    const guide = readerGuideState.guide || {};
+    const target = readerGuideState.target || {};
+    const questions = Array.isArray(guide.questions) ? guide.questions : [];
+    const item = questions[Number(index)];
+
+    if (!item || !String(item.question || "").trim()) return;
+
+    const text = [
+      "我正在阅读 NexoraLearning 当前小节，请围绕下面这张导读卡继续带读。",
+      "",
+      `阅读位置：${getReaderGuideTargetTitle(target)}`,
+      item.title ? `导读卡：${String(item.title || "").trim()}` : "",
+      item.guidance ? `阅读引导：${String(item.guidance || "").trim()}` : "",
+      item.anchor ? `原文线索：${String(item.anchor || "").trim()}` : "",
+      `延伸追问：${String(item.question || "").trim()}`,
+      item.reason ? `推荐理由：${String(item.reason || "").trim()}` : "",
+    ].filter(Boolean).join("\n");
+
+    sendHostMessage({
+      type: "nexora:send-message",
+      text,
+      guide: true,
+      reader_context: {
+        lecture_id: String(target.lectureId || ""),
+        book_id: String(target.bookId || ""),
+        chapter_index: Number(target.chapterIndex) || 0,
+        session_index: Number(target.sessionIndex),
+        chapter_name: String(target.chapterName || ""),
+        session_name: String(target.sessionName || ""),
+      },
+    });
+    showToast("已发送到 Learning 对话");
+  }
+
+  function clearReaderGuidePatches() {
+    const chapterBody = el.readerContent ? el.readerContent.querySelector(".chapter-body") : null;
+    if (!chapterBody) return;
+
+    chapterBody.querySelectorAll(".reader-guide-section-break").forEach((node) => node.remove());
+    chapterBody.querySelectorAll(".reader-guide-highlight").forEach((node) => {
+      const parent = node.parentNode;
+      if (!parent) return;
+      parent.replaceChild(document.createTextNode(node.textContent || ""), node);
+      parent.normalize();
+    });
+    chapterBody.querySelectorAll(".reader-guide-patched-paragraph").forEach((node) => {
+      node.classList.remove("reader-guide-patched-paragraph");
+      node.removeAttribute("data-reader-guide-patch-index");
+    });
+  }
+
+  function normalizeReaderGuidePatchPhrases(card) {
+    const row = card && typeof card === "object" ? card : {};
+    const patch = row.patch && typeof row.patch === "object" ? row.patch : {};
+    const phrases = [];
+    const paragraph = String(patch.paragraph || "").trim();
+    const anchor = String(row.anchor || "").trim();
+    const keywords = Array.isArray(patch.keywords) ? patch.keywords : [];
+
+    if (paragraph) phrases.push(paragraph);
+    keywords.forEach((item) => {
+      const text = String(item || "").trim();
+      if (text) phrases.push(text);
+    });
+    if (anchor) phrases.push(anchor);
+
+    return Array.from(new Set(phrases)).filter((item) => item.length >= 2).slice(0, 5);
+  }
+
+  function findReaderGuidePatchParagraph(phrases) {
+    const chapterBody = el.readerContent ? el.readerContent.querySelector(".chapter-body") : null;
+    if (!chapterBody) return null;
+
+    const paragraphs = Array.from(chapterBody.querySelectorAll(".materials-preview-paragraph"));
+
+    for (const phrase of phrases) {
+      const compactPhrase = String(phrase || "").replace(/\s+/g, "");
+      if (!compactPhrase) continue;
+
+      const exact = paragraphs.find((node) => String(node.textContent || "").includes(phrase));
+      if (exact) return exact;
+
+      const compact = paragraphs.find((node) => String(node.textContent || "").replace(/\s+/g, "").includes(compactPhrase));
+      if (compact) return compact;
+    }
+
+    return null;
+  }
+
+  function highlightReaderGuidePhrase(paragraph, phrase, guideIndex) {
+    const targetPhrase = String(phrase || "").trim();
+    if (!paragraph || !targetPhrase) return false;
+
+    const walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const parent = node.parentElement;
+        if (!parent) return NodeFilter.FILTER_REJECT;
+        if (parent.closest(".annotation-marker") || parent.closest(".reader-guide-highlight")) return NodeFilter.FILTER_REJECT;
+        return String(node.nodeValue || "").includes(targetPhrase) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+      },
+    });
+    const textNode = walker.nextNode();
+    if (!textNode) return false;
+
+    const text = String(textNode.nodeValue || "");
+    const index = text.indexOf(targetPhrase);
+    if (index < 0) return false;
+
+    const before = text.slice(0, index);
+    const matched = text.slice(index, index + targetPhrase.length);
+    const after = text.slice(index + targetPhrase.length);
+    const mark = document.createElement("mark");
+    mark.className = "reader-guide-highlight";
+    mark.setAttribute("data-reader-guide-patch-index", String(guideIndex));
+    mark.textContent = matched;
+
+    const parent = textNode.parentNode;
+    if (!parent) return false;
+
+    if (before) parent.insertBefore(document.createTextNode(before), textNode);
+    parent.insertBefore(mark, textNode);
+    if (after) parent.insertBefore(document.createTextNode(after), textNode);
+    parent.removeChild(textNode);
+    return true;
+  }
+
+  function applyReaderGuidePatches() {
+    clearReaderGuidePatches();
+
+    if (readerGuideState.status !== "ready" || !readerGuideState.guide) return;
+
+    const cards = Array.isArray(readerGuideState.guide.guide_cards)
+      ? readerGuideState.guide.guide_cards
+      : Array.isArray(readerGuideState.guide.questions) ? readerGuideState.guide.questions : [];
+
+    cards.forEach((card, index) => {
+      const phrases = normalizeReaderGuidePatchPhrases(card);
+      const paragraph = findReaderGuidePatchParagraph(phrases);
+      if (!paragraph) return;
+
+      paragraph.classList.add("reader-guide-patched-paragraph");
+      paragraph.setAttribute("data-reader-guide-patch-index", String(index));
+
+      const separator = document.createElement("hr");
+      separator.className = "reader-guide-section-break";
+      separator.setAttribute("data-reader-guide-patch-index", String(index));
+      paragraph.parentNode.insertBefore(separator, paragraph);
+
+      phrases.slice(1).forEach((phrase) => {
+        highlightReaderGuidePhrase(paragraph, phrase, index);
+      });
+
+      if (!paragraph.querySelector(".reader-guide-highlight") && phrases[0]) {
+        highlightReaderGuidePhrase(paragraph, phrases[0].slice(0, 24), index);
+      }
+    });
+  }
+
+  function jumpToReaderGuideCard(index) {
+    openFloatingPanel();
+    setFloatingTab("guide");
+    requestAnimationFrame(() => {
+      const card = document.querySelector(`.reader-guide-card[data-reader-guide-card-index="${Number(index) || 0}"]`);
+      if (!card) return;
+
+      card.scrollIntoView({ block: "center", behavior: "smooth" });
+      card.classList.add("is-jump-target");
+      setTimeout(() => card.classList.remove("is-jump-target"), 1200);
+    });
   }
 
   // Quiz state management
@@ -5711,7 +6913,9 @@
     loading: false,
     currentChapter: "",
     currentSession: "",
+    currentMeta: null,
     questions: [],
+    answers: {},
     error: null,
   };
 
@@ -5724,6 +6928,8 @@
           quizState.questions = Array.isArray(parsed.questions) ? parsed.questions : [];
           quizState.currentChapter = String(parsed.currentChapter || "");
           quizState.currentSession = String(parsed.currentSession || "");
+          quizState.currentMeta = parsed.currentMeta && typeof parsed.currentMeta === "object" ? parsed.currentMeta : null;
+          quizState.answers = parsed.answers && typeof parsed.answers === "object" ? parsed.answers : {};
         }
       }
     } catch (_) {}
@@ -5735,8 +6941,176 @@
         questions: quizState.questions,
         currentChapter: quizState.currentChapter,
         currentSession: quizState.currentSession,
+        currentMeta: quizState.currentMeta,
+        answers: quizState.answers,
       }));
     } catch (_) {}
+  }
+
+  function getCurrentQuizKey() {
+    const meta = quizState.currentMeta || {};
+    const quizId = String(meta.quizId || "").trim();
+    const lectureId = String(meta.lectureId || "").trim();
+    const bookId = String(meta.bookId || "").trim();
+    const chapterIndex = Number(meta.chapterIndex);
+    const sessionIndex = Number(meta.sessionIndex);
+
+    if (quizId) {
+      return `server::${quizId}`;
+    }
+
+    if (!lectureId || !bookId || !Number.isInteger(chapterIndex) || !Number.isInteger(sessionIndex)) {
+      return "";
+    }
+
+    return `${lectureId}::${bookId}::${chapterIndex}::${sessionIndex}`;
+  }
+
+  function getFloatingTabContent(tabName) {
+    return document.querySelector(`.floating-tab-content[data-tab="${String(tabName || floatingPanelState.activeTab || "").trim()}"]`);
+  }
+
+  function preserveFloatingScroll(tabName, renderFn) {
+    const before = getFloatingTabContent(tabName);
+    const top = before ? Number(before.scrollTop || 0) : 0;
+    renderFn();
+    requestAnimationFrame(() => {
+      const after = getFloatingTabContent(tabName);
+
+      if (after) {
+        after.scrollTop = top;
+      }
+    });
+  }
+
+  function writeStoredQuiz(quizKey, questions, answers, meta) {
+    if (!quizKey) return;
+
+    const storedQuizzes = JSON.parse(localStorage.getItem("nxl_quiz_generated_v1") || "{}");
+    storedQuizzes[quizKey] = {
+      questions: Array.isArray(questions) ? questions : [],
+      answers: answers && typeof answers === "object" ? answers : {},
+      meta: meta && typeof meta === "object" ? meta : null,
+      timestamp: Date.now(),
+    };
+    localStorage.setItem("nxl_quiz_generated_v1", JSON.stringify(storedQuizzes));
+  }
+
+  function persistCurrentQuizAnswer(idx, record) {
+    const quizKey = getCurrentQuizKey();
+
+    if (!quizKey) {
+      throw new Error("当前测验缓存键缺失，不能保存本次作答");
+    }
+
+    const storedQuizzes = JSON.parse(localStorage.getItem("nxl_quiz_generated_v1") || "{}");
+    const stored = storedQuizzes[quizKey] && typeof storedQuizzes[quizKey] === "object"
+      ? storedQuizzes[quizKey]
+      : {
+        questions: quizState.questions || [],
+        answers: {},
+        meta: quizState.currentMeta || null,
+        timestamp: Date.now(),
+      };
+
+    const answers = stored.answers && typeof stored.answers === "object" ? stored.answers : {};
+    answers[String(idx)] = record;
+    stored.answers = answers;
+    storedQuizzes[quizKey] = stored;
+    localStorage.setItem("nxl_quiz_generated_v1", JSON.stringify(storedQuizzes));
+  }
+
+  function getQuizQuestionOptions(question) {
+    const raw = Array.isArray(question && question.options) ? question.options : [];
+    return raw.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 4);
+  }
+
+  function getQuizQuestionType(question) {
+    const options = getQuizQuestionOptions(question);
+    const type = String(question && (question.type || question.question_type) || "").trim().toLowerCase();
+
+    if (["choice", "single_choice", "multiple_choice", "选择题", "单选题"].includes(type) && options.length >= 2) {
+      return "choice";
+    }
+
+    if (options.length >= 2) {
+      return "choice";
+    }
+
+    return "text";
+  }
+
+  function getQuizOptionLabel(index) {
+    return String.fromCharCode(65 + Number(index || 0));
+  }
+
+  function renderQuizAnswerWorkspace(question, idx, submitted, savedAnswer) {
+    const type = getQuizQuestionType(question);
+
+    if (type === "choice") {
+      const options = getQuizQuestionOptions(question);
+      const name = `quizChoice${idx}`;
+      const rows = options.map((option, optionIndex) => {
+        const label = getQuizOptionLabel(optionIndex);
+        const value = `${label}. ${option}`;
+        const checked = savedAnswer === value || savedAnswer === option || savedAnswer.startsWith(`${label}.`);
+
+        return `
+          <label class="quiz-option${checked ? " is-selected" : ""}">
+            <input type="radio" name="${name}" value="${escapeHtml(value)}" ${checked ? "checked" : ""} ${submitted ? "disabled" : ""}>
+            <span class="quiz-option-letter">${label}</span>
+            <span class="quiz-option-text">${escapeHtml(option)}</span>
+          </label>
+        `;
+      }).join("");
+
+      return `
+        <div class="quiz-answer-workspace quiz-choice-workspace" data-quiz-input="${idx}">
+          <div class="quiz-options">${rows}</div>
+          <div class="quiz-submit-state" id="quizSubmitState${idx}" ${submitted ? "" : "hidden"}>
+            ${submitted ? "已提交" : ""}
+          </div>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="quiz-answer-workspace" data-quiz-input="${idx}">
+        <label class="quiz-answer-label" for="quizAnswerInput${idx}">你的作答</label>
+        <textarea class="quiz-answer-input" id="quizAnswerInput${idx}" rows="3" ${submitted ? "disabled" : ""} placeholder="简短写下你的理解">${escapeHtml(savedAnswer)}</textarea>
+        <div class="quiz-submit-state" id="quizSubmitState${idx}" ${submitted ? "" : "hidden"}>
+          ${submitted ? "已提交" : ""}
+        </div>
+      </div>
+    `;
+  }
+
+  function readQuizStudentAnswer(question, idx) {
+    if (getQuizQuestionType(question) === "choice") {
+      const checked = document.querySelector(`input[name="quizChoice${idx}"]:checked`);
+      return checked ? String(checked.value || "").trim() : "";
+    }
+
+    const input = document.getElementById(`quizAnswerInput${idx}`);
+    return input ? String(input.value || "").trim() : "";
+  }
+
+  function focusQuizInput(question, idx) {
+    if (getQuizQuestionType(question) === "choice") {
+      const first = document.querySelector(`input[name="quizChoice${idx}"]`);
+
+      if (first) {
+        first.focus();
+      }
+
+      return;
+    }
+
+    const input = document.getElementById(`quizAnswerInput${idx}`);
+
+    if (input) {
+      input.focus();
+    }
   }
 
   function renderQuizPanel() {
@@ -5775,27 +7149,43 @@
       return;
     }
 
+    const submittedCount = quizState.questions.reduce((total, _q, idx) => {
+      return total + (quizState.answers && quizState.answers[String(idx)] ? 1 : 0);
+    }, 0);
+    const totalCount = quizState.questions.length;
+    const allSubmitted = submittedCount >= totalCount;
     let html = '<div class="quiz-list">';
     quizState.questions.forEach((q, idx) => {
       const difficultyClass = q.difficulty === "简单" ? "easy" : q.difficulty === "中等" ? "medium" : "hard";
+      const answerRecord = quizState.answers && quizState.answers[String(idx)] ? quizState.answers[String(idx)] : null;
+      const submitted = !!answerRecord;
+      const savedAnswer = submitted ? String(answerRecord.student_answer || "") : "";
+      const title = String(q.title || q.content || "").trim();
+      const contentText = String(q.content || "").trim();
+      const contentHtml = contentText && contentText !== title
+        ? `<div class="quiz-item-content">${escapeHtml(contentText)}</div>`
+        : "";
+
       html += `
         <div class="quiz-item" data-index="${idx}">
           <div class="quiz-item-header">
             <span class="quiz-item-index">${idx + 1}</span>
             <span class="quiz-item-difficulty ${difficultyClass}">${escapeHtml(q.difficulty || "")}</span>
           </div>
-          <div class="quiz-item-title">${escapeHtml(q.title || q.content || "")}</div>
-          <div class="quiz-item-content" hidden>${escapeHtml(q.content || "")}</div>
-          <div class="quiz-item-hint" hidden>${escapeHtml(q.hint || "")}</div>
-          <div class="quiz-item-answer" hidden>${escapeHtml(q.answer || "")}</div>
-          <div class="quiz-item-actions">
-            <button class="quiz-show-hint-btn" onclick="showQuizHint(${idx})">提示</button>
-            <button class="quiz-show-answer-btn" onclick="showQuizAnswer(${idx})">查看答案</button>
-          </div>
+          <div class="quiz-item-title">${escapeHtml(title)}</div>
+          ${contentHtml}
+          ${renderQuizAnswerWorkspace(q, idx, submitted, savedAnswer)}
         </div>
       `;
     });
-    html += "</div>";
+    html += `
+      <div class="quiz-submit-all-bar">
+        <div class="quiz-submit-all-status" id="quizSubmitAllStatus">${submittedCount}/${totalCount} 已提交</div>
+        <button class="quiz-submit-all-btn" id="quizSubmitAllBtn" type="button" onclick="submitQuizAll()" ${allSubmitted ? "disabled" : ""}>
+          ${allSubmitted ? "已全部提交" : "提交全部"}
+        </button>
+      </div>
+    </div>`;
     content.innerHTML = html;
   }
 
@@ -5809,11 +7199,271 @@
   }
 
   function showQuizAnswer(idx) {
+    if (!quizState.answers || !quizState.answers[String(idx)]) {
+      showToast("先提交你的答案，再查看参考答案");
+      return;
+    }
+
     const item = document.querySelector(`.quiz-item[data-index="${idx}"]`);
     if (!item) return;
     const answer = item.querySelector(".quiz-item-answer");
     if (answer) {
       answer.hidden = !answer.hidden;
+    }
+  }
+
+  function buildQuizAnswerPayload(question, idx, studentAnswer) {
+    const meta = quizState.currentMeta;
+
+    if (!meta || !question) {
+      throw new Error("当前测验上下文不完整，不能提交答案");
+    }
+
+    if (!getCurrentQuizKey()) {
+      throw new Error("当前测验缓存键缺失，不能提交答案");
+    }
+
+    if (!studentAnswer) {
+      throw new Error("student_answer is required.");
+    }
+
+    return {
+      username: getRuntimeUsername(),
+      lecture_id: meta.lectureId,
+      book_id: meta.bookId,
+      chapter_index: meta.chapterIndex,
+      session_index: meta.sessionIndex,
+      chapter_name: meta.chapterName,
+      session_name: meta.sessionName,
+      question_index: idx,
+      question_title: question.title || "",
+      question_content: question.content || "",
+      question_difficulty: question.difficulty || "",
+      question_type: getQuizQuestionType(question),
+      question_options: getQuizQuestionOptions(question),
+      question_hint: question.hint || "",
+      reference_answer: question.answer || "",
+      student_answer: studentAnswer,
+      quiz_id: String(meta.quizId || ""),
+      quiz_type: String(meta.quizType || ""),
+    };
+  }
+
+  async function submitQuizAll() {
+    const statusEl = document.getElementById("quizSubmitAllStatus");
+    const submitBtn = document.getElementById("quizSubmitAllBtn");
+    const pendingPayloads = [];
+
+    if (!Array.isArray(quizState.questions) || !quizState.questions.length) {
+      showToast("当前没有可提交的测验题目");
+      return;
+    }
+
+    for (let idx = 0; idx < quizState.questions.length; idx += 1) {
+      if (quizState.answers && quizState.answers[String(idx)]) {
+        continue;
+      }
+
+      const question = quizState.questions[idx];
+      const studentAnswer = readQuizStudentAnswer(question, idx);
+
+      if (!studentAnswer) {
+        showToast(`第 ${idx + 1} 题还没有作答`);
+        focusQuizInput(question, idx);
+        return;
+      }
+
+      try {
+        pendingPayloads.push(buildQuizAnswerPayload(question, idx, studentAnswer));
+      } catch (err) {
+        showToast(err.message || "当前测验上下文不完整，不能提交答案");
+        return;
+      }
+    }
+
+    if (!pendingPayloads.length) {
+      showToast("全部题目已经提交");
+      return;
+    }
+
+    if (statusEl) {
+      statusEl.textContent = "正在提交全部作答...";
+    }
+
+    if (submitBtn) {
+      submitBtn.disabled = true;
+    }
+
+    try {
+      const result = await fetchJson("/api/frontend/quiz/submit-batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: getRuntimeUsername(),
+          answers: pendingPayloads,
+        }),
+      });
+      const records = result && Array.isArray(result.records) ? result.records : [];
+
+      if (records.length !== pendingPayloads.length) {
+        throw new Error("后端返回的作答记录数量不正确");
+      }
+
+      records.forEach((record) => {
+        const questionIndex = Number(record && record.question_index);
+
+        if (!Number.isInteger(questionIndex) || questionIndex < 0) {
+          throw new Error("后端返回了无效题号");
+        }
+
+        quizState.answers[String(questionIndex)] = record;
+        persistCurrentQuizAnswer(questionIndex, record);
+      });
+      saveQuizState();
+      preserveFloatingScroll("quiz", renderQuizPanel);
+    } catch (err) {
+      if (statusEl) {
+        statusEl.textContent = err.message || "提交失败";
+      }
+
+      if (submitBtn) {
+        submitBtn.disabled = false;
+      }
+    }
+  }
+
+  function getReaderChapterRange(chapter) {
+    const start = Math.max(0, Number(chapter && chapter.start) || 0);
+    const end = Math.max(start, Number(chapter && chapter.end) || start);
+    return `${start}:${Math.max(0, end - start)}`;
+  }
+
+  function getReaderChapterContext(index) {
+    const chapters = Array.isArray(state.readerChapters) ? state.readerChapters : [];
+    const idx = Math.max(0, Math.min(chapters.length - 1, Number(index) || 0));
+    const chapter = chapters[idx];
+    const cached = state.readerChapterCache && state.readerChapterCache[idx] !== undefined
+      ? String(state.readerChapterCache[idx] || "").trim()
+      : "";
+
+    if (cached) {
+      return cached;
+    }
+
+    const fullText = String(state.readerFullTextRaw || "");
+
+    if (!chapter || !fullText) {
+      return "";
+    }
+
+    const rawStart = Number(chapter.start) || 0;
+    const rawEnd = Number(chapter.end) || 0;
+
+    if (rawStart < 0 || rawEnd <= rawStart || rawEnd > fullText.length) {
+      return "";
+    }
+
+    return String(fullText.slice(rawStart, rawEnd).trim() || "");
+  }
+
+  async function loadChapterQuiz(chapterIndex, chapterName, chapterRange, chapterContext) {
+    const lectureId = String(state.selectedLectureId || "").trim();
+    const bookId = String(state.selectedBookId || "").trim();
+    const safeChapterIndex = Number(chapterIndex) || 0;
+    const safeChapterName = String(chapterName || "").trim();
+    const safeChapterRange = String(chapterRange || "").trim();
+    const loadingKey = `${lectureId}::${bookId}::${safeChapterIndex}::${safeChapterName}::${safeChapterRange}`;
+
+    if (!lectureId || !bookId || !safeChapterName || !state.isReaderOpen) return;
+
+    if (state.readerChapterQuizLoadingKey === loadingKey) return;
+
+    const currentMeta = quizState.currentMeta || {};
+    if (
+      String(currentMeta.quizType || "") === "chapter" &&
+      String(currentMeta.lectureId || "") === lectureId &&
+      String(currentMeta.bookId || "") === bookId &&
+      Number(currentMeta.chapterIndex) === safeChapterIndex &&
+      Array.isArray(quizState.questions) &&
+      quizState.questions.length
+    ) {
+      openFloatingPanel();
+      setFloatingTab("quiz");
+      renderQuizPanel();
+      return;
+    }
+
+    state.readerChapterQuizLoadingKey = loadingKey;
+    quizState.loading = true;
+    quizState.error = null;
+    quizState.currentChapter = safeChapterName;
+    quizState.currentSession = "章节小测";
+    quizState.currentMeta = {
+      quizType: "chapter",
+      quizId: "",
+      lectureId,
+      bookId,
+      chapterIndex: safeChapterIndex,
+      sessionIndex: 0,
+      chapterName: safeChapterName,
+      sessionName: "章节小测",
+      chapterRange: safeChapterRange,
+    };
+    quizState.questions = [];
+    quizState.answers = {};
+    renderQuizPanel();
+    openFloatingPanel();
+    setFloatingTab("quiz");
+
+    try {
+      const result = await fetchJson("/api/frontend/quiz/chapter", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: getRuntimeUsername(),
+          lecture_id: lectureId,
+          book_id: bookId,
+          chapter_index: safeChapterIndex,
+          chapter_name: safeChapterName,
+          chapter_range: safeChapterRange,
+          chapter_context: String(chapterContext || "").slice(0, 12000),
+          chapter_detail_xml: String(state.readerBookDetailXml || ""),
+        }),
+      });
+      const quiz = result && result.quiz && typeof result.quiz === "object" ? result.quiz : {};
+      const questions = Array.isArray(result.questions) ? result.questions : Array.isArray(quiz.questions) ? quiz.questions : [];
+      const answers = result.answers && typeof result.answers === "object" ? result.answers : quiz.answers && typeof quiz.answers === "object" ? quiz.answers : {};
+      const quizId = String(result.quiz_id || quiz.quiz_id || "").trim();
+
+      if (!quizId || !questions.length) {
+        throw new Error("章节小测没有返回有效题目");
+      }
+
+      quizState.questions = questions;
+      quizState.answers = answers;
+      quizState.currentMeta = {
+        quizType: "chapter",
+        quizId,
+        lectureId,
+        bookId,
+        chapterIndex: safeChapterIndex,
+        sessionIndex: 0,
+        chapterName: safeChapterName,
+        sessionName: "章节小测",
+        chapterRange: safeChapterRange,
+      };
+      writeStoredQuiz(getCurrentQuizKey(), quizState.questions, quizState.answers, quizState.currentMeta);
+      saveQuizState();
+    } catch (err) {
+      quizState.error = err && err.message ? err.message : "章节小测加载失败";
+    } finally {
+      quizState.loading = false;
+
+      if (state.readerChapterQuizLoadingKey === loadingKey) {
+        state.readerChapterQuizLoadingKey = "";
+      }
+
+      renderQuizPanel();
     }
   }
 
@@ -5826,9 +7476,21 @@
     const quizKey = `${lectureId}::${bookId}::${chapterIndex}::${sessionIndex}`;
     const storedQuizzes = JSON.parse(localStorage.getItem("nxl_quiz_generated_v1") || "{}");
     if (storedQuizzes[quizKey]) {
-      quizState.questions = storedQuizzes[quizKey].questions || [];
+      const stored = storedQuizzes[quizKey];
+      quizState.questions = stored.questions || [];
       quizState.currentChapter = chapterName;
       quizState.currentSession = sessionName;
+      quizState.currentMeta = stored.meta && typeof stored.meta === "object" ? stored.meta : {
+        quizType: "session",
+        lectureId,
+        bookId,
+        chapterIndex,
+        sessionIndex,
+        chapterName,
+        sessionName,
+      };
+      quizState.answers = stored.answers && typeof stored.answers === "object" ? stored.answers : {};
+      saveQuizState();
       renderQuizPanel();
       openFloatingPanel();
       setFloatingTab("quiz");
@@ -5839,6 +7501,16 @@
     quizState.error = null;
     quizState.currentChapter = chapterName;
     quizState.currentSession = sessionName;
+    quizState.currentMeta = {
+      quizType: "session",
+      lectureId,
+      bookId,
+      chapterIndex,
+      sessionIndex,
+      chapterName,
+      sessionName,
+    };
+    quizState.answers = {};
     renderQuizPanel();
     openFloatingPanel();
     setFloatingTab("quiz");
@@ -5848,6 +7520,7 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          username: getRuntimeUsername(),
           lecture_id: lectureId,
           book_id: bookId,
           chapter_index: chapterIndex,
@@ -5860,12 +7533,7 @@
 
       if (result && result.success && Array.isArray(result.questions)) {
         quizState.questions = result.questions;
-        // 保存到localStorage
-        storedQuizzes[quizKey] = {
-          questions: result.questions,
-          timestamp: Date.now(),
-        };
-        localStorage.setItem("nxl_quiz_generated_v1", JSON.stringify(storedQuizzes));
+        writeStoredQuiz(quizKey, result.questions, {}, quizState.currentMeta);
       } else {
         quizState.error = result.error || "生成题目失败";
       }
@@ -5878,6 +7546,25 @@
   }
 
   function retryQuiz() {
+    const meta = quizState.currentMeta || {};
+
+    if (String(meta.quizType || "") === "chapter") {
+      const chapterIndex = Number(meta.chapterIndex) || state.readerActiveChapterIndex;
+      const chapter = state.readerChapters[chapterIndex];
+      const chapterName = String(meta.chapterName || (chapter && chapter.title) || "").trim();
+      const chapterRange = String(meta.chapterRange || getReaderChapterRange(chapter)).trim();
+      let chapterContext = "";
+
+      if (chapter) {
+        const start = Math.max(0, Math.min(state.readerFullTextRaw.length, Number(chapter.start) || 0));
+        const end = Math.max(start, Math.min(state.readerFullTextRaw.length, Number(chapter.end) || 0));
+        chapterContext = String(state.readerFullTextRaw.slice(start, end).trim() || "");
+      }
+
+      loadChapterQuiz(chapterIndex, chapterName, chapterRange, chapterContext);
+      return;
+    }
+
     // 获取当前session信息并重新生成
     const chapterIndex = state.readerActiveChapterIndex;
     const chapter = state.readerChapters[chapterIndex];
@@ -5921,6 +7608,7 @@
   // 暴露全局函数
   window.showQuizHint = showQuizHint;
   window.showQuizAnswer = showQuizAnswer;
+  window.submitQuizAll = submitQuizAll;
   window.retryQuiz = retryQuiz;
 
   loadQuizState();
@@ -5945,6 +7633,56 @@
           setFloatingTab(tab.dataset.tab);
         });
       });
+      panel.addEventListener("click", (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+
+        const guideBtn = target.closest("[data-reader-guide-action]");
+        if (!guideBtn) return;
+
+        const action = String(guideBtn.getAttribute("data-reader-guide-action") || "").trim();
+
+        if (action === "generate") {
+          generateReaderGuide(false);
+          return;
+        }
+
+        if (action === "generate-force") {
+          generateReaderGuide(true);
+          return;
+        }
+
+        if (action === "dismiss") {
+          closeFloatingPanel();
+          return;
+        }
+
+        if (action === "toggle-complete") return;
+
+        if (action === "toggle-card") {
+          const index = Number(guideBtn.getAttribute("data-reader-guide-index") || "0");
+          const cardState = getReaderGuideCardState(index);
+          setReaderGuideCardState(index, { collapsed: !cardState.collapsed });
+          renderReaderGuidePanel();
+          return;
+        }
+
+        if (action === "ask") {
+          askReaderGuideQuestion(Number(guideBtn.getAttribute("data-reader-guide-index") || "0"));
+        }
+      });
+      panel.addEventListener("change", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLInputElement)) return;
+
+        const action = String(target.getAttribute("data-reader-guide-action") || "").trim();
+        if (action !== "toggle-complete") return;
+
+        const index = Number(target.getAttribute("data-reader-guide-index") || "0");
+        const checked = !!target.checked;
+        setReaderGuideCardState(index, { completed: checked, collapsed: checked });
+        renderReaderGuidePanel();
+      });
     }
   }
 
@@ -5953,7 +7691,9 @@
   function closeReader() {
     resetReaderSelectionTelemetry();
     if (state.isReaderOpen && Array.isArray(state.readerChapters) && state.readerChapters.length) {
-      reportReaderChapterComplete(state.readerActiveChapterIndex).catch(() => {});
+      reportReaderChapterComplete(state.readerActiveChapterIndex).catch((err) => {
+        console.warn("[NXL-Reader] chapter complete on close failed", err);
+      });
     }
     clearReaderTelemetrySessionContext("close");
     closeFloatingPanel();
@@ -5980,9 +7720,15 @@
     state.readerViewMode = "closed";
     state.readerMeta = { title: "", subtitle: "" };
     state.readerReportedChapterKey = "";
+    state.readerReportingChapterKey = "";
+    state.readerChapterQuizLoadingKey = "";
     state.readerSectionsData = {};
     state.readerAnnotations = [];
     state.readerChapterCache = {};
+    state.readerGuidePromptedKey = "";
+    readerGuideState = { status: "empty", target: null, guide: null, error: "", draft: "" };
+    renderReaderGuidePanel();
+    syncFloatingBtnVisibility();
     syncReaderModeUI();
     el.readerPane.hidden = true;
     syncMaterialsPageMode();
@@ -6117,7 +7863,25 @@
   }
 
   async function fetchJson(url, init) {
-    const resp = await fetch(resolveApiUrl(url), init);
+    const options = init && typeof init === "object" ? { ...init } : {};
+    const headers = new Headers(options.headers || {});
+    const runtimeUsername = getRuntimeUsername();
+
+    if (runtimeUsername && !headers.has("X-Nexora-Username")) {
+      headers.set("X-Nexora-Username", runtimeUsername);
+    }
+
+    if (typeof options.body === "string" && !headers.has("Content-Type")) {
+      headers.set("Content-Type", "application/json");
+    }
+
+    options.headers = headers;
+
+    if (!options.credentials) {
+      options.credentials = "same-origin";
+    }
+
+    const resp = await fetch(resolveApiUrl(url), options);
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok || data.success === false) {
       throw new Error(data.error || data.message || `HTTP ${resp.status}`);
@@ -6333,13 +8097,26 @@
     const bookId = String(state.selectedBookId || "").trim();
     const chapterName = String((chapter && chapter.title) || "").trim();
     if (!lectureId || !bookId || !chapterName) return;
-    const chapterRange = `${Math.max(0, Number(chapter.start) || 0)}:${Math.max(0, (Number(chapter.end) || 0) - (Number(chapter.start) || 0))}`;
-    const reportKey = `${lectureId}::${bookId}::${chapterName}::${chapterRange}`;
-    if (state.readerReportedChapterKey === reportKey) return;
-    const start = Math.max(0, Math.min(state.readerFullTextRaw.length, Number(chapter.start) || 0));
-    const end = Math.max(start, Math.min(state.readerFullTextRaw.length, Number(chapter.end) || 0));
-    const chapterContext = String(state.readerFullTextRaw.slice(start, end).trim() || "");
-    if (!chapterContext) return;
+    const chapterRange = getReaderChapterRange(chapter);
+    const reportKey = getChapterCompleteReportKey(lectureId, bookId, idx, chapterName, chapterRange);
+    if (!reportKey) return;
+    if (hasChapterCompleteReport(reportKey) || state.readerReportedChapterKey === reportKey || state.readerReportingChapterKey === reportKey) return;
+    const chapterContext = getReaderChapterContext(idx);
+
+    if (!chapterContext) {
+      console.warn("[NXL-Reader] chapter complete skipped: empty chapter context", {
+        lectureId,
+        bookId,
+        chapterIndex: idx,
+        chapterName,
+        chapterRange,
+        cacheKeys: Object.keys(state.readerChapterCache || {}),
+        fullTextLength: String(state.readerFullTextRaw || "").length,
+      });
+      return;
+    }
+
+    state.readerReportingChapterKey = reportKey;
     emitTelemetry("reader_chapter_complete", {
       lecture_id: lectureId,
       book_id: bookId,
@@ -6347,19 +8124,40 @@
       chapter_name: chapterName,
       chapter_range: chapterRange,
     });
-    await fetchJson("/api/frontend/learning/chapter-complete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        lecture_id: lectureId,
-        book_id: bookId,
-        chapter_name: chapterName,
-        chapter_range: chapterRange,
-        chapter_context: chapterContext.slice(0, 12000),
-        chapter_detail_xml: String(state.readerBookDetailXml || ""),
-      }),
-    });
-    state.readerReportedChapterKey = reportKey;
+    try {
+      await fetchJson("/api/frontend/learning/chapter-complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: getRuntimeUsername(),
+          lecture_id: lectureId,
+          book_id: bookId,
+          chapter_name: chapterName,
+          chapter_range: chapterRange,
+          chapter_context: chapterContext.slice(0, 12000),
+          chapter_detail_xml: String(state.readerBookDetailXml || ""),
+        }),
+      });
+      markChapterCompleteReport(reportKey, idx);
+      state.readerReportedChapterKey = reportKey;
+
+      if (state.isReaderOpen) {
+        loadChapterQuiz(idx, chapterName, chapterRange, chapterContext).catch((err) => {
+          quizState.loading = false;
+          quizState.error = err && err.message ? err.message : "章节小测加载失败";
+          console.warn("[NXL-Reader] chapter quiz load failed", err);
+          renderQuizPanel();
+        });
+      }
+    } catch (err) {
+      console.warn("[NXL-Reader] chapter complete report failed", err);
+      throw err;
+    } finally {
+      if (state.readerReportingChapterKey === reportKey) {
+        state.readerReportingChapterKey = "";
+      }
+    }
+
     await loadDashboardRows();
     renderProgressList();
     renderPie();
@@ -6641,8 +8439,10 @@
       loadDashboardRows(),
       loadLearningFeedChannels(),
       loadLearningFeeds(),
+      loadDashboardNotifications(),
       loadUserProfile(),
     ]);
+    renderDashboardNotifications();
     renderUserProfile();
     renderProgressList();
     renderPie();
@@ -6754,9 +8554,57 @@
         syncPieProfileTabs();
       });
     }
+    if (el.userProfileDimensions) {
+      el.userProfileDimensions.addEventListener("click", async (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+
+        const removeBtn = target.closest("[data-notice-remove-id]");
+        if (removeBtn) {
+          event.preventDefault();
+          event.stopPropagation();
+          const notificationId = String(removeBtn.getAttribute("data-notice-remove-id") || "").trim();
+
+          try {
+            await removeDashboardNotification(notificationId);
+          } catch (err) {
+            showToast(`移除通知失败：${err.message || "未知错误"}`);
+          }
+
+          return;
+        }
+
+        const settingsBtn = target.closest("[data-view='settings'][data-settings-tab]");
+        if (settingsBtn) {
+          const tab = String(settingsBtn.getAttribute("data-settings-tab") || "refinement").trim();
+          openSettingsView(tab || "refinement").catch((err) => showToast(`打开设置失败：${err.message || "未知错误"}`));
+          return;
+        }
+
+        const notice = target.closest("[data-notice-jumpto]");
+        if (!notice) return;
+
+        const jumpto = String(notice.getAttribute("data-notice-jumpto") || "").trim();
+        if (jumpto) {
+          emitHostPayload("nexora:notification:open", { jumpto });
+        }
+      });
+    }
     if (el.learningFeedComposeBtn) {
       el.learningFeedComposeBtn.addEventListener("click", () => {
         enterFeedComposeMode();
+      });
+    }
+    if (el.dashboardFocusPanel) {
+      el.dashboardFocusPanel.addEventListener("click", (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        const item = target.closest("[data-dashboard-focus-lecture-id]");
+        if (!item) return;
+        const lectureId = String(item.getAttribute("data-dashboard-focus-lecture-id") || "");
+        if (!lectureId) return;
+        setView("materials");
+        openLectureHome(lectureId, { returnTarget: "dashboard" });
       });
     }
 
@@ -6768,7 +8616,7 @@
       const lectureId = String(item.getAttribute("data-progress-lecture-id") || "");
       if (!lectureId) return;
       setView("materials");
-      openLectureHome(lectureId);
+      openLectureHome(lectureId, { returnTarget: "dashboard" });
     });
     if (el.learningFeedPanel) {
       el.learningFeedPanel.addEventListener("click", async (event) => {
@@ -6944,13 +8792,11 @@
 
     el.backToDashboardBtn.addEventListener("click", async () => {
       if (state.materialsDetailMode === "catalog") {
-        state.materialsDetailMode = "lecture";
-        state.catalogContext = null;
-        renderLectureDetail();
+        returnFromCourseHome();
         return;
       }
       if (state.materialsPageMode === "lecture") {
-        openMaterialsShelf();
+        returnFromCourseHome();
         return;
       }
       closeReader();
@@ -6959,17 +8805,7 @@
     });
     if (el.backFromCourseHomeBtn) {
       el.backFromCourseHomeBtn.addEventListener("click", () => {
-        if (state.materialsDetailMode === "teacher-edit") {
-          closeTeacherEditPanel();
-          return;
-        }
-        if (state.materialsDetailMode === "catalog") {
-          state.materialsDetailMode = "lecture";
-          state.catalogContext = null;
-          renderLectureDetail();
-          return;
-        }
-        openMaterialsShelf();
+        returnFromCourseHome();
       });
     }
     el.openUploadViewBtn.addEventListener("click", () => {
@@ -7073,9 +8909,13 @@
             }
           }
           // 打开对应章节并滚动到session位置
-          openReaderChapter(chapterIdx, scrollToOffset);
+          openReaderChapter(chapterIdx, scrollToOffset, {
+            sessionIndex: sessionIdx,
+            sessionRange,
+          });
           setChapterListPanelOpen(false);
           state.readerViewMode = "reading";
+          syncFloatingBtnVisibility();
           syncReaderModeUI();
           setReaderFullscreen(true);
           return;
@@ -7086,11 +8926,14 @@
         if (!item) return;
         const idx = Number(item.getAttribute("data-reader-chapter-index") || "0");
         if (idx !== state.readerActiveChapterIndex) {
-          reportReaderChapterComplete(state.readerActiveChapterIndex).catch(() => {});
+          reportReaderChapterComplete(state.readerActiveChapterIndex).catch((err) => {
+            console.warn("[NXL-Reader] chapter complete before chapter switch failed", err);
+          });
         }
         openReaderChapter(idx);
         setChapterListPanelOpen(false);
         state.readerViewMode = "reading";
+        syncFloatingBtnVisibility();
         syncReaderModeUI();
         setReaderFullscreen(true);
       });
@@ -7191,8 +9034,17 @@
       });
     }
     el.readerContent.addEventListener("click", (event) => {
-      if (!state.isReaderFullscreen) return;
       const target = event.target instanceof Element ? event.target : null;
+      const guidePatch = target ? target.closest(".reader-guide-highlight, .reader-guide-section-break") : null;
+
+      if (guidePatch) {
+        event.preventDefault();
+        event.stopPropagation();
+        jumpToReaderGuideCard(Number(guidePatch.getAttribute("data-reader-guide-patch-index") || "0"));
+        return;
+      }
+
+      if (!state.isReaderFullscreen) return;
       if (target && target.closest(".annotation-marker")) return;
       const navBtn = target ? target.closest("[data-reader-nav]") : null;
       if (navBtn) {
@@ -7203,7 +9055,9 @@
           ? state.readerActiveChapterIndex - 1
           : state.readerActiveChapterIndex + 1;
         if (dir === "next" && nextIndex > state.readerActiveChapterIndex) {
-          reportReaderChapterComplete(state.readerActiveChapterIndex).catch(() => {});
+          reportReaderChapterComplete(state.readerActiveChapterIndex).catch((err) => {
+            console.warn("[NXL-Reader] chapter complete before next navigation failed", err);
+          });
         }
         openReaderChapter(nextIndex);
         return;

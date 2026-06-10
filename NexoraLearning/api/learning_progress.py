@@ -46,6 +46,14 @@ def _resolve_runtime_user_id() -> str:
     qs = str(request.args.get("username") or "").strip()
     if qs:
         return qs
+
+    data = request.get_json(silent=True) or {}
+    if isinstance(data, dict):
+        body_username = str(data.get("username") or data.get("user_id") or "").strip()
+
+        if body_username:
+            return body_username
+
     for header_name in (
         "X-Nexora-Username",
         "X-Username",
@@ -105,18 +113,20 @@ def frontend_learning_chapter_complete():
         for r in (existing_records or [])
     )
 
-    if not already_completed:
-        user_store.append_learning_record(
-            _cfg,
-            username,
-            {
-                "type": "chapter_completed",
-                "lecture_id": lecture_id,
-                "book_id": book_id,
-                "chapter_name": chapter_name,
-                "chapter_range": chapter_range,
-            },
-        )
+    if already_completed:
+        return jsonify({"success": True, "enqueue": None, "already_completed": True})
+
+    user_store.append_learning_record(
+        _cfg,
+        username,
+        {
+            "type": "chapter_completed",
+            "lecture_id": lecture_id,
+            "book_id": book_id,
+            "chapter_name": chapter_name,
+            "chapter_range": chapter_range,
+        },
+    )
 
     # 章节完成触发完整画像更新链：记忆分析 → 画像提取 → 画像出题
     job = enqueue_memory_job(
@@ -144,6 +154,46 @@ def frontend_learning_chapter_complete():
         },
     )
     return jsonify({"success": True, "enqueue": job, "already_completed": already_completed})
+
+
+@learning_progress_bp.route("/frontend/learning/chapter-record/clear", methods=["POST"])
+def frontend_learning_chapter_record_clear():
+    """清空指定章节阅读记录，不删除已固化的小测验文件。"""
+    data = request.get_json(silent=True) or {}
+    username = _resolve_runtime_user_id()
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    chapter_name = str(data.get("chapter_name") or "").strip()
+    chapter_index = _safe_int(data.get("chapter_index"), -1)
+
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+    if not lecture_id or not book_id or not chapter_name:
+        return jsonify({"success": False, "error": "lecture_id, book_id and chapter_name are required."}), 400
+    if chapter_index < 0:
+        return jsonify({"success": False, "error": "chapter_index is required."}), 400
+
+    result = user_store.remove_chapter_learning_records(
+        _cfg,
+        username,
+        lecture_id=lecture_id,
+        book_id=book_id,
+        chapter_name=chapter_name,
+        chapter_index=chapter_index,
+    )
+    log_event(
+        "frontend_chapter_record_clear",
+        "用户清空章节阅读记录",
+        payload={
+            "username": username,
+            "lecture_id": lecture_id,
+            "book_id": book_id,
+            "chapter_name": chapter_name,
+            "chapter_index": chapter_index,
+            "removed": int(result.get("removed") or 0),
+        },
+    )
+    return jsonify({"success": True, **result})
 
 
 # ─────────────────────────────────────────────────────────────────────

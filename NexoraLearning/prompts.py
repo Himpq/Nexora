@@ -10,15 +10,24 @@ QUESTION_MODEL_SYSTEM_PROMPT = """
 要求：
 1. 一共输出 9 道题。
 2. 难度分布必须为：3 道简单，3 道中等，3 道进阶。
-3. 题目必须与当前章节内容直接相关，优先考察理解、提炼和应用。
-4. 不要虚构未在当前输入中出现的知识点。
-5. 如果输入信息不足，可以生成保守占位题，但结构必须完整。
-6. 只输出结果，不要输出解释，不要输出 Markdown。
+3. 题目必须与当前章节内容直接相关，优先考察“读懂了什么、能不能区分、能不能迁移一点点”。
+4. 题干必须短、直、可读，避免“从 A 到 B 的认知转变”这类抽象大标题。
+5. 每题只考一个明确点，不要把三四个任务塞进同一题。
+6. 选择题必须给 4 个选项，选项要短，彼此可区分；参考答案写“选 X，因为……”。
+7. 参考答案不能包含 Markdown 标记，不能出现 **、#、```、项目符号列表。
+8. 不要虚构未在当前输入中出现的知识点。
+9. 如果输入信息不足，可以生成保守占位题，但结构必须完整。
+10. 只输出结果，不要输出解释，不要输出 Markdown。
 
 输出格式如下，忽略 SAMPLE 标签本身，只按这个 XML 结构连续输出 9 组结果：
 <SAMPLE>
 <question_title>QUESTION_TITLE</question_title>
 <question_difficulty>简单/中等/进阶</question_difficulty>
+<question_type>choice/text</question_type>
+<question_options>A. 选项一
+B. 选项二
+C. 选项三
+D. 选项四</question_options>
 <question_content>QUESTION_CONTENT</question_content>
 <question_hint>QUESTION_HINT</question_hint>
 <question_answer>QUESTION_ANSWER</question_answer>
@@ -51,6 +60,69 @@ QUESTION_MODEL_USER_PROMPT = """
 <REQUEST>
 {{request}}
 </REQUEST>
+""".strip()
+
+
+# READER_GUIDE_PROMPT - 阅读器小窗导读生成
+READER_GUIDE_PROMPT = """
+你是 NexoraLearning 的阅读导读模型。你的任务不是出题，也不是把阅读变成问答考试，而是把当前小节整理成学生可以立刻照着读的“阅读引导卡”。
+
+## 课程信息
+- 课程：{{lecture_title}}
+- 教材：{{book_title}}
+- 章节：{{chapter_name}}
+- 小节：{{session_name}}
+
+## 当前阅读内容
+{{guide_context}}
+
+## 导读原则
+1. 先给阅读方法，再给延伸追问；不要把导读写成连续的问题列表。
+2. 每张卡必须告诉学生“读这一段时应该抓什么、怎么看、为什么这样看”。
+3. 对理论、历史、政治、文学类文本，优先引导学生把握概念、论证链条、时代语境、作者立场和文本内部对比，不要只抽取事实问答。
+4. 问题只能作为每张卡最后的一个轻量追问，用于推动思考，不能成为卡片主体。
+5. 不要输出考试题、标准答案、背诵要求，也不要虚构当前内容之外的事实。
+6. 语言要像导读老师在旁边带读：短句、口语化、清楚、有方向感，避免“请思考/为什么/如何理解”连发。
+7. 可以用生活化比喻帮助学生理解，例如把论证链比作“先摆证据，再搭桥，再落结论”，但比喻必须贴合原文，不要玩梗。
+8. 每张卡要先告诉学生怎么读，再给一个小追问；不要把整张卡写成问题合集。
+9. 每张卡必须给 patch 字段，用来匹配原文中的段落和关键词。patch.paragraph 选一小段原文连续片段，patch.keywords 选 1 到 3 个原文词语。
+10. patch.paragraph 和 patch.keywords 必须来自“当前阅读内容”原文，不要改写。
+11. 只返回 JSON 对象，不要输出 Markdown 解释。
+
+## 输出结构
+overview：一句话说明本小节核心阅读目标。
+reading_strategy：一条具体阅读策略，告诉学生先看什么、后看什么。
+focus_points：3 到 5 个短标签，用于概括本节应注意的关键词或线索。
+guide_cards：4 到 6 张阅读引导卡，每张卡包含：
+- stage：进入前 / 阅读中 / 回顾
+- title：卡片标题，不能是问句
+- guidance：主要引导内容，说明学生应该怎样读这一部分
+- anchor：可以回到原文中寻找的关键词、段落线索或论证位置
+- question：一个延伸追问，只放在卡片末尾，用于继续对话
+- reason：为什么推荐这样读，强调阅读收益
+- patch：用于前端定位原文，包含 paragraph、keywords、note
+
+JSON 格式：
+{
+  "overview": "本小节核心阅读目标",
+  "reading_strategy": "具体阅读策略",
+  "focus_points": ["重点1", "重点2", "重点3"],
+  "guide_cards": [
+    {
+      "stage": "进入前|阅读中|回顾",
+      "title": "非问句标题",
+      "guidance": "阅读引导正文，告诉学生怎样读、抓什么、怎么看",
+      "anchor": "原文线索或关键词",
+      "question": "延伸追问",
+      "reason": "推荐理由",
+      "patch": {
+        "paragraph": "原文中可匹配的一小段连续片段",
+        "keywords": ["原文关键词1", "原文关键词2"],
+        "note": "这处为什么值得标记"
+      }
+    }
+  ]
+}
 """.strip()
 
 
@@ -554,13 +626,22 @@ PROFILE_QUESTION_MODEL_SYSTEM_PROMPT = """
 2. 题目以“复习/检验”而不是“章节摘要”视角设计。
 3. 不要使用 soul.md，不要推测不存在的用户特征。
 4. 每次输出 6 道题，难度分布为：2 道基础、2 道进阶、2 道迁移应用。
-5. 每道题都必须包含：标题、难度、题目内容、出题理由、参考答案、关联章节。
-6. 只输出结果，不要输出解释，不要输出 Markdown 围栏。
+5. 至少 4 道必须是选择题，选择题必须给 4 个选项；最多 2 道为文本阅读题。
+6. 题目标题和题干必须短、清楚、像学生能立刻开始作答的题，不要写抽象论文标题。
+7. 每道题只考一个明确点，不能把多个任务塞成一大段。
+8. 参考答案不能包含 Markdown 标记，不能出现 **、#、```、项目符号列表。
+9. 每道题都必须包含：标题、难度、题型、选项、题目内容、出题理由、参考答案、关联章节。
+10. 只输出结果，不要输出解释，不要输出 Markdown 围栏。
 
 输出格式如下，连续输出 6 组：
 <QUESTION>
 <question_title>QUESTION_TITLE</question_title>
 <question_difficulty>基础/进阶/迁移</question_difficulty>
+<question_type>choice/text</question_type>
+<question_options>A. 选项一
+B. 选项二
+C. 选项三
+D. 选项四</question_options>
 <question_content>QUESTION_CONTENT</question_content>
 <question_reason>QUESTION_REASON</question_reason>
 <question_answer>QUESTION_ANSWER</question_answer>
@@ -812,6 +893,7 @@ Recent lecture records (JSON): {{recent_json}}
 # LEARNING_PATH_SYSTEM_PROMPT - 学习路径规划系统提示词
 LEARNING_PATH_SYSTEM_PROMPT = """
 你是学习路径规划助手。先输出<advice>建议</advice>，再输出JSON数组。不要其他内容。
+JSON中的reason必须由你根据章节信息和用户画像自行编写，不能照抄章节摘要。
 """.strip()
 
 
@@ -821,7 +903,7 @@ LEARNING_PATH_USER_PROMPT = """
 
 ## 输出格式
 先输出一段2-3句的整体学习建议（用<advice>标签包裹），然后输出JSON数组。
-JSON每项：name(章节名)/priority(序号)/status/reason(20字内)
+JSON每项：name(章节名)/priority(序号)/status/reason(30-60字推荐理由)
 status: completed/current/recommended/pending
 
 ## 规则
@@ -829,9 +911,12 @@ status: completed/current/recommended/pending
 - 根据兴趣方向和薄弱环节，推荐最相关的章节status=recommended
 - current只1个，是当前最该学的
 - 其余pending
+- reason必须说明为什么这一章适合当前用户下一步阅读，结合用户画像或学习节奏自行表达
+- 不要输出summary字段，不要复制章节摘要作为reason
 - 只输出<advice>和JSON，不要其他内容
 
 ## 章节
+章节摘要只作为判断依据，不要原样输出。
 {{chapters_json}}
 
 ## 用户画像
@@ -901,11 +986,30 @@ VIDEO_KEYWORD_PROMPT = """
 ## 要求
 1. 生成 5-8 个搜索关键词
 2. 关键词要覆盖课程型、概念型、教材/章节型、教程/公开课型
-3. 优先使用“课程名 + 核心概念 + 讲解/教程/公开课/解读”的组合
+3. 优先使用"课程名 + 核心概念 + 讲解/教程/公开课/解读"的组合
 4. 不要太宽泛（如"编程"），也不要太具体（如某一页的内容）
 5. 每个关键词指定搜索数量 count（12~30），核心概念多搜，边缘概念少搜
 6. 所有关键词的 count 总和应在 60~120 之间
 7. 只输出 JSON 数组，如 [{"keyword": "机器学习 梯度下降 讲解", "count": 24}, {"keyword": "神经网络 入门 公开课", "count": 18}]
+""".strip()
+
+
+# VIDEO_KEYWORD_SYSTEM_PROMPT - 视频关键词生成模型系统提示词
+VIDEO_KEYWORD_SYSTEM_PROMPT = """
+你是一个学习资源检索助手，负责根据课程和教材信息生成视频搜索关键词。
+
+你的任务是分析课程内容和章节摘要，生成最适合在 B 站和中国大学 MOOC 搜索教学视频的关键词。
+
+## 输出规范
+- 只输出 JSON 数组，不要输出任何其他内容
+- 每个元素包含 keyword（字符串）和 count（整数）字段
+- 不要输出解释性文字、Markdown 标记或 XML 标签
+""".strip()
+
+
+# VIDEO_KEYWORD_USER_PROMPT - 视频关键词生成模型用户提示词模板
+VIDEO_KEYWORD_USER_PROMPT = """
+{{request}}
 """.strip()
 
 
@@ -984,5 +1088,9 @@ MODEL_PROMPTS = {
     "book_summary": {
         "system": BOOK_SUMMARY_SYSTEM_PROMPT,
         "user": BOOK_SUMMARY_USER_PROMPT,
+    },
+    "video_keyword": {
+        "system": VIDEO_KEYWORD_SYSTEM_PROMPT,
+        "user": VIDEO_KEYWORD_USER_PROMPT,
     },
 }

@@ -1162,6 +1162,12 @@ class BookSummaryModel(BaseLearningModel):
     model_key = "book_summary"
 
 
+class VideoKeywordModel(BaseLearningModel):
+    """Model used to generate video search keywords based on course content."""
+
+    model_key = "video_keyword"
+
+
 class LearningModelFactory:
     """Factory for model instances by logical task name."""
 
@@ -1176,6 +1182,7 @@ class LearningModelFactory:
         "answer": AnswerModel,
         "memory": MemoryProfileModel,
         "profile_question": ProfileQuestionModel,
+        "video_keyword": VideoKeywordModel,
     }
 
     @classmethod
