@@ -24,6 +24,7 @@ def run_rough_model(
     append_log_text: Callable[[str], None],
     log_event: Callable[..., None],
     run_coarse_reading_chunked: Callable[..., Any],
+    push_book_progress_step: Optional[Callable[[str, str, Mapping[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     """调用粗读模型处理教材（入口编排层）。"""
     model_cfg = get_rough_reading_settings(cfg)
@@ -65,12 +66,20 @@ def run_rough_model(
 
     runner = build_coarse_reading_runner(cfg, model_name=model_name or "")
     cancel_key = job_key(str(lecture.get("id") or ""), str(book.get("id") or ""))
+    lecture_id = str(lecture.get("id") or "")
+    book_id = str(book.get("id") or "")
 
     def _on_delta(delta: str) -> None:
         piece = str(delta or "")
         if not piece:
             return
         append_log_text(piece)
+        if push_book_progress_step and lecture_id and book_id:
+            push_book_progress_step(lecture_id, book_id, {
+                "type": "model_text",
+                "title": "模型输出",
+                "preview": piece[:200],
+            })
         if is_cancelled_key(cancel_key):
             raise RuntimeError("cancelled by admin")
 

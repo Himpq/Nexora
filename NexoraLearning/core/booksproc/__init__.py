@@ -46,7 +46,12 @@ from .modeling import (
 )
 from .queue import get_queue_snapshot as _internal_get_queue_snapshot
 from .runtime import as_bool, exec_read_book_text_tool, exec_search_book_text_tool, resolve_book_text, safe_json_obj
-from .state import get_book_progress_steps as _state_get_book_progress_steps, get_book_progress_text as _state_get_book_progress_text
+from .state import (
+    get_book_progress_steps as _state_get_book_progress_steps,
+    get_book_progress_text as _state_get_book_progress_text,
+    push_model_output,
+    push_tool_call,
+)
 
 __all__ = [
     "init_booksproc",
@@ -94,4 +99,6 @@ __all__ = [
     "resolve_book_text",
     "exec_read_book_text_tool",
     "exec_search_book_text_tool",
+    "push_model_output",
+    "push_tool_call",
 ]

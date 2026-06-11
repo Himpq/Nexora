@@ -1361,8 +1361,10 @@ def frontend_profile():
 
 
 
-def _learning_path_cache_path(lecture_id: str, book_id: str) -> Path:
+def _learning_path_cache_path(lecture_id: str, book_id: str, user_id: str = "") -> Path:
     data_dir = Path(str(_cfg.get("data_dir") or "data")).resolve()
+    if user_id:
+        return data_dir / "users" / user_id / "learning_path" / f"{lecture_id}_{book_id}.json"
     return data_dir / "lectures" / lecture_id / "books" / book_id / "learning_path.json"
 
 
@@ -1413,7 +1415,7 @@ def frontend_learning_path():
         return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
 
     # 检查持久化缓存
-    cache_path = _learning_path_cache_path(lecture_id, book_id)
+    cache_path = _learning_path_cache_path(lecture_id, book_id, user_id)
     if not force and cache_path.exists():
         try:
             cached = json.loads(cache_path.read_text(encoding="utf-8"))
@@ -2082,6 +2084,28 @@ def frontend_settings_refinement():
             running_by_book[f"{lecture_id}::{book_id}{suffix}"] = job_status
     queue_snapshot["running_count"] = int(running_count)
     items: List[Dict[str, Any]] = []
+    # 检查每个 lecture 的大纲状态（从 job 队列获取，包含 error 状态）
+    outline_status_cache: Dict[str, str] = {}
+    outline_error_cache: Dict[str, str] = {}
+    for job in queue_snapshot.get("jobs", []) if isinstance(queue_snapshot.get("jobs"), list) else []:
+        if not isinstance(job, dict):
+            continue
+        job_type = str(job.get("job_type") or "").strip().lower()
+        if job_type != "outline":
+            continue
+        lid = str(job.get("lecture_id") or "").strip()
+        if not lid:
+            continue
+        job_status = str(job.get("status") or "").strip().lower()
+        if job_status in ("running", "queued"):
+            outline_status_cache[lid] = "running"
+            outline_error_cache[lid] = ""
+        elif job_status == "done":
+            outline_status_cache[lid] = "done"
+            outline_error_cache[lid] = ""
+        elif job_status == "error":
+            outline_status_cache[lid] = "error"
+            outline_error_cache[lid] = str(job.get("error") or "").strip()
     for row in rows:
         lecture_id = str(row.get("lecture_id") or "").strip()
         lecture_title = str(row.get("lecture_title") or "").strip()
@@ -2092,6 +2116,16 @@ def frontend_settings_refinement():
         refine_status = str(book.get("refinement_status") or "").strip().lower()
         coarse_status = str(book.get("coarse_status") or "").strip().lower()
         key = f"{lecture_id}::{book_id}"
+
+        # 获取大纲状态（优先使用 job 状态，否则检查文件）
+        if lecture_id not in outline_status_cache:
+            try:
+                from core.booksproc.outline import load_outline
+                outline = load_outline(_cfg, lecture_id)
+                outline_status_cache[lecture_id] = "done" if outline else ""
+            except Exception:
+                outline_status_cache[lecture_id] = ""
+
         items.append(
             {
                 "lecture_id": lecture_id,
@@ -2106,6 +2140,8 @@ def frontend_settings_refinement():
                 "section_status": str(book.get("section_status") or ""),
                 "summary_status": str(book.get("summary_status") or ""),
                 "annotation_status": str(book.get("annotation_status") or ""),
+                "outline_status": outline_status_cache.get(lecture_id, ""),
+                "outline_error": outline_error_cache.get(lecture_id, ""),
                 "coarse_model": str(book.get("coarse_model") or ""),
                 "intensive_model": str(book.get("intensive_model") or ""),
                 "question_model": str(book.get("question_model") or ""),
@@ -3968,13 +4004,18 @@ def frontend_get_outline(lecture_id: str):
 
 @bp.route("/frontend/outline/<lecture_id>/generate", methods=["POST"])
 def frontend_generate_outline(lecture_id: str):
-    """手动触发课程大纲生成。"""
+    """手动触发课程大纲生成（异步，通过队列执行）。"""
     try:
-        from core.booksproc.outline import generate_outline
+        from core.booksproc.queue import enqueue_job
 
-        user_id = _resolve_runtime_user_id()
-        result = generate_outline(_cfg, lecture_id, user_id=user_id)
-        return jsonify({"success": True, "outline": result})
+        enqueue_job(
+            lecture_id,
+            "outline",
+            actor=_resolve_runtime_user_id() or "manual",
+            force=True,
+            job_type="outline",
+        )
+        return jsonify({"success": True, "message": "大纲生成任务已加入队列"})
     except Exception as exc:
         log_event(
             "outline_manual_error",
@@ -5233,6 +5274,56 @@ def frontend_settings_feed_channels_delete(channel_id: str):
     if not removed:
         return jsonify({"success": False, "error": "channel not found."}), 404
     return jsonify({"success": True, "channel_id": channel_id})
+
+
+@bp.route("/frontend/settings/feed-channels/<channel_id>", methods=["PATCH"])
+def frontend_settings_feed_channels_update(channel_id: str):
+    if not _is_runtime_admin():
+        return jsonify({"success": False, "error": "Only admin can update channels."}), 403
+
+    data = request.get_json(silent=True) or {}
+
+    # 获取现有频道记录
+    from core.learning_feed import list_learning_feed_channels
+    existing_channels = list_learning_feed_channels(_cfg)
+    existing_channel = None
+    for ch in existing_channels:
+        if str(ch.get("id") or "").strip() == channel_id:
+            existing_channel = ch
+            break
+
+    if not existing_channel:
+        return jsonify({"success": False, "error": "channel not found."}), 404
+
+    # 合并更新字段
+    updates = {}
+
+    if "title" in data:
+        title = str(data.get("title") or "").strip()
+        if not title:
+            return jsonify({"success": False, "error": "title cannot be empty."}), 400
+        updates["title"] = title
+
+    if "member_user_ids" in data:
+        member_user_ids = _normalize_channel_members(data.get("member_user_ids"))
+        if "ALL" in {item.upper() for item in member_user_ids}:
+            member_user_ids = []
+            updates["type"] = "public"
+        else:
+            updates["type"] = "private"
+        updates["member_user_ids"] = member_user_ids
+
+    if not updates:
+        return jsonify({"success": False, "error": "No valid fields to update."}), 400
+
+    # 合并现有记录和更新
+    merged_record = {**existing_channel, **updates, "id": channel_id}
+
+    record = upsert_learning_feed_channel(
+        _cfg,
+        merged_record,
+    )
+    return jsonify({"success": True, "item": record})
 
 
 @bp.route("/frontend/learning-feeds", methods=["GET"])

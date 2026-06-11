@@ -1,10 +1,33 @@
-"""Reader guide generation for NexoraLearning."""
+"""Reader guide generation for NexoraLearning.
+
+使用工具调用模式生成导读，避免 JSON 解析错误。
+"""
 
 from __future__ import annotations
 
 import json
 import re
 from typing import Any, Callable, Dict, List, Mapping, Optional
+
+
+def _safe_json_obj(raw: str) -> Dict[str, Any]:
+    """安全解析 JSON 字符串为字典。"""
+    text = str(raw or "").strip()
+    if not text:
+        return {}
+    try:
+        obj = json.loads(text)
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
+
+
+def _safe_json_dumps(obj: Any) -> str:
+    """安全序列化对象为 JSON 字符串。"""
+    try:
+        return json.dumps(obj, ensure_ascii=False)
+    except Exception:
+        return "{}"
 
 
 def _strip_json_fence(content: str) -> str:
@@ -101,29 +124,26 @@ def _normalize_guide_cards(value: Any) -> List[Dict[str, Any]]:
     return rows
 
 
-def _normalize_reader_guide(content: str) -> Dict[str, Any]:
-    parsed = _parse_json_object(content)
-    guide = parsed.get("guide") if isinstance(parsed.get("guide"), dict) else parsed
-    cards = _normalize_guide_cards(guide.get("guide_cards"))
+def _normalize_reader_guide(guide_data: Dict[str, Any]) -> Dict[str, Any]:
+    """规范化导读数据（从工具调用参数）。"""
+    cards = _normalize_guide_cards(guide_data.get("guide_cards"))
 
     if not cards:
         raise ValueError("模型未返回有效导读卡")
 
     return {
-        "overview": str(guide.get("overview") or "").strip()[:500],
-        "reading_strategy": str(guide.get("reading_strategy") or "").strip()[:360],
-        "focus_points": _normalize_list(guide.get("focus_points"), 120),
+        "overview": str(guide_data.get("overview") or "").strip()[:500],
+        "reading_strategy": str(guide_data.get("reading_strategy") or "").strip()[:360],
+        "focus_points": _normalize_list(guide_data.get("focus_points"), 120),
         "guide_cards": cards[:6],
         "questions": cards[:6],
     }
 
 
-def _normalize_pre_reading_questions(content: str) -> List[Dict[str, Any]]:
-    parsed = _parse_json_object(content)
-    questions = parsed.get("questions") if isinstance(parsed.get("questions"), list) else []
-
+def _normalize_pre_reading_questions(questions_data: List[Any]) -> List[Dict[str, Any]]:
+    """规范化阅读前问题数据（从工具调用参数）。"""
     result = []
-    for q in questions:
+    for q in questions_data:
         if not isinstance(q, dict):
             continue
 
@@ -210,6 +230,140 @@ def _render_reader_guide_prompt(
     return prompt
 
 
+def _build_guide_tools() -> List[Dict[str, Any]]:
+    """构建导读工具定义。"""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "submit_guide",
+                "description": "Submit the reader guide. Call this tool to submit the generated guide cards.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "overview": {
+                            "type": "string",
+                            "description": "One sentence describing the core reading objective"
+                        },
+                        "reading_strategy": {
+                            "type": "string",
+                            "description": "Specific reading strategy"
+                        },
+                        "focus_points": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "3-5 short labels for key points"
+                        },
+                        "guide_cards": {
+                            "type": "array",
+                            "description": "4-6 reading guide cards",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "stage": {
+                                        "type": "string",
+                                        "enum": ["进入前", "阅读中", "回顾"],
+                                        "description": "Reading stage"
+                                    },
+                                    "title": {
+                                        "type": "string",
+                                        "description": "Card title (not a question)"
+                                    },
+                                    "guidance": {
+                                        "type": "string",
+                                        "description": "Main guidance content"
+                                    },
+                                    "anchor": {
+                                        "type": "string",
+                                        "description": "Keywords or paragraph clues"
+                                    },
+                                    "question": {
+                                        "type": "string",
+                                        "description": "One follow-up question at the end"
+                                    },
+                                    "reason": {
+                                        "type": "string",
+                                        "description": "Why this reading approach is recommended"
+                                    },
+                                    "patch": {
+                                        "type": "object",
+                                        "properties": {
+                                            "paragraph": {
+                                                "type": "string",
+                                                "description": "A short continuous fragment from the original text"
+                                            },
+                                            "keywords": {
+                                                "type": "array",
+                                                "items": {"type": "string"},
+                                                "description": "1-3 keywords from the original text"
+                                            },
+                                            "note": {
+                                                "type": "string",
+                                                "description": "Why this location is worth marking"
+                                            }
+                                        },
+                                        "required": ["paragraph", "keywords"]
+                                    }
+                                },
+                                "required": ["stage", "title", "guidance", "patch"]
+                            }
+                        }
+                    },
+                    "required": ["overview", "guide_cards"]
+                }
+            }
+        }
+    ]
+
+
+def _build_pre_reading_tools() -> List[Dict[str, Any]]:
+    """构建阅读前问题工具定义。"""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "submit_questions",
+                "description": "Submit pre-reading questions. Call this tool to submit the generated questions.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "questions": {
+                            "type": "array",
+                            "description": "2-3 pre-reading questions",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id": {"type": "string", "description": "Question ID"},
+                                    "type": {
+                                        "type": "string",
+                                        "enum": ["knowledge_level", "learning_goal", "learning_style"],
+                                        "description": "Question type"
+                                    },
+                                    "title": {"type": "string", "description": "Question title"},
+                                    "options": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "id": {"type": "string"},
+                                                "text": {"type": "string"}
+                                            },
+                                            "required": ["id", "text"]
+                                        },
+                                        "description": "3-4 options"
+                                    }
+                                },
+                                "required": ["id", "type", "title", "options"]
+                            }
+                        }
+                    },
+                    "required": ["questions"]
+                }
+            }
+        }
+    ]
+
+
 def generate_pre_reading_questions(
     cfg: Mapping[str, Any],
     *,
@@ -221,7 +375,7 @@ def generate_pre_reading_questions(
     stream: bool = False,
     on_delta: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
-    """Generate pre-reading questions for the active reader chapter or session."""
+    """Generate pre-reading questions using tool calls."""
     from .modeling import build_question_generation_runner
     from .modeling import get_question_generation_settings
     from ..lectures import get_book
@@ -254,7 +408,7 @@ def generate_pre_reading_questions(
     runner = build_question_generation_runner(resolved_cfg)
 
     safe_session_name = str(session_name or "").strip() or "整章导读"
-    prompt = str(PRE_READING_QUESTIONS_PROMPT or "")
+    system_prompt = str(PRE_READING_QUESTIONS_PROMPT or "")
     values = {
         "lecture_title": str(lecture.get("title") or ""),
         "book_title": str(book.get("title") or ""),
@@ -264,7 +418,9 @@ def generate_pre_reading_questions(
     }
 
     for key, value in values.items():
-        prompt = prompt.replace("{{" + key + "}}", value)
+        system_prompt = system_prompt.replace("{{" + key + "}}", value)
+
+    user_prompt = "请根据章节内容生成阅读前问题，使用 submit_questions 工具提交。"
 
     log_event(
         "pre_reading_questions_start",
@@ -277,25 +433,111 @@ def generate_pre_reading_questions(
         },
     )
 
-    content = runner.run(
-        request=prompt,
-        api_mode="chat",
-        options={
-            "temperature": float(settings.get("temperature") or 0.3),
-            "max_tokens": 1000,
-            "stream": bool(stream),
-        },
-        request_timeout=float(settings.get("request_timeout") or 120),
-        on_delta=on_delta,
-    )
+    # 工具调用模式
+    tools = _build_pre_reading_tools()
+    proxy = runner.nexora_client.proxy
+    model_name = runner.model_name
 
-    if not content:
-        raise RuntimeError("Model returned empty pre-reading questions")
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    turn_history: List[Dict[str, Any]] = []
+    questions_submitted = False
+    result_questions: List[Dict[str, Any]] = []
 
-    questions = _normalize_pre_reading_questions(content)
+    for turn in range(1, 4):
+        request_messages = list(messages) + turn_history
 
-    if not questions:
-        raise ValueError("模型未返回有效问题")
+        response = proxy.chat_completions(
+            messages=request_messages,
+            model=model_name or None,
+            options={
+                "temperature": float(settings.get("temperature") or 0.3),
+                "max_tokens": 1000,
+                "tools": tools,
+                "tool_choice": "auto",
+            },
+            use_chat_path=False,
+            request_timeout=float(settings.get("request_timeout") or 120),
+        )
+
+        if not bool(response.get("ok")):
+            raise RuntimeError(f"Nexora API Error: {response.get('message') or 'request failed'}")
+
+        payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
+        choices = payload.get("choices") if isinstance(payload.get("choices"), list) else []
+        if not choices:
+            raise RuntimeError("Model returned no choices")
+
+        msg = choices[0].get("message") if isinstance(choices[0], dict) else {}
+        content = str((msg or {}).get("content") or "")
+
+        raw_tool_calls = (msg or {}).get("tool_calls") if isinstance((msg or {}).get("tool_calls"), list) else []
+        tool_calls: List[Dict[str, Any]] = []
+        for raw_call in raw_tool_calls:
+            if not isinstance(raw_call, dict):
+                continue
+            raw_func = raw_call.get("function") if isinstance(raw_call.get("function"), dict) else {}
+            normalized_name = str(raw_func.get("name") or "").strip()
+            normalized_args_obj = _safe_json_obj(str(raw_func.get("arguments") or "{}"))
+            tool_calls.append({
+                "id": str(raw_call.get("id") or ""),
+                "type": "function",
+                "function": {
+                    "name": normalized_name,
+                    "arguments": _safe_json_dumps(normalized_args_obj),
+                },
+            })
+
+        turn_history.append({
+            "role": "assistant",
+            "content": content if content else None,
+            "tool_calls": tool_calls if tool_calls else None,
+        })
+
+        if not tool_calls:
+            turn_history.append({
+                "role": "user",
+                "content": "You must call submit_questions(questions=[...]) to submit. Do not output plain text JSON.",
+            })
+            continue
+
+        for call in tool_calls:
+            func = call.get("function") if isinstance(call.get("function"), dict) else {}
+            tool_name = str(func.get("name") or "").strip()
+            args_obj = _safe_json_obj(str(func.get("arguments") or "{}"))
+            call_id = str(call.get("id") or "")
+
+            if tool_name == "submit_questions":
+                raw_questions = args_obj.get("questions")
+                if isinstance(raw_questions, list):
+                    result_questions = _normalize_pre_reading_questions(raw_questions)
+                    if result_questions:
+                        questions_submitted = True
+                        turn_history.append({
+                            "role": "tool",
+                            "tool_call_id": call_id,
+                            "content": _safe_json_dumps({"ok": True, "count": len(result_questions)}),
+                        })
+                    else:
+                        turn_history.append({
+                            "role": "tool",
+                            "tool_call_id": call_id,
+                            "content": _safe_json_dumps({"ok": False, "error": "No valid questions."}),
+                        })
+            else:
+                turn_history.append({
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": _safe_json_dumps({"ok": False, "error": f"Unknown tool: {tool_name}"}),
+                })
+
+        if questions_submitted:
+            break
+
+    if not questions_submitted or not result_questions:
+        raise RuntimeError("Model failed to submit questions via tool call")
 
     log_event(
         "pre_reading_questions_done",
@@ -305,12 +547,12 @@ def generate_pre_reading_questions(
             "book_id": safe_book_id,
             "chapter_name": str(chapter_name or ""),
             "session_name": str(session_name or ""),
-            "questions_count": len(questions),
+            "questions_count": len(result_questions),
         },
     )
 
     return {
-        "questions": questions,
+        "questions": result_questions,
         "model_name": str(runner.model_name or ""),
         "chapter_name": str(chapter_name or ""),
         "session_name": str(session_name or ""),
@@ -330,7 +572,7 @@ def generate_reader_guide(
     user_profile: str = "",
     pre_reading_answers: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Generate guide questions for the active reader chapter or session."""
+    """Generate reader guide using tool calls."""
     from .modeling import build_question_generation_runner
     from .modeling import get_question_generation_settings
     from ..lectures import get_book
@@ -356,7 +598,7 @@ def generate_reader_guide(
 
     settings = get_question_generation_settings(resolved_cfg)
     runner = build_question_generation_runner(resolved_cfg)
-    prompt = _render_reader_guide_prompt(
+    system_prompt = _render_reader_guide_prompt(
         lecture_title=str(lecture.get("title") or ""),
         book_title=str(book.get("title") or ""),
         chapter_name=str(chapter_name or ""),
@@ -365,6 +607,8 @@ def generate_reader_guide(
         user_profile=user_profile,
         pre_reading_answers=pre_reading_answers,
     )
+
+    user_prompt = "请根据阅读内容生成导读卡，使用 submit_guide 工具提交。"
 
     log_event(
         "reader_guide_start",
@@ -378,22 +622,113 @@ def generate_reader_guide(
         },
     )
 
-    content = runner.run(
-        request=prompt,
-        api_mode="chat",
-        options={
-            "temperature": float(settings.get("temperature") or 0.3),
-            "max_tokens": 1800,
-            "stream": bool(stream),
-        },
-        request_timeout=float(settings.get("request_timeout") or 240),
-        on_delta=on_delta,
-    )
+    # 工具调用模式
+    tools = _build_guide_tools()
+    proxy = runner.nexora_client.proxy
+    model_name = runner.model_name
 
-    if not content:
-        raise RuntimeError("Model returned empty reader guide")
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    turn_history: List[Dict[str, Any]] = []
+    guide_submitted = False
+    result_guide: Dict[str, Any] = {}
 
-    guide = _normalize_reader_guide(content)
+    for turn in range(1, 4):
+        request_messages = list(messages) + turn_history
+
+        response = proxy.chat_completions(
+            messages=request_messages,
+            model=model_name or None,
+            options={
+                "temperature": float(settings.get("temperature") or 0.3),
+                "max_tokens": 2000,
+                "tools": tools,
+                "tool_choice": "auto",
+            },
+            use_chat_path=False,
+            request_timeout=float(settings.get("request_timeout") or 240),
+        )
+
+        if not bool(response.get("ok")):
+            raise RuntimeError(f"Nexora API Error: {response.get('message') or 'request failed'}")
+
+        payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
+        choices = payload.get("choices") if isinstance(payload.get("choices"), list) else []
+        if not choices:
+            raise RuntimeError("Model returned no choices")
+
+        msg = choices[0].get("message") if isinstance(choices[0], dict) else {}
+        content = str((msg or {}).get("content") or "")
+
+        raw_tool_calls = (msg or {}).get("tool_calls") if isinstance((msg or {}).get("tool_calls"), list) else []
+        tool_calls: List[Dict[str, Any]] = []
+        for raw_call in raw_tool_calls:
+            if not isinstance(raw_call, dict):
+                continue
+            raw_func = raw_call.get("function") if isinstance(raw_call.get("function"), dict) else {}
+            normalized_name = str(raw_func.get("name") or "").strip()
+            normalized_args_obj = _safe_json_obj(str(raw_func.get("arguments") or "{}"))
+            tool_calls.append({
+                "id": str(raw_call.get("id") or ""),
+                "type": "function",
+                "function": {
+                    "name": normalized_name,
+                    "arguments": _safe_json_dumps(normalized_args_obj),
+                },
+            })
+
+        turn_history.append({
+            "role": "assistant",
+            "content": content if content else None,
+            "tool_calls": tool_calls if tool_calls else None,
+        })
+
+        if not tool_calls:
+            turn_history.append({
+                "role": "user",
+                "content": "You must call submit_guide(guide_cards=[...]) to submit. Do not output plain text JSON.",
+            })
+            continue
+
+        for call in tool_calls:
+            func = call.get("function") if isinstance(call.get("function"), dict) else {}
+            tool_name = str(func.get("name") or "").strip()
+            args_obj = _safe_json_obj(str(func.get("arguments") or "{}"))
+            call_id = str(call.get("id") or "")
+
+            if tool_name == "submit_guide":
+                try:
+                    result_guide = _normalize_reader_guide(args_obj)
+                    guide_submitted = True
+                    turn_history.append({
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": _safe_json_dumps({
+                            "ok": True,
+                            "cards_count": len(result_guide.get("guide_cards") or []),
+                        }),
+                    })
+                except Exception as exc:
+                    turn_history.append({
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": _safe_json_dumps({"ok": False, "error": str(exc)}),
+                    })
+            else:
+                turn_history.append({
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": _safe_json_dumps({"ok": False, "error": f"Unknown tool: {tool_name}"}),
+                })
+
+        if guide_submitted:
+            break
+
+    if not guide_submitted or not result_guide:
+        raise RuntimeError("Model failed to submit guide via tool call")
+
     log_event(
         "reader_guide_done",
         "Reader 导读生成完成",
@@ -402,12 +737,12 @@ def generate_reader_guide(
             "book_id": safe_book_id,
             "chapter_name": str(chapter_name or ""),
             "session_name": str(session_name or ""),
-            "guide_cards_count": len(guide.get("guide_cards") or []),
+            "guide_cards_count": len(result_guide.get("guide_cards") or []),
         },
     )
 
     return {
-        "guide": guide,
+        "guide": result_guide,
         "model_name": str(runner.model_name or ""),
         "chapter_name": str(chapter_name or ""),
         "session_name": str(session_name or ""),

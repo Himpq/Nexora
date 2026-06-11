@@ -1,4 +1,7 @@
-"""Outline generation for NexoraLearning."""
+"""Outline generation for NexoraLearning.
+
+使用工具调用模式生成大纲，避免 JSON 解析错误。
+"""
 
 from __future__ import annotations
 
@@ -26,6 +29,26 @@ def _read_json(path: Path) -> Optional[Any]:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
+
+
+def _safe_json_obj(raw: str) -> Dict[str, Any]:
+    """安全解析 JSON 字符串为字典。"""
+    text = str(raw or "").strip()
+    if not text:
+        return {}
+    try:
+        obj = json.loads(text)
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
+
+
+def _safe_json_dumps(obj: Any) -> str:
+    """安全序列化对象为 JSON 字符串。"""
+    try:
+        return json.dumps(obj, ensure_ascii=False)
+    except Exception:
+        return "{}"
 
 
 def _extract_chapter_summaries(bookinfo_xml: str) -> List[Dict[str, str]]:
@@ -169,16 +192,100 @@ def _build_books_summary(books: List[Dict[str, Any]]) -> str:
     return "\n".join(lines) if lines else "暂无教材信息"
 
 
+def _build_outline_tools() -> List[Dict[str, Any]]:
+    """构建大纲生成工具定义。"""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "submit_outline",
+                "description": "Submit the final course outline. Call this tool to submit the generated outline sections.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "course_title": {
+                            "type": "string",
+                            "description": "Course title"
+                        },
+                        "sections": {
+                            "type": "array",
+                            "description": "List of learning sections",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id": {"type": "string", "description": "Section ID, e.g. sec_001"},
+                                    "title": {"type": "string", "description": "Section title"},
+                                    "summary": {"type": "string", "description": "Section summary (50-100 chars)"},
+                                    "objectives": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "description": "Learning objectives"
+                                    },
+                                    "key_concepts": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "description": "Core concepts"
+                                    },
+                                    "difficulty": {
+                                        "type": "string",
+                                        "enum": ["基础", "中等", "进阶"],
+                                        "description": "Difficulty level"
+                                    },
+                                    "estimated_minutes": {
+                                        "type": "integer",
+                                        "description": "Estimated study time in minutes (15-60)"
+                                    },
+                                    "prerequisites": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "description": "Prerequisite section IDs"
+                                    },
+                                    "sources": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "book_id": {"type": "string"},
+                                                "book_title": {"type": "string"},
+                                                "chapter_name": {"type": "string"},
+                                                "chapter_summary": {"type": "string"}
+                                            },
+                                            "required": ["book_id", "chapter_name"]
+                                        },
+                                        "description": "Source references"
+                                    },
+                                    "exploration": {
+                                        "type": "object",
+                                        "properties": {
+                                            "agent_prompt": {"type": "string", "description": "Exploration prompt for students"},
+                                            "search_keywords": {
+                                                "type": "array",
+                                                "items": {"type": "string"},
+                                                "description": "Search keywords"
+                                            }
+                                        }
+                                    }
+                                },
+                                "required": ["id", "title", "summary", "estimated_minutes", "sources"]
+                            }
+                        }
+                    },
+                    "required": ["course_title", "sections"]
+                }
+            }
+        }
+    ]
+
+
 def generate_outline(
     cfg: Mapping[str, Any],
     lecture_id: str,
     *,
     user_id: str = "",
 ) -> Dict[str, Any]:
-    """生成课程大纲。"""
+    """生成课程大纲（使用工具调用模式）。"""
     from core.lectures import get_lecture, list_books, load_book_info_xml
-    from core.booksproc.modeling import build_memory_runner
-    from core.booksproc.guide import _parse_json_object
+    from core.models import NexoraCompletionClient, load_scheduler_models_config
     from core.runlog import log_event
 
     safe_lecture_id = str(lecture_id or "").strip()
@@ -212,7 +319,7 @@ def generate_outline(
     except ImportError:
         from prompts import OUTLINE_GENERATION_PROMPT
 
-    prompt = str(OUTLINE_GENERATION_PROMPT or "")
+    system_prompt = str(OUTLINE_GENERATION_PROMPT or "")
     values = {
         "lecture_title": lecture_title,
         "books_summary": books_summary,
@@ -222,7 +329,9 @@ def generate_outline(
     }
 
     for key, value in values.items():
-        prompt = prompt.replace("{{" + key + "}}", value)
+        system_prompt = system_prompt.replace("{{" + key + "}}", value)
+
+    user_prompt = "请根据课程信息生成学习大纲，使用 submit_outline 工具提交。"
 
     log_event(
         "outline_start",
@@ -230,39 +339,253 @@ def generate_outline(
         payload={"lecture_id": safe_lecture_id},
     )
 
-    # 调用模型生成
-    runner = build_memory_runner(cfg)
-    content = runner.run(
-        request=prompt,
-        api_mode="chat",
-        options={
-            "temperature": 0.3,
-            "max_tokens": 4000,
+    # 获取模型配置
+    models_cfg = load_scheduler_models_config(cfg)
+    model_name = str(models_cfg.get("default_nexora_model") or "").strip()
+    temperature = 0.3
+    max_output_tokens = 8000
+    request_timeout = 300
+
+    # 工具定义
+    tools = _build_outline_tools()
+
+    # 多轮对话调用
+    client = NexoraCompletionClient(cfg)
+    proxy = client.proxy
+
+    messages: List[Dict[str, Any]] = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    turn_history: List[Dict[str, Any]] = []
+    outline_submitted = False
+    result_outline: Dict[str, Any] = {}
+    max_turns = 5
+
+    for turn in range(1, max_turns + 1):
+        request_messages = list(messages)
+        if turn_history:
+            request_messages.extend(turn_history)
+
+        log_event(
+            "outline_round",
+            "大纲生成轮次",
+            payload={"turn": turn, "messages_count": len(request_messages)},
+        )
+
+        response = proxy.chat_completions(
+            messages=request_messages,
+            model=model_name or None,
+            options={
+                "temperature": temperature,
+                "max_tokens": max_output_tokens,
+                "tools": tools,
+                "tool_choice": "auto",
+            },
+            use_chat_path=False,
+            request_timeout=request_timeout,
+        )
+
+        if not bool(response.get("ok")):
+            raise RuntimeError(f"Nexora API Error: {response.get('message') or 'request failed'}")
+
+        payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
+        choices = payload.get("choices") if isinstance(payload.get("choices"), list) else []
+        if not choices:
+            raise RuntimeError("Model returned no choices")
+
+        msg = choices[0].get("message") if isinstance(choices[0], dict) else {}
+        content = str((msg or {}).get("content") or "")
+
+        # 推送模型输出到日志
+        if content.strip():
+            log_event(
+                "outline_model_output",
+                "大纲模型输出",
+                payload={"turn": turn, "content_len": len(content)},
+                content=content[:2000],
+            )
+
+        raw_tool_calls = (msg or {}).get("tool_calls") if isinstance((msg or {}).get("tool_calls"), list) else []
+        tool_calls: List[Dict[str, Any]] = []
+        for raw_call in raw_tool_calls:
+            if not isinstance(raw_call, dict):
+                continue
+            raw_func = raw_call.get("function") if isinstance(raw_call.get("function"), dict) else {}
+            normalized_name = str(raw_func.get("name") or "").strip()
+            normalized_args_obj = _safe_json_obj(str(raw_func.get("arguments") or "{}"))
+            normalized_call: Dict[str, Any] = {
+                "id": str(raw_call.get("id") or ""),
+                "type": "function",
+                "function": {
+                    "name": normalized_name,
+                    "arguments": _safe_json_dumps(normalized_args_obj),
+                },
+            }
+            tool_calls.append(normalized_call)
+
+        log_event(
+            "outline_tool_calls",
+            "大纲工具调用检测",
+            payload={
+                "turn": turn,
+                "has_tool_calls": bool(tool_calls),
+                "tool_names": [tc.get("function", {}).get("name", "") for tc in tool_calls],
+            },
+        )
+
+        if not tool_calls:
+            log_event(
+                "outline_no_tool",
+                "模型未调用工具，要求重试",
+                payload={"turn": turn},
+            )
+            # 没有工具调用，要求模型重试
+            turn_history.append({
+                "role": "user",
+                "content": "You must call submit_outline(sections=[...]) to submit the outline. Do not output plain text JSON.",
+            })
+            continue
+
+        # 处理工具调用
+        for call in tool_calls:
+            if not isinstance(call, dict):
+                continue
+            call_id = str(call.get("id") or "")
+            func = call.get("function") if isinstance(call.get("function"), dict) else {}
+            tool_name = str(func.get("name") or "").strip()
+            args_obj = _safe_json_obj(str(func.get("arguments") or "{}"))
+
+            log_event(
+                "outline_tool_process",
+                "处理工具调用",
+                payload={
+                    "turn": turn,
+                    "tool_name": tool_name,
+                    "call_id": call_id,
+                    "args_keys": list(args_obj.keys()) if isinstance(args_obj, dict) else [],
+                },
+            )
+
+            if tool_name == "submit_outline":
+                raw_sections = args_obj.get("sections")
+                course_title = str(args_obj.get("course_title") or lecture_title).strip()
+                parsed_sections: List[Dict[str, Any]] = []
+
+                if isinstance(raw_sections, list):
+                    for row in raw_sections:
+                        if not isinstance(row, dict):
+                            continue
+                        section_id = str(row.get("id") or "").strip()
+                        title = str(row.get("title") or "").strip()
+                        summary = str(row.get("summary") or "").strip()
+                        estimated_minutes = int(row.get("estimated_minutes") or 30)
+                        if not title:
+                            continue
+
+                        objectives = row.get("objectives") if isinstance(row.get("objectives"), list) else []
+                        key_concepts = row.get("key_concepts") if isinstance(row.get("key_concepts"), list) else []
+                        difficulty = str(row.get("difficulty") or "中等").strip()
+                        prerequisites = row.get("prerequisites") if isinstance(row.get("prerequisites"), list) else []
+                        sources = row.get("sources") if isinstance(row.get("sources"), list) else []
+                        exploration = row.get("exploration") if isinstance(row.get("exploration"), dict) else {}
+
+                        parsed_sections.append({
+                            "id": section_id or f"sec_{len(parsed_sections) + 1:03d}",
+                            "title": title,
+                            "summary": summary,
+                            "objectives": [str(o) for o in objectives if str(o).strip()],
+                            "key_concepts": [str(c) for c in key_concepts if str(c).strip()],
+                            "difficulty": difficulty,
+                            "estimated_minutes": max(15, min(60, estimated_minutes)),
+                            "prerequisites": [str(p) for p in prerequisites if str(p).strip()],
+                            "sources": [s for s in sources if isinstance(s, dict)],
+                            "exploration": exploration,
+                        })
+
+                if parsed_sections:
+                    result_outline = {
+                        "course_title": course_title,
+                        "sections": parsed_sections,
+                    }
+                    outline_submitted = True
+
+                    log_event(
+                        "outline_submit_success",
+                        "大纲提交成功",
+                        payload={
+                            "turn": turn,
+                            "sections_count": len(parsed_sections),
+                            "course_title": course_title,
+                        },
+                    )
+
+                    # 返回成功结果给模型
+                    turn_history.append({
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": json.dumps({
+                            "ok": True,
+                            "sections_count": len(parsed_sections),
+                            "message": f"Outline submitted successfully with {len(parsed_sections)} sections.",
+                        }, ensure_ascii=False),
+                    })
+                else:
+                    turn_history.append({
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": json.dumps({
+                            "ok": False,
+                            "error": "No valid sections found. Please provide at least one section.",
+                        }, ensure_ascii=False),
+                    })
+            else:
+                turn_history.append({
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": json.dumps({"ok": False, "error": f"Unknown tool: {tool_name}"}),
+                })
+
+        if outline_submitted:
+            log_event(
+                "outline_loop_break",
+                "大纲循环结束",
+                payload={
+                    "turn": turn,
+                    "outline_submitted": outline_submitted,
+                    "result_outline_keys": list(result_outline.keys()) if isinstance(result_outline, dict) else [],
+                },
+            )
+            break
+
+    log_event(
+        "outline_loop_end",
+        "大纲生成循环结束",
+        payload={
+            "outline_submitted": outline_submitted,
+            "result_outline_keys": list(result_outline.keys()) if isinstance(result_outline, dict) else [],
+            "sections_count": len(result_outline.get("sections", [])),
         },
-        request_timeout=300,
     )
 
-    if not content:
-        raise RuntimeError("Model returned empty outline")
-
-    # 解析结果
-    outline = _parse_json_object(content)
+    if not outline_submitted or not result_outline:
+        raise RuntimeError("Model failed to submit outline via tool call after multiple attempts")
 
     # 验证和规范化
-    sections = outline.get("sections")
+    sections = result_outline.get("sections")
     if not isinstance(sections, list) or not sections:
         raise ValueError("模型未返回有效的 sections")
 
     # 补充元数据
-    outline["lecture_id"] = safe_lecture_id
-    outline["lecture_title"] = lecture_title
-    outline["total_sections"] = len(sections)
-    outline["total_estimated_minutes"] = sum(
+    result_outline["lecture_id"] = safe_lecture_id
+    result_outline["lecture_title"] = lecture_title
+    result_outline["total_sections"] = len(sections)
+    result_outline["total_estimated_minutes"] = sum(
         int(s.get("estimated_minutes") or 0) for s in sections if isinstance(s, dict)
     )
 
     # 保存大纲
-    _save_outline(cfg, safe_lecture_id, outline)
+    _save_outline(cfg, safe_lecture_id, result_outline)
 
     log_event(
         "outline_done",
@@ -273,7 +596,7 @@ def generate_outline(
         },
     )
 
-    return outline
+    return result_outline
 
 
 def _save_outline(

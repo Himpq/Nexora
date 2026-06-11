@@ -1,4 +1,4 @@
-﻿(function () {
+(function () {
 // ─────── Constants & DOM References ───────────────────────────────────
   "use strict";
 
@@ -23,7 +23,10 @@
     dashboardSidePanelTitle: document.getElementById("dashboardSidePanelTitle"),
     learningFeedPanel: document.getElementById("learningFeedPanel"),
     learningFeedComposeBtn: document.getElementById("learningFeedComposeBtn"),
-    feedChannelSelect: document.getElementById("feedChannelSelect"),
+    feedLayout: document.getElementById("feedLayout"),
+    feedChannelSidebar: document.getElementById("feedChannelSidebar"),
+    feedChannelList: document.getElementById("feedChannelList"),
+    feedContentArea: document.getElementById("feedContentArea"),
     dashboardProgressTabBtn: document.getElementById("dashboardProgressTabBtn"),
     dashboardProgressFeedTabBtn: document.getElementById("dashboardProgressFeedTabBtn"),
     dashboardPieTabBtn: document.getElementById("dashboardPieTabBtn"),
@@ -206,6 +209,14 @@
     feedExpandedMap: {},
     feedCommentDrafts: {},
     feedCommentComposing: {},
+    channelEditState: {
+      channelId: "",
+      title: "",
+      selectedUserIds: [],
+      searchQuery: "",
+      searchResults: [],
+      isAllPublic: false,
+    },
     feedMentionState: {
       key: "",
       query: "",
@@ -2119,159 +2130,197 @@
   }
 
 // ─────── Feed Rendering & Compose ─────────────────────────────────────
-  function renderLearningFeeds() {
-    if (!el.learningFeedPanel) return;
-    if (el.progressList) el.progressList.hidden = state.dashboardSideTab === "feed";
-    el.learningFeedPanel.hidden = state.dashboardSideTab !== "feed";
-    if (el.learningFeedComposeBtn) el.learningFeedComposeBtn.hidden = state.dashboardSideTab !== "feed";
-    if (el.feedChannelSelect) {
+
+  /**
+   * 渲染左侧频道列表
+   */
+  function renderFeedChannelList() {
+      if (!el.feedChannelList) return;
+
       const channels = Array.isArray(state.learningFeedChannels) ? state.learningFeedChannels : [];
-      el.feedChannelSelect.hidden = state.dashboardSideTab !== "feed";
-      el.feedChannelSelect.innerHTML = channels.length
-        ? channels.map((row) => `<option value="${escapeHtml(String((row && row.id) || ""))}">${escapeHtml(String((row && row.title) || ""))}</option>`).join("")
-        : '<option value="public_all">所有用户</option>';
-      el.feedChannelSelect.value = String(state.selectedFeedChannelId || "public_all");
-    }
-    if (state.dashboardSideTab !== "feed") return;
-    const rows = Array.isArray(state.learningFeeds) ? state.learningFeeds : [];
-    if (!rows.length) {
-      el.learningFeedPanel.innerHTML = '<div class="materials-empty">暂无学习动态</div>';
-      return;
-    }
-    el.learningFeedPanel.innerHTML = `
-      <div class="feed-stream-list">
-        ${rows.slice(0, 20).map((row) => {
-          const username = getFeedAuthorName(row);
-          const handle = getFeedAuthorHandle(row);
-          const avatar = getFeedAuthorInitial(row);
-          const avatarUrl = getFeedAuthorAvatarUrl(row);
-          const summary = String(row.summary || row.content || "").trim() || "暂无内容";
-          const summaryHtml = renderTextWithMentions(summary);
-          const liked = Array.isArray(row.liked_user_ids) && row.liked_user_ids.includes(state.username);
-          const likesCount = Math.max(0, Number(row.likes_count) || 0);
-          const commentsCount = Math.max(0, Number(row.comments_count) || 0);
-          const timeText = formatFeedRelativeTime(row.timestamp);
-          const feedId = String(row.id || "").trim();
-          const expanded = !!state.feedExpandedMap[feedId];
-          const comments = Array.isArray(row.comments) ? row.comments : [];
-          const draft = String(state.feedCommentDrafts[feedId] || "");
-          const isAdminAuthor = !!row.author_is_admin;
-          const canDeleteFeed = !!row.can_delete;
-          const mentionState = state.feedMentionState && state.feedMentionState.key === `comment:${feedId}` ? state.feedMentionState : null;
-          const likeIcon = `
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path d="M7 10h4l2-5c.2-.5.7-.8 1.2-.8.9 0 1.6.7 1.6 1.6v2.2h2.7c1.2 0 2.1 1.1 1.8 2.3l-1.4 7A2 2 0 0 1 17.7 19H7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
-              <path d="M4 10h3v9H4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
-            </svg>
-          `;
-          const commentIcon = `
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <path d="M5 6.5A2.5 2.5 0 0 1 7.5 4h9A2.5 2.5 0 0 1 19 6.5v6A2.5 2.5 0 0 1 16.5 15H11l-4 3v-3H7.5A2.5 2.5 0 0 1 5 12.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
-            </svg>
-          `;
-          const timeIcon = `
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.8"/>
-              <path d="M12 7.8v4.6l3.2 1.9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-          `;
-          const verifiedIcon = `
-            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-              <circle cx="12" cy="12" r="9" fill="#2563eb"/>
-              <path d="M8 12.3l2.3 2.3 5-5" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-          `;
-          const trashIcon = renderTrashIcon();
-          const renderComments = expanded ? `
-            <div class="feed-comments">
-              <div class="feed-comment-compose">
-                <div class="feed-comment-compose-main">
-                  <input class="feed-comment-input" type="text" data-feed-comment-input="${escapeHtml(feedId)}" placeholder="发表评论..." value="${escapeHtml(draft)}" autocomplete="off">
-                  <div class="feed-mention-menu" data-feed-mention-menu="${escapeHtml(feedId)}" hidden style="display:none"></div>
-                </div>
-                <button class="feed-comment-send" type="button" data-feed-action="comment-send" data-feed-id="${escapeHtml(feedId)}" aria-label="发送评论" title="发送评论">
-                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-                    <path d="M4 11.5L20 4l-4.6 16-3.1-5.4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
-                  </svg>
-                </button>
-              </div>
-              <div class="feed-comment-list">
-                ${comments.length ? comments.map((comment) => {
-                  const commentAuthor = getFeedAuthorName(comment);
-                  const commentHandle = getFeedAuthorHandle(comment);
-                  const commentAvatar = getFeedAuthorAvatarUrl(comment);
-                  const commentInitial = getFeedAuthorInitial(comment);
-                  const commentTime = formatFeedRelativeTime(comment.timestamp);
-                  const isAdminCommentAuthor = !!comment.author_is_admin;
-                  const canDeleteComment = !!comment.can_delete;
-                  const commentId = String(comment.id || "").trim();
-                  return `
-                    <div class="feed-comment-item">
-                      ${commentAvatar
-                        ? `<img class="feed-comment-avatar feed-comment-avatar-image" src="${escapeHtml(commentAvatar)}" alt="${escapeHtml(commentAuthor)}">`
-                        : `<div class="feed-comment-avatar">${escapeHtml(commentInitial)}</div>`}
-                      <div class="feed-comment-main">
-                        <div class="feed-comment-head">
-                          <span class="feed-comment-author">${escapeHtml(commentAuthor)}</span>
-                          ${isAdminCommentAuthor ? `<span class="feed-item-verified feed-comment-verified" title="管理员">${verifiedIcon}</span>` : ""}
-                          ${commentHandle ? `<span class="feed-comment-handle">@${escapeHtml(commentHandle)}</span>` : ""}
-                          ${commentTime ? `<span class="feed-comment-time">${escapeHtml(commentTime)}</span>` : ""}
-                          ${canDeleteComment ? `<button class="feed-comment-delete" type="button" data-feed-action="comment-delete" data-feed-id="${escapeHtml(feedId)}" data-comment-id="${escapeHtml(commentId)}" aria-label="删除评论" title="删除评论">${trashIcon}</button>` : ""}
-                        </div>
-                        <div class="feed-comment-content">${renderTextWithMentions(String(comment.content || "").trim())}</div>
-                        <div class="feed-comment-actions">
-                          <button class="feed-comment-action-btn ${Array.isArray(comment.liked_user_ids) && comment.liked_user_ids.includes(state.username) ? "is-active" : ""}" type="button" data-feed-action="comment-like" data-feed-id="${escapeHtml(feedId)}" data-comment-id="${escapeHtml(commentId)}" aria-label="点赞评论" title="点赞评论">
-                            <span class="feed-action-icon">${likeIcon}</span>
-                            <span class="feed-action-count">${Math.max(0, Number(comment.likes_count) || 0)}</span>
-                          </button>
-                          <button class="feed-comment-action-btn" type="button" data-feed-action="comment-reply" data-feed-id="${escapeHtml(feedId)}" data-comment-id="${escapeHtml(commentId)}" data-comment-username="${escapeHtml(commentHandle || String((comment && comment.author && comment.author.user_id) || ''))}" aria-label="回复评论" title="回复评论">
-                            <span class="feed-action-icon">${renderReplyIcon()}</span>
-                            <span class="feed-action-label">回复</span>
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  `;
-                }).join("") : '<div class="feed-comments-empty">暂无评论</div>'}
-              </div>
-            </div>
-          ` : "";
+      const selectedId = String(state.selectedFeedChannelId || "public_all");
+
+      const editIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`;
+
+      const channelItems = [
+          { id: "public_all", title: "所有动态", builtin: true },
+          ...channels
+      ];
+
+      el.feedChannelList.innerHTML = channelItems.map((row) => {
+          const channelId = String((row && row.id) || "").trim();
+          const channelTitle = String((row && row.title) || "").trim();
+          const isActive = channelId === selectedId;
+          const isBuiltin = !!(row && row.builtin);
+
           return `
-            <article class="feed-item">
-              ${avatarUrl
-                ? `<img class="feed-item-avatar feed-item-avatar-image" src="${escapeHtml(avatarUrl)}" alt="${escapeHtml(username)}">`
-                : `<div class="feed-item-avatar">${escapeHtml(avatar)}</div>`}
-              <div class="feed-item-body">
-                <div class="feed-item-head">
-                  <div class="feed-item-author-row">
-                    <span class="feed-item-author">${escapeHtml(username)}</span>
-                    ${isAdminAuthor ? `<span class="feed-item-verified" title="管理员">${verifiedIcon}</span>` : ""}
-                    ${handle ? `<span class="feed-item-handle">@${escapeHtml(handle)}</span>` : ""}
-                    ${timeText ? `<span class="feed-item-time"><span class="feed-time-icon">${timeIcon}</span><span>${escapeHtml(timeText)}</span></span>` : ""}
-                  </div>
-                </div>
-                <div class="feed-item-summary">${summaryHtml}</div>
-                <div class="feed-item-foot">
-                  <div class="feed-item-actions">
-                    <button class="feed-action-btn ${liked ? "is-active" : ""}" type="button" data-feed-action="like" data-feed-id="${escapeHtml(String(row.id || ""))}" aria-label="点赞" title="点赞">
-                      <span class="feed-action-icon">${likeIcon}</span>
-                      <span class="feed-action-count">${likesCount}</span>
-                    </button>
-                    <button class="feed-action-btn" type="button" data-feed-action="comment-toggle" data-feed-id="${escapeHtml(feedId)}" aria-label="评论" title="展开评论" aria-expanded="${expanded ? "true" : "false"}">
-                      <span class="feed-action-icon">${commentIcon}</span>
-                      <span class="feed-action-count">${commentsCount}</span>
-                    </button>
-                    ${canDeleteFeed ? `<button class="feed-action-btn feed-action-btn-danger" type="button" data-feed-action="feed-delete" data-feed-id="${escapeHtml(feedId)}" aria-label="删除动态" title="删除动态"><span class="feed-action-icon">${trashIcon}</span></button>` : ""}
-                  </div>
-                </div>
-                ${renderComments}
-                <div class="feed-item-divider" aria-hidden="true"></div>
-              </div>
-            </article>
+              <button class="feed-channel-item${isActive ? " is-active" : ""}" type="button" data-channel-id="${escapeHtml(channelId)}">
+                  <span class="feed-channel-item-name">${escapeHtml(channelTitle)}</span>
+                  ${!isBuiltin ? `
+                      <span class="feed-channel-item-actions">
+                          <button class="feed-channel-action-btn" type="button" data-action="edit-channel" data-channel-id="${escapeHtml(channelId)}" title="编辑频道">${editIcon}</button>
+                      </span>
+                  ` : ""}
+              </button>
           `;
-        }).join("")}
-      </div>
-    `;
+      }).join("");
+  }
+
+  /**
+   * 渲染动态内容列表
+   */
+  function renderLearningFeeds() {
+      if (!el.learningFeedPanel) return;
+
+      if (el.progressList) el.progressList.hidden = state.dashboardSideTab === "feed";
+      if (el.feedLayout) el.feedLayout.hidden = state.dashboardSideTab !== "feed";
+      if (el.learningFeedComposeBtn) el.learningFeedComposeBtn.hidden = state.dashboardSideTab !== "feed";
+
+      if (state.dashboardSideTab !== "feed") return;
+
+      renderFeedChannelList();
+
+      const rows = Array.isArray(state.learningFeeds) ? state.learningFeeds : [];
+      if (!rows.length) {
+          el.learningFeedPanel.innerHTML = '<div class="materials-empty">暂无学习动态</div>';
+          return;
+      }
+
+      el.learningFeedPanel.innerHTML = `
+          <div class="feed-stream-list">
+              ${rows.slice(0, 20).map((row) => {
+                  const username = getFeedAuthorName(row);
+                  const handle = getFeedAuthorHandle(row);
+                  const avatar = getFeedAuthorInitial(row);
+                  const avatarUrl = getFeedAuthorAvatarUrl(row);
+                  const summary = String(row.summary || row.content || "").trim() || "暂无内容";
+                  const summaryHtml = renderTextWithMentions(summary);
+                  const liked = Array.isArray(row.liked_user_ids) && row.liked_user_ids.includes(state.username);
+                  const likesCount = Math.max(0, Number(row.likes_count) || 0);
+                  const commentsCount = Math.max(0, Number(row.comments_count) || 0);
+                  const timeText = formatFeedRelativeTime(row.timestamp);
+                  const feedId = String(row.id || "").trim();
+                  const expanded = !!state.feedExpandedMap[feedId];
+                  const comments = Array.isArray(row.comments) ? row.comments : [];
+                  const draft = String(state.feedCommentDrafts[feedId] || "");
+                  const isAdminAuthor = !!row.author_is_admin;
+                  const canDeleteFeed = !!row.can_delete;
+                  const mentionState = state.feedMentionState && state.feedMentionState.key === `comment:${feedId}` ? state.feedMentionState : null;
+                  const likeIcon = `
+                      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                          <path d="M7 10h4l2-5c.2-.5.7-.8 1.2-.8.9 0 1.6.7 1.6 1.6v2.2h2.7c1.2 0 2.1 1.1 1.8 2.3l-1.4 7A2 2 0 0 1 17.7 19H7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+                          <path d="M4 10h3v9H4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+                      </svg>
+                  `;
+                  const commentIcon = `
+                      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                          <path d="M5 6.5A2.5 2.5 0 0 1 7.5 4h9A2.5 2.5 0 0 1 19 6.5v6A2.5 2.5 0 0 1 16.5 15H11l-4 3v-3H7.5A2.5 2.5 0 0 1 5 12.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+                      </svg>
+                  `;
+                  const timeIcon = `
+                      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                          <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.8"/>
+                          <path d="M12 7.8v4.6l3.2 1.9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                  `;
+                  const verifiedIcon = `
+                      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                          <circle cx="12" cy="12" r="9" fill="#2563eb"/>
+                          <path d="M8 12.3l2.3 2.3 5-5" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                  `;
+                  const trashIcon = renderTrashIcon();
+                  const renderComments = expanded ? `
+                      <div class="feed-comments">
+                          <div class="feed-comment-compose">
+                              <div class="feed-comment-compose-main">
+                                  <input class="feed-comment-input" type="text" data-feed-comment-input="${escapeHtml(feedId)}" placeholder="发表评论..." value="${escapeHtml(draft)}" autocomplete="off">
+                                  <div class="feed-mention-menu" data-feed-mention-menu="${escapeHtml(feedId)}" hidden style="display:none"></div>
+                              </div>
+                              <button class="feed-comment-send" type="button" data-feed-action="comment-send" data-feed-id="${escapeHtml(feedId)}" aria-label="发送评论" title="发送评论">
+                                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                                      <path d="M4 11.5L20 4l-4.6 16-3.1-5.4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+                                  </svg>
+                              </button>
+                          </div>
+                          <div class="feed-comment-list">
+                              ${comments.length ? comments.map((comment) => {
+                                  const commentAuthor = getFeedAuthorName(comment);
+                                  const commentHandle = getFeedAuthorHandle(comment);
+                                  const commentAvatar = getFeedAuthorAvatarUrl(comment);
+                                  const commentInitial = getFeedAuthorInitial(comment);
+                                  const commentTime = formatFeedRelativeTime(comment.timestamp);
+                                  const isAdminCommentAuthor = !!comment.author_is_admin;
+                                  const canDeleteComment = !!comment.can_delete;
+                                  const commentId = String(comment.id || "").trim();
+                                  return `
+                                      <div class="feed-comment-item">
+                                          ${commentAvatar
+                                              ? `<img class="feed-comment-avatar feed-comment-avatar-image" src="${escapeHtml(commentAvatar)}" alt="${escapeHtml(commentAuthor)}">`
+                                              : `<div class="feed-comment-avatar">${escapeHtml(commentInitial)}</div>`}
+                                          <div class="feed-comment-main">
+                                              <div class="feed-comment-head">
+                                                  <span class="feed-comment-author">${escapeHtml(commentAuthor)}</span>
+                                                  ${isAdminCommentAuthor ? `<span class="feed-item-verified feed-comment-verified" title="管理员">${verifiedIcon}</span>` : ""}
+                                                  ${commentHandle ? `<span class="feed-comment-handle">@${escapeHtml(commentHandle)}</span>` : ""}
+                                                  ${commentTime ? `<span class="feed-comment-time">${escapeHtml(commentTime)}</span>` : ""}
+                                                  ${canDeleteComment ? `<button class="feed-comment-delete" type="button" data-feed-action="comment-delete" data-feed-id="${escapeHtml(feedId)}" data-comment-id="${escapeHtml(commentId)}" aria-label="删除评论" title="删除评论">${trashIcon}</button>` : ""}
+                                              </div>
+                                              <div class="feed-comment-content">${renderTextWithMentions(String(comment.content || "").trim())}</div>
+                                              <div class="feed-comment-actions">
+                                                  <button class="feed-comment-action-btn ${Array.isArray(comment.liked_user_ids) && comment.liked_user_ids.includes(state.username) ? "is-active" : ""}" type="button" data-feed-action="comment-like" data-feed-id="${escapeHtml(feedId)}" data-comment-id="${escapeHtml(commentId)}" aria-label="点赞评论" title="点赞评论">
+                                                      <span class="feed-action-icon">${likeIcon}</span>
+                                                      <span class="feed-action-count">${Math.max(0, Number(comment.likes_count) || 0)}</span>
+                                                  </button>
+                                                  <button class="feed-comment-action-btn" type="button" data-feed-action="comment-reply" data-feed-id="${escapeHtml(feedId)}" data-comment-id="${escapeHtml(commentId)}" data-comment-username="${escapeHtml(commentHandle || String((comment && comment.author && comment.author.user_id) || ''))}" aria-label="回复评论" title="回复评论">
+                                                      <span class="feed-action-icon">${renderReplyIcon()}</span>
+                                                      <span class="feed-action-label">回复</span>
+                                                  </button>
+                                              </div>
+                                          </div>
+                                      </div>
+                                  `;
+                              }).join("") : '<div class="feed-comments-empty">暂无评论</div>'}
+                          </div>
+                      </div>
+                  ` : "";
+
+                  return `
+                      <article class="feed-item">
+                          ${avatarUrl
+                              ? `<img class="feed-item-avatar feed-item-avatar-image" src="${escapeHtml(avatarUrl)}" alt="${escapeHtml(username)}">`
+                              : `<div class="feed-item-avatar">${escapeHtml(avatar)}</div>`}
+                          <div class="feed-item-body">
+                              <div class="feed-item-head">
+                                  <div class="feed-item-author-row">
+                                      <span class="feed-item-author">${escapeHtml(username)}</span>
+                                      ${isAdminAuthor ? `<span class="feed-item-verified" title="管理员">${verifiedIcon}</span>` : ""}
+                                      ${handle ? `<span class="feed-item-handle">@${escapeHtml(handle)}</span>` : ""}
+                                      ${timeText ? `<span class="feed-item-time"><span class="feed-time-icon">${timeIcon}</span><span>${escapeHtml(timeText)}</span></span>` : ""}
+                                  </div>
+                              </div>
+                              <div class="feed-item-summary">${summaryHtml}</div>
+                              <div class="feed-item-foot">
+                                  <div class="feed-item-actions">
+                                      <button class="feed-action-btn ${liked ? "is-active" : ""}" type="button" data-feed-action="like" data-feed-id="${escapeHtml(String(row.id || ""))}" aria-label="点赞" title="点赞">
+                                          <span class="feed-action-icon">${likeIcon}</span>
+                                          <span class="feed-action-count">${likesCount}</span>
+                                      </button>
+                                      <button class="feed-action-btn" type="button" data-feed-action="comment-toggle" data-feed-id="${escapeHtml(feedId)}" aria-label="评论" title="展开评论" aria-expanded="${expanded ? "true" : "false"}">
+                                          <span class="feed-action-icon">${commentIcon}</span>
+                                          <span class="feed-action-count">${commentsCount}</span>
+                                      </button>
+                                      ${canDeleteFeed ? `<button class="feed-action-btn feed-action-btn-danger" type="button" data-feed-action="feed-delete" data-feed-id="${escapeHtml(feedId)}" aria-label="删除动态" title="删除动态"><span class="feed-action-icon">${trashIcon}</span></button>` : ""}
+                                  </div>
+                              </div>
+                              ${renderComments}
+                              <div class="feed-item-divider" aria-hidden="true"></div>
+                          </div>
+                      </article>
+                  `;
+              }).join("")}
+          </div>
+      `;
   }
 
   function syncDashboardSideTabs() {
@@ -2291,9 +2340,8 @@
     if (el.dashboardFocusPanel) {
       el.dashboardFocusPanel.hidden = !isProgress;
     }
-    if (el.feedChannelSelect) {
-      el.feedChannelSelect.hidden = isProgress;
-      el.feedChannelSelect.value = String(state.selectedFeedChannelId || "public_all");
+    if (el.feedLayout) {
+      el.feedLayout.hidden = isProgress;
     }
     renderPie();
     renderLearningFeeds();
@@ -2716,6 +2764,12 @@
     return true;
   }
 
+  function canStartOutline(item) {
+    const outline = normalizeStatusKey(item && item.outline_status);
+    if (["running", "queued", "done", "completed", "success"].includes(outline)) return false;
+    return true;
+  }
+
   function isDoneStatus(value) {
     return ["done", "completed", "success"].includes(normalizeStatusKey(value));
   }
@@ -2742,12 +2796,24 @@
 
   function getAgentStatus(item, agentKey) {
     const status = normalizeStatusKey(item && item[`${agentKey}_status`]);
-    return {
-      status,
-      done: isDoneStatus(status),
-      running: isRunningStatus(status),
-      error: isErrorStatus(status),
-    };
+    const done = isDoneStatus(status);
+    const running = isRunningStatus(status);
+    const error = isErrorStatus(status);
+    const idle = !done && !running && !error && status !== "empty";
+    const pending = idle && !_canAgentRun(item, agentKey);
+    return { status, done, running, error, idle, pending };
+  }
+
+  function _canAgentRun(item, agentKey) {
+    if (agentKey === "coarse") return canStartRefinement(item);
+    if (agentKey === "section") return canStartSection(item);
+    if (agentKey === "intensive") return canStartIntensive(item);
+    if (agentKey === "question") return canStartQuestion(item);
+    if (agentKey === "annotation") return canStartAnnotation(item);
+    if (agentKey === "summary") return canStartSummary(item);
+    if (agentKey === "outline") return canStartOutline(item);
+    if (agentKey === "video") return canStartVideo(item);
+    return true;
   }
 
   function getCurrentAgentKey(item) {
@@ -2763,7 +2829,7 @@
     const hasError = AGENT_PIPELINE.some((a) => isErrorStatus(normalizeStatusKey(item && item[`${a.key}_status`])));
     const steps = AGENT_PIPELINE.map((agent) => {
       const s = getAgentStatus(item, agent.key);
-      return { key: agent.key, label: agent.label, icon: agent.icon, desc: agent.desc, done: s.done, running: s.running, error: s.error };
+      return { key: agent.key, label: agent.label, icon: agent.icon, desc: agent.desc, done: s.done, running: s.running, error: s.error, pending: s.pending };
     });
     const doneCount = steps.filter((row) => row.done).length;
     const activeIndex = steps.findIndex((row) => row.running);
@@ -2845,19 +2911,15 @@
 // ─────── Settings: Rendering ──────────────────────────────────────────
   function renderSettingsNav() {
     const tabs = [
-      { id: "refinement", title: "待精读列表", sub: "选择教材并触发精读" },
-      { id: "model", title: "模型设置", sub: "设置默认模型与任务模型" },
-      { id: "channels", title: "频道管理", sub: "创建和筛选动态频道" },
-      { id: "users", title: "用户管理", sub: "查看用户信息并设置身份" },
-      { id: "logs", title: "模型日志", sub: "查看模型调用、工具链与输出" },
-      { id: "profile", title: "用户信息", sub: "当前用户与连接状态" },
+      { id: "refinement", title: "教材处理" },
+      { id: "model", title: "模型配置" },
+      { id: "channels", title: "频道与推送" },
+      { id: "users", title: "用户管理" },
+      { id: "logs", title: "系统日志" },
     ];
-    el.settingsNavList.innerHTML = tabs.map((tab) => `
-      <button class="settings-nav-item ${state.settingsTab === tab.id ? "is-active" : ""}" data-settings-tab="${tab.id}" type="button">
-        <div class="settings-nav-title">${escapeHtml(tab.title)}</div>
-        <div class="settings-nav-sub">${escapeHtml(tab.sub)}</div>
-      </button>
-    `).join("");
+    el.settingsNavList.innerHTML = `<div class="settings-tab-bar">
+      ${tabs.map((tab) => `<button class="settings-tab ${state.settingsTab === tab.id ? "is-active" : ""}" data-settings-tab="${tab.id}" type="button">${escapeHtml(tab.title)}</button>`).join("")}
+    </div>`;
   }
 
   function getSettingsUserRoleLabel(role) {
@@ -2919,7 +2981,6 @@
     if (saveBtn instanceof HTMLButtonElement) {
       saveBtn.classList.remove("is-saving");
       saveBtn.disabled = !!saveBtn.dataset.locked;
-      saveBtn.textContent = "✓";
       saveBtn.title = "保存身份";
     }
   }
@@ -2975,11 +3036,14 @@
             </div>
             <div class="settings-user-actions">
               <label class="settings-user-ctl-label" for="${escapeHtml(identitySelectId)}">身份</label>
-              <select id="${escapeHtml(identitySelectId)}" class="input-lite settings-user-select" data-user-identity-select="${escapeHtml(userId)}" ${isLocked ? "disabled" : ""}>
+              <select id="${escapeHtml(identitySelectId)}" class="input-lite settings-identity-select" data-user-identity-select="${escapeHtml(userId)}" ${isLocked ? "disabled" : ""}>
                 <option value="student" ${identity === "student" ? "selected" : ""}>学生</option>
                 <option value="teacher" ${identity === "teacher" ? "selected" : ""}>教师</option>
               </select>
-              <button class="nxl-icon-btn nxl-icon-btn-dark settings-user-save-btn" type="button" data-action="save-user-identity" data-user-id="${escapeHtml(userId)}" ${isLocked ? "disabled data-locked=\"1\" title=\"不可修改其他管理员身份\"" : "title=\"保存身份\""} aria-label="保存身份">✓</button>
+              <button class="settings-user-save-btn" type="button" data-action="save-user-identity" data-user-id="${escapeHtml(userId)}" ${isLocked ? "disabled data-locked=\"1\" title=\"不可修改其他管理员身份\"" : "title=\"保存身份\""} aria-label="保存身份">
+                <svg class="save-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                <svg class="spinner-icon" viewBox="0 0 24 24" style="display:none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2" fill="none" stroke-dasharray="31.4" stroke-dashoffset="0"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="0.8s" repeatCount="indefinite"/></circle></svg>
+              </button>
             </div>
           </article>
         `;
@@ -2988,7 +3052,6 @@
     el.settingsDetailPane.innerHTML = `
       <section class="settings-detail-scroll">
         <article class="settings-card">
-          <div class="settings-title">用户管理</div>
           <div class="settings-sub">查看用户信息，并把身份切换为学生或教师。管理员账号在这里保持锁定。</div>
           <div class="settings-users-summary-grid">
             <div class="settings-users-summary-item"><div class="settings-kv-label">用户总数</div><div class="settings-kv-value" data-settings-users-summary="total">${escapeHtml(String(summary.total || 0))}</div></div>
@@ -2999,8 +3062,7 @@
         </article>
         ${error ? `
           <article class="settings-card">
-            <div class="settings-title" style="color:#b91c1c;">加载失败</div>
-            <div class="settings-sub">${escapeHtml(error)}</div>
+            <div class="settings-sub" style="color:#b91c1c;">${escapeHtml(error)}</div>
           </article>
         ` : ""}
         <section class="settings-user-list">
@@ -3019,7 +3081,6 @@
     el.settingsDetailPane.innerHTML = `
       <section class="settings-detail-scroll">
         <article class="settings-card">
-          <div class="settings-title">用户信息</div>
           <div class="settings-grid">
             <div><div class="settings-kv-label">用户名</div><div class="settings-kv-value">${escapeHtml(username)}</div></div>
             <div><div class="settings-kv-label">角色</div><div class="settings-kv-value">${escapeHtml(role)}</div></div>
@@ -3028,7 +3089,6 @@
           </div>
         </article>
         <article class="settings-card">
-          <div class="settings-title">Nexora 连接</div>
           <div class="settings-grid">
             <div><div class="settings-kv-label">连接状态</div><div class="settings-kv-value">${connected ? "已连接" : "未连接"}</div></div>
             <div><div class="settings-kv-label">模型数量</div><div class="settings-kv-value">${modelsCount}</div></div>
@@ -3043,19 +3103,33 @@
   function renderSettingsLogs() {
     const rows = Array.isArray(state.settingsLogs) ? state.settingsLogs : [];
     const sources = Array.isArray(state.settingsLogSources) ? state.settingsLogSources : [];
-    const sourceOptions = ['<option value="">全部模型</option>']
-      .concat(sources.map((row) => `<option value="${escapeHtml(row)}">${escapeHtml(row)}</option>`))
-      .join("");
-    const categoryOptions = [
-      ["所有日志", "all"],
-      ["模型日志", "model"],
-      ["错误日志", "error"],
-    ].map(([label, value]) => `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`).join("");
-    const rowHtml = rows.length ? rows.map((row) => {
+
+    // 按时间分组（间隔 < 5 分钟为同一会话）
+    const groups = [];
+    let currentGroup = null;
+    const SESSION_GAP_MS = 5 * 60 * 1000;
+
+    for (const row of rows) {
+      const ts = String((row && row.timestamp) || "");
+      const tsMs = ts ? new Date(ts).getTime() : 0;
+
+      if (!currentGroup || (tsMs - currentGroup.endTimeMs > SESSION_GAP_MS)) {
+        currentGroup = { startTime: ts, endTimeMs: tsMs, rows: [] };
+        groups.push(currentGroup);
+      }
+      currentGroup.rows.push(row);
+      if (tsMs > currentGroup.endTimeMs) {
+        currentGroup.endTimeMs = tsMs;
+      }
+    }
+
+    // 渲染日志条目
+    const renderLogEntry = (row, idx) => {
       const kind = String((row && row.kind) || "");
       const source = String((row && row.source) || "unknown");
       const title = String((row && (row.title || row.event_type || row.tool_name)) || "");
       const ts = String((row && row.timestamp) || "—");
+      const timeStr = ts ? ts.split(" ").pop() || ts : "—";
       const content = kind === "tool_flow"
         ? JSON.stringify({
           arguments: row.arguments || {},
@@ -3068,41 +3142,119 @@
             payload: row.payload || {},
             content: row.content || "",
           }, null, 2);
+      const badgeClass = kind === "model_text" ? "type-model" : kind === "tool_flow" ? "type-tool" : "";
+      const badgeLabel = kind === "model_text" ? "模型" : kind === "tool_flow" ? "工具" : "事件";
+
       return `
-        <article class="settings-log-item">
-          <div class="settings-log-head">
-            <div>
-              <div class="settings-log-title">${escapeHtml(title || "日志记录")}</div>
-              <div class="settings-log-meta">${escapeHtml(ts)} · ${escapeHtml(source)} · ${escapeHtml(kind || "event")}</div>
-            </div>
+        <div class="log-entry" data-log-index="${idx}">
+          <div class="log-entry-header" onclick="this.parentElement.classList.toggle('is-expanded')">
+            <span class="log-entry-type-badge ${badgeClass}">${badgeLabel}</span>
+            <span class="log-entry-title">${escapeHtml(title || source || "日志记录")}</span>
+            <span class="log-entry-time">${escapeHtml(timeStr)}</span>
+            <svg class="log-entry-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
           </div>
-          <pre class="settings-log-body">${escapeHtml(content)}</pre>
-        </article>
+          <div class="log-entry-body">
+            <pre>${escapeHtml(content)}</pre>
+          </div>
+        </div>
+      `;
+    };
+
+    // 渲染分组
+    const groupsHtml = groups.length ? groups.map((group, gIdx) => {
+      const startTime = group.startTime || "—";
+      const timeStr = startTime ? startTime.split(" ").pop() || startTime : "—";
+      const count = group.rows.length;
+      const entriesHtml = group.rows.map((row, rIdx) => renderLogEntry(row, `${gIdx}_${rIdx}`)).join("");
+
+      return `
+        <div class="settings-log-group ${gIdx === 0 ? "is-expanded" : ""}" data-group-index="${gIdx}">
+          <div class="settings-log-group-header" onclick="this.parentElement.classList.toggle('is-expanded')">
+            <span class="settings-log-group-title">${escapeHtml(startTime.split(" ")[0] || "会话")} ${escapeHtml(timeStr)}</span>
+            <span class="settings-log-group-count">${count} 条</span>
+            <svg class="settings-log-group-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+          </div>
+          <div class="settings-log-group-body">
+            ${entriesHtml}
+          </div>
+        </div>
       `;
     }).join("") : '<div class="materials-empty">暂无模型日志</div>';
+
+    // 过滤按钮
+    const filterBtns = [
+      { key: "all", label: "所有日志" },
+      { key: "model", label: "模型日志" },
+      { key: "error", label: "错误日志" },
+    ].map((f) => `<button class="settings-filter-btn ${state.settingsLogCategory === f.key ? "is-active" : ""}" data-filter="${f.key}" type="button">${f.label}</button>`).join("");
+
     el.settingsDetailPane.innerHTML = `
       <section class="settings-detail-scroll">
         <article class="settings-card">
-          <div class="settings-title">模型日志</div>
-          <div class="settings-sub">按来源与类型筛选最近的模型执行记录。</div>
-          <div class="settings-inline-form settings-model-form">
-            <div class="materials-form-row settings-model-row">
-              <label class="materials-form-label settings-model-label" for="settingsLogCategorySelect">日志分类</label>
-              <select id="settingsLogCategorySelect" class="input-lite settings-model-select">${categoryOptions}</select>
-            </div>
-            <div class="materials-form-row settings-model-row">
-              <label class="materials-form-label settings-model-label" for="settingsLogSourceSelect">模型来源</label>
-              <select id="settingsLogSourceSelect" class="input-lite settings-model-select" ${state.settingsLogCategory === "model" ? "" : "disabled"}>${sourceOptions}</select>
-            </div>
+          <div class="settings-sub">按时间分组展示最近的模型执行记录，点击展开查看详情。</div>
+          <div class="settings-search-bar">
+            <input class="settings-search-input" id="settingsLogSearchInput" type="text" placeholder="搜索日志标题或内容..." value="${escapeHtml(state.settingsLogSearch || "")}" />
+            <button class="nxl-icon-btn" id="settingsLogRefreshBtn" type="button" title="刷新日志">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+            </button>
+          </div>
+          <div class="settings-filter-group">
+            ${filterBtns}
           </div>
         </article>
-        ${rowHtml}
+        <div id="settingsLogGroupsContainer">
+          ${groupsHtml}
+        </div>
       </section>
     `;
-    const categorySelect = document.getElementById("settingsLogCategorySelect");
-    const sourceSelect = document.getElementById("settingsLogSourceSelect");
-    if (categorySelect) categorySelect.value = String(state.settingsLogCategory || "all");
-    if (sourceSelect) sourceSelect.value = String(state.settingsLogSource || "");
+
+    // 绑定搜索
+    const searchInput = document.getElementById("settingsLogSearchInput");
+    if (searchInput) {
+      searchInput.addEventListener("input", () => {
+        state.settingsLogSearch = searchInput.value;
+        filterLogEntries();
+      });
+    }
+
+    // 绑定过滤按钮
+    el.settingsDetailPane.querySelectorAll(".settings-filter-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        state.settingsLogCategory = String(btn.getAttribute("data-filter") || "all");
+        loadSettingsLogs().then(() => renderSettingsLogs());
+      });
+    });
+
+    // 绑定刷新按钮
+    const refreshBtn = document.getElementById("settingsLogRefreshBtn");
+    if (refreshBtn) {
+      refreshBtn.addEventListener("click", () => {
+        loadSettingsLogs().then(() => renderSettingsLogs());
+      });
+    }
+  }
+
+  function filterLogEntries() {
+    const search = String(state.settingsLogSearch || "").trim().toLowerCase();
+    const container = document.getElementById("settingsLogGroupsContainer");
+    if (!container) return;
+
+    container.querySelectorAll(".log-entry").forEach((entry) => {
+      if (!search) {
+        entry.style.display = "";
+        return;
+      }
+      const title = String(entry.querySelector(".log-entry-title")?.textContent || "").toLowerCase();
+      const body = String(entry.querySelector(".log-entry-body pre")?.textContent || "").toLowerCase();
+      const matches = title.includes(search) || body.includes(search);
+      entry.style.display = matches ? "" : "none";
+    });
+
+    // 隐藏空分组
+    container.querySelectorAll(".settings-log-group").forEach((group) => {
+      const visibleEntries = group.querySelectorAll(".log-entry:not([style*='display: none'])");
+      group.style.display = visibleEntries.length ? "" : "none";
+    });
   }
 
   function renderSettingsRefinement() {
@@ -3190,6 +3342,7 @@
       question: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9 9a3 3 0 0 1 5.12 2.13c0 2-3 2-3 4.87M12 17h.01"/></svg>',
       annotation: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
       summary: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>',
+      outline: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h10"/></svg>',
       video: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="23 7 16 12 23 17"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>',
     };
 
@@ -3206,10 +3359,10 @@
     for (let i = 0; i < flow.steps.length; i++) {
       const step = flow.steps[i];
       const isLast = i === flow.steps.length - 1;
-      const status = step.running ? "running" : step.error ? "error" : step.done ? "done" : "pending";
+      const status = step.running ? "running" : step.error ? "error" : step.done ? "done" : step.pending ? "pending" : "idle";
       const icon = AGENT_SVG[step.key] || AGENT_SVG.coarse;
       const { action, enabled } = _getAgentAction(item, step.key);
-      const btnHtml = enabled
+      const btnHtml = (enabled && !step.pending)
         ? `<button class="flow-node-btn" data-action="${action}" data-lecture-id="${escapeHtml(lectureId)}" data-book-id="${escapeHtml(bookId)}" type="button" title="执行">${SVG_ICONS.play}</button>`
         : "";
       html += `<div class="flow-node is-${status}" data-agent-key="${step.key}">
@@ -3232,6 +3385,7 @@
     if (key === "question") return { action: "start-question", enabled: canStartQuestion(item) };
     if (key === "annotation") return { action: "start-annotation", enabled: canStartAnnotation(item) };
     if (key === "summary") return { action: "start-summary", enabled: canStartSummary(item) };
+    if (key === "outline") return { action: "start-outline", enabled: canStartOutline(item) };
     return { action: "", enabled: false };
   }
 
@@ -3240,12 +3394,12 @@
     for (const step of flow.steps) {
       const node = container.querySelector(`.flow-node[data-agent-key="${step.key}"]`);
       if (!node) continue;
-      const status = step.running ? "running" : step.error ? "error" : step.done ? "done" : "pending";
+      const status = step.running ? "running" : step.error ? "error" : step.done ? "done" : step.pending ? "pending" : "idle";
       node.className = `flow-node is-${status}`;
       // 更新按钮
       const { action, enabled } = _getAgentAction(item, step.key);
       let btn = node.querySelector(".flow-node-btn");
-      if (enabled) {
+      if (enabled && !step.pending) {
         if (!btn) {
           btn = document.createElement("button");
           btn.className = "flow-node-btn";
@@ -3296,40 +3450,40 @@
     const memory = settings.memory || {};
     const profileQuestion = settings.profile_question || {};
     const options = Array.isArray(state.modelOptions) ? state.modelOptions : [];
-    const optionHtml = ['<option value="">(空) 手动指定后才启用</option>']
-      .concat(options.map((row) => `<option value="${escapeHtml(row.id)}">${escapeHtml(row.label || row.id)}</option>`))
-      .join("");
     const disabledAttr = state.isAdmin ? "" : "disabled";
+
+    // 模型配置项定义
+    const modelFields = [
+      { id: "settingsDefaultModelSelect", label: "默认模型", value: settings.default_nexora_model || "" },
+      { id: "settingsRoughModelSelect", label: "粗读模型", value: rough.model_name || "" },
+      { id: "settingsIntensiveModelSelect", label: "精读模型", value: intensive.model_name || "" },
+      { id: "settingsSplitChaptersModelSelect", label: "分节模型", value: splitChapters.model_name || "" },
+      { id: "settingsMemoryModelSelect", label: "记忆模型", value: memory.model_name || "" },
+      { id: "settingsProfileQuestionModelSelect", label: "画像出题模型", value: profileQuestion.model_name || "" },
+    ];
+
+    const formHtml = modelFields.map((field) => `
+      <div class="materials-form-row settings-model-row">
+        <label class="materials-form-label settings-model-label" for="${field.id}">${escapeHtml(field.label)}</label>
+        <div class="nxl-custom-select" data-select-id="${field.id}" data-value="${escapeHtml(String(field.value))}">
+          <button class="nxl-custom-select-trigger" type="button" ${disabledAttr}>
+            <span class="nxl-custom-select-value">${escapeHtml(String(field.value) || "(空)")}</span>
+            <svg class="nxl-custom-select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+          </button>
+          <div class="nxl-custom-select-dropdown">
+            <div class="nxl-custom-select-option ${!field.value ? "is-selected" : ""}" data-value="">(空)</div>
+            ${options.map((row) => `<div class="nxl-custom-select-option ${String(row.id) === String(field.value) ? "is-selected" : ""}" data-value="${escapeHtml(row.id)}">${escapeHtml(row.label || row.id)}</div>`).join("")}
+          </div>
+        </div>
+      </div>
+    `).join("");
+
     el.settingsDetailPane.innerHTML = `
       <section class="settings-detail-scroll">
         <article class="settings-card">
-          <div class="settings-title">模型设置</div>
           <div class="settings-sub">默认模型为空时，后端不会强制绑定默认模型。</div>
           <div class="settings-inline-form settings-model-form">
-            <div class="materials-form-row settings-model-row">
-              <label class="materials-form-label settings-model-label" for="settingsDefaultModelSelect">默认模型</label>
-              <select id="settingsDefaultModelSelect" class="input-lite settings-model-select" ${disabledAttr}>${optionHtml}</select>
-            </div>
-            <div class="materials-form-row settings-model-row">
-              <label class="materials-form-label settings-model-label" for="settingsRoughModelSelect">精读模型</label>
-              <select id="settingsRoughModelSelect" class="input-lite settings-model-select" ${disabledAttr}>${optionHtml}</select>
-            </div>
-            <div class="materials-form-row settings-model-row">
-              <label class="materials-form-label settings-model-label" for="settingsIntensiveModelSelect">IntensiveReadingModel</label>
-              <select id="settingsIntensiveModelSelect" class="input-lite settings-model-select" ${disabledAttr}>${optionHtml}</select>
-            </div>
-            <div class="materials-form-row settings-model-row">
-              <label class="materials-form-label settings-model-label" for="settingsSplitChaptersModelSelect">SplitChaptersModel</label>
-              <select id="settingsSplitChaptersModelSelect" class="input-lite settings-model-select" ${disabledAttr}>${optionHtml}</select>
-            </div>
-            <div class="materials-form-row settings-model-row">
-              <label class="materials-form-label settings-model-label" for="settingsMemoryModelSelect">MemoryProfileModel</label>
-              <select id="settingsMemoryModelSelect" class="input-lite settings-model-select" ${disabledAttr}>${optionHtml}</select>
-            </div>
-            <div class="materials-form-row settings-model-row">
-              <label class="materials-form-label settings-model-label" for="settingsProfileQuestionModelSelect">ProfileQuestionModel</label>
-              <select id="settingsProfileQuestionModelSelect" class="input-lite settings-model-select" ${disabledAttr}>${optionHtml}</select>
-            </div>
+            ${formHtml}
             <div class="materials-form-row settings-model-row">
               <label class="materials-form-label settings-model-label" for="settingsMemoryIntervalInput">画像分析轮数</label>
               <input id="settingsMemoryIntervalInput" class="input-lite settings-model-select" type="number" min="1" step="1" value="${escapeHtml(String(memory.trigger_turn_interval || 10))}" ${disabledAttr} />
@@ -3342,18 +3496,44 @@
         </article>
       </section>
     `;
-    const defaultSelect = document.getElementById("settingsDefaultModelSelect");
-    const roughSelect = document.getElementById("settingsRoughModelSelect");
-    const intensiveSelect = document.getElementById("settingsIntensiveModelSelect");
-    const splitSelect = document.getElementById("settingsSplitChaptersModelSelect");
-    const memorySelect = document.getElementById("settingsMemoryModelSelect");
-    const profileQuestionSelect = document.getElementById("settingsProfileQuestionModelSelect");
-    if (defaultSelect) defaultSelect.value = String(settings.default_nexora_model || "");
-    if (roughSelect) roughSelect.value = String(rough.model_name || "");
-    if (intensiveSelect) intensiveSelect.value = String(intensive.model_name || "");
-    if (splitSelect) splitSelect.value = String(splitChapters.model_name || "");
-    if (memorySelect) memorySelect.value = String(memory.model_name || "");
-    if (profileQuestionSelect) profileQuestionSelect.value = String(profileQuestion.model_name || "");
+
+    // 初始化自定义下拉栏
+    document.querySelectorAll(".nxl-custom-select").forEach((selectEl) => {
+      const trigger = selectEl.querySelector(".nxl-custom-select-trigger");
+      const dropdown = selectEl.querySelector(".nxl-custom-select-dropdown");
+      const valueEl = selectEl.querySelector(".nxl-custom-select-value");
+
+      if (trigger) {
+        trigger.addEventListener("click", (e) => {
+          e.stopPropagation();
+          // 关闭其他下拉栏
+          document.querySelectorAll(".nxl-custom-select.is-open").forEach((el) => {
+            if (el !== selectEl) el.classList.remove("is-open");
+          });
+          selectEl.classList.toggle("is-open");
+        });
+      }
+
+      if (dropdown) {
+        dropdown.querySelectorAll(".nxl-custom-select-option").forEach((opt) => {
+          opt.addEventListener("click", () => {
+            const value = String(opt.getAttribute("data-value") || "");
+            selectEl.setAttribute("data-value", value);
+            if (valueEl) valueEl.textContent = value || "(空)";
+            dropdown.querySelectorAll(".nxl-custom-select-option").forEach((o) => o.classList.remove("is-selected"));
+            opt.classList.add("is-selected");
+            selectEl.classList.remove("is-open");
+          });
+        });
+      }
+    });
+
+    // 点击外部关闭下拉栏
+    document.addEventListener("click", () => {
+      document.querySelectorAll(".nxl-custom-select.is-open").forEach((el) => {
+        el.classList.remove("is-open");
+      });
+    });
   }
 
   function renderSettingsDetail() {
@@ -8635,44 +8815,272 @@
   }
 
 // ─────── Settings Channels ────────────────────────────────────────────
-  function renderSettingsChannels() {
-    const rows = Array.isArray(state.learningFeedChannels) ? state.learningFeedChannels.filter((row) => row && !row.builtin) : [];
-    el.settingsDetailPane.innerHTML = `
-      <section class="settings-detail-scroll">
-        <article class="settings-card">
-          <div class="settings-title">新建频道</div>
-          <div class="settings-sub">使用 <code>@用户名</code> 添加可见用户。输入 <code>@ALL</code> 后将变为全员公开频道。</div>
-          <div class="settings-inline-form">
-            <div class="materials-form-row settings-model-row">
-              <label class="materials-form-label settings-model-label" for="settingsChannelTitleInput">频道名</label>
-              <input id="settingsChannelTitleInput" class="input-lite settings-model-select" placeholder="例如：春物私有研读">
-            </div>
-            <div class="materials-form-row settings-model-row">
-              <label class="materials-form-label settings-model-label" for="settingsChannelUsersInput">可见用户</label>
-              <input id="settingsChannelUsersInput" class="input-lite settings-model-select" placeholder="@mujica,@alice 或 @ALL">
-            </div>
-            <div class="materials-form-actions materials-form-actions-right">
-              <button id="createFeedChannelBtn" class="nxl-icon-btn nxl-icon-btn-dark" type="button" aria-label="新建频道" title="新建频道">+</button>
-            </div>
-          </div>
-        </article>
-        <article class="settings-card">
-          <div class="settings-title">现有频道</div>
-          <div class="settings-log-list">
-            ${rows.length ? rows.map((row) => `
-              <div class="settings-log-item">
-                <div class="settings-log-head">
-                  <strong>${escapeHtml(String(row.title || ""))}</strong>
-                  <button class="nxl-icon-btn nxl-icon-btn-danger" type="button" data-action="delete-feed-channel" data-channel-id="${escapeHtml(String(row.id || ""))}" title="删除频道" aria-label="删除频道">×</button>
-                </div>
-                <div class="settings-log-meta">${escapeHtml(String(row.type || ""))}</div>
-                <pre class="settings-log-content">${escapeHtml(Array.isArray(row.member_user_ids) && row.member_user_ids.length ? row.member_user_ids.map((userId) => `@${userId}`).join(", ") : "全员可见")}</pre>
+
+  /**
+   * 渲染用户卡片（参考用户管理样式）
+   */
+  function renderUserCardHtml(user, isSelected, isEditing, channelId) {
+      const userId = String(user.user_id || user.id || "").trim();
+      const displayName = String(user.display_name || user.name || userId).trim();
+      const nickname = String(user.nickname || "").trim();
+      const handle = String(user.handle || user.user_id || "").trim();
+      const avatarUrl = normalizeFeedAvatarUrl(String(user.avatar_url || "").trim());
+      const avatarText = String((displayName || nickname || userId || "U").trim().slice(0, 1) || "U").toUpperCase();
+
+      const PLUS_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
+      const MINUS_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>';
+
+      const addAction = isEditing ? "add-user-to-channel" : "add-user-to-selection";
+      const removeAction = isEditing ? "remove-user-from-channel" : "remove-user-from-selection";
+      const channelAttr = isEditing && channelId ? ` data-channel-id="${escapeHtml(channelId)}"` : "";
+
+      return `
+          <article class="settings-user-card channel-user-card" data-user-id="${escapeHtml(userId)}">
+              <div class="settings-user-main">
+                  ${avatarUrl
+                      ? `<img class="settings-user-avatar settings-user-avatar-img" src="${escapeHtml(avatarUrl)}" alt="${escapeHtml(displayName)}">`
+                      : `<div class="settings-user-avatar">${escapeHtml(avatarText)}</div>`}
+                  <div class="settings-user-meta">
+                      <div class="settings-user-title">
+                          <span>${escapeHtml(displayName)}</span>
+                          ${nickname && nickname !== displayName ? `<span class="settings-user-pill">${escapeHtml(nickname)}</span>` : ""}
+                      </div>
+                      <div class="settings-user-sub">@${escapeHtml(handle || userId)}</div>
+                  </div>
               </div>
-            `).join("") : '<div class="materials-empty">暂无自定义频道</div>'}
+              <div class="channel-user-action">
+                  ${isSelected
+                      ? `<button class="channel-action-btn channel-action-remove" type="button" data-action="${removeAction}" data-user-id="${escapeHtml(userId)}"${channelAttr} title="移出" aria-label="移出">${MINUS_ICON}</button>`
+                      : `<button class="channel-action-btn channel-action-add" type="button" data-action="${addAction}" data-user-id="${escapeHtml(userId)}"${channelAttr} title="添加" aria-label="添加">${PLUS_ICON}</button>`}
+              </div>
+          </article>
+      `;
+  }
+
+  /**
+   * 渲染频道编辑面板（右侧内容）
+   */
+  function renderChannelEditPanelHtml(channel, allUsers) {
+      const channelId = String(channel ? (channel.id || "") : "").trim();
+      const isEditing = !!channel;
+      const title = isEditing ? String(channel.title || "") : String(state.channelEditState.title || "");
+      const isPublic = state.channelEditState.isAllPublic === true;
+      const selectedUserIds = Array.isArray(state.channelEditState.selectedUserIds) ? state.channelEditState.selectedUserIds : [];
+      const selectedSet = new Set(selectedUserIds);
+
+      const selectedUsers = [];
+      const otherUsers = [];
+
+      if (isPublic) {
+          // 全员公开时，显示 ALL 卡片，其他用户放在可选列表
+          otherUsers.push(...allUsers);
+      } else {
+          for (const user of allUsers) {
+              const userId = String(user.user_id || user.id || "").trim();
+              if (selectedSet.has(userId)) {
+                  selectedUsers.push(user);
+              } else {
+                  otherUsers.push(user);
+              }
+          }
+      }
+
+      const headerTitle = isEditing ? "编辑频道" : "新建频道";
+      const saveBtnText = isEditing ? "保存修改" : "创建频道";
+      const searchQuery = String(state.channelEditState.searchQuery || "").trim();
+
+      let filteredOtherUsers = otherUsers;
+      if (searchQuery) {
+          const query = searchQuery.toLowerCase();
+          filteredOtherUsers = otherUsers.filter((user) => {
+              const userId = String(user.user_id || user.id || "").toLowerCase();
+              const displayName = String(user.display_name || user.name || "").toLowerCase();
+              const nickname = String(user.nickname || "").toLowerCase();
+              return userId.includes(query) || displayName.includes(query) || nickname.includes(query);
+          });
+      }
+
+      const ALL_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>';
+      const PLUS_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
+      const MINUS_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>';
+
+      return `
+          <div class="channel-edit-header">
+              <div class="channel-edit-title">${escapeHtml(headerTitle)}</div>
           </div>
-        </article>
-      </section>
-    `;
+          <div class="channel-edit-form">
+              <div class="materials-form-row">
+                  <label class="materials-form-label" for="settingsChannelTitleInput">频道名</label>
+                  <input id="settingsChannelTitleInput" class="input-lite" placeholder="例如：春物私有研读" value="${escapeHtml(title)}">
+              </div>
+          </div>
+          <div class="channel-users-layout">
+              <div class="channel-users-column">
+                  <div class="channel-users-header">
+                      <span class="channel-users-title">已选用户 (${isPublic ? "全员" : selectedUsers.length})</span>
+                  </div>
+                   <div class="channel-users-list">
+                      ${isPublic
+                          ? `<article class="settings-user-card channel-user-card channel-all-card">
+                                  <div class="settings-user-main">
+                                      <div class="settings-user-avatar channel-all-avatar">${ALL_ICON}</div>
+                                      <div class="settings-user-meta">
+                                          <div class="settings-user-title"><span>全员公开</span></div>
+                                          <div class="settings-user-sub">所有用户可见</div>
+                                      </div>
+                                  </div>
+                                  <div class="channel-user-action">
+                                      <button class="channel-action-btn channel-action-remove" type="button" data-action="toggle-all-public-off" title="取消全员公开" aria-label="取消全员公开">${MINUS_ICON}</button>
+                                  </div>
+                              </article>`
+                          : selectedUsers.length
+                              ? selectedUsers.map((user) => renderUserCardHtml(user, true, isEditing, channelId)).join("")
+                              : '<div class="materials-empty">暂无用户</div>'}
+                  </div>
+              </div>
+              <div class="channel-users-column">
+                  <div class="channel-users-header">
+                      <span class="channel-users-title">可选用户 (${filteredOtherUsers.length})</span>
+                      <input class="input-lite channel-user-search" type="text" placeholder="搜索用户..." value="${escapeHtml(searchQuery)}" data-channel-user-search>
+                  </div>
+                  <div class="channel-users-list">
+                      ${!isPublic ? `
+                          <article class="settings-user-card channel-user-card channel-all-option" data-action="toggle-all-public-on">
+                              <div class="settings-user-main">
+                                  <div class="settings-user-avatar channel-all-avatar">${ALL_ICON}</div>
+                                  <div class="settings-user-meta">
+                                      <div class="settings-user-title"><span>全员公开</span></div>
+                                      <div class="settings-user-sub">点击设为全员公开</div>
+                                  </div>
+                              </div>
+                              <div class="channel-user-action">
+                                  <button class="channel-action-btn channel-action-add" type="button" title="设为全员公开" aria-label="设为全员公开">${PLUS_ICON}</button>
+                              </div>
+                          </article>
+                      ` : ""}
+                      ${filteredOtherUsers.length
+                          ? filteredOtherUsers.map((user) => renderUserCardHtml(user, false, isEditing, channelId)).join("")
+                          : '<div class="materials-empty">暂无用户</div>'}
+                  </div>
+              </div>
+          </div>
+          <div class="channel-edit-actions">
+              <button id="saveFeedChannelBtn" class="channel-save-btn" type="button">${escapeHtml(saveBtnText)}</button>
+          </div>
+      `;
+  }
+
+  /**
+   * 渲染频道设置页面主函数
+   */
+  function renderSettingsChannels() {
+      const channels = Array.isArray(state.learningFeedChannels) ? state.learningFeedChannels.filter((row) => row && !row.builtin) : [];
+      const allUsers = Array.isArray(state.settingsUsers) ? state.settingsUsers : [];
+      const editState = state.channelEditState;
+      const selectedChannelId = editState.channelId;
+      const selectedChannel = selectedChannelId
+          ? channels.find((row) => String((row && row.id) || "").trim() === selectedChannelId)
+          : null;
+
+      const channelListHtml = channels.length
+          ? channels.map((row) => {
+              const channelId = String(row.id || "").trim();
+              const channelTitle = String(row.title || "").trim();
+              const isActive = channelId === selectedChannelId;
+              const memberCount = Array.isArray(row.member_user_ids) ? row.member_user_ids.length : 0;
+              const isPublic = String(row.type || "").trim() === "public";
+
+              return `
+                  <div class="channel-list-item${isActive ? " is-active" : ""}" data-action="select-channel" data-channel-id="${escapeHtml(channelId)}">
+                      <div class="channel-list-item-main">
+                          <span class="channel-list-item-title">${escapeHtml(channelTitle)}</span>
+                          <span class="channel-list-item-meta">${isPublic ? "全员公开" : `${memberCount} 人`}</span>
+                      </div>
+                      <button class="channel-list-item-delete" type="button" data-action="delete-feed-channel" data-channel-id="${escapeHtml(channelId)}" title="删除频道" aria-label="删除频道"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+                  </div>
+              `;
+          }).join("")
+          : '<div class="materials-empty">暂无自定义频道</div>';
+
+      const PLUS_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
+
+      el.settingsDetailPane.innerHTML = `
+          <section class="channel-settings-layout">
+              <aside class="channel-list-pane">
+                  <div class="channel-list-header">
+                      <span class="channel-list-title">现有频道列表</span>
+                      <button id="createNewChannelBtn" class="channel-list-btn" type="button" aria-label="新建频道" title="新建频道">${PLUS_ICON}</button>
+                  </div>
+                  <div class="channel-list-content">
+                      ${channelListHtml}
+                  </div>
+              </aside>
+              <main class="channel-edit-pane">
+                  ${renderChannelEditPanelHtml(selectedChannel, allUsers)}
+              </main>
+          </section>
+      `;
+  }
+
+  /**
+   * 打开频道编辑对话框
+   */
+  function openChannelEditDialog(channelId) {
+      const channels = Array.isArray(state.learningFeedChannels) ? state.learningFeedChannels : [];
+      const channel = channels.find((row) => String((row && row.id) || "").trim() === channelId);
+
+      state.channelEditState = {
+          channelId: channelId,
+          title: channel ? String(channel.title || "") : "",
+          selectedUserIds: channel && Array.isArray(channel.member_user_ids) ? [...channel.member_user_ids] : [],
+          searchQuery: "",
+          isAllPublic: channel ? String(channel.type || "").trim() === "public" : false,
+      };
+
+      if (!state.settingsUsers || !state.settingsUsers.length) {
+          loadSettingsUsers().then(() => {
+              renderSettingsChannels();
+          });
+      } else {
+          renderSettingsChannels();
+      }
+  }
+
+  /**
+   * 重置频道编辑状态（返回新建频道模式）
+   */
+  function resetChannelEditState() {
+      state.channelEditState = {
+          channelId: "",
+          title: "",
+          selectedUserIds: [],
+          searchQuery: "",
+          isAllPublic: false,
+      };
+  }
+
+  /**
+   * 只重新渲染编辑面板（不重建整个页面）
+   */
+  function renderChannelEditPanel() {
+      // 先保存当前输入框的值
+      const titleInput = document.getElementById("settingsChannelTitleInput");
+      if (titleInput) {
+          state.channelEditState.title = String(titleInput.value || "").trim();
+      }
+
+      const channels = Array.isArray(state.learningFeedChannels) ? state.learningFeedChannels.filter((row) => row && !row.builtin) : [];
+      const allUsers = Array.isArray(state.settingsUsers) ? state.settingsUsers : [];
+      const editState = state.channelEditState;
+      const selectedChannelId = editState.channelId;
+      const selectedChannel = selectedChannelId
+          ? channels.find((row) => String((row && row.id) || "").trim() === selectedChannelId)
+          : null;
+
+      const editPane = document.querySelector(".channel-edit-pane");
+      if (editPane) {
+          editPane.innerHTML = renderChannelEditPanelHtml(selectedChannel, allUsers);
+      }
   }
 
   async function loadMaterialsRows() {
@@ -8923,29 +9331,164 @@
   }
 
   async function createLearningFeedChannel() {
-    const titleInput = document.getElementById("settingsChannelTitleInput");
-    const usersInput = document.getElementById("settingsChannelUsersInput");
-    const title = String(titleInput && titleInput.value || "").trim();
-    const rawUsers = String(usersInput && usersInput.value || "").trim();
-    if (!title) throw new Error("频道名不能为空");
-    const member_user_ids = rawUsers
-      ? rawUsers.split(",").map((item) => String(item || "").trim()).filter(Boolean).map((item) => item.startsWith("@") ? item.slice(1).trim() : item)
-      : [];
-    await fetchJson("/api/frontend/settings/feed-channels", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title, member_user_ids }),
-    });
-    await loadLearningFeedChannels();
+      // 先保存当前输入框的值
+      const titleInput = document.getElementById("settingsChannelTitleInput");
+      if (titleInput) {
+          state.channelEditState.title = String(titleInput.value || "").trim();
+      }
+      const title = state.channelEditState.title;
+      const isPublic = state.channelEditState.isAllPublic === true;
+
+      if (!title) throw new Error("频道名不能为空");
+
+      // 全员公开时发送 ["ALL"]，否则发送选中的用户ID
+      const member_user_ids = isPublic ? ["ALL"] : (state.channelEditState.selectedUserIds || []);
+
+      await fetchJson("/api/frontend/settings/feed-channels", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title, member_user_ids }),
+      });
+
+      resetChannelEditState();
+      await loadLearningFeedChannels();
+      await loadSettingsUsers();
+  }
+
+  async function updateLearningFeedChannel() {
+      const channelId = String(state.channelEditState.channelId || "").trim();
+      if (!channelId) throw new Error("频道ID不存在");
+
+      // 先保存当前输入框的值
+      const titleInput = document.getElementById("settingsChannelTitleInput");
+      if (titleInput) {
+          state.channelEditState.title = String(titleInput.value || "").trim();
+      }
+      const title = state.channelEditState.title;
+      const isPublic = state.channelEditState.isAllPublic === true;
+
+      if (!title) throw new Error("频道名不能为空");
+
+      // 全员公开时发送 ["ALL"]，否则发送选中的用户ID
+      const member_user_ids = isPublic ? ["ALL"] : (state.channelEditState.selectedUserIds || []);
+
+      await fetchJson(`/api/frontend/settings/feed-channels/${encodeURIComponent(channelId)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title, member_user_ids }),
+      });
+
+      await loadLearningFeedChannels();
+      await loadSettingsUsers();
+      renderSettingsChannels();
+  }
+
+  /**
+   * 获取当前频道内的用户ID列表（从DOM中读取）
+   */
+  function getChannelMemberUserIds() {
+      const memberCards = document.querySelectorAll(".channel-users-column:first-child .channel-user-card");
+      return Array.from(memberCards).map((card) => String(card.getAttribute("data-user-id") || "").trim()).filter(Boolean);
+  }
+
+  async function saveFeedChannel() {
+      const editState = state.channelEditState;
+      if (editState.channelId) {
+          await updateLearningFeedChannel();
+      } else {
+          await createLearningFeedChannel();
+      }
+  }
+
+  /**
+   * 添加用户到频道（先更新本地状态，再异步请求）
+   */
+  async function addUserToChannel(channelId, userId) {
+      if (!channelId || !userId) return;
+
+      const channels = Array.isArray(state.learningFeedChannels) ? state.learningFeedChannels : [];
+      const channel = channels.find((row) => String((row && row.id) || "").trim() === channelId);
+      if (!channel) return;
+
+      const currentMembers = Array.isArray(channel.member_user_ids) ? [...channel.member_user_ids] : [];
+      if (currentMembers.includes(userId)) return;
+
+      // 先更新本地状态
+      currentMembers.push(userId);
+      channel.member_user_ids = currentMembers;
+      if (Array.isArray(state.channelEditState.selectedUserIds)) {
+          state.channelEditState.selectedUserIds.push(userId);
+      }
+      renderChannelEditPanel();
+
+      // 异步请求后端
+      try {
+          await fetchJson(`/api/frontend/settings/feed-channels/${encodeURIComponent(channelId)}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ member_user_ids: currentMembers }),
+          });
+      } catch (err) {
+          showToast(`添加用户失败：${err.message || "未知错误"}`);
+          // 回滚
+          channel.member_user_ids = currentMembers.filter((id) => id !== userId);
+          if (Array.isArray(state.channelEditState.selectedUserIds)) {
+              state.channelEditState.selectedUserIds = state.channelEditState.selectedUserIds.filter((id) => id !== userId);
+          }
+          renderChannelEditPanel();
+      }
+  }
+
+  /**
+   * 从频道移除用户（先更新本地状态，再异步请求）
+   */
+  async function removeUserFromChannel(channelId, userId) {
+      if (!channelId || !userId) return;
+
+      const channels = Array.isArray(state.learningFeedChannels) ? state.learningFeedChannels : [];
+      const channel = channels.find((row) => String((row && row.id) || "").trim() === channelId);
+      if (!channel) return;
+
+      const currentMembers = Array.isArray(channel.member_user_ids) ? [...channel.member_user_ids] : [];
+      const newMembers = currentMembers.filter((id) => id !== userId);
+
+      // 先更新本地状态
+      channel.member_user_ids = newMembers;
+      if (Array.isArray(state.channelEditState.selectedUserIds)) {
+          state.channelEditState.selectedUserIds = state.channelEditState.selectedUserIds.filter((id) => id !== userId);
+      }
+      renderChannelEditPanel();
+
+      // 异步请求后端
+      try {
+          await fetchJson(`/api/frontend/settings/feed-channels/${encodeURIComponent(channelId)}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ member_user_ids: newMembers }),
+          });
+      } catch (err) {
+          showToast(`移除用户失败：${err.message || "未知错误"}`);
+          // 回滚
+          channel.member_user_ids = currentMembers;
+          if (Array.isArray(state.channelEditState.selectedUserIds)) {
+              state.channelEditState.selectedUserIds.push(userId);
+          }
+          renderChannelEditPanel();
+      }
   }
 
   async function removeLearningFeedChannel(channelId) {
-    const id = String(channelId || "").trim();
-    if (!id) return;
-    await fetchJson(`/api/frontend/settings/feed-channels/${encodeURIComponent(id)}`, {
-      method: "DELETE",
-    });
-    await loadLearningFeedChannels();
+      const id = String(channelId || "").trim();
+      if (!id) return;
+      await fetchJson(`/api/frontend/settings/feed-channels/${encodeURIComponent(id)}`, {
+          method: "DELETE",
+      });
+
+      if (String(state.channelEditState.channelId || "").trim() === id) {
+          resetChannelEditState();
+      }
+
+      await loadLearningFeedChannels();
   }
 
   async function loadLearningFeedChannels() {
@@ -9005,30 +9548,31 @@
 
   async function saveModelSettings() {
     if (!state.isAdmin) throw new Error("仅管理员可修改模型设置");
-    const defaultSelect = document.getElementById("settingsDefaultModelSelect");
-    const roughSelect = document.getElementById("settingsRoughModelSelect");
-    const intensiveSelect = document.getElementById("settingsIntensiveModelSelect");
-    const splitSelect = document.getElementById("settingsSplitChaptersModelSelect");
-    const memorySelect = document.getElementById("settingsMemoryModelSelect");
-    const profileQuestionSelect = document.getElementById("settingsProfileQuestionModelSelect");
+
+    function getCustomSelectValue(selectId) {
+      const el = document.querySelector(`[data-select-id="${selectId}"]`);
+      if (!el) return "";
+      return String(el.getAttribute("data-value") || "").trim();
+    }
+
     const memoryIntervalInput = document.getElementById("settingsMemoryIntervalInput");
     const payload = {
-      default_nexora_model: defaultSelect ? String(defaultSelect.value || "").trim() : "",
+      default_nexora_model: getCustomSelectValue("settingsDefaultModelSelect"),
       rough_reading: {
-        model_name: roughSelect ? String(roughSelect.value || "").trim() : "",
+        model_name: getCustomSelectValue("settingsRoughModelSelect"),
       },
       intensive_reading: {
-        model_name: intensiveSelect ? String(intensiveSelect.value || "").trim() : "",
+        model_name: getCustomSelectValue("settingsIntensiveModelSelect"),
       },
       split_chapters: {
-        model_name: splitSelect ? String(splitSelect.value || "").trim() : "",
+        model_name: getCustomSelectValue("settingsSplitChaptersModelSelect"),
       },
       memory: {
-        model_name: memorySelect ? String(memorySelect.value || "").trim() : "",
+        model_name: getCustomSelectValue("settingsMemoryModelSelect"),
         trigger_turn_interval: Math.max(1, Number(memoryIntervalInput ? memoryIntervalInput.value : 10) || 10),
       },
       profile_question: {
-        model_name: profileQuestionSelect ? String(profileQuestionSelect.value || "").trim() : "",
+        model_name: getCustomSelectValue("settingsProfileQuestionModelSelect"),
       },
     };
     await fetchJson("/api/frontend/settings/models", {
@@ -9130,6 +9674,14 @@
         book_id: bookId,
         actor: state.username || "",
       }),
+    });
+    await loadRefinementSettings();
+  }
+
+  async function startOutline(lectureId) {
+    await fetchJson(`/api/frontend/outline/${encodeURIComponent(lectureId)}/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
     });
     await loadRefinementSettings();
   }
@@ -9260,9 +9812,29 @@
         syncDashboardSideTabs();
       });
     }
-    if (el.feedChannelSelect) {
-      el.feedChannelSelect.addEventListener("change", () => {
-        state.selectedFeedChannelId = String(el.feedChannelSelect.value || "public_all");
+    if (el.feedChannelList) {
+      el.feedChannelList.addEventListener("click", async (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+
+        const editBtn = target.closest("[data-action='edit-channel']");
+        if (editBtn) {
+          event.preventDefault();
+          event.stopPropagation();
+          const channelId = String(editBtn.getAttribute("data-channel-id") || "").trim();
+          if (channelId) {
+            openChannelEditDialog(channelId);
+          }
+          return;
+        }
+
+        const channelItem = target.closest("[data-channel-id]");
+        if (!channelItem) return;
+
+        const channelId = String(channelItem.getAttribute("data-channel-id") || "").trim();
+        if (!channelId || channelId === String(state.selectedFeedChannelId || "public_all")) return;
+
+        state.selectedFeedChannelId = channelId;
         loadLearningFeeds().catch((err) => showToast(`加载动态失败：${err.message || "未知错误"}`));
       });
     }
@@ -10057,11 +10629,9 @@
         const select = card ? card.querySelector("[data-user-identity-select]") : null;
         let identity = select instanceof HTMLSelectElement ? String(select.value || "").trim().toLowerCase() : "";
         if (identity !== "student" && identity !== "teacher") identity = "student";
-        const previousText = saveUserIdentityBtn.textContent;
         if (saveUserIdentityBtn instanceof HTMLButtonElement) {
           saveUserIdentityBtn.disabled = true;
           saveUserIdentityBtn.classList.add("is-saving");
-          saveUserIdentityBtn.textContent = "…";
         }
         updateSettingsUserIdentity(userId, identity)
           .then((updated) => {
@@ -10076,38 +10646,124 @@
             if (saveUserIdentityBtn instanceof HTMLButtonElement) {
               saveUserIdentityBtn.disabled = false;
               saveUserIdentityBtn.classList.remove("is-saving");
-              saveUserIdentityBtn.textContent = previousText || "✓";
             }
             showToast(`更新用户身份失败：${err.message || "未知错误"}`);
           });
         return;
       }
-      const createChannelBtn = target.closest("#createFeedChannelBtn");
-      if (createChannelBtn) {
-        createLearningFeedChannel()
-          .then(() => {
-            showToast("频道创建成功");
-            renderSettingsView();
-          })
-          .catch((err) => showToast(`创建频道失败：${err.message || "未知错误"}`));
-        return;
+      const saveChannelBtn = target.closest("#saveFeedChannelBtn");
+      if (saveChannelBtn) {
+          saveFeedChannel()
+              .then(() => {
+                  showToast(state.channelEditState.channelId ? "频道已更新" : "频道创建成功");
+                  renderSettingsChannels();
+              })
+              .catch((err) => showToast(`操作失败：${err.message || "未知错误"}`));
+          return;
       }
+
+      const cancelEditBtn = target.closest("#cancelEditChannelBtn");
+      if (cancelEditBtn) {
+          resetChannelEditState();
+          renderSettingsChannels();
+          return;
+      }
+
+      const createNewChannelBtn = target.closest("#createNewChannelBtn");
+      if (createNewChannelBtn) {
+          resetChannelEditState();
+          renderSettingsChannels();
+          return;
+      }
+
+      // 删除频道（必须在 select-channel 之前，因为按钮在 item 内部）
       const deleteChannelBtn = target.closest("[data-action='delete-feed-channel']");
       if (deleteChannelBtn) {
-        const channelId = String(deleteChannelBtn.getAttribute("data-channel-id") || "");
-        if (!channelId) return;
-        confirmModalAsync("确认删除该频道？")
-          .then((ok) => {
-            if (!ok) return null;
-            return removeLearningFeedChannel(channelId);
-          })
-          .then((result) => {
-            if (result === null) return;
-            showToast("频道已删除");
-            renderSettingsView();
-          })
-          .catch((err) => showToast(`删除频道失败：${err.message || "未知错误"}`));
-        return;
+          const channelId = String(deleteChannelBtn.getAttribute("data-channel-id") || "");
+          if (!channelId) return;
+          confirmModalAsync("确认删除该频道？")
+              .then((ok) => {
+                  if (!ok) return null;
+                  return removeLearningFeedChannel(channelId);
+              })
+              .then((result) => {
+                  if (result === null) return;
+                  showToast("频道已删除");
+                  renderSettingsChannels();
+              })
+              .catch((err) => showToast(`删除频道失败：${err.message || "未知错误"}`));
+          return;
+      }
+
+      const selectChannelBtn = target.closest("[data-action='select-channel']");
+      if (selectChannelBtn) {
+          const channelId = String(selectChannelBtn.getAttribute("data-channel-id") || "").trim();
+          if (channelId) {
+              openChannelEditDialog(channelId);
+          }
+          return;
+      }
+
+      // 新建频道模式：添加用户到选择列表
+      const addUserSelectionBtn = target.closest("[data-action='add-user-to-selection']");
+      if (addUserSelectionBtn) {
+          const userId = String(addUserSelectionBtn.getAttribute("data-user-id") || "").trim();
+          if (userId) {
+              state.channelEditState.selectedUserIds = [...(state.channelEditState.selectedUserIds || []), userId];
+              renderChannelEditPanel();
+          }
+          return;
+      }
+
+      // 新建频道模式：从选择列表移除用户
+      const removeUserSelectionBtn = target.closest("[data-action='remove-user-from-selection']");
+      if (removeUserSelectionBtn) {
+          const userId = String(removeUserSelectionBtn.getAttribute("data-user-id") || "").trim();
+          if (userId) {
+              state.channelEditState.selectedUserIds = (state.channelEditState.selectedUserIds || []).filter((id) => id !== userId);
+              renderChannelEditPanel();
+          }
+          return;
+      }
+
+      // 设为全员公开
+      const toggleAllPublicOnBtn = target.closest("[data-action='toggle-all-public-on']");
+      if (toggleAllPublicOnBtn) {
+          state.channelEditState.isAllPublic = true;
+          state.channelEditState.selectedUserIds = ["ALL"];
+          renderChannelEditPanel();
+          return;
+      }
+
+      // 取消全员公开
+      const toggleAllPublicOffBtn = target.closest("[data-action='toggle-all-public-off']");
+      if (toggleAllPublicOffBtn) {
+          state.channelEditState.isAllPublic = false;
+          state.channelEditState.selectedUserIds = [];
+          renderChannelEditPanel();
+          return;
+      }
+
+      // 编辑频道模式：添加用户到频道（先更新本地状态，再异步请求）
+      const addUserBtn = target.closest("[data-action='add-user-to-channel']");
+      if (addUserBtn) {
+          const channelId = String(addUserBtn.getAttribute("data-channel-id") || "").trim();
+          const userId = String(addUserBtn.getAttribute("data-user-id") || "").trim();
+          if (channelId && userId) {
+              addUserToChannel(channelId, userId);
+          }
+          return;
+      }
+
+      // 编辑频道模式：从频道移除用户
+      const removeUserBtn = target.closest("[data-action='remove-user-from-channel']");
+      if (removeUserBtn) {
+          const channelId = String(removeUserBtn.getAttribute("data-channel-id") || "").trim();
+          const userId = String(removeUserBtn.getAttribute("data-user-id") || "").trim();
+          if (channelId && userId) {
+              removeUserFromChannel(channelId, userId);
+          }
+          return;
       }
       const startBtn = target.closest("[data-action='start-refinement']");
       if (startBtn) {
@@ -10205,23 +10861,77 @@
           .catch((err) => showToast("视频搜索启动失败：" + (err.message || "未知错误")));
         return;
       }
+      const outlineBtn = target.closest("[data-action='start-outline']");
+      if (outlineBtn) {
+        const lectureId = String(outlineBtn.getAttribute("data-lecture-id") || "");
+        if (!lectureId) return;
+        startOutline(lectureId)
+          .then(() => {
+            showToast("已开始课程大纲生成");
+            renderSettingsView();
+          })
+          .catch((err) => showToast("大纲生成启动失败：" + (err.message || "未知错误")));
+        return;
+      }
     });
 
     el.settingsDetailPane.addEventListener("change", (event) => {
       const target = event.target;
-      if (!(target instanceof HTMLSelectElement)) return;
-      if (target.id === "settingsLogCategorySelect") {
-        state.settingsLogCategory = String(target.value || "all");
-        if (state.settingsLogCategory !== "model") {
-          state.settingsLogSource = "";
-        }
-        loadSettingsLogs().catch((err) => showToast(`加载模型日志失败：${err.message || "未知错误"}`));
-        return;
+      if (!(target instanceof HTMLElement)) return;
+
+      if (target instanceof HTMLSelectElement) {
+          if (target.id === "settingsLogCategorySelect") {
+              state.settingsLogCategory = String(target.value || "all");
+              if (state.settingsLogCategory !== "model") {
+                  state.settingsLogSource = "";
+              }
+              loadSettingsLogs().catch((err) => showToast(`加载模型日志失败：${err.message || "未知错误"}`));
+              return;
+          }
+          if (target.id === "settingsLogSourceSelect") {
+              state.settingsLogSource = String(target.value || "");
+              loadSettingsLogs().catch((err) => showToast(`加载模型日志失败：${err.message || "未知错误"}`));
+              return;
+          }
       }
-      if (target.id === "settingsLogSourceSelect") {
-        state.settingsLogSource = String(target.value || "");
-// ─────── Admin Utilities ──────────────────────────────────────────────
-        loadSettingsLogs().catch((err) => showToast(`加载模型日志失败：${err.message || "未知错误"}`));
+
+      if (target.matches(".settings-user-select-item input[type='checkbox']")) {
+          const userId = String(target.value || "").trim();
+          if (!userId) return;
+
+          const selectedIds = state.channelEditState.selectedUserIds || [];
+          if (target.checked) {
+              if (!selectedIds.includes(userId)) {
+                  state.channelEditState.selectedUserIds = [...selectedIds, userId];
+              }
+          } else {
+              state.channelEditState.selectedUserIds = selectedIds.filter((id) => id !== userId);
+          }
+          renderSettingsChannels();
+          return;
+      }
+    });
+
+    el.settingsDetailPane.addEventListener("input", async (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) return;
+
+      if (target.matches("[data-channel-user-search]")) {
+          state.channelEditState.searchQuery = String(target.value || "").trim();
+          renderSettingsChannels();
+
+          const newSearchInput = document.querySelector("[data-channel-user-search]");
+          if (newSearchInput instanceof HTMLInputElement) {
+              newSearchInput.focus();
+              const len = newSearchInput.value.length;
+              newSearchInput.setSelectionRange(len, len);
+          }
+          return;
+      }
+
+      if (target.id === "settingsChannelTitleInput") {
+          state.channelEditState.title = String(target.value || "").trim();
+          return;
       }
     });
 
