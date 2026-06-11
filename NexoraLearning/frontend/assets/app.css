@@ -90,7 +90,6 @@ body {
   min-width: 0;
   min-height: 0;
   border: 1px solid var(--nxl-line);
-  border-radius: var(--nxl-radius);
   background: var(--nxl-panel);
   box-shadow: var(--nxl-shadow);
   overflow: hidden;
@@ -998,7 +997,7 @@ body {
 .materials-list::-webkit-scrollbar,
 .materials-preview-pane::-webkit-scrollbar,
 .materials-detail-scroll::-webkit-scrollbar {
-  width: 10px;
+  width: 6px;
 }
 
 .progress-list::-webkit-scrollbar-thumb,
@@ -3270,7 +3269,6 @@ body.reader-fullscreen-active .materials-preview-text {
 
 .settings-panel {
   width: 100%;
-  height: 400px;
   min-height: 400px;
   padding: 14px;
   display: flex;

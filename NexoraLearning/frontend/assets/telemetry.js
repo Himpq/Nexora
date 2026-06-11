@@ -26,6 +26,7 @@
       currentKey: "",
       enteredAt: 0,
       heartbeatTimer: null,
+      basicContext: null,
     },
     backend: {
       pendingRecords: [],
@@ -184,6 +185,23 @@
     state.reader.heartbeatTimer = null;
   }
 
+  function setBasicReaderContext(payload) {
+    if (!payload || typeof payload !== "object") {
+      state.reader.basicContext = null;
+      return;
+    }
+    state.reader.basicContext = {
+      lecture_id: String(payload.lecture_id || "").trim(),
+      book_id: String(payload.book_id || "").trim(),
+      chapter_index: Number(payload.chapter_index) || 0,
+      chapter_title: String(payload.chapter_title || "").trim(),
+    };
+  }
+
+  function clearBasicReaderContext() {
+    state.reader.basicContext = null;
+  }
+
   function setReaderSessionContext(payload) {
     const nextContext = normalizeReaderSessionContext(payload);
     if (!nextContext) {
@@ -239,12 +257,28 @@
     }, BACKEND_FLUSH_DELAY_MS);
   }
 
-  async function flushBackendQueue() {
+  async function flushBackendQueue(isUnload) {
     const userId = getResolvedUserId();
     if (!userId || !state.backend.pendingRecords.length || state.backend.sending) return;
     const batch = state.backend.pendingRecords.splice(0);
     const events = batch.map((record) => mapRecordToBackendEvent(record, userId)).filter(Boolean);
     if (!events.length) return;
+
+    const payload = JSON.stringify({
+      user_id: userId,
+      events,
+    });
+
+    // 页面卸载时使用 sendBeacon 确保数据发送成功
+    if (isUnload && navigator.sendBeacon) {
+      const blob = new Blob([payload], { type: "application/json" });
+      const sent = navigator.sendBeacon(BACKEND_INGEST_URL, blob);
+      if (!sent) {
+        state.backend.pendingRecords = batch.concat(state.backend.pendingRecords);
+      }
+      return;
+    }
+
     state.backend.sending = true;
     try {
       const response = await fetch(BACKEND_INGEST_URL, {
@@ -254,10 +288,7 @@
         },
         credentials: "same-origin",
         keepalive: true,
-        body: JSON.stringify({
-          user_id: userId,
-          events,
-        }),
+        body: payload,
       });
       if (!response.ok) {
         throw new Error(`telemetry ingest failed: ${response.status}`);
@@ -451,8 +482,76 @@
           duration_ms: 0,
           extra,
         };
+      case "annotation_ask":
+        return {
+          stream: "annotation",
+          ts: record.ts,
+          uid: userId,
+          bid: bookId,
+          ci: chapterIndex,
+          si: sessionIndex,
+          event: "ask",
+          ann_type: "提问",
+          offset: "",
+          duration_ms: 0,
+          extra,
+        };
+      case "annotation_dwell":
+        return {
+          stream: "annotation",
+          ts: record.ts,
+          uid: userId,
+          bid: bookId,
+          ci: chapterIndex,
+          si: sessionIndex,
+          event: "dwell",
+          ann_type: String(payload.note_type || "知识点").trim() || "知识点",
+          offset: Number.isFinite(Number(payload.offset)) ? Number(payload.offset) : "",
+          duration_ms: Number.isFinite(Number(payload.duration_ms)) ? Number(payload.duration_ms) : 0,
+          extra,
+        };
+      case "question_answer":
+        return {
+          stream: "question",
+          ts: record.ts,
+          uid: userId,
+          lid: String(payload.lecture_id || "").trim(),
+          bid: bookId,
+          ci: chapterIndex,
+          si: sessionIndex,
+          qid: String(payload.question_id || "").trim(),
+          difficulty: String(payload.difficulty || "").trim(),
+          answer: String(payload.answer || "").trim(),
+          is_correct: Number.isFinite(Number(payload.is_correct)) ? Number(payload.is_correct) : "",
+          duration_sec: Number.isFinite(Number(payload.duration_sec)) ? Number(payload.duration_sec) : "",
+          extra,
+        };
+      case "pre_reading_qa":
+        return {
+          stream: "reading",
+          ts: record.ts,
+          uid: userId,
+          bid: bookId,
+          ci: chapterIndex,
+          si: sessionIndex,
+          event: "pre_reading_qa",
+          scroll: "",
+          focus: "reader",
+          sel_text: "",
+          extra,
+        };
       default:
         return null;
+    }
+  }
+
+  function handleVisibilityHidden() {
+    stopReaderHeartbeat();
+  }
+
+  function handleVisibilityVisible() {
+    if (state.reader.currentContext) {
+      startReaderHeartbeat();
     }
   }
 
@@ -461,12 +560,23 @@
     setUserId,
     setReaderSessionContext,
     clearReaderSessionContext,
+    setBasicReaderContext,
+    clearBasicReaderContext,
+    flush: flushBackendQueue,
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      handleVisibilityHidden();
+    } else {
+      handleVisibilityVisible();
+    }
   });
 
   window.addEventListener("pagehide", () => {
     clearReaderSessionContext("pagehide");
     if (state.backend.pendingRecords.length) {
-      flushBackendQueue();
+      flushBackendQueue(true);
     }
   });
 })();

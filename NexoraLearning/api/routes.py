@@ -1678,6 +1678,61 @@ def frontend_videos_refresh():
     return jsonify({"success": True, "items": items, "cached": False})
 
 
+@bp.route("/frontend/knowledge-graph", methods=["GET"])
+def frontend_knowledge_graph():
+    """读取已缓存的知识图谱。"""
+    lecture_id = str(request.args.get("lecture_id") or "").strip()
+    book_id = str(request.args.get("book_id") or "").strip()
+    if not lecture_id or not book_id:
+        return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+
+    from core.knowledge_graph import load_cached_graph
+    graph = load_cached_graph(_cfg, lecture_id, book_id)
+    if graph:
+        return jsonify({"success": True, "graph": graph, "cached": True})
+
+    return jsonify({"success": True, "graph": None, "cached": False})
+
+
+@bp.route("/frontend/knowledge-graph/generate", methods=["POST"])
+def frontend_knowledge_graph_generate():
+    """手动触发知识图谱生成。"""
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    if not lecture_id or not book_id:
+        return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+
+    lecture = get_learning_lecture(_cfg, lecture_id)
+    if not lecture:
+        return jsonify({"success": False, "error": "Lecture not found."}), 404
+
+    lecture_title = str(lecture.get("title") or "").strip()
+    bookinfo_xml = str(load_book_info_xml(_cfg, lecture_id, book_id) or "")
+    bookdetail_xml = str(load_book_detail_xml(_cfg, lecture_id, book_id) or "")
+
+    # 获取教材标题
+    book_title = ""
+    books = list_lecture_books(_cfg, lecture_id)
+    for book in books:
+        if str(book.get("id") or "") == book_id:
+            book_title = str(book.get("title") or "").strip()
+            break
+
+    try:
+        from core.knowledge_graph import generate_knowledge_graph
+        graph = generate_knowledge_graph(
+            _cfg, lecture_id, book_id,
+            lecture_title=lecture_title,
+            book_title=book_title,
+            bookinfo_xml=bookinfo_xml,
+            bookdetail_xml=bookdetail_xml,
+        )
+        return jsonify({"success": True, "graph": graph, "cached": False})
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
 @bp.route("/frontend/teacher/class-overview", methods=["GET"])
 def frontend_teacher_class_overview():
     """教师 Panel 数据接口：返回全班学生的阅读状态与章节进度。"""
@@ -3584,6 +3639,8 @@ def _read_reader_guide_request_payload() -> Dict[str, Any]:
         "chapter_name": str(data.get("chapter_name") or "").strip(),
         "session_name": str(data.get("session_name") or "").strip(),
         "guide_context": str(data.get("guide_context") or "").strip(),
+        "pre_reading_answers": data.get("pre_reading_answers"),
+        "user_profile": str(data.get("user_profile") or "").strip(),
     }
 
     if not payload["lecture_id"] or not payload["book_id"]:
@@ -3699,6 +3756,232 @@ def frontend_reader_guide_stream():
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@bp.route("/frontend/reader-guide/pre-questions", methods=["POST"])
+def frontend_reader_guide_pre_questions():
+    """以 SSE 形式流式生成阅读前问题。"""
+    try:
+        data = request.get_json(silent=True) or {}
+        lecture_id = str(data.get("lecture_id") or "").strip()
+        book_id = str(data.get("book_id") or "").strip()
+        chapter_name = str(data.get("chapter_name") or "").strip()
+        session_name = str(data.get("session_name") or "").strip()
+        guide_context = str(data.get("guide_context") or "").strip()
+
+        if not lecture_id or not book_id:
+            raise ValueError("lecture_id and book_id are required.")
+        if not guide_context:
+            raise ValueError("guide_context is required.")
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+    def event_stream():
+        events: "queue.Queue[Tuple[str, Dict[str, Any]]]" = queue.Queue()
+
+        def push_event(event_name: str, event_payload: Dict[str, Any]) -> None:
+            events.put((event_name, event_payload))
+
+        def push_delta(delta_text: str) -> None:
+            text = str(delta_text or "")
+            if text:
+                push_event("delta", {"content": text})
+
+        def run_worker() -> None:
+            try:
+                from core.booksproc.guide import generate_pre_reading_questions
+
+                result = generate_pre_reading_questions(
+                    _cfg,
+                    lecture_id=lecture_id,
+                    book_id=book_id,
+                    chapter_name=chapter_name,
+                    session_name=session_name,
+                    guide_context=guide_context,
+                    stream=True,
+                    on_delta=push_delta,
+                )
+                push_event("done", {"success": True, **result})
+            except Exception as exc:
+                log_event(
+                    "pre_reading_questions_stream_error",
+                    str(exc),
+                    payload={"lecture_id": lecture_id, "book_id": book_id},
+                )
+                push_event("error", {"success": False, "error": str(exc)})
+            finally:
+                push_event("close", {})
+
+        thread = threading.Thread(target=run_worker, name="pre-reading-questions-stream", daemon=True)
+        thread.start()
+
+        yield _reader_guide_sse_event("status", {"message": "pre-reading questions stream started"})
+
+        while True:
+            try:
+                event_name, event_payload = events.get(timeout=20)
+            except queue.Empty:
+                yield _reader_guide_sse_event("ping", {"timestamp": time.time()})
+                continue
+
+            if event_name == "close":
+                break
+
+            yield _reader_guide_sse_event(event_name, event_payload)
+
+    return Response(
+        stream_with_context(event_stream()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@bp.route("/frontend/reader-guide/pre-questions/save", methods=["POST"])
+def frontend_reader_guide_pre_questions_save():
+    """保存阅读前问答结果。"""
+    username = _resolve_runtime_user_id()
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    chapter_index = data.get("chapter_index")
+    questions = data.get("questions", [])
+    answers = data.get("answers", {})
+    skipped = bool(data.get("skipped"))
+
+    if not lecture_id or not book_id:
+        return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+
+    if chapter_index is None:
+        return jsonify({"success": False, "error": "chapter_index is required."}), 400
+
+    # 持久化到用户目录
+    from pathlib import Path
+
+    data_dir = Path(str(_cfg.get("data_dir") or "data"))
+    qa_dir = data_dir / "users" / username / "guide_qa"
+    qa_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = f"{lecture_id}_{book_id}_{chapter_index}.json"
+    qa_path = qa_dir / filename
+
+    qa_data = {
+        "lecture_id": lecture_id,
+        "book_id": book_id,
+        "chapter_index": chapter_index,
+        "questions": questions,
+        "answers": answers,
+        "skipped": skipped,
+        "timestamp": int(time.time()),
+    }
+
+    qa_path.write_text(json.dumps(qa_data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    log_event(
+        "pre_reading_qa_saved",
+        "阅读前问答已保存",
+        payload={
+            "username": username,
+            "lecture_id": lecture_id,
+            "book_id": book_id,
+            "chapter_index": chapter_index,
+            "skipped": skipped,
+            "answers_count": len(answers),
+        },
+    )
+
+    return jsonify({"success": True, "path": str(qa_path)})
+
+
+@bp.route("/frontend/reader-guide/pre-questions/check", methods=["POST"])
+def frontend_reader_guide_pre_questions_check():
+    """检查是否存在阅读前问答缓存。"""
+    username = _resolve_runtime_user_id()
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    chapter_index = data.get("chapter_index")
+
+    if not lecture_id or not book_id:
+        return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+
+    if chapter_index is None:
+        return jsonify({"success": False, "error": "chapter_index is required."}), 400
+
+    from pathlib import Path
+
+    data_dir = Path(str(_cfg.get("data_dir") or "data"))
+    qa_dir = data_dir / "users" / username / "guide_qa"
+    filename = f"{lecture_id}_{book_id}_{chapter_index}.json"
+    qa_path = qa_dir / filename
+
+    if qa_path.exists():
+        try:
+            qa_data = json.loads(qa_path.read_text(encoding="utf-8"))
+            return jsonify({"success": True, "cached": True, "data": qa_data})
+        except Exception:
+            return jsonify({"success": True, "cached": False})
+
+    return jsonify({"success": True, "cached": False})
+
+
+@bp.route("/frontend/reader-guide/user-profile", methods=["POST"])
+def frontend_reader_guide_user_profile():
+    """获取用户画像。"""
+    username = _resolve_runtime_user_id()
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+
+    from pathlib import Path
+
+    data_dir = Path(str(_cfg.get("data_dir") or "data"))
+    profile_path = data_dir / "users" / username / "user.md"
+
+    profile_content = ""
+    if profile_path.exists():
+        try:
+            profile_content = profile_path.read_text(encoding="utf-8")
+        except Exception:
+            pass
+
+    return jsonify({"success": True, "profile": profile_content})
+
+
+@bp.route("/frontend/outline/<lecture_id>", methods=["GET"])
+def frontend_get_outline(lecture_id: str):
+    """获取课程的固化大纲。"""
+    from core.booksproc.outline import load_outline
+
+    outline = load_outline(_cfg, lecture_id)
+    if outline is None:
+        return jsonify({"success": False, "error": "大纲尚未生成"}), 404
+    return jsonify({"success": True, "outline": outline})
+
+
+@bp.route("/frontend/outline/<lecture_id>/generate", methods=["POST"])
+def frontend_generate_outline(lecture_id: str):
+    """手动触发课程大纲生成。"""
+    try:
+        from core.booksproc.outline import generate_outline
+
+        user_id = _resolve_runtime_user_id()
+        result = generate_outline(_cfg, lecture_id, user_id=user_id)
+        return jsonify({"success": True, "outline": result})
+    except Exception as exc:
+        log_event(
+            "outline_manual_error",
+            str(exc),
+            payload={"lecture_id": lecture_id},
+        )
+        return jsonify({"success": False, "error": str(exc)}), 500
 
 
 def _quiz_answer_id(

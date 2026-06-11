@@ -1,0 +1,165 @@
+.nxkg-loading,
+.nxkg-empty,
+.nxkg-error {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 200px;
+    color: var(--nxl-soft);
+    font-size: 13px;
+}
+
+.nxkg-empty-text {
+    margin-bottom: 16px;
+}
+
+.nxkg-generate-btn {
+    padding: 8px 20px;
+    border: 1px solid var(--nxl-line-strong);
+    border-radius: 8px;
+    background: #fff;
+    color: var(--nxl-text);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.18s, color 0.18s;
+}
+
+.nxkg-generate-btn:hover {
+    background: #111;
+    color: #fff;
+    border-color: #111;
+}
+
+.nxkg-generate-btn:disabled {
+    background: #f0f0f0;
+    color: #aaa;
+    border-color: #e0e0e0;
+    cursor: not-allowed;
+}
+
+.nxkg-error {
+    color: #dc2626;
+}
+
+.nxkg-graph-wrapper {
+    width: 100%;
+    overflow: auto;
+    padding: 16px;
+}
+
+.nxkg-graph-wrapper svg {
+    display: block;
+}
+
+.nxkg-graph-wrapper .node {
+    cursor: pointer;
+    transition: opacity 0.18s;
+}
+
+.nxkg-graph-wrapper .node:hover {
+    opacity: 0.8;
+}
+
+.nxkg-graph-wrapper .nodeLabel {
+    font-size: 13px;
+}
+
+.nxkg-graph-wrapper .edgeLabel {
+    display: none;
+}
+
+.nxkg-graph-wrapper path.flowchart-link {
+    stroke: #c0c0c0;
+    stroke-width: 1.5;
+}
+
+.nxkg-legend {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 16px;
+    padding: 10px 16px;
+    border-top: 1px solid var(--nxl-line);
+    background: #fafafa;
+    font-size: 11px;
+    color: var(--nxl-soft);
+}
+
+.nxkg-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.nxkg-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+}
+
+.nxkg-dot.nxkg-mastered {
+    background: #16a34a;
+}
+
+.nxkg-dot.nxkg-weak {
+    background: #ea580c;
+}
+
+.nxkg-dot.nxkg-unseen {
+    background: #9ca3af;
+}
+
+.nxkg-legend-hint {
+    margin-left: auto;
+    font-size: 11px;
+    color: #bbb;
+}
+
+.nxkg-context-menu {
+    position: fixed;
+    z-index: 10010;
+    min-width: 120px;
+    background: #fff;
+    border: 1px solid var(--nxl-line);
+    border-radius: 10px;
+    box-shadow: var(--nxl-shadow);
+    padding: 4px 0;
+}
+
+.nxkg-context-menu-item {
+    display: block;
+    width: 100%;
+    padding: 8px 14px;
+    border: none;
+    background: none;
+    text-align: left;
+    font-size: 13px;
+    color: var(--nxl-text);
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.nxkg-context-menu-item:hover {
+    background: #f5f5f5;
+}
+
+.nxkg-detail-content {
+    font-size: 14px;
+    line-height: 1.7;
+    color: var(--nxl-text);
+    white-space: pre-wrap;
+    word-break: break-word;
+    text-align: left;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.nxkg-empty-hint {
+    color: var(--nxl-soft);
+    font-size: 13px;
+    padding: 20px 0;
+    text-align: center;
+}
