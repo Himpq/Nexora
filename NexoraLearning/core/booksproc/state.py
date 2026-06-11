@@ -104,6 +104,26 @@ def push_book_progress_step(lecture_id: str, book_id: str, step: Dict[str, Any])
             del bucket[:-60]
 
 
+def push_model_output(lecture_id: str, book_id: str, content: str) -> None:
+    """推送模型文本输出到活动日志（统一接口）"""
+    if not content or not content.strip():
+        return
+    push_book_progress_step(lecture_id, book_id, {
+        "type": "model_text",
+        "title": "模型输出",
+        "preview": content[:200],
+    })
+
+
+def push_tool_call(lecture_id: str, book_id: str, tool_name: str, title: str, preview: str = "") -> None:
+    """推送工具调用到活动日志（统一接口）"""
+    push_book_progress_step(lecture_id, book_id, {
+        "type": tool_name,
+        "title": title,
+        "preview": str(preview or "")[:100],
+    })
+
+
 def get_book_progress_steps(lecture_id: str, book_id: str) -> List[Dict[str, Any]]:
     """Return a copy of progress steps. Falls back to persisted book.json."""
     with LOCK:

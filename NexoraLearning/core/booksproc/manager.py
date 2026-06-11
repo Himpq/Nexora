@@ -100,6 +100,8 @@ from .state import (
     is_cancelled_key as state_is_cancelled_key,
     job_key as state_job_key,
     push_book_progress_step as state_push_book_progress_step,
+    push_model_output as state_push_model_output,
+    push_tool_call as state_push_tool_call,
     set_book_progress as state_set_book_progress,
     update_job as state_update_job,
 )
@@ -221,6 +223,16 @@ def _push_book_progress_step(lecture_id: str, book_id: str, step: Mapping[str, A
     state_push_book_progress_step(lecture_id, book_id, row)
 
 
+def _push_model_output(lecture_id: str, book_id: str, content: str) -> None:
+    """推送模型文本输出到活动日志（统一接口）"""
+    state_push_model_output(lecture_id, book_id, content)
+
+
+def _push_tool_call(lecture_id: str, book_id: str, tool_name: str, title: str, preview: str = "") -> None:
+    """推送工具调用到活动日志（统一接口）"""
+    state_push_tool_call(lecture_id, book_id, tool_name, title, preview)
+
+
 def get_book_progress_steps(lecture_id: str, book_id: str) -> List[Dict[str, Any]]:
     """读取教材进度步骤列表。"""
     return state_get_book_progress_steps(lecture_id, book_id)
@@ -230,7 +242,48 @@ def init_booksproc(cfg: Mapping[str, Any]) -> None:
     """初始化教材处理队列工作线程。"""
     _CFG.clear()
     _CFG.update(dict(cfg or {}))
+    _reset_stuck_jobs(_CFG)
     init_booksproc_queue(_CFG, run_job=_run_job, log_event=log_event)
+
+
+def _reset_stuck_jobs(cfg: Mapping[str, Any]) -> None:
+    """服务器重启时，将所有卡在 queued/running 状态的任务重置。"""
+    try:
+        for lecture in list_lectures(cfg):
+            lecture_id = str(lecture.get("id") or "").strip()
+            if not lecture_id:
+                continue
+            for book in list_books(cfg, lecture_id):
+                book_id = str(book.get("id") or "").strip()
+                if not book_id:
+                    continue
+                updates = {}
+                for status_key in [
+                    "coarse_status", "section_status", "intensive_status",
+                    "question_status", "annotation_status", "summary_status",
+                    "video_status",
+                ]:
+                    val = str(book.get(status_key) or "").strip().lower()
+                    if val in ("queued", "running"):
+                        base = status_key.replace("_status", "")
+                        error_key = f"{base}_error"
+                        # 如果之前没有完成过（没有对应的 xml 数据），重置为空闲
+                        if val == "queued":
+                            updates[status_key] = ""
+                            updates[error_key] = ""
+                        else:
+                            # running 状态说明任务中断了，标记为错误
+                            updates[status_key] = "error"
+                            updates[error_key] = "任务因服务器重启而中断"
+                if updates:
+                    update_book(cfg, lecture_id, book_id, updates)
+                    log_event(
+                        "stuck_job_reset",
+                        "重置卡住的任务状态",
+                        payload={"lecture_id": lecture_id, "book_id": book_id, **updates},
+                    )
+    except Exception as exc:
+        log_event("stuck_job_reset_error", f"重置卡住任务失败: {exc}", payload={"error": str(exc)})
 
 
 def mark_book_uploaded(
@@ -1368,6 +1421,7 @@ def _run_rough_model(
         append_log_text=append_log_text,
         log_event=log_event,
         run_coarse_reading_chunked=_run_coarse_reading_chunked,
+        push_book_progress_step=_push_book_progress_step,
     )
 
 
@@ -1538,7 +1592,8 @@ def run_annotation_generation_once(
         as_bool=_as_bool,
         log_event=log_event,
         append_log_text=append_log_text,
-        push_book_progress_step=_push_book_progress_step,
+        push_model_output=_push_model_output,
+        push_tool_call=_push_tool_call,
         policy=ContextPolicy.LLM_COMPRESS,
         llm_compress_func=_llm_compress_func,
     )
@@ -1584,6 +1639,8 @@ def run_book_summary_once(
         as_bool=_as_bool,
         log_event=log_event,
         append_log_text=append_log_text,
+        push_model_output=_push_model_output,
+        push_tool_call=_push_tool_call,
     )
 
 

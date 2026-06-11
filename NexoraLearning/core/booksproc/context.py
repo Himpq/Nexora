@@ -296,6 +296,13 @@ class Context:
         if len(other_msgs) <= 1:
             return False
 
+        # 保存第一条 user 消息，防止压缩后丢失
+        original_user_msg = None
+        for m in other_msgs:
+            if m.role == "user":
+                original_user_msg = m
+                break
+
         retained_tail = self._normalize_tail_messages(self._select_active_tail_messages(other_msgs))
         retained_tail_count = len(retained_tail)
         if retained_tail_count > 0:
@@ -325,11 +332,24 @@ class Context:
         )
         self._messages = system_msgs + [summary_msg] + msgs_to_keep
 
+        # 确保压缩后至少保留一条 user 消息（Chat API 要求）
+        if original_user_msg:
+            has_user_after = any(m.role == "user" for m in self._messages if m not in system_msgs)
+            if not has_user_after:
+                insert_index = len(system_msgs) + 1  # system 之后、summary 之后
+                self._messages.insert(insert_index, original_user_msg)
+
         # 如果插入摘要后仍超出限制，只允许继续丢弃保留尾巴，直到变成真正的小上下文。
         while self.chars() > self.max_chars and len(msgs_to_keep) > 0:
             msgs_to_keep.pop(0)
             msgs_to_keep = self._normalize_tail_messages(msgs_to_keep)
             self._messages = system_msgs + [summary_msg] + msgs_to_keep
+            # 再次检查 user 消息
+            if original_user_msg:
+                has_user_after = any(m.role == "user" for m in self._messages if m not in system_msgs)
+                if not has_user_after:
+                    insert_index = len(system_msgs) + 1
+                    self._messages.insert(insert_index, original_user_msg)
 
         self._stats["compression_count"] += 1
         append_llm_compress_log(

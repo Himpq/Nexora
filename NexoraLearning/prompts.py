@@ -1166,51 +1166,21 @@ OUTLINE_GENERATION_PROMPT = """
 3. 每个单元标注预估学习时间（分钟）
 4. 标注单元间的前置依赖关系
 5. 为每个单元提供探索性学习的 agent_prompt 和 search_keywords
-6. 为阅读器提供精确的跳转信息（book_id/chapter_index/char_range）
 
-## 输出格式
-只输出 JSON 对象，不要输出其他内容：
-
-```json
-{
-  "course_title": "课程标题",
-  "total_sections": 10,
-  "total_estimated_minutes": 300,
-  "sections": [
-    {
-      "id": "sec_001",
-      "title": "单元标题",
-      "summary": "单元内容概述（50-100字）",
-      "objectives": ["学习目标1", "学习目标2"],
-      "key_concepts": ["核心概念1", "核心概念2"],
-      "difficulty": "基础|中等|进阶",
-      "estimated_minutes": 30,
-      "prerequisites": [],
-      "reading_order": 1,
-      "sources": [
-        {
-          "book_id": "book_id",
-          "book_title": "教材名称",
-          "chapter_index": 0,
-          "chapter_name": "章节名称",
-          "session_index": -1,
-          "char_range": [0, 5000]
-        }
-      ],
-      "exploration": {
-        "agent_prompt": "为学生生成的探索性问题或任务",
-        "search_keywords": ["关键词1", "关键词2"]
-      },
-      "navigation": {
-        "highlight_ranges": [
-          {"book_id": "book_id", "chapter_index": 0, "start": 100, "end": 200, "label": "重点段落"}
-        ],
-        "annotations_to_show": ["批注ID1", "批注ID2"]
-      }
-    }
-  ]
-}
-```
+## 提交方式
+使用 submit_outline 工具提交大纲，参数说明：
+- course_title: 课程标题
+- sections: 学习单元数组，每个单元包含：
+  - id: 单元ID，格式 sec_001, sec_002 等
+  - title: 单元标题
+  - summary: 内容概述（50-100字）
+  - objectives: 学习目标数组
+  - key_concepts: 核心概念数组
+  - difficulty: 难度级别（基础/中等/进阶）
+  - estimated_minutes: 预估学习时间（15-60分钟）
+  - prerequisites: 前置依赖的单元ID数组
+  - sources: 来源引用数组，每项包含 book_id, book_title, chapter_name, chapter_summary
+  - exploration: 探索性学习配置，包含 agent_prompt 和 search_keywords
 
 ## 规则
 1. sections 数量控制在 8-15 个，根据课程内容复杂度调整
@@ -1218,8 +1188,7 @@ OUTLINE_GENERATION_PROMPT = """
 3. prerequisites 中的 id 必须在 sections 中存在
 4. estimated_minutes 根据内容量估算，每个 section 在 15-60 分钟之间
 5. exploration.agent_prompt 要具体、可执行，能引导学生深入学习
-6. navigation.highlight_ranges 用于阅读器高亮显示相关段落
-7. 只输出 JSON，不要输出其他内容
+6. 必须通过 submit_outline 工具提交，不要输出纯文本 JSON
 """.strip()
 
 
@@ -1239,43 +1208,19 @@ PRE_READING_QUESTIONS_PROMPT = """
 ## 问题设计原则
 1. 每道题是单选题，3-4 个选项
 2. 问题类型固定为以下三类（根据内容选择 2-3 类）：
-   - 认知程度：你对本节主题了解多少？
-   - 学习目标：你希望从本节学到什么？
-   - 学习风格（可选）：你更喜欢哪种阅读方式？
+   - knowledge_level：你对本节主题了解多少？
+   - learning_goal：你希望从本节学到什么？
+   - learning_style（可选）：你更喜欢哪种阅读方式？
 3. 选项要具体、可区分，避免模糊表述
 4. 问题要帮助学生明确阅读前的自我定位
 
-## 输出格式
-只输出 JSON 对象，不要输出其他内容：
-
-```json
-{
-  "questions": [
-    {
-      "id": "q1",
-      "type": "knowledge_level",
-      "title": "你对本节主题了解多少？",
-      "options": [
-        {"id": "a", "text": "完全不了解，第一次接触"},
-        {"id": "b", "text": "听说过，但没有深入了解"},
-        {"id": "c", "text": "有一定了解，读过相关材料"},
-        {"id": "d", "text": "比较熟悉，想进一步深化"}
-      ]
-    },
-    {
-      "id": "q2",
-      "type": "learning_goal",
-      "title": "你希望从本节学到什么？",
-      "options": [
-        {"id": "a", "text": "理解核心概念和论点"},
-        {"id": "b", "text": "学习分析方法和论证逻辑"},
-        {"id": "c", "text": "了解历史背景和时代语境"},
-        {"id": "d", "text": "联系现实应用和当代意义"}
-      ]
-    }
-  ]
-}
-```
+## 提交方式
+使用 submit_questions 工具提交问题，参数说明：
+- questions: 问题数组，每个问题包含：
+  - id: 问题ID（q1, q2, q3）
+  - type: 问题类型（knowledge_level/learning_goal/learning_style）
+  - title: 问题标题
+  - options: 选项数组，每个选项包含 id（a/b/c/d）和 text
 """.strip()
 
 
@@ -1307,40 +1252,18 @@ READER_GUIDE_PROMPT = """
 8. 每张卡要先告诉学生怎么读，再给一个小追问；不要把整张卡写成问题合集。
 9. 每张卡必须给 patch 字段，用来匹配原文中的段落和关键词。patch.paragraph 选一小段原文连续片段，patch.keywords 选 1 到 3 个原文词语。
 10. patch.paragraph 和 patch.keywords 必须来自"当前阅读内容"原文，不要改写。
-11. 只返回 JSON 对象，不要输出 Markdown 解释。
 
-## 输出结构
-overview：一句话说明本小节核心阅读目标。
-reading_strategy：一条具体阅读策略，告诉学生先看什么、后看什么。
-focus_points：3 到 5 个短标签，用于概括本节应注意的关键词或线索。
-guide_cards：4 到 6 张阅读引导卡，每张卡包含：
-- stage：进入前 / 阅读中 / 回顾
-- title：卡片标题，不能是问句
-- guidance：主要引导内容，说明学生应该怎样读这一部分
-- anchor：可以回到原文中寻找的关键词、段落线索或论证位置
-- question：一个延伸追问，只放在卡片末尾，用于继续对话
-- reason：为什么推荐这样读，强调阅读收益
-- patch：用于前端定位原文，包含 paragraph、keywords、note
-
-JSON 格式：
-{
-  "overview": "本小节核心阅读目标",
-  "reading_strategy": "具体阅读策略",
-  "focus_points": ["重点1", "重点2", "重点3"],
-  "guide_cards": [
-    {
-      "stage": "进入前|阅读中|回顾",
-      "title": "非问句标题",
-      "guidance": "阅读引导正文，告诉学生怎样读、抓什么、怎么看",
-      "anchor": "原文线索或关键词",
-      "question": "延伸追问",
-      "reason": "推荐理由",
-      "patch": {
-        "paragraph": "原文中可匹配的一小段连续片段",
-        "keywords": ["原文关键词1", "原文关键词2"],
-        "note": "这处为什么值得标记"
-      }
-    }
-  ]
-}
+## 提交方式
+使用 submit_guide 工具提交导读卡，参数说明：
+- overview: 一句话说明本小节核心阅读目标
+- reading_strategy: 一条具体阅读策略
+- focus_points: 3-5 个短标签数组
+- guide_cards: 4-6 张阅读引导卡数组，每张卡包含：
+  - stage: 阶段（进入前/阅读中/回顾）
+  - title: 卡片标题（不能是问句）
+  - guidance: 主要引导内容
+  - anchor: 原文线索或关键词
+  - question: 一个延伸追问（放在末尾）
+  - reason: 推荐理由
+  - patch: 用于定位原文，包含 paragraph（原文片段）、keywords（关键词数组）、note（标记理由）
 """.strip()

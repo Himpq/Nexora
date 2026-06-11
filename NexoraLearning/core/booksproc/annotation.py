@@ -470,7 +470,8 @@ def run_annotation_with_tools(
     chapter_detail_xml: str = "",
     on_delta: Optional[Callable[[str], None]] = None,
     log_event: Optional[Callable[..., None]] = None,
-    push_book_progress_step: Optional[Callable[[str, str, Mapping[str, Any]], None]] = None,
+    push_model_output: Optional[Callable[[str, str, str], None]] = None,
+    push_tool_call: Optional[Callable[[str, str, str, str, str], None]] = None,
     max_input_chars: int = 15000,
     policy: ContextPolicy = ContextPolicy.LLM_COMPRESS,
     llm_compress_func: Optional[Callable[[str], str]] = None,
@@ -682,6 +683,10 @@ def run_annotation_with_tools(
         tool_calls = message.get("tool_calls") or []
         assistant_content = str(message.get("content") or "")
 
+        # 推送模型文本输出到活动日志
+        if assistant_content.strip() and push_model_output and lecture_id and book_id:
+            push_model_output(lecture_id, book_id, assistant_content)
+
         if log_event:
             log_event(
                 "annotation_round_response",
@@ -723,6 +728,17 @@ def run_annotation_with_tools(
                 if task.has_handler(func_name):
                     try:
                         result = task.execute(func_name, func_args)
+                        # 推送工具调用到活动日志
+                        if push_tool_call and lecture_id and book_id:
+                            tool_title = f"调用 {func_name}"
+                            tool_preview = ""
+                            if func_name == "read":
+                                tool_preview = f"读取 [{func_args.get('offset', 0)}, {func_args.get('offset', 0) + func_args.get('length', 0)}]"
+                            elif func_name == "find":
+                                tool_preview = f"搜索 \"{func_args.get('keyword', '')}\""
+                            elif func_name == "write":
+                                tool_preview = f"写入 {len(result_annotations_text)} 字符"
+                            push_tool_call(lecture_id, book_id, func_name, tool_title, tool_preview)
                         ctx.add(
                             role="tool",
                             content=json.dumps(result, ensure_ascii=False),
@@ -793,7 +809,8 @@ def run_annotation_generation_once(
     as_bool: Callable[..., bool],
     log_event: Callable[..., None],
     append_log_text: Callable[[str], None],
-    push_book_progress_step: Callable[[str, str, Mapping[str, Any]], None],
+    push_model_output: Callable[[str, str, str], None],
+    push_tool_call: Callable[[str, str, str, str, str], None],
     policy: ContextPolicy = ContextPolicy.LLM_COMPRESS,
     llm_compress_func: Optional[Callable[[str], str]] = None,
 ) -> Dict[str, Any]:
@@ -884,11 +901,23 @@ def run_annotation_generation_once(
         preload_len = min(chapter_length, max(1500, min(max_input_chars, 4000)))
         chapter_context = full_text[chapter_start:chapter_start + preload_len] if preload_len > 0 else ""
 
+        # 根据章节长度动态计算批注数量
+        if chapter_length < 2000:
+            annotation_count_hint = "2-4"
+        elif chapter_length < 5000:
+            annotation_count_hint = "3-6"
+        elif chapter_length < 10000:
+            annotation_count_hint = "5-10"
+        elif chapter_length < 20000:
+            annotation_count_hint = "8-15"
+        else:
+            annotation_count_hint = "12-20"
+
         request_text = (
             "请为当前章节的关键段落生成学习批注。"
             "批注应聚焦于：易错点、思考点、方法提醒、结构观察。"
             "每个批注必须包含精确的 offset（相对于章节起始的位置）和简短的 anchor_text。"
-            "批注数量控制在 3-8 个，质量优先。"
+            f"批注数量控制在 {annotation_count_hint} 个，质量优先。"
             "必须通过工具 write(annotations=[...]) 提交全部批注。"
         )
         if prompt_notes:
@@ -927,7 +956,8 @@ def run_annotation_generation_once(
                 chapter_detail_xml=chapter_detail_xml,
                 on_delta=lambda delta: append_log_text(str(delta or "")),
                 log_event=log_event,
-                push_book_progress_step=push_book_progress_step,
+                push_model_output=push_model_output,
+                push_tool_call=push_tool_call,
                 policy=policy,
                 llm_compress_func=llm_compress_func,
             )

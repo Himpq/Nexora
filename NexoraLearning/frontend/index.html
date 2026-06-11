@@ -1,10 +1,10 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NexoraLearning 学习看板</title>
-  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260610_04">
+  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260611_02">
   <link rel="stylesheet" href="/api/frontend/assets/learning_panel.css?v=20260610_04">
   <link rel="stylesheet" href="/api/frontend/assets/knowledge_graph.css">
 </head>
@@ -18,12 +18,18 @@
               <button id="dashboardProgressTabBtn" class="kicker-tab is-active" type="button">课程进度</button>
               <button id="dashboardProgressFeedTabBtn" class="kicker-tab" type="button">动态中心</button>
             </div>
-            <select id="feedChannelSelect" class="input-lite feed-channel-select" hidden aria-label="选择频道"></select>
             <button id="openMaterialsViewBtn" class="nxl-icon-btn" type="button" aria-label="打开课程页" title="打开课程页">☰</button>
           </header>
           <section id="dashboardFocusPanel" class="dashboard-focus-panel"></section>
           <div id="progressList" class="progress-list"></div>
-          <div id="learningFeedPanel" class="feed-stream-panel" hidden></div>
+          <div id="feedLayout" class="feed-layout" hidden>
+            <aside id="feedChannelSidebar" class="feed-channel-sidebar">
+              <div id="feedChannelList" class="feed-channel-list"></div>
+            </aside>
+            <main id="feedContentArea" class="feed-content-area">
+              <div id="learningFeedPanel" class="feed-stream-panel"></div>
+            </main>
+          </div>
           <button id="learningFeedComposeBtn" class="nxl-floating-feed-btn" type="button" aria-label="发布动态" title="发布动态" hidden>+</button>
         </article>
 
