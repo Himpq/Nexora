@@ -171,6 +171,8 @@
     materialsPageMode: "shelf",
     materialsDetailMode: "lecture",
     courseHomeReturnTarget: "shelf",
+    courseHomeTab: "books",
+    courseVideoCache: {},
     catalogContext: null,
     learningPathCache: {},
     teacherEditContext: null,
@@ -2734,6 +2736,7 @@
     { key: "question",   label: "出题", desc: "生成练习题目" },
     { key: "annotation", label: "批注", desc: "生成学习批注" },
     { key: "summary",    label: "概述", desc: "生成全书概述" },
+    { key: "outline",    label: "大纲", desc: "生成课程大纲" },
     { key: "video",      label: "视频", desc: "搜索相关视频" },
   ];
 
@@ -3520,6 +3523,18 @@
     const target = event.target;
     if (!(target instanceof Element)) return;
 
+    // Tab 切换
+    const tabBtn = target.closest(".course-home-tab");
+    if (tabBtn) {
+      const tabName = String(tabBtn.dataset.tab || "").trim();
+      if (tabName) {
+        const row = getSelectedLectureRow();
+        const lid = row ? String((row.lecture || {}).id || "") : "";
+        activateCourseHomeTab(tabName, lid);
+      }
+      return;
+    }
+
     const lectureCard = target.closest("[data-lecture-home-id]");
     if (lectureCard) {
       openLectureHome(String(lectureCard.getAttribute("data-lecture-home-id") || ""));
@@ -3685,6 +3700,108 @@
     }
   }
 
+  /**
+   * 渲染单个课程主页 Tab pane 的 HTML（不依赖 display:none）
+   */
+  function renderCourseHomePaneHtml(tabName, lectureId, books) {
+    if (tabName === "books") {
+      var booksHtml = books.length
+        ? books.map(function (book) {
+            var bookId = String(book.id || "");
+            var bkActive = bookId === state.selectedBookId ? "is-active" : "";
+            var bookTitle = String(book.title || bookId || "教材").trim();
+            var bookState = bkActive ? '<div class="learning-panel-book-current">当前教材</div>' : "";
+            return '<article class="book-item ' + bkActive + ' learning-panel-book-item" data-book-id="' + escapeHtml(bookId) + '" title="' + escapeHtml(bookTitle) + '">' +
+              renderCourseDetailBookCover(book, bookTitle) +
+              '<div class="learning-panel-book-head">' +
+              '<div class="book-title learning-panel-book-title">' + escapeHtml(bookTitle) + '</div>' +
+              bookState +
+              '</div>' +
+              '</article>';
+          }).join("")
+        : '<div class="materials-empty">暂无教材</div>';
+
+      return '<div class="course-home-tab-pane is-active-pane" data-tab-pane="books">' +
+        '<div class="learning-panel-split-grid">' +
+        '<div class="learning-panel-books-column">' +
+
+        '<div class="learning-panel-section-body">' +
+        '<div class="book-list learning-panel-books-grid">' +
+        booksHtml +
+        '</div>' +
+        '</div>' +
+        '</div>' +
+        '</div>' +
+        '</div>';
+    }
+
+    // videos pane（与 books 结构一致，共享 learning-panel-section-body 的 padding）
+    if (tabName === "videos") {
+      return '<div class="course-home-tab-pane is-active-pane" data-tab-pane="videos">' +
+        '<div class="learning-panel-split-grid">' +
+        '<div class="learning-panel-books-column">' +
+        '<div class="learning-panel-section-body">' +
+        '<div class="lp-video-container" id="courseVideoPanelContainer" data-lecture-id="' + escapeHtml(lectureId) + '">' +
+        '<div class="lp-video-loading">正在加载已缓存视频...</div>' +
+        '</div>' +
+        '</div>' +
+        '</div>' +
+        '</div>' +
+        '</div>';
+    }
+
+    // outline pane
+    return '<div class="course-home-tab-pane is-active-pane" data-tab-pane="outline">' +
+      '<div class="learning-panel-split-grid">' +
+      '<div class="learning-panel-books-column">' +
+      '<div class="learning-panel-section-body">' +
+      '<div class="outline-container" id="courseOutlineContainer" data-lecture-id="' + escapeHtml(lectureId) + '">' +
+      '<div class="lp-video-loading">正在加载学习大纲...</div>' +
+      '</div>' +
+      '</div>' +
+      '</div>' +
+      '</div>' +
+      '</div>';
+  }
+
+  /**
+   * 激活课程主页的指定 Tab（innerHTML 替换 pane，无 display:none 残留）
+   */
+  function activateCourseHomeTab(tabName, lectureId) {
+    state.courseHomeTab = tabName;
+    var effectiveLectureId = lectureId || state.selectedLectureId || "";
+
+    // 更新 Tab 按钮状态
+    document.querySelectorAll(".course-home-tab").forEach(function (btn) {
+      btn.classList.toggle("is-active", btn.dataset.tab === tabName);
+    });
+
+    // 替换 pane 内容（只渲染当前激活的 pane）
+    var tabContent = document.querySelector(".course-home-tab-content");
+    if (tabContent) {
+      var row = getSelectedLectureRow();
+      var books = row && Array.isArray(row.books) ? row.books : [];
+      tabContent.innerHTML = renderCourseHomePaneHtml(tabName, effectiveLectureId, books);
+    }
+
+    // 切换到 videos 时加载视频
+    if (tabName === "videos") {
+      loadCourseCachedVideos(effectiveLectureId);
+    }
+
+    // 切换到 outline 时加载大纲
+    if (tabName === "outline") {
+      loadCourseOutline(effectiveLectureId);
+    }
+  }
+
+  /**
+   * 首字母大写
+   */
+  function capitalize(str) {
+    return String(str || "").charAt(0).toUpperCase() + String(str || "").slice(1);
+  }
+
   async function loadCourseCachedVideos(lectureId) {
     const container = document.getElementById("courseVideoPanelContainer");
     if (!container) return;
@@ -3692,6 +3809,13 @@
     const resolvedLectureId = String(lectureId || "").trim();
     if (!resolvedLectureId) {
       container.innerHTML = '<div class="lp-video-empty">暂无已缓存视频</div>';
+      return;
+    }
+
+    // 缓存命中：直接渲染，不重复请求
+    const cacheKey = resolvedLectureId;
+    if (state.courseVideoCache[cacheKey]) {
+      renderVideoList(container, state.courseVideoCache[cacheKey].items, state.courseVideoCache[cacheKey].cached);
       return;
     }
 
@@ -3706,6 +3830,9 @@
         container.innerHTML = '<div class="lp-video-empty">暂无已缓存视频</div>';
         return;
       }
+
+      // 写入缓存
+      state.courseVideoCache[cacheKey] = { items: data.items, cached: true };
 
       renderVideoList(container, data.items, true);
     } catch (_err) {
@@ -3743,16 +3870,124 @@
     html += '</div>';
     container.innerHTML = html;
 
-    // 横向滚动：滚轮事件转为横向
-    const grid = container.querySelector(".lp-video-grid");
+    var grid = container.querySelector(".lp-video-grid");
     if (grid) {
-      grid.addEventListener("wheel", (e) => {
-        if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
-          e.preventDefault();
-          grid.scrollLeft += e.deltaY;
-        }
-      }, { passive: false });
+        grid.addEventListener("wheel", function (e) {
+            if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+                e.preventDefault();
+                grid.scrollLeft += e.deltaY;
+            }
+        }, { passive: false });
     }
+  }
+
+  async function loadCourseOutline(lectureId) {
+    const container = document.getElementById("courseOutlineContainer");
+    if (!container) return;
+
+    const resolvedLectureId = String(lectureId || "").trim();
+    if (!resolvedLectureId) {
+      container.innerHTML = '<div class="outline-empty">暂无学习大纲</div>';
+      return;
+    }
+
+    // 缓存命中
+    if (state.courseOutline && state.courseOutline.lecture_id === resolvedLectureId) {
+      renderOutline(container, state.courseOutline);
+      return;
+    }
+
+    container.dataset.lectureId = resolvedLectureId;
+    container.innerHTML = '<div class="lp-video-loading">正在加载学习大纲...</div>';
+
+    try {
+      const data = await fetchJson(`/api/frontend/outline/${encodeURIComponent(resolvedLectureId)}`);
+      if (String(container.dataset.lectureId || "") !== resolvedLectureId) return;
+
+      if (!data.success || !data.outline) {
+        container.innerHTML = '<div class="outline-empty">大纲尚未生成，请等待教材处理完成</div>';
+        return;
+      }
+
+      state.courseOutline = data.outline;
+      renderOutline(container, data.outline);
+    } catch (_err) {
+      container.innerHTML = '<div class="outline-empty">大纲尚未生成，请等待教材处理完成</div>';
+    }
+  }
+
+  function renderOutline(container, outline) {
+    const sections = Array.isArray(outline.sections) ? outline.sections : [];
+    const totalSections = outline.total_sections || sections.length;
+    const totalMinutes = outline.total_estimated_minutes || 0;
+
+    if (!sections.length) {
+      container.innerHTML = '<div class="outline-empty">大纲内容为空</div>';
+      return;
+    }
+
+    let html = `
+      <div class="outline-header">
+        <h3 class="outline-title">${escapeHtml(outline.course_title || outline.lecture_title || "学习大纲")}</h3>
+        <span class="outline-meta">共 ${totalSections} 个单元 · 预计 ${totalMinutes} 分钟</span>
+      </div>
+      <div class="outline-sections">
+    `;
+
+    sections.forEach((section, idx) => {
+      const sectionId = escapeHtml(section.id || `sec_${idx}`);
+      const title = escapeHtml(section.title || "");
+      const summary = escapeHtml(section.summary || "");
+      const difficulty = escapeHtml(section.difficulty || "");
+      const minutes = section.estimated_minutes || 0;
+      const readingOrder = section.reading_order || idx + 1;
+      const objectives = Array.isArray(section.objectives) ? section.objectives : [];
+      const keyConcepts = Array.isArray(section.key_concepts) ? section.key_concepts : [];
+      const prerequisites = Array.isArray(section.prerequisites) ? section.prerequisites : [];
+
+      const difficultyClass = difficulty === "基础" ? "outline-difficulty-basic" :
+        difficulty === "中等" ? "outline-difficulty-medium" :
+        difficulty === "进阶" ? "outline-difficulty-advanced" : "";
+
+      html += `
+        <div class="outline-section-card" data-section-id="${sectionId}">
+          <div class="outline-section-order">${readingOrder}</div>
+          <div class="outline-section-body">
+            <div class="outline-section-title">${title}</div>
+            ${summary ? `<div class="outline-section-summary">${summary}</div>` : ""}
+            <div class="outline-section-meta">
+              ${difficulty ? `<span class="outline-difficulty ${difficultyClass}">${difficulty}</span>` : ""}
+              ${minutes ? `<span class="outline-time">约 ${minutes} 分钟</span>` : ""}
+            </div>
+            ${keyConcepts.length ? `
+              <div class="outline-concepts">
+                ${keyConcepts.map((c) => `<span class="outline-concept-tag">${escapeHtml(c)}</span>`).join("")}
+              </div>
+            ` : ""}
+            ${objectives.length ? `
+              <div class="outline-objectives">
+                <div class="outline-objectives-label">学习目标</div>
+                <ul class="outline-objectives-list">
+                  ${objectives.map((o) => `<li>${escapeHtml(o)}</li>`).join("")}
+                </ul>
+              </div>
+            ` : ""}
+            ${prerequisites.length ? `
+              <div class="outline-prerequisites">
+                <span class="outline-prerequisites-label">前置依赖：</span>
+                ${prerequisites.map((p) => {
+                  const prereqSection = sections.find((s) => s.id === p);
+                  return `<span class="outline-prerequisite-tag">${escapeHtml(prereqSection ? prereqSection.title : p)}</span>`;
+                }).join("")}
+              </div>
+            ` : ""}
+          </div>
+        </div>
+      `;
+    });
+
+    html += '</div>';
+    container.innerHTML = html;
   }
 
   async function generateLearningPath(lectureId, bookId, force) {
@@ -4626,6 +4861,18 @@
       </aside>
     `;
 
+    // Tab 状态
+    const activeTab = state.courseHomeTab || "books";
+    const tabDefs = [
+      { key: "books", label: "教材列表" },
+      { key: "videos", label: "推荐视频" },
+      { key: "outline", label: "学习大纲" },
+    ];
+    const tabBarHtml = `<div class="course-home-tab-bar">
+      ${tabDefs.map((t) => `<button class="course-home-tab${t.key === activeTab ? " is-active" : ""}" data-tab="${t.key}" type="button">${t.label}</button>`).join("")}
+    </div>`;
+
+    // 整体写入：Hero + Tab 栏 + 单个激活的 Tab pane（无 display:none 残留）
     detailPane.innerHTML = `
       <section class="materials-detail-scroll learning-panel-page">
         <section class="detail-section learning-panel-section learning-panel-hero">
@@ -4653,48 +4900,15 @@
           </div>
         </section>
 
-        <section class="detail-section learning-panel-section">
-          <div class="learning-panel-split-grid">
-            <div class="learning-panel-books-column">
-              <div class="learning-panel-section-head">
-                <div class="detail-title learning-panel-section-title">教材列表</div>
-              </div>
-              <div class="learning-panel-section-body">
-                <div class="book-list learning-panel-books-grid">
-                ${books.length ? books.map((book) => {
-              const bookId = String(book.id || "");
-              const active = bookId === state.selectedBookId ? "is-active" : "";
-              const bookTitle = String(book.title || bookId || "教材").trim();
-              const bookState = active ? '<div class="learning-panel-book-current">当前教材</div>' : "";
-              return `
-                  <article class="book-item ${active} learning-panel-book-item" data-book-id="${escapeHtml(bookId)}" title="${escapeHtml(bookTitle)}">
-                    ${renderCourseDetailBookCover(book, bookTitle)}
-                    <div class="learning-panel-book-head">
-                      <div class="book-title learning-panel-book-title">${escapeHtml(bookTitle)}</div>
-                      ${bookState}
-                    </div>
-                  </article>
-              `;
-            }).join("") : '<div class="materials-empty">暂无教材</div>'}
-              </div>
-            </div>
-          </div>
+        ${tabBarHtml}
 
-          <div class="learning-panel-course-video-block">
-            <div class="learning-panel-section-head learning-panel-course-video-head">
-              <div class="detail-title learning-panel-section-title">推荐视频</div>
-            </div>
-            <div class="learning-panel-section-body">
-              <div class="lp-video-container" id="courseVideoPanelContainer" data-lecture-id="${escapeHtml(lectureId)}">
-                <div class="lp-video-loading">正在加载已缓存视频...</div>
-              </div>
-            </div>
-          </div>
-          </div>
-        </section>
+        <div class="course-home-tab-content">
+          ${renderCourseHomePaneHtml(activeTab, lectureId, books)}
+        </div>
       </section>
     `;
-    loadCourseCachedVideos(lectureId);
+
+    activateCourseHomeTab(activeTab, lectureId);
   }
 
   async function fetchBookTextFull() {
@@ -5573,6 +5787,9 @@
   // 批注气泡定位与显示控制
   var _annotationHideTimer = null;
   var _activeAnnotationMarker = null;
+  var _annotationDwellTimer = null;
+  var _annotationDwellEnterAt = 0;
+  var ANNOTATION_DWELL_THRESHOLD_MS = 3000;
 
 // ─────── Reader: Annotation Bubble Logic ──────────────────────────────
   function _showAnnotationBubble(marker) {
@@ -5614,6 +5831,7 @@
   function _annotationMarkerEnter() {
     emitKnowledgePointHoverTelemetry(this, "marker");
     _showAnnotationBubble(this);
+    _startAnnotationDwellTimer(this);
   }
 
   function _annotationMarkerLeave(ev) {
@@ -5623,6 +5841,47 @@
       return;
     }
     _hideAnnotationBubble(marker);
+    _clearAnnotationDwellTimer();
+  }
+
+  function _startAnnotationDwellTimer(marker) {
+    _clearAnnotationDwellTimer();
+    _annotationDwellEnterAt = Date.now();
+    _annotationDwellTimer = setTimeout(function () {
+      _annotationDwellTimer = null;
+      emitAnnotationDwellTelemetry(marker, ANNOTATION_DWELL_THRESHOLD_MS);
+    }, ANNOTATION_DWELL_THRESHOLD_MS);
+  }
+
+  function _clearAnnotationDwellTimer() {
+    if (_annotationDwellTimer) {
+      clearTimeout(_annotationDwellTimer);
+      _annotationDwellTimer = null;
+    }
+    _annotationDwellEnterAt = 0;
+  }
+
+  function emitAnnotationDwellTelemetry(marker, durationMs) {
+    if (!(marker instanceof Element) || !state.isReaderOpen) return;
+    const chapterMeta = getReaderCurrentChapterMeta();
+    const noteType = String(marker.getAttribute("data-note-type") || "").trim();
+    const anchorText = String(marker.getAttribute("data-anchor-text") || "").trim();
+    const offset = Number(marker.getAttribute("data-offset") || 0) || 0;
+    const length = Number(marker.getAttribute("data-length") || 0) || 0;
+    const bubbleContent = marker.querySelector(".annotation-bubble-content");
+    const noteText = bubbleContent ? String(bubbleContent.textContent || "").trim() : "";
+    emitTelemetry("annotation_dwell", {
+      lecture_id: String(state.selectedLectureId || "").trim(),
+      book_id: String(state.selectedBookId || "").trim(),
+      chapter_index: chapterMeta.chapterIndex,
+      chapter_title: chapterMeta.chapterTitle,
+      note_type: noteType,
+      anchor_text: anchorText,
+      note_text: noteText,
+      offset,
+      length,
+      duration_ms: durationMs,
+    });
   }
 
   function _annotationBubbleEnter(ev) {
@@ -5650,6 +5909,17 @@
     if (window.parent && window.parent !== window) {
       window.parent.postMessage({ source: "nexora-learning", type: "nexora:reader:ask-annotation", text: promptText }, "*");
     }
+
+    // 发射 annotation_ask telemetry 事件
+    const chapterMeta = getReaderCurrentChapterMeta();
+    emitTelemetry("annotation_ask", {
+      lecture_id: String(state.selectedLectureId || "").trim(),
+      book_id: String(state.selectedBookId || "").trim(),
+      chapter_index: chapterMeta.chapterIndex,
+      chapter_title: chapterMeta.chapterTitle,
+      anchor_text: anchorText,
+      note_text: noteText,
+    });
   }
 
   function injectDemoAnnotation() {
@@ -5926,13 +6196,29 @@
 
     // 仅当 selectedBookId 已设置时才发射 telemetry，避免未选择书籍时产生噪声事件
     if (String(state.selectedBookId || "").trim()) {
+      const lectureId = String(state.selectedLectureId || "").trim();
+      const bookId = String(state.selectedBookId || "").trim();
+      const chapterIndex = Number(state.readerActiveChapterIndex) || 0;
+      const chapterTitle = String((state.readerChapters[state.readerActiveChapterIndex] || {}).title || "").trim();
+
       emitTelemetry("reader_open", {
-        lecture_id: String(state.selectedLectureId || "").trim(),
-        book_id: String(state.selectedBookId || "").trim(),
+        lecture_id: lectureId,
+        book_id: bookId,
         view_mode: mode,
-        chapter_index: Number(state.readerActiveChapterIndex) || 0,
-        chapter_title: String((state.readerChapters[state.readerActiveChapterIndex] || {}).title || "").trim(),
+        chapter_index: chapterIndex,
+        chapter_title: chapterTitle,
       });
+
+      // 设置基础 reader 信息，用于 visibility 事件
+      const telemetry = window.NXLTelemetry;
+      if (telemetry && typeof telemetry.setBasicReaderContext === "function") {
+        telemetry.setBasicReaderContext({
+          lecture_id: lectureId,
+          book_id: bookId,
+          chapter_index: chapterIndex,
+          chapter_title: chapterTitle,
+        });
+      }
     }
     notifyHostReaderState(true);
     notifyHostReaderContext();
@@ -6208,12 +6494,17 @@
   // Reader guide state management
   const READER_GUIDE_CACHE_KEY = "nxl_reader_guide_cache_v1";
   const READER_GUIDE_CARD_STATE_KEY = "nxl_reader_guide_card_state_v1";
+  const PRE_READING_QA_CACHE_KEY = "nxl_pre_reading_qa_cache_v1";
   let readerGuideState = {
     status: "empty",
     target: null,
     guide: null,
     error: "",
     draft: "",
+    preQuestions: null,
+    preQuestionsDraft: "",
+    preReadingAnswers: null,
+    preReadingSkipped: false,
   };
 
   function readReaderGuideCache() {
@@ -6239,6 +6530,73 @@
     });
 
     localStorage.setItem(READER_GUIDE_CACHE_KEY, JSON.stringify(nextCache));
+  }
+
+  function readPreReadingQACache() {
+    try {
+      const raw = localStorage.getItem(PRE_READING_QA_CACHE_KEY);
+      const parsed = raw ? JSON.parse(raw) : {};
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch (_err) {
+      return {};
+    }
+  }
+
+  function writePreReadingQACache(cache) {
+    const input = cache && typeof cache === "object" ? cache : {};
+    const rows = Object.entries(input)
+      .filter(([, value]) => value && typeof value === "object")
+      .sort((a, b) => Number((b[1] || {}).timestamp || 0) - Number((a[1] || {}).timestamp || 0))
+      .slice(0, 80);
+    const nextCache = {};
+
+    rows.forEach(([key, value]) => {
+      nextCache[key] = value;
+    });
+
+    localStorage.setItem(PRE_READING_QA_CACHE_KEY, JSON.stringify(nextCache));
+  }
+
+  async function checkPreReadingQACache(target) {
+    try {
+      const result = await fetchJson("/api/frontend/reader-guide/pre-questions/check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lecture_id: target.lectureId,
+          book_id: target.bookId,
+          chapter_index: target.chapterIndex,
+        }),
+      });
+      return result && result.cached ? result.data : null;
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  async function savePreReadingQA(target, questions, answers, skipped) {
+    try {
+      await fetchJson("/api/frontend/reader-guide/pre-questions/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lecture_id: target.lectureId,
+          book_id: target.bookId,
+          chapter_index: target.chapterIndex,
+          questions,
+          answers,
+          skipped,
+        }),
+      });
+
+      // 同时保存到 localStorage
+      const cache = readPreReadingQACache();
+      const key = getReaderGuideKey(target);
+      cache[key] = { questions, answers, skipped, timestamp: Date.now() };
+      writePreReadingQACache(cache);
+    } catch (err) {
+      console.warn("[NXL-PreQA] save failed", err);
+    }
   }
 
   function readReaderGuideCardState() {
@@ -6398,6 +6756,57 @@
           <div class="reader-guide-actions">
             <button type="button" class="reader-guide-primary" data-reader-guide-action="generate">生成导读</button>
             <button type="button" class="reader-guide-secondary" data-reader-guide-action="dismiss">稍后</button>
+          </div>
+        </section>
+      `;
+      return;
+    }
+
+    if (readerGuideState.status === "pre_questions_loading") {
+      const draft = String(readerGuideState.preQuestionsDraft || "").trim();
+      content.innerHTML = `
+        <div class="reader-guide-loading">
+          <div class="quiz-loading-spinner"></div>
+          <div class="quiz-loading-text">正在准备阅读前问答...</div>
+          <div class="quiz-loading-hint">模型正在根据章节内容生成问题</div>
+          <section class="reader-guide-stream">
+            <div class="reader-guide-stream-label">实时输出</div>
+            <pre class="reader-guide-draft">${escapeHtml(draft || "等待模型开始输出...")}</pre>
+          </section>
+        </div>
+      `;
+      return;
+    }
+
+    if (readerGuideState.status === "pre_questions_ready" && readerGuideState.preQuestions) {
+      const questions = readerGuideState.preQuestions || [];
+      const questionHtml = questions.map((q, idx) => {
+        const optionsHtml = (q.options || []).map((opt) => `
+          <label class="pre-qa-option">
+            <input type="radio" name="pre_qa_${q.id}" value="${escapeHtml(opt.id)}" data-question-id="${escapeHtml(q.id)}" data-option-id="${escapeHtml(opt.id)}">
+            <span class="pre-qa-option-text">${escapeHtml(opt.text)}</span>
+          </label>
+        `).join("");
+
+        return `
+          <div class="pre-qa-question" data-question-id="${escapeHtml(q.id)}">
+            <div class="pre-qa-question-title">${escapeHtml(q.title)}</div>
+            <div class="pre-qa-options">${optionsHtml}</div>
+          </div>
+        `;
+      }).join("");
+
+      content.innerHTML = `
+        <section class="pre-qa-container">
+          <div class="pre-qa-header">
+            <div class="reader-guide-kicker">阅读前准备</div>
+            <h3>${escapeHtml(title)}</h3>
+            <p class="pre-qa-hint">回答以下问题，帮助系统为你生成更个性化的导读</p>
+          </div>
+          <div class="pre-qa-questions">${questionHtml}</div>
+          <div class="pre-qa-actions">
+            <button type="button" class="reader-guide-primary" data-reader-guide-action="submit-pre-qa">提交并生成导读</button>
+            <button type="button" class="reader-guide-secondary" data-reader-guide-action="skip-pre-qa">跳过，直接生成</button>
           </div>
         </section>
       `;
@@ -6572,12 +6981,23 @@
     };
   }
 
-  async function fetchReaderGuideStream(target, onDelta) {
+  async function fetchReaderGuideStream(target, onDelta, userProfile, preReadingAnswers, preReadingSkipped) {
+    const requestBody = buildReaderGuideRequestBody(target);
+    if (userProfile) {
+      requestBody.user_profile = userProfile;
+    }
+    if (preReadingAnswers || preReadingSkipped) {
+      requestBody.pre_reading_answers = {
+        answers: preReadingAnswers || {},
+        skipped: preReadingSkipped || false,
+      };
+    }
+
     const response = await fetch(resolveApiUrl("/api/frontend/reader-guide/stream"), {
       method: "POST",
       credentials: "same-origin",
       headers: { "Content-Type": "application/json", "X-Nexora-Username": getRuntimeUsername() },
-      body: JSON.stringify(buildReaderGuideRequestBody(target)),
+      body: JSON.stringify(requestBody),
     });
 
     if (!response.ok) {
@@ -6647,6 +7067,87 @@
     return finalResult;
   }
 
+  async function fetchPreReadingQuestionsStream(target, onDelta) {
+    const response = await fetch(resolveApiUrl("/api/frontend/reader-guide/pre-questions"), {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-Nexora-Username": getRuntimeUsername() },
+      body: JSON.stringify({
+        lecture_id: target.lectureId,
+        book_id: target.bookId,
+        chapter_name: target.chapterName,
+        session_name: target.sessionName,
+        guide_context: target.guideContext,
+      }),
+    });
+
+    if (!response.ok) {
+      let message = `HTTP ${response.status}`;
+
+      try {
+        const data = await response.json();
+        message = String((data && (data.error || data.message)) || message);
+      } catch (_err) {}
+
+      throw new Error(message);
+    }
+
+    if (!response.body) {
+      throw new Error("阅读前问答回答流没有返回响应体");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+    let finalResult = null;
+
+    const handleBlock = (block) => {
+      const parsed = parseReaderGuideSseBlock(block);
+
+      if (!parsed) return;
+
+      if (parsed.eventName === "delta") {
+        const piece = String((parsed.data && parsed.data.content) || "");
+
+        if (piece && typeof onDelta === "function") {
+          onDelta(piece);
+        }
+      } else if (parsed.eventName === "done") {
+        finalResult = parsed.data;
+      } else if (parsed.eventName === "error") {
+        throw new Error(String((parsed.data && parsed.data.error) || "阅读前问答生成失败"));
+      }
+    };
+
+    while (true) {
+      const result = await reader.read();
+
+      if (result.done) {
+        break;
+      }
+
+      buffer += decoder.decode(result.value, { stream: true });
+      buffer = buffer.replace(/\r\n/g, "\n");
+
+      const blocks = buffer.split("\n\n");
+      buffer = blocks.pop() || "";
+
+      blocks.forEach(handleBlock);
+    }
+
+    buffer += decoder.decode();
+
+    if (buffer.trim()) {
+      handleBlock(buffer);
+    }
+
+    if (!finalResult || !finalResult.success || !finalResult.questions) {
+      throw new Error("阅读前问答回答流没有返回完整问题");
+    }
+
+    return finalResult;
+  }
+
   async function generateReaderGuide(force) {
     const target = readerGuideState.target;
     const key = getReaderGuideKey(target);
@@ -6658,6 +7159,10 @@
         guide: null,
         error: "当前阅读上下文不完整，不能生成导读。",
         draft: "",
+        preQuestions: null,
+        preQuestionsDraft: "",
+        preReadingAnswers: null,
+        preReadingSkipped: false,
       };
       renderReaderGuidePanel();
       return;
@@ -6671,27 +7176,195 @@
         guide: cache[key].guide,
         error: "",
         draft: "",
+        preQuestions: null,
+        preQuestionsDraft: "",
+        preReadingAnswers: null,
+        preReadingSkipped: false,
       };
       renderReaderGuidePanel();
       return;
     }
 
+    // 检查阅读前问答缓存
+    const qaCache = readPreReadingQACache();
+    const cachedQA = qaCache[key];
+
+    if (!force && cachedQA) {
+      // 有缓存，直接使用缓存的答案生成导读
+      readerGuideState.preReadingAnswers = cachedQA.answers || {};
+      readerGuideState.preReadingSkipped = cachedQA.skipped || false;
+    } else {
+      // 没有缓存，先生成问题
+      await generatePreReadingQuestions(target, key);
+      return;
+    }
+
+    // 生成导读
+    await fetchAndRenderGuide(target, key, cache, force);
+  }
+
+  async function generatePreReadingQuestions(target, key) {
     readerGuideState = {
-      status: "loading",
+      status: "pre_questions_loading",
       target,
       guide: null,
       error: "",
       draft: "",
+      preQuestions: null,
+      preQuestionsDraft: "",
+      preReadingAnswers: null,
+      preReadingSkipped: false,
     };
     renderReaderGuidePanel();
     openFloatingPanel();
     setFloatingTab("guide");
 
     try {
+      const result = await fetchPreReadingQuestionsStream(target, (delta) => {
+        readerGuideState.preQuestionsDraft = `${String(readerGuideState.preQuestionsDraft || "")}${String(delta || "")}`;
+        const draftEl = document.querySelector('.floating-tab-content[data-tab="guide"] .reader-guide-draft');
+        if (draftEl) {
+          draftEl.textContent = readerGuideState.preQuestionsDraft || "等待模型开始输出...";
+          draftEl.scrollTop = draftEl.scrollHeight;
+        }
+      });
+
+      if (!result || !result.success || !result.questions) {
+        throw new Error((result && (result.error || result.message)) || "模型未返回问题");
+      }
+
+      readerGuideState = {
+        status: "pre_questions_ready",
+        target,
+        guide: null,
+        error: "",
+        draft: "",
+        preQuestions: result.questions,
+        preQuestionsDraft: "",
+        preReadingAnswers: null,
+        preReadingSkipped: false,
+      };
+    } catch (err) {
+      readerGuideState = {
+        status: "error",
+        target,
+        guide: null,
+        error: String(err && err.message ? err.message : "阅读前问答生成失败"),
+        draft: "",
+        preQuestions: null,
+        preQuestionsDraft: "",
+        preReadingAnswers: null,
+        preReadingSkipped: false,
+      };
+    }
+
+    renderReaderGuidePanel();
+  }
+
+  async function submitPreReadingQA() {
+    const target = readerGuideState.target;
+    const key = getReaderGuideKey(target);
+    const questions = readerGuideState.preQuestions || [];
+    const answers = {};
+    const startTime = Date.now();
+
+    // 收集答案
+    questions.forEach((q) => {
+      const selected = document.querySelector(`input[name="pre_qa_${q.id}"]:checked`);
+      if (selected) {
+        const optionId = selected.getAttribute("data-option-id");
+        const option = (q.options || []).find((o) => o.id === optionId);
+        answers[q.id] = {
+          question_id: q.id,
+          question_type: q.type,
+          question_title: q.title,
+          option_id: optionId,
+          answer_text: option ? option.text : "",
+        };
+      }
+    });
+
+    const durationMs = Date.now() - startTime;
+
+    // 保存答案
+    readerGuideState.preReadingAnswers = answers;
+    readerGuideState.preReadingSkipped = false;
+    await savePreReadingQA(target, questions, answers, false);
+
+    // 发射遥测
+    emitTelemetry("pre_reading_qa", {
+      lecture_id: target.lectureId,
+      book_id: target.bookId,
+      chapter_index: target.chapterIndex,
+      session_index: target.sessionIndex,
+      answers: JSON.stringify(answers),
+      skipped: false,
+      duration_ms: durationMs,
+    });
+
+    // 生成导读
+    const cache = readReaderGuideCache();
+    await fetchAndRenderGuide(target, key, cache, false);
+  }
+
+  async function skipPreReadingQA() {
+    const target = readerGuideState.target;
+    const key = getReaderGuideKey(target);
+    const questions = readerGuideState.preQuestions || [];
+
+    // 保存跳过状态
+    readerGuideState.preReadingAnswers = {};
+    readerGuideState.preReadingSkipped = true;
+    await savePreReadingQA(target, questions, {}, true);
+
+    // 发射遥测
+    emitTelemetry("pre_reading_qa", {
+      lecture_id: target.lectureId,
+      book_id: target.bookId,
+      chapter_index: target.chapterIndex,
+      session_index: target.sessionIndex,
+      answers: "{}",
+      skipped: true,
+      duration_ms: 0,
+    });
+
+    // 生成导读
+    const cache = readReaderGuideCache();
+    await fetchAndRenderGuide(target, key, cache, false);
+  }
+
+  async function fetchAndRenderGuide(target, key, cache, force) {
+    readerGuideState = {
+      status: "loading",
+      target,
+      guide: null,
+      error: "",
+      draft: "",
+      preQuestions: readerGuideState.preQuestions,
+      preQuestionsDraft: "",
+      preReadingAnswers: readerGuideState.preReadingAnswers,
+      preReadingSkipped: readerGuideState.preReadingSkipped,
+    };
+    renderReaderGuidePanel();
+
+    try {
+      // 获取用户画像
+      let userProfile = "";
+      try {
+        const profileResult = await fetchJson("/api/frontend/reader-guide/user-profile", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        userProfile = profileResult && profileResult.profile ? profileResult.profile : "";
+      } catch (_err) {
+        // 忽略画像获取失败
+      }
+
       const result = await fetchReaderGuideStream(target, (delta) => {
         readerGuideState.draft = `${String(readerGuideState.draft || "")}${String(delta || "")}`;
         updateReaderGuideDraftView(readerGuideState.draft);
-      });
+      }, userProfile, readerGuideState.preReadingAnswers, readerGuideState.preReadingSkipped);
 
       if (!result || !result.success || !result.guide) {
         throw new Error((result && (result.error || result.message)) || "模型未返回导读");
@@ -6721,6 +7394,10 @@
         guide: result.guide,
         error: "",
         draft: "",
+        preQuestions: null,
+        preQuestionsDraft: "",
+        preReadingAnswers: null,
+        preReadingSkipped: false,
       };
     } catch (err) {
       readerGuideState = {
@@ -6729,6 +7406,10 @@
         guide: null,
         error: String(err && err.message ? err.message : "导读生成失败"),
         draft: String(readerGuideState.draft || ""),
+        preQuestions: null,
+        preQuestionsDraft: "",
+        preReadingAnswers: null,
+        preReadingSkipped: false,
       };
     }
 
@@ -7318,6 +7999,22 @@
 
         quizState.answers[String(questionIndex)] = record;
         persistCurrentQuizAnswer(questionIndex, record);
+
+        // 发射 question telemetry 事件
+        const pendingPayload = pendingPayloads[questionIndex];
+        if (pendingPayload) {
+          emitTelemetry("question_answer", {
+            lecture_id: pendingPayload.lecture_id || "",
+            book_id: pendingPayload.book_id || "",
+            chapter_index: pendingPayload.chapter_index,
+            session_index: pendingPayload.session_index,
+            question_id: record.question_id || "",
+            difficulty: pendingPayload.question_difficulty || "",
+            answer: pendingPayload.student_answer || "",
+            is_correct: record.is_correct !== undefined ? record.is_correct : "",
+            duration_sec: record.duration_sec !== undefined ? record.duration_sec : "",
+          });
+        }
       });
       saveQuizState();
       preserveFloatingScroll("quiz", renderQuizPanel);
@@ -7669,6 +8366,17 @@
 
         if (action === "ask") {
           askReaderGuideQuestion(Number(guideBtn.getAttribute("data-reader-guide-index") || "0"));
+          return;
+        }
+
+        if (action === "submit-pre-qa") {
+          submitPreReadingQA();
+          return;
+        }
+
+        if (action === "skip-pre-qa") {
+          skipPreReadingQA();
+          return;
         }
       });
       panel.addEventListener("change", (event) => {
@@ -7688,14 +8396,18 @@
 
   initFloatingPanel();
 
-  function closeReader() {
+  function closeReader(isUnload) {
     resetReaderSelectionTelemetry();
     if (state.isReaderOpen && Array.isArray(state.readerChapters) && state.readerChapters.length) {
-      reportReaderChapterComplete(state.readerActiveChapterIndex).catch((err) => {
+      reportReaderChapterComplete(state.readerActiveChapterIndex, isUnload).catch((err) => {
         console.warn("[NXL-Reader] chapter complete on close failed", err);
       });
     }
     clearReaderTelemetrySessionContext("close");
+    const telemetry = window.NXLTelemetry;
+    if (telemetry && typeof telemetry.clearBasicReaderContext === "function") {
+      telemetry.clearBasicReaderContext();
+    }
     closeFloatingPanel();
     // 仅当 selectedBookId 已设置时才发射 telemetry，避免未选择书籍时产生噪声事件
     if (String(state.selectedBookId || "").trim()) {
@@ -8088,7 +8800,7 @@
     }
   }
 
-  async function reportReaderChapterComplete(index) {
+  async function reportReaderChapterComplete(index, isUnload) {
     const chapters = Array.isArray(state.readerChapters) ? state.readerChapters : [];
     if (!chapters.length) return;
     const idx = Math.max(0, Math.min(chapters.length - 1, Number(index) || 0));
@@ -8124,19 +8836,31 @@
       chapter_name: chapterName,
       chapter_range: chapterRange,
     });
+
+    const payload = JSON.stringify({
+      username: getRuntimeUsername(),
+      lecture_id: lectureId,
+      book_id: bookId,
+      chapter_name: chapterName,
+      chapter_range: chapterRange,
+      chapter_context: chapterContext.slice(0, 12000),
+      chapter_detail_xml: String(state.readerBookDetailXml || ""),
+    });
+
+    // 页面卸载时使用 sendBeacon 确保数据发送成功
+    if (isUnload && navigator.sendBeacon) {
+      const blob = new Blob([payload], { type: "application/json" });
+      navigator.sendBeacon("/api/frontend/learning/chapter-complete", blob);
+      markChapterCompleteReport(reportKey, idx);
+      state.readerReportedChapterKey = reportKey;
+      return;
+    }
+
     try {
       await fetchJson("/api/frontend/learning/chapter-complete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          username: getRuntimeUsername(),
-          lecture_id: lectureId,
-          book_id: bookId,
-          chapter_name: chapterName,
-          chapter_range: chapterRange,
-          chapter_context: chapterContext.slice(0, 12000),
-          chapter_detail_xml: String(state.readerBookDetailXml || ""),
-        }),
+        body: payload,
       });
       markChapterCompleteReport(reportKey, idx);
       state.readerReportedChapterKey = reportKey;
@@ -9238,8 +9962,8 @@
       }
     });
 
-    if (el.courseHomeContent) {
-      el.courseHomeContent.addEventListener("click", handleCourseHomeClick);
+    if (el.courseHomePane) {
+      el.courseHomePane.addEventListener("click", handleCourseHomeClick);
       el.courseHomeContent.addEventListener("click", handleCatalogClick);
     }
 
@@ -9561,7 +10285,6 @@
     syncTelemetryUserId();
     loadReaderSettings();
     setView("dashboard");
-    closeReader();
     syncReaderSettingsPanel();
     setUploadTab("create");
     renderUploadPreviewEmpty("请选择教材文件后预览");
@@ -9581,5 +10304,10 @@
   window.addEventListener("beforeunload", () => {
     stopSettingsPolling();
     notifyHostInputVisibility(false);
+    closeReader(true);
+    const telemetry = window.NXLTelemetry;
+    if (telemetry && typeof telemetry.flush === "function") {
+      telemetry.flush(true);
+    }
   });
 })();

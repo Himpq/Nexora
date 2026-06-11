@@ -805,6 +805,55 @@ def _worker_loop() -> None:
         _run_job(dict(job))
 
 
+def _check_and_trigger_outline(lecture_id: str) -> None:
+    """检查课程下所有教材是否完成 summary，如果是则触发大纲生成。"""
+    try:
+        books = list_books(_CFG, lecture_id)
+        if not books:
+            return
+
+        # 检查所有 book 的 summary_status
+        all_done = all(
+            str(b.get("summary_status") or "").strip().lower() == "done"
+            for b in books
+        )
+        if not all_done:
+            return
+
+        # 检查是否已有大纲
+        outline_path = Path(_CFG["data_dir"]) / "lectures" / lecture_id / "solidified" / "outline.json"
+        if outline_path.exists():
+            return  # 已有大纲，不重复生成
+
+        # 添加大纲生成任务到队列（使用特殊的 book_id "outline"）
+        try:
+            from core.booksproc.queue import enqueue_job
+            enqueue_job(
+                lecture_id,
+                "outline",
+                actor="system",
+                force=False,
+                job_type="outline",
+            )
+            log_event(
+                "outline_queued",
+                "课程大纲生成任务已加入队列",
+                payload={"lecture_id": lecture_id},
+            )
+        except Exception as exc:
+            log_event(
+                "outline_queue_error",
+                f"课程大纲生成任务入队失败: {exc}",
+                payload={"lecture_id": lecture_id, "error": str(exc)},
+            )
+    except Exception as exc:
+        log_event(
+            "outline_check_error",
+            f"检查大纲生成条件失败: {exc}",
+            payload={"lecture_id": lecture_id, "error": str(exc)},
+        )
+
+
 def _run_job(job: Dict[str, Any]) -> None:
     """执行单个教材提炼任务。"""
     lecture_id = str(job.get("lecture_id") or "").strip()
@@ -1045,6 +1094,8 @@ def _run_job(job: Dict[str, Any]) -> None:
                 payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id},
                 content=f"summary_chars={int(result.get('summary_chars') or 0)}; chapter_count={int(result.get('chapter_count') or 0)}",
             )
+            # 检查是否所有教材都完成了 summary，如果是则触发大纲生成
+            _check_and_trigger_outline(lecture_id)
         elif job_type == "video":
             from core.video_search import search_and_cache_videos
             lecture = get_lecture(_CFG, lecture_id)
@@ -1066,6 +1117,32 @@ def _run_job(job: Dict[str, Any]) -> None:
                 "book_video_done",
                 "视频搜索完成",
                 payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id, "count": len(items)},
+            )
+        elif job_type == "outline":
+            from core.booksproc.outline import generate_outline
+            _set_book_progress(lecture_id, book_id, "正在生成课程大纲...")
+            result = generate_outline(_CFG, lecture_id)
+            finished_at = int(time.time())
+            _set_book_progress(lecture_id, book_id, "课程大纲生成完成")
+            _update_job(
+                job_id,
+                {
+                    "status": "done",
+                    "finished_at": finished_at,
+                    "error": "",
+                    "outline_status": "done",
+                    "section_count": len(result.get("sections", [])),
+                },
+            )
+            log_event(
+                "outline_done",
+                "课程大纲生成完成",
+                payload={
+                    "lecture_id": lecture_id,
+                    "book_id": book_id,
+                    "job_id": job_id,
+                    "section_count": len(result.get("sections", [])),
+                },
             )
         else:
             lecture = get_lecture(_CFG, lecture_id)
@@ -1219,6 +1296,15 @@ def _run_job(job: Dict[str, Any]) -> None:
             log_event(
                 "book_video_error",
                 "视频搜索失败",
+                payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id},
+                content=message,
+            )
+        elif job_type == "outline":
+            _set_book_progress(lecture_id, book_id, f"大纲生成失败：{message[:120]}")
+            _update_job(job_id, {"status": "error", "finished_at": int(time.time()), "error": message, "outline_status": "error"})
+            log_event(
+                "outline_error",
+                "课程大纲生成失败",
                 payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id},
                 content=message,
             )
