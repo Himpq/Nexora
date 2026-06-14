@@ -74,12 +74,6 @@ def run_rough_model(
         if not piece:
             return
         append_log_text(piece)
-        if push_book_progress_step and lecture_id and book_id:
-            push_book_progress_step(lecture_id, book_id, {
-                "type": "model_text",
-                "title": "模型输出",
-                "preview": piece[:200],
-            })
         if is_cancelled_key(cancel_key):
             raise RuntimeError("cancelled by admin")
 

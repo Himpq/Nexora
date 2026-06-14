@@ -147,6 +147,20 @@ body.learning-workspace-active.learning-embed-immersive .chat-header {
   display: flex !important;
 }
 
+body.learning-reader-active.learning-embed-immersive .chat-header {
+  display: none !important;
+}
+
+body.learning-reader-active #knowledgePanel,
+body.learning-reader-active #filePanel,
+body.learning-embed-immersive #knowledgePanel,
+body.learning-embed-immersive #filePanel {
+  display: none !important;
+  transform: translateX(105%) !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
 body.learning-embed-immersive .input-dock {
   display: none !important;
 }

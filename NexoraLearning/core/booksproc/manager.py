@@ -1706,6 +1706,7 @@ def _run_coarse_reading_chunked(
     chunk_count = max(1, (total_len + chunk_size - 1) // chunk_size)
     resume_round = 1
     resume_reason = "initial"
+    existing_planned_sections = _build_planned_sections_from_existing_chapters(chapters, total_len)
 
     def _save_chapter_tool(chapter_name: str, chapter_range: str, chapter_summary: str) -> Dict[str, Any]:
         nonlocal merged_output
@@ -1954,10 +1955,21 @@ def _run_coarse_reading_chunked(
             "completed_chapters": _count_completed_chapters(chapters),
         }
 
-    section_plan = _discover_coarse_sections(full_text)
-    planned_sections = list(section_plan.get("sections") or [])
-    plan_mode = str(section_plan.get("mode") or "fallback").strip()
-    heading_candidates = list(section_plan.get("candidates") or [])
+    if existing_planned_sections:
+        section_plan = {
+            "mode": "sectioned",
+            "sections": list(existing_planned_sections),
+            "reason": "existing_bookinfo_outline",
+            "candidates": [],
+        }
+        planned_sections = list(existing_planned_sections)
+        plan_mode = "sectioned"
+        heading_candidates: List[str] = []
+    else:
+        section_plan = _discover_coarse_sections(full_text)
+        planned_sections = list(section_plan.get("sections") or [])
+        plan_mode = str(section_plan.get("mode") or "fallback").strip()
+        heading_candidates = list(section_plan.get("candidates") or [])
     if plan_mode == "model_planning" and heading_candidates:
         planning_result = _run_coarse_section_planning(
             runner=runner,
@@ -2675,6 +2687,30 @@ def _run_coarse_section_planning(
             },
             content="",
         )
+        round_delta_parts: List[str] = []
+        round_merge_key = f"planning:{turn}"
+
+        def _on_planning_delta(delta_text: str) -> None:
+            piece = str(delta_text or "")
+            if not piece:
+                return
+
+            round_delta_parts.append(piece)
+
+            if on_delta:
+                on_delta(piece)
+
+            _push_book_progress_step(
+                lecture_id,
+                book_id,
+                {
+                    "type": "model_text",
+                    "title": f"模型输出（分节规划第 {turn} 轮）",
+                    "preview": piece,
+                    "merge_key": round_merge_key,
+                },
+            )
+
         response = runner.nexora_client.proxy.chat_completions(
             messages=request_messages,
             model=model_name or runner.model_name,
@@ -2689,7 +2725,7 @@ def _run_coarse_section_planning(
             },
             use_chat_path=False,
             request_timeout=int(request_timeout),
-            on_delta=on_delta,
+            on_delta=_on_planning_delta,
         )
         if not bool(response.get("ok")):
             raise RuntimeError(f"Nexora API Error: {response.get('message') or 'request failed'}")
@@ -2701,15 +2737,16 @@ def _run_coarse_section_planning(
         content = str((msg or {}).get("content") or "")
         assistant_text = content or assistant_text
 
-        # 推送模型文本输出到活动日志
-        if content.strip():
+        # 推送模型文本输出到活动日志：非流式响应也按轮次占一块。
+        if content.strip() and not round_delta_parts:
             _push_book_progress_step(
                 lecture_id,
                 book_id,
                 {
                     "type": "model_text",
-                    "title": "模型输出",
-                    "preview": content[:200],
+                    "title": f"模型输出（分节规划第 {turn} 轮）",
+                    "preview": content,
+                    "merge_key": round_merge_key,
                 },
             )
         log_event(
@@ -2757,6 +2794,15 @@ def _run_coarse_section_planning(
             func = call.get("function") if isinstance(call.get("function"), dict) else {}
             tool_name = str(func.get("name") or "").strip()
             args_obj = _safe_json_obj(str(func.get("arguments") or "{}"))
+            _push_book_progress_step(
+                lecture_id,
+                book_id,
+                {
+                    "type": "tool_call",
+                    "title": f"工具调用：{tool_name or 'unknown'}",
+                    "preview": _safe_json_dumps(args_obj),
+                },
+            )
             log_event(
                 "section_planning_tool_call",
                 "分节规划工具调用",
@@ -4067,6 +4113,42 @@ def _parse_existing_chapters(xml_text: str) -> List[Dict[str, str]]:
             continue
         rows.append({"chapter_name": name, "chapter_range": rng, "chapter_summary": summary, "chapter_status": status or _chapter_status_from_summary(summary)})
     return rows
+
+
+def _build_planned_sections_from_existing_chapters(chapters: List[Dict[str, str]], total_len: int) -> List[Dict[str, Any]]:
+    """把已存在的 bookinfo.xml 章节骨架转换为续跑用分节计划。"""
+    sections: List[Dict[str, Any]] = []
+    safe_total = max(0, int(total_len or 0))
+
+    for row in list(chapters or []):
+        name = str((row or {}).get("chapter_name") or "").strip()
+        range_text = str((row or {}).get("chapter_range") or "").strip()
+
+        if not name or not re.match(r"^\d+:\d+$", range_text):
+            continue
+
+        try:
+            start_s, length_s = range_text.split(":", 1)
+            start = int(start_s)
+            length = int(length_s)
+        except Exception:
+            continue
+
+        if start < 0 or length <= 0:
+            continue
+
+        end = min(safe_total, start + length) if safe_total > 0 else start + length
+        if end <= start:
+            continue
+
+        sections.append({
+            "chapter_name": name,
+            "start": start,
+            "end": end,
+            "range": f"{start}:{end - start}",
+        })
+
+    return sections
 
 
 def _render_chapters_xml(chapters: List[Dict[str, str]]) -> str:

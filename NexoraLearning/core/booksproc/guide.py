@@ -376,10 +376,11 @@ def generate_pre_reading_questions(
     on_delta: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
     """Generate pre-reading questions using tool calls."""
-    from .modeling import build_question_generation_runner
-    from .modeling import get_question_generation_settings
+    from .modeling import build_pre_reading_question_runner
+    from .modeling import get_pre_reading_question_settings
     from ..lectures import get_book
     from ..lectures import get_lecture
+    from ..lectures import list_books
     from ..runlog import log_event
 
     try:
@@ -391,36 +392,13 @@ def generate_pre_reading_questions(
     safe_lecture_id = str(lecture_id or "").strip()
     safe_book_id = str(book_id or "").strip()
     safe_context = str(guide_context or "").strip()
+    scope = "course" if not safe_book_id else "book"
 
-    if not safe_lecture_id or not safe_book_id:
-        raise ValueError("lecture_id and book_id are required.")
+    if not safe_lecture_id:
+        raise ValueError("lecture_id is required.")
 
     if not safe_context:
         raise ValueError("guide_context is required.")
-
-    lecture = get_lecture(resolved_cfg, safe_lecture_id)
-    book = get_book(resolved_cfg, safe_lecture_id, safe_book_id)
-
-    if lecture is None or book is None:
-        raise ValueError(f"Book not found: {safe_lecture_id}/{safe_book_id}")
-
-    settings = get_question_generation_settings(resolved_cfg)
-    runner = build_question_generation_runner(resolved_cfg)
-
-    safe_session_name = str(session_name or "").strip() or "整章导读"
-    system_prompt = str(PRE_READING_QUESTIONS_PROMPT or "")
-    values = {
-        "lecture_title": str(lecture.get("title") or ""),
-        "book_title": str(book.get("title") or ""),
-        "chapter_name": str(chapter_name or ""),
-        "session_name": safe_session_name,
-        "guide_context": safe_context[:9000],
-    }
-
-    for key, value in values.items():
-        system_prompt = system_prompt.replace("{{" + key + "}}", value)
-
-    user_prompt = "请根据章节内容生成阅读前问题，使用 submit_questions 工具提交。"
 
     log_event(
         "pre_reading_questions_start",
@@ -430,13 +408,88 @@ def generate_pre_reading_questions(
             "book_id": safe_book_id,
             "chapter_name": str(chapter_name or ""),
             "session_name": str(session_name or ""),
+            "scope": scope,
         },
     )
+
+    lecture = get_lecture(resolved_cfg, safe_lecture_id)
+    if lecture is None:
+        raise ValueError(f"Lecture not found: {safe_lecture_id}")
+
+    book = None
+    course_books: List[Dict[str, Any]] = []
+    if safe_book_id:
+        book = get_book(resolved_cfg, safe_lecture_id, safe_book_id)
+        if book is None:
+            raise ValueError(f"Book not found: {safe_lecture_id}/{safe_book_id}")
+    else:
+        course_books = list_books(resolved_cfg, safe_lecture_id) or []
+
+    settings = get_pre_reading_question_settings(resolved_cfg)
+    runner = build_pre_reading_question_runner(resolved_cfg)
+
+    safe_session_name = str(session_name or "").strip() or "整章导读"
+    system_prompt = str(PRE_READING_QUESTIONS_PROMPT or "")
+    course_book_titles = [
+        str((row or {}).get("title") or (row or {}).get("id") or "").strip()
+        for row in course_books[:6]
+        if isinstance(row, dict)
+    ]
+    book_title = (
+        str((book or {}).get("title") or "").strip()
+        or "、".join([title for title in course_book_titles if title])
+        or "课程整体"
+    )
+    values = {
+        "lecture_title": str(lecture.get("title") or ""),
+        "book_title": book_title,
+        "chapter_name": str(chapter_name or ""),
+        "session_name": safe_session_name,
+        "guide_context": safe_context[:9000],
+    }
+
+    for key, value in values.items():
+        system_prompt = system_prompt.replace("{{" + key + "}}", value)
+
+    log_event(
+        "pre_reading_questions_context",
+        "阅读前问答上下文已注入",
+        payload={
+            "lecture_id": safe_lecture_id,
+            "book_id": safe_book_id,
+            "book_title": book_title,
+            "chapter_name": str(chapter_name or ""),
+            "session_name": safe_session_name,
+            "scope": scope,
+            "guide_context_chars": len(safe_context),
+            "system_prompt_chars": len(system_prompt),
+        },
+        content=safe_context[:1600],
+    )
+
+    if scope == "course":
+        user_prompt = (
+            "请根据系统提示里的课程信息、教材清单、课程大纲和教材内容摘录生成阅读前问题，"
+            "使用 submit_questions 工具提交。问题必须帮助学生进入这门课和这些教材的核心内容，"
+            "选项要直接关联课程主题、教材主题、关键人物、关键概念或主要矛盾。"
+            "不要把“课程整体导读”“阅读前内容定位”“学习路线规划”本身当作被学习的主题，"
+            "不要生成只询问学习规划方法、学习效率或泛泛学习方式的问题。"
+        )
+    else:
+        user_prompt = "请根据章节内容生成阅读前问题，使用 submit_questions 工具提交。"
 
     # 工具调用模式
     tools = _build_pre_reading_tools()
     proxy = runner.nexora_client.proxy
     model_name = runner.model_name
+
+    def emit_stream_text(delta_text: str) -> None:
+        piece = str(delta_text or "")
+
+        if not piece or not bool(stream) or not callable(on_delta):
+            return
+
+        on_delta(piece)
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -446,8 +499,20 @@ def generate_pre_reading_questions(
     questions_submitted = False
     result_questions: List[Dict[str, Any]] = []
 
+    emit_stream_text("已构建阅读前问答上下文，正在请求模型生成问题...\n")
+
     for turn in range(1, 4):
         request_messages = list(messages) + turn_history
+        round_deltas: List[str] = []
+
+        def _on_round_delta(delta_text: str) -> None:
+            piece = str(delta_text or "")
+            if not piece:
+                return
+            round_deltas.append(piece)
+            emit_stream_text(piece)
+
+        emit_stream_text(f"\n[阅读前问答第 {turn} 轮] 模型开始输出...\n")
 
         response = proxy.chat_completions(
             messages=request_messages,
@@ -455,11 +520,13 @@ def generate_pre_reading_questions(
             options={
                 "temperature": float(settings.get("temperature") or 0.3),
                 "max_tokens": 1000,
+                "stream": bool(stream),
                 "tools": tools,
                 "tool_choice": "auto",
             },
             use_chat_path=False,
             request_timeout=float(settings.get("request_timeout") or 120),
+            on_delta=_on_round_delta,
         )
 
         if not bool(response.get("ok")):
@@ -473,13 +540,35 @@ def generate_pre_reading_questions(
         msg = choices[0].get("message") if isinstance(choices[0], dict) else {}
         content = str((msg or {}).get("content") or "")
 
+        log_event(
+            "pre_reading_questions_round",
+            "阅读前问答轮次响应",
+            payload={
+                "lecture_id": safe_lecture_id,
+                "book_id": safe_book_id,
+                "chapter_name": str(chapter_name or ""),
+                "session_name": str(session_name or ""),
+                "turn": turn,
+                "tool_calls": len((msg or {}).get("tool_calls") or []) if isinstance((msg or {}).get("tool_calls"), list) else 0,
+                "content_len": len(content or "".join(round_deltas)),
+            },
+            content=(content or "".join(round_deltas))[:2400],
+        )
+
         raw_tool_calls = (msg or {}).get("tool_calls") if isinstance((msg or {}).get("tool_calls"), list) else []
         tool_calls: List[Dict[str, Any]] = []
+        streamed_text = "".join(round_deltas)
+
         for raw_call in raw_tool_calls:
             if not isinstance(raw_call, dict):
                 continue
             raw_func = raw_call.get("function") if isinstance(raw_call.get("function"), dict) else {}
             normalized_name = str(raw_func.get("name") or "").strip()
+            raw_arguments = str(raw_func.get("arguments") or "")
+
+            if raw_arguments and raw_arguments not in streamed_text:
+                emit_stream_text(f"\n[Tool Call] {normalized_name or 'unknown'}\n{raw_arguments}\n")
+
             normalized_args_obj = _safe_json_obj(str(raw_func.get("arguments") or "{}"))
             tool_calls.append({
                 "id": str(raw_call.get("id") or ""),
@@ -547,6 +636,7 @@ def generate_pre_reading_questions(
             "book_id": safe_book_id,
             "chapter_name": str(chapter_name or ""),
             "session_name": str(session_name or ""),
+            "scope": scope,
             "questions_count": len(result_questions),
         },
     )
@@ -637,6 +727,15 @@ def generate_reader_guide(
 
     for turn in range(1, 4):
         request_messages = list(messages) + turn_history
+        round_deltas: List[str] = []
+
+        def _on_round_delta(delta_text: str) -> None:
+            piece = str(delta_text or "")
+            if not piece:
+                return
+            round_deltas.append(piece)
+            if callable(on_delta):
+                on_delta(piece)
 
         response = proxy.chat_completions(
             messages=request_messages,
@@ -644,11 +743,13 @@ def generate_reader_guide(
             options={
                 "temperature": float(settings.get("temperature") or 0.3),
                 "max_tokens": 2000,
+                "stream": bool(stream),
                 "tools": tools,
                 "tool_choice": "auto",
             },
             use_chat_path=False,
             request_timeout=float(settings.get("request_timeout") or 240),
+            on_delta=_on_round_delta,
         )
 
         if not bool(response.get("ok")):
@@ -661,6 +762,21 @@ def generate_reader_guide(
 
         msg = choices[0].get("message") if isinstance(choices[0], dict) else {}
         content = str((msg or {}).get("content") or "")
+
+        log_event(
+            "reader_guide_round",
+            "Reader 导读轮次响应",
+            payload={
+                "lecture_id": safe_lecture_id,
+                "book_id": safe_book_id,
+                "chapter_name": str(chapter_name or ""),
+                "session_name": str(session_name or ""),
+                "turn": turn,
+                "tool_calls": len((msg or {}).get("tool_calls") or []) if isinstance((msg or {}).get("tool_calls"), list) else 0,
+                "content_len": len(content or "".join(round_deltas)),
+            },
+            content=(content or "".join(round_deltas))[:2400],
+        )
 
         raw_tool_calls = (msg or {}).get("tool_calls") if isinstance((msg or {}).get("tool_calls"), list) else []
         tool_calls: List[Dict[str, Any]] = []

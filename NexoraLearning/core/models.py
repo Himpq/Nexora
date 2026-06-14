@@ -133,6 +133,18 @@ DEFAULT_SCHEDULER_MODELS_CONFIG: Dict[str, Any] = {
         "think": False,
         "prompt_notes": "",
     },
+    "pre_reading_question": {
+        "enabled": True,
+        "model_name": "",
+        "api_mode": "chat",
+        "temperature": 0.3,
+        "max_output_tokens": 4000,
+        "max_input_chars": 12000,
+        "request_timeout": 240,
+        "stream": True,
+        "think": False,
+        "prompt_notes": "",
+    },
     "split_chapters": {
         "enabled": True,
         "model_name": "",
@@ -328,6 +340,15 @@ def get_question_generation_model_config(cfg: Mapping[str, Any]) -> Dict[str, An
     if isinstance(branch, dict):
         return dict(branch)
     return dict(DEFAULT_SCHEDULER_MODELS_CONFIG["question_generation"])
+
+
+def get_pre_reading_question_model_config(cfg: Mapping[str, Any]) -> Dict[str, Any]:
+    """读取阅读前问答模型配置。"""
+    data = load_scheduler_models_config(cfg)
+    branch = data.get("pre_reading_question")
+    if isinstance(branch, dict):
+        return dict(branch)
+    return dict(DEFAULT_SCHEDULER_MODELS_CONFIG["pre_reading_question"])
 
 
 def get_split_chapters_model_config(cfg: Mapping[str, Any]) -> Dict[str, Any]:
@@ -550,6 +571,51 @@ def update_question_generation_model_config(cfg: Mapping[str, Any], updates: Map
     merged_branch = dict(current)
     merged_branch.update(sanitized)
     save_scheduler_models_config(cfg, {"question_generation": merged_branch})
+    return merged_branch
+
+
+def update_pre_reading_question_model_config(cfg: Mapping[str, Any], updates: Mapping[str, Any]) -> Dict[str, Any]:
+    """更新阅读前问答模型配置并做基础类型校验。"""
+    current = get_pre_reading_question_model_config(cfg)
+    allowed_fields = {
+        "enabled",
+        "model_name",
+        "api_mode",
+        "temperature",
+        "max_output_tokens",
+        "max_input_chars",
+        "request_timeout",
+        "stream",
+        "think",
+        "prompt_notes",
+    }
+    sanitized: Dict[str, Any] = {}
+    for key, value in dict(updates or {}).items():
+        if key not in allowed_fields:
+            continue
+        sanitized[key] = value
+    for bool_field in ("enabled", "stream", "think"):
+        if bool_field in sanitized:
+            sanitized[bool_field] = _as_bool(sanitized[bool_field], default=_as_bool(current.get(bool_field), False))
+    for int_field in ("max_output_tokens", "max_input_chars", "request_timeout"):
+        if int_field in sanitized:
+            try:
+                upper_bound = {
+                    "max_output_tokens": _MAX_MODEL_OUTPUT_TOKENS,
+                    "max_input_chars": _MAX_MODEL_INPUT_CHARS,
+                    "request_timeout": _MAX_REQUEST_TIMEOUT,
+                }.get(int_field)
+                sanitized[int_field] = _clamp_int(sanitized[int_field], default=current.get(int_field) or 1, minimum=1, maximum=upper_bound)
+            except Exception:
+                sanitized[int_field] = current.get(int_field)
+    if "temperature" in sanitized:
+        try:
+            sanitized["temperature"] = float(sanitized["temperature"])
+        except Exception:
+            sanitized["temperature"] = current.get("temperature")
+    merged_branch = dict(current)
+    merged_branch.update(sanitized)
+    save_scheduler_models_config(cfg, {"pre_reading_question": merged_branch})
     return merged_branch
 
 
@@ -1084,6 +1150,12 @@ class QuestionGenerationModel(BaseLearningModel):
     model_key = "question"
 
 
+class PreReadingQuestionModel(BaseLearningModel):
+    """Model for generating pre-reading questions before chapter study."""
+
+    model_key = "pre_reading_question"
+
+
 class IntensiveReadingModel(BaseLearningModel):
     """Placeholder model for close reading and study guidance."""
 
@@ -1174,6 +1246,7 @@ class LearningModelFactory:
     _registry: Dict[str, Type[BaseLearningModel]] = {
         "coarse_reading": CoarseReadingModel,
         "question": QuestionGenerationModel,
+        "pre_reading_question": PreReadingQuestionModel,
         "question_verify": QuestionVerifyModel,
         "intensive_reading": IntensiveReadingModel,
         "split_chapters": SplitChaptersModel,

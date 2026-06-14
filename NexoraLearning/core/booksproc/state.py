@@ -23,6 +23,7 @@ TEMPMEM: Dict[str, List[str]] = {}
 BOOK_PROGRESS: Dict[str, str] = {}
 BOOK_PROGRESS_STEPS: Dict[str, List[Dict[str, Any]]] = {}
 READ_PROGRESS: Dict[str, Dict[str, int]] = {}
+MODEL_TEXT_PREVIEW_LIMIT = 4000
 
 
 def job_key(lecture_id: str, book_id: str) -> str:
@@ -35,6 +36,70 @@ def _book_json_path(lecture_id: str, book_id: str) -> Path:
     return data_dir / "lectures" / lecture_id / "books" / book_id / "book.json"
 
 
+def _is_model_text_step(step: Mapping[str, Any]) -> bool:
+    return str(step.get("type") or "").strip() == "model_text"
+
+
+def _model_text_merge_key(step: Mapping[str, Any]) -> str:
+    return str(step.get("merge_key") or "").strip()
+
+
+def _can_merge_model_text_step(previous: Mapping[str, Any], current: Mapping[str, Any]) -> bool:
+    if not (_is_model_text_step(previous) and _is_model_text_step(current)):
+        return False
+
+    previous_key = _model_text_merge_key(previous)
+    current_key = _model_text_merge_key(current)
+
+    if previous_key or current_key:
+        return previous_key == current_key
+
+    return True
+
+
+def _merge_model_text_preview(previous: str, current: str) -> str:
+    merged = f"{str(previous or '')}{str(current or '')}"
+
+    if len(merged) <= MODEL_TEXT_PREVIEW_LIMIT:
+        return merged
+
+    return merged[-MODEL_TEXT_PREVIEW_LIMIT:]
+
+
+def _coalesce_progress_steps(steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Merge streaming model deltas into one visible model activity row."""
+    merged_steps: List[Dict[str, Any]] = []
+
+    for step in steps:
+        row = dict(step or {})
+
+        if merged_steps and _can_merge_model_text_step(merged_steps[-1], row):
+            previous = merged_steps[-1]
+            previous["preview"] = _merge_model_text_preview(
+                str(previous.get("preview") or ""),
+                str(row.get("preview") or ""),
+            )
+            previous["title"] = str(previous.get("title") or row.get("title") or "模型输出")
+            continue
+
+        merged_steps.append(row)
+
+    return merged_steps
+
+
+def _append_progress_step(bucket: List[Dict[str, Any]], row: Dict[str, Any]) -> None:
+    # 模型正文是流式 delta，连续片段应当更新同一条活动记录。
+    if bucket and _can_merge_model_text_step(bucket[-1], row):
+        bucket[-1]["preview"] = _merge_model_text_preview(
+            str(bucket[-1].get("preview") or ""),
+            str(row.get("preview") or ""),
+        )
+        bucket[-1]["title"] = str(bucket[-1].get("title") or row.get("title") or "模型输出")
+        return
+
+    bucket.append(row)
+
+
 def _save_steps_to_book(lecture_id: str, book_id: str, steps: List[Dict[str, Any]]) -> None:
     """Persist progress steps to book.json."""
     path = _book_json_path(lecture_id, book_id)
@@ -42,7 +107,7 @@ def _save_steps_to_book(lecture_id: str, book_id: str, steps: List[Dict[str, Any
         return
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        data["progress_steps"] = steps[-30:]  # keep last 30
+        data["progress_steps"] = _coalesce_progress_steps(steps)[-30:]
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         pass
@@ -57,7 +122,7 @@ def _load_steps_from_book(lecture_id: str, book_id: str) -> List[Dict[str, Any]]
         data = json.loads(path.read_text(encoding="utf-8"))
         steps = data.get("progress_steps")
         if isinstance(steps, list):
-            return [dict(s) for s in steps if isinstance(s, dict)]
+            return _coalesce_progress_steps([dict(s) for s in steps if isinstance(s, dict)])
     except Exception:
         pass
     return []
@@ -99,7 +164,7 @@ def push_book_progress_step(lecture_id: str, book_id: str, step: Dict[str, Any])
     row = dict(step or {})
     with LOCK:
         bucket = BOOK_PROGRESS_STEPS.setdefault(key, [])
-        bucket.append(row)
+        _append_progress_step(bucket, row)
         if len(bucket) > 60:
             del bucket[:-60]
 
@@ -129,7 +194,7 @@ def get_book_progress_steps(lecture_id: str, book_id: str) -> List[Dict[str, Any
     with LOCK:
         memory_steps = BOOK_PROGRESS_STEPS.get(job_key(lecture_id, book_id))
         if memory_steps:
-            return [dict(item) for item in memory_steps]
+            return _coalesce_progress_steps([dict(item) for item in memory_steps])
     # Fallback: load from disk
     return _load_steps_from_book(lecture_id, book_id)
 

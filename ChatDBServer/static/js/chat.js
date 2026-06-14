@@ -121,7 +121,7 @@ const CHAT_COMPOSER_PREFS_KEY = 'nexora_chat_composer_prefs_v1';
 const CHAT_INPUT_DRAFT_KEY = 'nexora_chat_input_draft_v1';
 const CHAT_INPUT_DRAFT_MAX_LEN = 12000;
 let NEXORA_LEARNING_FRONTEND_URL = `${window.location.protocol}//${window.location.hostname}:5001/api/frontend/`;
-const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260609_05';
+const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260614_03';
 const NEXORA_LEARNING_JS_URL = '/static/js/learning_mode.js?v=20260609_05';
 const MAIL_POLL_INTERVAL_MS = 5000;
 const AGENT_STATUS_POLL_VISIBLE_MS = 5000;
@@ -4303,18 +4303,92 @@ function saveMailListScroll(scrollTop) {
     }
 }
 
-function setRightSidebarPanelVisible(panel, visible) {
+let rightSidebarLastInteractionTarget = null;
+
+document.addEventListener('pointerdown', (event) => {
+    rightSidebarLastInteractionTarget = event && event.target ? event.target : null;
+}, true);
+
+document.addEventListener('click', (event) => {
+    rightSidebarLastInteractionTarget = event && event.target ? event.target : rightSidebarLastInteractionTarget;
+}, true);
+
+function describeRightSidebarDebugTarget(target = null) {
+    const node = target || rightSidebarLastInteractionTarget;
+    if (!node || !(node instanceof Element)) return '';
+    const id = node.id ? `#${node.id}` : '';
+    const cls = String(node.className || '').trim().replace(/\s+/g, '.');
+    const classText = cls ? `.${cls}` : '';
+    return `${String(node.tagName || '').toLowerCase()}${id}${classText}`;
+}
+
+function logRightSidebarPanelDebug(action, details = {}) {
+    try {
+        const err = new Error();
+        console.warn('[RightSidebar]', action, {
+            ...details,
+            learningReaderOpened: !!learningReaderOpened,
+            learningEmbedLayoutMode: String(learningEmbedLayoutMode || ''),
+            bodyClass: document.body ? String(document.body.className || '') : '',
+            target: describeRightSidebarDebugTarget(),
+            stack: err && err.stack ? String(err.stack) : '',
+        });
+    } catch (_err) {}
+}
+
+// Reader 沉浸态必须立即清空宿主右侧栏，避免目录面板打开时抢占宿主布局。
+function hideRightSidebarPanelImmediately(panel) {
     const p = panel || null;
+
     if (!p) return;
-    const show = !!visible;
+
     if (p.__panelAnimTimer) {
         clearTimeout(p.__panelAnimTimer);
         p.__panelAnimTimer = null;
     }
+
+    p.__panelVisibleTarget = false;
+    p.classList.remove('visible');
+    p.classList.remove('panel-animating');
+}
+
+function setRightSidebarPanelVisible(panel, visible) {
+    const p = panel || null;
+
+    if (!p) return;
+
+    const show = !!visible && !isLearningReaderRightSidebarLocked();
+
+    if (visible && !show) {
+        logRightSidebarPanelDebug('blocked-show', {
+            panelId: p.id || '',
+            reason: 'learning_reader_or_immersive',
+        });
+        hideRightSidebarPanelImmediately(p);
+        return;
+    }
+
+    if (!show && isLearningReaderRightSidebarLocked()) {
+        hideRightSidebarPanelImmediately(p);
+        return;
+    }
+
+    if (p.__panelAnimTimer) {
+        clearTimeout(p.__panelAnimTimer);
+        p.__panelAnimTimer = null;
+    }
+    p.__panelVisibleTarget = show;
     p.classList.add('panel-animating');
     requestAnimationFrame(() => {
-        if (show) p.classList.add('visible');
-        else p.classList.remove('visible');
+        if (p.__panelVisibleTarget !== show) return;
+        if (show) {
+            logRightSidebarPanelDebug('show', {
+                panelId: p.id || '',
+            });
+            p.classList.add('visible');
+        } else {
+            p.classList.remove('visible');
+        }
     });
     p.__panelAnimTimer = setTimeout(() => {
         p.classList.remove('panel-animating');
@@ -4322,12 +4396,62 @@ function setRightSidebarPanelVisible(panel, visible) {
     }, 280);
 }
 
-function closeKnowledgePanel() {
-    if (els.knowledgePanel) setRightSidebarPanelVisible(els.knowledgePanel, false);
+function closeKnowledgePanel(options = {}) {
+    const immediate = !!(options && options.immediate);
+
+    if (!els.knowledgePanel) return;
+
+    if (immediate) {
+        hideRightSidebarPanelImmediately(els.knowledgePanel);
+        return;
+    }
+
+    setRightSidebarPanelVisible(els.knowledgePanel, false);
+}
+
+function isLearningImmersiveLayoutActive() {
+    const mode = String(learningEmbedLayoutMode || '').trim().toLowerCase();
+    const bodyImmersive = !!(document.body && document.body.classList.contains('learning-embed-immersive'));
+    const learningPanelVisible = !!(
+        els.learningMainPanel
+        && els.learningMainPanel.style.display !== 'none'
+        && els.learningMainPanel.offsetParent !== null
+    );
+    return !!(learningModeEnabled && learningPanelVisible && (mode === 'immersive' || bodyImmersive));
+}
+
+function isLearningReaderOrImmersiveClassActive() {
+    return !!(
+        document.body
+        && (
+            document.body.classList.contains('learning-reader-active')
+            || document.body.classList.contains('learning-embed-immersive')
+        )
+    );
+}
+
+function isLearningReaderRightSidebarLocked() {
+    return !!(
+        learningReaderOpened
+        || isLearningImmersiveLayoutActive()
+        || isLearningReaderOrImmersiveClassActive()
+    );
+}
+
+function closeReaderBlockedRightSidebars() {
+    closeKnowledgePanel({ immediate: true });
+    closeCloudFilePanel({ immediate: true });
 }
 
 function openKnowledgePanel() {
     if (!els.knowledgePanel) return;
+    if (isLearningReaderRightSidebarLocked()) {
+        logRightSidebarPanelDebug('blocked-open-knowledge', {
+            reason: 'learning_reader_or_immersive',
+        });
+        closeKnowledgePanel();
+        return;
+    }
     if (els.filePanel) setRightSidebarPanelVisible(els.filePanel, false);
     setRightSidebarPanelVisible(els.knowledgePanel, true);
     void loadKnowledge(currentConversationId);
@@ -4335,6 +4459,13 @@ function openKnowledgePanel() {
 
 function toggleKnowledgePanel() {
     if (!els.knowledgePanel) return;
+    if (isLearningReaderRightSidebarLocked()) {
+        logRightSidebarPanelDebug('blocked-toggle-knowledge', {
+            reason: 'learning_reader_or_immersive',
+        });
+        closeKnowledgePanel();
+        return;
+    }
     const nextVisible = !els.knowledgePanel.classList.contains('visible');
     if (nextVisible) openKnowledgePanel();
     else closeKnowledgePanel();
@@ -4346,12 +4477,28 @@ function isKnowledgeViewerOpen() {
     return viewer.style.display !== 'none' && viewer.offsetParent !== null;
 }
 
-function closeCloudFilePanel() {
-    if (els.filePanel) setRightSidebarPanelVisible(els.filePanel, false);
+function closeCloudFilePanel(options = {}) {
+    const immediate = !!(options && options.immediate);
+
+    if (!els.filePanel) return;
+
+    if (immediate) {
+        hideRightSidebarPanelImmediately(els.filePanel);
+        return;
+    }
+
+    setRightSidebarPanelVisible(els.filePanel, false);
 }
 
 function openCloudFilePanel() {
     if (!els.filePanel) return;
+    if (isLearningReaderRightSidebarLocked()) {
+        logRightSidebarPanelDebug('blocked-open-file', {
+            reason: 'learning_reader_or_immersive',
+        });
+        closeCloudFilePanel();
+        return;
+    }
     if (els.knowledgePanel) setRightSidebarPanelVisible(els.knowledgePanel, false);
     setRightSidebarPanelVisible(els.filePanel, true);
     loadCloudFiles();
@@ -4359,6 +4506,13 @@ function openCloudFilePanel() {
 
 function toggleCloudFilePanel() {
     if (!els.filePanel) return;
+    if (isLearningReaderRightSidebarLocked()) {
+        logRightSidebarPanelDebug('blocked-toggle-file', {
+            reason: 'learning_reader_or_immersive',
+        });
+        closeCloudFilePanel();
+        return;
+    }
     const nextVisible = !els.filePanel.classList.contains('visible');
     if (nextVisible) openCloudFilePanel();
     else closeCloudFilePanel();
@@ -4873,9 +5027,26 @@ async function submitLearningFeedPost(text) {
     }
 }
 
+function normalizeAssetHref(href) {
+    try {
+        return new URL(String(href || ''), window.location.href).href;
+    } catch (_err) {
+        return String(href || '');
+    }
+}
+
 function ensureStylesheetAsset(id, href) {
     let link = document.getElementById(id);
-    if (link) return Promise.resolve(link);
+    const expectedHref = normalizeAssetHref(href);
+    if (link) {
+        const currentHref = normalizeAssetHref(link.getAttribute('href') || link.href || '');
+        if (currentHref === expectedHref) return Promise.resolve(link);
+        link.href = href;
+        return new Promise((resolve, reject) => {
+            link.addEventListener('load', () => resolve(link), { once: true });
+            link.addEventListener('error', () => reject(new Error(`failed to load stylesheet: ${href}`)), { once: true });
+        });
+    }
     link = document.createElement('link');
     link.id = id;
     link.rel = 'stylesheet';
@@ -4931,7 +5102,8 @@ function registerLearningModeChatBridge() {
         getLearningInteractionLockKey,
         get messagesContainer() { return els.messagesContainer; },
         get messageInput() { return els.messageInput; },
-        frontendUrl: NEXORA_LEARNING_FRONTEND_URL,
+        get frontendUrl() { return NEXORA_LEARNING_FRONTEND_URL; },
+        get username() { return currentUsername; },
     });
 }
 
@@ -5092,6 +5264,9 @@ function handleLearningHostMessage(payload) {
         return true;
     }
     if (msgType === 'nexora:layout:request') {
+        if (String(payload.mode || '').trim().toLowerCase() === 'immersive') {
+            closeReaderBlockedRightSidebars();
+        }
         setLearningEmbedLayoutMode(payload.mode, payload);
         return true;
     }
@@ -5121,6 +5296,7 @@ function handleLearningHostMessage(payload) {
         const wasReaderOpened = !!learningReaderOpened;
         learningReaderOpened = !!payload.opened;
         if (learningReaderOpened) {
+            closeReaderBlockedRightSidebars();
             learningHeaderMode = 'learning';
             applyLearningSidebarMode('learning');
             void syncLearningHeaderMode();
@@ -5185,22 +5361,37 @@ window.addEventListener('nexora:layout:request', (event) => {
     handleLearningHostMessage(payload);
 });
 
+async function ensureCurrentUsernameForLearning() {
+    if (!String(currentUsername || '').trim()) {
+        await checkUserRole();
+    }
+
+    const username = String(currentUsername || '').trim();
+
+    if (!username) {
+        throw new Error('NexoraLearning requires authenticated username before iframe render.');
+    }
+
+    return username;
+}
+
 async function renderLearningMainPanel() {
     if (!els.learningMainPanel) return;
     try {
+        const username = await ensureCurrentUsernameForLearning();
         const api = await ensureLearningModeAssets();
         if (learningMainMounted) return;
         els.learningMainPanel.innerHTML = '<div class="learning-mode-welcome-loading">正在载入 NexoraLearning...</div>';
         if (api && typeof api.renderMainPanel === 'function') {
             api.renderMainPanel(els.learningMainPanel, {
                 frontendUrl: NEXORA_LEARNING_FRONTEND_URL,
-                username: currentUsername,
+                username,
             });
             learningMainMounted = true;
         } else if (api && typeof api.renderWelcome === 'function') {
             api.renderWelcome(els.learningMainPanel, {
                 frontendUrl: NEXORA_LEARNING_FRONTEND_URL,
-                username: currentUsername,
+                username,
             });
             learningMainMounted = true;
         }
@@ -5296,6 +5487,7 @@ async function renderWelcomeScreen() {
         return;
     }
     try {
+        const username = await ensureCurrentUsernameForLearning();
         const api = await ensureLearningModeAssets();
         let host = els.messagesContainer.querySelector('.welcome-screen.learning-mode-welcome-shell');
         if (!host) {
@@ -5311,7 +5503,7 @@ async function renderWelcomeScreen() {
         if (api && typeof api.renderWelcome === 'function') {
             api.renderWelcome(host, {
                 frontendUrl: NEXORA_LEARNING_FRONTEND_URL,
-                username: currentUsername,
+                username,
             });
             learningWelcomeMounted = true;
         }
@@ -11906,6 +12098,7 @@ function createPuzzleCardNode(puzzle, options = {}) {
         return api.createPuzzleCardNode(puzzle, {
             ...options,
             frontendUrl: NEXORA_LEARNING_FRONTEND_URL,
+            username: currentUsername,
         });
     }
     return null;

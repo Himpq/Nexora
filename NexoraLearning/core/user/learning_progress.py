@@ -87,6 +87,37 @@ def list_lecture_chapters(
     return chapters
 
 
+def parse_book_info_xml_chapter_titles(xml_text: str) -> List[str]:
+    """Extract chapter titles from bookinfo.xml without reading full book text."""
+    text = str(xml_text or "")
+    titles: List[str] = []
+    for match in re.finditer(r"<chapter_name>\s*(.*?)\s*</chapter_name>", text, flags=re.IGNORECASE):
+        title = str(match.group(1) or "").strip()
+        if title:
+            titles.append(title)
+    return titles
+
+
+def list_lecture_chapter_names(
+    lecture_id: str,
+    books: list,
+) -> List[str]:
+    """Return chapter names across all books using only lightweight metadata."""
+    chapter_names: List[str] = []
+    for book in (books or []):
+        book_id = str((book or {}).get("id") or "").strip()
+        if not book_id:
+            continue
+
+        try:
+            info_xml = str(load_book_info_xml(_cfg, lecture_id, book_id) or "")
+            chapter_names.extend(parse_book_info_xml_chapter_titles(info_xml))
+        except Exception:
+            continue
+
+    return chapter_names
+
+
 def list_completed_chapter_names(
     records: List[Dict[str, Any]],
     lecture_id: str,
@@ -110,15 +141,15 @@ def compute_user_lecture_progress(
     user_id: str,
     lecture_id: str,
     books: list,
+    records: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """从用户 learning.jsonl 计算该课程的 per-user 进度.
 
     返回 {progress, current_chapter, next_chapter}，覆盖 lecture.json 全局值.
     """
-    records = user_store.list_learning_records(_cfg, user_id)
-    completed = list_completed_chapter_names(records, lecture_id)
-    all_chapters = list_lecture_chapters(lecture_id, books)
-    chapter_names = [str(ch.get("title") or "").strip() for ch in all_chapters if ch.get("title")]
+    learning_records = records if records is not None else user_store.list_learning_records(_cfg, user_id)
+    completed = list_completed_chapter_names(learning_records, lecture_id)
+    chapter_names = list_lecture_chapter_names(lecture_id, books)
     total = len(chapter_names)
 
     current_chapter = ""
@@ -144,7 +175,10 @@ def compute_user_lecture_progress(
     }
 
 
-def build_user_study_hours_map(user_id: str) -> Dict[str, float]:
+def build_user_study_hours_map(
+    user_id: str,
+    records: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, float]:
     """Aggregate per-lecture study hours for a user.
 
     Reads both ``learning.jsonl`` (if any explicit duration fields are set)
@@ -154,7 +188,7 @@ def build_user_study_hours_map(user_id: str) -> Dict[str, float]:
 
     # --- learning.jsonl (explicit duration fields) ---------------------------------
     try:
-        rows = user_store.list_learning_records(_cfg, user_id)
+        rows = records if records is not None else user_store.list_learning_records(_cfg, user_id)
         for row in rows:
             if not isinstance(row, dict):
                 continue
@@ -366,11 +400,14 @@ def _parse_duration_ms_from_extra(raw_extra: str) -> float:
     return 0.0
 
 
-def build_user_lecture_last_active_map(user_id: str) -> Dict[str, int]:
+def build_user_lecture_last_active_map(
+    user_id: str,
+    records: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, int]:
     """Aggregate latest real learning activity per lecture."""
     last_map: Dict[str, int] = {}
 
-    rows = user_store.list_learning_records(_cfg, user_id)
+    rows = records if records is not None else user_store.list_learning_records(_cfg, user_id)
     for row in rows:
         if not isinstance(row, dict):
             continue
