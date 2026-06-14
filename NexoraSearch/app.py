@@ -1,8 +1,10 @@
 import json
 import logging
 import os
+import queue
 import secrets
 import string
+import threading
 import time
 import urllib.request
 from functools import wraps
@@ -13,6 +15,11 @@ from core.nexora_agent import NexoraPageAgentClient
 from core.render import PLAYWRIGHT_AVAILABLE, RenderManager
 from core.render_search import render_search
 from core.search import search_clean
+from core.crawlee.bilibili import crawl_bilibili
+from core.crawlee.bilibili_api import crawl_bilibili_api
+from core.crawlee.universal import crawl_page as crawlee_crawl_page
+from core.crawlee.icourse163 import crawl_icourse163, crawl_icourse163_api
+from core.context import SearchContext, parse_tool_calls, strip_tool_calls
 
 
 app = Flask(__name__)
@@ -73,26 +80,56 @@ DEFAULT_CONFIG = {
     },
     "default_model": "",
     "web_search_prompt": (
-        "你是 NexoraSearch 联网搜索助手。\n"
-        "你必须主动使用工具来获取信息，绝不要只回复对话式回答。\n\n"
+        "你是 NexoraSearch 聚合搜索助手。你的唯一职责是调用工具搜索信息并输出百科式总结。\n\n"
+        "【核心规则 - 违反即失败】\n"
+        "- 收到任何用户输入后，你的第一条回复必须且只能包含 <tool_call> 块，禁止输出任何其他内容\n"
+        "- 绝对禁止回复问候语、询问用户想要什么信息、或任何形式的对话式内容\n"
+        "- 即使用户只输入一个词（如人名、产品名），也必须立即发起工具调用\n\n"
         "## 可用工具\n"
-        "fetch_url(url) — 抓取并解析指定网页内容\n\n"
-        "## 调用格式（严格遵守）\n"
-        "当需要使用工具时，你的回复中必须包含以下格式的工具调用块：\n\n"
+        "1. search_bilibili(keyword) — 搜索B站视频，返回视频列表\n"
+        "2. search_web(url) — 爬取并深度解析指定网页（适用于百科、新闻、博客）\n"
+        "3. fetch_url(url) — 轻量抓取网页内容\n\n"
+        "## 调用格式（严格JSON格式）\n"
         "<tool_call>\n"
-        "{\"name\": \"fetch_url\", \"arguments\": {\"url\": \"你要抓取的网址\"}}\n"
+        "{\"name\": \"search_bilibili\", \"arguments\": {\"keyword\": \"搜索词\"}}\n"
         "</tool_call>\n\n"
-        "## 规则\n"
-        "1. 收到用户问题后，立刻发起工具调用，不要询问用户\n"
-        "2. 你可以直接构造 URL，如 https://zh.wikipedia.org/wiki/关键词\n"
-        "3. 可以连续多次调用 fetch_url 直到信息充足\n"
-        "4. 最终用中文回答，附上来源 URL\n\n"
-        "## 示例\n"
-        "用户：量子力学是什么\n"
-        "你的回复：\n"
-        "我来搜索量子力学的相关信息。\n"
+        "## 首轮必须执行的调用（不可跳过）\n"
+        "对任何用户输入，首轮至少发起以下调用：\n"
+        "1. search_bilibili — 用用户输入作为关键词搜索B站视频\n"
+        "2. search_web — 搜索百度百科页面 https://baike.baidu.com/item/关键词\n"
+        "3. fetch_url — 搜索知乎 https://www.zhihu.com/search?type=content&q=关键词 或搜狗百科 https://baike.sogou.com/v/关键词.htm\n\n"
+        "可用信息源：百度百科、搜狗百科、知乎、搜狐、新浪、CSDN等国内可访问站点。\n"
+        "禁止使用 Wikipedia、Google 等被墙站点。\n\n"
+        "可以同时发起多个 <tool_call> 块。\n\n"
+        "## 后续轮次\n"
+        "根据工具返回结果，可以继续调用工具补充信息，最多8轮。\n"
+        "【重要】如果工具返回结果标注「已成功获取」，说明该URL的内容已经拿到，禁止再次调用相同URL。\n"
+        "如果所有工具都返回了结果，不要再发起工具调用，直接输出最终总结。\n"
+        "如果某个工具失败（如超时），换一个URL或工具类型，不要重复调用失败的工具。\n\n"
+        "## 最终输出格式\n"
+        "当信息充足后（不再发起工具调用时），输出百科式 Markdown：\n\n"
+        "# 主题名称\n\n"
+        "> 一句话概述\n\n"
+        "## 基本信息\n"
+        "| 属性 | 值 |\n|---|---|\n\n"
+        "## 详细介绍\n"
+        "分段阐述核心内容\n\n"
+        "## 相关视频\n"
+        "- [视频标题](链接) — UP主 · 播放量\n"
+        "（没有视频则省略此章节）\n\n"
+        "## 参考来源\n"
+        "- 来源URL\n\n"
+        "## 完整示例\n"
+        "用户输入：索尼A6700\n\n"
+        "AI回复（只输出工具调用，不输出其他文字）：\n"
         "<tool_call>\n"
-        "{\"name\": \"fetch_url\", \"arguments\": {\"url\": \"https://zh.wikipedia.org/wiki/量子力学\"}}\n"
+        "{\"name\": \"search_bilibili\", \"arguments\": {\"keyword\": \"索尼A6700\"}}\n"
+        "</tool_call>\n"
+        "<tool_call>\n"
+        "{\"name\": \"search_web\", \"arguments\": {\"url\": \"https://baike.baidu.com/item/索尼A6700\"}}\n"
+        "</tool_call>\n"
+        "<tool_call>\n"
+        "{\"name\": \"fetch_url\", \"arguments\": {\"url\": \"https://www.zhihu.com/search?type=content&q=索尼A6700\"}}\n"
         "</tool_call>"
     ),
     "server": {
@@ -501,11 +538,11 @@ def admin_test_parse():
         chat_path = "/" + chat_path
 
     payload = {
-        "model": model_name or str(config.get("default_model") or "").strip() or "gpt-4o-mini",
+        "model": actual_model,
         "stream": True,
         "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": cleaned},
+            {"role": "system", "content": parse_prompt or "你是一个网页内容提取专家。请完整提取网页的所有有价值信息，包括：\n1. 文章正文（保留段落结构）\n2. 关键数据、数字、统计信息\n3. 人物、组织、地点等实体\n4. 时间线和历史事件\n5. 核心观点和论据\n6. 相关链接和引用\n\n输出格式：使用Markdown，保留原文的层级结构，不要遗漏重要信息。"},
+            {"role": "user", "content": f"页面标题: {title}\n\n请完整提取以下网页内容，不要遗漏任何重要信息：\n\n{cleaned}"},
         ],
     }
     if temperature is not None and temperature != "":
@@ -564,18 +601,7 @@ def admin_test_parse():
 
 def _parse_tool_calls(text: str):
     """Parse <tool_call>...</tool_call> blocks from model output."""
-    import re
-    calls = []
-    for m in re.finditer(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", text, re.DOTALL):
-        try:
-            obj = json.loads(m.group(1))
-            name = str(obj.get("name") or "").strip()
-            args = obj.get("arguments") or {}
-            if name:
-                calls.append({"name": name, "arguments": args, "raw": m.group(0)})
-        except json.JSONDecodeError:
-            pass
-    return calls
+    return parse_tool_calls(text)
 
 
 def _execute_fetch_url(url: str) -> str:
@@ -664,25 +690,31 @@ def _execute_fetch_url(url: str) -> str:
 
 
 def _execute_fetch_url_streaming(url: str, events: list) -> str:
-    """Fetch URL via Playwright, clean HTML, parse with model. Appends SSE events to `events` list."""
+    """Fetch URL via Crawlee, clean HTML, parse with model. Appends SSE events to `events` list."""
     def _ev(msg):
         events.append(f'data: {json.dumps({"type": "tool_progress", "content": msg})}\n\n')
 
-    _ev(f"正在渲染 {url} ...")
+    def _on_crawlee_event(evt):
+        evt_type = evt.get("type", "")
+        content = evt.get("content", "")
+        if content and evt_type in ("progress", "log"):
+            events.append(f'data: {json.dumps({"type": "tool_progress", "content": content})}\n\n')
+
+    _ev(f"正在爬取 {url} ...")
     try:
-        render_result = rm.render_webview(url, timeout=15000, use_sogou_fix=True)
+        render_result = crawlee_crawl_page(url=url, scroll=True, extract_html=True, event_callback=_on_crawlee_event)
     except Exception as e:
-        _ev(f"渲染失败: {e}")
-        return f"渲染失败: {e}"
+        _ev(f"爬取失败: {e}")
+        return f"爬取失败: {e}"
 
     if not render_result.get("success"):
-        err = f"渲染失败: {render_result.get('error', 'unknown')}"
+        err = f"爬取失败: {render_result.get('error', 'unknown')}"
         _ev(err)
         return err
 
     title = render_result.get("title") or ""
-    full_html = render_result.get("full_html") or ""
-    _ev(f"渲染成功 [{title}]，HTML {len(full_html)} 字符")
+    full_html = render_result.get("html") or ""
+    _ev(f"爬取成功 [{title}]，HTML {len(full_html)} 字符")
 
     _ev("正在清理 HTML ...")
     cleaned = _clean_html_for_parse(full_html)
@@ -692,7 +724,7 @@ def _execute_fetch_url_streaming(url: str, events: list) -> str:
     model_cfg = (config.get("models") or {}).get("page_parse_agent") or {}
     model_name = str(model_cfg.get("model_name") or "").strip()
     actual_model = model_name or str(config.get("default_model") or "").strip() or "gpt-4o-mini"
-    parse_prompt = str(model_cfg.get("parse_prompt") or model_cfg.get("system_prompt") or "").strip()
+    system_prompt = str(model_cfg.get("system_prompt") or "").strip()
     temperature = model_cfg.get("temperature")
     max_tokens = model_cfg.get("max_output_tokens")
     timeout = int(model_cfg.get("request_timeout") or 120)
@@ -714,8 +746,8 @@ def _execute_fetch_url_streaming(url: str, events: list) -> str:
         "model": actual_model,
         "stream": True,
         "messages": [
-            {"role": "system", "content": parse_prompt or "分析以下网页内容，提取关键信息并用中文总结。"},
-            {"role": "user", "content": f"页面标题: {title}\n\n{cleaned}"},
+            {"role": "system", "content": system_prompt or "你是一个网页内容提取专家。请完整提取网页的所有有价值信息，使用Markdown格式输出。"},
+            {"role": "user", "content": f"页面标题: {title}\n\n请完整提取以下网页内容，不要遗漏任何重要信息：\n\n{cleaned}"},
         ],
     }
     if temperature is not None and temperature != "":
@@ -759,6 +791,265 @@ def _execute_fetch_url_streaming(url: str, events: list) -> str:
                                 events.append(f'data: {json.dumps({"type": "tool_result", "name": "fetch_url", "content": c})}\n\n')
                             if r:
                                 parsed_text += r
+                        except json.JSONDecodeError:
+                            pass
+    except Exception as e:
+        _ev(f"子模型解析失败: {e}")
+        return f"模型解析失败: {e}"
+
+    _ev(f"解析完成 ({len(parsed_text)} 字符)")
+    return parsed_text or "(模型未返回内容)"
+
+
+def _execute_search_bilibili_streaming(keyword: str, events: list) -> str:
+    """Search Bilibili videos via Crawlee. Appends SSE events to `events` list."""
+    def _ev(msg):
+        events.append(f'data: {json.dumps({"type": "tool_progress", "content": msg})}\n\n')
+
+    def _on_crawlee_event(evt):
+        evt_type = evt.get("type", "")
+        if evt_type == "result":
+            idx = evt.get("index", "?")
+            title = evt.get("title", "")
+            up_name = evt.get("up_name", "")
+            play_count = evt.get("play_count", "0")
+            url = evt.get("url", "")
+            events.append(f'data: {json.dumps({"type": "tool_progress", "content": f"[#{idx}] {title} - {up_name} (播放: {play_count})"})}\n\n')
+        elif evt_type == "log":
+            content = evt.get("content", "")
+            if content:
+                events.append(f'data: {json.dumps({"type": "tool_progress", "content": content})}\n\n')
+
+    _ev(f"B站搜索: {keyword}")
+    try:
+        result = crawl_bilibili(keyword=keyword, mode="search", max_results=10, event_callback=_on_crawlee_event)
+    except Exception as e:
+        return f"B站搜索异常: {e}"
+
+    if not result.get("success"):
+        return f"B站搜索失败: {result.get('error', 'unknown')}"
+
+    items = result.get("items") or []
+    if not items:
+        return "B站未找到相关视频"
+
+    lines = [f"B站搜索 \"{keyword}\" 共找到 {len(items)} 个视频：\n"]
+    for i, item in enumerate(items, 1):
+        title = item.get("title", "")
+        up_name = item.get("up_name", "")
+        play_count = item.get("play_count", "0")
+        danmaku = item.get("danmaku_count", "0")
+        duration = item.get("duration", "")
+        url = item.get("url", "")
+        lines.append(f"{i}. **{title}**")
+        lines.append(f"   UP主: {up_name} | 播放: {play_count} | 弹幕: {danmaku}")
+        if duration:
+            lines.append(f"   时长: {duration}")
+        lines.append(f"   链接: {url}\n")
+
+    return "\n".join(lines)
+
+
+def _execute_search_bilibili_api_streaming(keyword: str, events: list) -> str:
+    """Search Bilibili videos via API. Appends SSE events."""
+    def _ev(msg):
+        events.append(f'data: {json.dumps({"type": "tool_progress", "content": msg})}\n\n')
+
+    def _on_event(evt):
+        evt_type = evt.get("type", "")
+        if evt_type == "result":
+            idx = evt.get("index", "?")
+            title = evt.get("title", "")
+            author = evt.get("author", "")
+            play = evt.get("play", 0)
+            events.append(f'data: {json.dumps({"type": "tool_progress", "content": f"[#{idx}] {title} - {author} (播放: {play})"})}\n\n')
+        elif evt_type == "log":
+            content = evt.get("content", "")
+            if content:
+                events.append(f'data: {json.dumps({"type": "tool_progress", "content": content})}\n\n')
+
+    _ev(f"B站API搜索: {keyword}")
+    result = crawl_bilibili_api(keyword=keyword, page_size=10, event_callback=_on_event)
+
+    if not result.get("success"):
+        return f"B站搜索失败: {result.get('error', 'unknown')}"
+
+    items = result.get("items") or []
+    if not items:
+        return "B站未找到相关视频"
+
+    lines = [f"B站搜索 \"{keyword}\" 共找到 {len(items)} 个视频：\n"]
+    for i, item in enumerate(items, 1):
+        title = item.get("title", "")
+        author = item.get("author", "")
+        play = item.get("play", 0)
+        danmaku = item.get("danmaku", 0)
+        duration = item.get("duration", "")
+        cover = item.get("cover", "")
+        url = item.get("url", "")
+        lines.append(f"{i}. **{title}**")
+        lines.append(f"   UP主: {author} | 播放: {play:,} | 弹幕: {danmaku:,}")
+        if duration:
+            lines.append(f"   时长: {duration}")
+        if cover:
+            lines.append(f"   封面: {cover}")
+        lines.append(f"   链接: {url}\n")
+
+    return "\n".join(lines)
+
+
+def _execute_search_icourse163_streaming(keyword: str, events: list) -> str:
+    """Search icourse163 (中国大学MOOC) courses via Crawlee. Appends SSE events."""
+    def _ev(msg):
+        events.append(f'data: {json.dumps({"type": "tool_progress", "content": msg})}\n\n')
+
+    def _on_crawlee_event(evt):
+        evt_type = evt.get("type", "")
+        if evt_type == "result":
+            idx = evt.get("index", "?")
+            title = evt.get("title", "")
+            school = evt.get("school", "")
+            teacher = evt.get("teacher", "")
+            events.append(f'data: {json.dumps({"type": "tool_progress", "content": f"[#{idx}] {title} - {school} ({teacher})"})}\n\n')
+        elif evt_type == "log":
+            content = evt.get("content", "")
+            if content:
+                events.append(f'data: {json.dumps({"type": "tool_progress", "content": content})}\n\n')
+
+    _ev(f"中国大学MOOC搜索: {keyword}")
+    try:
+        result = crawl_icourse163(keyword=keyword, max_results=10, event_callback=_on_crawlee_event)
+    except Exception as e:
+        return f"MOOC搜索异常: {e}"
+
+    if not result.get("success"):
+        return f"MOOC搜索失败: {result.get('error', 'unknown')}"
+
+    items = result.get("items") or []
+    if not items:
+        return "中国大学MOOC未找到相关课程"
+
+    lines = [f"中国大学MOOC搜索 \"{keyword}\" 共找到 {len(items)} 门课程：\n"]
+    for i, item in enumerate(items, 1):
+        title = item.get("title", "")
+        school = item.get("school", "")
+        teacher = item.get("teacher", "")
+        description = item.get("description", "")
+        enrollment = item.get("enrollment", "")
+        cover_url = item.get("cover_url", "")
+        url = item.get("url", "")
+        lines.append(f"{i}. **{title}**")
+        lines.append(f"   学校: {school} | 教师: {teacher}")
+        if enrollment:
+            lines.append(f"   选课人数: {enrollment}")
+        if description:
+            lines.append(f"   简介: {description[:200]}")
+        if cover_url:
+            lines.append(f"   封面: {cover_url}")
+        if url:
+            lines.append(f"   链接: {url}")
+        lines.append("")
+
+    return "\n".join(lines)
+    """Crawl a URL via Crawlee, clean HTML, parse with model. Appends SSE events."""
+    def _ev(msg):
+        events.append(f'data: {json.dumps({"type": "tool_progress", "content": msg})}\n\n')
+
+    def _on_crawlee_event(evt):
+        evt_type = evt.get("type", "")
+        content = evt.get("content", "")
+        if content and evt_type in ("progress", "log"):
+            events.append(f'data: {json.dumps({"type": "tool_progress", "content": content})}\n\n')
+
+    _ev(f"正在爬取 {url} ...")
+    try:
+        crawl_result = crawlee_crawl_page(url=url, scroll=True, extract_html=True, event_callback=_on_crawlee_event)
+    except Exception as e:
+        return f"爬取异常: {e}"
+
+    if not crawl_result.get("success"):
+        return f"爬取失败: {crawl_result.get('error', 'unknown')}"
+
+    title = crawl_result.get("title", "")
+    full_html = crawl_result.get("html", "")
+    text_length = crawl_result.get("text_length", 0)
+    _ev(f"爬取成功 [{title}]，文本 {text_length} 字符")
+
+    if not full_html:
+        return f"页面无 HTML 内容: {title}"
+
+    _ev("正在清理 HTML ...")
+    cleaned = _clean_html_for_parse(full_html)
+    _ev(f"清理完成 → {len(cleaned)} 字符")
+
+    # Parse with sub-model
+    model_cfg = (config.get("models") or {}).get("page_parse_agent") or {}
+    model_name = str(model_cfg.get("model_name") or "").strip()
+    actual_model = model_name or str(config.get("default_model") or "").strip() or "gpt-4o-mini"
+    system_prompt = str(model_cfg.get("system_prompt") or "").strip()
+    temperature = model_cfg.get("temperature")
+    max_tokens = model_cfg.get("max_output_tokens")
+    timeout = int(model_cfg.get("request_timeout") or 120)
+    max_chars = int(model_cfg.get("max_input_chars") or 32000)
+
+    if len(cleaned) > max_chars:
+        cleaned = cleaned[:max_chars]
+
+    _ev(f"子模型解析中 (model={actual_model}) ...")
+
+    nexora_cfg = config.get("nexora") or {}
+    base_url = str(nexora_cfg.get("base_url") or "").strip().rstrip("/")
+    api_key = str(nexora_cfg.get("api_key") or "").strip()
+    chat_path = str(nexora_cfg.get("chat_completions_path") or "/api/papi/chat/completions").strip()
+    if not chat_path.startswith("/"):
+        chat_path = "/" + chat_path
+
+    payload = {
+        "model": actual_model,
+        "stream": True,
+        "messages": [
+            {"role": "system", "content": system_prompt or "你是一个网页内容提取专家。请完整提取网页的所有有价值信息，使用Markdown格式输出。"},
+            {"role": "user", "content": f"页面标题: {title}\n\n请完整提取以下网页内容，不要遗漏任何重要信息：\n\n{cleaned}"},
+        ],
+    }
+    if temperature is not None and temperature != "":
+        payload["temperature"] = temperature
+    if max_tokens:
+        payload["max_tokens"] = int(max_tokens)
+
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["X-API-Key"] = api_key
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    parsed_text = ""
+    try:
+        req = urllib.request.Request(
+            f"{base_url}{chat_path}",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            buf = ""
+            while True:
+                chunk = resp.read(512)
+                if not chunk:
+                    break
+                buf += chunk.decode("utf-8", errors="replace")
+                while "\n" in buf:
+                    line, buf = buf.split("\n", 1)
+                    line = line.strip()
+                    if not line or line == "data: [DONE]":
+                        continue
+                    if line.startswith("data: "):
+                        try:
+                            obj = json.loads(line[6:])
+                            delta = (obj.get("choices") or [{}])[0].get("delta") or {}
+                            c = delta.get("content") or ""
+                            if c:
+                                parsed_text += c
+                                events.append(f'data: {json.dumps({"type": "tool_result", "name": "search_web", "content": c})}\n\n')
                         except json.JSONDecodeError:
                             pass
     except Exception as e:
@@ -879,10 +1170,10 @@ def admin_test_search():
         web_prompt = str(DEFAULT_CONFIG.get("web_search_prompt") or "").strip()
     system_content = web_prompt + skills_text
 
-    messages = [
-        {"role": "system", "content": system_content},
-        {"role": "user", "content": user_prompt},
-    ]
+    # 使用 SearchContext 管理上下文
+    ctx = SearchContext(max_chars=50000)
+    ctx.add_system(system_content)
+    ctx.add_user(f"请立即搜索以下内容并输出百科式总结（只输出工具调用，不要输出任何其他文字）：\n{user_prompt}")
 
     max_rounds = 8
 
@@ -898,6 +1189,8 @@ def admin_test_search():
             def capture(s):
                 _buf.append(s)
 
+            # 构建消息列表并调用模型
+            messages = ctx.build()
             content, reasoning = _call_search_agent_stream(messages, capture)
 
             # Flush streamed output
@@ -905,17 +1198,19 @@ def admin_test_search():
                 yield item
 
             # Parse tool calls from the accumulated text
-            tool_calls = _parse_tool_calls(content)
+            tool_calls = parse_tool_calls(content)
 
             tail = content[-200:] if content else "(empty)"
             yield f'data: {json.dumps({"type": "debug", "content": f"[Round {round_i}] output_len={len(content)} tool_calls={len(tool_calls)} | tail={tail}"})}\n\n'
+            yield f'data: {json.dumps({"type": "debug", "content": f"[Context] msgs={ctx.count()} chars={ctx.chars()}"})}\n\n'
 
             if not tool_calls:
+                # 没有工具调用，说明模型已经完成，添加到上下文
+                ctx.add_assistant(content)
                 break
 
-            # Execute each tool call
-            messages.append({"role": "assistant", "content": content})
-            tool_result_text = ""
+            # 执行工具调用并收集结果
+            tool_results = []
             for tc in tool_calls:
                 fn_name = tc["name"]
                 fn_args = tc["arguments"]
@@ -925,17 +1220,285 @@ def admin_test_search():
                     yield f"data: {json.dumps({'type': 'tool_call', 'name': 'fetch_url', 'args': {'url': url}})}\n\n"
                     tool_events = []
                     result = _execute_fetch_url_streaming(url, tool_events)
-                    # Yield all progress/result events collected during tool execution
+                    for ev in tool_events:
+                        yield ev
+                elif fn_name == "search_bilibili":
+                    keyword = fn_args.get("keyword") or ""
+                    yield f"data: {json.dumps({'type': 'tool_call', 'name': 'search_bilibili', 'args': {'keyword': keyword}})}\n\n"
+                    tool_events = []
+                    result = _execute_search_bilibili_streaming(keyword, tool_events)
+                    for ev in tool_events:
+                        yield ev
+                elif fn_name == "search_web":
+                    url = fn_args.get("url") or ""
+                    yield f"data: {json.dumps({'type': 'tool_call', 'name': 'search_web', 'args': {'url': url}})}\n\n"
+                    tool_events = []
+                    result = _execute_search_web_streaming(url, tool_events)
+                    for ev in tool_events:
+                        yield ev
+                elif fn_name == "search_icourse163":
+                    keyword = fn_args.get("keyword") or ""
+                    yield f"data: {json.dumps({'type': 'tool_call', 'name': 'search_icourse163', 'args': {'keyword': keyword}})}\n\n"
+                    tool_events = []
+                    result = _execute_search_icourse163_streaming(keyword, tool_events)
                     for ev in tool_events:
                         yield ev
                 else:
                     yield f"data: {json.dumps({'type': 'tool_call', 'name': fn_name, 'args': fn_args})}\n\n"
                     result = f"未知工具: {fn_name}"
 
-                yield f"data: {json.dumps({'type': 'tool_result_end', 'name': fn_name, 'content': result[-500:] if len(result) > 500 else result})}\n\n"
-                tool_result_text += f"工具 {fn_name} 的返回结果：\n{result}\n\n"
+                yield f"data: {json.dumps({'type': 'tool_result_end', 'name': fn_name, 'content': result[-5000:] if len(result) > 5000 else result})}\n\n"
+                
+                # 不截断结果，保留完整内容
+                tool_results.append((fn_name, fn_args, result))
 
-            messages.append({"role": "user", "content": tool_result_text.strip()})
+            # 批量添加工具调用和结果到上下文
+            ctx.add_tool_calls_batch(tool_results)
+
+            # 截断上下文如果超出限制
+            ctx.truncate_if_needed()
+
+        yield "data: [DONE]\n\n"
+
+    return Response(generate(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ── Crawlee Test Endpoints ──
+
+
+@app.route("/admin/api/test/crawlee/bilibili", methods=["POST"])
+def admin_test_crawlee_bilibili():
+    if not _is_admin():
+        return jsonify({"success": False, "message": "Unauthorized"}), 401
+
+    data = request.get_json() or {}
+    keyword = str(data.get("keyword") or "").strip()
+    mode = str(data.get("mode") or "popular").strip().lower()
+    max_results = int(data.get("max_results") or 20)
+
+    event_queue = queue.Queue()
+
+    def _on_event(evt):
+        event_queue.put(evt)
+
+    result_holder = {}
+
+    def _run_crawler():
+        try:
+            result = crawl_bilibili(
+                keyword=keyword,
+                mode=mode,
+                max_results=max_results,
+                event_callback=_on_event,
+            )
+            result_holder["result"] = result
+        except Exception as e:
+            result_holder["result"] = {"success": False, "error": str(e), "items": [], "count": 0}
+        finally:
+            event_queue.put(None)  # sentinel: crawl finished
+
+    thread = threading.Thread(target=_run_crawler, daemon=True)
+    thread.start()
+
+    def generate():
+        while True:
+            try:
+                evt = event_queue.get(timeout=90)
+            except queue.Empty:
+                yield f'data: {json.dumps({"type": "error", "content": "爬取超时 (90s)"})}\n\n'
+                break
+
+            if evt is None:
+                # Crawl finished
+                result = result_holder.get("result", {})
+                yield f'data: {json.dumps({"type": "done", "count": result.get("count", 0), "success": result.get("success", False)})}\n\n'
+                break
+
+            yield f'data: {json.dumps(evt, ensure_ascii=False)}\n\n'
+
+        yield "data: [DONE]\n\n"
+
+    return Response(generate(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.route("/admin/api/test/crawlee/universal", methods=["POST"])
+def admin_test_crawlee_universal():
+    if not _is_admin():
+        return jsonify({"success": False, "message": "Unauthorized"}), 401
+
+    data = request.get_json() or {}
+    url = str(data.get("url") or "").strip()
+    wait_selector = str(data.get("wait_selector") or "").strip()
+    scroll = bool(data.get("scroll", True))
+    extract_html = bool(data.get("extract_html", True))
+    timeout_ms = int(data.get("timeout_ms") or 30000)
+
+    if not url:
+        return jsonify({"success": False, "message": "请输入 URL"}), 400
+
+    event_queue = queue.Queue()
+
+    def _on_event(evt):
+        event_queue.put(evt)
+
+    result_holder = {}
+
+    def _run_crawler():
+        try:
+            result = crawlee_crawl_page(
+                url=url,
+                wait_selector=wait_selector,
+                scroll=scroll,
+                extract_html=extract_html,
+                timeout_ms=timeout_ms,
+                event_callback=_on_event,
+            )
+            result_holder["result"] = result
+        except Exception as e:
+            result_holder["result"] = {"success": False, "error": str(e)}
+        finally:
+            event_queue.put(None)  # sentinel
+
+    thread = threading.Thread(target=_run_crawler, daemon=True)
+    thread.start()
+
+    def generate():
+        while True:
+            try:
+                evt = event_queue.get(timeout=timeout_ms // 1000 + 30)
+            except queue.Empty:
+                yield f'data: {json.dumps({"type": "error", "content": "渲染超时"})}\n\n'
+                break
+
+            if evt is None:
+                result = result_holder.get("result", {})
+                yield f'data: {json.dumps({"type": "done", "success": result.get("success", False), "title": result.get("title", ""), "text_length": result.get("text_length", 0), "html_length": result.get("html_length", 0)})}\n\n'
+                break
+
+            yield f'data: {json.dumps(evt, ensure_ascii=False)}\n\n'
+
+        yield "data: [DONE]\n\n"
+
+    return Response(generate(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.route("/admin/api/test/bilibili/api", methods=["POST"])
+def admin_test_bilibili_api():
+    if not _is_admin():
+        return jsonify({"success": False, "message": "Unauthorized"}), 401
+
+    data = request.get_json() or {}
+    keyword = str(data.get("keyword") or "").strip()
+    max_results = int(data.get("max_results") or 20)
+
+    if not keyword:
+        return jsonify({"success": False, "message": "请输入关键词"}), 400
+
+    event_queue = queue.Queue()
+
+    def _on_event(evt):
+        event_queue.put(evt)
+
+    result_holder = {}
+
+    def _run_search():
+        try:
+            result = crawl_bilibili_api(
+                keyword=keyword,
+                page_size=max_results,
+                event_callback=_on_event,
+            )
+            result_holder["result"] = result
+        except Exception as e:
+            result_holder["result"] = {"success": False, "error": str(e), "items": [], "count": 0}
+        finally:
+            event_queue.put(None)
+
+    thread = threading.Thread(target=_run_search, daemon=True)
+    thread.start()
+
+    def generate():
+        while True:
+            try:
+                evt = event_queue.get(timeout=30)
+            except queue.Empty:
+                yield f'data: {json.dumps({"type": "error", "content": "搜索超时"})}\n\n'
+                break
+
+            if evt is None:
+                result = result_holder.get("result", {})
+                yield f'data: {json.dumps({"type": "done", "count": result.get("count", 0), "success": result.get("success", False)})}\n\n'
+                break
+
+            yield f'data: {json.dumps(evt, ensure_ascii=False)}\n\n'
+
+        yield "data: [DONE]\n\n"
+
+    return Response(generate(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.route("/admin/api/test/crawlee/icourse163", methods=["POST"])
+def admin_test_crawlee_icourse163():
+    if not _is_admin():
+        return jsonify({"success": False, "message": "Unauthorized"}), 401
+
+    data = request.get_json() or {}
+    keyword = str(data.get("keyword") or "").strip()
+    max_results = int(data.get("max_results") or 20)
+    use_api = bool(data.get("use_api", False))
+
+    if not keyword:
+        return jsonify({"success": False, "message": "请输入关键词"}), 400
+
+    event_queue = queue.Queue()
+
+    def _on_event(evt):
+        event_queue.put(evt)
+
+    result_holder = {}
+
+    def _run_crawler():
+        try:
+            if use_api:
+                result = crawl_icourse163_api(
+                    keyword=keyword,
+                    page_size=max_results,
+                    event_callback=_on_event,
+                )
+            else:
+                result = crawl_icourse163(
+                    keyword=keyword,
+                    max_results=max_results,
+                    event_callback=_on_event,
+                )
+            result_holder["result"] = result
+        except Exception as e:
+            result_holder["result"] = {"success": False, "error": str(e), "items": [], "count": 0}
+        finally:
+            event_queue.put(None)  # sentinel: crawl finished
+
+    thread = threading.Thread(target=_run_crawler, daemon=True)
+    thread.start()
+
+    def generate():
+        while True:
+            try:
+                evt = event_queue.get(timeout=120)
+            except queue.Empty:
+                yield f'data: {json.dumps({"type": "error", "content": "爬取超时 (120s)"})}\n\n'
+                break
+
+            if evt is None:
+                # Crawl finished
+                result = result_holder.get("result", {})
+                yield f'data: {json.dumps({"type": "done", "count": result.get("count", 0), "success": result.get("success", False)})}\n\n'
+                break
+
+            yield f'data: {json.dumps(evt, ensure_ascii=False)}\n\n'
 
         yield "data: [DONE]\n\n"
 

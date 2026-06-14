@@ -100,6 +100,8 @@ from .state import (
     is_cancelled_key as state_is_cancelled_key,
     job_key as state_job_key,
     push_book_progress_step as state_push_book_progress_step,
+    push_model_output as state_push_model_output,
+    push_tool_call as state_push_tool_call,
     set_book_progress as state_set_book_progress,
     update_job as state_update_job,
 )
@@ -221,6 +223,16 @@ def _push_book_progress_step(lecture_id: str, book_id: str, step: Mapping[str, A
     state_push_book_progress_step(lecture_id, book_id, row)
 
 
+def _push_model_output(lecture_id: str, book_id: str, content: str) -> None:
+    """推送模型文本输出到活动日志（统一接口）"""
+    state_push_model_output(lecture_id, book_id, content)
+
+
+def _push_tool_call(lecture_id: str, book_id: str, tool_name: str, title: str, preview: str = "") -> None:
+    """推送工具调用到活动日志（统一接口）"""
+    state_push_tool_call(lecture_id, book_id, tool_name, title, preview)
+
+
 def get_book_progress_steps(lecture_id: str, book_id: str) -> List[Dict[str, Any]]:
     """读取教材进度步骤列表。"""
     return state_get_book_progress_steps(lecture_id, book_id)
@@ -230,7 +242,48 @@ def init_booksproc(cfg: Mapping[str, Any]) -> None:
     """初始化教材处理队列工作线程。"""
     _CFG.clear()
     _CFG.update(dict(cfg or {}))
+    _reset_stuck_jobs(_CFG)
     init_booksproc_queue(_CFG, run_job=_run_job, log_event=log_event)
+
+
+def _reset_stuck_jobs(cfg: Mapping[str, Any]) -> None:
+    """服务器重启时，将所有卡在 queued/running 状态的任务重置。"""
+    try:
+        for lecture in list_lectures(cfg):
+            lecture_id = str(lecture.get("id") or "").strip()
+            if not lecture_id:
+                continue
+            for book in list_books(cfg, lecture_id):
+                book_id = str(book.get("id") or "").strip()
+                if not book_id:
+                    continue
+                updates = {}
+                for status_key in [
+                    "coarse_status", "section_status", "intensive_status",
+                    "question_status", "annotation_status", "summary_status",
+                    "video_status",
+                ]:
+                    val = str(book.get(status_key) or "").strip().lower()
+                    if val in ("queued", "running"):
+                        base = status_key.replace("_status", "")
+                        error_key = f"{base}_error"
+                        # 如果之前没有完成过（没有对应的 xml 数据），重置为空闲
+                        if val == "queued":
+                            updates[status_key] = ""
+                            updates[error_key] = ""
+                        else:
+                            # running 状态说明任务中断了，标记为错误
+                            updates[status_key] = "error"
+                            updates[error_key] = "任务因服务器重启而中断"
+                if updates:
+                    update_book(cfg, lecture_id, book_id, updates)
+                    log_event(
+                        "stuck_job_reset",
+                        "重置卡住的任务状态",
+                        payload={"lecture_id": lecture_id, "book_id": book_id, **updates},
+                    )
+    except Exception as exc:
+        log_event("stuck_job_reset_error", f"重置卡住任务失败: {exc}", payload={"error": str(exc)})
 
 
 def mark_book_uploaded(
@@ -691,6 +744,66 @@ def enqueue_book_summary(
     return queued
 
 
+def enqueue_book_video(
+    cfg: Mapping[str, Any],
+    lecture_id: str,
+    book_id: str,
+    *,
+    actor: str = "",
+) -> Dict[str, Any]:
+    """将教材加入视频搜索队列（粗读完成后可执行）。"""
+    resolved_cfg = dict(cfg or {})
+    lecture_key = str(lecture_id or "").strip()
+    book_key = str(book_id or "").strip()
+    if not lecture_key or not book_key:
+        raise ValueError("lecture_id and book_id are required.")
+
+    lecture = get_lecture(resolved_cfg, lecture_key)
+    if lecture is None:
+        raise ValueError(f"Lecture not found: {lecture_key}")
+    book = get_book(resolved_cfg, lecture_key, book_key)
+    if book is None:
+        raise ValueError(f"Book not found: {lecture_key}/{book_key}")
+
+    # 视频搜索在管线最后，任何步骤完成后都可以触发
+    any_done = any(
+        str(book.get(f"{step}_status") or "").strip().lower() in {"done", "completed", "success"}
+        for step in ("coarse", "section", "intensive", "question", "annotation", "summary")
+    )
+    if not any_done:
+        raise ValueError("at least one processing step must be completed before video search.")
+
+    queued = queue_enqueue_job(
+        lecture_key,
+        book_key,
+        actor=actor,
+        force=False,
+        job_type="video",
+    )
+    job = dict(queued.get("job") or {})
+    job_id = str(job.get("job_id") or "")
+    now = int(job.get("created_at") or time.time())
+
+    update_book(
+        resolved_cfg,
+        lecture_key,
+        book_key,
+        {
+            "video_status": "queued",
+            "video_error": "",
+            "video_job_id": job_id,
+            "video_requested_at": now,
+        },
+    )
+    _set_book_progress(lecture_key, book_key, "视频搜索任务排队中...")
+    log_event(
+        "book_video_queue",
+        "教材已加入视频搜索队列",
+        payload={"lecture_id": lecture_key, "book_id": book_key, "job_id": job_id, "actor": actor},
+    )
+    return queued
+
+
 def get_refinement_queue_snapshot() -> Dict[str, Any]:
     """获取当前提炼队列快照。"""
     return queue_get_snapshot()
@@ -743,6 +856,55 @@ def _worker_loop() -> None:
             time.sleep(0.35)
             continue
         _run_job(dict(job))
+
+
+def _check_and_trigger_outline(lecture_id: str) -> None:
+    """检查课程下所有教材是否完成 summary，如果是则触发大纲生成。"""
+    try:
+        books = list_books(_CFG, lecture_id)
+        if not books:
+            return
+
+        # 检查所有 book 的 summary_status
+        all_done = all(
+            str(b.get("summary_status") or "").strip().lower() == "done"
+            for b in books
+        )
+        if not all_done:
+            return
+
+        # 检查是否已有大纲
+        outline_path = Path(_CFG["data_dir"]) / "lectures" / lecture_id / "solidified" / "outline.json"
+        if outline_path.exists():
+            return  # 已有大纲，不重复生成
+
+        # 添加大纲生成任务到队列（使用特殊的 book_id "outline"）
+        try:
+            from core.booksproc.queue import enqueue_job
+            enqueue_job(
+                lecture_id,
+                "outline",
+                actor="system",
+                force=False,
+                job_type="outline",
+            )
+            log_event(
+                "outline_queued",
+                "课程大纲生成任务已加入队列",
+                payload={"lecture_id": lecture_id},
+            )
+        except Exception as exc:
+            log_event(
+                "outline_queue_error",
+                f"课程大纲生成任务入队失败: {exc}",
+                payload={"lecture_id": lecture_id, "error": str(exc)},
+            )
+    except Exception as exc:
+        log_event(
+            "outline_check_error",
+            f"检查大纲生成条件失败: {exc}",
+            payload={"lecture_id": lecture_id, "error": str(exc)},
+        )
 
 
 def _run_job(job: Dict[str, Any]) -> None:
@@ -848,6 +1010,22 @@ def _run_job(job: Dict[str, Any]) -> None:
             "book_summary_start",
             "教材开始全书概述（概述阶段）",
             payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id, "model_name": model_name},
+        )
+    elif job_type == "video":
+        update_book(
+            _CFG,
+            lecture_id,
+            book_id,
+            {
+                "video_status": "running",
+                "video_error": "",
+            },
+        )
+        _set_book_progress(lecture_id, book_id, "正在搜索相关视频...")
+        log_event(
+            "book_video_start",
+            "教材开始视频搜索",
+            payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id},
         )
     else:
         update_book(
@@ -968,6 +1146,56 @@ def _run_job(job: Dict[str, Any]) -> None:
                 "教材提炼完成（全书概述阶段）",
                 payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id},
                 content=f"summary_chars={int(result.get('summary_chars') or 0)}; chapter_count={int(result.get('chapter_count') or 0)}",
+            )
+            # 检查是否所有教材都完成了 summary，如果是则触发大纲生成
+            _check_and_trigger_outline(lecture_id)
+        elif job_type == "video":
+            from core.video_search import search_and_cache_videos
+            lecture = get_lecture(_CFG, lecture_id)
+            book = get_book(_CFG, lecture_id, book_id)
+            lecture_title = str((lecture or {}).get("title") or "").strip()
+            book_title = str((book or {}).get("title") or "").strip()
+            bookinfo_xml = str(load_book_info_xml(_CFG, lecture_id, book_id) or "")
+            items = search_and_cache_videos(
+                _CFG, lecture_id, book_id,
+                lecture_title=lecture_title,
+                book_title=book_title,
+                bookinfo_xml=bookinfo_xml,
+            )
+            finished_at = int(time.time())
+            _set_book_progress(lecture_id, book_id, f"视频搜索完成，找到 {len(items)} 个视频")
+            update_book(_CFG, lecture_id, book_id, {"video_status": "done", "video_error": ""})
+            _update_job(job_id, {"status": "done", "finished_at": finished_at, "error": ""})
+            log_event(
+                "book_video_done",
+                "视频搜索完成",
+                payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id, "count": len(items)},
+            )
+        elif job_type == "outline":
+            from core.booksproc.outline import generate_outline
+            _set_book_progress(lecture_id, book_id, "正在生成课程大纲...")
+            result = generate_outline(_CFG, lecture_id)
+            finished_at = int(time.time())
+            _set_book_progress(lecture_id, book_id, "课程大纲生成完成")
+            _update_job(
+                job_id,
+                {
+                    "status": "done",
+                    "finished_at": finished_at,
+                    "error": "",
+                    "outline_status": "done",
+                    "section_count": len(result.get("sections", [])),
+                },
+            )
+            log_event(
+                "outline_done",
+                "课程大纲生成完成",
+                payload={
+                    "lecture_id": lecture_id,
+                    "book_id": book_id,
+                    "job_id": job_id,
+                    "section_count": len(result.get("sections", [])),
+                },
             )
         else:
             lecture = get_lecture(_CFG, lecture_id)
@@ -1114,6 +1342,25 @@ def _run_job(job: Dict[str, Any]) -> None:
                 payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id},
                 content=message,
             )
+        elif job_type == "video":
+            update_book(_CFG, lecture_id, book_id, {"video_status": "error", "video_error": message})
+            _set_book_progress(lecture_id, book_id, f"视频搜索失败：{message[:120]}")
+            _update_job(job_id, {"status": "error", "finished_at": int(time.time()), "error": message})
+            log_event(
+                "book_video_error",
+                "视频搜索失败",
+                payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id},
+                content=message,
+            )
+        elif job_type == "outline":
+            _set_book_progress(lecture_id, book_id, f"大纲生成失败：{message[:120]}")
+            _update_job(job_id, {"status": "error", "finished_at": int(time.time()), "error": message, "outline_status": "error"})
+            log_event(
+                "outline_error",
+                "课程大纲生成失败",
+                payload={"lecture_id": lecture_id, "book_id": book_id, "job_id": job_id},
+                content=message,
+            )
         else:
             update_book(
                 _CFG,
@@ -1174,6 +1421,7 @@ def _run_rough_model(
         append_log_text=append_log_text,
         log_event=log_event,
         run_coarse_reading_chunked=_run_coarse_reading_chunked,
+        push_book_progress_step=_push_book_progress_step,
     )
 
 
@@ -1344,7 +1592,8 @@ def run_annotation_generation_once(
         as_bool=_as_bool,
         log_event=log_event,
         append_log_text=append_log_text,
-        push_book_progress_step=_push_book_progress_step,
+        push_model_output=_push_model_output,
+        push_tool_call=_push_tool_call,
         policy=ContextPolicy.LLM_COMPRESS,
         llm_compress_func=_llm_compress_func,
     )
@@ -1390,6 +1639,8 @@ def run_book_summary_once(
         as_bool=_as_bool,
         log_event=log_event,
         append_log_text=append_log_text,
+        push_model_output=_push_model_output,
+        push_tool_call=_push_tool_call,
     )
 
 
@@ -1455,6 +1706,7 @@ def _run_coarse_reading_chunked(
     chunk_count = max(1, (total_len + chunk_size - 1) // chunk_size)
     resume_round = 1
     resume_reason = "initial"
+    existing_planned_sections = _build_planned_sections_from_existing_chapters(chapters, total_len)
 
     def _save_chapter_tool(chapter_name: str, chapter_range: str, chapter_summary: str) -> Dict[str, Any]:
         nonlocal merged_output
@@ -1703,10 +1955,21 @@ def _run_coarse_reading_chunked(
             "completed_chapters": _count_completed_chapters(chapters),
         }
 
-    section_plan = _discover_coarse_sections(full_text)
-    planned_sections = list(section_plan.get("sections") or [])
-    plan_mode = str(section_plan.get("mode") or "fallback").strip()
-    heading_candidates = list(section_plan.get("candidates") or [])
+    if existing_planned_sections:
+        section_plan = {
+            "mode": "sectioned",
+            "sections": list(existing_planned_sections),
+            "reason": "existing_bookinfo_outline",
+            "candidates": [],
+        }
+        planned_sections = list(existing_planned_sections)
+        plan_mode = "sectioned"
+        heading_candidates: List[str] = []
+    else:
+        section_plan = _discover_coarse_sections(full_text)
+        planned_sections = list(section_plan.get("sections") or [])
+        plan_mode = str(section_plan.get("mode") or "fallback").strip()
+        heading_candidates = list(section_plan.get("candidates") or [])
     if plan_mode == "model_planning" and heading_candidates:
         planning_result = _run_coarse_section_planning(
             runner=runner,
@@ -2424,6 +2687,30 @@ def _run_coarse_section_planning(
             },
             content="",
         )
+        round_delta_parts: List[str] = []
+        round_merge_key = f"planning:{turn}"
+
+        def _on_planning_delta(delta_text: str) -> None:
+            piece = str(delta_text or "")
+            if not piece:
+                return
+
+            round_delta_parts.append(piece)
+
+            if on_delta:
+                on_delta(piece)
+
+            _push_book_progress_step(
+                lecture_id,
+                book_id,
+                {
+                    "type": "model_text",
+                    "title": f"模型输出（分节规划第 {turn} 轮）",
+                    "preview": piece,
+                    "merge_key": round_merge_key,
+                },
+            )
+
         response = runner.nexora_client.proxy.chat_completions(
             messages=request_messages,
             model=model_name or runner.model_name,
@@ -2438,7 +2725,7 @@ def _run_coarse_section_planning(
             },
             use_chat_path=False,
             request_timeout=int(request_timeout),
-            on_delta=on_delta,
+            on_delta=_on_planning_delta,
         )
         if not bool(response.get("ok")):
             raise RuntimeError(f"Nexora API Error: {response.get('message') or 'request failed'}")
@@ -2449,6 +2736,19 @@ def _run_coarse_section_planning(
         msg = choices[0].get("message") if isinstance(choices[0], dict) else {}
         content = str((msg or {}).get("content") or "")
         assistant_text = content or assistant_text
+
+        # 推送模型文本输出到活动日志：非流式响应也按轮次占一块。
+        if content.strip() and not round_delta_parts:
+            _push_book_progress_step(
+                lecture_id,
+                book_id,
+                {
+                    "type": "model_text",
+                    "title": f"模型输出（分节规划第 {turn} 轮）",
+                    "preview": content,
+                    "merge_key": round_merge_key,
+                },
+            )
         log_event(
             "section_planning_model_output",
             "分节规划模型输出",
@@ -2494,6 +2794,15 @@ def _run_coarse_section_planning(
             func = call.get("function") if isinstance(call.get("function"), dict) else {}
             tool_name = str(func.get("name") or "").strip()
             args_obj = _safe_json_obj(str(func.get("arguments") or "{}"))
+            _push_book_progress_step(
+                lecture_id,
+                book_id,
+                {
+                    "type": "tool_call",
+                    "title": f"工具调用：{tool_name or 'unknown'}",
+                    "preview": _safe_json_dumps(args_obj),
+                },
+            )
             log_event(
                 "section_planning_tool_call",
                 "分节规划工具调用",
@@ -3804,6 +4113,42 @@ def _parse_existing_chapters(xml_text: str) -> List[Dict[str, str]]:
             continue
         rows.append({"chapter_name": name, "chapter_range": rng, "chapter_summary": summary, "chapter_status": status or _chapter_status_from_summary(summary)})
     return rows
+
+
+def _build_planned_sections_from_existing_chapters(chapters: List[Dict[str, str]], total_len: int) -> List[Dict[str, Any]]:
+    """把已存在的 bookinfo.xml 章节骨架转换为续跑用分节计划。"""
+    sections: List[Dict[str, Any]] = []
+    safe_total = max(0, int(total_len or 0))
+
+    for row in list(chapters or []):
+        name = str((row or {}).get("chapter_name") or "").strip()
+        range_text = str((row or {}).get("chapter_range") or "").strip()
+
+        if not name or not re.match(r"^\d+:\d+$", range_text):
+            continue
+
+        try:
+            start_s, length_s = range_text.split(":", 1)
+            start = int(start_s)
+            length = int(length_s)
+        except Exception:
+            continue
+
+        if start < 0 or length <= 0:
+            continue
+
+        end = min(safe_total, start + length) if safe_total > 0 else start + length
+        if end <= start:
+            continue
+
+        sections.append({
+            "chapter_name": name,
+            "start": start,
+            "end": end,
+            "range": f"{start}:{end - start}",
+        })
+
+    return sections
 
 
 def _render_chapters_xml(chapters: List[Dict[str, str]]) -> str:

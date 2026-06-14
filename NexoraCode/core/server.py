@@ -7,6 +7,7 @@
 import logging
 import re
 import mimetypes
+import threading
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -26,6 +27,8 @@ _NEXORA_SETTINGS_SHELL_HTML = """<!doctype html><html><head><meta charset=\"utf-
 _PROXY_TIMEOUT = 30
 _PROXY_STREAM_CONNECT_TIMEOUT = 10
 _VERBOSE_PROXY_LOG = str(config.get("verbose_proxy_log", False)).strip().lower() in {"1", "true", "on", "yes"}
+_UPSTREAM_SESSION = requests.Session()
+_UPSTREAM_SESSION_LOCK = threading.RLock()
 import sys
 
 def _get_vendor_roots():
@@ -246,6 +249,33 @@ def _rewrite_location(location: str) -> str:
     return urlunsplit(("", "", parsed.path or "/", parsed.query, parsed.fragment))
 
 
+def _collect_upstream_cookie_debug(remote_url: str) -> dict:
+    """返回即将发往 ChatDBServer 的 cookie 视图，用于定位登录态同步问题。"""
+    merged = {}
+    req = requests.Request("GET", remote_url)
+
+    with _UPSTREAM_SESSION_LOCK:
+        prepared = _UPSTREAM_SESSION.prepare_request(req)
+
+    cookie_header = str(prepared.headers.get("Cookie") or "")
+
+    for part in cookie_header.split(";"):
+
+        if "=" not in part:
+            continue
+
+        key, value = part.split("=", 1)
+        key = key.strip()
+
+        if key:
+            merged[key] = value.strip()
+
+    for key, value in request.cookies.items():
+        merged[str(key)] = str(value)
+
+    return merged
+
+
 def _proxy_request(path: str):
     remote_url = _build_remote_url(path)
     remote_base = _remote_base_url()
@@ -293,23 +323,26 @@ def _proxy_request(path: str):
     req_timeout = (_PROXY_STREAM_CONNECT_TIMEOUT, None) if request_wants_stream else _PROXY_TIMEOUT
 
     try:
-        upstream = requests.request(
-            method=method,
-            url=remote_url,
-            params=request.args,
-            headers=incoming_headers,
-            data=body,
-            cookies=request.cookies,
-            allow_redirects=False,
-            timeout=req_timeout,
-            stream=True,
-        )
+        # 使用持久化 Session 捕获上游 HttpOnly session cookie。浏览器 JS 读不到
+        # HttpOnly cookie，但本地代理必须在后续 register / Learning 请求中继续携带它。
+        with _UPSTREAM_SESSION_LOCK:
+            upstream = _UPSTREAM_SESSION.request(
+                method=method,
+                url=remote_url,
+                params=request.args,
+                headers=incoming_headers,
+                data=body,
+                cookies=dict(request.cookies),
+                allow_redirects=False,
+                timeout=req_timeout,
+                stream=True,
+            )
     except Exception as e:
         return jsonify({"success": False, "error": f"proxy request failed: {e}"}), 502
 
     if str(path or "").startswith("api/local_agent/register"):
         try:
-            print(f"[NexoraProxy DEBUG] cookies sent to upstream: {dict(request.cookies)}")
+            print(f"[NexoraProxy DEBUG] cookies sent to upstream: {_collect_upstream_cookie_debug(remote_url)}")
             print(
                 f"[NexoraProxy] register upstream status={upstream.status_code} "
                 f"location={upstream.headers.get('Location','')} set-cookie={'yes' if upstream.headers.get('Set-Cookie') else 'no'}"
@@ -384,6 +417,13 @@ def _proxy_request(path: str):
         resp.headers["X-Accel-Buffering"] = "no"
     else:
         body_bytes = upstream.content
+
+        if str(path or "").startswith("api/local_agent/register"):
+            try:
+                print(f"[NexoraProxy] register upstream body={body_bytes.decode('utf-8', errors='replace')[:1200]}")
+            except Exception as log_error:
+                print(f"[NexoraProxy] register upstream body log error={log_error}")
+
         if "text/html" in ct_lower:
             try:
                 txt = body_bytes.decode(upstream.encoding or "utf-8", errors="replace")

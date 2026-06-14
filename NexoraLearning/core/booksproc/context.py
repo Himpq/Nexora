@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import random
 import time
 from enum import Enum
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
@@ -88,6 +89,7 @@ class Context:
             "compression_count": 0,
             "truncation_count": 0,
         }
+        self._request_nonce_counter = 0
 
     def _select_active_tail_messages(self, messages: List[Message]) -> List[Message]:
         """选择压缩后必须保留的极少量活动尾巴。
@@ -181,7 +183,27 @@ class Context:
 
     def build(self) -> List[Dict[str, Any]]:
         """构建消息列表（用于 API 调用）"""
-        return [msg.to_dict() for msg in self._messages]
+        messages = [msg.to_dict() for msg in self._messages]
+        nonce = self._build_request_nonce_message()
+
+        if nonce:
+            messages.append(nonce.to_dict())
+
+        return messages
+
+    def _build_request_nonce_message(self) -> Optional[Message]:
+        """为每次模型请求注入短扰动，打破同上下文下的重复轨迹。"""
+        self._request_nonce_counter += 1
+        now_ms = int(time.time() * 1000)
+        random_salt = f"{random.getrandbits(32):08x}"
+        flow = str(self._trace_meta.get("flow") or "booksproc").strip()
+        content = (
+            "[运行扰动]\n"
+            f"flow={flow}\n"
+            f"request_nonce={now_ms}-{self._request_nonce_counter}-{random_salt}\n"
+            "该值只用于打破重复上下文导致的固定输出轨迹；不得写入业务结果，不得改变工具参数结构。"
+        )
+        return Message(role="user", content=content)
 
     def chars(self) -> int:
         """估算当前消息列表的字符数"""
@@ -296,6 +318,13 @@ class Context:
         if len(other_msgs) <= 1:
             return False
 
+        # 保存第一条 user 消息，防止压缩后丢失
+        original_user_msg = None
+        for m in other_msgs:
+            if m.role == "user":
+                original_user_msg = m
+                break
+
         retained_tail = self._normalize_tail_messages(self._select_active_tail_messages(other_msgs))
         retained_tail_count = len(retained_tail)
         if retained_tail_count > 0:
@@ -325,11 +354,24 @@ class Context:
         )
         self._messages = system_msgs + [summary_msg] + msgs_to_keep
 
+        # 确保压缩后至少保留一条 user 消息（Chat API 要求）
+        if original_user_msg:
+            has_user_after = any(m.role == "user" for m in self._messages if m not in system_msgs)
+            if not has_user_after:
+                insert_index = len(system_msgs) + 1  # system 之后、summary 之后
+                self._messages.insert(insert_index, original_user_msg)
+
         # 如果插入摘要后仍超出限制，只允许继续丢弃保留尾巴，直到变成真正的小上下文。
         while self.chars() > self.max_chars and len(msgs_to_keep) > 0:
             msgs_to_keep.pop(0)
             msgs_to_keep = self._normalize_tail_messages(msgs_to_keep)
             self._messages = system_msgs + [summary_msg] + msgs_to_keep
+            # 再次检查 user 消息
+            if original_user_msg:
+                has_user_after = any(m.role == "user" for m in self._messages if m not in system_msgs)
+                if not has_user_after:
+                    insert_index = len(system_msgs) + 1
+                    self._messages.insert(insert_index, original_user_msg)
 
         self._stats["compression_count"] += 1
         append_llm_compress_log(

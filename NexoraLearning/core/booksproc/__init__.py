@@ -8,6 +8,7 @@ from .manager import (
     enqueue_book_section,
     enqueue_book_annotation,
     enqueue_book_summary,
+    enqueue_book_video,
     get_book_progress_text,
     get_book_progress_steps,
     get_refinement_queue_snapshot,
@@ -23,11 +24,14 @@ from .manager import (
 from .modeling import (
     build_memory_runner,
     build_profile_question_runner,
+    build_pre_reading_question_runner,
     build_annotation_runner,
     build_book_summary_runner,
+    build_video_keyword_runner,
     get_intensive_reading_settings,
     get_memory_settings,
     get_profile_question_settings,
+    get_pre_reading_question_settings,
     get_question_generation_settings,
     get_rough_reading_settings,
     get_split_chapters_settings,
@@ -36,6 +40,7 @@ from .modeling import (
     update_intensive_reading_settings,
     update_memory_settings,
     update_profile_question_settings,
+    update_pre_reading_question_settings,
     update_question_generation_settings,
     update_rough_reading_settings,
     update_split_chapters_settings,
@@ -44,7 +49,23 @@ from .modeling import (
 )
 from .queue import get_queue_snapshot as _internal_get_queue_snapshot
 from .runtime import as_bool, exec_read_book_text_tool, exec_search_book_text_tool, resolve_book_text, safe_json_obj
-from .state import get_book_progress_steps as _state_get_book_progress_steps, get_book_progress_text as _state_get_book_progress_text
+from .state import (
+    get_book_progress_steps as _state_get_book_progress_steps,
+    get_book_progress_text as _state_get_book_progress_text,
+    push_model_output,
+    push_tool_call,
+)
+from .personalized_learning import (
+    save_learning_path,
+    load_learning_path,
+    load_all_chapter_status,
+    update_chapter_status,
+    save_pre_reading_qa,
+    load_pre_reading_qa,
+    save_chapter_content,
+    load_chapter_content,
+    has_chapter_content,
+)
 
 __all__ = [
     "init_booksproc",
@@ -56,6 +77,7 @@ __all__ = [
     "enqueue_book_section",
     "enqueue_book_annotation",
     "enqueue_book_summary",
+    "enqueue_book_video",
     "cancel_book_refinement",
     "get_book_progress_text",
     "get_book_progress_steps",
@@ -67,11 +89,14 @@ __all__ = [
     "load_book_summary_from_storage",
     "build_memory_runner",
     "build_profile_question_runner",
+    "build_pre_reading_question_runner",
     "build_annotation_runner",
     "build_book_summary_runner",
+    "build_video_keyword_runner",
     "get_intensive_reading_settings",
     "get_memory_settings",
     "get_profile_question_settings",
+    "get_pre_reading_question_settings",
     "get_question_generation_settings",
     "get_rough_reading_settings",
     "get_split_chapters_settings",
@@ -80,6 +105,7 @@ __all__ = [
     "update_intensive_reading_settings",
     "update_memory_settings",
     "update_profile_question_settings",
+    "update_pre_reading_question_settings",
     "update_question_generation_settings",
     "update_rough_reading_settings",
     "update_split_chapters_settings",
@@ -90,4 +116,15 @@ __all__ = [
     "resolve_book_text",
     "exec_read_book_text_tool",
     "exec_search_book_text_tool",
+    "push_model_output",
+    "push_tool_call",
+    "save_learning_path",
+    "load_learning_path",
+    "load_all_chapter_status",
+    "update_chapter_status",
+    "save_pre_reading_qa",
+    "load_pre_reading_qa",
+    "save_chapter_content",
+    "load_chapter_content",
+    "has_chapter_content",
 ]

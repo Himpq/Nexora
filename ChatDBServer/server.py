@@ -4375,7 +4375,7 @@ def logout():
 # exists in the user database.  This prevents forged session cookies from
 # granting access to non-existent users (which would auto-create directories,
 # databases, etc. via User(username) constructors).
-_PUBLIC_PATHS = {'/login', '/logout', '/static', '/api/health'}
+_PUBLIC_PATHS = {'/login', '/logout', '/static', '/api/health', '/api/user/avatar'}
 
 
 @app.before_request
@@ -5051,13 +5051,21 @@ def mail_me_send():
 
 
 @app.route('/api/user/avatar/<user_id>', methods=['GET'])
-@require_login
 def get_user_avatar(user_id):
-    """读取头像（登录用户可访问）"""
-    avatar_file = get_user_avatar_file(user_id)
+    """Serve an existing user's profile avatar as a bounded public image resource."""
+    safe_user_id = str(user_id or '').strip()
+    if not safe_user_id:
+        return jsonify({'success': False, 'message': 'user_id is required'}), 400
+
+    users = load_users()
+    if safe_user_id not in users:
+        return jsonify({'success': False, 'message': 'user not found'}), 404
+
+    avatar_file = get_user_avatar_file(safe_user_id)
     if not os.path.exists(avatar_file):
-        return jsonify({'success': False, 'message': '头像不存在'}), 404
-    return send_file(avatar_file, mimetype='image/png')
+        return jsonify({'success': False, 'message': 'avatar not found'}), 404
+
+    return send_file(avatar_file, mimetype='image/png', conditional=True)
 
 
 def get_user_stats(username, user_path):
@@ -9371,20 +9379,33 @@ def chat_stream():
             'quota': quota_status,
         })
 
-    # 检测 NexoraCode 本地 Agent 状态，通过 WSS 长连接注入工具
-    from agent_tunnel import is_agent_online, get_agent_tools
-    _agent_info = None
-    if is_agent_online(username):
-        tools = get_agent_tools(username)
-        if tools:
-            _agent_info = {"username": username, "tools": tools}
-    
-    # 也可以兼容旧版本 Cookie 标识
-    if not _agent_info:
-        _agent_token = request.cookies.get("nexoracode_agent", "").strip()
-        _agent_info = _LOCAL_AGENTS.get(_agent_token) if _agent_token else None
-        if _agent_info and _agent_info.get("username") != username:
-            _agent_info = None
+    def _resolve_local_agent_info_for_chat():
+        """解析当前用户的 NexoraCode 本地工具，优先使用 WSS 在线工具表。"""
+        from agent_tunnel import is_agent_online, get_agent_tools
+
+        if is_agent_online(username):
+            online_tools = get_agent_tools(username)
+
+            if online_tools:
+                return {"username": username, "tools": online_tools, "source": "wss"}
+
+        agent_token = request.cookies.get("nexoracode_agent", "").strip()
+        token_agent_info = _LOCAL_AGENTS.get(agent_token) if agent_token else None
+
+        if token_agent_info and token_agent_info.get("username") == username:
+            return dict(token_agent_info, source="cookie")
+
+        for info in _LOCAL_AGENTS.values():
+
+            if not isinstance(info, dict):
+                continue
+
+            if info.get("username") == username:
+                return dict(info, source="username")
+
+        return None
+
+    _agent_info = _resolve_local_agent_info_for_chat()
 
     # 如果是重新生成，前端通常不再传 message；这里从历史中回填触发该回答的 user 消息。
     # 版本快照改为在最终覆盖写入时原子落盘（ConversationManager.add_message），
@@ -9545,8 +9566,34 @@ def chat_stream():
                 auto_create=(conversation_id is None)
             )
 
-            if _agent_info:
-                _inject_local_agent_tools(model, _agent_info)
+            current_agent_info = _resolve_local_agent_info_for_chat()
+
+            if current_agent_info:
+                _inject_local_agent_tools(model, current_agent_info)
+
+            try:
+                local_tool_names = []
+
+                if current_agent_info and isinstance(current_agent_info.get("tools"), list):
+
+                    for tool_def in current_agent_info.get("tools", []):
+
+                        if not isinstance(tool_def, dict):
+                            continue
+
+                        func = tool_def.get("function") if isinstance(tool_def.get("function"), dict) else {}
+                        tool_name = str(func.get("name") or tool_def.get("name") or "").strip()
+
+                        if tool_name:
+                            local_tool_names.append(tool_name)
+
+                print(
+                    f"[NexoraCode ChatInject] username={username} "
+                    f"source={str((current_agent_info or {}).get('source') or 'none')} "
+                    f"tool_count={len(local_tool_names)} tools={local_tool_names}"
+                )
+            except Exception as local_agent_log_error:
+                print(f"[NexoraCode ChatInject] log error={local_agent_log_error}")
 
             prepared_file_ids = _prepare_chat_file_ids(
                 username=username,
@@ -9778,11 +9825,8 @@ def _inject_local_agent_tools(model, agent_info: dict):
                 },
             }
 
-        # 注入工具定义（前置，避免在 selectTools 目录提示中被截断）
-        if isinstance(model.tools, list):
-            model.tools.insert(0, formatted)
-        else:
-            model.tools = [formatted]
+        # 注入工具定义并登记为外部运行时工具，避免 sendMessage 重建基础工具时被清空。
+        model.register_external_function_tool(formatted)
 
         # 注入执行处理器：尝试走 agent_tunnel_socket 执行，否则回退
         def _make_handler(name: str, uname: str):
@@ -9966,15 +10010,27 @@ def local_agent_register():
     }
     registered_tools = []
     for t in tools:
+
         if str((t or {}).get("type", "")).strip() != "function":
             continue
+
         func = (t or {}).get("function")
+
         if isinstance(func, dict):
             name = str(func.get("name") or "").strip()
         else:
             name = str((t or {}).get("name") or "").strip()
+
         if name:
             registered_tools.append(name)
+
+    if is_agent_online(username):
+        update_agent_tools(username, tools)
+
+    print(
+        f"[NexoraCode Register] username={username} "
+        f"tool_count={len(registered_tools)} tools={registered_tools}"
+    )
     return jsonify({"success": True, "registered_tools": registered_tools})
 
 
@@ -11877,17 +11933,27 @@ def agent_tunnel_socket(ws):
         token = data['agent_token']
         
         # 从本地代理已注册表中查找凭据
+        registered_tools = []
         agent_info = _LOCAL_AGENTS.get(token)
         if agent_info:
             username = agent_info.get("username")
-            
+            registered_tools = agent_info.get("tools") if isinstance(agent_info.get("tools"), list) else []
+             
         if not username:
             ws.send(json.dumps({'error': 'Invalid or unregistered agent_token'}))
             return
-            
+             
         # Auth ok
         register_agent(username, ws)
-        ws.send(json.dumps({'type': 'auth_ok'}))
+
+        if registered_tools:
+            update_agent_tools(username, registered_tools)
+
+        ws.send(json.dumps({'type': 'auth_ok', 'tool_count': len(registered_tools)}))
+        print(
+            f"[NexoraCode WSS] auth username={username} "
+            f"preloaded_tool_count={len(registered_tools)}"
+        )
         
         # Ping loop and message handler
         while True:

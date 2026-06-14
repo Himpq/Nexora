@@ -4,8 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NexoraLearning 学习看板</title>
-  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260601_02">
-  <link rel="stylesheet" href="/api/frontend/assets/learning_panel.css?v=20260601_02">
+  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260614_05">
+  <link rel="stylesheet" href="/api/frontend/assets/learning_panel.css?v=20260613_08">
+  <link rel="stylesheet" href="/api/frontend/assets/knowledge_graph.css">
 </head>
 <body>
   <main class="learning-shell" id="learningPanel">
@@ -17,20 +18,30 @@
               <button id="dashboardProgressTabBtn" class="kicker-tab is-active" type="button">课程进度</button>
               <button id="dashboardProgressFeedTabBtn" class="kicker-tab" type="button">动态中心</button>
             </div>
-            <select id="feedChannelSelect" class="input-lite feed-channel-select" hidden aria-label="选择频道"></select>
             <button id="openMaterialsViewBtn" class="nxl-icon-btn" type="button" aria-label="打开课程页" title="打开课程页">☰</button>
           </header>
+          <section id="dashboardFocusPanel" class="dashboard-focus-panel"></section>
           <div id="progressList" class="progress-list"></div>
-          <div id="learningFeedPanel" class="feed-stream-panel" hidden></div>
+          <div id="feedLayout" class="feed-layout" hidden>
+            <aside id="feedChannelSidebar" class="feed-channel-sidebar">
+              <div id="feedChannelList" class="feed-channel-list"></div>
+            </aside>
+            <main id="feedContentArea" class="feed-content-area">
+              <div id="learningFeedPanel" class="feed-stream-panel"></div>
+            </main>
+          </div>
           <button id="learningFeedComposeBtn" class="nxl-floating-feed-btn" type="button" aria-label="发布动态" title="发布动态" hidden>+</button>
         </article>
 
         <div class="side-column">
           <article class="panel-card pie-panel">
             <header class="panel-head materials-head">
-              <p id="dashboardSidePanelTitle" class="panel-kicker panel-kicker-zh">学习时长数据</p>
+              <div class="panel-kicker-switch">
+                <button id="dashboardProfileTabBtn" class="kicker-tab is-active" type="button">通知</button>
+              </div>
             </header>
-            <div id="timePieChart" class="time-pie-chart" aria-label="学习时间占比"></div>
+            <div id="timePieChart" class="time-pie-chart" aria-label="学习时间占比" hidden></div>
+            <div id="userProfileDimensions" class="profile-dimensions-panel notifications-panel"></div>
           </article>
 
           <article class="panel-card profile-panel">
@@ -49,7 +60,6 @@
             <p class="panel-kicker">COURSES</p>
           </div>
           <div class="materials-head-right">
-            <button id="openUploadViewBtn" class="nxl-icon-btn nxl-icon-btn-darker" type="button" hidden aria-label="上传教材" title="上传教材">⤴</button>
           </div>
         </header>
 
@@ -70,8 +80,6 @@
               </div>
             </div>
             <div class="materials-head-right">
-              <button id="courseHomeUploadBtn" class="nxl-icon-btn nxl-icon-btn-darker" type="button" hidden aria-label="上传教材" title="上传教材">⤴</button>
-              <button id="courseHomeSettingsBtn" class="nxl-icon-btn" type="button" hidden aria-label="教材课程管理界面" title="教材课程管理界面">⚙</button>
             </div>
           </header>
           <section id="courseHomeContent" class="materials-detail-pane"></section>
@@ -255,7 +263,13 @@
               </div>
               <div class="materials-form-row materials-form-row-file">
                 <label class="materials-form-label" for="materialsFileInput">文件</label>
-                <input id="materialsFileInput" class="input-lite input-file" type="file" accept=".epub,.pdf,.txt,.md,.docx,.doc,.c,.h,.py,.rst">
+                <div id="materialsFileDropZone" class="materials-file-drop-zone">
+                  <input id="materialsFileInput" class="input-lite input-file" type="file" accept=".epub,.pdf,.txt,.md,.docx,.doc,.c,.h,.py,.rst">
+                  <div class="materials-file-drop-hint">
+                    <span id="materialsFileDropTitle" class="materials-file-drop-title">拖拽教材文件到这里</span>
+                    <span id="materialsFileDropSub" class="materials-file-drop-sub">或点击区域选择文件</span>
+                  </div>
+                </div>
               </div>
               <div class="materials-form-actions materials-form-actions-right">
                 <button id="materialsUploadBookBtn" class="nxl-icon-btn nxl-icon-btn-dark" type="button" aria-label="确认上传" title="确认上传">⤴</button>
@@ -290,6 +304,38 @@
         </section>
       </article>
     </section>
+
+    <section id="learningPathView" class="view-pane">
+      <article class="panel-card materials-panel learning-path-article">
+        <header id="learningPathHeader" class="panel-head materials-head learning-path-header">
+          <div class="materials-head-left learning-path-floating-stack">
+            <button id="backFromLearningPathBtn" class="nxl-icon-btn" type="button" aria-label="返回课程主页" title="返回课程主页">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M15 18l-6-6 6-6"></path>
+              </svg>
+            </button>
+            <div id="learningPathFloatingActions" class="learning-path-floating-actions" aria-label="学习操作" hidden></div>
+            <div class="panel-kicker">LEARNING PATH</div>
+          </div>
+        </header>
+        <div class="learning-path-body">
+          <section class="learning-path-main-pane">
+            <div id="learningPathMarkdown" class="learning-path-markdown"></div>
+          </section>
+        </div>
+      </article>
+      <aside class="learning-path-outline-pane">
+        <div class="learning-path-outline-header">
+          <div class="learning-path-outline-title">学习大纲</div>
+          <button id="learningPathOutlineToggle" class="learning-path-outline-toggle" type="button" aria-label="收起学习大纲" title="收起学习大纲" aria-expanded="true">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M15 18l-6-6 6-6"></path>
+            </svg>
+          </button>
+        </div>
+        <div id="learningPathOutline" class="learning-path-outline-body"></div>
+      </aside>
+    </section>
   </main>
   <div id="confirmBackdrop" class="modal-backdrop" style="display:none;">
     <div class="modal modal-sm" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
@@ -313,7 +359,8 @@
   <div id="readerFloatingPanel" class="reader-floating-panel" aria-hidden="true">
     <div class="floating-panel-head" id="floatingPanelHead">
       <div class="floating-panel-tabs">
-        <button class="floating-tab is-active" data-tab="quiz" type="button">测验</button>
+        <button class="floating-tab is-active" data-tab="guide" type="button">导读</button>
+        <button class="floating-tab" data-tab="quiz" type="button">测验</button>
         <button class="floating-tab" data-tab="knowledge" type="button">知识点</button>
         <button class="floating-tab" data-tab="progress" type="button">进度</button>
       </div>
@@ -325,7 +372,10 @@
       </button>
     </div>
     <div class="floating-panel-body">
-      <div class="floating-tab-content is-active" data-tab="quiz">
+      <div class="floating-tab-content is-active" data-tab="guide">
+        <div class="floating-empty-hint">进入章节后生成本节导读</div>
+      </div>
+      <div class="floating-tab-content" data-tab="quiz" hidden>
         <div class="floating-empty-hint">完成章节阅读后开启测验</div>
       </div>
       <div class="floating-tab-content" data-tab="knowledge" hidden>
@@ -337,9 +387,11 @@
     </div>
     <div id="floatingResizeHandle" class="floating-resize-handle"></div>
   </div>
-  <script src="/api/frontend/assets/utils.js?v=20260530_01"></script>
-  <script src="/api/frontend/assets/telemetry.js?v=20260529_01"></script>
-  <script src="/api/frontend/assets/app.js?v=20260601_02"></script>
+  <script src="/api/frontend/assets/mermaid.min.js"></script>
+  <script src="/api/frontend/assets/utils.js?v=20260610_04"></script>
+  <script src="/api/frontend/assets/telemetry.js?v=20260610_04"></script>
+  <script src="/api/frontend/assets/knowledge_graph.js"></script>
+  <script src="/api/frontend/assets/app.js?v=20260614_05"></script>
 </body>
 </html>
 

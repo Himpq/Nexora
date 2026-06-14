@@ -19,6 +19,42 @@ def _xml_escape(value: Any) -> str:
     )
 
 
+def _strip_markdown_answer(value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    text = re.sub(r"```[\s\S]*?```", lambda match: str(match.group(0)).replace("```", ""), text)
+    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^\s*[-*+]\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^\s*\d+[.)]\s+", "", text, flags=re.MULTILINE)
+    text = text.replace("**", "").replace("__", "").replace("`", "")
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _normalize_question_type(value: Any, options: List[str]) -> str:
+    text = str(value or "").strip().lower()
+
+    if text in {"choice", "single_choice", "multiple_choice", "选择题", "单选题"}:
+        return "choice"
+
+    if text in {"text", "reading", "short_answer", "简答题", "文本题", "阅读题"}:
+        return "text"
+
+    return "choice" if len(options) >= 2 else "text"
+
+
+def _normalize_question_options(value: Any) -> List[str]:
+    raw_items = value if isinstance(value, list) else str(value or "").splitlines()
+    rows: List[str] = []
+
+    for item in raw_items:
+        text = str(item or "").strip()
+        text = re.sub(r"^[A-Da-d][.、)\s]+", "", text).strip()
+
+        if text:
+            rows.append(text[:160])
+
+    return rows[:4]
+
+
 def _parse_range(value: str) -> Tuple[int, int]:
     text = str(value or "").strip()
     if ":" not in text:
@@ -108,8 +144,8 @@ def _extract_existing_question_blocks(questions_xml: str) -> List[str]:
     return [str(block or "").strip() for block in pattern.findall(text) if str(block or "").strip()]
 
 
-def _normalize_questions(value: Any) -> List[Dict[str, str]]:
-    rows: List[Dict[str, str]] = []
+def _normalize_questions(value: Any) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
     if not isinstance(value, list):
         return rows
     for item in value:
@@ -119,13 +155,22 @@ def _normalize_questions(value: Any) -> List[Dict[str, str]]:
         difficulty = str(item.get("question_difficulty") or item.get("difficulty") or "").strip()
         content = str(item.get("question_content") or item.get("content") or "").strip()
         hint = str(item.get("question_hint") or item.get("hint") or "").strip()
-        answer = str(item.get("question_answer") or item.get("answer") or "").strip()
+        options = _normalize_question_options(item.get("question_options") or item.get("options"))
+        question_type = _normalize_question_type(item.get("question_type") or item.get("type"), options)
+        answer = _strip_markdown_answer(item.get("question_answer") or item.get("answer"))
+
+        if question_type == "choice" and len(options) < 2:
+            question_type = "text"
+            options = []
+
         if not (title or content or answer):
             continue
         rows.append(
             {
                 "question_title": title,
                 "question_difficulty": difficulty,
+                "question_type": question_type,
+                "question_options": options,
                 "question_content": content,
                 "question_hint": hint,
                 "question_answer": answer,
@@ -134,7 +179,7 @@ def _normalize_questions(value: Any) -> List[Dict[str, str]]:
     return rows
 
 
-def _render_question_items_xml(items: List[Dict[str, str]]) -> str:
+def _render_question_items_xml(items: List[Dict[str, Any]]) -> str:
     if not items:
         return "  <question_items></question_items>"
     blocks: List[str] = []
@@ -143,6 +188,8 @@ def _render_question_items_xml(items: List[Dict[str, str]]) -> str:
             "    <question_item>\n"
             f"      <question_title>{_xml_escape(item.get('question_title') or '')}</question_title>\n"
             f"      <question_difficulty>{_xml_escape(item.get('question_difficulty') or '')}</question_difficulty>\n"
+            f"      <question_type>{_xml_escape(item.get('question_type') or '')}</question_type>\n"
+            f"      <question_options>{_xml_escape(chr(10).join(item.get('question_options') or []))}</question_options>\n"
             f"      <question_content>{_xml_escape(item.get('question_content') or '')}</question_content>\n"
             f"      <question_hint>{_xml_escape(item.get('question_hint') or '')}</question_hint>\n"
             f"      <question_answer>{_xml_escape(item.get('question_answer') or '')}</question_answer>\n"
@@ -419,6 +466,11 @@ def run_question_with_tools_strict(
                                 "properties": {
                                     "question_title": {"type": "string"},
                                     "question_difficulty": {"type": "string"},
+                                    "question_type": {"type": "string"},
+                                    "question_options": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                    },
                                     "question_content": {"type": "string"},
                                     "question_hint": {"type": "string"},
                                     "question_answer": {"type": "string"},
@@ -426,6 +478,7 @@ def run_question_with_tools_strict(
                                 "required": [
                                     "question_title",
                                     "question_difficulty",
+                                    "question_type",
                                     "question_content",
                                     "question_hint",
                                     "question_answer",
@@ -711,10 +764,14 @@ def generate_session_quiz(
 {chapter_detail[:2000]}
 
 ## 出题要求
-1. 生成3道题目，难度分布：1道简单、1道中等、1道进阶
-2. 题目类型：选择题或简答题
-3. 必须基于上述学习内容，不要凭空捏造
-4. 每道题包含：标题、难度、题目内容、提示、答案
+1. 生成3道题目，难度分布：1道简单、1道中等、1道进阶。
+2. 第1题和第2题必须是选择题，第3题必须是文本阅读题。
+3. 选择题必须有4个选项，选项短、清楚、互相可区分。
+4. 题目标题和题干必须口语化、短、清楚，不要写抽象论文标题。
+5. 每道题只考一个明确点，不要把多个任务塞进一题。
+6. 必须基于上述学习内容，不要凭空捏造。
+7. 答案不能包含 Markdown 标记，不能出现 **、#、```、项目符号列表。
+8. 每道题包含：标题、难度、题型、选项、题目内容、提示、答案。
 
 请以JSON格式返回，格式如下：
 ```json
@@ -723,9 +780,11 @@ def generate_session_quiz(
     {{
       "title": "题目标题",
       "difficulty": "简单|中等|进阶",
-      "content": "题目内容",
+      "type": "choice|text",
+      "options": ["选项A", "选项B", "选项C", "选项D"],
+      "content": "题目内容。选择题直接问一个明确问题；文本阅读题给一个可短答的问题。",
       "hint": "提示",
-      "answer": "答案"
+      "answer": "答案。选择题写：选A，因为..."
     }}
   ]
 }}
@@ -797,7 +856,7 @@ def generate_session_quiz(
         raise
 
 
-def _parse_quiz_json(content: str) -> List[Dict[str, str]]:
+def _parse_quiz_json(content: str) -> List[Dict[str, Any]]:
     """从模型输出中解析题目JSON。"""
     text = str(content or "").strip()
 

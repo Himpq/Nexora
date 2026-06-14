@@ -295,6 +295,31 @@ def run_tool_driven_round_with_context(
                 },
             )
         
+        round_delta_parts: List[str] = []
+        round_merge_key = f"coarse:{resume_round}:{turn}"
+
+        def _on_turn_delta(delta_text: str) -> None:
+            piece = str(delta_text or "")
+            if not piece:
+                return
+
+            round_delta_parts.append(piece)
+
+            if on_delta:
+                on_delta(piece)
+
+            if push_book_progress_step and lecture_id and book_id:
+                push_book_progress_step(
+                    lecture_id,
+                    book_id,
+                    {
+                        "type": "model_text",
+                        "title": f"模型输出（第 {resume_round}-{turn} 轮）",
+                        "preview": piece,
+                        "merge_key": round_merge_key,
+                    },
+                )
+
         # 调用模型
         try:
             response = runner.nexora_client.proxy.chat_completions(
@@ -311,7 +336,7 @@ def run_tool_driven_round_with_context(
                 },
                 use_chat_path=False,
                 request_timeout=request_timeout,
-                on_delta=on_delta,
+                on_delta=_on_turn_delta,
             )
         except Exception as e:
             if log_event:
@@ -333,13 +358,27 @@ def run_tool_driven_round_with_context(
         msg = choices[0].get("message") if isinstance(choices[0].get("message"), dict) else {}
         assistant_content = str(msg.get("content") or "")
         raw_tool_calls = msg.get("tool_calls") if isinstance(msg.get("tool_calls"), list) else []
-        
+        round_model_text = assistant_content if assistant_content.strip() else "".join(round_delta_parts).strip()
+
         # 记录助手内容
         if assistant_content.strip():
             assistant_concat.append(assistant_content)
             if log_model_text:
                 log_model_text(assistant_content, source="rough_reading")
-        
+
+        # 推送模型文本输出到活动日志：一个工具轮次只占一个模型块。
+        if round_model_text and not round_delta_parts and push_book_progress_step and lecture_id and book_id:
+            push_book_progress_step(
+                lecture_id,
+                book_id,
+                {
+                    "type": "model_text",
+                    "title": f"模型输出（第 {resume_round}-{turn} 轮）",
+                    "preview": round_model_text,
+                    "merge_key": round_merge_key,
+                },
+            )
+
         # 处理工具调用
         tool_calls = []
         for raw_call in raw_tool_calls:
@@ -388,6 +427,17 @@ def run_tool_driven_round_with_context(
             tool_name = str(func.get("name") or "").strip()
             args_raw = str(func.get("arguments") or "{}")
             args_obj = _safe_json_obj(args_raw)
+
+            if push_book_progress_step and lecture_id and book_id:
+                push_book_progress_step(
+                    lecture_id,
+                    book_id,
+                    {
+                        "type": "tool_call",
+                        "title": f"工具调用：{tool_name or 'unknown'}",
+                        "preview": _safe_json_dumps(args_obj),
+                    },
+                )
             
             if log_event:
                 log_event(

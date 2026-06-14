@@ -44,8 +44,18 @@ def _safe_int(value: Any, default: int = 0) -> int:
 def _resolve_runtime_user_id() -> str:
     """Best-effort username resolution from request context."""
     qs = str(request.args.get("username") or "").strip()
+
     if qs:
         return qs
+
+    data = request.get_json(silent=True) or {}
+
+    if isinstance(data, dict):
+        body_username = str(data.get("username") or data.get("user_id") or "").strip()
+
+        if body_username:
+            return body_username
+
     for header_name in (
         "X-Nexora-Username",
         "X-Username",
@@ -55,19 +65,18 @@ def _resolve_runtime_user_id() -> str:
         "X-Forwarded-User",
     ):
         candidate = str(request.headers.get(header_name) or "").strip()
+
         if candidate:
             return candidate
-    # Fallback: use default_username from config or cookie session
-    from core.nexora_proxy import NexoraProxy as _NP
-    proxy = _cfg.get("__proxy__")
-    if proxy is None:
-        try:
-            proxy = _NP(_cfg)
-            _cfg["__proxy__"] = proxy
-        except Exception:
-            proxy = None
-    if proxy is not None:
-        return str(getattr(proxy, "default_username", "") or "").strip()
+
+    log_event(
+        "learning_progress_user_resolution_failed",
+        "Learning progress rejected because no explicit runtime user was provided.",
+        payload={
+            "has_cookie": bool(str(request.headers.get("Cookie") or "").strip()),
+            "path": str(request.path or "").strip(),
+        },
+    )
     return ""
 
 
@@ -105,24 +114,27 @@ def frontend_learning_chapter_complete():
         for r in (existing_records or [])
     )
 
-    if not already_completed:
-        user_store.append_learning_record(
-            _cfg,
-            username,
-            {
-                "type": "chapter_completed",
-                "lecture_id": lecture_id,
-                "book_id": book_id,
-                "chapter_name": chapter_name,
-                "chapter_range": chapter_range,
-            },
-        )
+    if already_completed:
+        return jsonify({"success": True, "enqueue": None, "already_completed": True})
 
+    user_store.append_learning_record(
+        _cfg,
+        username,
+        {
+            "type": "chapter_completed",
+            "lecture_id": lecture_id,
+            "book_id": book_id,
+            "chapter_name": chapter_name,
+            "chapter_range": chapter_range,
+        },
+    )
+
+    # 章节完成触发完整画像更新链：记忆分析 → 画像提取 → 画像出题
     job = enqueue_memory_job(
         _cfg,
         user_id=username,
         lecture_id=lecture_id,
-        reason="profile_question",
+        reason="chapter_complete",
         payload={
             "book_id": book_id,
             "chapter_name": chapter_name,
@@ -133,16 +145,56 @@ def frontend_learning_chapter_complete():
     )
     log_event(
         "frontend_chapter_complete",
-        "用户完成章节并触发画像出题",
+        "用户完成章节并触发记忆分析+画像提取+画像出题",
         payload={
             "username": username,
             "lecture_id": lecture_id,
             "book_id": book_id,
             "chapter_name": chapter_name,
-            "question_job": dict(job or {}),
+            "memory_job": dict(job or {}),
         },
     )
     return jsonify({"success": True, "enqueue": job, "already_completed": already_completed})
+
+
+@learning_progress_bp.route("/frontend/learning/chapter-record/clear", methods=["POST"])
+def frontend_learning_chapter_record_clear():
+    """清空指定章节阅读记录，不删除已固化的小测验文件。"""
+    data = request.get_json(silent=True) or {}
+    username = _resolve_runtime_user_id()
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    chapter_name = str(data.get("chapter_name") or "").strip()
+    chapter_index = _safe_int(data.get("chapter_index"), -1)
+
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+    if not lecture_id or not book_id or not chapter_name:
+        return jsonify({"success": False, "error": "lecture_id, book_id and chapter_name are required."}), 400
+    if chapter_index < 0:
+        return jsonify({"success": False, "error": "chapter_index is required."}), 400
+
+    result = user_store.remove_chapter_learning_records(
+        _cfg,
+        username,
+        lecture_id=lecture_id,
+        book_id=book_id,
+        chapter_name=chapter_name,
+        chapter_index=chapter_index,
+    )
+    log_event(
+        "frontend_chapter_record_clear",
+        "用户清空章节阅读记录",
+        payload={
+            "username": username,
+            "lecture_id": lecture_id,
+            "book_id": book_id,
+            "chapter_name": chapter_name,
+            "chapter_index": chapter_index,
+            "removed": int(result.get("removed") or 0),
+        },
+    )
+    return jsonify({"success": True, **result})
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -199,9 +251,23 @@ def frontend_learning_session_complete():
             },
         )
 
+    # 小节完成触发记忆分析更新
+    memory_job = enqueue_memory_job(
+        _cfg,
+        user_id=username,
+        lecture_id=lecture_id,
+        reason="session_complete",
+        payload={
+            "book_id": book_id,
+            "chapter_name": chapter_name,
+            "session_name": session_name,
+            "session_index": session_index,
+        },
+    )
+
     log_event(
         "frontend_session_complete",
-        "用户完成小节学习",
+        "用户完成小节学习并触发记忆分析",
         payload={
             "username": username,
             "lecture_id": lecture_id,
@@ -210,6 +276,7 @@ def frontend_learning_session_complete():
             "chapter_index": chapter_index,
             "session_name": session_name,
             "session_index": session_index,
+            "memory_job": dict(memory_job or {}),
         },
     )
-    return jsonify({"success": True, "already_completed": already_completed})
+    return jsonify({"success": True, "already_completed": already_completed, "memory_enqueue": memory_job})

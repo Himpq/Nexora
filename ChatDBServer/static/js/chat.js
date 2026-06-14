@@ -121,8 +121,8 @@ const CHAT_COMPOSER_PREFS_KEY = 'nexora_chat_composer_prefs_v1';
 const CHAT_INPUT_DRAFT_KEY = 'nexora_chat_input_draft_v1';
 const CHAT_INPUT_DRAFT_MAX_LEN = 12000;
 let NEXORA_LEARNING_FRONTEND_URL = `${window.location.protocol}//${window.location.hostname}:5001/api/frontend/`;
-const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260523_10';
-const NEXORA_LEARNING_JS_URL = '/static/js/learning_mode.js?v=20260523_10';
+const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260614_03';
+const NEXORA_LEARNING_JS_URL = '/static/js/learning_mode.js?v=20260609_05';
 const MAIL_POLL_INTERVAL_MS = 5000;
 const AGENT_STATUS_POLL_VISIBLE_MS = 5000;
 const MODAL_STACK_BASE_Z = 12000;
@@ -704,6 +704,8 @@ function getLearningSidebarMessages() {
                 if (!(item instanceof Element) || isInsideConsumed(item)) return;
                 if (item.classList.contains('thinking-block') && item.classList.contains('reasoning-thinking-block')) {
                     const contentEl = item.querySelector('.thinking-content');
+                    const pending = String(contentEl && contentEl.dataset.streamLive || '') === '1'
+                        || String(item.dataset.streamLive || '') === '1';
                     const raw = String(
                         contentEl && (
                             (typeof contentEl.__sourceMarkdown === 'string')
@@ -716,6 +718,7 @@ function getLearningSidebarMessages() {
                     parts.push({
                         kind: 'thinking',
                         format: 'markdown',
+                        pending,
                         content: raw
                     });
                     return;
@@ -764,8 +767,13 @@ function getLearningSidebarMessages() {
                 }
                 if (item.classList.contains('question-tool-card')) {
                     const questionBody = item.querySelector('.question-card-body');
-                    const questionId = String(
+                    const questionCardId = String(
                         (questionBody && questionBody.dataset && questionBody.dataset.questionCardId)
+                        || item.dataset.questionCardId
+                        || ''
+                    ).trim();
+                    const questionId = String(
+                        (questionBody && questionBody.dataset && questionBody.dataset.questionId)
                         || item.dataset.questionId
                         || ''
                     ).trim();
@@ -786,6 +794,7 @@ function getLearningSidebarMessages() {
                         kind: 'question',
                         format: 'question',
                         question: {
+                            question_card_id: questionCardId,
                             question_id: questionId,
                             question_title: questionTitle,
                             question_content: questionContent,
@@ -4294,18 +4303,92 @@ function saveMailListScroll(scrollTop) {
     }
 }
 
-function setRightSidebarPanelVisible(panel, visible) {
+let rightSidebarLastInteractionTarget = null;
+
+document.addEventListener('pointerdown', (event) => {
+    rightSidebarLastInteractionTarget = event && event.target ? event.target : null;
+}, true);
+
+document.addEventListener('click', (event) => {
+    rightSidebarLastInteractionTarget = event && event.target ? event.target : rightSidebarLastInteractionTarget;
+}, true);
+
+function describeRightSidebarDebugTarget(target = null) {
+    const node = target || rightSidebarLastInteractionTarget;
+    if (!node || !(node instanceof Element)) return '';
+    const id = node.id ? `#${node.id}` : '';
+    const cls = String(node.className || '').trim().replace(/\s+/g, '.');
+    const classText = cls ? `.${cls}` : '';
+    return `${String(node.tagName || '').toLowerCase()}${id}${classText}`;
+}
+
+function logRightSidebarPanelDebug(action, details = {}) {
+    try {
+        const err = new Error();
+        console.warn('[RightSidebar]', action, {
+            ...details,
+            learningReaderOpened: !!learningReaderOpened,
+            learningEmbedLayoutMode: String(learningEmbedLayoutMode || ''),
+            bodyClass: document.body ? String(document.body.className || '') : '',
+            target: describeRightSidebarDebugTarget(),
+            stack: err && err.stack ? String(err.stack) : '',
+        });
+    } catch (_err) {}
+}
+
+// Reader 沉浸态必须立即清空宿主右侧栏，避免目录面板打开时抢占宿主布局。
+function hideRightSidebarPanelImmediately(panel) {
     const p = panel || null;
+
     if (!p) return;
-    const show = !!visible;
+
     if (p.__panelAnimTimer) {
         clearTimeout(p.__panelAnimTimer);
         p.__panelAnimTimer = null;
     }
+
+    p.__panelVisibleTarget = false;
+    p.classList.remove('visible');
+    p.classList.remove('panel-animating');
+}
+
+function setRightSidebarPanelVisible(panel, visible) {
+    const p = panel || null;
+
+    if (!p) return;
+
+    const show = !!visible && !isLearningReaderRightSidebarLocked();
+
+    if (visible && !show) {
+        logRightSidebarPanelDebug('blocked-show', {
+            panelId: p.id || '',
+            reason: 'learning_reader_or_immersive',
+        });
+        hideRightSidebarPanelImmediately(p);
+        return;
+    }
+
+    if (!show && isLearningReaderRightSidebarLocked()) {
+        hideRightSidebarPanelImmediately(p);
+        return;
+    }
+
+    if (p.__panelAnimTimer) {
+        clearTimeout(p.__panelAnimTimer);
+        p.__panelAnimTimer = null;
+    }
+    p.__panelVisibleTarget = show;
     p.classList.add('panel-animating');
     requestAnimationFrame(() => {
-        if (show) p.classList.add('visible');
-        else p.classList.remove('visible');
+        if (p.__panelVisibleTarget !== show) return;
+        if (show) {
+            logRightSidebarPanelDebug('show', {
+                panelId: p.id || '',
+            });
+            p.classList.add('visible');
+        } else {
+            p.classList.remove('visible');
+        }
     });
     p.__panelAnimTimer = setTimeout(() => {
         p.classList.remove('panel-animating');
@@ -4313,12 +4396,62 @@ function setRightSidebarPanelVisible(panel, visible) {
     }, 280);
 }
 
-function closeKnowledgePanel() {
-    if (els.knowledgePanel) setRightSidebarPanelVisible(els.knowledgePanel, false);
+function closeKnowledgePanel(options = {}) {
+    const immediate = !!(options && options.immediate);
+
+    if (!els.knowledgePanel) return;
+
+    if (immediate) {
+        hideRightSidebarPanelImmediately(els.knowledgePanel);
+        return;
+    }
+
+    setRightSidebarPanelVisible(els.knowledgePanel, false);
+}
+
+function isLearningImmersiveLayoutActive() {
+    const mode = String(learningEmbedLayoutMode || '').trim().toLowerCase();
+    const bodyImmersive = !!(document.body && document.body.classList.contains('learning-embed-immersive'));
+    const learningPanelVisible = !!(
+        els.learningMainPanel
+        && els.learningMainPanel.style.display !== 'none'
+        && els.learningMainPanel.offsetParent !== null
+    );
+    return !!(learningModeEnabled && learningPanelVisible && (mode === 'immersive' || bodyImmersive));
+}
+
+function isLearningReaderOrImmersiveClassActive() {
+    return !!(
+        document.body
+        && (
+            document.body.classList.contains('learning-reader-active')
+            || document.body.classList.contains('learning-embed-immersive')
+        )
+    );
+}
+
+function isLearningReaderRightSidebarLocked() {
+    return !!(
+        learningReaderOpened
+        || isLearningImmersiveLayoutActive()
+        || isLearningReaderOrImmersiveClassActive()
+    );
+}
+
+function closeReaderBlockedRightSidebars() {
+    closeKnowledgePanel({ immediate: true });
+    closeCloudFilePanel({ immediate: true });
 }
 
 function openKnowledgePanel() {
     if (!els.knowledgePanel) return;
+    if (isLearningReaderRightSidebarLocked()) {
+        logRightSidebarPanelDebug('blocked-open-knowledge', {
+            reason: 'learning_reader_or_immersive',
+        });
+        closeKnowledgePanel();
+        return;
+    }
     if (els.filePanel) setRightSidebarPanelVisible(els.filePanel, false);
     setRightSidebarPanelVisible(els.knowledgePanel, true);
     void loadKnowledge(currentConversationId);
@@ -4326,6 +4459,13 @@ function openKnowledgePanel() {
 
 function toggleKnowledgePanel() {
     if (!els.knowledgePanel) return;
+    if (isLearningReaderRightSidebarLocked()) {
+        logRightSidebarPanelDebug('blocked-toggle-knowledge', {
+            reason: 'learning_reader_or_immersive',
+        });
+        closeKnowledgePanel();
+        return;
+    }
     const nextVisible = !els.knowledgePanel.classList.contains('visible');
     if (nextVisible) openKnowledgePanel();
     else closeKnowledgePanel();
@@ -4337,12 +4477,28 @@ function isKnowledgeViewerOpen() {
     return viewer.style.display !== 'none' && viewer.offsetParent !== null;
 }
 
-function closeCloudFilePanel() {
-    if (els.filePanel) setRightSidebarPanelVisible(els.filePanel, false);
+function closeCloudFilePanel(options = {}) {
+    const immediate = !!(options && options.immediate);
+
+    if (!els.filePanel) return;
+
+    if (immediate) {
+        hideRightSidebarPanelImmediately(els.filePanel);
+        return;
+    }
+
+    setRightSidebarPanelVisible(els.filePanel, false);
 }
 
 function openCloudFilePanel() {
     if (!els.filePanel) return;
+    if (isLearningReaderRightSidebarLocked()) {
+        logRightSidebarPanelDebug('blocked-open-file', {
+            reason: 'learning_reader_or_immersive',
+        });
+        closeCloudFilePanel();
+        return;
+    }
     if (els.knowledgePanel) setRightSidebarPanelVisible(els.knowledgePanel, false);
     setRightSidebarPanelVisible(els.filePanel, true);
     loadCloudFiles();
@@ -4350,6 +4506,13 @@ function openCloudFilePanel() {
 
 function toggleCloudFilePanel() {
     if (!els.filePanel) return;
+    if (isLearningReaderRightSidebarLocked()) {
+        logRightSidebarPanelDebug('blocked-toggle-file', {
+            reason: 'learning_reader_or_immersive',
+        });
+        closeCloudFilePanel();
+        return;
+    }
     const nextVisible = !els.filePanel.classList.contains('visible');
     if (nextVisible) openCloudFilePanel();
     else closeCloudFilePanel();
@@ -4864,9 +5027,26 @@ async function submitLearningFeedPost(text) {
     }
 }
 
+function normalizeAssetHref(href) {
+    try {
+        return new URL(String(href || ''), window.location.href).href;
+    } catch (_err) {
+        return String(href || '');
+    }
+}
+
 function ensureStylesheetAsset(id, href) {
     let link = document.getElementById(id);
-    if (link) return Promise.resolve(link);
+    const expectedHref = normalizeAssetHref(href);
+    if (link) {
+        const currentHref = normalizeAssetHref(link.getAttribute('href') || link.href || '');
+        if (currentHref === expectedHref) return Promise.resolve(link);
+        link.href = href;
+        return new Promise((resolve, reject) => {
+            link.addEventListener('load', () => resolve(link), { once: true });
+            link.addEventListener('error', () => reject(new Error(`failed to load stylesheet: ${href}`)), { once: true });
+        });
+    }
     link = document.createElement('link');
     link.id = id;
     link.rel = 'stylesheet';
@@ -4922,7 +5102,8 @@ function registerLearningModeChatBridge() {
         getLearningInteractionLockKey,
         get messagesContainer() { return els.messagesContainer; },
         get messageInput() { return els.messageInput; },
-        frontendUrl: NEXORA_LEARNING_FRONTEND_URL,
+        get frontendUrl() { return NEXORA_LEARNING_FRONTEND_URL; },
+        get username() { return currentUsername; },
     });
 }
 
@@ -4932,13 +5113,40 @@ function shouldForceLearningSidebarMode() {
 
 function resolveLearningSidebarModeForConversation(modeHint = null) {
     if (shouldForceLearningSidebarMode()) return 'learning';
+    if (!learningModeEnabled) return 'nexora';
+    if (String(modeHint || '').trim().toLowerCase() === 'learning') return 'learning';
     return 'nexora';
+}
+
+function isLearningWorkspaceActive() {
+    return !!(learningModeEnabled && String(learningSidebarMode || '').trim().toLowerCase() === 'learning');
+}
+
+function syncLearningWorkspaceLayout() {
+    return window.NexoraLearningWorkspaceLayout.sync({
+        enabled: learningModeEnabled,
+        sidebarMode: learningSidebarMode,
+        readerOpened: learningReaderOpened,
+        layoutMode: learningEmbedLayoutMode,
+        elements: {
+            sidebar: els.sidebar,
+            mainContent: els.mainContent,
+            inputDock: els.inputDock,
+            learningSidebarPanel: els.learningSidebarPanel,
+            learningMainPanel: els.learningMainPanel,
+        },
+    });
 }
 
 function applyLearningSidebarMode(mode) {
     const normalized = (learningModeEnabled && String(mode || 'nexora').trim().toLowerCase() === 'learning') ? 'learning' : 'nexora';
     learningSidebarMode = normalized;
     const visible = normalized === 'learning';
+    if (!visible && !String(currentConversationId || '').trim() && currentConversationMode === 'learning') {
+        currentConversationMode = 'chat';
+        learningHeaderMode = 'chat';
+        learningWelcomeMounted = false;
+    }
     const renderSidebarPanel = () => {
         if (!visible) return;
         if (!window.NexoraLearningMode || typeof window.NexoraLearningMode.renderSidebarPanel !== 'function') return;
@@ -4987,6 +5195,8 @@ function applyLearningSidebarMode(mode) {
             window.NexoraLearningMode.destroySidebarPanel();
         }
     }
+    syncLearningWorkspaceLayout();
+    _syncTurnIndicatorVisibility();
 }
 
 function shouldPreserveLearningReaderImmersiveLayout() {
@@ -4994,14 +5204,27 @@ function shouldPreserveLearningReaderImmersiveLayout() {
     return !!(learningModeEnabled && learningReaderOpened && mode === 'learning');
 }
 
+function isLearningMainPanelRendered() {
+    return !!(els.learningMainPanel && els.learningMainPanel.querySelector('.learning-mode-frame'));
+}
+
+function shouldPreserveLearningMainPanelForNewConversation(resolvedMode) {
+    const mode = String(resolvedMode || '').trim().toLowerCase();
+    // Learning 侧栏新建对话只切换聊天上下文，主 iframe 保持当前位置。
+    return !!(mode === 'learning' && isLearningWorkspaceActive() && isLearningMainPanelRendered());
+}
+
 function clearLearningWelcomeState(options = {}) {
     const force = !!(options && options.force);
     if (!force && shouldPreserveLearningReaderImmersiveLayout()) {
         return;
     }
-    if (els.inputDock) els.inputDock.classList.remove('learning-mode-hidden');
     if (learningEmbedLayoutMode !== 'default') {
         setLearningEmbedLayoutMode('default');
+    }
+    const layoutState = syncLearningWorkspaceLayout();
+    if (!layoutState.active && els.inputDock) {
+        els.inputDock.classList.remove('learning-mode-hidden');
     }
 }
 
@@ -5013,8 +5236,11 @@ function setLearningEmbedLayoutMode(mode, options = {}) {
     if (els.mainContent) {
         els.mainContent.classList.toggle('learning-embed-immersive', active);
     }
+    const layoutState = syncLearningWorkspaceLayout();
     if (els.inputDock) {
-        if (active) {
+        if (layoutState.active) {
+            els.inputDock.classList.add('learning-mode-hidden');
+        } else if (active) {
             // immersive 模式下，inputDock 由 CSS body.learning-embed-immersive .input-dock 控制
             els.inputDock.classList.remove('learning-mode-hidden');
         } else if (options && options.hasOwnProperty('hideInputDock')) {
@@ -5031,13 +5257,34 @@ function handleLearningHostMessage(payload) {
     if (String(payload.source || '').trim().toLowerCase() !== 'nexora-learning') return false;
     const msgType = String(payload.type || '').trim().toLowerCase();
     if (msgType === 'nexora:chat-input:visibility') {
-        if (els.inputDock) {
+        const layoutState = syncLearningWorkspaceLayout();
+        if (!layoutState.active && els.inputDock) {
             els.inputDock.classList.toggle('learning-mode-hidden', !!payload.hidden);
         }
         return true;
     }
     if (msgType === 'nexora:layout:request') {
+        if (String(payload.mode || '').trim().toLowerCase() === 'immersive') {
+            closeReaderBlockedRightSidebars();
+        }
         setLearningEmbedLayoutMode(payload.mode, payload);
+        return true;
+    }
+    if (msgType === 'nexora:inject-prompt') {
+        const text = String(payload.text || '').trim();
+        if (text && els.messageInput) {
+            els.messageInput.value = text;
+            els.messageInput.focus();
+            els.messageInput.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        return true;
+    }
+    if (msgType === 'nexora:send-message') {
+        const text = String(payload.text || '').trim();
+        if (text) {
+            if (payload.interview) window.__nexoraInterviewPending = true;
+            sendMessage({ textOverride: text, displayContentOverride: text });
+        }
         return true;
     }
     if (msgType === 'nexora:feed-compose:toggle') {
@@ -5049,15 +5296,15 @@ function handleLearningHostMessage(payload) {
         const wasReaderOpened = !!learningReaderOpened;
         learningReaderOpened = !!payload.opened;
         if (learningReaderOpened) {
+            closeReaderBlockedRightSidebars();
             learningHeaderMode = 'learning';
             applyLearningSidebarMode('learning');
             void syncLearningHeaderMode();
             return true;
         }
         if (wasReaderOpened) {
-            const hasConversation = !!String(currentConversationId || '').trim();
-            learningHeaderMode = hasConversation ? 'chat' : 'learning';
-            applyLearningSidebarMode(hasConversation ? 'nexora' : 'learning');
+            learningHeaderMode = learningModeEnabled ? 'learning' : 'chat';
+            applyLearningSidebarMode(learningModeEnabled ? 'learning' : 'nexora');
             void syncLearningHeaderMode();
         }
         return true;
@@ -5114,22 +5361,37 @@ window.addEventListener('nexora:layout:request', (event) => {
     handleLearningHostMessage(payload);
 });
 
+async function ensureCurrentUsernameForLearning() {
+    if (!String(currentUsername || '').trim()) {
+        await checkUserRole();
+    }
+
+    const username = String(currentUsername || '').trim();
+
+    if (!username) {
+        throw new Error('NexoraLearning requires authenticated username before iframe render.');
+    }
+
+    return username;
+}
+
 async function renderLearningMainPanel() {
     if (!els.learningMainPanel) return;
     try {
+        const username = await ensureCurrentUsernameForLearning();
         const api = await ensureLearningModeAssets();
         if (learningMainMounted) return;
         els.learningMainPanel.innerHTML = '<div class="learning-mode-welcome-loading">正在载入 NexoraLearning...</div>';
         if (api && typeof api.renderMainPanel === 'function') {
             api.renderMainPanel(els.learningMainPanel, {
                 frontendUrl: NEXORA_LEARNING_FRONTEND_URL,
-                username: currentUsername,
+                username,
             });
             learningMainMounted = true;
         } else if (api && typeof api.renderWelcome === 'function') {
             api.renderWelcome(els.learningMainPanel, {
                 frontendUrl: NEXORA_LEARNING_FRONTEND_URL,
-                username: currentUsername,
+                username,
             });
             learningMainMounted = true;
         }
@@ -5149,10 +5411,13 @@ async function syncLearningHeaderMode() {
     const showLearning = isLearningConversationView();
     const knowledgeViewerOpen = isKnowledgeViewerOpen();
     const viewerOpen = knowledgeViewerOpen;
+    const workspaceActive = isLearningWorkspaceActive();
     const showLearningMain = !!(
         learningModeEnabled
         && !viewerOpen
         && (
+            workspaceActive
+            ||
             (String(learningHeaderMode || '').trim().toLowerCase() === 'learning' && !hasConversation)
             || learningReaderOpened
         )
@@ -5162,6 +5427,8 @@ async function syncLearningHeaderMode() {
         if (els.inputDock) {
             els.inputDock.classList.remove('learning-mode-hidden');
         }
+    } else {
+        setLearningEmbedLayoutMode('immersive', { hideInputDock: true });
     }
     if (els.messagesContainer) {
         if (showLearningMain && !hasConversation) {
@@ -5178,6 +5445,9 @@ async function syncLearningHeaderMode() {
         if (showLearningMain) {
             await renderLearningMainPanel();
         }
+    }
+    if (!showLearningMain && !viewerOpen && !hasConversation && !showLearning) {
+        await renderWelcomeScreen();
     }
     if (els.conversationTitle) {
         els.conversationTitle.textContent = hasConversation ? (els.conversationTitle.textContent || 'Untitled Conversation') : (showLearning ? 'Learning' : 'Nexora');
@@ -5217,6 +5487,7 @@ async function renderWelcomeScreen() {
         return;
     }
     try {
+        const username = await ensureCurrentUsernameForLearning();
         const api = await ensureLearningModeAssets();
         let host = els.messagesContainer.querySelector('.welcome-screen.learning-mode-welcome-shell');
         if (!host) {
@@ -5232,7 +5503,7 @@ async function renderWelcomeScreen() {
         if (api && typeof api.renderWelcome === 'function') {
             api.renderWelcome(host, {
                 frontendUrl: NEXORA_LEARNING_FRONTEND_URL,
-                username: currentUsername,
+                username,
             });
             learningWelcomeMounted = true;
         }
@@ -9120,16 +9391,18 @@ function initUI() {
     // Event Listeners
     if(els.sendBtn) els.sendBtn.addEventListener('click', sendMessage);
     if (els.sidebarBrandNexoraTab) {
-        els.sidebarBrandNexoraTab.addEventListener('click', () => applyLearningSidebarMode('nexora'));
+        els.sidebarBrandNexoraTab.addEventListener('click', () => {
+            learningHeaderMode = 'chat';
+            applyLearningSidebarMode('nexora');
+            void syncLearningHeaderMode();
+        });
     }
     if (els.sidebarBrandLearningTab) {
         els.sidebarBrandLearningTab.addEventListener('click', () => {
             if (!learningModeEnabled) return;
-            if (!String(currentConversationId || '').trim()) {
-                learningHeaderMode = 'learning';
-                void syncLearningHeaderMode();
-            }
+            learningHeaderMode = 'learning';
             applyLearningSidebarMode('learning');
+            void syncLearningHeaderMode();
         });
     }
     document.addEventListener('click', (event) => {
@@ -11357,6 +11630,7 @@ async function createNewConversation(silent = false, targetMode = null) {
     const normalizedTargetMode = String(targetMode || '').trim().toLowerCase();
     const preferNexoraChat = normalizedTargetMode === 'chat' && String(learningSidebarMode || '').trim().toLowerCase() === 'nexora';
     const resolvedMode = preferNexoraChat ? 'chat' : resolveNewConversationMode(targetMode);
+    const preserveLearningMainPanel = shouldPreserveLearningMainPanelForNewConversation(resolvedMode);
     currentConversationMode = resolvedMode;
     currentConversationLongtermState = {
         active: false,
@@ -11373,7 +11647,9 @@ async function createNewConversation(silent = false, targetMode = null) {
         currentConversationId = null;
         learningHeaderMode = resolvedMode === 'learning' ? 'learning' : 'chat';
         learningWelcomeMounted = false;
-        learningMainMounted = false;
+        if (!preserveLearningMainPanel) {
+            learningMainMounted = false;
+        }
         syncNotesForConversation(null);
         applyLearningSidebarMode(resolvedMode === 'learning' ? 'learning' : 'nexora');
         void renderWelcomeScreen();
@@ -11442,9 +11718,10 @@ async function loadConversation(id) {
             cachedPuzzleStates = (data.conversation.puzzle_states && typeof data.conversation.puzzle_states === 'object')
                 ? data.conversation.puzzle_states : {};
             refreshConversationImageHistoryFlag(data.conversation.messages || []);
-            syncConversationModeFromConversation(data.conversation);
-            applyLearningSidebarMode(learningReaderOpened ? 'learning' : 'nexora');
-            learningHeaderMode = learningReaderOpened ? 'learning' : 'chat';
+            const loadedConversationMode = syncConversationModeFromConversation(data.conversation);
+            const loadedSidebarMode = resolveLearningSidebarModeForConversation(loadedConversationMode);
+            applyLearningSidebarMode(loadedSidebarMode);
+            learningHeaderMode = loadedSidebarMode === 'learning' ? 'learning' : 'chat';
             void syncLearningHeaderMode();
             // Render
             renderMessages(data.conversation.messages, false, { instant: true });
@@ -11766,13 +12043,20 @@ function createQuestionCardNode(question, options = {}) {
     const content = escapeHtml(String(payload.question_content || '').trim());
     const choices = Array.isArray(payload.choices) ? payload.choices : [];
     const allowOther = payload.allow_other !== false;
-    const cardId = String(payload.question_id || options.cardId || `question_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`);
+    const persistentQuestionId = String(payload.question_id || '').trim();
+    const cardId = String(options.cardId || persistentQuestionId || `question_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`);
+    const cardIdAttr = escapeHtml(cardId);
+    const persistentQuestionAttr = persistentQuestionId ? ` data-question-id="${escapeHtml(persistentQuestionId)}"` : '';
+    wrap.dataset.questionCardId = cardId;
+    if (persistentQuestionId) {
+        wrap.dataset.questionId = persistentQuestionId;
+    }
     const choicesHtml = choices.map((choice, index) => {
         const safeChoice = String(choice || '').trim();
-        return `<button class="question-choice-btn" data-question-card-id="${cardId}" data-choice-index="${index}" data-choice-value="${escapeHtml(safeChoice)}">${escapeHtml(safeChoice)}</button>`;
+        return `<button class="question-choice-btn" data-question-card-id="${cardIdAttr}" data-choice-index="${index}" data-choice-value="${escapeHtml(safeChoice)}">${escapeHtml(safeChoice)}</button>`;
     }).join('');
     wrap.innerHTML = `
-        <div class="question-card-body" data-question-card-id="${cardId}">
+        <div class="question-card-body" data-question-card-id="${cardIdAttr}"${persistentQuestionAttr}>
             <div class="question-card-topline">
                 <div class="question-card-kicker">QUESTION</div>
                 <div class="question-card-pill">Awaiting answer</div>
@@ -11782,10 +12066,9 @@ function createQuestionCardNode(question, options = {}) {
             ${choices.length ? `<div class="question-card-choices">${choicesHtml}</div>` : ''}
             ${allowOther ? `
             <div class="question-card-other">
-                <input class="question-other-input" type="text" placeholder="其他" data-question-card-id="${cardId}">
-                <button class="question-other-submit" data-question-card-id="${cardId}">提交</button>
+                <input class="question-other-input" type="text" placeholder="其他" data-question-card-id="${cardIdAttr}">
+                <button class="question-other-submit" data-question-card-id="${cardIdAttr}">提交</button>
             </div>` : ''}
-            <div class="question-card-meta">Question ID: ${escapeHtml(cardId)}</div>
         </div>
     `;
     wrap.querySelectorAll('.question-choice-btn').forEach((btn) => {
@@ -11815,6 +12098,7 @@ function createPuzzleCardNode(puzzle, options = {}) {
         return api.createPuzzleCardNode(puzzle, {
             ...options,
             frontendUrl: NEXORA_LEARNING_FRONTEND_URL,
+            username: currentUsername,
         });
     }
     return null;
@@ -11877,16 +12161,19 @@ async function submitQuestionAnswer(answerText, questionCard = null) {
     const finalAnswer = String(answerText || '').trim();
     if (!finalAnswer) return;
     const body = questionCard ? questionCard.querySelector('.question-card-body') : null;
+    const questionCardId = String((body && body.dataset && body.dataset.questionCardId) || '').trim();
+    const persistentQuestionId = String((body && body.dataset && body.dataset.questionId) || '').trim();
     const payload = questionCard ? {
-        question_id: String((body && body.dataset && body.dataset.questionCardId) || '').trim(),
+        question_card_id: questionCardId,
+        question_id: persistentQuestionId,
         question_title: String((questionCard.querySelector('.question-card-title') || {}).textContent || '').trim(),
         question_content: String((questionCard.querySelector('.question-card-content') || {}).textContent || '').trim(),
         choices: Array.from(questionCard.querySelectorAll('.question-choice-btn'))
             .map((btn) => String(btn.textContent || '').trim())
             .filter(Boolean),
     } : {};
-    if (payload.question_id) {
-        rememberLockedQuestion(payload.question_id, finalAnswer);
+    if (payload.question_card_id) {
+        rememberLockedQuestion(payload.question_card_id, finalAnswer);
     }
     if (questionCard) applyQuestionAnswer(questionCard, finalAnswer);
     if (els.messageInput) {
@@ -11914,8 +12201,9 @@ function appendQuestionStep(messageDiv, step) {
     const payload = (step.question && typeof step.question === 'object') ? step.question : step;
     const node = createQuestionCardNode(payload);
     if (!node) return;
-    const questionId = String(payload.question_id || '').trim();
-    const rememberedAnswer = getLockedQuestionAnswer(questionId);
+    const body = node.querySelector('.question-card-body');
+    const questionCardId = String((body && body.dataset && body.dataset.questionCardId) || payload.question_id || '').trim();
+    const rememberedAnswer = getLockedQuestionAnswer(questionCardId);
     if (rememberedAnswer) {
         applyQuestionAnswer(node, rememberedAnswer);
     }
@@ -12867,11 +13155,18 @@ async function sendMessage(options = {}) {
     let text = rawText;
     let nextConversationMode = (currentConversationMode === 'longterm' || isAutoContinue)
         ? 'longterm'
-        : ((learningModeEnabled && currentConversationMode === 'learning') ? 'learning' : 'chat');
+        : ((learningModeEnabled && isLearningWorkspaceActive()) ? 'learning' : 'chat');
     if (learningModeEnabled && learningReaderOpened && nextConversationMode !== 'longterm') {
         nextConversationMode = 'learning';
         currentConversationMode = 'learning';
         learningHeaderMode = 'learning';
+    }
+    if (nextConversationMode === 'learning') {
+        currentConversationMode = 'learning';
+        learningHeaderMode = 'learning';
+    } else if (nextConversationMode === 'chat') {
+        currentConversationMode = 'chat';
+        if (!learningReaderOpened) learningHeaderMode = 'chat';
     }
     let longtermTaskText = '';
     if (isAutoContinue && !text) {
@@ -12948,9 +13243,9 @@ async function sendMessage(options = {}) {
     const ensuredConversationId = await ensureConversationExistsForStreaming(text, nextConversationMode);
     if (ensuredConversationId) {
         currentConversationId = ensuredConversationId;
-        if (nextConversationMode === 'learning' && !learningReaderOpened) {
-            learningHeaderMode = 'chat';
-            applyLearningSidebarMode('nexora');
+        if (nextConversationMode === 'learning') {
+            learningHeaderMode = 'learning';
+            applyLearningSidebarMode('learning');
             await syncLearningHeaderMode();
         }
     }
@@ -13064,6 +13359,7 @@ async function sendMessage(options = {}) {
         } : (nextConversationMode === 'learning' ? {
             learning: true,
             lecture_id: String((learningReaderContextSnapshot && learningReaderContextSnapshot.lecture_id) || '').trim(),
+            interview: !!window.__nexoraInterviewPending,
             system_prompt: '',
             context_blocks: learningReaderContextBlocks,
             active_tool_skills: [],
@@ -13084,6 +13380,7 @@ async function sendMessage(options = {}) {
         include_context: !!tokenBudgetState.includeContext,
         skip_user_message: isAutoContinue
     };
+    window.__nexoraInterviewPending = false;
     if (options && options.puzzle_submission) {
         payload.puzzle_submission = options.puzzle_submission;
     }
@@ -16167,15 +16464,28 @@ function findActiveTurnIndexByViewportMiddle(viewportMiddle) {
 function _shouldShowTurnIndicator() {
     if (!String(currentConversationId || '').trim()) return false;
     if (typeof isKnowledgeViewerOpen === 'function' && isKnowledgeViewerOpen()) return false;
+    if (typeof isLearningWorkspaceActive === 'function' && isLearningWorkspaceActive()) return false;
     return true;
 }
 
 function _syncTurnIndicatorVisibility() {
     const panel = document.getElementById('turnIndicatorPanel');
+    const container = document.getElementById('turnIndicatorLines');
     if (!panel) return;
     if (!_shouldShowTurnIndicator()) {
         panel.classList.remove('visible');
+        hideTurnListPopup();
+        return;
     }
+
+    if (container && container.children.length) {
+        panel.classList.add('visible');
+        scheduleTurnIndicatorActiveUpdate({ animate: false, forceScroll: false });
+        return;
+    }
+
+    panel.classList.remove('visible');
+    hideTurnListPopup();
 }
 
 function renderTurnIndicator(messages, options = {}) {
@@ -16250,6 +16560,10 @@ function renderTurnIndicator(messages, options = {}) {
 function appendTurnIndicatorLine(role, msg) {
     const container = document.getElementById('turnIndicatorLines');
     if (!container) return;
+    if (!_shouldShowTurnIndicator()) {
+        _syncTurnIndicatorVisibility();
+        return;
+    }
 
     const roleLower = String(role || '').toLowerCase();
 
@@ -16538,6 +16852,10 @@ function updateTurnIndicatorActive(options = {}) {
     const container = document.getElementById('turnIndicatorLines');
     const messagesContainer = els.messagesContainer;
     if (!container || !messagesContainer) return;
+    if (!_shouldShowTurnIndicator()) {
+        _syncTurnIndicatorVisibility();
+        return;
+    }
 
     if (!container.children.length) return;
 
@@ -24178,9 +24496,20 @@ async function handleFileUpload(e) {
     });
 }
 
+function getUploadPreviewDisplayName(file) {
+    const rawName = String(
+        (file && (file.name || file.original_name || file.filename || file.sandbox_path)) || ''
+    ).trim();
+
+    if (!rawName) return '未命名';
+
+    const pathParts = rawName.split(/[\\/]/).filter(Boolean);
+    return String(pathParts[pathParts.length - 1] || rawName).trim() || '未命名';
+}
+
 function getUploadPreviewIconClass(file) {
     const type = String((file && file.type) || '').toLowerCase();
-    const name = String((file && file.name) || '').toLowerCase();
+    const name = getUploadPreviewDisplayName(file).toLowerCase();
     if ((file && file.type) === 'image') return 'fa-regular fa-image';
     if (type === 'text' || name.endsWith('.txt') || name.endsWith('.md') || name.endsWith('.csv')) return 'fa-regular fa-file-lines';
     if (name.endsWith('.pdf')) return 'fa-regular fa-file-pdf';
@@ -24193,7 +24522,7 @@ function getUploadPreviewIconClass(file) {
 }
 
 function getUploadPreviewMeta(file) {
-    const name = String((file && file.name) || '').trim();
+    const name = getUploadPreviewDisplayName(file);
     const ext = name.includes('.') ? name.split('.').pop().toLowerCase() : '';
     const size = Number(file && file.size ? file.size : 0);
     if (file && file.type === 'image') {
@@ -24258,7 +24587,7 @@ function updateFilePreview() {
 
         const title = document.createElement('div');
         title.className = 'upload-preview-title';
-        title.textContent = String(entry.title || '未命名').trim() || '未命名';
+        title.textContent = getUploadPreviewDisplayName(file);
         body.appendChild(title);
 
         const meta = document.createElement('div');
