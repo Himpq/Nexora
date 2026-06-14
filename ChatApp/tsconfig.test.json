@@ -11,6 +11,8 @@
   },
   "include": [
     "src/services/apiClient.ts",
+    "src/services/learningExperienceService.ts",
+    "src/services/learningChatService.ts",
     "src/services/types.ts",
     "src/config/env.ts",
     "src/services/__tests__/**/*.ts"

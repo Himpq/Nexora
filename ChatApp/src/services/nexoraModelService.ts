@@ -1,18 +1,62 @@
-import { chatApiClient } from "./apiClient";
+import { chatApiClient, learningApiClient } from "./apiClient";
 import type { ModelOption } from "./types";
 
-const DEFAULT_CHAT_MODEL = "hunyuan-lite";
+type RawModelOption = ModelOption | string;
 
-export async function listNexoraModels(_username?: string) {
+function normalizeModelOption(raw: RawModelOption): ModelOption | null {
+  if (typeof raw === "string") {
+    const value = raw.trim();
+    return value ? { id: value, name: value, model: value } : null;
+  }
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+
+  const model = String(raw.model || raw.id || raw.name || "").trim();
+  if (!model) {
+    return null;
+  }
+
   return {
-    success: true,
-    data: [
-      {
-        id: DEFAULT_CHAT_MODEL,
-        name: DEFAULT_CHAT_MODEL,
-        model: DEFAULT_CHAT_MODEL,
-      },
-    ] satisfies ModelOption[],
+    ...raw,
+    id: String(raw.id || model).trim() || model,
+    name: String(raw.name || model).trim() || model,
+    model,
+  };
+}
+
+export async function listNexoraModels(username?: string) {
+  const result = await learningApiClient.getJson<{
+    success: boolean;
+    payload?: {
+      data?: RawModelOption[];
+      models?: RawModelOption[];
+      default_model?: string;
+      defaultModel?: string;
+    };
+    data?: RawModelOption[];
+    models?: RawModelOption[];
+    default_model?: string;
+    defaultModel?: string;
+  }>("/api/nexora/models", {
+    query: username ? { username } : undefined,
+  });
+  const payload = result.payload || result;
+  const rawModels = Array.isArray(payload.data)
+    ? payload.data
+    : Array.isArray(payload.models)
+      ? payload.models
+      : [];
+  const models = rawModels.flatMap((model) => {
+    const normalized = normalizeModelOption(model);
+    return normalized ? [normalized] : [];
+  });
+  const defaultModel = String(payload.default_model || payload.defaultModel || "").trim();
+
+  return {
+    success: result.success !== false,
+    data: models,
+    defaultModel,
   };
 }
 
@@ -30,7 +74,6 @@ export function chatCompletions(payload: {
     raw: unknown;
   }>("/api/papi/chat/completions", {
     ...payload,
-    model: DEFAULT_CHAT_MODEL,
   });
 }
 
@@ -49,7 +92,6 @@ export function responses(payload: {
     raw: unknown;
   }>("/api/papi/responses", {
     ...payload,
-    model: DEFAULT_CHAT_MODEL,
   });
 }
 
@@ -66,7 +108,6 @@ export function completions(payload: {
     "/api/papi/completions",
     {
       ...payload,
-      model: DEFAULT_CHAT_MODEL,
     },
   );
 }

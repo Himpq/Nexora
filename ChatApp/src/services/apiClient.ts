@@ -24,9 +24,11 @@ type ApiClientState = {
 };
 
 export type ApiClient = {
+  request(path: string, options?: RequestOptions): Promise<Response>;
   requestJson<T>(path: string, options?: RequestOptions): Promise<T>;
   getJson<T>(path: string, options?: RequestOptions): Promise<T>;
   postJson<T>(path: string, payload?: unknown, options?: RequestOptions): Promise<T>;
+  postStream(path: string, payload?: unknown, options?: RequestOptions): Promise<Response>;
   patchJson<T>(path: string, payload?: unknown, options?: RequestOptions): Promise<T>;
   deleteJson<T>(path: string, options?: RequestOptions): Promise<T>;
   setBaseUrl(nextBaseUrl: string): void;
@@ -86,13 +88,17 @@ export function createApiClient(initialBaseUrl: string): ApiClient {
     return merged;
   }
 
-  const requestJson = async <T>(path: string, options: RequestOptions = {}): Promise<T> => {
+  const request = async (path: string, options: RequestOptions = {}): Promise<Response> => {
     const { query, headers, body, ...rest } = options;
-    const response = await fetch(buildUrl(path, query), {
+    return fetch(buildUrl(path, query), {
       ...rest,
       body,
       headers: buildHeaders(headers),
     });
+  };
+
+  const requestJson = async <T>(path: string, options: RequestOptions = {}): Promise<T> => {
+    const response = await request(path, options);
     const payload = (await response.json().catch(() => null)) as
       | ApiSuccess
       | ApiErrorPayload
@@ -120,6 +126,18 @@ export function createApiClient(initialBaseUrl: string): ApiClient {
       body: JSON.stringify(payload ?? {}),
     });
 
+  const postStream = (path: string, payload?: unknown, options?: RequestOptions) =>
+    request(path, {
+      ...options,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+        ...(options?.headers || {}),
+      },
+      body: JSON.stringify(payload ?? {}),
+    });
+
   const patchJson = <T>(path: string, payload?: unknown, options?: RequestOptions) =>
     requestJson<T>(path, {
       ...options,
@@ -135,9 +153,11 @@ export function createApiClient(initialBaseUrl: string): ApiClient {
     requestJson<T>(path, { ...options, method: "DELETE" });
 
   return {
+    request,
     requestJson,
     getJson,
     postJson,
+    postStream,
     patchJson,
     deleteJson,
     setBaseUrl(nextBaseUrl: string) {
@@ -162,6 +182,7 @@ export function createApiClient(initialBaseUrl: string): ApiClient {
 export const learningApiClient = createApiClient(appEnv.nexoraLearningBaseUrl);
 export const chatApiClient = createApiClient(appEnv.chatDBServerBaseUrl);
 chatApiClient.setPublicApiKey(appEnv.chatDBServerPublicApiKey);
+learningApiClient.setPublicApiKey(appEnv.nexoraLearningRuntimeApiKey);
 
 export const requestJson = learningApiClient.requestJson;
 export const getJson = learningApiClient.getJson;

@@ -16,6 +16,21 @@ from core.lectures import load_book_info_xml, load_book_text
 from core.lectures import list_lectures as _list_all_lectures, list_books as _list_lecture_books
 
 _cfg: Dict[str, Any] = {}
+_TELEMETRY_READING_COLUMNS = ["ts", "uid", "bid", "ci", "si", "event", "scroll", "focus", "sel_text", "extra"]
+_ENGAGING_READING_EVENTS = frozenset({
+    "snapshot",
+    "scroll",
+    "selection",
+    "session_complete",
+    "chapter_complete",
+    "focus_in",
+})
+_LEARNING_ACTIVE_RECORD_TYPES = frozenset({
+    "chapter_completed",
+    "study_time",
+    "study_session",
+    "learning_time",
+})
 
 
 def init_learning_progress(cfg: Dict[str, Any]) -> None:
@@ -72,6 +87,37 @@ def list_lecture_chapters(
     return chapters
 
 
+def parse_book_info_xml_chapter_titles(xml_text: str) -> List[str]:
+    """Extract chapter titles from bookinfo.xml without reading full book text."""
+    text = str(xml_text or "")
+    titles: List[str] = []
+    for match in re.finditer(r"<chapter_name>\s*(.*?)\s*</chapter_name>", text, flags=re.IGNORECASE):
+        title = str(match.group(1) or "").strip()
+        if title:
+            titles.append(title)
+    return titles
+
+
+def list_lecture_chapter_names(
+    lecture_id: str,
+    books: list,
+) -> List[str]:
+    """Return chapter names across all books using only lightweight metadata."""
+    chapter_names: List[str] = []
+    for book in (books or []):
+        book_id = str((book or {}).get("id") or "").strip()
+        if not book_id:
+            continue
+
+        try:
+            info_xml = str(load_book_info_xml(_cfg, lecture_id, book_id) or "")
+            chapter_names.extend(parse_book_info_xml_chapter_titles(info_xml))
+        except Exception:
+            continue
+
+    return chapter_names
+
+
 def list_completed_chapter_names(
     records: List[Dict[str, Any]],
     lecture_id: str,
@@ -95,15 +141,15 @@ def compute_user_lecture_progress(
     user_id: str,
     lecture_id: str,
     books: list,
+    records: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """从用户 learning.jsonl 计算该课程的 per-user 进度.
 
     返回 {progress, current_chapter, next_chapter}，覆盖 lecture.json 全局值.
     """
-    records = user_store.list_learning_records(_cfg, user_id)
-    completed = list_completed_chapter_names(records, lecture_id)
-    all_chapters = list_lecture_chapters(lecture_id, books)
-    chapter_names = [str(ch.get("title") or "").strip() for ch in all_chapters if ch.get("title")]
+    learning_records = records if records is not None else user_store.list_learning_records(_cfg, user_id)
+    completed = list_completed_chapter_names(learning_records, lecture_id)
+    chapter_names = list_lecture_chapter_names(lecture_id, books)
     total = len(chapter_names)
 
     current_chapter = ""
@@ -129,7 +175,10 @@ def compute_user_lecture_progress(
     }
 
 
-def build_user_study_hours_map(user_id: str) -> Dict[str, float]:
+def build_user_study_hours_map(
+    user_id: str,
+    records: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, float]:
     """Aggregate per-lecture study hours for a user.
 
     Reads both ``learning.jsonl`` (if any explicit duration fields are set)
@@ -139,7 +188,7 @@ def build_user_study_hours_map(user_id: str) -> Dict[str, float]:
 
     # --- learning.jsonl (explicit duration fields) ---------------------------------
     try:
-        rows = user_store.list_learning_records(_cfg, user_id)
+        rows = records if records is not None else user_store.list_learning_records(_cfg, user_id)
         for row in rows:
             if not isinstance(row, dict):
                 continue
@@ -196,6 +245,38 @@ def _resolve_telemetry_csv(user_id: str) -> Path:
     return data_dir / "users" / uid / "telemetry" / "reading.csv"
 
 
+def _timestamp_to_unix_seconds(value: Any) -> int:
+    """Normalize frontend telemetry milliseconds / backend record seconds to unix seconds."""
+    try:
+        raw = float(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+    if raw <= 0:
+        return 0
+
+    if raw > 10_000_000_000:
+        return int(raw / 1000)
+
+    return int(raw)
+
+
+def _timestamp_to_milliseconds(value: Any) -> float:
+    """Normalize telemetry timestamps before calculating duration spans."""
+    try:
+        raw = float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+    if raw <= 0:
+        return 0.0
+
+    if raw > 10_000_000_000:
+        return raw
+
+    return raw * 1000.0
+
+
 def _telemetry_reading_seconds_per_book(user_id: str) -> Dict[str, float]:
     """Estimate per-book reading seconds from telemetry.
 
@@ -217,26 +298,16 @@ def _telemetry_reading_seconds_per_book(user_id: str) -> Dict[str, float]:
     if not csv_path.exists():
         return snapshot_seconds
 
-    # Events that indicate actual user engagement (not just reader_close noise)
-    _ENGAGING_EVENTS = frozenset({
-        "snapshot", "scroll", "selection", "session_complete",
-        "chapter_complete", "focus_in",
-    })
-
-    columns = ["ts", "uid", "bid", "ci", "si", "event", "scroll", "focus", "sel_text", "extra"]
     try:
         with csv_path.open("r", encoding="utf-8", newline="") as f:
-            reader = csv.DictReader(f, fieldnames=columns)
+            reader = csv.DictReader(f, fieldnames=_TELEMETRY_READING_COLUMNS)
             next(reader, None)  # skip header
             for raw in reader:
                 bid = str(raw.get("bid") or "").strip()
                 if not bid:
                     continue
-                # parse timestamp
-                try:
-                    ts_val = float(raw.get("ts") or 0)
-                except (ValueError, TypeError):
-                    ts_val = 0.0
+
+                ts_val = _timestamp_to_milliseconds(raw.get("ts"))
                 event = str(raw.get("event") or "").strip()
 
                 # ── source 1: snapshot heartbeats ──
@@ -250,7 +321,7 @@ def _telemetry_reading_seconds_per_book(user_id: str) -> Dict[str, float]:
                         duration_seconds[bid] = duration_seconds.get(bid, 0.0) + ms / 1000.0
 
                 # ── source 3: track event span for engaging events ──
-                if event in _ENGAGING_EVENTS and ts_val > 0:
+                if event in _ENGAGING_READING_EVENTS and ts_val > 0:
                     if bid not in book_first_ts or ts_val < book_first_ts[bid]:
                         book_first_ts[bid] = ts_val
                     if ts_val > book_last_ts.get(bid, 0.0):
@@ -279,6 +350,33 @@ def _telemetry_reading_seconds_per_book(user_id: str) -> Dict[str, float]:
     return result
 
 
+def _telemetry_reading_last_ts_per_book(user_id: str) -> Dict[str, int]:
+    """Return latest engaging reading timestamp per book as unix seconds."""
+    csv_path = _resolve_telemetry_csv(user_id)
+    if not csv_path.exists():
+        return {}
+
+    last_by_book: Dict[str, int] = {}
+    with csv_path.open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f, fieldnames=_TELEMETRY_READING_COLUMNS)
+        next(reader, None)
+
+        for raw in reader:
+            bid = str(raw.get("bid") or "").strip()
+            if not bid:
+                continue
+
+            event = str(raw.get("event") or "").strip()
+            if event not in _ENGAGING_READING_EVENTS:
+                continue
+
+            ts_val = _timestamp_to_unix_seconds(raw.get("ts"))
+            if ts_val > last_by_book.get(bid, 0):
+                last_by_book[bid] = ts_val
+
+    return last_by_book
+
+
 def _parse_duration_ms_from_extra(raw_extra: str) -> float:
     """Extract duration_ms / active_duration_ms from the extra JSON column."""
     text = str(raw_extra or "").strip()
@@ -300,6 +398,42 @@ def _parse_duration_ms_from_extra(raw_extra: str) -> float:
     except Exception:
         pass
     return 0.0
+
+
+def build_user_lecture_last_active_map(
+    user_id: str,
+    records: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, int]:
+    """Aggregate latest real learning activity per lecture."""
+    last_map: Dict[str, int] = {}
+
+    rows = records if records is not None else user_store.list_learning_records(_cfg, user_id)
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        record_type = str(row.get("type") or "").strip()
+        if record_type not in _LEARNING_ACTIVE_RECORD_TYPES:
+            continue
+
+        lecture_id = str(row.get("lecture_id") or "").strip()
+        if not lecture_id:
+            continue
+
+        ts_val = _timestamp_to_unix_seconds(row.get("timestamp") or row.get("ts"))
+        if ts_val > last_map.get(lecture_id, 0):
+            last_map[lecture_id] = ts_val
+
+    book_last_map = _telemetry_reading_last_ts_per_book(user_id)
+    if book_last_map:
+        book_to_lecture = _build_book_to_lecture_mapping()
+
+        for book_id, ts_val in book_last_map.items():
+            lecture_id = book_to_lecture.get(book_id)
+            if lecture_id and ts_val > last_map.get(lecture_id, 0):
+                last_map[lecture_id] = ts_val
+
+    return last_map
 
 
 def _build_book_to_lecture_mapping() -> Dict[str, str]:

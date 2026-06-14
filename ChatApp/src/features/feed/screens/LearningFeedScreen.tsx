@@ -3,12 +3,14 @@ import { Pressable, StyleSheet, TextInput, View } from "react-native";
 
 import { useSession } from "../../../app/providers/SessionProvider";
 import {
+  AppBadge,
   AppButton,
   AppCard,
   AppText,
   colors,
   radius,
   Screen,
+  ScreenHeader,
   spacing,
   StateView,
 } from "../../../design";
@@ -25,6 +27,7 @@ import {
   type LearningFeedComment,
   type LearningFeedItem,
 } from "../../../services/learningFeedService";
+import { normalizeError } from "../../../utils/errors";
 
 type OperationTarget =
   | "create-feed"
@@ -35,11 +38,12 @@ type OperationTarget =
   | `delete-comment:${string}:${string}`
   | `delete-channel:${string}`;
 
-const PUBLIC_CHANNEL_MEMBER_SENTINEL = "ALL";
+type QueuedOperation = {
+  target: OperationTarget;
+  action: () => Promise<void>;
+};
 
-function normalizeError(err: unknown) {
-  return err instanceof Error ? err : new Error(String(err || "Unknown error"));
-}
+const PUBLIC_CHANNEL_MEMBER_SENTINEL = "ALL";
 
 function getChannelTitle(channel?: LearningFeedChannel) {
   return String(channel?.title || channel?.id || "").trim() || "未命名频道";
@@ -98,7 +102,9 @@ export function LearningFeedScreen() {
   const [error, setError] = useState<Error | null>(null);
   const [operationError, setOperationError] = useState<Error | null>(null);
   const [activeOperation, setActiveOperation] = useState<OperationTarget | null>(null);
+  const [queuedOperationCount, setQueuedOperationCount] = useState(0);
   const activeOperationRef = useRef<OperationTarget | null>(null);
+  const operationQueueRef = useRef<QueuedOperation[]>([]);
   const selectedChannelIdRef = useRef(selectedChannelId);
   const loadRequestIdRef = useRef(0);
 
@@ -153,21 +159,38 @@ export function LearningFeedScreen() {
   }, [loadFeed]);
 
   const runOperation = useCallback(
-    async (target: OperationTarget, action: () => Promise<void>) => {
+    (target: OperationTarget, action: () => Promise<void>) => {
+      operationQueueRef.current.push({ target, action });
+      setQueuedOperationCount(operationQueueRef.current.length);
+
       if (activeOperationRef.current) {
         return;
       }
-      activeOperationRef.current = target;
-      setActiveOperation(target);
-      setOperationError(null);
-      try {
-        await action();
-      } catch (err) {
-        setOperationError(normalizeError(err));
-      } finally {
-        activeOperationRef.current = null;
-        setActiveOperation(null);
-      }
+
+      const drainQueue = async () => {
+        while (operationQueueRef.current.length > 0) {
+          const next = operationQueueRef.current.shift();
+          setQueuedOperationCount(operationQueueRef.current.length);
+          if (!next) {
+            continue;
+          }
+
+          activeOperationRef.current = next.target;
+          setActiveOperation(next.target);
+          setOperationError(null);
+          try {
+            await next.action();
+          } catch (err) {
+            setOperationError(normalizeError(err));
+          } finally {
+            activeOperationRef.current = null;
+            setActiveOperation(null);
+          }
+        }
+        setQueuedOperationCount(0);
+      };
+
+      void drainQueue();
     },
     [],
   );
@@ -321,6 +344,7 @@ export function LearningFeedScreen() {
     return (
       <Screen>
         <StateView
+          icon="alert-triangle"
           title="动态加载失败"
           message={error.message}
           actionLabel="重试"
@@ -332,19 +356,19 @@ export function LearningFeedScreen() {
 
   return (
     <Screen scroll>
-      <View style={styles.header}>
-        <View style={styles.titleBlock}>
-          <AppText variant="title">学习动态</AppText>
-          <AppText tone="secondary">
-            {getChannelTitle(selectedChannel)} · {items.length} 条动态
-          </AppText>
-        </View>
-        <AppButton
-          title="刷新"
-          variant="ghost"
-          onPress={() => void loadFeed(selectedChannelId, { replaceScreen: false })}
-        />
-      </View>
+      <ScreenHeader
+        overline="Nexora"
+        title="学习动态"
+        subtitle={`${getChannelTitle(selectedChannel)} · ${items.length} 条动态`}
+        trailing={
+          <AppButton
+            title="刷新"
+            variant="ghost"
+            size="sm"
+            onPress={() => void loadFeed(selectedChannelId, { replaceScreen: false })}
+          />
+        }
+      />
 
       <View style={styles.channelRow}>
         {channels.map((channel) => {
@@ -373,9 +397,11 @@ export function LearningFeedScreen() {
       </View>
 
       {operationError ? (
-        <AppCard style={styles.errorCard}>
-          <AppText tone="danger">{operationError.message}</AppText>
-          <AppButton title="关闭" variant="ghost" onPress={() => setOperationError(null)} />
+        <AppCard variant="outlined" style={styles.errorCard}>
+          <AppText tone="danger" variant="caption" style={styles.flexText}>
+            ⚠ {operationError.message}
+          </AppText>
+          <AppButton title="关闭" variant="ghost" size="sm" onPress={() => setOperationError(null)} />
         </AppCard>
       ) : null}
 
@@ -390,11 +416,12 @@ export function LearningFeedScreen() {
           textAlignVertical="top"
         />
         <View style={styles.cardActions}>
-          <AppText variant="caption" tone="secondary">
+          <AppText variant="caption" tone="muted">
             发布到 {getChannelTitle(selectedChannel)}
           </AppText>
           <AppButton
             title="发布"
+            size="sm"
             loading={activeOperation === "create-feed"}
             disabled={!composerText.trim()}
             onPress={handleCreateFeed}
@@ -403,9 +430,20 @@ export function LearningFeedScreen() {
         </View>
       </AppCard>
 
+      {activeOperation || queuedOperationCount > 0 ? (
+        <AppCard variant="muted" style={styles.queueStatusCard}>
+          <AppText variant="caption" tone="muted">
+            {activeOperation ? "正在同步操作" : "等待同步"}
+            {queuedOperationCount > 0 ? ` · 队列中 ${queuedOperationCount} 项` : ""}
+          </AppText>
+        </AppCard>
+      ) : null}
+
       {isAdmin ? (
         <AppCard style={styles.adminCard}>
-          <AppText variant="heading">频道管理</AppText>
+          <AppText variant="overline" tone="muted">
+            频道管理
+          </AppText>
           <TextInput
             value={channelTitle}
             onChangeText={setChannelTitle}
@@ -421,9 +459,13 @@ export function LearningFeedScreen() {
             style={styles.singleLineInput}
           />
           <View style={styles.cardActions}>
+            <AppText variant="caption" tone="muted">
+              新频道
+            </AppText>
             <AppButton
               title="创建频道"
-              variant="secondary"
+              variant="outline"
+              size="sm"
               loading={activeOperation === "create-channel"}
               disabled={!isAdmin || !channelTitle.trim()}
               onPress={handleCreateChannel}
@@ -435,8 +477,8 @@ export function LearningFeedScreen() {
             .map((channel) => (
               <View key={channel.id} style={styles.channelAdminRow}>
                 <View style={styles.titleBlock}>
-                  <AppText>{getChannelTitle(channel)}</AppText>
-                  <AppText variant="caption" tone="secondary">
+                  <AppText variant="bodyStrong">{getChannelTitle(channel)}</AppText>
+                  <AppText variant="caption" tone="muted">
                     {channel.type === "public"
                       ? "公开频道"
                       : `${channel.member_user_ids?.length || 0} 名成员`}
@@ -445,6 +487,7 @@ export function LearningFeedScreen() {
                 <AppButton
                   title="删除"
                   variant="ghost"
+                  size="sm"
                   loading={activeOperation === `delete-channel:${channel.id}`}
                   onPress={() => handleDeleteChannel(channel)}
                   style={styles.tinyButton}
@@ -456,6 +499,7 @@ export function LearningFeedScreen() {
 
       {items.length === 0 ? (
         <StateView
+          icon="activity"
           title="暂无动态"
           message="当前频道还没有学习动态。"
           actionLabel="刷新"
@@ -469,19 +513,18 @@ export function LearningFeedScreen() {
           return (
             <AppCard key={feedId || `feed-${index}`} style={styles.feedCard}>
               <View style={styles.feedHeader}>
+                <View style={styles.avatar}>
+                  <AppText style={styles.avatarText}>
+                    {getAuthorName(item).slice(0, 1).toUpperCase()}
+                  </AppText>
+                </View>
                 <View style={styles.titleBlock}>
                   <View style={styles.authorRow}>
-                    <AppText variant="heading">{getAuthorName(item)}</AppText>
-                    {item.author_is_admin ? (
-                      <View style={styles.adminBadge}>
-                        <AppText variant="caption" style={styles.adminBadgeText}>
-                          Admin
-                        </AppText>
-                      </View>
-                    ) : null}
+                    <AppText variant="bodyStrong">{getAuthorName(item)}</AppText>
+                    {item.author_is_admin ? <AppBadge label="Admin" tone="solid" /> : null}
                   </View>
                   {formatTimestamp(item.timestamp) ? (
-                    <AppText variant="caption" tone="secondary">
+                    <AppText variant="caption" tone="muted">
                       {formatTimestamp(item.timestamp)}
                     </AppText>
                   ) : null}
@@ -490,6 +533,7 @@ export function LearningFeedScreen() {
                   <AppButton
                     title="删除"
                     variant="ghost"
+                    size="sm"
                     loading={activeOperation === `delete-feed:${feedId}`}
                     onPress={() => handleDeleteFeed(item)}
                     style={styles.tinyButton}
@@ -500,14 +544,19 @@ export function LearningFeedScreen() {
               <AppText style={styles.feedContent}>{getFeedContent(item)}</AppText>
 
               <View style={styles.feedActions}>
-                <AppButton
-                  title={`${liked ? "已赞" : "点赞"} ${item.likes_count || 0}`}
-                  variant={liked ? "secondary" : "ghost"}
-                  loading={activeOperation === `like:${feedId}`}
+                <Pressable
                   onPress={() => handleToggleLike(item)}
-                  style={styles.feedActionButton}
-                />
-                <AppText variant="caption" tone="secondary">
+                  style={({ pressed }) => [
+                    styles.likeButton,
+                    liked && styles.likeButtonActive,
+                    pressed && styles.pressed,
+                  ]}
+                >
+                  <AppText variant="caption" style={liked ? styles.likeTextActive : styles.likeText}>
+                    {liked ? "♥" : "♡"} {item.likes_count || 0}
+                  </AppText>
+                </Pressable>
+                <AppText variant="caption" tone="muted">
                   评论 {item.comments_count ?? comments.length}
                 </AppText>
               </View>
@@ -519,16 +568,17 @@ export function LearningFeedScreen() {
                     return (
                       <View key={commentId || `comment-${feedId}-${commentIndex}`} style={styles.commentRow}>
                         <View style={styles.titleBlock}>
-                          <AppText variant="caption" tone="secondary">
+                          <AppText variant="caption" tone="muted">
                             {getAuthorName(comment)}
                             {comment.author_is_admin ? " · Admin" : ""}
                           </AppText>
-                          <AppText>{comment.content}</AppText>
+                          <AppText variant="caption">{comment.content}</AppText>
                         </View>
                         {comment.can_delete ? (
                           <AppButton
                             title="删除"
                             variant="ghost"
+                            size="sm"
                             loading={activeOperation === `delete-comment:${feedId}:${commentId}`}
                             onPress={() => handleDeleteComment(item, comment)}
                             style={styles.tinyButton}
@@ -552,7 +602,8 @@ export function LearningFeedScreen() {
                 />
                 <AppButton
                   title="发送"
-                  variant="secondary"
+                  variant="outline"
+                  size="sm"
                   loading={activeOperation === `comment:${feedId}`}
                   disabled={!String(commentDrafts[feedId] || "").trim()}
                   onPress={() => handleAddComment(item)}
@@ -568,11 +619,6 @@ export function LearningFeedScreen() {
 }
 
 const styles = StyleSheet.create({
-  header: {
-    alignItems: "flex-start",
-    flexDirection: "row",
-    gap: spacing.md,
-  },
   titleBlock: {
     flex: 1,
     gap: spacing.xs,
@@ -585,8 +631,8 @@ const styles = StyleSheet.create({
   channelPill: {
     backgroundColor: colors.surface,
     borderColor: colors.border,
-    borderRadius: 999,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: radius.pill,
+    borderWidth: 1,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
   },
@@ -599,19 +645,27 @@ const styles = StyleSheet.create({
   },
   channelPillText: {
     color: colors.textSecondary,
-    fontWeight: "700",
+    fontWeight: "600",
   },
   channelPillTextSelected: {
-    color: "#FFFFFF",
-    fontWeight: "700",
+    color: colors.onPrimary,
+    fontWeight: "600",
   },
   pressed: {
-    opacity: 0.82,
+    opacity: 0.7,
   },
   errorCard: {
     alignItems: "center",
     flexDirection: "row",
     gap: spacing.md,
+    borderLeftWidth: 4,
+    borderLeftColor: colors.danger,
+  },
+  queueStatusCard: {
+    paddingVertical: spacing.md,
+  },
+  flexText: {
+    flex: 1,
   },
   composerCard: {
     gap: spacing.md,
@@ -620,19 +674,21 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceMuted,
     borderColor: colors.border,
     borderRadius: radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderWidth: 1,
     color: colors.text,
     minHeight: 92,
     padding: spacing.md,
+    fontSize: 15,
   },
   singleLineInput: {
     backgroundColor: colors.surfaceMuted,
     borderColor: colors.border,
     borderRadius: radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderWidth: 1,
     color: colors.text,
-    minHeight: 44,
+    minHeight: 48,
     paddingHorizontal: spacing.md,
+    fontSize: 15,
   },
   cardActions: {
     alignItems: "center",
@@ -645,8 +701,7 @@ const styles = StyleSheet.create({
     minWidth: 88,
   },
   tinyButton: {
-    minHeight: 34,
-    minWidth: 64,
+    minWidth: 56,
     paddingHorizontal: spacing.sm,
   },
   adminCard: {
@@ -654,8 +709,8 @@ const styles = StyleSheet.create({
   },
   channelAdminRow: {
     alignItems: "center",
-    borderTopColor: colors.border,
-    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.divider,
+    borderTopWidth: 1,
     flexDirection: "row",
     gap: spacing.md,
     paddingTop: spacing.md,
@@ -664,9 +719,22 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   feedHeader: {
-    alignItems: "flex-start",
+    alignItems: "center",
     flexDirection: "row",
     gap: spacing.md,
+  },
+  avatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: colors.surfaceInverse,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  avatarText: {
+    color: colors.textInverse,
+    fontSize: 16,
+    fontWeight: "700",
   },
   authorRow: {
     alignItems: "center",
@@ -674,29 +742,33 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: spacing.sm,
   },
-  adminBadge: {
-    backgroundColor: colors.warning,
-    borderRadius: radius.sm,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs,
-  },
-  adminBadgeText: {
-    color: "#FFFFFF",
-    fontWeight: "700",
-  },
   feedContent: {
     flexShrink: 1,
+    lineHeight: 22,
   },
   feedActions: {
     alignItems: "center",
     flexDirection: "row",
-    flexWrap: "wrap",
     gap: spacing.md,
   },
-  feedActionButton: {
-    minHeight: 36,
-    minWidth: 92,
+  likeButton: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.pill,
     paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm - 2,
+  },
+  likeButtonActive: {
+    backgroundColor: colors.surfaceInverse,
+    borderColor: colors.surfaceInverse,
+  },
+  likeText: {
+    color: colors.textSecondary,
+    fontWeight: "600",
+  },
+  likeTextActive: {
+    color: colors.textInverse,
+    fontWeight: "600",
   },
   comments: {
     backgroundColor: colors.surfaceMuted,
@@ -718,10 +790,11 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceMuted,
     borderColor: colors.border,
     borderRadius: radius.md,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderWidth: 1,
     color: colors.text,
     flex: 1,
     minHeight: 44,
     paddingHorizontal: spacing.md,
+    fontSize: 14,
   },
 });

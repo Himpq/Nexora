@@ -172,6 +172,10 @@ def run_summary_with_tools(
     on_delta: Optional[Callable[[str], None]] = None,
     append_log_text: Optional[Callable[[str], None]] = None,
     log_event: Optional[Callable[..., None]] = None,
+    push_model_output: Optional[Callable[[str, str, str], None]] = None,
+    push_tool_call: Optional[Callable[[str, str, str, str, str], None]] = None,
+    lecture_id: str = "",
+    book_id: str = "",
 ) -> Dict[str, Any]:
     """使用 write 工具循环调用模型生成全书总结（模拟 annotation 的工具链模式）。"""
     try:
@@ -267,6 +271,11 @@ def run_summary_with_tools(
 
         message = _extract_choice_message(response)
         tool_calls = message.get("tool_calls") or []
+        assistant_content = str(message.get("content") or "")
+
+        # 推送模型文本输出到活动日志
+        if assistant_content.strip() and push_model_output and lecture_id and book_id:
+            push_model_output(lecture_id, book_id, assistant_content)
 
         if log_event:
             log_event(
@@ -361,6 +370,8 @@ def run_book_summary_once(
     as_bool: Callable[..., bool],
     log_event: Callable[..., None],
     append_log_text: Callable[[str], None],
+    push_model_output: Optional[Callable[[str, str, str], None]] = None,
+    push_tool_call: Optional[Callable[[str, str, str, str, str], None]] = None,
 ) -> Dict[str, Any]:
     """执行一次全书概述生成。
 
@@ -427,6 +438,13 @@ def run_book_summary_once(
         },
     )
 
+    def _on_delta(delta: str) -> None:
+        piece = str(delta or "")
+        if not piece:
+            return
+        if append_log_text:
+            append_log_text(piece)
+
     try:
         result = run_summary_with_tools(
             runner=runner,
@@ -441,9 +459,13 @@ def run_book_summary_once(
             request_timeout=request_timeout,
             stream=stream,
             think=think,
-            on_delta=lambda delta: append_log_text(str(delta or "")) if append_log_text else None,
+            on_delta=_on_delta,
             append_log_text=append_log_text,
             log_event=log_event,
+            push_model_output=push_model_output,
+            push_tool_call=push_tool_call,
+            lecture_id=lecture_key,
+            book_id=book_key,
         )
     except Exception as exc:
         raise RuntimeError(f"全书概述模型调用失败: {exc}") from exc

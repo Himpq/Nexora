@@ -3,19 +3,24 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import html as html_lib
+import queue
 import re
 import threading
 import time
+from collections.abc import Mapping as MappingABC
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Mapping
 from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
-from flask import Blueprint, jsonify, request, send_file, send_from_directory
+from flask import Blueprint, Response, jsonify, request, send_file, send_from_directory, stream_with_context
 from werkzeug.utils import secure_filename
 
 from core import storage
+from prompts import PROFILE_INTERVIEW_PROMPT, PROFILE_UPDATE_PROMPT
 from core.lectures import (
     create_book as create_lecture_book,
     create_lecture as create_learning_lecture,
@@ -49,10 +54,11 @@ from core.models import (
     update_default_nexora_model,
 )
 from core.nexora_proxy import NexoraProxy
-from core.runlog import log_event
+from core.runlog import append_log_text, log_event
 from core.runlog import available_log_sources, list_structured_logs
 from core import user as user_store
 from core.memory.memory_analysis import run_memory_analysis_job
+from core.memory.profile_extract import parse_profile_dimensions, run_profile_extraction_job
 from core.memory.profile_question import run_profile_question_job
 from core.learning_feed import prepend_learning_feed_item
 from core.learning_feed import list_learning_feed_items
@@ -66,6 +72,7 @@ from core.learning_feed import delete_learning_feed_item
 from core.learning_feed import delete_learning_feed_comment
 from core.user import append_notification
 from core.user.learning_progress import (
+    build_user_lecture_last_active_map as _build_user_lecture_last_active_map,
     build_user_study_hours_map as _build_user_study_hours_map,
     compute_user_lecture_progress as _compute_user_lecture_progress,
 )
@@ -200,6 +207,32 @@ def _run_background_memory_job(cfg: Mapping[str, Any], job: Mapping[str, Any]) -
         run_profile_question_job(cfg, job)
         return
     run_memory_analysis_job(cfg, job)
+    # 章节完成触发完整链：记忆分析 → 画像提取 → 画像出题
+    if reason == "chapter_complete":
+        try:
+            run_profile_extraction_job(cfg, job)
+        except Exception as exc:
+            log_event(
+                "profile_extraction_chain_error",
+                "画像提取串联执行失败",
+                payload={
+                    "job_id": str(job.get("job_id") or "").strip(),
+                    "user_id": str(job.get("user_id") or "").strip(),
+                    "error": str(exc),
+                },
+            )
+        try:
+            run_profile_question_job(cfg, job)
+        except Exception as exc:
+            log_event(
+                "profile_question_chain_error",
+                "画像出题串联执行失败",
+                payload={
+                    "job_id": str(job.get("job_id") or "").strip(),
+                    "user_id": str(job.get("user_id") or "").strip(),
+                    "error": str(exc),
+                },
+            )
 
 
 def _allowed(filename: str) -> bool:
@@ -465,6 +498,7 @@ def _lecture_or_404(lecture_id: str) -> Tuple[Optional[Dict[str, Any]], Optional
 
 def _resolve_runtime_user_id() -> str:
     query_username = str(request.args.get("username") or "").strip()
+
     if query_username:
         return query_username
 
@@ -477,22 +511,29 @@ def _resolve_runtime_user_id() -> str:
         "X-Forwarded-User",
     ):
         candidate = str(request.headers.get(header_name) or "").strip()
+
         if candidate:
             return candidate
 
     session_result = _fetch_session_user_from_nexora()
+
     if session_result.get("success"):
         user_payload = session_result.get("user") if isinstance(session_result.get("user"), dict) else {}
         resolved = str(user_payload.get("id") or user_payload.get("username") or "").strip()
+
         if resolved:
             return resolved
 
-    if _proxy is not None:
-        default_username = str(getattr(_proxy, "default_username", "") or "").strip()
-        if default_username:
-            return default_username
-
-    return "guest"
+    log_event(
+        "runtime_user_resolution_failed",
+        "Runtime user resolution failed because no Nexora session user was available.",
+        payload={
+            "has_cookie": bool(str(request.headers.get("Cookie") or "").strip()),
+            "session_lookup_success": bool(session_result.get("success")),
+            "session_lookup_message": str(session_result.get("message") or "").strip(),
+        },
+    )
+    return ""
 
 
 def _escape_card_html(value: Any) -> str:
@@ -734,15 +775,32 @@ def frontend_context():
                         or ""
                     ).strip()
 
-        # 会话解析不到时，再走显式用户名或默认用户名。
+        # 会话解析不到时，只允许显式用户名继续；否则直接返回认证错误。
         if not user_payload:
-            if not username:
-                username = str(getattr(_proxy, "default_username", "") or "").strip()
-            result = _proxy.get_user_info(username=username or None)
+            if not username and not requested_username and not header_username:
+                log_event(
+                    "frontend_context_auth_missing",
+                    "Frontend context rejected because Nexora session user could not be resolved.",
+                    payload={
+                        "has_cookie": bool(str(request.headers.get("Cookie") or "").strip()),
+                        "integration_base_url": str(integration.get("base_url") or "").strip(),
+                    },
+                )
+                return jsonify(
+                    {
+                        "success": False,
+                        "error": "Nexora 登录态缺失，请从已登录的 Nexora 页面进入 NexoraLearning。",
+                        "integration": integration,
+                    }
+                ), 401
+
+            result = _proxy.get_user_info(username=username)
+
             if result.get("success"):
                 user_payload = result.get("user") if isinstance(result.get("user"), dict) else {}
                 role = str(user_payload.get("role") or "").strip().lower()
                 is_admin = role == "admin"
+
                 if not username:
                     username = str(
                         user_payload.get("id")
@@ -768,6 +826,21 @@ def frontend_context():
         else:
             integration["connected"] = False
             integration["message"] = str(probe.get("message") or "").strip()
+    elif not username:
+        log_event(
+            "frontend_context_proxy_missing",
+            "Frontend context rejected because Nexora proxy is not initialized.",
+            payload={
+                "has_cookie": bool(str(request.headers.get("Cookie") or "").strip()),
+            },
+        )
+        return jsonify(
+            {
+                "success": False,
+                "error": "NexoraLearning 未初始化 Nexora 代理，无法解析当前登录用户。",
+                "integration": integration,
+            }
+        ), 503
 
     log_event(
         "frontend_context_resolution",
@@ -801,28 +874,94 @@ def frontend_context():
     )
 
 
-def _build_feed_author_snapshot(username: str) -> Dict[str, str]:
+def _build_feed_actor_payload(username: str) -> Dict[str, str]:
+    """解析动态发起者的公开展示字段，供动态流和通知列表复用。"""
     user_id = str(username or "").strip()
-    snapshot = {"user_id": user_id}
+    snapshot = {"user_id": user_id, "username": user_id}
     if not user_id:
         return snapshot
+
     session_result = _fetch_session_user_from_nexora()
     if session_result.get("success"):
         user = session_result.get("user") if isinstance(session_result.get("user"), dict) else {}
         session_user_id = str(user.get("id") or "").strip()
         if session_user_id and session_user_id == user_id:
-            snapshot["user_id"] = session_user_id
+            snapshot.update(
+                {
+                    "user_id": session_user_id,
+                    "username": str(user.get("username") or session_user_id).strip() or session_user_id,
+                }
+            )
+            for key in ("display_name", "nickname"):
+                value = str(user.get(key) or "").strip()
+                if value:
+                    snapshot[key] = value
+            avatar_url = str(user.get("avatar_url") or user.get("avatar") or "").strip()
+            if avatar_url:
+                snapshot["avatar_url"] = avatar_url
             return snapshot
+
     if _proxy is None:
         return snapshot
+
     try:
         result = _proxy.get_user_info(username=user_id or None)
         if isinstance(result, dict) and result.get("success"):
             user = result.get("user") if isinstance(result.get("user"), dict) else {}
             snapshot["user_id"] = str(user.get("id") or user_id).strip() or user_id
+            snapshot["username"] = str(user.get("username") or user_id).strip() or user_id
+            for key in ("display_name", "nickname"):
+                value = str(user.get(key) or "").strip()
+                if value:
+                    snapshot[key] = value
+            avatar_url = str(user.get("avatar_url") or user.get("avatar") or "").strip()
+            if avatar_url:
+                snapshot["avatar_url"] = avatar_url
     except Exception:
         pass
+
     return snapshot
+
+
+def _build_feed_author_snapshot(username: str) -> Dict[str, str]:
+    """构建动态记录中的 author 快照。"""
+    return _build_feed_actor_payload(username)
+
+
+def _extract_legacy_feed_notice_actor_id(row: Mapping[str, Any]) -> str:
+    """从旧动态通知标题里提取发起者，用于补齐通知头像展示。"""
+    title = str(row.get("title") or "").strip()
+    if not (title.startswith("你在动态中") or title.startswith("你在评论中")):
+        return ""
+
+    match = re.search(r"@\s*([A-Za-z0-9_][A-Za-z0-9_.-]{0,63})", title)
+    return str(match.group(1) if match else "").strip()
+
+
+def _enrich_feed_notice_actor(row: Dict[str, Any]) -> Dict[str, Any]:
+    """补齐动态通知的发起者字段，前端据此渲染头像。"""
+    payload = dict(row or {})
+    source = str(payload.get("source") or "").strip().lower()
+    actor = payload.get("actor") if isinstance(payload.get("actor"), dict) else {}
+    actor_id = str(
+        payload.get("actor_user_id")
+        or actor.get("user_id")
+        or actor.get("username")
+        or ""
+    ).strip()
+
+    if source != "feed":
+        actor_id = actor_id or _extract_legacy_feed_notice_actor_id(payload)
+        if not actor_id:
+            return payload
+        payload["source"] = "feed"
+
+    if actor_id and not actor.get("avatar_url"):
+        payload["actor"] = _build_feed_actor_payload(actor_id)
+    elif actor:
+        payload["actor"] = dict(actor)
+
+    return payload
 
 
 def _extract_mentioned_user_ids(text: str) -> List[str]:
@@ -840,6 +979,8 @@ def _extract_mentioned_user_ids(text: str) -> List[str]:
 
 def _notify_feed_mentions(author_user_id: str, content: str, *, title: str, jumpto: str = "") -> None:
     author_key = str(author_user_id or "").strip()
+    actor_payload = _build_feed_actor_payload(author_key)
+
     for mentioned_user_key in _extract_mentioned_user_ids(content):
         mention_key = str(mentioned_user_key or "").strip()
         if not mention_key:
@@ -880,10 +1021,13 @@ def _notify_feed_mentions(author_user_id: str, content: str, *, title: str, jump
                 resolved_username,
                 {
                     "type": "notification",
+                    "source": "feed",
                     "date": int(time.time()),
                     "title": str(title or "").strip(),
                     "content": str(content or "").strip(),
                     "jumpto": str(jumpto or "").strip(),
+                    "actor_user_id": author_key,
+                    "actor": actor_payload,
                 },
             )
             log_event(
@@ -1022,16 +1166,52 @@ def _list_recent_feed_user_examples(limit: int = 5) -> List[Dict[str, Any]]:
 
 @bp.route("/frontend/materials", methods=["GET"])
 def frontend_materials():
+    started_at = time.perf_counter()
     sort_by = str(request.args.get("sort_by") or "updated_at").strip().lower() or "updated_at"
     order = str(request.args.get("order") or "desc").strip().lower() or "desc"
     desc = order != "asc"
 
     user_id = _resolve_runtime_user_id()
-    study_hours_map = _build_user_study_hours_map(user_id) if user_id else {}
+    learning_records = user_store.list_learning_records(_cfg, user_id) if user_id else []
+    study_hours_map = _build_user_study_hours_map(user_id, records=learning_records) if user_id else {}
+    teacher_info_cache: Dict[str, Dict[str, Any]] = {}
 
     lectures = list_learning_lectures(_cfg)
     rows = []
     total_books = 0
+
+    def _resolve_teacher_infos_for_materials(teacher_ids: List[str]) -> List[Dict[str, Any]]:
+        resolved_rows: List[Dict[str, Any]] = []
+        missing_ids: List[str] = []
+
+        for teacher_id in teacher_ids:
+            uid = str(teacher_id or "").strip()
+            if not uid:
+                continue
+
+            cached = teacher_info_cache.get(uid)
+            if cached is not None:
+                resolved_rows.append(dict(cached))
+            else:
+                missing_ids.append(uid)
+
+        if missing_ids:
+            fetched_rows = _resolve_teacher_infos(missing_ids)
+            for row in fetched_rows:
+                if not isinstance(row, dict):
+                    continue
+
+                uid = str(row.get("user_id") or row.get("username") or "").strip()
+                if uid:
+                    teacher_info_cache[uid] = dict(row)
+
+            for uid in missing_ids:
+                cached = teacher_info_cache.get(uid)
+                if cached is not None:
+                    resolved_rows.append(dict(cached))
+
+        return resolved_rows
+
     for lecture in lectures:
         lecture_id = str((lecture or {}).get("id") or "").strip()
         books = list_lecture_books(_cfg, lecture_id) if lecture_id else []
@@ -1040,11 +1220,11 @@ def frontend_materials():
         # Resolve teacher user IDs to objects with avatar_url
         raw_teacher = lecture_with_user.get("teacher") or []
         if isinstance(raw_teacher, list) and raw_teacher:
-            lecture_with_user["teacher_info"] = _resolve_teacher_infos([
+            lecture_with_user["teacher_info"] = _resolve_teacher_infos_for_materials([
                 str(t or "") for t in raw_teacher
             ])
         if user_id and lecture_id:
-            user_progress = _compute_user_lecture_progress(user_id, lecture_id, books)
+            user_progress = _compute_user_lecture_progress(user_id, lecture_id, books, records=learning_records)
             lecture_with_user["progress"] = user_progress["progress"]
             lecture_with_user["current_chapter"] = user_progress["current_chapter"]
             lecture_with_user["next_chapter"] = user_progress["next_chapter"]
@@ -1080,6 +1260,20 @@ def frontend_materials():
         return int((lecture or {}).get("updated_at") or 0)
 
     rows.sort(key=_row_sort_key, reverse=desc)
+    duration_ms = int((time.perf_counter() - started_at) * 1000)
+
+    if duration_ms >= 800:
+        log_event(
+            "frontend_materials_slow",
+            "NexoraLearning materials list request exceeded the slow threshold.",
+            payload={
+                "duration_ms": duration_ms,
+                "lectures": len(rows),
+                "total_books": total_books,
+                "user_id": user_id,
+                "teacher_cache_size": len(teacher_info_cache),
+            },
+        )
 
     return jsonify(
         {
@@ -1089,6 +1283,7 @@ def frontend_materials():
             "total_books": total_books,
             "sort_by": sort_by,
             "order": "desc" if desc else "asc",
+            "duration_ms": duration_ms,
         }
     )
 
@@ -1097,8 +1292,10 @@ def frontend_materials():
 def frontend_dashboard():
     user_id = _resolve_runtime_user_id()
     user_store.ensure_user_files(_cfg, user_id)
+    learning_records = user_store.list_learning_records(_cfg, user_id)
     selected_lecture_ids = set(user_store.list_selected_lecture_ids(_cfg, user_id))
-    study_hours_map = _build_user_study_hours_map(user_id)
+    study_hours_map = _build_user_study_hours_map(user_id, records=learning_records)
+    last_active_map = _build_user_lecture_last_active_map(user_id, records=learning_records)
 
     lectures = list_learning_lectures(_cfg)
     selected_rows = []
@@ -1111,10 +1308,11 @@ def frontend_dashboard():
         lecture_with_user_state = dict(lecture or {})
         lecture_hours = float(study_hours_map.get(lecture_id, 0.0))
         lecture_with_user_state["study_hours"] = lecture_hours
+        lecture_with_user_state["last_active_ts"] = int(last_active_map.get(lecture_id, 0))
         total_study_hours += lecture_hours
         books = list_lecture_books(_cfg, lecture_id)
         total_books += len(books)
-        user_progress = _compute_user_lecture_progress(user_id, lecture_id, books)
+        user_progress = _compute_user_lecture_progress(user_id, lecture_id, books, records=learning_records)
         lecture_with_user_state["progress"] = user_progress["progress"]
         lecture_with_user_state["current_chapter"] = user_progress["current_chapter"]
         lecture_with_user_state["next_chapter"] = user_progress["next_chapter"]
@@ -1137,6 +1335,497 @@ def frontend_dashboard():
             "total_study_hours": round(total_study_hours, 3),
         }
     )
+
+
+def _is_book_pending_parse(book: Mapping[str, Any]) -> bool:
+    """判断教材是否还没有完成首页可用的粗读解析。"""
+    coarse_status = str(book.get("coarse_status") or "").strip().lower()
+    if coarse_status in {"done", "completed", "success"}:
+        return False
+
+    return True
+
+
+def _build_pending_parse_summary() -> Dict[str, Any]:
+    """统计管理员首页通知栏中的待解析教材。"""
+    items: List[Dict[str, Any]] = []
+
+    for lecture in list_learning_lectures(_cfg):
+        lecture_id = str((lecture or {}).get("id") or "").strip()
+        if not lecture_id:
+            continue
+
+        lecture_title = str((lecture or {}).get("title") or lecture_id).strip()
+        books = list_lecture_books(_cfg, lecture_id)
+
+        for book in books:
+            if not isinstance(book, MappingABC) or not _is_book_pending_parse(book):
+                continue
+
+            items.append(
+                {
+                    "lecture_id": lecture_id,
+                    "lecture_title": lecture_title,
+                    "book_id": str(book.get("id") or "").strip(),
+                    "book_title": str(book.get("title") or book.get("id") or "").strip(),
+                    "coarse_status": str(book.get("coarse_status") or "").strip(),
+                    "refinement_status": str(book.get("refinement_status") or "").strip(),
+                    "updated_at": int(book.get("updated_at") or 0),
+                }
+            )
+
+    items.sort(key=lambda row: int(row.get("updated_at") or 0), reverse=True)
+    return {
+        "count": len(items),
+        "items": items[:5],
+    }
+
+
+@bp.route("/frontend/notifications", methods=["GET"])
+def frontend_notifications():
+    """返回首页右侧通知面板数据。"""
+    user_id = _resolve_runtime_user_id()
+    user_store.ensure_user_files(_cfg, user_id)
+
+    try:
+        limit = int(request.args.get("limit") or 20)
+    except (TypeError, ValueError):
+        limit = 20
+
+    limit = max(1, min(limit, 50))
+    notifications = user_store.list_notifications(_cfg, user_id)
+    rows = [
+        _enrich_feed_notice_actor(row)
+        for row in notifications
+        if isinstance(row, dict) and not bool(row.get("removed"))
+    ][:limit]
+
+    return jsonify(
+        {
+            "success": True,
+            "user_id": user_id,
+            "items": rows,
+            "admin_pending_parse": _build_pending_parse_summary() if _is_runtime_admin() else {"count": 0, "items": []},
+        }
+    )
+
+
+@bp.route("/frontend/notifications/<notification_id>/remove", methods=["POST"])
+def frontend_notification_remove(notification_id: str):
+    """将首页通知标记为已移除。"""
+    user_id = _resolve_runtime_user_id()
+    user_store.ensure_user_files(_cfg, user_id)
+    result = user_store.mark_notification_removed(_cfg, user_id, notification_id)
+
+    if not result.get("updated"):
+        return jsonify({"success": False, "error": "notification not found."}), 404
+
+    return jsonify({"success": True, **result})
+
+
+@bp.route("/frontend/profile", methods=["GET"])
+def frontend_profile():
+    """返回用户画像的结构化维度数据。"""
+    user_id = _resolve_runtime_user_id()
+    user_store.ensure_user_files(_cfg, user_id)
+
+    from core.memory import PROFILE_DIMENSIONS, parse_profile_dimensions, parse_profile_timeline
+
+    user_md = str(user_store.read_memory(_cfg, user_id, "user") or "")
+    dimensions = parse_profile_dimensions(user_md)
+    timeline = parse_profile_timeline(user_md)
+
+    filled_count = sum(1 for d in dimensions.values() if d.get("filled"))
+    total_count = len(PROFILE_DIMENSIONS)
+    completion_rate = round(filled_count / total_count, 3) if total_count > 0 else 0.0
+
+    return jsonify(
+        {
+            "success": True,
+            "user_id": user_id,
+            "dimensions": dimensions,
+            "timeline": timeline,
+            "completion_rate": completion_rate,
+            "filled_count": filled_count,
+            "total_count": total_count,
+        }
+    )
+
+
+
+
+def _learning_path_cache_path(lecture_id: str, book_id: str, user_id: str = "") -> Path:
+    data_dir = Path(str(_cfg.get("data_dir") or "data")).resolve()
+    if user_id:
+        return data_dir / "users" / user_id / "learning_path" / f"{lecture_id}_{book_id}.json"
+    return data_dir / "lectures" / lecture_id / "books" / book_id / "learning_path.json"
+
+
+@bp.route("/frontend/learning-path", methods=["POST"])
+def frontend_learning_path():
+    """生成个性化学习路径。基于章节结构 + 用户画像，用 LLM 生成推荐顺序和原因。"""
+    user_id = _resolve_runtime_user_id()
+    user_store.ensure_user_files(_cfg, user_id)
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    force = bool(data.get("force"))
+    cache_version = 3
+    allowed_statuses = {"completed", "current", "recommended", "pending"}
+
+    def _sanitize_path_items(raw_items):
+        items = raw_items if isinstance(raw_items, list) else []
+        sanitized = []
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+
+            status = str(item.get("status") or "").strip().lower()
+            if status not in allowed_statuses:
+                continue
+
+            priority_num = item.get("priority")
+            try:
+                priority = int(priority_num)
+            except Exception:
+                continue
+
+            sanitized.append({
+                "name": name,
+                "priority": priority,
+                "status": status,
+                "reason": str(item.get("reason") or "").strip(),
+            })
+
+        return sanitized
+
+    if not lecture_id or not book_id:
+        return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+
+    # 检查持久化缓存
+    cache_path = _learning_path_cache_path(lecture_id, book_id, user_id)
+    if not force and cache_path.exists():
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+            cached_path = _sanitize_path_items(cached.get("path") if isinstance(cached, dict) else [])
+            if (
+                isinstance(cached, dict)
+                and int(cached.get("version") or 0) == cache_version
+                and cached_path
+                and all(str(item.get("reason") or "").strip() for item in cached_path)
+            ):
+                return jsonify({"success": True, "advice": cached.get("advice", ""), "path": cached_path, "cached": True})
+        except Exception:
+            pass
+
+    from core.memory import PROFILE_DIMENSIONS, parse_profile_dimensions
+    from core.booksproc import build_memory_runner, get_memory_settings
+
+    # 读取章节结构
+    bookinfo_xml = str(load_book_info_xml(_cfg, lecture_id, book_id) or "")
+    if not bookinfo_xml:
+        return jsonify({"success": False, "error": "Book info not found. Please run coarse reading first."}), 404
+
+    # 解析章节列表
+    import re as _re
+    all_chapters = []
+    for m in _re.finditer(
+        r"<chapter_name>\s*(.*?)\s*</chapter_name>[\s\S]*?<chapter_range>\s*(.*?)\s*</chapter_range>[\s\S]*?<chapter_summary>\s*(.*?)\s*</chapter_summary>",
+        bookinfo_xml, flags=_re.IGNORECASE | _re.DOTALL,
+    ):
+        all_chapters.append({
+            "name": str(m.group(1) or "").strip(),
+            "range": str(m.group(2) or "").strip(),
+            "summary": str(m.group(3) or "").strip()[:200],
+        })
+
+    if not all_chapters:
+        return jsonify({"success": False, "error": "No chapters found in bookinfo."}), 404
+
+    # 读取用户画像
+    user_md = str(user_store.read_memory(_cfg, user_id, "user") or "")
+    profile_dims = parse_profile_dimensions(user_md)
+    weak_areas = profile_dims.get("weak_areas", {}).get("value", "")
+    interest = profile_dims.get("interest_direction", {}).get("value", "")
+    learning_pace = profile_dims.get("learning_pace", {}).get("value", "")
+
+    # 读取已完成章节
+    records = user_store.list_learning_records(_cfg, user_id)
+    completed = set()
+    for r in (records or []):
+        if isinstance(r, dict) and str(r.get("type") or "").strip() == "chapter_completed" and str(r.get("lecture_id") or "").strip() == lecture_id:
+            completed.add(str(r.get("chapter_name") or "").strip())
+
+    # 只把未完成的章节传给模型，已完成的不参与路径规划
+    incomplete_chapters = [c for c in all_chapters if c["name"] not in completed]
+
+    chapters_json = json.dumps(incomplete_chapters, ensure_ascii=False)
+    profile_summary = json.dumps({
+        "weak_areas": weak_areas,
+        "interest_direction": interest,
+        "learning_pace": learning_pace,
+        "completed_count": len(completed),
+        "total_count": len(all_chapters),
+    }, ensure_ascii=False)
+
+    # 调用 LLM 生成路径（直接用 completions API，避免 memory model 的 system prompt 干扰）
+    chapters_brief = [{"name": c["name"], "summary": c["summary"][:100]} for c in incomplete_chapters]
+    chapters_brief_json = json.dumps(chapters_brief, ensure_ascii=False)
+
+    from prompts import LEARNING_PATH_SYSTEM_PROMPT, LEARNING_PATH_USER_PROMPT
+    user_prompt = LEARNING_PATH_USER_PROMPT.replace(
+        "{{chapters_json}}", chapters_brief_json
+    ).replace(
+        "{{profile_summary}}", profile_summary
+    )
+
+    advice_text = ""
+    path_items = []
+
+    try:
+        proxy = _cfg.get("__proxy__")
+        if proxy is None:
+            from core.nexora_proxy import NexoraProxy as _NP
+            proxy = _NP(_cfg)
+            _cfg["__proxy__"] = proxy
+        messages = [
+            {"role": "system", "content": LEARNING_PATH_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ]
+        default_model = get_default_nexora_model(_cfg)
+        result = proxy.complete_raw(
+            messages=messages,
+            model=default_model or None,
+            username=user_id,
+            api_mode="chat",
+            options={"temperature": 0.3, "max_output_tokens": 2000},
+            request_timeout=120,
+        )
+        if not result.get("success"):
+            raise RuntimeError(str(result.get("message") or "API调用失败"))
+        result_text = str(result.get("content") or "")
+        # 提取建议文本
+        advice_match = _re.search(r"<advice>\s*(.*?)\s*</advice>", result_text, flags=_re.DOTALL)
+        advice_text = str(advice_match.group(1) or "").strip() if advice_match else ""
+        # 提取 JSON
+        json_match = _re.search(r"\[[\s\S]*\]", str(result_text or ""))
+        if json_match:
+            path_items = json.loads(json_match.group(0))
+        else:
+            path_items = []
+    except Exception as exc:
+        log_event("learning_path_error", "学习路径生成失败", payload={"error": str(exc)})
+        return jsonify({"success": False, "error": f"学习路径生成失败：{str(exc)}"}), 502
+
+    path_items = _sanitize_path_items(path_items)
+    if not path_items:
+        return jsonify({"success": False, "error": "模型未返回有效推荐阅读。"}), 502
+
+    if not all(str(item.get("reason") or "").strip() for item in path_items):
+        return jsonify({"success": False, "error": "模型未为推荐阅读编写完整理由。"}), 502
+
+    # 持久化缓存
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps({"version": cache_version, "advice": advice_text, "path": path_items}, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+    return jsonify({"success": True, "advice": advice_text, "path": path_items})
+
+
+
+@bp.route("/frontend/videos", methods=["GET"])
+def frontend_videos():
+    """获取课程相关视频（从缓存读取，粗读时自动生成）。"""
+    lecture_id = str(request.args.get("lecture_id") or "").strip()
+    book_id = str(request.args.get("book_id") or "").strip()
+    if not lecture_id or not book_id:
+        return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+
+    from core.video_search import load_cached_videos
+
+    items = load_cached_videos(_cfg, lecture_id, book_id)
+    if items:
+        return jsonify({"success": True, "items": items, "cached": True})
+
+    try:
+        items = _run_frontend_video_search(lecture_id, book_id)
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc), "items": []}), 500
+
+    return jsonify({"success": True, "items": items, "cached": False})
+
+
+@bp.route("/frontend/lecture-videos", methods=["GET"])
+def frontend_lecture_videos():
+    """读取课程下所有教材已经缓存的视频，不触发新的视频搜索。"""
+    lecture_id = str(request.args.get("lecture_id") or "").strip()
+    if not lecture_id:
+        return jsonify({"success": False, "error": "lecture_id is required."}), 400
+
+    from core.video_search import load_cached_videos
+
+    items: List[Dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    books = list_lecture_books(_cfg, lecture_id)
+    cached_book_count = 0
+
+    for book in books:
+        if not isinstance(book, MappingABC):
+            continue
+
+        book_id = str(book.get("id") or "").strip()
+        if not book_id:
+            continue
+
+        rows = load_cached_videos(_cfg, lecture_id, book_id)
+        if not rows:
+            continue
+
+        cached_book_count += 1
+        book_title = str(book.get("title") or book_id).strip()
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+
+            url = str(row.get("url") or "").strip()
+            if not url or url in seen_urls:
+                continue
+
+            seen_urls.add(url)
+            item = dict(row)
+            item["lecture_id"] = lecture_id
+            item["book_id"] = book_id
+            item["book_title"] = book_title
+            items.append(item)
+
+    return jsonify(
+        {
+            "success": True,
+            "items": items,
+            "cached": True,
+            "book_count": len(books),
+            "cached_book_count": cached_book_count,
+        }
+    )
+
+
+def _run_frontend_video_search(lecture_id: str, book_id: str) -> List[Dict[str, Any]]:
+    """执行前端视频搜索，并把失败原因写入结构化日志。"""
+    from core.video_search import search_and_cache_videos
+
+    lecture = get_learning_lecture(_cfg, lecture_id)
+    book = get_lecture_book(_cfg, lecture_id, book_id)
+    lecture_title = str((lecture or {}).get("title") or "").strip()
+    book_title = str((book or {}).get("title") or "").strip()
+    bookinfo_xml = str(load_book_info_xml(_cfg, lecture_id, book_id) or "")
+
+    try:
+        return search_and_cache_videos(
+            _cfg,
+            lecture_id,
+            book_id,
+            lecture_title=lecture_title,
+            book_title=book_title,
+            bookinfo_xml=bookinfo_xml,
+        )
+    except Exception as exc:
+        log_event(
+            "frontend_video_search_error",
+            "前端视频搜索失败",
+            payload={
+                "lecture_id": lecture_id,
+                "book_id": book_id,
+                "lecture_title": lecture_title,
+                "book_title": book_title,
+                "error": str(exc),
+            },
+        )
+        raise
+
+
+@bp.route("/frontend/videos/refresh", methods=["POST"])
+def frontend_videos_refresh():
+    """强制刷新视频（删除缓存后重新搜索）。"""
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    if not lecture_id or not book_id:
+        return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+
+    from core.video_search import _videos_path as _vp
+    cache_path = _vp(_cfg, lecture_id, book_id)
+    if cache_path.exists():
+        cache_path.unlink()
+
+    try:
+        items = _run_frontend_video_search(lecture_id, book_id)
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc), "items": []}), 500
+
+    return jsonify({"success": True, "items": items, "cached": False})
+
+
+@bp.route("/frontend/knowledge-graph", methods=["GET"])
+def frontend_knowledge_graph():
+    """读取已缓存的知识图谱。"""
+    lecture_id = str(request.args.get("lecture_id") or "").strip()
+    book_id = str(request.args.get("book_id") or "").strip()
+    if not lecture_id or not book_id:
+        return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+
+    from core.knowledge_graph import load_cached_graph
+    graph = load_cached_graph(_cfg, lecture_id, book_id)
+    if graph:
+        return jsonify({"success": True, "graph": graph, "cached": True})
+
+    return jsonify({"success": True, "graph": None, "cached": False})
+
+
+@bp.route("/frontend/knowledge-graph/generate", methods=["POST"])
+def frontend_knowledge_graph_generate():
+    """手动触发知识图谱生成。"""
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    if not lecture_id or not book_id:
+        return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+
+    lecture = get_learning_lecture(_cfg, lecture_id)
+    if not lecture:
+        return jsonify({"success": False, "error": "Lecture not found."}), 404
+
+    lecture_title = str(lecture.get("title") or "").strip()
+    bookinfo_xml = str(load_book_info_xml(_cfg, lecture_id, book_id) or "")
+    bookdetail_xml = str(load_book_detail_xml(_cfg, lecture_id, book_id) or "")
+
+    # 获取教材标题
+    book_title = ""
+    books = list_lecture_books(_cfg, lecture_id)
+    for book in books:
+        if str(book.get("id") or "") == book_id:
+            book_title = str(book.get("title") or "").strip()
+            break
+
+    try:
+        from core.knowledge_graph import generate_knowledge_graph
+        graph = generate_knowledge_graph(
+            _cfg, lecture_id, book_id,
+            lecture_title=lecture_title,
+            book_title=book_title,
+            bookinfo_xml=bookinfo_xml,
+            bookdetail_xml=bookdetail_xml,
+        )
+        return jsonify({"success": True, "graph": graph, "cached": False})
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
 
 
 @bp.route("/frontend/teacher/class-overview", methods=["GET"])
@@ -1488,6 +2177,28 @@ def frontend_settings_refinement():
             running_by_book[f"{lecture_id}::{book_id}{suffix}"] = job_status
     queue_snapshot["running_count"] = int(running_count)
     items: List[Dict[str, Any]] = []
+    # 检查每个 lecture 的大纲状态（从 job 队列获取，包含 error 状态）
+    outline_status_cache: Dict[str, str] = {}
+    outline_error_cache: Dict[str, str] = {}
+    for job in queue_snapshot.get("jobs", []) if isinstance(queue_snapshot.get("jobs"), list) else []:
+        if not isinstance(job, dict):
+            continue
+        job_type = str(job.get("job_type") or "").strip().lower()
+        if job_type != "outline":
+            continue
+        lid = str(job.get("lecture_id") or "").strip()
+        if not lid:
+            continue
+        job_status = str(job.get("status") or "").strip().lower()
+        if job_status in ("running", "queued"):
+            outline_status_cache[lid] = "running"
+            outline_error_cache[lid] = ""
+        elif job_status == "done":
+            outline_status_cache[lid] = "done"
+            outline_error_cache[lid] = ""
+        elif job_status == "error":
+            outline_status_cache[lid] = "error"
+            outline_error_cache[lid] = str(job.get("error") or "").strip()
     for row in rows:
         lecture_id = str(row.get("lecture_id") or "").strip()
         lecture_title = str(row.get("lecture_title") or "").strip()
@@ -1498,6 +2209,16 @@ def frontend_settings_refinement():
         refine_status = str(book.get("refinement_status") or "").strip().lower()
         coarse_status = str(book.get("coarse_status") or "").strip().lower()
         key = f"{lecture_id}::{book_id}"
+
+        # 获取大纲状态（优先使用 job 状态，否则检查文件）
+        if lecture_id not in outline_status_cache:
+            try:
+                from core.booksproc.outline import load_outline
+                outline = load_outline(_cfg, lecture_id)
+                outline_status_cache[lecture_id] = "done" if outline else ""
+            except Exception:
+                outline_status_cache[lecture_id] = ""
+
         items.append(
             {
                 "lecture_id": lecture_id,
@@ -1512,6 +2233,8 @@ def frontend_settings_refinement():
                 "section_status": str(book.get("section_status") or ""),
                 "summary_status": str(book.get("summary_status") or ""),
                 "annotation_status": str(book.get("annotation_status") or ""),
+                "outline_status": outline_status_cache.get(lecture_id, ""),
+                "outline_error": outline_error_cache.get(lecture_id, ""),
                 "coarse_model": str(book.get("coarse_model") or ""),
                 "intensive_model": str(book.get("intensive_model") or ""),
                 "question_model": str(book.get("question_model") or ""),
@@ -1706,6 +2429,25 @@ def frontend_settings_refinement_summary():
         return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
     try:
         result = enqueue_book_summary(_cfg, lecture_id, book_id, actor=actor, model_name=model_name)
+        return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, **result}), 202
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@bp.route("/frontend/settings/refinement/video", methods=["POST"])
+def frontend_settings_refinement_video():
+    """设置页：手动触发视频搜索。"""
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    actor = str(data.get("actor") or _resolve_runtime_user_id()).strip()
+    if not _is_runtime_admin():
+        return jsonify({"success": False, "error": "Only admin can start video search."}), 403
+    if not lecture_id or not book_id:
+        return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+    try:
+        from core.booksproc import enqueue_book_video
+        result = enqueue_book_video(_cfg, lecture_id, book_id, actor=actor)
         return jsonify({"success": True, "lecture_id": lecture_id, "book_id": book_id, **result}), 202
     except Exception as exc:
         return jsonify({"success": False, "error": str(exc)}), 500
@@ -2965,6 +3707,704 @@ def frontend_quiz_generate():
         return jsonify({"success": False, "error": str(exc)}), 500
 
 
+@bp.route("/frontend/quiz/chapter", methods=["POST"])
+def frontend_chapter_quiz_load():
+    """读取或创建章节完成后的小测，题目一旦选定会固化到用户文件。"""
+    username = _resolve_runtime_user_id()
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    chapter_name = str(data.get("chapter_name") or "").strip()
+    chapter_range = str(data.get("chapter_range") or "").strip()
+    chapter_context = str(data.get("chapter_context") or "")
+    chapter_detail_xml = str(data.get("chapter_detail_xml") or "")
+
+    try:
+        chapter_index = int(data.get("chapter_index") or 0)
+    except Exception:
+        return jsonify({"success": False, "error": "chapter_index is required."}), 400
+
+    if not lecture_id or not book_id or not chapter_name:
+        return jsonify({"success": False, "error": "lecture_id, book_id and chapter_name are required."}), 400
+
+    try:
+        from core.booksproc.chapter_quiz import load_or_create_chapter_quiz
+        quiz = load_or_create_chapter_quiz(
+            _cfg,
+            user_id=username,
+            lecture_id=lecture_id,
+            book_id=book_id,
+            chapter_index=chapter_index,
+            chapter_name=chapter_name,
+            chapter_range=chapter_range,
+            chapter_context=chapter_context,
+            chapter_detail_xml=chapter_detail_xml,
+        )
+        return jsonify({
+            "success": True,
+            "quiz": quiz,
+            "quiz_id": quiz.get("quiz_id"),
+            "questions": quiz.get("questions") or [],
+            "answers": quiz.get("answers") or {},
+        }), 200
+    except Exception as exc:
+        log_event(
+            "chapter_quiz_load_error",
+            str(exc),
+            payload={"username": username, "lecture_id": lecture_id, "book_id": book_id, "chapter_name": chapter_name},
+        )
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+def _read_reader_guide_request_payload() -> Dict[str, Any]:
+    """读取导读请求参数，供普通接口和流式接口共享。"""
+    data = request.get_json(silent=True) or {}
+    payload = {
+        "lecture_id": str(data.get("lecture_id") or "").strip(),
+        "book_id": str(data.get("book_id") or "").strip(),
+        "chapter_name": str(data.get("chapter_name") or "").strip(),
+        "session_name": str(data.get("session_name") or "").strip(),
+        "guide_context": str(data.get("guide_context") or "").strip(),
+        "pre_reading_answers": data.get("pre_reading_answers"),
+        "user_profile": str(data.get("user_profile") or "").strip(),
+    }
+
+    if not payload["lecture_id"] or not payload["book_id"]:
+        raise ValueError("lecture_id and book_id are required.")
+
+    if not payload["guide_context"]:
+        raise ValueError("guide_context is required.")
+
+    return payload
+
+
+def _reader_guide_sse_event(event_name: str, payload: Dict[str, Any]) -> str:
+    """序列化导读 SSE 事件，统一输出 JSON data。"""
+    data = json.dumps(payload, ensure_ascii=False)
+    return f"event: {event_name}\ndata: {data}\n\n"
+
+
+@bp.route("/frontend/reader-guide/generate", methods=["POST"])
+def frontend_reader_guide_generate():
+    """为当前阅读章节或小节生成导读卡片。"""
+    try:
+        payload = _read_reader_guide_request_payload()
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+    try:
+        from core.booksproc.guide import generate_reader_guide
+        result = generate_reader_guide(
+            _cfg,
+            lecture_id=payload["lecture_id"],
+            book_id=payload["book_id"],
+            chapter_name=payload["chapter_name"],
+            session_name=payload["session_name"],
+            guide_context=payload["guide_context"],
+        )
+        return jsonify({"success": True, **result}), 200
+    except Exception as exc:
+        log_event(
+            "reader_guide_error",
+            str(exc),
+            payload={"lecture_id": payload["lecture_id"], "book_id": payload["book_id"]},
+        )
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@bp.route("/frontend/reader-guide/stream", methods=["POST"])
+def frontend_reader_guide_stream():
+    """以 SSE 形式流式生成当前阅读章节或小节导读。"""
+    try:
+        payload = _read_reader_guide_request_payload()
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+    def event_stream():
+        events: "queue.Queue[Tuple[str, Dict[str, Any]]]" = queue.Queue()
+
+        def push_event(event_name: str, event_payload: Dict[str, Any]) -> None:
+            events.put((event_name, event_payload))
+
+        def push_delta(delta_text: str) -> None:
+            text = str(delta_text or "")
+
+            if text:
+                append_log_text(text)
+                push_event("delta", {"content": text})
+
+        def run_worker() -> None:
+            try:
+                from core.booksproc.guide import generate_reader_guide
+
+                result = generate_reader_guide(
+                    _cfg,
+                    lecture_id=payload["lecture_id"],
+                    book_id=payload["book_id"],
+                    chapter_name=payload["chapter_name"],
+                    session_name=payload["session_name"],
+                    guide_context=payload["guide_context"],
+                    stream=True,
+                    on_delta=push_delta,
+                )
+                push_event("done", {"success": True, **result})
+            except Exception as exc:
+                log_event(
+                    "reader_guide_stream_error",
+                    str(exc),
+                    payload={"lecture_id": payload["lecture_id"], "book_id": payload["book_id"]},
+                )
+                push_event("error", {"success": False, "error": str(exc)})
+            finally:
+                push_event("close", {})
+
+        thread = threading.Thread(target=run_worker, name="reader-guide-stream", daemon=True)
+        thread.start()
+
+        yield _reader_guide_sse_event("status", {"message": "reader guide stream started"})
+
+        while True:
+            try:
+                event_name, event_payload = events.get(timeout=20)
+            except queue.Empty:
+                yield _reader_guide_sse_event("ping", {"timestamp": time.time()})
+                continue
+
+            if event_name == "close":
+                break
+
+            yield _reader_guide_sse_event(event_name, event_payload)
+
+    return Response(
+        stream_with_context(event_stream()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@bp.route("/frontend/reader-guide/pre-questions", methods=["POST"])
+def frontend_reader_guide_pre_questions():
+    """以 SSE 形式流式生成阅读前问题。"""
+    try:
+        data = request.get_json(silent=True) or {}
+        lecture_id = str(data.get("lecture_id") or "").strip()
+        book_id = str(data.get("book_id") or "").strip()
+        chapter_name = str(data.get("chapter_name") or "").strip()
+        session_name = str(data.get("session_name") or "").strip()
+        guide_context = str(data.get("guide_context") or "").strip()
+
+        if not lecture_id or not book_id:
+            raise ValueError("lecture_id and book_id are required.")
+        if not guide_context:
+            raise ValueError("guide_context is required.")
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+    def event_stream():
+        events: "queue.Queue[Tuple[str, Dict[str, Any]]]" = queue.Queue()
+
+        def push_event(event_name: str, event_payload: Dict[str, Any]) -> None:
+            events.put((event_name, event_payload))
+
+        def push_delta(delta_text: str) -> None:
+            text = str(delta_text or "")
+            if text:
+                append_log_text(text)
+                push_event("delta", {"content": text})
+
+        def run_worker() -> None:
+            try:
+                from core.booksproc.guide import generate_pre_reading_questions
+
+                result = generate_pre_reading_questions(
+                    _cfg,
+                    lecture_id=lecture_id,
+                    book_id=book_id,
+                    chapter_name=chapter_name,
+                    session_name=session_name,
+                    guide_context=guide_context,
+                    stream=True,
+                    on_delta=push_delta,
+                )
+                push_event("done", {"success": True, **result})
+            except Exception as exc:
+                log_event(
+                    "pre_reading_questions_stream_error",
+                    str(exc),
+                    payload={"lecture_id": lecture_id, "book_id": book_id},
+                )
+                push_event("error", {"success": False, "error": str(exc)})
+            finally:
+                push_event("close", {})
+
+        thread = threading.Thread(target=run_worker, name="pre-reading-questions-stream", daemon=True)
+        thread.start()
+
+        yield _reader_guide_sse_event("status", {"message": "pre-reading questions stream started"})
+
+        while True:
+            try:
+                event_name, event_payload = events.get(timeout=20)
+            except queue.Empty:
+                yield _reader_guide_sse_event("ping", {"timestamp": time.time()})
+                continue
+
+            if event_name == "close":
+                break
+
+            yield _reader_guide_sse_event(event_name, event_payload)
+
+    return Response(
+        stream_with_context(event_stream()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@bp.route("/frontend/reader-guide/pre-questions/save", methods=["POST"])
+def frontend_reader_guide_pre_questions_save():
+    """保存阅读前问答结果。"""
+    username = _resolve_runtime_user_id()
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    chapter_index = data.get("chapter_index")
+    questions = data.get("questions", [])
+    answers = data.get("answers", {})
+    skipped = bool(data.get("skipped"))
+
+    if not lecture_id or not book_id:
+        return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+
+    if chapter_index is None:
+        return jsonify({"success": False, "error": "chapter_index is required."}), 400
+
+    # 持久化到用户目录
+    from pathlib import Path
+
+    data_dir = Path(str(_cfg.get("data_dir") or "data"))
+    qa_dir = data_dir / "users" / username / "guide_qa"
+    qa_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = f"{lecture_id}_{book_id}_{chapter_index}.json"
+    qa_path = qa_dir / filename
+
+    qa_data = {
+        "lecture_id": lecture_id,
+        "book_id": book_id,
+        "chapter_index": chapter_index,
+        "questions": questions,
+        "answers": answers,
+        "skipped": skipped,
+        "timestamp": int(time.time()),
+    }
+
+    qa_path.write_text(json.dumps(qa_data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    log_event(
+        "pre_reading_qa_saved",
+        "阅读前问答已保存",
+        payload={
+            "username": username,
+            "lecture_id": lecture_id,
+            "book_id": book_id,
+            "chapter_index": chapter_index,
+            "skipped": skipped,
+            "answers_count": len(answers),
+        },
+    )
+
+    return jsonify({"success": True, "path": str(qa_path)})
+
+
+@bp.route("/frontend/reader-guide/pre-questions/check", methods=["POST"])
+def frontend_reader_guide_pre_questions_check():
+    """检查是否存在阅读前问答缓存。"""
+    username = _resolve_runtime_user_id()
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    chapter_index = data.get("chapter_index")
+
+    if not lecture_id or not book_id:
+        return jsonify({"success": False, "error": "lecture_id and book_id are required."}), 400
+
+    if chapter_index is None:
+        return jsonify({"success": False, "error": "chapter_index is required."}), 400
+
+    from pathlib import Path
+
+    data_dir = Path(str(_cfg.get("data_dir") or "data"))
+    qa_dir = data_dir / "users" / username / "guide_qa"
+    filename = f"{lecture_id}_{book_id}_{chapter_index}.json"
+    qa_path = qa_dir / filename
+
+    if qa_path.exists():
+        try:
+            qa_data = json.loads(qa_path.read_text(encoding="utf-8"))
+            return jsonify({"success": True, "cached": True, "data": qa_data})
+        except Exception:
+            return jsonify({"success": True, "cached": False})
+
+    return jsonify({"success": True, "cached": False})
+
+
+@bp.route("/frontend/reader-guide/user-profile", methods=["POST"])
+def frontend_reader_guide_user_profile():
+    """获取用户画像。"""
+    username = _resolve_runtime_user_id()
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+
+    from pathlib import Path
+
+    data_dir = Path(str(_cfg.get("data_dir") or "data"))
+    profile_path = data_dir / "users" / username / "user.md"
+
+    profile_content = ""
+    if profile_path.exists():
+        try:
+            profile_content = profile_path.read_text(encoding="utf-8")
+        except Exception:
+            pass
+
+    return jsonify({"success": True, "profile": profile_content})
+
+
+@bp.route("/frontend/outline/<lecture_id>", methods=["GET"])
+def frontend_get_outline(lecture_id: str):
+    """获取课程的固化大纲。"""
+    from core.booksproc.outline import load_outline
+
+    outline = load_outline(_cfg, lecture_id)
+    if outline is None:
+        return jsonify({"success": False, "error": "大纲尚未生成"}), 404
+    return jsonify({"success": True, "outline": outline})
+
+
+@bp.route("/frontend/outline/<lecture_id>/generate", methods=["POST"])
+def frontend_generate_outline(lecture_id: str):
+    """手动触发课程大纲生成（异步，通过队列执行）。"""
+    try:
+        from core.booksproc.queue import enqueue_job
+
+        enqueue_job(
+            lecture_id,
+            "outline",
+            actor=_resolve_runtime_user_id() or "manual",
+            force=True,
+            job_type="outline",
+        )
+        return jsonify({"success": True, "message": "大纲生成任务已加入队列"})
+    except Exception as exc:
+        log_event(
+            "outline_manual_error",
+            str(exc),
+            payload={"lecture_id": lecture_id},
+        )
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@bp.route("/frontend/outline/<lecture_id>/generate-stream", methods=["GET"])
+def frontend_generate_outline_stream(lecture_id: str):
+    """流式生成课程大纲，向课程管理返回模型活动。"""
+    safe_lecture_id = str(lecture_id or "").strip()
+    runtime_user_id = _resolve_runtime_user_id() or "manual"
+    if not safe_lecture_id:
+        return Response("event: error\ndata: {\"error\": \"lecture_id is required\"}\n\n", mimetype="text/event-stream")
+
+    def event_stream():
+        events: "queue.Queue[Tuple[str, Dict[str, Any]]]" = queue.Queue()
+
+        def push_event(event_name: str, event_payload: Dict[str, Any]) -> None:
+            events.put((event_name, event_payload))
+
+        def push_status(message: str) -> None:
+            text = str(message or "").strip()
+            if text:
+                push_event("status", {"message": text})
+
+        def push_delta(delta_text: str) -> None:
+            text = str(delta_text or "")
+            if text:
+                append_log_text(text)
+                push_event("delta", {"content": text})
+
+        def to_sse(event_name: str, event_payload: Dict[str, Any]) -> str:
+            return f"event: {event_name}\ndata: {json.dumps(event_payload, ensure_ascii=False)}\n\n"
+
+        def run_worker() -> None:
+            try:
+                from core.booksproc.outline import generate_outline
+
+                result = generate_outline(
+                    _cfg,
+                    safe_lecture_id,
+                    user_id=runtime_user_id,
+                    on_status=push_status,
+                    on_delta=push_delta,
+                )
+                push_event("done", {"success": True, "outline": result})
+            except Exception as exc:
+                log_event(
+                    "outline_stream_error",
+                    str(exc),
+                    payload={"lecture_id": safe_lecture_id},
+                )
+                push_event("error", {"success": False, "error": str(exc)})
+            finally:
+                push_event("close", {})
+
+        thread = threading.Thread(target=run_worker, name="outline-generate-stream", daemon=True)
+        thread.start()
+
+        yield to_sse("status", {"message": "大纲流式生成已启动"})
+
+        while True:
+            try:
+                event_name, event_payload = events.get(timeout=20)
+            except queue.Empty:
+                yield to_sse("ping", {"timestamp": time.time()})
+                continue
+
+            if event_name == "close":
+                break
+
+            yield to_sse(event_name, event_payload)
+
+    return Response(
+        stream_with_context(event_stream()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _quiz_answer_id(
+    lecture_id: str,
+    book_id: str,
+    chapter_index: int,
+    session_index: int,
+    question_index: int,
+    question_title: str,
+    question_content: str,
+) -> str:
+    """生成稳定的测验作答记录ID，便于后续评估接口聚合。"""
+    raw = "|".join(
+        [
+            lecture_id,
+            book_id,
+            str(chapter_index),
+            str(session_index),
+            str(question_index),
+            question_title,
+            question_content,
+        ]
+    )
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+    return f"quiz_{digest}"
+
+
+def _strip_quiz_markdown(value: Any) -> str:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    text = re.sub(r"```[\s\S]*?```", lambda match: str(match.group(0)).replace("```", ""), text)
+    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^\s*[-*+]\s+", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^\s*\d+[.)]\s+", "", text, flags=re.MULTILINE)
+    text = text.replace("**", "").replace("__", "").replace("`", "")
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _build_frontend_quiz_answer_record(data: Mapping[str, Any]) -> Tuple[Optional[Dict[str, Any]], str, Optional[str]]:
+    """校验测验作答载荷，并构造可写入用户记录的标准结构。"""
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    book_id = str(data.get("book_id") or "").strip()
+    chapter_name = str(data.get("chapter_name") or "").strip()
+    session_name = str(data.get("session_name") or "").strip()
+    question_title = str(data.get("question_title") or "").strip()
+    question_content = str(data.get("question_content") or "").strip()
+    question_difficulty = str(data.get("question_difficulty") or "").strip()
+    question_type = str(data.get("question_type") or "").strip()
+    raw_question_options = data.get("question_options")
+    question_options = [
+        str(item).strip()
+        for item in raw_question_options
+        if str(item).strip()
+    ] if isinstance(raw_question_options, list) else []
+    question_hint = str(data.get("question_hint") or "").strip()
+    reference_answer = _strip_quiz_markdown(data.get("reference_answer"))
+    student_answer = str(data.get("student_answer") or "").strip()
+    quiz_id = str(data.get("quiz_id") or "").strip()
+
+    try:
+        chapter_index = int(data.get("chapter_index"))
+        session_index = int(data.get("session_index"))
+        question_index = int(data.get("question_index"))
+    except (TypeError, ValueError):
+        return None, "", "chapter_index, session_index and question_index are required."
+
+    if not lecture_id or not book_id:
+        return None, "", "lecture_id and book_id are required."
+
+    if chapter_index < 0 or session_index < 0 or question_index < 0:
+        return None, "", "chapter_index, session_index and question_index must be non-negative."
+
+    if not question_title and not question_content:
+        return None, "", "question_title or question_content is required."
+
+    if not reference_answer:
+        return None, "", "reference_answer is required for quiz feedback."
+
+    if not student_answer:
+        return None, "", "student_answer is required."
+
+    record = {
+        "type": "session_quiz_answer",
+        "question_id": _quiz_answer_id(
+            lecture_id,
+            book_id,
+            chapter_index,
+            session_index,
+            question_index,
+            question_title,
+            question_content,
+        ),
+        "lecture_id": lecture_id,
+        "book_id": book_id,
+        "chapter_index": chapter_index,
+        "session_index": session_index,
+        "chapter_name": chapter_name,
+        "session_name": session_name,
+        "question_index": question_index,
+        "question_title": question_title,
+        "question_content": question_content,
+        "question_difficulty": question_difficulty,
+        "question_type": question_type,
+        "question_options": question_options,
+        "question_hint": question_hint,
+        "student_answer": student_answer,
+        "reference_answer": reference_answer,
+        "answer_chars": len(student_answer),
+        "review_state": "submitted",
+    }
+
+    return record, quiz_id, None
+
+
+def _save_frontend_quiz_answer_record(username: str, record: Dict[str, Any], quiz_id: str) -> Dict[str, Any]:
+    """保存测验作答记录，并同步章节小测缓存文件。"""
+    saved = user_store.append_question_completion(_cfg, username, record)
+
+    if quiz_id:
+        from core.booksproc.chapter_quiz import save_chapter_quiz_answer
+        save_chapter_quiz_answer(
+            _cfg,
+            user_id=username,
+            quiz_id=quiz_id,
+            question_index=int(record.get("question_index") or 0),
+            record=saved,
+        )
+
+    return saved
+
+
+@bp.route("/frontend/quiz/submit", methods=["POST"])
+def frontend_quiz_submit():
+    """提交学生在测验浮层中的单题作答，并写入用户答题记录。"""
+    username = _resolve_runtime_user_id()
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, MappingABC):
+        return jsonify({"success": False, "error": "request body must be an object."}), 400
+
+    record, quiz_id, error_message = _build_frontend_quiz_answer_record(data)
+    if error_message or record is None:
+        return jsonify({"success": False, "error": error_message or "invalid quiz answer payload."}), 400
+
+    saved = _save_frontend_quiz_answer_record(username, record, quiz_id)
+    log_event(
+        "quiz_answer_submitted",
+        "学生测验作答已提交",
+        payload={
+            "username": username,
+            "lecture_id": record.get("lecture_id"),
+            "book_id": record.get("book_id"),
+            "chapter_name": record.get("chapter_name"),
+            "session_name": record.get("session_name"),
+            "question_index": record.get("question_index"),
+            "question_id": saved.get("question_id"),
+        },
+    )
+    return jsonify({"success": True, "record": saved})
+
+
+@bp.route("/frontend/quiz/submit-batch", methods=["POST"])
+def frontend_quiz_submit_batch():
+    """一次性提交测验浮层中的多道题作答。"""
+    username = _resolve_runtime_user_id()
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, MappingABC):
+        return jsonify({"success": False, "error": "request body must be an object."}), 400
+
+    raw_answers = data.get("answers")
+    if not isinstance(raw_answers, list) or not raw_answers:
+        return jsonify({"success": False, "error": "answers are required."}), 400
+
+    prepared: List[Tuple[Dict[str, Any], str]] = []
+
+    for item_index, item in enumerate(raw_answers):
+        if not isinstance(item, MappingABC):
+            return jsonify({"success": False, "error": f"answer {item_index + 1} must be an object."}), 400
+
+        record, quiz_id, error_message = _build_frontend_quiz_answer_record(item)
+        if error_message or record is None:
+            return jsonify({"success": False, "error": error_message or "invalid quiz answer payload.", "answer_index": item_index}), 400
+
+        prepared.append((record, quiz_id))
+
+    records = [
+        _save_frontend_quiz_answer_record(username, record, quiz_id)
+        for record, quiz_id in prepared
+    ]
+
+    first_record = prepared[0][0]
+    log_event(
+        "quiz_answers_submitted",
+        "学生测验作答已批量提交",
+        payload={
+            "username": username,
+            "lecture_id": first_record.get("lecture_id"),
+            "book_id": first_record.get("book_id"),
+            "chapter_name": first_record.get("chapter_name"),
+            "session_name": first_record.get("session_name"),
+            "answer_count": len(records),
+        },
+    )
+    return jsonify({"success": True, "records": records})
+
+
 @bp.route("/lectures/<lecture_id>/books/<book_id>/annotations", methods=["GET"])
 def get_book_annotations(lecture_id: str, book_id: str):
     _, _, error_response = _book_or_404(lecture_id, book_id)
@@ -3120,7 +4560,14 @@ def _runtime_question_tool_spec() -> Dict[str, Any]:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "question_id": {"type": "string"},
+                    "track_answer": {
+                        "type": "boolean",
+                        "description": "Set true only when this question answer must be tracked or reused as durable learning state. For one-off clarification questions, set false and omit question_id.",
+                    },
+                    "question_id": {
+                        "type": "string",
+                        "description": "Stable ID for tracked questions. Required only when track_answer is true.",
+                    },
                     "question_title": {"type": "string"},
                     "question_content": {"type": "string"},
                     "choices": {"type": "array", "items": {"type": "string"}},
@@ -3303,10 +4750,16 @@ def _runtime_execute_tool(username: str, tool_name: str, arguments: Dict[str, An
         if not title or not content:
             raise ValueError("question_title and question_content are required.")
         choices = [str(item or "").strip() for item in (safe_args.get("choices") or []) if str(item or "").strip()]
+        track_answer = safe_args.get("track_answer") is True
+        question_id = str(safe_args.get("question_id") or "").strip()
+        if track_answer and not question_id:
+            raise ValueError("question_id is required when track_answer is true.")
+
         return {
             "success": True,
             "question": {
-                "question_id": str(safe_args.get("question_id") or "").strip(),
+                "track_answer": track_answer,
+                "question_id": question_id if track_answer else "",
                 "question_title": title,
                 "question_content": content,
                 "choices": choices,
@@ -3512,13 +4965,42 @@ def _build_runtime_context_payload(username: str, payload: Optional[Dict[str, An
         f"- {row['title'] or row['id']} | progress {max(0, min(100, _safe_int(row.get('progress'), 0)))}% | current_chapter {row.get('current_chapter') or '-'} | books {row.get('books_count', 0)}"
         for row in lecture_rows
     ]
+    from core.memory import PROFILE_DIMENSIONS, parse_profile_dimensions, parse_profile_timeline
+
+    user_md = str(user_store.read_memory(_cfg, user_id, "user") or "")
+    profile_dims = parse_profile_dimensions(user_md)
+    profile_timeline = parse_profile_timeline(user_md)
+    profile_rate = sum(1 for d in profile_dims.values() if d.get("filled"))
+    profile_total = len(PROFILE_DIMENSIONS)
+    empty_dims = [d["name"] for d in PROFILE_DIMENSIONS if not profile_dims.get(d["key"], {}).get("filled")]
+    interview_active = bool(payload_map.get("interview"))
+
+    base_system_prompt = (
+        "You are in NexoraLearning mode. Use NexoraLearning tools to inspect lectures, books, overview XML, detail XML, questions XML, "
+        "and only read raw text when needed. Prefer structured learning materials over direct full-text reads."
+        "\n\nWhen using the question tool, set track_answer=false and omit question_id for ordinary one-off clarification questions. "
+        "Set track_answer=true and provide a stable question_id only when the user's answer must be tracked, reused, or written as durable learning state."
+    )
+
+    if interview_active:
+        filled_list = [
+            d["name"] for d in PROFILE_DIMENSIONS if profile_dims.get(d["key"], {}).get("filled")
+        ]
+        filled_summary = "、".join(filled_list) or "无"
+        empty_summary = "、".join(empty_dims) or "无"
+
+        if empty_dims:
+            template = PROFILE_INTERVIEW_PROMPT
+        else:
+            template = PROFILE_UPDATE_PROMPT
+
+        interview_instruction = template.replace("{{filled_summary}}", filled_summary).replace("{{empty_list}}", empty_summary)
+        base_system_prompt += "\n\n## 画像访谈模式（已激活）\n\n" + interview_instruction
+
     return {
         "learning": True,
         "lecture_id": active_lecture_id,
-        "system_prompt": (
-            "You are in NexoraLearning mode. Use NexoraLearning tools to inspect lectures, books, overview XML, detail XML, questions XML, "
-            "and only read raw text when needed. Prefer structured learning materials over direct full-text reads."
-        ),
+        "system_prompt": base_system_prompt,
         "context_blocks": [
             {
                 "type": "learning_profile",
@@ -3541,6 +5023,22 @@ def _build_runtime_context_payload(username: str, payload: Optional[Dict[str, An
                 "type": "learning_recent_records",
                 "title": "Recent Learning Records",
                 "content": json.dumps(recent_learning, ensure_ascii=False),
+            },
+            {
+                "type": "learning_profile_dimensions",
+                "title": "学习画像",
+                "content": (
+                    f"画像完整度：{profile_rate}/{profile_total}\n"
+                    + "\n".join(
+                        f"- {d['name']}（{d['key']}）：{'已填写 — ' + profile_dims[d['key']]['value'] if profile_dims.get(d['key'], {}).get('filled') else '未填写'}"
+                        for d in PROFILE_DIMENSIONS
+                    )
+                    + ("\n\n待填写维度：" + "、".join(empty_dims) if empty_dims else "\n\n所有维度已填写完毕。")
+                    + "\n\n## 最近进步\n"
+                    + ("\n".join(f"- [{e['date']}] {e['text']}" for e in profile_timeline["progress"]) if profile_timeline["progress"] else "- 暂无记录")
+                    + "\n\n## 需要注意\n"
+                    + ("\n".join(f"- [{e['date']}] {e['text']}" for e in profile_timeline["attention"]) if profile_timeline["attention"] else "- 暂无")
+                ),
             },
         ],
         "meta": {
@@ -3950,6 +5448,56 @@ def frontend_settings_feed_channels_delete(channel_id: str):
     return jsonify({"success": True, "channel_id": channel_id})
 
 
+@bp.route("/frontend/settings/feed-channels/<channel_id>", methods=["PATCH"])
+def frontend_settings_feed_channels_update(channel_id: str):
+    if not _is_runtime_admin():
+        return jsonify({"success": False, "error": "Only admin can update channels."}), 403
+
+    data = request.get_json(silent=True) or {}
+
+    # 获取现有频道记录
+    from core.learning_feed import list_learning_feed_channels
+    existing_channels = list_learning_feed_channels(_cfg)
+    existing_channel = None
+    for ch in existing_channels:
+        if str(ch.get("id") or "").strip() == channel_id:
+            existing_channel = ch
+            break
+
+    if not existing_channel:
+        return jsonify({"success": False, "error": "channel not found."}), 404
+
+    # 合并更新字段
+    updates = {}
+
+    if "title" in data:
+        title = str(data.get("title") or "").strip()
+        if not title:
+            return jsonify({"success": False, "error": "title cannot be empty."}), 400
+        updates["title"] = title
+
+    if "member_user_ids" in data:
+        member_user_ids = _normalize_channel_members(data.get("member_user_ids"))
+        if "ALL" in {item.upper() for item in member_user_ids}:
+            member_user_ids = []
+            updates["type"] = "public"
+        else:
+            updates["type"] = "private"
+        updates["member_user_ids"] = member_user_ids
+
+    if not updates:
+        return jsonify({"success": False, "error": "No valid fields to update."}), 400
+
+    # 合并现有记录和更新
+    merged_record = {**existing_channel, **updates, "id": channel_id}
+
+    record = upsert_learning_feed_channel(
+        _cfg,
+        merged_record,
+    )
+    return jsonify({"success": True, "item": record})
+
+
 @bp.route("/frontend/learning-feeds", methods=["GET"])
 def frontend_learning_feeds():
     username = str(_resolve_runtime_user_id() or "").strip()
@@ -4249,3 +5797,1297 @@ def frontend_learning_feed_comment_delete(feed_id: str, comment_id: str):
         return jsonify({"success": False, "error": "comment not found."}), 404
     log_event("learning_feed_comment_deleted", {"feed_id": feed_id, "comment_id": comment_id, "username": username, "source": "feed"})
     return jsonify({"success": True, "item": updated})
+
+
+# ── 个性化学习路线与章节内容 ─────────────────────────────────────────
+
+def _reader_guide_sse_event(event: str, data: Any) -> str:
+    """Format an SSE event."""
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _build_personalized_learning_catalog_context(
+    lecture_id: str,
+    outline: Any,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """基于课程大纲与教材目录构建学习路线输入上下文。"""
+    from core.booksproc.summary import _extract_chapter_summaries
+
+    books = list_lecture_books(_cfg, lecture_id) or []
+    if not books:
+        raise ValueError("课程教材列表为空，请先上传并解析教材。")
+
+    if not isinstance(outline, dict) or not isinstance(outline.get("sections"), list):
+        raise ValueError("课程大纲结构无效，请重新生成课程大纲。")
+
+    books_info: List[Dict[str, Any]] = []
+    catalog_rows: List[Dict[str, Any]] = []
+    missing_catalog_titles: List[str] = []
+
+    for book in books:
+        if not isinstance(book, dict):
+            continue
+
+        book_id = str(book.get("id") or "").strip()
+        book_title = str(book.get("title") or "").strip()
+        if not book_id:
+            continue
+
+        chapter_rows = _extract_chapter_summaries(load_book_info_xml(_cfg, lecture_id, book_id))
+        if not chapter_rows:
+            missing_catalog_titles.append(book_title or book_id)
+            continue
+
+        books_info.append({
+            "book_id": book_id,
+            "title": book_title or book_id,
+            "catalog_chapters": len(chapter_rows),
+        })
+
+        for chapter_index, chapter in enumerate(chapter_rows):
+            catalog_rows.append({
+                "book_id": book_id,
+                "book_title": book_title or book_id,
+                "chapter_index": chapter_index,
+                "chapter_name": str(chapter.get("chapter_name") or "").strip(),
+                "chapter_range": str(chapter.get("chapter_range") or "").strip(),
+                "chapter_summary": str(chapter.get("chapter_summary") or "").strip(),
+            })
+
+    if missing_catalog_titles:
+        joined_titles = "、".join(missing_catalog_titles)
+        raise ValueError(f"以下教材缺少可用目录，请先完成教材粗读解析：{joined_titles}")
+
+    if not catalog_rows:
+        raise ValueError("教材目录为空，请先完成教材粗读解析后再生成学习路线。")
+
+    return books_info, catalog_rows
+
+
+def _parse_start_length_range(range_text: str) -> Tuple[int, int]:
+    """解析 START:LENGTH 章节范围。"""
+    text = str(range_text or "").strip()
+    left, sep, right = text.partition(":")
+    if not sep:
+        raise ValueError(f"章节范围格式无效：{text}")
+
+    try:
+        start = int(left.strip())
+        length = int(right.strip())
+    except ValueError as exc:
+        raise ValueError(f"章节范围格式无效：{text}") from exc
+
+    if start < 0 or length <= 0:
+        raise ValueError(f"章节范围数值无效：{text}")
+
+    return start, length
+
+
+def _slice_book_text_by_range(book_text: str, range_text: str) -> str:
+    """按学习路线保存的章节范围截取教材原文。"""
+    start, length = _parse_start_length_range(range_text)
+    text = str(book_text or "")
+    end = start + length
+
+    if start >= len(text) or end > len(text):
+        raise ValueError(f"章节范围超出教材原文长度：{range_text}")
+
+    chapter_text = text[start:end].strip()
+    if not chapter_text:
+        raise ValueError(f"章节范围内原文为空：{range_text}")
+
+    return chapter_text
+
+
+def _clean_chapter_source_text(raw_text: str) -> str:
+    """清理原文章节中的 HTML 标签，避免模型把排版标签当成可引用原文。"""
+    text = html_lib.unescape(str(raw_text or ""))
+
+    if not text.strip():
+        raise ValueError("章节原文为空，无法生成文章阅读。")
+
+    text = re.sub(r"(?is)<\s*(script|style)[^>]*>.*?<\s*/\s*\1\s*>", "", text)
+    text = re.sub(r"(?is)<\s*br\s*/?\s*>", "\n", text)
+    text = re.sub(
+        r"(?is)<\s*/?\s*(?:address|article|aside|blockquote|dd|div|dl|dt|figcaption|figure|footer|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|table|tbody|td|tfoot|th|thead|tr|ul)(?:\s+[^>]*)?\s*/?\s*>",
+        "\n",
+        text,
+    )
+    text = re.sub(
+        r"(?is)<\s*/?\s*(?:a|abbr|b|bdi|bdo|cite|code|data|dfn|em|font|i|kbd|mark|q|rp|rt|ruby|s|samp|small|span|strong|sub|sup|time|u|var|wbr)(?:\s+[^>]*)?\s*/?\s*>",
+        "",
+        text,
+    )
+    text = re.sub(r"(?is)<\s*/?\s*[a-z][a-z0-9:-]*(?:\s+[^>]*)?\s*/?\s*>", "", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    cleaned = text.strip()
+    if not cleaned:
+        raise ValueError("章节原文清理 HTML 标签后为空，无法生成文章阅读。")
+
+    return cleaned
+
+
+@bp.route("/frontend/personalized-learning/generate-path", methods=["POST"])
+def frontend_personalized_learning_generate_path():
+    """SSE 流式生成个性化学习路线。"""
+    try:
+        data = request.get_json(silent=True) or {}
+        lecture_id = str(data.get("lecture_id") or "").strip()
+        if not lecture_id:
+            raise ValueError("lecture_id is required.")
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+    user_id = _resolve_runtime_user_id()
+    if not user_id:
+        return jsonify({"success": False, "error": "user_id is required."}), 400
+
+    def event_stream():
+        events: "queue.Queue[Tuple[str, Dict[str, Any]]]" = queue.Queue()
+
+        def push_event(event_name: str, event_payload: Dict[str, Any]) -> None:
+            events.put((event_name, event_payload))
+
+        def push_delta(delta_text: str) -> None:
+            text = str(delta_text or "")
+            if text:
+                append_log_text(text)
+                push_event("delta", {"content": text})
+
+        def run_worker() -> None:
+            try:
+                from core.booksproc.personalized_learning import (
+                    generate_learning_path_with_tools,
+                    save_learning_path,
+                    load_pre_reading_qa,
+                )
+                from core.booksproc.outline import load_outline
+
+                log_event(
+                    "personalized_learning_path_stream_start",
+                    "个性化学习路线流启动",
+                    payload={"user_id": user_id, "lecture_id": lecture_id},
+                )
+
+                outline = load_outline(_cfg, lecture_id)
+                if not outline:
+                    push_event("error", {"success": False, "error": "课程大纲未生成，请先生成大纲。"})
+                    return
+
+                books_info, catalog_rows = _build_personalized_learning_catalog_context(lecture_id, outline)
+
+                user_md = str(user_store.read_memory(_cfg, user_id, "user") or "")
+
+                qa_data = load_pre_reading_qa(_cfg, user_id, lecture_id)
+
+                from prompts import (
+                    PERSONALIZED_LEARNING_PATH_SYSTEM_PROMPT,
+                    PERSONALIZED_LEARNING_PATH_USER_PROMPT,
+                )
+
+                outline_json = json.dumps(outline, ensure_ascii=False)
+                books_json = json.dumps(books_info, ensure_ascii=False)
+                catalog_json = json.dumps(catalog_rows, ensure_ascii=False)
+                qa_json = json.dumps(qa_data, ensure_ascii=False) if qa_data else "{}"
+                profile_json = json.dumps({"user_profile": user_md[:3000]}, ensure_ascii=False)
+
+                proxy = _cfg.get("__proxy__")
+                if proxy is None:
+                    from core.nexora_proxy import NexoraProxy as _NP
+                    proxy = _NP(_cfg)
+                    _cfg["__proxy__"] = proxy
+
+                default_model = get_default_nexora_model(_cfg)
+
+                log_event(
+                    "personalized_learning_path_stream_context",
+                    "个性化学习路线上下文已装载",
+                    payload={
+                        "user_id": user_id,
+                        "lecture_id": lecture_id,
+                        "books_count": len(books_info),
+                        "catalog_chapters": len(catalog_rows),
+                        "catalog_chars": len(catalog_json),
+                        "outline_sections": len(outline.get("sections") or []) if isinstance(outline, dict) else 0,
+                        "qa_present": bool(qa_data),
+                    },
+                )
+
+                user_prompt = PERSONALIZED_LEARNING_PATH_USER_PROMPT.replace(
+                    "{{outline_json}}", outline_json
+                ).replace(
+                    "{{books_json}}", books_json
+                ).replace(
+                    "{{catalog_json}}", catalog_json
+                ).replace(
+                    "{{qa_json}}", qa_json
+                ).replace(
+                    "{{profile_json}}", profile_json
+                )
+
+                advice_text, chapters = generate_learning_path_with_tools(
+                    _cfg,
+                    proxy=proxy,
+                    model_name=default_model or "",
+                    user_id=user_id,
+                    lecture_id=lecture_id,
+                    system_prompt=PERSONALIZED_LEARNING_PATH_SYSTEM_PROMPT,
+                    user_prompt=user_prompt,
+                    full_text=catalog_json,
+                    request_timeout=180,
+                    on_delta=push_delta,
+                )
+
+                if not chapters:
+                    push_event("error", {"success": False, "error": "无法解析学习路线结果"})
+                    return
+
+                path_data = {
+                    "advice": advice_text,
+                    "chapters": chapters,
+                    "outline": outline,
+                    "books": books_info,
+                    "catalog": catalog_rows,
+                    "qa": qa_data,
+                    "user_profile_summary": user_md[:1000],
+                }
+                save_learning_path(_cfg, user_id, lecture_id, path_data)
+
+                push_event("done", {
+                    "success": True,
+                    "advice": advice_text,
+                    "chapters": chapters,
+                    "cached": False,
+                })
+
+            except Exception as exc:
+                log_event(
+                    "personalized_learning_path_error",
+                    str(exc),
+                    payload={"user_id": user_id, "lecture_id": lecture_id},
+                )
+                push_event("error", {"success": False, "error": str(exc)})
+            finally:
+                push_event("close", {})
+
+        thread = threading.Thread(target=run_worker, name="personalized-learning-path", daemon=True)
+        thread.start()
+
+        yield _reader_guide_sse_event("status", {"message": "personalized learning path generation started"})
+
+        while True:
+            try:
+                event_name, event_payload = events.get(timeout=30)
+            except queue.Empty:
+                yield _reader_guide_sse_event("ping", {"timestamp": time.time()})
+                continue
+
+            if event_name == "close":
+                break
+
+            yield _reader_guide_sse_event(event_name, event_payload)
+
+    return Response(
+        stream_with_context(event_stream()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@bp.route("/frontend/personalized-learning/generate-path-stream", methods=["GET"])
+def frontend_personalized_learning_generate_path_stream():
+    """GET SSE endpoint for learning path generation (for EventSource)."""
+    lecture_id = str(request.args.get("lecture_id") or "").strip()
+    if not lecture_id:
+        return Response("event: error\ndata: {\"error\": \"lecture_id is required\"}\n\n", mimetype="text/event-stream")
+
+    user_id = _resolve_runtime_user_id()
+    if not user_id:
+        return Response("event: error\ndata: {\"error\": \"user_id is required\"}\n\n", mimetype="text/event-stream")
+
+    def event_stream():
+        events: "queue.Queue[Tuple[str, Dict[str, Any]]]" = queue.Queue()
+
+        def push_event(event_name: str, event_payload: Dict[str, Any]) -> None:
+            events.put((event_name, event_payload))
+
+        def push_delta(delta_text: str) -> None:
+            text = str(delta_text or "")
+            if text:
+                append_log_text(text)
+                push_event("delta", {"content": text})
+
+        def run_worker() -> None:
+            try:
+                from core.booksproc.personalized_learning import (
+                    generate_learning_path_with_tools,
+                    save_learning_path,
+                    load_pre_reading_qa,
+                )
+                from core.booksproc.outline import load_outline
+
+                log_event(
+                    "personalized_learning_path_stream_start",
+                    "个性化学习路线流启动",
+                    payload={"user_id": user_id, "lecture_id": lecture_id},
+                )
+
+                outline = load_outline(_cfg, lecture_id)
+                if not outline:
+                    push_event("error", {"success": False, "error": "课程大纲未生成"})
+                    return
+
+                books_info, catalog_rows = _build_personalized_learning_catalog_context(lecture_id, outline)
+
+                user_md = str(user_store.read_memory(_cfg, user_id, "user") or "")
+                qa_data = load_pre_reading_qa(_cfg, user_id, lecture_id)
+
+                from prompts import (
+                    PERSONALIZED_LEARNING_PATH_SYSTEM_PROMPT,
+                    PERSONALIZED_LEARNING_PATH_USER_PROMPT,
+                )
+
+                outline_json = json.dumps(outline, ensure_ascii=False)
+                books_json = json.dumps(books_info, ensure_ascii=False)
+                catalog_json = json.dumps(catalog_rows, ensure_ascii=False)
+                qa_json = json.dumps(qa_data, ensure_ascii=False) if qa_data else "{}"
+                profile_json = json.dumps({"user_profile": user_md[:3000]}, ensure_ascii=False)
+
+                proxy = _cfg.get("__proxy__")
+                if proxy is None:
+                    from core.nexora_proxy import NexoraProxy as _NP
+                    proxy = _NP(_cfg)
+                    _cfg["__proxy__"] = proxy
+
+                default_model = get_default_nexora_model(_cfg)
+
+                log_event(
+                    "personalized_learning_path_stream_context",
+                    "个性化学习路线上下文已装载",
+                    payload={
+                        "user_id": user_id,
+                        "lecture_id": lecture_id,
+                        "books_count": len(books_info),
+                        "catalog_chapters": len(catalog_rows),
+                        "catalog_chars": len(catalog_json),
+                        "outline_sections": len(outline.get("sections") or []) if isinstance(outline, dict) else 0,
+                        "qa_present": bool(qa_data),
+                    },
+                )
+
+                user_prompt = PERSONALIZED_LEARNING_PATH_USER_PROMPT.replace(
+                    "{{outline_json}}", outline_json
+                ).replace(
+                    "{{books_json}}", books_json
+                ).replace(
+                    "{{catalog_json}}", catalog_json
+                ).replace(
+                    "{{qa_json}}", qa_json
+                ).replace(
+                    "{{profile_json}}", profile_json
+                )
+
+                advice_text, chapters = generate_learning_path_with_tools(
+                    _cfg,
+                    proxy=proxy,
+                    model_name=default_model or "",
+                    user_id=user_id,
+                    lecture_id=lecture_id,
+                    system_prompt=PERSONALIZED_LEARNING_PATH_SYSTEM_PROMPT,
+                    user_prompt=user_prompt,
+                    full_text=catalog_json,
+                    request_timeout=180,
+                    on_delta=push_delta,
+                )
+
+                if not chapters:
+                    push_event("error", {"success": False, "error": "无法解析学习路线结果"})
+                    return
+
+                path_data = {
+                    "advice": advice_text,
+                    "chapters": chapters,
+                    "outline": outline,
+                    "books": books_info,
+                    "catalog": catalog_rows,
+                    "qa": qa_data,
+                    "user_profile_summary": user_md[:1000],
+                }
+                save_learning_path(_cfg, user_id, lecture_id, path_data)
+
+                push_event("done", {
+                    "success": True,
+                    "advice": advice_text,
+                    "chapters": chapters,
+                    "cached": False,
+                })
+
+            except Exception as exc:
+                log_event(
+                    "personalized_learning_path_error",
+                    str(exc),
+                    payload={"user_id": user_id, "lecture_id": lecture_id},
+                )
+                push_event("error", {"success": False, "error": str(exc)})
+            finally:
+                push_event("close", {})
+
+        thread = threading.Thread(target=run_worker, name="personalized-learning-path-get", daemon=True)
+        thread.start()
+
+        yield _reader_guide_sse_event("status", {"message": "personalized learning path generation started"})
+
+        while True:
+            try:
+                event_name, event_payload = events.get(timeout=30)
+            except queue.Empty:
+                yield _reader_guide_sse_event("ping", {"timestamp": time.time()})
+                continue
+
+            if event_name == "close":
+                break
+
+            yield _reader_guide_sse_event(event_name, event_payload)
+
+    return Response(
+        stream_with_context(event_stream()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@bp.route("/frontend/personalized-learning/load-path", methods=["POST"])
+def frontend_personalized_learning_load_path():
+    """加载已生成的学习路线。"""
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    if not lecture_id:
+        return jsonify({"success": False, "error": "lecture_id is required."}), 400
+
+    user_id = _resolve_runtime_user_id()
+    if not user_id:
+        return jsonify({"success": False, "error": "user_id is required."}), 400
+
+    from core.booksproc.personalized_learning import load_learning_path, load_all_chapter_status
+
+    path_data = load_learning_path(_cfg, user_id, lecture_id)
+    if not path_data:
+        return jsonify({"success": True, "cached": False})
+
+    chapters_status = load_all_chapter_status(_cfg, user_id, lecture_id)
+
+    return jsonify({
+        "success": True,
+        "cached": True,
+        "advice": path_data.get("advice", ""),
+        "chapters": chapters_status,
+    })
+
+
+@bp.route("/frontend/personalized-learning/generate-chapter", methods=["POST"])
+def frontend_personalized_learning_generate_chapter():
+    """SSE 流式生成章节内容。"""
+    try:
+        data = request.get_json(silent=True) or {}
+        lecture_id = str(data.get("lecture_id") or "").strip()
+        chapter_index = data.get("chapter_index")
+        if not lecture_id:
+            raise ValueError("lecture_id is required.")
+        if chapter_index is None:
+            raise ValueError("chapter_index is required.")
+        chapter_index = int(chapter_index)
+    except (ValueError, TypeError) as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+    user_id = _resolve_runtime_user_id()
+    if not user_id:
+        return jsonify({"success": False, "error": "user_id is required."}), 400
+
+    def event_stream():
+        events: "queue.Queue[Tuple[str, Dict[str, Any]]]" = queue.Queue()
+
+        def push_event(event_name: str, event_payload: Dict[str, Any]) -> None:
+            events.put((event_name, event_payload))
+
+        def push_delta(delta_text: str) -> None:
+            text = str(delta_text or "")
+            if text:
+                append_log_text(text)
+                push_event("delta", {"content": text})
+
+        def run_worker() -> None:
+            try:
+                from core.booksproc.personalized_learning import (
+                    generate_chapter_markdown_with_tools,
+                    load_learning_path,
+                    save_chapter_content,
+                )
+                from core.lectures import load_book_text
+
+                log_event(
+                    "personalized_chapter_stream_start",
+                    "个性化章节流启动",
+                    payload={"user_id": user_id, "lecture_id": lecture_id, "chapter_index": chapter_index},
+                )
+
+                path_data = load_learning_path(_cfg, user_id, lecture_id)
+                if not path_data:
+                    push_event("error", {"success": False, "error": "学习路线未生成，请先生成学习路线。"})
+                    return
+
+                chapters = path_data.get("chapters") or []
+                if chapter_index < 0 or chapter_index >= len(chapters):
+                    push_event("error", {"success": False, "error": "章节索引超出范围。"})
+                    return
+
+                chapter = chapters[chapter_index]
+                chapter_name = str(chapter.get("name") or "").strip()
+                book_id = str(chapter.get("book_id") or "").strip()
+                book_title = str(chapter.get("book_title") or "").strip()
+                chapter_range = str(chapter.get("chapter_range") or "").strip()
+                chapter_summary = str(chapter.get("chapter_summary") or "").strip()
+
+                if not book_id:
+                    push_event("error", {"success": False, "error": "章节未关联教材。"})
+                    return
+                if not chapter_range:
+                    push_event("error", {"success": False, "error": "学习路线缺少章节范围，请重新生成学习路线。"})
+                    return
+
+                # 加载教材内容
+                book_text = load_book_text(_cfg, lecture_id, book_id)
+                if not book_text:
+                    push_event("error", {"success": False, "error": "教材内容未找到。"})
+                    return
+                chapter_text = _clean_chapter_source_text(_slice_book_text_by_range(book_text, chapter_range))
+
+                # 加载用户画像
+                user_md = str(user_store.read_memory(_cfg, user_id, "user") or "")
+
+                # 加载阅读前问答
+                from core.booksproc.personalized_learning import load_pre_reading_qa
+                qa_data = load_pre_reading_qa(_cfg, user_id, lecture_id)
+
+                # 构建提示词
+                from prompts import (
+                    CHAPTER_CONTENT_GENERATION_SYSTEM_PROMPT,
+                    CHAPTER_CONTENT_GENERATION_USER_PROMPT,
+                )
+
+                profile_json = json.dumps({"user_profile": user_md[:2000]}, ensure_ascii=False)
+                qa_json = json.dumps(qa_data, ensure_ascii=False) if qa_data else "{}"
+                advice_text = str(path_data.get("advice") or "").strip()
+
+                user_prompt = CHAPTER_CONTENT_GENERATION_USER_PROMPT.replace(
+                    "{{chapter_name}}", chapter_name
+                ).replace(
+                    "{{book_title}}", book_title
+                ).replace(
+                    "{{chapter_index}}", str(chapter_index)
+                ).replace(
+                    "{{chapter_range}}", chapter_range
+                ).replace(
+                    "{{chapter_summary}}", chapter_summary
+                ).replace(
+                    "{{book_content}}", chapter_text
+                ).replace(
+                    "{{profile_json}}", profile_json
+                ).replace(
+                    "{{qa_json}}", qa_json
+                ).replace(
+                    "{{learning_path_advice}}", advice_text
+                )
+
+                proxy = _cfg.get("__proxy__")
+                if proxy is None:
+                    from core.nexora_proxy import NexoraProxy as _NP
+                    proxy = _NP(_cfg)
+                    _cfg["__proxy__"] = proxy
+
+                default_model = get_default_nexora_model(_cfg)
+                markdown_content = generate_chapter_markdown_with_tools(
+                    _cfg,
+                    proxy=proxy,
+                    model_name=default_model or "",
+                    user_id=user_id,
+                    lecture_id=lecture_id,
+                    chapter_name=chapter_name,
+                    system_prompt=CHAPTER_CONTENT_GENERATION_SYSTEM_PROMPT,
+                    user_prompt=user_prompt,
+                    full_text=chapter_text,
+                    request_timeout=300,
+                    on_delta=push_delta,
+                )
+                if not markdown_content:
+                    push_event("error", {"success": False, "error": "生成内容为空"})
+                    return
+
+                save_chapter_content(_cfg, user_id, lecture_id, chapter_index, markdown_content)
+
+                push_event("done", {
+                    "success": True,
+                    "chapter_index": chapter_index,
+                    "chapter_name": chapter_name,
+                    "content": markdown_content,
+                })
+
+            except Exception as exc:
+                log_event(
+                    "personalized_chapter_error",
+                    str(exc),
+                    payload={"user_id": user_id, "lecture_id": lecture_id, "chapter_index": chapter_index},
+                )
+                push_event("error", {"success": False, "error": str(exc)})
+            finally:
+                push_event("close", {})
+
+        thread = threading.Thread(target=run_worker, name="personalized-chapter-gen", daemon=True)
+        thread.start()
+
+        yield _reader_guide_sse_event("status", {"message": "chapter content generation started"})
+
+        while True:
+            try:
+                event_name, event_payload = events.get(timeout=30)
+            except queue.Empty:
+                yield _reader_guide_sse_event("ping", {"timestamp": time.time()})
+                continue
+
+            if event_name == "close":
+                break
+
+            yield _reader_guide_sse_event(event_name, event_payload)
+
+    return Response(
+        stream_with_context(event_stream()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@bp.route("/frontend/personalized-learning/generate-chapter-stream", methods=["GET"])
+def frontend_personalized_learning_generate_chapter_stream():
+    """GET SSE endpoint for chapter content generation (for EventSource)."""
+    lecture_id = str(request.args.get("lecture_id") or "").strip()
+    chapter_index_str = str(request.args.get("chapter_index") or "").strip()
+
+    if not lecture_id:
+        return Response("event: error\ndata: {\"error\": \"lecture_id is required\"}\n\n", mimetype="text/event-stream")
+
+    try:
+        chapter_index = int(chapter_index_str)
+    except (ValueError, TypeError):
+        return Response("event: error\ndata: {\"error\": \"chapter_index must be integer\"}\n\n", mimetype="text/event-stream")
+
+    user_id = _resolve_runtime_user_id()
+    if not user_id:
+        return Response("event: error\ndata: {\"error\": \"user_id is required\"}\n\n", mimetype="text/event-stream")
+
+    def event_stream():
+        events: "queue.Queue[Tuple[str, Dict[str, Any]]]" = queue.Queue()
+
+        def push_event(event_name: str, event_payload: Dict[str, Any]) -> None:
+            events.put((event_name, event_payload))
+
+        def push_delta(delta_text: str) -> None:
+            text = str(delta_text or "")
+            if text:
+                append_log_text(text)
+                push_event("delta", {"content": text})
+
+        def run_worker() -> None:
+            try:
+                from core.booksproc.personalized_learning import (
+                    generate_chapter_markdown_with_tools,
+                    load_learning_path,
+                    save_chapter_content,
+                )
+                from core.lectures import load_book_text
+
+                log_event(
+                    "personalized_chapter_stream_start",
+                    "个性化章节流启动",
+                    payload={"user_id": user_id, "lecture_id": lecture_id, "chapter_index": chapter_index},
+                )
+
+                path_data = load_learning_path(_cfg, user_id, lecture_id)
+                if not path_data:
+                    push_event("error", {"success": False, "error": "学习路线未生成"})
+                    return
+
+                chapters = path_data.get("chapters") or []
+                if chapter_index < 0 or chapter_index >= len(chapters):
+                    push_event("error", {"success": False, "error": "章节索引超出范围"})
+                    return
+
+                chapter = chapters[chapter_index]
+                chapter_name = str(chapter.get("name") or "").strip()
+                book_id = str(chapter.get("book_id") or "").strip()
+                book_title = str(chapter.get("book_title") or "").strip()
+                chapter_range = str(chapter.get("chapter_range") or "").strip()
+                chapter_summary = str(chapter.get("chapter_summary") or "").strip()
+
+                if not book_id:
+                    push_event("error", {"success": False, "error": "章节未关联教材"})
+                    return
+                if not chapter_range:
+                    push_event("error", {"success": False, "error": "学习路线缺少章节范围，请重新生成学习路线。"})
+                    return
+
+                book_text = load_book_text(_cfg, lecture_id, book_id)
+                if not book_text:
+                    push_event("error", {"success": False, "error": "教材内容未找到"})
+                    return
+                chapter_text = _clean_chapter_source_text(_slice_book_text_by_range(book_text, chapter_range))
+
+                user_md = str(user_store.read_memory(_cfg, user_id, "user") or "")
+
+                from core.booksproc.personalized_learning import load_pre_reading_qa
+                qa_data = load_pre_reading_qa(_cfg, user_id, lecture_id)
+
+                from prompts import (
+                    CHAPTER_CONTENT_GENERATION_SYSTEM_PROMPT,
+                    CHAPTER_CONTENT_GENERATION_USER_PROMPT,
+                )
+
+                profile_json = json.dumps({"user_profile": user_md[:2000]}, ensure_ascii=False)
+                qa_json = json.dumps(qa_data, ensure_ascii=False) if qa_data else "{}"
+                advice_text = str(path_data.get("advice") or "").strip()
+
+                user_prompt = CHAPTER_CONTENT_GENERATION_USER_PROMPT.replace(
+                    "{{chapter_name}}", chapter_name
+                ).replace(
+                    "{{book_title}}", book_title
+                ).replace(
+                    "{{chapter_index}}", str(chapter_index)
+                ).replace(
+                    "{{chapter_range}}", chapter_range
+                ).replace(
+                    "{{chapter_summary}}", chapter_summary
+                ).replace(
+                    "{{book_content}}", chapter_text
+                ).replace(
+                    "{{profile_json}}", profile_json
+                ).replace(
+                    "{{qa_json}}", qa_json
+                ).replace(
+                    "{{learning_path_advice}}", advice_text
+                )
+
+                proxy = _cfg.get("__proxy__")
+                if proxy is None:
+                    from core.nexora_proxy import NexoraProxy as _NP
+                    proxy = _NP(_cfg)
+                    _cfg["__proxy__"] = proxy
+
+                default_model = get_default_nexora_model(_cfg)
+                markdown_content = generate_chapter_markdown_with_tools(
+                    _cfg,
+                    proxy=proxy,
+                    model_name=default_model or "",
+                    user_id=user_id,
+                    lecture_id=lecture_id,
+                    chapter_name=chapter_name,
+                    system_prompt=CHAPTER_CONTENT_GENERATION_SYSTEM_PROMPT,
+                    user_prompt=user_prompt,
+                    full_text=chapter_text,
+                    request_timeout=300,
+                    on_delta=push_delta,
+                )
+                if not markdown_content:
+                    push_event("error", {"success": False, "error": "生成内容为空"})
+                    return
+
+                save_chapter_content(_cfg, user_id, lecture_id, chapter_index, markdown_content)
+
+                push_event("done", {
+                    "success": True,
+                    "chapter_index": chapter_index,
+                    "chapter_name": chapter_name,
+                    "content": markdown_content,
+                })
+
+            except Exception as exc:
+                log_event(
+                    "personalized_chapter_error",
+                    str(exc),
+                    payload={"user_id": user_id, "lecture_id": lecture_id, "chapter_index": chapter_index},
+                )
+                push_event("error", {"success": False, "error": str(exc)})
+            finally:
+                push_event("close", {})
+
+        thread = threading.Thread(target=run_worker, name="personalized-chapter-gen-get", daemon=True)
+        thread.start()
+
+        yield _reader_guide_sse_event("status", {"message": "chapter content generation started"})
+
+        while True:
+            try:
+                event_name, event_payload = events.get(timeout=30)
+            except queue.Empty:
+                yield _reader_guide_sse_event("ping", {"timestamp": time.time()})
+                continue
+
+            if event_name == "close":
+                break
+
+            yield _reader_guide_sse_event(event_name, event_payload)
+
+    return Response(
+        stream_with_context(event_stream()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@bp.route("/frontend/personalized-learning/load-chapter", methods=["POST"])
+def frontend_personalized_learning_load_chapter():
+    """加载已生成的章节内容。"""
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    chapter_index = data.get("chapter_index")
+
+    if not lecture_id:
+        return jsonify({"success": False, "error": "lecture_id is required."}), 400
+    if chapter_index is None:
+        return jsonify({"success": False, "error": "chapter_index is required."}), 400
+
+    user_id = _resolve_runtime_user_id()
+    if not user_id:
+        return jsonify({"success": False, "error": "user_id is required."}), 400
+
+    from core.booksproc.personalized_learning import load_chapter_content
+
+    content = load_chapter_content(_cfg, user_id, lecture_id, int(chapter_index))
+    if content is None:
+        return jsonify({"success": True, "cached": False})
+
+    return jsonify({
+        "success": True,
+        "cached": True,
+        "content": content,
+    })
+
+
+@bp.route("/frontend/personalized-learning/chapter-complete", methods=["POST"])
+def frontend_personalized_learning_chapter_complete():
+    """标记个性化学习路线中的章节学习完成。"""
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    try:
+        chapter_index = int(data.get("chapter_index"))
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "chapter_index is required."}), 400
+
+    if not lecture_id:
+        return jsonify({"success": False, "error": "lecture_id is required."}), 400
+
+    user_id = _resolve_runtime_user_id()
+    if not user_id:
+        return jsonify({"success": False, "error": "user_id is required."}), 400
+
+    from core.booksproc.personalized_learning import (
+        has_chapter_content,
+        load_all_chapter_status,
+        load_chapter_content,
+        load_learning_path,
+        mark_chapter_completed,
+    )
+
+    path_data = load_learning_path(_cfg, user_id, lecture_id)
+    if not path_data:
+        return jsonify({"success": False, "error": "学习路线未生成。"}), 404
+
+    chapters = path_data.get("chapters") if isinstance(path_data, dict) else []
+    if not isinstance(chapters, list) or chapter_index < 0 or chapter_index >= len(chapters):
+        return jsonify({"success": False, "error": "章节索引超出范围。"}), 400
+
+    if not has_chapter_content(_cfg, user_id, lecture_id, chapter_index):
+        return jsonify({"success": False, "error": "请先生成并阅读本章学习素材。"}), 400
+
+    chapter = chapters[chapter_index] if isinstance(chapters[chapter_index], dict) else {}
+    chapter_name = str(chapter.get("name") or "").strip()
+    book_id = str(chapter.get("book_id") or "").strip()
+    chapter_range = str(chapter.get("chapter_range") or "").strip()
+    outline_section_id = str(chapter.get("outline_section_id") or "").strip()
+
+    if not chapter_name or not book_id:
+        return jsonify({"success": False, "error": "学习路线章节缺少教材信息。"}), 400
+
+    existing_records = user_store.list_learning_records(_cfg, user_id)
+    already_completed = any(
+        isinstance(row, dict)
+        and str(row.get("type") or "").strip() == "chapter_completed"
+        and str(row.get("lecture_id") or "").strip() == lecture_id
+        and str(row.get("book_id") or "").strip() == book_id
+        and str(row.get("chapter_name") or "").strip() == chapter_name
+        for row in (existing_records or [])
+    )
+
+    updated_path = mark_chapter_completed(_cfg, user_id, lecture_id, chapter_index)
+    if not updated_path:
+        return jsonify({"success": False, "error": "章节完成状态更新失败。"}), 500
+
+    if not already_completed:
+        user_store.append_learning_record(
+            _cfg,
+            user_id,
+            {
+                "type": "chapter_completed",
+                "source": "personalized_learning_path",
+                "lecture_id": lecture_id,
+                "book_id": book_id,
+                "chapter_name": chapter_name,
+                "chapter_index": chapter_index,
+                "chapter_range": chapter_range,
+                "outline_section_id": outline_section_id,
+            },
+        )
+
+    memory_job = None
+    if not already_completed:
+        chapter_content = str(load_chapter_content(_cfg, user_id, lecture_id, chapter_index) or "")
+        memory_job = enqueue_memory_job(
+            _cfg,
+            user_id=user_id,
+            lecture_id=lecture_id,
+            reason="personalized_chapter_complete",
+            payload={
+                "book_id": book_id,
+                "chapter_name": chapter_name,
+                "chapter_index": chapter_index,
+                "chapter_range": chapter_range,
+                "outline_section_id": outline_section_id,
+                "chapter_context": chapter_content[:12000],
+            },
+        )
+
+    chapters_status = load_all_chapter_status(_cfg, user_id, lecture_id)
+    log_event(
+        "personalized_chapter_complete",
+        "个性化学习路线章节已标记完成",
+        payload={
+            "user_id": user_id,
+            "lecture_id": lecture_id,
+            "book_id": book_id,
+            "chapter_index": chapter_index,
+            "chapter_name": chapter_name,
+            "already_completed": already_completed,
+            "memory_job": dict(memory_job or {}),
+        },
+    )
+    return jsonify({
+        "success": True,
+        "already_completed": already_completed,
+        "chapters": chapters_status,
+        "memory_enqueue": memory_job,
+    })
+
+
+@bp.route("/frontend/personalized-learning/chapter-quiz", methods=["POST"])
+def frontend_personalized_learning_chapter_quiz():
+    """读取或创建基于个性化学习素材的章节练习。"""
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    try:
+        chapter_index = int(data.get("chapter_index"))
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "chapter_index is required."}), 400
+
+    if not lecture_id:
+        return jsonify({"success": False, "error": "lecture_id is required."}), 400
+
+    user_id = _resolve_runtime_user_id()
+    if not user_id:
+        return jsonify({"success": False, "error": "user_id is required."}), 400
+
+    from core.booksproc.personalized_learning import load_chapter_content, load_learning_path
+
+    path_data = load_learning_path(_cfg, user_id, lecture_id)
+    if not path_data:
+        return jsonify({"success": False, "error": "学习路线未生成。"}), 404
+
+    chapters = path_data.get("chapters") if isinstance(path_data, dict) else []
+    if not isinstance(chapters, list) or chapter_index < 0 or chapter_index >= len(chapters):
+        return jsonify({"success": False, "error": "章节索引超出范围。"}), 400
+
+    chapter = chapters[chapter_index] if isinstance(chapters[chapter_index], dict) else {}
+    chapter_name = str(chapter.get("name") or "").strip()
+    book_id = str(chapter.get("book_id") or "").strip()
+    chapter_range = str(chapter.get("chapter_range") or "").strip()
+    chapter_content = str(load_chapter_content(_cfg, user_id, lecture_id, chapter_index) or "").strip()
+
+    if not book_id or not chapter_name:
+        return jsonify({"success": False, "error": "学习路线章节缺少教材信息。"}), 400
+    if not chapter_content:
+        return jsonify({"success": False, "error": "请先生成本章学习素材。"}), 400
+
+    try:
+        from core.booksproc.chapter_quiz import load_or_create_chapter_quiz
+        quiz = load_or_create_chapter_quiz(
+            _cfg,
+            user_id=user_id,
+            lecture_id=lecture_id,
+            book_id=book_id,
+            chapter_index=chapter_index,
+            chapter_name=chapter_name,
+            chapter_range=chapter_range,
+            chapter_context=chapter_content[:12000],
+            chapter_detail_xml="",
+        )
+        return jsonify({
+            "success": True,
+            "quiz": quiz,
+            "quiz_id": quiz.get("quiz_id"),
+            "questions": quiz.get("questions") or [],
+            "answers": quiz.get("answers") or {},
+        }), 200
+    except Exception as exc:
+        log_event(
+            "personalized_chapter_quiz_error",
+            str(exc),
+            payload={"user_id": user_id, "lecture_id": lecture_id, "chapter_index": chapter_index},
+        )
+        return jsonify({"success": False, "error": str(exc)}), 500
+
+
+@bp.route("/frontend/personalized-learning/save-qa", methods=["POST"])
+def frontend_personalized_learning_save_qa():
+    """保存阅读前问答。"""
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    if not lecture_id:
+        return jsonify({"success": False, "error": "lecture_id is required."}), 400
+
+    user_id = _resolve_runtime_user_id()
+    if not user_id:
+        return jsonify({"success": False, "error": "user_id is required."}), 400
+
+    from core.booksproc.personalized_learning import save_pre_reading_qa
+
+    qa_data = {
+        "questions": data.get("questions") or [],
+        "answers": data.get("answers") or {},
+        "skipped": bool(data.get("skipped")),
+    }
+
+    path = save_pre_reading_qa(_cfg, user_id, lecture_id, qa_data)
+    return jsonify({"success": True, "path": path})
+
+
+@bp.route("/frontend/personalized-learning/load-qa", methods=["POST"])
+def frontend_personalized_learning_load_qa():
+    """加载阅读前问答。"""
+    data = request.get_json(silent=True) or {}
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    if not lecture_id:
+        return jsonify({"success": False, "error": "lecture_id is required."}), 400
+
+    user_id = _resolve_runtime_user_id()
+    if not user_id:
+        return jsonify({"success": False, "error": "user_id is required."}), 400
+
+    from core.booksproc.personalized_learning import load_pre_reading_qa
+
+    qa_data = load_pre_reading_qa(_cfg, user_id, lecture_id)
+    if not qa_data:
+        return jsonify({"success": True, "cached": False})
+
+    return jsonify({"success": True, "cached": True, "data": qa_data})
+
+
+def _build_personalized_qa_guide_context(
+    *,
+    lecture_id: str,
+    lecture_title: str,
+    outline: Any,
+) -> Tuple[str, List[Dict[str, Any]], int]:
+    """构建个性化学习路线问答上下文，确保问题生成能看到课程和教材内容。"""
+    books = list_lecture_books(_cfg, lecture_id) or []
+    books_info: List[Dict[str, Any]] = []
+    book_text_rows: List[Tuple[str, str, str]] = []
+
+    for book in books:
+        if not isinstance(book, dict):
+            continue
+
+        book_id = str(book.get("id") or "").strip()
+        book_title = str(book.get("title") or "").strip()
+        if not book_id:
+            continue
+
+        books_info.append({
+            "book_id": book_id,
+            "title": book_title or book_id,
+        })
+
+        book_text = str(load_book_text(_cfg, lecture_id, book_id) or "").strip()
+        if book_text:
+            book_text_rows.append((book_id, book_title or book_id, book_text))
+
+    if not book_text_rows:
+        raise ValueError("课程教材解析内容为空，请先完成教材解析后再生成阅读前问答。")
+
+    outline_text = json.dumps(outline, ensure_ascii=False)[:2600]
+    books_info_text = json.dumps(books_info, ensure_ascii=False)[:1400]
+    book_context_parts: List[str] = []
+    remaining_chars = 5200
+
+    for index, (book_id, book_title, book_text) in enumerate(book_text_rows):
+        remaining_books = max(1, len(book_text_rows) - index)
+        excerpt_limit = max(900, remaining_chars // remaining_books)
+        excerpt = book_text[:excerpt_limit]
+        remaining_chars = max(0, remaining_chars - len(excerpt))
+
+        book_context_parts.append(
+            f"## 教材内容摘录\nbook_id: {book_id}\nbook_title: {book_title}\n\n{excerpt}"
+        )
+
+        if remaining_chars <= 0:
+            break
+
+    guide_context = "\n\n".join([
+        f"## 课程信息\nlecture_id: {lecture_id}\nlecture_title: {lecture_title or lecture_id}",
+        f"## 教材清单\n{books_info_text}",
+        f"## 课程大纲\n{outline_text}",
+        "\n\n".join(book_context_parts),
+    ])
+
+    return guide_context, books_info, len(book_text_rows)
+
+
+@bp.route("/frontend/personalized-learning/generate-qa-stream", methods=["GET"])
+def frontend_personalized_learning_generate_qa_stream():
+    """GET SSE endpoint for learning path QA generation (no book_id required)."""
+    lecture_id = str(request.args.get("lecture_id") or "").strip()
+    if not lecture_id:
+        return Response("event: error\ndata: {\"error\": \"lecture_id is required\"}\n\n", mimetype="text/event-stream")
+
+    user_id = _resolve_runtime_user_id()
+    if not user_id:
+        return Response("event: error\ndata: {\"error\": \"user_id is required\"}\n\n", mimetype="text/event-stream")
+
+    def event_stream():
+        events: "queue.Queue[Tuple[str, Dict[str, Any]]]" = queue.Queue()
+
+        def push_event(event_name: str, event_payload: Dict[str, Any]) -> None:
+            events.put((event_name, event_payload))
+
+        def push_delta(delta_text: str) -> None:
+            text = str(delta_text or "")
+            if text:
+                append_log_text(text)
+                push_event("delta", {"content": text})
+
+        def run_worker() -> None:
+            try:
+                from core.booksproc.outline import load_outline
+                from core.booksproc.guide import generate_pre_reading_questions
+                from core.lectures import get_lecture as get_learning_lecture
+
+                log_event(
+                    "personalized_qa_stream_start",
+                    "个性化学习阅读前问答流启动",
+                    payload={"user_id": user_id, "lecture_id": lecture_id, "scope": "course"},
+                )
+
+                outline = load_outline(_cfg, lecture_id)
+                if not outline:
+                    push_event("error", {"success": False, "error": "课程大纲未生成"})
+                    return
+                push_event("status", {"message": "已读取课程大纲，正在整理教材上下文"})
+
+                lecture = get_learning_lecture(_cfg, lecture_id)
+                lecture_title = str(lecture.get("title") or "") if lecture else ""
+
+                outline_text = json.dumps(outline, ensure_ascii=False)
+                guide_context, books_info, books_with_content_count = _build_personalized_qa_guide_context(
+                    lecture_id=lecture_id,
+                    lecture_title=lecture_title,
+                    outline=outline,
+                )
+                push_event("status", {"message": "阅读前问答上下文已装载，正在请求模型"})
+
+                log_event(
+                    "personalized_qa_stream_context",
+                    "个性化学习阅读前问答上下文已加载",
+                    payload={
+                        "user_id": user_id,
+                        "lecture_id": lecture_id,
+                        "lecture_title": lecture_title,
+                        "books_count": len(books_info),
+                        "books_with_content_count": books_with_content_count,
+                        "outline_chars": len(outline_text),
+                        "guide_context_chars": len(guide_context),
+                        "scope": "course",
+                    },
+                    content=guide_context[:1800],
+                )
+
+                result = generate_pre_reading_questions(
+                    _cfg,
+                    lecture_id=lecture_id,
+                    book_id="",
+                    chapter_name=lecture_title or "课程整体内容",
+                    session_name="阅读前内容定位",
+                    guide_context=guide_context,
+                    stream=True,
+                    on_delta=push_delta,
+                )
+                questions = result.get("questions") if isinstance(result, dict) else []
+                if not questions:
+                    push_event("error", {"success": False, "error": "模型未返回问题"})
+                    return
+
+                push_event("done", {"success": True, "questions": questions})
+
+            except Exception as exc:
+                log_event(
+                    "personalized_qa_stream_error",
+                    str(exc),
+                    payload={"user_id": user_id, "lecture_id": lecture_id},
+                )
+                push_event("error", {"success": False, "error": str(exc)})
+            finally:
+                push_event("close", {})
+
+        thread = threading.Thread(target=run_worker, name="personalized-qa-stream", daemon=True)
+        thread.start()
+
+        yield _reader_guide_sse_event("status", {"message": "personalized QA stream started"})
+
+        while True:
+            try:
+                event_name, event_payload = events.get(timeout=30)
+            except queue.Empty:
+                yield _reader_guide_sse_event("ping", {"timestamp": time.time()})
+                continue
+
+            if event_name == "close":
+                break
+
+            yield _reader_guide_sse_event(event_name, event_payload)
+
+    return Response(
+        stream_with_context(event_stream()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )

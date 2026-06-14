@@ -1,4 +1,4 @@
-import { deleteJson, getJson, patchJson, postJson } from "./apiClient";
+import { deleteJson, getJson, patchJson, postJson, requestJson } from "./apiClient";
 import type { Book } from "./types";
 
 export function listBooks(lectureId: string) {
@@ -19,6 +19,34 @@ export function createBook(
   return postJson<{ success: boolean; book: Book }>(
     `/api/lectures/${encodeURIComponent(lectureId)}/books`,
     payload,
+  );
+}
+
+export function uploadBookFile(
+  lectureId: string,
+  bookId: string,
+  payload: { uri: string; name: string; type?: string | null; file?: File },
+) {
+  const formData = new FormData();
+  if (payload.file) {
+    formData.append("file", payload.file, payload.name);
+  } else {
+    formData.append(
+      "file",
+      {
+        uri: payload.uri,
+        name: payload.name,
+        type: payload.type || "application/octet-stream",
+      } as unknown as Blob,
+    );
+  }
+
+  return requestJson<{ success: boolean; book: Book; message?: string }>(
+    `/api/lectures/${encodeURIComponent(lectureId)}/books/${encodeURIComponent(bookId)}/file`,
+    {
+      method: "POST",
+      body: formData,
+    },
   );
 }
 

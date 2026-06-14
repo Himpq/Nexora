@@ -1,33 +1,32 @@
 # Nexora ChatApp
 
-Nexora 的移动端 App 工作区。项目计划使用 Expo + React Native + TypeScript，优先服务 Nexora 的学习流程。
+Nexora 的移动端学习客户端工作区。当前代码已经覆盖会话、学习上下文、课程/教材、AI 问答、管理员内容流、向量化监控和 Learning Feed；UI/UX 统一排在最后一轮。
 
-初始产品路径：
+## 从这里开始
 
-```txt
-用户设置 -> 课程库 -> 加入学习 -> 学习看板 -> 教材阅读 -> 基于课程上下文的 AI 问答
-```
+- [docs/README.md](docs/README.md)：文档入口和阅读顺序
+- [docs/current-state.md](docs/current-state.md)：当前真实可用的产品状态
+- [docs/architecture.md](docs/architecture.md)：代码边界、服务归属和依赖方向
+- [docs/backend-data-flow.md](docs/backend-data-flow.md)：真实后端数据流
+- [docs/versioning.md](docs/versioning.md)：版本号和构建号规则
+- [docs/roadmap.md](docs/roadmap.md)：下一步工作顺序，UI/UX 放最后
+- [docs/agents/domain.md](docs/agents/domain.md)：agent 读写的领域语言
 
-## 当前状态
+## 当前后端
 
-当前目录包含项目骨架、service 边界、基础导航、设计组件和占位页面。业务功能按 `docs/slices/` 中的切片逐步实现。
+- `NexoraLearning`：学习域的主要聚合入口
+- `ChatDBServer`：聊天、模型、用户和 PAPI 能力
 
-## 后端目标
-
-- `NexoraLearning`：移动端第一优先接入目标，本地默认端口 `5001`
-- `ChatDBServer`：Nexora 核心聊天、模型和用户服务，本地默认端口 `5000`
-
-移动端 API 基地址通过环境变量设置：
-
-```txt
-EXPO_PUBLIC_NEXORA_LEARNING_BASE_URL=https://chat.himpqblog.cn:5002
-```
-
-Android 模拟器访问宿主机时使用：
+默认真实环境：
 
 ```txt
 EXPO_PUBLIC_NEXORA_LEARNING_BASE_URL=https://chat.himpqblog.cn:5002
+EXPO_PUBLIC_CHAT_DB_SERVER_BASE_URL=https://chat.himpqblog.cn
 ```
+
+本地运行时可以复制 `.env.example` 为 `.env` 并补充 API key；`.env` 和 `.env.*` 不进入 Git。Expo 真机调试不要使用 `localhost` 作为后端地址，除非手机能访问同一个主机地址。
+
+聊天和学习服务都通过 `src/services/*` 访问，屏幕层不直接发请求。
 
 ## 常用命令
 
@@ -36,12 +35,5 @@ npm install
 npm run start
 npm run android
 npm run typecheck
+npm run test:unit
 ```
-
-## 重要文件
-
-- `docs/architecture.md`：源码结构和依赖方向
-- `docs/roadmap.md`：版本路线
-- `docs/slices/_template.md`：功能切片模板
-- `../NEXORALEARNING_API.md`：根目录维护的完整学习 API 说明
-- `AGENT.md`：本地项目指令文件，已加入 `.gitignore`

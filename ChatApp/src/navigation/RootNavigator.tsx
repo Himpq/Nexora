@@ -1,7 +1,7 @@
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 
 import { useSession } from "../app/providers/SessionProvider";
-import { StateView, Screen } from "../design";
+import { colors, StateView, Screen, typography } from "../design";
 import { AdminHomeScreen } from "../features/admin/screens/AdminHomeScreen";
 import { BookUploadScreen } from "../features/admin/screens/BookUploadScreen";
 import { RefinementQueueScreen } from "../features/admin/screens/RefinementQueueScreen";
@@ -9,7 +9,7 @@ import { VectorizeScreen } from "../features/admin/screens/VectorizeScreen";
 import { BookDetailScreen } from "../features/books/screens/BookDetailScreen";
 import { BookReaderScreen } from "../features/books/screens/BookReaderScreen";
 import { CourseDetailScreen } from "../features/courses/screens/CourseDetailScreen";
-import { UserSetupScreen } from "../features/session/screens/UserSetupScreen";
+import { LoginScreen } from "../features/session/screens/LoginScreen";
 import { MainTabs } from "./MainTabs";
 import type { RootStackParamList } from "./types";
 
@@ -27,11 +27,24 @@ export function RootNavigator() {
   }
 
   if (!username) {
-    return <UserSetupScreen />;
+    return <LoginScreen />;
   }
 
   return (
-    <Stack.Navigator>
+    <Stack.Navigator
+      screenOptions={{
+        headerStyle: { backgroundColor: colors.surface },
+        headerShadowVisible: false,
+        headerTintColor: colors.text,
+        headerTitleStyle: {
+          fontSize: typography.heading.fontSize,
+          fontWeight: "700",
+          color: colors.text,
+        },
+        headerBackTitle: "",
+        contentStyle: { backgroundColor: colors.background },
+      }}
+    >
       <Stack.Screen name="MainTabs" component={MainTabs} options={{ headerShown: false }} />
       <Stack.Screen
         name="AdminHome"

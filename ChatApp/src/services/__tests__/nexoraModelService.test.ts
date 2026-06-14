@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { setChatApiPublicApiKey } from "../apiClient";
-import { chatCompletions, listNexoraModels } from "../nexoraModelService";
+import { chatCompletions, completions, listNexoraModels, responses } from "../nexoraModelService";
 
 type FetchCall = {
   url: string;
@@ -26,11 +26,12 @@ function installFetch(payload: unknown, status = 200) {
   return calls;
 }
 
-test("chatCompletions defaults to the free hunyuan-lite model", async () => {
+test("chatCompletions sends the requested backend model", async () => {
   const calls = installFetch({ success: true, content: "ok" });
   setChatApiPublicApiKey("public-test-key");
 
   await chatCompletions({
+    model: "qwen-test",
     username: "learner",
     messages: [{ role: "user", content: "hello" }],
   });
@@ -39,31 +40,64 @@ test("chatCompletions defaults to the free hunyuan-lite model", async () => {
   assert.deepEqual(JSON.parse(String(calls[0].init.body)), {
     username: "learner",
     messages: [{ role: "user", content: "hello" }],
-    model: "hunyuan-lite",
+    model: "qwen-test",
   });
   assert.equal(new Headers(calls[0].init.headers).get("X-API-Key"), "public-test-key");
 });
 
-test("chatCompletions always uses the free hunyuan-lite model", async () => {
+test("PAPI helpers leave model unset when backend should choose the default", async () => {
   const calls = installFetch({ success: true, content: "ok" });
 
   await chatCompletions({
-    model: "do-not-use-this-model",
     username: "learner",
     messages: [{ role: "user", content: "hello" }],
   });
+  await responses({
+    username: "learner",
+    input: [{ role: "user", content: "hello" }],
+  });
+  await completions({
+    username: "learner",
+    prompt: "hello",
+  });
 
-  assert.equal(JSON.parse(String(calls[0].init.body)).model, "hunyuan-lite");
+  assert.equal(Object.hasOwn(JSON.parse(String(calls[0].init.body)), "model"), false);
+  assert.equal(Object.hasOwn(JSON.parse(String(calls[1].init.body)), "model"), false);
+  assert.equal(Object.hasOwn(JSON.parse(String(calls[2].init.body)), "model"), false);
 });
 
-test("listNexoraModels returns only hunyuan-lite without calling the backend", async () => {
-  const calls = installFetch({ success: true, data: [] });
+test("listNexoraModels loads backend models and backend default model", async () => {
+  const calls = installFetch({
+    success: true,
+    models: [
+      {
+        id: "qwen-test",
+        name: "Qwen Test",
+        provider: "dashscope",
+      },
+      "doubao-test",
+    ],
+    default_model: "qwen-test",
+  });
 
   const models = await listNexoraModels("learner");
 
   assert.deepEqual(models, {
     success: true,
-    data: [{ id: "hunyuan-lite", name: "hunyuan-lite", model: "hunyuan-lite" }],
+    data: [
+      { id: "qwen-test", name: "Qwen Test", provider: "dashscope", model: "qwen-test" },
+      { id: "doubao-test", name: "doubao-test", model: "doubao-test" },
+    ],
+    defaultModel: "qwen-test",
   });
-  assert.equal(calls.length, 0);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://chat.himpqblog.cn:5002/api/nexora/models?username=learner");
+
+  installFetch({ success: true, payload: { data: [] } });
+
+  assert.deepEqual(await listNexoraModels("learner"), {
+    success: true,
+    data: [],
+    defaultModel: "",
+  });
 });

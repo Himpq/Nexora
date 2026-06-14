@@ -1,5 +1,0 @@
-ChatDB Web Server Starting...
-Visit: http://localhost:5000
-Use Ctrl+C to stop the server
- * Serving Flask app 'server'
- * Debug mode: off

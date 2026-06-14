@@ -59,6 +59,26 @@ class NexoraProxy:
             path = f"/{path}"
         return path.rstrip("/")
 
+    @staticmethod
+    def _merge_stream_fragment(existing: str, incoming: str) -> Tuple[str, str]:
+        """合并流式字段片段，并返回本次真正新增的文本。"""
+        current = str(existing or "")
+        piece = str(incoming or "")
+
+        if not piece:
+            return current, ""
+
+        if not current:
+            return piece, piece
+
+        if piece == current:
+            return current, ""
+
+        if piece.startswith(current):
+            return piece, piece[len(current):]
+
+        return f"{current}{piece}", piece
+
     def _build_headers(self) -> Dict[str, str]:
         headers = {"Content-Type": "application/json"}
         if self.api_key:
@@ -646,25 +666,15 @@ class NexoraProxy:
                                     func = tc.get("function") if isinstance(tc.get("function"), dict) else {}
                                     name_part = str(func.get("name") or "")
                                     args_part = str(func.get("arguments") or "")
+
                                     if name_part:
-                                        # 某些流会分片 name；若已存在且不同则追加，否则覆盖空值。
                                         prev_name = str((entry.get("function") or {}).get("name") or "")
-                                        if prev_name and name_part != prev_name and not name_part.startswith(prev_name):
-                                            (entry["function"])["name"] = f"{prev_name}{name_part}"
-                                        else:
-                                            (entry["function"])["name"] = name_part if not prev_name else prev_name
+                                        merged_name, _name_delta = self._merge_stream_fragment(prev_name, name_part)
+                                        (entry["function"])["name"] = merged_name
+
                                     if args_part:
                                         prev_args = str((entry.get("function") or {}).get("arguments") or "")
-                                        merged_args = args_part
-                                        if prev_args:
-                                            if args_part == prev_args:
-                                                merged_args = prev_args
-                                            elif args_part.startswith(prev_args):
-                                                merged_args = args_part
-                                            elif prev_args.startswith(args_part):
-                                                merged_args = prev_args
-                                            else:
-                                                merged_args = f"{prev_args}{args_part}"
+                                        merged_args, _args_delta = self._merge_stream_fragment(prev_args, args_part)
                                         (entry["function"])["arguments"] = merged_args
 
                         finish_reason = choice0.get("finish_reason")
@@ -676,12 +686,12 @@ class NexoraProxy:
                         usage_payload = dict(usage_obj)
                     if delta_text:
                         full_text.append(delta_text)
-                        if on_delta is not None:
-                            try:
-                                # 只回传 token 增量，避免日志膨胀。
-                                on_delta(delta_text)
-                            except Exception:
-                                pass
+                    if delta_text and on_delta is not None:
+                        try:
+                            # 仅向上游透传模型正文；工具调用由最终 message.tool_calls 和执行日志展示。
+                            on_delta(delta_text)
+                        except Exception:
+                            pass
                 if chunk_count == 0:
                     debug_preview = "\n".join(raw_events[:20])
                     return status, {

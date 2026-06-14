@@ -169,6 +169,31 @@ def run_summary_tool_loop(
                 payload={"resume_round": resume_round, "section_index": section_index, "turn": turn, "policy": policy.value},
             )
         
+        round_delta_parts: List[str] = []
+        round_merge_key = f"summary:{resume_round}:{section_index}:{turn}"
+
+        def _on_turn_delta(delta_text: str) -> None:
+            piece = str(delta_text or "")
+            if not piece:
+                return
+
+            round_delta_parts.append(piece)
+
+            if on_delta:
+                on_delta(piece)
+
+            if push_book_progress_step and lecture_id and book_id:
+                push_book_progress_step(
+                    lecture_id,
+                    book_id,
+                    {
+                        "type": "model_text",
+                        "title": f"模型输出（第 {resume_round}-{section_index + 1}-{turn} 轮）",
+                        "preview": piece,
+                        "merge_key": round_merge_key,
+                    },
+                )
+
         # 调用模型
         try:
             response = runner.nexora_client.proxy.chat_completions(
@@ -185,7 +210,7 @@ def run_summary_tool_loop(
                 },
                 use_chat_path=False,
                 request_timeout=request_timeout,
-                on_delta=on_delta,
+                on_delta=_on_turn_delta,
             )
         except Exception as e:
             if log_event:
@@ -207,7 +232,21 @@ def run_summary_tool_loop(
         msg = choices[0].get("message") if isinstance(choices[0], dict) else {}
         assistant_content = str((msg or {}).get("content") or "")
         raw_tool_calls = (msg or {}).get("tool_calls") if isinstance((msg or {}).get("tool_calls"), list) else []
-        
+        round_model_text = assistant_content if assistant_content.strip() else "".join(round_delta_parts).strip()
+
+        # 推送模型文本输出到活动日志：一个摘要轮次只占一个模型块。
+        if round_model_text and not round_delta_parts and push_book_progress_step and lecture_id and book_id:
+            push_book_progress_step(
+                lecture_id,
+                book_id,
+                {
+                    "type": "model_text",
+                    "title": f"模型输出（第 {resume_round}-{section_index + 1}-{turn} 轮）",
+                    "preview": round_model_text,
+                    "merge_key": round_merge_key,
+                },
+            )
+
         # 处理工具调用
         tool_calls = []
         for raw_call in raw_tool_calls:
@@ -263,6 +302,17 @@ def run_summary_tool_loop(
             func = call.get("function") if isinstance(call.get("function"), dict) else {}
             tool_name = str(func.get("name") or "").strip()
             args_obj = _safe_json_obj(str(func.get("arguments") or "{}"))
+
+            if push_book_progress_step and lecture_id and book_id:
+                push_book_progress_step(
+                    lecture_id,
+                    book_id,
+                    {
+                        "type": "tool_call",
+                        "title": f"工具调用：{tool_name or 'unknown'}",
+                        "preview": _safe_json_dumps(args_obj),
+                    },
+                )
             
             # 执行工具
             result_obj = None
@@ -275,6 +325,36 @@ def run_summary_tool_loop(
                 if (chunk_end - chunk_start) >= 2000 and req_len < 2000:
                     args_obj["length"] = 2000
                     args_obj = _clamp_to_section(args_obj, chunk_start, chunk_end)
+
+                read_offset = int(args_obj.get("offset") or chunk_start)
+                read_length = int(args_obj.get("length") or 0)
+                read_key = (read_offset, read_length)
+
+                if read_key in queried_ranges:
+                    next_offset = max(read_offset + max(1, read_length), max((start + length for start, length in queried_ranges), default=chunk_start))
+
+                    if next_offset < chunk_end:
+                        args_obj["offset"] = next_offset
+                        args_obj["length"] = min(max(2000, read_length), chunk_end - next_offset)
+                        args_obj = _clamp_to_section(args_obj, chunk_start, chunk_end)
+
+                        if log_event:
+                            log_event(
+                                "section_summary_read_guard_shift",
+                                "第二阶段检测到重复读取同一区间，已推进读取窗口",
+                                payload={
+                                    "resume_round": resume_round,
+                                    "section_index": section_index,
+                                    "turn": turn,
+                                    "from_offset": read_offset,
+                                    "from_length": read_length,
+                                    "to_offset": int(args_obj.get("offset") or 0),
+                                    "to_length": int(args_obj.get("length") or 0),
+                                },
+                            )
+
+                queried_ranges.append((int(args_obj.get("offset") or 0), int(args_obj.get("length") or 0)))
+
                 if on_read:
                     result_obj = on_read(args_obj)
                 else:

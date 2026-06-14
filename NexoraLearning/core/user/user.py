@@ -294,6 +294,55 @@ def list_learning_records(cfg: Dict[str, Any], user_id: str) -> List[Dict[str, A
     return _read_jsonl(_learning_jsonl_path(cfg, user_id))
 
 
+def remove_chapter_learning_records(
+    cfg: Dict[str, Any],
+    user_id: str,
+    lecture_id: str,
+    book_id: str,
+    chapter_name: str,
+    chapter_index: int,
+) -> Dict[str, int]:
+    """删除指定章节的阅读完成记录，保留测验与题库等独立文件。"""
+    ensure_user_files(cfg, user_id)
+    path = _learning_jsonl_path(cfg, user_id)
+    rows = _read_jsonl(path)
+    kept: List[Dict[str, Any]] = []
+    removed = 0
+    target_lecture_id = str(lecture_id or "").strip()
+    target_book_id = str(book_id or "").strip()
+    target_chapter_name = str(chapter_name or "").strip()
+    target_chapter_index = int(chapter_index)
+
+    for row in rows:
+        record_type = str(row.get("type") or "").strip()
+        same_book = (
+            str(row.get("lecture_id") or "").strip() == target_lecture_id
+            and str(row.get("book_id") or "").strip() == target_book_id
+        )
+        same_chapter_name = str(row.get("chapter_name") or "").strip() == target_chapter_name
+
+        raw_chapter_index = str(row.get("chapter_index") if row.get("chapter_index") is not None else "").strip()
+        row_chapter_index = int(raw_chapter_index) if raw_chapter_index.lstrip("-").isdigit() else -1
+        same_chapter_index = row_chapter_index == target_chapter_index
+        remove_record = same_book and (
+            (record_type == "chapter_completed" and same_chapter_name)
+            or (record_type == "session_completed" and (same_chapter_name or same_chapter_index))
+        )
+
+        if remove_record:
+            removed += 1
+            continue
+
+        kept.append(row)
+
+    serialized = "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in kept)
+
+    with _lock:
+        path.write_text(serialized, encoding="utf-8")
+
+    return {"removed": removed, "remaining": len(kept)}
+
+
 def append_notification(
     cfg: Dict[str, Any],
     user_id: str,
@@ -301,11 +350,13 @@ def append_notification(
 ) -> Dict[str, Any]:
     ensure_user_files(cfg, user_id)
     payload = dict(record or {})
+    payload.setdefault("notification_id", f"notice_{uuid.uuid4().hex[:16]}")
     payload.setdefault("type", "notification")
     payload.setdefault("date", int(time.time()))
     payload.setdefault("title", "")
     payload.setdefault("content", "")
     payload.setdefault("jumpto", "")
+    payload.setdefault("removed", False)
     path = _notifications_jsonl_path(cfg, user_id)
     serialized = json.dumps(payload, ensure_ascii=False) + "\n"
     with _lock:
@@ -315,7 +366,63 @@ def append_notification(
 
 
 def list_notifications(cfg: Dict[str, Any], user_id: str) -> List[Dict[str, Any]]:
-    return _read_jsonl(_notifications_jsonl_path(cfg, user_id))
+    ensure_user_files(cfg, user_id)
+    path = _notifications_jsonl_path(cfg, user_id)
+    rows = _read_jsonl(path)
+    changed = False
+    normalized: List[Dict[str, Any]] = []
+
+    for row in rows:
+        payload = dict(row)
+        notification_id = str(payload.get("notification_id") or payload.get("id") or "").strip()
+
+        if not notification_id:
+            notification_id = f"notice_{uuid.uuid4().hex[:16]}"
+            changed = True
+
+        if payload.get("notification_id") != notification_id:
+            payload["notification_id"] = notification_id
+            changed = True
+
+        normalized.append(payload)
+
+    if changed:
+        _write_jsonl_rows(path, normalized)
+
+    return normalized
+
+
+def mark_notification_removed(
+    cfg: Dict[str, Any],
+    user_id: str,
+    notification_id: str,
+) -> Dict[str, Any]:
+    """将通知标记为已移除，而不是从通知记录文件中删除。"""
+    target_id = str(notification_id or "").strip()
+
+    if not target_id:
+        return {"updated": False, "notification_id": target_id}
+
+    rows = list_notifications(cfg, user_id)
+    updated = False
+    now = int(time.time())
+    kept_rows: List[Dict[str, Any]] = []
+
+    for row in rows:
+        payload = dict(row)
+        row_id = str(payload.get("notification_id") or payload.get("id") or "").strip()
+
+        if row_id == target_id:
+            payload["removed"] = True
+            payload["removed_at"] = now
+            updated = True
+
+        kept_rows.append(payload)
+
+    if updated:
+        _write_jsonl_rows(_notifications_jsonl_path(cfg, user_id), kept_rows)
+
+    return {"updated": updated, "notification_id": target_id}
 
 
 def append_question_completion(
@@ -505,6 +612,14 @@ def _append_jsonl(path: Path, payload: Dict[str, Any]) -> None:
     with _lock:
         previous = path.read_text(encoding="utf-8") if path.exists() else ""
         path.write_text(previous + serialized, encoding="utf-8")
+
+
+def _write_jsonl_rows(path: Path, rows: List[Dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    serialized = "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows)
+
+    with _lock:
+        path.write_text(serialized, encoding="utf-8")
 
 
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:

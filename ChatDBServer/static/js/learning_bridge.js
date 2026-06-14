@@ -31,11 +31,33 @@
         return String(payload.source || "").trim().toLowerCase() === "nexora-learning";
     }
 
+    function injectPromptText(text) {
+        var promptText = String(text || "").trim();
+        if (!promptText) return;
+        // 优先使用 sidebar bridge
+        try {
+            if (window.NexoraLearningSidebarBridge && typeof window.NexoraLearningSidebarBridge.setInputValue === "function") {
+                window.NexoraLearningSidebarBridge.setInputValue(promptText);
+                return;
+            }
+        } catch (_) {}
+        // 兜底：直接操作 textarea
+        var textarea = document.querySelector(".learning-sidebar-chat-input");
+        if (textarea) {
+            textarea.value = promptText;
+            textarea.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+    }
+
     function handleMessage(payload) {
         if (!isLearningPayload(payload)) return false;
         var msg = String(payload.type || "").trim().toLowerCase();
         if (msg === "nexora:backdrop") {
             toggleBackdrop(!!payload.visible);
+            return true;
+        }
+        if (msg === "nexora:inject-prompt") {
+            injectPromptText(payload.text);
             return true;
         }
         return false;

@@ -12,6 +12,7 @@ import React, {
 import { setApiUsername } from "../../services/apiClient";
 import { getFrontendContext } from "../../services/frontendService";
 import type { FrontendContext } from "../../services/types";
+import { normalizeError } from "../../utils/errors";
 
 const USERNAME_STORAGE_KEY = "nexora.chatapp.username";
 
@@ -28,10 +29,6 @@ type SessionState = {
 };
 
 const SessionContext = createContext<SessionState | null>(null);
-
-function normalizeError(err: unknown) {
-  return err instanceof Error ? err : new Error(String(err || "Unknown error"));
-}
 
 function resolveIsAdmin(context: FrontendContext | null) {
   const role = String(context?.user?.role || "").trim().toLowerCase();

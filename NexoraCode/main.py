@@ -3143,6 +3143,12 @@ def _agent_tunnel_loop(registry: ToolRegistry, agent_token: str, base_url: str):
 
             # 2. 注册工具
             tools = registry.list_tools_llm_format()
+            tool_names = [
+                str(((tool.get("function") or {}).get("name") or tool.get("name") or "")).strip()
+                for tool in tools
+                if isinstance(tool, dict)
+            ]
+            print(f"[NexoraCode WSS] sync_tools sending count={len(tool_names)} tools={tool_names}")
             ws.send(json.dumps({
                 "type": "sync_tools",
                 "tools": tools
@@ -3187,6 +3193,10 @@ def _agent_tunnel_loop(registry: ToolRegistry, agent_token: str, base_url: str):
                     
                     if ctype == "pong":
                         pass
+                    elif ctype == "tools_synced":
+                        print(f"[NexoraCode WSS] tools_synced ack={payload}")
+                    elif ctype == "prompt_synced":
+                        print(f"[NexoraCode WSS] prompt_synced ack={payload}")
                     elif ctype == "call_tool":
                         task_id = payload.get("task_id")
                         tool_name = payload.get("tool_name")
@@ -3285,6 +3295,12 @@ def main():
     if "__NC_AUTH_TRACE_HEARTBEAT__" in _EARLY_PAGE_ACCEL_JS:
         _EARLY_PAGE_ACCEL_JS = _EARLY_PAGE_ACCEL_JS.replace("__NC_AUTH_TRACE_HEARTBEAT__", "true" if _AUTH_TRACE_HEARTBEAT else "false")
     tools = registry.list_tools_llm_format()
+    startup_tool_names = [
+        str(((tool.get("function") or {}).get("name") or tool.get("name") or "")).strip()
+        for tool in tools
+        if isinstance(tool, dict)
+    ]
+    print(f"[NexoraCode Tools] startup count={len(startup_tool_names)} tools={startup_tool_names}")
     entry_url = _build_entry_url(runtime_base_url)
 
     # 创建 WebView 窗口

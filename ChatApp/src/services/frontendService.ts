@@ -39,6 +39,7 @@ export function completeLearningChapter(payload: {
   return postJson<{
     success: boolean;
     enqueue?: unknown;
+    already_completed?: boolean;
     progress?: number;
     next_chapter?: string;
   }>("/api/frontend/learning/chapter-complete", payload);

@@ -1,5 +1,7 @@
 # 切片：用户上下文
 
+状态：已落地。当前实现位于 `SessionProvider`、`UserSetupScreen` 和 `SettingsScreen`。
+
 ## 目标
 
 用户可以用显式 username 建立移动端本地会话，App 统一携带用户身份调用 NexoraLearning，并在设置页查看当前用户、管理员身份和后端连通状态。

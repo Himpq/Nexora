@@ -347,6 +347,8 @@ class Model:
         # 工具定义
         self.tools = self._parse_tools(TOOLS)
         self.tool_executor = ToolExecutor(self)
+        self._external_tool_definitions: List[Dict[str, Any]] = []
+        self._external_tool_names: Set[str] = set()
         self._runtime_selector_enabled = False
         self._runtime_tool_catalog = []
         self._runtime_tool_catalog_by_id = {}
@@ -2512,6 +2514,76 @@ class Model:
                     })
         return parsed_tools
 
+    def register_external_function_tool(self, tool: Dict[str, Any]) -> str:
+        """登记运行时注入的外部 function 工具，并立即加入当前工具列表。"""
+        spec = self._extract_function_tool_spec(tool)
+
+        if not spec:
+            raise ValueError("external tool must be a function tool")
+
+        name = str(spec.get("name") or "").strip()
+
+        if not name:
+            raise ValueError("external tool name is required")
+
+        self._external_tool_definitions = [
+            item
+            for item in (self._external_tool_definitions or [])
+            if str((self._extract_function_tool_spec(item) or {}).get("name") or "").strip() != name
+        ]
+        self._external_tool_definitions.append(tool)
+        self._external_tool_names = {
+            str((self._extract_function_tool_spec(item) or {}).get("name") or "").strip()
+            for item in self._external_tool_definitions
+            if str((self._extract_function_tool_spec(item) or {}).get("name") or "").strip()
+        }
+        self.tools = [
+            item
+            for item in (self.tools or [])
+            if str((self._extract_function_tool_spec(item) or {}).get("name") or "").strip() != name
+        ]
+        self.tools.insert(0, tool)
+
+        return name
+
+    def _restore_external_function_tools(self) -> List[str]:
+        """在 sendMessage 重建基础工具列表后恢复 NexoraCode 等外部工具。"""
+        external_tools = list(self._external_tool_definitions or [])
+
+        if not external_tools:
+            return []
+
+        external_names: List[str] = []
+        external_name_set: Set[str] = set()
+
+        for item in external_tools:
+            spec = self._extract_function_tool_spec(item)
+            name = str((spec or {}).get("name") or "").strip()
+
+            if not name:
+                continue
+
+            external_names.append(name)
+            external_name_set.add(name)
+
+        if not external_name_set:
+            return []
+
+        self.tools = [
+            item
+            for item in (self.tools or [])
+            if str((self._extract_function_tool_spec(item) or {}).get("name") or "").strip() not in external_name_set
+        ]
+
+        for item in reversed(external_tools):
+            spec = self._extract_function_tool_spec(item)
+            name = str((spec or {}).get("name") or "").strip()
+
+            if name:
+                self.tools.insert(0, item)
+
+        return external_names
+
     def _extract_function_tool_spec(self, tool: Dict[str, Any]) -> Optional[Dict[str, str]]:
         if not isinstance(tool, dict):
             return None
@@ -3909,6 +3981,10 @@ class Model:
             self._runtime_conversation_mode = normalized_conversation_mode
             self._runtime_conversation_mode_payload = dict(normalized_conversation_mode_payload)
             self.tools = self._parse_tools(TOOLS)
+            restored_external_tools = self._restore_external_function_tools()
+
+            if restored_external_tools:
+                print(f"[NexoraCode ToolsRestore] count={len(restored_external_tools)} tools={restored_external_tools}")
 
             tool_loop_started_at = time.time()
             tool_loop_consecutive_tool_rounds = 0

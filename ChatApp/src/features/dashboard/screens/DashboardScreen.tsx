@@ -5,26 +5,27 @@ import { useCallback, useEffect, useState } from "react";
 import { StyleSheet, View } from "react-native";
 
 import {
+  AppBadge,
   AppButton,
   AppCard,
   AppText,
   colors,
+  radius,
   Screen,
+  ScreenHeader,
+  SectionHeader,
   spacing,
   StateView,
 } from "../../../design";
 import { getDashboard } from "../../../services/frontendService";
 import type { DashboardResponse, LectureRow } from "../../../services/types";
 import type { MainTabParamList, RootStackParamList } from "../../../navigation/types";
+import { normalizeError } from "../../../utils/errors";
 
 type DashboardScreenProps = CompositeScreenProps<
   BottomTabScreenProps<MainTabParamList, "Dashboard">,
   NativeStackScreenProps<RootStackParamList>
 >;
-
-function normalizeError(err: unknown) {
-  return err instanceof Error ? err : new Error(String(err || "Unknown error"));
-}
 
 function getLectureTitle(row: LectureRow) {
   return String(row.lecture?.title || "").trim() || "未命名课程";
@@ -48,6 +49,14 @@ function formatHours(value: unknown) {
   return `${hours.toFixed(1)} 小时`;
 }
 
+function clampProgress(value: unknown) {
+  const progress = Number(value ?? 0);
+  if (!Number.isFinite(progress)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, progress));
+}
+
 type MetricCardProps = {
   label: string;
   value: string;
@@ -56,11 +65,21 @@ type MetricCardProps = {
 function MetricCard({ label, value }: MetricCardProps) {
   return (
     <AppCard style={styles.metricCard}>
-      <AppText variant="caption" tone="secondary">
+      <AppText variant="display" style={styles.metricValue}>
+        {value}
+      </AppText>
+      <AppText variant="caption" tone="muted">
         {label}
       </AppText>
-      <AppText variant="heading">{value}</AppText>
     </AppCard>
+  );
+}
+
+function ProgressBar({ value }: { value: number }) {
+  return (
+    <View style={styles.progressTrack}>
+      <View style={[styles.progressFill, { width: `${value}%` }]} />
+    </View>
   );
 }
 
@@ -76,10 +95,7 @@ function LearningCourseCard({ row, onContinue }: LearningCourseCardProps) {
   const description = String(lecture.description || "").trim();
   const currentChapter = String(lecture.current_chapter || "").trim();
   const nextChapter = String(lecture.next_chapter || "").trim();
-  const progress = Number(lecture.progress ?? 0);
-  const progressLabel = Number.isFinite(progress)
-    ? `${Math.max(0, Math.min(100, progress))}%`
-    : "0%";
+  const progress = clampProgress(lecture.progress);
   const meta = [category, status].filter(Boolean).join(" · ");
 
   return (
@@ -88,16 +104,12 @@ function LearningCourseCard({ row, onContinue }: LearningCourseCardProps) {
         <View style={styles.titleBlock}>
           <AppText variant="heading">{getLectureTitle(row)}</AppText>
           {meta ? (
-            <AppText variant="caption" tone="secondary">
+            <AppText variant="caption" tone="muted">
               {meta}
             </AppText>
           ) : null}
         </View>
-        <View style={styles.badge}>
-          <AppText variant="caption" style={styles.badgeText}>
-            已加入
-          </AppText>
-        </View>
+        <AppBadge label="已加入" tone="solid" />
       </View>
 
       {description ? (
@@ -106,35 +118,40 @@ function LearningCourseCard({ row, onContinue }: LearningCourseCardProps) {
         </AppText>
       ) : null}
 
+      <View style={styles.progressBlock}>
+        <View style={styles.progressLabelRow}>
+          <AppText variant="caption" tone="muted">
+            学习进度
+          </AppText>
+          <AppText variant="label">{progress}%</AppText>
+        </View>
+        <ProgressBar value={progress} />
+      </View>
+
       <View style={styles.courseMeta}>
         <View style={styles.metaItem}>
-          <AppText variant="caption" tone="secondary">
+          <AppText variant="caption" tone="muted">
             教材
           </AppText>
-          <AppText>{getBooksCount(row)} 本</AppText>
+          <AppText variant="bodyStrong">{getBooksCount(row)} 本</AppText>
         </View>
+        <View style={styles.metaDivider} />
         <View style={styles.metaItem}>
-          <AppText variant="caption" tone="secondary">
+          <AppText variant="caption" tone="muted">
             学习时长
           </AppText>
-          <AppText>{formatHours(lecture.study_hours)}</AppText>
-        </View>
-        <View style={styles.metaItem}>
-          <AppText variant="caption" tone="secondary">
-            进度
-          </AppText>
-          <AppText>{progressLabel}</AppText>
+          <AppText variant="bodyStrong">{formatHours(lecture.study_hours)}</AppText>
         </View>
       </View>
 
-      <View style={styles.continueBlock}>
-        <AppButton title="继续学习" onPress={onContinue} style={styles.continueButton} />
-        <AppText variant="caption" tone="secondary">
-          {currentChapter
-            ? `当前章节：${currentChapter}${nextChapter ? `，下一章：${nextChapter}` : ""}`
-            : "进入课程教材列表继续阅读。"}
+      {currentChapter ? (
+        <AppText variant="caption" tone="muted">
+          当前章节：{currentChapter}
+          {nextChapter ? ` · 下一章：${nextChapter}` : ""}
         </AppText>
-      </View>
+      ) : null}
+
+      <AppButton title="继续学习" onPress={onContinue} fullWidth />
     </AppCard>
   );
 }
@@ -191,6 +208,7 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
     return (
       <Screen>
         <StateView
+          icon="alert-triangle"
           title="学习看板加载失败"
           message={error.message}
           actionLabel="重试"
@@ -206,6 +224,7 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
     return (
       <Screen>
         <StateView
+          icon="grid"
           title="还没有加入课程"
           message="先从课程库加入一门课程，再回到这里查看学习概览。"
           actionLabel="去课程库"
@@ -217,26 +236,20 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
 
   return (
     <Screen scroll>
-      <View style={styles.header}>
-        <View style={styles.titleBlock}>
-          <AppText variant="title">学习看板</AppText>
-          <AppText tone="secondary">查看已加入课程和学习概览。</AppText>
-        </View>
-        <AppButton title="刷新" variant="ghost" onPress={() => void loadDashboard()} />
-      </View>
+      <ScreenHeader
+        overline="Nexora"
+        title="学习看板"
+        subtitle="查看已加入课程和学习概览"
+        trailing={<AppButton title="刷新" variant="ghost" size="sm" onPress={() => void loadDashboard()} />}
+      />
 
       <View style={styles.metrics}>
-        <MetricCard label="已加入课程" value={`${dashboard?.total_lectures ?? rows.length} 门`} />
-        <MetricCard label="教材总数" value={`${dashboard?.total_books ?? 0} 本`} />
+        <MetricCard label="已加入课程" value={`${dashboard?.total_lectures ?? rows.length}`} />
+        <MetricCard label="教材总数" value={`${dashboard?.total_books ?? 0}`} />
         <MetricCard label="学习时长" value={formatHours(dashboard?.total_study_hours)} />
       </View>
 
-      <View style={styles.sectionHeader}>
-        <AppText variant="heading">继续学习</AppText>
-        <AppText variant="caption" tone="secondary">
-          共 {rows.length} 门课程
-        </AppText>
-      </View>
+      <SectionHeader title="继续学习" subtitle={`共 ${rows.length} 门课程`} />
 
       {rows.map((row) => {
         const lectureId = String(row.lecture?.id || "").trim();
@@ -253,28 +266,21 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
 }
 
 const styles = StyleSheet.create({
-  header: {
-    alignItems: "flex-start",
-    flexDirection: "row",
-    gap: spacing.md,
-  },
   titleBlock: {
     flex: 1,
     gap: spacing.xs,
   },
   metrics: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    gap: spacing.md,
+    gap: spacing.sm,
   },
   metricCard: {
-    flexBasis: "30%",
-    flexGrow: 1,
+    flex: 1,
     gap: spacing.xs,
-    minWidth: 96,
+    paddingVertical: spacing.lg,
   },
-  sectionHeader: {
-    gap: spacing.xs,
+  metricValue: {
+    fontSize: 26,
   },
   courseCard: {
     gap: spacing.md,
@@ -284,28 +290,40 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: spacing.md,
   },
-  badge: {
-    backgroundColor: colors.primaryMuted,
-    borderRadius: 999,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs,
+  progressBlock: {
+    gap: spacing.sm,
   },
-  badgeText: {
-    color: colors.primary,
-    fontWeight: "700",
+  progressLabelRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  progressTrack: {
+    height: 6,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surfaceMuted,
+    overflow: "hidden",
+  },
+  progressFill: {
+    height: "100%",
+    borderRadius: radius.pill,
+    backgroundColor: colors.primary,
   },
   courseMeta: {
     flexDirection: "row",
-    gap: spacing.lg,
+    alignItems: "center",
+    backgroundColor: colors.surfaceMuted,
+    borderRadius: radius.md,
+    padding: spacing.md,
   },
   metaItem: {
     flex: 1,
     gap: spacing.xs,
+    alignItems: "center",
   },
-  continueButton: {
+  metaDivider: {
+    width: 1,
     alignSelf: "stretch",
-  },
-  continueBlock: {
-    gap: spacing.xs,
+    backgroundColor: colors.border,
   },
 });

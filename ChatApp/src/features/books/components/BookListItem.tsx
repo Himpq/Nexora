@@ -1,6 +1,6 @@
 import { StyleSheet, View } from "react-native";
 
-import { AppButton, AppCard, AppText, colors, spacing } from "../../../design";
+import { AppBadge, AppButton, AppCard, AppText, spacing } from "../../../design";
 import type { Book } from "../../../services/types";
 
 type BookListItemProps = {
@@ -32,16 +32,12 @@ export function BookListItem({ book, onPress }: BookListItemProps) {
         <View style={styles.titleBlock}>
           <AppText variant="heading">{getBookTitle(book)}</AppText>
           {meta ? (
-            <AppText variant="caption" tone="secondary">
+            <AppText variant="caption" tone="muted">
               {meta}
             </AppText>
           ) : null}
         </View>
-        <View style={styles.badge}>
-          <AppText variant="caption" style={styles.badgeText}>
-            教材
-          </AppText>
-        </View>
+        <AppBadge label="教材" tone="neutral" />
       </View>
 
       {description ? (
@@ -50,7 +46,7 @@ export function BookListItem({ book, onPress }: BookListItemProps) {
         </AppText>
       ) : null}
 
-      <AppButton title="查看教材" onPress={onPress} style={styles.button} />
+      <AppButton title="查看教材" variant="outline" onPress={onPress} fullWidth />
     </AppCard>
   );
 }
@@ -67,18 +63,5 @@ const styles = StyleSheet.create({
   titleBlock: {
     flex: 1,
     gap: spacing.xs,
-  },
-  badge: {
-    backgroundColor: colors.surfaceMuted,
-    borderRadius: 999,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs,
-  },
-  badgeText: {
-    color: colors.textMuted,
-    fontWeight: "700",
-  },
-  button: {
-    alignSelf: "stretch",
   },
 });

@@ -7,6 +7,7 @@
     let sidebarOptionsRef = {};
     const sidebarFoldState = new Map();
     let currentFrontendUrl = '';
+    let currentRuntimeUsername = '';
     let activePuzzleFullscreen = null;
     const puzzleSubmissionRegistryKey = 'nexora_learning_puzzle_registry_v1';
 
@@ -14,6 +15,9 @@
     let chatBridge = null;
     function registerChatBridge(bridge) {
         chatBridge = bridge && typeof bridge === 'object' ? bridge : null;
+        if (chatBridge) {
+            setLearningRuntimeUsername(chatBridge.username);
+        }
     }
 
     function escapeHtml(value) {
@@ -33,6 +37,31 @@
             h += (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24);
         }
         return String(h >>> 0);
+    }
+
+    function setLearningRuntimeUsername(username) {
+        const normalized = String(username || '').trim();
+
+        if (normalized) {
+            currentRuntimeUsername = normalized;
+        }
+
+        return currentRuntimeUsername;
+    }
+
+    function buildLearningFrontendUrl(frontendUrl, username) {
+        const raw = String(frontendUrl || '').trim();
+        const runtimeUsername = setLearningRuntimeUsername(username);
+
+        if (!raw) return '';
+
+        const url = new URL(raw, window.location.href);
+
+        if (runtimeUsername) {
+            url.searchParams.set('username', runtimeUsername);
+        }
+
+        return url.toString();
     }
 
     function buildStablePuzzleCardId(payload, fallbackPrefix = 'puzzle') {
@@ -140,10 +169,20 @@
         return true;
     }
 
-    function resolveLearningPuzzleUrl(frontendUrl) {
+    function resolveLearningPuzzleUrl(frontendUrl, username) {
         const base = String(frontendUrl || currentFrontendUrl || '').trim();
+        const runtimeUsername = setLearningRuntimeUsername(username);
+
         if (!base) return '/api/frontend/puzzle';
-        return `${base.replace(/\/+$/, '')}/puzzle`;
+
+        const url = new URL(base, window.location.href);
+        url.pathname = `${url.pathname.replace(/\/+$/, '')}/puzzle`;
+
+        if (runtimeUsername) {
+            url.searchParams.set('username', runtimeUsername);
+        }
+
+        return url.toString();
     }
 
     function syncPuzzleCardLockState(card) {
@@ -237,7 +276,7 @@
         `;
         const iframe = wrap.querySelector('.puzzle-card-iframe');
         if (iframe) {
-            iframe.src = resolveLearningPuzzleUrl(options.frontendUrl);
+            iframe.src = resolveLearningPuzzleUrl(options.frontendUrl, options.username || (chatBridge && chatBridge.username));
             iframe.addEventListener('load', () => {
                 try {
                     const initPayload = {
@@ -587,7 +626,7 @@
 
     function renderWelcome(container, options = {}) {
         if (!container) return;
-        const frontendUrl = String(options.frontendUrl || '').trim();
+        const frontendUrl = buildLearningFrontendUrl(options.frontendUrl, options.username);
         container.classList.add('learning-mode-welcome-shell');
         container.innerHTML = '<div class="learning-mode-shell"><div class="learning-mode-frame-wrap"></div></div>';
         const wrap = container.querySelector('.learning-mode-frame-wrap');
@@ -597,7 +636,7 @@
 
     function renderMainPanel(container, options = {}) {
         if (!container) return;
-        const frontendUrl = String(options.frontendUrl || '').trim();
+        const frontendUrl = buildLearningFrontendUrl(options.frontendUrl, options.username);
         currentFrontendUrl = frontendUrl;
         container.innerHTML = '<div class="learning-mode-shell"><div class="learning-mode-frame-wrap"></div></div>';
         const wrap = container.querySelector('.learning-mode-frame-wrap');
@@ -635,6 +674,7 @@
         const item = (part && typeof part === 'object') ? part : {};
         const question = (item.question && typeof item.question === 'object') ? item.question : {};
         const questionId = String(question.question_id || '').trim();
+        const questionCardId = String(question.question_card_id || questionId || '').trim();
         const title = String(question.question_title || 'Question').trim();
         const content = String(question.question_content || '').trim();
         const choices = Array.isArray(question.choices) ? question.choices : [];
@@ -671,7 +711,7 @@
             const finalAnswer = String(rawAnswer || '').trim();
             if (!finalAnswer || resolved) return;
             if (bridge && typeof bridge.submitQuestionAnswer === 'function') {
-                await bridge.submitQuestionAnswer(finalAnswer, questionId);
+                await bridge.submitQuestionAnswer(finalAnswer, questionCardId);
                 return;
             }
             if (bridge && typeof bridge.send === 'function') {
@@ -723,13 +763,6 @@
             otherWrap.appendChild(input);
             otherWrap.appendChild(submit);
             card.appendChild(otherWrap);
-        }
-
-        if (questionId) {
-            const meta = document.createElement('div');
-            meta.className = 'learning-sidebar-question-meta';
-            meta.textContent = `Question ID: ${questionId}`;
-            card.appendChild(meta);
         }
 
         if (resolved && answer) {
@@ -833,7 +866,8 @@
             const foldKey = buildSidebarFoldKey(messageIndex, partIndex, part);
             const details = document.createElement('details');
             details.className = `learning-sidebar-fold learning-sidebar-fold-${kind}`;
-            const shouldAutoOpen = kind === 'thinking' || (kind === 'tool' && !!(part && part.pending));
+            const pending = !!(part && part.pending);
+            const shouldAutoOpen = pending;
             if (sidebarFoldState.has(foldKey)) {
                 details.open = sidebarFoldState.get(foldKey) === true;
             } else {
@@ -1049,7 +1083,8 @@
             try { sidebarUnmount(); } catch (_) {}
             sidebarUnmount = null;
         }
-        if (sidebarReaderOpened) {
+        const sidebarMode = String((sidebarOptionsRef || {}).sidebarMode || '').trim().toLowerCase();
+        if (sidebarMode === 'learning') {
             renderSidebarChat(sidebarContainerRef);
             const bridge = window.NexoraLearningSidebarBridge;
             if (bridge && typeof bridge.subscribe === 'function') {
@@ -1187,7 +1222,32 @@
         if (handlePuzzleStateUpdateFromIframe(event)) return;
         if (handlePuzzleFramePayload(event)) return;
         handleReaderStatePayload(event && event.data);
+        // 处理来自 NexoraLearning iframe 的提示词注入请求
+        const data = event && event.data;
+        if (data && typeof data === 'object'
+            && String(data.source || '').trim().toLowerCase() === 'nexora-learning'
+            && String(data.type || '').trim().toLowerCase() === 'nexora:inject-prompt') {
+            injectPromptToMainInput(String(data.text || '').trim());
+        }
     });
+
+    // 同页面 CustomEvent 兜底（非 iframe 场景）
+    window.addEventListener('nexora:inject-prompt', (event) => {
+        const data = event && event.detail;
+        if (data && typeof data === 'object') {
+            injectPromptToMainInput(String(data.text || '').trim());
+        }
+    });
+
+    function injectPromptToMainInput(text) {
+        if (!text) return;
+        const textarea = document.getElementById('messageInput');
+        if (!textarea) return;
+        textarea.value = text;
+        textarea.focus();
+        // 触发 input 事件让框架感知到值变化
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    }
 
     window.addEventListener('nexora:reader:state', (event) => {
         handleReaderStatePayload(event && event.detail);
@@ -1368,14 +1428,15 @@
             });
         } catch (_) {}
         const frontendUrl = chatBridge ? chatBridge.frontendUrl : '';
-        const node = createPuzzleCardNode(payload, { cardId: fallbackCardId, serverState, frontendUrl });
+        const username = chatBridge ? chatBridge.username : '';
+        const node = createPuzzleCardNode(payload, { cardId: fallbackCardId, serverState, frontendUrl, username });
         if (!node) {
             const ensureAssets = chatBridge && typeof chatBridge.ensureLearningModeAssets === 'function'
                 ? chatBridge.ensureLearningModeAssets
                 : null;
             if (!ensureAssets) return;
             void ensureAssets().then(() => {
-                const retryNode = createPuzzleCardNode(payload, { cardId: fallbackCardId, serverState, frontendUrl });
+                const retryNode = createPuzzleCardNode(payload, { cardId: fallbackCardId, serverState, frontendUrl, username });
                 if (!retryNode) return;
                 const puzzleIdRetry = String((retryNode.dataset && retryNode.dataset.puzzleId) || payload.puzzle_id || '').trim();
                 const rememberedSubmissionRetry = getLockedPuzzleSubmission(puzzleIdRetry);
