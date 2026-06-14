@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NexoraLearning 学习看板</title>
-  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260611_02">
-  <link rel="stylesheet" href="/api/frontend/assets/learning_panel.css?v=20260610_04">
+  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260614_05">
+  <link rel="stylesheet" href="/api/frontend/assets/learning_panel.css?v=20260613_08">
   <link rel="stylesheet" href="/api/frontend/assets/knowledge_graph.css">
 </head>
 <body>
@@ -60,7 +60,6 @@
             <p class="panel-kicker">COURSES</p>
           </div>
           <div class="materials-head-right">
-            <button id="openUploadViewBtn" class="nxl-icon-btn nxl-icon-btn-darker" type="button" hidden aria-label="上传教材" title="上传教材">⤴</button>
           </div>
         </header>
 
@@ -81,8 +80,6 @@
               </div>
             </div>
             <div class="materials-head-right">
-              <button id="courseHomeUploadBtn" class="nxl-icon-btn nxl-icon-btn-darker" type="button" hidden aria-label="上传教材" title="上传教材">⤴</button>
-              <button id="courseHomeSettingsBtn" class="nxl-icon-btn" type="button" hidden aria-label="教材课程管理界面" title="教材课程管理界面">⚙</button>
             </div>
           </header>
           <section id="courseHomeContent" class="materials-detail-pane"></section>
@@ -266,7 +263,13 @@
               </div>
               <div class="materials-form-row materials-form-row-file">
                 <label class="materials-form-label" for="materialsFileInput">文件</label>
-                <input id="materialsFileInput" class="input-lite input-file" type="file" accept=".epub,.pdf,.txt,.md,.docx,.doc,.c,.h,.py,.rst">
+                <div id="materialsFileDropZone" class="materials-file-drop-zone">
+                  <input id="materialsFileInput" class="input-lite input-file" type="file" accept=".epub,.pdf,.txt,.md,.docx,.doc,.c,.h,.py,.rst">
+                  <div class="materials-file-drop-hint">
+                    <span id="materialsFileDropTitle" class="materials-file-drop-title">拖拽教材文件到这里</span>
+                    <span id="materialsFileDropSub" class="materials-file-drop-sub">或点击区域选择文件</span>
+                  </div>
+                </div>
               </div>
               <div class="materials-form-actions materials-form-actions-right">
                 <button id="materialsUploadBookBtn" class="nxl-icon-btn nxl-icon-btn-dark" type="button" aria-label="确认上传" title="确认上传">⤴</button>
@@ -300,6 +303,38 @@
           <section id="settingsDetailPane" class="settings-detail-pane"></section>
         </section>
       </article>
+    </section>
+
+    <section id="learningPathView" class="view-pane">
+      <article class="panel-card materials-panel learning-path-article">
+        <header id="learningPathHeader" class="panel-head materials-head learning-path-header">
+          <div class="materials-head-left learning-path-floating-stack">
+            <button id="backFromLearningPathBtn" class="nxl-icon-btn" type="button" aria-label="返回课程主页" title="返回课程主页">
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M15 18l-6-6 6-6"></path>
+              </svg>
+            </button>
+            <div id="learningPathFloatingActions" class="learning-path-floating-actions" aria-label="学习操作" hidden></div>
+            <div class="panel-kicker">LEARNING PATH</div>
+          </div>
+        </header>
+        <div class="learning-path-body">
+          <section class="learning-path-main-pane">
+            <div id="learningPathMarkdown" class="learning-path-markdown"></div>
+          </section>
+        </div>
+      </article>
+      <aside class="learning-path-outline-pane">
+        <div class="learning-path-outline-header">
+          <div class="learning-path-outline-title">学习大纲</div>
+          <button id="learningPathOutlineToggle" class="learning-path-outline-toggle" type="button" aria-label="收起学习大纲" title="收起学习大纲" aria-expanded="true">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M15 18l-6-6 6-6"></path>
+            </svg>
+          </button>
+        </div>
+        <div id="learningPathOutline" class="learning-path-outline-body"></div>
+      </aside>
     </section>
   </main>
   <div id="confirmBackdrop" class="modal-backdrop" style="display:none;">
@@ -356,7 +391,7 @@
   <script src="/api/frontend/assets/utils.js?v=20260610_04"></script>
   <script src="/api/frontend/assets/telemetry.js?v=20260610_04"></script>
   <script src="/api/frontend/assets/knowledge_graph.js"></script>
-  <script src="/api/frontend/assets/app.js?v=20260610_04"></script>
+  <script src="/api/frontend/assets/app.js?v=20260614_05"></script>
 </body>
 </html>
 

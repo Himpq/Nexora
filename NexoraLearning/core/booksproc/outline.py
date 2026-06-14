@@ -277,11 +277,60 @@ def _build_outline_tools() -> List[Dict[str, Any]]:
     ]
 
 
+def _normalize_outline_sections(raw_sections: Any) -> List[Dict[str, Any]]:
+    """规范化 submit_outline 返回的 sections。"""
+    parsed_sections: List[Dict[str, Any]] = []
+    if not isinstance(raw_sections, list):
+        return parsed_sections
+
+    for row in raw_sections:
+        if not isinstance(row, dict):
+            continue
+
+        section_id = str(row.get("id") or "").strip()
+        title = str(row.get("title") or "").strip()
+        summary = str(row.get("summary") or "").strip()
+
+        try:
+            estimated_minutes = int(row.get("estimated_minutes") or 30)
+        except Exception:
+            estimated_minutes = 30
+
+        if not title:
+            continue
+
+        objectives = row.get("objectives") if isinstance(row.get("objectives"), list) else []
+        key_concepts = row.get("key_concepts") if isinstance(row.get("key_concepts"), list) else []
+        difficulty = str(row.get("difficulty") or "中等").strip()
+        prerequisites = row.get("prerequisites") if isinstance(row.get("prerequisites"), list) else []
+        sources = row.get("sources") if isinstance(row.get("sources"), list) else []
+        exploration = row.get("exploration") if isinstance(row.get("exploration"), dict) else {}
+
+        parsed_sections.append(
+            {
+                "id": section_id or f"sec_{len(parsed_sections) + 1:03d}",
+                "title": title,
+                "summary": summary,
+                "objectives": [str(item) for item in objectives if str(item).strip()],
+                "key_concepts": [str(item) for item in key_concepts if str(item).strip()],
+                "difficulty": difficulty,
+                "estimated_minutes": max(15, min(60, estimated_minutes)),
+                "prerequisites": [str(item) for item in prerequisites if str(item).strip()],
+                "sources": [item for item in sources if isinstance(item, dict)],
+                "exploration": exploration,
+            }
+        )
+
+    return parsed_sections
+
+
 def generate_outline(
     cfg: Mapping[str, Any],
     lecture_id: str,
     *,
     user_id: str = "",
+    on_status: Optional[callable] = None,
+    on_delta: Optional[callable] = None,
 ) -> Dict[str, Any]:
     """生成课程大纲（使用工具调用模式）。"""
     from core.lectures import get_lecture, list_books, load_book_info_xml
@@ -291,6 +340,23 @@ def generate_outline(
     safe_lecture_id = str(lecture_id or "").strip()
     if not safe_lecture_id:
         raise ValueError("lecture_id is required.")
+
+    def emit_status(message: str) -> None:
+        if callable(on_status):
+            try:
+                on_status(str(message or "").strip())
+            except Exception:
+                pass
+
+    def emit_delta(delta_text: str) -> None:
+        piece = str(delta_text or "")
+        if not piece:
+            return
+        if callable(on_delta):
+            try:
+                on_delta(piece)
+            except Exception:
+                pass
 
     lecture = get_lecture(cfg, safe_lecture_id)
     if lecture is None:
@@ -302,6 +368,7 @@ def generate_outline(
     books = list_books(cfg, safe_lecture_id)
     if not books:
         raise ValueError("No books found for this lecture.")
+    emit_status("已读取课程与教材列表")
 
     # 为每本书加载 bookinfo
     for book in books:
@@ -312,6 +379,7 @@ def generate_outline(
     all_chapters, all_details = _collect_all_books_data(cfg, safe_lecture_id)
     books_summary = _build_books_summary(books)
     profile_summary = _build_profile_summary(cfg, user_id)
+    emit_status("已整理教材章节、关键点与用户画像")
 
     # 构造 prompt
     try:
@@ -338,6 +406,7 @@ def generate_outline(
         "课程大纲生成开始",
         payload={"lecture_id": safe_lecture_id},
     )
+    emit_status("已构建大纲生成提示词，准备调用模型")
 
     # 获取模型配置
     models_cfg = load_scheduler_models_config(cfg)
@@ -366,6 +435,7 @@ def generate_outline(
         request_messages = list(messages)
         if turn_history:
             request_messages.extend(turn_history)
+        emit_status(f"模型第 {turn} 轮生成中")
 
         log_event(
             "outline_round",
@@ -373,17 +443,28 @@ def generate_outline(
             payload={"turn": turn, "messages_count": len(request_messages)},
         )
 
+        round_fragments: List[str] = []
+
+        def _on_round_delta(delta_text: str) -> None:
+            piece = str(delta_text or "")
+            if not piece:
+                return
+            round_fragments.append(piece)
+            emit_delta(piece)
+
         response = proxy.chat_completions(
             messages=request_messages,
             model=model_name or None,
             options={
                 "temperature": temperature,
                 "max_tokens": max_output_tokens,
+                "stream": True,
                 "tools": tools,
                 "tool_choice": "auto",
             },
             use_chat_path=False,
             request_timeout=request_timeout,
+            on_delta=_on_round_delta,
         )
 
         if not bool(response.get("ok")):
@@ -404,6 +485,15 @@ def generate_outline(
                 "大纲模型输出",
                 payload={"turn": turn, "content_len": len(content)},
                 content=content[:2000],
+            )
+            emit_status(f"模型第 {turn} 轮返回文本输出")
+        elif round_fragments:
+            streamed_text = "".join(round_fragments)
+            log_event(
+                "outline_model_stream",
+                "大纲模型流式输出",
+                payload={"turn": turn, "content_len": len(streamed_text)},
+                content=streamed_text[:4000],
             )
 
         raw_tool_calls = (msg or {}).get("tool_calls") if isinstance((msg or {}).get("tool_calls"), list) else []
@@ -432,6 +522,15 @@ def generate_outline(
                 "has_tool_calls": bool(tool_calls),
                 "tool_names": [tc.get("function", {}).get("name", "") for tc in tool_calls],
             },
+            content=_safe_json_dumps(tool_calls)[:2400] if tool_calls else "",
+        )
+
+        turn_history.append(
+            {
+                "role": "assistant",
+                "content": content if content else None,
+                "tool_calls": tool_calls if tool_calls else None,
+            }
         )
 
         if not tool_calls:
@@ -445,6 +544,7 @@ def generate_outline(
                 "role": "user",
                 "content": "You must call submit_outline(sections=[...]) to submit the outline. Do not output plain text JSON.",
             })
+            emit_status("模型未提交 submit_outline，已要求重试")
             continue
 
         # 处理工具调用
@@ -468,40 +568,9 @@ def generate_outline(
             )
 
             if tool_name == "submit_outline":
-                raw_sections = args_obj.get("sections")
+                emit_status("模型已调用 submit_outline，正在校验大纲结构")
                 course_title = str(args_obj.get("course_title") or lecture_title).strip()
-                parsed_sections: List[Dict[str, Any]] = []
-
-                if isinstance(raw_sections, list):
-                    for row in raw_sections:
-                        if not isinstance(row, dict):
-                            continue
-                        section_id = str(row.get("id") or "").strip()
-                        title = str(row.get("title") or "").strip()
-                        summary = str(row.get("summary") or "").strip()
-                        estimated_minutes = int(row.get("estimated_minutes") or 30)
-                        if not title:
-                            continue
-
-                        objectives = row.get("objectives") if isinstance(row.get("objectives"), list) else []
-                        key_concepts = row.get("key_concepts") if isinstance(row.get("key_concepts"), list) else []
-                        difficulty = str(row.get("difficulty") or "中等").strip()
-                        prerequisites = row.get("prerequisites") if isinstance(row.get("prerequisites"), list) else []
-                        sources = row.get("sources") if isinstance(row.get("sources"), list) else []
-                        exploration = row.get("exploration") if isinstance(row.get("exploration"), dict) else {}
-
-                        parsed_sections.append({
-                            "id": section_id or f"sec_{len(parsed_sections) + 1:03d}",
-                            "title": title,
-                            "summary": summary,
-                            "objectives": [str(o) for o in objectives if str(o).strip()],
-                            "key_concepts": [str(c) for c in key_concepts if str(c).strip()],
-                            "difficulty": difficulty,
-                            "estimated_minutes": max(15, min(60, estimated_minutes)),
-                            "prerequisites": [str(p) for p in prerequisites if str(p).strip()],
-                            "sources": [s for s in sources if isinstance(s, dict)],
-                            "exploration": exploration,
-                        })
+                parsed_sections = _normalize_outline_sections(args_obj.get("sections"))
 
                 if parsed_sections:
                     result_outline = {
@@ -519,6 +588,7 @@ def generate_outline(
                             "course_title": course_title,
                         },
                     )
+                    emit_status(f"已接收 {len(parsed_sections)} 个大纲章节，准备固化")
 
                     # 返回成功结果给模型
                     turn_history.append({
@@ -586,6 +656,7 @@ def generate_outline(
 
     # 保存大纲
     _save_outline(cfg, safe_lecture_id, result_outline)
+    emit_status("大纲文件已保存")
 
     log_event(
         "outline_done",
@@ -595,6 +666,7 @@ def generate_outline(
             "section_count": len(sections),
         },
     )
+    emit_status("课程大纲生成完成")
 
     return result_outline
 

@@ -7,6 +7,7 @@
     let sidebarOptionsRef = {};
     const sidebarFoldState = new Map();
     let currentFrontendUrl = '';
+    let currentRuntimeUsername = '';
     let activePuzzleFullscreen = null;
     const puzzleSubmissionRegistryKey = 'nexora_learning_puzzle_registry_v1';
 
@@ -14,6 +15,9 @@
     let chatBridge = null;
     function registerChatBridge(bridge) {
         chatBridge = bridge && typeof bridge === 'object' ? bridge : null;
+        if (chatBridge) {
+            setLearningRuntimeUsername(chatBridge.username);
+        }
     }
 
     function escapeHtml(value) {
@@ -33,6 +37,31 @@
             h += (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24);
         }
         return String(h >>> 0);
+    }
+
+    function setLearningRuntimeUsername(username) {
+        const normalized = String(username || '').trim();
+
+        if (normalized) {
+            currentRuntimeUsername = normalized;
+        }
+
+        return currentRuntimeUsername;
+    }
+
+    function buildLearningFrontendUrl(frontendUrl, username) {
+        const raw = String(frontendUrl || '').trim();
+        const runtimeUsername = setLearningRuntimeUsername(username);
+
+        if (!raw) return '';
+
+        const url = new URL(raw, window.location.href);
+
+        if (runtimeUsername) {
+            url.searchParams.set('username', runtimeUsername);
+        }
+
+        return url.toString();
     }
 
     function buildStablePuzzleCardId(payload, fallbackPrefix = 'puzzle') {
@@ -140,10 +169,20 @@
         return true;
     }
 
-    function resolveLearningPuzzleUrl(frontendUrl) {
+    function resolveLearningPuzzleUrl(frontendUrl, username) {
         const base = String(frontendUrl || currentFrontendUrl || '').trim();
+        const runtimeUsername = setLearningRuntimeUsername(username);
+
         if (!base) return '/api/frontend/puzzle';
-        return `${base.replace(/\/+$/, '')}/puzzle`;
+
+        const url = new URL(base, window.location.href);
+        url.pathname = `${url.pathname.replace(/\/+$/, '')}/puzzle`;
+
+        if (runtimeUsername) {
+            url.searchParams.set('username', runtimeUsername);
+        }
+
+        return url.toString();
     }
 
     function syncPuzzleCardLockState(card) {
@@ -237,7 +276,7 @@
         `;
         const iframe = wrap.querySelector('.puzzle-card-iframe');
         if (iframe) {
-            iframe.src = resolveLearningPuzzleUrl(options.frontendUrl);
+            iframe.src = resolveLearningPuzzleUrl(options.frontendUrl, options.username || (chatBridge && chatBridge.username));
             iframe.addEventListener('load', () => {
                 try {
                     const initPayload = {
@@ -587,7 +626,7 @@
 
     function renderWelcome(container, options = {}) {
         if (!container) return;
-        const frontendUrl = String(options.frontendUrl || '').trim();
+        const frontendUrl = buildLearningFrontendUrl(options.frontendUrl, options.username);
         container.classList.add('learning-mode-welcome-shell');
         container.innerHTML = '<div class="learning-mode-shell"><div class="learning-mode-frame-wrap"></div></div>';
         const wrap = container.querySelector('.learning-mode-frame-wrap');
@@ -597,7 +636,7 @@
 
     function renderMainPanel(container, options = {}) {
         if (!container) return;
-        const frontendUrl = String(options.frontendUrl || '').trim();
+        const frontendUrl = buildLearningFrontendUrl(options.frontendUrl, options.username);
         currentFrontendUrl = frontendUrl;
         container.innerHTML = '<div class="learning-mode-shell"><div class="learning-mode-frame-wrap"></div></div>';
         const wrap = container.querySelector('.learning-mode-frame-wrap');
@@ -1389,14 +1428,15 @@
             });
         } catch (_) {}
         const frontendUrl = chatBridge ? chatBridge.frontendUrl : '';
-        const node = createPuzzleCardNode(payload, { cardId: fallbackCardId, serverState, frontendUrl });
+        const username = chatBridge ? chatBridge.username : '';
+        const node = createPuzzleCardNode(payload, { cardId: fallbackCardId, serverState, frontendUrl, username });
         if (!node) {
             const ensureAssets = chatBridge && typeof chatBridge.ensureLearningModeAssets === 'function'
                 ? chatBridge.ensureLearningModeAssets
                 : null;
             if (!ensureAssets) return;
             void ensureAssets().then(() => {
-                const retryNode = createPuzzleCardNode(payload, { cardId: fallbackCardId, serverState, frontendUrl });
+                const retryNode = createPuzzleCardNode(payload, { cardId: fallbackCardId, serverState, frontendUrl, username });
                 if (!retryNode) return;
                 const puzzleIdRetry = String((retryNode.dataset && retryNode.dataset.puzzleId) || payload.puzzle_id || '').trim();
                 const rememberedSubmissionRetry = getLockedPuzzleSubmission(puzzleIdRetry);

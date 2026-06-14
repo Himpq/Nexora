@@ -44,10 +44,12 @@ def _safe_int(value: Any, default: int = 0) -> int:
 def _resolve_runtime_user_id() -> str:
     """Best-effort username resolution from request context."""
     qs = str(request.args.get("username") or "").strip()
+
     if qs:
         return qs
 
     data = request.get_json(silent=True) or {}
+
     if isinstance(data, dict):
         body_username = str(data.get("username") or data.get("user_id") or "").strip()
 
@@ -63,19 +65,18 @@ def _resolve_runtime_user_id() -> str:
         "X-Forwarded-User",
     ):
         candidate = str(request.headers.get(header_name) or "").strip()
+
         if candidate:
             return candidate
-    # Fallback: use default_username from config or cookie session
-    from core.nexora_proxy import NexoraProxy as _NP
-    proxy = _cfg.get("__proxy__")
-    if proxy is None:
-        try:
-            proxy = _NP(_cfg)
-            _cfg["__proxy__"] = proxy
-        except Exception:
-            proxy = None
-    if proxy is not None:
-        return str(getattr(proxy, "default_username", "") or "").strip()
+
+    log_event(
+        "learning_progress_user_resolution_failed",
+        "Learning progress rejected because no explicit runtime user was provided.",
+        payload={
+            "has_cookie": bool(str(request.headers.get("Cookie") or "").strip()),
+            "path": str(request.path or "").strip(),
+        },
+    )
     return ""
 
 

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import random
 import time
 from enum import Enum
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
@@ -88,6 +89,7 @@ class Context:
             "compression_count": 0,
             "truncation_count": 0,
         }
+        self._request_nonce_counter = 0
 
     def _select_active_tail_messages(self, messages: List[Message]) -> List[Message]:
         """选择压缩后必须保留的极少量活动尾巴。
@@ -181,7 +183,27 @@ class Context:
 
     def build(self) -> List[Dict[str, Any]]:
         """构建消息列表（用于 API 调用）"""
-        return [msg.to_dict() for msg in self._messages]
+        messages = [msg.to_dict() for msg in self._messages]
+        nonce = self._build_request_nonce_message()
+
+        if nonce:
+            messages.append(nonce.to_dict())
+
+        return messages
+
+    def _build_request_nonce_message(self) -> Optional[Message]:
+        """为每次模型请求注入短扰动，打破同上下文下的重复轨迹。"""
+        self._request_nonce_counter += 1
+        now_ms = int(time.time() * 1000)
+        random_salt = f"{random.getrandbits(32):08x}"
+        flow = str(self._trace_meta.get("flow") or "booksproc").strip()
+        content = (
+            "[运行扰动]\n"
+            f"flow={flow}\n"
+            f"request_nonce={now_ms}-{self._request_nonce_counter}-{random_salt}\n"
+            "该值只用于打破重复上下文导致的固定输出轨迹；不得写入业务结果，不得改变工具参数结构。"
+        )
+        return Message(role="user", content=content)
 
     def chars(self) -> int:
         """估算当前消息列表的字符数"""
