@@ -288,6 +288,15 @@ body.learning-workspace-active #learningMainPanel .learning-mode-frame {
   margin: 0 0 0.7em;
 }
 
+.learning-sidebar-chat-text img {
+  display: block;
+  box-sizing: border-box;
+  max-width: 100%;
+  height: auto;
+  margin: 0.6em 0;
+  border-radius: 4px;
+}
+
 .learning-sidebar-chat-text ul,
 .learning-sidebar-chat-text ol {
   margin: 0.45em 0 0.7em;

@@ -2435,6 +2435,13 @@ class Model:
         mail_enabled = bool(mail_cfg.get("nexora_mail_enabled", False))
         nexora_search_cfg = CONFIG.get("nexora_search", {}) if isinstance(CONFIG, dict) else {}
         nexora_search_enabled = bool(nexora_search_cfg.get("nexora_search_enabled", False))
+        gen_image_cfg = CONFIG.get("gen_image", {}) if isinstance(CONFIG, dict) else {}
+        gen_image_enabled = (
+            isinstance(gen_image_cfg, dict)
+            and bool(str(gen_image_cfg.get("enabled_api", "") or "").strip())
+            and isinstance(gen_image_cfg.get("apis", {}), dict)
+            and str(gen_image_cfg.get("enabled_api", "") or "").strip() in gen_image_cfg.get("apis", {})
+        )
         provider = getattr(self, 'provider', 'volcengine')
         use_responses_api = self._provider_use_responses_api(provider)
 
@@ -2462,7 +2469,9 @@ class Model:
                     continue
                 if func_def.get("name") in ["server_web_search", "server_render_page"] and not nexora_search_enabled:
                     continue
-                                
+                if func_def.get("name") == "generate_image" and not gen_image_enabled:
+                    continue
+                                 
                 # provider 已具备可直连的 native 搜索能力时，隐藏本地中转 relay_web_search/searchOnline。
                 # 使用 provider adapter 能力判定，不再硬编码 provider 名。
                 if (
@@ -3300,6 +3309,32 @@ class Model:
     def _execute_function_impl(self, function_name: str, args: Dict) -> str:
         """函数执行实现（委托给统一工具执行器）"""
         return self.tool_executor.execute(function_name, args)
+
+    def _model_visible_function_result(self, function_name: str, result: Any) -> str:
+        """Extract the short result text that is sent back to the model."""
+        name = canonicalize_tool_name(function_name)
+        text = str(result or "")
+
+        if name != "generate_image":
+            return text
+
+        try:
+            payload = json.loads(text) if isinstance(result, str) else result
+        except Exception:
+            return text
+
+        if not isinstance(payload, dict):
+            return text
+
+        message = str(payload.get("model_result") or payload.get("message") or "").strip()
+
+        if not message:
+            message = "图片生成成功。" if payload.get("success") is True else "图片生成失败。"
+
+        if payload.get("success") is True:
+            return message
+
+        return message if message.startswith("错误") else f"错误：{message}"
 
     def _append_trailing_newline_for_user_content(self, content: Any) -> Any:
         """
@@ -6028,8 +6063,11 @@ class Model:
                             
                             # 执行函数
                             result = self._execute_function(func_name, func_args)
+                            model_visible_result = self._model_visible_function_result(func_name, result)
                             
                             print(f"[FUNCTION] 结果: {result[:100]}..." if len(result) > 100 else f"[FUNCTION] 结果: {result}")
+                            if model_visible_result != result:
+                                print(f"[FUNCTION] 模型可见结果: {model_visible_result}")
                             
                             # 记录结果步骤
                             step_result = {
@@ -6102,7 +6140,7 @@ class Model:
                             current_function_outputs.append(
                                 self.provider_adapter.build_function_output_message(
                                     call_id=call_id,
-                                    result=result,
+                                    result=model_visible_result,
                                     use_responses_api=use_responses_api
                                 )
                             )

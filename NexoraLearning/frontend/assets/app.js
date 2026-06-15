@@ -96,6 +96,8 @@
     learningPathOutline: document.getElementById("learningPathOutline"),
     learningPathOutlinePane: document.querySelector(".learning-path-outline-pane"),
     learningPathOutlineToggle: document.getElementById("learningPathOutlineToggle"),
+    learningPathOutlineTab: document.getElementById("learningPathOutlineTab"),
+    learningPathReportTab: document.getElementById("learningPathReportTab"),
     learningPathFloatingActions: document.getElementById("learningPathFloatingActions"),
     backFromLearningPathBtn: document.getElementById("backFromLearningPathBtn"),
     confirmBackdrop: document.getElementById("confirmBackdrop"),
@@ -190,6 +192,8 @@
     courseHomeReturnTarget: "shelf",
     courseHomeTab: "books",
     courseVideoCache: {},
+    learningReportCache: {},
+    learningPathSideTab: "outline",
     catalogContext: null,
     learningPathCache: {},
     lpOutlineCollapsed: false,
@@ -895,7 +899,8 @@
   }
 
   function openLearningPathView(lectureId) {
-    state.selectedLectureId = lectureId;
+    const resolvedLectureId = String(lectureId || "").trim();
+    state.selectedLectureId = resolvedLectureId;
     state.learningPathStage = "loading";
     state.learningPathData = null;
     state.currentChapterIndex = -1;
@@ -904,8 +909,8 @@
     state.lpPathDraft = "";
     state.lpChapterDraft = "";
     setView("learningPath");
-    renderLearningPathView(lectureId);
-    autoLoadLearningPath(lectureId);
+    renderLearningPathView(resolvedLectureId);
+    autoLoadLearningPath(resolvedLectureId);
   }
 
   async function autoLoadLearningPath(lectureId) {
@@ -938,26 +943,9 @@
     clearLearningPathFloatingActions();
 
     const stage = state.learningPathStage || "loading";
-    const pathData = state.learningPathData;
-    const hasPathChapters = !!(
-      pathData &&
-      Array.isArray(pathData.chapters) &&
-      pathData.chapters.length
-    );
 
-    if ((stage === "path-ready" || stage === "generating-chapter") && hasPathChapters) {
-      renderLearningPathOutline(outline, pathData.chapters, lectureId);
-    } else {
-      outline.innerHTML = `
-        <div class="lp-outline-empty">
-          <div class="lp-outline-empty-icon">
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-              <path d="M4 6h16M4 12h16M4 18h10"></path>
-            </svg>
-          </div>
-          <div class="lp-outline-empty-text">请开始个性化学习路线</div>
-        </div>
-      `;
+    if (stage !== "path-ready") {
+      renderLearningPathSidePanel(lectureId);
     }
 
     if (stage === "no-outline") {
@@ -1010,6 +998,118 @@
         <div class="learning-path-empty-hint">正在检查学习路线...</div>
       </div>
     `;
+  }
+
+  function renderLearningPathEmptyOutline(container) {
+    if (!container) return;
+
+    container.innerHTML = `
+      <div class="lp-outline-empty">
+        <div class="lp-outline-empty-icon">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M4 6h16M4 12h16M4 18h10"></path>
+          </svg>
+        </div>
+        <div class="lp-outline-empty-text">请开始个性化学习路线</div>
+      </div>
+    `;
+  }
+
+  function getLearningPathCurrentChapterReportOptions() {
+    const pathData = state.learningPathData;
+    const chapters = pathData && Array.isArray(pathData.chapters) ? pathData.chapters : [];
+    const idx = Number(state.currentChapterIndex);
+
+    if (!Number.isInteger(idx) || idx < 0 || idx >= chapters.length) {
+      return {};
+    }
+
+    const chapter = chapters[idx] || {};
+    const options = { chapterIndex: idx };
+    const bookId = String(chapter.book_id || "").trim();
+
+    if (bookId) {
+      options.bookId = bookId;
+    }
+
+    return options;
+  }
+
+  function syncLearningPathSideTabs() {
+    const activeTab = state.learningPathSideTab === "report" ? "report" : "outline";
+    state.learningPathSideTab = activeTab;
+
+    [el.learningPathOutlineTab, el.learningPathReportTab].forEach((tab) => {
+      if (!tab) return;
+
+      const isActive = String(tab.getAttribute("data-lp-side-tab") || "") === activeTab;
+      tab.classList.toggle("is-active", isActive);
+      tab.setAttribute("aria-selected", isActive ? "true" : "false");
+      tab.setAttribute("tabindex", isActive ? "0" : "-1");
+    });
+
+    if (el.learningPathOutlinePane) {
+      el.learningPathOutlinePane.setAttribute("data-side-tab", activeTab);
+    }
+  }
+
+  function renderLearningPathSidePanel(lectureId) {
+    const container = el.learningPathOutline;
+    if (!container) return;
+
+    syncLearningPathSideTabs();
+
+    if (state.learningPathSideTab === "report") {
+      renderLearningPathReportPanel(container, lectureId);
+      return;
+    }
+
+    const stage = state.learningPathStage || "loading";
+    const pathData = state.learningPathData;
+    const hasPathChapters = !!(
+      pathData &&
+      Array.isArray(pathData.chapters) &&
+      pathData.chapters.length
+    );
+
+    if ((stage === "path-ready" || stage === "generating-chapter") && hasPathChapters) {
+      renderLearningPathOutline(container, pathData.chapters, lectureId);
+      return;
+    }
+
+    renderLearningPathEmptyOutline(container);
+  }
+
+  async function renderLearningPathReportPanel(container, lectureId) {
+    if (!container) return;
+
+    const resolvedLectureId = String(lectureId || state.selectedLectureId || "").trim();
+
+    if (!resolvedLectureId) {
+      container.innerHTML = '<div class="learning-report-empty-line">缺少课程 ID</div>';
+      return;
+    }
+
+    const options = getLearningPathCurrentChapterReportOptions();
+    const requestKey = getLearningReportCacheKey(resolvedLectureId, options);
+    container.dataset.learningReportKey = requestKey;
+    container.innerHTML = renderLearningReportLoading("正在加载学习报告...");
+
+    try {
+      const report = await fetchLearningReport(resolvedLectureId, options);
+
+      if (container.dataset.learningReportKey !== requestKey || state.learningPathSideTab !== "report") {
+        return;
+      }
+
+      container.innerHTML = renderLearningReportPanel(report, { compact: true });
+    } catch (err) {
+      if (container.dataset.learningReportKey !== requestKey || state.learningPathSideTab !== "report") {
+        return;
+      }
+
+      container.innerHTML = `<div class="learning-report-error">${escapeHtml(err && err.message ? err.message : "学习报告加载失败")}</div>`;
+    }
   }
 
   function isLearningPathChapterCompleted(chapter) {
@@ -1095,7 +1195,7 @@
     }
 
     const chapter = chapters[idx];
-    renderLearningPathOutline(el.learningPathOutline, chapters, lectureId);
+    renderLearningPathSidePanel(lectureId);
 
     if (chapter.content_generated) {
       loadLearningPathChapterContent(md, lectureId, idx, chapter);
@@ -1306,6 +1406,7 @@
         trigger_source: "learning_path",
       });
 
+      invalidateLearningReportCache(resolvedLectureId);
       state.learningPathStage = "path-ready";
       renderLearningPathView(resolvedLectureId);
       showToast(result.already_completed ? "此前已完成本章" : "已完成本章学习");
@@ -1663,7 +1764,7 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex) {
         : null;
       if (chapter && el.learningPathMarkdown) {
         state.lpChapterDraft = "";
-        renderLearningPathOutline(el.learningPathOutline, state.learningPathData.chapters, lectureId);
+        renderLearningPathSidePanel(lectureId);
         renderChapterMarkdown(el.learningPathMarkdown, lectureId, chapterIndex, chapter, renderedContent);
       } else {
         throw new Error("章节生成完成，但章节视图状态异常");
@@ -3383,10 +3484,24 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex) {
 
       const editIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`;
 
+      const seenChannelIds = new Set();
       const channelItems = [
           { id: "public_all", title: "所有动态", builtin: true },
           ...channels
-      ];
+      ].reduce((rows, row) => {
+          const channelId = String((row && row.id) || "").trim();
+
+          if (!channelId || seenChannelIds.has(channelId)) {
+              return rows;
+          }
+
+          seenChannelIds.add(channelId);
+          rows.push(Object.assign({}, row, {
+              id: channelId,
+              title: channelId === "public_all" ? "所有动态" : String((row && row.title) || channelId).trim(),
+          }));
+          return rows;
+      }, []);
 
       el.feedChannelList.innerHTML = channelItems.map((row) => {
           const channelId = String((row && row.id) || "").trim();
@@ -3395,14 +3510,14 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex) {
           const isBuiltin = !!(row && row.builtin);
 
           return `
-              <button class="feed-channel-item${isActive ? " is-active" : ""}" type="button" data-channel-id="${escapeHtml(channelId)}">
-                  <span class="feed-channel-item-name">${escapeHtml(channelTitle)}</span>
+              <div class="feed-channel-item${isActive ? " is-active" : ""}" data-channel-id="${escapeHtml(channelId)}">
+                  <button class="feed-channel-select-btn" type="button" data-feed-channel-select data-channel-id="${escapeHtml(channelId)}" aria-current="${isActive ? "true" : "false"}">
+                      <span class="feed-channel-item-name">${escapeHtml(channelTitle)}</span>
+                  </button>
                   ${!isBuiltin ? `
-                      <span class="feed-channel-item-actions">
-                          <button class="feed-channel-action-btn" type="button" data-action="edit-channel" data-channel-id="${escapeHtml(channelId)}" title="编辑频道">${editIcon}</button>
-                      </span>
+                      <button class="feed-channel-action-btn" type="button" data-action="edit-channel" data-channel-id="${escapeHtml(channelId)}" title="编辑频道" aria-label="编辑频道 ${escapeHtml(channelTitle)}">${editIcon}</button>
                   ` : ""}
-              </button>
+              </div>
           `;
       }).join("");
   }
@@ -5461,6 +5576,10 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex) {
       return;
     }
 
+    // 离开课程主页：中断思维导图流式、关闭抽屉
+    if (window.NXKG && typeof window.NXKG.reset === "function") {
+      window.NXKG.reset();
+    }
     openMaterialsShelf();
   }
 
@@ -5477,6 +5596,21 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex) {
         const lid = row ? String((row.lecture || {}).id || "") : "";
         activateCourseHomeTab(tabName, lid);
       }
+      return;
+    }
+
+    // 思维导图：生成按钮（mindmap tab 内）
+    const generateMindmapBtn = target.closest("[data-action='generate-mindmap']");
+    if (generateMindmapBtn) {
+      const lectureId = String(generateMindmapBtn.getAttribute("data-lecture-id") || "").trim();
+      if (!lectureId) return;
+      if (!window.NXKG || typeof window.NXKG.generateCourseStream !== "function") {
+        showToast("思维导图模块未加载");
+        return;
+      }
+      generateMindmapBtn.disabled = true;
+      generateMindmapBtn.textContent = "生成中...";
+      window.NXKG.generateCourseStream(lectureId);
       return;
     }
 
@@ -5703,6 +5837,32 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex) {
         '</div>';
     }
 
+    // mindmap pane
+    if (tabName === "mindmap") {
+      return '<div class="course-home-tab-pane is-active-pane" data-tab-pane="mindmap">' +
+        '<div class="learning-panel-split-grid">' +
+        '<div class="learning-panel-books-column">' +
+        '<div class="learning-panel-section-body">' +
+        '<div class="outline-container" id="courseMindmapContainer" data-lecture-id="' + escapeHtml(lectureId) + '">' +
+        '<div class="lp-video-loading">正在加载思维导图...</div>' +
+        '</div>' +
+        '</div>' +
+        '</div>' +
+        '</div>' +
+        '</div>';
+    }
+
+    // report pane
+    if (tabName === "report") {
+      return '<div class="course-home-tab-pane is-active-pane" data-tab-pane="report">' +
+        '<div class="learning-panel-section-body">' +
+        '<div class="learning-report-shell" id="courseLearningReportContainer" data-lecture-id="' + escapeHtml(lectureId) + '">' +
+        renderLearningReportLoading("正在生成学习报告...") +
+        '</div>' +
+        '</div>' +
+        '</div>';
+    }
+
     // outline pane
     return '<div class="course-home-tab-pane is-active-pane" data-tab-pane="outline">' +
       '<div class="learning-panel-split-grid">' +
@@ -5745,6 +5905,15 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex) {
     // 切换到 outline 时加载大纲
     if (tabName === "outline") {
       loadCourseOutline(effectiveLectureId);
+    }
+
+    // 切换到 mindmap 时加载思维导图
+    if (tabName === "mindmap") {
+      loadCourseMindmap(effectiveLectureId);
+    }
+
+    if (tabName === "report") {
+      loadCourseLearningReport(effectiveLectureId);
     }
   }
 
@@ -5832,6 +6001,293 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex) {
             }
         }, { passive: false });
     }
+  }
+
+  function getLearningReportCacheKey(lectureId, options = {}) {
+    const bookId = String(options.bookId || "").trim();
+    const chapterIndex = Number.isInteger(Number(options.chapterIndex)) ? Number(options.chapterIndex) : -1;
+    return [String(lectureId || "").trim(), bookId, String(chapterIndex)].join("::");
+  }
+
+  function invalidateLearningReportCache(lectureId) {
+    const targetLectureId = String(lectureId || "").trim();
+    if (!targetLectureId) {
+      state.learningReportCache = {};
+      return;
+    }
+
+    Object.keys(state.learningReportCache || {}).forEach((key) => {
+      if (key.startsWith(`${targetLectureId}::`)) {
+        delete state.learningReportCache[key];
+      }
+    });
+  }
+
+  function renderLearningReportLoading(text) {
+    return `
+      <div class="learning-report-loading">
+        <span class="quiz-loading-spinner"></span>
+        <span>${escapeHtml(String(text || "正在加载学习报告..."))}</span>
+      </div>
+    `;
+  }
+
+  function formatLearningReportPercent(value, emptyText = "—") {
+    if (value === null || value === undefined || value === "") return emptyText;
+
+    const num = Number(value);
+    if (!Number.isFinite(num)) return emptyText;
+
+    const percent = num <= 1 ? num * 100 : num;
+    return `${Math.round(Math.max(0, Math.min(100, percent)))}%`;
+  }
+
+  function formatLearningReportNumber(value, suffix = "") {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return "—";
+
+    if (Math.abs(num) >= 10) {
+      return `${Math.round(num)}${suffix}`;
+    }
+
+    return `${Number(num.toFixed(1))}${suffix}`;
+  }
+
+  function getLearningReportRecordLabel(type) {
+    const key = String(type || "").trim();
+    const labels = {
+      chapter_completed: "章节完成",
+      session_completed: "小节完成",
+      lecture_selection: "课程选择",
+      study_time: "学习时长",
+      study_session: "学习会话",
+      learning_time: "学习时长",
+    };
+    return labels[key] || key || "学习记录";
+  }
+
+  async function fetchLearningReport(lectureId, options = {}) {
+    const resolvedLectureId = String(lectureId || "").trim();
+    if (!resolvedLectureId) {
+      throw new Error("缺少课程 ID");
+    }
+
+    const requestOptions = options && typeof options === "object" ? options : {};
+    const cacheKey = getLearningReportCacheKey(resolvedLectureId, requestOptions);
+    if (!requestOptions.force && state.learningReportCache && state.learningReportCache[cacheKey]) {
+      return state.learningReportCache[cacheKey];
+    }
+
+    const params = new URLSearchParams();
+    params.set("lecture_id", resolvedLectureId);
+
+    const bookId = String(requestOptions.bookId || "").trim();
+    if (bookId) {
+      params.set("book_id", bookId);
+    }
+
+    const chapterIndex = Number(requestOptions.chapterIndex);
+    if (Number.isInteger(chapterIndex) && chapterIndex >= 0) {
+      params.set("chapter_index", String(chapterIndex));
+    }
+
+    const data = await fetchJson(`/api/frontend/learning/report?${params.toString()}`);
+    state.learningReportCache[cacheKey] = data;
+    return data;
+  }
+
+  function renderLearningReportMetric(label, value, subText = "") {
+    return `
+      <div class="learning-report-metric">
+        <div class="learning-report-metric-label">${escapeHtml(label)}</div>
+        <div class="learning-report-metric-value">${escapeHtml(value)}</div>
+        ${subText ? `<div class="learning-report-metric-sub">${escapeHtml(subText)}</div>` : ""}
+      </div>
+    `;
+  }
+
+  function renderLearningReportPills(rows, emptyText) {
+    const items = Array.isArray(rows) ? rows.filter(Boolean) : [];
+    if (!items.length) {
+      return `<div class="learning-report-empty-line">${escapeHtml(emptyText || "暂无数据")}</div>`;
+    }
+
+    return `
+      <div class="learning-report-pill-list">
+        ${items.map((item) => `<span class="learning-report-pill">${escapeHtml(String(item || ""))}</span>`).join("")}
+      </div>
+    `;
+  }
+
+  function renderLearningReportInsightList(rows, emptyText) {
+    const items = Array.isArray(rows) ? rows : [];
+    if (!items.length) {
+      return `<div class="learning-report-empty-line">${escapeHtml(emptyText || "暂无数据")}</div>`;
+    }
+
+    return `
+      <div class="learning-report-insight-list">
+        ${items.map((row) => `
+          <div class="learning-report-insight">
+            <div class="learning-report-insight-title">${escapeHtml(String(row && row.title || ""))}</div>
+            <div class="learning-report-insight-detail">${escapeHtml(String(row && row.detail || ""))}</div>
+          </div>
+        `).join("")}
+      </div>
+    `;
+  }
+
+  function renderLearningReportRecords(rows) {
+    const items = Array.isArray(rows) ? rows : [];
+    if (!items.length) {
+      return '<div class="learning-report-empty-line">暂无学习记录</div>';
+    }
+
+    return `
+      <div class="learning-report-record-list">
+        ${items.map((row) => {
+          const titleParts = [
+            getLearningReportRecordLabel(row && row.type),
+            String(row && row.chapter_name || "").trim(),
+            String(row && row.session_name || "").trim(),
+          ].filter(Boolean);
+          return `
+            <div class="learning-report-record">
+              <div class="learning-report-record-title">${escapeHtml(titleParts.join(" / ") || "学习记录")}</div>
+              <div class="learning-report-record-time">${escapeHtml(formatTs(Number(row && row.timestamp || 0)))}</div>
+            </div>
+          `;
+        }).join("")}
+      </div>
+    `;
+  }
+
+  function renderLearningReportPanel(report, options = {}) {
+    const payload = report && typeof report === "object" ? report : {};
+    const summary = payload.summary && typeof payload.summary === "object" ? payload.summary : {};
+    const reading = payload.reading && typeof payload.reading === "object" ? payload.reading : {};
+    const quiz = payload.quiz && typeof payload.quiz === "object" ? payload.quiz : {};
+    const profile = payload.profile && typeof payload.profile === "object" ? payload.profile : {};
+    const progress = payload.progress && typeof payload.progress === "object" ? payload.progress : {};
+    const compact = !!options.compact;
+    const title = compact ? "学习报告" : `${String(payload.lecture_title || "课程").trim()} 学习报告`;
+    const progressPercent = Math.max(0, Math.min(100, Number(summary.progress_percent || 0)));
+    const accuracy = summary.accuracy === null || summary.accuracy === undefined
+      ? "未判定"
+      : formatLearningReportPercent(summary.accuracy);
+    const dimensions = Array.isArray(profile.dimensions) ? profile.dimensions : [];
+    const filledDimensions = dimensions.filter((row) => row && row.filled).map((row) => `${row.name}: ${row.brief || "已填写"}`).slice(0, compact ? 4 : 8);
+    const difficultyRows = Object.entries(quiz.by_difficulty || {}).map(([name, count]) => `${name} ${count}`);
+    const timeline = profile.timeline && typeof profile.timeline === "object" ? profile.timeline : {};
+    const profileProgressRows = Array.isArray(timeline.progress) ? timeline.progress.slice(0, compact ? 2 : 4).map((row) => `${row.date} ${row.text}`) : [];
+
+    return `
+      <section class="learning-report${compact ? " is-compact" : ""}">
+        <header class="learning-report-head">
+          <div>
+            <div class="learning-report-kicker">LEARNING REPORT</div>
+            <h3 class="learning-report-title">${escapeHtml(title)}</h3>
+          </div>
+          <div class="learning-report-generated">${escapeHtml(formatTs(Number(payload.generated_at || 0)))}</div>
+        </header>
+
+        <section class="learning-report-progress">
+          <div class="learning-report-progress-top">
+            <span>课程进度</span>
+            <strong>${escapeHtml(String(progressPercent))}%</strong>
+          </div>
+          <div class="learning-report-progress-bar"><span style="width:${progressPercent}%"></span></div>
+          <div class="learning-report-progress-next">${escapeHtml(String(progress.current_chapter || "暂无当前章节"))}</div>
+        </section>
+
+        <section class="learning-report-metrics">
+          ${renderLearningReportMetric("章节", `${summary.completed_chapters || 0}/${summary.total_chapters || 0}`, "已完成")}
+          ${renderLearningReportMetric("小节", `${summary.completed_sessions || 0}/${summary.total_sessions || 0}`, "已完成")}
+          ${renderLearningReportMetric("学习时长", formatLearningReportNumber(summary.study_hours || 0, "h"), "课程累计")}
+          ${renderLearningReportMetric("测验", String(summary.submitted_questions || 0), "已提交")}
+          ${renderLearningReportMetric("正确率", accuracy, `${summary.reviewed_questions || 0} 题可判定`)}
+          ${renderLearningReportMetric("画像", formatLearningReportPercent(summary.profile_completion_rate || 0), "维度完成")}
+        </section>
+
+        <section class="learning-report-grid">
+          <article class="learning-report-block">
+            <div class="learning-report-block-title">学习行为</div>
+            <div class="learning-report-line">阅读事件 ${escapeHtml(String(reading.total_events || 0))} · 阅读约 ${escapeHtml(formatLearningReportNumber(reading.total_reading_minutes || 0, " 分钟"))}</div>
+            <div class="learning-report-line">选中文本 ${escapeHtml(String(reading.selection_count || 0))} · 批注提问 ${escapeHtml(String(reading.annotation_ask_count || 0))}</div>
+            <div class="learning-report-line">深读章节 ${escapeHtml(String(reading.deep_read_chapters || 0))}</div>
+          </article>
+
+          <article class="learning-report-block">
+            <div class="learning-report-block-title">题目状态</div>
+            <div class="learning-report-line">提交 ${escapeHtml(String(quiz.submitted || 0))} 题 · 可判定 ${escapeHtml(String(quiz.reviewed || 0))} 题</div>
+            ${renderLearningReportPills(difficultyRows, "暂无难度分布")}
+          </article>
+
+          <article class="learning-report-block">
+            <div class="learning-report-block-title">画像依据</div>
+            ${renderLearningReportPills(filledDimensions, "暂无已填写画像维度")}
+          </article>
+
+          <article class="learning-report-block">
+            <div class="learning-report-block-title">画像变化</div>
+            ${renderLearningReportPills(profileProgressRows, "暂无画像时间线")}
+          </article>
+        </section>
+
+        <section class="learning-report-grid learning-report-grid-bottom">
+          <article class="learning-report-block">
+            <div class="learning-report-block-title">薄弱点</div>
+            ${renderLearningReportInsightList(payload.weaknesses, "暂无显性薄弱点")}
+          </article>
+
+          <article class="learning-report-block">
+            <div class="learning-report-block-title">下一步建议</div>
+            ${renderLearningReportInsightList(payload.recommendations, "暂无建议")}
+          </article>
+        </section>
+
+        <section class="learning-report-block learning-report-record-block">
+          <div class="learning-report-block-title">最近学习记录</div>
+          ${renderLearningReportRecords(payload.recent_records)}
+        </section>
+      </section>
+    `;
+  }
+
+  async function loadCourseLearningReport(lectureId) {
+    const container = document.getElementById("courseLearningReportContainer");
+    if (!container) return;
+
+    const resolvedLectureId = String(lectureId || "").trim();
+    if (!resolvedLectureId) {
+      container.innerHTML = '<div class="learning-report-empty-line">缺少课程 ID</div>';
+      return;
+    }
+
+    container.dataset.lectureId = resolvedLectureId;
+    container.innerHTML = renderLearningReportLoading("正在生成学习报告...");
+
+    try {
+      const report = await fetchLearningReport(resolvedLectureId);
+      if (String(container.dataset.lectureId || "") !== resolvedLectureId) return;
+
+      container.innerHTML = renderLearningReportPanel(report);
+    } catch (err) {
+      container.innerHTML = `<div class="learning-report-error">${escapeHtml(err && err.message ? err.message : "学习报告加载失败")}</div>`;
+    }
+  }
+
+  /**
+   * 加载课程级思维导图：委托给 NXKG（knowledge_graph.js）。
+   * 若尚未生成，NXKG 会显示"生成思维导图"按钮，由全局事件委托处理点击。
+   */
+  async function loadCourseMindmap(lectureId) {
+    if (!window.NXKG || typeof window.NXKG.loadCourse !== "function") {
+      const container = document.getElementById("courseMindmapContainer");
+      if (container) container.innerHTML = '<div class="lp-video-loading">思维导图模块未加载</div>';
+      return;
+    }
+    await window.NXKG.loadCourse(lectureId);
   }
 
   async function loadCourseOutline(lectureId) {
@@ -6830,6 +7286,8 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex) {
       { key: "books", label: "教材列表" },
       { key: "videos", label: "推荐视频" },
       { key: "outline", label: "学习大纲" },
+      { key: "mindmap", label: "思维导图" },
+      { key: "report", label: "学习报告" },
     ];
     const tabBarHtml = `<div class="course-home-tab-bar">
       ${tabDefs.map((t) => `<button class="course-home-tab${t.key === activeTab ? " is-active" : ""}" data-tab="${t.key}" type="button">${t.label}</button>`).join("")}
@@ -10091,6 +10549,23 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex) {
         }
       });
       saveQuizState();
+      {
+        const meta = quizState.currentMeta || {};
+        const reportLectureId = String(meta.lectureId || "").trim();
+
+        if (reportLectureId) {
+          invalidateLearningReportCache(reportLectureId);
+
+          if (
+            state.learningPathSideTab === "report" &&
+            el.learningPathView &&
+            el.learningPathView.classList.contains("is-active") &&
+            String(state.selectedLectureId || "").trim() === reportLectureId
+          ) {
+            renderLearningPathSidePanel(reportLectureId);
+          }
+        }
+      }
       preserveFloatingScroll("quiz", renderQuizPanel);
       sendQuizLearningAnalysisToSidebar(records);
     } catch (err) {
@@ -11527,6 +12002,7 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex) {
       navigator.sendBeacon("/api/frontend/learning/chapter-complete", blob);
       markChapterCompleteReport(reportKey, idx);
       state.readerReportedChapterKey = reportKey;
+      invalidateLearningReportCache(lectureId);
       return;
     }
 
@@ -11538,6 +12014,7 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex) {
       });
       markChapterCompleteReport(reportKey, idx);
       state.readerReportedChapterKey = reportKey;
+      invalidateLearningReportCache(lectureId);
 
       if (state.isReaderOpen) {
         loadChapterQuiz(idx, chapterName, chapterRange, chapterContext).catch((err) => {
@@ -12258,7 +12735,7 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex) {
           return;
         }
 
-        const channelItem = target.closest("[data-channel-id]");
+        const channelItem = target.closest("[data-feed-channel-select]");
         if (!channelItem) return;
 
         const channelId = String(channelItem.getAttribute("data-channel-id") || "").trim();
@@ -12576,6 +13053,30 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex) {
     if (el.learningPathOutlineToggle) {
       el.learningPathOutlineToggle.addEventListener("click", () => {
         setLearningPathOutlineCollapsed(!state.lpOutlineCollapsed, true);
+      });
+    }
+    if (el.learningPathOutlinePane) {
+      el.learningPathOutlinePane.addEventListener("click", (event) => {
+        const rawTarget = event.target;
+        const target = rawTarget instanceof Element
+          ? rawTarget
+          : rawTarget && rawTarget.parentElement instanceof Element
+            ? rawTarget.parentElement
+            : null;
+        const tab = target ? target.closest("[data-lp-side-tab]") : null;
+
+        if (!tab || !el.learningPathOutlinePane.contains(tab)) {
+          return;
+        }
+
+        const nextTab = String(tab.getAttribute("data-lp-side-tab") || "").trim();
+
+        if (nextTab !== "outline" && nextTab !== "report") {
+          return;
+        }
+
+        state.learningPathSideTab = nextTab;
+        renderLearningPathSidePanel(state.selectedLectureId);
       });
     }
     {

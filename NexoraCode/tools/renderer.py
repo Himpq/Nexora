@@ -88,9 +88,135 @@ from pathlib import Path
 
 _INTERACTIVE_WIN = None
 _INTERACTIVE_READY = threading.Event()
+_INTERACTIVE_PAGES = {}
+_INTERACTIVE_LOCK = threading.RLock()
+_NEXT_INTERACTIVE_PAGE_ID = 0
+_ACTIVE_PAGE_ID = None
 _STATIC_COOKIE_LOCK = threading.Lock()
 _STATIC_REQUESTS_SESSION = None
 _STATIC_COOKIE_JAR_PATH = Path(get_app_root()) / "renderer_cookies.lwp"
+
+
+def _allocate_interactive_page_id() -> int:
+    """为 local_web_render 创建的驻留页面分配稳定递增 ID。"""
+    global _NEXT_INTERACTIVE_PAGE_ID
+
+    with _INTERACTIVE_LOCK:
+        page_id = _NEXT_INTERACTIVE_PAGE_ID
+        _NEXT_INTERACTIVE_PAGE_ID += 1
+        return page_id
+
+
+def _normalize_interactive_page_id(page_id):
+    if isinstance(page_id, bool):
+        return None, {"error": "page_id 必须是 local_web_render 返回的页面 ID 数字"}
+
+    if page_id is None:
+        return None, {"error": "page_id 不能为空，请先用 local_web_render(extract_mode='interactive') 获取页面 ID"}
+
+    try:
+        normalized = int(str(page_id).strip())
+    except Exception:
+        return None, {"error": "page_id 必须是 local_web_render 返回的页面 ID 数字"}
+
+    if normalized < 0:
+        return None, {"error": "page_id 不能小于 0"}
+
+    return normalized, None
+
+
+def _get_interactive_page(page_id):
+    normalized, err = _normalize_interactive_page_id(page_id)
+
+    if err:
+        return None, None, err
+
+    with _INTERACTIVE_LOCK:
+        page = _INTERACTIVE_PAGES.get(normalized)
+
+    if not page or not page.get("window"):
+        return normalized, None, {
+            "page_id": normalized,
+            "error": f"找不到 page_id={normalized} 的驻留页面，请重新使用 local_web_render(extract_mode='interactive') 打开页面",
+        }
+
+    return normalized, page, None
+
+
+def _set_active_interactive_page(page_id: int):
+    global _ACTIVE_PAGE_ID
+    global _INTERACTIVE_READY
+    global _INTERACTIVE_WIN
+
+    with _INTERACTIVE_LOCK:
+        page = _INTERACTIVE_PAGES.get(page_id)
+
+        if not page:
+            return
+
+        _ACTIVE_PAGE_ID = page_id
+        _INTERACTIVE_WIN = page.get("window")
+        _INTERACTIVE_READY = page.get("ready") or threading.Event()
+
+
+def _remove_interactive_page(page_id: int, window=None):
+    global _ACTIVE_PAGE_ID
+    global _INTERACTIVE_READY
+    global _INTERACTIVE_WIN
+
+    with _INTERACTIVE_LOCK:
+        page = _INTERACTIVE_PAGES.get(page_id)
+
+        if not page:
+            return
+
+        if window is not None and page.get("window") is not window:
+            return
+
+        removed_window = page.get("window")
+        _INTERACTIVE_PAGES.pop(page_id, None)
+
+        if _ACTIVE_PAGE_ID == page_id:
+            _ACTIVE_PAGE_ID = None
+
+        if _INTERACTIVE_WIN is removed_window:
+            _INTERACTIVE_WIN = None
+            _INTERACTIVE_READY = threading.Event()
+
+
+def _update_interactive_page_state(page_id: int, title=None, url=None):
+    with _INTERACTIVE_LOCK:
+        page = _INTERACTIVE_PAGES.get(page_id)
+
+        if not page:
+            return
+
+        if title is not None:
+            page["title"] = str(title or "")
+
+        if url is not None:
+            page["url"] = str(url or "")
+
+        page["updated_at"] = time.time()
+
+
+def _interactive_pages_summary() -> list:
+    with _INTERACTIVE_LOCK:
+        active_page_id = _ACTIVE_PAGE_ID
+        pages = []
+
+        for page_id in sorted(_INTERACTIVE_PAGES.keys()):
+            page = _INTERACTIVE_PAGES[page_id]
+            pages.append({
+                "page_id": page_id,
+                "title": str(page.get("title") or ""),
+                "url": str(page.get("url") or ""),
+                "active": page_id == active_page_id,
+                "created_at": page.get("created_at"),
+                "updated_at": page.get("updated_at"),
+            })
+
+    return pages
 
 
 def _get_static_requests_session():
@@ -169,15 +295,21 @@ def _merge_document_cookies_into_static_session(url: str, cookie_text: str):
         _save_static_requests_cookies(session)
 
 
-def _sync_interactive_cookies_to_static_session():
-    if not _INTERACTIVE_WIN:
+def _sync_interactive_cookies_to_static_session(page_id: int):
+    _, _, page_err = _get_interactive_page(page_id)
+
+    if page_err:
         return
+
     payload, err = _interactive_eval_js_safe(
         "(function(){return {url:String(window.location.href||''), cookie:String(document.cookie||'')};})();",
         timeout_sec=2.5,
+        page_id=page_id,
     )
+
     if err or not isinstance(payload, dict):
         return
+
     _merge_document_cookies_into_static_session(payload.get("url"), payload.get("cookie"))
 
 
@@ -202,20 +334,26 @@ def _run_with_timeout(func, timeout_sec: float = 4.0):
     return True, box.get("value")
 
 
-def _interactive_eval_js_safe(js_code: str, timeout_sec: float = 4.0):
-    global _INTERACTIVE_WIN
-    if not _INTERACTIVE_WIN:
-        return None, {"error": "Interactive window not initialized"}
-    ok, res = _run_with_timeout(lambda: _INTERACTIVE_WIN.evaluate_js(js_code), timeout_sec)
+def _interactive_eval_js_safe(js_code: str, timeout_sec: float = 4.0, page_id=None):
+    resolved_page_id, page, page_err = _get_interactive_page(page_id)
+
+    if page_err:
+        return None, page_err
+
+    window = page.get("window")
+    ok, res = _run_with_timeout(lambda: window.evaluate_js(js_code), timeout_sec)
+
     if not ok:
-        # Window may have been closed manually; force re-init on next call.
-        _INTERACTIVE_WIN = None
+        if isinstance(res, dict):
+            res["page_id"] = resolved_page_id
+
         return None, res
+
     return res, None
 
 
-def _interactive_window_alive() -> bool:
-    value, err = _interactive_eval_js_safe("(function(){return true;})();", timeout_sec=1.2)
+def _interactive_window_alive(page_id: int) -> bool:
+    value, err = _interactive_eval_js_safe("(function(){return true;})();", timeout_sec=1.2, page_id=page_id)
     return (err is None) and bool(value)
 
 
@@ -396,15 +534,19 @@ def _format_interactive_node_line(node: dict) -> str:
     return f"[ID:{node_id} {tag} ({text}) rect:{rect_text}{meta}]"
 
 
-def _build_interactive_snapshot(payload) -> dict:
+def _build_interactive_snapshot(payload, page_id=None) -> dict:
     import json
     import ast
+
     if payload is None:
         payload = {}
+
     if isinstance(payload, bool):
         payload = {}
+
     if isinstance(payload, str):
         txt = payload.strip()
+
         if txt:
             try:
                 payload = json.loads(txt)
@@ -413,18 +555,35 @@ def _build_interactive_snapshot(payload) -> dict:
                     payload = ast.literal_eval(txt)
                 except Exception:
                     payload = {}
+
     if isinstance(payload, list) and len(payload) == 1 and isinstance(payload[0], dict):
         payload = payload[0]
+
     if not isinstance(payload, dict):
         payload = {}
+
+    if page_id is None:
+        raw_page_id = payload.get("page_id")
+
+        if raw_page_id is not None:
+            page_id, _ = _normalize_interactive_page_id(raw_page_id)
+
     title = str(payload.get("title", "") or "")
     url = str(payload.get("url", "") or "")
     nodes = payload.get("nodes", [])
+
     if not isinstance(nodes, list):
         nodes = []
+
     lines = [_format_interactive_node_line(node) for node in nodes if isinstance(node, dict)]
-    content = f"网页已准备：{title}\nURL：{url}\n\n【当前视窗节点分布】\n" + ("\n".join(lines) if lines else "(none)")
+    page_line = f"页面ID：{page_id}\n" if page_id is not None else ""
+    content = f"{page_line}网页已准备：{title}\nURL：{url}\n\n【当前视窗节点分布】\n" + ("\n".join(lines) if lines else "(none)")
+
+    if page_id is not None:
+        _update_interactive_page_state(page_id, title=title, url=url)
+
     return {
+        "page_id": page_id,
         "title": title,
         "url": url,
         "viewport": payload.get("viewport", {}),
@@ -433,104 +592,162 @@ def _build_interactive_snapshot(payload) -> dict:
     }
 
 
-def _interactive_basic_snapshot() -> dict:
-    title, err1 = _interactive_eval_js_safe("(function(){return String(document.title || '');})();", timeout_sec=2.0)
+def _interactive_basic_snapshot(page_id: int) -> dict:
+    title, err1 = _interactive_eval_js_safe(
+        "(function(){return String(document.title || '');})();",
+        timeout_sec=2.0,
+        page_id=page_id,
+    )
+
     if err1:
         return err1
-    url, err2 = _interactive_eval_js_safe("(function(){return String(window.location.href || '');})();", timeout_sec=2.0)
+
+    url, err2 = _interactive_eval_js_safe(
+        "(function(){return String(window.location.href || '');})();",
+        timeout_sec=2.0,
+        page_id=page_id,
+    )
+
     if err2:
         return err2
+
     payload = {
         "title": str(title or ""),
         "url": str(url or ""),
         "viewport": {},
         "nodes": []
     }
-    _sync_interactive_cookies_to_static_session()
-    return _build_interactive_snapshot(payload)
+
+    _sync_interactive_cookies_to_static_session(page_id)
+    return _build_interactive_snapshot(payload, page_id=page_id)
 
 
-def _get_interactive_dom():
-    if not _INTERACTIVE_WIN:
-        return {"error": "Interactive window not initialized"}
+def _get_interactive_dom(page_id: int):
+    resolved_page_id, _, page_err = _get_interactive_page(page_id)
+
+    if page_err:
+        return page_err
+
     try:
         last_err = None
+
         for _ in range(3):
-            payload, err = _interactive_eval_js_safe(_interactive_dom_js(), timeout_sec=5.0)
+            payload, err = _interactive_eval_js_safe(_interactive_dom_js(), timeout_sec=5.0, page_id=resolved_page_id)
+
             if err:
                 last_err = err
                 time.sleep(0.25)
                 continue
-            _sync_interactive_cookies_to_static_session()
-            snap = _build_interactive_snapshot(payload)
+
+            _sync_interactive_cookies_to_static_session(resolved_page_id)
+            snap = _build_interactive_snapshot(payload, page_id=resolved_page_id)
+
             # During navigation transition, payload may be empty/non-structured; retry briefly.
             if snap.get("title") or snap.get("url") or snap.get("nodes"):
                 return snap
+
             time.sleep(0.25)
+
         if last_err:
             return last_err
-        return _interactive_basic_snapshot()
+
+        return _interactive_basic_snapshot(resolved_page_id)
     except Exception as e:
         return {"error": f"Evaluate Error: {str(e)}"}
 
-def _init_interactive_window(url: str):
-    global _INTERACTIVE_WIN
-    import webview
-    
-    if _INTERACTIVE_WIN is not None:
-        try:
-            if not _interactive_window_alive():
-                _INTERACTIVE_WIN = None
-            else:
-                _INTERACTIVE_READY.clear()
-                ok, res = _run_with_timeout(lambda: _INTERACTIVE_WIN.load_url(url), timeout_sec=2.5)
-                if not ok:
-                    _INTERACTIVE_WIN = None
-                else:
-                    import time
-                    time.sleep(1.5) # wait for DOM build
-                    return _get_interactive_dom()
-        except:
-            _INTERACTIVE_WIN = None
 
-    if _INTERACTIVE_WIN is not None:
-        return _get_interactive_dom()
+def _init_interactive_window(url: str, page_id=None):
+    import webview
+
+    if page_id is not None:
+        resolved_page_id, page, page_err = _get_interactive_page(page_id)
+
+        if page_err:
+            return page_err
+
+        if not _interactive_window_alive(resolved_page_id):
+            _remove_interactive_page(resolved_page_id, page.get("window"))
+            return {
+                "page_id": resolved_page_id,
+                "error": f"page_id={resolved_page_id} 的驻留页面已不可用，请重新使用 local_web_render(extract_mode='interactive') 打开页面",
+            }
+
+        ready = page.get("ready")
+
+        if ready:
+            ready.clear()
+
+        ok, res = _run_with_timeout(lambda: page["window"].load_url(url), timeout_sec=2.5)
+
+        if not ok:
+            if isinstance(res, dict):
+                res["page_id"] = resolved_page_id
+
+            return res
+
+        _set_active_interactive_page(resolved_page_id)
+        _update_interactive_page_state(resolved_page_id, url=url)
+        time.sleep(1.5)
+        return _get_interactive_dom(resolved_page_id)
 
     try:
-        window_id = f"interactive_{uuid.uuid4().hex[:8]}"
-        _INTERACTIVE_READY.clear()
+        created_page_id = _allocate_interactive_page_id()
+        ready = threading.Event()
+        window_id = f"interactive_{created_page_id}_{uuid.uuid4().hex[:8]}"
 
         # Needs to be a bit large
-        import webview
-        import time
         w = webview.create_window(window_id, url, hidden=False, width=1280, height=800)
-        _INTERACTIVE_WIN = w
+
+        with _INTERACTIVE_LOCK:
+            _INTERACTIVE_PAGES[created_page_id] = {
+                "id": created_page_id,
+                "window": w,
+                "ready": ready,
+                "title": "",
+                "url": url,
+                "created_at": time.time(),
+                "updated_at": time.time(),
+            }
+
+        _set_active_interactive_page(created_page_id)
 
         def on_loaded():
-            _INTERACTIVE_READY.set()
+            ready.set()
+            _update_interactive_page_state(created_page_id, url=url)
 
         def on_closed():
-            global _INTERACTIVE_WIN
-            if _INTERACTIVE_WIN is w:
-                _INTERACTIVE_WIN = None
-                _INTERACTIVE_READY.clear()
+            _remove_interactive_page(created_page_id, w)
 
         w.events.loaded += on_loaded
+
         if hasattr(w.events, "closed"):
             w.events.closed += on_closed
-        # _INTERACTIVE_READY.wait(timeout=20)
+
         time.sleep(2)
-        return _get_interactive_dom()
+        return _get_interactive_dom(created_page_id)
     except Exception as e:
-        _INTERACTIVE_WIN = None
+        if "created_page_id" in locals():
+            _remove_interactive_page(created_page_id)
+
         return {"error": f"Interactive window create failed: {e}"}
 
-def handle_web_click(node_id: int) -> dict:
-    if not _INTERACTIVE_WIN:
-        return {"error": "驻留浏览器未启动，请先使用 local_web_render 并指定 extract_mode='interactive'"}
+def handle_web_click(page_id: int, node_id: int) -> dict:
+    resolved_page_id, _, page_err = _get_interactive_page(page_id)
+
+    if page_err:
+        return page_err
+
+    try:
+        safe_node_id = int(node_id)
+    except Exception:
+        return {"page_id": resolved_page_id, "error": "node_id 必须是当前页面快照返回的元素 ID"}
+
+    if safe_node_id <= 0:
+        return {"page_id": resolved_page_id, "error": "node_id 必须大于 0"}
+
     js = f"""
     (function() {{
-        var el = document.querySelector('[data-nexora-id="{node_id}"]');
+        var el = document.querySelector('[data-nexora-id="{safe_node_id}"]');
         if (el) {{
             // Remove target so new_window behavior is blocked
             if (el.tagName && el.tagName.toLowerCase() === 'a') el.removeAttribute('target');
@@ -544,20 +761,30 @@ def handle_web_click(node_id: int) -> dict:
     }})();
     """
     try:
-        ok, err = _interactive_eval_js_safe(js, timeout_sec=4.5)
+        clicked, err = _interactive_eval_js_safe(js, timeout_sec=4.5, page_id=resolved_page_id)
+
         if err:
             return err
-        if not ok:
-            return {"error": f"找不到 ID 为 {node_id} 的元素"}
+
+        if not clicked:
+            return {"page_id": resolved_page_id, "error": f"找不到 ID 为 {safe_node_id} 的元素"}
+
         import time
         time.sleep(3) # Wait for page load or JS mutation
-        return _get_interactive_dom()
+        return _get_interactive_dom(resolved_page_id)
     except Exception as e:
-        return {"error": f"Click Error: {str(e)}"}
+        return {"page_id": resolved_page_id, "error": f"Click Error: {str(e)}"}
 
-def handle_web_exec_js(code: str) -> dict:
-    if not _INTERACTIVE_WIN:
-        return {"error": "驻留浏览器未启动"}
+
+def handle_web_exec_js(page_id: int, code: str) -> dict:
+    resolved_page_id, _, page_err = _get_interactive_page(page_id)
+
+    if page_err:
+        return page_err
+
+    if not str(code or "").strip():
+        return {"page_id": resolved_page_id, "error": "code 不能为空"}
+
     try:
         import time
         # Ensure it is safely evaluated and returned
@@ -566,22 +793,31 @@ def handle_web_exec_js(code: str) -> dict:
             wrapped_code = f"(function() {{\n{code}\n}})();"
         else:
             wrapped_code = code
-        res, err = _interactive_eval_js_safe(wrapped_code, timeout_sec=6.0)
+
+        res, err = _interactive_eval_js_safe(wrapped_code, timeout_sec=6.0, page_id=resolved_page_id)
+
         if err:
             return err
+
         time.sleep(1) # Short wait for DOM to settle
-        return {"result": str(res), "dom": _get_interactive_dom()}
+        return {"page_id": resolved_page_id, "result": res, "dom": _get_interactive_dom(resolved_page_id)}
     except Exception as e:
-        return {"error": f"JS eval failed: {str(e)}"}
+        return {"page_id": resolved_page_id, "error": f"JS eval failed: {str(e)}"}
 
 
-def handle_web_input(selector: str, text: str, submit: bool = False) -> dict:
-    if not _INTERACTIVE_WIN:
-        return {"error": "驻留浏览器未启动，请先使用 local_web_render 并指定 extract_mode='interactive'"}
+def handle_web_input(page_id: int, selector: str, text: str, submit: bool = False) -> dict:
+    resolved_page_id, _, page_err = _get_interactive_page(page_id)
+
+    if page_err:
+        return page_err
+
     safe_selector = str(selector or "").strip()
+
     if not safe_selector:
-        return {"error": "selector 不能为空"}
+        return {"page_id": resolved_page_id, "error": "selector 不能为空"}
+
     import json
+
     js = f"""
     (function() {{
         var selector = {json.dumps(safe_selector, ensure_ascii=False)};
@@ -632,33 +868,161 @@ def handle_web_input(selector: str, text: str, submit: bool = False) -> dict:
     """
     try:
         import time
-        result, err = _interactive_eval_js_safe(js, timeout_sec=6.0)
+        result, err = _interactive_eval_js_safe(js, timeout_sec=6.0, page_id=resolved_page_id)
+
         if err:
             return err
-        time.sleep(1)
-        return {"result": result, "dom": _get_interactive_dom()}
-    except Exception as e:
-        return {"error": f"Input Error: {str(e)}"}
 
-def handle_web_scroll(direction: str) -> dict:
-    if not _INTERACTIVE_WIN:
-        return {"error": "驻留浏览器未启动"}
+        time.sleep(1)
+        return {"page_id": resolved_page_id, "result": result, "dom": _get_interactive_dom(resolved_page_id)}
+    except Exception as e:
+        return {"page_id": resolved_page_id, "error": f"Input Error: {str(e)}"}
+
+
+def handle_web_scroll(page_id: int, direction: str) -> dict:
+    resolved_page_id, _, page_err = _get_interactive_page(page_id)
+
+    if page_err:
+        return page_err
+
     js_map = {
         "down": "window.scrollBy(0, window.innerHeight * 0.8)",
         "up": "window.scrollBy(0, -window.innerHeight * 0.8)",
         "top": "window.scrollTo(0, 0)",
         "bottom": "window.scrollTo(0, document.body.scrollHeight)"
     }
-    js = js_map.get(direction, "window.scrollBy(0, window.innerHeight * 0.5)")
+    safe_direction = str(direction or "").strip().lower()
+
+    if safe_direction not in js_map:
+        return {"page_id": resolved_page_id, "error": "direction 必须是 down、up、bottom 或 top"}
+
+    js = js_map[safe_direction]
+
     try:
-        _, err = _interactive_eval_js_safe(js, timeout_sec=4.5)
+        _, err = _interactive_eval_js_safe(js, timeout_sec=4.5, page_id=resolved_page_id)
+
         if err:
             return err
+
         import time
         time.sleep(1)
-        return _get_interactive_dom()
+        return _get_interactive_dom(resolved_page_id)
     except Exception as e:
-        return {"error": f"Scroll Error: {str(e)}"}
+        return {"page_id": resolved_page_id, "error": f"Scroll Error: {str(e)}"}
+
+
+def handle_web_get_content(page_id: int, extract_mode: str = "readability") -> dict:
+    resolved_page_id, _, page_err = _get_interactive_page(page_id)
+
+    if page_err:
+        return page_err
+
+    mode = str(extract_mode or "readability").strip().lower()
+
+    if mode not in {"readability", "full_text", "html"}:
+        return {"page_id": resolved_page_id, "error": "extract_mode 必须是 readability、full_text 或 html"}
+
+    js = """
+    (function() {
+        var doc = document.documentElement;
+        var body = document.body;
+        return {
+            title: String(document.title || ''),
+            url: String(window.location.href || ''),
+            html: String(doc ? doc.outerHTML : ''),
+            text: String(body ? body.innerText || '' : '')
+        };
+    })();
+    """
+
+    try:
+        payload, err = _interactive_eval_js_safe(js, timeout_sec=8.0, page_id=resolved_page_id)
+
+        if err:
+            return err
+
+        if not isinstance(payload, dict):
+            return {"page_id": resolved_page_id, "error": "页面内容读取结果不是有效对象"}
+
+        title = str(payload.get("title") or "")
+        url = str(payload.get("url") or "")
+        html = str(payload.get("html") or "")
+        text = str(payload.get("text") or "")
+
+        if mode == "html":
+            content = html
+        elif mode == "full_text":
+            content = text
+        else:
+            content = _extract_readability(html, url)
+
+        _update_interactive_page_state(resolved_page_id, title=title, url=url)
+        _sync_interactive_cookies_to_static_session(resolved_page_id)
+
+        return {
+            "page_id": resolved_page_id,
+            "title": title,
+            "url": url,
+            "extract_mode": mode,
+            "content": content,
+            "dom": _get_interactive_dom(resolved_page_id),
+        }
+    except Exception as e:
+        return {"page_id": resolved_page_id, "error": f"Get Content Error: {str(e)}"}
+
+
+def handle_web_list_pages() -> dict:
+    page_ids = [page["page_id"] for page in _interactive_pages_summary()]
+    errors = {}
+    js = "(function(){return {title:String(document.title||''), url:String(window.location.href||'')};})();"
+
+    for page_id in page_ids:
+        payload, err = _interactive_eval_js_safe(js, timeout_sec=2.0, page_id=page_id)
+
+        if err:
+            errors[page_id] = str(err.get("error") if isinstance(err, dict) else err)
+            continue
+
+        if isinstance(payload, dict):
+            _update_interactive_page_state(page_id, title=payload.get("title"), url=payload.get("url"))
+
+    pages = _interactive_pages_summary()
+
+    for page in pages:
+        page_error = errors.get(page["page_id"])
+
+        if page_error:
+            page["error"] = page_error
+
+    with _INTERACTIVE_LOCK:
+        active_page_id = _ACTIVE_PAGE_ID
+
+    return {
+        "active_page_id": active_page_id,
+        "pages": pages,
+    }
+
+
+def handle_web_close_page(page_id: int) -> dict:
+    resolved_page_id, page, page_err = _get_interactive_page(page_id)
+
+    if page_err:
+        return page_err
+
+    window = page.get("window")
+    ok, res = _run_with_timeout(lambda: window.destroy(), timeout_sec=2.5)
+
+    if not ok:
+        detail = res.get("error") if isinstance(res, dict) else str(res)
+        return {"page_id": resolved_page_id, "error": f"关闭页面失败: {detail}"}
+
+    _remove_interactive_page(resolved_page_id, window)
+
+    return {
+        "page_id": resolved_page_id,
+        "closed": True,
+        "pages": _interactive_pages_summary(),
+    }
 
 def _render_webview(
 
@@ -750,8 +1114,9 @@ def _render_static(url: str, extract_mode: str) -> dict:
     }
 
 
-def web_render(url: str, wait_for: str = "networkidle", extract_mode: str = "readability") -> dict:
+def web_render(url: str, wait_for: str = "networkidle", extract_mode: str = "readability", page_id=None) -> dict:
     engine = str(config.get("renderer_engine", "auto") or "auto").strip().lower()
+
     if engine == "requests":
         try:
             return _render_static(url, extract_mode)
@@ -764,8 +1129,8 @@ def web_render(url: str, wait_for: str = "networkidle", extract_mode: str = "rea
         # 如果已经有活跃的 webview（通过 webview.windows 判断应用是否已经启动 GUI 循环）
         if len(webview.windows) > 0:
             if extract_mode == "interactive":
-                return _init_interactive_window(url)
-            
+                return _init_interactive_window(url, page_id=page_id)
+
             res = _render_webview(url, extract_mode)
             if "error" not in res:
                 return res

@@ -94,7 +94,7 @@ TOOL_CATALOG = [
         "module": "renderer",
         "name": "local_web_render",
         "handler": "web_render",
-        "description": "用本地真实浏览器打开并渲染网页。interactive 模式会保留页面会话与 Cookie；返回当前视窗的交互节点概览。建立会话后，优先使用 web_exec_js 或 web_input 做精确操作。",
+        "description": "用本地真实浏览器打开并渲染网页。interactive 模式会创建或导航驻留页面，并返回稳定 page_id 与当前视窗交互节点；后续所有 local_web_* 页面操作都必须传这个 page_id。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -109,7 +109,11 @@ TOOL_CATALOG = [
                     "type": "string",
                     "enum": ["readability", "full_text", "html", "interactive"],
                     "default": "readability",
-                    "description": "提取模式：readability(正文), full_text(全文), html(源码), interactive(驻留交互模式；后续优先配合 web_exec_js / web_input 使用)",
+                    "description": "提取模式：readability(正文), full_text(全文), html(源码), interactive(驻留交互模式；返回 page_id)",
+                },
+                "page_id": {
+                    "type": "integer",
+                    "description": "可选。传入已有 page_id 时在该驻留页面导航到新 URL；不传则新建页面并分配 0、1、2 递增 ID。",
                 },
             },
             "required": ["url"],
@@ -117,56 +121,102 @@ TOOL_CATALOG = [
     },
     {
         "module": "renderer",
-        "name": "web_click",
-        "handler": "handle_web_click",
-        "description": "在 interactive 页面会话中点击网页元素。",
+        "name": "local_web_get_content",
+        "handler": "handle_web_get_content",
+        "description": "读取指定驻留页面当前真实内容。用户手动操作页面后，用这个工具传入同一个 page_id 重新获取页面正文和当前 DOM 节点。",
         "parameters": {
             "type": "object",
             "properties": {
-                "node_id": {"type": "integer", "description": "要点击的元素的 data-nexora-id"},
+                "page_id": {"type": "integer", "description": "local_web_render(interactive) 返回的页面 ID"},
+                "extract_mode": {
+                    "type": "string",
+                    "enum": ["readability", "full_text", "html"],
+                    "default": "readability",
+                    "description": "读取模式：readability(正文), full_text(页面可见全文), html(当前 DOM 源码)",
+                },
             },
-            "required": ["node_id"],
+            "required": ["page_id"],
         },
     },
     {
         "module": "renderer",
-        "name": "web_input",
-        "handler": "handle_web_input",
-        "description": "在 interactive 页面会话中向 input/textarea 等元素写入文本。适合登录、搜索、表单填写。优先使用 local_web_render(interactive) 返回的 selector。",
+        "name": "local_web_click",
+        "handler": "handle_web_click",
+        "description": "在指定驻留页面中点击网页元素。必须传 local_web_render 返回的 page_id 和当前快照里的 node_id。",
         "parameters": {
             "type": "object",
             "properties": {
+                "page_id": {"type": "integer", "description": "local_web_render(interactive) 返回的页面 ID"},
+                "node_id": {"type": "integer", "description": "要点击的元素的 data-nexora-id"},
+            },
+            "required": ["page_id", "node_id"],
+        },
+    },
+    {
+        "module": "renderer",
+        "name": "local_web_input",
+        "handler": "handle_web_input",
+        "description": "在指定驻留页面中向 input/textarea 等元素写入文本。适合登录、搜索、表单填写。必须传 page_id，并优先使用页面快照返回的 selector。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "page_id": {"type": "integer", "description": "local_web_render(interactive) 返回的页面 ID"},
                 "selector": {"type": "string", "description": "目标 input/textarea/select/contenteditable 的 CSS 定位器"},
                 "text": {"type": "string", "description": "要注入的文本内容"},
                 "submit": {"type": "boolean", "description": "是否在输入后尝试提交回车/表单提交", "default": False},
             },
-            "required": ["selector", "text"],
+            "required": ["page_id", "selector", "text"],
         },
     },
     {
         "module": "renderer",
-        "name": "web_exec_js",
+        "name": "local_web_exec_js",
         "handler": "handle_web_exec_js",
-        "description": "在 interactive 页面会话的真实网页 DOM 中执行 JS。网页交互时优先用它读取状态、筛选元素、触发站内脚本；这不同于 client_js_exec。",
+        "description": "在指定驻留页面的真实网页 DOM 中执行 JS。网页交互时用它读取状态、筛选元素、触发站内脚本；必须传 page_id。",
         "parameters": {
             "type": "object",
             "properties": {
+                "page_id": {"type": "integer", "description": "local_web_render(interactive) 返回的页面 ID"},
                 "code": {"type": "string", "description": "要注入执行的 JavaScript 代码内容。内部需要包含 return 或者直接进行 DOM 操作。"},
             },
-            "required": ["code"],
+            "required": ["page_id", "code"],
         },
     },
     {
         "module": "renderer",
-        "name": "web_scroll",
+        "name": "local_web_scroll",
         "handler": "handle_web_scroll",
-        "description": "在 interactive 模式下滚动页面。仅在必须暴露新内容、触发懒加载或翻到目标区域时使用；默认优先 web_exec_js / web_input。",
+        "description": "在指定驻留页面中滚动页面。仅在必须暴露新内容、触发懒加载或翻到目标区域时使用；必须传 page_id。",
         "parameters": {
             "type": "object",
             "properties": {
+                "page_id": {"type": "integer", "description": "local_web_render(interactive) 返回的页面 ID"},
                 "direction": {"type": "string", "enum": ["down", "up", "bottom", "top"], "description": "滚动方向"},
             },
-            "required": ["direction"],
+            "required": ["page_id", "direction"],
+        },
+    },
+    {
+        "module": "renderer",
+        "name": "local_web_list_pages",
+        "handler": "handle_web_list_pages",
+        "description": "列出当前 NexoraCode 驻留网页页面及其 page_id，用于确认后续 local_web_* 操作的目标页面。",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "module": "renderer",
+        "name": "local_web_close_page",
+        "handler": "handle_web_close_page",
+        "description": "关闭指定 page_id 的驻留网页页面。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "page_id": {"type": "integer", "description": "local_web_render(interactive) 返回的页面 ID"},
+            },
+            "required": ["page_id"],
         },
     },
     {

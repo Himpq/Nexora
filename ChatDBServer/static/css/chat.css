@@ -825,6 +825,44 @@ body {
     background: #fff;
     border-top: 1px solid #e2e8f0;
 }
+.tool-output.generate-image-tool-output {
+    max-height: none;
+    overflow-y: visible;
+    white-space: normal;
+    font-family: inherit;
+}
+.generate-image-progress {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+.generate-image-progress-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: #334155;
+}
+.generate-image-progress-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.generate-image-progress-item {
+    padding: 6px 8px;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    background: #f8fafc;
+    color: #475569;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    word-break: break-word;
+}
+.generate-image-progress-item.current {
+    border-color: #bbf7d0;
+    background: #f0fdf4;
+    color: #166534;
+}
 .tool-usage.tool-error {
     border-color: #fecaca;
 }
@@ -997,6 +1035,19 @@ body {
 
 .message-assistant .content p:last-child {
     margin-bottom: 0;
+}
+
+.message-content img,
+.content-body img,
+.message-bubble img,
+.tool-output-markdown img {
+    display: block;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+    object-fit: contain;
+    border-radius: 8px;
+    margin: 12px 0;
 }
 
 .message-assistant .content pre {

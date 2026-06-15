@@ -63,6 +63,7 @@ function resolveNewConversationMode(targetMode = null) {
 let currentConversationId = null;
 let currentAbortController = null;
 let isGenerating = false;
+let lastAgentOnline = false;
 
 let shouldAutoScroll = true; // Auto-scroll control
 let _isJumping = false; // Temporarily block scroll listener during jump
@@ -87,6 +88,10 @@ let pendingAvatarDataUrl = '';
 let adminUsersCache = [];
 let adminSelectedUserId = null;
 let adminUserFilterKeyword = '';
+let adminGenImageApisCache = [];
+let adminSelectedGenImageApiId = '';
+let adminGenImageApiFilterKeyword = '';
+let adminGenImageApiEditorState = { originalApiId: '' };
 let adminMailUsersCache = [];
 let adminSelectedMailUser = null;
 let adminMailUserFilterKeyword = '';
@@ -230,7 +235,7 @@ const imageViewerState = {
     dragStartY: 0
 };
 let fileDragDepth = 0;
-let isFileDropOverlayVisible = false;
+let fileDropHighlightTarget = null;
 const NOTES_DEFAULT_NOTEBOOK_ID = 'nb_default';
 const NOTES_LEGACY_STORE_KEY = 'nexora_notes_store_v2';
 const NOTES_LEGACY_PREFIX = 'nexora_notes_conv_';
@@ -4216,14 +4221,17 @@ function startAgentStatusPolling() {
                 const indicator = document.getElementById('desktopAgentIndicator');
                 if (indicator) {
                     if (data.online) {
+                        lastAgentOnline = true;
                         indicator.style.backgroundColor = '#4caf50'; // green
                         indicator.title = 'NexoraCode (本地计算节点) - 在线';
                     } else {
+                        lastAgentOnline = false;
                         indicator.style.backgroundColor = '#9e9e9e'; // grey
                         indicator.title = 'NexoraCode (本地计算节点) - 离线';
                     }
                 }
             }).catch(() => {
+                lastAgentOnline = false;
                 const indicator = document.getElementById('desktopAgentIndicator');
                 if (indicator) {
                     indicator.style.backgroundColor = '#9e9e9e';
@@ -4793,7 +4801,6 @@ const els = {
     fileUploadProgressWrap: document.getElementById('fileUploadProgressWrap'),
     fileUploadProgressFill: document.getElementById('fileUploadProgressFill'),
     fileUploadProgressText: document.getElementById('fileUploadProgressText'),
-    fileDropOverlay: document.getElementById('fileDropOverlay'),
     cancelFileUploadBtn: document.getElementById('cancelFileUploadBtn'),
     sendBtn: document.getElementById('sendBtn'),
     toggleSidebar: document.getElementById('toggleSidebar'),
@@ -4939,6 +4946,36 @@ const els = {
     knowledgeSearchInput: document.getElementById('knowledgeSearchInput'),
     knowledgeSearchBtn: document.getElementById('knowledgeSearchBtn')
 };
+
+let generatedImageSizeObserver = null;
+
+function syncGeneratedImageViewportLimit() {
+    const container = els.messagesContainer || document.getElementById('messagesContainer');
+
+    if (!container) {
+        return;
+    }
+
+    const height = Math.max(160, Math.floor(Number(container.clientHeight || 0) * 0.8));
+    container.style.setProperty('--generated-image-max-height', `${height}px`);
+}
+
+function bindGeneratedImageViewportLimit() {
+    const container = els.messagesContainer || document.getElementById('messagesContainer');
+
+    if (!container || container.dataset.generatedImageLimitBound === '1') {
+        return;
+    }
+
+    container.dataset.generatedImageLimitBound = '1';
+    syncGeneratedImageViewportLimit();
+    window.addEventListener('resize', syncGeneratedImageViewportLimit, { passive: true });
+
+    if (typeof ResizeObserver === 'function') {
+        generatedImageSizeObserver = new ResizeObserver(() => syncGeneratedImageViewportLimit());
+        generatedImageSizeObserver.observe(container);
+    }
+}
 
 function ensureLearningFeedComposerControls() {
     if (!els.sendBtn || !els.sendBtn.parentElement) return null;
@@ -9322,6 +9359,7 @@ function initUI() {
     captureChatHeaderBaseState();
     initModalBackdropStacking();
     ensureAdminPublicApiLayout();
+    bindGeneratedImageViewportLimit();
     bindImageViewerEvents();
     bindToolsModeDropdown();
     applyComposerPrefsFromStorage();
@@ -9456,7 +9494,7 @@ function initUI() {
             cancelCurrentFileUpload();
         });
     }
-    bindGlobalFileDropUpload();
+    bindInputFileDropUpload();
     
     if(els.messageInput) {
         const restoredDraft = loadMessageDraftFromStorage();
@@ -9826,6 +9864,13 @@ function initUI() {
             if (!e || e.key !== 'Escape') return;
             const settingsModal = document.getElementById('settingsModal');
             if (!settingsModal || !settingsModal.classList.contains('active')) return;
+            const genImageApiModal = document.getElementById('adminGenImageApiModal');
+            if (genImageApiModal && genImageApiModal.classList.contains('active')) {
+                e.preventDefault();
+                e.stopPropagation();
+                closeAdminGenImageApiModal();
+                return;
+            }
             const publicApiModal = document.getElementById('adminPublicApiKeyModal');
             if (publicApiModal && publicApiModal.classList.contains('active')) {
                 e.preventDefault();
@@ -9847,6 +9892,7 @@ function initUI() {
                 'avatarCropModal',
                 'adminTextConfirmModal',
                 'adminConfigModal',
+                'adminGenImageApiModal',
                 'skillEditorModal',
                 'adminPublicApiKeyModal',
                 'adminPublicApiDeleteModal'
@@ -10013,6 +10059,19 @@ function initUI() {
         });
     }
 
+    const addGenImageApiBtn = document.getElementById('btnAddGenImageApi');
+    if (addGenImageApiBtn) {
+        addGenImageApiBtn.addEventListener('click', () => openAdminGenImageApiEditor());
+    }
+
+    const adminGenImageApiSearchInput = document.getElementById('adminGenImageApiSearchInput');
+    if (adminGenImageApiSearchInput) {
+        adminGenImageApiSearchInput.addEventListener('input', (e) => {
+            adminGenImageApiFilterKeyword = (e.target.value || '').trim().toLowerCase();
+            renderAdminGenImageApis();
+        });
+    }
+
     const adminQuotaUnitSelect = document.getElementById('adminQuotaUnitSelect');
     if (adminQuotaUnitSelect) {
         adminQuotaDisplayUnit = loadAdminQuotaDisplayUnitPreference();
@@ -10077,6 +10136,17 @@ function initUI() {
     const configModal = document.getElementById('adminConfigModal');
     if (configModal) {
         bindBackdropSafeClose(configModal, closeAdminConfigModal);
+    }
+    const genImageModal = document.getElementById('adminGenImageApiModal');
+    if (genImageModal) {
+        bindBackdropSafeClose(genImageModal, closeAdminGenImageApiModal);
+    }
+    const genImageSaveBtn = document.getElementById('adminGenImageApiSaveBtn');
+    if (genImageSaveBtn) {
+        genImageSaveBtn.addEventListener('click', async (e) => {
+            e.preventDefault();
+            await saveAdminGenImageApiModal();
+        });
     }
     const adminProviderApiTypeInput = document.getElementById('adminProviderApiTypeInput');
     if (adminProviderApiTypeInput) {
@@ -11820,6 +11890,47 @@ function updateSendButtonState() {
     scheduleLearningSidebarBridgeNotify(0);
 }
 
+const NEXORA_LATENCY_LOG_THRESHOLD_MS = 700;
+
+function createNexoraLatencyProbe(scope, meta = {}) {
+    const start = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    let last = start;
+    const marks = [];
+
+    const nowMs = () => (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+
+    return {
+        mark(name, detail = {}) {
+            const now = nowMs();
+            marks.push({
+                name: String(name || '').trim() || 'mark',
+                total_ms: Number((now - start).toFixed(1)),
+                delta_ms: Number((now - last).toFixed(1)),
+                detail: (detail && typeof detail === 'object') ? detail : {}
+            });
+            last = now;
+        },
+        flush(reason = 'done', options = {}) {
+            const total = nowMs() - start;
+            const threshold = Number(options.thresholdMs || NEXORA_LATENCY_LOG_THRESHOLD_MS);
+            const force = !!options.force;
+
+            if (!force && total < threshold) {
+                return;
+            }
+
+            try {
+                console.warn(`[NexoraLatency] ${scope} ${total.toFixed(1)}ms`, {
+                    reason,
+                    total_ms: Number(total.toFixed(1)),
+                    meta,
+                    marks
+                });
+            } catch (_) {}
+        }
+    };
+}
+
 function messageHasImageAttachments(msg) {
     if (!msg || typeof msg !== 'object') return false;
     const metadata = (msg.metadata && typeof msg.metadata === 'object') ? msg.metadata : null;
@@ -13147,8 +13258,21 @@ async function sendMessage(options = {}) {
     const overrideDisplayContent = String(options && options.displayContentOverride ? options.displayContentOverride : '').trim();
     const overrideText = String(options && options.textOverride ? options.textOverride : '').trim();
     const rawText = isAutoContinue ? '' : (overrideText || els.messageInput.value.trim());
+    const latencyProbe = createNexoraLatencyProbe('sendMessage', {
+        agent_online: !!lastAgentOnline,
+        current_conversation_id: String(currentConversationId || ''),
+        auto_continue: isAutoContinue,
+        conversation_mode: String(currentConversationMode || '')
+    });
+    latencyProbe.mark('start', {
+        text_chars: String(rawText || '').length,
+        upload_count: Array.isArray(uploadedFileIds) ? uploadedFileIds.length : 0
+    });
+
     if (learningFeedComposeMode && !isAutoContinue && !isGenerating) {
         await submitLearningFeedPost(rawText);
+        latencyProbe.mark('learning_feed_submit');
+        latencyProbe.flush('learning_feed_submit');
         return;
     }
     const longtermTriggered = !isAutoContinue && /^\s*\/longterm(?:\s+|$)/i.test(rawText);
@@ -13205,8 +13329,10 @@ async function sendMessage(options = {}) {
 
     // Configs
     const model = await ensureSelectedModelReady();
+    latencyProbe.mark('ensure_selected_model', { model });
     if (!model) {
         showToast('当前账号无可用模型，请联系管理员');
+        latencyProbe.flush('no_model', { force: true });
         return;
     }
     const enableThinking = els.checkThinking ? els.checkThinking.checked : true;
@@ -13224,12 +13350,18 @@ async function sendMessage(options = {}) {
     const hasImageAttachment = uploadedFileIds.some((f) => f && f.type === 'image');
     if (hasImageAttachment) {
         const canVision = await ensureModelVisionCapable();
+        latencyProbe.mark('image_attachment_vision_check', { can_vision: !!canVision });
         if (!canVision) {
             showToast(`当前模型不支持图片输入：${model || '-'}`);
+            latencyProbe.flush('image_attachment_unsupported', { force: true });
             return;
         }
     }
     const allowHistoryImages = currentConversationHasImageHistory ? await ensureModelVisionCapable() : true;
+    latencyProbe.mark('history_image_vision_check', {
+        has_history_images: !!currentConversationHasImageHistory,
+        allow_history_images: !!allowHistoryImages
+    });
     if (!allowHistoryImages && currentConversationHasImageHistory) {
         showToast(`当前模型不支持历史图片上下文，将自动忽略历史图片：${model || '-'}`);
     }
@@ -13238,15 +13370,25 @@ async function sendMessage(options = {}) {
         model,
         forceContextCompressionRequested
     );
+    latencyProbe.mark('context_compression_preflight', {
+        ok: !!(compressionDecision && compressionDecision.ok),
+        force: !!(compressionDecision && compressionDecision.forceCompression)
+    });
     if (!compressionDecision.ok) return;
     const forceContextCompression = !!compressionDecision.forceCompression;
+    const hadConversationBeforeEnsure = !!String(currentConversationId || '').trim();
     const ensuredConversationId = await ensureConversationExistsForStreaming(text, nextConversationMode);
+    latencyProbe.mark('ensure_conversation', {
+        ensured_conversation_id: String(ensuredConversationId || ''),
+        had_conversation_before_send: hadConversationBeforeEnsure
+    });
     if (ensuredConversationId) {
         currentConversationId = ensuredConversationId;
         if (nextConversationMode === 'learning') {
             learningHeaderMode = 'learning';
             applyLearningSidebarMode('learning');
             await syncLearningHeaderMode();
+            latencyProbe.mark('sync_learning_header_mode');
         }
     }
     // UI Updates
@@ -13412,16 +13554,20 @@ async function sendMessage(options = {}) {
     uploadedFileIds = [];
     updateFilePreview();
 
-    let userMessagePersisted = false;
-    if (!isAutoContinue && currentConversationId) {
-        userMessagePersisted = await persistUserPartial(currentConversationId, displayContent, {
-            modelName: model,
-            source: 'chat',
-            attachments: pendingUserAttachments,
-            sandboxPaths
-        });
-    }
-    payload.skip_user_message = !!(isAutoContinue || userMessagePersisted);
+    latencyProbe.mark('persist_user_partial_skipped', {
+        reason: 'stream_worker_persists_user_message',
+        conversation_id: String(currentConversationId || '')
+    });
+    payload.skip_user_message = !!isAutoContinue;
+
+    latencyProbe.mark('ready_for_stream_fetch', {
+        conversation_id: String(currentConversationId || ''),
+        skip_user_message: !!payload.skip_user_message,
+        agent_online: !!lastAgentOnline,
+        tools_mode: toolsMode,
+        enable_tools: !!enableTools
+    });
+    latencyProbe.flush('before_stream_fetch');
 
     isGenerating = true;
     releaseLearningSidebarPendingSend({ notify: false });
@@ -14199,10 +14345,20 @@ async function sendMessage(options = {}) {
     try {
         const res = await fetch('/api/chat/stream', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'text/event-stream'
+            },
+            credentials: 'include',
             body: JSON.stringify(payload),
             signal: currentAbortController.signal
         });
+        latencyProbe.mark('stream_fetch_headers', {
+            status: Number(res.status || 0),
+            content_type: String(res.headers.get('content-type') || '')
+        });
+        latencyProbe.flush('stream_fetch_headers');
+
         if (!res.ok) {
             const errMsg = await readErrorMessageFromResponse(res, `HTTP ${res.status}`);
             throw new Error(errMsg);
@@ -14305,7 +14461,11 @@ async function sendMessage(options = {}) {
                                 });
                             }
                             
-                            if (!currentContentSpan || !currentContentSpan.isConnected) {
+                            if (aiMsgDiv.__contentAfterGeneratedImage) {
+                                currentContentSpan = createContentSpan(aiMsgDiv, { afterGeneratedImage: true });
+                                currentSegmentContent = '';
+                                aiMsgDiv.__contentAfterGeneratedImage = false;
+                            } else if (!currentContentSpan || !currentContentSpan.isConnected) {
                                 currentContentSpan = createContentSpan(aiMsgDiv);
                             }
 
@@ -15286,6 +15446,203 @@ function finalizeToolCallBadge(aiMsgDiv, name, callId, argumentsText = '', optio
     }
 }
 
+function isGenerateImageToolName(name) {
+    const compact = String(name || '').trim().replace(/[_\-\s]/g, '').toLowerCase();
+    return compact === 'generateimage';
+}
+
+function parseToolResultPayload(result) {
+    if (result && typeof result === 'object') {
+        return result;
+    }
+
+    const text = String(result || '').trim();
+
+    if (!text) {
+        return null;
+    }
+
+    try {
+        return JSON.parse(text);
+    } catch (e) {
+        return null;
+    }
+}
+
+function readContentBodySourceText(node) {
+    if (!node) {
+        return '';
+    }
+
+    if (typeof node.__sourceMarkdown === 'string') {
+        return node.__sourceMarkdown;
+    }
+
+    return String(node.dataset.streamRaw || node.dataset.rawText || node.textContent || '');
+}
+
+function collectContentMarkdownBeforeNode(parent, stopNode) {
+    if (!parent || !stopNode) {
+        return '';
+    }
+
+    const parts = [];
+    const nodes = Array.from(parent.children || []);
+
+    for (const node of nodes) {
+        if (node === stopNode) {
+            break;
+        }
+
+        if (!node.classList || !node.classList.contains('content-body')) {
+            continue;
+        }
+
+        if (node.classList.contains('generated-image-result')) {
+            continue;
+        }
+
+        parts.push(readContentBodySourceText(node));
+    }
+
+    return parts.join('');
+}
+
+function normalizeGenerateImageProgress(payload) {
+    const source = payload && Array.isArray(payload.progress) ? payload.progress : [];
+    const logs = [];
+
+    source.forEach((entry) => {
+        let text = '';
+
+        if (typeof entry === 'string') {
+            text = entry.trim();
+        } else if (entry && typeof entry === 'object') {
+            text = String(entry.log || entry.message || entry.text || '').trim();
+        } else {
+            text = String(entry || '').trim();
+        }
+
+        if (text) {
+            logs.push(text);
+        }
+    });
+
+    return logs;
+}
+
+function appendGenerateImageProgress(root, progressLogs) {
+    if (!root || !Array.isArray(progressLogs) || progressLogs.length === 0) {
+        return;
+    }
+
+    const wrap = document.createElement('div');
+    wrap.className = 'generate-image-progress';
+
+    const title = document.createElement('div');
+    title.className = 'generate-image-progress-title';
+    title.textContent = '生成进度';
+    wrap.appendChild(title);
+
+    const list = document.createElement('div');
+    list.className = 'generate-image-progress-list';
+
+    progressLogs.forEach((text, index) => {
+        const item = document.createElement('div');
+        item.className = index === progressLogs.length - 1
+            ? 'generate-image-progress-item current'
+            : 'generate-image-progress-item';
+        item.textContent = text;
+        list.appendChild(item);
+    });
+
+    wrap.appendChild(list);
+    root.appendChild(wrap);
+}
+
+function renderGenerateImageToolOutput(outDiv, toolName, result) {
+    if (!outDiv || !isGenerateImageToolName(toolName)) {
+        return false;
+    }
+
+    const payload = parseToolResultPayload(result);
+    const progressLogs = normalizeGenerateImageProgress(payload);
+    const statusMessage = String((payload && payload.message) || '图片生成完成').trim();
+
+    if (!payload || payload.success !== true) {
+        return false;
+    }
+
+    const outputLogs = progressLogs.length > 0 ? progressLogs : [statusMessage];
+    outDiv.classList.remove('tool-output-markdown');
+    outDiv.classList.add('generate-image-tool-output');
+    outDiv.innerHTML = '';
+    appendGenerateImageProgress(outDiv, outputLogs);
+    bindSourceMarkdown(outDiv, outputLogs.join('\n'));
+
+    return true;
+}
+
+function renderGenerateImageResultInMessage(aiMsgDiv, result, callId, anchorEl) {
+    if (!aiMsgDiv) {
+        return false;
+    }
+
+    const payload = parseToolResultPayload(result);
+
+    if (!payload || payload.success !== true) {
+        return false;
+    }
+
+    const markdown = String(payload.markdown || '').trim();
+
+    if (!markdown) {
+        return false;
+    }
+
+    const safeCallId = String(callId || '').trim();
+    const parent = aiMsgDiv.querySelector('.message-content') || aiMsgDiv;
+    const existing = Array.from(parent.querySelectorAll('.content-body.generated-image-result')).find((node) => {
+        if (safeCallId && String(node.dataset.callId || '') === safeCallId) {
+            return true;
+        }
+
+        return !safeCallId && typeof node.__sourceMarkdown === 'string' && node.__sourceMarkdown === markdown;
+    });
+
+    if (existing) {
+        const hasFollowup = !!parent.querySelector('.content-body.generated-image-followup');
+        aiMsgDiv.__generatedImageResultAnchor = existing;
+        aiMsgDiv.__generatedImageTextPrefix = collectContentMarkdownBeforeNode(parent, existing);
+        aiMsgDiv.__contentAfterGeneratedImage = !hasFollowup;
+        return true;
+    }
+
+    const body = document.createElement('div');
+    body.className = 'content-body generated-image-result fade-in';
+    body.dataset.toolName = 'generate_image';
+
+    if (safeCallId) {
+        body.dataset.callId = safeCallId;
+    }
+
+    body.innerHTML = renderMarkdownWithNewTabLinks(markdown, { breaks: false });
+    bindSourceMarkdown(body, markdown);
+
+    if (anchorEl && anchorEl.parentElement === parent) {
+        anchorEl.insertAdjacentElement('afterend', body);
+    } else {
+        parent.appendChild(body);
+    }
+
+    aiMsgDiv.__contentAfterGeneratedImage = true;
+    aiMsgDiv.__generatedImageResultAnchor = body;
+    aiMsgDiv.__generatedImageTextPrefix = collectContentMarkdownBeforeNode(parent, body);
+    aiMsgDiv.__generatedImageFollowupSpan = null;
+    syncGeneratedImageViewportLimit();
+    return true;
+}
+
 function updateLastToolResult(aiMsgDiv, name, result, callId = '', options = {}) {
     // Find the last tool usage of this name that doesn't have a result yet
     const parent = aiMsgDiv.querySelector('.message-content') || aiMsgDiv;
@@ -15353,22 +15710,52 @@ function updateLastToolResult(aiMsgDiv, name, result, callId = '', options = {})
         setToolUsageStatus(target, `${safeName} 完成:`);
         const outDiv = target.querySelector('.tool-output');
         const resultText = (typeof result === 'object') ? JSON.stringify(result, null, 2) : String(result || '');
-        outDiv.textContent = resultText;
-        if (outDiv.textContent.trim()) {
+
+        const renderedGenerateImage = renderGenerateImageToolOutput(outDiv, safeName, result);
+
+        if (renderedGenerateImage) {
+            renderGenerateImageResultInMessage(aiMsgDiv, result, safeCallId, target);
+        }
+
+        if (!renderedGenerateImage) {
+            outDiv.classList.remove('tool-output-markdown');
+            outDiv.classList.remove('generate-image-tool-output');
+            outDiv.textContent = resultText;
+        }
+
+        if (outDiv.textContent.trim() || outDiv.querySelector('img')) {
             target.classList.add('has-output');
-            target.dataset.autoLock = '1';
-            target.dataset.userToggled = 'false';
+            target.dataset.autoLock = renderedGenerateImage ? '0' : '1';
+            target.dataset.userToggled = renderedGenerateImage ? 'true' : 'false';
+            if (renderedGenerateImage) {
+                target.classList.add('expanded');
+            }
             scrollToolOutputToBottom(outDiv);
         }
-        // 调用结束后自动折叠
-        scheduleToolAutoCollapse(target, 320);
+
+        if (!renderedGenerateImage) {
+            scheduleToolAutoCollapse(target, 320);
+        }
     }
 }
 
-function createContentSpan(parentMsgDiv) {
+function createContentSpan(parentMsgDiv, options = {}) {
     const parent = parentMsgDiv.querySelector('.message-content') || parentMsgDiv;
     const span = document.createElement('div');
     span.className = 'content-body fade-in';
+
+    if (options && options.afterGeneratedImage === true) {
+        span.classList.add('generated-image-followup');
+        const generatedImages = parent.querySelectorAll('.content-body.generated-image-result');
+        const anchor = generatedImages.length > 0 ? generatedImages[generatedImages.length - 1] : null;
+        parentMsgDiv.__generatedImageFollowupSpan = span;
+
+        if (anchor && anchor.parentElement === parent) {
+            anchor.insertAdjacentElement('afterend', span);
+            return span;
+        }
+    }
+
     parent.appendChild(span);
     return span;
 }
@@ -17037,6 +17424,11 @@ async function startRegenerate(index) {
         showToast(`当前模型不支持历史图片上下文，将自动忽略历史图片：${modelName || '-'}`);
     }
     let accumulatedContent = "";
+    let currentSegmentContent = "";
+    let currentContentSpan = null;
+    let hasRenderedContentDelta = false;
+    let hasTimelineBoundary = false;
+    let needsCanonicalTimelineSync = false;
     const modelBadgeState = {
         modelName: String(modelName || ''),
         searchFlag: 'unknown',
@@ -17070,44 +17462,48 @@ async function startRegenerate(index) {
     try {
         const response = await fetch('/api/chat/stream', {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-            conversation_id: currentConversationId,
-            model_name: modelName,
-            is_regenerate: true,
-            regenerate_index: index,
-            conversation_mode: (learningModeEnabled && currentConversationMode === 'learning') ? 'learning' : (currentConversationMode === 'longterm' ? 'longterm' : 'chat'),
-            conversation_mode_payload: currentConversationMode === 'longterm' ? {
-                task: String(currentConversationLongtermState.task || '').trim(),
-                plan: Array.isArray(currentConversationLongtermState.plan) ? currentConversationLongtermState.plan : [],
-                context: String(currentConversationLongtermState.context || '').trim(),
-                step: String(currentConversationLongtermState.step || '').trim(),
-                current_index: Number.isFinite(Number(currentConversationLongtermState.current_index)) ? Number(currentConversationLongtermState.current_index) : -1,
-                done_indices: Array.isArray(currentConversationLongtermState.done_indices) ? currentConversationLongtermState.done_indices : [],
-            } : ((learningModeEnabled && currentConversationMode === 'learning') ? {
-                learning: true,
-                lecture_id: String((learningReaderContextSnapshot && learningReaderContextSnapshot.lecture_id) || '').trim(),
-                system_prompt: '',
-                context_blocks: regenLearningReaderContextBlocks,
-                active_tool_skills: [],
-                meta: {
-                    source: 'chatdbserver_learning_mode_regenerate'
-                },
-            } : {}),
-            enable_thinking: els.checkThinking.checked,
-            enable_web_search: els.checkSearch.checked,
-            enable_tools: enableTools,
-            tool_mode: (learningModeEnabled && currentConversationMode === 'learning') ? 'force' : (currentConversationMode === 'longterm' ? 'force' : toolsMode),
-            skill_mode: (learningModeEnabled && currentConversationMode === 'learning') ? 'force' : 'off',
-            debug_mode: isDebugConsoleEnabled(),
-            show_token_usage: true,
-            file_ids: regenAttachmentPayload.file_ids,
-            sandbox_paths: regenAttachmentPayload.sandbox_paths,
-            user_attachments: regenAttachmentPayload.user_attachments,
-            allow_history_images: allowHistoryImages,
-            include_context: !!tokenBudgetState.includeContext,
-            force_context_compression: !!forceContextCompression
-        }),
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'text/event-stream'
+            },
+            credentials: 'include',
+            body: JSON.stringify({
+                conversation_id: currentConversationId,
+                model_name: modelName,
+                is_regenerate: true,
+                regenerate_index: index,
+                conversation_mode: (learningModeEnabled && currentConversationMode === 'learning') ? 'learning' : (currentConversationMode === 'longterm' ? 'longterm' : 'chat'),
+                conversation_mode_payload: currentConversationMode === 'longterm' ? {
+                    task: String(currentConversationLongtermState.task || '').trim(),
+                    plan: Array.isArray(currentConversationLongtermState.plan) ? currentConversationLongtermState.plan : [],
+                    context: String(currentConversationLongtermState.context || '').trim(),
+                    step: String(currentConversationLongtermState.step || '').trim(),
+                    current_index: Number.isFinite(Number(currentConversationLongtermState.current_index)) ? Number(currentConversationLongtermState.current_index) : -1,
+                    done_indices: Array.isArray(currentConversationLongtermState.done_indices) ? currentConversationLongtermState.done_indices : [],
+                } : ((learningModeEnabled && currentConversationMode === 'learning') ? {
+                    learning: true,
+                    lecture_id: String((learningReaderContextSnapshot && learningReaderContextSnapshot.lecture_id) || '').trim(),
+                    system_prompt: '',
+                    context_blocks: regenLearningReaderContextBlocks,
+                    active_tool_skills: [],
+                    meta: {
+                        source: 'chatdbserver_learning_mode_regenerate'
+                    },
+                } : {}),
+                enable_thinking: els.checkThinking.checked,
+                enable_web_search: els.checkSearch.checked,
+                enable_tools: enableTools,
+                tool_mode: (learningModeEnabled && currentConversationMode === 'learning') ? 'force' : (currentConversationMode === 'longterm' ? 'force' : toolsMode),
+                skill_mode: (learningModeEnabled && currentConversationMode === 'learning') ? 'force' : 'off',
+                debug_mode: isDebugConsoleEnabled(),
+                show_token_usage: true,
+                file_ids: regenAttachmentPayload.file_ids,
+                sandbox_paths: regenAttachmentPayload.sandbox_paths,
+                user_attachments: regenAttachmentPayload.user_attachments,
+                allow_history_images: allowHistoryImages,
+                include_context: !!tokenBudgetState.includeContext,
+                force_context_compression: !!forceContextCompression
+            }),
             signal: currentAbortController.signal
         });
 
@@ -17207,7 +17603,8 @@ async function startRegenerate(index) {
                     } else if (data.type === 'debug_trace') {
                         appendDebugTraceChunk(data, debugScopeKey);
                     } else if (data.type === 'content') {
-                        accumulatedContent += data.content;
+                        const contentDelta = String(data.content || '');
+                        accumulatedContent += contentDelta;
                         if (isDebugConsoleEnabled()) {
                             appendDebugConsoleEntry({
                                 direction: 'model->server',
@@ -17217,15 +17614,32 @@ async function startRegenerate(index) {
                                 replaceKey: `${debugScopeKey}:reply`
                             });
                         }
-                        updateMessageDivContent(index, accumulatedContent, regenMessageDiv);
+                        if (!currentContentSpan || !currentContentSpan.isConnected) {
+                            currentContentSpan = createContentSpan(regenMessageDiv);
+                            currentSegmentContent = "";
+                        }
+                        currentSegmentContent += contentDelta;
+                        hasRenderedContentDelta = true;
+                        renderStreamingContentSegment(regenMessageDiv, currentContentSpan, currentSegmentContent, 'regen-live-segment');
+
+                        if (shouldAutoScroll) {
+                            els.messagesContainer.scrollTop = els.messagesContainer.scrollHeight;
+                        }
                     } else if (data.type === 'done') {
                         const doneContent = String(data.content || '');
                         if (doneContent) {
                             accumulatedContent = doneContent;
-                            updateMessageDivContent(index, accumulatedContent, regenMessageDiv);
+                            if (!hasRenderedContentDelta && !hasTimelineBoundary) {
+                                updateMessageDivContent(index, accumulatedContent, regenMessageDiv);
+                            } else if (!hasRenderedContentDelta && hasTimelineBoundary) {
+                                needsCanonicalTimelineSync = true;
+                            }
                         }
                     } else if (data.type === 'reasoning_content') {
                         updateMessageDivThinking(index, data.content, regenMessageDiv);
+                        hasTimelineBoundary = true;
+                        currentContentSpan = null;
+                        currentSegmentContent = "";
                     } else if (
                         data.type === 'web_search' ||
                         data.type === 'search_meta' ||
@@ -17233,8 +17647,13 @@ async function startRegenerate(index) {
                         data.type === 'function_call' ||
                         data.type === 'function_result' ||
                         data.type === 'context_compression_status' ||
-                        data.type === 'learning_card'
+                        data.type === 'learning_card' ||
+                        data.type === 'question' ||
+                        data.type === 'puzzle'
                     ) {
+                        hasTimelineBoundary = true;
+                        currentContentSpan = null;
+                        currentSegmentContent = "";
                         updateMessageDivTools(index, data, regenMessageDiv);
                     } else if (data.type === 'token_usage') {
                         onTokenStreamUsageChunk(data);
@@ -17323,6 +17742,7 @@ async function startRegenerate(index) {
                 !targetAfterStream
                 || !targetAfterStream.isConnected
                 || !hasRenderedContent
+                || needsCanonicalTimelineSync
             );
             if (shouldSyncFromServer && currentConversationId) {
                 try {
@@ -17332,7 +17752,7 @@ async function startRegenerate(index) {
                         renderMessages(convData.conversation.messages, true, { instant: true });
                     }
                 } catch (_) {
-                    // ignore fallback refresh errors
+                    // ignore canonical timeline sync errors
                 }
             }
         }
@@ -17393,22 +17813,86 @@ function resolveAssistantStreamMessageDiv(index, preferredMessageDiv = null) {
     return document.querySelector(`.message.assistant[data-index="${index}"]`);
 }
 
+function resolveContentBodyForFullTextUpdate(messageDiv, displayText) {
+    const contentRoot = messageDiv.querySelector('.message-content') || messageDiv;
+    const generatedAnchor = (
+        messageDiv.__generatedImageResultAnchor
+        && messageDiv.__generatedImageResultAnchor.isConnected
+    )
+        ? messageDiv.__generatedImageResultAnchor
+        : Array.from(contentRoot.querySelectorAll('.content-body.generated-image-result')).pop();
+
+    if (generatedAnchor) {
+        let body = (
+            messageDiv.__generatedImageFollowupSpan
+            && messageDiv.__generatedImageFollowupSpan.isConnected
+        )
+            ? messageDiv.__generatedImageFollowupSpan
+            : contentRoot.querySelector('.content-body.generated-image-followup');
+
+        if (!body) {
+            body = createContentSpan(messageDiv, { afterGeneratedImage: true });
+        }
+
+        const prefix = String(
+            messageDiv.__generatedImageTextPrefix
+            || collectContentMarkdownBeforeNode(contentRoot, generatedAnchor)
+            || ''
+        );
+        let nextText = String(displayText || '');
+
+        if (prefix && nextText.startsWith(prefix)) {
+            nextText = nextText.slice(prefix.length);
+        }
+
+        messageDiv.__contentAfterGeneratedImage = false;
+        messageDiv.__generatedImageFollowupSpan = body;
+
+        return { body, text: nextText };
+    }
+
+    let body = Array.from(contentRoot.querySelectorAll('.content-body')).find((node) => {
+        return !node.classList.contains('generated-image-result')
+            && !node.classList.contains('generated-image-followup');
+    });
+
+    if (!body) {
+        body = document.createElement('div');
+        body.className = 'content-body';
+        contentRoot.appendChild(body);
+    }
+
+    return { body, text: String(displayText || '') };
+}
+
+function renderStreamingContentSegment(messageDiv, body, rawText, source = 'stream-segment') {
+
+    if (!messageDiv || !body) {
+        return;
+    }
+
+    const planInfo = applyLongtermPlanFromText(rawText, { source, messageDiv });
+    const bodyText = String(planInfo && planInfo.text !== undefined ? planInfo.text : rawText || '');
+
+    body.dataset.streamLive = '1';
+    body.dataset.streamRaw = bodyText;
+    body.innerHTML = renderMarkdownWithNewTabLinks(bodyText, { streamingMathProvisional: true });
+    bindSourceMarkdown(body, bodyText);
+    highlightCode(body);
+}
+
 function updateMessageDivContent(index, fullText, preferredMessageDiv = null) {
     const messageDiv = resolveAssistantStreamMessageDiv(index, preferredMessageDiv);
     if (!messageDiv) return;
     const planInfo = applyLongtermPlanFromText(fullText, { source: 'stream', messageDiv });
     const displayText = String(planInfo && planInfo.text !== undefined ? planInfo.text : fullText || '');
-    
-    let body = messageDiv.querySelector('.content-body');
-    if (!body) {
-        body = document.createElement('div');
-        body.className = 'content-body';
-        messageDiv.querySelector('.message-content').appendChild(body);
-    }
+    const resolved = resolveContentBodyForFullTextUpdate(messageDiv, displayText);
+    const body = resolved.body;
+    const bodyText = resolved.text;
     
     body.dataset.streamLive = '1';
-    body.innerHTML = renderMarkdownWithNewTabLinks(displayText, { streamingMathProvisional: true });
-    bindSourceMarkdown(body, displayText);
+    body.innerHTML = renderMarkdownWithNewTabLinks(bodyText, { streamingMathProvisional: true });
+    bindSourceMarkdown(body, bodyText);
     highlightCode(body);
     
     if (shouldAutoScroll) els.messagesContainer.scrollTop = els.messagesContainer.scrollHeight;
@@ -17818,11 +18302,15 @@ async function resumeActiveStreamAfterReload() {
                 } else if (chunk.type === 'content') {
                     assistantDiv.__reasoningSegmentOpen = false;
                     currentFullContent += String(chunk.content || '');
-                    currentSegmentContent += String(chunk.content || '');
                     onTokenStreamTextChunk(chunk.content);
-                    if (!currentContentSpan || !currentContentSpan.isConnected) {
+                    if (assistantDiv.__contentAfterGeneratedImage) {
+                        currentContentSpan = createContentSpan(assistantDiv, { afterGeneratedImage: true });
+                        currentSegmentContent = '';
+                        assistantDiv.__contentAfterGeneratedImage = false;
+                    } else if (!currentContentSpan || !currentContentSpan.isConnected) {
                         currentContentSpan = createContentSpan(assistantDiv);
                     }
+                    currentSegmentContent += String(chunk.content || '');
                     currentContentSpan.dataset.streamRaw = currentSegmentContent;
                     dirtiedContentSpans.add(currentContentSpan);
                 } else if (chunk.type === 'reasoning_content') {
@@ -23955,39 +24443,24 @@ function highlightCode(element) {
 
 
 // --- File Upload ---
-function ensureFileDropOverlayElement() {
-    if (els.fileDropOverlay) return els.fileDropOverlay;
-    let overlay = document.getElementById('fileDropOverlay');
-    if (!overlay) {
-        overlay = document.createElement('div');
-        overlay.id = 'fileDropOverlay';
-        overlay.className = 'file-drop-overlay';
-        overlay.setAttribute('aria-hidden', 'true');
-        overlay.innerHTML = `
-            <div class="file-drop-overlay-card">
-                <i class="fa-solid fa-cloud-arrow-up"></i>
-                <div class="file-drop-overlay-title">拖放文件以上传</div>
-                <div class="file-drop-overlay-subtitle">松开鼠标后自动上传到当前对话</div>
-            </div>
-        `;
-        document.body.appendChild(overlay);
+function setInputFileDropHighlight(dropTarget, visible) {
+    const target = dropTarget || fileDropHighlightTarget;
+
+    if (!target) {
+        return;
     }
-    els.fileDropOverlay = overlay;
-    return overlay;
+
+    fileDropHighlightTarget = target;
+    target.classList.toggle('file-drop-active', !!visible);
+
+    if (!visible) {
+        fileDropHighlightTarget = null;
+    }
 }
 
-function setFileDropOverlayVisible(visible) {
-    const overlay = ensureFileDropOverlayElement();
-    if (!overlay) return;
-    const next = !!visible;
-    isFileDropOverlayVisible = next;
-    overlay.classList.toggle('active', next);
-    overlay.setAttribute('aria-hidden', next ? 'false' : 'true');
-}
-
-function resetFileDropOverlayState() {
+function resetInputFileDropState() {
     fileDragDepth = 0;
-    setFileDropOverlayVisible(false);
+    setInputFileDropHighlight(null, false);
 }
 
 function dragEventHasFiles(e) {
@@ -24000,88 +24473,107 @@ function dragEventHasFiles(e) {
     return types.includes('Files');
 }
 
-function dragEventInKnowledgeScope(e) {
-    const target = e && e.target;
-    if (target && typeof target.closest === 'function') {
-        if (target.closest('#knowledgeViewer, #knowledgeEditor, .knowledge-toast-editor, .knowledge-view-body, .knowledge-view-content, .toastui-editor-defaultUI, #publicEditShell')) {
-            return true;
-        }
+// 拖拽上传只允许输入框容器触发，避免页面其他区域拖拽文件或图片时误上传。
+function resolveInputFileDropTarget() {
+    const inputContainer = document.querySelector('#inputWrapper .input-container');
+
+    if (inputContainer instanceof HTMLElement) {
+        return inputContainer;
     }
-    const path = e && typeof e.composedPath === 'function' ? e.composedPath() : [];
-    if (Array.isArray(path) && path.length > 0) {
-        for (let i = 0; i < path.length; i++) {
-            const node = path[i];
-            if (!node || typeof node.closest !== 'function') continue;
-            if (node.closest('#knowledgeViewer, #knowledgeEditor, .knowledge-toast-editor, .knowledge-view-body, .knowledge-view-content, .toastui-editor-defaultUI, #publicEditShell')) {
-                return true;
-            }
-        }
-    }
-    return false;
+
+    console.warn('[NexoraFileDrop] input container missing; drag upload binding skipped.');
+    return null;
 }
 
-function bindGlobalFileDropUpload() {
-    if (document.body && document.body.dataset.fileDropBound === '1') return;
-    if (document.body) document.body.dataset.fileDropBound = '1';
-    ensureFileDropOverlayElement();
+function bindInputFileDropUpload() {
+    const dropTarget = resolveInputFileDropTarget();
+
+    if (!dropTarget) {
+        return;
+    }
+
+    if (dropTarget.dataset.fileDropBound === '1') {
+        return;
+    }
+
+    dropTarget.dataset.fileDropBound = '1';
 
     const onDragEnter = (e) => {
-        if (!dragEventHasFiles(e)) return;
-        if (dragEventInKnowledgeScope(e)) {
-            resetFileDropOverlayState();
+
+        if (!dragEventHasFiles(e)) {
             return;
         }
+
         e.preventDefault();
         e.stopPropagation();
         fileDragDepth += 1;
-        setFileDropOverlayVisible(true);
+        setInputFileDropHighlight(dropTarget, true);
     };
 
     const onDragOver = (e) => {
-        if (!dragEventHasFiles(e)) return;
-        if (dragEventInKnowledgeScope(e)) {
-            resetFileDropOverlayState();
+
+        if (!dragEventHasFiles(e)) {
             return;
         }
+
         e.preventDefault();
         e.stopPropagation();
-        if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
-        if (!isFileDropOverlayVisible) setFileDropOverlayVisible(true);
+
+        if (e.dataTransfer) {
+            e.dataTransfer.dropEffect = 'copy';
+        }
+
+        if (!dropTarget.classList.contains('file-drop-active')) {
+            setInputFileDropHighlight(dropTarget, true);
+        }
     };
 
     const onDragLeave = (e) => {
-        if (!isFileDropOverlayVisible) return;
+
+        if (!dropTarget.classList.contains('file-drop-active')) {
+            return;
+        }
+
         if (dragEventHasFiles(e)) {
             e.preventDefault();
             e.stopPropagation();
         }
+
         fileDragDepth = Math.max(0, fileDragDepth - 1);
+
         if (fileDragDepth === 0) {
-            setFileDropOverlayVisible(false);
+            setInputFileDropHighlight(dropTarget, false);
         }
     };
 
     const onDrop = async (e) => {
-        if (!dragEventHasFiles(e)) return;
-        if (dragEventInKnowledgeScope(e)) {
-            resetFileDropOverlayState();
+
+        if (!dragEventHasFiles(e)) {
             return;
         }
+
         e.preventDefault();
         e.stopPropagation();
         const files = Array.from((e.dataTransfer && e.dataTransfer.files) ? e.dataTransfer.files : []);
-        resetFileDropOverlayState();
-        if (!files.length) return;
+        resetInputFileDropState();
+
+        if (!files.length) {
+            return;
+        }
+
         await handleFileUploadFiles(files, { source: 'drop', clearInput: false });
     };
 
-    window.addEventListener('dragenter', onDragEnter);
-    window.addEventListener('dragover', onDragOver);
-    window.addEventListener('dragleave', onDragLeave);
-    window.addEventListener('drop', onDrop);
-    window.addEventListener('blur', () => resetFileDropOverlayState());
+    dropTarget.addEventListener('dragenter', onDragEnter);
+    dropTarget.addEventListener('dragover', onDragOver);
+    dropTarget.addEventListener('dragleave', onDragLeave);
+    dropTarget.addEventListener('drop', onDrop);
+    window.addEventListener('blur', () => resetInputFileDropState());
     document.addEventListener('visibilitychange', () => {
-        if (document.hidden) resetFileDropOverlayState();
+
+        if (document.hidden) {
+            resetInputFileDropState();
+        }
     });
 }
 
@@ -24676,6 +25168,8 @@ async function openAdminDashboard(defaultTab = 'users') {
         mail: 'admin-mail',
         stats: 'admin-stats',
         models: 'admin-models',
+        gen_image: 'admin-gen-image',
+        genImage: 'admin-gen-image',
         auth: 'admin-auth',
         chroma: 'admin-chroma'
     };
@@ -26272,6 +26766,361 @@ async function revokeAdminPublicApiKey() {
     }
     openAdminPublicApiDeleteModal(selected);
 }
+
+function applyAdminGenImageApiPayload(data) {
+    adminGenImageApisCache = Array.isArray(data && data.apis) ? data.apis : [];
+    const currentExists = adminSelectedGenImageApiId
+        && adminGenImageApisCache.some((item) => String((item && item.api_id) || '') === adminSelectedGenImageApiId);
+
+    if (!currentExists) {
+        const enabled = adminGenImageApisCache.find((item) => item && item.enabled);
+        const first = adminGenImageApisCache[0];
+        adminSelectedGenImageApiId = String((enabled && enabled.api_id) || (first && first.api_id) || '');
+    }
+}
+
+async function loadAdminGenImageApis() {
+    const listEl = document.getElementById('adminGenImageApiList');
+    const detailEl = document.getElementById('adminGenImageApiDetail');
+
+    if (!listEl || !detailEl) return;
+
+    listEl.innerHTML = '<div class="admin-user-detail-empty" style="padding:12px;">Loading...</div>';
+    detailEl.innerHTML = '<div class="admin-user-detail-empty">Loading...</div>';
+
+    try {
+        const res = await fetch('/api/admin/gen-image/apis');
+        const data = await res.json();
+
+        if (!data.success) {
+            throw new Error(data.message || '加载失败');
+        }
+
+        applyAdminGenImageApiPayload(data);
+        renderAdminGenImageApis();
+    } catch (err) {
+        const msg = escapeHtml(err && err.message ? err.message : '加载失败');
+        listEl.innerHTML = `<div class="admin-user-detail-empty" style="padding:12px; color:#dc2626;">${msg}</div>`;
+        detailEl.innerHTML = `<div class="admin-user-detail-empty" style="color:#dc2626;">${msg}</div>`;
+    }
+}
+
+function renderAdminGenImageApis() {
+    renderAdminGenImageApiList();
+    renderAdminGenImageApiDetail();
+}
+
+function getSelectedAdminGenImageApi() {
+    return (adminGenImageApisCache || []).find((item) => {
+        return String((item && item.api_id) || '') === String(adminSelectedGenImageApiId || '');
+    }) || null;
+}
+
+function renderAdminGenImageApiList() {
+    const listEl = document.getElementById('adminGenImageApiList');
+
+    if (!listEl) return;
+
+    const keyword = String(adminGenImageApiFilterKeyword || '').trim().toLowerCase();
+    const rows = (adminGenImageApisCache || []).filter((item) => {
+
+        if (!keyword) return true;
+
+        const text = [
+            item.api_id || '',
+            item.name || '',
+            item.base_url || '',
+            item.model || '',
+            item.enabled ? 'enabled 启用' : 'disabled 关闭',
+        ].join(' ').toLowerCase();
+        return text.includes(keyword);
+    });
+
+    if (!rows.length) {
+        listEl.innerHTML = '<div class="admin-user-detail-empty" style="padding:12px;">暂无生图接口</div>';
+        return;
+    }
+
+    listEl.innerHTML = rows.map((item) => {
+        const apiId = String(item.api_id || '').trim();
+        const active = apiId === adminSelectedGenImageApiId ? 'active' : '';
+        const enabledBadge = item.enabled
+            ? '<span class="model-status-pill ok">启用</span>'
+            : '<span class="model-status-pill muted">关闭</span>';
+        return `
+            <div class="admin-user-item ${active}" onclick="adminSelectGenImageApi('${encodeURIComponent(apiId)}')">
+                <div class="model-admin-model-icon" style="width:32px; height:32px;">
+                    <i class="fa-regular fa-image"></i>
+                </div>
+                <div>
+                    <div class="admin-user-name">${escapeHtml(item.name || apiId)}</div>
+                    <div class="admin-user-meta">${escapeHtml(apiId)} · ${escapeHtml(item.model || '-')}</div>
+                    <div class="admin-user-meta">${enabledBadge}</div>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function renderAdminGenImageApiDetail() {
+    const detailEl = document.getElementById('adminGenImageApiDetail');
+
+    if (!detailEl) return;
+
+    const item = getSelectedAdminGenImageApi();
+
+    if (!item) {
+        detailEl.innerHTML = '<div class="admin-user-detail-empty">请选择左侧接口查看详情</div>';
+        return;
+    }
+
+    const apiId = String(item.api_id || '').trim();
+    const createdAt = item.created_at ? new Date(Number(item.created_at) * 1000).toLocaleString() : '-';
+    const updatedAt = item.updated_at ? new Date(Number(item.updated_at) * 1000).toLocaleString() : '-';
+    const enabledAction = item.enabled
+        ? `<button class="btn-primary-outline btn-compact" type="button" onclick="adminDisableGenImageApi()">关闭接口</button>`
+        : `<button class="btn-primary-outline btn-compact" type="button" onclick="adminEnableGenImageApi('${encodeURIComponent(apiId)}')">启用接口</button>`;
+
+    detailEl.innerHTML = `
+        <div class="admin-user-detail-head">
+            <div class="model-admin-model-icon" style="width:40px; height:40px;">
+                <i class="fa-regular fa-image"></i>
+            </div>
+            <div>
+                <div class="admin-user-name" style="font-size:16px;">${escapeHtml(item.name || apiId)}</div>
+                <div class="admin-user-meta">ID: ${escapeHtml(apiId)}</div>
+            </div>
+        </div>
+        <div class="admin-user-detail-grid">
+            <div class="form-group">
+                <label>状态</label>
+                <div class="admin-info-text">${item.enabled ? '启用' : '关闭'}</div>
+            </div>
+            <div class="form-group">
+                <label>API Type</label>
+                <div class="admin-info-text mono">${escapeHtml(item.api_type || 'openai')}</div>
+            </div>
+            <div class="form-group" style="grid-column: 1 / -1;">
+                <label>Base URL</label>
+                <div class="admin-info-text mono">${escapeHtml(item.base_url || '-')}</div>
+            </div>
+            <div class="form-group">
+                <label>模型 ID</label>
+                <div class="admin-info-text mono">${escapeHtml(item.model || '-')}</div>
+            </div>
+            <div class="form-group">
+                <label>API Key</label>
+                <div class="admin-info-text mono">${escapeHtml(maskSecret(item.api_key || ''))}</div>
+            </div>
+            <div class="form-group">
+                <label>尺寸</label>
+                <div class="admin-info-text mono">${escapeHtml(item.size || '-')}</div>
+            </div>
+            <div class="form-group">
+                <label>质量</label>
+                <div class="admin-info-text mono">${escapeHtml(item.quality || '-')}</div>
+            </div>
+            <div class="form-group">
+                <label>返回格式</label>
+                <div class="admin-info-text mono">${escapeHtml(item.response_format || '-')}</div>
+            </div>
+            <div class="form-group">
+                <label>超时</label>
+                <div class="admin-info-text mono">${escapeHtml(String(item.timeout || '-'))}s</div>
+            </div>
+            <div class="form-group">
+                <label>创建时间</label>
+                <div class="admin-info-text">${escapeHtml(createdAt)}</div>
+            </div>
+            <div class="form-group">
+                <label>更新时间</label>
+                <div class="admin-info-text">${escapeHtml(updatedAt)}</div>
+            </div>
+        </div>
+        <div class="admin-user-actions">
+            ${enabledAction}
+            <button class="btn-primary-outline btn-compact" type="button" onclick="adminEditGenImageApi('${encodeURIComponent(apiId)}')">编辑</button>
+            <button class="btn-danger-small btn-compact" type="button" onclick="adminDeleteGenImageApi('${encodeURIComponent(apiId)}')">删除</button>
+        </div>
+    `;
+}
+
+function openAdminGenImageApiEditor(apiId = '') {
+    const modal = document.getElementById('adminGenImageApiModal');
+    const title = document.getElementById('adminGenImageApiModalTitle');
+
+    if (!modal) return;
+
+    const current = apiId
+        ? ((adminGenImageApisCache || []).find((item) => String((item && item.api_id) || '') === apiId) || {})
+        : {};
+
+    adminGenImageApiEditorState = { originalApiId: apiId || '' };
+
+    if (title) title.textContent = apiId ? '编辑生图接口' : '新增生图接口';
+
+    document.getElementById('adminGenImageApiIdInput').value = current.api_id || '';
+    document.getElementById('adminGenImageNameInput').value = current.name || '';
+    document.getElementById('adminGenImageApiTypeInput').value = current.api_type || 'openai';
+    document.getElementById('adminGenImageApiKeyInput').value = current.api_key || '';
+    document.getElementById('adminGenImageBaseUrlInput').value = current.base_url || 'https://api.openai.com/v1';
+    document.getElementById('adminGenImageModelInput').value = current.model || 'gpt-image-1';
+    document.getElementById('adminGenImageSizeInput').value = current.size || '1024x1024';
+    document.getElementById('adminGenImageQualityInput').value = current.quality || 'auto';
+    document.getElementById('adminGenImageResponseFormatInput').value = current.response_format || 'b64_json';
+    document.getElementById('adminGenImageTimeoutInput').value = current.timeout || 120;
+    document.getElementById('adminGenImageEnabledInput').checked = !!current.enabled;
+
+    modal.classList.add('active');
+}
+
+function closeAdminGenImageApiModal() {
+    const modal = document.getElementById('adminGenImageApiModal');
+
+    if (modal) modal.classList.remove('active');
+
+    adminGenImageApiEditorState = { originalApiId: '' };
+}
+
+async function saveAdminGenImageApiModal() {
+    const apiId = String(document.getElementById('adminGenImageApiIdInput').value || '').trim();
+
+    if (!apiId) {
+        showToast('接口标识不能为空');
+        return;
+    }
+
+    const payload = {
+        original_api_id: String(adminGenImageApiEditorState.originalApiId || '').trim(),
+        api_id: apiId,
+        name: String(document.getElementById('adminGenImageNameInput').value || '').trim() || apiId,
+        api_type: String(document.getElementById('adminGenImageApiTypeInput').value || 'openai').trim(),
+        api_key: String(document.getElementById('adminGenImageApiKeyInput').value || '').trim(),
+        base_url: String(document.getElementById('adminGenImageBaseUrlInput').value || '').trim(),
+        model: String(document.getElementById('adminGenImageModelInput').value || '').trim(),
+        size: String(document.getElementById('adminGenImageSizeInput').value || '').trim(),
+        quality: String(document.getElementById('adminGenImageQualityInput').value || '').trim(),
+        response_format: String(document.getElementById('adminGenImageResponseFormatInput').value || '').trim(),
+        timeout: parseInt(document.getElementById('adminGenImageTimeoutInput').value || 120, 10) || 120,
+        enabled: !!document.getElementById('adminGenImageEnabledInput').checked,
+    };
+
+    try {
+        const res = await fetch('/api/admin/gen-image/apis/upsert', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+
+        if (!data.success) {
+            showToast(data.message || '保存失败');
+            return;
+        }
+
+        adminSelectedGenImageApiId = apiId;
+        applyAdminGenImageApiPayload(data);
+        closeAdminGenImageApiModal();
+        renderAdminGenImageApis();
+        showToast('生图接口已保存');
+    } catch (err) {
+        showToast('保存失败: ' + (err && err.message ? err.message : '未知错误'));
+    }
+}
+
+window.adminSelectGenImageApi = function(encodedApiId) {
+    adminSelectedGenImageApiId = decodeURIComponent(encodedApiId || '');
+    renderAdminGenImageApis();
+};
+
+window.adminEditGenImageApi = function(encodedApiId) {
+    openAdminGenImageApiEditor(decodeURIComponent(encodedApiId || ''));
+};
+
+window.adminEnableGenImageApi = async function(encodedApiId) {
+    const apiId = decodeURIComponent(encodedApiId || '');
+
+    if (!apiId) return;
+
+    try {
+        const res = await fetch('/api/admin/gen-image/apis/enable', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ api_id: apiId }),
+        });
+        const data = await res.json();
+
+        if (!data.success) {
+            showToast(data.message || '启用失败');
+            return;
+        }
+
+        applyAdminGenImageApiPayload(data);
+        adminSelectedGenImageApiId = apiId;
+        renderAdminGenImageApis();
+        showToast('生图接口已启用');
+    } catch (err) {
+        showToast('启用失败: ' + (err && err.message ? err.message : '未知错误'));
+    }
+};
+
+window.adminDisableGenImageApi = async function() {
+    try {
+        const res = await fetch('/api/admin/gen-image/apis/disable', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+        });
+        const data = await res.json();
+
+        if (!data.success) {
+            showToast(data.message || '关闭失败');
+            return;
+        }
+
+        applyAdminGenImageApiPayload(data);
+        renderAdminGenImageApis();
+        showToast('生图接口已关闭');
+    } catch (err) {
+        showToast('关闭失败: ' + (err && err.message ? err.message : '未知错误'));
+    }
+};
+
+window.adminDeleteGenImageApi = async function(encodedApiId) {
+    const apiId = decodeURIComponent(encodedApiId || '');
+
+    if (!apiId) return;
+
+    const ok = await confirmModalAsync('删除生图接口', `确定要删除接口「${apiId}」吗？`, 'danger');
+
+    if (!ok) return;
+
+    try {
+        const res = await fetch('/api/admin/gen-image/apis/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ api_id: apiId }),
+        });
+        const data = await res.json();
+
+        if (!data.success) {
+            showToast(data.message || '删除失败');
+            return;
+        }
+
+        if (adminSelectedGenImageApiId === apiId) {
+            adminSelectedGenImageApiId = '';
+        }
+
+        applyAdminGenImageApiPayload(data);
+        renderAdminGenImageApis();
+        showToast('生图接口已删除');
+    } catch (err) {
+        showToast('删除失败: ' + (err && err.message ? err.message : '未知错误'));
+    }
+};
+
+window.closeAdminGenImageApiModal = closeAdminGenImageApiModal;
 
 async function loadAdminModelConfig() {
     const providerPaneEl = document.getElementById('adminModelProviderList');
@@ -28018,6 +28867,12 @@ function switchSettingsTab(tabName) {
     if (tabName === 'admin-models') {
         loadAdminModelConfig();
         void loadServerQuotaSettings();
+    }
+    if (tabName === 'admin-gen-image') {
+        adminGenImageApiFilterKeyword = '';
+        const filterInput = document.getElementById('adminGenImageApiSearchInput');
+        if (filterInput) filterInput.value = '';
+        void loadAdminGenImageApis();
     }
     if (tabName === 'admin-auth') {
         void loadAdminPublicApiAuth();
