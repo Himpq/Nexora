@@ -19,7 +19,7 @@
     <script src="https://uicdn.toast.com/editor/latest/toastui-editor-all.min.js"></script>
 
     <!-- App Styles -->
-    <link rel="stylesheet" href="/static/css/style.css?v=20260609_05">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260615_04">
     <link rel="stylesheet" href="/static/css/easymde_override.css?v=20260416_12">
 </head>
 <body>
@@ -624,7 +624,7 @@
     
     <!-- Scripts -->
     <script src="/static/js/learning_workspace_layout.js?v=20260614_01"></script>
-    <script src="/static/js/chat.js?v=20260614_03"></script>
+    <script src="/static/js/chat.js?v=20260615_04"></script>
 
     <!-- 添加用户表单 -->
     <div id="addUserModal" class="modal-backdrop" style="z-index: 2200;">
@@ -795,6 +795,72 @@
         </div>
     </div>
 
+    <div id="adminGenImageApiModal" class="modal-backdrop" style="z-index: 4202;">
+        <div class="modal" style="width: 560px; padding: 0;">
+            <div class="modal-head">
+                <h3 id="adminGenImageApiModalTitle">生图接口</h3>
+                <button class="btn-modal-close" onclick="closeAdminGenImageApiModal()" title="Close"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="modal-body" style="padding: 16px 20px;">
+                <div class="admin-form">
+                    <div class="form-group" style="margin-bottom: 10px;">
+                        <label>接口标识</label>
+                        <input id="adminGenImageApiIdInput" class="input-modern" placeholder="openai_image">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 10px;">
+                        <label>接口名称</label>
+                        <input id="adminGenImageNameInput" class="input-modern" placeholder="OpenAI Image">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 10px;">
+                        <label>API Type</label>
+                        <select id="adminGenImageApiTypeInput" class="input-modern">
+                            <option value="openai">openai</option>
+                            <option value="openai_compatible">openai_compatible</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="margin-bottom: 10px;">
+                        <label>API Key</label>
+                        <input id="adminGenImageApiKeyInput" class="input-modern" placeholder="api key">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 10px;">
+                        <label>Base URL</label>
+                        <input id="adminGenImageBaseUrlInput" class="input-modern" placeholder="https://api.openai.com/v1">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 10px;">
+                        <label>模型 ID</label>
+                        <input id="adminGenImageModelInput" class="input-modern" placeholder="gpt-image-1">
+                    </div>
+                    <div class="admin-user-detail-grid" style="margin-bottom: 10px;">
+                        <div class="form-group">
+                            <label>尺寸</label>
+                            <input id="adminGenImageSizeInput" class="input-modern" placeholder="1024x1024">
+                        </div>
+                        <div class="form-group">
+                            <label>质量</label>
+                            <input id="adminGenImageQualityInput" class="input-modern" placeholder="auto">
+                        </div>
+                        <div class="form-group">
+                            <label>返回格式</label>
+                            <input id="adminGenImageResponseFormatInput" class="input-modern" placeholder="b64_json">
+                        </div>
+                        <div class="form-group">
+                            <label>超时秒数</label>
+                            <input id="adminGenImageTimeoutInput" class="input-modern" type="number" min="10" max="600" placeholder="120">
+                        </div>
+                    </div>
+                    <label style="display:flex; align-items:center; gap:8px; margin-top: 4px;">
+                        <input id="adminGenImageEnabledInput" type="checkbox">
+                        保存后启用此接口
+                    </label>
+                </div>
+                <div class="modal-footer" style="margin-top: 14px;">
+                    <button class="btn-cancel" onclick="closeAdminGenImageApiModal()">取消</button>
+                    <button id="adminGenImageApiSaveBtn" class="btn-confirm">保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div id="adminPublicApiKeyModal" class="modal-backdrop">
         <div class="modal" style="width: 480px; padding: 0;">
             <div class="modal-head">
@@ -957,6 +1023,7 @@
                         <button type="button" id="settingsAdminMailBtn" class="admin-tab settings-admin-entry" data-tab="admin-mail" style="display:none;">邮箱管理</button>
                         {% endif %}
                         <button type="button" id="settingsAdminModelsBtn" class="admin-tab settings-admin-entry" data-tab="admin-models" style="display:none;">模型管理</button>
+                        <button type="button" id="settingsAdminGenImageBtn" class="admin-tab settings-admin-entry" data-tab="admin-gen-image" style="display:none;">生图 API</button>
                         <button type="button" id="settingsAdminAuthBtn" class="admin-tab settings-admin-entry" data-tab="admin-auth" style="display:none;">认证管理</button>
                         <button type="button" id="settingsAdminStatsBtn" class="admin-tab settings-admin-entry" data-tab="admin-stats" style="display:none;">统计信息</button>
                         <button type="button" id="settingsAdminChromaBtn" class="admin-tab settings-admin-entry" data-tab="admin-chroma" style="display:none;">向量库</button>
@@ -1124,6 +1191,20 @@
                                 </div>
                                 <div id="adminModelConfigList" class="admin-user-detail">
                                     <div class="admin-user-detail-empty">请选择左侧供应商查看模型</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="settings-admin-gen-image-tab" class="admin-tab-content">
+                            <div class="admin-users-toolbar">
+                                <button id="btnAddGenImageApi" class="btn-primary" type="button">+ 添加接口</button>
+                                <input id="adminGenImageApiSearchInput" class="input-modern model-admin-search" placeholder="筛选接口：名称 / BaseURL / 模型 / 状态">
+                            </div>
+                            <div class="admin-users-layout" style="padding-top:12px; min-height: 520px;">
+                                <div id="adminGenImageApiList" class="admin-users-list">
+                                    <div class="admin-user-detail-empty">Loading...</div>
+                                </div>
+                                <div id="adminGenImageApiDetail" class="admin-user-detail">
+                                    <div class="admin-user-detail-empty">请选择左侧接口查看详情</div>
                                 </div>
                             </div>
                         </div>

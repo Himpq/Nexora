@@ -37,6 +37,7 @@
     "longtermUpdate": "longterm_update",
     "serverWebSearch": "server_web_search",
     "serverRenderPage": "server_render_page",
+    "generateImage": "generate_image",
 }
 
 
@@ -83,6 +84,35 @@ TOOLS = [
                     }
                 },
                 "required": ["url"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_image",
+            "description": "根据用户的自然语言描述生成图片。仅当用户明确要求画图、生成图片、生成视觉素材、海报、插画、照片或图像方案时使用。工具只向模型返回生成成功或错误信息，图片会由系统自动展示在聊天记录中。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "用于生图的详细提示词，尽量包含主体、场景、风格、构图、光线、色彩和比例要求。"
+                    },
+                    "size": {
+                        "type": "string",
+                        "description": "可选图片尺寸，例如 1024x1024、1024x1536、1536x1024。"
+                    },
+                    "n": {
+                        "type": "integer",
+                        "description": "可选生成数量，默认 1，最大 4。"
+                    },
+                    "quality": {
+                        "type": "string",
+                        "description": "可选质量参数，例如 auto、standard、hd、high。"
+                    }
+                },
+                "required": ["prompt"]
             }
         }
     },
@@ -303,7 +333,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "client_js_exec",
-            "description": """在当前聊天页的隔离 JS Worker 中执行纯 JavaScript。适合轻量计算、文本处理和 Canvas；不能访问 DOM、页面状态或网络。若要操作真实网页 DOM，请用 local_web_render / web_exec_js。可用 const canvas = context.canvas 访问内置 canvas。Three.js 入口示例：const renderer = new THREE.WebGLRenderer({ canvas, antialias: true }); const scene = new THREE.Scene(); const camera = new THREE.PerspectiveCamera(60, canvas.width / canvas.height, 0.1, 1000); camera.position.z = 3; renderer.render(scene, camera); 如需拖拽/触摸绕原点旋转，可调用：const orbit = context.enableThreeOrbit({ camera, renderer, scene, target:[0,0,0] });""",
+            "description": """在当前聊天页的隔离 JS Worker 中执行纯 JavaScript。适合轻量计算、文本处理和 Canvas；不能访问 DOM、页面状态或网络。若要操作真实网页 DOM，请用 local_web_render(extract_mode="interactive") 获取 page_id，再用 local_web_exec_js(page_id=...)。可用 const canvas = context.canvas 访问内置 canvas。Three.js 入口示例：const renderer = new THREE.WebGLRenderer({ canvas, antialias: true }); const scene = new THREE.Scene(); const camera = new THREE.PerspectiveCamera(60, canvas.width / canvas.height, 0.1, 1000); camera.position.z = 3; renderer.render(scene, camera); 如需拖拽/触摸绕原点旋转，可调用：const orbit = context.enableThreeOrbit({ camera, renderer, scene, target:[0,0,0] });""",
             "parameters": {
                 "type": "object",
                 "properties": {

@@ -3198,23 +3198,48 @@ def _agent_tunnel_loop(registry: ToolRegistry, agent_token: str, base_url: str):
                     elif ctype == "prompt_synced":
                         print(f"[NexoraCode WSS] prompt_synced ack={payload}")
                     elif ctype == "call_tool":
+                        received_at = time.time()
                         task_id = payload.get("task_id")
                         tool_name = payload.get("tool_name")
                         args = payload.get("args", {})
+                        sent_at = payload.get("sent_at")
+                        try:
+                            server_to_agent_ms = max(0.0, (received_at - float(sent_at)) * 1000.0) if sent_at else None
+                        except Exception:
+                            server_to_agent_ms = None
 
                         print(f"[NexoraCode WSS] Executing tool {tool_name} (task={task_id})")
                         try:
+                            exec_started_at = time.perf_counter()
                             result = registry.execute(tool_name, args)
+                            exec_ms = (time.perf_counter() - exec_started_at) * 1000.0
                         except Exception as e:
                             print(f"[NexoraCode WSS] Tool Execution Exception: {e}")
                             result = {"error": str(e), "success": False}
+                            exec_ms = 0.0
 
                         # 回传结果
+                        send_started_at = time.perf_counter()
                         ws.send(json.dumps({
                             "type": "tool_result",
                             "task_id": task_id,
                             "result": result
                         }))
+                        send_ms = (time.perf_counter() - send_started_at) * 1000.0
+                        total_ms = (time.time() - received_at) * 1000.0
+
+                        if total_ms >= 500.0 or (server_to_agent_ms is not None and server_to_agent_ms >= 500.0):
+                            print(
+                                "[NexoraCode ToolLatency] "
+                                + json.dumps({
+                                    "tool_name": tool_name,
+                                    "task_id": task_id,
+                                    "server_to_agent_ms": round(server_to_agent_ms, 1) if server_to_agent_ms is not None else None,
+                                    "exec_ms": round(exec_ms, 1),
+                                    "result_send_ms": round(send_ms, 1),
+                                    "agent_total_ms": round(total_ms, 1),
+                                }, ensure_ascii=False, default=str)
+                            )
 
                 except websocket.WebSocketTimeoutException:
                     pass

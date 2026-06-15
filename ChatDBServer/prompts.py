@@ -50,7 +50,7 @@ system_tools_enabled_auto_select = """
 - 用户已启用工具调用，模式为 Auto(Select)。
 - 若你已明确知道要调用的工具，可直接调用。
 - 如需查看当前轮更完整的工具目录，再调用 select_tools。
-- 对真实网页交互：先用 local_web_render(interactive) 建立会话，再优先用 web_exec_js / web_input；仅在需要加载新区域时才用 web_scroll。
+- 对真实网页交互：先用 local_web_render(extract_mode="interactive") 建立页面并记录返回的 page_id；后续 local_web_get_content / local_web_exec_js / local_web_input / local_web_click / local_web_scroll 都必须传同一个 page_id。用户手动操作打开的页面后，继续用这个 page_id 读取或操作页面。
 """
 
 system_tools_enabled_auto_off = """
@@ -65,7 +65,7 @@ system_tools_enabled_force = """
 当前会话能力：
 - 用户已启用工具调用，模式为 Force。
 - 直接使用当前可用工具完成任务，避免重复或无意义调用。
-- 对真实网页交互：先用 local_web_render(interactive) 建立会话，再优先用 web_exec_js / web_input；仅在需要加载新区域时才用 web_scroll。
+- 对真实网页交互：先用 local_web_render(extract_mode="interactive") 建立页面并记录返回的 page_id；后续 local_web_get_content / local_web_exec_js / local_web_input / local_web_click / local_web_scroll 都必须传同一个 page_id。用户手动操作打开的页面后，继续用这个 page_id 读取或操作页面。
 """
 
 

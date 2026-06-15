@@ -40,6 +40,7 @@ from tools import canonicalize_tool_name
 from secure import normalize_text, resolve_configured_path, safe_filename, safe_join_path
 from timeline import list_entries as list_timeline_entries, record_notes_snapshot_change
 from datastorage import safe_read_json, safe_write_json, get_path_lock
+import conversation_asset_store
 from learning_runtime import build_learning_context_payload, build_learning_memory_blocks
 from learning_runtime import get_learning_runtime_config
 from server_quota import (
@@ -270,6 +271,10 @@ DEFAULT_MAIN_CONFIG = {
         "nexora_search_enabled": False,
         "service_url": "http://127.0.0.1:45678",
         "timeout": 15
+    },
+    "gen_image": {
+        "enabled_api": "",
+        "apis": {}
     },
     "temp_context_cache": {
         "enabled": True,
@@ -1058,6 +1063,134 @@ def save_main_config(cfg):
         json.dump(payload, f, indent=4, ensure_ascii=False)
     _config_cache = None
     return payload
+
+
+def _normalize_gen_image_api_id(raw: Any) -> str:
+    text = str(raw or '').strip()
+    text = re.sub(r'\s+', '_', text)
+    text = re.sub(r'[^a-zA-Z0-9_.-]', '', text)
+    return text[:64]
+
+
+def _normalize_gen_image_api_type(raw: Any) -> str:
+    text = str(raw or '').strip().lower()
+
+    if text in {'openai-compatible', 'openai compatible', 'openai_compatible'}:
+        return 'openai_compatible'
+
+    return 'openai'
+
+
+def _normalize_gen_image_size(raw: Any) -> str:
+    text = str(raw or '').strip().lower()
+
+    if not text:
+        return '1024x1024'
+
+    if not re.fullmatch(r'\d{2,5}x\d{2,5}', text):
+        raise ValueError('图片尺寸格式必须是 1024x1024 这样的 宽x高')
+
+    return text
+
+
+def _normalize_gen_image_timeout(raw: Any) -> int:
+    try:
+        value = int(raw or 120)
+    except Exception:
+        value = 120
+
+    return max(10, min(value, 600))
+
+
+def _normalize_gen_image_record(api_id: str, raw: Any, enabled_api: str = '') -> Dict[str, Any]:
+    item = raw if isinstance(raw, dict) else {}
+    safe_id = _normalize_gen_image_api_id(api_id or item.get('api_id') or item.get('id'))
+
+    if not safe_id:
+        raise ValueError('接口标识不能为空')
+
+    record = {
+        'api_id': safe_id,
+        'name': str(item.get('name') or safe_id).strip()[:80] or safe_id,
+        'api_type': _normalize_gen_image_api_type(item.get('api_type')),
+        'api_key': str(item.get('api_key') or '').strip(),
+        'base_url': str(item.get('base_url') or '').strip().rstrip('/'),
+        'model': str(item.get('model') or 'gpt-image-1').strip(),
+        'size': _normalize_gen_image_size(item.get('size') or '1024x1024'),
+        'quality': str(item.get('quality') or 'auto').strip() or 'auto',
+        'response_format': str(item.get('response_format') or 'b64_json').strip(),
+        'timeout': _normalize_gen_image_timeout(item.get('timeout')),
+        'enabled': safe_id == str(enabled_api or '').strip(),
+        'updated_at': int(item.get('updated_at') or 0),
+        'created_at': int(item.get('created_at') or 0),
+    }
+
+    return record
+
+
+def _normalize_gen_image_config(raw: Any) -> Dict[str, Any]:
+    cfg = raw if isinstance(raw, dict) else {}
+    apis_raw = cfg.get('apis', {}) if isinstance(cfg.get('apis'), dict) else {}
+    enabled_api = _normalize_gen_image_api_id(cfg.get('enabled_api'))
+    apis: Dict[str, Dict[str, Any]] = {}
+
+    for api_id, item in apis_raw.items():
+        safe_id = _normalize_gen_image_api_id(api_id)
+
+        if not safe_id:
+            continue
+
+        try:
+            apis[safe_id] = _normalize_gen_image_record(safe_id, item, enabled_api)
+        except ValueError:
+            continue
+
+    if enabled_api not in apis:
+        enabled_api = ''
+
+    for api_id, item in apis.items():
+        item['enabled'] = api_id == enabled_api
+
+    return {
+        'enabled_api': enabled_api,
+        'apis': apis,
+    }
+
+
+def _get_gen_image_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    gen_cfg = cfg.get('gen_image') if isinstance(cfg, dict) else {}
+    normalized = _normalize_gen_image_config(gen_cfg)
+
+    if isinstance(cfg, dict) and cfg.get('gen_image') != normalized:
+        cfg['gen_image'] = normalized
+
+    return normalized
+
+
+def _assert_gen_image_record_ready(record: Dict[str, Any]) -> None:
+    if not str(record.get('api_key') or '').strip():
+        raise ValueError('启用生图接口前必须填写 API Key')
+
+    if not str(record.get('base_url') or '').strip():
+        raise ValueError('启用生图接口前必须填写 Base URL')
+
+    if not str(record.get('model') or '').strip():
+        raise ValueError('启用生图接口前必须填写模型 ID')
+
+
+def _gen_image_config_public_payload(gen_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    normalized = _normalize_gen_image_config(gen_cfg)
+    apis = []
+
+    for api_id, item in sorted(normalized.get('apis', {}).items(), key=lambda row: row[0].lower()):
+        row = dict(item)
+        row['api_key_masked'] = _mask_public_api_key(row.get('api_key'))
+        apis.append(row)
+
+    return {
+        'enabled_api': normalized.get('enabled_api', ''),
+        'apis': apis,
+    }
 
 
 def _ensure_server_bootstrap_files():
@@ -1916,110 +2049,35 @@ def _persist_knowledge_image_bytes(
 
 
 def _conversation_asset_root(username: str) -> str:
-    return safe_join_path(
-        os.path.dirname(__file__),
-        'data',
-        'users',
-        str(username or ''),
-        'conversation_assets'
-    )
+    return conversation_asset_store.conversation_asset_root(username)
 
 
 def _conversation_asset_dir(username: str, conversation_id: str) -> str:
-    return safe_join_path(_conversation_asset_root(username), str(conversation_id or ''))
+    return conversation_asset_store.conversation_asset_dir(username, conversation_id)
 
 
 def _conversation_asset_index_path(username: str, conversation_id: str) -> str:
-    return safe_join_path(_conversation_asset_dir(username, conversation_id), 'index.json')
+    return conversation_asset_store.conversation_asset_index_path(username, conversation_id)
 
 
 def _load_conversation_asset_index(username: str, conversation_id: str) -> Dict[str, Any]:
-    idx_path = _conversation_asset_index_path(username, conversation_id)
-    if not os.path.exists(idx_path):
-        return {"assets": {}}
-    try:
-        with open(idx_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            return {"assets": {}}
-        assets = data.get("assets", {})
-        if not isinstance(assets, dict):
-            assets = {}
-        data["assets"] = assets
-        return data
-    except Exception:
-        return {"assets": {}}
+    return conversation_asset_store.load_conversation_asset_index(username, conversation_id)
 
 
 def _save_conversation_asset_index(username: str, conversation_id: str, data: Dict[str, Any]):
-    conv_dir = _conversation_asset_dir(username, conversation_id)
-    os.makedirs(conv_dir, exist_ok=True)
-    idx_path = _conversation_asset_index_path(username, conversation_id)
-    payload = data if isinstance(data, dict) else {"assets": {}}
-    if "assets" not in payload or not isinstance(payload.get("assets"), dict):
-        payload["assets"] = {}
-    with open(idx_path, 'w', encoding='utf-8') as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    conversation_asset_store.save_conversation_asset_index(username, conversation_id, data)
 
 
 def _parse_image_data_url(raw_url: str):
-    text = str(raw_url or "").strip()
-    m = re.match(r"^data:(image/[a-zA-Z0-9.+-]+);base64,(.+)$", text, re.IGNORECASE | re.DOTALL)
-    if not m:
-        raise ValueError("invalid image data url")
-    mime = str(m.group(1) or "").strip().lower()
-    b64 = str(m.group(2) or "").strip()
-    try:
-        raw = base64.b64decode(b64, validate=True)
-    except (ValueError, binascii.Error) as e:
-        raise ValueError(f"invalid base64 image data: {str(e)}")
-    return mime, raw
+    return conversation_asset_store.parse_image_data_url(raw_url)
 
 
 def _safe_asset_ext(mime: str) -> str:
-    mt = str(mime or "").strip().lower()
-    return _ASSET_IMAGE_MIME_TO_EXT.get(mt, ".bin")
+    return conversation_asset_store.safe_asset_ext(mime)
 
 
 def _persist_conversation_image_asset(username: str, conversation_id: str, file_item: Dict[str, Any]) -> Dict[str, Any]:
-    item = file_item if isinstance(file_item, dict) else {}
-    raw_url = str(item.get("url") or item.get("image_url") or "").strip()
-    if not raw_url.startswith("data:image/"):
-        return item
-
-    mime, raw = _parse_image_data_url(raw_url)
-    max_image_bytes = 12 * 1024 * 1024
-    if len(raw) > max_image_bytes:
-        raise ValueError("image too large (>12MB)")
-
-    asset_id = uuid.uuid4().hex
-    ext = _safe_asset_ext(mime)
-    filename = f"{asset_id}{ext}"
-    conv_dir = _conversation_asset_dir(username, conversation_id)
-    os.makedirs(conv_dir, exist_ok=True)
-    file_path = os.path.join(conv_dir, filename)
-    with open(file_path, 'wb') as wf:
-        wf.write(raw)
-
-    index_data = _load_conversation_asset_index(username, conversation_id)
-    assets_map = index_data.setdefault("assets", {})
-    created_at = int(time.time())
-    assets_map[asset_id] = {
-        "asset_id": asset_id,
-        "file_name": filename,
-        "mime": mime,
-        "size": len(raw),
-        "name": str(item.get("name") or filename),
-        "created_at": created_at
-    }
-    _save_conversation_asset_index(username, conversation_id, index_data)
-
-    normalized = dict(item)
-    normalized["asset_id"] = asset_id
-    normalized["asset_url"] = f"/api/conversations/{conversation_id}/assets/{asset_id}"
-    normalized["mime"] = mime
-    normalized["size"] = len(raw)
-    return normalized
+    return conversation_asset_store.persist_conversation_image_asset(username, conversation_id, file_item)
 
 
 def _prepare_chat_file_ids(username: str, conversation_id: str, file_ids: List[Any]) -> List[Any]:
@@ -2043,77 +2101,15 @@ def _prepare_chat_file_ids(username: str, conversation_id: str, file_ids: List[A
 
 
 def _collect_referenced_asset_ids(conversation_data: Dict[str, Any]) -> set:
-    out = set()
-    if not isinstance(conversation_data, dict):
-        return out
-    msgs = conversation_data.get("messages", [])
-    if not isinstance(msgs, list):
-        return out
-    for msg in msgs:
-        if not isinstance(msg, dict):
-            continue
-        meta = msg.get("metadata", {})
-        if not isinstance(meta, dict):
-            continue
-        attachments = meta.get("attachments", [])
-        if not isinstance(attachments, list):
-            continue
-        for att in attachments:
-            if not isinstance(att, dict):
-                continue
-            aid = str(att.get("asset_id") or "").strip()
-            if aid:
-                out.add(aid)
-    return out
+    return conversation_asset_store.collect_referenced_asset_ids(conversation_data)
 
 
 def _cleanup_conversation_assets(username: str, conversation_id: str, keep_asset_ids: Optional[set] = None):
-    conv_dir = _conversation_asset_dir(username, conversation_id)
-    if not os.path.isdir(conv_dir):
-        return
-
-    keep = keep_asset_ids if isinstance(keep_asset_ids, set) else set()
-    idx = _load_conversation_asset_index(username, conversation_id)
-    assets = idx.get("assets", {}) if isinstance(idx.get("assets"), dict) else {}
-    kept_assets = {}
-    for aid, meta in assets.items():
-        aid_s = str(aid or "").strip()
-        if not aid_s:
-            continue
-        if aid_s in keep:
-            kept_assets[aid_s] = meta
-            continue
-        file_name = str((meta or {}).get("file_name") or "").strip()
-        if file_name:
-            fpath = os.path.join(conv_dir, file_name)
-            try:
-                if os.path.exists(fpath):
-                    os.remove(fpath)
-            except Exception:
-                pass
-    idx["assets"] = kept_assets
-    _save_conversation_asset_index(username, conversation_id, idx)
+    conversation_asset_store.cleanup_conversation_assets(username, conversation_id, keep_asset_ids)
 
 
 def _remove_conversation_assets_dir(username: str, conversation_id: str):
-    conv_dir = _conversation_asset_dir(username, conversation_id)
-    if not os.path.isdir(conv_dir):
-        return
-    try:
-        for root, dirs, files in os.walk(conv_dir, topdown=False):
-            for name in files:
-                try:
-                    os.remove(os.path.join(root, name))
-                except Exception:
-                    pass
-            for name in dirs:
-                try:
-                    os.rmdir(os.path.join(root, name))
-                except Exception:
-                    pass
-        os.rmdir(conv_dir)
-    except Exception:
-        pass
+    conversation_asset_store.remove_conversation_assets_dir(username, conversation_id)
 
 
 def _resolve_user_root_dir(username: str) -> str:
@@ -7727,26 +7723,13 @@ def save_assistant_partial(conv_id):
 @require_login
 def get_conversation_asset(conv_id, asset_id):
     username = session['username']
-    aid = str(asset_id or '').strip()
-    if not aid:
-        return jsonify({'success': False, 'message': 'invalid asset id'}), 400
-
-    idx = _load_conversation_asset_index(username, conv_id)
-    assets = idx.get("assets", {}) if isinstance(idx.get("assets"), dict) else {}
-    meta = assets.get(aid)
-    if not isinstance(meta, dict):
-        return jsonify({'success': False, 'message': 'asset not found'}), 404
-
-    file_name = str(meta.get("file_name") or "").strip()
-    if not file_name:
-        return jsonify({'success': False, 'message': 'asset file missing'}), 404
-
-    fpath = safe_join_path(_conversation_asset_dir(username, conv_id), file_name)
-    if not os.path.exists(fpath):
-        return jsonify({'success': False, 'message': 'asset file not found'}), 404
-
-    mime = str(meta.get("mime") or "").strip() or "application/octet-stream"
-    return send_file(fpath, mimetype=mime)
+    try:
+        fpath, mime, _meta = conversation_asset_store.get_conversation_asset_file(username, conv_id, asset_id)
+        return send_file(fpath, mimetype=mime)
+    except ValueError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+    except FileNotFoundError as e:
+        return jsonify({'success': False, 'message': str(e)}), 404
 
 
 @app.route('/api/switch_version', methods=['POST'])
@@ -7943,6 +7926,182 @@ def admin_get_models_config():
         })
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
+
+
+@app.route('/api/admin/gen-image/apis', methods=['GET'])
+@require_admin
+def admin_get_gen_image_apis():
+    """管理员读取生图接口配置"""
+    try:
+        cfg = ensure_main_config_defaults()
+        gen_cfg = _get_gen_image_config(cfg)
+        save_main_config(cfg)
+        return jsonify({
+            'success': True,
+            **_gen_image_config_public_payload(gen_cfg),
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/admin/gen-image/apis/upsert', methods=['POST'])
+@require_admin
+def admin_upsert_gen_image_api():
+    """新增或更新生图接口配置"""
+    data = request.get_json(silent=True) or {}
+    api_id = _normalize_gen_image_api_id(data.get('api_id') or data.get('id'))
+    original_api_id = _normalize_gen_image_api_id(data.get('original_api_id') or api_id)
+
+    if not api_id:
+        return jsonify({'success': False, 'message': '接口标识不能为空'}), 400
+
+    try:
+        cfg = ensure_main_config_defaults()
+        gen_cfg = _get_gen_image_config(cfg)
+        apis = gen_cfg.setdefault('apis', {})
+
+        if original_api_id and original_api_id != api_id:
+
+            if original_api_id not in apis:
+                return jsonify({'success': False, 'message': '原接口不存在'}), 404
+
+            if api_id in apis:
+                return jsonify({'success': False, 'message': f'接口已存在: {api_id}'}), 400
+
+            existing = apis.pop(original_api_id)
+
+            if gen_cfg.get('enabled_api') == original_api_id:
+                gen_cfg['enabled_api'] = api_id
+        else:
+            existing = apis.get(api_id, {})
+
+        now_ts = int(time.time())
+        merged = dict(existing if isinstance(existing, dict) else {})
+        merged.update({
+            'api_id': api_id,
+            'name': str(data.get('name') or api_id).strip(),
+            'api_type': data.get('api_type'),
+            'api_key': data.get('api_key'),
+            'base_url': data.get('base_url'),
+            'model': data.get('model'),
+            'size': data.get('size'),
+            'quality': data.get('quality'),
+            'response_format': data.get('response_format'),
+            'timeout': data.get('timeout'),
+            'created_at': int(merged.get('created_at') or now_ts),
+            'updated_at': now_ts,
+        })
+
+        record = _normalize_gen_image_record(api_id, merged, gen_cfg.get('enabled_api', ''))
+        enable_requested = _coerce_bool_flag(data.get('enabled'), False)
+
+        if enable_requested:
+            _assert_gen_image_record_ready(record)
+            gen_cfg['enabled_api'] = api_id
+
+        apis[api_id] = record
+        gen_cfg = _normalize_gen_image_config(gen_cfg)
+        cfg['gen_image'] = gen_cfg
+        save_main_config(cfg)
+        return jsonify({
+            'success': True,
+            'message': f'生图接口 {api_id} 已保存',
+            **_gen_image_config_public_payload(gen_cfg),
+        })
+    except ValueError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/admin/gen-image/apis/enable', methods=['POST'])
+@require_admin
+def admin_enable_gen_image_api():
+    """启用指定生图接口，保证同一时间仅一个接口可用"""
+    data = request.get_json(silent=True) or {}
+    api_id = _normalize_gen_image_api_id(data.get('api_id') or data.get('id'))
+
+    if not api_id:
+        return jsonify({'success': False, 'message': '接口标识不能为空'}), 400
+
+    try:
+        cfg = ensure_main_config_defaults()
+        gen_cfg = _get_gen_image_config(cfg)
+        apis = gen_cfg.setdefault('apis', {})
+        record = apis.get(api_id)
+
+        if not isinstance(record, dict):
+            return jsonify({'success': False, 'message': '接口不存在'}), 404
+
+        _assert_gen_image_record_ready(record)
+        gen_cfg['enabled_api'] = api_id
+        gen_cfg = _normalize_gen_image_config(gen_cfg)
+        cfg['gen_image'] = gen_cfg
+        save_main_config(cfg)
+        return jsonify({
+            'success': True,
+            'message': f'已启用生图接口 {api_id}',
+            **_gen_image_config_public_payload(gen_cfg),
+        })
+    except ValueError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/admin/gen-image/apis/disable', methods=['POST'])
+@require_admin
+def admin_disable_gen_image_api():
+    """关闭当前生图接口"""
+    try:
+        cfg = ensure_main_config_defaults()
+        gen_cfg = _get_gen_image_config(cfg)
+        gen_cfg['enabled_api'] = ''
+        gen_cfg = _normalize_gen_image_config(gen_cfg)
+        cfg['gen_image'] = gen_cfg
+        save_main_config(cfg)
+        return jsonify({
+            'success': True,
+            'message': '生图接口已关闭',
+            **_gen_image_config_public_payload(gen_cfg),
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/admin/gen-image/apis/delete', methods=['POST'])
+@require_admin
+def admin_delete_gen_image_api():
+    """删除生图接口"""
+    data = request.get_json(silent=True) or {}
+    api_id = _normalize_gen_image_api_id(data.get('api_id') or data.get('id'))
+
+    if not api_id:
+        return jsonify({'success': False, 'message': '接口标识不能为空'}), 400
+
+    try:
+        cfg = ensure_main_config_defaults()
+        gen_cfg = _get_gen_image_config(cfg)
+        apis = gen_cfg.setdefault('apis', {})
+
+        if api_id not in apis:
+            return jsonify({'success': False, 'message': '接口不存在'}), 404
+
+        apis.pop(api_id, None)
+
+        if gen_cfg.get('enabled_api') == api_id:
+            gen_cfg['enabled_api'] = ''
+
+        gen_cfg = _normalize_gen_image_config(gen_cfg)
+        cfg['gen_image'] = gen_cfg
+        save_main_config(cfg)
+        return jsonify({
+            'success': True,
+            'message': f'生图接口 {api_id} 已删除',
+            **_gen_image_config_public_payload(gen_cfg),
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 
 @app.route('/api/admin/auth/public-api', methods=['GET'])
@@ -9110,6 +9269,68 @@ def _iter_sse_from_runtime_stream(stream_id: str, username: str, from_seq: int =
 @require_login
 def chat_stream():
     """流式聊天接口"""
+    latency_started_at = time.perf_counter()
+    latency_last_at = latency_started_at
+    latency_marks = []
+    latency_context = {}
+
+    def _chat_latency_mark(name: str, **detail):
+        nonlocal latency_last_at
+
+        now = time.perf_counter()
+        latency_marks.append({
+            "name": str(name or "").strip() or "mark",
+            "total_ms": round((now - latency_started_at) * 1000.0, 1),
+            "delta_ms": round((now - latency_last_at) * 1000.0, 1),
+            "detail": detail,
+        })
+        latency_last_at = now
+
+    def _chat_latency_flush(reason: str, force: bool = False, threshold_ms: float = 700.0):
+        total_ms = (time.perf_counter() - latency_started_at) * 1000.0
+
+        if (not force) and total_ms < float(threshold_ms or 0):
+            return
+
+        try:
+            print(
+                "[CHAT_STREAM_LATENCY] "
+                + json.dumps({
+                    "reason": str(reason or ""),
+                    "total_ms": round(total_ms, 1),
+                    "username": str(latency_context.get("username", "") or ""),
+                    "conversation_id": str(latency_context.get("conversation_id", "") or ""),
+                    "model_name": str(latency_context.get("model_name", "") or ""),
+                    "marks": latency_marks,
+                }, ensure_ascii=False, default=str)
+            )
+        except Exception:
+            pass
+
+    def _agent_info_latency_summary(agent_info: dict) -> Dict[str, Any]:
+        if not isinstance(agent_info, dict):
+            return {
+                "agent_source": "none",
+                "agent_tool_count": 0,
+                "agent_schema_bytes": 0,
+            }
+
+        tools = agent_info.get("tools")
+        tool_count = len(tools) if isinstance(tools, list) else 0
+        schema_bytes = 0
+
+        if isinstance(tools, list):
+            try:
+                schema_bytes = len(json.dumps(tools, ensure_ascii=False, default=str).encode("utf-8"))
+            except Exception:
+                schema_bytes = 0
+
+        return {
+            "agent_source": str(agent_info.get("source") or "unknown"),
+            "agent_tool_count": tool_count,
+            "agent_schema_bytes": schema_bytes,
+        }
+
     data = request.get_json(silent=True) or {}
     sys_config = get_config_all()
     log_status = str(sys_config.get('log_status', 'silent')).lower()
@@ -9199,47 +9420,30 @@ def chat_stream():
         return jsonify({'success': False, 'message': '消息不能为空'}), 400
     
     username = session['username']
+    local_agent_cookie_token = request.cookies.get("nexoracode_agent", "").strip()
+    latency_context.update({
+        "username": username,
+        "conversation_id": str(conversation_id or ""),
+        "model_name": str(model_name or ""),
+    })
+    _chat_latency_mark(
+        "request_parsed",
+        enable_tools=bool(enable_tools),
+        tool_mode=str(tool_mode or ""),
+        has_agent_cookie=bool(local_agent_cookie_token),
+        file_count=len(file_ids),
+        attachment_count=len(sanitized_user_attachments),
+    )
+
     conversation_id_from_request = bool(str(conversation_id or '').strip())
     skip_user_message = bool(data.get('skip_user_message', False))
     user_message_persisted = False
-    if not is_regenerate and not skip_user_message:
-        user_text = str(message or '')
-        has_user_turn_payload = bool(user_text.strip()) or bool(file_ids) or bool(sanitized_user_attachments) or bool(sanitized_sandbox_paths)
-        if has_user_turn_payload:
-            try:
-                manager = ConversationManager(username)
-                persisted_conversation_id = str(conversation_id or '').strip()
-                if persisted_conversation_id:
-                    existing = manager.get_conversation(persisted_conversation_id)
-                    if not isinstance(existing, dict):
-                        persisted_conversation_id = manager.create_conversation(
-                            conversation_id=persisted_conversation_id,
-                            title=(user_text.strip()[:48] or '新对话')
-                        )
-                else:
-                    persisted_conversation_id = manager.create_conversation(
-                        title=(user_text.strip()[:48] or '新对话')
-                    )
 
-                if persisted_conversation_id:
-                    conversation_id = persisted_conversation_id
-                    user_metadata = {'source': 'chat_stream'}
-                    if sanitized_user_attachments:
-                        user_metadata['attachments'] = sanitized_user_attachments
-                    if sanitized_sandbox_paths:
-                        user_metadata['sandbox_paths'] = sanitized_sandbox_paths
-                    manager.add_message(
-                        persisted_conversation_id,
-                        'user',
-                        user_text,
-                        metadata=user_metadata
-                    )
-                    user_message_persisted = True
-            except Exception as persist_error:
-                try:
-                    print(f"[CHAT_STREAM_PERSIST] failed to persist user message: {persist_error}")
-                except Exception:
-                    pass
+    _chat_latency_mark(
+        "server_user_persist_deferred",
+        deferred_to_stream_worker=bool(not is_regenerate and not skip_user_message),
+        conversation_id=str(conversation_id or ""),
+    )
 
     skill_mode = 'force'
     skill_runtime: Dict[str, Any] = {}
@@ -9288,6 +9492,12 @@ def chat_stream():
                     active_tool_skills = list(runtime_skills)
         except Exception as learning_skill_error:
             print(f"[LEARNING_RUNTIME] failed to build active_tool_skills: {learning_skill_error}")
+
+    _chat_latency_mark(
+        "skill_runtime",
+        skill_mode=str(skill_mode or ""),
+        active_skill_count=len(active_tool_skills) if isinstance(active_tool_skills, list) else 0,
+    )
     
     # --- 模型权限校验 ---
     requested_model_name = str(model_name or '').strip()
@@ -9366,6 +9576,21 @@ def chat_stream():
                     title=(str(message or '').strip()[:48] or '新对话')
                 )
 
+            blocked_user_text = str(message or '').strip()
+            if persisted_conversation_id and blocked_user_text and not is_regenerate and not skip_user_message:
+                manager.add_message(
+                    persisted_conversation_id,
+                    'user',
+                    blocked_user_text,
+                    metadata={
+                        'source': 'quota_precheck',
+                        'blocked': True,
+                        'error_code': 'quota_exhausted',
+                        'model_name': str(model_name or '').strip(),
+                        'provider': provider_name,
+                    }
+                )
+
         except Exception as persist_error:
             try:
                 print(f"[QUOTA_PERSIST] failed to persist blocked turn: {persist_error}")
@@ -9379,6 +9604,16 @@ def chat_stream():
             'quota': quota_status,
         })
 
+    latency_context.update({
+        "conversation_id": str(conversation_id or ""),
+        "model_name": str(model_name or ""),
+    })
+    _chat_latency_mark(
+        "model_permission_quota",
+        provider_name=provider_name,
+        model_name=str(model_name or ""),
+    )
+
     def _resolve_local_agent_info_for_chat():
         """解析当前用户的 NexoraCode 本地工具，优先使用 WSS 在线工具表。"""
         from agent_tunnel import is_agent_online, get_agent_tools
@@ -9389,8 +9624,7 @@ def chat_stream():
             if online_tools:
                 return {"username": username, "tools": online_tools, "source": "wss"}
 
-        agent_token = request.cookies.get("nexoracode_agent", "").strip()
-        token_agent_info = _LOCAL_AGENTS.get(agent_token) if agent_token else None
+        token_agent_info = _LOCAL_AGENTS.get(local_agent_cookie_token) if local_agent_cookie_token else None
 
         if token_agent_info and token_agent_info.get("username") == username:
             return dict(token_agent_info, source="cookie")
@@ -9406,6 +9640,7 @@ def chat_stream():
         return None
 
     _agent_info = _resolve_local_agent_info_for_chat()
+    _chat_latency_mark("agent_info_prefetch", **_agent_info_latency_summary(_agent_info))
 
     # 如果是重新生成，前端通常不再传 message；这里从历史中回填触发该回答的 user 消息。
     # 版本快照改为在最终覆盖写入时原子落盘（ConversationManager.add_message），
@@ -9482,6 +9717,12 @@ def chat_stream():
             raw_conversation_mode_payload = request_meta.get('conversation_mode_payload')
             if not isinstance(raw_conversation_mode_payload, dict):
                 raw_conversation_mode_payload = {}
+            _chat_latency_mark(
+                "worker_request_normalized",
+                conversation_mode=raw_conversation_mode,
+                message_chars=len(effective_message),
+            )
+
             if raw_conversation_mode == 'learning':
                 try:
                     learning_runtime_payload = build_learning_context_payload(username, raw_conversation_mode_payload)
@@ -9550,7 +9791,13 @@ def chat_stream():
                             except Exception as puzzle_inject_err:
                                 print(f"[PUZZLE_INJECT] failed: {puzzle_inject_err}")
                 except Exception as learning_runtime_error:
-                    print(f"[LEARNING_RUNTIME] failed to merge payload: {learning_runtime_error}")
+                        print(f"[LEARNING_RUNTIME] failed to merge payload: {learning_runtime_error}")
+            _chat_latency_mark(
+                "worker_learning_runtime",
+                conversation_mode=raw_conversation_mode,
+                context_block_count=len(raw_conversation_mode_payload.get('context_blocks', [])) if isinstance(raw_conversation_mode_payload, dict) and isinstance(raw_conversation_mode_payload.get('context_blocks', []), list) else 0,
+            )
+
             effective_enable_tools = bool(enable_tools)
             effective_tool_mode = tool_mode
             if raw_conversation_mode == 'longterm':
@@ -9563,13 +9810,23 @@ def chat_stream():
                 username,
                 model_name=model_name,
                 conversation_id=conversation_id,
-                auto_create=(conversation_id is None)
+                auto_create=(not bool(str(conversation_id or '').strip()))
+            )
+            _chat_latency_mark(
+                "model_created",
+                conversation_id=str(model.conversation_id or ""),
+                effective_enable_tools=bool(effective_enable_tools),
+                effective_tool_mode=str(effective_tool_mode or ""),
             )
 
             current_agent_info = _resolve_local_agent_info_for_chat()
+            _chat_latency_mark("agent_info_worker_resolve", **_agent_info_latency_summary(current_agent_info))
 
             if current_agent_info:
                 _inject_local_agent_tools(model, current_agent_info)
+                _chat_latency_mark("agent_tools_injected", **_agent_info_latency_summary(current_agent_info))
+            else:
+                _chat_latency_mark("agent_tools_injected", agent_source="none", agent_tool_count=0, agent_schema_bytes=0)
 
             try:
                 local_tool_names = []
@@ -9600,12 +9857,20 @@ def chat_stream():
                 conversation_id=model.conversation_id,
                 file_ids=file_ids
             )
+            _chat_latency_mark(
+                "prepared_file_ids",
+                prepared_file_count=len(prepared_file_ids) if isinstance(prepared_file_ids, list) else 0,
+            )
 
             if model.conversation_id:
                 set_conversation_id(model.conversation_id)
+                latency_context["conversation_id"] = str(model.conversation_id or "")
 
             if not conversation_id_from_request:
                 push_chunk({'type': 'conversation_id', 'conversation_id': model.conversation_id})
+
+            _chat_latency_mark("before_model_send_message")
+            first_model_chunk_seen = False
 
             for chunk in model.sendMessage(
                 effective_message,
@@ -9631,6 +9896,14 @@ def chat_stream():
                 conversation_mode_payload=raw_conversation_mode_payload,
                 skip_user_message=bool(skip_user_message or user_message_persisted)
             ):
+                if not first_model_chunk_seen:
+                    first_model_chunk_seen = True
+                    _chat_latency_mark(
+                        "model_first_chunk",
+                        chunk_type=str((chunk or {}).get('type') if isinstance(chunk, dict) else type(chunk).__name__),
+                    )
+                    _chat_latency_flush("model_first_chunk")
+
                 if log_all_chunks:
                     _log_stream_chunk(chunk, model_name=model_name or model.model_name)
                 push_chunk(chunk if isinstance(chunk, dict) else {'type': 'content', 'content': str(chunk)})
@@ -9655,6 +9928,7 @@ def chat_stream():
         conversation_id=str(conversation_id or '').strip(),
         worker=_stream_worker
     )
+    _chat_latency_mark("runtime_stream_started", stream_id=str(stream_id or ""))
 
     from flask import stream_with_context
     resp = Response(
@@ -9664,6 +9938,8 @@ def chat_stream():
     resp.headers['Cache-Control'] = 'no-cache, no-transform'
     resp.headers['X-Accel-Buffering'] = 'no'
     resp.headers['Connection'] = 'keep-alive'
+    _chat_latency_mark("sse_response_ready")
+    _chat_latency_flush("sse_response_ready")
     return resp
 
 
@@ -10076,14 +10352,10 @@ def local_agent_pull():
 def get_token_stats():
     """获取Token使用统计"""
     username = session['username']
+    conversation_id = (request.args.get('conversation_id') or '').strip()
     user = User(username)
-    
-    try:
-        logs = user.get_token_logs()
-        conversation_id = (request.args.get('conversation_id') or '').strip()
-        if conversation_id:
-            logs = [log for log in logs if str(log.get('conversation_id', '')) == conversation_id]
 
+    try:
         def _safe_int(v):
             try:
                 if v is None:
@@ -10101,8 +10373,45 @@ def get_token_stats():
             except Exception:
                 return 0
 
-        # 优先：当指定 conversation_id 时，使用对话消息中的 metadata.io_tokens 聚合。
-        # 这样可与前端 model-badge 保持一致（按单次 assistant 响应统计）。
+        def _build_stats_from_logs(logs):
+            input_total = 0
+            output_total = 0
+            total_tokens = 0
+            today_input_tokens = 0
+            today_output_tokens = 0
+            today_tokens = 0
+            today_str = time.strftime("%Y-%m-%d", time.localtime())
+
+            for log in logs:
+                in_tokens = _safe_int(log.get('input_tokens', 0))
+                out_tokens = _safe_int(log.get('output_tokens', 0))
+                log_total = _safe_int(log.get('total_tokens', 0))
+
+                if log_total <= 0:
+                    log_total = in_tokens + out_tokens
+
+                input_total += in_tokens
+                output_total += out_tokens
+                total_tokens += log_total
+
+                if log.get('timestamp', '').startswith(today_str):
+                    today_input_tokens += in_tokens
+                    today_output_tokens += out_tokens
+                    today_tokens += log_total
+
+            return {
+                'success': True,
+                'conversation_id': conversation_id or None,
+                'input_total': input_total,
+                'output_total': output_total,
+                'total': total_tokens,
+                'today_input': today_input_tokens,
+                'today_output': today_output_tokens,
+                'today': today_tokens,
+                'history': logs[:20]
+            }
+
+        # conversation_id 模式直接从对话消息 metadata.io_tokens 聚合，避免每次流结束后扫描全量 token_usage.json。
         if conversation_id:
             try:
                 manager = ConversationManager(username)
@@ -10142,7 +10451,6 @@ def get_token_stats():
                         io_today_total += (in_tok + out_tok)
 
                 if io_found:
-                    # history 仍返回 token 日志最近记录，便于排查
                     return jsonify({
                         'success': True,
                         'conversation_id': conversation_id,
@@ -10152,49 +10460,17 @@ def get_token_stats():
                         'today_input': io_today_input,
                         'today_output': io_today_output,
                         'today': io_today_total,
-                        'history': logs[:20]
+                        'history': []
                     })
-            except Exception:
-                # 回退到旧日志聚合逻辑
-                pass
+            except Exception as stats_error:
+                print(f"[TOKEN_STATS] conversation aggregate failed cid={conversation_id}: {stats_error}")
 
-        input_total = 0
-        output_total = 0
-        total_tokens = 0
-        today_input_tokens = 0
-        today_output_tokens = 0
-        today_tokens = 0
-        
-        # Calculate stats
-        today_str = time.strftime("%Y-%m-%d", time.localtime())
-        
-        for log in logs:
-            in_tokens = _safe_int(log.get('input_tokens', 0))
-            out_tokens = _safe_int(log.get('output_tokens', 0))
-            log_total = _safe_int(log.get('total_tokens', 0))
-            if log_total <= 0:
-                log_total = in_tokens + out_tokens
+        logs = user.get_token_logs()
 
-            input_total += in_tokens
-            output_total += out_tokens
-            total_tokens += log_total
+        if conversation_id:
+            logs = [log for log in logs if str(log.get('conversation_id', '')) == conversation_id]
 
-            if log.get('timestamp', '').startswith(today_str):
-                today_input_tokens += in_tokens
-                today_output_tokens += out_tokens
-                today_tokens += log_total
-                
-        return jsonify({
-            'success': True,
-            'conversation_id': conversation_id or None,
-            'input_total': input_total,
-            'output_total': output_total,
-            'total': total_tokens,
-            'today_input': today_input_tokens,
-            'today_output': today_output_tokens,
-            'today': today_tokens,
-            'history': logs[:20]  # Optional: return recent logs if needed
-        })
+        return jsonify(_build_stats_from_logs(logs))
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 

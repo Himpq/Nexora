@@ -2,6 +2,8 @@
 import json
 import re
 import unicodedata
+import base64
+import binascii
 from typing import Any, Callable, Dict
 from flask import has_request_context, request
 from urllib import request as urllib_request, parse as urllib_parse, error as urllib_error
@@ -12,6 +14,8 @@ import ssl
 from chroma_client import ChromaStore
 from file_sandbox import UserFileSandbox
 from client_tool_bridge import request_client_js_execution
+from conversation_asset_store import persist_conversation_image_bytes
+from provider_factory import create_provider_adapter
 from tools import TOOL_NAME_ALIASES, canonicalize_tool_name
 from learning_runtime import LearningRuntimeExecutor, get_learning_tools
 
@@ -42,6 +46,7 @@ class ToolExecutor:
             "longterm_update": self._longterm_update,
             "server_web_search": self._server_web_search,
             "server_render_page": self._server_render_page,
+            "generate_image": self._generate_image,
             "search_keyword": self._search_keyword,
             "readtmp": self._readtmp,
             "searchtmp": self._searchtmp,
@@ -1680,4 +1685,215 @@ class ToolExecutor:
             return f"Render Internal Error: {str(e)}"
 
 
+    def _get_enabled_gen_image_api(self) -> Dict[str, Any]:
+        cfg = self.model.config if isinstance(getattr(self.model, "config", None), dict) else {}
+        gen_cfg = cfg.get("gen_image", {}) if isinstance(cfg.get("gen_image", {}), dict) else {}
+        apis = gen_cfg.get("apis", {}) if isinstance(gen_cfg.get("apis", {}), dict) else {}
+        enabled_api = str(gen_cfg.get("enabled_api", "") or "").strip()
 
+        if not enabled_api:
+            raise ValueError("未启用生图接口")
+
+        api_cfg = apis.get(enabled_api)
+
+        if not isinstance(api_cfg, dict):
+            raise ValueError(f"已启用的生图接口不存在: {enabled_api}")
+
+        return dict(api_cfg)
+
+    def _safe_gen_image_count(self, raw_count: Any) -> int:
+        try:
+            count = int(raw_count or 1)
+        except Exception:
+            count = 1
+
+        return max(1, min(count, 4))
+
+    def _decode_generated_image_bytes(self, b64_text: str) -> bytes:
+        raw_text = str(b64_text or "").strip()
+
+        if not raw_text:
+            raise ValueError("图片 base64 为空")
+
+        if raw_text.startswith("data:image/"):
+            _, raw_text = raw_text.split(",", 1)
+
+        try:
+            return base64.b64decode(raw_text, validate=True)
+        except (ValueError, binascii.Error) as e:
+            raise ValueError(f"图片 base64 无法解析: {str(e)}")
+
+    def _generated_image_markdown(self, images: list) -> str:
+        lines = []
+
+        for idx, item in enumerate(images, 1):
+            url = str((item or {}).get("asset_url") or (item or {}).get("url") or "").strip()
+
+            if not url:
+                continue
+
+            lines.append(f"![生成图片 {idx}]({url})")
+
+        return "\n\n".join(lines)
+
+    def _normalize_generated_image_progress(self, raw_progress: Any) -> list:
+        """Normalize image generation stage logs for the tool result payload."""
+        logs = []
+
+        if not isinstance(raw_progress, list):
+            return logs
+
+        for entry in raw_progress:
+            if isinstance(entry, str):
+                text = entry.strip()
+            elif isinstance(entry, dict):
+                nested_logs = entry.get("logs")
+
+                if isinstance(nested_logs, list):
+                    logs.extend(self._normalize_generated_image_progress(nested_logs))
+                    continue
+
+                text = str(entry.get("log") or entry.get("message") or entry.get("text") or "").strip()
+            else:
+                text = str(entry or "").strip()
+
+            if text:
+                logs.append(text)
+
+        return logs
+
+    def _generate_image(self, args: Dict[str, Any]) -> str:
+        safe_args = args if isinstance(args, dict) else {}
+        prompt = str(safe_args.get("prompt", "") or "").strip()
+
+        if not prompt:
+            return json.dumps({"success": False, "message": "prompt 不能为空"}, ensure_ascii=False)
+
+        try:
+            api_cfg = self._get_enabled_gen_image_api()
+            api_name = str(api_cfg.get("api_id") or api_cfg.get("name") or "gen_image").strip() or "gen_image"
+            api_type = str(api_cfg.get("api_type") or "openai").strip() or "openai"
+            api_key = str(api_cfg.get("api_key") or "").strip()
+            base_url = str(api_cfg.get("base_url") or "").strip().rstrip("/")
+            model_id = str(api_cfg.get("model") or "").strip()
+            size = str(safe_args.get("size") or api_cfg.get("size") or "1024x1024").strip()
+            quality = str(safe_args.get("quality") or api_cfg.get("quality") or "auto").strip()
+            response_format = str(api_cfg.get("response_format") or "b64_json").strip()
+            timeout = int(api_cfg.get("timeout") or 120)
+            image_count = self._safe_gen_image_count(safe_args.get("n", 1))
+
+            if not api_key:
+                raise ValueError("生图 API Key 不能为空")
+
+            if not base_url:
+                raise ValueError("生图 Base URL 不能为空")
+
+            if not model_id:
+                raise ValueError("生图模型不能为空")
+
+            if not str(getattr(self.model, "conversation_id", "") or "").strip():
+                raise ValueError("当前会话 ID 为空，无法保存生图结果")
+
+            adapter = create_provider_adapter(api_name, {
+                "api_key": api_key,
+                "base_url": base_url,
+                "api_type": api_type,
+            })
+            print(f"[GEN_IMAGE] api={api_name} model={model_id} size={size} n={image_count}")
+            result = adapter.generate_image(
+                api_key=api_key,
+                base_url=base_url,
+                model_id=model_id,
+                prompt=prompt,
+                size=size,
+                n=image_count,
+                quality=quality,
+                response_format=response_format,
+                timeout=timeout,
+            )
+            raw_images = result.get("images", []) if isinstance(result, dict) else []
+            progress_logs = self._normalize_generated_image_progress(result.get("progress", [])) if isinstance(result, dict) else []
+
+            def add_progress(logs: list) -> None:
+                for text in logs:
+                    if text not in progress_logs:
+                        progress_logs.append(text)
+
+            if not isinstance(raw_images, list) or not raw_images:
+                raise ValueError("生图接口没有返回图片")
+
+            images = []
+
+            for idx, item in enumerate(raw_images, 1):
+
+                if not isinstance(item, dict):
+                    continue
+
+                image_url = str(item.get("url") or "").strip()
+                b64_json = str(item.get("b64_json") or "").strip()
+                revised_prompt = str(item.get("revised_prompt") or "").strip()
+                item_progress = self._normalize_generated_image_progress(item.get("progress", []))
+                add_progress(item_progress)
+
+                if b64_json:
+                    raw = self._decode_generated_image_bytes(b64_json)
+                    asset = persist_conversation_image_bytes(
+                        username=self.model.username,
+                        conversation_id=self.model.conversation_id,
+                        image_bytes=raw,
+                        mime="image/png",
+                        name=f"generated_image_{idx}.png",
+                        metadata={
+                            "source": "generate_image",
+                            "prompt": prompt,
+                            "model": model_id,
+                            "api": api_name,
+                        },
+                    )
+                    image_item = {
+                        "index": idx,
+                        "asset_id": asset.get("asset_id"),
+                        "asset_url": asset.get("asset_url"),
+                        "mime": asset.get("mime"),
+                        "size": asset.get("size"),
+                        "revised_prompt": revised_prompt,
+                    }
+
+                    if item_progress:
+                        image_item["progress"] = item_progress
+
+                    images.append(image_item)
+                    continue
+
+                if image_url:
+                    image_item = {
+                        "index": idx,
+                        "url": image_url,
+                        "revised_prompt": revised_prompt,
+                    }
+
+                    if item_progress:
+                        image_item["progress"] = item_progress
+
+                    images.append(image_item)
+
+            if not images:
+                raise ValueError("生图接口返回了图片数据，但没有可展示的图片地址")
+
+            markdown = self._generated_image_markdown(images)
+            model_result = "图片生成成功，图片已自动展示在聊天记录中。"
+            payload = {
+                "success": True,
+                "message": model_result,
+                "model_result": model_result,
+                "api": api_name,
+                "model": model_id,
+                "prompt": prompt,
+                "images": images,
+                "markdown": markdown,
+                "progress": progress_logs,
+            }
+            return json.dumps(payload, ensure_ascii=False)
+        except Exception as e:
+            print(f"[GEN_IMAGE] failed: {e}")
+            return json.dumps({"success": False, "message": str(e)}, ensure_ascii=False)

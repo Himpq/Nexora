@@ -1,4 +1,7 @@
+import json
 from typing import Any
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 
 from openai import OpenAI
 
@@ -9,6 +12,40 @@ class OpenAIProvider(ProviderInterface):
     @property
     def api_type(self) -> str:
         return "openai"
+
+    def _normalize_progress_logs(self, raw: Any) -> list:
+        """Normalize stage logs from OpenAI-compatible image responses."""
+        logs = []
+
+        if not isinstance(raw, list):
+            return logs
+
+        for entry in raw:
+            if isinstance(entry, str):
+                text = entry.strip()
+            elif isinstance(entry, dict):
+                nested_logs = entry.get("logs")
+
+                if isinstance(nested_logs, list):
+                    logs.extend(self._normalize_progress_logs(nested_logs))
+                    continue
+
+                text = str(entry.get("log") or entry.get("message") or entry.get("text") or "").strip()
+            else:
+                text = str(entry or "").strip()
+
+            if text:
+                logs.append(text)
+
+        return logs
+
+    def _supports_image_response_format(self, model_id: str) -> bool:
+        model = str(model_id or "").strip().lower()
+
+        if model.startswith("gpt-image-1"):
+            return False
+
+        return True
 
     def create_client(self, api_key: str, base_url: str, timeout: float = 120.0):
         return OpenAI(
@@ -24,6 +61,137 @@ class OpenAIProvider(ProviderInterface):
         if use_responses_api:
             return client.responses.create(**request_params)
         return client.chat.completions.create(**request_params)
+
+    def generate_image(
+        self,
+        *,
+        api_key: str,
+        base_url: str,
+        model_id: str,
+        prompt: str,
+        size: str = "1024x1024",
+        n: int = 1,
+        quality: str = "",
+        response_format: str = "b64_json",
+        timeout: float = 120.0,
+        extra_body=None,
+    ):
+        key = str(api_key or "").strip()
+        url_base = str(base_url or "").strip().rstrip("/")
+        model = str(model_id or "").strip()
+        text = str(prompt or "").strip()
+
+        if not key:
+            raise ValueError("生图 API Key 不能为空")
+
+        if not url_base:
+            raise ValueError("生图 Base URL 不能为空")
+
+        if not model:
+            raise ValueError("生图模型不能为空")
+
+        if not text:
+            raise ValueError("生图提示词不能为空")
+
+        try:
+            image_count = int(n or 1)
+        except Exception:
+            image_count = 1
+        image_count = max(1, min(image_count, 4))
+
+        req_body = {
+            "model": model,
+            "prompt": text,
+            "n": image_count,
+            "size": str(size or "1024x1024").strip() or "1024x1024",
+        }
+        fmt = str(response_format or "").strip()
+
+        if fmt and self._supports_image_response_format(model):
+            req_body["response_format"] = fmt
+
+        q = str(quality or "").strip()
+        if q and q.lower() != "auto":
+            req_body["quality"] = q
+
+        if isinstance(extra_body, dict):
+            for k, v in extra_body.items():
+                key_text = str(k or "").strip()
+                if key_text:
+                    req_body[key_text] = v
+
+        endpoint = f"{url_base}/images/generations"
+        raw = json.dumps(req_body, ensure_ascii=False).encode("utf-8")
+        req = urllib_request.Request(
+            endpoint,
+            data=raw,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+
+        try:
+            with urllib_request.urlopen(req, timeout=float(timeout or 120.0)) as resp:
+                payload_text = resp.read().decode("utf-8")
+        except urllib_error.HTTPError as e:
+            detail = e.read().decode("utf-8", errors="replace") if e.fp else str(e)
+            raise ValueError(f"生图接口 HTTP {e.code}: {detail}")
+        except Exception as e:
+            raise ValueError(f"生图接口请求失败: {str(e)}")
+
+        try:
+            payload = json.loads(payload_text)
+        except Exception:
+            raise ValueError("生图接口返回的不是 JSON")
+
+        data = payload.get("data", []) if isinstance(payload, dict) else []
+        if not isinstance(data, list):
+            raise ValueError("生图接口返回缺少 data 数组")
+
+        images = []
+        progress_logs = []
+
+        def add_progress(logs):
+            for text in logs:
+                if text not in progress_logs:
+                    progress_logs.append(text)
+
+        add_progress(self._normalize_progress_logs(payload.get("progress", [])) if isinstance(payload, dict) else [])
+
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+
+            b64_json = str(
+                item.get("b64_json")
+                or item.get("b64")
+                or item.get("image_base64")
+                or ""
+            ).strip()
+            image_url = str(item.get("url") or item.get("image_url") or "").strip()
+            revised_prompt = str(item.get("revised_prompt") or "").strip()
+            item_progress = self._normalize_progress_logs(item.get("progress", []))
+            add_progress(item_progress)
+
+            images.append({
+                "b64_json": b64_json,
+                "url": image_url,
+                "revised_prompt": revised_prompt,
+                "progress": item_progress,
+                "raw": item,
+            })
+
+        return {
+            "ok": True,
+            "provider": self.provider_name,
+            "api_type": self.api_type,
+            "model": model,
+            "images": images,
+            "progress": progress_logs,
+            "raw_response": payload,
+        }
 
     def iter_stream_events(self, chunks, *, use_responses_api: bool, native_web_search_enabled: bool = False):
         if not use_responses_api:

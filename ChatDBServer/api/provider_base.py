@@ -129,6 +129,26 @@ class ProviderInterface(ABC):
         """
         raise ValueError(f"provider {self.provider_name} 暂不支持图片理解接口")
 
+    def generate_image(
+        self,
+        *,
+        api_key: str,
+        base_url: str,
+        model_id: str,
+        prompt: str,
+        size: str = "1024x1024",
+        n: int = 1,
+        quality: str = "",
+        response_format: str = "b64_json",
+        timeout: float = 120.0,
+        extra_body: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Unified image generation API for providers.
+        Provider adapters may override with native implementation.
+        """
+        raise ValueError(f"provider {self.provider_name} 暂不支持图片生成接口")
+
     def upload_file(self, *, client: Any, file_obj, purpose: str = "user_data"):
         """
         Provider file upload helper.

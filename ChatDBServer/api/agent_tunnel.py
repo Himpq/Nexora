@@ -61,6 +61,8 @@ def get_agent_prompt(username: str) -> str:
         return ""
 
 def call_local_tool_sync(username: str, tool_name: str, args: dict, timeout_sec: int = 30) -> dict:
+    started_at = time.perf_counter()
+
     with _AGENT_LOCK:
         agent = _ACTIVE_AGENTS.get(username)
         ws = agent["ws"] if agent else None
@@ -76,11 +78,14 @@ def call_local_tool_sync(username: str, tool_name: str, args: dict, timeout_sec:
         "type": "call_tool",
         "task_id": task_id,
         "tool_name": tool_name,
-        "args": args
+        "args": args,
+        "sent_at": time.time(),
     }
-    
+
     try:
+        send_started_at = time.perf_counter()
         ws.send(json.dumps(payload))
+        send_ms = (time.perf_counter() - send_started_at) * 1000.0
     except Exception as e:
         _PENDING_TASKS.pop(task_id, None)
         return {"error": f"Failed to send request to agent: {e}"}
@@ -90,8 +95,37 @@ def call_local_tool_sync(username: str, tool_name: str, args: dict, timeout_sec:
     task_data = _PENDING_TASKS.pop(task_id, None)
     
     if not success:
+        total_ms = (time.perf_counter() - started_at) * 1000.0
+        print(
+            "[NEXORACODE_TOOL_LATENCY] "
+            + json.dumps({
+                "stage": "timeout",
+                "username": username,
+                "tool_name": tool_name,
+                "task_id": task_id,
+                "send_ms": round(send_ms, 1),
+                "total_ms": round(total_ms, 1),
+                "timeout_sec": timeout_sec,
+            }, ensure_ascii=False, default=str)
+        )
         return {"error": f"Local agent execution timeout (>{timeout_sec}s)"}
-        
+
+    total_ms = (time.perf_counter() - started_at) * 1000.0
+    if total_ms >= 500.0:
+        result_obj = task_data.get("result") if isinstance(task_data, dict) else None
+        print(
+            "[NEXORACODE_TOOL_LATENCY] "
+            + json.dumps({
+                "stage": "result",
+                "username": username,
+                "tool_name": tool_name,
+                "task_id": task_id,
+                "send_ms": round(send_ms, 1),
+                "total_ms": round(total_ms, 1),
+                "result_success": bool(result_obj.get("success", True)) if isinstance(result_obj, dict) else None,
+            }, ensure_ascii=False, default=str)
+        )
+
     return task_data.get("result", {"error": "No result received"})
 
 def handle_agent_result(task_id: str, result: Any):

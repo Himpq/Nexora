@@ -8,6 +8,7 @@ import logging
 import re
 import mimetypes
 import threading
+import time
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -222,6 +223,25 @@ def _build_remote_url(path: str) -> str:
     return f"{base}/"
 
 
+def _build_upstream_request_session() -> requests.Session:
+    """Create an isolated upstream session with the shared proxy cookies copied in."""
+    upstream_session = requests.Session()
+
+    with _UPSTREAM_SESSION_LOCK:
+        upstream_session.cookies.update(_UPSTREAM_SESSION.cookies)
+
+    return upstream_session
+
+
+def _merge_upstream_response_cookies(upstream_session: requests.Session) -> None:
+    """Merge cookies learned by one upstream request back into the shared proxy jar."""
+    if upstream_session is None:
+        return
+
+    with _UPSTREAM_SESSION_LOCK:
+        _UPSTREAM_SESSION.cookies.update(upstream_session.cookies)
+
+
 def _rewrite_set_cookie(v: str) -> str:
     val = str(v or "")
     if not val:
@@ -253,9 +273,8 @@ def _collect_upstream_cookie_debug(remote_url: str) -> dict:
     """返回即将发往 ChatDBServer 的 cookie 视图，用于定位登录态同步问题。"""
     merged = {}
     req = requests.Request("GET", remote_url)
-
-    with _UPSTREAM_SESSION_LOCK:
-        prepared = _UPSTREAM_SESSION.prepare_request(req)
+    upstream_session = _build_upstream_request_session()
+    prepared = upstream_session.prepare_request(req)
 
     cookie_header = str(prepared.headers.get("Cookie") or "")
 
@@ -277,6 +296,7 @@ def _collect_upstream_cookie_debug(remote_url: str) -> dict:
 
 
 def _proxy_request(path: str):
+    request_started_at = time.perf_counter()
     remote_url = _build_remote_url(path)
     remote_base = _remote_base_url()
     remote_parts = urlsplit(remote_base)
@@ -321,23 +341,45 @@ def _proxy_request(path: str):
 
     # For SSE/chat streaming, disable read timeout; otherwise default timeout is fine.
     req_timeout = (_PROXY_STREAM_CONNECT_TIMEOUT, None) if request_wants_stream else _PROXY_TIMEOUT
+    upstream_session = _build_upstream_request_session()
+    session_ready_at = time.perf_counter()
+    upstream_headers_at = None
+
+    def _log_proxy_latency(reason: str, status_code: int = 0, error: str = "") -> None:
+        total_ms = max(0.0, (time.perf_counter() - request_started_at) * 1000.0)
+        if total_ms < 700.0 and not error:
+            return
+
+        try:
+            print(
+                "[NexoraProxyLatency] "
+                f"reason={str(reason or '')} method={method} path=/{str(path or '').lstrip('/')} "
+                f"status={int(status_code or 0)} total_ms={total_ms:.1f} "
+                f"session_copy_ms={max(0.0, (session_ready_at - request_started_at) * 1000.0):.1f} "
+                f"upstream_headers_ms={max(0.0, ((upstream_headers_at or time.perf_counter()) - session_ready_at) * 1000.0):.1f} "
+                f"stream={bool(request_wants_stream)} error={str(error or '')[:300]}"
+            )
+        except Exception:
+            pass
 
     try:
         # 使用持久化 Session 捕获上游 HttpOnly session cookie。浏览器 JS 读不到
         # HttpOnly cookie，但本地代理必须在后续 register / Learning 请求中继续携带它。
-        with _UPSTREAM_SESSION_LOCK:
-            upstream = _UPSTREAM_SESSION.request(
-                method=method,
-                url=remote_url,
-                params=request.args,
-                headers=incoming_headers,
-                data=body,
-                cookies=dict(request.cookies),
-                allow_redirects=False,
-                timeout=req_timeout,
-                stream=True,
-            )
+        upstream = upstream_session.request(
+            method=method,
+            url=remote_url,
+            params=request.args,
+            headers=incoming_headers,
+            data=body,
+            cookies=dict(request.cookies),
+            allow_redirects=False,
+            timeout=req_timeout,
+            stream=True,
+        )
+        upstream_headers_at = time.perf_counter()
+        _merge_upstream_response_cookies(upstream_session)
     except Exception as e:
+        _log_proxy_latency("upstream_request_failed", error=str(e))
         return jsonify({"success": False, "error": f"proxy request failed: {e}"}), 502
 
     if str(path or "").startswith("api/local_agent/register"):
@@ -369,6 +411,10 @@ def _proxy_request(path: str):
         or body_indicates_stream
         or path_likely_stream
     )
+    if int(upstream.status_code or 0) >= 400 and "text/event-stream" not in ct_lower and "application/x-ndjson" not in ct_lower:
+        is_streaming_response = False
+
+    _log_proxy_latency("upstream_headers", status_code=int(upstream.status_code or 0))
 
     if _VERBOSE_PROXY_LOG:
         try:
