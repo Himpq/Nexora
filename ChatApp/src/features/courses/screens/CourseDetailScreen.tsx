@@ -10,6 +10,7 @@ import {
   AppCard,
   AppText,
   colors,
+  CoverImage,
   FadeIn,
   ProgressBar,
   radius,
@@ -28,6 +29,12 @@ import {
   type CourseOutlineResponse,
   type LearningVideo,
 } from "../../../services/learningExperienceService";
+import {
+  getLectureCoverUri,
+  listLectureCoverAssets,
+  resolveLearningAssetUrl,
+  type CoverAsset,
+} from "../../../services/imageService";
 import type { Book, Lecture } from "../../../services/types";
 import { normalizeError } from "../../../utils/errors";
 
@@ -62,12 +69,19 @@ function getVideoMeta(video: LearningVideo) {
     .join(" · ");
 }
 
+function getVideoCoverUri(video: LearningVideo) {
+  const direct = String(video.cover || video.cover_url || "").trim();
+  if (!direct) return "";
+  return resolveLearningAssetUrl(direct);
+}
+
 export function CourseDetailScreen({ navigation, route }: CourseDetailScreenProps) {
   const { lectureId, lectureTitle } = route.params;
   const [lecture, setLecture] = useState<Lecture | null>(null);
   const [books, setBooks] = useState<Book[]>([]);
   const [outline, setOutline] = useState<CourseOutlineResponse["outline"] | null>(null);
   const [videos, setVideos] = useState<LearningVideo[]>([]);
+  const [coverAssets, setCoverAssets] = useState<CoverAsset[]>([]);
   const [extrasError, setExtrasError] = useState<Error | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
@@ -76,6 +90,16 @@ export function CourseDetailScreen({ navigation, route }: CourseDetailScreenProp
     () => getLectureTitle(lecture, lectureTitle),
     [lecture, lectureTitle],
   );
+  const bookCoverByBookId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const item of coverAssets) {
+      const bookId = String(item?.book_id || "").trim();
+      const path = String(item?.cover_path || item?.image_url || "").trim();
+      if (!bookId || !path || map.has(bookId)) continue;
+      map.set(bookId, resolveLearningAssetUrl(path));
+    }
+    return map;
+  }, [coverAssets]);
 
   const loadLecture = useCallback(async () => {
     const normalizedLectureId = String(lectureId || "").trim();
@@ -94,9 +118,10 @@ export function CourseDetailScreen({ navigation, route }: CourseDetailScreenProp
       setLecture(result.lecture || null);
       setBooks(result.books);
       setExtrasError(null);
-      const [outlineResult, videosResult] = await Promise.allSettled([
+      const [outlineResult, videosResult, coversResult] = await Promise.allSettled([
         getCourseOutline(normalizedLectureId),
         getLectureVideos(normalizedLectureId),
+        listLectureCoverAssets(normalizedLectureId),
       ]);
       setOutline(outlineResult.status === "fulfilled" ? outlineResult.value.outline || null : null);
       setVideos(
@@ -104,22 +129,23 @@ export function CourseDetailScreen({ navigation, route }: CourseDetailScreenProp
           ? videosResult.value.items
           : [],
       );
-      if (outlineResult.status === "rejected" || videosResult.status === "rejected") {
-        setExtrasError(
-          normalizeError(
-            outlineResult.status === "rejected"
-              ? outlineResult.reason
-              : videosResult.status === "rejected"
-                ? videosResult.reason
-                : undefined,
-          ),
-        );
+      setCoverAssets(
+        coversResult.status === "fulfilled" && Array.isArray(coversResult.value.items)
+          ? coversResult.value.items
+          : [],
+      );
+      const firstFailure = [outlineResult, videosResult, coversResult].find(
+        (entry) => entry.status === "rejected",
+      ) as PromiseRejectedResult | undefined;
+      if (firstFailure) {
+        setExtrasError(normalizeError(firstFailure.reason));
       }
     } catch (err) {
       setLecture(null);
       setBooks([]);
       setOutline(null);
       setVideos([]);
+      setCoverAssets([]);
       setExtrasError(null);
       setError(normalizeError(err));
     } finally {
@@ -179,6 +205,7 @@ export function CourseDetailScreen({ navigation, route }: CourseDetailScreenProp
   const progress = getProgress(lecture);
   const outlineSections = Array.isArray(outline?.sections) ? outline.sections : [];
   const visibleVideos = videos.slice(0, 3);
+  const lectureCoverUri = getLectureCoverUri(lecture);
 
   return (
     <Screen scroll>
@@ -187,6 +214,15 @@ export function CourseDetailScreen({ navigation, route }: CourseDetailScreenProp
         subtitle={lecture?.description ? String(lecture.description) : "查看课程下的教材和阅读内容"}
         trailing={<AppButton title="刷新" variant="ghost" size="sm" onPress={() => void loadLecture()} />}
       />
+
+      {lectureCoverUri ? (
+        <CoverImage
+          uri={lectureCoverUri}
+          fallbackIcon="book-open"
+          style={styles.lectureCover}
+          accessibilityLabel={title}
+        />
+      ) : null}
 
       <AppCard style={styles.summaryCard}>
         <View style={styles.summaryRow}>
@@ -230,6 +266,7 @@ export function CourseDetailScreen({ navigation, route }: CourseDetailScreenProp
             <BookListItem
               key={bookId || getBookTitle(book)}
               book={book}
+              coverUri={bookCoverByBookId.get(bookId)}
               onPress={() => openBook(book)}
             />
           );
@@ -291,6 +328,7 @@ export function CourseDetailScreen({ navigation, route }: CourseDetailScreenProp
         <View style={styles.videoList}>
           {visibleVideos.map((video, index) => {
             const url = String(video.url || "").trim();
+            const videoCover = getVideoCoverUri(video);
             return (
               <AnimatedPressable
                 key={url || `${getVideoTitle(video)}-${index}`}
@@ -299,9 +337,16 @@ export function CourseDetailScreen({ navigation, route }: CourseDetailScreenProp
                 style={styles.videoPressable}
               >
                 <AppCard style={styles.videoCard}>
-                  <View style={styles.videoBadge}>
-                    <Feather name="play" size={16} color={colors.textInverse} />
-                  </View>
+                  <CoverImage
+                    uri={videoCover}
+                    fallbackIcon="play"
+                    style={styles.videoThumb}
+                    overlay={
+                      <View style={styles.videoPlayBadge}>
+                        <Feather name="play" size={14} color={colors.textInverse} />
+                      </View>
+                    }
+                  />
                   <View style={styles.titleBlock}>
                     <AppText variant="bodyStrong" numberOfLines={2}>
                       {getVideoTitle(video)}
@@ -396,6 +441,19 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: spacing.md,
   },
+  videoThumb: {
+    width: 64,
+    height: 44,
+    borderRadius: radius.sm,
+  },
+  videoPlayBadge: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(10,10,10,0.55)",
+  },
   videoBadge: {
     alignItems: "center",
     backgroundColor: colors.surfaceInverse,
@@ -403,6 +461,12 @@ const styles = StyleSheet.create({
     height: 36,
     justifyContent: "center",
     width: 36,
+  },
+  lectureCover: {
+    width: "100%",
+    aspectRatio: 16 / 9,
+    borderRadius: radius.lg,
+    marginBottom: spacing.lg,
   },
   errorCard: {
     borderLeftColor: colors.danger,

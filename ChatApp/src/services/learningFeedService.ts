@@ -1,4 +1,4 @@
-import { deleteJson, getJson, postJson } from "./apiClient";
+import { deleteJson, getJson, patchJson, postJson } from "./apiClient";
 
 export type LearningFeedAuthor = {
   user_id?: string;
@@ -126,5 +126,23 @@ export function deleteLearningFeedComment(feedId: string, commentId: string) {
     `/api/frontend/learning-feeds/${encodeURIComponent(feedId)}/comments/${encodeURIComponent(
       commentId,
     )}`,
+  );
+}
+
+export function toggleLearningFeedCommentLike(feedId: string, commentId: string) {
+  return postJson<{ success: boolean; item: LearningFeedItem }>(
+    `/api/frontend/learning-feeds/${encodeURIComponent(feedId)}/comments/${encodeURIComponent(
+      commentId,
+    )}/like`,
+  );
+}
+
+export function updateLearningFeedChannel(
+  channelId: string,
+  payload: { title?: string; member_user_ids?: string[] },
+) {
+  return patchJson<{ success: boolean; item: LearningFeedChannel }>(
+    `/api/frontend/settings/feed-channels/${encodeURIComponent(channelId)}`,
+    payload,
   );
 }

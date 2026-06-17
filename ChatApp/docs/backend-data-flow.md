@@ -17,20 +17,22 @@
 
 ## 学习看板与课程
 
-- `DashboardScreen` / `CourseListScreen` / `CourseDetailScreen` -> `frontendService` / `lectureService` / `learningExperienceService` -> `NexoraLearning`
-- 接口：`GET /api/frontend/materials`、`GET /api/frontend/dashboard`、`POST /api/frontend/learning/select`、`GET /api/lectures`、`GET /api/lectures/{lecture_id}`、`GET /api/frontend/outline/{lecture_id}`、`GET /api/frontend/lecture-videos`
+- `DashboardScreen` / `CourseListScreen` / `CourseDetailScreen` -> `frontendService` / `lectureService` / `learningExperienceService` / `imageService` -> `NexoraLearning`
+- 接口：`GET /api/frontend/materials`、`GET /api/frontend/dashboard`、`POST /api/frontend/learning/select`、`GET /api/lectures`、`GET /api/lectures/{lecture_id}`、`GET /api/lectures/{lecture_id}/cover-assets`、`GET /api/frontend/outline/{lecture_id}`、`GET /api/frontend/lecture-videos`
+- 封面优先使用 Lecture / Book 实体上的 `cover_path` / `cover`，课程详情可用 `cover-assets` 补齐 Book 封面；相对路径由 `imageService` 按 `learningApiClient` base URL 补全。
 
 ## 教材阅读
 
 - `CourseDetailScreen` -> `BookDetailScreen` -> `BookReaderScreen` -> `bookService` / `frontendService` / `learningExperienceService` -> `NexoraLearning`
-- 接口：`GET /api/lectures/{lecture_id}/books`、`POST /api/lectures/{lecture_id}/books`、`POST /api/lectures/{lecture_id}/books/{book_id}/file`、`GET /api/lectures/{lecture_id}/books/{book_id}/text`、`GET /api/lectures/{lecture_id}/books/{book_id}/bookinfo`、`GET /api/lectures/{lecture_id}/books/{book_id}/bookdetail`、`POST /api/frontend/learning/chapter-complete`、`GET /api/frontend/knowledge-graph`、`POST /api/frontend/knowledge-graph/generate`、`GET /api/frontend/videos`、`POST /api/frontend/videos/refresh`
+- 接口：`GET /api/lectures/{lecture_id}/books`、`POST /api/lectures/{lecture_id}/books`、`POST /api/lectures/{lecture_id}/books/{book_id}/file`、`GET /api/lectures/{lecture_id}/books/{book_id}/text`、`POST /api/lectures/{lecture_id}/books/{book_id}/text`、`GET /api/lectures/{lecture_id}/books/{book_id}/bookinfo`、`GET /api/lectures/{lecture_id}/books/{book_id}/bookdetail`、`GET /api/lectures/{lecture_id}/books/{book_id}/sections`、`GET /api/lectures/{lecture_id}/books/{book_id}/chapter/{chapter_index}`、`GET /api/lectures/{lecture_id}/books/{book_id}/annotations`、`GET /api/lectures/{lecture_id}/books/{book_id}/summary`、`POST /api/lectures/{lecture_id}/books/{book_id}/parse`、`GET /api/lectures/{lecture_id}/books/{book_id}/cover-assets`、`GET /api/lectures/{lecture_id}/books/{book_id}/images/{image_id}`、`POST /api/frontend/learning/chapter-complete`、`GET /api/frontend/knowledge-graph`、`POST /api/frontend/knowledge-graph/generate`、`GET /api/frontend/videos`、`POST /api/frontend/videos/refresh`
 - 纯文本阅读页不要伪造章节完成；只有解析到真实 `chapter_name` 和 `chapter_range` 时才调用章节完成接口。
 
 ## 学习体验扩展
 
 - `learningExperienceService` 承接 NexoraLearning 新增前端学习体验 API。
 - 已有 service contract：`GET /api/frontend/notifications`、`POST /api/frontend/notifications/{notification_id}/remove`、`GET /api/frontend/profile`、`POST /api/frontend/learning-path`、`POST /api/frontend/personalized-learning/load-path`、`GET /api/frontend/videos`、`GET /api/frontend/lecture-videos`、`POST /api/frontend/videos/refresh`、`GET /api/frontend/knowledge-graph`、`POST /api/frontend/knowledge-graph/generate`、`GET /api/frontend/outline/{lecture_id}`、`POST /api/frontend/outline/{lecture_id}/generate`、`POST /api/frontend/learning/session-complete`、`POST /api/frontend/learning/chapter-record/clear`、`POST /api/frontend/quiz/chapter`。
-- 当前移动端 UI 已接入课程大纲、课程推荐视频、Book 知识图谱和可验证章节完成；通知、画像、个性化学习路径、章节测验等先锁定 service contract，后续再补完整导航和交互。
+- `learningContentService` 已锁定扩展 contract：`POST /api/frontend/reader-guide/generate`、`POST /api/frontend/reader-guide/stream`、`POST /api/frontend/reader-guide/pre-questions`、`POST /api/frontend/reader-guide/pre-questions/save`、`POST /api/frontend/reader-guide/pre-questions/check`、`POST /api/frontend/reader-guide/user-profile`、`POST /api/frontend/quiz/generate`、`POST /api/frontend/quiz/submit`、`POST /api/frontend/quiz/submit-batch`、`GET /api/frontend/mindmap/{lecture_id}`、`GET /api/frontend/mindmap/{lecture_id}/generate-stream`、`POST /api/frontend/mindmap/{lecture_id}/section`、`POST /api/frontend/personalized-learning/generate-path`、`GET /api/frontend/personalized-learning/generate-path-stream`、`POST /api/frontend/personalized-learning/load-path`、`POST /api/frontend/personalized-learning/generate-chapter`、`POST /api/frontend/personalized-learning/generate-chapter-stream`、`POST /api/frontend/personalized-learning/load-chapter`、`POST /api/frontend/personalized-learning/chapter-complete`、`POST /api/frontend/personalized-learning/chapter-quiz`、`POST /api/frontend/personalized-learning/save-qa`、`POST /api/frontend/personalized-learning/load-qa`、`GET /api/frontend/personalized-learning/generate-qa-stream`、`GET /api/frontend/learning/report`、`GET /api/frontend/teacher/class-overview`、`GET /api/frontend/teacher/student-analysis`、`POST /api/frontend/card`、`GET /api/frontend/question-bank`、`GET /api/frontend/users/search`、`GET /api/frontend/learning-feeds/users/search`。
+- 当前移动端 UI 已接入课程大纲、课程推荐视频、Book 知识图谱和可验证章节完成；通知、画像、reader guide、mindmap、个性化学习路径、章节/课时测验、学习报告、教师视图和题库等先锁定 service contract，后续再补完整导航和交互。
 
 ## AI 学习问答
 
@@ -50,5 +52,12 @@
 ## Learning Feed
 
 - `LearningFeedScreen` -> `learningFeedService` -> `NexoraLearning`
-- 接口：`GET /api/frontend/learning-feeds/channels`、`GET /api/frontend/learning-feeds`、`POST /api/frontend/learning-feeds`、`POST /api/frontend/learning-feeds/{feed_id}/like`、`POST /api/frontend/learning-feeds/{feed_id}/comments`、`DELETE /api/frontend/learning-feeds/{feed_id}`、`DELETE /api/frontend/learning-feeds/{feed_id}/comments/{comment_id}`、`POST /api/frontend/settings/feed-channels`、`DELETE /api/frontend/settings/feed-channels/{channel_id}`
+- 接口：`GET /api/frontend/learning-feeds/channels`、`GET /api/frontend/learning-feeds`、`POST /api/frontend/learning-feeds`、`POST /api/frontend/learning-feeds/{feed_id}/like`、`POST /api/frontend/learning-feeds/{feed_id}/comments`、`POST /api/frontend/learning-feeds/{feed_id}/comments/{comment_id}/like`、`DELETE /api/frontend/learning-feeds/{feed_id}`、`DELETE /api/frontend/learning-feeds/{feed_id}/comments/{comment_id}`、`POST /api/frontend/settings/feed-channels`、`PATCH /api/frontend/settings/feed-channels/{channel_id}`、`DELETE /api/frontend/settings/feed-channels/{channel_id}`
+- Feed author 的 `avatar_url` 由 `Avatar` / `imageService` 渲染，失败时回退到用户名首字。
 - Screen 内的写操作用 FIFO 队列串行执行；忙时新操作不得静默丢弃。
+
+## 设置与管理
+
+- `SettingsScreen` -> `SessionProvider` / `frontendService` -> `NexoraLearning`
+- `settingsAdminService` 锁定管理员设置 contract：`GET /api/frontend/settings/users`、`PATCH /api/frontend/settings/users/{user_id}`、`GET /api/frontend/settings/models`、`PATCH /api/frontend/settings/models`、`GET /api/models/rough-reading`、`PATCH /api/models/rough-reading`、`GET /api/frontend/settings/logs`
+- Settings 用户头像可来自 `context.user.avatar_url` 或 `context.user.avatar`，由 `Avatar` / `imageService` 渲染，失败时回退到 username 首字。

@@ -1,12 +1,15 @@
 import { StyleSheet, View } from "react-native";
 import { Feather } from "@expo/vector-icons";
 
-import { AppBadge, AppCard, AppText, colors, radius, spacing } from "../../../design";
+import { AppBadge, AppCard, AppText, colors, CoverImage, radius, spacing } from "../../../design";
+import { getBookCoverUri, resolveLearningAssetUrl } from "../../../services/imageService";
 import type { Book } from "../../../services/types";
 
 type BookListItemProps = {
   book: Book;
   onPress: () => void;
+  /** Optional cover URI override (e.g. resolved via `cover-assets`). */
+  coverUri?: string;
 };
 
 function getBookTitle(book: Book) {
@@ -23,16 +26,29 @@ function getBookMeta(book: Book) {
     .join(" · ");
 }
 
-export function BookListItem({ book, onPress }: BookListItemProps) {
+export function BookListItem({ book, onPress, coverUri }: BookListItemProps) {
   const description = String(book.description || "").trim();
   const meta = getBookMeta(book);
+  const resolvedCover = coverUri
+    ? resolveLearningAssetUrl(coverUri)
+    : getBookCoverUri(book);
 
   return (
     <AppCard style={styles.card} onPress={onPress}>
       <View style={styles.header}>
-        <View style={styles.cover}>
-          <Feather name="book" size={18} color={colors.textInverse} />
-        </View>
+        {resolvedCover ? (
+          <CoverImage
+            uri={resolvedCover}
+            fallbackIcon="book"
+            style={styles.cover}
+            borderRadius={radius.md}
+            accessibilityLabel={getBookTitle(book)}
+          />
+        ) : (
+          <View style={styles.cover}>
+            <Feather name="book" size={18} color={colors.textInverse} />
+          </View>
+        )}
         <View style={styles.titleBlock}>
           <AppText variant="heading" numberOfLines={2}>
             {getBookTitle(book)}
@@ -72,12 +88,13 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   cover: {
-    width: 40,
-    height: 40,
+    width: 48,
+    height: 56,
     borderRadius: radius.md,
     backgroundColor: colors.surfaceInverse,
     alignItems: "center",
     justifyContent: "center",
+    overflow: "hidden",
   },
   titleBlock: {
     flex: 1,

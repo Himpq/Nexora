@@ -11,8 +11,13 @@
   },
   "include": [
     "src/services/apiClient.ts",
+    "src/services/bookService.ts",
+    "src/services/imageService.ts",
+    "src/services/learningContentService.ts",
     "src/services/learningExperienceService.ts",
+    "src/services/learningFeedService.ts",
     "src/services/learningChatService.ts",
+    "src/services/settingsAdminService.ts",
     "src/services/types.ts",
     "src/config/env.ts",
     "src/services/__tests__/**/*.ts"

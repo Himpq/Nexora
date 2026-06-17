@@ -187,6 +187,7 @@ learningApiClient.setPublicApiKey(appEnv.nexoraLearningRuntimeApiKey);
 export const requestJson = learningApiClient.requestJson;
 export const getJson = learningApiClient.getJson;
 export const postJson = learningApiClient.postJson;
+export const postStream = learningApiClient.postStream;
 export const patchJson = learningApiClient.patchJson;
 export const deleteJson = learningApiClient.deleteJson;
 

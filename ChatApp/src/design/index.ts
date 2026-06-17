@@ -5,6 +5,8 @@ export * from "./components/AppCard";
 export * from "./components/AppInput";
 export * from "./components/AppText";
 export * from "./components/AnimatedPressable";
+export * from "./components/Avatar";
+export * from "./components/CoverImage";
 export * from "./components/FadeIn";
 export * from "./components/ProgressBar";
 export * from "./components/Screen";

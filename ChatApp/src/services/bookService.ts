@@ -100,3 +100,63 @@ export function saveBookDetail(lectureId: string, bookId: string, content: strin
     { content },
   );
 }
+
+export function getBookSections(lectureId: string, bookId: string) {
+  return getJson<{ success: boolean; lecture_id: string; book_id: string; content: string }>(
+    `/api/lectures/${encodeURIComponent(lectureId)}/books/${encodeURIComponent(bookId)}/sections`,
+  );
+}
+
+export function getBookChapterText(lectureId: string, bookId: string, chapterIndex: number) {
+  return getJson<{
+    success: boolean;
+    lecture_id: string;
+    book_id: string;
+    chapter_index: number;
+    chapter_name?: string;
+    content: string;
+    chars?: number;
+    [key: string]: unknown;
+  }>(
+    `/api/lectures/${encodeURIComponent(lectureId)}/books/${encodeURIComponent(bookId)}/chapter/${encodeURIComponent(String(chapterIndex))}`,
+  );
+}
+
+export function getBookAnnotations(lectureId: string, bookId: string) {
+  return getJson<{
+    success: boolean;
+    lecture_id: string;
+    book_id: string;
+    annotations?: Array<Record<string, unknown>>;
+    items?: Array<Record<string, unknown>>;
+    [key: string]: unknown;
+  }>(
+    `/api/lectures/${encodeURIComponent(lectureId)}/books/${encodeURIComponent(bookId)}/annotations`,
+  );
+}
+
+export function getBookSummary(lectureId: string, bookId: string) {
+  return getJson<{
+    success: boolean;
+    lecture_id: string;
+    book_id: string;
+    summary?: string;
+    content?: string;
+    [key: string]: unknown;
+  }>(
+    `/api/lectures/${encodeURIComponent(lectureId)}/books/${encodeURIComponent(bookId)}/summary`,
+  );
+}
+
+export function parseBookFile(lectureId: string, bookId: string) {
+  return postJson<{ success: boolean; book?: Book; message?: string; [key: string]: unknown }>(
+    `/api/lectures/${encodeURIComponent(lectureId)}/books/${encodeURIComponent(bookId)}/parse`,
+  );
+}
+
+export function uploadBookText(lectureId: string, bookId: string, content: string) {
+  return postJson<{ success: boolean; book?: Book; chars?: number; [key: string]: unknown }>(
+    `/api/lectures/${encodeURIComponent(lectureId)}/books/${encodeURIComponent(bookId)}/text`,
+    { content },
+  );
+}

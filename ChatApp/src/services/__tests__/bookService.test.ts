@@ -1,7 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createBook, uploadBookFile } from "../bookService";
+import {
+  createBook,
+  getBookAnnotations,
+  getBookChapterText,
+  getBookSections,
+  getBookSummary,
+  parseBookFile,
+  uploadBookFile,
+  uploadBookText,
+} from "../bookService";
 
 type FetchCall = {
   url: string;
@@ -60,4 +69,50 @@ test("uploadBookFile posts multipart form data to the book file endpoint", async
   );
   assert.equal(new Headers(calls[0].init.headers).get("Content-Type"), null);
   assert.ok(calls[0].init.body instanceof FormData);
+});
+
+test("book service reads derived book content endpoints", async () => {
+  const calls = installFetch({ success: true, content: "", items: [] });
+
+  await getBookSections("lecture 1", "book 1");
+  await getBookChapterText("lecture 1", "book 1", 2);
+  await getBookAnnotations("lecture 1", "book 1");
+  await getBookSummary("lecture 1", "book 1");
+
+  assert.equal(
+    calls[0].url,
+    "https://chat.himpqblog.cn:5002/api/lectures/lecture%201/books/book%201/sections",
+  );
+  assert.equal(
+    calls[1].url,
+    "https://chat.himpqblog.cn:5002/api/lectures/lecture%201/books/book%201/chapter/2",
+  );
+  assert.equal(
+    calls[2].url,
+    "https://chat.himpqblog.cn:5002/api/lectures/lecture%201/books/book%201/annotations",
+  );
+  assert.equal(
+    calls[3].url,
+    "https://chat.himpqblog.cn:5002/api/lectures/lecture%201/books/book%201/summary",
+  );
+  assert.equal(calls[0].init.method, "GET");
+});
+
+test("book service posts parse and text upload actions", async () => {
+  const calls = installFetch({ success: true, book: { id: "book 1" }, chars: 12 });
+
+  await parseBookFile("lecture 1", "book 1");
+  await uploadBookText("lecture 1", "book 1", "chapter text");
+
+  assert.equal(
+    calls[0].url,
+    "https://chat.himpqblog.cn:5002/api/lectures/lecture%201/books/book%201/parse",
+  );
+  assert.equal(calls[0].init.method, "POST");
+  assert.deepEqual(JSON.parse(String(calls[0].init.body)), {});
+  assert.equal(
+    calls[1].url,
+    "https://chat.himpqblog.cn:5002/api/lectures/lecture%201/books/book%201/text",
+  );
+  assert.deepEqual(JSON.parse(String(calls[1].init.body)), { content: "chapter text" });
 });

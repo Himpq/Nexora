@@ -8,6 +8,7 @@ import {
   AppButton,
   AppCard,
   AppText,
+  Avatar,
   colors,
   FadeIn,
   haptics,
@@ -66,6 +67,11 @@ function getAuthorName(item: Pick<LearningFeedItem | LearningFeedComment, "autho
     )
       .trim() || "未知用户"
   );
+}
+
+function getAuthorAvatarUrl(item: Pick<LearningFeedItem | LearningFeedComment, "author">) {
+  const author = item.author || {};
+  return String(author.avatar_url || "").trim();
 }
 
 function getFeedContent(item: LearningFeedItem) {
@@ -529,11 +535,7 @@ export function LearningFeedScreen() {
             <FadeIn key={feedId || `feed-${index}`} index={index}>
             <AppCard style={styles.feedCard}>
               <View style={styles.feedHeader}>
-                <View style={styles.avatar}>
-                  <AppText style={styles.avatarText}>
-                    {getAuthorName(item).slice(0, 1).toUpperCase()}
-                  </AppText>
-                </View>
+                <Avatar uri={getAuthorAvatarUrl(item)} name={getAuthorName(item)} size="md" />
                 <View style={styles.titleBlock}>
                   <View style={styles.authorRow}>
                     <AppText variant="bodyStrong">{getAuthorName(item)}</AppText>
@@ -583,6 +585,11 @@ export function LearningFeedScreen() {
                     const commentId = String(comment.id || "").trim();
                     return (
                       <View key={commentId || `comment-${feedId}-${commentIndex}`} style={styles.commentRow}>
+                        <Avatar
+                          uri={getAuthorAvatarUrl(comment)}
+                          name={getAuthorName(comment)}
+                          size="sm"
+                        />
                         <View style={styles.titleBlock}>
                           <AppText variant="caption" tone="muted">
                             {getAuthorName(comment)}

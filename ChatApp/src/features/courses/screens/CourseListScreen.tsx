@@ -11,6 +11,7 @@ import {
   AppCard,
   AppText,
   colors,
+  CoverImage,
   FadeIn,
   radius,
   Screen,
@@ -24,6 +25,7 @@ import {
   getMaterials,
   selectLearning,
 } from "../../../services/frontendService";
+import { getLectureCoverUri } from "../../../services/imageService";
 import type { LectureRow } from "../../../services/types";
 import type { MainTabParamList, RootStackParamList } from "../../../navigation/types";
 import { normalizeError } from "../../../utils/errors";
@@ -56,9 +58,18 @@ function CourseCard({ row, selected, updating, onToggle, onOpen }: CourseCardPro
       ? row.books.length
       : 0;
   const meta = [category, status].filter(Boolean).join(" · ");
+  const coverUri = getLectureCoverUri(lecture);
 
   return (
     <AppCard style={styles.card} active={selected}>
+      {coverUri ? (
+        <CoverImage
+          uri={coverUri}
+          fallbackIcon="book-open"
+          style={styles.cardCover}
+          accessibilityLabel={getLectureTitle(row)}
+        />
+      ) : null}
       <View style={styles.cardHeader}>
         <View style={styles.titleBlock}>
           <AppText variant="heading">{getLectureTitle(row)}</AppText>
@@ -303,6 +314,11 @@ const styles = StyleSheet.create({
   },
   card: {
     gap: spacing.md,
+  },
+  cardCover: {
+    width: "100%",
+    aspectRatio: 16 / 9,
+    borderRadius: radius.md,
   },
   cardHeader: {
     alignItems: "flex-start",

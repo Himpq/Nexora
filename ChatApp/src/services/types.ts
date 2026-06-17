@@ -47,6 +47,9 @@ export type Lecture = {
   current_chapter?: string;
   next_chapter?: string;
   study_hours?: number;
+  cover_path?: string;
+  cover?: string;
+  teacher?: string | string[];
   [key: string]: unknown;
 };
 
@@ -66,6 +69,8 @@ export type Book = {
   chunks_count?: number;
   vector_count?: number;
   error?: string;
+  cover_path?: string;
+  cover?: string;
   [key: string]: unknown;
 };
 

@@ -8,6 +8,7 @@ import {
   AppButton,
   AppCard,
   AppText,
+  Avatar,
   colors,
   FadeIn,
   haptics,
@@ -49,6 +50,11 @@ export function SettingsScreen() {
   const role = String(context?.user?.role || "").trim();
   const integration = context?.integration || null;
   const connected = Boolean(integration?.connected);
+  const avatarUrl = String(
+    context?.user?.avatar_url
+      || (context?.user as { avatar?: unknown } | undefined)?.avatar
+      || "",
+  ).trim();
 
   return (
     <Screen scroll tabBarSpace>
@@ -65,11 +71,7 @@ export function SettingsScreen() {
         </View>
         <View style={styles.cardBody}>
           <View style={styles.identityRow}>
-            <View style={styles.avatar}>
-              <AppText style={styles.avatarText}>
-                {(username || "?").slice(0, 1).toUpperCase()}
-              </AppText>
-            </View>
+            <Avatar uri={avatarUrl} name={username || "?"} size="lg" />
             <View style={styles.identityText}>
               <AppText variant="heading">{username || "未登录"}</AppText>
               <AppText variant="caption" tone="tertiary">

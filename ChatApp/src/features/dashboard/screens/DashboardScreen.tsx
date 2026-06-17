@@ -12,6 +12,7 @@ import {
   AppCard,
   AppText,
   colors,
+  CoverImage,
   FadeIn,
   ProgressBar,
   radius,
@@ -23,6 +24,7 @@ import {
   Skeleton,
 } from "../../../design";
 import { getDashboard } from "../../../services/frontendService";
+import { getLectureCoverUri } from "../../../services/imageService";
 import type { DashboardResponse, LectureRow } from "../../../services/types";
 import type { MainTabParamList, RootStackParamList } from "../../../navigation/types";
 import { normalizeError } from "../../../utils/errors";
@@ -96,9 +98,18 @@ function LearningCourseCard({ row, onContinue }: LearningCourseCardProps) {
   const nextChapter = String(lecture.next_chapter || "").trim();
   const progress = clampProgress(lecture.progress);
   const meta = [category, status].filter(Boolean).join(" · ");
+  const coverUri = getLectureCoverUri(lecture);
 
   return (
     <AppCard style={styles.courseCard} onPress={onContinue}>
+      {coverUri ? (
+        <CoverImage
+          uri={coverUri}
+          fallbackIcon="book-open"
+          style={styles.courseCover}
+          accessibilityLabel={getLectureTitle(row)}
+        />
+      ) : null}
       <View style={styles.courseHeader}>
         <View style={styles.titleBlock}>
           <AppText variant="heading">{getLectureTitle(row)}</AppText>
@@ -367,6 +378,11 @@ const styles = StyleSheet.create({
   },
   courseCard: {
     gap: spacing.md,
+  },
+  courseCover: {
+    width: "100%",
+    aspectRatio: 16 / 9,
+    borderRadius: radius.md,
   },
   courseHeader: {
     alignItems: "flex-start",
