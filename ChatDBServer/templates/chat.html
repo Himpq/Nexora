@@ -20,6 +20,7 @@
 
     <!-- App Styles -->
     <link rel="stylesheet" href="/static/css/style.css?v=20260615_04">
+    <link rel="stylesheet" href="/static/css/learning_course_workspace.css?v=20260616_01">
     <link rel="stylesheet" href="/static/css/easymde_override.css?v=20260416_12">
 </head>
 <body>
@@ -33,6 +34,9 @@
                     </button>
                     <button type="button" class="sidebar-brand-tab" id="sidebarBrandLearningTab" data-sidebar-mode="learning" aria-pressed="false">
                         <span class="sidebar-brand-learning-text">Learning</span>
+                    </button>
+                    <button type="button" class="sidebar-brand-tab sidebar-brand-tab-workspace" id="sidebarBrandWorkspaceTab" data-sidebar-mode="workspace" aria-pressed="false" hidden>
+                        <span class="sidebar-brand-workspace-text">Workspace</span>
                     </button>
                 </div>
                 <button class="btn-icon" id="toggleSidebarMobile">
@@ -50,6 +54,7 @@
                 <!-- Dynamic List -->
             </div>
             <div class="sidebar-content learning-sidebar-panel" id="learningSidebarPanel" style="display:none;"></div>
+            <div class="sidebar-content learning-course-workspace-panel" id="learningCourseWorkspacePanel" hidden></div>
 
             <div class="sidebar-footer">
                 <!--<a href="/knowledge_graph" class="footer-link">-->
@@ -624,7 +629,8 @@
     
     <!-- Scripts -->
     <script src="/static/js/learning_workspace_layout.js?v=20260614_01"></script>
-    <script src="/static/js/chat.js?v=20260615_04"></script>
+    <script src="/static/js/chat.js?v=20260616_02"></script>
+    <script src="/static/js/learning_course_workspace.js?v=20260616_03"></script>
 
     <!-- 添加用户表单 -->
     <div id="addUserModal" class="modal-backdrop" style="z-index: 2200;">

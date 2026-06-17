@@ -801,9 +801,18 @@
 
         container.innerHTML =
             '<div class="nxkg-generating">' +
+            '<section class="nxkg-generating-panel">' +
             '<div class="nxkg-generating-head">正在生成思维导图...</div>' +
-            '<div class="nxkg-generating-lines"></div>' +
+            '<div class="nxkg-generating-sub">模型正在梳理课程大纲、章节关系和知识点层级</div>' +
+            '<div class="nxkg-generating-lines" aria-live="polite"></div>' +
+            '</section>' +
+            '<section class="nxkg-generating-preview">' +
+            '<div class="nxkg-generating-preview-head">' +
+            '<span>流式草稿</span>' +
+            '<span>实时更新</span>' +
+            '</div>' +
             '<pre class="nxkg-generating-draft"></pre>' +
+            '</section>' +
             '</div>';
 
         var linesEl = container.querySelector(".nxkg-generating-lines");

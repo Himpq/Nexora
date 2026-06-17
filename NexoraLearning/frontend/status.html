@@ -1,0 +1,539 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NexoraLearning Status</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --panel: #ffffff;
+      --soft: #f8fafc;
+      --ink: #111319;
+      --muted: #64748b;
+      --line: #e5e7eb;
+      --accent: #0f172a;
+      --accent-2: #2563eb;
+      --good: #16a34a;
+      --warn: #d97706;
+      --bad: #dc2626;
+      --radius: 18px;
+    }
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", Arial, sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+    }
+    .topbar {
+      height: 64px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 28px;
+      position: sticky;
+      top: 0;
+      background: rgba(255, 255, 255, 0.96);
+      backdrop-filter: blur(16px);
+      z-index: 5;
+    }
+    .brand {
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 26px;
+      line-height: 1;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+    .nav {
+      display: inline-flex;
+      gap: 10px;
+      align-items: center;
+    }
+    .nav a, .pill {
+      min-height: 34px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 13px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      color: #334155;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .page {
+      width: min(1180px, calc(100vw - 48px));
+      margin: 0 auto;
+      padding: 28px 0 70px;
+    }
+    .hero {
+      padding: 18px 4px 30px;
+      border-bottom: 1px solid var(--line);
+    }
+    .kicker {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      padding: 0 12px;
+      border-radius: 999px;
+      border: 1px solid #dbe3ef;
+      color: #475569;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    h1 {
+      margin: 14px 0 0;
+      max-width: 900px;
+      font-size: clamp(40px, 7vw, 76px);
+      line-height: 0.98;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+    .hero-desc {
+      margin: 18px 0 0;
+      max-width: 760px;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.7;
+    }
+    .snapshot {
+      margin-top: 16px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .summary-grid {
+      margin-top: 28px;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .card, .panel {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+    }
+    .card {
+      padding: 18px;
+      min-width: 0;
+    }
+    .label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .value {
+      margin-top: 10px;
+      font-size: 34px;
+      line-height: 1;
+      font-weight: 800;
+      letter-spacing: 0;
+      overflow-wrap: anywhere;
+    }
+    .hint {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .section {
+      padding: 32px 4px 0;
+    }
+    .section-head {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+    .section h2 {
+      margin: 0;
+      font-size: 28px;
+      letter-spacing: 0;
+    }
+    .section p {
+      margin: 6px 0 0;
+      max-width: 760px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .grid-two {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+    }
+    .panel {
+      padding: 22px;
+      min-width: 0;
+    }
+    .panel h3 {
+      margin: 0 0 18px;
+      font-size: 18px;
+    }
+    .metric-list, .event-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .metric-row, .event-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 14px;
+      align-items: center;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    .metric-row:last-child, .event-row:last-child {
+      border-bottom: 0;
+      padding-bottom: 0;
+    }
+    .metric-name, .event-name {
+      font-size: 14px;
+      font-weight: 750;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    .metric-note, .event-note {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+    .metric-value {
+      font-size: 24px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+    .bar {
+      margin-top: 12px;
+      height: 10px;
+      border-radius: 999px;
+      background: #eef2f7;
+      overflow: hidden;
+    }
+    .bar span {
+      display: block;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #111827 0%, #2563eb 100%);
+      width: 0%;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      padding: 0 10px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: var(--soft);
+      color: #334155;
+      font-size: 12px;
+      font-weight: 750;
+      white-space: nowrap;
+    }
+    .badge.good { color: var(--good); border-color: #bbf7d0; background: #f0fdf4; }
+    .badge.warn { color: var(--warn); border-color: #fed7aa; background: #fffbeb; }
+    .badge.bad { color: var(--bad); border-color: #fecaca; background: #fef2f2; }
+    .empty {
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.6;
+      padding: 4px 0;
+    }
+    .footnote {
+      margin-top: 28px;
+      padding-top: 18px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+    @media (max-width: 960px) {
+      .summary-grid, .grid-two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 700px) {
+      .topbar { height: 56px; padding: 0 12px; }
+      .brand { font-size: 21px; }
+      .nav a:first-child { display: none; }
+      .page { width: min(100vw, calc(100vw - 20px)); padding-top: 14px; }
+      h1 { font-size: 34px; }
+      .summary-grid, .grid-two { grid-template-columns: 1fr; }
+      .card, .panel { border-radius: 14px; padding: 14px; }
+      .value { font-size: 28px; }
+      .section { padding-top: 24px; }
+      .section h2 { font-size: 22px; }
+      .metric-row, .event-row { grid-template-columns: 1fr; gap: 8px; }
+      .metric-value { font-size: 21px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/api/frontend/">NexoraLearning</a>
+    <nav class="nav" aria-label="status navigation">
+      <a href="/api/frontend/">学习看板</a>
+      <span class="pill" id="viewerPill">状态</span>
+    </nav>
+  </header>
+
+  <main class="page">
+    <section class="hero">
+      <span class="kicker">NexoraLearning</span>
+      <h1>学习服务状态</h1>
+      <p class="hero-desc" id="heroDesc">正在读取 Learning 服务状态。</p>
+      <div class="snapshot">
+        <span>快照时间</span>
+        <span class="pill" id="snapshotAt">--</span>
+      </div>
+      <div class="summary-grid" id="summaryGrid"></div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <div>
+          <h2>服务面板</h2>
+          <p>公开视图只展示运行状态和资源概览；登录后会追加当前用户自己的画像、内容生成和学习行为统计。</p>
+        </div>
+        <span class="badge" id="serviceBadge">loading</span>
+      </div>
+      <div class="grid-two">
+        <article class="panel">
+          <h3>运行状态</h3>
+          <div class="metric-list" id="serviceList"></div>
+        </article>
+        <article class="panel">
+          <h3>资源概览</h3>
+          <div class="metric-list" id="publicList"></div>
+        </article>
+      </div>
+    </section>
+
+    <section class="section" id="privateSection" hidden>
+      <div class="section-head">
+        <div>
+          <h2>我的学习状态</h2>
+          <p>这里的数据只来自当前登录用户的 Learning 目录和带用户标识的结构化事件。</p>
+        </div>
+      </div>
+      <div class="grid-two">
+        <article class="panel">
+          <h3>学习画像</h3>
+          <div id="profilePanel"></div>
+        </article>
+        <article class="panel">
+          <h3>内容生成</h3>
+          <div class="metric-list" id="contentPanel"></div>
+        </article>
+        <article class="panel">
+          <h3>防护与拦截</h3>
+          <div id="safetyPanel"></div>
+        </article>
+        <article class="panel">
+          <h3>学习行为</h3>
+          <div class="metric-list" id="activityPanel"></div>
+        </article>
+      </div>
+    </section>
+
+    <div class="footnote" id="footnote"></div>
+  </main>
+
+  <script>
+    const escapeHtml = (value) => String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+    const num = (value) => Number(value || 0).toLocaleString('zh-CN');
+    const percent = (value) => `${Number(value || 0).toFixed(1)}%`;
+    const timeText = (seconds) => {
+      const n = Number(seconds || 0);
+      if (!n) return '-';
+      try { return new Date(n * 1000).toLocaleString('zh-CN'); } catch (_) { return '-'; }
+    };
+
+    function metricRow(name, value, note) {
+      return `
+        <div class="metric-row">
+          <div>
+            <div class="metric-name">${escapeHtml(name)}</div>
+            <div class="metric-note">${escapeHtml(note || '')}</div>
+          </div>
+          <div class="metric-value">${escapeHtml(value)}</div>
+        </div>
+      `;
+    }
+
+    function renderSummary(status) {
+      const service = status.service || {};
+      const pub = status.public || {};
+      const priv = status.private || null;
+      const cards = [
+        ['服务状态', service.status === 'ok' ? 'OK' : 'Degraded', service.runtime_api_enabled ? 'Runtime API 已启用' : 'Runtime API 未启用'],
+        ['课程数', num(pub.lectures), 'Learning 服务中的公开课程资源'],
+        ['教材数', num(pub.books), 'Learning 服务中的教材资源'],
+        priv
+          ? ['画像完整度', percent((priv.profile || {}).completion_rate), `${num((priv.profile || {}).filled_dimensions)}/${num((priv.profile || {}).total_dimensions)} 个维度`]
+          : ['登录状态', 'Public', '仅显示公开服务状态']
+      ];
+      document.getElementById('summaryGrid').innerHTML = cards.map(([label, value, hint]) => `
+        <article class="card">
+          <div class="label">${escapeHtml(label)}</div>
+          <div class="value">${escapeHtml(value)}</div>
+          <div class="hint">${escapeHtml(hint)}</div>
+        </article>
+      `).join('');
+    }
+
+    function renderService(status) {
+      const service = status.service || {};
+      const pub = status.public || {};
+      const badge = document.getElementById('serviceBadge');
+      badge.textContent = service.status === 'ok' ? 'online' : 'degraded';
+      badge.className = `badge ${service.status === 'ok' ? 'good' : 'warn'}`;
+      document.getElementById('serviceList').innerHTML = [
+        metricRow('服务', service.name || 'NexoraLearning', `version ${service.version || '-'}`),
+        metricRow('数据目录', service.data_dir_ready ? 'Ready' : 'Missing', service.data_dir_ready ? '可读写数据目录已就绪' : '数据目录不可用'),
+        metricRow('Nexora 连接', service.nexora_base_url || '-', 'Learning 调用模型和用户信息的上游地址'),
+        metricRow('启用流水线', num((service.enabled_model_pipelines || []).length), (service.enabled_model_pipelines || []).join(', ') || '-')
+      ].join('');
+      document.getElementById('publicList').innerHTML = [
+        metricRow('课程资源', num(pub.lectures), 'lectures 目录'),
+        metricRow('教材资源', num(pub.books), 'books 目录'),
+        metricRow('事件日志', num(pub.structured_log_files), pub.latest_log || '-'),
+        metricRow('快照', status.snapshotAt || '-', 'status overview')
+      ].join('');
+    }
+
+    function renderPrivate(status) {
+      const viewer = status.viewer || {};
+      const priv = status.private || null;
+      document.getElementById('viewerPill').textContent = viewer.authenticated ? viewer.user_id : 'Public';
+      if (!priv || !viewer.authenticated) {
+        document.getElementById('privateSection').hidden = true;
+        document.getElementById('heroDesc').textContent = '当前为公开视图，仅展示 NexoraLearning 服务运行状态。';
+        return;
+      }
+      document.getElementById('heroDesc').textContent = `当前为 ${viewer.user_id} 的私有学习状态视图。`;
+      document.getElementById('privateSection').hidden = false;
+      renderProfile(priv.profile || {});
+      renderContent(priv.content_generation || {});
+      renderSafety(priv.safety || {});
+      renderActivity(priv.activity || {}, priv.telemetry || {});
+    }
+
+    function renderProfile(profile) {
+      const width = Math.max(0, Math.min(100, Number(profile.completion_rate || 0)));
+      const names = Array.isArray(profile.dimension_names) ? profile.dimension_names : [];
+      document.getElementById('profilePanel').innerHTML = `
+        <div class="metric-list">
+          ${metricRow('画像更新', num(profile.update_count), `最近更新时间 ${timeText(profile.updated_at)}`)}
+          ${metricRow('画像出题', num(profile.profile_question_count), '由画像链路触发的问题生成')}
+          ${metricRow('时间线记录', num((profile.progress_entries || 0) + (profile.attention_entries || 0)), '最近进步与需要注意')}
+        </div>
+        <div class="bar" aria-label="profile completion"><span style="width:${width}%"></span></div>
+        <div class="hint">${escapeHtml(names.join(' / ') || '暂无已填写画像维度')}</div>
+      `;
+    }
+
+    function renderContent(content) {
+      const counts = content.state_counts || {};
+      const recent = Array.isArray(content.recent_states) ? content.recent_states : [];
+      const recentHtml = recent.length
+        ? recent.map((item) => `
+            <div class="event-row">
+              <div>
+                <div class="event-name">${escapeHtml(item.lecture_id || '-')} · Chapter ${escapeHtml(item.chapter_index)}</div>
+                <div class="event-note">${escapeHtml(item.error || `raw ${num(item.raw_content_chars)} chars`)}</div>
+              </div>
+              <span class="badge ${item.status === 'done' ? 'good' : item.status === 'running' ? 'warn' : item.status === 'error' ? 'bad' : ''}">${escapeHtml(item.status || '-')}</span>
+            </div>
+          `).join('')
+        : '<div class="empty">暂无章节生成状态。</div>';
+      document.getElementById('contentPanel').innerHTML = [
+        metricRow('学习路径', num(content.learning_paths), `${num(content.courses)} 个个性化课程目录`),
+        metricRow('已生成章节', num(content.generated_chapters), 'chapter_*.md'),
+        metricRow('运行中', num(counts.running), '可恢复流式章节生成状态'),
+        metricRow('异常状态', num(counts.error), '需要重新触发或检查日志'),
+        `<div class="event-list">${recentHtml}</div>`
+      ].join('');
+    }
+
+    function renderSafety(safety) {
+      const recent = Array.isArray(safety.recent) ? safety.recent : [];
+      const recentHtml = recent.length
+        ? recent.map((item) => `
+            <div class="event-row">
+              <div>
+                <div class="event-name">${escapeHtml(item.event_type || '-')}</div>
+                <div class="event-note">${escapeHtml(item.title || item.timestamp || '-')}</div>
+              </div>
+              <span class="badge warn">guard</span>
+            </div>
+          `).join('')
+        : '<div class="empty">暂无当前用户可归因的防护拦截事件。</div>';
+      document.getElementById('safetyPanel').innerHTML = `
+        <div class="metric-list">
+          ${metricRow('防护拦截', num(safety.intercept_count), '包含拒写、质量回退、guard 等事件')}
+        </div>
+        <div class="event-list" style="margin-top:14px">${recentHtml}</div>
+      `;
+    }
+
+    function renderActivity(activity, telemetry) {
+      const streams = Array.isArray(telemetry.streams) ? telemetry.streams : [];
+      const streamNote = streams.map((item) => `${item.stream}: ${num(item.rows)}`).join(' · ') || '-';
+      document.getElementById('activityPanel').innerHTML = [
+        metricRow('学习记录', num(activity.learning_records), 'learning.jsonl'),
+        metricRow('通知', num(activity.notifications), `${num(activity.unread_notifications)} 条未移除`),
+        metricRow('题库', num(activity.question_bank_items), `${num(activity.question_completions)} 条完成记录`),
+        metricRow('遥测', num(telemetry.total_rows), streamNote)
+      ].join('');
+    }
+
+    async function loadStatus() {
+      let status = null;
+      try {
+        const res = await fetch('/api/status/overview', { credentials: 'include' });
+        const data = await res.json();
+        if (!res.ok || !data.success || !data.status) {
+          throw new Error(data.error || data.message || `HTTP ${res.status}`);
+        }
+        status = data.status;
+      } catch (err) {
+        document.getElementById('heroDesc').textContent = `状态读取失败：${String(err && err.message ? err.message : err)}`;
+        status = {
+          snapshotAt: '-',
+          service: { status: 'degraded', name: 'NexoraLearning', version: '-', data_dir_ready: false, runtime_api_enabled: false },
+          public: { lectures: 0, books: 0, structured_log_files: 0, latest_log: '' },
+          viewer: { authenticated: false, user_id: '', role: 'guest' },
+          private: null
+        };
+      }
+      document.getElementById('snapshotAt').textContent = status.snapshotAt || '-';
+      renderSummary(status);
+      renderService(status);
+      renderPrivate(status);
+      document.getElementById('footnote').textContent = status.viewer && status.viewer.authenticated
+        ? '私有指标按当前登录用户过滤。无用户归因的全局日志不会混入个人统计。'
+        : '未登录访问不会返回任何用户画像、通知、学习路径或章节生成明细。';
+    }
+
+    loadStatus();
+  </script>
+</body>
+</html>

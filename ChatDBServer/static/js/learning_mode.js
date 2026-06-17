@@ -641,7 +641,14 @@
         container.innerHTML = '<div class="learning-mode-shell"><div class="learning-mode-frame-wrap"></div></div>';
         const wrap = container.querySelector('.learning-mode-frame-wrap');
         if (!wrap) return;
-        wrap.appendChild(ensureSharedIframe('main', frontendUrl));
+        const frame = ensureSharedIframe('main', frontendUrl);
+        if (frame && frame.dataset.hostPointerRelayBound !== '1') {
+            frame.dataset.hostPointerRelayBound = '1';
+            frame.addEventListener('pointerdown', () => {
+                window.dispatchEvent(new CustomEvent('nexora:learning-frame-pointerdown'));
+            }, true);
+        }
+        wrap.appendChild(frame);
     }
 
     function renderSidebarMarkdown(target, role, text) {
