@@ -17,6 +17,8 @@ type AppInputProps = TextInputProps & {
   leading?: React.ReactNode;
   trailing?: React.ReactNode;
   invalid?: boolean;
+  /** "dark" renders for placement on an ink surface (e.g. the login card). */
+  theme?: "light" | "dark";
 };
 
 export function AppInput({
@@ -25,6 +27,7 @@ export function AppInput({
   leading,
   trailing,
   invalid,
+  theme = "light",
   style,
   multiline,
   onFocus,
@@ -32,19 +35,25 @@ export function AppInput({
   ...props
 }: AppInputProps) {
   const [focused, setFocused] = useState(false);
+  const dark = theme === "dark";
 
   return (
     <View style={[styles.wrapper, containerStyle]}>
       {label ? (
-        <AppText variant="label" tone="secondary" style={styles.label}>
+        <AppText
+          variant="label"
+          tone={dark ? "inverseMuted" : "secondary"}
+          style={styles.label}
+        >
           {label}
         </AppText>
       ) : null}
       <View
         style={[
           styles.field,
+          dark && styles.fieldDark,
           multiline && styles.fieldMultiline,
-          focused && styles.fieldFocused,
+          focused && (dark ? styles.fieldFocusedDark : styles.fieldFocused),
           invalid && styles.fieldInvalid,
         ]}
       >
@@ -52,7 +61,7 @@ export function AppInput({
         <TextInput
           {...props}
           multiline={multiline}
-          placeholderTextColor={colors.textMuted}
+          placeholderTextColor={dark ? "rgba(255,255,255,0.35)" : colors.textMuted}
           onFocus={(e) => {
             setFocused(true);
             onFocus?.(e);
@@ -61,7 +70,7 @@ export function AppInput({
             setFocused(false);
             onBlur?.(e);
           }}
-          style={[styles.input, multiline && styles.inputMultiline, style]}
+          style={[styles.input, dark && styles.inputDark, multiline && styles.inputMultiline, style]}
           textAlignVertical={multiline ? "top" : "center"}
         />
         {trailing ? <View style={styles.trailing}>{trailing}</View> : null}
@@ -95,6 +104,13 @@ const styles = StyleSheet.create({
   fieldFocused: {
     borderColor: colors.focus,
   },
+  fieldDark: {
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderColor: "rgba(255,255,255,0.12)",
+  },
+  fieldFocusedDark: {
+    borderColor: "rgba(255,255,255,0.55)",
+  },
   fieldInvalid: {
     borderColor: colors.danger,
   },
@@ -109,6 +125,9 @@ const styles = StyleSheet.create({
     fontSize: typography.body.fontSize,
     color: colors.text,
     paddingVertical: spacing.sm,
+  },
+  inputDark: {
+    color: colors.textInverse,
   },
   inputMultiline: {
     minHeight: 96,

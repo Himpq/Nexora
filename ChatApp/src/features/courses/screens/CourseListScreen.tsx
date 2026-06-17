@@ -11,9 +11,11 @@ import {
   AppCard,
   AppText,
   colors,
+  FadeIn,
   radius,
   Screen,
   ScreenHeader,
+  Skeleton,
   spacing,
   StateView,
 } from "../../../design";
@@ -56,12 +58,12 @@ function CourseCard({ row, selected, updating, onToggle, onOpen }: CourseCardPro
   const meta = [category, status].filter(Boolean).join(" · ");
 
   return (
-    <AppCard style={[styles.card, selected && styles.selectedCard]}>
+    <AppCard style={styles.card} active={selected}>
       <View style={styles.cardHeader}>
         <View style={styles.titleBlock}>
           <AppText variant="heading">{getLectureTitle(row)}</AppText>
           {meta ? (
-            <AppText variant="caption" tone="muted">
+            <AppText variant="caption" tone="tertiary">
               {meta}
             </AppText>
           ) : null}
@@ -76,7 +78,7 @@ function CourseCard({ row, selected, updating, onToggle, onOpen }: CourseCardPro
       ) : null}
 
       <View style={styles.metaRow}>
-        <AppText variant="caption" tone="muted">
+        <AppText variant="caption" tone="tertiary">
           教材 {booksCount} 本
         </AppText>
       </View>
@@ -202,15 +204,21 @@ export function CourseListScreen({ navigation }: CourseListScreenProps) {
 
   if (loading) {
     return (
-      <Screen>
-        <StateView title="正在加载课程" message="正在读取课程库和学习状态..." loading />
+      <Screen scroll tabBarSpace>
+        <Skeleton width="45%" height={28} style={styles.skeletonHeader} />
+        <Skeleton width="70%" height={14} style={styles.skeletonSub} />
+        <View style={styles.skeletonList}>
+          <Skeleton height={172} borderRadius={radius.lg} />
+          <Skeleton height={172} borderRadius={radius.lg} />
+          <Skeleton height={172} borderRadius={radius.lg} />
+        </View>
       </Screen>
     );
   }
 
   if (error) {
     return (
-      <Screen>
+      <Screen tabBarSpace>
         <StateView
           icon="alert-triangle"
           title="课程加载失败"
@@ -224,7 +232,7 @@ export function CourseListScreen({ navigation }: CourseListScreenProps) {
 
   if (rows.length === 0) {
     return (
-      <Screen>
+      <Screen tabBarSpace>
         <StateView
           icon="book"
           title="暂无课程"
@@ -237,7 +245,7 @@ export function CourseListScreen({ navigation }: CourseListScreenProps) {
   }
 
   return (
-    <Screen scroll>
+    <Screen scroll tabBarSpace>
       <ScreenHeader
         overline="Nexora"
         title="课程库"
@@ -269,18 +277,19 @@ export function CourseListScreen({ navigation }: CourseListScreenProps) {
         </AppCard>
       ) : null}
 
-      {rows.map((row) => {
+      {rows.map((row, i) => {
         const lectureId = String(row.lecture?.id || "").trim();
         const selected = selectedLectureIdSet.has(lectureId);
         return (
-          <CourseCard
-            key={lectureId || getLectureTitle(row)}
-            row={row}
-            selected={selected}
-            updating={updatingLectureId === lectureId}
-            onToggle={() => void handleToggle(row)}
-            onOpen={() => openCourseDetail(row)}
-          />
+          <FadeIn key={lectureId || getLectureTitle(row)} index={i}>
+            <CourseCard
+              row={row}
+              selected={selected}
+              updating={updatingLectureId === lectureId}
+              onToggle={() => void handleToggle(row)}
+              onOpen={() => openCourseDetail(row)}
+            />
+          </FadeIn>
         );
       })}
     </Screen>
@@ -295,10 +304,6 @@ const styles = StyleSheet.create({
   card: {
     gap: spacing.md,
   },
-  selectedCard: {
-    borderColor: colors.primary,
-    borderWidth: 2,
-  },
   cardHeader: {
     alignItems: "flex-start",
     flexDirection: "row",
@@ -306,6 +311,15 @@ const styles = StyleSheet.create({
   },
   metaRow: {
     paddingVertical: spacing.xs,
+  },
+  skeletonHeader: {
+    marginBottom: spacing.sm,
+  },
+  skeletonSub: {
+    marginBottom: spacing.lg,
+  },
+  skeletonList: {
+    gap: spacing.lg,
   },
   actions: {
     flexDirection: "row",

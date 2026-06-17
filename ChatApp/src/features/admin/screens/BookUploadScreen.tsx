@@ -2,16 +2,19 @@ import type { DocumentPickerAsset } from "expo-document-picker";
 import * as DocumentPicker from "expo-document-picker";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Pressable, StyleSheet, TextInput, View } from "react-native";
+import { StyleSheet, TextInput, View } from "react-native";
 
 import { useSession } from "../../../app/providers/SessionProvider";
 import {
+  AnimatedPressable,
   AppButton,
   AppCard,
   AppText,
   colors,
+  haptics,
   radius,
   Screen,
+  Skeleton,
   spacing,
   StateView,
 } from "../../../design";
@@ -188,8 +191,12 @@ export function BookUploadScreen({ navigation }: BookUploadScreenProps) {
 
   if (loading) {
     return (
-      <Screen>
-        <StateView title="正在加载课程" message="正在读取可上传教材的课程列表..." loading />
+      <Screen scroll>
+        <Skeleton width="40%" height={26} style={styles.skLine} />
+        <Skeleton width="80%" height={14} style={styles.skLine} />
+        <Skeleton height={72} borderRadius={radius.md} style={styles.skLine} />
+        <Skeleton height={72} borderRadius={radius.md} style={styles.skLine} />
+        <Skeleton height={240} borderRadius={radius.lg} />
       </Screen>
     );
   }
@@ -273,15 +280,15 @@ export function BookUploadScreen({ navigation }: BookUploadScreenProps) {
           const lectureId = String(row.lecture?.id || "").trim();
           const selected = lectureId === selectedLectureId;
           return (
-            <Pressable
+            <AnimatedPressable
               key={lectureId || getLectureTitle(row)}
               disabled={submitting}
-              onPress={() => setSelectedLectureId(lectureId)}
-              style={({ pressed }) => [
-                styles.lectureOption,
-                selected && styles.lectureOptionSelected,
-                pressed && styles.pressed,
-              ]}
+              onPress={() => {
+                haptics.selection();
+                setSelectedLectureId(lectureId);
+              }}
+              press={{ pressedScale: 0.98 }}
+              style={[styles.lectureOption, selected && styles.lectureOptionSelected]}
             >
               <View style={styles.titleBlock}>
                 <AppText variant="heading">{getLectureTitle(row)}</AppText>
@@ -297,7 +304,7 @@ export function BookUploadScreen({ navigation }: BookUploadScreenProps) {
                   {selected ? "已选择" : "选择"}
                 </AppText>
               </View>
-            </Pressable>
+            </AnimatedPressable>
           );
         })}
       </View>
@@ -423,9 +430,10 @@ const styles = StyleSheet.create({
   },
   lectureOptionSelected: {
     borderColor: colors.primary,
+    borderWidth: 1.5,
   },
-  pressed: {
-    opacity: 0.82,
+  skLine: {
+    marginBottom: spacing.lg,
   },
   badge: {
     borderRadius: 999,

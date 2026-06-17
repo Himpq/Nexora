@@ -10,7 +10,7 @@ type BookContentSectionProps = {
 export function BookContentSection({ title, content }: BookContentSectionProps) {
   return (
     <AppCard style={styles.card}>
-      <AppText variant="overline" tone="muted">
+      <AppText variant="overline" tone="tertiary">
         {title}
       </AppText>
       <AppText selectable style={styles.content}>
@@ -27,6 +27,7 @@ const styles = StyleSheet.create({
   content: {
     color: colors.text,
     fontSize: 16,
-    lineHeight: 27,
+    lineHeight: 28,
+    letterSpacing: 0.1,
   },
 });

@@ -1,7 +1,7 @@
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 
 import { useSession } from "../app/providers/SessionProvider";
-import { colors, StateView, Screen, typography } from "../design";
+import { colors, Screen, Skeleton, spacing, typography } from "../design";
 import { AdminHomeScreen } from "../features/admin/screens/AdminHomeScreen";
 import { BookUploadScreen } from "../features/admin/screens/BookUploadScreen";
 import { RefinementQueueScreen } from "../features/admin/screens/RefinementQueueScreen";
@@ -20,8 +20,11 @@ export function RootNavigator() {
 
   if (isBootstrapping) {
     return (
-      <Screen>
-        <StateView title="正在加载" message="正在恢复用户上下文..." loading />
+      <Screen scroll>
+        <Skeleton width="40%" height={28} style={{ marginBottom: spacing.lg }} />
+        <Skeleton height={120} borderRadius={16} style={{ marginBottom: spacing.lg }} />
+        <Skeleton height={88} borderRadius={16} style={{ marginBottom: spacing.lg }} />
+        <Skeleton height={180} borderRadius={16} />
       </Screen>
     );
   }

@@ -1,15 +1,19 @@
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Pressable, StyleSheet, View } from "react-native";
+import { StyleSheet, View } from "react-native";
 
 import { useSession } from "../../../app/providers/SessionProvider";
 import {
+  AnimatedPressable,
+  AppBadge,
   AppButton,
   AppCard,
   AppText,
   colors,
+  haptics,
   radius,
   Screen,
+  Skeleton,
   spacing,
   StateView,
 } from "../../../design";
@@ -54,15 +58,12 @@ function getStatusLabel(status?: string) {
   return value;
 }
 
-function getStatusTone(status?: string) {
+function getStatusTone(status?: string): "success" | "warning" | "danger" | "muted" {
   const value = String(status || "").trim().toLowerCase();
-  if (value === "done") {
-    return "secondary";
-  }
-  if (value === "error") {
-    return "danger";
-  }
-  return "primary";
+  if (value === "done") return "success";
+  if (value === "error") return "danger";
+  if (value === "vectorizing" || value === "queued") return "warning";
+  return "muted";
 }
 
 function toStatusSnapshot(book: Book | null): VectorizeStatusResponse | null {
@@ -242,8 +243,12 @@ export function VectorizeScreen({ navigation }: VectorizeScreenProps) {
 
   if (loading) {
     return (
-      <Screen>
-        <StateView title="正在加载向量化状态" message="正在读取课程和教材的向量化信息..." loading />
+      <Screen scroll>
+        <Skeleton width="45%" height={26} style={styles.skLine} />
+        <Skeleton width="80%" height={14} style={styles.skLine} />
+        <Skeleton height={72} borderRadius={radius.md} style={styles.skLine} />
+        <Skeleton height={72} borderRadius={radius.md} style={styles.skLine} />
+        <Skeleton height={160} borderRadius={radius.lg} />
       </Screen>
     );
   }
@@ -324,9 +329,10 @@ export function VectorizeScreen({ navigation }: VectorizeScreenProps) {
           const lectureSelected = lectureId === selectedLectureId;
           return (
             <View key={lectureId || getLectureTitle(row)} style={styles.lectureGroup}>
-              <Pressable
+              <AnimatedPressable
                 disabled={triggering || statusLoading}
               onPress={() => {
+                haptics.selection();
                 const nextLecture = lectureSelected ? "" : lectureId;
                 const nextBook = row.books?.[0]?.id || "";
                 setSelectedLectureId(nextLecture);
@@ -334,11 +340,8 @@ export function VectorizeScreen({ navigation }: VectorizeScreenProps) {
                 setSuccessMessage("");
                 setOperationError(null);
               }}
-                style={({ pressed }) => [
-                  styles.lectureOption,
-                  lectureSelected && styles.lectureOptionSelected,
-                  pressed && styles.pressed,
-                ]}
+                press={{ pressedScale: 0.98 }}
+                style={[styles.lectureOption, lectureSelected && styles.lectureOptionSelected]}
               >
                 <View style={styles.titleBlock}>
                   <AppText variant="heading">{getLectureTitle(row)}</AppText>
@@ -354,7 +357,7 @@ export function VectorizeScreen({ navigation }: VectorizeScreenProps) {
                     {lectureSelected ? "已展开" : "展开"}
                   </AppText>
                 </View>
-              </Pressable>
+              </AnimatedPressable>
 
               {lectureSelected ? (
                 <View style={styles.bookList}>
@@ -363,15 +366,15 @@ export function VectorizeScreen({ navigation }: VectorizeScreenProps) {
                       const bookId = String(book.id || "").trim();
                       const selected = bookId === selectedBookId;
                       return (
-                        <Pressable
+                        <AnimatedPressable
                           key={bookId || getBookTitle(book)}
                           disabled={triggering || statusLoading}
-                          onPress={() => selectBook(lectureId, bookId)}
-                          style={({ pressed }) => [
-                            styles.bookOption,
-                            selected && styles.bookOptionSelected,
-                            pressed && styles.pressed,
-                          ]}
+                          onPress={() => {
+                            haptics.selection();
+                            selectBook(lectureId, bookId);
+                          }}
+                          press={{ pressedScale: 0.98 }}
+                          style={[styles.bookOption, selected && styles.bookOptionSelected]}
                         >
                           <View style={styles.titleBlock}>
                             <AppText>{getBookTitle(book)}</AppText>
@@ -388,7 +391,7 @@ export function VectorizeScreen({ navigation }: VectorizeScreenProps) {
                               {selected ? "已选中" : "选择"}
                             </AppText>
                           </View>
-                        </Pressable>
+                        </AnimatedPressable>
                       );
                     })
                   ) : (
@@ -413,18 +416,19 @@ export function VectorizeScreen({ navigation }: VectorizeScreenProps) {
         </View>
 
         {statusLoading ? (
-          <AppText tone="secondary">正在读取向量化状态...</AppText>
+          <View style={styles.statusSkeleton}>
+            <Skeleton width="70%" height={14} />
+            <Skeleton width="50%" height={14} />
+          </View>
         ) : status ? (
           <>
             <View style={styles.statusGrid}>
-              <StatusCell label="状态" value={status.vector_status} />
+              <StatusCell label="状态" value={getStatusLabel(status.vector_status)} />
               <StatusCell label="分块" value={status.chunks_count} />
               <StatusCell label="向量" value={status.vector_count} />
               <StatusCell label="提供方" value={status.vector_provider} />
             </View>
-            <AppText variant="caption" tone={getStatusTone(status.vector_status)}>
-              {getStatusLabel(status.vector_status)}
-            </AppText>
+            <AppBadge label={getStatusLabel(status.vector_status)} tone={getStatusTone(status.vector_status)} />
             {status.error ? (
               <AppText variant="caption" tone="danger">
                 {status.error}
@@ -556,8 +560,11 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     fontWeight: "700",
   },
-  pressed: {
-    opacity: 0.82,
+  skLine: {
+    marginBottom: spacing.lg,
+  },
+  statusSkeleton: {
+    gap: spacing.sm,
   },
   statusCard: {
     gap: spacing.md,

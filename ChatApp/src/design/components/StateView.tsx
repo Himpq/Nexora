@@ -13,6 +13,10 @@ type StateViewProps = {
   icon?: keyof typeof Feather.glyphMap;
   actionLabel?: string;
   onAction?: () => void;
+  /** When provided alongside `loading`, render this skeleton instead of the spinner. */
+  skeleton?: React.ReactNode;
+  /** Compact variant: no icon wrap, smaller spacing. For inline use. */
+  compact?: boolean;
 };
 
 export function StateView({
@@ -22,33 +26,35 @@ export function StateView({
   icon,
   actionLabel,
   onAction,
+  skeleton,
+  compact = false,
 }: StateViewProps) {
+  // Skeleton-first loading: callers pass a skeleton node to keep layout stable.
+  if (loading && skeleton) {
+    return <View style={styles.skeletonHost}>{skeleton}</View>;
+  }
+
   return (
-    <View style={styles.container}>
+    <View style={compact ? styles.containerCompact : styles.container}>
       {loading ? (
         <View style={styles.iconWrap}>
           <ActivityIndicator color={colors.primary} />
         </View>
       ) : icon ? (
-        <View style={styles.iconWrap}>
-          <Feather name={icon} size={28} color={colors.primary} />
+        <View style={[styles.iconWrap, compact && styles.iconWrapCompact]}>
+          <Feather name={icon} size={compact ? 22 : 28} color={colors.textSecondary} />
         </View>
       ) : null}
-      <AppText variant="heading" style={styles.center}>
+      <AppText variant={compact ? "heading" : "heading"} style={styles.center}>
         {title}
       </AppText>
       {message ? (
-        <AppText variant="body" tone="secondary" style={styles.center}>
+        <AppText variant="body" tone="secondary" style={[styles.center, styles.message]}>
           {message}
         </AppText>
       ) : null}
       {actionLabel && onAction ? (
-        <AppButton
-          title={actionLabel}
-          variant="outline"
-          onPress={onAction}
-          style={styles.action}
-        />
+        <AppButton title={actionLabel} variant="outline" onPress={onAction} style={styles.action} />
       ) : null}
     </View>
   );
@@ -62,6 +68,16 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     padding: spacing.xl,
   },
+  containerCompact: {
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.sm,
+    padding: spacing.lg,
+  },
+  skeletonHost: {
+    flex: 1,
+    padding: spacing.lg,
+  },
   iconWrap: {
     width: 64,
     height: 64,
@@ -71,8 +87,16 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceMuted,
     marginBottom: spacing.xs,
   },
+  iconWrapCompact: {
+    width: 48,
+    height: 48,
+    marginBottom: 0,
+  },
   center: {
     textAlign: "center",
+  },
+  message: {
+    maxWidth: 320,
   },
   action: {
     marginTop: spacing.sm,

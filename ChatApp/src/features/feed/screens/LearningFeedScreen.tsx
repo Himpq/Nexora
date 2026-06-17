@@ -1,16 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Pressable, StyleSheet, TextInput, View } from "react-native";
+import { StyleSheet, TextInput, View } from "react-native";
 
 import { useSession } from "../../../app/providers/SessionProvider";
 import {
+  AnimatedPressable,
   AppBadge,
   AppButton,
   AppCard,
   AppText,
   colors,
+  FadeIn,
+  haptics,
   radius,
   Screen,
   ScreenHeader,
+  Skeleton,
   spacing,
   StateView,
 } from "../../../design";
@@ -334,15 +338,23 @@ export function LearningFeedScreen() {
 
   if (loading) {
     return (
-      <Screen>
-        <StateView title="正在加载动态" message="正在读取 Learning Feed..." loading />
+      <Screen scroll tabBarSpace>
+        <Skeleton width="45%" height={26} style={styles.skHeader} />
+        <View style={styles.skPills}>
+          <Skeleton width={72} height={34} borderRadius={radius.pill} />
+          <Skeleton width={88} height={34} borderRadius={radius.pill} />
+          <Skeleton width={64} height={34} borderRadius={radius.pill} />
+        </View>
+        <Skeleton height={120} borderRadius={radius.lg} style={styles.skHeader} />
+        <Skeleton height={160} borderRadius={radius.lg} style={styles.skHeader} />
+        <Skeleton height={160} borderRadius={radius.lg} />
       </Screen>
     );
   }
 
   if (error) {
     return (
-      <Screen>
+      <Screen tabBarSpace>
         <StateView
           icon="alert-triangle"
           title="动态加载失败"
@@ -355,7 +367,7 @@ export function LearningFeedScreen() {
   }
 
   return (
-    <Screen scroll>
+    <Screen scroll tabBarSpace>
       <ScreenHeader
         overline="Nexora"
         title="学习动态"
@@ -374,15 +386,18 @@ export function LearningFeedScreen() {
         {channels.map((channel) => {
           const selected = channel.id === selectedChannelId;
           return (
-            <Pressable
+            <AnimatedPressable
               key={channel.id}
               disabled={Boolean(activeOperation)}
-              onPress={() => handleSelectChannel(channel.id)}
-              style={({ pressed }) => [
+              onPress={() => {
+                haptics.selection();
+                handleSelectChannel(channel.id);
+              }}
+              press={{ pressedScale: 0.95 }}
+              style={[
                 styles.channelPill,
                 selected && styles.channelPillSelected,
-                activeOperation && styles.channelPillDisabled,
-                pressed && styles.pressed,
+                activeOperation ? styles.channelPillDisabled : null,
               ]}
             >
               <AppText
@@ -391,7 +406,7 @@ export function LearningFeedScreen() {
               >
                 {getChannelTitle(channel)}
               </AppText>
-            </Pressable>
+            </AnimatedPressable>
           );
         })}
       </View>
@@ -511,7 +526,8 @@ export function LearningFeedScreen() {
           const liked = hasLiked(item, username);
           const comments = Array.isArray(item.comments) ? item.comments : [];
           return (
-            <AppCard key={feedId || `feed-${index}`} style={styles.feedCard}>
+            <FadeIn key={feedId || `feed-${index}`} index={index}>
+            <AppCard style={styles.feedCard}>
               <View style={styles.feedHeader}>
                 <View style={styles.avatar}>
                   <AppText style={styles.avatarText}>
@@ -544,19 +560,19 @@ export function LearningFeedScreen() {
               <AppText style={styles.feedContent}>{getFeedContent(item)}</AppText>
 
               <View style={styles.feedActions}>
-                <Pressable
-                  onPress={() => handleToggleLike(item)}
-                  style={({ pressed }) => [
-                    styles.likeButton,
-                    liked && styles.likeButtonActive,
-                    pressed && styles.pressed,
-                  ]}
+                <AnimatedPressable
+                  onPress={() => {
+                    haptics.impact("light");
+                    handleToggleLike(item);
+                  }}
+                  press={{ pressedScale: 0.92 }}
+                  style={[styles.likeButton, liked && styles.likeButtonActive]}
                 >
                   <AppText variant="caption" style={liked ? styles.likeTextActive : styles.likeText}>
                     {liked ? "♥" : "♡"} {item.likes_count || 0}
                   </AppText>
-                </Pressable>
-                <AppText variant="caption" tone="muted">
+                </AnimatedPressable>
+                <AppText variant="caption" tone="tertiary">
                   评论 {item.comments_count ?? comments.length}
                 </AppText>
               </View>
@@ -611,6 +627,7 @@ export function LearningFeedScreen() {
                 />
               </View>
             </AppCard>
+            </FadeIn>
           );
         })
       )}
@@ -642,6 +659,14 @@ const styles = StyleSheet.create({
   },
   channelPillDisabled: {
     opacity: 0.55,
+  },
+  skHeader: {
+    marginBottom: spacing.lg,
+  },
+  skPills: {
+    flexDirection: "row",
+    gap: spacing.sm,
+    marginBottom: spacing.lg,
   },
   channelPillText: {
     color: colors.textSecondary,

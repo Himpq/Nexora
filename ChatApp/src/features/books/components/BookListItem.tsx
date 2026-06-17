@@ -1,6 +1,7 @@
 import { StyleSheet, View } from "react-native";
+import { Feather } from "@expo/vector-icons";
 
-import { AppBadge, AppButton, AppCard, AppText, spacing } from "../../../design";
+import { AppBadge, AppCard, AppText, colors, radius, spacing } from "../../../design";
 import type { Book } from "../../../services/types";
 
 type BookListItemProps = {
@@ -27,12 +28,17 @@ export function BookListItem({ book, onPress }: BookListItemProps) {
   const meta = getBookMeta(book);
 
   return (
-    <AppCard style={styles.card}>
+    <AppCard style={styles.card} onPress={onPress}>
       <View style={styles.header}>
+        <View style={styles.cover}>
+          <Feather name="book" size={18} color={colors.textInverse} />
+        </View>
         <View style={styles.titleBlock}>
-          <AppText variant="heading">{getBookTitle(book)}</AppText>
+          <AppText variant="heading" numberOfLines={2}>
+            {getBookTitle(book)}
+          </AppText>
           {meta ? (
-            <AppText variant="caption" tone="muted">
+            <AppText variant="caption" tone="tertiary">
               {meta}
             </AppText>
           ) : null}
@@ -41,12 +47,17 @@ export function BookListItem({ book, onPress }: BookListItemProps) {
       </View>
 
       {description ? (
-        <AppText tone="secondary" numberOfLines={3}>
+        <AppText tone="secondary" numberOfLines={2}>
           {description}
         </AppText>
       ) : null}
 
-      <AppButton title="查看教材" variant="outline" onPress={onPress} fullWidth />
+      <View style={styles.footer}>
+        <AppText variant="label" tone="secondary">
+          查看教材
+        </AppText>
+        <Feather name="arrow-right" size={16} color={colors.text} />
+      </View>
     </AppCard>
   );
 }
@@ -56,12 +67,29 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   header: {
-    alignItems: "flex-start",
+    alignItems: "center",
     flexDirection: "row",
     gap: spacing.md,
+  },
+  cover: {
+    width: 40,
+    height: 40,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceInverse,
+    alignItems: "center",
+    justifyContent: "center",
   },
   titleBlock: {
     flex: 1,
     gap: spacing.xs,
+  },
+  footer: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: colors.borderFaint,
+    paddingTop: spacing.md,
   },
 });

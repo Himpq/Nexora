@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useCallback } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -7,16 +7,23 @@ import {
   StyleProp,
   ViewStyle,
 } from "react-native";
+import Animated from "react-native-reanimated";
 
 import { colors, radius, shadow, spacing } from "../tokens";
+import { haptics, type HapticIntensity } from "../hooks/useHaptic";
+import { useSpringPress } from "../hooks/useSpringPress";
 import { AppText } from "./AppText";
+
+const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
 type AppButtonProps = Omit<PressableProps, "style"> & {
   title: string;
-  variant?: "primary" | "secondary" | "ghost" | "outline" | "danger";
+  variant?: "primary" | "secondary" | "ghost" | "outline" | "danger" | "onInverse";
   size?: "sm" | "md";
   loading?: boolean;
   fullWidth?: boolean;
+  /** Haptic fired on press-in. Pass false to disable. */
+  haptic?: HapticIntensity | false;
   style?: StyleProp<ViewStyle>;
 };
 
@@ -26,43 +33,75 @@ export function AppButton({
   size = "md",
   loading = false,
   fullWidth = false,
+  haptic = variant === "primary" || variant === "danger" || variant === "onInverse"
+    ? "light"
+    : false,
   disabled,
   style,
+  onPressIn,
+  onPressOut,
   ...props
 }: AppButtonProps) {
   const isDisabled = disabled || loading;
   const spinnerColor =
-    variant === "primary" || variant === "danger" ? colors.onPrimary : colors.text;
+    variant === "primary" || variant === "danger"
+      ? colors.onPrimary
+      : variant === "onInverse"
+        ? colors.text
+        : colors.text;
+  const { pressStyle, onPressIn: springIn, onPressOut: springOut } = useSpringPress({
+    pressedScale: 0.97,
+    preset: "responsive",
+    haptic,
+  });
+
+  const handlePressIn = useCallback(
+    (e: Parameters<NonNullable<PressableProps["onPressIn"]>>[0]) => {
+      if (!isDisabled) springIn();
+      onPressIn?.(e);
+    },
+    [isDisabled, onPressIn, springIn],
+  );
+
+  const handlePressOut = useCallback(
+    (e: Parameters<NonNullable<PressableProps["onPressOut"]>>[0]) => {
+      if (!isDisabled) springOut();
+      onPressOut?.(e);
+    },
+    [isDisabled, onPressOut, springOut],
+  );
 
   return (
-    <Pressable
+    <AnimatedPressable
       {...props}
       disabled={isDisabled}
-      style={({ pressed }) => [
+      onPressIn={handlePressIn}
+      onPressOut={handlePressOut}
+      style={[
         styles.base,
         size === "sm" ? styles.sizeSm : styles.sizeMd,
         variantStyles[variant],
         variant === "primary" && shadow.sm,
+        variant === "onInverse" && shadow.md,
         fullWidth && styles.fullWidth,
         isDisabled && styles.disabled,
-        pressed && !isDisabled && pressedStyles[variant],
-        pressed && !isDisabled && { transform: [{ scale: 0.98 }] },
+        !isDisabled && pressStyle,
         style,
       ]}
     >
       {loading ? (
         <ActivityIndicator color={spinnerColor} size="small" />
       ) : (
-        <AppText
-          variant={size === "sm" ? "label" : "bodyStrong"}
-          style={labelStyles[variant]}
-        >
+        <AppText variant={size === "sm" ? "label" : "bodyStrong"} style={labelStyles[variant]}>
           {title}
         </AppText>
       )}
-    </Pressable>
+    </AnimatedPressable>
   );
 }
+
+// Fire a notification haptic from outside (e.g. after a successful login submit).
+export const buttonHaptics = haptics;
 
 const styles = StyleSheet.create({
   base: {
@@ -106,14 +145,9 @@ const variantStyles = StyleSheet.create({
   danger: {
     backgroundColor: colors.danger,
   },
-});
-
-const pressedStyles = StyleSheet.create({
-  primary: { backgroundColor: colors.primaryPressed },
-  secondary: { backgroundColor: colors.border },
-  ghost: { backgroundColor: colors.surfaceMuted },
-  outline: { backgroundColor: colors.surfaceMuted },
-  danger: { opacity: 0.85 },
+  onInverse: {
+    backgroundColor: colors.surface,
+  },
 });
 
 const labelStyles = StyleSheet.create({
@@ -122,4 +156,5 @@ const labelStyles = StyleSheet.create({
   ghost: { color: colors.text },
   outline: { color: colors.text },
   danger: { color: colors.onPrimary },
+  onInverse: { color: colors.text },
 });

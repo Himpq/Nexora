@@ -3,10 +3,14 @@ import { StyleSheet, View } from "react-native";
 
 import { useSession } from "../../../app/providers/SessionProvider";
 import {
+  AppBadge,
   AppButton,
   AppCard,
   AppText,
+  FadeIn,
+  radius,
   Screen,
+  Skeleton,
   spacing,
   StateView,
 } from "../../../design";
@@ -143,8 +147,11 @@ export function RefinementQueueScreen() {
 
   if (loading) {
     return (
-      <Screen>
-        <StateView title="正在加载提炼队列" message="正在读取教材提炼状态..." loading />
+      <Screen scroll>
+        <Skeleton width="40%" height={26} style={styles.skLine} />
+        <Skeleton height={96} borderRadius={radius.lg} style={styles.skLine} />
+        <Skeleton height={200} borderRadius={radius.lg} style={styles.skLine} />
+        <Skeleton height={200} borderRadius={radius.lg} />
       </Screen>
     );
   }
@@ -223,13 +230,14 @@ export function RefinementQueueScreen() {
               />
             </View>
           </AppCard>
-          {items.map((item) => {
+          {items.map((item, index) => {
           const lectureId = String(item.lecture_id || "").trim();
           const bookId = String(item.book_id || "").trim();
           const itemKey = `${lectureId}:${bookId}`;
           const selected = selectedKeys.includes(itemKey);
           return (
-            <AppCard key={itemKey || getItemTitle(item)} style={styles.itemCard}>
+            <FadeIn key={itemKey || getItemTitle(item)} index={index}>
+            <AppCard style={styles.itemCard}>
               <View style={styles.itemHeader}>
                 <View style={styles.titleBlock}>
                   <AppText variant="heading">{getItemTitle(item)}</AppText>
@@ -321,12 +329,22 @@ export function RefinementQueueScreen() {
                 />
               </View>
             </AppCard>
+            </FadeIn>
           );
           })}
         </>
       )}
     </Screen>
   );
+}
+
+function statusTone(value?: string): "success" | "warning" | "danger" | "muted" {
+  const text = String(value || "").trim().toLowerCase();
+  if (!text) return "muted";
+  if (/(done|complete|success|completed|ready|finished)/.test(text)) return "success";
+  if (/(running|processing|pending|queued|progress|working)/.test(text)) return "warning";
+  if (/(error|failed|fail|stopped)/.test(text)) return "danger";
+  return "muted";
 }
 
 function StatusCell({
@@ -341,10 +359,10 @@ function StatusCell({
   const errorText = String(error || "").trim();
   return (
     <View style={styles.statusCell}>
-      <AppText variant="caption" tone="secondary">
+      <AppText variant="caption" tone="tertiary">
         {label}
       </AppText>
-      <AppText>{getStatusText(value)}</AppText>
+      <AppBadge label={getStatusText(value)} tone={statusTone(value)} />
       {errorText ? (
         <AppText variant="caption" tone="danger">
           {errorText}
@@ -363,6 +381,9 @@ const styles = StyleSheet.create({
   titleBlock: {
     flex: 1,
     gap: spacing.xs,
+  },
+  skLine: {
+    marginBottom: spacing.lg,
   },
   errorCard: {
     gap: spacing.sm,

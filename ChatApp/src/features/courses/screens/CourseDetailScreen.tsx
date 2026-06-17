@@ -1,17 +1,22 @@
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Linking, Pressable, StyleSheet, View } from "react-native";
+import { Linking, StyleSheet, View } from "react-native";
+import { Feather } from "@expo/vector-icons";
 
 import { BookListItem } from "../../books/components/BookListItem";
 import {
+  AnimatedPressable,
   AppButton,
   AppCard,
   AppText,
   colors,
+  FadeIn,
+  ProgressBar,
   radius,
   Screen,
   ScreenHeader,
   SectionHeader,
+  Skeleton,
   spacing,
   StateView,
 } from "../../../design";
@@ -148,8 +153,11 @@ export function CourseDetailScreen({ navigation, route }: CourseDetailScreenProp
 
   if (loading) {
     return (
-      <Screen>
-        <StateView title="正在加载课程" message="正在读取课程教材..." loading />
+      <Screen scroll>
+        <Skeleton width="60%" height={26} style={styles.skLine} />
+        <Skeleton height={140} borderRadius={radius.lg} style={styles.skLine} />
+        <Skeleton height={92} borderRadius={radius.lg} style={styles.skLine} />
+        <Skeleton height={92} borderRadius={radius.lg} />
       </Screen>
     );
   }
@@ -183,28 +191,22 @@ export function CourseDetailScreen({ navigation, route }: CourseDetailScreenProp
       <AppCard style={styles.summaryCard}>
         <View style={styles.summaryRow}>
           <View style={styles.summaryItem}>
-            <AppText variant="display" style={styles.summaryValue}>
-              {books.length}
-            </AppText>
-            <AppText variant="caption" tone="muted">
+            <AppText style={styles.summaryValue}>{books.length}</AppText>
+            <AppText variant="caption" tone="tertiary">
               教材数量
             </AppText>
           </View>
           <View style={styles.summaryDivider} />
           <View style={styles.summaryItem}>
-            <AppText variant="display" style={styles.summaryValue}>
-              {progress}%
-            </AppText>
-            <AppText variant="caption" tone="muted">
+            <AppText style={styles.summaryValue}>{progress}%</AppText>
+            <AppText variant="caption" tone="tertiary">
               学习进度
             </AppText>
           </View>
         </View>
-        <View style={styles.progressTrack}>
-          <View style={[styles.progressFill, { width: `${progress}%` }]} />
-        </View>
+        <ProgressBar value={progress} />
         {lecture?.current_chapter ? (
-          <AppText variant="caption" tone="muted">
+          <AppText variant="caption" tone="tertiary">
             当前章节：{String(lecture.current_chapter)}
             {lecture.next_chapter ? ` · 下一章：${String(lecture.next_chapter)}` : ""}
           </AppText>
@@ -290,30 +292,29 @@ export function CourseDetailScreen({ navigation, route }: CourseDetailScreenProp
           {visibleVideos.map((video, index) => {
             const url = String(video.url || "").trim();
             return (
-              <Pressable
+              <AnimatedPressable
                 key={url || `${getVideoTitle(video)}-${index}`}
                 disabled={!url}
                 onPress={() => void Linking.openURL(url)}
-                style={({ pressed }) => [styles.videoPressable, pressed && styles.pressed]}
+                style={styles.videoPressable}
               >
                 <AppCard style={styles.videoCard}>
                   <View style={styles.videoBadge}>
-                    <AppText variant="caption" tone="inverse">
-                      ▶
-                    </AppText>
+                    <Feather name="play" size={16} color={colors.textInverse} />
                   </View>
                   <View style={styles.titleBlock}>
                     <AppText variant="bodyStrong" numberOfLines={2}>
                       {getVideoTitle(video)}
                     </AppText>
                     {getVideoMeta(video) ? (
-                      <AppText variant="caption" tone="muted" numberOfLines={1}>
+                      <AppText variant="caption" tone="tertiary" numberOfLines={1}>
                         {getVideoMeta(video)}
                       </AppText>
                     ) : null}
                   </View>
+                  <Feather name="external-link" size={16} color={colors.textTertiary} />
                 </AppCard>
-              </Pressable>
+              </AnimatedPressable>
             );
           })}
         </View>
@@ -355,22 +356,18 @@ const styles = StyleSheet.create({
   },
   summaryValue: {
     fontSize: 28,
+    fontWeight: "800",
+    color: colors.text,
+    letterSpacing: -0.5,
+    includeFontPadding: false,
   },
   summaryDivider: {
     width: 1,
     height: 40,
     backgroundColor: colors.border,
   },
-  progressTrack: {
-    height: 6,
-    borderRadius: radius.pill,
-    backgroundColor: colors.surfaceMuted,
-    overflow: "hidden",
-  },
-  progressFill: {
-    height: "100%",
-    borderRadius: radius.pill,
-    backgroundColor: colors.primary,
+  skLine: {
+    marginBottom: spacing.lg,
   },
   outlineCard: {
     gap: spacing.md,
@@ -406,9 +403,6 @@ const styles = StyleSheet.create({
     height: 36,
     justifyContent: "center",
     width: 36,
-  },
-  pressed: {
-    opacity: 0.7,
   },
   errorCard: {
     borderLeftColor: colors.danger,

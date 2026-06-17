@@ -3,16 +3,27 @@ import type { CompositeScreenProps } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withDelay,
+  withRepeat,
+  withSequence,
+  withTiming,
+} from "react-native-reanimated";
 
 import { useSession } from "../../../app/providers/SessionProvider";
 import {
+  AnimatedPressable,
   AppButton,
   AppCard,
   AppText,
   colors,
+  haptics,
   radius,
   Screen,
   ScreenHeader,
+  Skeleton,
   spacing,
   StateView,
 } from "../../../design";
@@ -444,15 +455,18 @@ export function ConversationScreen({ navigation, route }: ConversationScreenProp
 
   if (loadingModels && loadingContext) {
     return (
-      <Screen>
-        <StateView title="正在加载问答" message="正在准备模型、上下文和对话目标..." loading />
+      <Screen scroll tabBarSpace>
+        <Skeleton width="55%" height={26} style={styles.skLine} />
+        <Skeleton height={120} borderRadius={radius.lg} style={styles.skLine} />
+        <Skeleton height={64} borderRadius={radius.lg} style={styles.skLine} />
+        <Skeleton height={64} borderRadius={radius.lg} />
       </Screen>
     );
   }
 
   if (error) {
     return (
-      <Screen>
+      <Screen tabBarSpace>
         <StateView
           icon="alert-triangle"
           title="AI 问答加载失败"
@@ -465,7 +479,7 @@ export function ConversationScreen({ navigation, route }: ConversationScreenProp
   }
 
   return (
-    <Screen scroll>
+    <Screen scroll tabBarSpace>
       <ScreenHeader
         overline="AI 问答"
         title={buildTargetLabel(target)}
@@ -511,9 +525,13 @@ export function ConversationScreen({ navigation, route }: ConversationScreenProp
               }
               const active = selectedModelValue === value;
               return (
-                <Pressable
+                <AnimatedPressable
                   key={value}
-                  onPress={() => setSelectedModel(value)}
+                  onPress={() => {
+                    haptics.selection();
+                    setSelectedModel(value);
+                  }}
+                  press={{ pressedScale: 0.95 }}
                   style={[styles.modelChip, active && styles.modelChipActive]}
                 >
                   <AppText
@@ -522,7 +540,7 @@ export function ConversationScreen({ navigation, route }: ConversationScreenProp
                   >
                     {getModelLabel(model, value)}
                   </AppText>
-                </Pressable>
+                </AnimatedPressable>
               );
             })}
           </ScrollView>
@@ -626,6 +644,7 @@ export function ConversationScreen({ navigation, route }: ConversationScreenProp
 
 function ChatBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === "user";
+  const streaming = message.status === "streaming";
   return (
     <View style={[styles.bubbleRow, isUser ? styles.bubbleRowUser : styles.bubbleRowAssistant]}>
       <View style={[styles.bubble, isUser ? styles.userBubble : styles.assistantBubble]}>
@@ -633,7 +652,7 @@ function ChatBubble({ message }: { message: ChatMessage }) {
           variant="overline"
           style={isUser ? styles.bubbleRoleUser : styles.bubbleRoleAssistant}
         >
-          {isUser ? "你" : message.status === "streaming" ? "助手 · 生成中" : "助手"}
+          {isUser ? "你" : streaming ? "助手 · 生成中" : "助手"}
         </AppText>
         {message.thinkingTitle ? (
           <AppText
@@ -650,10 +669,46 @@ function ChatBubble({ message }: { message: ChatMessage }) {
             </AppText>
           </View>
         ) : null}
-        <AppText style={isUser ? styles.bubbleTextUser : styles.bubbleTextAssistant}>
-          {message.content || "..."}
-        </AppText>
+        {streaming && !message.content ? (
+          <TypingDots />
+        ) : (
+          <AppText style={isUser ? styles.bubbleTextUser : styles.bubbleTextAssistant}>
+            {message.content}
+            {streaming ? <AppText style={styles.cursor}>▍</AppText> : null}
+          </AppText>
+        )}
       </View>
+    </View>
+  );
+}
+
+// Three pulsing dots while the assistant spins up its first token.
+function TypingDots() {
+  const a = useSharedValue(0);
+  const b = useSharedValue(0);
+  const c = useSharedValue(0);
+
+  useEffect(() => {
+    const loop = (v: typeof a) =>
+      withRepeat(
+        withSequence(withTiming(1, { duration: 380 }), withTiming(0.3, { duration: 380 })),
+        -1,
+        false,
+      );
+    a.value = loop(a);
+    b.value = withDelay(140, loop(b));
+    c.value = withDelay(280, loop(c));
+  }, [a, b, c]);
+
+  const s1 = useAnimatedStyle(() => ({ opacity: a.value }));
+  const s2 = useAnimatedStyle(() => ({ opacity: b.value }));
+  const s3 = useAnimatedStyle(() => ({ opacity: c.value }));
+
+  return (
+    <View style={styles.typingRow}>
+      <Animated.View style={[styles.typingDot, s1]} />
+      <Animated.View style={[styles.typingDot, s2]} />
+      <Animated.View style={[styles.typingDot, s3]} />
     </View>
   );
 }
@@ -745,6 +800,25 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceMuted,
     borderRadius: radius.sm,
     padding: spacing.sm,
+  },
+  cursor: {
+    color: colors.textTertiary,
+    fontWeight: "700",
+  },
+  typingRow: {
+    flexDirection: "row",
+    gap: 5,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.xs,
+  },
+  typingDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: colors.textTertiary,
+  },
+  skLine: {
+    marginBottom: spacing.lg,
   },
   errorCard: {
     alignItems: "center",

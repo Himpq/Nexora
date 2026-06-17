@@ -9,6 +9,8 @@ import {
   AppCard,
   AppText,
   colors,
+  FadeIn,
+  haptics,
   Screen,
   ScreenHeader,
   spacing,
@@ -24,7 +26,7 @@ type DetailRowProps = {
 function DetailRow({ label, value, tone = "primary", last = false }: DetailRowProps) {
   return (
     <View style={[styles.row, !last && styles.rowBorder]}>
-      <AppText variant="caption" tone="muted">
+      <AppText variant="caption" tone="tertiary">
         {label}
       </AppText>
       <AppText variant="label" tone={tone} style={styles.value} numberOfLines={1}>
@@ -49,12 +51,15 @@ export function SettingsScreen() {
   const connected = Boolean(integration?.connected);
 
   return (
-    <Screen scroll>
-      <ScreenHeader overline="Nexora" title="设置" />
+    <Screen scroll tabBarSpace>
+      <FadeIn index={0}>
+        <ScreenHeader overline="Nexora" title="我的" />
+      </FadeIn>
 
+      <FadeIn index={1}>
       <AppCard padded={false} style={styles.card}>
         <View style={styles.cardHead}>
-          <AppText variant="overline" tone="muted">
+          <AppText variant="overline" tone="tertiary">
             用户上下文
           </AppText>
         </View>
@@ -67,10 +72,11 @@ export function SettingsScreen() {
             </View>
             <View style={styles.identityText}>
               <AppText variant="heading">{username || "未登录"}</AppText>
-              <AppText variant="caption" tone="muted">
+              <AppText variant="caption" tone="tertiary">
                 {role || "未加载"} {isAdmin ? "· 管理员" : ""}
               </AppText>
             </View>
+            {isAdmin ? <AppBadge label="Admin" tone="solid" /> : null}
           </View>
           <DetailRow label="context username" value={context?.username || "未加载"} />
           <DetailRow label="角色" value={role || "未加载"} last />
@@ -85,6 +91,7 @@ export function SettingsScreen() {
             title="刷新上下文"
             variant="outline"
             size="sm"
+            haptic="light"
             loading={isContextLoading}
             onPress={() => void refreshContext()}
             style={styles.flexButton}
@@ -93,15 +100,21 @@ export function SettingsScreen() {
             title="切换用户"
             variant="ghost"
             size="sm"
-            onPress={() => void clearUsername()}
+            haptic="medium"
+            onPress={() => {
+              haptics.impact("medium");
+              void clearUsername();
+            }}
             style={styles.flexButton}
           />
         </View>
       </AppCard>
+      </FadeIn>
 
+      <FadeIn index={2}>
       <AppCard padded={false} style={styles.card}>
         <View style={styles.cardHead}>
-          <AppText variant="overline" tone="muted">
+          <AppText variant="overline" tone="tertiary">
             后端连通性
           </AppText>
           <AppBadge
@@ -119,16 +132,18 @@ export function SettingsScreen() {
             last
           />
           {integration?.message ? (
-            <AppText variant="caption" tone="muted" style={styles.errorText}>
+            <AppText variant="caption" tone="tertiary" style={styles.errorText}>
               {integration.message}
             </AppText>
           ) : null}
         </View>
       </AppCard>
+      </FadeIn>
 
+      <FadeIn index={3}>
       <AppCard padded={false} style={styles.card}>
         <View style={styles.cardHead}>
-          <AppText variant="overline" tone="muted">
+          <AppText variant="overline" tone="tertiary">
             应用信息
           </AppText>
         </View>
@@ -138,6 +153,7 @@ export function SettingsScreen() {
           <DetailRow label="Chat API" value={appEnv.chatDBServerBaseUrl} last />
         </View>
       </AppCard>
+      </FadeIn>
     </Screen>
   );
 }

@@ -8,19 +8,23 @@ type ScreenProps = ViewProps & {
   scroll?: boolean;
   edges?: ReadonlyArray<Edge>;
   avoidKeyboard?: boolean;
+  /** Reserve bottom space for the floating tab bar (tab-level screens only). */
+  tabBarSpace?: boolean;
 };
 
 export function Screen({
   scroll = false,
   edges = ["top", "left", "right"],
   avoidKeyboard = true,
+  tabBarSpace = false,
   style,
   children,
   ...props
 }: ScreenProps) {
+  const bottomSpace = tabBarSpace ? styles.tabBarSpace : null;
   const content = scroll ? (
     <ScrollView
-      contentContainerStyle={[styles.scrollContent, style]}
+      contentContainerStyle={[styles.scrollContent, bottomSpace, style]}
       showsVerticalScrollIndicator={false}
       keyboardShouldPersistTaps="handled"
       {...props}
@@ -28,7 +32,7 @@ export function Screen({
       {children}
     </ScrollView>
   ) : (
-    <View {...props} style={[styles.content, style]}>
+    <View {...props} style={[styles.content, bottomSpace, style]}>
       {children}
     </View>
   );
@@ -66,5 +70,9 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     padding: spacing.lg,
     gap: spacing.lg,
+  },
+  // Clear the floating tab bar (~64 bar + safe-area padding).
+  tabBarSpace: {
+    paddingBottom: 96,
   },
 });

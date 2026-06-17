@@ -7,8 +7,11 @@ import {
   AppButton,
   AppCard,
   AppText,
+  radius,
   Screen,
   ScreenHeader,
+  Skeleton,
+  SkeletonLine,
   spacing,
   StateView,
 } from "../../../design";
@@ -208,8 +211,19 @@ export function BookReaderScreen({ navigation, route }: BookReaderScreenProps) {
 
   if (loading) {
     return (
-      <Screen>
-        <StateView title={config.loadingTitle} message="正在读取教材内容..." loading />
+      <Screen scroll>
+        <Skeleton width="50%" height={26} style={styles.skTitle} />
+        <Skeleton height={88} borderRadius={radius.lg} style={styles.skTitle} />
+        <AppCard style={styles.skBody}>
+          <Skeleton width="40%" height={12} />
+          <View style={styles.skLines}>
+            <SkeletonLine />
+            <SkeletonLine />
+            <SkeletonLine width="92%" />
+            <SkeletonLine width="96%" />
+            <SkeletonLine width="60%" last />
+          </View>
+        </AppCard>
       </Screen>
     );
   }
@@ -255,11 +269,11 @@ export function BookReaderScreen({ navigation, route }: BookReaderScreenProps) {
       {firstChapter ? (
         <AppCard variant="muted" style={styles.chapterCard}>
           <View style={styles.chapterCopy}>
-            <AppText variant="overline" tone="muted">
+            <AppText variant="overline" tone="tertiary">
               章节进度
             </AppText>
             <AppText variant="bodyStrong">{firstChapter.name}</AppText>
-            <AppText variant="caption" tone="muted">
+            <AppText variant="caption" tone="tertiary">
               range: {firstChapter.range}
             </AppText>
             {chapterCompleteMessage ? (
@@ -301,5 +315,14 @@ const styles = StyleSheet.create({
   },
   chapterButton: {
     minWidth: 96,
+  },
+  skTitle: {
+    marginBottom: spacing.lg,
+  },
+  skBody: {
+    gap: spacing.md,
+  },
+  skLines: {
+    gap: 0,
   },
 });

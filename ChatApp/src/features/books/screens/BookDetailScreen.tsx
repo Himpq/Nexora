@@ -1,16 +1,20 @@
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Pressable, StyleSheet, View } from "react-native";
+import { StyleSheet, View } from "react-native";
+import { Feather } from "@expo/vector-icons";
 
 import {
+  AnimatedPressable,
   AppButton,
   AppCard,
   AppText,
   colors,
+  FadeIn,
   radius,
   Screen,
   ScreenHeader,
   SectionHeader,
+  Skeleton,
   spacing,
   StateView,
 } from "../../../design";
@@ -29,7 +33,7 @@ type BookDetailScreenProps = NativeStackScreenProps<RootStackParamList, "BookDet
 
 type ContentAction = {
   mode: BookContentMode;
-  glyph: string;
+  icon: keyof typeof Feather.glyphMap;
   title: string;
   description: string;
 };
@@ -37,19 +41,19 @@ type ContentAction = {
 const CONTENT_ACTIONS: ContentAction[] = [
   {
     mode: "text",
-    glyph: "¶",
+    icon: "file-text",
     title: "原文",
     description: "查看教材已上传或解析后的全文内容。",
   },
   {
     mode: "bookinfo",
-    glyph: "◔",
+    icon: "book-open",
     title: "概读",
     description: "查看管理员提炼生成的 bookinfo 内容。",
   },
   {
     mode: "bookdetail",
-    glyph: "◉",
+    icon: "layers",
     title: "精读",
     description: "查看管理员提炼生成的 bookdetail 内容。",
   },
@@ -190,8 +194,12 @@ export function BookDetailScreen({ navigation, route }: BookDetailScreenProps) {
 
   if (loading) {
     return (
-      <Screen>
-        <StateView title="正在加载教材" message="正在读取教材详情..." loading />
+      <Screen scroll>
+        <Skeleton width="55%" height={26} style={styles.skLine} />
+        <Skeleton height={72} borderRadius={radius.lg} style={styles.skLine} />
+        <Skeleton height={84} borderRadius={radius.lg} style={styles.skLine} />
+        <Skeleton height={84} borderRadius={radius.lg} style={styles.skLine} />
+        <Skeleton height={84} borderRadius={radius.lg} />
       </Screen>
     );
   }
@@ -222,31 +230,27 @@ export function BookDetailScreen({ navigation, route }: BookDetailScreenProps) {
 
       <SectionHeader title="阅读内容" subtitle="原文、概读和精读分别独立加载" />
 
-      {CONTENT_ACTIONS.map((action) => (
-        <Pressable
-          key={action.mode}
-          onPress={() => openReader(action.mode)}
-          style={({ pressed }) => [styles.actionWrap, pressed && styles.pressed]}
-        >
-          <AppCard style={styles.actionCard}>
-            <View style={styles.glyphBox}>
-              <AppText style={styles.glyph}>{action.glyph}</AppText>
-            </View>
-            <View style={styles.actionCopy}>
-              <AppText variant="heading">{action.title}</AppText>
-              <AppText variant="caption" tone="muted">
-                {action.description}
-              </AppText>
-            </View>
-            <AppText style={styles.chevron} tone="muted">
-              ›
-            </AppText>
-          </AppCard>
-        </Pressable>
+      {CONTENT_ACTIONS.map((action, index) => (
+        <FadeIn key={action.mode} index={index}>
+          <AnimatedPressable onPress={() => openReader(action.mode)} style={styles.actionWrap}>
+            <AppCard style={styles.actionCard}>
+              <View style={styles.glyphBox}>
+                <Feather name={action.icon} size={20} color={colors.textInverse} />
+              </View>
+              <View style={styles.actionCopy}>
+                <AppText variant="heading">{action.title}</AppText>
+                <AppText variant="caption" tone="tertiary">
+                  {action.description}
+                </AppText>
+              </View>
+              <Feather name="chevron-right" size={20} color={colors.textTertiary} />
+            </AppCard>
+          </AnimatedPressable>
+        </FadeIn>
       ))}
 
       <AppCard variant="muted">
-        <AppText variant="caption" tone="muted">
+        <AppText variant="caption" tone="tertiary">
           概读和精读由管理员提炼生成。尚未生成时，阅读页会显示等待处理状态。
         </AppText>
       </AppCard>
@@ -262,9 +266,11 @@ export function BookDetailScreen({ navigation, route }: BookDetailScreenProps) {
 
       <AppCard style={styles.graphCard}>
         {graphLoading ? (
-          <AppText variant="caption" tone="muted">
-            正在读取知识图谱...
-          </AppText>
+          <View style={styles.graphSkeleton}>
+            <Skeleton width="80%" height={14} />
+            <Skeleton width="60%" height={14} />
+            <Skeleton width="70%" height={14} />
+          </View>
         ) : graphChapters.length > 0 ? (
           graphChapters.slice(0, 4).map((chapter, index) => {
             const children = getNodeChildren(chapter);
@@ -278,7 +284,7 @@ export function BookDetailScreen({ navigation, route }: BookDetailScreenProps) {
                 <View style={styles.actionCopy}>
                   <AppText variant="bodyStrong">{getNodeTitle(chapter)}</AppText>
                   {chapter.summary || chapter.content ? (
-                    <AppText variant="caption" tone="muted" numberOfLines={2}>
+                    <AppText variant="caption" tone="tertiary" numberOfLines={2}>
                       {String(chapter.summary || chapter.content)}
                     </AppText>
                   ) : null}
@@ -292,7 +298,7 @@ export function BookDetailScreen({ navigation, route }: BookDetailScreenProps) {
             );
           })
         ) : (
-          <AppText variant="caption" tone="muted">
+          <AppText variant="caption" tone="tertiary">
             暂无知识图谱缓存。生成需要后端模型处理，可能需要一些时间。
           </AppText>
         )}
@@ -330,8 +336,11 @@ const styles = StyleSheet.create({
   actionWrap: {
     borderRadius: radius.lg,
   },
-  pressed: {
-    opacity: 0.7,
+  skLine: {
+    marginBottom: spacing.lg,
+  },
+  graphSkeleton: {
+    gap: spacing.sm,
   },
   actionCard: {
     alignItems: "center",
@@ -346,17 +355,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: colors.surfaceInverse,
   },
-  glyph: {
-    fontSize: 20,
-    color: colors.textInverse,
-  },
   actionCopy: {
     flex: 1,
     gap: spacing.xs,
-  },
-  chevron: {
-    fontSize: 28,
-    lineHeight: 28,
   },
   graphCard: {
     gap: spacing.md,

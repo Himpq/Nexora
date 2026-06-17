@@ -1,12 +1,15 @@
 import { useNavigation, type CompositeNavigationProp } from "@react-navigation/native";
 import type { BottomTabNavigationProp } from "@react-navigation/bottom-tabs";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import { Pressable, StyleSheet, View } from "react-native";
+import { StyleSheet, View } from "react-native";
+import { Feather } from "@expo/vector-icons";
 
 import {
+  AnimatedPressable,
   AppCard,
   AppText,
   colors,
+  FadeIn,
   radius,
   Screen,
   ScreenHeader,
@@ -21,7 +24,7 @@ type AdminNavigation = CompositeNavigationProp<
 
 type AdminAction = {
   key: string;
-  glyph: string;
+  icon: keyof typeof Feather.glyphMap;
   title: string;
   description: string;
   onPress: (navigation: AdminNavigation) => void;
@@ -30,28 +33,28 @@ type AdminAction = {
 const ADMIN_ACTIONS: AdminAction[] = [
   {
     key: "upload",
-    glyph: "↥",
+    icon: "upload-cloud",
     title: "上传教材",
     description: "上传新的教材文件并触发解析。",
     onPress: (navigation) => navigation.navigate("BookUpload"),
   },
   {
     key: "refine",
-    glyph: "⚗",
+    icon: "filter",
     title: "提炼队列",
     description: "查看并处理概读与精读提炼任务。",
     onPress: (navigation) => navigation.navigate("RefinementQueue"),
   },
   {
     key: "feed",
-    glyph: "◈",
+    icon: "rss",
     title: "学习动态",
     description: "管理频道与社区学习动态。",
     onPress: (navigation) => navigation.navigate("MainTabs", { screen: "Feed" }),
   },
   {
     key: "vectorize",
-    glyph: "⊞",
+    icon: "cpu",
     title: "向量化监控",
     description: "监控教材向量化处理状态。",
     onPress: (navigation) => navigation.navigate("Vectorize"),
@@ -62,40 +65,32 @@ export function AdminHomeScreen() {
   const navigation = useNavigation<AdminNavigation>();
 
   return (
-    <Screen scroll>
-      <ScreenHeader
-        overline="Admin"
-        title="内容管理"
-        subtitle="教材上传、提炼队列和向量化状态"
-      />
+    <Screen scroll tabBarSpace>
+      <FadeIn index={0}>
+        <ScreenHeader
+          overline="Admin"
+          title="内容管理"
+          subtitle="教材上传、提炼队列和向量化状态"
+        />
+      </FadeIn>
 
-      <AppCard variant="muted">
-        <AppText variant="caption" tone="muted">
-          管理端切片应在学习者主路径稳定后实现，包括教材上传、提炼队列和向量化状态。
-        </AppText>
-      </AppCard>
-
-      {ADMIN_ACTIONS.map((action) => (
-        <Pressable
-          key={action.key}
-          onPress={() => action.onPress(navigation)}
-          style={({ pressed }) => [styles.wrap, pressed && styles.pressed]}
-        >
-          <AppCard style={styles.actionCard}>
-            <View style={styles.glyphBox}>
-              <AppText style={styles.glyph}>{action.glyph}</AppText>
-            </View>
-            <View style={styles.copy}>
-              <AppText variant="heading">{action.title}</AppText>
-              <AppText variant="caption" tone="muted">
-                {action.description}
-              </AppText>
-            </View>
-            <AppText style={styles.chevron} tone="muted">
-              ›
-            </AppText>
-          </AppCard>
-        </Pressable>
+      {ADMIN_ACTIONS.map((action, index) => (
+        <FadeIn key={action.key} index={index + 1}>
+          <AnimatedPressable onPress={() => action.onPress(navigation)} style={styles.wrap}>
+            <AppCard style={styles.actionCard}>
+              <View style={styles.glyphBox}>
+                <Feather name={action.icon} size={20} color={colors.textInverse} />
+              </View>
+              <View style={styles.copy}>
+                <AppText variant="heading">{action.title}</AppText>
+                <AppText variant="caption" tone="tertiary">
+                  {action.description}
+                </AppText>
+              </View>
+              <Feather name="chevron-right" size={20} color={colors.textTertiary} />
+            </AppCard>
+          </AnimatedPressable>
+        </FadeIn>
       ))}
     </Screen>
   );
@@ -104,9 +99,6 @@ export function AdminHomeScreen() {
 const styles = StyleSheet.create({
   wrap: {
     borderRadius: radius.lg,
-  },
-  pressed: {
-    opacity: 0.7,
   },
   actionCard: {
     alignItems: "center",
@@ -121,16 +113,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: colors.surfaceInverse,
   },
-  glyph: {
-    fontSize: 20,
-    color: colors.textInverse,
-  },
   copy: {
     flex: 1,
     gap: spacing.xs,
-  },
-  chevron: {
-    fontSize: 28,
-    lineHeight: 28,
   },
 });
