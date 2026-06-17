@@ -211,15 +211,9 @@ def prepend_learning_feed_item(cfg: Mapping[str, Any], record: Mapping[str, Any]
     return payload
 
 
-def list_learning_feed_items(
-    cfg: Mapping[str, Any],
-    *,
-    limit: int = 200,
-    channel_id: str = "",
-) -> List[Dict[str, Any]]:
+def list_learning_feed_items(cfg: Mapping[str, Any], *, limit: int = 200) -> List[Dict[str, Any]]:
     path = ensure_learning_feed_file(cfg)
     rows: List[Dict[str, Any]] = []
-    target_channel_id = str(channel_id or "").strip()
     try:
         for raw_line in path.read_text(encoding="utf-8").splitlines():
             raw_line = str(raw_line or "").strip()
@@ -230,10 +224,7 @@ def list_learning_feed_items(
             except Exception:
                 continue
             if isinstance(row, dict):
-                normalized = _normalize_feed_record(row)
-                if target_channel_id and str(normalized.get("channel_id") or "public_all").strip() != target_channel_id:
-                    continue
-                rows.append(normalized)
+                rows.append(_normalize_feed_record(row))
             if len(rows) >= max(1, int(limit or 200)):
                 break
     except Exception:

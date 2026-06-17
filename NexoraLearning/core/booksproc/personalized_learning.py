@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
@@ -16,6 +18,8 @@ HTML_TAG_PATTERN = re.compile(
     r"(?is)<\s*/?\s*[a-z][a-z0-9:-]*(?:\s+[^>]*)?\s*/?\s*>|"
     r"&lt;\s*/?\s*[a-z][a-z0-9:-]*(?:\s+[^&]*?)?/?\s*&gt;"
 )
+_GENERATION_LOCK = threading.RLock()
+_CHAPTER_GENERATION_JOBS: Dict[str, "ChapterGenerationJob"] = {}
 
 
 def _data_dir(cfg: Mapping[str, Any]) -> Path:
@@ -37,6 +41,22 @@ def _pre_reading_qa_path(cfg: Mapping[str, Any], user_id: str, lecture_id: str) 
 
 def _chapter_path(cfg: Mapping[str, Any], user_id: str, lecture_id: str, chapter_index: int) -> Path:
     return _course_dir(cfg, user_id, lecture_id) / f"chapter_{chapter_index}.md"
+
+
+def _chapter_generation_state_path(
+    cfg: Mapping[str, Any],
+    user_id: str,
+    lecture_id: str,
+    chapter_index: Optional[int] = None,
+) -> Path:
+    course_dir = _course_dir(cfg, user_id, lecture_id)
+    if chapter_index is None:
+        return course_dir / "chapter_generation_state.json"
+    return course_dir / f"chapter_generation_state_{int(chapter_index)}.json"
+
+
+def _chapter_generation_key(user_id: str, lecture_id: str, chapter_index: int) -> str:
+    return f"{str(user_id or '').strip()}::{str(lecture_id or '').strip()}::{int(chapter_index)}"
 
 
 def _read_json(path: Path) -> Optional[Dict[str, Any]]:
@@ -65,6 +85,263 @@ def _read_text(path: Path) -> Optional[str]:
 def _write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+class ChapterGenerationJob:
+    def __init__(
+        self,
+        cfg: Mapping[str, Any],
+        *,
+        user_id: str,
+        lecture_id: str,
+        chapter_index: int,
+        worker: Callable[[Callable[[str], None]], Dict[str, Any]],
+    ) -> None:
+        self.cfg = dict(cfg or {})
+        self.user_id = str(user_id or "").strip()
+        self.lecture_id = str(lecture_id or "").strip()
+        self.chapter_index = int(chapter_index)
+        self.job_id = f"lpchap_{uuid.uuid4().hex[:12]}"
+        self.status = "running"
+        self.raw_content = ""
+        self.content = ""
+        self.error = ""
+        self.started_at = int(time.time())
+        self.updated_at = self.started_at
+        self.finished_at = 0
+        self._last_persist_at = 0.0
+        self._worker = worker
+        self._condition = threading.Condition(threading.RLock())
+        self.thread = threading.Thread(
+            target=self._run,
+            name=f"personalized-chapter-{self.job_id}",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self._persist(force=True)
+        self.thread.start()
+
+    def append_delta(self, text: str) -> None:
+        piece = str(text or "")
+        if not piece:
+            return
+        with self._condition:
+            self.raw_content += piece
+            self.updated_at = int(time.time())
+            self._persist()
+            self._condition.notify_all()
+
+    def complete(self, result: Mapping[str, Any]) -> None:
+        with self._condition:
+            payload = dict(result or {})
+            self.status = "done"
+            self.content = str(payload.get("content") or "")
+            self.updated_at = int(time.time())
+            self.finished_at = self.updated_at
+            self._persist(force=True)
+            self._condition.notify_all()
+
+    def fail(self, error: str) -> None:
+        with self._condition:
+            self.status = "error"
+            self.error = str(error or "chapter generation failed")
+            self.updated_at = int(time.time())
+            self.finished_at = self.updated_at
+            self._persist(force=True)
+            self._condition.notify_all()
+
+    def snapshot(self) -> Dict[str, Any]:
+        with self._condition:
+            return {
+                "job_id": self.job_id,
+                "user_id": self.user_id,
+                "lecture_id": self.lecture_id,
+                "chapter_index": self.chapter_index,
+                "status": self.status,
+                "raw_content": self.raw_content,
+                "content": self.content,
+                "error": self.error,
+                "started_at": self.started_at,
+                "updated_at": self.updated_at,
+                "finished_at": self.finished_at,
+            }
+
+    def wait_for_change(self, raw_length: int, timeout: float = 30.0) -> Dict[str, Any]:
+        deadline = time.time() + max(0.1, float(timeout or 30.0))
+        with self._condition:
+            while (
+                len(self.raw_content) <= raw_length
+                and self.status == "running"
+                and time.time() < deadline
+            ):
+                self._condition.wait(timeout=max(0.1, deadline - time.time()))
+            return self.snapshot()
+
+    def _run(self) -> None:
+        try:
+            result = self._worker(self.append_delta)
+            self.complete(result if isinstance(result, Mapping) else {"content": str(result or "")})
+        except Exception as exc:
+            self.fail(str(exc))
+            log_event(
+                "personalized_chapter_generation_job_error",
+                str(exc),
+                payload={
+                    "job_id": self.job_id,
+                    "user_id": self.user_id,
+                    "lecture_id": self.lecture_id,
+                    "chapter_index": self.chapter_index,
+                },
+            )
+
+    def _persist(self, *, force: bool = False) -> None:
+        now = time.time()
+        if not force and now - self._last_persist_at < 1.0:
+            return
+        self._last_persist_at = now
+        _write_json(
+            _chapter_generation_state_path(self.cfg, self.user_id, self.lecture_id, self.chapter_index),
+            self.snapshot(),
+        )
+
+
+def load_chapter_generation_state(
+    cfg: Mapping[str, Any],
+    user_id: str,
+    lecture_id: str,
+    chapter_index: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    safe_uid = str(user_id or "").strip()
+    safe_lid = str(lecture_id or "").strip()
+    if not safe_uid or not safe_lid:
+        return None
+
+    if chapter_index is not None:
+        idx = int(chapter_index)
+        key = _chapter_generation_key(safe_uid, safe_lid, idx)
+        with _GENERATION_LOCK:
+            job = _CHAPTER_GENERATION_JOBS.get(key)
+            if job is not None:
+                snapshot = job.snapshot()
+                if snapshot.get("status") == "running":
+                    return snapshot
+
+        state = _read_json(_chapter_generation_state_path(cfg, safe_uid, safe_lid, idx))
+        if not isinstance(state, dict):
+            return None
+        status = str(state.get("status") or "").strip().lower()
+        if status != "running":
+            return state
+
+        # A persisted running state without an in-memory worker means the server restarted.
+        state["status"] = "error"
+        state["error"] = "chapter generation worker is no longer running"
+        state["finished_at"] = int(time.time())
+        _write_json(_chapter_generation_state_path(cfg, safe_uid, safe_lid, idx), state)
+        return state
+
+    with _GENERATION_LOCK:
+        for key, job in list(_CHAPTER_GENERATION_JOBS.items()):
+            if not key.startswith(f"{safe_uid}::{safe_lid}::"):
+                continue
+            snapshot = job.snapshot()
+            if snapshot.get("status") == "running":
+                return snapshot
+
+    state = _read_json(_chapter_generation_state_path(cfg, safe_uid, safe_lid))
+    if not isinstance(state, dict):
+        return None
+    status = str(state.get("status") or "").strip().lower()
+    if status != "running":
+        return state
+
+    # A persisted running state without an in-memory worker means the server restarted.
+    state["status"] = "error"
+    state["error"] = "chapter generation worker is no longer running"
+    state["finished_at"] = int(time.time())
+    _write_json(_chapter_generation_state_path(cfg, safe_uid, safe_lid), state)
+    return state
+
+
+def load_all_chapter_generation_states(
+    cfg: Mapping[str, Any],
+    user_id: str,
+    lecture_id: str,
+) -> List[Dict[str, Any]]:
+    safe_uid = str(user_id or "").strip()
+    safe_lid = str(lecture_id or "").strip()
+    if not safe_uid or not safe_lid:
+        return []
+
+    rows_by_index: Dict[int, Dict[str, Any]] = {}
+    with _GENERATION_LOCK:
+        for key, job in list(_CHAPTER_GENERATION_JOBS.items()):
+            if not key.startswith(f"{safe_uid}::{safe_lid}::"):
+                continue
+            snapshot = job.snapshot()
+            idx = int(snapshot.get("chapter_index") or -1)
+            if idx >= 0:
+                rows_by_index[idx] = snapshot
+
+    course_dir = _course_dir(cfg, safe_uid, safe_lid)
+    try:
+        paths = list(course_dir.glob("chapter_generation_state_*.json"))
+    except Exception:
+        paths = []
+
+    for path in paths:
+        state = _read_json(path)
+        if not isinstance(state, dict):
+            continue
+        idx = int(state.get("chapter_index") or -1)
+        if idx < 0 or idx in rows_by_index:
+            continue
+        rows_by_index[idx] = load_chapter_generation_state(cfg, safe_uid, safe_lid, idx) or state
+
+    legacy = load_chapter_generation_state(cfg, safe_uid, safe_lid)
+    if isinstance(legacy, dict):
+        idx = int(legacy.get("chapter_index") or -1)
+        if idx >= 0 and idx not in rows_by_index:
+            rows_by_index[idx] = legacy
+
+    return [rows_by_index[idx] for idx in sorted(rows_by_index)]
+
+
+def start_or_attach_chapter_generation(
+    cfg: Mapping[str, Any],
+    *,
+    user_id: str,
+    lecture_id: str,
+    chapter_index: int,
+    worker: Callable[[Callable[[str], None]], Dict[str, Any]],
+) -> Tuple[ChapterGenerationJob, str]:
+    safe_uid = str(user_id or "").strip()
+    safe_lid = str(lecture_id or "").strip()
+    idx = int(chapter_index)
+    if not safe_uid or not safe_lid:
+        raise ValueError("user_id and lecture_id are required")
+
+    key = _chapter_generation_key(safe_uid, safe_lid, idx)
+    with _GENERATION_LOCK:
+        existing = _CHAPTER_GENERATION_JOBS.get(key)
+        if existing is not None:
+            snapshot = existing.snapshot()
+            if snapshot.get("status") == "running":
+                mode = "attached" if int(snapshot.get("chapter_index") or -1) == idx else "attached_active"
+                return existing, mode
+            _CHAPTER_GENERATION_JOBS.pop(key, None)
+
+        job = ChapterGenerationJob(
+            cfg,
+            user_id=safe_uid,
+            lecture_id=safe_lid,
+            chapter_index=idx,
+            worker=worker,
+        )
+        _CHAPTER_GENERATION_JOBS[key] = job
+        job.start()
+        return job, "started"
 
 
 # ── 学习路线 ──────────────────────────────────────────────────────
@@ -127,6 +404,8 @@ def load_all_chapter_status(
         if not isinstance(ch, dict):
             continue
         has_content = _chapter_path(cfg, user_id, lecture_id, idx).exists()
+        generation_state = load_chapter_generation_state(cfg, user_id, lecture_id, idx)
+        generation_status = str((generation_state or {}).get("status") or "").strip().lower() if isinstance(generation_state, dict) else ""
         status = str(ch.get("status") or "pending").strip()
         learning_completed = status == "completed"
         result.append({
@@ -141,6 +420,10 @@ def load_all_chapter_status(
             "priority": int(ch.get("priority") or idx + 1),
             "reason": str(ch.get("reason") or "").strip(),
             "content_generated": has_content,
+            "content_generating": generation_status == "running",
+            "generation_status": generation_status,
+            "generation_job_id": str((generation_state or {}).get("job_id") or "") if isinstance(generation_state, dict) else "",
+            "generation_raw_content_chars": len(str((generation_state or {}).get("raw_content") or "")) if isinstance(generation_state, dict) else 0,
             "learning_completed": learning_completed,
             "completed_at": int(ch.get("completed_at") or 0) if learning_completed else 0,
         })

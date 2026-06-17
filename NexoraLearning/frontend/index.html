@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NexoraLearning 学习看板</title>
-  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260614_05">
-  <link rel="stylesheet" href="/api/frontend/assets/learning_panel.css?v=20260613_08">
-  <link rel="stylesheet" href="/api/frontend/assets/knowledge_graph.css">
+  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260616_01">
+  <link rel="stylesheet" href="/api/frontend/assets/learning_panel.css?v=20260616_05">
+  <link rel="stylesheet" href="/api/frontend/assets/knowledge_graph.css?v=20260615_01">
 </head>
 <body>
   <main class="learning-shell" id="learningPanel">
@@ -46,6 +46,7 @@
 
           <article class="panel-card profile-panel">
             <section id="userProfileCard" class="user-profile-card" aria-label="用户资料"></section>
+            <button id="learningStatusBtn" class="profile-status-icon" type="button" aria-label="NexoraLearning Status" title="NexoraLearning Status">i</button>
             <button id="profileAdminSettingsBtn" class="profile-admin-settings-icon" type="button" hidden aria-label="用户管理" title="用户管理">⚙</button>
           </article>
         </div>
@@ -326,7 +327,10 @@
       </article>
       <aside class="learning-path-outline-pane">
         <div class="learning-path-outline-header">
-          <div class="learning-path-outline-title">学习大纲</div>
+          <div class="learning-path-side-tabs" role="tablist" aria-label="学习路径侧栏">
+            <button id="learningPathOutlineTab" class="learning-path-side-tab is-active" type="button" data-lp-side-tab="outline" role="tab" aria-selected="true">学习大纲</button>
+            <button id="learningPathReportTab" class="learning-path-side-tab" type="button" data-lp-side-tab="report" role="tab" aria-selected="false">学习报告</button>
+          </div>
           <button id="learningPathOutlineToggle" class="learning-path-outline-toggle" type="button" aria-label="收起学习大纲" title="收起学习大纲" aria-expanded="true">
             <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
               <path d="M15 18l-6-6 6-6"></path>
@@ -390,8 +394,9 @@
   <script src="/api/frontend/assets/mermaid.min.js"></script>
   <script src="/api/frontend/assets/utils.js?v=20260610_04"></script>
   <script src="/api/frontend/assets/telemetry.js?v=20260610_04"></script>
-  <script src="/api/frontend/assets/knowledge_graph.js"></script>
-  <script src="/api/frontend/assets/app.js?v=20260614_05"></script>
+  <script src="/api/frontend/assets/knowledge_graph.js?v=20260615_01"></script>
+  <script src="/api/frontend/assets/app.js?v=20260616_03"></script>
+  <script src="/api/frontend/assets/course_workspace_bridge.js?v=20260616_06"></script>
 </body>
 </html>
 
