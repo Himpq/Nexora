@@ -343,6 +343,43 @@ body.learning-workspace-active .sidebar-content::-webkit-scrollbar-thumb:hover {
     white-space: nowrap; 
     min-width: 0; /* Critical for flex child truncation */
 }
+.conversation-item-right {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    margin-left: 8px;
+}
+.conversation-stream-indicator {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    color: #3b82f6;
+    flex-shrink: 0;
+}
+.conversation-stream-indicator.is-loading {
+    font-size: 12px;
+    opacity: 0.9;
+}
+.conversation-stream-indicator.is-unread::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: #2563eb;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.16);
+}
+.conversation-item:hover .conversation-stream-indicator,
+.conversation-item.active .conversation-stream-indicator {
+    color: currentColor;
+}
+.conversation-item:hover .conversation-stream-indicator.is-unread::before,
+.conversation-item.active .conversation-stream-indicator.is-unread::before {
+    background: currentColor;
+    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.18);
+}
 .conversation-mode-icon {
     margin-right: 6px;
     font-size: 11px;

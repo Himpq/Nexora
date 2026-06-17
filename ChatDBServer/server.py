@@ -35,7 +35,7 @@ from file_sandbox import UserFileSandbox
 from provider_factory import create_provider_adapter
 from client_tool_bridge import pull_pending_request, submit_request_result, enqueue_request, wait_for_result, pull_local_tool_request
 from agent_tunnel import register_agent, unregister_agent, update_agent_tools, update_agent_prompt, update_ping, is_agent_online, handle_agent_result
-from stream_runtime import start_session as start_stream_session, iter_session_chunks as iter_stream_session_chunks, get_session_meta as get_stream_session_meta, request_cancel as request_stream_cancel
+from stream_runtime import start_session as start_stream_session, iter_session_chunks as iter_stream_session_chunks, get_session_meta as get_stream_session_meta, request_cancel as request_stream_cancel, list_sessions as list_stream_sessions
 from tools import canonicalize_tool_name
 from secure import normalize_text, resolve_configured_path, safe_filename, safe_join_path
 from timeline import list_entries as list_timeline_entries, record_notes_snapshot_change
@@ -9705,8 +9705,9 @@ def chat_stream():
         lines.append('以上是用户提交的拼图结果，请评价其正确性并给出反馈，不要再次输出拼图工具。')
         return '\n'.join(lines)
 
-    def _stream_worker(push_chunk, set_conversation_id):
+    def _stream_worker(push_chunk, set_conversation_id, set_stage):
         try:
+            set_stage("normalizing_request")
             request_meta = normalize_longterm_request(
                 message=message,
                 conversation_mode=data.get('conversation_mode'),
@@ -9722,8 +9723,10 @@ def chat_stream():
                 conversation_mode=raw_conversation_mode,
                 message_chars=len(effective_message),
             )
+            set_stage("request_normalized", f"mode={raw_conversation_mode or 'chat'} chars={len(effective_message)}")
 
             if raw_conversation_mode == 'learning':
+                set_stage("building_learning_context")
                 try:
                     learning_runtime_payload = build_learning_context_payload(username, raw_conversation_mode_payload)
                     merged_payload = dict(raw_conversation_mode_payload)
@@ -9797,6 +9800,7 @@ def chat_stream():
                 conversation_mode=raw_conversation_mode,
                 context_block_count=len(raw_conversation_mode_payload.get('context_blocks', [])) if isinstance(raw_conversation_mode_payload, dict) and isinstance(raw_conversation_mode_payload.get('context_blocks', []), list) else 0,
             )
+            set_stage("learning_context_ready", f"mode={raw_conversation_mode or 'chat'}")
 
             effective_enable_tools = bool(enable_tools)
             effective_tool_mode = tool_mode
@@ -9818,8 +9822,10 @@ def chat_stream():
                 effective_enable_tools=bool(effective_enable_tools),
                 effective_tool_mode=str(effective_tool_mode or ""),
             )
+            set_stage("model_created", f"conversation_id={str(model.conversation_id or '')} tools={bool(effective_enable_tools)}")
 
             current_agent_info = _resolve_local_agent_info_for_chat()
+            set_stage("resolving_agent_tools")
             _chat_latency_mark("agent_info_worker_resolve", **_agent_info_latency_summary(current_agent_info))
 
             if current_agent_info:
@@ -9857,6 +9863,7 @@ def chat_stream():
                 conversation_id=model.conversation_id,
                 file_ids=file_ids
             )
+            set_stage("files_ready", f"file_count={len(prepared_file_ids) if isinstance(prepared_file_ids, list) else 0}")
             _chat_latency_mark(
                 "prepared_file_ids",
                 prepared_file_count=len(prepared_file_ids) if isinstance(prepared_file_ids, list) else 0,
@@ -9870,6 +9877,7 @@ def chat_stream():
                 push_chunk({'type': 'conversation_id', 'conversation_id': model.conversation_id})
 
             _chat_latency_mark("before_model_send_message")
+            set_stage("waiting_model_stream", f"model={model_name or model.model_name or ''}")
             first_model_chunk_seen = False
 
             for chunk in model.sendMessage(
@@ -9898,6 +9906,7 @@ def chat_stream():
             ):
                 if not first_model_chunk_seen:
                     first_model_chunk_seen = True
+                    set_stage("model_streaming", f"first_chunk={str((chunk or {}).get('type') if isinstance(chunk, dict) else type(chunk).__name__)}")
                     _chat_latency_mark(
                         "model_first_chunk",
                         chunk_type=str((chunk or {}).get('type') if isinstance(chunk, dict) else type(chunk).__name__),
@@ -9907,7 +9916,9 @@ def chat_stream():
                 if log_all_chunks:
                     _log_stream_chunk(chunk, model_name=model_name or model.model_name)
                 push_chunk(chunk if isinstance(chunk, dict) else {'type': 'content', 'content': str(chunk)})
+            set_stage("model_stream_exhausted")
         except Exception as e:
+            set_stage("worker_error", str(e)[:500])
             error_details = _format_exception_details(e)
             print(f"[STREAM_ERROR]\n{error_details}")
             if _is_rate_limit_exception(e):
@@ -9983,6 +9994,23 @@ def chat_stream_reconnect():
     resp.headers['X-Accel-Buffering'] = 'no'
     resp.headers['Connection'] = 'keep-alive'
     return resp
+
+
+@app.route('/api/chat/stream/status', methods=['GET', 'POST'])
+@require_login
+def chat_stream_status():
+    if request.method == 'POST':
+        data = request.get_json(silent=True) or {}
+        raw_ids = data.get('stream_ids', [])
+    else:
+        raw = str(request.args.get('stream_ids') or request.args.get('ids') or '').strip()
+        raw_ids = [part.strip() for part in raw.split(',')] if raw else []
+    if not isinstance(raw_ids, list):
+        raw_ids = []
+    stream_ids = [str(item or '').strip() for item in raw_ids if str(item or '').strip()]
+    username = session['username']
+    rows = list_stream_sessions(username=username, stream_ids=stream_ids, include_done=True)
+    return jsonify({'success': True, 'sessions': rows})
 
 
 @app.route('/api/client-tools/pull', methods=['POST'])

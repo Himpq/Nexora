@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from core.booksproc import build_memory_runner, get_memory_settings
 from core.runlog import log_event
-from core.user import ensure_user_files, read_memory, write_memory
+from core.user import append_notification, ensure_user_files, read_memory, write_memory
 
 # ── Profile dimension definitions ─────────────────────────────────────
 
@@ -144,6 +144,58 @@ def build_profile_extraction_prompt(
     )
 
 
+def _append_profile_update_notification(
+    cfg: Mapping[str, Any],
+    *,
+    user_id: str,
+    lecture_id: str,
+    job_id: str,
+    reason: str,
+    filled_count: int,
+) -> None:
+    try:
+        append_notification(
+            dict(cfg or {}),
+            user_id,
+            {
+                "type": "notification",
+                "source": "learning_profile",
+                "title": "学习画像已更新",
+                "content": f"NexoraLearning 已根据最近学习记录更新你的学习画像（{filled_count}/{len(PROFILE_DIMENSIONS)} 个维度已填写）。",
+                "jumpto": "learning_profile",
+                "job_id": job_id,
+                "lecture_id": lecture_id,
+                "reason": reason,
+                "filled_dimensions": filled_count,
+                "total_dimensions": len(PROFILE_DIMENSIONS),
+            },
+        )
+        log_event(
+            "profile_extraction_notification_done",
+            "学习画像更新通知已写入。",
+            payload={
+                "source": "learning_profile",
+                "job_id": job_id,
+                "user_id": user_id,
+                "lecture_id": lecture_id,
+                "filled_dimensions": filled_count,
+                "total_dimensions": len(PROFILE_DIMENSIONS),
+            },
+        )
+    except Exception as exc:
+        log_event(
+            "profile_extraction_notification_error",
+            "学习画像更新通知写入失败。",
+            payload={
+                "source": "learning_profile",
+                "job_id": job_id,
+                "user_id": user_id,
+                "lecture_id": lecture_id,
+                "error": str(exc),
+            },
+        )
+
+
 def run_profile_extraction_job(cfg: Mapping[str, Any], job: Mapping[str, Any]) -> None:
     """Execute profile extraction: use LLM to update user.md with structured dimensions."""
     user_id = str(job.get("user_id") or "").strip()
@@ -197,6 +249,15 @@ def run_profile_extraction_job(cfg: Mapping[str, Any], job: Mapping[str, Any]) -
     # Parse the updated profile for logging
     dimensions = parse_profile_dimensions(updated_md)
     filled_count = sum(1 for d in dimensions.values() if d.get("filled"))
+
+    _append_profile_update_notification(
+        cfg,
+        user_id=user_id,
+        lecture_id=lecture_id,
+        job_id=job_id,
+        reason=reason,
+        filled_count=filled_count,
+    )
 
     log_event(
         "profile_extraction_done",

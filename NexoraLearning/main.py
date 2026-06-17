@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
 from core.runlog import init_run_logger
 
@@ -250,6 +250,11 @@ def create_app():
             "service": "NexoraLearning", 
             "version": "0.1.0"
         })
+
+    @app.route("/status")
+    @app.route("/NexoraLearning/status")
+    def status_page():
+        return send_from_directory(str(ROOT / "frontend"), "status.html")
 
     return app, cfg
 

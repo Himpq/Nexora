@@ -443,21 +443,42 @@ body.nxkg-board-expanded {
 
 .nxkg-generating {
     display: grid;
-    grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+    grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
     gap: 16px;
     min-height: 420px;
     padding: 18px;
     border: 1px solid var(--nxkg-line);
     border-radius: 8px;
-    background: #ffffff;
+    background: #f8fafc;
     box-shadow: var(--nxkg-shadow);
+}
+
+.nxkg-generating-panel,
+.nxkg-generating-preview {
+    min-width: 0;
+    min-height: 0;
+    border: 1px solid #e4eaf3;
+    border-radius: 8px;
+    background: #ffffff;
+}
+
+.nxkg-generating-panel {
+    display: flex;
+    padding: 18px;
+    flex-direction: column;
+}
+
+.nxkg-generating-preview {
+    display: flex;
+    overflow: hidden;
+    flex-direction: column;
 }
 
 .nxkg-generating-head {
     display: flex;
     align-items: center;
     gap: 10px;
-    margin-bottom: 12px;
+    margin-bottom: 8px;
     color: var(--nxkg-ink);
     font-size: 14px;
     font-weight: 800;
@@ -473,9 +494,16 @@ body.nxkg-board-expanded {
     animation: nxkg-spin 0.85s linear infinite;
 }
 
+.nxkg-generating-sub {
+    margin-bottom: 16px;
+    color: var(--nxkg-muted);
+    font-size: 12px;
+    line-height: 1.6;
+}
+
 .nxkg-generating-lines {
     display: flex;
-    max-height: 360px;
+    max-height: 326px;
     margin: 0;
     overflow-y: auto;
     flex-direction: column;
@@ -492,14 +520,33 @@ body.nxkg-board-expanded {
     line-height: 1.5;
 }
 
+.nxkg-generating-preview-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 46px;
+    padding: 0 14px;
+    border-bottom: 1px solid #e4eaf3;
+    color: var(--nxkg-ink);
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.nxkg-generating-preview-head span:last-child {
+    color: var(--nxkg-muted);
+    font-size: 11px;
+    font-weight: 700;
+}
+
 .nxkg-generating-draft {
-    min-height: 380px;
-    max-height: 520px;
+    flex: 1 1 auto;
+    min-height: 0;
     margin: 0;
     padding: 14px;
     overflow-y: auto;
-    border: 1px solid #edf1f7;
-    border-radius: 8px;
+    border: 0;
+    border-radius: 0;
     background: #0f172a;
     color: #dbeafe;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -586,6 +633,10 @@ body.nxkg-board-expanded {
 @media (max-width: 900px) {
     .nxkg-generating {
         grid-template-columns: 1fr;
+    }
+
+    .nxkg-generating-lines {
+        max-height: 240px;
     }
 
     .nxkg-generating-draft {

@@ -2,7 +2,7 @@ import copy
 import threading
 import time
 import uuid
-from typing import Any, Callable, Dict, Generator, Optional, Tuple
+from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 
 
 _SESSIONS_LOCK = threading.Lock()
@@ -26,6 +26,10 @@ def _new_session(username: str, conversation_id: str = "") -> Dict[str, Any]:
         "last_seq": 0,
         "chunks": [],  # list[dict]
         "error": "",
+        "stage": "created",
+        "stage_detail": "",
+        "stage_updated_at": time.time(),
+        "last_chunk_type": "",
         "cancel_requested": False,
         "cancel_reason": "",
         "cond": threading.Condition(threading.Lock()),
@@ -53,7 +57,14 @@ def cleanup_sessions() -> None:
 def start_session(
     username: str,
     conversation_id: str,
-    worker: Callable[[Callable[[Dict[str, Any]], None], Callable[[str], None]], None],
+    worker: Callable[
+        [
+            Callable[[Dict[str, Any]], None],
+            Callable[[str], None],
+            Callable[[str, str], None],
+        ],
+        None,
+    ],
 ) -> str:
     cleanup_sessions()
     session = _new_session(username=username, conversation_id=conversation_id)
@@ -71,15 +82,30 @@ def start_session(
             session["updated_at"] = time.time()
             cond.notify_all()
 
+    def _set_stage(stage: str, detail: str = "") -> None:
+        stage_text = str(stage or "").strip()
+        if not stage_text:
+            return
+        cond = session["cond"]
+        with cond:
+            session["stage"] = stage_text
+            session["stage_detail"] = str(detail or "").strip()
+            session["stage_updated_at"] = time.time()
+            session["updated_at"] = time.time()
+            cond.notify_all()
+
     def _push_chunk(chunk: Dict[str, Any]) -> None:
         payload = copy.deepcopy(chunk) if isinstance(chunk, dict) else {"type": "message", "content": str(chunk)}
         cid = str(payload.get("conversation_id") or "").strip()
+        chunk_type = str(payload.get("type") or "").strip()
         cond = session["cond"]
         with cond:
             if bool(session.get("cancel_requested", False)):
                 raise RuntimeError(_CANCEL_SENTINEL)
             if cid:
                 session["conversation_id"] = cid
+            if chunk_type:
+                session["last_chunk_type"] = chunk_type
             session["last_seq"] = int(session["last_seq"]) + 1
             payload["_stream_seq"] = int(session["last_seq"])
             session["chunks"].append(payload)
@@ -94,12 +120,16 @@ def start_session(
         with cond:
             session["status"] = str(status or "done")
             session["error"] = str(error or "")
+            session["stage"] = "finished"
+            session["stage_detail"] = str(error or "")
+            session["stage_updated_at"] = time.time()
             session["updated_at"] = time.time()
             cond.notify_all()
 
     def _run():
         try:
-            worker(_push_chunk, _set_conversation_id)
+            _set_stage("worker_started")
+            worker(_push_chunk, _set_conversation_id, _set_stage)
             _finish("done", "")
         except RuntimeError as e:
             if _CANCEL_SENTINEL in str(e):
@@ -149,10 +179,45 @@ def get_session_meta(stream_id: str, username: Optional[str] = None) -> Optional
             "last_seq": int(s.get("last_seq") or 0),
             "created_at": float(s.get("created_at") or 0),
             "updated_at": float(s.get("updated_at") or 0),
+            "idle_seconds": max(0.0, time.time() - float(s.get("updated_at") or 0)),
+            "stage": str(s.get("stage") or ""),
+            "stage_detail": str(s.get("stage_detail") or ""),
+            "stage_updated_at": float(s.get("stage_updated_at") or 0),
+            "stage_idle_seconds": max(0.0, time.time() - float(s.get("stage_updated_at") or 0)),
+            "last_chunk_type": str(s.get("last_chunk_type") or ""),
             "error": str(s.get("error") or ""),
             "cancel_requested": bool(s.get("cancel_requested", False)),
             "cancel_reason": str(s.get("cancel_reason") or ""),
         }
+
+
+def list_sessions(
+    *,
+    username: Optional[str] = None,
+    stream_ids: Optional[List[str]] = None,
+    include_done: bool = True,
+) -> List[Dict[str, Any]]:
+    cleanup_sessions()
+    requested_ids = {
+        str(item or "").strip()
+        for item in (stream_ids or [])
+        if str(item or "").strip()
+    }
+    with _SESSIONS_LOCK:
+        ids = list(_SESSIONS.keys())
+
+    rows: List[Dict[str, Any]] = []
+    for sid in ids:
+        if requested_ids and sid not in requested_ids:
+            continue
+        meta = get_session_meta(sid, username=username)
+        if not meta:
+            continue
+        if not include_done and str(meta.get("status") or "") != "running":
+            continue
+        rows.append(meta)
+    rows.sort(key=lambda item: float(item.get("updated_at") or 0), reverse=True)
+    return rows
 
 
 def request_cancel(stream_id: str, username: Optional[str] = None, reason: str = "user_abort") -> bool:
