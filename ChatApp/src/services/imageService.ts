@@ -1,4 +1,4 @@
-import { getJson, learningApiClient } from "./apiClient";
+import { chatApiClient, getJson, learningApiClient } from "./apiClient";
 
 export type CoverAsset = {
   asset_key?: string;
@@ -28,6 +28,38 @@ const ABSOLUTE_URL_PATTERN = /^[a-z][a-z\d+\-.]*:\/\//i;
 const LOCALHOST_HOSTS = new Set(["127.0.0.1", "localhost", "0.0.0.0", "::1"]);
 
 /**
+ * Base URL of the Nexora user portal (a.k.a. ChatDBServer host) — this is
+ * where `/api/user/avatar/<id>` lives. `SessionProvider` sets it from the
+ * `integration.base_url` returned by `/api/frontend/context` so avatar URLs
+ * resolve to the same host the web frontend uses, instead of the
+ * NexoraLearning API host (where avatar paths would 404).
+ */
+let nexoraPortalBaseUrl = "";
+
+function normalizeBaseUrl(value: string) {
+  return String(value || "").trim().replace(/\/+$/, "");
+}
+
+function isUsableBaseUrl(value: string) {
+  if (!value) return false;
+  try {
+    const parsed = new URL(value);
+    const host = String(parsed.hostname || "").trim().toLowerCase();
+    return Boolean(host) && !LOCALHOST_HOSTS.has(host);
+  } catch (_err) {
+    return false;
+  }
+}
+
+export function setNexoraPortalBaseUrl(nextBaseUrl?: string | null) {
+  nexoraPortalBaseUrl = normalizeBaseUrl(String(nextBaseUrl || ""));
+}
+
+export function getNexoraPortalBaseUrl() {
+  return nexoraPortalBaseUrl;
+}
+
+/**
  * Resolve a relative `/api/...` path returned by the Nexora Learning backend
  * to a fully-qualified URL the React Native `<Image>` component can load.
  *
@@ -53,10 +85,15 @@ export function resolveLearningAssetUrl(path?: string | null): string {
 }
 
 /**
- * Avatar URLs returned by the Nexora portal can be relative (`/static/...`)
- * or absolute. Match the web frontend behaviour: absolute URLs pass through,
- * relative URLs only get the base host prepended when the host isn't a local
- * loopback (which would never resolve from a phone).
+ * Avatar URLs returned by the Nexora portal can be relative (`/api/user/avatar/...`)
+ * or absolute. They live on the Nexora portal host (ChatDBServer), NOT on the
+ * NexoraLearning API host. Match the web frontend behaviour:
+ * - absolute URLs pass through;
+ * - relative URLs get the Nexora portal base URL prepended (set from the
+ *   `integration.base_url` field of `/api/frontend/context`);
+ * - if the portal URL is not yet known, fall back to the configured chat
+ *   backend base URL, then to the learning API base URL — but only when the
+ *   host is not a local loopback (which would never resolve from a phone).
  */
 export function resolveAvatarUrl(rawUrl?: string | null): string {
   const value = String(rawUrl || "").trim();
@@ -64,23 +101,18 @@ export function resolveAvatarUrl(rawUrl?: string | null): string {
   if (ABSOLUTE_URL_PATTERN.test(value)) {
     return value;
   }
-  const baseUrl = String(learningApiClient.getState().baseUrl || "")
-    .trim()
-    .replace(/\/+$/, "");
-  if (!baseUrl) {
-    return value.startsWith("/") ? value : `/${value}`;
-  }
-  try {
-    const parsed = new URL(baseUrl);
-    const host = String(parsed.hostname || "").trim().toLowerCase();
-    if (host && !LOCALHOST_HOSTS.has(host)) {
-      const normalizedPath = value.startsWith("/") ? value : `/${value}`;
-      return `${baseUrl}${normalizedPath}`;
+  const normalizedPath = value.startsWith("/") ? value : `/${value}`;
+  const candidates = [
+    nexoraPortalBaseUrl,
+    normalizeBaseUrl(chatApiClient.getState().baseUrl || ""),
+    normalizeBaseUrl(learningApiClient.getState().baseUrl || ""),
+  ];
+  for (const candidate of candidates) {
+    if (isUsableBaseUrl(candidate)) {
+      return `${candidate}${normalizedPath}`;
     }
-  } catch (_err) {
-    /* fall through */
   }
-  return value;
+  return normalizedPath;
 }
 
 export function listLectureCoverAssets(lectureId: string) {

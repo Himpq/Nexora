@@ -11,6 +11,7 @@ import React, {
 
 import { setApiUsername } from "../../services/apiClient";
 import { getFrontendContext } from "../../services/frontendService";
+import { setNexoraPortalBaseUrl } from "../../services/imageService";
 import type { FrontendContext } from "../../services/types";
 import { normalizeError } from "../../utils/errors";
 
@@ -52,6 +53,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       setContext(null);
       setContextError(null);
       setIsContextLoading(false);
+      setNexoraPortalBaseUrl("");
       return;
     }
 
@@ -61,6 +63,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       const nextContext = await getFrontendContext(normalized);
       if (contextRequestIdRef.current === requestId) {
         setContext(nextContext);
+        setNexoraPortalBaseUrl(nextContext?.integration?.base_url);
       }
     } catch (err) {
       if (contextRequestIdRef.current === requestId) {
@@ -130,6 +133,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     setContext(null);
     setContextError(null);
     setIsContextLoading(false);
+    setNexoraPortalBaseUrl("");
   }, []);
 
   const value = useMemo<SessionState>(

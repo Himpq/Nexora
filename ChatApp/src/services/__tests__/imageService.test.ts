@@ -10,6 +10,7 @@ import {
   pickPrimaryCoverUri,
   resolveAvatarUrl,
   resolveLearningAssetUrl,
+  setNexoraPortalBaseUrl,
 } from "../imageService";
 
 type FetchCall = {
@@ -87,12 +88,31 @@ test("image service picks covers from backend records", () => {
 });
 
 test("image service resolves avatar URLs for the configured backend host", () => {
+  setNexoraPortalBaseUrl("");
+  // No portal base URL set -> falls back to chatApiClient host (ChatDBServer).
   assert.equal(
-    resolveAvatarUrl("/avatars/ada.png"),
-    "https://chat.himpqblog.cn:5002/avatars/ada.png",
+    resolveAvatarUrl("/api/user/avatar/ada?v=1"),
+    "https://chat.himpqblog.cn/api/user/avatar/ada?v=1",
   );
   assert.equal(
     resolveAvatarUrl("https://cdn.example.test/avatars/ada.png"),
     "https://cdn.example.test/avatars/ada.png",
   );
+});
+
+test("image service prefers the Nexora portal base URL when set", () => {
+  setNexoraPortalBaseUrl("https://portal.example.test");
+  try {
+    assert.equal(
+      resolveAvatarUrl("/api/user/avatar/ada?v=1"),
+      "https://portal.example.test/api/user/avatar/ada?v=1",
+    );
+    // Absolute URLs always pass through.
+    assert.equal(
+      resolveAvatarUrl("https://cdn.example.test/avatars/ada.png"),
+      "https://cdn.example.test/avatars/ada.png",
+    );
+  } finally {
+    setNexoraPortalBaseUrl("");
+  }
 });
