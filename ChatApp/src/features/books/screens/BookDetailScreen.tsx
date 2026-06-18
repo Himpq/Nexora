@@ -1,24 +1,39 @@
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { StyleSheet, View } from "react-native";
+import { Feather } from "@expo/vector-icons";
 
 import {
+  AnimatedPressable,
   AppButton,
   AppCard,
   AppText,
   colors,
+  FadeIn,
+  radius,
   Screen,
+  ScreenHeader,
+  SectionHeader,
+  Skeleton,
   spacing,
   StateView,
 } from "../../../design";
 import type { BookContentMode, RootStackParamList } from "../../../navigation/types";
 import { getBook } from "../../../services/bookService";
+import {
+  generateKnowledgeGraph,
+  getKnowledgeGraph,
+  type KnowledgeGraphNode,
+  type KnowledgeGraphResponse,
+} from "../../../services/learningExperienceService";
 import type { Book } from "../../../services/types";
+import { normalizeError } from "../../../utils/errors";
 
 type BookDetailScreenProps = NativeStackScreenProps<RootStackParamList, "BookDetail">;
 
 type ContentAction = {
   mode: BookContentMode;
+  icon: keyof typeof Feather.glyphMap;
   title: string;
   description: string;
 };
@@ -26,24 +41,23 @@ type ContentAction = {
 const CONTENT_ACTIONS: ContentAction[] = [
   {
     mode: "text",
+    icon: "file-text",
     title: "原文",
     description: "查看教材已上传或解析后的全文内容。",
   },
   {
     mode: "bookinfo",
+    icon: "book-open",
     title: "概读",
     description: "查看管理员提炼生成的 bookinfo 内容。",
   },
   {
     mode: "bookdetail",
+    icon: "layers",
     title: "精读",
     description: "查看管理员提炼生成的 bookdetail 内容。",
   },
 ];
-
-function normalizeError(err: unknown) {
-  return err instanceof Error ? err : new Error(String(err || "Unknown error"));
-}
 
 function getBookTitle(book: Book | null, fallback?: string) {
   return String(book?.title || fallback || "").trim() || "未命名教材";
@@ -62,9 +76,44 @@ function getBookMeta(book: Book | null) {
     .join(" · ");
 }
 
+function getGraphChapters(graph: KnowledgeGraphResponse["graph"] | null | undefined) {
+  if (!graph) {
+    return [];
+  }
+  if (Array.isArray(graph.chapters)) {
+    return graph.chapters;
+  }
+  if (Array.isArray(graph.nodes)) {
+    return graph.nodes;
+  }
+  return [];
+}
+
+function getNodeTitle(node: KnowledgeGraphNode) {
+  return String(node.title || node.name || node.label || node.id || "").trim() || "未命名知识点";
+}
+
+function getNodeChildren(node: KnowledgeGraphNode) {
+  if (Array.isArray(node.children)) {
+    return node.children;
+  }
+  if (Array.isArray(node.concepts)) {
+    return node.concepts;
+  }
+  if (Array.isArray(node.key_points)) {
+    return node.key_points;
+  }
+  return [];
+}
+
 export function BookDetailScreen({ navigation, route }: BookDetailScreenProps) {
   const { lectureId, lectureTitle, bookId, bookTitle } = route.params;
   const [book, setBook] = useState<Book | null>(null);
+  const [knowledgeGraph, setKnowledgeGraph] = useState<KnowledgeGraphResponse["graph"] | null>(null);
+  const [graphCached, setGraphCached] = useState(false);
+  const [graphLoading, setGraphLoading] = useState(true);
+  const [graphGenerating, setGraphGenerating] = useState(false);
+  const [graphError, setGraphError] = useState<Error | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
 
@@ -85,9 +134,44 @@ export function BookDetailScreen({ navigation, route }: BookDetailScreenProps) {
     }
   }, [bookId, lectureId]);
 
+  const loadKnowledgeGraph = useCallback(async () => {
+    setGraphLoading(true);
+    setGraphError(null);
+    try {
+      const result = await getKnowledgeGraph(lectureId, bookId);
+      setKnowledgeGraph(result.graph || null);
+      setGraphCached(Boolean(result.cached));
+    } catch (err) {
+      setKnowledgeGraph(null);
+      setGraphCached(false);
+      setGraphError(normalizeError(err));
+    } finally {
+      setGraphLoading(false);
+    }
+  }, [bookId, lectureId]);
+
+  const handleGenerateKnowledgeGraph = useCallback(async () => {
+    setGraphGenerating(true);
+    setGraphError(null);
+    try {
+      const result = await generateKnowledgeGraph(lectureId, bookId);
+      setKnowledgeGraph(result.graph || null);
+      setGraphCached(Boolean(result.cached));
+    } catch (err) {
+      setGraphError(normalizeError(err));
+    } finally {
+      setGraphGenerating(false);
+      setGraphLoading(false);
+    }
+  }, [bookId, lectureId]);
+
   useEffect(() => {
     void loadBook();
   }, [loadBook]);
+
+  useEffect(() => {
+    void loadKnowledgeGraph();
+  }, [loadKnowledgeGraph]);
 
   useEffect(() => {
     navigation.setOptions({ title });
@@ -106,10 +190,16 @@ export function BookDetailScreen({ navigation, route }: BookDetailScreenProps) {
     [bookId, lectureId, lectureTitle, navigation, title],
   );
 
+  const graphChapters = getGraphChapters(knowledgeGraph);
+
   if (loading) {
     return (
-      <Screen>
-        <StateView title="正在加载教材" message="正在读取教材详情..." loading />
+      <Screen scroll>
+        <Skeleton width="55%" height={26} style={styles.skLine} />
+        <Skeleton height={72} borderRadius={radius.lg} style={styles.skLine} />
+        <Skeleton height={84} borderRadius={radius.lg} style={styles.skLine} />
+        <Skeleton height={84} borderRadius={radius.lg} style={styles.skLine} />
+        <Skeleton height={84} borderRadius={radius.lg} />
       </Screen>
     );
   }
@@ -118,6 +208,7 @@ export function BookDetailScreen({ navigation, route }: BookDetailScreenProps) {
     return (
       <Screen>
         <StateView
+          icon="alert-triangle"
           title="教材加载失败"
           message={error.message}
           actionLabel="重试"
@@ -129,76 +220,167 @@ export function BookDetailScreen({ navigation, route }: BookDetailScreenProps) {
 
   return (
     <Screen scroll>
-      <View style={styles.header}>
-        <View style={styles.titleBlock}>
-          <AppText variant="title">{title}</AppText>
-          {meta ? (
-            <AppText variant="caption" tone="secondary">
-              {meta}
-            </AppText>
-          ) : null}
-        </View>
-        <AppButton title="刷新" variant="ghost" onPress={() => void loadBook()} />
-      </View>
+      <ScreenHeader title={title} subtitle={meta || undefined} />
 
       {book?.description ? (
-        <AppCard>
+        <AppCard variant="muted">
           <AppText tone="secondary">{String(book.description)}</AppText>
         </AppCard>
       ) : null}
 
-      <View style={styles.sectionHeader}>
-        <AppText variant="heading">阅读内容</AppText>
-        <AppText variant="caption" tone="secondary">
-          原文、概读和精读分别独立加载。
-        </AppText>
-      </View>
+      <SectionHeader title="阅读内容" subtitle="原文、概读和精读分别独立加载" />
 
-      {CONTENT_ACTIONS.map((action) => (
-        <AppCard key={action.mode} style={styles.actionCard}>
-          <View style={styles.actionCopy}>
-            <AppText variant="heading">{action.title}</AppText>
-            <AppText tone="secondary">{action.description}</AppText>
-          </View>
-          <AppButton title="打开" onPress={() => openReader(action.mode)} style={styles.actionButton} />
-        </AppCard>
+      {CONTENT_ACTIONS.map((action, index) => (
+        <FadeIn key={action.mode} index={index}>
+          <AnimatedPressable onPress={() => openReader(action.mode)} style={styles.actionWrap}>
+            <AppCard style={styles.actionCard}>
+              <View style={styles.glyphBox}>
+                <Feather name={action.icon} size={20} color={colors.textInverse} />
+              </View>
+              <View style={styles.actionCopy}>
+                <AppText variant="heading">{action.title}</AppText>
+                <AppText variant="caption" tone="tertiary">
+                  {action.description}
+                </AppText>
+              </View>
+              <Feather name="chevron-right" size={20} color={colors.textTertiary} />
+            </AppCard>
+          </AnimatedPressable>
+        </FadeIn>
       ))}
 
-      <AppCard style={styles.noteCard}>
-        <AppText variant="caption" tone="secondary">
+      <AppCard variant="muted">
+        <AppText variant="caption" tone="tertiary">
           概读和精读由管理员提炼生成。尚未生成时，阅读页会显示等待处理状态。
         </AppText>
+      </AppCard>
+
+      <SectionHeader
+        title="知识图谱"
+        subtitle={
+          graphChapters.length > 0
+            ? `${graphCached ? "缓存" : "最新"} · ${graphChapters.length} 组知识结构`
+            : "从概读/精读中提取章节和知识点"
+        }
+      />
+
+      <AppCard style={styles.graphCard}>
+        {graphLoading ? (
+          <View style={styles.graphSkeleton}>
+            <Skeleton width="80%" height={14} />
+            <Skeleton width="60%" height={14} />
+            <Skeleton width="70%" height={14} />
+          </View>
+        ) : graphChapters.length > 0 ? (
+          graphChapters.slice(0, 4).map((chapter, index) => {
+            const children = getNodeChildren(chapter);
+            return (
+              <View key={`${getNodeTitle(chapter)}-${index}`} style={styles.graphRow}>
+                <View style={styles.graphIndex}>
+                  <AppText variant="caption" tone="inverse">
+                    {index + 1}
+                  </AppText>
+                </View>
+                <View style={styles.actionCopy}>
+                  <AppText variant="bodyStrong">{getNodeTitle(chapter)}</AppText>
+                  {chapter.summary || chapter.content ? (
+                    <AppText variant="caption" tone="tertiary" numberOfLines={2}>
+                      {String(chapter.summary || chapter.content)}
+                    </AppText>
+                  ) : null}
+                  {children.length > 0 ? (
+                    <AppText variant="caption" tone="secondary" numberOfLines={1}>
+                      {children.slice(0, 5).map(getNodeTitle).join(" · ")}
+                    </AppText>
+                  ) : null}
+                </View>
+              </View>
+            );
+          })
+        ) : (
+          <AppText variant="caption" tone="tertiary">
+            暂无知识图谱缓存。生成需要后端模型处理，可能需要一些时间。
+          </AppText>
+        )}
+
+        {graphError ? (
+          <AppText variant="caption" tone="danger">
+            {graphError.message}
+          </AppText>
+        ) : null}
+
+        <View style={styles.graphActions}>
+          <AppButton
+            title={graphChapters.length > 0 ? "重新生成" : "生成图谱"}
+            variant="outline"
+            size="sm"
+            loading={graphGenerating}
+            onPress={() => void handleGenerateKnowledgeGraph()}
+            style={styles.graphButton}
+          />
+          <AppButton
+            title="刷新"
+            variant="ghost"
+            size="sm"
+            disabled={graphLoading || graphGenerating}
+            onPress={() => void loadKnowledgeGraph()}
+            style={styles.graphButton}
+          />
+        </View>
       </AppCard>
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  header: {
-    alignItems: "flex-start",
-    flexDirection: "row",
-    gap: spacing.md,
+  actionWrap: {
+    borderRadius: radius.lg,
   },
-  titleBlock: {
-    flex: 1,
-    gap: spacing.xs,
+  skLine: {
+    marginBottom: spacing.lg,
   },
-  sectionHeader: {
-    gap: spacing.xs,
+  graphSkeleton: {
+    gap: spacing.sm,
   },
   actionCard: {
     alignItems: "center",
     flexDirection: "row",
     gap: spacing.md,
   },
+  glyphBox: {
+    width: 44,
+    height: 44,
+    borderRadius: radius.md,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.surfaceInverse,
+  },
   actionCopy: {
     flex: 1,
     gap: spacing.xs,
   },
-  actionButton: {
-    minWidth: 88,
+  graphCard: {
+    gap: spacing.md,
   },
-  noteCard: {
-    backgroundColor: colors.surfaceMuted,
+  graphRow: {
+    alignItems: "flex-start",
+    flexDirection: "row",
+    gap: spacing.md,
+  },
+  graphIndex: {
+    alignItems: "center",
+    backgroundColor: colors.surfaceInverse,
+    borderRadius: radius.pill,
+    height: 24,
+    justifyContent: "center",
+    width: 24,
+  },
+  graphActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.sm,
+  },
+  graphButton: {
+    minWidth: 88,
   },
 });

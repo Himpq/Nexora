@@ -12,10 +12,17 @@ function extractTag(raw: string, tag: string) {
 
 export function parseAssistantResponse(rawContent: string): ParsedAssistantResponse {
   const raw = String(rawContent || "");
+  const thinkingTitle = extractTag(raw, "THINKING_TITLE");
+  const thinking = extractTag(raw, "THINKING");
   const final = extractTag(raw, "FINAL");
+  const cleaned = raw
+    .replace(/<THINKING_TITLE>[\s\S]*?<\/THINKING_TITLE>/gi, "")
+    .replace(/<THINKING>[\s\S]*?<\/THINKING>/gi, "")
+    .replace(/<FINAL>[\s\S]*?<\/FINAL>/gi, "")
+    .trim();
   return {
-    thinkingTitle: extractTag(raw, "THINKING_TITLE"),
-    thinking: extractTag(raw, "THINKING"),
-    final: final || raw.trim(),
+    thinkingTitle,
+    thinking,
+    final: final || cleaned || raw.trim(),
   };
 }

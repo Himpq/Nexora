@@ -1,11 +1,15 @@
 import { StyleSheet, View } from "react-native";
+import { Feather } from "@expo/vector-icons";
 
-import { AppButton, AppCard, AppText, colors, spacing } from "../../../design";
+import { AppBadge, AppCard, AppText, colors, CoverImage, radius, spacing } from "../../../design";
+import { getBookCoverUri, resolveLearningAssetUrl } from "../../../services/imageService";
 import type { Book } from "../../../services/types";
 
 type BookListItemProps = {
   book: Book;
   onPress: () => void;
+  /** Optional cover URI override (e.g. resolved via `cover-assets`). */
+  coverUri?: string;
 };
 
 function getBookTitle(book: Book) {
@@ -22,35 +26,54 @@ function getBookMeta(book: Book) {
     .join(" · ");
 }
 
-export function BookListItem({ book, onPress }: BookListItemProps) {
+export function BookListItem({ book, onPress, coverUri }: BookListItemProps) {
   const description = String(book.description || "").trim();
   const meta = getBookMeta(book);
+  const resolvedCover = coverUri
+    ? resolveLearningAssetUrl(coverUri)
+    : getBookCoverUri(book);
 
   return (
-    <AppCard style={styles.card}>
+    <AppCard style={styles.card} onPress={onPress}>
       <View style={styles.header}>
+        {resolvedCover ? (
+          <CoverImage
+            uri={resolvedCover}
+            fallbackIcon="book"
+            style={styles.cover}
+            borderRadius={radius.md}
+            accessibilityLabel={getBookTitle(book)}
+          />
+        ) : (
+          <View style={styles.cover}>
+            <Feather name="book" size={18} color={colors.textInverse} />
+          </View>
+        )}
         <View style={styles.titleBlock}>
-          <AppText variant="heading">{getBookTitle(book)}</AppText>
+          <AppText variant="heading" numberOfLines={2}>
+            {getBookTitle(book)}
+          </AppText>
           {meta ? (
-            <AppText variant="caption" tone="secondary">
+            <AppText variant="caption" tone="tertiary">
               {meta}
             </AppText>
           ) : null}
         </View>
-        <View style={styles.badge}>
-          <AppText variant="caption" style={styles.badgeText}>
-            教材
-          </AppText>
-        </View>
+        <AppBadge label="教材" tone="neutral" />
       </View>
 
       {description ? (
-        <AppText tone="secondary" numberOfLines={3}>
+        <AppText tone="secondary" numberOfLines={2}>
           {description}
         </AppText>
       ) : null}
 
-      <AppButton title="查看教材" onPress={onPress} style={styles.button} />
+      <View style={styles.footer}>
+        <AppText variant="label" tone="secondary">
+          查看教材
+        </AppText>
+        <Feather name="arrow-right" size={16} color={colors.text} />
+      </View>
     </AppCard>
   );
 }
@@ -60,25 +83,30 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   header: {
-    alignItems: "flex-start",
+    alignItems: "center",
     flexDirection: "row",
     gap: spacing.md,
+  },
+  cover: {
+    width: 48,
+    height: 56,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceInverse,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
   },
   titleBlock: {
     flex: 1,
     gap: spacing.xs,
   },
-  badge: {
-    backgroundColor: colors.surfaceMuted,
-    borderRadius: 999,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs,
-  },
-  badgeText: {
-    color: colors.textMuted,
-    fontWeight: "700",
-  },
-  button: {
-    alignSelf: "stretch",
+  footer: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: colors.borderFaint,
+    paddingTop: spacing.md,
   },
 });

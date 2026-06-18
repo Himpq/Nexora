@@ -27,3 +27,20 @@ export function selectLearning(lectureId: string, selected: boolean, actor?: str
     actor,
   });
 }
+
+export function completeLearningChapter(payload: {
+  lecture_id: string;
+  book_id: string;
+  chapter_name: string;
+  chapter_range?: string;
+  chapter_context?: string;
+  chapter_detail_xml?: string;
+}) {
+  return postJson<{
+    success: boolean;
+    enqueue?: unknown;
+    already_completed?: boolean;
+    progress?: number;
+    next_chapter?: string;
+  }>("/api/frontend/learning/chapter-complete", payload);
+}

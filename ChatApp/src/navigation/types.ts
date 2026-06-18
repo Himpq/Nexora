@@ -1,5 +1,11 @@
+import type { NavigatorScreenParams } from "@react-navigation/native";
+
 export type RootStackParamList = {
-  MainTabs: undefined;
+  MainTabs: NavigatorScreenParams<MainTabParamList>;
+  AdminHome: undefined;
+  BookUpload: undefined;
+  RefinementQueue: undefined;
+  Vectorize: undefined;
   CourseDetail: {
     lectureId: string;
     lectureTitle?: string;
@@ -22,8 +28,17 @@ export type RootStackParamList = {
 export type MainTabParamList = {
   Dashboard: undefined;
   Courses: undefined;
-  Chat: undefined;
+  Feed: undefined;
+  Chat: ChatContextSelection | undefined;
+  Admin: undefined;
   Settings: undefined;
 };
 
 export type BookContentMode = "text" | "bookinfo" | "bookdetail";
+
+export type ChatContextSelection = {
+  lectureId?: string;
+  lectureTitle?: string;
+  bookId?: string;
+  bookTitle?: string;
+};

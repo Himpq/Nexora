@@ -1,32 +1,15 @@
 # 路线图
 
-`docs/slices` 的文件编号和版本主号对齐：
+当前版本 `1.1.0`。下一阶段先稳契约、状态和缺口，UI/UX 最后。
 
-```txt
-0.1.0 -> 01-*
-0.2.0 -> 02-*
-0.3.0 -> 03-*
-0.4.0 -> 04-*
-0.5.0 -> 05-*
-0.6.0 -> 06-*
-0.6.1 -> 06-1-*
-0.6.2 -> 06-2-*
-0.7.0 -> 07-*
-0.8.0 -> 08-*
-0.9.0 -> 09-*
-```
+## 顺序
 
-| 版本 | 目标 | 核心能力 |
-|---|---|---|
-| 0.1.0 | 项目底座 | Expo、源码结构、导航、API Client、最小基础组件 |
-| 0.2.0 | 用户上下文 | username/session、frontend context、设置页 |
-| 0.3.0 | 课程库 | 课程列表、加入/退出学习 |
-| 0.4.0 | 学习看板 | 已加入课程、学习概览、继续学习 |
-| 0.5.0 | 教材阅读 | 教材列表、原文、bookinfo、bookdetail、继续学习定位 |
-| 0.6.0 | AI 问答底座 | 流式优先设计、非流式兜底、模型选择、结构化回复解析 |
-| 0.6.1 | 流式通道验证 | 验证移动端 SSE/fetch stream、确认 ChatDBServer 或 NexoraLearning proxy 路线 |
-| 0.6.2 | 流式体验接入 | 增量渲染、思考块流式展示、取消生成、错误恢复 |
-| 0.7.0 | 管理员内容流 | 创建教材、上传文件、触发教材提炼（粗读/精读生成）、提炼队列 |
-| 0.8.0 | 向量化监控 | 触发/查看向量化、单本状态轮询 |
-| 0.9.0 | Beta 打磨 | 错误处理、缓存、UI 全方面开发、XML 阅读展示优化、Android 真机测试 |
-| 1.0.0 | 首个稳定版 | 学习闭环 + 基础 AI 问答 |
+1. 稳定 service contract：对照真实后端确认每个 `src/services/*Service.ts`，保留 URL、payload、header、错误、stream parsing 测试；不一致先改 `backend-data-flow.md`。
+2. 统一运行状态：各屏统一 loading、empty、error、retry、updating、cancelled；username session 继续保持简单。
+3. 补产品缺口：真实章节边界后再接章节完成 UI，`bookinfo` / `bookdetail` 先做轻量可读格式化，聊天历史和 retry 稳定后再扩。
+4. 维护文档与版本：事实写 `current-state.md`，路径写 `backend-data-flow.md`，顺序写本文件，版本和构建号写 `versioning.md`；`package.json`、`package-lock.json`、`app.json` 保持一致。
+5. UI/UX 最后：再统一 Dashboard、Courses、Books、Chat、Admin、Feed、Settings，并做阅读器、聊天、Admin / Feed 和 Android 真机验证。
+
+## 历史
+
+旧切片已移到 `archive/slices/`，只用于追溯，不指导当前开发。

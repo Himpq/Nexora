@@ -6,11 +6,17 @@ import { StyleSheet, View } from "react-native";
 
 import { useSession } from "../../../app/providers/SessionProvider";
 import {
+  AppBadge,
   AppButton,
   AppCard,
   AppText,
   colors,
+  CoverImage,
+  FadeIn,
+  radius,
   Screen,
+  ScreenHeader,
+  Skeleton,
   spacing,
   StateView,
 } from "../../../design";
@@ -19,8 +25,10 @@ import {
   getMaterials,
   selectLearning,
 } from "../../../services/frontendService";
+import { getLectureCoverUri } from "../../../services/imageService";
 import type { LectureRow } from "../../../services/types";
 import type { MainTabParamList, RootStackParamList } from "../../../navigation/types";
+import { normalizeError } from "../../../utils/errors";
 
 type CourseListScreenProps = CompositeScreenProps<
   BottomTabScreenProps<MainTabParamList, "Courses">,
@@ -34,10 +42,6 @@ type CourseCardProps = {
   onToggle: () => void;
   onOpen: () => void;
 };
-
-function normalizeError(err: unknown) {
-  return err instanceof Error ? err : new Error(String(err || "Unknown error"));
-}
 
 function getLectureTitle(row: LectureRow) {
   return String(row.lecture?.title || "").trim() || "未命名课程";
@@ -54,55 +58,61 @@ function CourseCard({ row, selected, updating, onToggle, onOpen }: CourseCardPro
       ? row.books.length
       : 0;
   const meta = [category, status].filter(Boolean).join(" · ");
+  const coverUri = getLectureCoverUri(lecture);
 
   return (
-    <AppCard style={[styles.card, selected && styles.selectedCard]}>
+    <AppCard style={styles.card} active={selected}>
+      {coverUri ? (
+        <CoverImage
+          uri={coverUri}
+          fallbackIcon="book-open"
+          style={styles.cardCover}
+          accessibilityLabel={getLectureTitle(row)}
+        />
+      ) : null}
       <View style={styles.cardHeader}>
         <View style={styles.titleBlock}>
           <AppText variant="heading">{getLectureTitle(row)}</AppText>
           {meta ? (
-            <AppText variant="caption" tone="secondary">
+            <AppText variant="caption" tone="tertiary">
               {meta}
             </AppText>
           ) : null}
         </View>
-        <View style={[styles.badge, selected ? styles.selectedBadge : styles.mutedBadge]}>
-          <AppText
-            variant="caption"
-            style={selected ? styles.selectedBadgeText : styles.mutedBadgeText}
-          >
-            {selected ? "已加入" : "未加入"}
-          </AppText>
-        </View>
+        <AppBadge label={selected ? "已加入" : "未加入"} tone={selected ? "solid" : "muted"} />
       </View>
 
       {description ? (
-        <AppText tone="secondary" numberOfLines={3} style={styles.description}>
+        <AppText tone="secondary" numberOfLines={3}>
           {description}
         </AppText>
       ) : null}
 
-      <View style={styles.footer}>
-        <AppText variant="caption" tone="secondary">
+      <View style={styles.metaRow}>
+        <AppText variant="caption" tone="tertiary">
           教材 {booksCount} 本
         </AppText>
-        <View style={styles.actions}>
-          {selected ? (
-            <AppButton
-              title="查看教材"
-              loading={updating}
-              onPress={onOpen}
-              style={styles.selectButton}
-            />
-          ) : null}
+      </View>
+
+      <View style={styles.actions}>
+        {selected ? (
           <AppButton
-            title={selected ? "退出学习" : "加入学习"}
-            variant={selected ? "secondary" : "primary"}
+            title="查看教材"
+            variant="outline"
+            size="sm"
             loading={updating}
-            onPress={onToggle}
-            style={styles.selectButton}
+            onPress={onOpen}
+            style={styles.actionButton}
           />
-        </View>
+        ) : null}
+        <AppButton
+          title={selected ? "退出学习" : "加入学习"}
+          variant={selected ? "ghost" : "primary"}
+          size="sm"
+          loading={updating}
+          onPress={onToggle}
+          style={styles.actionButton}
+        />
       </View>
     </AppCard>
   );
@@ -205,16 +215,23 @@ export function CourseListScreen({ navigation }: CourseListScreenProps) {
 
   if (loading) {
     return (
-      <Screen>
-        <StateView title="正在加载课程" message="正在读取课程库和学习状态..." loading />
+      <Screen scroll tabBarSpace>
+        <Skeleton width="45%" height={28} style={styles.skeletonHeader} />
+        <Skeleton width="70%" height={14} style={styles.skeletonSub} />
+        <View style={styles.skeletonList}>
+          <Skeleton height={172} borderRadius={radius.lg} />
+          <Skeleton height={172} borderRadius={radius.lg} />
+          <Skeleton height={172} borderRadius={radius.lg} />
+        </View>
       </Screen>
     );
   }
 
   if (error) {
     return (
-      <Screen>
+      <Screen tabBarSpace>
         <StateView
+          icon="alert-triangle"
           title="课程加载失败"
           message={error.message}
           actionLabel="重试"
@@ -226,8 +243,9 @@ export function CourseListScreen({ navigation }: CourseListScreenProps) {
 
   if (rows.length === 0) {
     return (
-      <Screen>
+      <Screen tabBarSpace>
         <StateView
+          icon="book"
           title="暂无课程"
           message="当前课程库还没有可加入的课程。"
           actionLabel="刷新"
@@ -238,57 +256,51 @@ export function CourseListScreen({ navigation }: CourseListScreenProps) {
   }
 
   return (
-    <Screen scroll>
-      <View style={styles.header}>
-        <View style={styles.titleBlock}>
-          <AppText variant="title">课程库</AppText>
-          <AppText tone="secondary">
-            共 {rows.length} 门课程，已加入 {selectedLectureIdSet.size} 门。
-          </AppText>
-        </View>
-        <AppButton title="刷新" variant="ghost" onPress={() => void loadCourses()} />
-      </View>
+    <Screen scroll tabBarSpace>
+      <ScreenHeader
+        overline="Nexora"
+        title="课程库"
+        subtitle={`共 ${rows.length} 门课程，已加入 ${selectedLectureIdSet.size} 门`}
+        trailing={<AppButton title="刷新" variant="ghost" size="sm" onPress={() => void loadCourses()} />}
+      />
 
       {operationError ? (
-        <AppCard style={styles.bannerCard}>
-          <AppText tone="danger" style={styles.bannerText}>
-            {operationError.message}
-          </AppText>
-          <AppButton
-            title="关闭"
-            variant="ghost"
-            onPress={() => setOperationError(null)}
-            style={styles.bannerButton}
-          />
+        <AppCard variant="outlined" style={styles.errorBanner}>
+          <View style={styles.errorContent}>
+            <AppText tone="danger" variant="caption">
+              ⚠ {operationError.message}
+            </AppText>
+            <AppButton
+              title="关闭"
+              variant="ghost"
+              size="sm"
+              onPress={() => setOperationError(null)}
+            />
+          </View>
         </AppCard>
       ) : null}
 
       {learningStateError ? (
-        <AppCard style={styles.bannerCard}>
-          <AppText tone="secondary" style={styles.bannerText}>
+        <AppCard variant="muted" style={styles.warningBanner}>
+          <AppText variant="caption" tone="muted">
             学习状态加载失败，已按未加入状态显示。{learningStateError.message}
           </AppText>
-          <AppButton
-            title="关闭"
-            variant="ghost"
-            onPress={() => setLearningStateError(null)}
-            style={styles.bannerButton}
-          />
         </AppCard>
       ) : null}
 
-      {rows.map((row) => {
+      {rows.map((row, i) => {
         const lectureId = String(row.lecture?.id || "").trim();
         const selected = selectedLectureIdSet.has(lectureId);
         return (
-          <CourseCard
-            key={lectureId || getLectureTitle(row)}
-            row={row}
-            selected={selected}
-            updating={updatingLectureId === lectureId}
-            onToggle={() => void handleToggle(row)}
-            onOpen={() => openCourseDetail(row)}
-          />
+          <FadeIn key={lectureId || getLectureTitle(row)} index={i}>
+            <CourseCard
+              row={row}
+              selected={selected}
+              updating={updatingLectureId === lectureId}
+              onToggle={() => void handleToggle(row)}
+              onOpen={() => openCourseDetail(row)}
+            />
+          </FadeIn>
         );
       })}
     </Screen>
@@ -296,9 +308,6 @@ export function CourseListScreen({ navigation }: CourseListScreenProps) {
 }
 
 const styles = StyleSheet.create({
-  header: {
-    gap: spacing.md,
-  },
   titleBlock: {
     flex: 1,
     gap: spacing.xs,
@@ -306,61 +315,48 @@ const styles = StyleSheet.create({
   card: {
     gap: spacing.md,
   },
-  selectedCard: {
-    borderColor: colors.primary,
+  cardCover: {
+    width: "100%",
+    aspectRatio: 16 / 9,
+    borderRadius: radius.md,
   },
   cardHeader: {
     alignItems: "flex-start",
     flexDirection: "row",
     gap: spacing.md,
   },
-  badge: {
-    borderRadius: 999,
-    paddingHorizontal: spacing.sm,
+  metaRow: {
     paddingVertical: spacing.xs,
   },
-  selectedBadge: {
-    backgroundColor: colors.primaryMuted,
+  skeletonHeader: {
+    marginBottom: spacing.sm,
   },
-  mutedBadge: {
-    backgroundColor: colors.surfaceMuted,
+  skeletonSub: {
+    marginBottom: spacing.lg,
   },
-  selectedBadgeText: {
-    color: colors.primary,
-    fontWeight: "700",
-  },
-  mutedBadgeText: {
-    color: colors.textMuted,
-    fontWeight: "700",
-  },
-  description: {
-    flexShrink: 1,
-  },
-  footer: {
-    alignItems: "stretch",
-    gap: spacing.md,
+  skeletonList: {
+    gap: spacing.lg,
   },
   actions: {
-    alignItems: "center",
     flexDirection: "row",
-    flexWrap: "wrap",
+    alignItems: "center",
+    gap: spacing.sm,
     justifyContent: "flex-end",
-    gap: spacing.md,
   },
-  selectButton: {
-    minWidth: 112,
+  actionButton: {
+    minWidth: 100,
   },
-  bannerCard: {
-    alignItems: "center",
-    borderColor: colors.danger,
+  errorBanner: {
+    borderLeftWidth: 4,
+    borderLeftColor: colors.danger,
+  },
+  errorContent: {
     flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     gap: spacing.md,
   },
-  bannerText: {
-    flex: 1,
-  },
-  bannerButton: {
-    minHeight: 36,
-    paddingHorizontal: spacing.sm,
+  warningBanner: {
+    borderRadius: radius.md,
   },
 });
