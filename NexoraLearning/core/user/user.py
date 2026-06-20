@@ -25,6 +25,7 @@ Directory layout:
 from __future__ import annotations
 
 import json
+import hashlib
 import shutil
 import threading
 import time
@@ -441,6 +442,23 @@ def list_question_completions(cfg: Dict[str, Any], user_id: str) -> List[Dict[st
     return _read_jsonl(_question_completions_jsonl_path(cfg, user_id))
 
 
+def _question_group_id_from_record(record: Dict[str, Any]) -> str:
+    existing = str(record.get("question_group_id") or record.get("group_id") or "").strip()
+    if existing:
+        return existing
+    parts = [
+        str(record.get("job_id") or "").strip(),
+        str(record.get("lecture_id") or "").strip(),
+        str(record.get("book_id") or "").strip(),
+        str(record.get("chapter_name") or "").strip(),
+        str(record.get("chapter_range") or "").strip(),
+        str(record.get("generation_mode") or record.get("reason") or record.get("type") or "").strip(),
+    ]
+    raw = "|".join(parts)
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+    return f"qg_{digest}"
+
+
 def append_question_bank_item(
     cfg: Dict[str, Any],
     user_id: str,
@@ -450,6 +468,8 @@ def append_question_bank_item(
     ensure_question_bank_files(cfg, user_id)
     payload = dict(record or {})
     payload.setdefault("question_id", f"q_{uuid.uuid4().hex[:16]}")
+    if not str(payload.get("question_group_id") or payload.get("group_id") or "").strip():
+        payload["question_group_id"] = _question_group_id_from_record(payload)
     payload.setdefault("timestamp", int(time.time()))
     _append_jsonl(_question_bank_jsonl_path(cfg, user_id), payload)
     _append_jsonl(_question_bank_all_path(cfg), payload)
@@ -457,6 +477,7 @@ def append_question_bank_item(
         _question_refs_path(cfg, user_id),
         {
             "question_id": payload.get("question_id"),
+            "question_group_id": payload.get("question_group_id"),
             "lecture_id": payload.get("lecture_id"),
             "book_id": payload.get("book_id"),
             "chapter_name": payload.get("chapter_name"),

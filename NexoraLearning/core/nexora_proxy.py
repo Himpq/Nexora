@@ -398,6 +398,7 @@ class NexoraProxy:
         use_chat_path: bool = False,
         request_timeout: Optional[float] = None,
         on_delta: Optional[Callable[[str], None]] = None,
+        cancel_event: Any = None,
     ) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
             "messages": list(messages or []),
@@ -434,6 +435,7 @@ class NexoraProxy:
                 username=target_username,
                 request_timeout=request_timeout,
                 on_delta=on_delta,
+                cancel_event=cancel_event,
             )
         else:
             status, resp, used_endpoint = self._request_json(
@@ -509,6 +511,7 @@ class NexoraProxy:
         options: Optional[Mapping[str, Any]] = None,
         request_timeout: Optional[float] = None,
         on_delta: Optional[Callable[[str], None]] = None,
+        cancel_event: Any = None,
     ) -> Dict[str, Any]:
         normalized_mode = str(api_mode or "chat").strip().lower()
         safe_messages = list(messages or [])
@@ -534,6 +537,7 @@ class NexoraProxy:
                 use_chat_path=False,
                 request_timeout=request_timeout,
                 on_delta=on_delta,
+                cancel_event=cancel_event,
             )
             mode = "chat"
 
@@ -565,6 +569,7 @@ class NexoraProxy:
         username: Optional[str],
         request_timeout: Optional[float],
         on_delta: Optional[Callable[[str], None]] = None,
+        cancel_event: Any = None,
     ) -> Tuple[int, Dict[str, Any], str]:
         endpoint = self._resolve_path(path, username)
         url = f"{self.base_url}{endpoint}"
@@ -589,9 +594,15 @@ class NexoraProxy:
         final_finish_reason = "stop"
         usage_payload: Dict[str, Any] = {}
         try:
+            if cancel_event is not None and cancel_event.is_set():
+                return 499, {"success": False, "message": "request canceled"}, endpoint
+
             with urllib.request.urlopen(req, timeout=timeout_value) as resp:
                 status = int(getattr(resp, "status", 200) or 200)
                 for raw in resp:
+                    if cancel_event is not None and cancel_event.is_set():
+                        return 499, {"success": False, "message": "request canceled"}, endpoint
+
                     try:
                         raw_line = raw.decode("utf-8", errors="replace")
                     except Exception:

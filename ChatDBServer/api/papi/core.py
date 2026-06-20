@@ -24,6 +24,7 @@ def _load_config() -> Dict[str, Any]:
 
 _PAPI_PERMISSION_DEFAULTS: Dict[str, bool] = {
     'model_inference': True,
+    'image_generation': True,
     'knowledge_read': True,
     'conversations_read': True,
     'conversations_write': True,
@@ -123,6 +124,31 @@ def _papi_pick_model(config: Dict[str, Any], requested_model: str) -> Tuple[str,
 def _papi_normalize_messages(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """兼容 messages / prompt / system_prompt 的输入格式。"""
     data = data if isinstance(data, dict) else {}
+
+    def _build_image_parts() -> List[Dict[str, Any]]:
+        parts: List[Dict[str, Any]] = []
+
+        image_url = str(data.get('image_url') or '').strip()
+        if image_url:
+            parts.append({
+                'type': 'image_url',
+                'image_url': {'url': image_url},
+            })
+
+        image_b64 = str(data.get('image_b64') or '').strip()
+        if image_b64:
+            if image_b64.startswith('data:'):
+                data_url = image_b64
+            else:
+                image_mime = str(data.get('image_mime') or 'image/png').strip() or 'image/png'
+                data_url = f"data:{image_mime};base64,{image_b64}"
+            parts.append({
+                'type': 'image_url',
+                'image_url': {'url': data_url},
+            })
+
+        return parts
+
     raw_messages = data.get('messages')
     if not isinstance(raw_messages, list) and isinstance(data.get('input'), list):
         raw_messages = data.get('input')
@@ -213,7 +239,31 @@ def _papi_normalize_messages(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     if system_prompt and not any(item.get('role') == 'system' for item in normalized):
         normalized.insert(0, {'role': 'system', 'content': system_prompt})
 
-    if prompt_text and not any(item.get('role') == 'user' for item in normalized):
+    image_parts = _build_image_parts()
+    if image_parts:
+        user_index = -1
+        for index, item in enumerate(normalized):
+            if item.get('role') == 'user':
+                user_index = index
+
+        user_content = []
+        if prompt_text:
+            user_content.append({'type': 'text', 'text': prompt_text})
+        user_content.extend(image_parts)
+
+        if user_index >= 0:
+            existing_content = normalized[user_index].get('content')
+            if isinstance(existing_content, list):
+                merged_content = list(existing_content)
+            elif existing_content in (None, ''):
+                merged_content = []
+            else:
+                merged_content = [{'type': 'text', 'text': str(existing_content)}]
+            merged_content.extend(user_content)
+            normalized[user_index]['content'] = merged_content
+        else:
+            normalized.append({'role': 'user', 'content': user_content})
+    elif prompt_text and not any(item.get('role') == 'user' for item in normalized):
         normalized.append({'role': 'user', 'content': prompt_text})
 
     return normalized
@@ -312,6 +362,91 @@ def _papi_extract_instructions_from_input_items(input_items: Any, seed_instructi
 
 
 def _papi_prepare_chat_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _normalize_chat_image_url(value: Any) -> Optional[Dict[str, Any]]:
+        if isinstance(value, dict):
+            image_url = str(value.get('url') or value.get('image_url') or '').strip()
+            if not image_url:
+                return None
+
+            normalized = dict(value)
+            normalized['url'] = image_url
+            return normalized
+
+        image_url = str(value or '').strip()
+        if not image_url:
+            return None
+
+        return {'url': image_url}
+
+    def _normalize_chat_content_piece(piece: Any) -> Dict[str, Any]:
+        if piece is None:
+            return {'type': 'text', 'text': ''}
+        if isinstance(piece, str):
+            return {'type': 'text', 'text': piece}
+        if isinstance(piece, (int, float, bool)):
+            return {'type': 'text', 'text': str(piece)}
+        if not isinstance(piece, dict):
+            return {'type': 'text', 'text': str(piece)}
+
+        piece_type = str(piece.get('type') or '').strip().lower()
+        if piece_type in {'text', 'input_text', 'output_text'} or (
+            not piece_type and any(key in piece for key in ('text', 'content', 'value'))
+        ):
+            return {
+                'type': 'text',
+                'text': str(piece.get('text') or piece.get('content') or piece.get('value') or ''),
+            }
+
+        if piece_type in {'image_url', 'input_image'}:
+            image_payload = _normalize_chat_image_url(piece.get('image_url') or piece.get('url'))
+            if image_payload is None:
+                return {'type': 'text', 'text': ''}
+
+            return {
+                'type': 'image_url',
+                'image_url': image_payload,
+            }
+
+        if 'content' in piece:
+            return _normalize_chat_content_piece(piece.get('content'))
+
+        return {
+            'type': 'text',
+            'text': json.dumps(piece, ensure_ascii=False, default=str),
+        }
+
+    def _prepare_chat_content(content: Any) -> Any:
+        if isinstance(content, list):
+            pieces = [_normalize_chat_content_piece(piece) for piece in content]
+            pieces = [
+                piece for piece in pieces
+                if not (
+                    isinstance(piece, dict)
+                    and str(piece.get('type') or '').strip() == 'text'
+                    and str(piece.get('text') or '').strip() == ''
+                )
+            ]
+            has_image = any(
+                isinstance(piece, dict)
+                and str(piece.get('type') or '').strip() == 'image_url'
+                for piece in pieces
+            )
+            if has_image:
+                return pieces
+            return '\n'.join(
+                str(piece.get('text') or '').strip()
+                for piece in pieces
+                if isinstance(piece, dict) and str(piece.get('text') or '').strip()
+            ).strip()
+
+        if isinstance(content, dict):
+            piece = _normalize_chat_content_piece(content)
+            if str(piece.get('type') or '').strip() == 'image_url':
+                return [piece]
+            return str(piece.get('text') or '').strip()
+
+        return _stringify_chat_content(content).strip()
+
     def _stringify_chat_content(content: Any) -> str:
         if content is None:
             return ''
@@ -367,13 +502,14 @@ def _papi_prepare_chat_messages(messages: List[Dict[str, Any]]) -> List[Dict[str
             continue
 
         msg: Dict[str, Any] = {'role': role}
-        content_text = _stringify_chat_content(item.get('content')).strip()
+        content = _prepare_chat_content(item.get('content'))
+        content_text = content.strip() if isinstance(content, str) else ''
 
         if role == 'assistant' and isinstance(item.get('tool_calls'), list) and item.get('tool_calls'):
             msg['tool_calls'] = item.get('tool_calls')
-            msg['content'] = content_text if content_text else None
+            msg['content'] = content_text if isinstance(content, str) and content_text else None
         else:
-            msg['content'] = content_text
+            msg['content'] = content
 
         name = str(item.get('name') or '').strip()
         if name:

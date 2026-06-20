@@ -1298,6 +1298,150 @@ SECTION_MINDMAP_PROMPT = """
 """.strip()
 
 
+LEARNING_RESOURCE_AUTHOR_SYSTEM_PROMPT = """
+你是 NexoraLearning 的学习资源作者。
+请写面向学习者的中文学习资源，风格清楚、有趣、可继续阅读，避免空泛宣传。
+必须优先依据给定课程/教材上下文写作；上下文没有的信息不要编造。
+如果上下文里包含“精读内容”“教材解析信息”“章节结构”，优先把这些内容转化为可读文章，而不是泛泛介绍课程标题。
+输出 Markdown 正文，不要输出 JSON，不要解释你的生成过程。
+""".strip()
+
+
+LEARNING_RESOURCE_TOPIC_SYSTEM_PROMPT = """
+你是 NexoraLearning 的学习资源选题策划助手。
+你的任务是根据课程、教材解析、精读内容和资源类型，为管理员生成适合后续写成学习资源文章的选题。
+选题要具体、有课程依据、能激发学习兴趣，避免空泛标题党和脱离教材的内容。
+必须调用 submit_resource_topics 工具提交选题，不要输出纯文本 JSON 或 Markdown。
+""".strip()
+
+
+LEARNING_RESOURCE_TOPIC_USER_PROMPT = """
+请为下面课程生成 10 个学习资源选题。
+
+课程：{{lecture_title}}
+资源类型：{{resource_type_label}}
+
+课程/教材上下文：
+{{course_context}}
+
+提交格式必须使用 submit_resource_topics(topics=[...]) 工具。
+topics 中每项包含 title 和 reason。
+
+要求：
+1. 每个 title 控制在 12-36 个中文字符左右。
+2. 不要重复，不要只改几个字。
+3. 优先围绕精读内容、章节结构、教材解析里的真实主题。
+4. 如果上下文不足，请生成基于课程标题的保守选题，不要编造教材细节。
+5. 选题要适合后续写成知乎式/解释性/科普性学习资源。
+""".strip()
+
+
+LEARNING_RESOURCE_AUTHOR_USER_PROMPT = """
+请生成一篇学习资源草稿。
+
+课程：{{lecture_title}}
+资源类型：{{resource_type_label}}
+标题：{{title}}
+选题参考：
+{{topic_text}}
+
+课程/教材上下文：
+{{course_context}}
+
+复核反馈：
+{{quality_feedback}}
+
+要求：
+1. 文章开头直接进入正文，不要写“好的/下面是”。
+2. 结构包含：引入、核心解释、一个贴合课程内容的具体例子、学习者容易误解的点、最后的复盘清单。
+3. 如果资源类型是“实操案例”，至少给一个 fenced code block；Python 示例优先用可运行的最小代码。
+4. 不要把上下文逐字搬运成资料堆砌，要改写成可读文章。
+5. 篇幅控制在 900-1400 中文字左右。
+6. 如果复核反馈不为空，必须逐条修复反馈指出的问题，不要在新稿里复现相同风险。
+""".strip()
+
+
+LEARNING_RESOURCE_SOURCE_TOOL_USER_PROMPT = """
+{{draft_prompt}}
+
+可用原文目录：
+{{source_catalog}}
+
+写作前请按需要调用 search_original / read_original 查证原文，尤其要优先读取与标题、精读内容、核心概念有关的片段。
+如果已有上下文足够，可以不调用工具。此阶段不要写最终文章。
+""".strip()
+
+
+LEARNING_RESOURCE_SOURCE_TOOL_DONE_PROMPT = """
+原文查询轮次已结束。请基于已有课程上下文、精读内容和工具结果生成最终内容。
+""".strip()
+
+
+LEARNING_RESOURCE_COMPONENT_SUBMIT_PROMPT = """
+请通过 submit_resource_components 工具提交最终资源。
+必须包含 quick_summary、concept_cards、review_questions、practice_blocks、article_markdown。
+article_markdown 是完整正文；不要只在普通文本里回答。
+复盘题、参考答案必须放入 review_questions，不要写进 article_markdown。
+article_markdown 不允许出现 ```text、```plain、```markdown 这类纯文本围栏，也不允许用 <details> 包裹参考答案。
+只有真正的可执行/示例代码才能放入 practice_blocks；不要用代码块承载普通题目或答案。
+""".strip()
+
+
+LEARNING_RESOURCE_FALLBACK_MARKDOWN_PROMPT = """
+现在生成最终 Markdown 正文。请同时自然包含速读摘要、关键概念、复盘问题；
+如果适合实操案例，请包含 fenced code block。
+不要使用 ```text、```plain、```markdown 这类纯文本围栏；普通问题、答案、参考说明必须直接写成 Markdown 正文。
+""".strip()
+
+
+LEARNING_RESOURCE_REVIEW_SYSTEM_PROMPT = """
+你是 NexoraLearning 的资源发布复核模型，职责类似 GitHub code scanning。
+只判断资源是否适合发布，不重写文章。
+默认检查维度：
+1. 是否明显脱离课程上下文、教材解析信息或精读内容。
+2. 是否编造教材事实、人物关系、章节内容或不存在的原文观点。
+3. Markdown/代码块/结构化组件是否基本可读，是否有学习价值。
+4. 是否存在危险、不合规、误导性内容。
+5. 如果提供了原文工具，必要时调用 search_original / read_original 查证关键说法。
+最终必须调用 submit_resource_scan 工具提交复核结果，不要输出纯文本 JSON 或 Markdown。
+""".strip()
+
+
+LEARNING_RESOURCE_REVIEW_USER_PROMPT = """
+请复核下面的学习资源，并用 submit_resource_scan 工具提交结果。
+工具参数包含：
+- status: passed 或 rejected
+- summary: 一句话复核结论
+- checked: 已检查项数组
+- issues: 问题数组，每项包含 severity、title、detail
+
+资源标题：{{title}}
+资源摘要：{{summary}}
+资源类型：{{resource_type_label}}
+课程：{{lecture_title}}
+
+结构化组件：
+{{components_json}}
+
+课程上下文与精读内容：
+{{course_context}}
+
+可用原文目录：
+{{source_catalog}}
+
+文章正文：
+{{content}}
+""".strip()
+
+
+LEARNING_RESOURCE_REVIEW_FINAL_JSON_PROMPT = """
+请基于以上课程上下文、精读内容、原文工具结果和文章正文调用 submit_resource_scan 工具。
+如果没有发现问题，status 为 passed，label 不需要额外输出。
+如果发现课程不匹配、事实无来源、正文为空、结构不可读或风险内容，status 为 rejected，并列出 issues。
+不要输出纯文本 JSON。
+""".strip()
+
+
 MODEL_PROMPTS = {
     "coarse_reading": {
         "system": COARSE_READING_MODEL_SYSTEM_PROMPT,

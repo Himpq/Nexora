@@ -6,6 +6,7 @@ import json
 import hashlib
 import html as html_lib
 import queue
+import random
 import re
 import threading
 import time
@@ -50,6 +51,7 @@ from core.lectures import (
 )
 from core.models import (
     LearningModelFactory,
+    PromptContextManager,
     get_default_nexora_model,
     update_default_nexora_model,
 )
@@ -70,6 +72,17 @@ from core.learning_feed import toggle_learning_feed_comment_like
 from core.learning_feed import append_learning_feed_comment
 from core.learning_feed import delete_learning_feed_item
 from core.learning_feed import delete_learning_feed_comment
+from core.learning_resources import append_learning_resource
+from core.learning_resources import append_learning_resource_task
+from core.learning_resources import create_learning_resource_version
+from core.learning_resources import delete_learning_resource
+from core.learning_resources import list_learning_resource_tasks
+from core.learning_resources import list_learning_resources
+from core.learning_resources import is_learning_resource_plain_text_language
+from core.learning_resources import strip_model_thinking_blocks
+from core.learning_resources import switch_learning_resource_version
+from core.learning_resources import update_learning_resource
+from core.learning_resources import update_learning_resource_task
 from core.user import append_notification
 from core.user.learning_progress import (
     build_user_lecture_last_active_map as _build_user_lecture_last_active_map,
@@ -87,6 +100,7 @@ from core.memory.memory_queue import (
 )
 from core.tool_executor import ToolExecutor as LearningToolExecutor
 from core.tools import TOOLS as LEARNING_TOOLS
+from core.booksproc.context import Context, ContextPolicy
 from core.booksproc import (
     cancel_book_refinement,
     enqueue_book_intensive,
@@ -135,6 +149,25 @@ _cfg: Dict[str, Any] = {}
 _proxy: Optional[NexoraProxy] = None
 _FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 _FRONTEND_ASSETS_DIR = _FRONTEND_DIR / "assets"
+_VIDEO_GENERATOR_STAGES = (
+    "outline",
+    "script",
+    "storyboard",
+    "images",
+    "vision_description",
+    "canvas",
+    "audio",
+    "clips",
+    "timeline",
+    "export",
+)
+_VIDEO_GENERATOR_RUN_LOCK = threading.RLock()
+_VIDEO_GENERATOR_RUNNING_PROJECTS: set[str] = set()
+_LEARNING_RESOURCE_SCAN_LOCK = threading.RLock()
+_LEARNING_RESOURCE_SCAN_CANCEL_EVENTS: Dict[str, threading.Event] = {}
+_LEARNING_RESOURCE_PROCESS_STARTED_AT = int(time.time())
+_LEARNING_RESOURCE_GENERATION_LOCK = threading.RLock()
+_LEARNING_RESOURCE_GENERATION_ACTIVE_TASKS: set[str] = set()
 
 ALLOWED_EXT = {".pdf", ".txt", ".md", ".docx", ".doc", ".epub", ".c", ".h", ".py", ".rst"}
 _NEXORA_OPTION_FIELDS = (
@@ -2121,6 +2154,1144 @@ def frontend_lecture_videos():
             "cached_book_count": cached_book_count,
         }
     )
+
+
+@bp.route("/frontend/learning-resource-pushes", methods=["GET"])
+def frontend_learning_resource_pushes():
+    """后端统一抽取资源中心推送项。"""
+    user_id = _resolve_runtime_user_id()
+    user_store.ensure_user_files(_cfg, user_id)
+    refresh = _as_bool(request.args.get("refresh"), default=False)
+    selected_lecture_ids = [
+        str(item or "").strip()
+        for item in user_store.list_selected_lecture_ids(_cfg, user_id)
+        if str(item or "").strip()
+    ]
+
+    candidate_rows, source_errors = _build_learning_resource_push_candidates(selected_lecture_ids)
+    selected_rows, state = _select_learning_resource_push_rows(user_id, candidate_rows, refresh=refresh)
+    stats = _learning_resource_push_stats(selected_rows)
+
+    return jsonify(
+        {
+            "success": True,
+            "items": selected_rows,
+            "stats": stats,
+            "candidate_count": len(candidate_rows),
+            "selected_lecture_ids": selected_lecture_ids,
+            "errors": source_errors,
+            "state": {
+                "current_ids": state.get("current_ids", []),
+                "previous_ids": state.get("previous_ids", []),
+                "signature": state.get("signature", ""),
+            },
+        }
+    )
+
+
+def _build_learning_resource_push_candidates(selected_lecture_ids: List[str]) -> Tuple[List[Dict[str, Any]], List[str]]:
+    lecture_ids = [str(item or "").strip() for item in selected_lecture_ids if str(item or "").strip()]
+    lecture_id_set = set(lecture_ids)
+    lecture_title_map = _learning_resource_push_lecture_title_map(lecture_ids)
+    rows: List[Dict[str, Any]] = []
+    errors: List[str] = []
+
+    if not lecture_ids:
+        return rows, errors
+
+    rows.extend(_build_learning_resource_article_pushes(lecture_id_set))
+    cached_videos, cached_errors = _build_learning_resource_cached_video_pushes(lecture_ids, lecture_title_map)
+    generated_videos, generated_errors = _build_learning_resource_generated_video_pushes(lecture_id_set, lecture_title_map)
+    rows.extend(cached_videos)
+    rows.extend(generated_videos)
+    errors.extend(cached_errors)
+    errors.extend(generated_errors)
+    return _dedupe_learning_resource_push_rows(rows), errors
+
+
+def _learning_resource_push_lecture_title_map(lecture_ids: List[str]) -> Dict[str, str]:
+    rows: Dict[str, str] = {}
+
+    for lecture_id in lecture_ids:
+        lecture = get_learning_lecture(_cfg, lecture_id)
+        if isinstance(lecture, MappingABC):
+            rows[lecture_id] = str(lecture.get("title") or lecture_id).strip() or lecture_id
+        else:
+            rows[lecture_id] = lecture_id
+
+    return rows
+
+
+def _build_learning_resource_article_pushes(lecture_id_set: set[str]) -> List[Dict[str, Any]]:
+    # 资源推送面向学习者，只允许已发布文章进入推送候选池。
+    resources = list_learning_resources(_cfg, limit=300, include_drafts=False)
+    rows: List[Dict[str, Any]] = []
+
+    for resource in resources:
+
+        if not isinstance(resource, MappingABC):
+            continue
+
+        lecture_id = str(resource.get("lecture_id") or "").strip()
+        if lecture_id not in lecture_id_set:
+            continue
+
+        item = _normalize_learning_resource_article_push(resource)
+        if item:
+            rows.append(item)
+
+    return rows
+
+
+def _normalize_learning_resource_article_push(resource: Mapping[str, Any]) -> Dict[str, Any]:
+    status = str(resource.get("status") or "").strip()
+    resource_type = str(resource.get("resource_type") or "explainer").strip() or "explainer"
+    title = str(resource.get("title") or "学习资源").strip()
+    summary = str(resource.get("summary") or resource.get("description") or resource.get("content") or "").strip()
+    lecture_title = str(resource.get("lecture_title") or "").strip()
+    status_map = {
+        "queued": "已排队",
+        "generating": "生成中",
+        "draft": "草稿",
+        "draft_ready": "草稿完成",
+        "failed": "失败",
+    }
+    badge_suffix = status_map.get(status, "草稿") if status and status != "published" else ""
+    badge = f"{_learning_resource_type_label(resource_type)}{f' · {badge_suffix}' if badge_suffix else ''}"
+
+    return {
+        "id": str(resource.get("id") or f"resource_{hashlib.sha1(title.encode('utf-8')).hexdigest()[:12]}").strip(),
+        "type": "practice" if resource_type == "practice" else "article",
+        "source": "article",
+        "badge": badge,
+        "title": title,
+        "subtitle": lecture_title or "学习资源",
+        "description": summary or "这条资源已从后端保存，等待补充摘要或正文。",
+        "reason": "草稿仅管理员可见，发布后会进入普通用户的学习资源流。" if status and status != "published" else str(resource.get("reason") or "").strip(),
+        "lectureId": str(resource.get("lecture_id") or "").strip(),
+        "coverUrl": "",
+        "blocks": _normalize_learning_resource_push_blocks(resource),
+        "content": str(resource.get("content") or "").strip(),
+        "components": resource.get("components") if isinstance(resource.get("components"), MappingABC) else {},
+        "resourceStatus": status,
+    }
+
+
+def _learning_resource_blocks_contain_plain_text_code(blocks: Any) -> bool:
+    if not isinstance(blocks, list):
+        return False
+
+    for block in blocks:
+        if not isinstance(block, MappingABC):
+            continue
+
+        block_type = str(block.get("type") or "").strip().lower()
+        language = str(block.get("language") or block.get("lang") or "").strip()
+
+        if block_type == "code" and is_learning_resource_plain_text_language(language):
+            return True
+
+    return False
+
+
+def _normalize_learning_resource_push_blocks(resource: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    blocks = resource.get("blocks") if isinstance(resource.get("blocks"), list) else []
+    content = str(resource.get("content") or "").strip()
+
+    if not content:
+        return blocks
+
+    if blocks and not _learning_resource_blocks_contain_plain_text_code(blocks):
+        return blocks
+
+    components = resource.get("components") if isinstance(resource.get("components"), MappingABC) else {}
+
+    if components and str(components.get("article_markdown") or "").strip():
+        return _learning_resource_blocks_from_components(components, str(resource.get("title") or "学习资源").strip())
+
+    return _split_learning_resource_blocks(content)
+
+
+def _build_learning_resource_cached_video_pushes(
+    lecture_ids: List[str],
+    lecture_title_map: Mapping[str, str],
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    from core.video_search import load_cached_videos
+
+    rows: List[Dict[str, Any]] = []
+    errors: List[str] = []
+
+    for lecture_id in lecture_ids:
+        books = list_lecture_books(_cfg, lecture_id)
+
+        for book in books:
+
+            if not isinstance(book, MappingABC):
+                continue
+
+            book_id = str(book.get("id") or "").strip()
+            if not book_id:
+                continue
+
+            try:
+                videos = load_cached_videos(_cfg, lecture_id, book_id)
+            except Exception as exc:
+                errors.append(f"{lecture_title_map.get(lecture_id, lecture_id)}：缓存视频读取失败：{exc}")
+                continue
+
+            book_title = str(book.get("title") or book_id).strip()
+
+            for index, video in enumerate(videos):
+                item = _normalize_learning_resource_cached_video_push(video, lecture_id, lecture_title_map.get(lecture_id, ""), book_id, book_title, index)
+
+                if item:
+                    rows.append(item)
+
+    return rows, errors
+
+
+def _normalize_learning_resource_cached_video_push(
+    video: Mapping[str, Any],
+    lecture_id: str,
+    lecture_title: str,
+    book_id: str,
+    book_title: str,
+    index: int,
+) -> Dict[str, Any]:
+    if not isinstance(video, MappingABC):
+        return {}
+
+    url = str(video.get("url") or "").strip()
+    cover_url = str(video.get("cover") or video.get("pic") or video.get("thumbnail") or "").strip()
+    if not _is_learning_resource_push_url(url) or not _is_learning_resource_push_url(cover_url):
+        return {}
+
+    title = str(video.get("title") or "课程视频").strip()
+    source = str(video.get("source") or "视频链接").strip()
+    up_name = str(video.get("up_name") or "").strip()
+    play_count = str(video.get("play_count") or "").strip()
+    duration = str(video.get("duration") or "").strip()
+    keyword = str(video.get("keyword") or "").strip()
+    id_key = url or f"{lecture_id}:{book_id}:{title}:{index}"
+
+    return {
+        "id": f"cached-video-{hashlib.sha1(id_key.encode('utf-8')).hexdigest()[:16]}",
+        "type": "video",
+        "source": "cached_video",
+        "badge": "缓存视频链接",
+        "title": title,
+        "subtitle": _join_learning_resource_push_meta([book_title or lecture_title, source]),
+        "description": _join_learning_resource_push_meta([up_name, f"{play_count} 次学习" if play_count else "", duration, f"关键词：{keyword}" if keyword else ""]) or "粗读流程已经筛选并缓存的课程相关视频。",
+        "reason": "来自课程教材的视频缓存，可直接跳转到原平台观看。",
+        "lectureId": lecture_id,
+        "bookId": book_id,
+        "coverUrl": cover_url,
+        "externalUrl": url,
+        "action": "open-external-video",
+        "actionLabel": "观看",
+        "blocks": [],
+        "content": f"视频来源：{_join_learning_resource_push_meta([source, up_name]) or source}\n\n链接：{url}",
+        "components": {},
+    }
+
+
+def _build_learning_resource_generated_video_pushes(
+    lecture_id_set: set[str],
+    lecture_title_map: Mapping[str, str],
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    if not _is_runtime_teacher():
+        return [], []
+
+    rows: List[Dict[str, Any]] = []
+    errors: List[str] = []
+
+    try:
+        status, payload = _request_video_generator_json("/api/projects?limit=100", method="GET")
+    except Exception as exc:
+        return rows, [f"已生成视频读取失败：{exc}"]
+
+    if status >= 400 or payload.get("success") is False:
+        return rows, [str(payload.get("error") or payload.get("message") or "已生成视频读取失败")]
+
+    projects = payload.get("projects") if isinstance(payload.get("projects"), list) else []
+
+    for project in projects:
+
+        if not isinstance(project, MappingABC):
+            continue
+
+        item = _normalize_learning_resource_generated_video_push(project, lecture_id_set, lecture_title_map)
+
+        if item:
+            rows.append(item)
+
+    return rows, errors
+
+
+def _normalize_learning_resource_generated_video_push(
+    project: Mapping[str, Any],
+    lecture_id_set: set[str],
+    lecture_title_map: Mapping[str, str],
+) -> Dict[str, Any]:
+    project_id = str(project.get("id") or "").strip()
+    stages = project.get("stages") if isinstance(project.get("stages"), MappingABC) else {}
+    options = project.get("options") if isinstance(project.get("options"), MappingABC) else {}
+    lecture_id = str(options.get("lecture_id") or "").strip()
+
+    if not project_id or stages.get("export") != "done" or lecture_id not in lecture_id_set:
+        return {}
+
+    cover_url = _learning_resource_generated_video_cover_url(project_id)
+    if not cover_url:
+        return {}
+
+    title = str(project.get("title") or project_id or "已生成视频").strip()
+    duration = str(options.get("duration") or "").strip()
+    ratio = str(options.get("ratio") or "").strip()
+    style = str(options.get("style") or "").strip()
+    external_url = f"/api/frontend/video-generator/projects/{urllib_parse.quote(project_id, safe='')}/files/exports/video.mp4"
+
+    return {
+        "id": f"generated-video-{project_id}",
+        "type": "video",
+        "source": "generated_video",
+        "badge": "已生成视频",
+        "title": title,
+        "subtitle": _join_learning_resource_push_meta([lecture_title_map.get(lecture_id, "") or "视频工作台", ratio]),
+        "description": _join_learning_resource_push_meta([f"约 {duration} 秒" if duration else "", f"风格：{style}" if style else "", "MP4 成片已导出"]) or "视频工作台已完成导出的课程讲解成片。",
+        "reason": "NexoraVideoGenerator 已完成导出，可直接观看生成结果。",
+        "lectureId": lecture_id,
+        "coverUrl": cover_url,
+        "externalUrl": external_url,
+        "action": "open-external-video",
+        "actionLabel": "观看",
+        "blocks": [],
+        "content": f"视频项目：{project_id}\n\n导出文件：{external_url}",
+        "components": {},
+    }
+
+
+def _learning_resource_generated_video_cover_url(project_id: str) -> str:
+    try:
+        status, payload = _request_video_generator_json(
+            f"/api/projects/{urllib_parse.quote(project_id, safe='')}/artifacts/source/slides.json",
+            method="GET",
+        )
+    except Exception:
+        return ""
+
+    if status >= 400 or payload.get("success") is False:
+        return ""
+
+    slides = payload.get("artifact") if isinstance(payload.get("artifact"), list) else []
+    first = next((item for item in slides if isinstance(item, MappingABC) and str(item.get("scene_id") or "").strip()), None)
+
+    if not isinstance(first, MappingABC):
+        return ""
+
+    scene_id = str(first.get("scene_id") or "").strip()
+    return f"/api/frontend/video-generator/projects/{urllib_parse.quote(project_id, safe='')}/files/source/slides/{urllib_parse.quote(scene_id, safe='')}.png"
+
+
+def _select_learning_resource_push_rows(
+    user_id: str,
+    candidates: List[Dict[str, Any]],
+    *,
+    refresh: bool,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    state = _load_learning_resource_push_state(user_id)
+    rows = [row for row in candidates if isinstance(row, dict) and str(row.get("id") or "").strip()]
+    signature = _learning_resource_push_signature(rows)
+    stored_signature = str(state.get("signature") or "").strip()
+
+    if signature != stored_signature:
+        state = {"signature": signature, "current_ids": [], "previous_ids": [], "updated_at": 0}
+
+    current_ids = [str(item or "").strip() for item in state.get("current_ids", []) if str(item or "").strip()]
+    rows_by_id = {str(row.get("id") or "").strip(): row for row in rows}
+
+    if (not refresh) and current_ids:
+        current_rows = [rows_by_id[item_id] for item_id in current_ids if item_id in rows_by_id]
+
+        if current_rows:
+            return current_rows, state
+
+    previous_ids = current_ids if refresh else [str(item or "").strip() for item in state.get("previous_ids", []) if str(item or "").strip()]
+    selected = _draw_learning_resource_push_rows(rows, previous_ids)
+    state = {
+        "signature": signature,
+        "current_ids": [str(row.get("id") or "").strip() for row in selected],
+        "previous_ids": previous_ids,
+        "updated_at": int(time.time()),
+    }
+    _save_learning_resource_push_state(user_id, state)
+    return selected, state
+
+
+def _draw_learning_resource_push_rows(rows: List[Dict[str, Any]], previous_ids: List[str]) -> List[Dict[str, Any]]:
+    limit = min(6, len(rows))
+    if limit <= 0:
+        return []
+
+    previous_id_set = {str(item or "").strip() for item in previous_ids if str(item or "").strip()}
+    drawable = [row for row in rows if str(row.get("id") or "").strip() not in previous_id_set]
+
+    selected = _draw_weighted_learning_resource_push_rows(drawable, limit)
+
+    if len(selected) < limit:
+        selected_ids = {str(row.get("id") or "").strip() for row in selected}
+        refill_rows = [
+            row
+            for row in rows
+            if str(row.get("id") or "").strip() not in selected_ids
+        ]
+        selected.extend(_draw_weighted_learning_resource_push_rows(refill_rows, limit - len(selected)))
+
+    random.shuffle(selected)
+    return selected[:limit]
+
+
+def _draw_weighted_learning_resource_push_rows(rows: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
+    if limit <= 0:
+        return []
+
+    buckets = _bucket_learning_resource_push_rows(rows)
+    selected: List[Dict[str, Any]] = []
+    selected_ids: set[str] = set()
+
+    for source, count in _learning_resource_push_source_plan(limit).items():
+        selected.extend(_take_learning_resource_push_bucket_rows(buckets, source, count, selected_ids))
+
+    if len(selected) < limit:
+        selected.extend(_take_learning_resource_push_remainder_rows(rows, limit - len(selected), selected_ids))
+
+    return selected[:limit]
+
+
+def _learning_resource_push_source_plan(limit: int) -> Dict[str, int]:
+    plan = {
+        "article": 3,
+        "cached_video": 2,
+        "generated_video": 1,
+    }
+
+    total = sum(plan.values())
+    if limit >= total:
+        return plan
+
+    order = ["article", "cached_video", "generated_video", "article", "cached_video", "article"]
+    result = {"article": 0, "cached_video": 0, "generated_video": 0}
+
+    for source in order[:limit]:
+        result[source] += 1
+
+    return result
+
+
+def _bucket_learning_resource_push_rows(rows: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    buckets = {
+        "article": [],
+        "cached_video": [],
+        "generated_video": [],
+    }
+
+    for row in rows:
+        source = str(row.get("source") or "").strip()
+
+        if source not in buckets:
+            source = "article" if str(row.get("type") or "").strip() != "video" else "cached_video"
+
+        buckets[source].append(row)
+
+    for bucket_rows in buckets.values():
+        random.shuffle(bucket_rows)
+
+    return buckets
+
+
+def _take_learning_resource_push_bucket_rows(
+    buckets: Dict[str, List[Dict[str, Any]]],
+    source: str,
+    count: int,
+    selected_ids: set[str],
+) -> List[Dict[str, Any]]:
+    if count <= 0:
+        return []
+
+    result: List[Dict[str, Any]] = []
+    bucket_rows = buckets.get(source, [])
+
+    for row in bucket_rows:
+        item_id = str(row.get("id") or "").strip()
+
+        if not item_id or item_id in selected_ids:
+            continue
+
+        selected_ids.add(item_id)
+        result.append(row)
+
+        if len(result) >= count:
+            break
+
+    return result
+
+
+def _take_learning_resource_push_remainder_rows(
+    rows: List[Dict[str, Any]],
+    count: int,
+    selected_ids: set[str],
+) -> List[Dict[str, Any]]:
+    if count <= 0:
+        return []
+
+    remaining = [
+        row
+        for row in rows
+        if str(row.get("id") or "").strip() and str(row.get("id") or "").strip() not in selected_ids
+    ]
+    random.shuffle(remaining)
+    result = remaining[:count]
+
+    for row in result:
+        selected_ids.add(str(row.get("id") or "").strip())
+
+    return result
+
+
+def _load_learning_resource_push_state(user_id: str) -> Dict[str, Any]:
+    path = _learning_resource_push_state_path(user_id)
+
+    if not path.exists():
+        return {"signature": "", "current_ids": [], "previous_ids": [], "updated_at": 0}
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"signature": "", "current_ids": [], "previous_ids": [], "updated_at": 0}
+
+    return data if isinstance(data, dict) else {"signature": "", "current_ids": [], "previous_ids": [], "updated_at": 0}
+
+
+def _save_learning_resource_push_state(user_id: str, state: Mapping[str, Any]) -> None:
+    path = _learning_resource_push_state_path(user_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(dict(state or {}), ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _learning_resource_push_state_path(user_id: str) -> Path:
+    data_dir = Path(str(_cfg.get("data_dir") or "data")).resolve()
+    return data_dir / "users" / str(user_id or "").strip() / "learning_resource_push_state.json"
+
+
+def _learning_resource_push_signature(rows: List[Dict[str, Any]]) -> str:
+    ids = sorted(str(row.get("id") or "").strip() for row in rows if str(row.get("id") or "").strip())
+    return hashlib.sha1("\n".join(ids).encode("utf-8")).hexdigest()
+
+
+def _learning_resource_push_stats(rows: List[Dict[str, Any]]) -> Dict[str, int]:
+    article_count = 0
+    video_count = 0
+
+    for row in rows:
+        if str(row.get("type") or "").strip() == "video":
+            video_count += 1
+        else:
+            article_count += 1
+
+    return {
+        "total": len(rows),
+        "article": article_count,
+        "video": video_count,
+    }
+
+
+def _dedupe_learning_resource_push_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen: set[str] = set()
+    result: List[Dict[str, Any]] = []
+
+    for row in rows:
+        item_id = str(row.get("id") or "").strip()
+        if not item_id or item_id in seen:
+            continue
+
+        seen.add(item_id)
+        result.append(row)
+
+    return result
+
+
+def _is_learning_resource_push_url(value: str) -> bool:
+    text = str(value or "").strip()
+    return (text.startswith("/") and not text.startswith("//")) or text.startswith("http://") or text.startswith("https://")
+
+
+def _join_learning_resource_push_meta(parts: List[str]) -> str:
+    return " · ".join(str(part or "").strip() for part in parts if str(part or "").strip())
+
+
+@bp.route("/frontend/video-generator/status", methods=["GET"])
+def frontend_video_generator_status():
+    """读取 NexoraVideoGenerator 服务状态。"""
+    if not _is_runtime_teacher():
+        return jsonify({"success": False, "error": "Only admin or teacher can access this endpoint."}), 403
+
+    try:
+        status, payload = _request_video_generator_json("/health", method="GET")
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 502
+
+    return jsonify({
+        "success": status < 400,
+        "status": payload,
+    }), 200 if status < 400 else status
+
+
+@bp.route("/frontend/video-generator/projects", methods=["GET"])
+def frontend_video_generator_projects():
+    """读取 NexoraVideoGenerator 项目列表。"""
+    if not _is_runtime_teacher():
+        return jsonify({"success": False, "error": "Only admin or teacher can access this endpoint."}), 403
+
+    limit = str(request.args.get("limit") or "50").strip()
+    query = urllib_parse.urlencode({"limit": limit})
+
+    try:
+        status, payload = _request_video_generator_json(f"/api/projects?{query}", method="GET")
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 502
+
+    return jsonify(payload), 200 if status < 400 else status
+
+
+@bp.route("/frontend/video-generator/projects", methods=["POST"])
+def frontend_video_generator_create_project():
+    """从 NexoraLearning 课程资料创建视频生成项目。"""
+    if not _is_runtime_teacher():
+        return jsonify({"success": False, "error": "Only admin or teacher can create video projects."}), 403
+
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"success": False, "error": "JSON body is required."}), 400
+
+    try:
+        payload = _build_video_generator_learning_payload(data)
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+    try:
+        status, response_payload = _request_video_generator_json(
+            "/api/projects/from-learning",
+            method="POST",
+            payload=payload,
+        )
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 502
+
+    if status >= 400 or response_payload.get("success") is False:
+        return jsonify(response_payload), status
+
+    project = response_payload.get("project") if isinstance(response_payload.get("project"), dict) else {}
+    project_id = str(project.get("id") or "").strip()
+
+    if not project_id:
+        return jsonify({"success": False, "error": "VideoGenerator did not return project.id."}), 502
+
+    queued = _start_video_generator_pipeline(project_id, "outline")
+    response_payload["auto_run"] = {
+        "queued": queued,
+        "start_stage": "outline",
+        "stages": list(_VIDEO_GENERATOR_STAGES),
+    }
+
+    return jsonify(response_payload), 202
+
+
+@bp.route("/frontend/video-generator/projects/<project_id>", methods=["GET"])
+def frontend_video_generator_project(project_id: str):
+    """读取单个视频生成项目。"""
+    if not _is_runtime_teacher():
+        return jsonify({"success": False, "error": "Only admin or teacher can access this endpoint."}), 403
+
+    try:
+        safe_project_id = _safe_video_generator_path_part(project_id, "project_id")
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+    if safe_stage not in _VIDEO_GENERATOR_STAGES:
+        return jsonify({"success": False, "error": f"stage is not allowed: {safe_stage}"}), 400
+
+    try:
+        status, payload = _request_video_generator_json(f"/api/projects/{safe_project_id}", method="GET")
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 502
+
+    return jsonify(payload), 200 if status < 400 else status
+
+
+@bp.route("/frontend/video-generator/projects/<project_id>/stages/<stage>", methods=["POST"])
+def frontend_video_generator_run_stage(project_id: str, stage: str):
+    """从指定阶段开始继续执行视频生成项目。"""
+    if not _is_runtime_teacher():
+        return jsonify({"success": False, "error": "Only admin or teacher can run video project stages."}), 403
+
+    try:
+        safe_project_id = _safe_video_generator_path_part(project_id, "project_id")
+        safe_stage = _safe_video_generator_path_part(stage, "stage")
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+    try:
+        status, payload = _request_video_generator_json(f"/api/projects/{safe_project_id}", method="GET")
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 502
+
+    if status >= 400 or payload.get("success") is False:
+        return jsonify(payload), status
+
+    queued = _start_video_generator_pipeline(safe_project_id, safe_stage)
+
+    return jsonify({
+        "success": True,
+        "project": payload.get("project"),
+        "auto_run": {
+            "queued": queued,
+            "start_stage": safe_stage,
+            "stages": list(_VIDEO_GENERATOR_STAGES[_VIDEO_GENERATOR_STAGES.index(safe_stage):]),
+        },
+    }), 202
+
+
+@bp.route("/frontend/video-generator/projects/<project_id>/artifacts/<path:artifact_name>", methods=["GET"])
+def frontend_video_generator_artifact(project_id: str, artifact_name: str):
+    """读取视频生成项目 JSON 产物。"""
+    if not _is_runtime_teacher():
+        return jsonify({"success": False, "error": "Only admin or teacher can access this endpoint."}), 403
+
+    try:
+        safe_project_id = _safe_video_generator_path_part(project_id, "project_id")
+        safe_artifact = _safe_video_generator_relative_path(artifact_name)
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+    try:
+        status, payload = _request_video_generator_json(
+            f"/api/projects/{safe_project_id}/artifacts/{safe_artifact}",
+            method="GET",
+        )
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 502
+
+    return jsonify(payload), 200 if status < 400 else status
+
+
+@bp.route("/frontend/video-generator/projects/<project_id>/files/<path:relative_path>", methods=["GET"])
+def frontend_video_generator_file(project_id: str, relative_path: str):
+    """转发视频生成项目文件，供前端预览或下载。"""
+    if not _is_runtime_teacher():
+        return jsonify({"success": False, "error": "Only admin or teacher can access this endpoint."}), 403
+
+    try:
+        safe_project_id = _safe_video_generator_path_part(project_id, "project_id")
+        safe_relative_path = _safe_video_generator_relative_path(relative_path)
+    except ValueError as exc:
+        return jsonify({"success": False, "error": str(exc)}), 400
+
+    try:
+        status, body, content_type = _request_video_generator_bytes(
+            f"/api/projects/{safe_project_id}/files/{safe_relative_path}"
+        )
+    except Exception as exc:
+        return jsonify({"success": False, "error": str(exc)}), 502
+
+    return Response(body, status=200 if status < 400 else status, content_type=content_type)
+
+
+def _video_generator_cfg() -> Dict[str, Any]:
+    branch = _cfg.get("video_generator") if isinstance(_cfg.get("video_generator"), dict) else {}
+    return dict(branch)
+
+
+def _video_generator_base_url() -> str:
+    service_url = str(_video_generator_cfg().get("service_url") or "").strip().rstrip("/")
+
+    if not service_url:
+        raise ValueError("video_generator.service_url is required.")
+
+    return service_url
+
+
+def _video_generator_timeout() -> float:
+    raw_value = _video_generator_cfg().get("request_timeout")
+
+    if raw_value is None:
+        raise ValueError("video_generator.request_timeout is required.")
+
+    try:
+        return max(10.0, min(float(raw_value), 1800.0))
+    except Exception as exc:
+        raise ValueError("video_generator.request_timeout must be a number.") from exc
+
+
+def _request_video_generator_json(
+    path: str,
+    *,
+    method: str,
+    payload: Optional[Mapping[str, Any]] = None,
+) -> Tuple[int, Dict[str, Any]]:
+    url = f"{_video_generator_base_url()}{_normalize_video_generator_path(path)}"
+    body = None
+    headers = {"Accept": "application/json"}
+
+    if payload is not None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    req = urllib_request.Request(url, data=body, headers=headers, method=method)
+
+    try:
+        with urllib_request.urlopen(req, timeout=_video_generator_timeout()) as resp:
+            status = int(getattr(resp, "status", 200) or 200)
+            text = resp.read().decode("utf-8", errors="replace")
+            data = json.loads(text) if text.strip() else {}
+            return status, data if isinstance(data, dict) else {"success": False, "error": "VideoGenerator returned non-object JSON."}
+    except urllib_error.HTTPError as exc:
+        status = int(getattr(exc, "code", 502) or 502)
+        text = exc.read().decode("utf-8", errors="replace")
+
+        try:
+            data = json.loads(text) if text.strip() else {}
+        except Exception:
+            data = {"success": False, "error": text or str(exc)}
+
+        return status, data if isinstance(data, dict) else {"success": False, "error": "VideoGenerator returned non-object JSON."}
+    except (urllib_error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+        raise RuntimeError(f"VideoGenerator 请求失败: {url} | {type(exc).__name__}: {exc}") from exc
+
+
+def _request_video_generator_bytes(path: str) -> Tuple[int, bytes, str]:
+    url = f"{_video_generator_base_url()}{_normalize_video_generator_path(path)}"
+    req = urllib_request.Request(url, headers={"Accept": "*/*"}, method="GET")
+
+    try:
+        with urllib_request.urlopen(req, timeout=_video_generator_timeout()) as resp:
+            status = int(getattr(resp, "status", 200) or 200)
+            content_type = str(resp.headers.get("Content-Type") or "application/octet-stream")
+            return status, resp.read(), content_type
+    except urllib_error.HTTPError as exc:
+        status = int(getattr(exc, "code", 502) or 502)
+        content_type = str(exc.headers.get("Content-Type") or "application/json")
+        return status, exc.read(), content_type
+    except (urllib_error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+        raise RuntimeError(f"VideoGenerator 文件请求失败: {url} | {type(exc).__name__}: {exc}") from exc
+
+
+def _start_video_generator_pipeline(project_id: str, start_stage: str) -> bool:
+    safe_project_id = _safe_video_generator_path_part(project_id, "project_id")
+    safe_stage = _safe_video_generator_path_part(start_stage, "stage")
+
+    if safe_stage not in _VIDEO_GENERATOR_STAGES:
+        raise ValueError(f"stage is not allowed: {safe_stage}")
+
+    with _VIDEO_GENERATOR_RUN_LOCK:
+
+        if safe_project_id in _VIDEO_GENERATOR_RUNNING_PROJECTS:
+            return False
+
+        _VIDEO_GENERATOR_RUNNING_PROJECTS.add(safe_project_id)
+
+    worker = threading.Thread(
+        target=_run_video_generator_pipeline_worker,
+        args=(safe_project_id, safe_stage),
+        name=f"VideoGeneratorPipeline-{safe_project_id}",
+        daemon=True,
+    )
+    worker.start()
+    return True
+
+
+def _run_video_generator_pipeline_worker(project_id: str, start_stage: str) -> None:
+    stage_index = _VIDEO_GENERATOR_STAGES.index(start_stage)
+    stages = _VIDEO_GENERATOR_STAGES[stage_index:]
+
+    log_event(
+        "video_generator_pipeline_start",
+        "视频生成后台流程开始",
+        payload={
+            "project_id": project_id,
+            "start_stage": start_stage,
+            "stages": list(stages),
+        },
+    )
+
+    try:
+
+        for stage in stages:
+            log_event(
+                "video_generator_stage_start",
+                "视频生成阶段开始",
+                payload={
+                    "project_id": project_id,
+                    "stage": stage,
+                },
+            )
+            status, payload = _request_video_generator_json(
+                f"/api/projects/{project_id}/stages/{stage}",
+                method="POST",
+                payload={},
+            )
+
+            if status >= 400 or payload.get("success") is False:
+                message = str(payload.get("message") or payload.get("error") or f"HTTP {status}").strip()
+                raise RuntimeError(f"{stage} 失败: {message}")
+
+            log_event(
+                "video_generator_stage_done",
+                "视频生成阶段完成",
+                payload={
+                    "project_id": project_id,
+                    "stage": stage,
+                },
+            )
+
+        log_event(
+            "video_generator_pipeline_done",
+            "视频生成后台流程完成",
+            payload={
+                "project_id": project_id,
+                "start_stage": start_stage,
+                "stages": list(stages),
+            },
+        )
+    except Exception as exc:
+        log_event(
+            "video_generator_pipeline_failed",
+            "视频生成后台流程失败",
+            payload={
+                "project_id": project_id,
+                "start_stage": start_stage,
+                "error": str(exc),
+            },
+        )
+    finally:
+
+        with _VIDEO_GENERATOR_RUN_LOCK:
+            _VIDEO_GENERATOR_RUNNING_PROJECTS.discard(project_id)
+
+
+def _normalize_video_generator_path(path: str) -> str:
+    text = str(path or "").strip()
+
+    if not text.startswith("/"):
+        text = f"/{text}"
+
+    return text
+
+
+def _safe_video_generator_path_part(value: str, field_name: str) -> str:
+    text = str(value or "").strip()
+
+    if not text or not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", text):
+        raise ValueError(f"{field_name} is invalid.")
+
+    return text
+
+
+def _safe_video_generator_relative_path(value: str) -> str:
+    text = str(value or "").strip().replace("\\", "/")
+    parts = [part for part in text.split("/") if part]
+
+    if not parts or any(part in {".", ".."} for part in parts):
+        raise ValueError("relative path is invalid.")
+
+    for part in parts:
+
+        if not re.fullmatch(r"[A-Za-z0-9_.\-一-龥]+", part):
+            raise ValueError("relative path contains invalid characters.")
+
+    return "/".join(urllib_parse.quote(part, safe="") for part in parts)
+
+
+def _build_video_generator_learning_payload(data: Mapping[str, Any]) -> Dict[str, Any]:
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    title = str(data.get("title") or "").strip()
+
+    if not lecture_id:
+        raise ValueError("lecture_id is required.")
+
+    if not title:
+        raise ValueError("title is required.")
+
+    lecture = get_learning_lecture(_cfg, lecture_id)
+
+    if not isinstance(lecture, dict):
+        raise ValueError("Lecture not found.")
+
+    raw_book_ids = data.get("book_ids")
+    if raw_book_ids is not None and not isinstance(raw_book_ids, list):
+        raise ValueError("book_ids must be an array.")
+
+    selected_book_ids = [str(item or "").strip() for item in raw_book_ids or [] if str(item or "").strip()]
+    books = list_lecture_books(_cfg, lecture_id)
+    book_rows = []
+
+    if selected_book_ids:
+        book_by_id = {str(book.get("id") or "").strip(): book for book in books if isinstance(book, MappingABC)}
+
+        for book_id in selected_book_ids:
+            book = book_by_id.get(book_id)
+
+            if not isinstance(book, dict):
+                raise ValueError(f"Book not found: {book_id}")
+
+            book_rows.append(book)
+    else:
+        book_rows = [book for book in books if isinstance(book, dict)]
+
+    if not book_rows:
+        raise ValueError("lecture must include at least one book.")
+
+    learning = _collect_video_generator_learning_context(lecture_id, lecture, book_rows)
+
+    if not _video_generator_learning_has_content(learning):
+        raise ValueError("课程缺少可用于生成视频的粗读、精读、章节结构或资料笔记，请先完成教材解析流程。")
+
+    duration = str(data.get("duration") or "").strip()
+    style = str(data.get("style") or "").strip()
+    ratio = str(data.get("ratio") or "").strip()
+    created_by = str(data.get("created_by") or _resolve_runtime_user_id() or "").strip()
+    book_ids = [str(book.get("id") or "").strip() for book in book_rows if str(book.get("id") or "").strip()]
+
+    return {
+        "title": title,
+        "created_by": created_by,
+        "learning": learning,
+        "extra_prompts": {
+            "all": _video_generator_extra_prompt(duration=duration, style=style, ratio=ratio),
+        },
+        "options": {
+            "lecture_id": lecture_id,
+            "book_ids": book_ids,
+            "duration": duration,
+            "style": style,
+            "ratio": ratio,
+        },
+    }
+
+
+def _collect_video_generator_learning_context(
+    lecture_id: str,
+    lecture: Mapping[str, Any],
+    book_rows: List[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    lecture_title = str(lecture.get("title") or lecture_id).strip()
+    learning: Dict[str, Any] = {
+        "course_title": lecture_title,
+        "audience": "课程学习者",
+        "learning_goal": "生成面向课程学习的视频讲解",
+    }
+    coarse_blocks: List[str] = []
+    intensive_blocks: List[str] = []
+    chapter_structure: List[Dict[str, str]] = []
+    source_notes: List[Dict[str, str]] = []
+
+    for book in book_rows:
+        book_id = str(book.get("id") or "").strip()
+        book_title = str(book.get("title") or book_id).strip()
+
+        if not book_id:
+            continue
+
+        bookinfo_xml = str(load_book_info_xml(_cfg, lecture_id, book_id) or "").strip()
+        bookdetail_xml = str(load_book_detail_xml(_cfg, lecture_id, book_id) or "").strip()
+        sections_xml = str(load_book_sections_xml(_cfg, lecture_id, book_id) or "").strip()
+        book_text = str(load_book_text(_cfg, lecture_id, book_id) or "").strip()
+
+        if bookinfo_xml:
+            coarse_blocks.append(f"【{book_title}】\n{bookinfo_xml}")
+            source_notes.append({
+                "title": f"{book_title} 粗读概括",
+                "content": _fit_video_generator_text(bookinfo_xml, 20000),
+                "source": f"{lecture_id}/{book_id}/bookinfo.xml",
+            })
+
+        if bookdetail_xml:
+            intensive_blocks.append(f"【{book_title}】\n{bookdetail_xml}")
+            source_notes.append({
+                "title": f"{book_title} 精读内容",
+                "content": _fit_video_generator_text(bookdetail_xml, 20000),
+                "source": f"{lecture_id}/{book_id}/bookdetail.xml",
+            })
+
+        if sections_xml:
+            chapter_structure.append({
+                "book_id": book_id,
+                "book_title": book_title,
+                "sections": _fit_video_generator_text(sections_xml, 12000),
+            })
+
+        if book_text and len(source_notes) < 20:
+            source_notes.append({
+                "title": f"{book_title} 原文节选",
+                "content": _fit_video_generator_text(book_text, 20000),
+                "source": f"{lecture_id}/{book_id}/book.txt",
+            })
+
+    if coarse_blocks:
+        learning["coarse_reading"] = _fit_video_generator_text("\n\n".join(coarse_blocks), 20000)
+
+    if intensive_blocks:
+        learning["intensive_reading"] = _fit_video_generator_text("\n\n".join(intensive_blocks), 20000)
+
+    if chapter_structure:
+        learning["chapter_structure"] = chapter_structure
+
+    if source_notes:
+        learning["source_notes"] = source_notes[:20]
+
+    return learning
+
+
+def _fit_video_generator_text(text: str, max_chars: int) -> str:
+    value = str(text or "").strip()
+
+    if len(value) <= max_chars:
+        return value
+
+    return value[:max_chars]
+
+
+def _video_generator_learning_has_content(learning: Mapping[str, Any]) -> bool:
+    for key in ("coarse_reading", "intensive_reading"):
+        value = learning.get(key)
+
+        if isinstance(value, str) and value.strip():
+            return True
+
+    for key in ("chapter_structure", "source_notes"):
+        value = learning.get(key)
+
+        if isinstance(value, list) and value:
+            return True
+
+    return False
+
+
+def _video_generator_extra_prompt(*, duration: str, style: str, ratio: str) -> str:
+    details = []
+
+    if duration:
+        details.append(f"目标时长约 {duration} 秒")
+
+    if style:
+        details.append(f"呈现方式为 {style}")
+
+    if ratio:
+        details.append(f"画面比例为 {ratio}")
+
+    if not details:
+        return "基于课程资料生成适合课堂讲解的视频。"
+
+    return "基于课程资料生成适合课堂讲解的视频，" + "，".join(details) + "。"
 
 
 def _run_frontend_video_search(lecture_id: str, book_id: str) -> List[Dict[str, Any]]:
@@ -5765,6 +6936,77 @@ def runtime_memory_queue():
     return jsonify({"success": True, "queue": get_memory_queue_snapshot()})
 
 
+def _annotate_question_bank_rows(rows: List[Dict[str, Any]], completions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _question_text(row: MappingABC) -> Tuple[str, str]:
+        question = row.get("question") if isinstance(row.get("question"), MappingABC) else {}
+        title = str(
+            question.get("question_title")
+            or question.get("title")
+            or question.get("question")
+            or row.get("question_title")
+            or row.get("title")
+            or ""
+        ).strip()
+        content = str(
+            question.get("question_content")
+            or question.get("content")
+            or row.get("question_content")
+            or row.get("content")
+            or ""
+        ).strip()
+        return title, content
+
+    completion_by_question_id: Dict[str, Dict[str, Any]] = {}
+    completion_by_fingerprint: Dict[str, Dict[str, Any]] = {}
+    for completion in completions:
+        if not isinstance(completion, MappingABC):
+            continue
+        completion_row = dict(completion)
+        qid = str(completion_row.get("question_id") or "").strip()
+        if qid:
+            completion_by_question_id[qid] = completion_row
+        title = str(completion_row.get("question_title") or "").strip()
+        content = str(completion_row.get("question_content") or "").strip()
+        fingerprint = "|".join(
+            [
+                str(completion_row.get("lecture_id") or "").strip(),
+                str(completion_row.get("book_id") or "").strip(),
+                str(completion_row.get("chapter_name") or "").strip(),
+                title,
+                content,
+            ]
+        )
+        if fingerprint.strip("|"):
+            completion_by_fingerprint[fingerprint] = completion_row
+
+    annotated_rows: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, MappingABC):
+            continue
+        item = dict(row)
+        qid = str(item.get("question_id") or "").strip()
+        latest = completion_by_question_id.get(qid)
+        if latest is None:
+            title, content = _question_text(item)
+            fingerprint = "|".join(
+                [
+                    str(item.get("lecture_id") or "").strip(),
+                    str(item.get("book_id") or "").strip(),
+                    str(item.get("chapter_name") or "").strip(),
+                    title,
+                    content,
+                ]
+            )
+            latest = completion_by_fingerprint.get(fingerprint)
+        if latest:
+            item["latest_completion"] = latest
+            item["answer_state"] = "needs_review" if latest.get("is_correct") is False else "submitted"
+        else:
+            item["answer_state"] = "pending"
+        annotated_rows.append(item)
+    return annotated_rows
+
+
 @bp.route("/frontend/settings/logs", methods=["GET"])
 def frontend_settings_logs():
     if not _is_runtime_admin():
@@ -5790,11 +7032,2657 @@ def frontend_question_bank():
     if not username:
         return jsonify({"success": False, "error": "username is required."}), 400
     lecture_id = str(request.args.get("lecture_id") or "").strip()
+    answer_state_filter = str(request.args.get("answer_state") or "").strip()
+    question_type_filter = str(request.args.get("question_type") or "").strip()
+    group_mode = str(request.args.get("group_mode") or "").strip().lower()
+    page = max(1, _safe_int(request.args.get("page"), 1))
+    page_size = min(50, max(1, _safe_int(request.args.get("page_size"), 5)))
     rows = list(user_store.list_question_bank_items(_cfg, username) or [])
+    completions = list(user_store.list_question_completions(_cfg, username) or [])
+    rows = _annotate_question_bank_rows(rows, completions)
     if lecture_id:
         rows = [row for row in rows if str((row or {}).get("lecture_id") or "").strip() == lecture_id]
-    rows = rows[-200:]
+    if answer_state_filter and answer_state_filter != "all":
+        rows = [row for row in rows if str((row or {}).get("answer_state") or "").strip() == answer_state_filter]
+    if question_type_filter and question_type_filter != "all":
+        rows = [
+            row
+            for row in rows
+            if _question_bank_type_label(_question_bank_question_payload(row)) == question_type_filter
+        ]
+    rows = list(reversed(rows))
+    summary = {
+        "total": len(rows),
+        "pending": sum(1 for row in rows if str((row or {}).get("answer_state") or "") == "pending"),
+        "submitted": sum(1 for row in rows if str((row or {}).get("answer_state") or "") == "submitted"),
+        "needs_review": sum(1 for row in rows if str((row or {}).get("answer_state") or "") == "needs_review"),
+    }
+    if group_mode in {"chapter", "group", "groups"}:
+        groups = _build_question_bank_groups(rows)
+        total_groups = len(groups)
+        total_pages = max(1, (total_groups + page_size - 1) // page_size)
+        page = min(page, total_pages)
+        start = (page - 1) * page_size
+        page_groups = groups[start:start + page_size]
+        return jsonify(
+            {
+                "success": True,
+                "items": [item for group in page_groups for item in group.get("items", [])],
+                "groups": page_groups,
+                "total": len(rows),
+                "total_groups": total_groups,
+                "summary": summary,
+                "pagination": {
+                    "page": page,
+                    "page_size": page_size,
+                    "total": total_groups,
+                    "total_items": len(rows),
+                    "total_pages": total_pages,
+                    "has_prev": page > 1,
+                    "has_next": page < total_pages,
+                },
+            }
+        )
+
+    total = len(rows)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = min(page, total_pages)
+    start = (page - 1) * page_size
+    page_rows = rows[start:start + page_size]
+    return jsonify(
+        {
+            "success": True,
+            "items": page_rows,
+            "total": total,
+            "summary": summary,
+            "pagination": {
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+                "total_pages": total_pages,
+                "has_prev": page > 1,
+                "has_next": page < total_pages,
+            },
+        }
+    )
+
+
+@bp.route("/frontend/question-bank/groups/<path:group_id>", methods=["GET"])
+def frontend_question_bank_group_detail(group_id: str):
+    username = _resolve_runtime_user_id()
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+    target_group_id = str(group_id or "").strip()
+    if not target_group_id:
+        return jsonify({"success": False, "error": "group_id is required."}), 400
+
+    rows = list(user_store.list_question_bank_items(_cfg, username) or [])
+    completions = list(user_store.list_question_completions(_cfg, username) or [])
+    rows = list(reversed(_annotate_question_bank_rows(rows, completions)))
+    groups = _build_question_bank_groups(rows)
+    group = next(
+        (
+            item
+            for item in groups
+            if str(item.get("group_id") or item.get("question_group_id") or "").strip() == target_group_id
+        ),
+        None,
+    )
+    if group is None:
+        return jsonify({"success": False, "error": "question group not found."}), 404
+    return jsonify(
+        {
+            "success": True,
+            "group": group,
+            "items": group.get("items") if isinstance(group.get("items"), list) else [],
+        }
+    )
+
+
+def _question_bank_group_key(row: MappingABC) -> str:
+    explicit = str(row.get("question_group_id") or row.get("group_id") or "").strip()
+    if explicit:
+        return explicit
+    raw = "|".join(
+        [
+            str(row.get("lecture_id") or "").strip(),
+            str(row.get("book_id") or "").strip(),
+            str(row.get("chapter_name") or "").strip(),
+            str(row.get("chapter_range") or "").strip(),
+            str(row.get("generation_mode") or row.get("reason") or row.get("type") or "").strip(),
+        ]
+    )
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+    return f"qg_{digest}"
+
+
+def _question_bank_group_title(row: MappingABC) -> str:
+    explicit = str(row.get("question_group_title") or row.get("group_title") or row.get("paper_title") or "").strip()
+    if explicit:
+        return explicit
+    source = _question_bank_group_source(row)
+    chapter_name = str(row.get("chapter_name") or "").strip()
+    book_title = str(row.get("book_title") or "").strip()
+    base = chapter_name or book_title
+    if source == "画像出题":
+        return f"{base} 画像专项练习" if base else "画像专项练习"
+    if source == "章节小测":
+        return f"{base} 章节小测" if base else "章节小测"
+    return f"{base} 练习题组" if base else "未命名题组"
+
+
+def _question_bank_group_source(row: MappingABC) -> str:
+    mode = str(row.get("generation_mode") or "").strip()
+    reason = str(row.get("reason") or "").strip()
+    if mode == "profile_adaptive":
+        return "画像出题"
+    if mode == "chapter_quiz_sync" or reason == "chapter_quiz_empty_bank":
+        return "章节小测"
+    return "题库沉淀"
+
+
+def _build_question_bank_groups(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    groups: List[Dict[str, Any]] = []
+    group_by_id: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, MappingABC):
+            continue
+        group_id = _question_bank_group_key(row)
+        group = group_by_id.get(group_id)
+        if group is None:
+            group = {
+                "group_id": group_id,
+                "question_group_id": group_id,
+                "title": _question_bank_group_title(row),
+                "source": _question_bank_group_source(row),
+                "lecture_id": str(row.get("lecture_id") or "").strip(),
+                "lecture_title": str(row.get("lecture_title") or "").strip(),
+                "book_id": str(row.get("book_id") or "").strip(),
+                "book_title": str(row.get("book_title") or "").strip(),
+                "chapter_name": str(row.get("chapter_name") or "").strip(),
+                "chapter_range": str(row.get("chapter_range") or "").strip(),
+                "generation_mode": str(row.get("generation_mode") or "").strip(),
+                "reason": str(row.get("reason") or "").strip(),
+                "items": [],
+                "total_count": 0,
+                "answered_count": 0,
+                "correct_count": 0,
+                "pending_count": 0,
+                "needs_review_count": 0,
+                "created_timestamp": 0,
+                "latest_timestamp": 0,
+            }
+            group_by_id[group_id] = group
+            groups.append(group)
+        group["items"].append(row)
+        group["total_count"] = len(group["items"])
+        answer_state = str(row.get("answer_state") or "").strip()
+        if answer_state == "pending":
+            group["pending_count"] = int(group.get("pending_count") or 0) + 1
+        else:
+            group["answered_count"] = int(group.get("answered_count") or 0) + 1
+        if answer_state == "needs_review":
+            group["needs_review_count"] = int(group.get("needs_review_count") or 0) + 1
+        latest = row.get("latest_completion") if isinstance(row.get("latest_completion"), MappingABC) else {}
+        if latest.get("is_correct") is True:
+            group["correct_count"] = int(group.get("correct_count") or 0) + 1
+        try:
+            row_timestamp = int(row.get("timestamp") or 0)
+            if row_timestamp > 0:
+                current_created = int(group.get("created_timestamp") or 0)
+                group["created_timestamp"] = row_timestamp if current_created <= 0 else min(current_created, row_timestamp)
+                group["latest_timestamp"] = max(int(group.get("latest_timestamp") or 0), row_timestamp)
+        except Exception:
+            pass
+    title_counts: Dict[str, int] = {}
+    for group in groups:
+        title = str(group.get("title") or "").strip()
+        if title:
+            title_counts[title] = title_counts.get(title, 0) + 1
+    title_seen: Dict[str, int] = {}
+    for group in groups:
+        title = str(group.get("title") or "").strip()
+        if not title or title_counts.get(title, 0) <= 1:
+            continue
+        title_seen[title] = title_seen.get(title, 0) + 1
+        group["base_title"] = title
+        timestamp = _safe_int(group.get("latest_timestamp"), 0)
+        suffix = time.strftime("%m-%d %H:%M", time.localtime(timestamp)) if timestamp > 0 else "生成记录"
+        suffix = f"{suffix} #{title_seen[title]}"
+        group["title"] = f"{title} · {suffix}"
+    return groups
+
+
+def _normalize_question_bank_options(value: Any) -> List[Dict[str, str]]:
+    if isinstance(value, str):
+        raw_items = [line for line in value.splitlines() if line.strip()]
+    elif isinstance(value, list):
+        raw_items = value
+    else:
+        raw_items = []
+    options: List[Dict[str, str]] = []
+    for idx, item in enumerate(raw_items):
+        fallback_label = chr(ord("A") + idx)
+        label = ""
+        text = ""
+        if isinstance(item, MappingABC):
+            label = str(item.get("id") or item.get("label") or item.get("key") or item.get("option_id") or "").strip()
+            text = str(item.get("text") or item.get("content") or item.get("value") or item.get("title") or "").strip()
+        else:
+            text = str(item or "").strip()
+        match = re.match(r"^\s*([a-zA-Z])\s*[.、:：)]\s*(.+)$", text)
+        if match:
+            if not label:
+                label = match.group(1)
+            text = match.group(2).strip()
+        label = (label or fallback_label).upper()[:3]
+        if not text and not label:
+            continue
+        options.append(
+            {
+                "label": label,
+                "text": text,
+                "value": f"{label}. {text}" if text else label,
+            }
+        )
+    return options
+
+
+def _question_bank_question_payload(row: MappingABC) -> Dict[str, Any]:
+    question = row.get("question") if isinstance(row.get("question"), MappingABC) else {}
+    options = (
+        question.get("question_options")
+        or question.get("options")
+        or row.get("question_options")
+        or row.get("options")
+    )
+    return {
+        "title": str(
+            question.get("question_title")
+            or question.get("title")
+            or question.get("question")
+            or row.get("question_title")
+            or row.get("title")
+            or ""
+        ).strip(),
+        "content": str(
+            question.get("question_content")
+            or question.get("content")
+            or row.get("question_content")
+            or row.get("content")
+            or ""
+        ).strip(),
+        "answer": str(
+            question.get("question_answer")
+            or question.get("answer")
+            or row.get("reference_answer")
+            or ""
+        ).strip(),
+        "hint": str(question.get("question_hint") or question.get("hint") or row.get("question_hint") or "").strip(),
+        "difficulty": str(question.get("question_difficulty") or question.get("difficulty") or row.get("question_difficulty") or "").strip(),
+        "type": str(question.get("question_type") or question.get("type") or row.get("question_type") or row.get("type") or "").strip(),
+        "options": _normalize_question_bank_options(options),
+    }
+
+
+def _question_bank_type_label(question: Mapping[str, Any]) -> str:
+    options = question.get("options") if isinstance(question.get("options"), list) else []
+    raw_type = str(question.get("type") or "").strip().lower()
+    if raw_type in {"choice", "single_choice", "选择题", "单选题"}:
+        return "选择题"
+    if raw_type in {"multiple_choice", "多选题"}:
+        return "多选题"
+    if raw_type in {"true_false", "判断题"}:
+        return "判断题"
+    if raw_type in {"code", "practice", "实践题", "代码题"}:
+        return "实践题"
+    if len(options) >= 2:
+        return "选择题"
+    return "简答题"
+
+
+def _normalize_question_bank_answer(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"^\s*(正确答案|参考答案|答案)\s*[:：]?\s*", "", text)
+    text = re.sub(r"^\s*([a-z])\s*[.、:：)]\s*", r"\1 ", text)
+    text = re.sub(r"\s+", "", text)
+    text = re.sub(r"[，。,.、:：;；（）()【】\\[\\]{}\"'`*_<>]", "", text)
+    return text
+
+
+def _extract_question_bank_choice_letter(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    patterns = (
+        r"^\s*([a-zA-Z])\s*[.、:：)]",
+        r"^\s*([a-zA-Z])\s*$",
+        r"(?:正确答案|参考答案|答案|选择|选项|选)\s*[:：]?\s*([a-zA-Z])\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1).lower()
+    return ""
+
+
+def _extract_question_bank_choice_letters(value: Any) -> List[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    cleaned = re.sub(r"^\s*(正确答案|参考答案|答案|选择|选项|选)\s*[:：]?\s*", "", text)
+    letters = re.findall(r"\b([a-zA-Z])\b|([a-zA-Z])\s*[.、:：)]", cleaned)
+    result: List[str] = []
+    for pair in letters:
+        letter = str(pair[0] or pair[1] or "").strip().lower()
+        if letter and letter not in result:
+            result.append(letter)
+    if result:
+        return result
+    single = _extract_question_bank_choice_letter(value)
+    return [single] if single else []
+
+
+def _question_bank_auto_judge(question: Mapping[str, Any], student_answer: str) -> Optional[bool]:
+    reference_answer = str(question.get("answer") or "").strip()
+    if not reference_answer:
+        return None
+    normalized_student = _normalize_question_bank_answer(student_answer)
+    normalized_reference = _normalize_question_bank_answer(reference_answer)
+    if not normalized_student or not normalized_reference:
+        return None
+
+    options = question.get("options") if isinstance(question.get("options"), list) else []
+    question_type = str(question.get("type") or "").strip().lower()
+    looks_choice = len(options) >= 2 or question_type in {"choice", "single_choice", "multiple_choice", "选择题", "单选题", "多选题"}
+    if looks_choice:
+        if question_type in {"multiple_choice", "多选题"}:
+            student_letters = _extract_question_bank_choice_letters(student_answer)
+            reference_letters = _extract_question_bank_choice_letters(reference_answer)
+            if student_letters and reference_letters:
+                return set(student_letters) == set(reference_letters)
+        student_letter = _extract_question_bank_choice_letter(student_answer)
+        reference_letter = _extract_question_bank_choice_letter(reference_answer)
+        if student_letter and reference_letter:
+            return student_letter == reference_letter
+    if normalized_student == normalized_reference:
+        return True
+    if looks_choice:
+        return normalized_student in normalized_reference or normalized_reference in normalized_student
+    return None
+
+
+@bp.route("/frontend/question-bank/submit", methods=["POST"])
+def frontend_question_bank_submit():
+    username = _resolve_runtime_user_id()
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, MappingABC):
+        return jsonify({"success": False, "error": "request body must be an object."}), 400
+
+    question_id = str(data.get("question_id") or "").strip()
+    student_answer = str(data.get("student_answer") or "").strip()
+    if not question_id:
+        return jsonify({"success": False, "error": "question_id is required."}), 400
+    if not student_answer:
+        return jsonify({"success": False, "error": "student_answer is required."}), 400
+
+    rows = list(user_store.list_question_bank_items(_cfg, username) or [])
+    source_row = None
+    for row in rows:
+        if isinstance(row, MappingABC) and str(row.get("question_id") or "").strip() == question_id:
+            source_row = row
+            break
+    if source_row is None:
+        return jsonify({"success": False, "error": "question not found."}), 404
+
+    question = _question_bank_question_payload(source_row)
+    title = question.get("title") or question.get("content") or "题库练习"
+    is_correct = _question_bank_auto_judge(question, student_answer)
+    review_state = "review_required" if is_correct is False else "submitted"
+    record = {
+        "type": "question_bank_answer",
+        "question_id": question_id,
+        "lecture_id": str(source_row.get("lecture_id") or "").strip(),
+        "book_id": str(source_row.get("book_id") or "").strip(),
+        "chapter_name": str(source_row.get("chapter_name") or "").strip(),
+        "chapter_range": str(source_row.get("chapter_range") or "").strip(),
+        "question_title": title,
+        "question_content": question.get("content") or "",
+        "question_difficulty": question.get("difficulty") or "",
+        "question_type": question.get("type") or "",
+        "question_options": question.get("options") or [],
+        "question_hint": question.get("hint") or "",
+        "student_answer": student_answer,
+        "reference_answer": question.get("answer") or "",
+        "answer_chars": len(student_answer),
+        "review_state": review_state,
+        "source": "question_bank_center",
+    }
+    if is_correct is not None:
+        record["is_correct"] = bool(is_correct)
+
+    saved = user_store.append_question_completion(_cfg, username, record)
+    answer_state = "needs_review" if saved.get("is_correct") is False else "submitted"
+    log_event(
+        "question_bank_answer_submitted",
+        "题库中心作答已提交",
+        payload={
+            "username": username,
+            "question_id": question_id,
+            "lecture_id": saved.get("lecture_id"),
+            "book_id": saved.get("book_id"),
+            "answer_state": answer_state,
+        },
+    )
+    return jsonify({"success": True, "record": saved, "answer_state": answer_state})
+
+
+RESOURCE_TYPE_LABELS = {
+    "explainer": "科普解释",
+    "concept": "概念辨析",
+    "practice": "实操案例",
+    "review": "复习清单",
+}
+
+
+def _learning_resource_type_label(value: Any) -> str:
+    key = str(value or "explainer").strip()
+    return RESOURCE_TYPE_LABELS.get(key, "资源文章")
+
+
+def _learning_resource_lecture_title(lecture_id: str) -> str:
+    target_id = str(lecture_id or "").strip()
+    if not target_id:
+        return "当前课程"
+    lecture = get_learning_lecture(_cfg, target_id) or {}
+    return str(lecture.get("title") or lecture.get("name") or target_id).strip() or target_id
+
+
+def _normalize_learning_resource_topic_payload(data: Any) -> List[Dict[str, str]]:
+    if not isinstance(data, MappingABC):
+        raise ValueError("选题工具参数根节点必须是对象。")
+
+    raw_topics = data.get("topics")
+    if not isinstance(raw_topics, list):
+        raise ValueError("选题工具参数缺少 topics 数组。")
+
+    topics: List[Dict[str, str]] = []
+    seen = set()
+
+    for item in raw_topics:
+        if isinstance(item, MappingABC):
+            title = str(item.get("title") or item.get("name") or "").strip()
+            reason = str(item.get("reason") or item.get("description") or "").strip()
+        else:
+            title = str(item or "").strip()
+            reason = ""
+        title = re.sub(r"\s+", " ", title).strip(" -:：。")
+        if not title or title in seen:
+            continue
+        seen.add(title)
+        topics.append(
+            {
+                "id": f"topic_{len(topics) + 1}",
+                "title": title[:80],
+                "reason": reason[:180],
+                "source": "llm",
+            }
+        )
+        if len(topics) >= 10:
+            break
+
+    if len(topics) < 10:
+        raise ValueError(f"选题工具参数中有效选题不足 10 个，实际为 {len(topics)} 个。")
+
+    return topics
+
+
+def _learning_resource_topic_tool_spec() -> Dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "submit_resource_topics",
+            "description": "Submit learning resource topic suggestions for admin selection.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "topics": {
+                        "type": "array",
+                        "description": "Ten concrete topic suggestions based on the course context.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": "string"},
+                                "reason": {"type": "string"},
+                            },
+                            "required": ["title", "reason"],
+                        },
+                    },
+                },
+                "required": ["topics"],
+            },
+        },
+    }
+
+
+def _build_learning_resource_topic_suggestions(
+    lecture_id: str,
+    lecture_title: str,
+    resource_type: str,
+    username: str = "",
+) -> List[Dict[str, str]]:
+    course_context = _build_learning_resource_course_context(lecture_id)
+    variables = {
+        "lecture_id": lecture_id,
+        "lecture_title": lecture_title or "当前课程",
+        "resource_type": resource_type,
+        "resource_type_label": _learning_resource_type_label(resource_type),
+        "course_context": course_context[:9000] if course_context else "暂无课程/教材上下文。",
+        "username": username,
+    }
+    system_prompt = _render_learning_resource_prompt(
+        _learning_resource_prompt_text("LEARNING_RESOURCE_TOPIC_SYSTEM_PROMPT"),
+        variables,
+    )
+    user_prompt = _render_learning_resource_prompt(
+        _learning_resource_prompt_text("LEARNING_RESOURCE_TOPIC_USER_PROMPT"),
+        variables,
+    )
+    proxy = _proxy or NexoraProxy(_cfg)
+    model = get_default_nexora_model(_cfg) or None
+    ctx = _new_learning_resource_context(
+        system_prompt,
+        user_prompt,
+        flow="learning_resource_topics",
+        max_chars=18000,
+    )
+    result = proxy.chat_completions(
+        messages=_learning_resource_context_messages(ctx),
+        model=model,
+        username=username or None,
+        options={
+            "temperature": 0.65,
+            "stream": False,
+            "tools": [_learning_resource_topic_tool_spec()],
+            "tool_choice": {"type": "function", "function": {"name": "submit_resource_topics"}},
+        },
+        request_timeout=240,
+    )
+
+    if not result.get("ok"):
+        status = result.get("status")
+        endpoint = str(result.get("endpoint") or "").strip()
+        message = str(result.get("message") or "request failed").strip()
+        raise RuntimeError(f"Nexora 选题调用失败：{message}，status={status}，endpoint={endpoint}。")
+
+    payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+    choices = payload.get("choices") if isinstance(payload.get("choices"), list) else []
+    message = choices[0].get("message") if choices and isinstance(choices[0], MappingABC) else {}
+    tool_calls = message.get("tool_calls") if isinstance(message.get("tool_calls"), list) else []
+
+    for call in tool_calls:
+        if not isinstance(call, MappingABC):
+            continue
+
+        func = call.get("function") if isinstance(call.get("function"), MappingABC) else {}
+
+        if str(func.get("name") or "").strip() != "submit_resource_topics":
+            continue
+
+        try:
+            args = json.loads(str(func.get("arguments") or "{}"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"submit_resource_topics 参数不是合法 JSON：{exc.msg}。") from exc
+
+        return _normalize_learning_resource_topic_payload(args)
+
+    raise ValueError("模型没有调用 submit_resource_topics 工具提交选题。")
+
+
+def _learning_resource_scan_tool_spec() -> Dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "submit_resource_scan",
+            "description": "Submit the final publish scan result for a learning resource.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "enum": ["passed", "rejected"]},
+                    "summary": {"type": "string"},
+                    "checked": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "issues": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "severity": {"type": "string", "enum": ["high", "medium", "low"]},
+                                "title": {"type": "string"},
+                                "detail": {"type": "string"},
+                            },
+                            "required": ["severity", "title", "detail"],
+                        },
+                    },
+                },
+                "required": ["status", "summary", "checked", "issues"],
+            },
+        },
+    }
+
+
+def _learning_resource_summary(title: str, resource_type: str, lecture_title: str) -> str:
+    type_label = _learning_resource_type_label(resource_type)
+    clean_title = str(title or "").strip()
+    clean_lecture = str(lecture_title or "当前课程").strip() or "当前课程"
+    if clean_title:
+        return f"{type_label}草稿已创建，后续会围绕「{clean_title}」生成正文并发布给学习者。"
+    return f"围绕「{clean_lecture}」创建的{type_label}草稿，等待生成正文。"
+
+
+def _learning_resource_prompt_text(name: str, fallback: str = "") -> str:
+    try:
+        import prompts as learning_prompts
+    except Exception:
+        learning_prompts = None
+    return str(getattr(learning_prompts, name, fallback) if learning_prompts else fallback)
+
+
+def _render_learning_resource_prompt(template: str, variables: Mapping[str, Any]) -> str:
+    manager = PromptContextManager()
+    context = manager.build_context(
+        {
+            "lecture_title": variables.get("lecture_title"),
+            "lecture_id": variables.get("lecture_id"),
+            "username": variables.get("username"),
+        }
+    )
+    return manager.render(str(template or ""), context, variables)
+
+
+def _new_learning_resource_context(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    flow: str,
+    max_chars: int = 28000,
+) -> Context:
+    ctx = Context(
+        max_chars=max_chars,
+        max_messages=48,
+        policy=ContextPolicy.SLIDING_WINDOW,
+        trace_meta={"flow": flow},
+    )
+    if str(system_prompt or "").strip():
+        ctx.add("system", str(system_prompt or "").strip())
+    ctx.add("user", str(user_prompt or "").strip())
+    return ctx
+
+
+def _learning_resource_context_messages(ctx: Context) -> List[Dict[str, Any]]:
+    ctx.prepare()
+    return ctx.build()
+
+
+def _strip_learning_resource_context_text(value: Any, max_chars: int = 2000) -> str:
+    text = str(value or "")
+    if not text.strip():
+        return ""
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html_lib.unescape(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if max_chars > 0 and len(text) > max_chars:
+        return text[:max_chars].rstrip() + "..."
+    return text
+
+
+def _build_learning_resource_course_context(lecture_id: str) -> str:
+    target_lecture_id = str(lecture_id or "").strip()
+    if not target_lecture_id:
+        return ""
+    lecture = get_learning_lecture(_cfg, target_lecture_id) or {}
+    rows: List[str] = []
+    lecture_title = str(lecture.get("title") or lecture.get("name") or "").strip()
+    lecture_desc = str(lecture.get("description") or lecture.get("summary") or "").strip()
+    if lecture_title:
+        rows.append(f"课程名称：{lecture_title}")
+    if lecture_desc:
+        rows.append(f"课程说明：{_strip_learning_resource_context_text(lecture_desc, 900)}")
+    try:
+        books = list_lecture_books(_cfg, target_lecture_id) or []
+    except Exception:
+        books = []
+    for book in books[:3]:
+        if not isinstance(book, MappingABC):
+            continue
+        book_id = str(book.get("id") or "").strip()
+        book_title = str(book.get("title") or book.get("name") or book_id).strip()
+        if not book_id:
+            continue
+        rows.append(f"\n教材：{book_title}")
+        book_desc = str(book.get("description") or book.get("summary") or "").strip()
+        if book_desc:
+            rows.append(f"教材说明：{_strip_learning_resource_context_text(book_desc, 700)}")
+        try:
+            info_text = _strip_learning_resource_context_text(load_book_info_xml(_cfg, target_lecture_id, book_id), 1800)
+            if info_text:
+                rows.append(f"教材解析信息：{info_text}")
+        except Exception:
+            pass
+        try:
+            detail_text = _strip_learning_resource_context_text(load_book_detail_xml(_cfg, target_lecture_id, book_id), 2400)
+            if detail_text:
+                rows.append(f"精读内容：{detail_text}")
+        except Exception:
+            pass
+        try:
+            sections_text = _strip_learning_resource_context_text(load_book_sections_xml(_cfg, target_lecture_id, book_id), 1600)
+            if sections_text:
+                rows.append(f"章节/分节结构：{sections_text}")
+        except Exception:
+            pass
+        try:
+            book_text = _strip_learning_resource_context_text(load_book_text(_cfg, target_lecture_id, book_id), 1800)
+            if book_text:
+                rows.append(f"教材正文片段：{book_text}")
+        except Exception:
+            pass
+    context = "\n".join(row for row in rows if str(row or "").strip()).strip()
+    if len(context) > 9000:
+        context = context[:9000].rstrip() + "..."
+    return context
+
+
+def _build_learning_resource_source_texts(lecture_id: str) -> List[Dict[str, Any]]:
+    target_lecture_id = str(lecture_id or "").strip()
+    if not target_lecture_id:
+        return []
+    try:
+        books = list_lecture_books(_cfg, target_lecture_id) or []
+    except Exception:
+        books = []
+    rows: List[Dict[str, Any]] = []
+    for book in books[:5]:
+        if not isinstance(book, MappingABC):
+            continue
+        book_id = str(book.get("id") or "").strip()
+        if not book_id:
+            continue
+        try:
+            text = str(load_book_text(_cfg, target_lecture_id, book_id) or "")
+        except Exception:
+            text = ""
+        if not text.strip():
+            continue
+        rows.append(
+            {
+                "book_id": book_id,
+                "book_title": str(book.get("title") or book.get("name") or book_id).strip(),
+                "text": text,
+                "length": len(text),
+            }
+        )
+    return rows
+
+
+def _learning_resource_source_catalog(sources: List[Dict[str, Any]]) -> str:
+    rows = []
+    for item in sources:
+        rows.append(f"- {item.get('book_id')}: {item.get('book_title')}（{item.get('length')} 字）")
+    return "\n".join(rows) or "- 暂无可读取原文"
+
+
+def _search_learning_resource_sources(
+    sources: List[Dict[str, Any]],
+    *,
+    query: str,
+    book_id: str = "",
+    limit: int = 5,
+) -> Dict[str, Any]:
+    q = str(query or "").strip()
+    target_book_id = str(book_id or "").strip()
+    if not q:
+        return {"items": [], "message": "query is required"}
+    rows: List[Dict[str, Any]] = []
+    query_terms = [q]
+    for part in re.split(r"[\s,，。；;、]+", q):
+        part = part.strip()
+        if len(part) >= 2 and part not in query_terms:
+            query_terms.append(part)
+    for source in sources:
+        source_book_id = str(source.get("book_id") or "").strip()
+        if target_book_id and source_book_id != target_book_id:
+            continue
+        text = str(source.get("text") or "")
+        text_lower = text.lower()
+        for term in query_terms:
+            term_lower = term.lower()
+            start = text_lower.find(term_lower)
+            while start >= 0:
+                left = max(0, start - 180)
+                right = min(len(text), start + len(term) + 260)
+                rows.append(
+                    {
+                        "book_id": source_book_id,
+                        "book_title": str(source.get("book_title") or source_book_id),
+                        "start": left,
+                        "end": right,
+                        "snippet": _strip_learning_resource_context_text(text[left:right], 520),
+                    }
+                )
+                if len(rows) >= max(1, limit):
+                    return {"items": rows}
+                start = text_lower.find(term_lower, start + max(1, len(term_lower)))
+    return {"items": rows}
+
+
+def _read_learning_resource_source(
+    sources: List[Dict[str, Any]],
+    *,
+    book_id: str,
+    start: int,
+    length: int,
+) -> Dict[str, Any]:
+    target_book_id = str(book_id or "").strip()
+    source = next((item for item in sources if str(item.get("book_id") or "").strip() == target_book_id), None)
+    if not source:
+        return {"error": "book_id not found", "available": [item.get("book_id") for item in sources]}
+    text = str(source.get("text") or "")
+    safe_start = max(0, min(int(start or 0), len(text)))
+    safe_length = max(200, min(int(length or 1200), 3000))
+    safe_end = min(len(text), safe_start + safe_length)
+    return {
+        "book_id": target_book_id,
+        "book_title": str(source.get("book_title") or target_book_id),
+        "start": safe_start,
+        "end": safe_end,
+        "text": _strip_learning_resource_context_text(text[safe_start:safe_end], 3200),
+    }
+
+
+def _learning_resource_source_tool_specs() -> List[Dict[str, Any]]:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "search_original",
+                "description": "Search original textbook text for grounding snippets before writing a learning resource.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Keyword or phrase to search in original text."},
+                        "book_id": {"type": "string", "description": "Optional book id from the source catalog."},
+                        "limit": {"type": "integer", "description": "Max snippets to return, 1-8."},
+                    },
+                    "required": ["query"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_original",
+                "description": "Read a bounded range from original textbook text by book id and offset.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "book_id": {"type": "string", "description": "Book id from the source catalog."},
+                        "start": {"type": "integer", "description": "Start offset."},
+                        "length": {"type": "integer", "description": "Characters to read, max 3000."},
+                    },
+                    "required": ["book_id", "start"],
+                },
+            },
+        },
+    ]
+
+
+def _learning_resource_component_tool_spec() -> Dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "submit_resource_components",
+            "description": "Submit the final structured learning resource components for admin review.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "quick_summary": {"type": "string", "description": "A short speed-read summary in Chinese."},
+                    "concept_cards": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": "string"},
+                                "content": {"type": "string"},
+                            },
+                            "required": ["title", "content"],
+                        },
+                    },
+                    "review_questions": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "question": {"type": "string"},
+                                "answer": {"type": "string"},
+                            },
+                            "required": ["question"],
+                        },
+                    },
+                    "practice_blocks": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "language": {"type": "string"},
+                                "content": {"type": "string"},
+                                "runnable": {"type": "boolean"},
+                            },
+                            "required": ["language", "content"],
+                        },
+                    },
+                    "article_markdown": {
+                        "type": "string",
+                        "description": "The complete article body in Markdown. Do not include review questions, reference answers, details tags, or text/plain fenced blocks here; put review questions in review_questions and code in practice_blocks.",
+                    },
+                },
+                "required": ["quick_summary", "concept_cards", "review_questions", "article_markdown"],
+            },
+        },
+    }
+
+
+def _normalize_learning_resource_components(raw: Any) -> Dict[str, Any]:
+    data = raw if isinstance(raw, MappingABC) else {}
+    components: Dict[str, Any] = {
+        "quick_summary": strip_model_thinking_blocks(data.get("quick_summary") or ""),
+        "concept_cards": [],
+        "review_questions": [],
+        "practice_blocks": [],
+        "article_markdown": strip_model_thinking_blocks(data.get("article_markdown") or data.get("content") or ""),
+    }
+    for item in (data.get("concept_cards") if isinstance(data.get("concept_cards"), list) else []):
+        if not isinstance(item, MappingABC):
+            continue
+        title = strip_model_thinking_blocks(item.get("title") or item.get("name") or "")
+        content = strip_model_thinking_blocks(item.get("content") or item.get("description") or "")
+        if title or content:
+            components["concept_cards"].append({"title": title or "关键概念", "content": content})
+    for item in (data.get("review_questions") if isinstance(data.get("review_questions"), list) else []):
+        if isinstance(item, MappingABC):
+            question = strip_model_thinking_blocks(item.get("question") or item.get("title") or "")
+            answer = strip_model_thinking_blocks(item.get("answer") or "")
+        else:
+            question = strip_model_thinking_blocks(item)
+            answer = ""
+        if question:
+            components["review_questions"].append({"question": question, "answer": answer})
+    for item in (data.get("practice_blocks") if isinstance(data.get("practice_blocks"), list) else []):
+        if isinstance(item, MappingABC):
+            language = str(item.get("language") or item.get("lang") or "text").strip() or "text"
+            content = strip_model_thinking_blocks(item.get("content") or item.get("code") or "")
+            runnable = bool(item.get("runnable")) or language.lower() in {"python", "py"}
+        else:
+            language = "text"
+            content = strip_model_thinking_blocks(item)
+            runnable = False
+
+        if content and not is_learning_resource_plain_text_language(language):
+            components["practice_blocks"].append({"type": "code", "language": language, "content": content, "runnable": runnable})
+    return components
+
+
+def _learning_resource_markdown_from_components(components: Mapping[str, Any], title: str) -> str:
+    article = strip_model_thinking_blocks(components.get("article_markdown") or "")
+    if article:
+        return article
+    rows = [f"# {title}"]
+    summary = str(components.get("quick_summary") or "").strip()
+    if summary:
+        rows.extend(["", "## 速读摘要", summary])
+    concept_cards = components.get("concept_cards") if isinstance(components.get("concept_cards"), list) else []
+    if concept_cards:
+        rows.extend(["", "## 关键概念"])
+        for item in concept_cards:
+            if isinstance(item, MappingABC):
+                rows.append(f"- **{item.get('title') or '概念'}**：{item.get('content') or ''}")
+    review_questions = components.get("review_questions") if isinstance(components.get("review_questions"), list) else []
+    if review_questions:
+        rows.extend(["", "## 复盘问题"])
+        for idx, item in enumerate(review_questions, start=1):
+            if isinstance(item, MappingABC):
+                rows.append(f"{idx}. {item.get('question') or ''}")
+                if item.get("answer"):
+                    rows.append(f"   - 参考：{item.get('answer')}")
+    return "\n".join(rows).strip()
+
+
+def _learning_resource_blocks_from_components(components: Mapping[str, Any], title: str) -> List[Dict[str, Any]]:
+    markdown = _learning_resource_markdown_from_components(components, title)
+    blocks = _split_learning_resource_blocks(markdown)
+    practice_blocks = components.get("practice_blocks") if isinstance(components.get("practice_blocks"), list) else []
+    for block in practice_blocks:
+        if isinstance(block, MappingABC) and str(block.get("content") or "").strip():
+            blocks.append(
+                {
+                    "type": "code",
+                    "language": str(block.get("language") or "text").strip() or "text",
+                    "content": str(block.get("content") or "").strip(),
+                    "runnable": bool(block.get("runnable")),
+                }
+            )
+    return blocks
+
+
+def _run_learning_resource_component_generation(
+    *,
+    proxy: NexoraProxy,
+    messages: List[Dict[str, Any]],
+    model: Optional[str],
+    username: str,
+    push_activity,
+) -> Optional[Dict[str, Any]]:
+    final_messages = list(messages)
+    final_messages.append(
+        {
+            "role": "user",
+            "content": _learning_resource_prompt_text("LEARNING_RESOURCE_COMPONENT_SUBMIT_PROMPT"),
+        }
+    )
+    push_activity("model_call", "正在调用 Nexora 模型生成结构化资源组件")
+    result = proxy.chat_completions(
+        messages=final_messages,
+        model=model,
+        username=username or None,
+        options={
+            "temperature": 0.45,
+            "tools": [_learning_resource_component_tool_spec()],
+            "tool_choice": {"type": "function", "function": {"name": "submit_resource_components"}},
+            "stream": False,
+        },
+        request_timeout=600,
+    )
+    if not result.get("ok"):
+        push_activity("tool_error", f"结构化组件生成失败：{result.get('message') or 'request failed'}")
+        return None
+    payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+    choices = payload.get("choices") if isinstance(payload.get("choices"), list) else []
+    message = choices[0].get("message") if choices and isinstance(choices[0], MappingABC) else {}
+    tool_calls = message.get("tool_calls") if isinstance(message.get("tool_calls"), list) else []
+    for call in tool_calls:
+        if not isinstance(call, MappingABC):
+            continue
+        func = call.get("function") if isinstance(call.get("function"), MappingABC) else {}
+        if str(func.get("name") or "").strip() != "submit_resource_components":
+            continue
+        try:
+            args = json.loads(str(func.get("arguments") or "{}"))
+        except Exception:
+            args = {}
+        components = _normalize_learning_resource_components(args)
+        if str(components.get("article_markdown") or "").strip():
+            push_activity("tool_submit", "模型已提交结构化资源组件")
+            return components
+    push_activity("tool_error", "模型没有提交结构化组件，准备回退普通正文生成")
+    return None
+
+
+def _prepare_learning_resource_source_messages(
+    *,
+    proxy: NexoraProxy,
+    model: Optional[str],
+    username: str,
+    system_prompt: str,
+    user_prompt: str,
+    sources: List[Dict[str, Any]],
+    push_activity,
+) -> List[Dict[str, Any]]:
+    source_catalog = _learning_resource_source_catalog(sources)
+    source_prompt = _render_learning_resource_prompt(
+        _learning_resource_prompt_text("LEARNING_RESOURCE_SOURCE_TOOL_USER_PROMPT"),
+        {"draft_prompt": user_prompt, "source_catalog": source_catalog},
+    )
+    ctx = _new_learning_resource_context(
+        system_prompt,
+        source_prompt if sources else user_prompt,
+        flow="learning_resource_source",
+    )
+    if not sources:
+        return _learning_resource_context_messages(ctx)
+    tools = _learning_resource_source_tool_specs()
+    for turn in range(3):
+        result = proxy.chat_completions(
+            messages=_learning_resource_context_messages(ctx),
+            model=model,
+            username=username or None,
+            options={"temperature": 0.2, "tools": tools, "tool_choice": "auto", "stream": False},
+            request_timeout=240,
+        )
+        if not result.get("ok"):
+            push_activity("tool_error", f"原文工具准备失败：{result.get('message') or 'request failed'}")
+            return _learning_resource_context_messages(ctx)
+        payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+        choices = payload.get("choices") if isinstance(payload.get("choices"), list) else []
+        message = choices[0].get("message") if choices and isinstance(choices[0], dict) else {}
+        if not isinstance(message, dict):
+            return _learning_resource_context_messages(ctx)
+        tool_calls = message.get("tool_calls") if isinstance(message.get("tool_calls"), list) else []
+        assistant_kwargs: Dict[str, Any] = {}
+        if tool_calls:
+            assistant_kwargs["tool_calls"] = tool_calls
+        ctx.add("assistant", str(message.get("content") or ""), **assistant_kwargs)
+        if not tool_calls:
+            if str(message.get("content") or "").strip():
+                push_activity("tool_context", "模型判断无需继续查询原文")
+            return _learning_resource_context_messages(ctx)
+        for call in tool_calls:
+            if not isinstance(call, MappingABC):
+                continue
+            func = call.get("function") if isinstance(call.get("function"), MappingABC) else {}
+            tool_name = str(func.get("name") or "").strip()
+            try:
+                args = json.loads(str(func.get("arguments") or "{}"))
+            except Exception:
+                args = {}
+            if not isinstance(args, dict):
+                args = {}
+            if tool_name == "search_original":
+                query = str(args.get("query") or "").strip()
+                push_activity("tool_call", f"查询原文：{query[:40] or '空查询'}")
+                tool_result = _search_learning_resource_sources(
+                    sources,
+                    query=query,
+                    book_id=str(args.get("book_id") or ""),
+                    limit=max(1, min(_safe_int(args.get("limit"), 5), 8)),
+                )
+            elif tool_name == "read_original":
+                push_activity("tool_call", "读取原文片段")
+                tool_result = _read_learning_resource_source(
+                    sources,
+                    book_id=str(args.get("book_id") or ""),
+                    start=_safe_int(args.get("start"), 0),
+                    length=_safe_int(args.get("length"), 1200),
+                )
+            else:
+                tool_result = {"error": f"unknown tool: {tool_name}"}
+            ctx.add(
+                "tool",
+                json.dumps(tool_result, ensure_ascii=False),
+                tool_call_id=str(call.get("id") or ""),
+                name=tool_name,
+            )
+    ctx.add("user", _learning_resource_prompt_text("LEARNING_RESOURCE_SOURCE_TOOL_DONE_PROMPT"))
+    return _learning_resource_context_messages(ctx)
+
+
+def _split_learning_resource_blocks(markdown: str) -> List[Dict[str, Any]]:
+    text = strip_model_thinking_blocks(markdown)
+    if not text:
+        return []
+    blocks: List[Dict[str, Any]] = []
+    cursor = 0
+    pattern = re.compile(r"```([A-Za-z0-9_+\-.#]*)\s*\n(.*?)```", re.S)
+    for match in pattern.finditer(text):
+        before = text[cursor:match.start()].strip()
+        if before:
+            blocks.append({"type": "markdown", "content": before})
+        language = str(match.group(1) or "").strip()
+        display_language = language or "text"
+        code = str(match.group(2) or "").strip("\n")
+
+        if code.strip() and is_learning_resource_plain_text_language(language):
+            blocks.append({"type": "markdown", "content": code.strip()})
+        elif code.strip():
+            blocks.append(
+                {
+                    "type": "code",
+                    "language": display_language,
+                    "content": code,
+                    "runnable": display_language.lower() in {"python", "py"},
+                }
+            )
+        cursor = match.end()
+    tail = text[cursor:].strip()
+    if tail:
+        blocks.append({"type": "markdown", "content": tail})
+    return blocks or [{"type": "markdown", "content": text}]
+
+
+def _summarize_learning_resource_markdown(markdown: str, fallback_title: str) -> str:
+    text = re.sub(r"```.*?```", "", strip_model_thinking_blocks(markdown), flags=re.S)
+    text = re.sub(r"[#>*_`\-\[\]()]|^\s*\d+\.\s*", "", text, flags=re.M)
+    text = re.sub(r"\s+", " ", text).strip()
+    if text:
+        return text[:180]
+    return f"围绕「{fallback_title}」生成的学习资源草稿。"
+
+
+def _build_learning_resource_prompt(
+    *,
+    title: str,
+    resource_type: str,
+    lecture_title: str,
+    topics: List[Dict[str, Any]],
+    course_context: str = "",
+    quality_feedback: str = "",
+) -> Tuple[str, str]:
+    type_label = _learning_resource_type_label(resource_type)
+    topic_lines = []
+    for item in topics[:8]:
+        if isinstance(item, MappingABC):
+            topic_title = str(item.get("title") or "").strip()
+        else:
+            topic_title = str(item or "").strip()
+        if topic_title:
+            topic_lines.append(f"- {topic_title}")
+    topic_text = "\n".join(topic_lines) or "- 无额外选题"
+    context_text = str(course_context or "").strip() or "暂无课程/教材上下文。若上下文不足，请明确写成“基于当前课程标题的通用解释”，不要编造教材细节。"
+    variables = {
+        "title": title,
+        "resource_type": resource_type,
+        "resource_type_label": type_label,
+        "lecture_title": lecture_title or "当前课程",
+        "topic_text": topic_text,
+        "course_context": context_text,
+        "quality_feedback": str(quality_feedback or "").strip() or "无",
+    }
+    system_prompt = _render_learning_resource_prompt(
+        _learning_resource_prompt_text("LEARNING_RESOURCE_AUTHOR_SYSTEM_PROMPT"),
+        variables,
+    )
+    user_prompt = _render_learning_resource_prompt(
+        _learning_resource_prompt_text("LEARNING_RESOURCE_AUTHOR_USER_PROMPT"),
+        variables,
+    )
+    return system_prompt, user_prompt
+
+
+def _register_learning_resource_generation(task_id: str) -> None:
+    safe_task_id = str(task_id or "").strip()
+
+    if not safe_task_id:
+        return
+
+    with _LEARNING_RESOURCE_GENERATION_LOCK:
+        _LEARNING_RESOURCE_GENERATION_ACTIVE_TASKS.add(safe_task_id)
+
+
+def _clear_learning_resource_generation(task_id: str) -> None:
+    safe_task_id = str(task_id or "").strip()
+
+    if not safe_task_id:
+        return
+
+    with _LEARNING_RESOURCE_GENERATION_LOCK:
+        _LEARNING_RESOURCE_GENERATION_ACTIVE_TASKS.discard(safe_task_id)
+
+
+def _is_learning_resource_generation_active(task_id: str) -> bool:
+    safe_task_id = str(task_id or "").strip()
+
+    if not safe_task_id:
+        return False
+
+    with _LEARNING_RESOURCE_GENERATION_LOCK:
+        return safe_task_id in _LEARNING_RESOURCE_GENERATION_ACTIVE_TASKS
+
+
+def _run_learning_resource_generation(task_id: str, resource_id: str, username: str) -> None:
+    task_id = str(task_id or "").strip()
+    resource_id = str(resource_id or "").strip()
+    username = str(username or "").strip()
+    if not task_id or not resource_id:
+        return
+    _register_learning_resource_generation(task_id)
+    activity_rows: List[Dict[str, Any]] = []
+
+    def push_activity(kind: str, message: str) -> None:
+        activity_rows.append(
+            {
+                "time": int(time.time()),
+                "type": str(kind or "status").strip() or "status",
+                "message": str(message or "").strip(),
+            }
+        )
+        del activity_rows[:-30]
+
+    try:
+        tasks = list_learning_resource_tasks(_cfg, limit=200)
+        task = next((row for row in tasks if str(row.get("id") or "").strip() == task_id), {})
+        resources = list_learning_resources(_cfg, limit=200, include_drafts=True)
+        resource = next((row for row in resources if str(row.get("id") or "").strip() == resource_id), {})
+        if not task or not resource:
+            return
+
+        push_activity("status", "资源生成任务已启动")
+        update_learning_resource_task(_cfg, task_id, {"status": "draft_generating"})
+        update_learning_resource(
+            _cfg,
+            resource_id,
+            {
+                "status": "generating",
+                "summary": "模型正在生成正文，稍后会自动写入草稿。",
+                "generation_activity": list(activity_rows),
+            },
+        )
+
+        proxy = _proxy or NexoraProxy(_cfg)
+        title = str(resource.get("title") or task.get("title") or "学习资源草稿").strip()
+        resource_type = str(resource.get("resource_type") or task.get("resource_type") or "explainer").strip()
+        lecture_id = str(resource.get("lecture_id") or task.get("lecture_id") or "").strip()
+        lecture_title = str(resource.get("lecture_title") or task.get("lecture_title") or "当前课程").strip()
+        topics = task.get("topics") if isinstance(task.get("topics"), list) else []
+        quality_feedback = str(task.get("quality_feedback") or "").strip()
+        course_context = _build_learning_resource_course_context(lecture_id)
+        push_activity(
+            "context",
+            f"已读取课程上下文：{len(course_context)} 字" if course_context else "未读取到课程上下文，将按课程标题生成",
+        )
+        system_prompt, user_prompt = _build_learning_resource_prompt(
+            title=title,
+            resource_type=resource_type,
+            lecture_title=lecture_title,
+            topics=topics,
+            course_context=course_context,
+            quality_feedback=quality_feedback,
+        )
+        source_texts = _build_learning_resource_source_texts(lecture_id)
+        if source_texts:
+            push_activity("tool_context", f"已准备原文读取工具：{len(source_texts)} 本教材")
+        final_messages = _prepare_learning_resource_source_messages(
+            proxy=proxy,
+            model=get_default_nexora_model(_cfg) or None,
+            username=username,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            sources=source_texts,
+            push_activity=push_activity,
+        )
+        components = _run_learning_resource_component_generation(
+            proxy=proxy,
+            messages=final_messages,
+            model=get_default_nexora_model(_cfg) or None,
+            username=username,
+            push_activity=push_activity,
+        )
+        if components:
+            content = _learning_resource_markdown_from_components(components, title)
+            blocks = _learning_resource_blocks_from_components(components, title)
+            summary = str(components.get("quick_summary") or "").strip() or _summarize_learning_resource_markdown(content, title)
+            push_activity("done", "结构化资源组件已生成，等待管理员审核")
+            update_learning_resource(
+                _cfg,
+                resource_id,
+                {
+                    "status": "draft_ready",
+                    "summary": summary,
+                    "content": content,
+                    "blocks": blocks,
+                    "components": components,
+                    "reason": "结构化资源已生成，等待管理员审核发布。",
+                    "generation_activity": list(activity_rows),
+                },
+            )
+            update_learning_resource_task(_cfg, task_id, {"status": "draft_ready"})
+            log_event(
+                "learning_resource_generation_ready",
+                "学习资源结构化组件已生成",
+                payload={"task_id": task_id, "resource_id": resource_id, "block_count": len(blocks)},
+            )
+            return
+
+        final_messages.append(
+            {
+                "role": "user",
+                "content": _learning_resource_prompt_text("LEARNING_RESOURCE_FALLBACK_MARKDOWN_PROMPT"),
+            }
+        )
+        streamed_parts: List[str] = []
+        last_persist = 0.0
+
+        def on_delta(delta: str) -> None:
+            nonlocal last_persist
+            piece = str(delta or "")
+            if not piece:
+                return
+            streamed_parts.append(piece)
+            now = time.time()
+            content = strip_model_thinking_blocks("".join(streamed_parts))
+            if last_persist > 0 and now - last_persist < 1.0:
+                return
+            last_persist = now
+            if not any(row.get("type") == "model_output" for row in activity_rows):
+                push_activity("model_output", "模型开始返回正文")
+            update_learning_resource(
+                _cfg,
+                resource_id,
+                {
+                    "status": "generating",
+                    "content": content,
+                    "blocks": _split_learning_resource_blocks(content),
+                    "summary": "模型正在生成正文，已写入部分内容。",
+                    "generation_activity": list(activity_rows),
+                },
+            )
+
+        push_activity("model_call", "正在调用 Nexora 模型生成正文")
+        result = proxy.complete_raw(
+            messages=final_messages,
+            model=get_default_nexora_model(_cfg) or None,
+            username=username or None,
+            api_mode="chat",
+            options={"temperature": 0.55, "stream": True},
+            request_timeout=600,
+            on_delta=on_delta,
+        )
+        if not result.get("success") and not streamed_parts:
+            push_activity("model_call", "流式生成不可用，改用普通生成重试")
+            result = proxy.complete_raw(
+                messages=final_messages,
+                model=get_default_nexora_model(_cfg) or None,
+                username=username or None,
+                api_mode="chat",
+                options={"temperature": 0.55, "stream": False},
+                request_timeout=600,
+            )
+        if not result.get("success"):
+            message = str(result.get("message") or "模型生成失败").strip()
+            push_activity("failed", message)
+            update_learning_resource_task(_cfg, task_id, {"status": "failed", "error": message})
+            update_learning_resource(
+                _cfg,
+                resource_id,
+                {
+                    "status": "failed",
+                    "reason": message,
+                    "generation_activity": list(activity_rows),
+                },
+            )
+            log_event(
+                "learning_resource_generation_failed",
+                "学习资源正文生成失败",
+                payload={"task_id": task_id, "resource_id": resource_id, "message": message},
+            )
+            return
+
+        content = strip_model_thinking_blocks(result.get("content") or "".join(streamed_parts))
+        if not content:
+            raise RuntimeError("模型没有返回正文")
+        blocks = _split_learning_resource_blocks(content)
+        summary = _summarize_learning_resource_markdown(content, title)
+        push_activity("done", "正文生成完成，已写入草稿")
+        update_learning_resource(
+            _cfg,
+            resource_id,
+            {
+                "status": "draft_ready",
+                "summary": summary,
+                "content": content,
+                "blocks": blocks,
+                "reason": "正文已生成，等待管理员发布。",
+                "generation_activity": list(activity_rows),
+            },
+        )
+        update_learning_resource_task(_cfg, task_id, {"status": "draft_ready"})
+        log_event(
+            "learning_resource_generation_ready",
+            "学习资源正文已生成",
+            payload={"task_id": task_id, "resource_id": resource_id, "block_count": len(blocks)},
+        )
+    except Exception as exc:
+        message = str(exc) or "resource generation failed"
+        push_activity("failed", message)
+        update_learning_resource_task(_cfg, task_id, {"status": "failed", "error": message})
+        update_learning_resource(
+            _cfg,
+            resource_id,
+            {
+                "status": "failed",
+                "reason": message,
+                "generation_activity": list(activity_rows),
+            },
+        )
+        log_event(
+            "learning_resource_generation_error",
+            "学习资源正文生成异常",
+            payload={"task_id": task_id, "resource_id": resource_id, "error": message},
+        )
+    finally:
+        _clear_learning_resource_generation(task_id)
+
+
+def _normalize_learning_resource_scan(raw: Any, *, fallback_status: str = "rejected") -> Dict[str, Any]:
+    data = raw if isinstance(raw, MappingABC) else {}
+    status = str(data.get("status") or data.get("result") or fallback_status).strip().lower()
+    if status in {"pass", "passed", "ok", "approved", "success"}:
+        status = "passed"
+    elif status in {"reject", "rejected", "failed", "fail", "blocked", "risk"}:
+        status = "rejected"
+    else:
+        status = fallback_status
+    issues: List[Dict[str, str]] = []
+    raw_issues = data.get("issues") if isinstance(data.get("issues"), list) else []
+    for item in raw_issues[:12]:
+        if isinstance(item, MappingABC):
+            title = str(item.get("title") or item.get("name") or "复核问题").strip()
+            detail = str(item.get("detail") or item.get("description") or item.get("message") or "").strip()
+            severity = str(item.get("severity") or "medium").strip().lower()
+        else:
+            title = "复核问题"
+            detail = str(item or "").strip()
+            severity = "medium"
+        if detail or title:
+            issues.append(
+                {
+                    "severity": severity if severity in {"high", "medium", "low"} else "medium",
+                    "title": title,
+                    "detail": detail,
+                }
+            )
+    if status == "rejected" and not issues:
+        issues.append({"severity": "medium", "title": "scan 拒绝", "detail": "模型认为文章暂不适合发布。"})
+    checked = data.get("checked") if isinstance(data.get("checked"), list) else []
+    return {
+        "status": status,
+        "label": "模型已 review" if status == "passed" else "scan 拒绝",
+        "summary": str(data.get("summary") or data.get("message") or "").strip(),
+        "issues": issues,
+        "checked": [str(item or "").strip() for item in checked if str(item or "").strip()][:10],
+        "checked_at": int(time.time()),
+        "reviewer": "model",
+    }
+
+
+def _learning_resource_scan_feedback(scan: Mapping[str, Any]) -> str:
+    if not isinstance(scan, MappingABC):
+        return ""
+    rows: List[str] = []
+    summary = str(scan.get("summary") or "").strip()
+    if summary:
+        rows.append(f"复核结论：{summary}")
+    issues = scan.get("issues") if isinstance(scan.get("issues"), list) else []
+    for idx, item in enumerate(issues[:12], start=1):
+        if not isinstance(item, MappingABC):
+            continue
+        severity = str(item.get("severity") or "medium").strip()
+        title = str(item.get("title") or "复核问题").strip()
+        detail = str(item.get("detail") or "").strip()
+        rows.append(f"{idx}. [{severity}] {title}：{detail}")
+    checked = scan.get("checked") if isinstance(scan.get("checked"), list) else []
+    if checked:
+        rows.append("已检查项：" + "、".join(str(item or "").strip() for item in checked if str(item or "").strip()))
+    return "\n".join(row for row in rows if row.strip()).strip()
+
+
+def _prepare_learning_resource_review_context(
+    *,
+    proxy: NexoraProxy,
+    model: Optional[str],
+    username: str,
+    system_prompt: str,
+    user_prompt: str,
+    sources: List[Dict[str, Any]],
+    cancel_event=None,
+) -> Context:
+    ctx = _new_learning_resource_context(
+        system_prompt,
+        user_prompt,
+        flow="learning_resource_review",
+        max_chars=32000,
+    )
+    if not sources:
+        ctx.add("user", _learning_resource_prompt_text("LEARNING_RESOURCE_REVIEW_FINAL_JSON_PROMPT"))
+        return ctx
+
+    tools = _learning_resource_source_tool_specs()
+    for _turn in range(3):
+        if _is_learning_resource_scan_cancelled(cancel_event):
+            raise RuntimeError("模型复核已取消")
+
+        result = proxy.chat_completions(
+            messages=_learning_resource_context_messages(ctx),
+            model=model,
+            username=username or None,
+            options={"temperature": 0.1, "tools": tools, "tool_choice": "auto", "stream": False},
+            request_timeout=240,
+        )
+
+        if _is_learning_resource_scan_cancelled(cancel_event):
+            raise RuntimeError("模型复核已取消")
+
+        if not result.get("ok"):
+            break
+        payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+        choices = payload.get("choices") if isinstance(payload.get("choices"), list) else []
+        message = choices[0].get("message") if choices and isinstance(choices[0], MappingABC) else {}
+        if not isinstance(message, MappingABC):
+            break
+        tool_calls = message.get("tool_calls") if isinstance(message.get("tool_calls"), list) else []
+        assistant_kwargs: Dict[str, Any] = {}
+        if tool_calls:
+            assistant_kwargs["tool_calls"] = tool_calls
+        ctx.add("assistant", str(message.get("content") or ""), **assistant_kwargs)
+        if not tool_calls:
+            break
+        for call in tool_calls:
+            if not isinstance(call, MappingABC):
+                continue
+            func = call.get("function") if isinstance(call.get("function"), MappingABC) else {}
+            tool_name = str(func.get("name") or "").strip()
+            try:
+                args = json.loads(str(func.get("arguments") or "{}"))
+            except Exception:
+                args = {}
+            if not isinstance(args, dict):
+                args = {}
+            if tool_name == "search_original":
+                tool_result = _search_learning_resource_sources(
+                    sources,
+                    query=str(args.get("query") or "").strip(),
+                    book_id=str(args.get("book_id") or ""),
+                    limit=max(1, min(_safe_int(args.get("limit"), 5), 8)),
+                )
+            elif tool_name == "read_original":
+                tool_result = _read_learning_resource_source(
+                    sources,
+                    book_id=str(args.get("book_id") or ""),
+                    start=_safe_int(args.get("start"), 0),
+                    length=_safe_int(args.get("length"), 1200),
+                )
+            else:
+                tool_result = {"error": f"unknown tool: {tool_name}"}
+            ctx.add(
+                "tool",
+                json.dumps(tool_result, ensure_ascii=False),
+                tool_call_id=str(call.get("id") or ""),
+                name=tool_name,
+            )
+    ctx.add("user", _learning_resource_prompt_text("LEARNING_RESOURCE_REVIEW_FINAL_JSON_PROMPT"))
+    return ctx
+
+
+def _is_learning_resource_scan_cancelled(cancel_event: Any) -> bool:
+    return cancel_event is not None and cancel_event.is_set()
+
+
+def _register_learning_resource_scan(resource_id: str) -> threading.Event:
+    target_id = str(resource_id or "").strip()
+    event = threading.Event()
+
+    with _LEARNING_RESOURCE_SCAN_LOCK:
+        previous = _LEARNING_RESOURCE_SCAN_CANCEL_EVENTS.get(target_id)
+
+        if previous is not None:
+            previous.set()
+
+        _LEARNING_RESOURCE_SCAN_CANCEL_EVENTS[target_id] = event
+
+    return event
+
+
+def _cancel_learning_resource_scan(resource_id: str) -> bool:
+    target_id = str(resource_id or "").strip()
+
+    with _LEARNING_RESOURCE_SCAN_LOCK:
+        event = _LEARNING_RESOURCE_SCAN_CANCEL_EVENTS.get(target_id)
+
+    if event is None:
+        return False
+
+    event.set()
+    return True
+
+
+def _clear_learning_resource_scan(resource_id: str, cancel_event: threading.Event) -> None:
+    target_id = str(resource_id or "").strip()
+
+    with _LEARNING_RESOURCE_SCAN_LOCK:
+        if _LEARNING_RESOURCE_SCAN_CANCEL_EVENTS.get(target_id) is cancel_event:
+            _LEARNING_RESOURCE_SCAN_CANCEL_EVENTS.pop(target_id, None)
+
+
+def _scan_learning_resource_with_model(resource: Mapping[str, Any], username: str, on_delta=None, cancel_event=None) -> Dict[str, Any]:
+    title = str(resource.get("title") or "学习资源").strip()
+    content = str(resource.get("content") or "").strip()
+    summary = str(resource.get("summary") or "").strip()
+    lecture_id = str(resource.get("lecture_id") or "").strip()
+    lecture_title = str(resource.get("lecture_title") or _learning_resource_lecture_title(lecture_id)).strip()
+    resource_type = str(resource.get("resource_type") or "explainer").strip()
+    context = _build_learning_resource_course_context(lecture_id)
+    components = resource.get("components") if isinstance(resource.get("components"), MappingABC) else {}
+
+    if _is_learning_resource_scan_cancelled(cancel_event):
+        raise RuntimeError("模型复核已取消")
+
+    if not content and not summary:
+        return _normalize_learning_resource_scan(
+            {
+                "status": "rejected",
+                "summary": "正文为空，无法通过复核。",
+                "issues": [{"severity": "high", "title": "正文为空", "detail": "资源没有可审核的正文内容。"}],
+            }
+        )
+    proxy = _proxy or NexoraProxy(_cfg)
+    model = get_default_nexora_model(_cfg) or None
+    sources = _build_learning_resource_source_texts(lecture_id)
+    variables = {
+        "title": title,
+        "summary": summary,
+        "resource_type": resource_type,
+        "resource_type_label": _learning_resource_type_label(resource_type),
+        "lecture_id": lecture_id,
+        "lecture_title": lecture_title or "当前课程",
+        "components_json": json.dumps(components, ensure_ascii=False)[:5000],
+        "course_context": context[:9000] if context else "暂无课程上下文。",
+        "source_catalog": _learning_resource_source_catalog(sources),
+        "content": content[:14000],
+        "username": username,
+    }
+    system_prompt = _render_learning_resource_prompt(
+        _learning_resource_prompt_text("LEARNING_RESOURCE_REVIEW_SYSTEM_PROMPT"),
+        variables,
+    )
+    user_prompt = _render_learning_resource_prompt(
+        _learning_resource_prompt_text("LEARNING_RESOURCE_REVIEW_USER_PROMPT"),
+        variables,
+    )
+    review_ctx = _prepare_learning_resource_review_context(
+        proxy=proxy,
+        model=model,
+        username=username,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        sources=sources,
+        cancel_event=cancel_event,
+    )
+
+    if _is_learning_resource_scan_cancelled(cancel_event):
+        raise RuntimeError("模型复核已取消")
+
+    if callable(on_delta):
+        on_delta("正在提交结构化复核结果...\n")
+
+    result = proxy.chat_completions(
+        messages=_learning_resource_context_messages(review_ctx),
+        model=model,
+        username=username or None,
+        options={
+            "temperature": 0.1,
+            "stream": False,
+            "tools": [_learning_resource_scan_tool_spec()],
+            "tool_choice": {"type": "function", "function": {"name": "submit_resource_scan"}},
+        },
+        request_timeout=240,
+        cancel_event=cancel_event,
+    )
+    if not result.get("ok"):
+        return _normalize_learning_resource_scan(
+            {
+                "status": "rejected",
+                "summary": f"模型复核调用失败：{result.get('message') or 'unknown error'}",
+                "issues": [{"severity": "medium", "title": "复核调用失败", "detail": str(result.get("message") or "unknown error")}],
+            }
+        )
+    payload = result.get("payload") if isinstance(result.get("payload"), dict) else {}
+    choices = payload.get("choices") if isinstance(payload.get("choices"), list) else []
+    message = choices[0].get("message") if choices and isinstance(choices[0], MappingABC) else {}
+    tool_calls = message.get("tool_calls") if isinstance(message.get("tool_calls"), list) else []
+
+    for call in tool_calls:
+        if not isinstance(call, MappingABC):
+            continue
+
+        func = call.get("function") if isinstance(call.get("function"), MappingABC) else {}
+
+        if str(func.get("name") or "").strip() != "submit_resource_scan":
+            continue
+
+        try:
+            args = json.loads(str(func.get("arguments") or "{}"))
+        except json.JSONDecodeError as exc:
+            return _normalize_learning_resource_scan(
+                {
+                    "status": "rejected",
+                    "summary": "模型复核工具参数不是合法 JSON。",
+                    "issues": [{"severity": "medium", "title": "工具参数错误", "detail": exc.msg}],
+                }
+            )
+
+        scan = _normalize_learning_resource_scan(args)
+        scan["model"] = str(model or "").strip()
+
+        if callable(on_delta):
+            on_delta(json.dumps(scan, ensure_ascii=False, indent=2))
+
+        return scan
+
+    return _normalize_learning_resource_scan(
+        {
+            "status": "rejected",
+            "summary": "模型没有调用 submit_resource_scan 工具提交复核结果。",
+            "issues": [
+                {
+                    "severity": "medium",
+                    "title": "缺少复核工具调用",
+                    "detail": "复核链路要求通过 submit_resource_scan 提交结构化结果。",
+                }
+            ],
+        }
+    )
+
+
+def _learning_resource_scan_error(error: Any) -> Dict[str, Any]:
+    message = str(error or "模型复核调用异常").strip()
+    return _normalize_learning_resource_scan(
+        {
+            "status": "rejected",
+            "summary": f"模型复核异常：{message}",
+            "issues": [
+                {
+                    "severity": "medium",
+                    "title": "复核调用异常",
+                    "detail": message,
+                }
+            ],
+        }
+    )
+
+
+def _repair_interrupted_learning_resource_generations() -> None:
+    resources = list_learning_resources(_cfg, limit=500, include_drafts=True)
+    interrupted_statuses = {"queued", "generating"}
+    task_statuses = {"draft_queued", "draft_generating"}
+    repaired = 0
+
+    for resource in resources:
+        if not isinstance(resource, MappingABC):
+            continue
+
+        status = str(resource.get("status") or "").strip()
+
+        if status not in interrupted_statuses:
+            continue
+
+        source_task_id = str(resource.get("source_task_id") or "").strip()
+
+        if _is_learning_resource_generation_active(source_task_id):
+            continue
+
+        updated_at = _safe_int(resource.get("updated_at"), 0)
+
+        if updated_at >= _LEARNING_RESOURCE_PROCESS_STARTED_AT:
+            continue
+
+        resource_id = str(resource.get("id") or "").strip()
+        message = "资源生成进程已中断：服务在生成过程中停止或重启，后台生成线程已丢失。请重新生成该版本。"
+        activity_rows = list(resource.get("generation_activity") if isinstance(resource.get("generation_activity"), list) else [])
+        activity_rows.append(
+            {
+                "time": int(time.time()),
+                "type": "failed",
+                "message": message,
+            }
+        )
+
+        if source_task_id:
+            tasks = list_learning_resource_tasks(_cfg, limit=500)
+            task = next((row for row in tasks if str(row.get("id") or "").strip() == source_task_id), {})
+
+            if not task or str(task.get("status") or "").strip() in task_statuses:
+                update_learning_resource_task(
+                    _cfg,
+                    source_task_id,
+                    {
+                        "status": "failed",
+                        "error": message,
+                    },
+                )
+
+        update_learning_resource(
+            _cfg,
+            resource_id,
+            {
+                "status": "failed",
+                "reason": message,
+                "generation_activity": activity_rows[-30:],
+            },
+        )
+        repaired += 1
+
+    if repaired:
+        log_event(
+            "learning_resource_generation_interrupted_repaired",
+            "学习资源中断生成任务已标记失败",
+            payload={"count": repaired, "process_started_at": _LEARNING_RESOURCE_PROCESS_STARTED_AT},
+        )
+
+
+@bp.route("/frontend/learning-resources", methods=["GET"])
+def frontend_learning_resources():
+    username = _resolve_runtime_user_id()
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+    _repair_interrupted_learning_resource_generations()
+    include_drafts = _is_runtime_teacher() and str(request.args.get("include_drafts") or "").strip() == "1"
+    limit = min(100, max(1, _safe_int(request.args.get("limit"), 30)))
+    lecture_id = str(request.args.get("lecture_id") or "").strip()
+    rows = list_learning_resources(_cfg, limit=limit, include_drafts=include_drafts, lecture_id=lecture_id)
     return jsonify({"success": True, "items": rows, "total": len(rows)})
+
+
+@bp.route("/frontend/learning-resources/<path:resource_id>", methods=["GET"])
+def frontend_learning_resource_detail(resource_id: str):
+    username = _resolve_runtime_user_id()
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+    _repair_interrupted_learning_resource_generations()
+    target_id = str(resource_id or "").strip()
+    if not target_id:
+        return jsonify({"success": False, "error": "resource_id is required."}), 400
+    include_drafts = _is_runtime_teacher()
+    rows = list_learning_resources(_cfg, limit=500, include_drafts=include_drafts)
+    resource = next((row for row in rows if str(row.get("id") or "").strip() == target_id), None)
+    if not resource:
+        return jsonify({"success": False, "error": "resource not found."}), 404
+    return jsonify({"success": True, "resource": resource})
+
+
+@bp.route("/frontend/learning-resources/<path:resource_id>", methods=["DELETE"])
+def frontend_learning_resource_delete(resource_id: str):
+    username = _resolve_runtime_user_id()
+
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+
+    if not _is_runtime_teacher():
+        return jsonify({"success": False, "error": "Only admin or teacher can delete resources."}), 403
+
+    target_id = str(resource_id or "").strip()
+
+    if not target_id:
+        return jsonify({"success": False, "error": "resource_id is required."}), 400
+
+    resource = delete_learning_resource(_cfg, target_id)
+
+    if not resource:
+        return jsonify({"success": False, "error": "resource not found."}), 404
+
+    log_event(
+        "learning_resource_deleted",
+        "学习资源已删除",
+        payload={
+            "resource_id": target_id,
+            "source_task_id": resource.get("source_task_id"),
+            "status": resource.get("status"),
+            "title": resource.get("title"),
+            "username": username,
+        },
+    )
+
+    return jsonify({"success": True, "resource": resource})
+
+
+@bp.route("/frontend/learning-resources/<path:resource_id>/status", methods=["POST"])
+def frontend_learning_resource_status(resource_id: str):
+    username = _resolve_runtime_user_id()
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+    if not _is_runtime_teacher():
+        return jsonify({"success": False, "error": "Only admin or teacher can review resources."}), 403
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, MappingABC):
+        return jsonify({"success": False, "error": "request body must be an object."}), 400
+    target_status = str(data.get("status") or "").strip()
+    if target_status not in {"published", "draft_ready", "draft", "failed"}:
+        return jsonify({"success": False, "error": "unsupported status."}), 400
+    if target_status == "published":
+        target_id = str(resource_id or "").strip()
+        resources = list_learning_resources(_cfg, limit=300, include_drafts=True)
+        current = next((row for row in resources if str(row.get("id") or "").strip() == target_id), None)
+        if not current:
+            return jsonify({"success": False, "error": "resource not found."}), 404
+        if data.get("confirmed") is not True:
+            return jsonify({"success": False, "error": "publish confirmation is required."}), 400
+        if not str(current.get("content") or "").strip():
+            return jsonify({"success": False, "error": "resource content is required before publish."}), 409
+    updates: Dict[str, Any] = {
+        "status": target_status,
+        "reviewed_by": username,
+        "reviewed_at": int(time.time()),
+    }
+    if target_status == "published":
+        updates["published_at"] = int(time.time())
+        updates["reason"] = "管理员审核通过，已发布到学习资源。"
+    elif str(data.get("reason") or "").strip():
+        updates["reason"] = str(data.get("reason") or "").strip()
+    resource = update_learning_resource(_cfg, resource_id, updates)
+    if not resource:
+        return jsonify({"success": False, "error": "resource not found."}), 404
+    log_event(
+        "learning_resource_review_status",
+        "学习资源审核状态已更新",
+        payload={"resource_id": resource_id, "status": target_status, "username": username},
+    )
+    return jsonify({"success": True, "resource": resource})
+
+
+@bp.route("/frontend/learning-resources/<path:resource_id>/versions/<path:version_id>/select", methods=["POST"])
+def frontend_learning_resource_version_select(resource_id: str, version_id: str):
+    username = _resolve_runtime_user_id()
+
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+
+    if not _is_runtime_teacher():
+        return jsonify({"success": False, "error": "Only admin or teacher can switch resource versions."}), 403
+
+    target_id = str(resource_id or "").strip()
+    target_version_id = str(version_id or "").strip()
+
+    if not target_id or not target_version_id:
+        return jsonify({"success": False, "error": "resource_id and version_id are required."}), 400
+
+    resources = list_learning_resources(_cfg, limit=300, include_drafts=True)
+    current = next((row for row in resources if str(row.get("id") or "").strip() == target_id), None)
+
+    if not current:
+        return jsonify({"success": False, "error": "resource not found."}), 404
+
+    if str(current.get("status") or "").strip() in {"queued", "generating"}:
+        return jsonify({"success": False, "error": "resource is generating and cannot switch versions."}), 409
+
+    _cancel_learning_resource_scan(target_id)
+    resource = switch_learning_resource_version(_cfg, target_id, target_version_id)
+
+    if not resource:
+        return jsonify({"success": False, "error": "version not found."}), 404
+
+    log_event(
+        "learning_resource_version_selected",
+        "学习资源当前版本已切换",
+        payload={
+            "resource_id": target_id,
+            "version_id": target_version_id,
+            "username": username,
+        },
+    )
+
+    return jsonify({"success": True, "resource": resource})
+
+
+@bp.route("/frontend/learning-resources/<path:resource_id>/scan", methods=["POST"])
+def frontend_learning_resource_scan(resource_id: str):
+    username = _resolve_runtime_user_id()
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+    if not _is_runtime_teacher():
+        return jsonify({"success": False, "error": "Only admin or teacher can scan resources."}), 403
+    target_id = str(resource_id or "").strip()
+    resources = list_learning_resources(_cfg, limit=300, include_drafts=True)
+    resource = next((row for row in resources if str(row.get("id") or "").strip() == target_id), None)
+    if not resource:
+        return jsonify({"success": False, "error": "resource not found."}), 404
+    update_learning_resource(
+        _cfg,
+        target_id,
+        {
+            "review_scan": {
+                "status": "running",
+                "label": "模型复核中",
+                "summary": "正在检查课程相关性、事实可靠性、结构可读性和发布风险。",
+                "issues": [],
+                "checked": [],
+                "checked_at": int(time.time()),
+                "reviewer": "model",
+            },
+            "reviewed_by_model_at": int(time.time()),
+        },
+    )
+    try:
+        scan = _scan_learning_resource_with_model(resource, username)
+    except Exception as exc:
+        scan = _learning_resource_scan_error(exc)
+        log_event(
+            "learning_resource_model_scan_error",
+            "学习资源模型复核异常",
+            payload={"resource_id": target_id, "username": username, "error": str(exc)},
+        )
+
+    updated = update_learning_resource(
+        _cfg,
+        target_id,
+        {
+            "review_scan": scan,
+            "reviewed_by_model_at": int(time.time()),
+        },
+    )
+    if not updated:
+        return jsonify({"success": False, "error": "resource not found."}), 404
+    log_event(
+        "learning_resource_model_scan",
+        "学习资源模型复核完成",
+        payload={
+            "resource_id": target_id,
+            "version_id": updated.get("current_version_id"),
+            "status": scan.get("status"),
+            "username": username,
+        },
+    )
+    if str(scan.get("status") or "").strip() == "rejected":
+        log_event(
+            "learning_resource_guard_rejected",
+            "学习资源 scan 拒绝，已计入防幻觉拦截",
+            payload={
+                "resource_id": target_id,
+                "version_id": updated.get("current_version_id"),
+                "username": username,
+                "summary": scan.get("summary"),
+                "issue_count": len(scan.get("issues") if isinstance(scan.get("issues"), list) else []),
+            },
+        )
+    return jsonify({"success": True, "resource": updated, "scan": scan})
+
+
+@bp.route("/frontend/learning-resources/<path:resource_id>/scan-stream", methods=["POST"])
+def frontend_learning_resource_scan_stream(resource_id: str):
+    username = _resolve_runtime_user_id()
+
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+
+    if not _is_runtime_teacher():
+        return jsonify({"success": False, "error": "Only admin or teacher can scan resources."}), 403
+
+    target_id = str(resource_id or "").strip()
+    resources = list_learning_resources(_cfg, limit=300, include_drafts=True)
+    resource = next((row for row in resources if str(row.get("id") or "").strip() == target_id), None)
+
+    if not resource:
+        return jsonify({"success": False, "error": "resource not found."}), 404
+
+    event_queue = queue.Queue()
+    cancel_event = _register_learning_resource_scan(target_id)
+
+    def push_event(event_name: str, payload: Dict[str, Any]) -> None:
+        event_queue.put((event_name, payload))
+
+    def run_worker() -> None:
+        running_scan = {
+            "status": "running",
+            "label": "模型复核中",
+            "summary": "正在检查课程相关性、事实可靠性、结构可读性和发布风险。",
+            "issues": [],
+            "checked": [],
+            "checked_at": int(time.time()),
+            "reviewer": "model",
+        }
+        update_learning_resource(
+            _cfg,
+            target_id,
+            {
+                "review_scan": running_scan,
+                "reviewed_by_model_at": int(time.time()),
+            },
+        )
+        push_event("status", {"message": "模型复核已启动", "scan": running_scan})
+
+        try:
+            scan = _scan_learning_resource_with_model(
+                resource,
+                username,
+                on_delta=lambda text: push_event("review_output", {"content": str(text or "")}),
+                cancel_event=cancel_event,
+            )
+        except Exception as exc:
+            if _is_learning_resource_scan_cancelled(cancel_event):
+                push_event("cancelled", {"success": False, "message": "模型复核已取消"})
+                push_event("complete", {})
+                _clear_learning_resource_scan(target_id, cancel_event)
+                return
+
+            scan = _learning_resource_scan_error(exc)
+            log_event(
+                "learning_resource_model_scan_error",
+                "学习资源模型复核异常",
+                payload={"resource_id": target_id, "username": username, "error": str(exc)},
+            )
+
+        updated = update_learning_resource(
+            _cfg,
+            target_id,
+            {
+                "review_scan": scan,
+                "reviewed_by_model_at": int(time.time()),
+            },
+        )
+
+        if updated:
+            log_event(
+                "learning_resource_model_scan",
+                "学习资源模型复核完成",
+                payload={
+                    "resource_id": target_id,
+                    "version_id": updated.get("current_version_id"),
+                    "status": scan.get("status"),
+                    "username": username,
+                    "stream": True,
+                },
+            )
+
+            if str(scan.get("status") or "").strip() == "rejected":
+                log_event(
+                    "learning_resource_guard_rejected",
+                    "学习资源 scan 拒绝，已计入防幻觉拦截",
+                    payload={
+                        "resource_id": target_id,
+                        "version_id": updated.get("current_version_id"),
+                        "username": username,
+                        "summary": scan.get("summary"),
+                        "issue_count": len(scan.get("issues") if isinstance(scan.get("issues"), list) else []),
+                        "stream": True,
+                    },
+                )
+
+            push_event("done", {"success": True, "resource": updated, "scan": scan})
+        else:
+            push_event("error", {"success": False, "error": "resource not found."})
+
+        push_event("complete", {})
+        _clear_learning_resource_scan(target_id, cancel_event)
+
+    def event_stream():
+        worker = threading.Thread(target=run_worker, name="learning-resource-scan-stream", daemon=True)
+        worker.start()
+        yield _reader_guide_sse_event("status", {"message": "learning resource scan stream started"})
+
+        while True:
+            try:
+                event_name, event_payload = event_queue.get(timeout=15)
+            except queue.Empty:
+                yield _reader_guide_sse_event("ping", {"timestamp": time.time()})
+                continue
+
+            if event_name == "complete":
+                break
+
+            yield _reader_guide_sse_event(event_name, event_payload)
+
+    return Response(
+        stream_with_context(event_stream()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@bp.route("/frontend/learning-resources/<path:resource_id>/scan-cancel", methods=["POST"])
+def frontend_learning_resource_scan_cancel(resource_id: str):
+    username = _resolve_runtime_user_id()
+
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+
+    if not _is_runtime_teacher():
+        return jsonify({"success": False, "error": "Only admin or teacher can cancel resource scans."}), 403
+
+    target_id = str(resource_id or "").strip()
+
+    if not target_id:
+        return jsonify({"success": False, "error": "resource_id is required."}), 400
+
+    cancelled = _cancel_learning_resource_scan(target_id)
+
+    if cancelled:
+        log_event(
+            "learning_resource_model_scan_cancelled",
+            "学习资源模型复核已取消",
+            payload={"resource_id": target_id, "username": username},
+        )
+
+    return jsonify({"success": True, "cancelled": cancelled})
+
+
+@bp.route("/frontend/learning-resources/<path:resource_id>/regenerate", methods=["POST"])
+def frontend_learning_resource_regenerate(resource_id: str):
+    username = _resolve_runtime_user_id()
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+    if not _is_runtime_teacher():
+        return jsonify({"success": False, "error": "Only admin or teacher can regenerate resources."}), 403
+    _repair_interrupted_learning_resource_generations()
+    target_id = str(resource_id or "").strip()
+    resources = list_learning_resources(_cfg, limit=300, include_drafts=True)
+    resource = next((row for row in resources if str(row.get("id") or "").strip() == target_id), None)
+    if not resource:
+        return jsonify({"success": False, "error": "resource not found."}), 404
+    if str(resource.get("status") or "").strip() in {"queued", "generating"}:
+        return jsonify({"success": False, "error": "resource is already generating."}), 409
+    scan = resource.get("review_scan") if isinstance(resource.get("review_scan"), MappingABC) else {}
+    feedback = _learning_resource_scan_feedback(scan)
+    if not feedback:
+        feedback = "管理员要求基于当前草稿重新生成一个改进版本。"
+    lecture_id = str(resource.get("lecture_id") or "").strip()
+    lecture_title = str(resource.get("lecture_title") or _learning_resource_lecture_title(lecture_id)).strip()
+    resource_type = str(resource.get("resource_type") or "explainer").strip() or "explainer"
+    title = str(resource.get("title") or "学习资源草稿").strip()
+    record = append_learning_resource_task(
+        _cfg,
+        {
+            "task_type": "regenerate",
+            "status": "draft_queued",
+            "resource_type": resource_type,
+            "lecture_id": lecture_id,
+            "lecture_title": lecture_title,
+            "title": title,
+            "topics": [],
+            "selected_topic_ids": [],
+            "quality_feedback": feedback,
+            "regenerate_from_version_id": str(resource.get("current_version_id") or ""),
+            "created_by": username,
+        },
+    )
+    updated = create_learning_resource_version(
+        _cfg,
+        target_id,
+        {
+            "status": "queued",
+            "summary": "已根据 scan 反馈创建新版本，等待模型重新生成。",
+            "content": "",
+            "blocks": [],
+            "components": {},
+            "review_scan": {},
+            "generation_activity": [],
+            "reason": "根据模型复核反馈重新生成。",
+            "source_task_id": record.get("id"),
+            "created_by": username,
+        },
+    )
+    if not updated:
+        return jsonify({"success": False, "error": "resource not found."}), 404
+    worker = threading.Thread(
+        target=_run_learning_resource_generation,
+        args=(str(record.get("id") or ""), target_id, username),
+        name="learning-resource-regenerate",
+        daemon=True,
+    )
+    worker.start()
+    log_event(
+        "learning_resource_regenerate_created",
+        "学习资源已根据 scan 反馈创建新版本",
+        payload={
+            "resource_id": target_id,
+            "version_id": updated.get("current_version_id"),
+            "from_version_id": record.get("regenerate_from_version_id"),
+            "username": username,
+        },
+    )
+    return jsonify({"success": True, "task": record, "resource": updated})
+
+
+@bp.route("/frontend/learning-resources/tasks", methods=["GET"])
+def frontend_learning_resource_tasks():
+    username = _resolve_runtime_user_id()
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+    if not _is_runtime_teacher():
+        return jsonify({"success": False, "error": "Only admin or teacher can view resource tasks."}), 403
+    limit = min(100, max(1, _safe_int(request.args.get("limit"), 30)))
+    rows = list_learning_resource_tasks(_cfg, limit=limit)
+    return jsonify({"success": True, "items": rows, "total": len(rows)})
+
+
+@bp.route("/frontend/learning-resources/topics", methods=["POST"])
+def frontend_learning_resource_topics():
+    username = _resolve_runtime_user_id()
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+    if not _is_runtime_teacher():
+        return jsonify({"success": False, "error": "Only admin or teacher can generate resource topics."}), 403
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, MappingABC):
+        return jsonify({"success": False, "error": "request body must be an object."}), 400
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    resource_type = str(data.get("resource_type") or "explainer").strip() or "explainer"
+    if not lecture_id:
+        return jsonify({"success": False, "error": "请选择课程后再生成资源选题。"}), 400
+
+    lecture_title = _learning_resource_lecture_title(lecture_id)
+
+    try:
+        topics = _build_learning_resource_topic_suggestions(lecture_id, lecture_title, resource_type, username)
+    except Exception as exc:
+        error_message = str(exc or "学习资源选题生成失败。").strip()
+        record = append_learning_resource_task(
+            _cfg,
+            {
+                "task_type": "topic_suggestions",
+                "status": "failed",
+                "resource_type": resource_type,
+                "lecture_id": lecture_id,
+                "lecture_title": lecture_title,
+                "title": f"{lecture_title} {_learning_resource_type_label(resource_type)}选题",
+                "topics": [],
+                "selected_topic_ids": [],
+                "topic_source": "llm",
+                "error_message": error_message,
+                "created_by": username,
+            },
+        )
+        log_event(
+            "learning_resource_topics_failed",
+            "学习资源选题生成失败",
+            payload={
+                "username": username,
+                "lecture_id": lecture_id,
+                "resource_type": resource_type,
+                "error": error_message,
+            },
+        )
+        return jsonify({"success": False, "error": error_message, "message": "学习资源选题生成失败。", "task": record}), 502
+
+    record = append_learning_resource_task(
+        _cfg,
+        {
+            "task_type": "topic_suggestions",
+            "status": "topics_ready",
+            "resource_type": resource_type,
+            "lecture_id": lecture_id,
+            "lecture_title": lecture_title,
+            "title": f"{lecture_title} {_learning_resource_type_label(resource_type)}选题",
+            "topics": topics,
+            "selected_topic_ids": [row["id"] for row in topics[:3]],
+            "topic_source": "llm",
+            "created_by": username,
+        },
+    )
+    log_event(
+        "learning_resource_topics_created",
+        "学习资源选题已生成",
+        payload={"username": username, "lecture_id": lecture_id, "resource_type": resource_type, "topic_count": len(topics), "topic_source": "llm"},
+    )
+    return jsonify({"success": True, "task": record, "topics": topics})
+
+
+def _normalize_learning_resource_draft_topics(raw_topics: List[Any], selected_topic_ids: List[Any]) -> List[Dict[str, Any]]:
+    selected_ids = {str(item or "").strip() for item in selected_topic_ids if str(item or "").strip()}
+    rows: List[Dict[str, Any]] = []
+    seen_titles: set[str] = set()
+
+    for index, item in enumerate(raw_topics):
+        if isinstance(item, MappingABC):
+            topic_id = str(item.get("id") or f"topic_{index + 1}").strip()
+            title = str(item.get("title") or item.get("name") or "").strip()
+            reason = str(item.get("reason") or item.get("description") or "").strip()
+            source = str(item.get("source") or "").strip()
+        else:
+            topic_id = f"topic_{index + 1}"
+            title = str(item or "").strip()
+            reason = ""
+            source = ""
+
+        if selected_ids and topic_id not in selected_ids:
+            continue
+
+        title = re.sub(r"\s+", " ", title).strip(" -:：。")
+
+        if not title or title in seen_titles:
+            continue
+
+        seen_titles.add(title)
+        row: Dict[str, Any] = {
+            "id": topic_id,
+            "title": title,
+        }
+
+        if reason:
+            row["reason"] = reason
+
+        if source:
+            row["source"] = source
+
+        rows.append(row)
+
+    return rows
+
+
+def _create_learning_resource_draft_job(
+    *,
+    lecture_id: str,
+    lecture_title: str,
+    resource_type: str,
+    title: str,
+    topics: List[Dict[str, Any]],
+    selected_topic_ids: List[Any],
+    username: str,
+) -> Dict[str, Any]:
+    clean_title = str(title or "").strip()
+    record = append_learning_resource_task(
+        _cfg,
+        {
+            "task_type": "draft",
+            "status": "draft_queued",
+            "resource_type": resource_type,
+            "lecture_id": lecture_id,
+            "lecture_title": lecture_title,
+            "title": clean_title,
+            "topics": topics,
+            "selected_topic_ids": [str(item or "").strip() for item in selected_topic_ids if str(item or "").strip()],
+            "created_by": username,
+        },
+    )
+    resource = append_learning_resource(
+        _cfg,
+        {
+            "status": "queued",
+            "visibility": "public",
+            "resource_type": resource_type,
+            "lecture_id": lecture_id,
+            "lecture_title": lecture_title,
+            "title": clean_title,
+            "summary": _learning_resource_summary(clean_title, resource_type, lecture_title),
+            "content": "",
+            "source_task_id": record.get("id"),
+            "created_by": username,
+        },
+    )
+    worker = threading.Thread(
+        target=_run_learning_resource_generation,
+        args=(str(record.get("id") or ""), str(resource.get("id") or ""), username),
+        name="learning-resource-generation",
+        daemon=True,
+    )
+    worker.start()
+
+    return {
+        "task": record,
+        "resource": resource,
+    }
+
+
+@bp.route("/frontend/learning-resources/drafts", methods=["POST"])
+def frontend_learning_resource_draft():
+    username = _resolve_runtime_user_id()
+    if not username:
+        return jsonify({"success": False, "error": "username is required."}), 400
+    if not _is_runtime_teacher():
+        return jsonify({"success": False, "error": "Only admin or teacher can create resource drafts."}), 403
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, MappingABC):
+        return jsonify({"success": False, "error": "request body must be an object."}), 400
+    lecture_id = str(data.get("lecture_id") or "").strip()
+    resource_type = str(data.get("resource_type") or "explainer").strip() or "explainer"
+    lecture_title = _learning_resource_lecture_title(lecture_id)
+    title = str(data.get("title") or "").strip()
+    topics = _normalize_learning_resource_draft_topics(
+        data.get("topics") if isinstance(data.get("topics"), list) else [],
+        data.get("selected_topic_ids") if isinstance(data.get("selected_topic_ids"), list) else [],
+    )
+    selected_topic_ids = data.get("selected_topic_ids") if isinstance(data.get("selected_topic_ids"), list) else []
+
+    draft_specs: List[Dict[str, Any]] = []
+
+    for topic in topics:
+        topic_title = str(topic.get("title") or "").strip()
+        topic_id = str(topic.get("id") or "").strip()
+
+        if topic_title:
+            draft_specs.append(
+                {
+                    "title": topic_title,
+                    "topics": [topic],
+                    "selected_topic_ids": [topic_id] if topic_id else [],
+                }
+            )
+
+    if not draft_specs:
+        manual_title = title or f"{lecture_title} {_learning_resource_type_label(resource_type)}草稿"
+        draft_specs.append(
+            {
+                "title": manual_title,
+                "topics": [],
+                "selected_topic_ids": [str(item or "").strip() for item in selected_topic_ids if str(item or "").strip()],
+            }
+        )
+
+    created_rows = [
+        _create_learning_resource_draft_job(
+            lecture_id=lecture_id,
+            lecture_title=lecture_title,
+            resource_type=resource_type,
+            title=str(spec.get("title") or "").strip(),
+            topics=spec.get("topics") if isinstance(spec.get("topics"), list) else [],
+            selected_topic_ids=spec.get("selected_topic_ids") if isinstance(spec.get("selected_topic_ids"), list) else [],
+            username=username,
+        )
+        for spec in draft_specs
+    ]
+    tasks = [row["task"] for row in created_rows]
+    resources = [row["resource"] for row in created_rows]
+    log_event(
+        "learning_resource_draft_created",
+        "学习资源草稿任务已创建并开始生成正文",
+        payload={
+            "username": username,
+            "lecture_id": lecture_id,
+            "resource_type": resource_type,
+            "draft_count": len(resources),
+            "titles": [str(item.get("title") or "") for item in resources],
+        },
+    )
+    return jsonify(
+        {
+            "success": True,
+            "task": tasks[0] if tasks else None,
+            "resource": resources[0] if resources else None,
+            "tasks": tasks,
+            "resources": resources,
+            "total": len(resources),
+        }
+    )
 
 
 def _builtin_feed_channels(username: str, is_admin: bool) -> List[Dict[str, Any]]:
@@ -6495,6 +10383,7 @@ def frontend_personalized_learning_generate_path():
                     user_prompt=user_prompt,
                     full_text=catalog_json,
                     request_timeout=180,
+                    catalog_rows=catalog_rows,
                     on_delta=push_delta,
                 )
 
@@ -6660,6 +10549,7 @@ def frontend_personalized_learning_generate_path_stream():
                     user_prompt=user_prompt,
                     full_text=catalog_json,
                     request_timeout=180,
+                    catalog_rows=catalog_rows,
                     on_delta=push_delta,
                 )
 

@@ -1,5 +1,6 @@
 import json
-from typing import Any
+import re
+from typing import Any, Dict, List, Optional
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
@@ -53,6 +54,98 @@ class OpenAIProvider(ProviderInterface):
             base_url=base_url,
             timeout=timeout,
         )
+
+    def list_models(
+        self,
+        *,
+        client: Any,
+        capability: str = "",
+        request_options: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        cap = str(capability or "").strip().lower()
+        req_opts = request_options if isinstance(request_options, dict) else {}
+        catalog_url = str(self.provider_config.get("models_catalog_url", "") or "").strip()
+
+        if catalog_url:
+            api_key = self._resolve_api_key(client)
+            if not api_key:
+                return {
+                    "ok": False,
+                    "provider": self.provider_name,
+                    "api_type": self.api_type,
+                    "capability": cap,
+                    "error": "missing_api_key",
+                    "models": [],
+                }
+
+            ok, payload, err = self._fetch_models_payload(
+                url=catalog_url,
+                api_key=api_key,
+                timeout=self._resolve_models_catalog_timeout(req_opts),
+            )
+            if not ok:
+                return {
+                    "ok": False,
+                    "provider": self.provider_name,
+                    "api_type": self.api_type,
+                    "capability": cap,
+                    "source": "models_catalog_url",
+                    "error": err or "fetch_models_failed",
+                    "models": [],
+                }
+
+            source = "models_catalog_url"
+        else:
+            if client is None:
+                return {
+                    "ok": False,
+                    "provider": self.provider_name,
+                    "api_type": self.api_type,
+                    "capability": cap,
+                    "error": "missing_client",
+                    "models": [],
+                }
+
+            try:
+                payload = self._to_plain_payload(client.models.list())
+            except Exception as e:
+                return {
+                    "ok": False,
+                    "provider": self.provider_name,
+                    "api_type": self.api_type,
+                    "capability": cap,
+                    "source": "openai_models_api",
+                    "error": f"fetch_models_failed: {str(e)}",
+                    "models": [],
+                }
+
+            source = "openai_models_api"
+
+        raw_items = self._extract_model_items(payload)
+        if raw_items is None:
+            return {
+                "ok": False,
+                "provider": self.provider_name,
+                "api_type": self.api_type,
+                "capability": cap,
+                "source": source,
+                "error": "invalid_models_payload",
+                "models": [],
+            }
+
+        normalized = self._normalize_model_items(raw_items)
+        if cap:
+            normalized = [m for m in normalized if self._model_matches_capability(m, cap)]
+
+        return {
+            "ok": True,
+            "provider": self.provider_name,
+            "api_type": self.api_type,
+            "capability": cap,
+            "source": source,
+            "count": len(normalized),
+            "models": normalized,
+        }
 
     def use_responses_api(self, request_options=None) -> bool:
         return False
@@ -192,6 +285,320 @@ class OpenAIProvider(ProviderInterface):
             "progress": progress_logs,
             "raw_response": payload,
         }
+
+    def _resolve_api_key(self, client: Any) -> str:
+        candidates = [
+            getattr(client, "api_key", "") if client is not None else "",
+            self.provider_config.get("api_key", ""),
+        ]
+
+        for candidate in candidates:
+            text = str(candidate or "").strip()
+            if text:
+                return text
+
+        return ""
+
+    def _resolve_models_catalog_timeout(self, request_options: Dict[str, Any]) -> float:
+        raw = request_options.get("models_catalog_timeout", self.provider_config.get("models_catalog_timeout", 20.0))
+        try:
+            timeout = float(raw or 20.0)
+        except Exception:
+            timeout = 20.0
+
+        return max(2.0, min(timeout, 60.0))
+
+    def _fetch_models_payload(self, *, url: str, api_key: str, timeout: float):
+        req = urllib_request.Request(
+            url,
+            method="GET",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+        )
+
+        try:
+            with urllib_request.urlopen(req, timeout=float(timeout or 20.0)) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+                payload = json.loads(raw) if raw.strip() else {}
+                return True, payload, ""
+        except urllib_error.HTTPError as e:
+            try:
+                body = e.read().decode("utf-8", errors="replace")
+            except Exception:
+                body = ""
+
+            return False, None, f"http_{int(getattr(e, 'code', 500) or 500)}: {body[:240]}"
+        except Exception as e:
+            return False, None, str(e)
+
+    def _to_plain_payload(self, obj: Any) -> Any:
+        if obj is None or isinstance(obj, (str, int, float, bool)):
+            return obj
+
+        if isinstance(obj, dict):
+            return {str(k): self._to_plain_payload(v) for k, v in obj.items()}
+
+        if isinstance(obj, (list, tuple)):
+            return [self._to_plain_payload(item) for item in obj]
+
+        model_dump = getattr(obj, "model_dump", None)
+        if callable(model_dump):
+            try:
+                return model_dump(mode="json")
+            except TypeError:
+                try:
+                    return model_dump()
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        dict_fn = getattr(obj, "dict", None)
+        if callable(dict_fn):
+            try:
+                return dict_fn()
+            except Exception:
+                pass
+
+        data = getattr(obj, "data", None)
+        if data is not None:
+            return {"data": self._to_plain_payload(data)}
+
+        return str(obj)
+
+    def _extract_model_items(self, payload: Any):
+        if isinstance(payload, list):
+            return payload
+
+        if not isinstance(payload, dict):
+            return None
+
+        for key in ("data", "models", "items"):
+            items = payload.get(key)
+            if isinstance(items, list):
+                return items
+
+        result = payload.get("result")
+        if isinstance(result, dict):
+            for key in ("data", "models", "items"):
+                items = result.get(key)
+                if isinstance(items, list):
+                    return items
+
+        return None
+
+    def _normalize_model_items(self, items: List[Any]) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+
+        for item in items:
+            plain_item = self._to_plain_payload(item)
+            if isinstance(plain_item, str):
+                model_id = plain_item.strip()
+                if not model_id:
+                    continue
+
+                row = {"id": model_id, "name": model_id, "raw": {"id": model_id}}
+                self._attach_model_feature_flags(row)
+                out.append(row)
+                continue
+
+            if not isinstance(plain_item, dict):
+                continue
+
+            model_id = str(
+                plain_item.get("id")
+                or plain_item.get("model_id")
+                or plain_item.get("model")
+                or plain_item.get("name")
+                or ""
+            ).strip()
+            if not model_id:
+                continue
+
+            name = str(plain_item.get("name") or plain_item.get("display_name") or model_id).strip() or model_id
+            row = {"id": model_id, "name": name, "raw": plain_item}
+            ctx = self._extract_context_window_from_item(plain_item)
+            if ctx > 0:
+                row["context_window"] = ctx
+
+            self._attach_model_feature_flags(row)
+            out.append(row)
+
+        return out
+
+    def _attach_model_feature_flags(self, row: Dict[str, Any]) -> None:
+        has_vision = self._model_matches_capability(row, "vision")
+        if has_vision:
+            row["vision"] = True
+            row["features"] = ["Chat", "Vision"]
+        else:
+            row["vision"] = False
+            row["features"] = ["Chat"]
+
+    def _extract_context_window_from_item(self, item: Dict[str, Any]) -> int:
+        if not isinstance(item, dict):
+            return 0
+
+        target_keys = {
+            "context_window",
+            "context_length",
+            "max_context_tokens",
+            "max_input_tokens",
+            "max_prompt_tokens",
+            "input_token_limit",
+            "prompt_token_limit",
+            "contextsize",
+            "context_size",
+        }
+
+        def _to_int(value: Any) -> int:
+            try:
+                n = int(value)
+            except Exception:
+                return 0
+
+            if n < 1024:
+                return 0
+
+            return min(n, 4_000_000)
+
+        queue: List[Any] = [item]
+        visited = 0
+
+        while queue and visited < 200:
+            visited += 1
+            cur = queue.pop(0)
+
+            if isinstance(cur, dict):
+                for k, v in cur.items():
+                    key = str(k or "").strip().lower()
+                    if key in target_keys:
+                        n = _to_int(v)
+                        if n > 0:
+                            return n
+
+                    if isinstance(v, (dict, list)):
+                        queue.append(v)
+
+            elif isinstance(cur, list):
+                queue.extend(cur[:40])
+
+        return 0
+
+    def _model_matches_capability(self, model: Dict[str, Any], capability: str) -> bool:
+        cap = str(capability or "").strip().lower()
+        if not cap:
+            return True
+
+        raw = model.get("raw", {}) if isinstance(model.get("raw"), dict) else {}
+        model_id = str(model.get("id", "") or "").lower()
+        model_name = str(model.get("name", "") or "").lower()
+
+        if cap == "vision":
+            return self._model_supports_vision(model_id=model_id, model_name=model_name, raw=raw)
+
+        merged = f"{model_id} {model_name} {json.dumps(raw, ensure_ascii=False).lower()}"
+        return cap in merged
+
+    def _model_supports_vision(self, *, model_id: str, model_name: str, raw: Dict[str, Any]) -> bool:
+        configured_ids = self._configured_vision_model_ids()
+        if model_id in configured_ids or model_name in configured_ids:
+            return True
+
+        if self._matches_configured_vision_pattern(model_id) or self._matches_configured_vision_pattern(model_name):
+            return True
+
+        if self._raw_metadata_has_vision(raw):
+            return True
+
+        return self._model_name_has_vision_marker(model_id) or self._model_name_has_vision_marker(model_name)
+
+    def _configured_vision_model_ids(self) -> set:
+        raw_ids = self.provider_config.get("vision_model_ids", [])
+        if isinstance(raw_ids, str):
+            raw_ids = [x.strip() for x in raw_ids.split(",")]
+
+        if not isinstance(raw_ids, list):
+            return set()
+
+        return {str(x or "").strip().lower() for x in raw_ids if str(x or "").strip()}
+
+    def _matches_configured_vision_pattern(self, text: str) -> bool:
+        patterns = self.provider_config.get("vision_model_patterns", [])
+        if isinstance(patterns, str):
+            patterns = [x.strip() for x in patterns.split(",")]
+
+        if not isinstance(patterns, list):
+            return False
+
+        value = str(text or "").strip()
+        if not value:
+            return False
+
+        for pattern in patterns:
+            p = str(pattern or "").strip()
+            if not p:
+                continue
+
+            try:
+                if re.search(p, value, re.IGNORECASE):
+                    return True
+            except re.error:
+                if p.lower() in value.lower():
+                    return True
+
+        return False
+
+    def _raw_metadata_has_vision(self, raw: Dict[str, Any]) -> bool:
+        if not isinstance(raw, dict):
+            return False
+
+        vision_terms = ("vision", "visual", "image", "multimodal", "multi-modal", "vl")
+        metadata_keys = (
+            "modalities",
+            "input_modalities",
+            "capabilities",
+            "features",
+            "task_types",
+            "ability",
+            "abilities",
+            "supported_modalities",
+            "supported_input_modalities",
+        )
+
+        for key in metadata_keys:
+            val = raw.get(key)
+            text = json.dumps(val, ensure_ascii=False).lower() if val is not None else ""
+            if any(term in text for term in vision_terms):
+                return True
+
+        owner = str(raw.get("owned_by") or raw.get("owner") or raw.get("provider") or "").strip().lower()
+        if owner and any(term in owner for term in ("vision", "visual", "4v", "vl")):
+            return True
+
+        return False
+
+    def _model_name_has_vision_marker(self, text: str) -> bool:
+        value = str(text or "").strip().lower()
+        if not value:
+            return False
+
+        patterns = (
+            r"(^|[-_./:])vl($|[-_./:])",
+            r"(^|[-_./:])vision($|[-_./:])",
+            r"(^|[-_./:])visual($|[-_./:])",
+            r"(^|[-_./:])multimodal($|[-_./:])",
+            r"(^|[-_./:])llava($|[-_./:])",
+            r"(^|[-_./:])minicpm-v($|[-_./:])",
+            r"qwen[0-9.]*-vl",
+            r"glm-[0-9.]+v($|[-_./:])",
+            r"gpt-4o($|[-_./:])",
+        )
+
+        return any(re.search(pattern, value, re.IGNORECASE) for pattern in patterns)
 
     def iter_stream_events(self, chunks, *, use_responses_api: bool, native_web_search_enabled: bool = False):
         if not use_responses_api:

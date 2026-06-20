@@ -126,7 +126,7 @@ const CHAT_COMPOSER_PREFS_KEY = 'nexora_chat_composer_prefs_v1';
 const CHAT_INPUT_DRAFT_KEY = 'nexora_chat_input_draft_v1';
 const CHAT_INPUT_DRAFT_MAX_LEN = 12000;
 let NEXORA_LEARNING_FRONTEND_URL = `${window.location.protocol}//${window.location.hostname}:5001/api/frontend/`;
-const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260614_03';
+const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260620_01';
 const NEXORA_LEARNING_JS_URL = '/static/js/learning_mode.js?v=20260609_05';
 const MAIL_POLL_INTERVAL_MS = 5000;
 const AGENT_STATUS_POLL_VISIBLE_MS = 5000;
@@ -225,8 +225,6 @@ let currentConversationLongtermState = {
 let currentConversationLongtermAutoContinueKind = '';
 let currentConversationLongtermConfirmationInFlight = false;
 const modelMetaById = new Map();
-const providerVisionModelSetCache = new Map();
-const providerVisionPendingFetch = new Map();
 const imageViewerState = {
     active: false,
     scale: 1,
@@ -4434,32 +4432,18 @@ function closeKnowledgePanel(options = {}) {
     setRightSidebarPanelVisible(els.knowledgePanel, false);
 }
 
-function isLearningImmersiveLayoutActive() {
-    const mode = String(learningEmbedLayoutMode || '').trim().toLowerCase();
-    const bodyImmersive = !!(document.body && document.body.classList.contains('learning-embed-immersive'));
-    const learningPanelVisible = !!(
-        els.learningMainPanel
-        && els.learningMainPanel.style.display !== 'none'
-        && els.learningMainPanel.offsetParent !== null
-    );
-    return !!(learningModeEnabled && learningPanelVisible && (mode === 'immersive' || bodyImmersive));
-}
-
-function isLearningReaderOrImmersiveClassActive() {
+function isLearningReaderClassActive() {
     return !!(
         document.body
-        && (
-            document.body.classList.contains('learning-reader-active')
-            || document.body.classList.contains('learning-embed-immersive')
-        )
+        && document.body.classList.contains('learning-reader-active')
     );
 }
 
 function isLearningReaderRightSidebarLocked() {
+    // Learning 主面板也会使用 immersive 承载布局，右侧栏只在真实阅读器状态下锁定。
     return !!(
         learningReaderOpened
-        || isLearningImmersiveLayoutActive()
-        || isLearningReaderOrImmersiveClassActive()
+        || isLearningReaderClassActive()
     );
 }
 
@@ -12143,18 +12127,6 @@ function refreshConversationImageHistoryFlag(messages) {
     currentConversationHasImageHistory = conversationHasImageHistory(messages);
 }
 
-async function warnIfModelCannotUseHistoryImages(modelId) {
-    if (!currentConversationHasImageHistory) return;
-    try {
-        const canVision = await isModelVisionCapable(modelId);
-        if (!canVision) {
-            showToast('该模型不支持图片，历史图片无法传入该模型。');
-        }
-    } catch (_) {
-        // ignore capability check error
-    }
-}
-
 async function ensureSelectedModelReady() {
     const current = String(selectedModelId || '').trim();
     if (current) return current;
@@ -13774,32 +13746,11 @@ async function sendMessage(options = {}) {
     const enableSearch = els.checkSearch ? els.checkSearch.checked : true;
     const toolsMode = getToolsMode();
     const enableTools = toolsMode !== 'off';
-    let modelVisionCapableCache = null;
-    const ensureModelVisionCapable = async () => {
-        if (!model) return true;
-        if (modelVisionCapableCache === null) {
-            modelVisionCapableCache = await isModelVisionCapable(model);
-        }
-        return !!modelVisionCapableCache;
-    };
-    const hasImageAttachment = uploadedFileIds.some((f) => f && f.type === 'image');
-    if (hasImageAttachment) {
-        const canVision = await ensureModelVisionCapable();
-        latencyProbe.mark('image_attachment_vision_check', { can_vision: !!canVision });
-        if (!canVision) {
-            showToast(`当前模型不支持图片输入：${model || '-'}`);
-            latencyProbe.flush('image_attachment_unsupported', { force: true });
-            return;
-        }
-    }
-    const allowHistoryImages = currentConversationHasImageHistory ? await ensureModelVisionCapable() : true;
+    const allowHistoryImages = true;
     latencyProbe.mark('history_image_vision_check', {
         has_history_images: !!currentConversationHasImageHistory,
         allow_history_images: !!allowHistoryImages
     });
-    if (!allowHistoryImages && currentConversationHasImageHistory) {
-        showToast(`当前模型不支持历史图片上下文，将自动忽略历史图片：${model || '-'}`);
-    }
     const forceContextCompressionRequested = consumeForceContextCompressionOnce();
     const compressionDecision = await maybeConfirmContextCompressionBeforeSend(
         model,
@@ -17892,14 +17843,6 @@ async function startRegenerate(index) {
         showToast('当前账号无可用模型，请联系管理员');
         return;
     }
-    let modelVisionCapableCache = null;
-    const ensureModelVisionCapable = async () => {
-        if (!modelName) return true;
-        if (modelVisionCapableCache === null) {
-            modelVisionCapableCache = await isModelVisionCapable(modelName);
-        }
-        return !!modelVisionCapableCache;
-    };
     const forceContextCompressionRequested = consumeForceContextCompressionOnce();
     const compressionDecision = await maybeConfirmContextCompressionBeforeSend(
         modelName,
@@ -17946,12 +17889,7 @@ async function startRegenerate(index) {
     const regenAttachmentPayload = buildAttachmentsPayloadFromMessage(
         regenUserMessageDiv && regenUserMessageDiv.__messageData ? regenUserMessageDiv.__messageData : null
     );
-    const allowHistoryImages = (currentConversationHasImageHistory || regenAttachmentPayload.has_image)
-        ? await ensureModelVisionCapable()
-        : true;
-    if (!allowHistoryImages) {
-        showToast(`当前模型不支持历史图片上下文，将自动忽略历史图片：${modelName || '-'}`);
-    }
+    const allowHistoryImages = true;
     let accumulatedContent = "";
     let currentSegmentContent = "";
     let currentContentSpan = null;
@@ -24449,8 +24387,6 @@ async function loadModels() {
             providerCatalogByKey = (data.providers && typeof data.providers === 'object') ? data.providers : {};
             modelCatalog = Array.isArray(data.models) ? data.models : [];
             modelMetaById.clear();
-            providerVisionModelSetCache.clear();
-            providerVisionPendingFetch.clear();
             modelCatalog.forEach((m) => {
                 if (!m || !m.id) return;
                 modelMetaById.set(String(m.id), {
@@ -24643,83 +24579,6 @@ function getSelectedModelMeta() {
     return getModelMeta(selectedModelId);
 }
 
-function normalizeProviderName(provider) {
-    return String(provider || '').trim().toLowerCase();
-}
-
-function fallbackModelVisionMatch(modelId, modelName, provider) {
-    const p = normalizeProviderName(provider);
-    if (p !== 'volcengine' && p !== 'ollama') return false;
-    const merged = `${String(modelId || '')} ${String(modelName || '')}`.toLowerCase();
-    return ['vision', 'image', 'multimodal', 'vl', 'seed-1-8', 'llava'].some((k) => merged.includes(k));
-}
-
-async function ensureProviderVisionModelSet(provider) {
-    const p = normalizeProviderName(provider);
-    if (!p) return null;
-    if (providerVisionModelSetCache.has(p)) {
-        const cached = providerVisionModelSetCache.get(p);
-        if (cached instanceof Set) return cached;
-        providerVisionModelSetCache.delete(p);
-    }
-    if (providerVisionPendingFetch.has(p)) {
-        return providerVisionPendingFetch.get(p);
-    }
-
-    const req = (async () => {
-        const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-        const timer = controller ? setTimeout(() => {
-            try { controller.abort(); } catch (_) {}
-        }, 5000) : null;
-        try {
-            const res = await fetch(
-                `/api/provider/models?provider=${encodeURIComponent(p)}&capability=vision&cache_ttl=900`,
-                controller ? { signal: controller.signal } : undefined
-            );
-            const data = await res.json();
-            if (!data || !data.success || !Array.isArray(data.models)) {
-                providerVisionModelSetCache.delete(p);
-                return null;
-            }
-            // Ollama capability endpoint may return transient stale-empty payload
-            // before background refresh fills cache; treat it as unknown and retry later.
-            if (data.stale && data.models.length === 0) {
-                providerVisionModelSetCache.delete(p);
-                return null;
-            }
-            const set = new Set();
-            data.models.forEach((m) => {
-                const id = typeof m === 'string' ? m : (m && (m.id || m.model_id || m.name));
-                const norm = String(id || '').trim().toLowerCase();
-                if (norm) set.add(norm);
-            });
-            providerVisionModelSetCache.set(p, set);
-            return set;
-        } catch (e) {
-            providerVisionModelSetCache.delete(p);
-            return null;
-        } finally {
-            if (timer) clearTimeout(timer);
-            providerVisionPendingFetch.delete(p);
-        }
-    })();
-
-    providerVisionPendingFetch.set(p, req);
-    return req;
-}
-
-async function isModelVisionCapable(modelId) {
-    const meta = getModelMeta(modelId);
-    if (!meta) return false;
-    const provider = normalizeProviderName(meta.provider);
-    const modelKey = String(meta.id || modelId || '').trim().toLowerCase();
-    const byApi = await ensureProviderVisionModelSet(provider);
-    if (byApi instanceof Set) {
-        return byApi.has(modelKey);
-    }
-    return fallbackModelVisionMatch(meta.id, meta.name, meta.provider);
-}
-
 function isImageLikeFile(file) {
     if (!file) return false;
     const mime = String(file.type || '').toLowerCase();
@@ -24759,7 +24618,6 @@ async function selectModel(id, name) {
     els.currentModelDisplay.classList.remove('select-arrow-active');
     undockModelOptionsForMobile();
     updateTokenBudgetContextFromSelectedModel();
-    await warnIfModelCannotUseHistoryImages(id);
 }
 
 function closeAllSelects(e) {
@@ -25518,21 +25376,11 @@ async function handleFileUploadFiles(fileList, options = {}) {
     updateSendButtonState();
 
     try {
-        const selectedMeta = getSelectedModelMeta();
-        const selectedProvider = selectedMeta ? selectedMeta.provider : '';
-        const selectedModel = selectedMeta ? selectedMeta.id : selectedModelId;
-        const hasImage = files.some((f) => isImageLikeFile(f));
-        const visionCapable = hasImage ? await isModelVisionCapable(selectedModel) : false;
-
         for (let i = 0; i < files.length; i++) {
             if (uploadCancelledByUser) break;
             const file = files[i];
             try {
                 if (isImageLikeFile(file)) {
-                    if (!visionCapable) {
-                        showToast(`当前模型不支持图片输入：${selectedModel || '-'} (${selectedProvider || 'unknown'})`);
-                        continue;
-                    }
                     await appendUploadedImageEntry(file, i, files.length);
                     await new Promise((resolve) => setTimeout(resolve, 160));
                 } else {
@@ -26829,6 +26677,7 @@ function normalizeAdminPublicApiPermissions(raw) {
     const src = (raw && typeof raw === 'object') ? raw : {};
     return {
         model_inference: !!src.model_inference,
+        image_generation: !!src.image_generation,
         knowledge_read: !!src.knowledge_read,
         conversations_read: !!src.conversations_read,
         conversations_write: !!src.conversations_write,
@@ -26840,6 +26689,7 @@ function normalizeAdminPublicApiPermissions(raw) {
 function collectAdminPublicApiPermissionsFromUi() {
     return normalizeAdminPublicApiPermissions({
         model_inference: !!document.getElementById('adminPublicApiPermModel')?.checked,
+        image_generation: !!document.getElementById('adminPublicApiPermImage')?.checked,
         knowledge_read: !!document.getElementById('adminPublicApiPermKnowledge')?.checked,
         conversations_read: !!document.getElementById('adminPublicApiPermConversation')?.checked,
         conversations_write: !!document.getElementById('adminPublicApiPermConversationWrite')?.checked,
@@ -26851,12 +26701,14 @@ function collectAdminPublicApiPermissionsFromUi() {
 function applyAdminPublicApiPermissionsToUi(perms) {
     const p = normalizeAdminPublicApiPermissions(perms);
     const modelEl = document.getElementById('adminPublicApiPermModel');
+    const imageEl = document.getElementById('adminPublicApiPermImage');
     const knowledgeEl = document.getElementById('adminPublicApiPermKnowledge');
     const convEl = document.getElementById('adminPublicApiPermConversation');
     const convWriteEl = document.getElementById('adminPublicApiPermConversationWrite');
     const tokenEl = document.getElementById('adminPublicApiPermToken');
     const userReadEl = document.getElementById('adminPublicApiPermUserRead');
     if (modelEl) modelEl.checked = !!p.model_inference;
+    if (imageEl) imageEl.checked = !!p.image_generation;
     if (knowledgeEl) knowledgeEl.checked = !!p.knowledge_read;
     if (convEl) convEl.checked = !!p.conversations_read;
     if (convWriteEl) convWriteEl.checked = !!p.conversations_write;
@@ -26962,6 +26814,7 @@ function ensureAdminPublicApiLayout() {
         }
         const permItems = [
             ['adminPublicApiPermModel', '模型调用'],
+            ['adminPublicApiPermImage', '生图 API 调用'],
             ['adminPublicApiPermKnowledge', '知识库读取'],
             ['adminPublicApiPermConversation', '会话读取'],
             ['adminPublicApiPermConversationWrite', '会话写入'],

@@ -456,6 +456,17 @@ def _generate_profile_question_bank_questions(
     )
     rows = _parse_profile_question_blocks(content)
     selected: List[Dict[str, Any]] = []
+    question_group_raw = "|".join(
+        [
+            user_id,
+            lecture_id,
+            book_id,
+            chapter_name,
+            chapter_range,
+            str(time.time_ns()),
+        ]
+    )
+    question_group_id = f"qg_{hashlib.sha1(question_group_raw.encode('utf-8')).hexdigest()[:16]}"
 
     for idx, row in enumerate(rows, start=1):
         record = append_question_bank_item(
@@ -463,6 +474,7 @@ def _generate_profile_question_bank_questions(
             user_id,
             {
                 "type": "profile_question",
+                "question_group_id": question_group_id,
                 "reason": "chapter_quiz_empty_bank",
                 "lecture_id": lecture_id,
                 "lecture_title": _safe_text(lecture.get("title")),

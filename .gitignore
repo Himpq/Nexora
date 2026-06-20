@@ -23,3 +23,7 @@ NexoraSearch/config
 .claude
 .mimocode
 .playwright-cli
+NexoraVideoGenerator/data
+NexoraVideoGenerator/scripts
+NexoraCode/storage
+throttle.ctrl

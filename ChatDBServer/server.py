@@ -232,6 +232,7 @@ DEFAULT_MAIN_CONFIG = {
         "public_api_key_last_regenerated_at": "",
         "public_api_key_permissions": {
             "model_inference": True,
+            "image_generation": True,
             "knowledge_read": True,
             "conversations_read": True,
             "token_stats_read": True
@@ -305,6 +306,7 @@ DEFAULT_MODEL_ADAPTER_CONFIG = {
 
 PUBLIC_API_PERMISSION_DEFAULTS = {
     "model_inference": True,
+    "image_generation": True,
     "knowledge_read": True,
     "conversations_read": True,
     "conversations_write": True,
@@ -314,6 +316,7 @@ PUBLIC_API_PERMISSION_DEFAULTS = {
 
 PUBLIC_API_PERMISSION_LABELS = {
     "model_inference": "Model Inference",
+    "image_generation": "Image Generation",
     "knowledge_read": "Knowledge Read",
     "conversations_read": "Conversations Read",
     "conversations_write": "Conversations Write",
@@ -907,6 +910,8 @@ def resolve_public_api_key_auth(auth_key: Any, *, request_path: str = "", method
         required_permission = "token_stats_read"
     elif path.startswith("/api/papi/user/"):
         required_permission = "user_read"
+    elif path.startswith("/api/papi/images/"):
+        required_permission = "image_generation"
     elif (
         path.startswith("/api/papi/completions")
         or path.startswith("/api/papi/chat/completions")

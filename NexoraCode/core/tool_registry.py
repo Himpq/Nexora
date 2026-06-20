@@ -13,6 +13,7 @@ try:
     from tools import catalog as _tool_catalog  # noqa: F401
     from tools import shell as _tool_shell  # noqa: F401
     from tools import file_ops as _tool_file_ops  # noqa: F401
+    from tools import image_search as _tool_image_search  # noqa: F401
     from tools import renderer as _tool_renderer  # noqa: F401
     from tools import long_context as _tool_long_context  # noqa: F401
 except Exception:

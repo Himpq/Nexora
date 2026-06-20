@@ -358,6 +358,8 @@ def save_learning_path(
     if not safe_uid or not safe_lid:
         raise ValueError("user_id and lecture_id are required.")
 
+    _canonicalize_learning_path_data_sources(path_data)
+
     path_data["lecture_id"] = safe_lid
     path_data["updated_at"] = int(time.time())
 
@@ -382,7 +384,22 @@ def load_learning_path(
     safe_lid = str(lecture_id or "").strip()
     if not safe_uid or not safe_lid:
         return None
-    return _read_json(_learning_path_path(cfg, safe_uid, safe_lid))
+
+    target = _learning_path_path(cfg, safe_uid, safe_lid)
+    path_data = _read_json(target)
+    if not isinstance(path_data, dict):
+        return None
+
+    changed = _canonicalize_learning_path_data_sources(path_data)
+    if changed:
+        _write_json(target, path_data)
+        log_event(
+            "personalized_learning_path_source_repaired",
+            "个性化学习路线来源已按教材目录修正",
+            payload={"user_id": safe_uid, "lecture_id": safe_lid},
+        )
+
+    return path_data
 
 
 def load_all_chapter_status(
@@ -681,19 +698,147 @@ def _build_learning_path_tools() -> List[Dict[str, Any]]:
     ]
 
 
-def _normalize_learning_path_chapters(raw_chapters: Any) -> List[Dict[str, Any]]:
+def _normalize_catalog_source_text(value: Any) -> str:
+    """归一化目录匹配文本，防止模型输出中的空白差异影响来源校验。"""
+    return re.sub(r"\s+", "", str(value or "").strip()).lower()
+
+
+def _build_catalog_source_candidates(catalog_rows: Any) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]], set]:
+    """构建教材目录索引，用于把模型输出校正为真实教材来源。"""
+    by_name: Dict[str, Dict[str, Any]] = {}
+    by_range: Dict[str, Dict[str, Any]] = {}
+    by_range_length: Dict[str, Dict[str, Any]] = {}
+    valid_book_ids = set()
+
+    if not isinstance(catalog_rows, list):
+        return by_name, by_range, by_range_length, valid_book_ids
+
+    duplicate_names = set()
+    duplicate_ranges = set()
+    duplicate_lengths = set()
+
+    for row in catalog_rows:
+        if not isinstance(row, dict):
+            continue
+
+        book_id = str(row.get("book_id") or "").strip()
+        chapter_name = str(row.get("chapter_name") or "").strip()
+        chapter_range = str(row.get("chapter_range") or "").strip()
+        if not book_id or not chapter_name or not chapter_range:
+            continue
+
+        valid_book_ids.add(book_id)
+
+        name_key = _normalize_catalog_source_text(chapter_name)
+        if name_key in by_name:
+            duplicate_names.add(name_key)
+        else:
+            by_name[name_key] = row
+
+        if chapter_range in by_range:
+            duplicate_ranges.add(chapter_range)
+        else:
+            by_range[chapter_range] = row
+
+        _, sep, range_length = chapter_range.partition(":")
+        if sep and range_length:
+            if range_length in by_range_length:
+                duplicate_lengths.add(range_length)
+            else:
+                by_range_length[range_length] = row
+
+    for key in duplicate_names:
+        by_name.pop(key, None)
+    for key in duplicate_ranges:
+        by_range.pop(key, None)
+    for key in duplicate_lengths:
+        by_range_length.pop(key, None)
+
+    return by_name, by_range, by_range_length, valid_book_ids
+
+
+def _canonicalize_learning_path_source(
+    item: Mapping[str, Any],
+    catalog_index: Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]], set],
+) -> Dict[str, str]:
+    """按真实目录修正学习路线来源，避免模型抄错 book_id 或章节范围。"""
+    by_name, by_range, by_range_length, valid_book_ids = catalog_index
+    name = str(item.get("name") or "").strip()
+    book_id = str(item.get("book_id") or "").strip()
+    book_title = str(item.get("book_title") or "").strip()
+    chapter_range = str(item.get("chapter_range") or "").strip()
+
+    catalog_row: Optional[Mapping[str, Any]] = None
+    name_key = _normalize_catalog_source_text(name)
+    if name_key and name_key in by_name:
+        catalog_row = by_name[name_key]
+    elif chapter_range in by_range:
+        catalog_row = by_range[chapter_range]
+    elif len(valid_book_ids) == 1:
+        _, sep, range_length = chapter_range.partition(":")
+        if sep and range_length and range_length in by_range_length:
+            catalog_row = by_range_length[range_length]
+
+    if catalog_row is not None:
+        return {
+            "book_id": str(catalog_row.get("book_id") or "").strip(),
+            "book_title": str(catalog_row.get("book_title") or book_title).strip(),
+            "chapter_range": str(catalog_row.get("chapter_range") or "").strip(),
+        }
+
+    if valid_book_ids and book_id not in valid_book_ids:
+        return {"book_id": "", "book_title": book_title, "chapter_range": chapter_range}
+
+    return {"book_id": book_id, "book_title": book_title, "chapter_range": chapter_range}
+
+
+def _canonicalize_learning_path_data_sources(path_data: Dict[str, Any]) -> bool:
+    """修正已保存学习路线中的教材来源字段，保留用户学习状态。"""
+    if not isinstance(path_data, dict):
+        return False
+
+    chapters = path_data.get("chapters")
+    catalog_rows = path_data.get("catalog")
+    if not isinstance(chapters, list) or not isinstance(catalog_rows, list):
+        return False
+
+    catalog_index = _build_catalog_source_candidates(catalog_rows)
+    changed = False
+
+    for chapter in chapters:
+        if not isinstance(chapter, dict):
+            continue
+
+        source = _canonicalize_learning_path_source(chapter, catalog_index)
+        if not source["book_id"] or not source["chapter_range"]:
+            continue
+
+        for key in ("book_id", "book_title", "chapter_range"):
+            if str(chapter.get(key) or "").strip() == source[key]:
+                continue
+
+            chapter[key] = source[key]
+            changed = True
+
+    return changed
+
+
+def _normalize_learning_path_chapters(raw_chapters: Any, catalog_rows: Any = None) -> List[Dict[str, Any]]:
     chapters: List[Dict[str, Any]] = []
     if not isinstance(raw_chapters, list):
         return chapters
+
+    catalog_index = _build_catalog_source_candidates(catalog_rows)
 
     for idx, item in enumerate(raw_chapters):
         if not isinstance(item, dict):
             continue
 
         name = str(item.get("name") or "").strip()
-        book_id = str(item.get("book_id") or "").strip()
-        book_title = str(item.get("book_title") or "").strip()
-        chapter_range = str(item.get("chapter_range") or "").strip()
+        source = _canonicalize_learning_path_source(item, catalog_index)
+        book_id = source["book_id"]
+        book_title = source["book_title"]
+        chapter_range = source["chapter_range"]
         chapter_summary = str(item.get("chapter_summary") or "").strip()
         outline_section_id = str(item.get("outline_section_id") or "").strip()
         status = str(item.get("status") or "pending").strip().lower() or "pending"
@@ -753,6 +898,7 @@ def generate_learning_path_with_tools(
     user_prompt: str,
     full_text: str,
     request_timeout: int,
+    catalog_rows: Any = None,
     on_delta: Optional[Callable[[str], None]] = None,
 ) -> Tuple[str, List[Dict[str, Any]]]:
     safe_user_id = str(user_id or "").strip()
@@ -929,7 +1075,7 @@ def generate_learning_path_with_tools(
 
             if tool_name == "submit_learning_path":
                 advice_text = str(args_obj.get("advice") or "").strip()
-                chapters = _normalize_learning_path_chapters(args_obj.get("chapters"))
+                chapters = _normalize_learning_path_chapters(args_obj.get("chapters"), catalog_rows)
                 tool_result = {"ok": bool(advice_text and chapters), "chapters_count": len(chapters)}
             else:
                 tool_result = {"ok": False, "error": f"unsupported tool: {tool_name}"}

@@ -91,6 +91,37 @@ TOOL_CATALOG = [
         },
     },
     {
+        "module": "image_search",
+        "name": "image_search",
+        "handler": "image_search",
+        "description": (
+            "在用户本地计算机上搜索图片并返回结构化图片结果。"
+            "source 可选 bing_crawlee、bing、commons；bing_crawlee 使用 Python Crawlee + Playwright，"
+            "bing 使用直接 Playwright，commons 使用 Wikimedia Commons API。"
+            "返回结果会包含 markdown_prompt，模型可直接用其中的描述和图片链接按 Markdown 展示图片。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "图片搜索关键词"},
+                "source": {
+                    "type": "string",
+                    "enum": ["bing_crawlee", "bing", "commons"],
+                    "default": "bing_crawlee",
+                    "description": "图片搜索来源。不会在失败时自动切换来源。",
+                },
+                "limit": {"type": "integer", "description": "最多返回图片数量，范围 1-50，默认 10", "default": 10},
+                "proxy": {"type": "string", "description": "可选代理，例如 http://127.0.0.1:15555"},
+                "headless": {"type": "boolean", "description": "Bing 浏览器搜索是否使用无界面模式，默认 true", "default": True},
+                "channel": {"type": "string", "description": "Chromium 通道，默认 msedge", "default": "msedge"},
+                "user_data_dir": {"type": "string", "description": "可选浏览器持久化用户目录"},
+                "timeout": {"type": "integer", "description": "超时秒数，默认 45", "default": 45},
+                "scrolls": {"type": "integer", "description": "Bing 搜索滚动加载次数，默认 4", "default": 4},
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "module": "renderer",
         "name": "local_web_render",
         "handler": "web_render",

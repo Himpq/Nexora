@@ -1,6 +1,7 @@
 import importlib
 import json
 import sys
+import time
 from typing import Any, Dict, List
 from flask import Blueprint, request, jsonify
 
@@ -74,6 +75,10 @@ def _is_rate_limit_exception(exc: Exception) -> bool:
 
 def _disable_model_by_quota(model_id, provider_name=None, reason='quota_exhausted'):
     return _server_attr('_disable_model_by_quota')(model_id, provider_name=provider_name, reason=reason)
+
+
+def _get_gen_image_config(config):
+    return _server_attr('_get_gen_image_config')(config)
 
 
 def _get_client_cache() -> Dict[str, Any]:
@@ -239,6 +244,123 @@ def papi_token_stats(username):
         })
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
+
+
+@papi_bp.route('/api/papi/images/generations', methods=['POST'])
+@papi_bp.route('/api/papi/v1/images/generations', methods=['POST'])
+@require_papi_key
+def papi_generate_image():
+    """PAPI: OpenAI-compatible image generation through configured Nexora image provider."""
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({'success': False, 'message': 'request body must be an object'}), 400
+
+    prompt = str(data.get('prompt') or '').strip()
+    if not prompt:
+        return jsonify({'success': False, 'message': 'prompt is required'}), 400
+
+    try:
+        image_count = int(data.get('n') or 1)
+    except Exception:
+        image_count = 1
+    image_count = max(1, min(image_count, 4))
+
+    config = get_config_all()
+    gen_cfg = _get_gen_image_config(config)
+    enabled_api = str(gen_cfg.get('enabled_api') or '').strip()
+    apis = gen_cfg.get('apis') if isinstance(gen_cfg.get('apis'), dict) else {}
+    api_cfg = apis.get(enabled_api) if enabled_api else None
+    if not isinstance(api_cfg, dict):
+        return jsonify({'success': False, 'message': '未启用生图接口'}), 400
+
+    api_name = str(api_cfg.get('api_id') or api_cfg.get('name') or enabled_api).strip() or enabled_api
+    api_type = str(api_cfg.get('api_type') or 'openai').strip() or 'openai'
+    api_key = str(api_cfg.get('api_key') or '').strip()
+    base_url = str(api_cfg.get('base_url') or '').strip().rstrip('/')
+    model_id = str(data.get('model') or api_cfg.get('model') or '').strip()
+    size = str(data.get('size') or api_cfg.get('size') or '1024x1024').strip() or '1024x1024'
+    quality = str(data.get('quality') or api_cfg.get('quality') or 'auto').strip() or 'auto'
+    response_format = str(data.get('response_format') or api_cfg.get('response_format') or 'b64_json').strip() or 'b64_json'
+
+    try:
+        timeout = int(data.get('timeout') or api_cfg.get('timeout') or 120)
+    except Exception:
+        timeout = 120
+    timeout = max(10, min(timeout, 600))
+
+    if not api_key:
+        return jsonify({'success': False, 'message': '生图 API Key 不能为空'}), 400
+    if not base_url:
+        return jsonify({'success': False, 'message': '生图 Base URL 不能为空'}), 400
+    if not model_id:
+        return jsonify({'success': False, 'message': '生图模型不能为空'}), 400
+
+    extra_body = data.get('extra_body') if isinstance(data.get('extra_body'), dict) else None
+    try:
+        adapter = create_provider_adapter(api_name, {
+            'api_key': api_key,
+            'base_url': base_url,
+            'api_type': api_type,
+        })
+        result = adapter.generate_image(
+            api_key=api_key,
+            base_url=base_url,
+            model_id=model_id,
+            prompt=prompt,
+            size=size,
+            n=image_count,
+            quality=quality,
+            response_format=response_format,
+            timeout=timeout,
+            extra_body=extra_body,
+        )
+    except Exception as exc:
+        _papi_log(f"[PAPI_IMAGE_GENERATION] api={api_name} model={model_id} error={exc}", level='error')
+        return jsonify({
+            'success': False,
+            'message': str(exc),
+            'provider': api_name,
+            'model': model_id,
+        }), 502
+
+    raw_images = result.get('images') if isinstance(result, dict) else []
+    if not isinstance(raw_images, list) or not raw_images:
+        return jsonify({'success': False, 'message': '生图接口没有返回图片', 'provider': api_name, 'model': model_id}), 502
+
+    data_rows = []
+    for item in raw_images:
+        if not isinstance(item, dict):
+            continue
+        row = {}
+        b64_json = str(item.get('b64_json') or '').strip()
+        image_url = str(item.get('url') or '').strip()
+        revised_prompt = str(item.get('revised_prompt') or '').strip()
+        if b64_json:
+            row['b64_json'] = b64_json
+        if image_url:
+            row['url'] = image_url
+        if revised_prompt:
+            row['revised_prompt'] = revised_prompt
+        if row:
+            data_rows.append(row)
+
+    if not data_rows:
+        return jsonify({
+            'success': False,
+            'message': '生图接口返回了图片数据，但没有可用图片字段',
+            'provider': api_name,
+            'model': model_id,
+        }), 502
+
+    return jsonify({
+        'success': True,
+        'created': int(time.time()),
+        'provider': api_name,
+        'model': model_id,
+        'data': data_rows,
+        'progress': result.get('progress', []) if isinstance(result, dict) else [],
+    })
+
 
 @papi_bp.route('/api/papi/conversations/<username>', methods=['GET'])
 @require_papi_key

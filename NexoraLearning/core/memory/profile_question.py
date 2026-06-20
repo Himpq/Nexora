@@ -147,12 +147,14 @@ def run_profile_question_job(cfg: Mapping[str, Any], job: Mapping[str, Any]) -> 
         },
     )
     rows = _parse_question_blocks(content)
+    question_group_id = f"qg_{job_id}" if job_id else ""
     for idx, row in enumerate(rows, start=1):
         append_question_bank_item(
             dict(cfg or {}),
             user_id,
             {
                 "type": "profile_question",
+                "question_group_id": question_group_id,
                 "job_id": job_id,
                 "reason": reason,
                 "lecture_id": lecture_id,

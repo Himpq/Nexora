@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NexoraLearning 学习看板</title>
-  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260616_01">
+  <link rel="stylesheet" href="/api/frontend/assets/app.css?v=20260617_11">
+  <link rel="stylesheet" href="/api/frontend/assets/learning_push.css?v=20260618_06">
   <link rel="stylesheet" href="/api/frontend/assets/learning_panel.css?v=20260616_05">
   <link rel="stylesheet" href="/api/frontend/assets/knowledge_graph.css?v=20260615_01">
 </head>
@@ -16,12 +17,16 @@
           <header class="panel-head materials-head">
             <div class="panel-kicker-switch panel-kicker-switch-progress">
               <button id="dashboardProgressTabBtn" class="kicker-tab is-active" type="button">课程进度</button>
+              <button id="dashboardPushTabBtn" class="kicker-tab" type="button">学习资源</button>
+              <button id="dashboardQuestionBankTabBtn" class="kicker-tab" type="button">题库中心</button>
               <button id="dashboardProgressFeedTabBtn" class="kicker-tab" type="button">动态中心</button>
             </div>
             <button id="openMaterialsViewBtn" class="nxl-icon-btn" type="button" aria-label="打开课程页" title="打开课程页">☰</button>
           </header>
           <section id="dashboardFocusPanel" class="dashboard-focus-panel"></section>
           <div id="progressList" class="progress-list"></div>
+          <section id="learningPushPanel" class="learning-push-panel" hidden></section>
+          <section id="questionBankPanel" class="question-bank-panel" hidden></section>
           <div id="feedLayout" class="feed-layout" hidden>
             <aside id="feedChannelSidebar" class="feed-channel-sidebar">
               <div id="feedChannelList" class="feed-channel-list"></div>
@@ -51,6 +56,81 @@
           </article>
         </div>
       </section>
+    </section>
+
+    <section id="questionPracticeView" class="view-pane">
+      <article class="panel-card question-practice-page">
+        <header class="panel-head materials-head reader-head">
+          <div class="materials-head-left">
+            <button id="backFromQuestionPracticeBtn" class="nxl-icon-btn" type="button" aria-label="返回题库中心" title="返回题库中心">←</button>
+            <div class="reader-head-text">
+              <div id="questionPracticeTitle" class="reader-title">题组作答</div>
+              <div id="questionPracticeSubtitle" class="reader-subtitle">Question Practice</div>
+            </div>
+          </div>
+        </header>
+        <section id="questionPracticeContent" class="question-practice-content"></section>
+      </article>
+    </section>
+
+    <section id="learningResourceStudioView" class="view-pane">
+      <article class="panel-card resource-studio-page">
+        <header class="panel-head materials-head reader-head">
+          <div class="materials-head-left">
+            <button id="backFromResourceStudioBtn" class="nxl-icon-btn" type="button" aria-label="返回学习资源" title="返回学习资源">←</button>
+            <div class="reader-head-text">
+              <div class="reader-title">资源工作台</div>
+              <div class="reader-subtitle">Learning Resource Studio</div>
+            </div>
+          </div>
+        </header>
+        <section id="learningResourceStudioPanel" class="resource-studio-content"></section>
+      </article>
+    </section>
+
+    <section id="learningVideoStudioView" class="view-pane">
+      <article class="panel-card resource-studio-page video-studio-page">
+        <header class="panel-head materials-head reader-head">
+          <div class="materials-head-left">
+            <button id="backFromVideoStudioBtn" class="nxl-icon-btn" type="button" aria-label="返回学习资源" title="返回学习资源">←</button>
+            <div class="reader-head-text">
+              <div class="reader-title">视频生成工作台</div>
+              <div class="reader-subtitle">Learning Video Studio</div>
+            </div>
+          </div>
+        </header>
+        <section id="learningVideoStudioPanel" class="resource-studio-content video-studio-content"></section>
+      </article>
+    </section>
+
+    <section id="learningResourceReviewView" class="view-pane">
+      <article class="panel-card resource-studio-page">
+        <header class="panel-head materials-head reader-head">
+          <div class="materials-head-left">
+            <button id="backFromResourceReviewBtn" class="nxl-icon-btn" type="button" aria-label="返回资源工作台" title="返回资源工作台">←</button>
+            <div class="reader-head-text">
+              <div id="learningResourceReviewTitle" class="reader-title">资源审核</div>
+              <div id="learningResourceReviewSubtitle" class="reader-subtitle">Review Resource</div>
+            </div>
+          </div>
+        </header>
+        <section id="learningResourceReviewPanel" class="resource-studio-content"></section>
+      </article>
+    </section>
+
+    <section id="learningResourceReaderView" class="view-pane">
+      <article class="panel-card resource-reader-page">
+        <header class="panel-head materials-head reader-head">
+          <div class="materials-head-left">
+            <button id="backFromResourceReaderBtn" class="nxl-icon-btn" type="button" aria-label="返回学习资源" title="返回学习资源">←</button>
+            <div class="reader-head-text">
+              <div id="learningResourceReaderTitle" class="reader-title">学习资源</div>
+              <div id="learningResourceReaderSubtitle" class="reader-subtitle">Learning Resource</div>
+            </div>
+          </div>
+        </header>
+        <section id="learningResourceReaderContent" class="resource-reader-content"></section>
+      </article>
     </section>
 
     <section id="materialsView" class="view-pane">
@@ -395,7 +475,10 @@
   <script src="/api/frontend/assets/utils.js?v=20260610_04"></script>
   <script src="/api/frontend/assets/telemetry.js?v=20260610_04"></script>
   <script src="/api/frontend/assets/knowledge_graph.js?v=20260615_01"></script>
-  <script src="/api/frontend/assets/app.js?v=20260616_03"></script>
+  <script src="/api/frontend/assets/learning_push.js?v=20260618_03"></script>
+  <script src="/api/frontend/assets/learning_resource_studio.js?v=20260618_04"></script>
+  <script src="/api/frontend/assets/learning_video_studio.js?v=20260618_03"></script>
+  <script src="/api/frontend/assets/app.js?v=20260618_02"></script>
   <script src="/api/frontend/assets/course_workspace_bridge.js?v=20260616_06"></script>
 </body>
 </html>

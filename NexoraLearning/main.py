@@ -47,6 +47,10 @@ DEFAULT_CONFIG = {
         "service_url": "http://127.0.0.1:8100",
         "api_key": ""
     },
+    "video_generator": {
+        "service_url": "http://127.0.0.1:5011",
+        "request_timeout": 600
+    },
     "models": {
         "default_nexora_model": "",
         "rough_reading": {

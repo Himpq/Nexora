@@ -5,6 +5,27 @@
   const el = {
     learningPanel: document.getElementById("learningPanel"),
     dashboardView: document.getElementById("dashboardView"),
+    questionPracticeView: document.getElementById("questionPracticeView"),
+    questionPracticeContent: document.getElementById("questionPracticeContent"),
+    questionPracticeTitle: document.getElementById("questionPracticeTitle"),
+    questionPracticeSubtitle: document.getElementById("questionPracticeSubtitle"),
+    backFromQuestionPracticeBtn: document.getElementById("backFromQuestionPracticeBtn"),
+    learningResourceStudioView: document.getElementById("learningResourceStudioView"),
+    learningResourceStudioPanel: document.getElementById("learningResourceStudioPanel"),
+    backFromResourceStudioBtn: document.getElementById("backFromResourceStudioBtn"),
+    learningVideoStudioView: document.getElementById("learningVideoStudioView"),
+    learningVideoStudioPanel: document.getElementById("learningVideoStudioPanel"),
+    backFromVideoStudioBtn: document.getElementById("backFromVideoStudioBtn"),
+    learningResourceReviewView: document.getElementById("learningResourceReviewView"),
+    learningResourceReviewPanel: document.getElementById("learningResourceReviewPanel"),
+    learningResourceReviewTitle: document.getElementById("learningResourceReviewTitle"),
+    learningResourceReviewSubtitle: document.getElementById("learningResourceReviewSubtitle"),
+    backFromResourceReviewBtn: document.getElementById("backFromResourceReviewBtn"),
+    learningResourceReaderView: document.getElementById("learningResourceReaderView"),
+    learningResourceReaderTitle: document.getElementById("learningResourceReaderTitle"),
+    learningResourceReaderSubtitle: document.getElementById("learningResourceReaderSubtitle"),
+    learningResourceReaderContent: document.getElementById("learningResourceReaderContent"),
+    backFromResourceReaderBtn: document.getElementById("backFromResourceReaderBtn"),
     materialsView: document.getElementById("materialsView"),
     uploadView: document.getElementById("uploadView"),
     settingsView: document.getElementById("settingsView"),
@@ -28,7 +49,11 @@
     feedChannelList: document.getElementById("feedChannelList"),
     feedContentArea: document.getElementById("feedContentArea"),
     dashboardProgressTabBtn: document.getElementById("dashboardProgressTabBtn"),
+    dashboardPushTabBtn: document.getElementById("dashboardPushTabBtn"),
+    dashboardQuestionBankTabBtn: document.getElementById("dashboardQuestionBankTabBtn"),
     dashboardProgressFeedTabBtn: document.getElementById("dashboardProgressFeedTabBtn"),
+    learningPushPanel: document.getElementById("learningPushPanel"),
+    questionBankPanel: document.getElementById("questionBankPanel"),
     dashboardPieTabBtn: document.getElementById("dashboardPieTabBtn"),
     dashboardProfileTabBtn: document.getElementById("dashboardProfileTabBtn"),
     userProfileDimensions: document.getElementById("userProfileDimensions"),
@@ -203,6 +228,9 @@
     lpChapterScrollUnbind: null,
     lpChapterStreamKey: "",
     teacherEditContext: null,
+    questionPracticeReturnView: "dashboard",
+    learningResourceReaderItem: null,
+    learningResourceReviewItem: null,
     materialsSortBy: "updated_at",
     materialsSortOrder: "desc",
     settingsLogs: [],
@@ -210,6 +238,17 @@
     settingsLogCategory: "all",
     settingsLogSource: "",
     questionBankItems: [],
+    questionBankGroups: [],
+    questionBankSelectedGroupId: "",
+    questionBankSelectedGroup: null,
+    questionBankGroupLoading: false,
+    questionBankGroupError: "",
+    questionBankGroupAnswerFilter: "all",
+    questionBankSummary: { total: 0, pending: 0, submitted: 0, needs_review: 0 },
+    questionBankFilter: { lectureId: "all", answerState: "all", questionType: "all" },
+    questionBankPage: 1,
+    questionBankPageSize: 5,
+    questionBankPagination: { page: 1, page_size: 5, total: 0, total_pages: 1, has_prev: false, has_next: false },
     learningFeeds: [],
     learningFeedChannels: [],
     selectedFeedChannelId: "public_all",
@@ -1211,10 +1250,18 @@
   function getLearningPathChapterStatus(chapter) {
     const completed = isLearningPathChapterCompleted(chapter);
     const generated = !!(chapter && chapter.content_generated);
+    const generating = !!(chapter && (
+      chapter.content_generating === true ||
+      String(chapter.generation_status || "").trim().toLowerCase() === "running"
+    ));
     const rawStatus = String(chapter && chapter.status || "").trim().toLowerCase();
 
     if (completed) {
       return { className: "is-completed", label: "已完成", title: "学习已完成" };
+    }
+
+    if (generating) {
+      return { className: "is-current", label: "生成中", title: "章节内容正在生成" };
     }
 
     if (generated) {
@@ -1274,14 +1321,31 @@
                   idx !== generatingIndex
                 ) {
                   state.learningPathStage = "path-ready";
-                  state.lpChapterGeneratingIndex = -1;
-                  state.lpChapterStreamKey = "";
                 }
                 state.currentChapterIndex = idx;
                 renderLearningPathView(lectureId);
             });
         });
     }
+
+  function isLearningPathChapterStreaming(lectureId, chapterIndex, chapter) {
+    const idx = Number(chapterIndex);
+    if (!Number.isInteger(idx) || idx < 0) return false;
+
+    const streamLectureId = String(lectureId || "").trim();
+    const keyLectureId = String(state.selectedLectureId || "").trim();
+    const sameClientStream = !!(
+      state.lpChapterStreamKey &&
+      Number(state.lpChapterGeneratingIndex) === idx &&
+      (!keyLectureId || keyLectureId === streamLectureId)
+    );
+    const serverRunning = !!(chapter && (
+      chapter.content_generating === true ||
+      String(chapter.generation_status || "").trim().toLowerCase() === "running"
+    ));
+
+    return sameClientStream || serverRunning;
+  }
 
   function renderLearningPathChapterView(md, lectureId) {
     const pathData = state.learningPathData;
@@ -1301,6 +1365,19 @@
 
     if (chapter.content_generated) {
       loadLearningPathChapterContent(md, lectureId, idx, chapter);
+    } else if (isLearningPathChapterStreaming(lectureId, idx, chapter)) {
+      const hasClientStream = !!(
+        state.lpChapterStreamKey &&
+        Number(state.lpChapterGeneratingIndex) === idx
+      );
+      state.learningPathStage = "generating-chapter";
+      state.lpChapterGeneratingIndex = idx;
+      renderLearningPathSidePanel(lectureId);
+      renderLearningPathChapterStreamingView(md);
+
+      if (!hasClientStream) {
+        void generatePersonalizedChapterContent(lectureId, idx, { resume: true });
+      }
     } else {
       showChapterGenerateView(md, lectureId, idx, chapter);
     }
@@ -1825,7 +1902,8 @@
     return finalResult;
   }
 
-async function generatePersonalizedChapterContent(lectureId, chapterIndex) {
+async function generatePersonalizedChapterContent(lectureId, chapterIndex, options) {
+    const opts = options && typeof options === "object" ? options : {};
     const requestedChapterIndex = Number(chapterIndex);
     const streamKey = `${String(lectureId || "").trim()}::${requestedChapterIndex}::${Date.now()}`;
     state.learningPathStage = "generating-chapter";
@@ -1834,6 +1912,14 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex) {
     state.currentChapterIndex = requestedChapterIndex;
     state.lpChapterGeneratingIndex = requestedChapterIndex;
     state.lpChapterStreamKey = streamKey;
+    if (
+      state.learningPathData &&
+      Array.isArray(state.learningPathData.chapters) &&
+      state.learningPathData.chapters[requestedChapterIndex]
+    ) {
+      state.learningPathData.chapters[requestedChapterIndex].content_generating = true;
+      state.learningPathData.chapters[requestedChapterIndex].generation_status = "running";
+    }
     renderLearningPathView(lectureId);
 
     let streamingChapterIndex = requestedChapterIndex;
@@ -1872,7 +1958,12 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex) {
           }
 
           state.lpChapterDraft = markdownDraft;
-          updateLearningPathChapterStreamingMarkdown(markdownDraft);
+          if (
+            state.learningPathStage === "generating-chapter" &&
+            Number(state.currentChapterIndex) === requestedChapterIndex
+          ) {
+            updateLearningPathChapterStreamingMarkdown(markdownDraft);
+          }
         }
         ,
         (eventName, eventData) => {
@@ -1910,29 +2001,39 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex) {
         state.learningPathData.chapters[resultChapterIndex]
       ) {
         state.learningPathData.chapters[resultChapterIndex].content_generated = true;
+        state.learningPathData.chapters[resultChapterIndex].content_generating = false;
+        state.learningPathData.chapters[resultChapterIndex].generation_status = "done";
       }
 
       if (state.lpChapterStreamKey !== streamKey) {
         return;
       }
 
-      state.learningPathStage = "path-ready";
-      state.currentChapterIndex = resultChapterIndex;
-      state.lpChapterGeneratingIndex = -1;
-      state.lpChapterStreamKey = "";
+      const shouldRenderResult = !!(
+        Number(state.currentChapterIndex) === resultChapterIndex &&
+        state.learningPathStage === "generating-chapter"
+      );
 
       const renderedContent = String((result && result.content) || "").trim();
       if (!renderedContent) {
         throw new Error("章节生成完成但未返回 Markdown 正文");
       }
 
+      state.learningPathStage = "path-ready";
+      state.lpChapterGeneratingIndex = -1;
+      state.lpChapterStreamKey = "";
+
       const chapter = state.learningPathData && Array.isArray(state.learningPathData.chapters)
         ? state.learningPathData.chapters[resultChapterIndex]
         : null;
-      if (chapter && el.learningPathMarkdown) {
+      if (chapter && el.learningPathMarkdown && shouldRenderResult) {
+        state.currentChapterIndex = resultChapterIndex;
         state.lpChapterDraft = "";
         renderLearningPathSidePanel(lectureId);
         renderChapterMarkdown(el.learningPathMarkdown, lectureId, resultChapterIndex, chapter, renderedContent);
+      } else if (chapter) {
+        state.lpChapterDraft = "";
+        renderLearningPathSidePanel(lectureId);
       } else {
         throw new Error("章节生成完成，但章节视图状态异常");
       }
@@ -1940,11 +2041,30 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex) {
       if (state.lpChapterStreamKey !== streamKey) {
         return;
       }
+      const shouldRenderError = !!(
+        Number(state.currentChapterIndex) === requestedChapterIndex &&
+        state.learningPathStage === "generating-chapter"
+      );
+      if (
+        state.learningPathData &&
+        Array.isArray(state.learningPathData.chapters) &&
+        state.learningPathData.chapters[requestedChapterIndex]
+      ) {
+        state.learningPathData.chapters[requestedChapterIndex].content_generating = false;
+        state.learningPathData.chapters[requestedChapterIndex].generation_status = "error";
+      }
       state.learningPathStage = "path-ready";
       state.lpChapterGeneratingIndex = -1;
       state.lpChapterStreamKey = "";
-      renderLearningPathView(lectureId);
-      showToast(String(err && err.message ? err.message : "章节生成失败"));
+      if (shouldRenderError) {
+        renderLearningPathView(lectureId);
+        showToast(String(err && err.message ? err.message : "章节生成失败"));
+      } else {
+        renderLearningPathSidePanel(lectureId);
+        if (!opts.silent) {
+          showToast(String(err && err.message ? err.message : "章节生成失败"));
+        }
+      }
     }
   }
 
@@ -2388,6 +2508,21 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex) {
 
   function setView(name) {
     el.dashboardView.classList.toggle("is-active", name === "dashboard");
+    if (el.questionPracticeView) {
+      el.questionPracticeView.classList.toggle("is-active", name === "questionPractice");
+    }
+    if (el.learningResourceStudioView) {
+      el.learningResourceStudioView.classList.toggle("is-active", name === "resourceStudio");
+    }
+    if (el.learningVideoStudioView) {
+      el.learningVideoStudioView.classList.toggle("is-active", name === "videoStudio");
+    }
+    if (el.learningResourceReviewView) {
+      el.learningResourceReviewView.classList.toggle("is-active", name === "resourceReview");
+    }
+    if (el.learningResourceReaderView) {
+      el.learningResourceReaderView.classList.toggle("is-active", name === "resourceReader");
+    }
     el.materialsView.classList.toggle("is-active", name === "materials");
     el.uploadView.classList.toggle("is-active", name === "upload");
     el.settingsView.classList.toggle("is-active", name === "settings");
@@ -2700,6 +2835,1075 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex) {
         </div>
       </article>
     `).join("");
+  }
+
+  function getQuestionBankLectureTitle(lectureId) {
+    const targetId = String(lectureId || "").trim();
+    const rows = Array.isArray(state.allLectureRows) ? state.allLectureRows : [];
+    const row = rows.find((item) => String((item && item.lecture && item.lecture.id) || "").trim() === targetId);
+    return row ? getLectureTitle(row.lecture || {}) : (targetId || "未关联课程");
+  }
+
+  function normalizeQuestionBankOptions(rawOptions) {
+    const options = Array.isArray(rawOptions)
+      ? rawOptions
+      : String(rawOptions || "").split(/\r?\n/).filter(Boolean);
+    return options.map((option, optionIndex) => {
+      const fallbackLabel = String.fromCharCode(65 + optionIndex);
+      let label = "";
+      let text = "";
+      if (option && typeof option === "object") {
+        label = String(option.id || option.label || option.key || option.option_id || "").trim();
+        text = String(option.text || option.content || option.value || option.title || "").trim();
+      } else {
+        text = String(option || "").trim();
+      }
+      const match = text.match(/^\s*([a-zA-Z])\s*[.、:：)]\s*(.+)$/);
+      if (match) {
+        if (!label) label = match[1];
+        text = match[2].trim();
+      }
+      label = (label || fallbackLabel).slice(0, 3).toUpperCase();
+      text = text || String(option || "").trim();
+      return {
+        label,
+        text,
+        value: text ? `${label}. ${text}` : label,
+      };
+    }).filter((option) => option.text || option.label);
+  }
+
+  function getQuestionBankQuestion(item) {
+    const raw = item && typeof item === "object" ? item : {};
+    const question = raw.question && typeof raw.question === "object" ? raw.question : {};
+    const rawOptions = Array.isArray(question.options)
+      ? question.options
+      : Array.isArray(question.question_options)
+        ? question.question_options
+        : Array.isArray(raw.question_options)
+          ? raw.question_options
+          : Array.isArray(raw.options)
+            ? raw.options
+            : (question.question_options || raw.question_options || raw.options || []);
+    return {
+      title: String(question.question_title || question.title || question.question || raw.question_title || raw.title || "").trim(),
+      content: String(question.question_content || question.content || raw.question_content || raw.content || "").trim(),
+      answer: String(question.question_answer || question.answer || raw.reference_answer || "").trim(),
+      hint: String(question.question_hint || question.hint || raw.question_hint || "").trim(),
+      difficulty: String(question.question_difficulty || question.difficulty || raw.question_difficulty || "").trim(),
+      type: String(question.question_type || question.type || raw.question_type || raw.type || "").trim(),
+      options: normalizeQuestionBankOptions(rawOptions),
+    };
+  }
+
+  function getQuestionBankTypeLabel(item) {
+    const question = getQuestionBankQuestion(item);
+    const type = question.type.toLowerCase();
+    if (["choice", "single_choice", "选择题", "单选题"].includes(type)) return "选择题";
+    if (["multiple_choice", "多选题"].includes(type)) return "多选题";
+    if (["true_false", "判断题"].includes(type)) return "判断题";
+    if (["code", "practice", "实践题", "代码题"].includes(type)) return "实践题";
+    if (question.options.length >= 2) return "选择题";
+    return "简答题";
+  }
+
+  function isQuestionBankMultipleChoice(question) {
+    const type = String(question && question.type || "").trim().toLowerCase();
+    return ["multiple_choice", "multi_choice", "多选题"].includes(type);
+  }
+
+  function isQuestionBankOptionSelected(savedAnswer, option, label) {
+    const answer = String(savedAnswer || "").trim();
+    if (!answer) return false;
+    const optionLabel = String(label || option && option.label || "").trim();
+    const optionText = String(option && option.text || "").trim();
+    const optionValue = String(option && option.value || "").trim();
+    if (answer === optionValue || answer === optionText || answer === optionLabel) return true;
+    if (optionLabel && answer.startsWith(`${optionLabel}.`)) return true;
+    if (optionLabel && new RegExp(`(^|[\\s,，、;；])${optionLabel}(?=\\s|[.,，、;；]|$)`, "i").test(answer)) return true;
+    return !!(optionText && answer.includes(optionText));
+  }
+
+  function joinQuestionBankChoiceAnswers(values) {
+    return values.map((value) => String(value || "").trim()).filter(Boolean).join("；");
+  }
+
+  function getQuestionBankAnswerState(item) {
+    const stateValue = String(item && item.answer_state || "").trim();
+    if (stateValue) return stateValue;
+    return item && item.latest_completion ? "submitted" : "pending";
+  }
+
+  function getQuestionBankAnswerStateLabel(answerState) {
+    const value = String(answerState || "").trim();
+    if (value === "needs_review") return "待复盘";
+    if (value === "submitted") return "已作答";
+    return "未作答";
+  }
+
+  function getQuestionBankFilteredItems() {
+    return Array.isArray(state.questionBankItems) ? state.questionBankItems : [];
+  }
+
+  function renderQuestionBankFilters() {
+    const lectureRows = Array.isArray(state.allLectureRows) ? state.allLectureRows : [];
+    const lectureIds = Array.from(new Set(
+      lectureRows
+        .map((row) => String((row && row.lecture && row.lecture.id) || "").trim())
+        .filter(Boolean)
+    ));
+    const typeLabels = ["选择题", "多选题", "判断题", "简答题", "实践题"];
+    const lectureOptions = [
+      `<option value="all">全部课程</option>`,
+      ...lectureIds.map((lectureId) => `<option value="${escapeHtml(lectureId)}" ${state.questionBankFilter.lectureId === lectureId ? "selected" : ""}>${escapeHtml(getQuestionBankLectureTitle(lectureId))}</option>`),
+    ].join("");
+    const typeOptions = [
+      `<option value="all">全部题型</option>`,
+      ...typeLabels.map((typeLabel) => `<option value="${escapeHtml(typeLabel)}" ${state.questionBankFilter.questionType === typeLabel ? "selected" : ""}>${escapeHtml(typeLabel)}</option>`),
+    ].join("");
+
+    return `
+      <div class="question-bank-filters">
+        <select class="question-bank-select" data-qb-filter="lectureId" aria-label="按课程筛选">${lectureOptions}</select>
+        <select class="question-bank-select" data-qb-filter="answerState" aria-label="按作答状态筛选">
+          <option value="all">全部状态</option>
+          <option value="pending" ${state.questionBankFilter.answerState === "pending" ? "selected" : ""}>未作答</option>
+          <option value="submitted" ${state.questionBankFilter.answerState === "submitted" ? "selected" : ""}>已作答</option>
+          <option value="needs_review" ${state.questionBankFilter.answerState === "needs_review" ? "selected" : ""}>待复盘</option>
+        </select>
+        <select class="question-bank-select" data-qb-filter="questionType" aria-label="按题型筛选">${typeOptions}</select>
+      </div>
+    `;
+  }
+
+  function findQuestionBankItem(questionId) {
+    const targetId = String(questionId || "").trim();
+    if (!targetId) return null;
+    const selectedRows = Array.isArray(state.questionBankSelectedGroup && state.questionBankSelectedGroup.items)
+      ? state.questionBankSelectedGroup.items
+      : [];
+    const selectedItem = selectedRows.find((item) => String((item && item.question_id) || "").trim() === targetId);
+    if (selectedItem) return selectedItem;
+    const rows = Array.isArray(state.questionBankItems) ? state.questionBankItems : [];
+    return rows.find((item) => String((item && item.question_id) || "").trim() === targetId) || null;
+  }
+
+  function recomputeQuestionBankSummary() {
+    const rows = Array.isArray(state.questionBankItems) ? state.questionBankItems : [];
+    state.questionBankSummary = {
+      total: rows.length,
+      pending: rows.filter((item) => getQuestionBankAnswerState(item) === "pending").length,
+      submitted: rows.filter((item) => getQuestionBankAnswerState(item) === "submitted").length,
+      needs_review: rows.filter((item) => getQuestionBankAnswerState(item) === "needs_review").length,
+    };
+  }
+
+  function closeQuestionBankPracticeModal() {
+    const modal = document.getElementById("questionBankPracticeModal");
+    if (modal) {
+      modal.remove();
+    }
+  }
+
+  function renderQuestionBankPracticeInput(item) {
+    const question = getQuestionBankQuestion(item);
+    const questionId = String((item && item.question_id) || "").trim();
+    const latest = item && item.latest_completion && typeof item.latest_completion === "object" ? item.latest_completion : null;
+    const savedAnswer = latest ? String(latest.student_answer || "") : "";
+    if (question.options.length >= 2) {
+      const multi = isQuestionBankMultipleChoice(question);
+      return `
+        <div class="question-bank-practice-options">
+          ${question.options.map((option, optionIndex) => {
+            const label = option.label || String.fromCharCode(65 + optionIndex);
+            const value = option.value || `${label}. ${option.text || ""}`;
+            const checked = isQuestionBankOptionSelected(savedAnswer, option, label);
+            return `
+              <label class="question-bank-practice-option">
+                <input type="${multi ? "checkbox" : "radio"}" name="questionBankPracticeAnswer" value="${escapeHtml(value)}" ${checked ? "checked" : ""}>
+                <span class="question-bank-practice-option-letter">${label}</span>
+                <span class="question-bank-practice-option-text">${escapeHtml(option.text || value)}</span>
+              </label>
+            `;
+          }).join("")}
+        </div>
+      `;
+    }
+
+    return `
+      <textarea
+        id="questionBankPracticeAnswerInput"
+        class="question-bank-practice-textarea"
+        rows="6"
+        data-question-id="${escapeHtml(questionId)}"
+        placeholder="在这里写下你的作答">${escapeHtml(savedAnswer)}</textarea>
+    `;
+  }
+
+  function renderQuestionBankPracticeModal(item, result) {
+    const question = getQuestionBankQuestion(item);
+    const questionId = String((item && item.question_id) || "").trim();
+    const title = question.title || question.content || "题库练习";
+    const content = question.content && question.content !== title ? question.content : "";
+    const typeLabel = getQuestionBankTypeLabel(item);
+    const latest = result && typeof result === "object"
+      ? result
+      : item && item.latest_completion && typeof item.latest_completion === "object"
+        ? item.latest_completion
+        : null;
+    const studentAnswer = latest ? String(latest.student_answer || "") : "";
+    const isCorrect = latest && Object.prototype.hasOwnProperty.call(latest, "is_correct") ? latest.is_correct : null;
+    const resultLabel = isCorrect === true ? "自动判定正确" : (isCorrect === false ? "需要复盘" : (latest ? "已提交" : ""));
+    const resultClass = isCorrect === true ? "is-correct" : (isCorrect === false ? "is-review" : "is-submitted");
+    const meta = [
+      typeLabel,
+      question.difficulty || "综合",
+      getQuestionBankLectureTitle(item && item.lecture_id),
+      String((item && item.chapter_name) || "").trim(),
+    ].filter(Boolean).join(" · ");
+
+    const existing = document.getElementById("questionBankPracticeModal");
+    if (existing) existing.remove();
+
+    const modal = document.createElement("div");
+    modal.id = "questionBankPracticeModal";
+    modal.className = "question-bank-practice-modal";
+    modal.innerHTML = `
+      <div class="question-bank-practice-backdrop" data-qb-practice-action="close"></div>
+      <section class="question-bank-practice-dialog" role="dialog" aria-modal="true" aria-label="题库作答">
+        <header class="question-bank-practice-head">
+          <div>
+            <div class="question-bank-kicker">Question Practice</div>
+            <h3>${escapeHtml(title)}</h3>
+          </div>
+          <button class="question-bank-practice-close" type="button" data-qb-practice-action="close" aria-label="关闭">×</button>
+        </header>
+        <div class="question-bank-practice-body">
+          <div class="question-bank-meta question-bank-practice-meta">
+            ${meta ? meta.split(" · ").map((itemText) => `<span>${escapeHtml(itemText)}</span>`).join("") : ""}
+          </div>
+          ${content ? `<div class="question-bank-practice-content">${escapeHtml(content)}</div>` : ""}
+          ${question.hint ? `<div class="question-bank-practice-hint">提示：${escapeHtml(question.hint)}</div>` : ""}
+          ${renderQuestionBankPracticeInput(item)}
+          ${latest ? `
+            <section class="question-bank-practice-result ${resultClass}">
+              <div class="question-bank-practice-result-label">${escapeHtml(resultLabel)}</div>
+              <div class="question-bank-practice-result-row"><strong>你的作答</strong><span>${escapeHtml(studentAnswer || "未记录")}</span></div>
+              ${question.answer ? `<div class="question-bank-practice-result-row"><strong>参考答案</strong><span>${escapeHtml(question.answer)}</span></div>` : ""}
+            </section>
+          ` : question.answer ? `
+            <section class="question-bank-practice-reference" hidden>
+              <strong>参考答案</strong>
+              <span>${escapeHtml(question.answer)}</span>
+            </section>
+          ` : ""}
+        </div>
+        <footer class="question-bank-practice-foot">
+          ${question.answer && !latest ? `<button class="question-bank-practice-secondary" type="button" data-qb-practice-action="toggle-reference">查看参考答案</button>` : ""}
+          <button class="question-bank-practice-secondary" type="button" data-qb-practice-action="close">关闭</button>
+          <button class="question-bank-practice-primary" type="button" data-qb-practice-action="submit" data-question-id="${escapeHtml(questionId)}">
+            ${latest ? "重新提交" : "提交作答"}
+          </button>
+        </footer>
+      </section>
+    `;
+    document.body.appendChild(modal);
+    const input = modal.querySelector("#questionBankPracticeAnswerInput") || modal.querySelector("input[name='questionBankPracticeAnswer']");
+    if (input) {
+      setTimeout(() => input.focus(), 0);
+    }
+  }
+
+  function openQuestionBankPractice(questionId) {
+    const item = findQuestionBankItem(questionId);
+    if (!item) {
+      showToast("没有找到这道题");
+      return;
+    }
+    renderQuestionBankPracticeModal(item);
+  }
+
+  function readQuestionBankPracticeAnswer(modal) {
+    const checkedRows = Array.from(modal.querySelectorAll("input[name='questionBankPracticeAnswer']:checked"));
+    if (checkedRows.length) return joinQuestionBankChoiceAnswers(checkedRows.map((item) => item.value));
+    const input = modal.querySelector("#questionBankPracticeAnswerInput");
+    return input ? String(input.value || "").trim() : "";
+  }
+
+  async function submitQuestionBankPractice(questionId) {
+    const modal = document.getElementById("questionBankPracticeModal");
+    const item = findQuestionBankItem(questionId);
+    if (!modal || !item) return;
+    const submitBtn = modal.querySelector("[data-qb-practice-action='submit']");
+    const studentAnswer = readQuestionBankPracticeAnswer(modal);
+    if (!studentAnswer) {
+      showToast("请先完成作答");
+      return;
+    }
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = "提交中...";
+    }
+    try {
+      const result = await fetchJson("/api/frontend/question-bank/submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question_id: questionId,
+          student_answer: studentAnswer,
+        }),
+      });
+      item.latest_completion = result && result.record && typeof result.record === "object" ? result.record : {
+        student_answer: studentAnswer,
+      };
+      item.answer_state = String(result && result.answer_state || "submitted");
+      await refreshQuestionBankAfterAnswer();
+      renderQuestionBankActiveSurface();
+      const updatedItem = findQuestionBankItem(questionId) || item;
+      renderQuestionBankPracticeModal(updatedItem, updatedItem.latest_completion || item.latest_completion);
+      showToast("作答已提交");
+    } catch (err) {
+      showToast(`提交失败：${err.message || "未知错误"}`);
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = "提交作答";
+      }
+    }
+  }
+
+  function getQuestionBankGroupKey(item) {
+    const row = item && typeof item === "object" ? item : {};
+    const explicit = String(row.question_group_id || row.group_id || "").trim();
+    if (explicit) return explicit;
+    return [
+      String(row.lecture_id || "").trim(),
+      String(row.book_id || "").trim(),
+      String(row.chapter_name || "").trim(),
+      String(row.chapter_range || "").trim(),
+      String(row.generation_mode || row.reason || row.type || "").trim(),
+    ].join("|");
+  }
+
+  function getQuestionBankGroupTitle(item) {
+    const row = item && typeof item === "object" ? item : {};
+    const chapterName = String(row.chapter_name || "").trim();
+    const bookTitle = String(row.book_title || "").trim();
+    if (chapterName) return chapterName;
+    if (bookTitle) return bookTitle;
+    return "未命名题组";
+  }
+
+  function getQuestionBankGroupSubtitle(item, count) {
+    const row = item && typeof item === "object" ? item : {};
+    const mode = String(row.generation_mode || "").trim();
+    const reason = String(row.reason || "").trim();
+    const lectureTitle = getQuestionBankLectureTitle(row.lecture_id);
+    const source = mode === "profile_adaptive"
+      ? "画像出题"
+      : mode === "chapter_quiz_sync"
+        ? "章节小测"
+        : reason === "chapter_quiz_empty_bank"
+          ? "章节小测"
+          : "题库沉淀";
+    return [source, lectureTitle, `${count} 题`].filter(Boolean).join(" · ");
+  }
+
+  function groupQuestionBankItems(rows) {
+    const groups = [];
+    const groupMap = new Map();
+    (Array.isArray(rows) ? rows : []).forEach((item) => {
+      const key = getQuestionBankGroupKey(item);
+      if (!groupMap.has(key)) {
+        const group = {
+          key,
+          title: getQuestionBankGroupTitle(item),
+          firstItem: item,
+          items: [],
+        };
+        groupMap.set(key, group);
+        groups.push(group);
+      }
+      groupMap.get(key).items.push(item);
+    });
+    groups.forEach((group) => {
+      group.subtitle = getQuestionBankGroupSubtitle(group.firstItem, group.items.length);
+    });
+    return groups;
+  }
+
+  function getQuestionBankGroups() {
+    const groups = Array.isArray(state.questionBankGroups) && state.questionBankGroups.length
+      ? state.questionBankGroups
+      : groupQuestionBankItems(state.questionBankItems);
+    return groups.map((group) => {
+      const items = Array.isArray(group.items) ? group.items : [];
+      const totalCount = Number(group.total_count || items.length) || items.length;
+      const answeredCount = Number(group.answered_count || items.filter((item) => getQuestionBankAnswerState(item) !== "pending").length) || 0;
+      return Object.assign({}, group, {
+        group_id: String(group.group_id || group.question_group_id || group.key || getQuestionBankGroupKey(items[0] || {})).trim(),
+        title: String(group.title || getQuestionBankGroupTitle(items[0] || {})).trim(),
+        source: String(group.source || "").trim(),
+        items,
+        total_count: totalCount,
+        answered_count: answeredCount,
+        correct_count: Number(group.correct_count || 0) || 0,
+        pending_count: Number(group.pending_count || Math.max(0, totalCount - answeredCount)) || 0,
+        needs_review_count: Number(group.needs_review_count || items.filter((item) => getQuestionBankAnswerState(item) === "needs_review").length) || 0,
+        latest_timestamp: Number(group.latest_timestamp || 0) || 0,
+        created_timestamp: Number(group.created_timestamp || 0) || 0,
+      });
+    });
+  }
+
+  function normalizeQuestionBankGroup(group) {
+    const source = group && typeof group === "object" ? group : {};
+    const items = Array.isArray(source.items) ? source.items : [];
+    const fallback = items[0] || {};
+    const totalCount = Number(source.total_count || items.length) || items.length;
+    const answeredCount = Number(source.answered_count || items.filter((item) => getQuestionBankAnswerState(item) !== "pending").length) || 0;
+    return Object.assign({}, source, {
+      group_id: String(source.group_id || source.question_group_id || getQuestionBankGroupKey(fallback)).trim(),
+      question_group_id: String(source.question_group_id || source.group_id || getQuestionBankGroupKey(fallback)).trim(),
+      title: String(source.title || getQuestionBankGroupTitle(fallback)).trim(),
+      source: String(source.source || getQuestionBankGroupSubtitle(fallback, totalCount).split(" 路 ")[0] || "").trim(),
+      lecture_id: String(source.lecture_id || fallback.lecture_id || "").trim(),
+      lecture_title: String(source.lecture_title || fallback.lecture_title || "").trim(),
+      book_id: String(source.book_id || fallback.book_id || "").trim(),
+      book_title: String(source.book_title || fallback.book_title || "").trim(),
+      chapter_name: String(source.chapter_name || fallback.chapter_name || "").trim(),
+      items,
+      total_count: totalCount,
+      answered_count: answeredCount,
+      correct_count: Number(source.correct_count || items.filter((item) => {
+        const latest = item && item.latest_completion && typeof item.latest_completion === "object" ? item.latest_completion : null;
+        return latest && latest.is_correct === true;
+      }).length) || 0,
+      pending_count: Number(source.pending_count || items.filter((item) => getQuestionBankAnswerState(item) === "pending").length) || 0,
+      needs_review_count: Number(source.needs_review_count || items.filter((item) => getQuestionBankAnswerState(item) === "needs_review").length) || 0,
+      latest_timestamp: Number(source.latest_timestamp || 0) || 0,
+      created_timestamp: Number(source.created_timestamp || 0) || 0,
+    });
+  }
+
+  function findQuestionBankGroup(groupId) {
+    const targetId = String(groupId || "").trim();
+    if (!targetId) return null;
+    if (state.questionBankSelectedGroup && String(state.questionBankSelectedGroup.group_id || "").trim() === targetId) {
+      return normalizeQuestionBankGroup(state.questionBankSelectedGroup);
+    }
+    const group = getQuestionBankGroups().find((item) => String(item.group_id || "").trim() === targetId) || null;
+    return group ? normalizeQuestionBankGroup(group) : null;
+  }
+
+  function getQuestionBankGroupFilteredItems(group) {
+    const rows = Array.isArray(group && group.items) ? group.items : [];
+    const filter = String(state.questionBankGroupAnswerFilter || "all").trim();
+    if (!filter || filter === "all") return rows;
+    return rows.filter((item) => getQuestionBankAnswerState(item) === filter);
+  }
+
+  function renderQuestionBankGroupProgress(group) {
+    const total = Math.max(0, Number(group && group.total_count || 0));
+    const answered = Math.max(0, Number(group && group.answered_count || 0));
+    const percent = total > 0 ? Math.max(0, Math.min(100, Math.round((answered / total) * 100))) : 0;
+    return `
+      <div class="question-bank-group-progress" aria-label="题组作答进度">
+        <div class="question-bank-group-progress-label">
+          <strong>已完成 ${answered}/${total}</strong>
+          <span>${percent}%</span>
+        </div>
+        <div class="question-bank-group-progress-track">
+          <i style="width:${percent}%"></i>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderQuestionBankGroupCover(group) {
+    const safeGroup = normalizeQuestionBankGroup(group);
+    const latest = Number(safeGroup.latest_timestamp || safeGroup.created_timestamp || 0);
+    const meta = [
+      safeGroup.source,
+      safeGroup.lecture_title || getQuestionBankLectureTitle(safeGroup.lecture_id),
+      safeGroup.book_title,
+    ].filter(Boolean);
+    const stats = [
+      ["题量", safeGroup.total_count],
+      ["已作答", safeGroup.answered_count],
+      ["正确", safeGroup.correct_count],
+      ["待复盘", safeGroup.needs_review_count],
+      ["最近生成", latest ? formatTs(latest) : "暂无"],
+    ];
+    return `
+      <section class="question-bank-group-cover">
+        <div class="question-bank-group-cover-main">
+          <div class="question-bank-kicker">${escapeHtml(safeGroup.source || "Question Set")}</div>
+          <h3>${escapeHtml(safeGroup.title || "题组作答")}</h3>
+          <p>${meta.map((item) => escapeHtml(item)).join(" · ")}</p>
+        </div>
+        <div class="question-bank-group-cover-stats">
+          ${stats.map(([label, value]) => `
+            <div>
+              <span>${escapeHtml(label)}</span>
+              <strong>${escapeHtml(String(value))}</strong>
+            </div>
+          `).join("")}
+        </div>
+        ${renderQuestionBankGroupProgress(safeGroup)}
+      </section>
+    `;
+  }
+
+  function renderQuestionBankGroupAnswerFilters(group) {
+    const safeGroup = normalizeQuestionBankGroup(group);
+    const options = [
+      ["all", "全部", safeGroup.total_count],
+      ["pending", "未作答", safeGroup.pending_count],
+      ["submitted", "已作答", Math.max(0, safeGroup.answered_count - safeGroup.needs_review_count)],
+      ["needs_review", "待复盘", safeGroup.needs_review_count],
+    ];
+    const active = String(state.questionBankGroupAnswerFilter || "all").trim();
+    return `
+      <div class="question-bank-group-filterbar" role="tablist" aria-label="题组内筛选">
+        ${options.map(([value, label, count]) => `
+          <button class="question-bank-group-filter${active === value ? " is-active" : ""}" type="button" data-qb-group-filter="${escapeHtml(value)}" aria-pressed="${active === value ? "true" : "false"}">
+            ${escapeHtml(label)} <span>${Number(count || 0)}</span>
+          </button>
+        `).join("")}
+      </div>
+    `;
+  }
+
+  function renderQuestionBankMistakePanel(summary) {
+    const data = summary && typeof summary === "object" ? summary : {};
+    const reviewCount = Number(data.needs_review || 0) || 0;
+    return `
+      <section class="question-bank-mistakes-panel">
+        <div>
+          <div class="question-bank-kicker">Mistake Review</div>
+          <h3>错题本</h3>
+          <p>集中复盘自动判定错误或需要再看的题目。</p>
+        </div>
+        <div class="question-bank-mistakes-count">
+          <strong>${reviewCount}</strong>
+          <span>待复盘</span>
+        </div>
+        <button class="question-bank-action question-bank-action-soft" type="button" data-qb-action="open-mistakes">
+          进入错题本
+        </button>
+      </section>
+    `;
+  }
+
+  function renderQuestionPracticePage() {
+    if (!el.questionPracticeContent) return;
+    const selectedGroup = findQuestionBankGroup(state.questionBankSelectedGroupId);
+    if (state.questionBankGroupLoading && !selectedGroup) {
+      el.questionPracticeContent.innerHTML = '<div class="materials-empty">题组加载中...</div>';
+      return;
+    }
+    if (state.questionBankGroupError) {
+      el.questionPracticeContent.innerHTML = `<div class="materials-empty">${escapeHtml(state.questionBankGroupError)}</div>`;
+      return;
+    }
+    if (!selectedGroup) {
+      el.questionPracticeContent.innerHTML = '<div class="materials-empty">请选择一个题组开始作答</div>';
+      return;
+    }
+    const pageRows = getQuestionBankGroupFilteredItems(selectedGroup);
+    if (el.questionPracticeTitle) {
+      el.questionPracticeTitle.textContent = selectedGroup.title || "题组作答";
+    }
+    if (el.questionPracticeSubtitle) {
+      el.questionPracticeSubtitle.textContent = [selectedGroup.source, selectedGroup.book_title].filter(Boolean).join(" · ") || "Question Practice";
+    }
+    el.questionPracticeContent.innerHTML = `
+      ${renderQuestionBankGroupAnswerFilters(selectedGroup)}
+      ${renderQuestionBankPaper(pageRows, { practiceMode: true })}
+    `;
+  }
+
+  function renderQuestionBankActiveSurface() {
+    if (el.questionPracticeView && el.questionPracticeView.classList.contains("is-active")) {
+      renderQuestionPracticePage();
+    } else {
+      renderQuestionBankCenter();
+    }
+  }
+
+  function renderQuestionBankGroupList(groups) {
+    const rows = Array.isArray(groups) ? groups : [];
+    if (!rows.length) {
+      return '<div class="materials-empty">当前筛选条件下暂无题组</div>';
+    }
+    return `
+      <div class="question-bank-group-list">
+        ${rows.map((group) => {
+          const groupId = String(group.group_id || "").trim();
+          const total = Number(group.total_count || (group.items || []).length) || 0;
+          const answered = Number(group.answered_count || 0) || 0;
+          const pending = Number(group.pending_count || 0) || 0;
+          const review = Number(group.needs_review_count || 0) || 0;
+          const correct = Number(group.correct_count || 0) || 0;
+          const latest = Number(group.latest_timestamp || group.created_timestamp || 0) || 0;
+          const source = String(group.source || "题库沉淀").trim();
+          const bookTitle = String(group.book_title || "").trim();
+          const meta = [source, bookTitle].filter(Boolean).join(" · ");
+          return `
+            <article class="question-bank-group-card" data-qb-group-id="${escapeHtml(groupId)}">
+              <div class="question-bank-group-card-main">
+                <div class="question-bank-kicker">${escapeHtml(source)}</div>
+                <h4>${escapeHtml(group.title || "未命名题组")}</h4>
+                ${meta ? `<p>${escapeHtml(meta)}</p>` : ""}
+              </div>
+              <div class="question-bank-group-card-stats">
+                <span>${answered}/${total} 已作答</span>
+                ${correct ? `<span>${correct} 正确</span>` : ""}
+                ${pending ? `<span>${pending} 未作答</span>` : ""}
+                ${review ? `<span>${review} 待复盘</span>` : ""}
+                ${latest ? `<span>${escapeHtml(formatTs(latest))}</span>` : ""}
+              </div>
+              <button class="question-bank-action question-bank-action-primary" type="button" data-qb-action="open-group" data-group-id="${escapeHtml(groupId)}">
+                ${answered > 0 && answered < total ? "继续作答" : answered >= total && total > 0 ? "复盘题组" : "开始作答"}
+              </button>
+            </article>
+          `;
+        }).join("")}
+      </div>
+    `;
+  }
+
+  function renderQuestionBankPaperQuestion(item, index) {
+    const question = getQuestionBankQuestion(item);
+    const questionId = String((item && item.question_id) || `qb_${index}`).trim();
+    const title = question.title || question.content || `练习题 ${index + 1}`;
+    const content = question.content && question.content !== title ? question.content : "";
+    const answerState = getQuestionBankAnswerState(item);
+    const latest = item && item.latest_completion && typeof item.latest_completion === "object" ? item.latest_completion : null;
+    const savedAnswer = latest ? String(latest.student_answer || "") : "";
+    const statusLabel = getQuestionBankAnswerStateLabel(answerState);
+    const meta = [
+      getQuestionBankTypeLabel(item),
+      question.difficulty || "综合",
+      String((item && item.chapter_name) || "").trim(),
+    ].filter(Boolean).join(" · ");
+    const answerHtml = question.options.length >= 2
+      ? `<div class="question-bank-paper-options">
+          ${question.options.map((option, optionIndex) => {
+            const label = option.label || String.fromCharCode(65 + optionIndex);
+            const value = option.value || `${label}. ${option.text || ""}`;
+            const checked = isQuestionBankOptionSelected(savedAnswer, option, label);
+            const multi = isQuestionBankMultipleChoice(question);
+            return `
+              <label class="question-bank-paper-option">
+                <input type="${multi ? "checkbox" : "radio"}" name="qbPaperAnswer_${escapeHtml(questionId)}" data-qb-paper-answer value="${escapeHtml(value)}" ${checked ? "checked" : ""}>
+                <span>${escapeHtml(label)}</span>
+                <strong>${escapeHtml(option.text || value)}</strong>
+              </label>
+            `;
+          }).join("")}
+        </div>`
+      : `<textarea class="question-bank-paper-textarea" data-qb-paper-answer rows="4" placeholder="写下你的作答">${escapeHtml(savedAnswer)}</textarea>`;
+
+    return `
+      <article class="question-bank-paper-question ${answerState === "needs_review" ? "is-review" : answerState === "submitted" ? "is-done" : ""}" data-qb-paper-question="${escapeHtml(questionId)}">
+        <div class="question-bank-paper-index">${index + 1}</div>
+        <div class="question-bank-paper-main">
+          <div class="question-bank-paper-top">
+            <div>
+              <h4>${escapeHtml(title)}</h4>
+              ${meta ? `<p>${escapeHtml(meta)}</p>` : ""}
+            </div>
+            <span>${escapeHtml(statusLabel)}</span>
+          </div>
+          ${content ? `<div class="question-bank-paper-content">${escapeHtml(content)}</div>` : ""}
+          ${question.hint ? `<div class="question-bank-practice-hint">提示：${escapeHtml(question.hint)}</div>` : ""}
+          ${answerHtml}
+        </div>
+      </article>
+    `;
+  }
+
+  function renderQuestionBankPaper(rows, options) {
+    const opts = options && typeof options === "object" ? options : {};
+    const practiceMode = !!opts.practiceMode;
+    const pageRows = Array.isArray(rows) ? rows : [];
+    if (!pageRows.length) {
+      return '<div class="materials-empty">当前筛选条件下暂无题目</div>';
+    }
+    const answeredCount = pageRows.filter((item) => getQuestionBankAnswerState(item) !== "pending").length;
+    const groups = groupQuestionBankItems(pageRows);
+    return `
+      <section class="question-bank-paper${practiceMode ? " is-practice-mode" : ""}">
+        ${practiceMode ? "" : `<div class="question-bank-paper-head">
+          <div>
+            <div class="question-bank-kicker">Question Sets</div>
+            <h3>题组作答</h3>
+          </div>
+          <span>${groups.length} 组 · ${answeredCount}/${pageRows.length} 已作答</span>
+        </div>`}
+        <div class="question-bank-paper-list">
+          ${groups.map((group) => practiceMode ? `
+            ${group.items.map((item, index) => renderQuestionBankPaperQuestion(item, index)).join("")}
+          ` : `
+            <section class="question-bank-paper-group">
+              <div class="question-bank-paper-group-head">
+                <div>
+                  <h4>${escapeHtml(group.title)}</h4>
+                  <p>${escapeHtml(group.subtitle || "")}</p>
+                </div>
+              </div>
+              ${group.items.map((item, index) => renderQuestionBankPaperQuestion(item, index)).join("")}
+            </section>
+          `).join("")}
+        </div>
+        <div class="question-bank-paper-foot">
+          <button class="question-bank-action question-bank-action-secondary" type="button" data-qb-action="paper-clear">清空当前填写</button>
+          <button class="question-bank-action question-bank-action-primary" type="button" data-qb-action="paper-submit">${practiceMode ? "提交作答" : "提交当前题组"}</button>
+        </div>
+      </section>
+    `;
+  }
+
+  function readQuestionBankPaperAnswers() {
+    const panel = (el.questionPracticeView && el.questionPracticeView.classList.contains("is-active"))
+      ? el.questionPracticeContent
+      : el.questionBankPanel;
+    if (!panel) return [];
+    const answers = [];
+    panel.querySelectorAll("[data-qb-paper-question]").forEach((node) => {
+      const questionId = String(node.getAttribute("data-qb-paper-question") || "").trim();
+      if (!questionId) return;
+      const checkedRows = Array.from(node.querySelectorAll("input[data-qb-paper-answer]:checked"));
+      const textarea = node.querySelector("textarea[data-qb-paper-answer]");
+      const studentAnswer = checkedRows.length
+        ? joinQuestionBankChoiceAnswers(checkedRows.map((item) => item.value))
+        : textarea
+          ? String(textarea.value || "").trim()
+          : "";
+      if (studentAnswer) {
+        answers.push({ questionId, studentAnswer });
+      }
+    });
+    return answers;
+  }
+
+  async function submitQuestionBankPaper(button) {
+    const answers = readQuestionBankPaperAnswers();
+    if (!answers.length) {
+      showToast("请先填写至少一道题");
+      return;
+    }
+    const submitBtn = button instanceof HTMLElement ? button : null;
+    const originalText = submitBtn ? submitBtn.textContent : "";
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = "提交中...";
+    }
+    let submitted = 0;
+    try {
+      for (const answer of answers) {
+        await fetchJson("/api/frontend/question-bank/submit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            question_id: answer.questionId,
+            student_answer: answer.studentAnswer,
+          }),
+        });
+        submitted += 1;
+      }
+      await refreshQuestionBankAfterAnswer();
+      renderQuestionBankActiveSurface();
+      showToast(`已提交 ${submitted} 道题`);
+    } catch (err) {
+      showToast(`提交失败：${err.message || "未知错误"}`);
+      if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = originalText || "提交当前题组";
+      }
+    }
+  }
+
+  function clearQuestionBankPaperInputs() {
+    const panel = (el.questionPracticeView && el.questionPracticeView.classList.contains("is-active"))
+      ? el.questionPracticeContent
+      : el.questionBankPanel;
+    if (!panel) return;
+    panel.querySelectorAll("[data-qb-paper-answer]").forEach((node) => {
+      if (node instanceof HTMLInputElement && node.type === "radio") {
+        node.checked = false;
+      } else if (node instanceof HTMLTextAreaElement) {
+        node.value = "";
+      }
+    });
+  }
+
+  function renderQuestionBankItem(item, index, variant) {
+    const question = getQuestionBankQuestion(item);
+    const title = question.title || question.content || `练习题 ${index + 1}`;
+    const content = question.content && question.content !== title ? question.content : "";
+    const answerState = getQuestionBankAnswerState(item);
+    const stateLabel = getQuestionBankAnswerStateLabel(answerState);
+    const lectureId = String((item && item.lecture_id) || "").trim();
+    const bookTitle = String((item && item.book_title) || "").trim();
+    const chapterName = String((item && item.chapter_name) || "").trim();
+    const typeLabel = getQuestionBankTypeLabel(item);
+    const difficulty = question.difficulty || "综合";
+    const questionId = String((item && item.question_id) || `qb_${index}`).trim();
+    const meta = [
+      getQuestionBankLectureTitle(lectureId),
+      bookTitle,
+      chapterName,
+    ].filter(Boolean).join(" · ");
+    const optionsHtml = question.options.length
+      ? `<div class="question-bank-options">${question.options.map((option, optionIndex) => {
+        const label = option.label || String.fromCharCode(65 + optionIndex);
+        return `<span>${escapeHtml(label)}. ${escapeHtml(option.text || "")}</span>`;
+      }).join("")}</div>`
+      : "";
+    const stateClass = answerState === "needs_review" ? "is-review" : (answerState === "submitted" ? "is-done" : "is-pending");
+
+    return `
+      <article class="question-bank-item ${stateClass}${variant === "compact" ? " is-compact" : ""}" data-qb-question-id="${escapeHtml(questionId)}">
+        <div class="question-bank-item-head">
+          <div class="question-bank-item-title">${escapeHtml(title)}</div>
+          <span class="question-bank-state">${escapeHtml(stateLabel)}</span>
+        </div>
+        ${content ? `<div class="question-bank-item-content">${escapeHtml(content)}</div>` : ""}
+        ${optionsHtml}
+        <div class="question-bank-meta">
+          <span>${escapeHtml(typeLabel)}</span>
+          <span>${escapeHtml(difficulty)}</span>
+          ${meta ? `<span>${escapeHtml(meta)}</span>` : ""}
+        </div>
+        <div class="question-bank-actions">
+          <button class="question-bank-action question-bank-action-primary" type="button" data-qb-action="answer" data-question-id="${escapeHtml(questionId)}">${answerState === "pending" ? "开始作答" : "重新作答"}</button>
+          ${lectureId ? `<button class="question-bank-action question-bank-action-secondary" type="button" data-qb-action="open-lecture" data-lecture-id="${escapeHtml(lectureId)}">查看来源</button>` : ""}
+        </div>
+      </article>
+    `;
+  }
+
+  function renderQuestionBankPagination(position) {
+    const pagination = state.questionBankPagination || {};
+    const page = Math.max(1, Number(pagination.page || 1));
+    const totalPages = Math.max(1, Number(pagination.total_pages || 1));
+    const total = Math.max(0, Number(pagination.total || 0));
+    const totalItems = Math.max(0, Number(pagination.total_items || 0));
+    if (totalPages <= 1) {
+      return `<div class="question-bank-pagination is-single" data-qb-pagination-position="${escapeHtml(position || "")}">共 ${total} 组${totalItems ? ` · ${totalItems} 题` : ""}</div>`;
+    }
+
+    const pages = [];
+    const addPage = (value) => {
+      if (value < 1 || value > totalPages || pages.includes(value)) return;
+      pages.push(value);
+    };
+    addPage(1);
+    for (let idx = page - 2; idx <= page + 2; idx += 1) {
+      addPage(idx);
+    }
+    addPage(totalPages);
+    pages.sort((a, b) => a - b);
+
+    let last = 0;
+    const pageButtons = pages.map((value) => {
+      const gap = value - last > 1 ? `<span class="question-bank-page-gap">...</span>` : "";
+      last = value;
+      return `${gap}<button class="question-bank-page-btn${value === page ? " is-active" : ""}" type="button" data-qb-page="${value}" ${value === page ? 'aria-current="page"' : ""}>${value}</button>`;
+    }).join("");
+
+    return `
+      <nav class="question-bank-pagination" data-qb-pagination-position="${escapeHtml(position || "")}" aria-label="题库分页">
+        <button class="question-bank-page-btn" type="button" data-qb-page="${page - 1}" ${page <= 1 ? "disabled" : ""}>上一页</button>
+        <div class="question-bank-page-numbers">${pageButtons}</div>
+        <button class="question-bank-page-btn" type="button" data-qb-page="${page + 1}" ${page >= totalPages ? "disabled" : ""}>下一页</button>
+        <span class="question-bank-page-total">第 ${page}/${totalPages} 页 · 共 ${total} 组${totalItems ? ` · ${totalItems} 题` : ""}</span>
+      </nav>
+    `;
+  }
+
+  function renderQuestionBankCenter() {
+    if (!el.questionBankPanel) return;
+    const rows = Array.isArray(state.questionBankItems) ? state.questionBankItems : [];
+    const summary = state.questionBankSummary || {};
+
+    if (!rows.length) {
+      const isMistakeFilter = state.questionBankFilter && state.questionBankFilter.answerState === "needs_review";
+      el.questionBankPanel.innerHTML = `
+        <div class="question-bank-empty">
+          <div class="question-bank-empty-title">${isMistakeFilter ? "错题本暂无待复盘题目" : "题库还没有题目"}</div>
+          <div class="question-bank-empty-text">${isMistakeFilter ? "当前没有需要复盘的错题，可以返回全部题库继续练习。" : "进入课程章节生成小测后，题目会自动沉淀到这里。"}</div>
+          ${isMistakeFilter ? '<button class="question-bank-action question-bank-action-secondary" type="button" data-qb-action="clear-mistakes">返回全部题库</button>' : ""}
+        </div>
+      `;
+      return;
+    }
+
+    const groups = getQuestionBankGroups();
+    const pending = rows.filter((item) => getQuestionBankAnswerState(item) === "pending");
+    const review = rows.filter((item) => getQuestionBankAnswerState(item) === "needs_review");
+    const recommended = (review.length ? review : pending.length ? pending : rows).slice(-3).reverse();
+    const pagination = state.questionBankPagination || {};
+    const total = Number(summary.total || pagination.total_items || rows.length) || 0;
+
+    el.questionBankPanel.innerHTML = `
+      <section class="question-bank-hero">
+        <div>
+          <div class="question-bank-kicker">Practice Center</div>
+          <h2>题库中心</h2>
+          <p>在这里直接完成练习、提交作答和复盘错题；课程只作为题目来源与回看入口。</p>
+        </div>
+        <div class="question-bank-stats">
+          <div><strong>${total}</strong><span>题目</span></div>
+          <div><strong>${Number(summary.pending || pending.length) || 0}</strong><span>未作答</span></div>
+          <div><strong>${Number(summary.needs_review || review.length) || 0}</strong><span>待复盘</span></div>
+        </div>
+      </section>
+      ${renderQuestionBankMistakePanel(summary)}
+      <section class="question-bank-section is-recommend">
+        <div class="question-bank-section-head">
+          <h3>今日推荐练习</h3>
+          <span>${recommended.length} 题</span>
+        </div>
+        <div class="question-bank-recommend-list">
+          ${recommended.map((item, index) => renderQuestionBankItem(item, index, "compact")).join("")}
+        </div>
+      </section>
+      <section class="question-bank-section" data-qb-all-section>
+        <div class="question-bank-section-head">
+          <h3>题组列表</h3>
+          <span>每页 ${Number(state.questionBankPageSize || 5)} 组</span>
+        </div>
+        ${renderQuestionBankFilters()}
+        ${renderQuestionBankPagination("top")}
+        ${renderQuestionBankGroupList(groups)}
+        ${renderQuestionBankPagination("bottom")}
+      </section>
+    `;
+  }
+
+  function scrollQuestionBankToAllSection() {
+    if (!el.questionBankPanel) return;
+    const target = el.questionBankPanel.querySelector("[data-qb-all-section]");
+    if (!target) {
+      el.questionBankPanel.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    const panelRect = el.questionBankPanel.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    const nextTop = Math.max(0, el.questionBankPanel.scrollTop + targetRect.top - panelRect.top - 8);
+    el.questionBankPanel.scrollTo({ top: nextTop, behavior: "smooth" });
+  }
+
+  function getLearningPushContext() {
+    return {
+      state,
+      el,
+      escapeHtml,
+      fetchJson,
+      getLectureTitle,
+      loadQuestionBank,
+      normalizeStatusKey,
+      openLearningResourceStudio,
+      openLearningVideoStudio,
+      openLearningResourceReview,
+      closeLearningResourceReview,
+      openLearningResourceReader,
+      closeLearningResourceReader,
+      openLearningPathView,
+      openLectureHome,
+      setView,
+      confirmModalAsync,
+      showToast,
+      syncDashboardSideTabs,
+    };
+  }
+
+  function renderLearningResourceStudio() {
+    if (window.NXLLearningResourceStudio && typeof window.NXLLearningResourceStudio.render === "function") {
+      window.NXLLearningResourceStudio.render(getLearningPushContext());
+    }
+  }
+
+  function bindLearningResourceStudioEvents() {
+    if (window.NXLLearningResourceStudio && typeof window.NXLLearningResourceStudio.bind === "function") {
+      window.NXLLearningResourceStudio.bind(getLearningPushContext());
+    }
+  }
+
+  function openLearningResourceStudio() {
+    setView("resourceStudio");
+    renderLearningResourceStudio();
+    bindLearningResourceStudioEvents();
+  }
+
+  function renderLearningVideoStudio() {
+    if (window.NXLLearningVideoStudio && typeof window.NXLLearningVideoStudio.render === "function") {
+      window.NXLLearningVideoStudio.render(getLearningPushContext());
+    }
+  }
+
+  function bindLearningVideoStudioEvents() {
+    if (window.NXLLearningVideoStudio && typeof window.NXLLearningVideoStudio.bind === "function") {
+      window.NXLLearningVideoStudio.bind(getLearningPushContext());
+    }
+  }
+
+  function openLearningVideoStudio() {
+    setView("videoStudio");
+    renderLearningVideoStudio();
+    bindLearningVideoStudioEvents();
+  }
+
+  function renderLearningResourceReview() {
+    if (window.NXLLearningResourceStudio && typeof window.NXLLearningResourceStudio.renderReview === "function") {
+      window.NXLLearningResourceStudio.renderReview(getLearningPushContext(), state.learningResourceReviewItem);
+    }
+  }
+
+  function openLearningResourceReview(item) {
+    state.learningResourceReviewItem = item && typeof item === "object" ? item : null;
+    setView("resourceReview");
+    renderLearningResourceReview();
+    bindLearningResourceStudioEvents();
+  }
+
+  function closeLearningResourceReview() {
+    setView("resourceStudio");
+    renderLearningResourceStudio();
+  }
+
+  function renderLearningResourceReader() {
+    if (window.NXLLearningPush && typeof window.NXLLearningPush.renderReader === "function") {
+      window.NXLLearningPush.renderReader(getLearningPushContext(), state.learningResourceReaderItem);
+    }
+  }
+
+  function openLearningResourceReader(item) {
+    state.learningResourceReaderItem = item && typeof item === "object" ? item : null;
+    setView("resourceReader");
+    renderLearningResourceReader();
+    bindLearningPushEvents();
+  }
+
+  function closeLearningResourceReader() {
+    state.dashboardSideTab = "push";
+    setView("dashboard");
+    syncDashboardSideTabs();
+  }
+
+  function renderLearningPushCenter() {
+    if (window.NXLLearningPush && typeof window.NXLLearningPush.render === "function") {
+      window.NXLLearningPush.render(getLearningPushContext());
+    }
+  }
+
+  function bindLearningPushEvents() {
+    if (window.NXLLearningPush && typeof window.NXLLearningPush.bind === "function") {
+      window.NXLLearningPush.bind(getLearningPushContext());
+    }
   }
 
   function isTeacherPanelMode() {
@@ -3701,7 +4905,9 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex) {
   function renderLearningFeeds() {
       if (!el.learningFeedPanel) return;
 
-      if (el.progressList) el.progressList.hidden = state.dashboardSideTab === "feed";
+      if (el.progressList) el.progressList.hidden = state.dashboardSideTab !== "progress";
+      if (el.learningPushPanel) el.learningPushPanel.hidden = state.dashboardSideTab !== "push";
+      if (el.questionBankPanel) el.questionBankPanel.hidden = state.dashboardSideTab !== "questionBank";
       if (el.feedLayout) el.feedLayout.hidden = state.dashboardSideTab !== "feed";
       if (el.learningFeedComposeBtn) el.learningFeedComposeBtn.hidden = state.dashboardSideTab !== "feed";
 
@@ -3853,15 +5059,29 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex) {
   }
 
   function syncDashboardSideTabs() {
-    const isProgress = state.dashboardSideTab !== "feed";
-    state.dashboardSideTab = isProgress ? "progress" : "feed";
+    const activeTab = ["progress", "push", "questionBank", "feed"].includes(state.dashboardSideTab)
+      ? state.dashboardSideTab
+      : "progress";
+    state.dashboardSideTab = activeTab;
+    const isProgress = activeTab === "progress";
+    const isPush = activeTab === "push";
+    const isQuestionBank = activeTab === "questionBank";
+    const isFeed = activeTab === "feed";
     if (el.dashboardProgressTabBtn) {
       el.dashboardProgressTabBtn.classList.toggle("is-active", isProgress);
       el.dashboardProgressTabBtn.setAttribute("aria-selected", isProgress ? "true" : "false");
     }
+    if (el.dashboardPushTabBtn) {
+      el.dashboardPushTabBtn.classList.toggle("is-active", isPush);
+      el.dashboardPushTabBtn.setAttribute("aria-selected", isPush ? "true" : "false");
+    }
+    if (el.dashboardQuestionBankTabBtn) {
+      el.dashboardQuestionBankTabBtn.classList.toggle("is-active", isQuestionBank);
+      el.dashboardQuestionBankTabBtn.setAttribute("aria-selected", isQuestionBank ? "true" : "false");
+    }
     if (el.dashboardProgressFeedTabBtn) {
-      el.dashboardProgressFeedTabBtn.classList.toggle("is-active", !isProgress);
-      el.dashboardProgressFeedTabBtn.setAttribute("aria-selected", !isProgress ? "true" : "false");
+      el.dashboardProgressFeedTabBtn.classList.toggle("is-active", isFeed);
+      el.dashboardProgressFeedTabBtn.setAttribute("aria-selected", isFeed ? "true" : "false");
     }
     if (el.openMaterialsViewBtn) {
       el.openMaterialsViewBtn.hidden = !isProgress;
@@ -3869,10 +5089,21 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex) {
     if (el.dashboardFocusPanel) {
       el.dashboardFocusPanel.hidden = !isProgress;
     }
+    if (el.progressList) {
+      el.progressList.hidden = !isProgress;
+    }
+    if (el.learningPushPanel) {
+      el.learningPushPanel.hidden = !isPush;
+    }
+    if (el.questionBankPanel) {
+      el.questionBankPanel.hidden = !isQuestionBank;
+    }
     if (el.feedLayout) {
-      el.feedLayout.hidden = isProgress;
+      el.feedLayout.hidden = !isFeed;
     }
     renderPie();
+    renderLearningPushCenter();
+    renderQuestionBankCenter();
     renderLearningFeeds();
   }
 
@@ -3913,6 +5144,103 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex) {
     state.adminPendingParse = data.admin_pending_parse && typeof data.admin_pending_parse === "object"
       ? data.admin_pending_parse
       : { count: 0, items: [] };
+  }
+
+  async function loadQuestionBank() {
+    try {
+      const qs = new URLSearchParams();
+      qs.set("group_mode", "chapter");
+      qs.set("page", String(Math.max(1, Number(state.questionBankPage || 1))));
+      qs.set("page_size", String(Math.max(1, Number(state.questionBankPageSize || 5))));
+      if (state.questionBankFilter.lectureId && state.questionBankFilter.lectureId !== "all") {
+        qs.set("lecture_id", state.questionBankFilter.lectureId);
+      }
+      if (state.questionBankFilter.answerState && state.questionBankFilter.answerState !== "all") {
+        qs.set("answer_state", state.questionBankFilter.answerState);
+      }
+      if (state.questionBankFilter.questionType && state.questionBankFilter.questionType !== "all") {
+        qs.set("question_type", state.questionBankFilter.questionType);
+      }
+      const data = await fetchJson(`/api/frontend/question-bank?${qs.toString()}`);
+      state.questionBankItems = Array.isArray(data.items) ? data.items : [];
+      state.questionBankGroups = Array.isArray(data.groups) ? data.groups : [];
+      state.questionBankSummary = data.summary && typeof data.summary === "object"
+        ? data.summary
+        : { total: state.questionBankItems.length, pending: 0, submitted: 0, needs_review: 0 };
+      state.questionBankPagination = data.pagination && typeof data.pagination === "object"
+        ? data.pagination
+        : {
+            page: Math.max(1, Number(state.questionBankPage || 1)),
+            page_size: Math.max(1, Number(state.questionBankPageSize || 5)),
+            total: state.questionBankItems.length,
+            total_pages: 1,
+            has_prev: false,
+            has_next: false,
+          };
+      state.questionBankPage = Math.max(1, Number(state.questionBankPagination.page || 1));
+    } catch (_err) {
+      state.questionBankItems = [];
+      state.questionBankGroups = [];
+      state.questionBankSelectedGroupId = "";
+      state.questionBankSelectedGroup = null;
+      state.questionBankSummary = { total: 0, pending: 0, submitted: 0, needs_review: 0 };
+      state.questionBankPagination = { page: 1, page_size: state.questionBankPageSize || 5, total: 0, total_pages: 1, has_prev: false, has_next: false };
+    }
+  }
+
+  async function loadQuestionBankGroup(groupId) {
+    const targetGroupId = String(groupId || "").trim();
+    if (!targetGroupId) return null;
+    state.questionBankSelectedGroupId = targetGroupId;
+    state.questionBankGroupLoading = true;
+    state.questionBankGroupError = "";
+    try {
+      const data = await fetchJson(`/api/frontend/question-bank/groups/${encodeURIComponent(targetGroupId)}`);
+      const group = data && data.group && typeof data.group === "object" ? data.group : {};
+      if (Array.isArray(data && data.items)) {
+        group.items = data.items;
+      }
+      state.questionBankSelectedGroup = normalizeQuestionBankGroup(group);
+      return state.questionBankSelectedGroup;
+    } catch (err) {
+      state.questionBankSelectedGroup = null;
+      state.questionBankGroupError = err && err.message ? err.message : "题组加载失败";
+      return null;
+    } finally {
+      state.questionBankGroupLoading = false;
+    }
+  }
+
+  async function refreshQuestionBankAfterAnswer() {
+    const selectedGroupId = String(state.questionBankSelectedGroupId || "").trim();
+    await loadQuestionBank();
+    if (selectedGroupId) {
+      state.questionBankSelectedGroupId = selectedGroupId;
+      await loadQuestionBankGroup(selectedGroupId);
+    }
+  }
+
+  async function openQuestionBankGroupPractice(groupId) {
+    const targetGroupId = String(groupId || "").trim();
+    if (!targetGroupId) return;
+    state.questionPracticeReturnView = "dashboard";
+    state.questionBankSelectedGroupId = targetGroupId;
+    state.questionBankSelectedGroup = null;
+    state.questionBankGroupAnswerFilter = state.questionBankFilter.answerState === "needs_review" ? "needs_review" : "all";
+    state.questionBankGroupLoading = true;
+    state.questionBankGroupError = "";
+    setView("questionPractice");
+    renderQuestionPracticePage();
+    await loadQuestionBankGroup(targetGroupId);
+    renderQuestionPracticePage();
+  }
+
+  function closeQuestionBankPracticePage() {
+    state.dashboardSideTab = "questionBank";
+    state.questionBankGroupAnswerFilter = "all";
+    syncDashboardSideTabs();
+    setView("dashboard");
+    renderQuestionBankCenter();
   }
 
   function renderNotificationTime(row) {
@@ -12897,11 +14225,14 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex) {
       loadLearningFeedChannels(),
       loadLearningFeeds(),
       loadDashboardNotifications(),
+      loadQuestionBank(),
       loadUserProfile(),
     ]);
     renderDashboardNotifications();
     renderUserProfile();
     renderProgressList();
+    renderLearningPushCenter();
+    renderQuestionBankCenter();
     renderPie();
     renderLearningFeeds();
     syncDashboardSideTabs();
@@ -13075,12 +14406,219 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex) {
         syncDashboardSideTabs();
       });
     }
+    if (el.dashboardPushTabBtn) {
+      el.dashboardPushTabBtn.addEventListener("click", () => {
+        state.dashboardSideTab = "push";
+        syncDashboardSideTabs();
+      });
+    }
+    if (el.dashboardQuestionBankTabBtn) {
+      el.dashboardQuestionBankTabBtn.addEventListener("click", async () => {
+        state.dashboardSideTab = "questionBank";
+        await loadQuestionBank();
+        syncDashboardSideTabs();
+      });
+    }
     if (el.dashboardProgressFeedTabBtn) {
       el.dashboardProgressFeedTabBtn.addEventListener("click", () => {
         state.dashboardSideTab = "feed";
         syncDashboardSideTabs();
       });
     }
+    bindLearningPushEvents();
+    bindLearningResourceStudioEvents();
+    bindLearningVideoStudioEvents();
+    if (el.backFromResourceStudioBtn) {
+      el.backFromResourceStudioBtn.addEventListener("click", () => {
+        state.dashboardSideTab = "push";
+        setView("dashboard");
+        syncDashboardSideTabs();
+      });
+    }
+    if (el.backFromVideoStudioBtn) {
+      el.backFromVideoStudioBtn.addEventListener("click", () => {
+        state.dashboardSideTab = "push";
+        setView("dashboard");
+        syncDashboardSideTabs();
+      });
+    }
+    if (el.backFromResourceReaderBtn) {
+      el.backFromResourceReaderBtn.addEventListener("click", () => {
+        closeLearningResourceReader();
+      });
+    }
+    if (el.backFromResourceReviewBtn) {
+      el.backFromResourceReviewBtn.addEventListener("click", () => {
+        closeLearningResourceReview();
+      });
+    }
+    if (el.questionBankPanel) {
+      el.questionBankPanel.addEventListener("change", async (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        const filter = target.closest("[data-qb-filter]");
+        if (!filter) return;
+        const key = String(filter.getAttribute("data-qb-filter") || "").trim();
+        if (!Object.prototype.hasOwnProperty.call(state.questionBankFilter, key)) return;
+        state.questionBankFilter[key] = String(filter.value || "all");
+        state.questionBankPage = 1;
+        state.questionBankSelectedGroupId = "";
+        state.questionBankSelectedGroup = null;
+        await loadQuestionBank();
+        renderQuestionBankCenter();
+      });
+      el.questionBankPanel.addEventListener("click", async (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        const groupFilterNode = target.closest("[data-qb-group-filter]");
+        if (groupFilterNode) {
+          state.questionBankGroupAnswerFilter = String(groupFilterNode.getAttribute("data-qb-group-filter") || "all").trim() || "all";
+          renderQuestionBankCenter();
+          scrollQuestionBankToAllSection();
+          return;
+        }
+        const pageNode = target.closest("[data-qb-page]");
+        if (pageNode) {
+          const nextPage = Number(pageNode.getAttribute("data-qb-page") || "1");
+          const totalPages = Math.max(1, Number((state.questionBankPagination || {}).total_pages || 1));
+          if (!Number.isFinite(nextPage) || nextPage < 1 || nextPage > totalPages || pageNode.hasAttribute("disabled")) return;
+          state.questionBankPage = Math.max(1, Math.min(totalPages, Math.floor(nextPage)));
+          state.questionBankSelectedGroupId = "";
+          state.questionBankSelectedGroup = null;
+          await loadQuestionBank();
+          renderQuestionBankCenter();
+          scrollQuestionBankToAllSection();
+          return;
+        }
+        const actionNode = target.closest("[data-qb-action]");
+        if (!actionNode) return;
+        const action = String(actionNode.getAttribute("data-qb-action") || "").trim();
+        if (action === "open-group") {
+          const groupId = String(actionNode.getAttribute("data-group-id") || "").trim();
+          if (!groupId) return;
+          await openQuestionBankGroupPractice(groupId);
+          return;
+        }
+        if (action === "open-mistakes") {
+          state.questionBankFilter.answerState = "needs_review";
+          state.questionBankPage = 1;
+          state.questionBankSelectedGroupId = "";
+          state.questionBankSelectedGroup = null;
+          await loadQuestionBank();
+          renderQuestionBankCenter();
+          scrollQuestionBankToAllSection();
+          return;
+        }
+        if (action === "clear-mistakes") {
+          state.questionBankFilter.answerState = "all";
+          state.questionBankPage = 1;
+          state.questionBankSelectedGroupId = "";
+          state.questionBankSelectedGroup = null;
+          await loadQuestionBank();
+          renderQuestionBankCenter();
+          return;
+        }
+        if (action === "back-groups") {
+          state.questionBankSelectedGroupId = "";
+          state.questionBankSelectedGroup = null;
+          state.questionBankGroupError = "";
+          state.questionBankGroupAnswerFilter = "all";
+          renderQuestionBankCenter();
+          scrollQuestionBankToAllSection();
+          return;
+        }
+        if (action === "paper-submit") {
+          await submitQuestionBankPaper(actionNode);
+          return;
+        }
+        if (action === "paper-clear") {
+          clearQuestionBankPaperInputs();
+          return;
+        }
+        if (action === "answer") {
+          const questionId = String(actionNode.getAttribute("data-question-id") || "").trim();
+          openQuestionBankPractice(questionId);
+          return;
+        }
+        if (action === "open-lecture") {
+          const lectureId = String(actionNode.getAttribute("data-lecture-id") || "").trim();
+          if (!lectureId) return;
+          setView("materials");
+          openLectureHome(lectureId, { returnTarget: "dashboard" });
+          return;
+        }
+        if (action === "toggle-answer") {
+          const questionId = String(actionNode.getAttribute("data-question-id") || "").trim();
+          const answer = questionId ? document.getElementById(`qbAnswer${questionId}`) : null;
+          if (answer) {
+            answer.hidden = !answer.hidden;
+          }
+        }
+      });
+    }
+    if (el.backFromQuestionPracticeBtn) {
+      el.backFromQuestionPracticeBtn.addEventListener("click", () => {
+        closeQuestionBankPracticePage();
+      });
+    }
+    if (el.questionPracticeContent) {
+      el.questionPracticeContent.addEventListener("click", async (event) => {
+        const target = event.target;
+        if (!(target instanceof Element)) return;
+        const groupFilterNode = target.closest("[data-qb-group-filter]");
+        if (groupFilterNode) {
+          state.questionBankGroupAnswerFilter = String(groupFilterNode.getAttribute("data-qb-group-filter") || "all").trim() || "all";
+          renderQuestionPracticePage();
+          return;
+        }
+        const actionNode = target.closest("[data-qb-action]");
+        if (!actionNode) return;
+        const action = String(actionNode.getAttribute("data-qb-action") || "").trim();
+        if (action === "paper-submit") {
+          await submitQuestionBankPaper(actionNode);
+          return;
+        }
+        if (action === "paper-clear") {
+          clearQuestionBankPaperInputs();
+          return;
+        }
+        if (action === "answer") {
+          const questionId = String(actionNode.getAttribute("data-question-id") || "").trim();
+          openQuestionBankPractice(questionId);
+          return;
+        }
+        if (action === "open-lecture") {
+          const lectureId = String(actionNode.getAttribute("data-lecture-id") || "").trim();
+          if (!lectureId) return;
+          setView("materials");
+          openLectureHome(lectureId, { returnTarget: "dashboard" });
+        }
+      });
+    }
+    document.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const actionNode = target.closest("[data-qb-practice-action]");
+      if (!actionNode) return;
+      const modal = document.getElementById("questionBankPracticeModal");
+      if (!modal || !modal.contains(actionNode)) return;
+      const action = String(actionNode.getAttribute("data-qb-practice-action") || "").trim();
+      if (action === "close") {
+        closeQuestionBankPracticeModal();
+        return;
+      }
+      if (action === "toggle-reference") {
+        const reference = modal.querySelector(".question-bank-practice-reference");
+        if (reference) {
+          reference.hidden = !reference.hidden;
+        }
+        return;
+      }
+      if (action === "submit") {
+        const questionId = String(actionNode.getAttribute("data-question-id") || "").trim();
+        submitQuestionBankPractice(questionId);
+      }
+    });
     if (el.feedChannelList) {
       el.feedChannelList.addEventListener("click", async (event) => {
         const target = event.target;
