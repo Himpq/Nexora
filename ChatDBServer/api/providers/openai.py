@@ -9,6 +9,20 @@ from openai import OpenAI
 from provider_base import ProviderInterface
 
 
+OPENAI_CONTEXT_WINDOW_KEYS = (
+    "context_window",
+    "context_length",
+    "max_context_tokens",
+    "max_input_tokens",
+    "max_prompt_tokens",
+    "input_token_limit",
+    "prompt_token_limit",
+    "contextsize",
+    "context_size",
+)
+OPENAI_CONTEXT_WINDOW_MAX = 4_000_000
+
+
 class OpenAIProvider(ProviderInterface):
     @property
     def api_type(self) -> str:
@@ -144,6 +158,7 @@ class OpenAIProvider(ProviderInterface):
             "capability": cap,
             "source": source,
             "count": len(normalized),
+            "context_window_status": self._build_context_window_status(normalized),
             "models": normalized,
         }
 
@@ -442,29 +457,6 @@ class OpenAIProvider(ProviderInterface):
         if not isinstance(item, dict):
             return 0
 
-        target_keys = {
-            "context_window",
-            "context_length",
-            "max_context_tokens",
-            "max_input_tokens",
-            "max_prompt_tokens",
-            "input_token_limit",
-            "prompt_token_limit",
-            "contextsize",
-            "context_size",
-        }
-
-        def _to_int(value: Any) -> int:
-            try:
-                n = int(value)
-            except Exception:
-                return 0
-
-            if n < 1024:
-                return 0
-
-            return min(n, 4_000_000)
-
         queue: List[Any] = [item]
         visited = 0
 
@@ -475,8 +467,8 @@ class OpenAIProvider(ProviderInterface):
             if isinstance(cur, dict):
                 for k, v in cur.items():
                     key = str(k or "").strip().lower()
-                    if key in target_keys:
-                        n = _to_int(v)
+                    if key in OPENAI_CONTEXT_WINDOW_KEYS:
+                        n = self._safe_context_window_int(v)
                         if n > 0:
                             return n
 
@@ -487,6 +479,58 @@ class OpenAIProvider(ProviderInterface):
                 queue.extend(cur[:40])
 
         return 0
+
+    def _safe_context_window_int(self, value: Any) -> int:
+        try:
+            n = int(value)
+        except Exception:
+            return 0
+
+        if n < 1024:
+            return 0
+
+        return min(n, OPENAI_CONTEXT_WINDOW_MAX)
+
+    def _build_context_window_status(self, models: List[Dict[str, Any]]) -> Dict[str, Any]:
+        rows = models if isinstance(models, list) else []
+        with_context = 0
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+
+            context_window = self._safe_context_window_int(row.get("context_window"))
+            if context_window <= 0:
+                raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+                context_window = self._extract_context_window_from_item(raw)
+
+            if context_window > 0:
+                with_context += 1
+
+        total = len(rows)
+        missing = max(0, total - with_context)
+        message = ""
+        requires_manual_config = False
+
+        if total and with_context <= 0:
+            requires_manual_config = True
+            message = (
+                "OpenAI 兼容模型列表没有提供上下文窗口字段，"
+                "请在模型配置里填写 context_window，或配置包含上下文字段的 models_catalog_url"
+            )
+        elif missing > 0:
+            message = "部分 OpenAI 兼容模型缺少上下文窗口字段"
+
+        return {
+            "provider": self.provider_name,
+            "api_type": self.api_type,
+            "total_models": total,
+            "with_context_window": with_context,
+            "missing_context_window": missing,
+            "requires_manual_config": requires_manual_config,
+            "context_window_keys": list(OPENAI_CONTEXT_WINDOW_KEYS),
+            "message": message,
+        }
 
     def _model_matches_capability(self, model: Dict[str, Any], capability: str) -> bool:
         cap = str(capability or "").strip().lower()

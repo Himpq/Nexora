@@ -629,7 +629,7 @@
     
     <!-- Scripts -->
     <script src="/static/js/learning_workspace_layout.js?v=20260614_01"></script>
-    <script src="/static/js/chat.js?v=20260620_01"></script>
+    <script src="/static/js/chat.js?v=20260621_reader_workspace"></script>
     <script src="/static/js/learning_course_workspace.js?v=20260616_03"></script>
 
     <!-- 添加用户表单 -->
@@ -787,6 +787,10 @@
                     <div class="form-group" style="margin-bottom: 10px;">
                         <label>Provider</label>
                         <select id="adminModelProviderInput" class="input-modern"></select>
+                    </div>
+                    <div class="form-group" style="margin-bottom: 10px;">
+                        <label>上下文窗口</label>
+                        <input id="adminModelContextWindowInput" class="input-modern" type="number" min="1024" max="4000000" step="1" placeholder="tokens">
                     </div>
                     <div class="form-group" style="margin-bottom: 0;">
                         <label>状态</label>

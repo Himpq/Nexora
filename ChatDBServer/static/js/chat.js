@@ -153,10 +153,11 @@ let tokenMiniState = {
     requestSeq: 0,
     streaming: false
 };
-const TOKEN_BUDGET_DEFAULT_LIMIT = 32768;
+const TOKEN_BUDGET_DEFAULT_LIMIT = 0;
 let tokenBudgetState = {
     contextWindow: TOKEN_BUDGET_DEFAULT_LIMIT,
     estimated: true,
+    missingContextWindow: true,
     roundInput: 0,
     includeContext: true,
     latestInputTokens: 0,
@@ -861,24 +862,39 @@ function normalizeLearningReaderContextPayload(raw) {
     const windowText = normalizeSelectionTextForNotes(windowTextRaw).slice(0, 4000);
     if (!windowText) return null;
     const lectureId = String(src.lecture_id || '').trim();
+    const lectureTitle = String(src.lecture_title || src.course_title || '').trim();
     const bookId = String(src.book_id || '').trim();
+    const bookTitle = String(src.book_title || src.textbook_title || '').trim();
     const chapterTitle = String(src.chapter_title || '').trim();
     const chapterIndexNum = Number(src.chapter_index);
     const chapterIndex = Number.isFinite(chapterIndexNum) ? Math.max(0, Math.floor(chapterIndexNum)) : null;
     const title = String(src.reader_title || src.title || '').trim();
     const subTitle = String(src.reader_subtitle || src.subtitle || '').trim();
+    const bookInfoXml = normalizeLearningReaderLongContext(src.book_info_xml || src.coarse_content || src.bookinfo_xml, 22000);
+    const bookDetailXml = normalizeLearningReaderLongContext(src.book_detail_xml || src.intensive_content || src.bookdetail_xml, 26000);
     const capturedAtNum = Number(src.captured_at || src.ts || Date.now());
     const capturedAt = Number.isFinite(capturedAtNum) ? Math.floor(capturedAtNum) : Date.now();
     return {
         lecture_id: lectureId,
+        lecture_title: lectureTitle,
         book_id: bookId,
+        book_title: bookTitle,
         chapter_title: chapterTitle,
         chapter_index: chapterIndex,
         reader_title: title,
         reader_subtitle: subTitle,
+        book_info_xml: bookInfoXml,
+        book_detail_xml: bookDetailXml,
         window_text: windowText,
         captured_at: capturedAt
     };
+}
+
+function normalizeLearningReaderLongContext(value, maxLen) {
+    const text = String(value || '').replace(/\r\n?/g, '\n').trim();
+    const limit = Math.max(0, Number(maxLen) || 0);
+    if (!text || !limit || text.length <= limit) return text;
+    return `${text.slice(0, limit).trim()}\n\n[content_truncated original_length=${text.length} limit=${limit}]`;
 }
 
 function buildLearningReaderContextBlocks(mode) {
@@ -888,6 +904,8 @@ function buildLearningReaderContextBlocks(mode) {
     const lines = [];
     if (ctx.reader_title) lines.push(`阅读器标题: ${ctx.reader_title}`);
     if (ctx.reader_subtitle) lines.push(`阅读器副标题: ${ctx.reader_subtitle}`);
+    if (ctx.lecture_title) lines.push(`课程名称: ${ctx.lecture_title}`);
+    if (ctx.book_title) lines.push(`教材名称: ${ctx.book_title}`);
     if (ctx.chapter_title) lines.push(`章节: ${ctx.chapter_title}${Number.isFinite(ctx.chapter_index) ? ` (#${ctx.chapter_index + 1})` : ''}`);
     if (ctx.lecture_id) lines.push(`lecture_id: ${ctx.lecture_id}`);
     if (ctx.book_id) lines.push(`book_id: ${ctx.book_id}`);
@@ -895,11 +913,34 @@ function buildLearningReaderContextBlocks(mode) {
     lines.push('');
     lines.push('当前阅读窗口可见文本:');
     lines.push(ctx.window_text);
-    return [{
+    const blocks = [{
         type: 'learning_reader_window',
         title: 'Web Reader 当前窗口文本',
         content: lines.join('\n')
     }];
+    if (ctx.book_info_xml) {
+        blocks.push({
+            type: 'learning_reader_bookinfo',
+            title: 'Web Reader 教材粗读内容',
+            content: [
+                ctx.book_title ? `教材名称: ${ctx.book_title}` : '',
+                ctx.lecture_title ? `课程名称: ${ctx.lecture_title}` : '',
+                ctx.book_info_xml
+            ].filter(Boolean).join('\n')
+        });
+    }
+    if (ctx.book_detail_xml) {
+        blocks.push({
+            type: 'learning_reader_bookdetail',
+            title: 'Web Reader 教材精读内容',
+            content: [
+                ctx.book_title ? `教材名称: ${ctx.book_title}` : '',
+                ctx.lecture_title ? `课程名称: ${ctx.lecture_title}` : '',
+                ctx.book_detail_xml
+            ].filter(Boolean).join('\n')
+        });
+    }
+    return blocks;
 }
 
 function buildLearningReaderSelectionSourceMeta(rawSourceMeta, selectionText, plainText = '') {
@@ -1311,41 +1352,218 @@ function normalizeIndentedGfmTables(text) {
     const lines = src.split('\n');
     const out = [];
 
-    const isLikelyTableRow = (line) => /^\s*\|.+\|\s*$/.test(line || '');
-    const isLikelyTableSep = (line) => /^\s*\|[\s:\-|]+\|\s*$/.test(line || '');
-    const leadingSpaces = (line) => {
-        const m = String(line || '').match(/^(\s*)/);
-        return m ? m[1].length : 0;
+    const hasEscapedCharBefore = (line, index) => {
+        let count = 0;
+        for (let i = index - 1; i >= 0 && line[i] === '\\'; i -= 1) {
+            count += 1;
+        }
+        return count % 2 === 1;
     };
+
+    const readBacktickRun = (line, index) => {
+        let end = index;
+        while (end < line.length && line[end] === '`') {
+            end += 1;
+        }
+        return end - index;
+    };
+
+    const splitMarkdownTableCells = (line) => {
+        let body = String(line || '').replace(/\r$/, '').trim();
+        if (!body) return [];
+        if (body.startsWith('|')) {
+            body = body.slice(1);
+        }
+        if (body.endsWith('|') && !hasEscapedCharBefore(body, body.length - 1)) {
+            body = body.slice(0, -1);
+        }
+
+        const cells = [];
+        let current = '';
+        let codeSpanFence = 0;
+
+        for (let i = 0; i < body.length; i += 1) {
+            const ch = body[i];
+
+            if (ch === '`') {
+                const run = readBacktickRun(body, i);
+                if (codeSpanFence === 0) {
+                    codeSpanFence = run;
+                } else if (run === codeSpanFence) {
+                    codeSpanFence = 0;
+                }
+                current += body.slice(i, i + run);
+                i += run - 1;
+                continue;
+            }
+
+            if (ch === '|' && codeSpanFence === 0 && !hasEscapedCharBefore(body, i)) {
+                cells.push(current.trim());
+                current = '';
+                continue;
+            }
+
+            current += ch;
+        }
+
+        cells.push(current.trim());
+        return cells;
+    };
+
+    const isMarkdownTableSeparatorCells = (cells) => {
+        if (!Array.isArray(cells) || cells.length < 2) return false;
+        return cells.every((cell) => /^:?-{3,}:?$/.test(String(cell || '').replace(/\s+/g, '')));
+    };
+
+    const getMarkdownTableRow = (line) => {
+        const raw = String(line || '');
+        const trimmed = raw.trim();
+        if (!trimmed || !trimmed.includes('|')) return null;
+        if (/^(#{1,6}\s|[-*+]\s+|\d+[.)]\s+|>)/.test(trimmed)) return null;
+
+        const cells = splitMarkdownTableCells(raw);
+        if (cells.length < 2) return null;
+        if (!cells.some((cell) => String(cell || '').trim())) return null;
+
+        return {
+            cells,
+            isSeparator: isMarkdownTableSeparatorCells(cells)
+        };
+    };
+
+    const normalizeMarkdownTableSeparatorCells = (cells) => {
+        if (!Array.isArray(cells) || cells.length < 2) return [];
+        return cells.map((cell) => {
+            const compact = String(cell || '').replace(/\s+/g, '');
+            const left = compact.startsWith(':');
+            const right = compact.endsWith(':');
+            return `${left ? ':' : ''}---${right ? ':' : ''}`;
+        });
+    };
+
+    const escapeMarkdownTableCellPipes = (cell) => {
+        const src = String(cell || '').trim();
+        let outText = '';
+
+        for (let i = 0; i < src.length; i += 1) {
+            const ch = src[i];
+            if (ch === '|' && !hasEscapedCharBefore(src, i)) {
+                outText += '\\|';
+                continue;
+            }
+            outText += ch;
+        }
+
+        return outText;
+    };
+
+    const formatMarkdownTableRow = (cells) => {
+        return `| ${cells.map((cell) => escapeMarkdownTableCellPipes(cell)).join(' | ')} |`;
+    };
+
+    const collectMarkdownTableBlock = (start) => {
+        const header = getMarkdownTableRow(lines[start]);
+        if (!header || header.isSeparator) return null;
+
+        let nextIndex = start + 1;
+        if (
+            nextIndex < lines.length
+            && String(lines[nextIndex] || '').trim() === ''
+            && getMarkdownTableRow(lines[nextIndex + 1])
+        ) {
+            nextIndex += 1;
+        }
+
+        const next = getMarkdownTableRow(lines[nextIndex]);
+        if (!next || next.cells.length !== header.cells.length) return null;
+
+        if (next.isSeparator) {
+            const rows = [];
+            let endIndex = nextIndex;
+            for (let i = nextIndex + 1; i < lines.length; i += 1) {
+                const row = getMarkdownTableRow(lines[i]);
+                if (!row || row.isSeparator || row.cells.length !== header.cells.length) break;
+                rows.push(row);
+                endIndex = i;
+            }
+
+            return {
+                endIndex,
+                header,
+                separatorCells: normalizeMarkdownTableSeparatorCells(next.cells),
+                rows
+            };
+        }
+
+        const rows = [next];
+        let endIndex = nextIndex;
+        for (let i = nextIndex + 1; i < lines.length; i += 1) {
+            const row = getMarkdownTableRow(lines[i]);
+            if (!row || row.isSeparator || row.cells.length !== header.cells.length) break;
+            rows.push(row);
+            endIndex = i;
+        }
+
+        const beforeIsBoundary = start === 0 || String(lines[start - 1] || '').trim() === '';
+        const afterIsBoundary = endIndex + 1 >= lines.length || String(lines[endIndex + 1] || '').trim() === '';
+        const hasEnoughRows = rows.length >= 2;
+        if (!hasEnoughRows && !(beforeIsBoundary && afterIsBoundary)) return null;
+
+        return {
+            endIndex,
+            header,
+            separatorCells: Array.from({ length: header.cells.length }, () => '---'),
+            rows
+        };
+    };
+
+    const readFenceMarker = (line) => {
+        const match = String(line || '').match(/^\s*(`{3,}|~{3,})/);
+        if (!match) return null;
+        return {
+            char: match[1][0],
+            length: match[1].length
+        };
+    };
+
+    let activeFence = null;
 
     for (let i = 0; i < lines.length; i += 1) {
         const line = String(lines[i] || '');
-        if (!isLikelyTableRow(line) || i + 1 >= lines.length || !isLikelyTableSep(lines[i + 1])) {
+        const fence = readFenceMarker(line);
+
+        if (fence) {
+            if (!activeFence) {
+                activeFence = fence;
+            } else if (fence.char === activeFence.char && fence.length >= activeFence.length) {
+                activeFence = null;
+            }
             out.push(line);
             continue;
         }
 
-        const indent = leadingSpaces(line);
-        if (indent <= 0) {
+        if (activeFence) {
             out.push(line);
             continue;
         }
 
-        // 确保表格前有空行，提升 marked 对 GFM table 的识别稳定性。
+        const block = collectMarkdownTableBlock(i);
+        if (!block) {
+            out.push(line);
+            continue;
+        }
+
+        // 把模型输出的隐式表格统一转成 GFM 表格，避免 marked 按普通段落处理。
         if (out.length > 0 && String(out[out.length - 1] || '').trim() !== '') {
             out.push('');
         }
 
-        // 拉平当前整段缩进表格。
-        while (i < lines.length) {
-            const row = String(lines[i] || '');
-            if (!row.trim()) break;
-            if (!isLikelyTableRow(row) && !isLikelyTableSep(row)) break;
-            if (leadingSpaces(row) < indent) break;
-            out.push(row.slice(indent));
-            i += 1;
-        }
-        i -= 1;
+        out.push(formatMarkdownTableRow(block.header.cells));
+        out.push(formatMarkdownTableRow(block.separatorCells));
+        block.rows.forEach((row) => {
+            out.push(formatMarkdownTableRow(row.cells));
+        });
+        i = block.endIndex;
     }
 
     return out.join('\n');
@@ -3326,12 +3544,136 @@ function formatDebugConsoleTime(ts) {
 
 function formatDebugConsolePayload(payload) {
     if (payload === null || payload === undefined) return '';
+    if (isDebugContextManagerPayload(payload)) return formatDebugContextManagerPayloadText(payload);
     if (typeof payload === 'string') return payload;
+
     try {
         return JSON.stringify(payload, null, 2);
     } catch (_) {
         return String(payload);
     }
+}
+
+function isDebugContextManagerPayload(payload) {
+    return !!(
+        payload &&
+        typeof payload === 'object' &&
+        String(payload.format || '') === 'context_manager' &&
+        Array.isArray(payload.blocks)
+    );
+}
+
+function normalizeDebugContextKindClass(kind) {
+    const value = String(kind || '').trim().toLowerCase();
+
+    if (value === 'system_prompt') return 'system-prompt';
+    if (value === 'system_context') return 'system-context';
+    if (value === 'tool_call') return 'tool-call';
+    if (value === 'tool_result') return 'tool-result';
+    if (value === 'compressed') return 'compressed';
+
+    return 'context';
+}
+
+function formatDebugContextMetaText(meta) {
+    if (!meta || typeof meta !== 'object') return '';
+
+    try {
+        return JSON.stringify(meta, null, 2);
+    } catch (_) {
+        return String(meta);
+    }
+}
+
+function formatDebugContextManagerPayloadText(payload) {
+    const blocks = Array.isArray(payload && payload.blocks) ? payload.blocks : [];
+
+    return blocks.map((block) => {
+        const label = String((block && block.label) || 'Ctx').trim();
+        const role = String((block && block.role) || 'message').trim();
+        const kind = String((block && block.kind) || 'context').trim();
+        const content = String((block && block.content) || '').trim();
+        const meta = formatDebugContextMetaText(block && block.meta).trim();
+        const body = [content, meta].filter(Boolean).join('\n\n');
+
+        return `[${label}] ${role} · ${kind}${body ? `\n${body}` : ''}`;
+    }).join('\n\n');
+}
+
+function appendDebugContextPre(parent, text, className = '') {
+    const value = String(text || '');
+
+    if (!value.trim()) return;
+
+    const pre = document.createElement('pre');
+    pre.className = `debug-context-block-content${className ? ` ${className}` : ''}`;
+    pre.textContent = value;
+    parent.appendChild(pre);
+}
+
+function buildDebugContextManagerPayloadElement(payload) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'debug-context-flow';
+    const blocks = Array.isArray(payload && payload.blocks) ? payload.blocks : [];
+
+    blocks.forEach((rawBlock) => {
+        const block = rawBlock && typeof rawBlock === 'object' ? rawBlock : {};
+        const kind = String(block.kind || 'context').trim();
+        const role = String(block.role || 'message').trim();
+        const label = String(block.label || 'Ctx').trim();
+        const content = String(block.content || '');
+        const metaText = formatDebugContextMetaText(block.meta);
+        const card = document.createElement('div');
+        card.className = `debug-context-block ${normalizeDebugContextKindClass(kind)}`;
+
+        const head = document.createElement('div');
+        head.className = 'debug-context-block-head';
+
+        const labelEl = document.createElement('span');
+        labelEl.className = 'debug-context-block-label';
+        labelEl.textContent = label || 'Ctx';
+        head.appendChild(labelEl);
+
+        const roleEl = document.createElement('span');
+        roleEl.className = 'debug-context-block-role';
+        roleEl.textContent = role || 'message';
+        head.appendChild(roleEl);
+
+        const kindEl = document.createElement('span');
+        kindEl.className = 'debug-context-block-kind';
+        kindEl.textContent = kind || 'context';
+        head.appendChild(kindEl);
+
+        card.appendChild(head);
+        appendDebugContextPre(card, content);
+        appendDebugContextPre(card, metaText, 'meta');
+        wrapper.appendChild(card);
+    });
+
+    if (blocks.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'debug-context-empty';
+        empty.textContent = 'No context blocks';
+        wrapper.appendChild(empty);
+    }
+
+    return wrapper;
+}
+
+function renderDebugConsolePayload(container, payload) {
+    if (!container) return;
+
+    container.innerHTML = '';
+
+    if (isDebugContextManagerPayload(payload)) {
+        container.appendChild(buildDebugContextManagerPayloadElement(payload));
+        return;
+    }
+
+    const pre = document.createElement('pre');
+    pre.className = 'debug-console-plain-payload';
+    pre.textContent = formatDebugConsolePayload(payload);
+    container.appendChild(pre);
 }
 
 function getDebugDirectionLabel(direction) {
@@ -3389,10 +3731,9 @@ function buildDebugConsoleEntryElement(entry) {
             </div>
             <span class="debug-console-entry-stage">${escapeHtml(formatDebugConsoleTime(entry.ts))} · ${escapeHtml(entry.stage || '-')}</span>
         </div>
-        <pre class="debug-console-entry-payload"></pre>
+        <div class="debug-console-entry-payload"></div>
     `;
-    const pre = item.querySelector('.debug-console-entry-payload');
-    if (pre) pre.textContent = formatDebugConsolePayload(entry.payload);
+    renderDebugConsolePayload(item.querySelector('.debug-console-entry-payload'), entry.payload);
     return item;
 }
 
@@ -3401,8 +3742,7 @@ function updateDebugConsoleEntryElement(entry) {
     if (!body) return;
     const item = body.querySelector(`.debug-console-entry[data-entry-id="${String(entry.id || '')}"]`);
     if (!item) return;
-    const pre = item.querySelector('.debug-console-entry-payload');
-    if (pre) pre.textContent = formatDebugConsolePayload(entry.payload);
+    renderDebugConsolePayload(item.querySelector('.debug-console-entry-payload'), entry.payload);
     const stage = item.querySelector('.debug-console-entry-stage');
     if (stage) stage.textContent = `${formatDebugConsoleTime(entry.ts)} · ${entry.stage || '-'}`;
 }
@@ -3641,7 +3981,13 @@ function updateDebugToolMeta() {
         return;
     }
     const desc = String(tool.description || '').trim() || '无描述';
-    metaEl.textContent = `${tool.name}\n${desc}`;
+    const canonicalName = String(tool.canonical_name || tool.name || '').trim();
+    const legacyAlias = String(tool.legacy_alias || '').trim();
+    metaEl.textContent = [
+        `canonical_name: ${canonicalName || '-'}`,
+        legacyAlias ? `legacy_alias: ${legacyAlias}` : '',
+        desc
+    ].filter(Boolean).join('\n');
     renderDebugToolArgsInput(tool);
 }
 
@@ -3772,7 +4118,7 @@ async function executeDebugToolCall() {
         const payload = (data.parsed_result !== undefined && data.parsed_result !== null) ? data.parsed_result : data.result;
         debugConsoleState.toolResultText = formatDebugConsolePayload(payload);
         if (els.debugToolResult) els.debugToolResult.textContent = debugConsoleState.toolResultText;
-        showToast(`工具 ${toolName} 执行完成`);
+        showToast(`工具 ${String(data.canonical_name || toolName)} 执行完成`);
     } catch (err) {
         const msg = `执行失败: ${String(err && err.message ? err.message : err || 'unknown')}`;
         debugConsoleState.toolResultText = msg;
@@ -5182,6 +5528,14 @@ function syncLearningWorkspaceLayout() {
     });
 }
 
+function closeLearningCourseWorkspaceForReader() {
+    const workspaceApi = window.NexoraLearningCourseWorkspace;
+    if (!workspaceApi || typeof workspaceApi.close !== 'function') return;
+
+    // Reader 是独立的沉浸学习主视图，打开时必须退出课程 Workspace，避免侧栏出现双选和分层。
+    workspaceApi.close();
+}
+
 function applyLearningSidebarMode(mode) {
     const normalized = (learningModeEnabled && String(mode || 'nexora').trim().toLowerCase() === 'learning') ? 'learning' : 'nexora';
     learningSidebarMode = normalized;
@@ -5341,6 +5695,7 @@ function handleLearningHostMessage(payload) {
         learningReaderOpened = !!payload.opened;
         if (learningReaderOpened) {
             closeReaderBlockedRightSidebars();
+            closeLearningCourseWorkspaceForReader();
             learningHeaderMode = 'learning';
             applyLearningSidebarMode('learning');
             void syncLearningHeaderMode();
@@ -10263,13 +10618,7 @@ function normalizeContextWindow(v) {
 }
 
 function inferContextWindowByModelName(meta = {}) {
-    const merged = `${String(meta.id || '')} ${String(meta.name || '')}`.toLowerCase();
-    const kMatch = merged.match(/(?:^|[^0-9])(\d{2,4})k(?:[^0-9]|$)/);
-    if (kMatch && kMatch[1]) {
-        const k = safeTokenInt(kMatch[1]);
-        if (k >= 16) return k * 1000;
-    }
-    return TOKEN_BUDGET_DEFAULT_LIMIT;
+    return 0;
 }
 
 function resolveContextWindowForModel(modelId) {
@@ -10281,7 +10630,8 @@ function resolveContextWindowForModel(modelId) {
     if (explicit > 0) {
         return { limit: explicit, estimated: false };
     }
-    return { limit: inferContextWindowByModelName(meta), estimated: true };
+    const inferred = inferContextWindowByModelName(meta);
+    return { limit: inferred, estimated: true, missing: inferred <= 0 };
 }
 
 function estimateTokenCountFromCharCount(chars) {
@@ -10471,6 +10821,7 @@ function toggleContextIncludeMode() {
 
 function buildTokenBudgetHoverText(limit, used, ratioRaw, remain) {
     const contextOn = !!tokenBudgetState.includeContext;
+    const hasContextWindow = normalizeContextWindow(limit) > 0;
     const totalInput = safeTokenInt(tokenBudgetState.latestInputTokens);
     const rawInput = Math.max(
         totalInput,
@@ -10492,18 +10843,23 @@ function buildTokenBudgetHoverText(limit, used, ratioRaw, remain) {
 
     const rows = [
         `上下文传入: ${contextOn ? '开启' : '关闭'}`,
-        `CTX 占用: ${used.toLocaleString()} / ${limit.toLocaleString()} (${Math.round(ratioRaw * 100)}%)`,
+        hasContextWindow
+            ? `CTX 占用: ${used.toLocaleString()} / ${limit.toLocaleString()} (${Math.round(ratioRaw * 100)}%)`
+            : `CTX 占用: ${used > 0 ? used.toLocaleString() : '--'} / 未配置`,
         `本轮原始输入: ${rawInput.toLocaleString()}`,
         `缓存命中: ${cachedInput.toLocaleString()}`,
         `系统/工具/上下文: ${systemTokens.toLocaleString()} / ${toolTokens.toLocaleString()} / ${contextForPrompt.toLocaleString()}${exactBreakdown ? '' : '（近似）'}`,
         `计费输入(本轮/累计): ${totalInput.toLocaleString()} / ${cumulativeInput.toLocaleString()}`,
-        `剩余窗口: ${remain.toLocaleString()}${tokenBudgetState.estimated ? '（上限估算）' : ''}`
+        hasContextWindow
+            ? `剩余窗口: ${remain.toLocaleString()}${tokenBudgetState.estimated ? '（上限估算）' : ''}`
+            : '剩余窗口: 未配置'
     ];
     return rows.join('\n');
 }
 
 function buildTokenBudgetTooltipModel(limit, used, ratioRaw, remain) {
     const contextOn = !!tokenBudgetState.includeContext;
+    const hasContextWindow = normalizeContextWindow(limit) > 0;
     const totalInput = safeTokenInt(tokenBudgetState.latestInputTokens);
     const rawInput = Math.max(
         totalInput,
@@ -10521,10 +10877,13 @@ function buildTokenBudgetTooltipModel(limit, used, ratioRaw, remain) {
     const toolEstimate = safeTokenInt(tokenBudgetState.toolInputEstimate);
     const toolTokens = toolExact > 0 ? toolExact : toolEstimate;
     const contextTokens = contextOn ? Math.max(0, rawInput - systemTokens - toolTokens) : 0;
-    const reserveTokens = Math.max(0, limit - used);
-    const pct = (n) => `${Math.max(0, Math.min(100, Math.round((Math.max(0, n) / Math.max(1, limit)) * 1000) / 10)).toFixed(1)}%`;
+    const reserveTokens = hasContextWindow ? Math.max(0, limit - used) : 0;
+    const pct = (n) => hasContextWindow
+        ? `${Math.max(0, Math.min(100, Math.round((Math.max(0, n) / Math.max(1, limit)) * 1000) / 10)).toFixed(1)}%`
+        : '未配置';
     return {
         limit,
+        hasContextWindow,
         used,
         remain,
         ratioRaw,
@@ -10590,13 +10949,14 @@ function hideTokenBudgetTooltip() {
 
 function renderTokenBudgetTooltipContent(el, model) {
     if (!el || !model) return;
-    const pctValue = Math.max(0, Math.min(100, Math.round(model.ratioRaw * 1000) / 10));
+    const hasContextWindow = !!model.hasContextWindow;
+    const pctValue = hasContextWindow ? Math.max(0, Math.min(100, Math.round(model.ratioRaw * 1000) / 10)) : 0;
     el.innerHTML = `
         <div class="token-budget-tip-head">
             <div class="token-budget-tip-title">上下文窗口</div>
-            <div class="token-budget-tip-pct">${pctValue.toFixed(1)}%</div>
+            <div class="token-budget-tip-pct">${hasContextWindow ? `${pctValue.toFixed(1)}%` : '未配置'}</div>
         </div>
-        <div class="token-budget-tip-sub">${model.used.toLocaleString()}/${model.limit.toLocaleString()} 个令牌</div>
+        <div class="token-budget-tip-sub">${hasContextWindow ? `${model.used.toLocaleString()}/${model.limit.toLocaleString()} 个令牌` : '当前模型未配置上下文窗口'}</div>
         <div class="token-budget-tip-bar"><span style="width:${pctValue.toFixed(1)}%"></span></div>
         <div class="token-budget-tip-grid">
             <div class="token-budget-tip-row"><span>System Instructions</span><em>${model.systemTokens.toLocaleString()} (${model.pct(model.systemTokens)})</em></div>
@@ -10604,7 +10964,7 @@ function renderTokenBudgetTooltipContent(el, model) {
             <div class="token-budget-tip-row"><span>User Messages</span><em>${model.contextTokens.toLocaleString()} (${model.pct(model.contextTokens)})</em></div>
             <div class="token-budget-tip-row"><span>Cache Hits</span><em>${model.cachedInput.toLocaleString()}</em></div>
             <div class="token-budget-tip-row"><span>Billable Input</span><em>${model.totalInput.toLocaleString()} / ${model.cumulativeInput.toLocaleString()}</em></div>
-            <div class="token-budget-tip-row"><span>Remaining</span><em>${model.remain.toLocaleString()}${tokenBudgetState.estimated ? ' (估算上限)' : ''}</em></div>
+            <div class="token-budget-tip-row"><span>Remaining</span><em>${hasContextWindow ? `${model.remain.toLocaleString()}${tokenBudgetState.estimated ? ' (估算上限)' : ''}` : '未配置'}</em></div>
         </div>
     `;
 }
@@ -10613,10 +10973,10 @@ function showTokenBudgetTooltip(target, text, clientX = null, clientY = null) {
     const el = ensureTokenBudgetTooltipEl();
     const nextText = String(text || '').trim();
     if (!el || !nextText) return;
-    const limit = Math.max(1, normalizeContextWindow(tokenBudgetState.contextWindow) || TOKEN_BUDGET_DEFAULT_LIMIT);
+    const limit = normalizeContextWindow(tokenBudgetState.contextWindow);
     const used = safeTokenInt(tokenBudgetState.roundInput);
-    const remain = Math.max(0, limit - used);
-    const ratioRaw = used / limit;
+    const remain = limit > 0 ? Math.max(0, limit - used) : 0;
+    const ratioRaw = limit > 0 ? (used / limit) : 0;
     const tipModel = buildTokenBudgetTooltipModel(limit, used, ratioRaw, remain);
     renderTokenBudgetTooltipContent(el, tipModel);
     tokenBudgetTooltipState.visible = true;
@@ -10693,14 +11053,17 @@ function renderTokenBudgetUi() {
     const toggle = els.tokenBudgetContextToggle || document.getElementById('tokenBudgetContextToggle');
     if (!ring || !usage || !mini) return;
 
-    const limit = Math.max(1, normalizeContextWindow(tokenBudgetState.contextWindow) || TOKEN_BUDGET_DEFAULT_LIMIT);
+    const configuredLimit = normalizeContextWindow(tokenBudgetState.contextWindow);
+    const hasContextWindow = configuredLimit > 0;
+    const limit = hasContextWindow ? configuredLimit : 0;
     const used = safeTokenInt(tokenBudgetState.roundInput);
-    const ratioRaw = used / limit;
+    const ratioRaw = hasContextWindow ? (used / limit) : 0;
     const ratio = Math.max(0, Math.min(1, ratioRaw));
     const angle = Math.round(ratio * 360);
 
     let color = '#22c55e';
-    if (ratioRaw >= 0.8) color = '#ef4444';
+    if (!hasContextWindow) color = '#64748b';
+    else if (ratioRaw >= 0.8) color = '#ef4444';
     else if (ratioRaw >= 0.6) color = '#f59e0b';
 
     mini.style.setProperty('--tb-color', color);
@@ -10713,7 +11076,7 @@ function renderTokenBudgetUi() {
         toggle.setAttribute('aria-label', tokenBudgetState.includeContext ? '关闭历史上下文传入' : '开启历史上下文传入');
     }
 
-    const remain = Math.max(0, limit - used);
+    const remain = hasContextWindow ? Math.max(0, limit - used) : 0;
     const prefix = tokenBudgetState.estimated ? '~' : '';
     const systemTokens = safeTokenInt(tokenBudgetState.systemPromptTokens);
     const toolExact = safeTokenInt(tokenBudgetState.toolInputTokens);
@@ -10723,7 +11086,9 @@ function renderTokenBudgetUi() {
     const contextTokens = tokenBudgetState.includeContext
         ? Math.max(0, rawForBreakdown - systemTokens - toolTokens)
         : 0;
-    usage.textContent = `CTX ${prefix}${used.toLocaleString()}/${limit.toLocaleString()}`;// | S/T/C ${systemTokens}/${toolTokens}/${contextTokens}`;
+    usage.textContent = hasContextWindow
+        ? `CTX ${prefix}${used.toLocaleString()}/${limit.toLocaleString()}`
+        : `CTX ${used > 0 ? used.toLocaleString() : '--'}/未配置`;
     const hoverText = buildTokenBudgetHoverText(limit, used, ratioRaw, remain);
     mini.dataset.tokenBudgetTip = hoverText;
     usage.dataset.tokenBudgetTip = hoverText;
@@ -10738,6 +11103,7 @@ function updateTokenBudgetContextFromSelectedModel() {
     const ctx = resolveContextWindowForModel(selectedModelId);
     tokenBudgetState.contextWindow = ctx.limit;
     tokenBudgetState.estimated = !!ctx.estimated;
+    tokenBudgetState.missingContextWindow = !!ctx.missing || normalizeContextWindow(ctx.limit) <= 0;
     renderTokenBudgetUi();
 }
 
@@ -11819,6 +12185,7 @@ async function createNewConversation(silent = false, targetMode = null, options 
 async function loadConversation(id, options = {}) {
     const opts = (options && typeof options === 'object') ? options : {};
     detachCurrentVisibleStreamForNavigation(id);
+    await syncStoredConversationStreamStatus({ conversationIds: [id] });
     const viewer = document.getElementById('knowledgeViewer');
     // 如果当前在知识/邮件等 viewer 页面，先统一恢复聊天 Header 与布局
     if (viewer && viewer.style.display !== 'none') {
@@ -11833,7 +12200,6 @@ async function loadConversation(id, options = {}) {
     cachedPuzzleStates = {};
 
     currentConversationId = id;
-    markConversationStreamRead(id);
     syncGenerationStateForCurrentConversation();
     learningHeaderMode = learningReaderOpened ? 'learning' : 'chat';
     void syncLearningHeaderMode();
@@ -11861,10 +12227,14 @@ async function loadConversation(id, options = {}) {
 
     try {
         // Load messages
-        const res = await fetch(`/api/conversations/${id}`);
+        const res = await fetch(`/api/conversations/${encodeURIComponent(id)}?include_stream=1`);
         const data = await res.json();
         
         if (data.success && data.conversation) {
+            applyStreamSessionMetaRows(data.stream_sessions, id);
+            markConversationStreamRead(id);
+            syncGenerationStateForCurrentConversation();
+
             // 缓存服务端 puzzle 状态
             cachedPuzzleStates = (data.conversation.puzzle_states && typeof data.conversation.puzzle_states === 'object')
                 ? data.conversation.puzzle_states : {};
@@ -12567,6 +12937,92 @@ async function syncConversationMessagesFromServer(conversationId, options = {}) 
     }
 }
 
+async function fetchConversationMessagesSnapshot(conversationId) {
+    const cid = String(conversationId || currentConversationId || '').trim();
+    if (!cid) return null;
+
+    try {
+        const convRes = await fetch(`/api/conversations/${encodeURIComponent(cid)}?include_stream=1`);
+        const convData = await convRes.json().catch(() => ({}));
+        if (!(convData && convData.success && convData.conversation && Array.isArray(convData.conversation.messages))) {
+            console.warn('[ConversationPanel] invalid conversation snapshot', {
+                conversation_id: cid,
+                status: convRes.status
+            });
+            return null;
+        }
+
+        return {
+            conversation: convData.conversation,
+            messages: convData.conversation.messages || [],
+            stream_sessions: Array.isArray(convData.stream_sessions) ? convData.stream_sessions : []
+        };
+    } catch (error) {
+        console.warn('[ConversationPanel] failed to fetch conversation snapshot', {
+            conversation_id: cid,
+            error: String((error && error.message) || error || '')
+        });
+        return null;
+    }
+}
+
+async function renderConversationSnapshotFromServer(conversationId, options = {}) {
+    const opts = (options && typeof options === 'object') ? options : {};
+    const snapshot = await fetchConversationMessagesSnapshot(conversationId);
+    if (!snapshot) return null;
+
+    const instant = opts.instant !== false;
+    const silent = opts.silent !== false;
+    renderMessages(snapshot.messages, !!silent, { instant: !!instant });
+    refreshConversationImageHistoryFlag(snapshot.messages);
+    applyTokenBudgetFromConversationMessages(snapshot.messages);
+
+    const cid = String(conversationId || currentConversationId || '').trim();
+    if (cid) {
+        applyStreamSessionMetaRows(snapshot.stream_sessions, cid);
+        await refreshTokenMiniForConversation(cid, { keepStreamPart: false });
+    }
+
+    return snapshot;
+}
+
+async function ensureConversationPanelReadyForMutation(conversationId, operationName = 'operation') {
+    const cid = String(conversationId || currentConversationId || '').trim();
+    if (!cid) {
+        showToast('当前会话无效');
+        return false;
+    }
+
+    await syncStoredConversationStreamStatus();
+    syncGenerationStateForCurrentConversation();
+
+    const activeState = getConversationStreamState(cid);
+    if (activeState && String(activeState.status || '') === 'running') {
+        const stopping = !!activeState.stopping;
+        showToast(stopping ? '正在整理中断结果，请稍候' : '模型回复仍在生成，请先停止后再操作');
+        return false;
+    }
+
+    const resumeState = loadActiveStreamResumeState();
+    const resumeCid = String((resumeState && resumeState.conversation_id) || '').trim();
+    if (resumeCid && resumeCid === cid) {
+        clearActiveStreamResumeState();
+    }
+
+    const snapshot = await renderConversationSnapshotFromServer(cid, { instant: true, silent: true });
+    if (!snapshot) {
+        showToast('对话同步失败，请稍后再操作');
+        return false;
+    }
+
+    console.debug('[ConversationPanel] mutation gate passed', {
+        conversation_id: cid,
+        operation: String(operationName || 'operation'),
+        message_count: snapshot.messages.length
+    });
+    return true;
+}
+
 function getMessageRowByIndex(index) {
     const idx = Number(index);
     if (!Number.isFinite(idx)) return null;
@@ -12796,7 +13252,12 @@ function stopGeneration() {
         void requestServerCancelForActiveStream();
         if (controller) controller.abort();
         if (activeCid) {
-            removeConversationStreamState(activeCid);
+            setConversationStreamState(activeCid, {
+                status: 'running',
+                controller: null,
+                monitoring: true,
+                stopping: true
+            });
         }
         syncGenerationStateForCurrentConversation();
         updateSendButtonState();
@@ -12848,7 +13309,8 @@ function saveActiveStreamResumeState(nextState) {
         setConversationStreamState(payload.conversation_id, {
             ...payload,
             status: 'running',
-            unread: false
+            unread: false,
+            stopping: false
         });
     }
 }
@@ -12934,7 +13396,8 @@ function normalizeConversationStreamState(raw) {
         last_seq: Number.isFinite(Number(src.last_seq)) ? Number(src.last_seq) : 0,
         error: String(src.error || '').trim(),
         controller: src.controller || null,
-        monitoring: !!src.monitoring
+        monitoring: !!src.monitoring,
+        stopping: !!src.stopping
     };
 }
 
@@ -12950,7 +13413,8 @@ function serializeConversationStreamState(state) {
         started_at: normalized.started_at,
         updated_at: normalized.updated_at,
         last_seq: normalized.last_seq,
-        error: normalized.error
+        error: normalized.error,
+        stopping: !!normalized.stopping
     };
 }
 
@@ -13101,6 +13565,7 @@ function markConversationStreamFinished(conversationId, options = {}) {
         unread: true,
         controller: null,
         monitoring: false,
+        stopping: false,
         error: String(opts.error || '').trim()
     });
 }
@@ -13136,16 +13601,57 @@ function getConversationStreamIdsForStatusSync() {
     return ids;
 }
 
-async function syncStoredConversationStreamStatus() {
+function applyStreamSessionMetaRows(rows, sourceConversationId = '') {
+    const sessions = Array.isArray(rows) ? rows : [];
+    sessions.forEach((meta) => {
+        if (!meta || typeof meta !== 'object') return;
+
+        const cid = String(meta.conversation_id || sourceConversationId || '').trim();
+        const sid = String(meta.stream_id || '').trim();
+        const status = String(meta.status || '').trim().toLowerCase();
+        if (!cid || !sid) return;
+
+        const existing = getConversationStreamState(cid) || {};
+        const sameStream = String(existing.stream_id || '').trim() === sid;
+        if (status === 'running') {
+            setConversationStreamState(cid, {
+                conversation_id: cid,
+                stream_id: sid,
+                status: 'running',
+                unread: !!existing.unread,
+                assistant_index: Number.isFinite(Number(existing.assistant_index)) ? Number(existing.assistant_index) : null,
+                last_seq: Number.isFinite(Number(meta.last_seq)) ? Number(meta.last_seq) : Number(existing.last_seq || 0),
+                stopping: !!existing.stopping,
+                error: String(meta.error || existing.error || '').trim()
+            });
+            return;
+        }
+
+        if (sameStream || String(existing.status || '') === 'running') {
+            markConversationStreamFinished(cid, {
+                error: String(meta.error || '').trim()
+            });
+        }
+    });
+}
+
+async function syncStoredConversationStreamStatus(options = {}) {
+    const opts = (options && typeof options === 'object') ? options : {};
     const streamIds = getConversationStreamIdsForStatusSync();
-    if (!streamIds.length) return;
+    const conversationIds = Array.isArray(opts.conversationIds)
+        ? opts.conversationIds.map((item) => String(item || '').trim()).filter(Boolean)
+        : [];
+    if (!streamIds.length && !conversationIds.length) return;
     if (backgroundStreamStatusSyncInFlight) return;
     backgroundStreamStatusSyncInFlight = true;
     try {
         const res = await fetch('/api/chat/stream/status', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ stream_ids: streamIds })
+            body: JSON.stringify({
+                stream_ids: streamIds,
+                conversation_ids: conversationIds
+            })
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || !data || data.success === false) return;
@@ -13174,6 +13680,7 @@ async function syncStoredConversationStreamStatus() {
                 status: 'running'
             });
         });
+        applyStreamSessionMetaRows(rows);
     } catch (_) {
         // Network errors should not clear local stream state.
     } finally {
@@ -13203,6 +13710,20 @@ function findAssistantIndexAfterUserMessage(userIndex) {
         if (n < best) best = n;
     });
     return Number.isFinite(best) ? best : -1;
+}
+
+function findAssistantIndexAfterUserMessageInMessages(messages, userIndex) {
+    const rows = Array.isArray(messages) ? messages : [];
+    const idx = Number(userIndex);
+    if (!Number.isFinite(idx) || idx < 0 || idx >= rows.length) return -1;
+
+    for (let i = idx + 1; i < rows.length; i += 1) {
+        const role = String((rows[i] && rows[i].role) || '').trim().toLowerCase();
+        if (role === 'assistant') return i;
+        if (role === 'user') break;
+    }
+
+    return -1;
 }
 
 async function findAssistantIndexAfterUserMessageFromServer(conversationId, userIndex) {
@@ -13613,16 +14134,16 @@ function getToolsMode() {
 
 function buildContextCompressionPreflightInfo(modelId, forceRequested = false) {
     const ctx = resolveContextWindowForModel(modelId);
-    const contextWindow = Math.max(1, normalizeContextWindow(ctx.limit) || TOKEN_BUDGET_DEFAULT_LIMIT);
+    const contextWindow = normalizeContextWindow(ctx.limit);
     const rawInput = Math.max(
         0,
         safeTokenInt(tokenBudgetState.roundInput),
         safeTokenInt(tokenBudgetState.latestRawInputTokens),
         safeTokenInt(tokenBudgetState.latestInputTokens)
     );
-    const threshold = Math.max(1, Math.floor(contextWindow * 0.9));
-    const overload = rawInput > 0 && rawInput >= threshold;
-    const reliableWindow = !ctx.estimated;
+    const threshold = contextWindow > 0 ? Math.max(1, Math.floor(contextWindow * 0.9)) : 0;
+    const overload = contextWindow > 0 && rawInput > 0 && rawInput >= threshold;
+    const reliableWindow = contextWindow > 0 && !ctx.estimated;
     const triggerMode = forceRequested ? 'force' : (overload ? 'overload' : '');
     const needConfirm = !!forceRequested || (!!tokenBudgetState.includeContext && reliableWindow && overload);
     return {
@@ -13901,7 +14422,6 @@ async function sendMessage(options = {}) {
         enable_web_search: enableSearch,
         enable_tools: enableTools,
         tool_mode: nextConversationMode === 'longterm' ? 'force' : (nextConversationMode === 'learning' ? 'force' : toolsMode),
-        skill_mode: nextConversationMode === 'learning' ? 'force' : 'off',
         debug_mode: isDebugConsoleEnabled(),
         file_ids: fileInputs,
         sandbox_paths: sandboxPaths,
@@ -13962,7 +14482,8 @@ async function sendMessage(options = {}) {
         unread: false,
         assistant_index: null,
         started_at: Date.now(),
-        last_seq: 0
+        last_seq: 0,
+        stopping: false
     });
     releaseLearningSidebarPendingSend({ notify: false });
     syncGenerationStateForCurrentConversation();
@@ -14823,7 +15344,8 @@ async function sendMessage(options = {}) {
                                     status: 'running',
                                     unread: false,
                                     assistant_index: Number.isFinite(aiMsgIndex) ? aiMsgIndex : null,
-                                    last_seq: 0
+                                    last_seq: 0,
+                                    stopping: false
                                 });
                             }
                         }
@@ -15003,7 +15525,7 @@ async function sendMessage(options = {}) {
                                 }
                             }
                             // Special handling for addBasis to show content
-                            if (toolName === 'add_basis' || toolName === 'addBasis') {
+                            if (toolName === 'knowledge_basis_create' || toolName === 'add_basis' || toolName === 'addBasis') {
                                 try {
                                     const args = JSON.parse(chunk.arguments);
                                     appendAddBasisView(aiMsgDiv, args);
@@ -15022,7 +15544,10 @@ async function sendMessage(options = {}) {
                             const rawCallId = String(chunk.call_id || chunk.callId || '').trim();
                             const toolIndex = (chunk.index === undefined || chunk.index === null) ? null : Number(chunk.index);
                             const callId = allocateToolCallId(aiMsgDiv, toolName, 'result', rawCallId, toolIndex);
-                            updateLastToolResult(aiMsgDiv, toolName, chunk.result, callId, { toolIndex });
+                            updateLastToolResult(aiMsgDiv, toolName, chunk.result, callId, {
+                                toolIndex,
+                                modelVisibleResult: chunk.model_visible_result
+                            });
                             if (toolName === 'longterm_plan' || toolName === 'longterm_update') {
                                 applyLongtermPlanFromText(chunk.result, { source: 'function_result', messageDiv: aiMsgDiv });
                             }
@@ -15173,7 +15698,7 @@ async function sendMessage(options = {}) {
             const saved = await persistAbortedAssistantPartial(streamConversationId, currentFullContent, {
                 modelName: model,
                 source: 'send',
-                index: null
+                index: Number.isFinite(aiMsgIndex) ? aiMsgIndex : null
             });
             aiMsgDiv.dataset.localOnly = saved ? '0' : '1';
             if (saved) {
@@ -15195,7 +15720,7 @@ async function sendMessage(options = {}) {
             const saved = await persistAssistantErrorPartial(streamConversationId, currentFullContent, {
                 modelName: model,
                 source: 'send',
-                index: null,
+                index: Number.isFinite(aiMsgIndex) ? aiMsgIndex : null,
                 errorMessage: streamErrorMessage || '请求失败',
                 errorCode: streamErrorCode || 'stream_error',
                 retryable: false
@@ -15225,6 +15750,9 @@ async function sendMessage(options = {}) {
         currentConversationLongtermAutoContinueKind = '';
         if (isStreamVisible()) {
             await finishTokenMiniStreaming(streamConversationId);
+        }
+        if (streamEndedTerminally && isStreamVisible()) {
+            await renderConversationSnapshotFromServer(streamConversationId, { instant: true, silent: true });
         }
         loadConversations(); // Update list preview
         if (String(currentConversationId || '').trim() === String(streamConversationId || '').trim()) {
@@ -15450,7 +15978,7 @@ function appendToolEvent(aiMsgDiv, name, details, isFunction = false, options = 
 
     // Icon selection
     let iconSvg = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path></svg>'; // default toolbox
-    if(toolName === 'Web Search' || toolName === 'search_keyword' || toolName === 'searchKeyword' || toolName === 'web_search') {
+    if(toolName === 'Web Search' || toolName === 'knowledge_search_keyword' || toolName === 'search_keyword' || toolName === 'searchKeyword' || toolName === 'web_search') {
         iconSvg = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>';
     }
 
@@ -16122,6 +16650,37 @@ function renderGenerateImageResultInMessage(aiMsgDiv, result, callId, anchorEl) 
     return true;
 }
 
+function resolveToolResultDisplayMarkdown(result, options = {}) {
+    const opts = (options && typeof options === 'object') ? options : {};
+    const candidates = [
+        opts.modelVisibleResult,
+        opts.model_visible_result,
+        opts.markdownResult,
+        opts.markdown_result
+    ];
+
+    for (const value of candidates) {
+        if (value === undefined || value === null) continue;
+        const text = (typeof value === 'object') ? JSON.stringify(value, null, 2) : String(value || '');
+        if (text.trim()) return text;
+    }
+
+    return '';
+}
+
+function setToolResultMarkdownSource(outDiv, markdownText) {
+    if (!outDiv) return false;
+
+    const source = String(markdownText || '').trim();
+    if (!source) return false;
+
+    outDiv.classList.remove('generate-image-tool-output');
+    outDiv.classList.add('tool-output-markdown');
+    outDiv.textContent = source;
+    bindSourceMarkdown(outDiv, source);
+    return true;
+}
+
 function updateLastToolResult(aiMsgDiv, name, result, callId = '', options = {}) {
     // Find the last tool usage of this name that doesn't have a result yet
     const parent = aiMsgDiv.querySelector('.message-content') || aiMsgDiv;
@@ -16188,6 +16747,7 @@ function updateLastToolResult(aiMsgDiv, name, result, callId = '', options = {})
         target.dataset.resolved = 'true';
         setToolUsageStatus(target, `${safeName} 完成:`);
         const outDiv = target.querySelector('.tool-output');
+        const displayMarkdown = resolveToolResultDisplayMarkdown(result, options);
         const resultText = (typeof result === 'object') ? JSON.stringify(result, null, 2) : String(result || '');
 
         const renderedGenerateImage = renderGenerateImageToolOutput(outDiv, safeName, result);
@@ -16197,9 +16757,12 @@ function updateLastToolResult(aiMsgDiv, name, result, callId = '', options = {})
         }
 
         if (!renderedGenerateImage) {
-            outDiv.classList.remove('tool-output-markdown');
-            outDiv.classList.remove('generate-image-tool-output');
-            outDiv.textContent = resultText;
+            const displayedMarkdownSource = setToolResultMarkdownSource(outDiv, displayMarkdown);
+            if (!displayedMarkdownSource) {
+                outDiv.classList.remove('tool-output-markdown');
+                outDiv.classList.remove('generate-image-tool-output');
+                outDiv.textContent = resultText;
+            }
         }
 
         if (outDiv.textContent.trim() || outDiv.querySelector('img')) {
@@ -16434,6 +16997,20 @@ async function saveEditedUserPrompt(index, options = {}) {
     state.saving = true;
     if (state.editBtn) state.editBtn.disabled = true;
     try {
+        const beforeSaveSnapshot = await fetchConversationMessagesSnapshot(currentConversationId);
+        const beforeSaveMessages = beforeSaveSnapshot ? beforeSaveSnapshot.messages : [];
+        const serverLastUserIndex = getLastUserMessageIndexFromMessages(beforeSaveMessages);
+        const serverTarget = (idx >= 0 && idx < beforeSaveMessages.length) ? beforeSaveMessages[idx] : null;
+        const serverTargetRole = String((serverTarget && serverTarget.role) || '').trim().toLowerCase();
+        if (!beforeSaveSnapshot || serverTargetRole !== 'user' || serverLastUserIndex !== idx) {
+            resetUserPromptInlineEditor();
+            if (beforeSaveSnapshot) {
+                renderMessages(beforeSaveMessages, true, { instant: true });
+            }
+            showToast('对话已同步，请重新编辑最后一条用户消息');
+            return;
+        }
+
         const res = await fetch(`/api/conversations/${encodeURIComponent(String(currentConversationId))}/messages/${idx}/content`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
@@ -16445,49 +17022,14 @@ async function saveEditedUserPrompt(index, options = {}) {
             return;
         }
         resetUserPromptInlineEditor({ keepEditedContent: true, editedText: nextText });
+        const afterSaveSnapshot = await renderConversationSnapshotFromServer(currentConversationId, { instant: true, silent: true });
         if (!regenerateAfterSave) {
             showToast('提示词已更新');
             return;
         }
-        let assistantIndex = findAssistantIndexAfterUserMessage(idx);
-        if (assistantIndex < 0) {
-            const fallback = await findAssistantIndexAfterUserMessageFromServer(currentConversationId, idx);
-            assistantIndex = Number(fallback.index);
-            if (
-                Number.isFinite(assistantIndex)
-                && assistantIndex >= 0
-                && Array.isArray(fallback.messages)
-                && fallback.messages.length
-            ) {
-                renderMessages(fallback.messages, true, { instant: true });
-            }
-            if (assistantIndex < 0) {
-                const fallbackByEditedUser = await findAssistantIndexAfterEditedUserFromServer(currentConversationId, idx, nextText);
-                assistantIndex = Number(fallbackByEditedUser.index);
-                if (
-                    Number.isFinite(assistantIndex)
-                    && assistantIndex >= 0
-                    && Array.isArray(fallbackByEditedUser.messages)
-                    && fallbackByEditedUser.messages.length
-                ) {
-                    renderMessages(fallbackByEditedUser.messages, true, { instant: true });
-                }
-                if (isDebugConsoleEnabled()) {
-                    appendDebugConsoleEntry({
-                        direction: 'client->local',
-                        stage: 'regenerate_target_resolve',
-                        title: 'Regenerate Resolve',
-                        payload: {
-                            source: 'edit_user_prompt',
-                            preferred_user_index: idx,
-                            assistant_index: assistantIndex,
-                            fallback_reason: fallbackByEditedUser.reason,
-                            server_message_count: Array.isArray(fallbackByEditedUser.messages) ? fallbackByEditedUser.messages.length : 0
-                        }
-                    });
-                }
-            }
-        }
+        const assistantIndex = afterSaveSnapshot
+            ? findAssistantIndexAfterUserMessageInMessages(afterSaveSnapshot.messages, idx)
+            : -1;
         if (assistantIndex < 0) {
             showToast('提示词已更新，但未找到可重答的模型回复');
             return;
@@ -16505,6 +17047,15 @@ async function saveEditedUserPrompt(index, options = {}) {
 window.toggleEditUserPrompt = async function(index) {
     const idx = Number(index);
     if (!Number.isFinite(idx)) return;
+
+    if (Number(userPromptEditState.index) === idx && userPromptEditState.editorEl) {
+        await saveEditedUserPrompt(idx, { regenerateAfterSave: true });
+        return;
+    }
+
+    const operationReady = await ensureConversationPanelReadyForMutation(currentConversationId, 'edit_user_prompt');
+    if (!operationReady) return;
+
     const messageDiv = document.querySelector(`.message.user[data-index="${idx}"]`);
     if (!messageDiv) return;
     if (idx !== getLastUserMessageIndexFromDom()) {
@@ -16512,10 +17063,6 @@ window.toggleEditUserPrompt = async function(index) {
         return;
     }
 
-    if (Number(userPromptEditState.index) === idx && userPromptEditState.editorEl) {
-        await saveEditedUserPrompt(idx, { regenerateAfterSave: true });
-        return;
-    }
     if (userPromptEditState.editorEl) {
         resetUserPromptInlineEditor();
     }
@@ -16617,13 +17164,13 @@ function appendMessage(msg, index) {
         div.dataset.localOnly = msg.pending ? '1' : '0';
     }
     
-    // Avatar for AI
-    if (msg.role === 'assistant') {
-        const avatar = document.createElement('div');
-        avatar.className = 'avatar ai';
-        avatar.textContent = 'AI';
-        div.appendChild(avatar);
-    }
+    // Avatar for AI --- Removed avatar for ai
+    // if (msg.role === 'assistant') {
+    //     const avatar = document.createElement('div');
+    //     avatar.className = 'avatar ai';
+    //     avatar.textContent = 'AI';
+    //     div.appendChild(avatar);
+    // }
 
     const content = document.createElement('div');
     content.className = 'message-content';
@@ -16724,7 +17271,7 @@ function appendMessage(msg, index) {
                 else if (step.type === 'function_call') {
                     const toolName = resolveToolNameFromEvent(step, step.name);
                     if (toolName === 'learning_card' || toolName === 'question' || toolName === 'puzzle') return;
-                    if (toolName === 'add_basis' || toolName === 'addBasis') {
+                    if (toolName === 'knowledge_basis_create' || toolName === 'add_basis' || toolName === 'addBasis') {
                         try {
                             const args = JSON.parse(step.arguments);
                             appendAddBasisView(div, args);
@@ -16745,7 +17292,10 @@ function appendMessage(msg, index) {
                         return;
                     }
                     const callId = allocateToolCallId(div, toolName, 'result', step.call_id || '', step.index);
-                    updateLastToolResult(div, toolName, step.result, callId, { toolIndex: step.index });
+                    updateLastToolResult(div, toolName, step.result, callId, {
+                        toolIndex: step.index,
+                        modelVisibleResult: step.model_visible_result
+                    });
                     if (toolName === 'longterm_plan' || toolName === 'longterm_update') {
                         applyLongtermPlanFromText(step.result, { source: 'history-tool-result', messageDiv: div });
                     }
@@ -17770,6 +18320,9 @@ window.confirmDelete = function(index) {
             return;
         }
 
+        const operationReady = await ensureConversationPanelReadyForMutation(cid, 'delete');
+        if (!operationReady) return;
+
         const clickedRow = getMessageRowByIndex(idx);
         const isLocalOnlyAssistant = !!(
             clickedRow
@@ -17834,22 +18387,66 @@ window.confirmRegenerate = function(index) {
     });
 };
 
+function resolveAssistantMessageModelName(message) {
+    const msg = (message && typeof message === 'object') ? message : {};
+    const metadata = (msg.metadata && typeof msg.metadata === 'object') ? msg.metadata : {};
+    return String(msg.model_name || metadata.model_name || '').trim();
+}
+
+async function resolveRegenerateModelName(index, messageDiv = null) {
+    const idx = Number(index);
+    if (!Number.isFinite(idx) || idx < 0) {
+        return '';
+    }
+
+    let message = messageDiv && messageDiv.__messageData ? messageDiv.__messageData : null;
+    let modelName = resolveAssistantMessageModelName(message);
+
+    if (!modelName && currentConversationId) {
+        const snapshot = await fetchConversationMessagesSnapshot(currentConversationId);
+        const rows = snapshot && Array.isArray(snapshot.messages) ? snapshot.messages : [];
+        message = rows[idx] || null;
+        modelName = resolveAssistantMessageModelName(message);
+
+        if (messageDiv && message) {
+            messageDiv.__messageData = message;
+        }
+    }
+
+    if (!modelName) {
+        console.warn('[Regenerate] assistant message has no model_name', {
+            conversation_id: String(currentConversationId || ''),
+            message_index: idx
+        });
+        showToast('该历史回复没有记录模型，无法安全重答');
+        return '';
+    }
+
+    try {
+        await loadModels();
+    } catch (_) {
+        showToast('模型配置读取失败，无法重答');
+        return '';
+    }
+
+    const exists = Array.isArray(modelCatalog)
+        && modelCatalog.some((item) => String(item && item.id || '').trim() === modelName);
+    if (!exists) {
+        showToast(`历史回复模型不可用：${modelName}`);
+        return '';
+    }
+
+    return modelName;
+}
+
 async function startRegenerate(index) {
+    syncGenerationStateForCurrentConversation();
+
+    const operationReady = await ensureConversationPanelReadyForMutation(currentConversationId, 'regenerate');
+    if (!operationReady) return;
     syncGenerationStateForCurrentConversation();
     if (isConversationStreamRunning(currentConversationId)) return;
     
-    const modelName = await ensureSelectedModelReady();
-    if (!modelName) {
-        showToast('当前账号无可用模型，请联系管理员');
-        return;
-    }
-    const forceContextCompressionRequested = consumeForceContextCompressionOnce();
-    const compressionDecision = await maybeConfirmContextCompressionBeforeSend(
-        modelName,
-        forceContextCompressionRequested
-    );
-    if (!compressionDecision.ok) return;
-    const forceContextCompression = !!compressionDecision.forceCompression;
     const regenLearningReaderContextBlocks = buildLearningReaderContextBlocks(
         (learningModeEnabled && currentConversationMode === 'learning') ? 'learning' : currentConversationMode
     );
@@ -17865,7 +18462,7 @@ async function startRegenerate(index) {
                 regenMessageDiv = document.querySelector(`.message.assistant[data-index="${index}"]`);
             }
         } catch (_) {
-            // ignore sync errors; fallback to below guard
+            // 同步失败时交由下方统一错误提示处理。
         }
     }
     if (!regenMessageDiv) {
@@ -17884,6 +18481,17 @@ async function startRegenerate(index) {
         showToast('未找到可重答消息，请刷新后重试');
         return;
     }
+    const modelName = await resolveRegenerateModelName(index, regenMessageDiv);
+    if (!modelName) return;
+
+    const forceContextCompressionRequested = consumeForceContextCompressionOnce();
+    const compressionDecision = await maybeConfirmContextCompressionBeforeSend(
+        modelName,
+        forceContextCompressionRequested
+    );
+    if (!compressionDecision.ok) return;
+    const forceContextCompression = !!compressionDecision.forceCompression;
+
     const regenUserMessageIndex = Math.max(0, Math.floor(Number(index) - 1));
     const regenUserMessageDiv = getMessageElementByIndex(regenUserMessageIndex, 'user');
     const regenAttachmentPayload = buildAttachmentsPayloadFromMessage(
@@ -17962,7 +18570,6 @@ async function startRegenerate(index) {
                 enable_web_search: els.checkSearch.checked,
                 enable_tools: enableTools,
                 tool_mode: (learningModeEnabled && currentConversationMode === 'learning') ? 'force' : (currentConversationMode === 'longterm' ? 'force' : toolsMode),
-                skill_mode: (learningModeEnabled && currentConversationMode === 'learning') ? 'force' : 'off',
                 debug_mode: isDebugConsoleEnabled(),
                 show_token_usage: true,
                 file_ids: regenAttachmentPayload.file_ids,
@@ -18260,7 +18867,9 @@ async function startRegenerate(index) {
         if (streamCompleted || streamAbortedByUser || (streamEndedWithError && !streamErroredRetryable)) {
             clearActiveStreamResumeState();
         }
-        // Keep current message DOM to avoid delayed full re-render/flash.
+        if (streamEndedTerminally && currentConversationId) {
+            await renderConversationSnapshotFromServer(currentConversationId, { instant: true, silent: true });
+        }
         loadConversations();
         scheduleLearningSidebarBridgeNotify(0);
     }
@@ -18596,7 +19205,10 @@ function updateMessageDivTools(index, data, preferredMessageDiv = null) {
         const rawCallId = String(data.call_id || data.callId || '').trim();
         const toolIndex = (data.index === undefined || data.index === null) ? null : Number(data.index);
         const callId = allocateToolCallId(messageDiv, toolName, 'result', rawCallId, toolIndex);
-        updateLastToolResult(messageDiv, toolName, data.result, callId, { toolIndex });
+        updateLastToolResult(messageDiv, toolName, data.result, callId, {
+            toolIndex,
+            modelVisibleResult: data.model_visible_result
+        });
         if (toolName === 'longterm_plan' || toolName === 'longterm_update') {
             applyLongtermPlanFromText(data.result, { source: 'tool-update', messageDiv });
         }
@@ -18649,7 +19261,8 @@ async function resumeActiveStreamAfterReload(options = {}) {
     setConversationStreamState(reconnectStreamConversationId, {
         ...state,
         status: 'running',
-        unread: false
+        unread: false,
+        stopping: false
     });
 
     let assistantIndex = Number(state.assistant_index);
@@ -18715,6 +19328,7 @@ async function resumeActiveStreamAfterReload(options = {}) {
     let currentSegmentContent = '';
     let currentContentSpan = null;
     let buffer = '';
+    let replayCatchupSeq = 0;
     const decoder = new TextDecoder();
 
     try {
@@ -18759,6 +19373,7 @@ async function resumeActiveStreamAfterReload(options = {}) {
 
                 if (chunk.type === 'stream_session') {
                     const sid = String(chunk.stream_id || '').trim();
+                    replayCatchupSeq = Number.isFinite(Number(chunk.last_seq)) ? Number(chunk.last_seq) : 0;
                     if (sid) {
                         const sessionCid = String(chunk.conversation_id || reconnectStreamConversationId || currentConversationId || '').trim();
                         if (sessionCid && sessionCid !== reconnectStreamConversationId) {
@@ -18773,14 +19388,17 @@ async function resumeActiveStreamAfterReload(options = {}) {
                             stream_id: sid,
                             conversation_id: sessionCid || reconnectStreamConversationId,
                             status: 'running',
-                            unread: false
+                            unread: false,
+                            stopping: false
                         });
                     }
                 }
-                if (Number.isFinite(Number(chunk._stream_seq))) {
-                    patchActiveStreamResumeState({ last_seq: Number(chunk._stream_seq) });
+                const chunkSeq = Number.isFinite(Number(chunk._stream_seq)) ? Number(chunk._stream_seq) : 0;
+                const isReplayChunk = replayCatchupSeq > 0 && chunkSeq > 0 && chunkSeq <= replayCatchupSeq;
+                if (chunkSeq > 0) {
+                    patchActiveStreamResumeState({ last_seq: chunkSeq });
                     setConversationStreamState(reconnectStreamConversationId, {
-                        last_seq: Number(chunk._stream_seq)
+                        last_seq: chunkSeq
                     });
                 }
                 if (chunk.conversation_id) {
@@ -18813,7 +19431,9 @@ async function resumeActiveStreamAfterReload(options = {}) {
                 } else if (chunk.type === 'content') {
                     assistantDiv.__reasoningSegmentOpen = false;
                     currentFullContent += String(chunk.content || '');
-                    onTokenStreamTextChunk(chunk.content);
+                    if (!isReplayChunk) {
+                        onTokenStreamTextChunk(chunk.content);
+                    }
                     if (assistantDiv.__contentAfterGeneratedImage) {
                         currentContentSpan = createContentSpan(assistantDiv, { afterGeneratedImage: true });
                         currentSegmentContent = '';
@@ -18825,7 +19445,9 @@ async function resumeActiveStreamAfterReload(options = {}) {
                     currentContentSpan.dataset.streamRaw = currentSegmentContent;
                     dirtiedContentSpans.add(currentContentSpan);
                 } else if (chunk.type === 'reasoning_content') {
-                    onTokenStreamReasoningChunk(chunk.content);
+                    if (!isReplayChunk) {
+                        onTokenStreamReasoningChunk(chunk.content);
+                    }
                     const msgContentContainer = assistantDiv.querySelector('.message-content');
                     let thinkingBlock = assistantDiv.__activeReasoningThinkingBlock;
                     if(!assistantDiv.__reasoningSegmentOpen || !thinkingBlock || !thinkingBlock.isConnected || !thinkingBlock.classList.contains('reasoning-thinking-block')) {
@@ -18858,9 +19480,13 @@ async function resumeActiveStreamAfterReload(options = {}) {
                     } else if (chunk.type === 'puzzle') {
                         appendPuzzleStep(assistantDiv, chunk);
                     } else if (chunk.type === 'function_call_delta') {
-                        onTokenStreamToolArgsChunk(chunk.arguments_delta || chunk.delta || '');
+                        if (!isReplayChunk) {
+                            onTokenStreamToolArgsChunk(chunk.arguments_delta || chunk.delta || '');
+                        }
                     } else if (chunk.type === 'function_call') {
-                        onTokenStreamToolArgsChunk(chunk.arguments || '');
+                        if (!isReplayChunk) {
+                            onTokenStreamToolArgsChunk(chunk.arguments || '');
+                        }
                     }
                     if (chunk.type !== 'learning_card' && chunk.type !== 'puzzle') {
                         assistantDiv.__reasoningSegmentOpen = false;
@@ -19043,6 +19669,9 @@ async function resumeActiveStreamAfterReload(options = {}) {
         await finishTokenMiniStreaming(reconnectStreamConversationId);
         if (streamCompleted || streamAbortedByUser || (streamEndedWithError && !streamErroredRetryable)) {
             clearActiveStreamResumeState();
+        }
+        if (streamEndedTerminally && String(currentConversationId || '').trim() === reconnectBoundConversationId) {
+            await renderConversationSnapshotFromServer(reconnectBoundConversationId, { instant: true, silent: true });
         }
         if (streamCompleted) {
             loadConversations();
@@ -26277,6 +26906,22 @@ function isAdminOllamaProvider(providerInfo) {
     return getAdminProviderApiType(providerInfo) === 'ollama';
 }
 
+function getAdminModelContextWindow(modelInfo) {
+    const info = modelInfo && typeof modelInfo === 'object' ? modelInfo : {};
+    const raw = info.context_window != null ? info.context_window
+        : (info.context_length != null ? info.context_length
+            : (info.max_context_tokens != null ? info.max_context_tokens
+                : info.max_input_tokens));
+    const value = parseInt(raw || 0, 10);
+    return Number.isFinite(value) && value >= 1024 ? value : 0;
+}
+
+function formatAdminContextWindow(value) {
+    const n = parseInt(value || 0, 10);
+    if (!Number.isFinite(n) || n <= 0) return '-';
+    return `${n.toLocaleString('en-US')} tokens`;
+}
+
 function resolveAdminProviderIconProvider(providerKey, providerInfo = null) {
     const key = String(providerKey || '').trim();
     if (resolveProviderSimpleIconSlug(key)) return key;
@@ -27769,6 +28414,10 @@ function renderAdminModelConfig(options = {}) {
         const modelTotalTokens = Math.max(0, parseInt((quotaRow && quotaRow.quota_total_tokens) || 0, 10) || 0);
         const modelOverageTokens = Math.max(0, parseInt((quotaRow && quotaRow.overage_tokens) || 0, 10) || 0);
         const meterHtml = _buildQuotaReverseOverflowMeterHtml(modelUsedTokens, modelTotalTokens, modelOverageTokens, Math.max(0, modelOverageTokens));
+        const contextWindow = getAdminModelContextWindow(info);
+        const contextWindowHtml = contextWindow > 0
+            ? `<div class="admin-user-meta">上下文 ${escapeHtml(formatAdminContextWindow(contextWindow))}</div>`
+            : '';
         return `
         <div class="model-admin-item">
             <div class="model-admin-model-icon-cell">
@@ -27785,6 +28434,7 @@ function renderAdminModelConfig(options = {}) {
                         <button class="model-icon-btn model-icon-btn-danger" title="Delete Model" onclick="adminDeleteModelByEncoded('${encodeURIComponent(id)}')"><i class="fa-solid fa-trash"></i></button>
                     </div>
                 </div>
+                ${contextWindowHtml}
                 <div class="model-admin-item-meter-wrap" data-provider="${escapeHtml(providerKey)}" data-model="${escapeHtml(id)}" data-total-tokens="${modelTotalTokens}" data-used-tokens="${modelUsedTokens}" title="点击编辑额度">
                     <div class="model-admin-item-meter">${meterHtml}</div>
                 </div>
@@ -27888,6 +28538,7 @@ function openAdminConfigModal(mode, payload = {}) {
         modelFields.style.display = '';
         document.getElementById('adminModelIdInput').value = payload.model_id || '';
         document.getElementById('adminModelNameInput').value = payload.name || '';
+        document.getElementById('adminModelContextWindowInput').value = getAdminModelContextWindow(payload) || '';
         document.getElementById('adminModelStatusInput').value = payload.status || 'normal';
 
         const providerSelect = document.getElementById('adminModelProviderInput');
@@ -27952,6 +28603,7 @@ async function saveAdminConfigModal() {
             const modelId = (document.getElementById('adminModelIdInput').value || '').trim();
             const modelName = (document.getElementById('adminModelNameInput').value || '').trim();
             const provider = (document.getElementById('adminModelProviderInput').value || '').trim();
+            const contextWindow = (document.getElementById('adminModelContextWindowInput').value || '').trim();
             const status = (document.getElementById('adminModelStatusInput').value || 'normal').trim();
             if (!modelId || !provider) {
                 showToast('模型ID和供应商是必填项');
@@ -27965,6 +28617,7 @@ async function saveAdminConfigModal() {
                     model_id: modelId,
                     name: modelName || modelId,
                     provider,
+                    context_window: contextWindow,
                     status: status || 'normal'
                 })
             });
@@ -28150,6 +28803,7 @@ async function openModelEditor(modelId = '') {
         model_id: modelId || '',
         name: current.name || '',
         provider: current.provider || adminSelectedProvider || '',
+        context_window: getAdminModelContextWindow(current) || '',
         status: current.status || 'normal'
     });
 }

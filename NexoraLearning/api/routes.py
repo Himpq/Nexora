@@ -2897,13 +2897,33 @@ def frontend_video_generator_file(project_id: str, relative_path: str):
         return jsonify({"success": False, "error": str(exc)}), 400
 
     try:
-        status, body, content_type = _request_video_generator_bytes(
-            f"/api/projects/{safe_project_id}/files/{safe_relative_path}"
+        status, body, content_type, headers = _request_video_generator_bytes(
+            f"/api/projects/{safe_project_id}/files/{safe_relative_path}",
+            request_headers=_video_generator_file_request_headers(),
         )
     except Exception as exc:
         return jsonify({"success": False, "error": str(exc)}), 502
 
-    return Response(body, status=200 if status < 400 else status, content_type=content_type)
+    response_headers = _video_generator_file_response_headers(headers)
+    log_event(
+        "video_generator_file_proxy",
+        "视频生成文件代理响应",
+        payload={
+            "project_id": safe_project_id,
+            "relative_path": safe_relative_path,
+            "status": status,
+            "range": str(request.headers.get("Range") or "").strip(),
+            "content_range": str(response_headers.get("Content-Range") or "").strip(),
+            "content_length": str(response_headers.get("Content-Length") or "").strip(),
+        },
+    )
+
+    return Response(
+        body,
+        status=status,
+        content_type=content_type,
+        headers=response_headers,
+    )
 
 
 def _video_generator_cfg() -> Dict[str, Any]:
@@ -2968,19 +2988,65 @@ def _request_video_generator_json(
         raise RuntimeError(f"VideoGenerator 请求失败: {url} | {type(exc).__name__}: {exc}") from exc
 
 
-def _request_video_generator_bytes(path: str) -> Tuple[int, bytes, str]:
+def _video_generator_file_request_headers() -> Dict[str, str]:
+    headers = {
+        "Accept": "*/*",
+        "Accept-Encoding": "identity",
+    }
+
+    for name in ("Range", "If-Range"):
+        value = str(request.headers.get(name) or "").strip()
+
+        if value:
+            headers[name] = value
+
+    return headers
+
+
+def _video_generator_file_response_headers(source_headers: Mapping[str, Any]) -> Dict[str, str]:
+    headers: Dict[str, str] = {}
+    normalized_source_headers = {
+        str(key).lower(): value
+        for key, value in source_headers.items()
+    }
+
+    for name in (
+        "Accept-Ranges",
+        "Cache-Control",
+        "Content-Disposition",
+        "Content-Length",
+        "Content-Range",
+        "ETag",
+        "Last-Modified",
+    ):
+        value = str(normalized_source_headers.get(name.lower()) or "").strip()
+
+        if value:
+            headers[name] = value
+
+    if "Accept-Ranges" not in headers:
+        headers["Accept-Ranges"] = "bytes"
+
+    return headers
+
+
+def _request_video_generator_bytes(
+    path: str,
+    *,
+    request_headers: Mapping[str, str],
+) -> Tuple[int, bytes, str, Dict[str, str]]:
     url = f"{_video_generator_base_url()}{_normalize_video_generator_path(path)}"
-    req = urllib_request.Request(url, headers={"Accept": "*/*"}, method="GET")
+    req = urllib_request.Request(url, headers=dict(request_headers), method="GET")
 
     try:
         with urllib_request.urlopen(req, timeout=_video_generator_timeout()) as resp:
             status = int(getattr(resp, "status", 200) or 200)
             content_type = str(resp.headers.get("Content-Type") or "application/octet-stream")
-            return status, resp.read(), content_type
+            return status, resp.read(), content_type, dict(resp.headers.items())
     except urllib_error.HTTPError as exc:
         status = int(getattr(exc, "code", 502) or 502)
         content_type = str(exc.headers.get("Content-Type") or "application/json")
-        return status, exc.read(), content_type
+        return status, exc.read(), content_type, dict(exc.headers.items())
     except (urllib_error.URLError, TimeoutError, ConnectionError, OSError) as exc:
         raise RuntimeError(f"VideoGenerator 文件请求失败: {url} | {type(exc).__name__}: {exc}") from exc
 
@@ -3601,21 +3667,6 @@ def _legacy_frontend_chat_context_removed():
     ]
 
     active_tool_skills = [
-        {
-            "id": "learning-card-injection",
-            "title": "Learning Card Injection",
-            "required_tools": ["learning_card"],
-            "mode": "force",
-            "author": "NexoraLearning",
-            "version": "1.0",
-            "main_content": (
-                "当前处于 NexoraLearning 学习对话模式。"
-                "当需要展示课程总览卡片或章节片段卡片时，请主动调用 learning_card 工具。"
-                "课程总览使用 type=lecture_display；章节片段使用 type=chapter_range，"
-                "并传入 lecture_id、book_id 和 content_range。"
-                "不要把卡片内容直接当普通文本输出。"
-            ),
-        },
         {
             "id": "learning-course-book-tools",
             "title": "Learning Course and Book Tools",
@@ -6118,8 +6169,6 @@ _RUNTIME_READONLY_TOOL_NAMES = {
     "getBookDetailXml",
     "getBookQuestionsXml",
     "vectorSearch",
-    "puzzle",
-    "learning_card",
     "question",
     "read_learning_memory",
     "append_learning_memory",
@@ -6213,8 +6262,6 @@ def _runtime_tool_specs() -> List[Dict[str, Any]]:
             continue
         rows.append(json.loads(json.dumps(tool, ensure_ascii=False)))
         names.add(name)
-    if "learning_card" not in names:
-        rows.append(_runtime_learning_card_tool_spec())
     if "question" not in names:
         rows.append(_runtime_question_tool_spec())
     if "read_learning_memory" not in names:
@@ -6480,15 +6527,17 @@ def _runtime_active_tool_skills() -> List[Dict[str, Any]]:
                 "getBookDetailXml",
                 "getBookQuestionsXml",
                 "vectorSearch",
-                "learning_card",
                 "question",
             ],
             "mode": "force",
             "version": "1.0",
             "author": "NexoraLearning",
             "main_content": (
-                "This conversation is in NexoraLearning mode. Read course structure first, then inspect overview/detail/question material, "
-                "and only read raw book text when those are insufficient."
+                "This conversation is in NexoraLearning mode. Use listLectures/getLecture/listBooks/getBook to inspect course and textbook metadata. "
+                "Use getBookInfoXml for textbook coarse-reading content, getBookDetailXml for intensive-reading content, "
+                "getBookQuestionsXml for generated questions, readBookTextRange/getBookText for original text reading, "
+                "and searchBookText/vectorSearch for browsing and searching course textbook information. "
+                "Do not answer from guesses when course or textbook information can be read with these tools."
             ),
         }
     ]
@@ -6527,11 +6576,46 @@ def _runtime_select_lecture_rows(username: str, payload: Optional[Dict[str, Any]
     return rows, total_books
 
 
+def _runtime_select_book_rows(lecture_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for lecture_row in lecture_rows:
+        if not isinstance(lecture_row, dict):
+            continue
+        lecture_id = str(lecture_row.get("id") or "").strip()
+        lecture_title = str(lecture_row.get("title") or "").strip()
+        if not lecture_id:
+            continue
+        books = list_lecture_books(_cfg, lecture_id) or []
+        for book in books:
+            if not isinstance(book, dict):
+                continue
+            book_id = str(book.get("id") or "").strip()
+            if not book_id:
+                continue
+            rows.append(
+                {
+                    "lecture_id": lecture_id,
+                    "lecture_title": lecture_title,
+                    "book_id": book_id,
+                    "book_title": str(book.get("title") or "").strip(),
+                    "description": str(book.get("description") or "").strip(),
+                    "text_chars": _safe_int(book.get("text_chars"), 0),
+                    "coarse_status": str(book.get("coarse_status") or "").strip(),
+                    "intensive_status": str(book.get("intensive_status") or "").strip(),
+                    "question_status": str(book.get("question_status") or "").strip(),
+                    "section_status": str(book.get("section_status") or "").strip(),
+                    "vector_status": str(book.get("vector_status") or "").strip(),
+                }
+            )
+    return rows
+
+
 def _build_runtime_context_payload(username: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     user_id = str(username or "").strip()
     payload_map = payload if isinstance(payload, dict) else {}
     user_store.ensure_user_files(_cfg, user_id)
     lecture_rows, total_books = _runtime_select_lecture_rows(user_id, payload_map)
+    book_rows = _runtime_select_book_rows(lecture_rows)
     active_lecture_id = str(payload_map.get("lecture_id") or "").strip()
     if not active_lecture_id and lecture_rows:
         active_lecture_id = str(lecture_rows[0].get("id") or "").strip()
@@ -6597,6 +6681,11 @@ def _build_runtime_context_payload(username: str, payload: Optional[Dict[str, An
                 "content": "\n".join(progress_lines) if progress_lines else "No active lecture progress.",
             },
             {
+                "type": "learning_course_books",
+                "title": "Learning Course Books",
+                "content": json.dumps(book_rows, ensure_ascii=False),
+            },
+            {
                 "type": "learning_recent_records",
                 "title": "Recent Learning Records",
                 "content": json.dumps(recent_learning, ensure_ascii=False),
@@ -6622,6 +6711,7 @@ def _build_runtime_context_payload(username: str, payload: Optional[Dict[str, An
             "source": "nexoralearning_runtime",
             "selected_lecture_count": len(lecture_rows),
             "total_books": total_books,
+            "selected_book_count": len(book_rows),
             "lecture_id": active_lecture_id,
         },
         "cards": [],

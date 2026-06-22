@@ -3064,14 +3064,42 @@ def _normalize_keep_alive_value(raw_keep_alive, default='5m'):
     return keep_alive or str(default or '5m').strip() or '5m'
 
 
+MODEL_CONTEXT_WINDOW_KEYS = (
+    'context_window',
+    'context_length',
+    'max_context_tokens',
+    'max_input_tokens',
+    'max_prompt_tokens',
+)
+MODEL_CONTEXT_WINDOW_MAX = 4_000_000
+
+
 def _safe_context_window_int(raw):
     try:
         n = int(raw)
     except Exception:
         return 0
+
     if n < 1024:
         return 0
-    return min(n, 4_000_000)
+
+    return min(n, MODEL_CONTEXT_WINDOW_MAX)
+
+
+def _parse_model_context_window_for_save(raw):
+    text = str(raw or '').strip()
+    if not text:
+        return 0
+
+    try:
+        n = int(text)
+    except Exception:
+        raise ValueError('context_window 必须是 1024 到 4000000 之间的整数，或留空')
+
+    if n < 1024 or n > MODEL_CONTEXT_WINDOW_MAX:
+        raise ValueError('context_window 必须是 1024 到 4000000 之间的整数，或留空')
+
+    return n
 
 
 def _normalize_model_id_for_ctx(raw):
@@ -3124,22 +3152,87 @@ def _save_models_context_window_cache(cache_obj):
 
 def _extract_context_window_from_provider_row(row_obj):
     row = row_obj if isinstance(row_obj, dict) else {}
-    for key in ('context_window', 'context_length', 'max_context_tokens', 'max_input_tokens', 'max_prompt_tokens'):
+    for key in MODEL_CONTEXT_WINDOW_KEYS:
         n = _safe_context_window_int(row.get(key))
         if n > 0:
             return n
+
     raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
-    for key in ('context_window', 'context_length', 'max_context_tokens', 'max_input_tokens', 'max_prompt_tokens'):
+    for key in MODEL_CONTEXT_WINDOW_KEYS:
         n = _safe_context_window_int(raw.get(key))
         if n > 0:
             return n
+
     # DashScope / 百炼模型目录常把上下文信息放在 model_info 节点
     model_info = row.get("model_info") if isinstance(row.get("model_info"), dict) else {}
-    for key in ('context_window', 'context_length', 'max_context_tokens', 'max_input_tokens', 'max_prompt_tokens'):
+    for key in MODEL_CONTEXT_WINDOW_KEYS:
         n = _safe_context_window_int(model_info.get(key))
         if n > 0:
             return n
+
     return 0
+
+
+def _extract_context_map_from_provider_models_result(result_obj):
+    result = result_obj if isinstance(result_obj, dict) else {}
+    rows = result.get('models', [])
+    fresh_map = {}
+
+    if not isinstance(rows, list):
+        return fresh_map
+
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+
+        model_id = _normalize_model_id_for_ctx(
+            item.get('id') or item.get('model_id') or item.get('model') or item.get('name') or ''
+        )
+        if not model_id:
+            continue
+
+        ctx = _extract_context_window_from_provider_row(item)
+        if ctx > 0:
+            fresh_map[model_id] = ctx
+
+    return fresh_map
+
+
+def _build_provider_models_context_diagnostics(result_obj):
+    result = result_obj if isinstance(result_obj, dict) else {}
+    rows = result.get('models', [])
+    diagnostic = {
+        'total_models': 0,
+        'with_context_window': 0,
+        'missing_context_window': 0,
+        'context_window_keys': list(MODEL_CONTEXT_WINDOW_KEYS),
+        'message': '',
+    }
+
+    if not bool(result.get('ok', False)):
+        diagnostic['message'] = str(result.get('error') or result.get('message') or '模型列表拉取失败')
+        return diagnostic
+
+    if not isinstance(rows, list):
+        diagnostic['message'] = '模型列表返回结构中没有 models 数组'
+        return diagnostic
+
+    diagnostic['total_models'] = len(rows)
+    for item in rows:
+        if _extract_context_window_from_provider_row(item) > 0:
+            diagnostic['with_context_window'] += 1
+
+    diagnostic['missing_context_window'] = max(
+        0,
+        diagnostic['total_models'] - diagnostic['with_context_window']
+    )
+
+    if diagnostic['total_models'] and diagnostic['with_context_window'] <= 0:
+        diagnostic['message'] = '远端模型列表没有提供上下文窗口字段，请在模型配置里填写 context_window，或配置包含上下文字段的 models_catalog_url'
+    elif diagnostic['missing_context_window'] > 0:
+        diagnostic['message'] = '部分模型缺少上下文窗口字段'
+
+    return diagnostic
 
 
 def _read_cached_provider_context_window_map_with_meta(provider_key):
@@ -3575,6 +3668,143 @@ def _refresh_ollama_context_window_map(config_obj, timeout=8.0, force_remote=Fal
         merged.update(cached)
 
     return merged
+
+
+def _is_generic_context_provider(provider_name, provider_cfg):
+    provider = str(provider_name or '').strip().lower()
+    if provider in {'volcengine', 'aliyun', 'dashscope'}:
+        return False
+
+    cfg = provider_cfg if isinstance(provider_cfg, dict) else {}
+    api_type = _normalize_provider_api_type(cfg.get('api_type'))
+    if api_type in {'volcengine', 'dashscope', 'ollama'}:
+        return False
+
+    return True
+
+
+def _refresh_generic_provider_context_window_map(config_obj, provider_key, timeout=8.0, force_remote=False):
+    cfg = config_obj if isinstance(config_obj, dict) else {}
+    provider_name = str(provider_key or '').strip()
+    if not provider_name:
+        return {}
+
+    providers = cfg.get("providers", {}) if isinstance(cfg.get("providers"), dict) else {}
+    provider_cfg = providers.get(provider_name)
+    cached, cached_updated_at = _read_cached_provider_context_window_map_with_meta(provider_name)
+
+    if not isinstance(provider_cfg, dict):
+        return cached
+    if not _is_generic_context_provider(provider_name, provider_cfg):
+        return cached
+
+    api_key = str(provider_cfg.get('api_key', '') or '').strip()
+    if not api_key:
+        return cached
+
+    cache_ttl_sec = 1800
+    try:
+        cache_ttl_sec = max(0, int(provider_cfg.get('models_catalog_cache_ttl_sec', 1800) or 1800))
+    except Exception:
+        cache_ttl_sec = 1800
+
+    bg_refresh_enabled = bool(provider_cfg.get('models_catalog_async_refresh', True))
+    wait_on_miss = bool(provider_cfg.get('models_catalog_wait_on_miss', False))
+    bg_min_interval = 45
+    try:
+        bg_min_interval = max(5, int(provider_cfg.get('models_catalog_async_min_interval_sec', 45) or 45))
+    except Exception:
+        bg_min_interval = 45
+
+    if cached_updated_at and not force_remote:
+        age = max(0, int(time.time()) - int(cached_updated_at or 0))
+        if cache_ttl_sec > 0 and age <= cache_ttl_sec:
+            return cached
+
+        if bg_refresh_enabled:
+            cfg_snapshot = json.loads(json.dumps(cfg))
+            _launch_provider_context_refresh_bg(
+                provider_name,
+                lambda: _refresh_generic_provider_context_window_map(
+                    cfg_snapshot,
+                    provider_name,
+                    timeout=timeout,
+                    force_remote=True
+                ),
+                min_interval_sec=bg_min_interval
+            )
+            return cached
+
+    if (not force_remote) and bg_refresh_enabled and (not wait_on_miss):
+        cfg_snapshot = json.loads(json.dumps(cfg))
+        _launch_provider_context_refresh_bg(
+            provider_name,
+            lambda: _refresh_generic_provider_context_window_map(
+                cfg_snapshot,
+                provider_name,
+                timeout=timeout,
+                force_remote=True
+            ),
+            min_interval_sec=bg_min_interval
+        )
+        return cached
+
+    try:
+        adapter = create_provider_adapter(provider_name, provider_cfg)
+        client = adapter.create_client(
+            api_key=api_key,
+            base_url=str(provider_cfg.get('base_url', '') or '').strip(),
+            timeout=max(2.0, float(timeout or 8.0))
+        )
+        result = adapter.list_models(
+            client=client,
+            capability='',
+            request_options={}
+        )
+        fresh_map = _extract_context_map_from_provider_models_result(result)
+
+        if not fresh_map:
+            _write_cached_provider_context_window_map(provider_name, cached)
+            return cached
+
+        merged = dict(cached)
+        merged.update(fresh_map)
+        _write_cached_provider_context_window_map(provider_name, merged)
+        return merged
+    except Exception:
+        return cached
+
+
+def _refresh_generic_context_window_maps(config_obj, timeout=8.0):
+    cfg = config_obj if isinstance(config_obj, dict) else {}
+    providers = cfg.get("providers", {}) if isinstance(cfg.get("providers"), dict) else {}
+    models = cfg.get("models", {}) if isinstance(cfg.get("models"), dict) else {}
+    target_providers = set()
+
+    for model_info in models.values():
+        if not isinstance(model_info, dict):
+            continue
+
+        provider_name = str(model_info.get('provider') or '').strip()
+        if provider_name:
+            target_providers.add(provider_name)
+
+    out = {}
+    for provider_name in sorted(target_providers):
+        provider_cfg = providers.get(provider_name)
+        if not isinstance(provider_cfg, dict):
+            continue
+        if not _is_generic_context_provider(provider_name, provider_cfg):
+            continue
+
+        out[provider_name.strip().lower()] = _refresh_generic_provider_context_window_map(
+            cfg,
+            provider_name,
+            timeout=timeout,
+            force_remote=False
+        )
+
+    return out
 
 
 def _resolve_context_window_by_model_id(model_id, models_map):
@@ -5713,7 +5943,7 @@ def build_status_overview() -> Dict[str, Any]:
     if not os.path.exists(users_root):
         return {
             'snapshotAt': datetime.now().strftime('%Y-%m-%d %H:%M:%S CST'),
-            'source': 'ChatDBServer/data/users/*/{token_usage,tool_usage,conversations}',
+            'source': 'ChatDBServer/data/users/*/{token_usage,tool_usage,conversations} + ChatDBServer/data/papi/*/token_log.jsonl',
             'totals': {'tokens': 0, 'modelCalls': 0, 'toolCalls': 0, 'toolFailures': 0},
             'complexity': complexity,
             'models': [],
@@ -5914,6 +6144,77 @@ def build_status_overview() -> Dict[str, Any]:
                         bucket = 'complex'
                     row['complexityLoad'][bucket] += 1
                     complexity[bucket] += 1
+
+    try:
+        from papi.token_logger import iter_papi_token_log_entries
+    except Exception:
+        from api.papi.token_logger import iter_papi_token_log_entries
+
+    for log in iter_papi_token_log_entries():
+        if not isinstance(log, dict):
+            continue
+
+        input_tokens = _safe_int_status(log.get('input_tokens', 0), 0)
+        output_tokens = _safe_int_status(log.get('output_tokens', 0), 0)
+        total = log.get('total_tokens', None)
+        if total is None:
+            total = input_tokens + output_tokens
+        total = _safe_int_status(total, 0)
+        total_tokens += total
+
+        model_raw = str(log.get('model') or 'unknown').strip() or 'unknown'
+        provider = _status_normalize_provider(str(log.get('provider') or 'unknown').strip() or 'unknown')
+        model_name, display_name = _status_canonicalize_model(model_raw)
+        row = _ensure_status_model_row(model_map, model_name, display_name)
+        row['totalTokens'] += total
+        row['tokenLogCount'] += 1
+        row['callCount'] += 1
+        row['complexityLoad']['simple'] += 1
+        _status_add_provider_count(row, provider)
+
+        ts_dt = _status_parse_timestamp(log.get('timestamp'))
+        if isinstance(ts_dt, datetime) and ts_dt >= cutoff_24h:
+            recent = _ensure_status_recent_row(recent_24h_map, model_name, display_name)
+            recent['recentCalls'] += 1
+            recent['recentTokens'] += total
+            _status_add_provider_count(recent, provider)
+
+        duration_ms = _status_normalize_latency_ms(log.get('duration_ms', 0), output_tokens=output_tokens, for_ttft=False)
+        ttft_ms = _status_normalize_latency_ms(log.get('ttft_ms', 0), output_tokens=output_tokens, duration_hint_ms=duration_ms, for_ttft=True)
+        s_row = speed_map.setdefault(model_name, {
+            'id': model_name,
+            'name': str(display_name or model_name).strip() or model_name,
+            '_providerCounts': {},
+            'samples': 0,
+            'duration_ms_total': 0,
+            'duration_ms_count': 0,
+            'gen_ms_total': 0,
+            'gen_ms_count': 0,
+            'ttft_ms_total': 0,
+            'ttft_ms_count': 0,
+            'output_tokens_total': 0,
+            'effective_output_tokens_total': 0
+        })
+        if display_name and (not str(s_row.get('name') or '').strip() or str(s_row.get('name') or '').strip() == model_name):
+            s_row['name'] = str(display_name).strip() or model_name
+        _status_add_provider_count(s_row, provider)
+        s_row['samples'] += 1
+        if duration_ms > 0:
+            s_row['duration_ms_total'] += duration_ms
+            s_row['duration_ms_count'] += 1
+            gen_ms = duration_ms
+            if ttft_ms > 0 and ttft_ms < duration_ms:
+                gen_ms = max(1, duration_ms - ttft_ms)
+            if gen_ms > 0:
+                s_row['gen_ms_total'] += gen_ms
+                s_row['gen_ms_count'] += 1
+            if output_tokens > 0:
+                s_row['effective_output_tokens_total'] += output_tokens
+        if ttft_ms > 0:
+            s_row['ttft_ms_total'] += ttft_ms
+            s_row['ttft_ms_count'] += 1
+        if output_tokens > 0:
+            s_row['output_tokens_total'] += output_tokens
 
     fallback_complexity_by_model: Dict[str, Dict[str, int]] = {}
     for task_item in fallback_tool_complexity_tasks.values():
@@ -6144,7 +6445,7 @@ def build_status_overview() -> Dict[str, Any]:
 
     return {
         'snapshotAt': datetime.now().strftime('%Y-%m-%d %H:%M:%S CST'),
-        'source': 'ChatDBServer/data/users/*/{token_usage,tool_usage,conversations}',
+        'source': 'ChatDBServer/data/users/*/{token_usage,tool_usage,conversations} + ChatDBServer/data/papi/*/token_log.jsonl',
         'totals': {
             'tokens': total_tokens,
             'modelCalls': total_model_calls,
@@ -7404,8 +7705,17 @@ def get_conversation(conv_id):
     username = session['username']
     manager = ConversationManager(username)
     try:
-        conversation = manager.get_conversation(conv_id)
-        return jsonify({'success': True, 'conversation': conversation})
+        conversation = manager.ensure_conversation_compatibility(conv_id)
+        payload = {'success': True, 'conversation': conversation}
+
+        if _as_bool(request.args.get('include_stream'), default=False):
+            payload['stream_sessions'] = list_stream_sessions(
+                username=username,
+                conversation_ids=[conv_id],
+                include_done=True
+            )
+
+        return jsonify(payload)
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 
@@ -7699,6 +8009,14 @@ def save_assistant_partial(conv_id):
             parsed = None
         messages = conversation.get('messages', []) if isinstance(conversation.get('messages', []), list) else []
         if parsed is not None and 0 <= parsed < len(messages):
+            target = messages[parsed] if isinstance(messages[parsed], dict) else {}
+            target_role = str(target.get('role') or '').strip()
+            if target_role != 'assistant':
+                return jsonify({
+                    'success': False,
+                    'message': '消息索引已过期，请同步后重试',
+                    'server_message_count': len(messages)
+                }), 409
             index = parsed
 
     try:
@@ -7800,6 +8118,7 @@ def get_config():
         volc_context_map = _refresh_volc_context_window_map(config, timeout=8.0) if has_volcengine_model else {}
         aliyun_context_map = _refresh_aliyun_context_window_map(config, timeout=8.0) if has_aliyun_model else {}
         ollama_context_map = _refresh_ollama_context_window_map(config, timeout=8.0) if has_ollama_model else {}
+        generic_context_maps = _refresh_generic_context_window_maps(config, timeout=8.0)
 
         providers_info = {}
         for provider_name, provider_cfg in (config.get('providers', {}) or {}).items():
@@ -7829,6 +8148,8 @@ def get_config():
                 context_window = _resolve_aliyun_context_window_by_model_id(model_id, aliyun_context_map)
             if not context_window and provider_api_type == 'ollama':
                 context_window = _resolve_context_window_by_model_id(model_id, ollama_context_map)
+            if not context_window and provider_name in generic_context_maps:
+                context_window = _resolve_context_window_by_model_id(model_id, generic_context_maps.get(provider_name))
             if context_window:
                 item['context_window'] = context_window
             models_info.append(item)
@@ -7924,10 +8245,52 @@ def admin_get_models_config():
     """管理员读取模型/Provider配置"""
     try:
         cfg = load_models_config()
+        models = deepcopy(cfg.get('models', {}))
+        providers = cfg.get('providers', {})
+        has_volcengine_model = any(
+            isinstance(info, dict) and str(info.get('provider', 'volcengine')).strip().lower() == 'volcengine'
+            for info in (models or {}).values()
+        )
+        has_aliyun_model = any(
+            isinstance(info, dict) and str(info.get('provider', '')).strip().lower() in {'aliyun', 'dashscope'}
+            for info in (models or {}).values()
+        )
+        has_ollama_model = any(
+            isinstance(provider_cfg, dict) and str(provider_cfg.get('api_type', '')).strip().lower() == 'ollama'
+            for provider_cfg in (providers or {}).values()
+        )
+        volc_context_map = _refresh_volc_context_window_map(cfg, timeout=8.0) if has_volcengine_model else {}
+        aliyun_context_map = _refresh_aliyun_context_window_map(cfg, timeout=8.0) if has_aliyun_model else {}
+        ollama_context_map = _refresh_ollama_context_window_map(cfg, timeout=8.0) if has_ollama_model else {}
+        generic_context_maps = _refresh_generic_context_window_maps(cfg, timeout=8.0)
+
+        for model_id, info in models.items():
+            if not isinstance(info, dict):
+                continue
+
+            context_window = _extract_context_window_from_provider_row(info)
+            provider_label = str(info.get('provider', 'volcengine') or 'volcengine').strip()
+            provider_name = provider_label.lower()
+            provider_cfg = providers.get(provider_label, {}) if isinstance(providers, dict) else {}
+            provider_api_type = _normalize_provider_api_type(
+                provider_cfg.get('api_type') if isinstance(provider_cfg, dict) else ''
+            )
+
+            if not context_window and provider_name == 'volcengine':
+                context_window = _resolve_volc_context_window_by_model_id(model_id, volc_context_map)
+            if not context_window and provider_name in {'aliyun', 'dashscope'}:
+                context_window = _resolve_aliyun_context_window_by_model_id(model_id, aliyun_context_map)
+            if not context_window and provider_api_type == 'ollama':
+                context_window = _resolve_context_window_by_model_id(model_id, ollama_context_map)
+            if not context_window and provider_name in generic_context_maps:
+                context_window = _resolve_context_window_by_model_id(model_id, generic_context_maps.get(provider_name))
+            if context_window:
+                info['context_window'] = context_window
+
         return jsonify({
             'success': True,
-            'models': cfg.get('models', {}),
-            'providers': cfg.get('providers', {})
+            'models': models,
+            'providers': providers
         })
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
@@ -8472,6 +8835,8 @@ def _fetch_provider_models_live(provider_name: str, capability: str, timeout: fl
     ok = bool(result.get('ok', False))
     status_code = 200 if ok else 502
     payload = {'success': ok, **result}
+    if 'context_window_status' not in payload:
+        payload['context_window_status'] = _build_provider_models_context_diagnostics(result)
     return ok, status_code, payload
 
 
@@ -9177,6 +9542,12 @@ def admin_upsert_model():
     name = (data.get('name') or '').strip()
     provider = (data.get('provider') or '').strip()
     status = _normalize_model_status_text(data.get('status') or 'normal')
+    has_context_window_input = 'context_window' in data
+
+    try:
+        context_window = _parse_model_context_window_for_save(data.get('context_window'))
+    except ValueError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
 
     if not model_id:
         return jsonify({'success': False, 'message': 'model_id 不能为空'}), 400
@@ -9192,6 +9563,11 @@ def admin_upsert_model():
             return jsonify({'success': False, 'message': f'Provider 不存在: {provider}'}), 400
 
         is_rename = bool(original_model_id and original_model_id != model_id)
+        existing_key = original_model_id if is_rename else model_id
+        existing_model = models.get(existing_key, {})
+        if not isinstance(existing_model, dict):
+            existing_model = {}
+
         if is_rename:
             if original_model_id not in models:
                 return jsonify({'success': False, 'message': f'原模型不存在: {original_model_id}'}), 404
@@ -9199,11 +9575,19 @@ def admin_upsert_model():
                 return jsonify({'success': False, 'message': f'目标模型ID已存在: {model_id}'}), 400
             del models[original_model_id]
 
-        models[model_id] = {
-            'name': name or model_id,
-            'provider': provider,
-            'status': status or 'normal'
-        }
+        model_record = dict(existing_model)
+        model_record['name'] = name or model_id
+        model_record['provider'] = provider
+        model_record['status'] = status or 'normal'
+
+        if has_context_window_input:
+            if context_window > 0:
+                model_record['context_window'] = context_window
+            else:
+                for key in MODEL_CONTEXT_WINDOW_KEYS:
+                    model_record.pop(key, None)
+
+        models[model_id] = model_record
         save_models_config(cfg)
         if is_rename:
             return jsonify({'success': True, 'message': f'模型 {original_model_id} 已重命名为 {model_id}'})
@@ -9251,6 +9635,8 @@ def _iter_sse_from_runtime_stream(stream_id: str, username: str, from_seq: int =
         "conversation_id": str(meta.get("conversation_id") or ""),
         "status": str(meta.get("status") or "running"),
         "from_seq": max(0, safe_from_seq),
+        "head_seq": int(meta.get("head_seq") or 1),
+        "last_seq": int(meta.get("last_seq") or 0),
     }
     yield f"data: {json.dumps(session_info, ensure_ascii=False, default=str)}\n\n"
 
@@ -9483,8 +9869,11 @@ def chat_stream():
         active_tool_skills = next_active
         skill_mode = 'force'
     elif raw_skill_mode is not None:
-        # Legacy global override fallback.
-        skill_mode = _normalize_skill_mode(raw_skill_mode)
+        # 旧版前端会固定发送 skill_mode=off；已有 per-skill 配置时不能让它压掉用户启用的 Skill。
+        legacy_skill_mode = _normalize_skill_mode(raw_skill_mode)
+
+        if legacy_skill_mode != 'off' or not active_tool_skills:
+            skill_mode = legacy_skill_mode
 
     if str(data.get('conversation_mode') or '').strip() == 'learning':
         try:
@@ -9723,6 +10112,7 @@ def chat_stream():
             raw_conversation_mode_payload = request_meta.get('conversation_mode_payload')
             if not isinstance(raw_conversation_mode_payload, dict):
                 raw_conversation_mode_payload = {}
+            worker_active_tool_skills = list(active_tool_skills) if isinstance(active_tool_skills, list) else []
             _chat_latency_mark(
                 "worker_request_normalized",
                 conversation_mode=raw_conversation_mode,
@@ -9774,6 +10164,9 @@ def chat_stream():
                         current_meta['lecture_id'] = lecture_id
                         merged_payload['meta'] = current_meta
                     raw_conversation_mode_payload = merged_payload
+                    merged_active_skills = raw_conversation_mode_payload.get('active_tool_skills', [])
+                    if isinstance(merged_active_skills, list):
+                        worker_active_tool_skills = list(merged_active_skills)
                     # 拼图提交注入（服务端构建，不信任客户端文本）
                     puzzle_submission = data.get('puzzle_submission')
                     if isinstance(puzzle_submission, dict):
@@ -9904,7 +10297,7 @@ def chat_stream():
                 is_regenerate=is_regenerate,
                 regenerate_index=regenerate_index,
                 skill_mode=skill_mode,
-                active_tool_skills=active_tool_skills,
+                active_tool_skills=worker_active_tool_skills,
                 conversation_mode=raw_conversation_mode,
                 conversation_mode_payload=raw_conversation_mode_payload,
                 skip_user_message=bool(skip_user_message or user_message_persisted)
@@ -10007,14 +10400,25 @@ def chat_stream_status():
     if request.method == 'POST':
         data = request.get_json(silent=True) or {}
         raw_ids = data.get('stream_ids', [])
+        raw_conversation_ids = data.get('conversation_ids', [])
     else:
         raw = str(request.args.get('stream_ids') or request.args.get('ids') or '').strip()
         raw_ids = [part.strip() for part in raw.split(',')] if raw else []
+        raw_conversation = str(request.args.get('conversation_ids') or request.args.get('conversation_id') or '').strip()
+        raw_conversation_ids = [part.strip() for part in raw_conversation.split(',')] if raw_conversation else []
     if not isinstance(raw_ids, list):
         raw_ids = []
+    if not isinstance(raw_conversation_ids, list):
+        raw_conversation_ids = []
     stream_ids = [str(item or '').strip() for item in raw_ids if str(item or '').strip()]
+    conversation_ids = [str(item or '').strip() for item in raw_conversation_ids if str(item or '').strip()]
     username = session['username']
-    rows = list_stream_sessions(username=username, stream_ids=stream_ids, include_done=True)
+    rows = list_stream_sessions(
+        username=username,
+        stream_ids=stream_ids,
+        conversation_ids=conversation_ids,
+        include_done=True
+    )
     return jsonify({'success': True, 'sessions': rows})
 
 
@@ -10110,7 +10514,8 @@ def _inject_local_agent_tools(model, agent_info: dict):
             continue
         # 兼容两种输入格式：OpenAI 嵌套格式 或 Responses API 扁平格式
         func = tool_def.get("function") or {}
-        tool_name = func.get("name") or tool_def.get("name")
+        raw_tool_name = str(func.get("name") or tool_def.get("name") or "").strip()
+        tool_name = canonicalize_tool_name(raw_tool_name)
         description = func.get("description") or tool_def.get("description", "")
         parameters = func.get("parameters") or tool_def.get("parameters", {})
         if not tool_name:
@@ -10137,7 +10542,7 @@ def _inject_local_agent_tools(model, agent_info: dict):
         # 注入工具定义并登记为外部运行时工具，避免 sendMessage 重建基础工具时被清空。
         model.register_external_function_tool(formatted)
 
-        # 注入执行处理器：尝试走 agent_tunnel_socket 执行，否则回退
+        # 注入执行处理器：WSS 在线时走 agent_tunnel_socket，不在线时走长轮询通道。
         def _make_handler(name: str, uname: str):
             def _handler(args: dict) -> str:
                 from agent_tunnel import is_agent_online, call_local_tool_sync
@@ -10153,7 +10558,7 @@ def _inject_local_agent_tools(model, agent_info: dict):
                     except Exception as e:
                         return f"本地工具 WSS 通信异常: {e}"
 
-                # 回退：长轮询模式
+                # 本地 Agent 未保持 WSS 在线时使用长轮询通道。
                 conv_id = str(getattr(model, 'conversation_id', '') or '')
                 req_obj = enqueue_request(
                     username=uname,
@@ -10201,7 +10606,8 @@ def _flatten_model_function_tools(model) -> List[Dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         func = item.get("function") if isinstance(item.get("function"), dict) else None
-        name = str((func or {}).get("name") or item.get("name") or "").strip()
+        raw_name = str((func or {}).get("name") or item.get("name") or "").strip()
+        name = canonicalize_tool_name(raw_name)
         if not name or name in seen:
             continue
         seen.add(name)
@@ -10209,11 +10615,15 @@ def _flatten_model_function_tools(model) -> List[Dict[str, Any]]:
         parameters = (func or {}).get("parameters") if func else item.get("parameters")
         if not isinstance(parameters, dict):
             parameters = {}
-        out.append({
+        row = {
             "name": name,
+            "canonical_name": name,
             "description": description,
             "parameters": parameters,
-        })
+        }
+        if raw_name and raw_name != name:
+            row["legacy_alias"] = raw_name
+        out.append(row)
     return out
 
 
@@ -10251,10 +10661,13 @@ def debug_tools_execute():
     data = request.get_json(silent=True) or {}
     model_name = str(data.get('model_name') or '').strip() or None
     conversation_id = str(data.get('conversation_id') or '').strip() or None
-    tool_name = str(data.get('tool_name') or '').strip()
+    raw_tool_name = str(data.get('tool_name') or '').strip()
+    tool_name = canonicalize_tool_name(raw_tool_name)
     args = data.get('args')
-    if not tool_name:
+    if not raw_tool_name:
         return jsonify({'success': False, 'message': 'tool_name 不能为空'}), 400
+    if not tool_name:
+        return jsonify({'success': False, 'message': f'工具名无效: {raw_tool_name}'}), 400
     if args is None:
         args = {}
     if not isinstance(args, dict):
@@ -10283,6 +10696,8 @@ def debug_tools_execute():
         return jsonify({
             'success': True,
             'tool_name': tool_name,
+            'canonical_name': tool_name,
+            'legacy_alias': raw_tool_name if raw_tool_name != tool_name else '',
             'model_name': model.model_name,
             'conversation_id': conversation_id,
             'result': raw_result,

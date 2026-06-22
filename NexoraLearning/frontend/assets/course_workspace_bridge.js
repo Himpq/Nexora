@@ -185,12 +185,11 @@
         const materialsActive = isPaneActive('materialsView');
         const learningPathActive = isPaneActive('learningPathView');
         const courseHome = byId('courseHomePane');
-        const reader = byId('readerPane');
 
+        // 教材 Reader 由 reader state 接管沉浸主视图，课程 Workspace 只代表课程主页和学习路线。
         return !!(
             learningPathActive
             || (materialsActive && isShown(courseHome))
-            || (materialsActive && isShown(reader))
         );
     }
 

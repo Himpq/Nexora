@@ -30,6 +30,16 @@ def _safe_json_obj(raw: str) -> Dict[str, Any]:
         return {}
 
 
+def _render_prompt_template(template: str, values: Mapping[str, Any]) -> str:
+    """按 NexoraLearning 提示词规范渲染 {{var}} 占位符。"""
+    text = str(template or "")
+
+    for key, value in dict(values or {}).items():
+        text = text.replace("{{" + str(key) + "}}", str(value or ""))
+
+    return text
+
+
 def _clamp_to_section(args: Dict[str, Any], start: int, end: int) -> Dict[str, Any]:
     """将参数限制在章节范围内"""
     safe = dict(args or {})
@@ -59,6 +69,126 @@ def _clamp_to_section(args: Dict[str, Any], start: int, end: int) -> Dict[str, A
     safe["range_start"] = range_start
     safe["range_end"] = range_end
     return safe
+
+
+_SUMMARY_PROGRESS_MARKER = "[SUMMARY_LOOP_PROGRESS]"
+
+
+def _merge_read_ranges(ranges: List[Tuple[int, int]], start: int, end: int) -> List[Tuple[int, int]]:
+    """合并后端 read 区间，内部统一使用 START:LENGTH。"""
+    normalized: List[Tuple[int, int]] = []
+
+    for raw_start, raw_length in ranges:
+        range_start = max(start, min(end, int(raw_start)))
+        range_end = max(range_start, min(end, int(raw_start) + max(0, int(raw_length))))
+
+        if range_end > range_start:
+            normalized.append((range_start, range_end))
+
+    normalized.sort(key=lambda item: item[0])
+    merged: List[Tuple[int, int]] = []
+
+    for range_start, range_end in normalized:
+
+        if not merged or range_start > merged[-1][1]:
+            merged.append((range_start, range_end))
+            continue
+
+        last_start, last_end = merged[-1]
+        merged[-1] = (last_start, max(last_end, range_end))
+
+    return [(range_start, range_end - range_start) for range_start, range_end in merged]
+
+
+def _find_next_unread_offset(ranges: List[Tuple[int, int]], start: int, end: int) -> int:
+    """根据已读区间计算下一段未读起点。"""
+    cursor = max(0, int(start))
+
+    for range_start, range_length in _merge_read_ranges(ranges, start, end):
+        range_end = range_start + range_length
+
+        if range_end <= cursor:
+            continue
+
+        if range_start > cursor:
+            return cursor
+
+        cursor = max(cursor, range_end)
+
+    return min(cursor, max(start, end))
+
+
+def _format_model_read_ranges(ranges: List[Tuple[int, int]], start: int, end: int) -> str:
+    """格式化给模型看的已读区间，使用 FROM:TO。"""
+    merged = _merge_read_ranges(ranges, start, end)
+
+    if not merged:
+        return "无"
+
+    return ", ".join([f"{range_start}:{range_start + range_length}" for range_start, range_length in merged[-8:]])
+
+
+def _build_summary_progress_system_prompt(
+    *,
+    chapter_name: str,
+    chapter_range: str,
+    chunk_start: int,
+    chunk_end: int,
+    preload_start: int,
+    preload_end: int,
+    preloaded_ranges: List[Tuple[int, int]],
+    queried_ranges: List[Tuple[int, int]],
+    latest_quality_feedback: str,
+) -> str:
+    """构建摘要循环每轮更新的结构化系统进度提示。"""
+    all_ranges = list(preloaded_ranges or []) + list(queried_ranges or [])
+    next_offset = _find_next_unread_offset(all_ranges, chunk_start, chunk_end)
+    remaining = max(0, chunk_end - next_offset)
+    read_length = min(4000, remaining)
+    chapter_model_range = f"{int(chunk_start)}:{int(chunk_end)}"
+    read_ranges_text = _format_model_read_ranges(all_ranges, chunk_start, chunk_end)
+    tool_ranges_text = _format_model_read_ranges(queried_ranges, chunk_start, chunk_end)
+    preload_model_range = f"{int(preload_start)}:{int(preload_end)}"
+
+    if remaining > 0:
+        next_action = f"read(offset={next_offset}, length={max(2000, read_length) if remaining >= 2000 else read_length})"
+    else:
+        next_action = "本章范围已覆盖，优先调用 update_summary 提交摘要"
+
+    feedback = str(latest_quality_feedback or "").strip() or "无"
+    return (
+        f"{_SUMMARY_PROGRESS_MARKER}\n"
+        "range_format=模型可见范围使用 FROM:TO；read 工具参数使用 offset/length。\n"
+        f"chapter_name={chapter_name}\n"
+        f"chapter_range_model={chapter_model_range}\n"
+        f"preload_range_model={preload_model_range}\n"
+        f"seen_ranges_including_preload={read_ranges_text}\n"
+        f"tool_read_ranges={tool_ranges_text}\n"
+        f"next_required_action={next_action}\n"
+        f"quality_feedback={feedback}\n"
+        "规则: 不要重复读取 seen_ranges_including_preload 已覆盖的范围；"
+        "如果仍需查证，只读取未覆盖区间或明确缺口；"
+        "摘要准备好后必须调用 update_summary。"
+    )
+
+
+def _upsert_summary_progress_system_prompt(ctx: Context, content: str) -> None:
+    """更新摘要循环进度系统提示，避免多轮累积旧提示。"""
+    for index, msg in enumerate(ctx):
+
+        if msg.role == "system" and str(msg.content or "").startswith(_SUMMARY_PROGRESS_MARKER):
+            ctx.replace(index, role="system", content=content)
+            return
+
+    insert_index = 0
+
+    for index, msg in enumerate(ctx):
+
+        if msg.role == "system":
+            insert_index = index + 1
+            break
+
+    ctx.insert(insert_index, role="system", content=content)
 
 
 def run_summary_tool_loop(
@@ -122,19 +252,27 @@ def run_summary_tool_loop(
     section_done = False
     turn = 0
     latest_quality_feedback = ""
+    preloaded_ranges: List[Tuple[int, int]] = []
     queried_ranges: List[Tuple[int, int]] = []
+
+    if chapter_preload_text and preload_end > preload_start:
+        preloaded_ranges.append((int(preload_start), int(preload_end) - int(preload_start)))
     
     # 第一轮添加 preload 文本
     if chapter_preload_text:
-        preload_range = f"{preload_start}:{max(1, preload_end - preload_start)}"
-        initial_user_prompt = user_prompt_template.format(
-            request="请为当前章节生成摘要。",
-            chapter_name=chapter_name,
-            chapter_range=chapter_range,
-            preload_range=preload_range,
-            quality_feedback=latest_quality_feedback,
+        chapter_range_model = f"{int(chunk_start)}:{int(chunk_end)}"
+        preload_range_model = f"{int(preload_start)}:{int(preload_end)}"
+        initial_user_prompt = _render_prompt_template(
+            user_prompt_template,
+            {
+                "request": "请为当前章节生成摘要。",
+                "chapter_name": chapter_name,
+                "chapter_range": chapter_range_model,
+                "preload_range": preload_range_model,
+                "quality_feedback": latest_quality_feedback,
+                "chapter_preload": chapter_preload_text,
+            },
         )
-        initial_user_prompt += f"\n\n<CHAPTER_PRELOAD>\n{chapter_preload_text}\n</CHAPTER_PRELOAD>"
         ctx.add(role="user", content=initial_user_prompt)
     
     while not section_done and turn < max_turns:
@@ -146,12 +284,17 @@ def run_summary_tool_loop(
         
         # 如果不是第一轮，添加新的 user prompt
         if turn > 1:
-            user_prompt = user_prompt_template.format(
-                request="请继续生成摘要。",
-                chapter_name=chapter_name,
-                chapter_range=chapter_range,
-                preload_range="",
-                quality_feedback=latest_quality_feedback,
+            chapter_range_model = f"{int(chunk_start)}:{int(chunk_end)}"
+            user_prompt = _render_prompt_template(
+                user_prompt_template,
+                {
+                    "request": "请继续生成摘要。",
+                    "chapter_name": chapter_name,
+                    "chapter_range": chapter_range_model,
+                    "preload_range": "",
+                    "quality_feedback": latest_quality_feedback,
+                    "chapter_preload": "",
+                },
             )
             # 替换或添加 user 消息
             last_msg = ctx.last()
@@ -159,6 +302,21 @@ def run_summary_tool_loop(
                 ctx.replace(-1, content=user_prompt)
             else:
                 ctx.add(role="user", content=user_prompt)
+
+        _upsert_summary_progress_system_prompt(
+            ctx,
+            _build_summary_progress_system_prompt(
+                chapter_name=chapter_name,
+                chapter_range=chapter_range,
+                chunk_start=chunk_start,
+                chunk_end=chunk_end,
+                preload_start=preload_start,
+                preload_end=preload_end,
+                preloaded_ranges=preloaded_ranges,
+                queried_ranges=queried_ranges,
+                latest_quality_feedback=latest_quality_feedback,
+            ),
+        )
         
         # 准备上下文（执行策略）
         executed = ctx.prepare()
@@ -372,7 +530,7 @@ def run_summary_tool_loop(
                             "preview": (str(result_obj.get("text", ""))[:50] + "...") if len(str(result_obj.get("text", ""))) > 50 else str(result_obj.get("text", "")),
                         },
                     )
-            elif tool_name in {"index", "index_book_text"}:
+            elif tool_name in {"find", "index", "index_book_text"}:
                 args_obj = _clamp_to_section(args_obj, chunk_start, chunk_end)
                 if on_index:
                     result_obj = on_index(args_obj)
@@ -384,7 +542,7 @@ def run_summary_tool_loop(
                         lecture_id,
                         book_id,
                         {
-                            "type": "index",
+                            "type": "find" if tool_name == "find" else "index",
                             "title": f"检索关键词 [{args_obj.get('keyword', '')}]",
                             "preview": f"找到 {result_obj.get('count', 0)} 个匹配位置",
                         },

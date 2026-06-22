@@ -98,7 +98,7 @@ _STATIC_COOKIE_JAR_PATH = Path(get_app_root()) / "renderer_cookies.lwp"
 
 
 def _allocate_interactive_page_id() -> int:
-    """为 local_web_render 创建的驻留页面分配稳定递增 ID。"""
+    """为 browser_page_open 创建的驻留页面分配稳定递增 ID。"""
     global _NEXT_INTERACTIVE_PAGE_ID
 
     with _INTERACTIVE_LOCK:
@@ -109,15 +109,15 @@ def _allocate_interactive_page_id() -> int:
 
 def _normalize_interactive_page_id(page_id):
     if isinstance(page_id, bool):
-        return None, {"error": "page_id 必须是 local_web_render 返回的页面 ID 数字"}
+        return None, {"error": "page_id 必须是 browser_page_open 返回的页面 ID 数字"}
 
     if page_id is None:
-        return None, {"error": "page_id 不能为空，请先用 local_web_render(extract_mode='interactive') 获取页面 ID"}
+        return None, {"error": "page_id 不能为空，请先用 browser_page_open(extract_mode='interactive') 获取页面 ID"}
 
     try:
         normalized = int(str(page_id).strip())
     except Exception:
-        return None, {"error": "page_id 必须是 local_web_render 返回的页面 ID 数字"}
+        return None, {"error": "page_id 必须是 browser_page_open 返回的页面 ID 数字"}
 
     if normalized < 0:
         return None, {"error": "page_id 不能小于 0"}
@@ -137,7 +137,7 @@ def _get_interactive_page(page_id):
     if not page or not page.get("window"):
         return normalized, None, {
             "page_id": normalized,
-            "error": f"找不到 page_id={normalized} 的驻留页面，请重新使用 local_web_render(extract_mode='interactive') 打开页面",
+            "error": f"找不到 page_id={normalized} 的驻留页面，请重新使用 browser_page_open(extract_mode='interactive') 打开页面",
         }
 
     return normalized, page, None
@@ -669,7 +669,7 @@ def _init_interactive_window(url: str, page_id=None):
             _remove_interactive_page(resolved_page_id, page.get("window"))
             return {
                 "page_id": resolved_page_id,
-                "error": f"page_id={resolved_page_id} 的驻留页面已不可用，请重新使用 local_web_render(extract_mode='interactive') 打开页面",
+                "error": f"page_id={resolved_page_id} 的驻留页面已不可用，请重新使用 browser_page_open(extract_mode='interactive') 打开页面",
             }
 
         ready = page.get("ready")

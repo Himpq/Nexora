@@ -5,6 +5,11 @@ from typing import Any, Dict, List, Optional
 
 from datastorage import safe_append_jsonl, safe_read_json, safe_read_jsonl_tail
 
+try:
+    from papi.token_logger import iter_papi_token_log_entries
+except Exception:
+    from api.papi.token_logger import iter_papi_token_log_entries
+
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, 'data')
@@ -498,6 +503,55 @@ def _collect_usage_summary(model_quotas: Optional[Dict[str, Dict[str, Any]]] = N
                 })
                 global_model['tokens'] += total
                 global_model['requests'] += 1
+
+    for log in iter_papi_token_log_entries():
+        if not isinstance(log, dict):
+            continue
+        input_tokens = _int_value(log.get('input_tokens', 0))
+        output_tokens = _int_value(log.get('output_tokens', 0))
+        total = log.get('total_tokens')
+        if total is None:
+            total = input_tokens + output_tokens
+        total = _int_value(total)
+
+        model = _normalize_model_name(log.get('model'))
+        provider = _resolve_active_provider(model, log.get('provider'))
+        quota_key = _model_quota_key(provider, model)
+
+        total_tokens += total
+        total_requests += 1
+
+        if provider == 'unknown' or model == 'unknown':
+            continue
+
+        provider_entry = provider_map.setdefault(provider, {
+            'name': provider,
+            'tokens': 0,
+            'requests': 0,
+            'models': {},
+        })
+        provider_entry['tokens'] += total
+        provider_entry['requests'] += 1
+
+        model_entry = provider_entry['models'].setdefault(quota_key, {
+            'key': quota_key,
+            'name': model,
+            'provider': provider,
+            'tokens': 0,
+            'requests': 0,
+        })
+        model_entry['tokens'] += total
+        model_entry['requests'] += 1
+
+        global_model = model_totals.setdefault(quota_key, {
+            'key': quota_key,
+            'name': model,
+            'provider': provider,
+            'tokens': 0,
+            'requests': 0,
+        })
+        global_model['tokens'] += total
+        global_model['requests'] += 1
 
     # 把模型配置中的模型也并入，便于即使没产生调用也可以直接配额。
     for model_id, model_info in models_catalog.items():

@@ -49,14 +49,14 @@ system_tools_enabled_auto_select = """
 当前会话能力：
 - 用户已启用工具调用，模式为 Auto(Select)。
 - 若你已明确知道要调用的工具，可直接调用。
-- 如需查看当前轮更完整的工具目录，再调用 select_tools。
-- 对真实网页交互：先用 local_web_render(extract_mode="interactive") 建立页面并记录返回的 page_id；后续 local_web_get_content / local_web_exec_js / local_web_input / local_web_click / local_web_scroll 都必须传同一个 page_id。用户手动操作打开的页面后，继续用这个 page_id 读取或操作页面。
+- 如需查看当前轮更完整的工具目录，再调用 runtime_tool_select。
+- 对真实网页交互：先用 browser_page_open(extract_mode="interactive") 建立页面并记录返回的 page_id；后续 browser_page_read / browser_page_eval / browser_page_input / browser_page_click / browser_page_scroll 都必须传同一个 page_id。用户手动操作打开的页面后，继续用这个 page_id 读取或操作页面。
 """
 
 system_tools_enabled_auto_off = """
 当前会话能力：
 - 用户已启用工具调用，模式为 Auto(OFF)。
-- 当前默认不开放业务工具；先调用 enable_tools，启用工具后会自动注入工具内容。
+- 当前默认不开放业务工具；先调用 runtime_tool_enable，启用工具后会自动注入工具内容。
 - 请务必必要时先启用工具，然后获取足够多的信息再回答问题，而不是一味的根据上下文回答问题。
 """
 
@@ -65,7 +65,7 @@ system_tools_enabled_force = """
 当前会话能力：
 - 用户已启用工具调用，模式为 Force。
 - 直接使用当前可用工具完成任务，避免重复或无意义调用。
-- 对真实网页交互：先用 local_web_render(extract_mode="interactive") 建立页面并记录返回的 page_id；后续 local_web_get_content / local_web_exec_js / local_web_input / local_web_click / local_web_scroll 都必须传同一个 page_id。用户手动操作打开的页面后，继续用这个 page_id 读取或操作页面。
+- 对真实网页交互：先用 browser_page_open(extract_mode="interactive") 建立页面并记录返回的 page_id；后续 browser_page_read / browser_page_eval / browser_page_input / browser_page_click / browser_page_scroll 都必须传同一个 page_id。用户手动操作打开的页面后，继续用这个 page_id 读取或操作页面。
 """
 
 
@@ -76,7 +76,7 @@ TOOL_SKILL_BLOCK_TEMPLATE = """<TOOL-SKILL>
 <END>"""
 
 USER_PROFILE_MEMORY_TEMPLATE = """[短期记忆-用户画像]
-当你觉得需要更新用户画像的时候调用 updateShort 进行更新。
+当你觉得需要更新用户画像的时候调用 memory_short_update 进行更新。
 以下信息用于理解用户偏好与背景，回答时可参考但不要逐字复述：
 <USER_PROFILE>
 {{profile_text}}
@@ -224,12 +224,12 @@ RUNTIME_HINT_TOOL_TAG = "[工具选择协议]"
 runtime_native_search_hint = f"""{RUNTIME_HINT_NATIVE_TAG} 当前会话已启用原生联网搜索能力。"""
 
 runtime_tool_selector_empty = f"""{RUNTIME_HINT_TOOL_TAG}
-本轮可调用工具仅有 select_tools，但当前可选目录为空。
+本轮可调用工具仅有 runtime_tool_select，但当前可选目录为空。
 """
 
 runtime_tool_selector_template = f"""{RUNTIME_HINT_TOOL_TAG}
-Auto 模式下可调用 select_tools 请求当前轮更具体的工具子集；调用后立即生效，仅影响当前回复。
-示例：{{"tools":["client_js_exec","vector_search"]}}
+Auto 模式下可调用 runtime_tool_select 请求当前轮更具体的工具子集；调用后立即生效，仅影响当前回复。
+示例：{{"tools":["client_js_exec","knowledge_search_vector"]}}
 可选工具目录（工具名 - 工具概览）：
 {{catalog}}
 """
@@ -271,6 +271,9 @@ context_compression_prompt_template = """[上下文压缩任务]
 1. 先更新用户短期记忆。
 2. 再输出压缩后的上下文摘要。
 
+注意：最终输出只能是压缩后的上下文摘要，不要输出短期记忆更新过程、工具执行结果或解释过程。
+<HISTORY> 是上下文摘要的主体；<PROFILE_TEXT> 和 <RECENT_DIALOGUE> 只能作为辅助参考，不能替代 <HISTORY>。
+
 输入信息：
 <PROFILE_TEXT>
 {{profile_text}}
@@ -304,7 +307,7 @@ context_compression_prompt_template = """[上下文压缩任务]
 2. 使用中文，保持信息密度。
 3. 保留：用户目标、偏好、关键事实、已确认约束、未完成事项、近期事项、关键术语映射、情感交流细节、用户个人细节、对话风格与倾向。
 4. 删除：寒暄、重复表达、无关细节、冗长推理过程、工具中间日志。
-5. 可以按以下结构组织（不强制）：
+5. 按以下结构组织：
 近期决策
 近期对话时间线
 重要事件
@@ -315,6 +318,8 @@ context_compression_prompt_template = """[上下文压缩任务]
 注意力集中
 近期细节
 回答方式
+6. 最大长度约 {{max_chars}} 字；如果 <HISTORY> 信息量足够，不要为了简短而丢弃可复用细节。
+7. 对于关键信息直接照搬，有必要保留的上下文直接执行输出进行保留。
 """
 
 
@@ -327,11 +332,11 @@ def build_runtime_tool_selector_hint(catalog_prompt: str) -> str:
     return out.strip()
 
 
-def build_runtime_tool_not_enabled_message(function_name: str, allowed_names, selector_tool: str = "select_tools") -> str:
+def build_runtime_tool_not_enabled_message(function_name: str, allowed_names, selector_tool: str = "runtime_tool_select") -> str:
     fn = str(function_name or "").strip() or "unknown"
     allowed = [str(x).strip() for x in (allowed_names or []) if str(x).strip()]
     allowed_text = ", ".join(allowed) if allowed else "(none)"
-    selector = str(selector_tool or "select_tools").strip() or "select_tools"
+    selector = str(selector_tool or "runtime_tool_select").strip() or "runtime_tool_select"
     out = runtime_tool_not_enabled_template.replace("{{function_name}}", fn)
     out = out.replace("{{allowed_names}}", allowed_text)
     out = out.replace("{{selector_tool}}", selector)
@@ -372,7 +377,7 @@ def build_context_compression_prompt(
     add_short: str = "",
     max_chars: int = 6000
 ) -> str:
-    limit = max(600, min(12000, int(max_chars or 6000)))
+    limit = max(600, min(120000, int(max_chars or 6000)))
     out = context_compression_prompt_template.replace("{{history_text}}", str(history_text or "").strip())
     out = out.replace("{{profile_text}}", str(profile_text or "").strip())
     out = out.replace("{{recent_dialogue}}", str(recent_dialogue or "").strip())
@@ -408,7 +413,7 @@ def build_select_tools_catalog_prompt(catalog: List[Dict[str, Any]]) -> str:
 def build_select_tools_catalog_suffix(
     names: Iterable[str],
     max_items: int = 128,
-    selector_tool: str = "select_tools"
+    selector_tool: str = "runtime_tool_select"
 ) -> str:
     clean_names = [str(x).strip() for x in (names or []) if str(x).strip()]
     if not clean_names:
@@ -416,7 +421,7 @@ def build_select_tools_catalog_suffix(
     cap = max(1, int(max_items or 24))
     shown = clean_names[:cap]
     joined = ", ".join(shown)
-    selector = str(selector_tool or "select_tools").strip() or "select_tools"
+    selector = str(selector_tool or "runtime_tool_select").strip() or "runtime_tool_select"
     if len(clean_names) > len(shown):
         out = select_tools_catalog_suffix_more.replace("{{names}}", joined)
         out = out.replace("{{total}}", str(len(clean_names)))

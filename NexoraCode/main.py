@@ -1428,17 +1428,6 @@ class NexoraWindowApi:
             pass
         return {"success": False}
 
-    def get_preferred_model(self):
-        model_id = str(config.get("preferred_model_id", "") or "").strip()
-        return {"success": True, "model_id": model_id}
-
-    def set_preferred_model(self, model_id: str = ""):
-        next_id = str(model_id or "").strip()
-        prev = str(config.get("preferred_model_id", "") or "").strip()
-        if next_id != prev:
-            config.set("preferred_model_id", next_id)
-        return {"success": True}
-
     def is_window_maximized(self):
         try:
             if self._window:
@@ -4665,56 +4654,6 @@ def main():
                 wintitle.sync_max_state(win)
 
             threading.Thread(target=_stabilize_first_layout, daemon=True).start()
-
-        try:
-            win.evaluate_js("""(function() {
-  function api() {
-    return (window.pywebview && window.pywebview.api) ? window.pywebview.api : null;
-  }
-
-  if (!window.__nexoraCodeModelSyncBound) {
-    window.__nexoraCodeModelSyncBound = true;
-    document.addEventListener('click', function(e) {
-      const chip = e.target && e.target.closest ? e.target.closest('.model-chip') : null;
-      if (!chip) return;
-      const modelId = String(chip.dataset.modelId || '').trim();
-      if (!modelId) return;
-      const a = api();
-      if (a && a.set_preferred_model) a.set_preferred_model(modelId);
-    }, true);
-  }
-
-  const a = api();
-  if (a && a.get_preferred_model) {
-    a.get_preferred_model().then(function(d) {
-      const saved = String((d && d.model_id) || '').trim();
-      const current = String(localStorage.getItem('selectedModel') || '').trim();
-      if (!saved && current && a.set_preferred_model) {
-        a.set_preferred_model(current);
-        return;
-      }
-      if (!saved) return;
-      localStorage.setItem('selectedModel', saved);
-      let tryCount = 0;
-      const timer = setInterval(function() {
-        tryCount += 1;
-        let applied = false;
-        const chips = document.querySelectorAll('.model-chip[data-model-id]');
-        chips.forEach(function(chip) {
-          if (applied) return;
-          const mid = String(chip.dataset.modelId || '').trim();
-          if (mid === saved) {
-            chip.click();
-            applied = true;
-          }
-        });
-        if (applied || tryCount > 30) clearInterval(timer);
-      }, 250);
-    }).catch(function() {});
-  }
-})();""")
-        except Exception:
-            pass
 
         toast_msg = _pop_pending_toast()
         if toast_msg:

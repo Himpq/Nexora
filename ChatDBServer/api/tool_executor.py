@@ -16,7 +16,7 @@ from file_sandbox import UserFileSandbox
 from client_tool_bridge import request_client_js_execution
 from conversation_asset_store import persist_conversation_image_bytes
 from provider_factory import create_provider_adapter
-from tools import TOOL_NAME_ALIASES, canonicalize_tool_name
+from tools import canonicalize_tool_name
 from learning_runtime import LearningRuntimeExecutor, get_learning_tools
 
 
@@ -32,60 +32,54 @@ class ToolExecutor:
         self._template_max_chunk_chars = 20000
         self._template_total_budget_chars = 80000
         self.handlers: Dict[str, Callable[[Dict[str, Any]], str]] = {
-            "select_tools": self._select_tools,
-            "enable_tools": self._enable_tools,
-            "get_knowledge_list": self._get_knowledge_list,
-            "addShort": self._add_short,
+            "runtime_tool_select": self._runtime_tool_select,
+            "runtime_tool_enable": self._runtime_tool_enable,
+            "knowledge_list": self._get_knowledge_list,
+            "memory_short_add": self._add_short,
             # "queryShortMemory": self._query_short_memory,  # short-memory tools disabled
-            "add_basis": self._add_basis,
+            "knowledge_basis_create": self._add_basis,
             # "removeShort": self._remove_short,  # short-memory tools disabled
-            "remove_basis": self._remove_basis,
-            "update_basis": self._update_basis,
-            "get_basis_content": self._get_basis_content,
+            "knowledge_basis_delete": self._remove_basis,
+            "knowledge_basis_update": self._update_basis,
+            "knowledge_basis_read": self._get_basis_content,
             "longterm_plan": self._longterm_plan,
             "longterm_update": self._longterm_update,
             "server_web_search": self._server_web_search,
             "server_render_page": self._server_render_page,
             "generate_image": self._generate_image,
-            "search_keyword": self._search_keyword,
-            "readtmp": self._readtmp,
-            "searchtmp": self._searchtmp,
-            "listtmp": self._listtmp,
-            "cleartmp": self._cleartmp,
+            "knowledge_search_keyword": self._search_keyword,
+            "temp_context_read": self._temp_context_read,
+            "temp_context_search": self._temp_context_search,
+            "temp_context_list": self._temp_context_list,
+            "temp_context_clear": self._temp_context_clear,
             "arxiv_search": self._arxiv_search,
             "js_execute": self._js_execute,
             "client_js_exec": self._js_execute,
-            "get_user_profile_memory": self._get_user_profile_memory,
-            "updateShort": self._set_user_profile_memory,
-            "vector_search": self._vector_search,
-            "file_semantic_search": self._file_semantic_search,
+            "memory_profile_read": self._get_user_profile_memory,
+            "memory_short_update": self._set_user_profile_memory,
+            "knowledge_search_vector": self._vector_search,
+            "server_file_search_semantic": self._file_semantic_search,
             "link_knowledge": self._link_knowledge,
             "categorize_knowledge": self._categorize_knowledge,
             "create_category": self._create_category,
             "analyze_connections": self._analyze_connections,
-            "get_knowledge_graph_structure": self._get_knowledge_graph_structure,
+            "knowledge_graph_read": self._get_knowledge_graph_structure,
             "get_knowledge_connections": self._get_knowledge_connections,
             "find_path_between_knowledge": self._find_path_between_knowledge,
-            "get_context_length": self._get_context_length,
-            "get_context": self._get_context,
-            "get_context_find_keyword": self._get_context_find_keyword,
-            "get_main_title": self._get_main_title,
+            "conversation_context_length": self._get_context_length,
+            "conversation_context_read": self._get_context,
+            "conversation_context_search": self._get_context_find_keyword,
             "relay_web_search": self._relay_web_search,
             "send_email": self._send_email,
             "get_email_list": self._get_email_list,
             "get_email": self._get_email,
-            "file_create": self._file_create,
-            "file_read": self._file_read,
-            "file_write": self._file_write,
-            "file_find": self._file_find,
-            "file_list": self._file_list,
-            "file_remove": self._file_remove,
+            "server_file_create": self._file_create,
+            "server_file_read": self._file_read,
+            "server_file_write": self._file_write,
+            "server_file_find": self._file_find,
+            "server_file_list": self._file_list,
+            "server_file_remove": self._file_remove,
         }
-        # Backward compatibility for old camelCase tool names.
-        for legacy_name, canonical_name in TOOL_NAME_ALIASES.items():
-            handler = self.handlers.get(canonical_name)
-            if handler:
-                self.handlers.setdefault(legacy_name, handler)
         self._file_sandbox = UserFileSandbox(self.model.username)
         self._learning_executor = None
 
@@ -370,14 +364,16 @@ class ToolExecutor:
         return base_url
 
     def execute(self, function_name: str, args: Dict[str, Any]) -> str:
-        canonical_name = canonicalize_tool_name(function_name)
-        handler = self.handlers.get(canonical_name) or self.handlers.get(function_name)
+        raw_name = str(function_name or "").strip()
+        if self._is_learning_runtime_tool(raw_name):
+            try:
+                return self._get_learning_executor().execute(raw_name, args or {})
+            except Exception as e:
+                return f"错误：Learning 工具执行失败: {str(e)}"
+
+        canonical_name = canonicalize_tool_name(raw_name)
+        handler = self.handlers.get(canonical_name)
         if not handler:
-            if self._is_learning_runtime_tool(canonical_name or function_name):
-                try:
-                    return self._get_learning_executor().execute(canonical_name or function_name, args or {})
-                except Exception as e:
-                    return f"错误：Learning 工具执行失败: {str(e)}"
             return f"错误：未知函数 {function_name}"
         try:
             safe_args = args if isinstance(args, dict) else {}
@@ -390,14 +386,18 @@ class ToolExecutor:
     def _is_learning_runtime_tool(self, function_name: str) -> bool:
         if str(getattr(self.model, "_runtime_conversation_mode", "") or "").strip().lower() != "learning":
             return False
-        target = canonicalize_tool_name(function_name)
+        target = str(function_name or "").strip()
         if not target:
             return False
-        for tool in (get_learning_tools() or []):
+        try:
+            tools = get_learning_tools() or []
+        except Exception:
+            return False
+        for tool in tools:
             if not isinstance(tool, dict) or str(tool.get("type", "") or "").strip() != "function":
                 continue
             fn = tool.get("function") if isinstance(tool.get("function"), dict) else {}
-            name = canonicalize_tool_name(str(fn.get("name", "") or "").strip())
+            name = str(fn.get("name", "") or "").strip()
             if name == target:
                 return True
         return False
@@ -569,7 +569,7 @@ class ToolExecutor:
                 continue
             name = str(item.get("name", "") or "").strip()
             cname = canonicalize_tool_name(name)
-            if not name or cname in {"select_tools", "enable_tools"}:
+            if not name or cname in {"runtime_tool_select", "runtime_tool_enable"}:
                 continue
             key = (cname or name).lower()
             if key in seen:
@@ -601,10 +601,10 @@ class ToolExecutor:
             ensure_ascii=False
         )
 
-    def _select_tools(self, args: Dict[str, Any]) -> str:
+    def _runtime_tool_select(self, args: Dict[str, Any]) -> str:
         return self._apply_runtime_tool_selection(args, allow_enable_all=False)
 
-    def _enable_tools(self, args: Dict[str, Any]) -> str:
+    def _runtime_tool_enable(self, args: Dict[str, Any]) -> str:
         enabler = getattr(self.model, "_enable_runtime_tools_for_current_reply", None)
         if not callable(enabler):
             return json.dumps(
@@ -618,7 +618,7 @@ class ToolExecutor:
         requested_names = self._collect_runtime_tool_names_from_args(args if isinstance(args, dict) else {})
         if requested_names:
             result["requested_tool_names"] = requested_names
-            result["note"] = "enable_tools 在 Auto(OFF) 中会切换到 Force（忽略精确工具列表）"
+            result["note"] = "runtime_tool_enable 在 Auto(OFF) 中会切换到 Force（忽略精确工具列表）"
         return json.dumps(result, ensure_ascii=False)
 
     def _add_short(self, args: Dict[str, Any]) -> str:
@@ -768,7 +768,7 @@ class ToolExecutor:
     def _search_keyword(self, args: Dict[str, Any]) -> str:
         return self.model.user.search_keyword(args.get("keyword", ""), args.get("range", 10))
 
-    def _readtmp(self, args: Dict[str, Any]) -> str:
+    def _temp_context_read(self, args: Dict[str, Any]) -> str:
         rid = str(args.get("resource_id") or "").strip()
         if not rid:
             return json.dumps({"success": False, "message": "resource_id is required"}, ensure_ascii=False)
@@ -778,7 +778,7 @@ class ToolExecutor:
             count=args.get("count", 2000),
         )
 
-    def _searchtmp(self, args: Dict[str, Any]) -> str:
+    def _temp_context_search(self, args: Dict[str, Any]) -> str:
         raw_case = args.get("case_sensitive", False)
         if isinstance(raw_case, bool):
             case_sensitive = raw_case
@@ -795,11 +795,11 @@ class ToolExecutor:
             max_matches=args.get("max_matches", 20),
         )
 
-    def _listtmp(self, args: Dict[str, Any]) -> str:
+    def _temp_context_list(self, args: Dict[str, Any]) -> str:
         _ = args
         return self.model.temp_cache_list()
 
-    def _cleartmp(self, args: Dict[str, Any]) -> str:
+    def _temp_context_clear(self, args: Dict[str, Any]) -> str:
         _ = args
         return self.model.temp_cache_clear()
 
@@ -1182,7 +1182,7 @@ class ToolExecutor:
                 })
             return json.dumps(payload, ensure_ascii=False)
         except Exception as e:
-            return f"vector search error: {str(e)}, fall back to search_keyword immediately."
+            return f"knowledge_search_vector error: {str(e)}. 请检查向量库状态，或明确调用 knowledge_search_keyword 做关键词检索。"
 
     def _file_semantic_search(self, args: Dict[str, Any]) -> str:
         query = str(args.get("query") or "").strip()
@@ -1390,12 +1390,6 @@ class ToolExecutor:
             args.get("keyword", ""),
             args.get("range", 10),
             conversation_id=self.model.conversation_id,
-        )
-
-    def _get_main_title(self, args: Dict[str, Any]) -> str:
-        return self.model.conversation_manager.get_main_title(
-            self.model.conversation_id,
-            args.get("offset", 0),
         )
 
     def _relay_web_search(self, args: Dict[str, Any]) -> str:

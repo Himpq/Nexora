@@ -290,10 +290,245 @@ class Context:
         return split_index
 
     def _build_compress_text(self, msgs: List[Message]) -> str:
-        """构建压缩文本"""
-        return "\n".join(
-            f"[{msg.role}]: {msg.content}" for msg in msgs if msg.content
+        """构建压缩文本，保留工具轨迹但不注入大段工具正文。"""
+        tool_call_names = self._collect_tool_call_names(msgs)
+        lines: List[str] = []
+
+        for msg in msgs:
+
+            if msg.role == "assistant" and bool(msg.extra.get("tool_calls")):
+                assistant_text = self._compact_history_text(msg.content, limit=800)
+
+                if assistant_text:
+                    lines.append(f"[assistant]: {assistant_text}")
+
+                lines.append(
+                    "[assistant_tool_calls]: "
+                    + json.dumps(
+                        self._summarize_tool_calls(msg.extra.get("tool_calls") or []),
+                        ensure_ascii=False,
+                    )
+                )
+                continue
+
+            if msg.role == "tool":
+                lines.append(
+                    "[tool_result]: "
+                    + json.dumps(
+                        self._summarize_tool_result(msg, tool_call_names),
+                        ensure_ascii=False,
+                    )
+                )
+                continue
+
+            compact_text = self._compact_history_text(msg.content)
+
+            if compact_text:
+                lines.append(f"[{msg.role}]: {compact_text}")
+
+        return "\n".join(lines)
+
+    def _compact_history_text(self, content: str, *, limit: int = 1200) -> str:
+        """压缩普通消息文本，避免历史正文再次撑满压缩输入。"""
+        text = str(content or "").strip()
+
+        if not text:
+            return ""
+
+        if len(text) <= limit:
+            return text
+
+        head_len = max(200, int(limit * 0.7))
+        tail_len = max(120, limit - head_len)
+        head = text[:head_len].rstrip()
+        tail = text[-tail_len:].lstrip()
+        return (
+            f"{head}\n"
+            f"[中间内容已压缩，原始长度 {len(text)} 字符]\n"
+            f"{tail}"
         )
+
+    def _collect_tool_call_names(self, msgs: List[Message]) -> Dict[str, str]:
+        """收集 tool_call_id 与工具名的对应关系。"""
+        rows: Dict[str, str] = {}
+
+        for msg in msgs:
+            raw_tool_calls = msg.extra.get("tool_calls") if msg.role == "assistant" else None
+
+            if not isinstance(raw_tool_calls, list):
+                continue
+
+            for raw_call in raw_tool_calls:
+
+                if not isinstance(raw_call, Mapping):
+                    continue
+
+                call_id = str(raw_call.get("id") or "").strip()
+                function = raw_call.get("function") if isinstance(raw_call.get("function"), Mapping) else {}
+                tool_name = str(function.get("name") or "").strip()
+
+                if call_id and tool_name:
+                    rows[call_id] = tool_name
+
+        return rows
+
+    def _summarize_tool_calls(self, raw_tool_calls: Any) -> List[Dict[str, Any]]:
+        """把 assistant tool_calls 转为结构化摘要。"""
+        rows: List[Dict[str, Any]] = []
+
+        if not isinstance(raw_tool_calls, list):
+            return rows
+
+        for raw_call in raw_tool_calls:
+
+            if not isinstance(raw_call, Mapping):
+                continue
+
+            function = raw_call.get("function") if isinstance(raw_call.get("function"), Mapping) else {}
+            tool_name = str(function.get("name") or "").strip()
+            arguments = self._safe_json_dict(function.get("arguments"))
+
+            rows.append(
+                {
+                    "id": str(raw_call.get("id") or "").strip(),
+                    "name": tool_name,
+                    "arguments": self._summarize_tool_arguments(tool_name, arguments),
+                }
+            )
+
+        return rows
+
+    def _summarize_tool_arguments(self, tool_name: str, arguments: Mapping[str, Any]) -> Dict[str, Any]:
+        """保留会影响后续决策的工具参数。"""
+        data = dict(arguments or {})
+        wanted_keys = [
+            "offset",
+            "length",
+            "range_start",
+            "range_end",
+            "keyword",
+            "chapter_range",
+            "chapter_name",
+            "old_chapter_name",
+        ]
+        summary = {key: data.get(key) for key in wanted_keys if key in data}
+
+        if "offset" in data and "length" in data:
+            start, length = self._coerce_range_pair(data.get("offset"), data.get("length"))
+
+            if length > 0:
+                summary["range_for_model"] = f"{start}:{start + length}"
+
+        if "chapter_summary" in data:
+            summary["chapter_summary_chars"] = len(str(data.get("chapter_summary") or ""))
+            summary["chapter_summary_preview"] = self._compact_history_text(
+                str(data.get("chapter_summary") or ""),
+                limit=240,
+            )
+
+        if not summary and tool_name:
+            summary["raw_keys"] = sorted([str(key) for key in data.keys()])
+
+        return summary
+
+    def _summarize_tool_result(self, msg: Message, tool_call_names: Mapping[str, str]) -> Dict[str, Any]:
+        """把 tool 结果转为结构化摘要，移除 text/content 全文。"""
+        call_id = str(msg.extra.get("tool_call_id") or "").strip()
+        result = self._safe_json_dict(msg.content)
+        tool_name = str(tool_call_names.get(call_id) or "").strip()
+
+        summary: Dict[str, Any] = {
+            "tool_call_id": call_id,
+            "tool_name": tool_name,
+        }
+
+        for key in [
+            "ok",
+            "success",
+            "status",
+            "error",
+            "message",
+            "offset",
+            "length",
+            "remaining",
+            "keyword",
+            "count",
+            "hits_count",
+            "chapter_range",
+            "quality_feedback",
+        ]:
+
+            if key in result:
+                summary[key] = result.get(key)
+
+        if "offset" in result and "length" in result:
+            start, length = self._coerce_range_pair(result.get("offset"), result.get("length"))
+
+            if length > 0:
+                summary["range_for_model"] = f"{start}:{start + length}"
+
+        for text_key in ["text", "content"]:
+
+            if text_key not in result:
+                continue
+
+            text_value = str(result.get(text_key) or "")
+            summary[f"{text_key}_chars"] = len(text_value)
+            summary[f"{text_key}_preview"] = self._compact_history_text(text_value, limit=260)
+
+        hits = result.get("hits")
+
+        if isinstance(hits, list):
+            summary["hits_preview"] = [
+                self._summarize_hit(hit)
+                for hit in hits[:5]
+                if isinstance(hit, Mapping)
+            ]
+
+        return summary
+
+    def _summarize_hit(self, hit: Mapping[str, Any]) -> Dict[str, Any]:
+        """压缩搜索命中结果。"""
+        row = dict(hit or {})
+        return {
+            key: row.get(key)
+            for key in ["offset", "match_start", "match_end", "range", "range_start", "range_end"]
+            if key in row
+        }
+
+    def _safe_json_dict(self, value: Any) -> Dict[str, Any]:
+        """解析 JSON 对象文本。"""
+        if isinstance(value, Mapping):
+            return dict(value)
+
+        text = str(value or "").strip()
+
+        if not text:
+            return {}
+
+        try:
+            data = json.loads(text)
+        except Exception:
+            return {"_raw_chars": len(text), "_raw_preview": self._compact_history_text(text, limit=260)}
+
+        if isinstance(data, Mapping):
+            return dict(data)
+
+        return {"_value_type": type(data).__name__}
+
+    def _coerce_range_pair(self, start_value: Any, length_value: Any) -> Tuple[int, int]:
+        """将工具 offset/length 转为整数。"""
+        try:
+            start = int(start_value)
+        except Exception:
+            start = 0
+
+        try:
+            length = int(length_value)
+        except Exception:
+            length = 0
+
+        return max(0, start), max(0, length)
 
     def _serialize_messages(self, msgs: List[Message]) -> List[Dict[str, Any]]:
         """序列化消息列表用于日志记录。"""

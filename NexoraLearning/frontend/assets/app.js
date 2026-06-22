@@ -299,6 +299,7 @@
     lpPathDraft: "",
     lpChapterDraft: "",
     lpChapterGeneratingIndex: -1,
+    lpLabCleanups: [],
     feedMentionState: {
       key: "",
       query: "",
@@ -311,6 +312,7 @@
     readerReportedChapterKey: "",
     readerReportingChapterKey: "",
     readerChapterQuizLoadingKey: "",
+    readerBookInfoXml: "",
     readerBookDetailXml: "",
     readerGuidePromptedKey: "",
     dynamicPosting: false,
@@ -1421,6 +1423,18 @@
     return text.slice(markerIndex + LP_CHAPTER_CONTENT_MARKER.length).trimStart();
   }
 
+  function cleanupLearningArticleLabs() {
+    const cleanups = Array.isArray(state.lpLabCleanups) ? state.lpLabCleanups : [];
+
+    cleanups.forEach((cleanup) => {
+        if (typeof cleanup === "function") {
+            cleanup();
+        }
+    });
+
+    state.lpLabCleanups = [];
+  }
+
   function cleanupLearningPathChapterStreamingScroll() {
     if (typeof state.lpChapterScrollUnbind === "function") {
       state.lpChapterScrollUnbind();
@@ -1461,6 +1475,7 @@
 
   function renderChapterMarkdown(md, lectureId, chapterIndex, chapter, content) {
     cleanupLearningPathChapterStreamingScroll();
+    cleanupLearningArticleLabs();
 
     const markdown = stripLearningPathContentMarker(content);
     const completed = isLearningPathChapterCompleted(chapter);
@@ -1477,6 +1492,7 @@
         </div>
     `;
 
+    bindLearningArticleExperiments(md);
     renderLearningPathFloatingActions(lectureId, chapterIndex, chapter, completed);
     emitLearningPathChapterOpenTelemetry(lectureId, chapterIndex, chapter);
   }
@@ -2068,6 +2084,990 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     }
   }
 
+  function renderLearningLabError(title, detail) {
+    return `
+      <section class="lp-lab lp-lab-error">
+        <div class="lp-lab-head">
+          <div>
+            <div class="lp-lab-kicker">Interactive Lab</div>
+            <h3>${escapeHtml(title || "实验组件配置无效")}</h3>
+          </div>
+        </div>
+        <p>${escapeHtml(detail || "请检查 nxl-lab JSON 配置。")}</p>
+      </section>
+    `;
+  }
+
+  // 互动实验只解析 nxl-lab JSON 配置，不执行模型生成的 HTML 或脚本。
+  function renderLearningLabBlock(rawConfig, blockIndex) {
+    let config = null;
+
+    try {
+        config = JSON.parse(String(rawConfig || ""));
+    } catch (err) {
+        return renderLearningLabError("实验组件 JSON 无法解析", String(err && err.message || "JSON parse error"));
+    }
+
+    if (!config || typeof config !== "object") {
+        return renderLearningLabError("实验组件配置必须是对象", "nxl-lab 内容需要是一个 JSON object。");
+    }
+
+    const type = String(config.type || "").trim();
+
+    if (type === "formula_simulation") {
+        return renderFormulaSimulationLab(config, blockIndex);
+    }
+
+    if (type === "canvas_scene") {
+        return renderCanvasSceneLab(config, blockIndex);
+    }
+
+    if (type === "code_trace") {
+        return renderCodeTraceLab(config, blockIndex);
+    }
+
+    return renderLearningLabError("未知实验组件类型", `当前类型：${type || "未填写"}`);
+  }
+
+  // 公式实验第一版先支持理想气体模型，后续可按 formula_key 扩展更多受控渲染器。
+  function renderFormulaSimulationLab(config, blockIndex) {
+    const title = String(config.title || "公式实验").trim();
+    const description = String(config.description || "").trim();
+    const formula = String(config.formula || "").trim();
+    const parameters = Array.isArray(config.parameters) ? config.parameters : [];
+    const safeConfig = escapeHtml(encodeURIComponent(JSON.stringify(config)));
+
+    if (!parameters.length) {
+        return renderLearningLabError("公式实验缺少参数", "parameters 至少需要 1 个可拖动参数。");
+    }
+
+    return `
+      <section class="lp-lab lp-lab-formula" data-lab-config="${safeConfig}" data-lab-index="${escapeHtml(String(blockIndex))}">
+        <div class="lp-lab-head">
+          <div>
+            <div class="lp-lab-kicker">Formula Playground</div>
+            <h3>${escapeHtml(title)}</h3>
+            ${description ? `<p>${escapeHtml(description)}</p>` : ""}
+          </div>
+          ${formula ? `<div class="lp-lab-formula-badge">${escapeHtml(formula)}</div>` : ""}
+        </div>
+        <div class="lp-lab-formula-grid">
+          <div class="lp-lab-controls">
+            ${parameters.map((param) => {
+                const key = String(param && param.key || "").trim();
+                const label = String(param && param.label || key || "参数").trim();
+                const min = Number(param && param.min);
+                const max = Number(param && param.max);
+                const step = Number(param && param.step) || 1;
+                const value = Number(param && param.value);
+                const unit = String(param && param.unit || "").trim();
+
+                if (!key || !Number.isFinite(min) || !Number.isFinite(max) || !Number.isFinite(value)) {
+                    return "";
+                }
+
+                return `
+                  <label class="lp-lab-control">
+                    <span>
+                      <strong>${escapeHtml(label)}</strong>
+                      <em data-lab-value="${escapeHtml(key)}">${escapeHtml(String(value))}${unit ? ` ${escapeHtml(unit)}` : ""}</em>
+                    </span>
+                    <input type="range" min="${escapeHtml(String(min))}" max="${escapeHtml(String(max))}" step="${escapeHtml(String(step))}" value="${escapeHtml(String(value))}" data-lab-param="${escapeHtml(key)}">
+                  </label>
+                `;
+            }).join("")}
+            <div class="lp-lab-result" data-lab-result>等待参数变化</div>
+          </div>
+          <div class="lp-lab-stage">
+            <canvas class="lp-lab-canvas" data-lab-canvas></canvas>
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
+  // 通用 canvas_scene 由模型组合基础图元，前端只执行受控绘制指令。
+  function renderCanvasSceneLab(config, blockIndex) {
+    const title = String(config.title || "Canvas 实验").trim();
+    const description = String(config.description || "").trim();
+    const parameters = Array.isArray(config.parameters) ? config.parameters : [];
+    const safeConfig = escapeHtml(encodeURIComponent(JSON.stringify(config)));
+
+    return `
+      <section class="lp-lab lp-lab-canvas-scene" data-lab-config="${safeConfig}" data-lab-index="${escapeHtml(String(blockIndex))}">
+        <div class="lp-lab-head">
+          <div>
+            <div class="lp-lab-kicker">Canvas Scene</div>
+            <h3>${escapeHtml(title)}</h3>
+            ${description ? `<p>${escapeHtml(description)}</p>` : ""}
+          </div>
+        </div>
+        <div class="lp-lab-formula-grid">
+          <div class="lp-lab-controls">
+            ${parameters.length ? parameters.map((param) => {
+                const key = String(param && param.key || "").trim();
+                const label = String(param && param.label || key || "参数").trim();
+                const min = Number(param && param.min);
+                const max = Number(param && param.max);
+                const step = Number(param && param.step) || 1;
+                const value = Number(param && param.value);
+                const unit = String(param && param.unit || "").trim();
+
+                if (!key || !Number.isFinite(min) || !Number.isFinite(max) || !Number.isFinite(value)) {
+                    return "";
+                }
+
+                return `
+                  <label class="lp-lab-control">
+                    <span>
+                      <strong>${escapeHtml(label)}</strong>
+                      <em data-lab-value="${escapeHtml(key)}">${escapeHtml(String(value))}${unit ? ` ${escapeHtml(unit)}` : ""}</em>
+                    </span>
+                    <input type="range" min="${escapeHtml(String(min))}" max="${escapeHtml(String(max))}" step="${escapeHtml(String(step))}" value="${escapeHtml(String(value))}" data-lab-param="${escapeHtml(key)}">
+                  </label>
+                `;
+            }).join("") : '<div class="lp-lab-scene-note">该场景没有可调参数。</div>'}
+            <div class="lp-lab-result" data-lab-result>拖动参数观察画布变化</div>
+          </div>
+          <div class="lp-lab-stage">
+            <canvas class="lp-lab-canvas" data-lab-canvas></canvas>
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
+  // 代码执行图解由模型提交逐步 trace，前端只负责播放指针、变量和输出变化。
+  function renderCodeTraceLab(config, blockIndex) {
+    const title = String(config.title || "代码执行图解").trim();
+    const description = String(config.description || "").trim();
+    const codeLines = Array.isArray(config.code) ? config.code.map((line) => String(line || "")) : [];
+    const steps = Array.isArray(config.steps) ? config.steps : [];
+    const safeConfig = escapeHtml(encodeURIComponent(JSON.stringify(config)));
+
+    if (!codeLines.length || !steps.length) {
+        return renderLearningLabError("代码执行图解缺少代码或步骤", "code 和 steps 都需要由模型生成。");
+    }
+
+    return `
+      <section class="lp-lab lp-lab-code-trace" data-lab-config="${safeConfig}" data-lab-index="${escapeHtml(String(blockIndex))}">
+        <div class="lp-lab-head">
+          <div>
+            <div class="lp-lab-kicker">Execution Trace</div>
+            <h3>${escapeHtml(title)}</h3>
+            ${description ? `<p>${escapeHtml(description)}</p>` : ""}
+          </div>
+          <div class="lp-lab-trace-actions">
+            <button type="button" data-trace-action="run">运行</button>
+            <button type="button" data-trace-action="reset">重置</button>
+          </div>
+        </div>
+        <div class="lp-lab-trace-grid">
+          <div class="lp-lab-code-lines">
+            ${codeLines.map((line, idx) => `
+              <div class="lp-lab-code-line" data-trace-line="${idx}">
+                <span>${idx + 1}</span>
+                <code>${escapeHtml(line)}</code>
+              </div>
+            `).join("")}
+          </div>
+          <div class="lp-lab-trace-side">
+            <div class="lp-lab-vars" data-trace-vars>变量将在运行时显示</div>
+            <pre class="lp-lab-output" data-trace-output></pre>
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
+  function decodeLearningLabConfig(node) {
+    const raw = String(node && node.getAttribute("data-lab-config") || "");
+
+    if (!raw) {
+        throw new Error("缺少 data-lab-config");
+    }
+
+    return JSON.parse(decodeURIComponent(raw));
+  }
+
+  function findLearningLabDataNode(root, attrName, value) {
+    const expected = String(value || "");
+    const nodes = root ? Array.from(root.querySelectorAll(`[${attrName}]`)) : [];
+
+    return nodes.find((node) => String(node.getAttribute(attrName) || "") === expected) || null;
+  }
+
+  function getFormulaLabValues(node, config) {
+    const values = {};
+    const parameters = Array.isArray(config.parameters) ? config.parameters : [];
+
+    parameters.forEach((param) => {
+        const key = String(param && param.key || "").trim();
+        if (!key) return;
+
+        const input = findLearningLabDataNode(node, "data-lab-param", key);
+        const rawValue = input instanceof HTMLInputElement ? input.value : param.value;
+        const value = Number(rawValue);
+
+        if (Number.isFinite(value)) {
+            values[key] = value;
+        }
+    });
+
+    return values;
+  }
+
+  function calculateFormulaLabResult(config, values) {
+    const formulaKey = String(config.formula_key || "").trim();
+
+    if (formulaKey === "ideal_gas") {
+        const n = Number(values.n);
+        const r = Number(values.R || values.r || 8.314);
+        const t = Number(values.T);
+        const v = Number(values.V);
+
+        if (![n, r, t, v].every(Number.isFinite) || v <= 0) {
+            throw new Error("理想气体实验需要 n、T、V，并且 V 必须大于 0。");
+        }
+
+        return {
+            label: "P",
+            value: (n * r * t) / v,
+            unit: String(config.result_unit || "kPa"),
+        };
+    }
+
+    throw new Error(`未注册公式实验：${formulaKey || "未填写 formula_key"}`);
+  }
+
+  function syncFormulaLabLabels(node, config, values) {
+    const parameters = Array.isArray(config.parameters) ? config.parameters : [];
+
+    parameters.forEach((param) => {
+        const key = String(param && param.key || "").trim();
+        const label = findLearningLabDataNode(node, "data-lab-value", key);
+        const unit = String(param && param.unit || "").trim();
+
+        if (label && Object.prototype.hasOwnProperty.call(values, key)) {
+            label.textContent = `${values[key]}${unit ? ` ${unit}` : ""}`;
+        }
+    });
+  }
+
+  function resizeLabCanvas(canvas) {
+    const rect = canvas.getBoundingClientRect();
+    const ratio = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    const width = Math.max(320, Math.floor(rect.width || 320));
+    const height = Math.max(220, Math.floor(rect.height || 220));
+
+    if (canvas.width !== Math.floor(width * ratio) || canvas.height !== Math.floor(height * ratio)) {
+        canvas.width = Math.floor(width * ratio);
+        canvas.height = Math.floor(height * ratio);
+    }
+
+    return { width, height, ratio };
+  }
+
+  function pingPongUnit(value) {
+    const wrapped = ((Number(value || 0) % 2) + 2) % 2;
+
+    return wrapped <= 1 ? wrapped : 2 - wrapped;
+  }
+
+  function buildLabExpressionScope(values, extraValues) {
+    return Object.assign({}, values || {}, extraValues || {}, {
+      abs: Math.abs,
+      sqrt: Math.sqrt,
+      sin: Math.sin,
+      cos: Math.cos,
+      tan: Math.tan,
+      exp: Math.exp,
+      log: Math.log,
+      min: Math.min,
+      max: Math.max,
+      floor: Math.floor,
+      ceil: Math.ceil,
+      round: Math.round,
+      pi: Math.PI,
+      clamp: (value, min, max) => Math.max(Number(min), Math.min(Number(max), Number(value))),
+    });
+  }
+
+  function evaluateLabExpression(expression, values, extraValues) {
+    const source = String(expression || "").trim();
+
+    if (!source) {
+      return 0;
+    }
+
+    if (!/^[0-9A-Za-z_+\-*/%^().,\s]+$/.test(source)) {
+      throw new Error("表达式包含未允许的字符");
+    }
+
+    const scope = buildLabExpressionScope(values, extraValues);
+    const allowedNames = new Set(Object.keys(scope));
+    const names = source.match(/[A-Za-z_][A-Za-z0-9_]*/g) || [];
+
+    names.forEach((name) => {
+      if (!allowedNames.has(name)) {
+        throw new Error(`表达式使用了未注册变量：${name}`);
+      }
+    });
+
+    const argNames = Object.keys(scope);
+    const argValues = argNames.map((name) => scope[name]);
+    const normalized = source.replace(/\^/g, "**");
+    const value = Function(...argNames, `"use strict"; return (${normalized});`)(...argValues);
+    const numberValue = Number(value);
+
+    if (!Number.isFinite(numberValue)) {
+      throw new Error("表达式结果不是有效数字");
+    }
+
+    return numberValue;
+  }
+
+  function resolveLabNumber(value, values, extraValues, defaultValue) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+
+    const text = String(value ?? "").trim();
+
+    if (!text) {
+      return Number(defaultValue || 0);
+    }
+
+    if (text.startsWith("=")) {
+      return evaluateLabExpression(text.slice(1), values, extraValues);
+    }
+
+    const numberValue = Number(text);
+
+    return Number.isFinite(numberValue) ? numberValue : Number(defaultValue || 0);
+  }
+
+  function resolveLabText(value, values, extraValues) {
+    const text = String(value ?? "");
+
+    return text.replace(/\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g, (_match, key) => {
+      const scope = buildLabExpressionScope(values, extraValues);
+      const current = scope[key];
+
+      return typeof current === "number" ? String(Number(current.toFixed(2))) : String(current ?? "");
+    });
+  }
+
+  function getCanvasSceneSize(config) {
+    const scene = config && config.scene && typeof config.scene === "object" ? config.scene : {};
+
+    return {
+      width: Math.max(200, Number(scene.width || 640) || 640),
+      height: Math.max(160, Number(scene.height || 360) || 360),
+      scene,
+    };
+  }
+
+  function drawCanvasArrowHead(ctx, x1, y1, x2, y2, color, size) {
+    const angle = Math.atan2(y2 - y1, x2 - x1);
+    const head = Math.max(4, Number(size || 10));
+
+    ctx.beginPath();
+    ctx.fillStyle = color;
+    ctx.moveTo(x2, y2);
+    ctx.lineTo(x2 - head * Math.cos(angle - Math.PI / 6), y2 - head * Math.sin(angle - Math.PI / 6));
+    ctx.lineTo(x2 - head * Math.cos(angle + Math.PI / 6), y2 - head * Math.sin(angle + Math.PI / 6));
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function drawCanvasSceneGraph(ctx, element, values, extraValues) {
+    const nodes = Array.isArray(element.nodes) ? element.nodes : [];
+    const edges = Array.isArray(element.edges) ? element.edges : [];
+    const nodeMap = {};
+
+    nodes.forEach((node) => {
+      const id = String(node && node.id || "").trim();
+      if (!id) return;
+
+      nodeMap[id] = {
+        source: node,
+        x: resolveLabNumber(node.x, values, extraValues, 0),
+        y: resolveLabNumber(node.y, values, extraValues, 0),
+        radius: resolveLabNumber(node.radius, values, extraValues, 18),
+        width: resolveLabNumber(node.width, values, extraValues, 78),
+        height: resolveLabNumber(node.height, values, extraValues, 36),
+      };
+    });
+
+    edges.forEach((edge) => {
+      const from = nodeMap[String(edge && edge.from || "").trim()];
+      const to = nodeMap[String(edge && edge.to || "").trim()];
+      if (!from || !to) return;
+
+      const color = String(edge.color || element.edge_color || "#64748b");
+      const lineWidth = resolveLabNumber(edge.line_width, values, extraValues, 2);
+      ctx.beginPath();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = lineWidth;
+      ctx.moveTo(from.x, from.y);
+      ctx.lineTo(to.x, to.y);
+      ctx.stroke();
+
+      if (edge.arrow !== false) {
+        drawCanvasArrowHead(ctx, from.x, from.y, to.x, to.y, color, resolveLabNumber(edge.head_size, values, extraValues, 9));
+      }
+
+      if (edge.label) {
+        const midX = (from.x + to.x) / 2;
+        const midY = (from.y + to.y) / 2;
+        ctx.fillStyle = String(edge.label_color || "#475467");
+        ctx.font = "700 12px \"Segoe UI\", \"Microsoft YaHei\", sans-serif";
+        ctx.fillText(resolveLabText(edge.label, values, extraValues), midX + 6, midY - 6);
+      }
+    });
+
+    Object.keys(nodeMap).forEach((id) => {
+      const node = nodeMap[id];
+      const source = node.source || {};
+      const shape = String(source.shape || "circle").trim();
+      const fill = String(source.fill || element.node_fill || "#ffffff");
+      const stroke = String(source.stroke || element.node_stroke || "#111827");
+      const label = resolveLabText(source.label || id, values, extraValues);
+      ctx.fillStyle = fill;
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = resolveLabNumber(source.line_width, values, extraValues, 2);
+
+      if (shape === "rect") {
+        const x = node.x - node.width / 2;
+        const y = node.y - node.height / 2;
+        ctx.fillRect(x, y, node.width, node.height);
+        ctx.strokeRect(x, y, node.width, node.height);
+      } else {
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, Math.max(1, node.radius), 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
+
+      ctx.fillStyle = String(source.text_color || "#111827");
+      ctx.font = `${String(source.weight || "800")} ${resolveLabNumber(source.size, values, extraValues, 12)}px "Segoe UI", "Microsoft YaHei", sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(label, node.x, node.y);
+      ctx.textAlign = "start";
+      ctx.textBaseline = "alphabetic";
+    });
+  }
+
+  function drawCanvasScenePlot(ctx, element, values, extraValues) {
+    const x = resolveLabNumber(element.x, values, extraValues, 40);
+    const y = resolveLabNumber(element.y, values, extraValues, 40);
+    const width = resolveLabNumber(element.width, values, extraValues, 300);
+    const height = resolveLabNumber(element.height, values, extraValues, 180);
+    const xMin = resolveLabNumber(element.x_min, values, extraValues, -1);
+    const xMax = resolveLabNumber(element.x_max, values, extraValues, 1);
+    const yMin = resolveLabNumber(element.y_min, values, extraValues, -1);
+    const yMax = resolveLabNumber(element.y_max, values, extraValues, 1);
+    const curves = Array.isArray(element.curves) ? element.curves : [];
+    const samples = Math.max(8, Math.min(240, Math.round(resolveLabNumber(element.samples, values, extraValues, 80))));
+    const toCanvasX = (value) => x + ((value - xMin) / Math.max(0.000001, xMax - xMin)) * width;
+    const toCanvasY = (value) => y + height - ((value - yMin) / Math.max(0.000001, yMax - yMin)) * height;
+
+    ctx.fillStyle = String(element.fill || "#ffffff");
+    ctx.strokeStyle = String(element.stroke || "#d0d5dd");
+    ctx.lineWidth = 1;
+    ctx.fillRect(x, y, width, height);
+    ctx.strokeRect(x, y, width, height);
+
+    ctx.strokeStyle = "#e5e7eb";
+    ctx.beginPath();
+    for (let i = 1; i < 4; i += 1) {
+      const gx = x + (width / 4) * i;
+      const gy = y + (height / 4) * i;
+      ctx.moveTo(gx, y);
+      ctx.lineTo(gx, y + height);
+      ctx.moveTo(x, gy);
+      ctx.lineTo(x + width, gy);
+    }
+    ctx.stroke();
+
+    if (xMin < 0 && xMax > 0) {
+      const axisX = toCanvasX(0);
+      ctx.strokeStyle = "#98a2b3";
+      ctx.beginPath();
+      ctx.moveTo(axisX, y);
+      ctx.lineTo(axisX, y + height);
+      ctx.stroke();
+    }
+
+    if (yMin < 0 && yMax > 0) {
+      const axisY = toCanvasY(0);
+      ctx.strokeStyle = "#98a2b3";
+      ctx.beginPath();
+      ctx.moveTo(x, axisY);
+      ctx.lineTo(x + width, axisY);
+      ctx.stroke();
+    }
+
+    curves.forEach((curve) => {
+      const expression = String(curve && curve.expression || "").trim();
+      if (!expression) return;
+
+      ctx.beginPath();
+      ctx.strokeStyle = String(curve.color || "#2563eb");
+      ctx.lineWidth = resolveLabNumber(curve.line_width, values, extraValues, 2);
+
+      for (let i = 0; i <= samples; i += 1) {
+        const currentX = xMin + ((xMax - xMin) * i) / samples;
+        const currentY = evaluateLabExpression(expression, values, Object.assign({}, extraValues, { x: currentX }));
+        const px = toCanvasX(currentX);
+        const py = toCanvasY(currentY);
+
+        if (i === 0) {
+          ctx.moveTo(px, py);
+        } else {
+          ctx.lineTo(px, py);
+        }
+      }
+
+      ctx.stroke();
+    });
+
+    if (element.label) {
+      ctx.fillStyle = "#475467";
+      ctx.font = "700 12px \"Segoe UI\", \"Microsoft YaHei\", sans-serif";
+      ctx.fillText(resolveLabText(element.label, values, extraValues), x, y - 8);
+    }
+  }
+
+  function drawCanvasSceneElement(ctx, element, values, extraValues, sceneIndex, canvas) {
+    if (!element || typeof element !== "object") return;
+
+    const type = String(element.type || "").trim();
+    const fill = String(element.fill || element.color || "#2563eb");
+    const stroke = String(element.stroke || "#111827");
+    const lineWidth = resolveLabNumber(element.line_width, values, extraValues, 2);
+    ctx.lineWidth = lineWidth;
+
+    if (type === "rect") {
+      const x = resolveLabNumber(element.x, values, extraValues, 0);
+      const y = resolveLabNumber(element.y, values, extraValues, 0);
+      const width = resolveLabNumber(element.width, values, extraValues, 80);
+      const height = resolveLabNumber(element.height, values, extraValues, 60);
+      ctx.fillStyle = fill;
+      ctx.strokeStyle = stroke;
+
+      if (element.fill !== false) {
+        ctx.fillRect(x, y, width, height);
+      }
+
+      if (element.stroke !== false) {
+        ctx.strokeRect(x, y, width, height);
+      }
+      return;
+    }
+
+    if (type === "circle") {
+      const x = resolveLabNumber(element.x, values, extraValues, 0);
+      const y = resolveLabNumber(element.y, values, extraValues, 0);
+      const radius = resolveLabNumber(element.radius, values, extraValues, 12);
+      ctx.beginPath();
+      ctx.fillStyle = fill;
+      ctx.strokeStyle = stroke;
+      ctx.arc(x, y, Math.max(0, radius), 0, Math.PI * 2);
+
+      if (element.fill !== false) {
+        ctx.fill();
+      }
+
+      if (element.stroke) {
+        ctx.stroke();
+      }
+      return;
+    }
+
+    if (type === "line" || type === "arrow") {
+      const x1 = resolveLabNumber(element.x1, values, extraValues, 0);
+      const y1 = resolveLabNumber(element.y1, values, extraValues, 0);
+      const x2 = resolveLabNumber(element.x2, values, extraValues, 100);
+      const y2 = resolveLabNumber(element.y2, values, extraValues, 100);
+      ctx.beginPath();
+      ctx.strokeStyle = stroke;
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+
+      if (type === "arrow") {
+        const angle = Math.atan2(y2 - y1, x2 - x1);
+        const head = resolveLabNumber(element.head_size, values, extraValues, 10);
+        ctx.beginPath();
+        ctx.fillStyle = stroke;
+        ctx.moveTo(x2, y2);
+        ctx.lineTo(x2 - head * Math.cos(angle - Math.PI / 6), y2 - head * Math.sin(angle - Math.PI / 6));
+        ctx.lineTo(x2 - head * Math.cos(angle + Math.PI / 6), y2 - head * Math.sin(angle + Math.PI / 6));
+        ctx.closePath();
+        ctx.fill();
+      }
+      return;
+    }
+
+    if (type === "text") {
+      const x = resolveLabNumber(element.x, values, extraValues, 0);
+      const y = resolveLabNumber(element.y, values, extraValues, 0);
+      const size = resolveLabNumber(element.size, values, extraValues, 14);
+      const weight = String(element.weight || "700");
+      ctx.fillStyle = fill;
+      ctx.font = `${weight} ${size}px "Segoe UI", "Microsoft YaHei", sans-serif`;
+      ctx.fillText(resolveLabText(element.text || "", values, extraValues), x, y);
+      return;
+    }
+
+    if (type === "graph") {
+      drawCanvasSceneGraph(ctx, element, values, extraValues);
+      return;
+    }
+
+    if (type === "plot") {
+      drawCanvasScenePlot(ctx, element, values, extraValues);
+      return;
+    }
+
+    if (type === "particle_field") {
+      const bounds = element.bounds && typeof element.bounds === "object" ? element.bounds : {};
+      const x = resolveLabNumber(bounds.x, values, extraValues, 0);
+      const y = resolveLabNumber(bounds.y, values, extraValues, 0);
+      const width = resolveLabNumber(bounds.width, values, extraValues, 100);
+      const height = resolveLabNumber(bounds.height, values, extraValues, 100);
+      const radius = resolveLabNumber(element.radius, values, extraValues, 3);
+      const count = Math.max(1, Math.min(140, Math.round(resolveLabNumber(element.count, values, extraValues, 24))));
+      const speed = Math.max(0, resolveLabNumber(element.speed, values, extraValues, 0.2));
+      const key = `scene_${sceneIndex}_${count}`;
+
+      if (!canvas._nxlSceneParticleMap) {
+        canvas._nxlSceneParticleMap = {};
+      }
+
+      if (!canvas._nxlSceneParticleMap[key]) {
+        canvas._nxlSceneParticleMap[key] = Array.from({ length: count }, (_item, idx) => {
+            const seed = (idx + 1) * 6151;
+            return {
+              x: ((seed * 17) % 1000) / 1000,
+              y: ((seed * 31) % 1000) / 1000,
+              vx: (((seed * 43) % 200) - 100) / 100,
+              vy: (((seed * 59) % 200) - 100) / 100,
+            };
+          });
+      }
+
+      ctx.fillStyle = fill;
+      canvas._nxlSceneParticleMap[key].forEach((particle) => {
+        const px = x + radius + pingPongUnit(particle.x + particle.vx * speed * extraValues.t) * Math.max(1, width - radius * 2);
+        const py = y + radius + pingPongUnit(particle.y + particle.vy * speed * extraValues.t) * Math.max(1, height - radius * 2);
+        ctx.beginPath();
+        ctx.arc(px, py, radius, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
+  }
+
+  function drawCanvasSceneLab(canvas, config, values, timeMs) {
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const size = resizeLabCanvas(canvas);
+    const sceneData = getCanvasSceneSize(config);
+    const sceneWidth = sceneData.width;
+    const sceneHeight = sceneData.height;
+    const scaleX = size.width / sceneWidth;
+    const scaleY = size.height / sceneHeight;
+    const scene = sceneData.scene;
+    const elements = Array.isArray(scene.elements) ? scene.elements : [];
+    const extraValues = {
+      t: Number(timeMs || 0) / 1000,
+      W: sceneWidth,
+      H: sceneHeight,
+    };
+
+    ctx.setTransform(size.ratio, 0, 0, size.ratio, 0, 0);
+    ctx.clearRect(0, 0, size.width, size.height);
+    ctx.fillStyle = String(scene.background || "#f8fafc");
+    ctx.fillRect(0, 0, size.width, size.height);
+    ctx.save();
+    ctx.scale(scaleX, scaleY);
+
+    elements.forEach((element, index) => {
+      drawCanvasSceneElement(ctx, element, values, extraValues, index, canvas);
+    });
+
+    ctx.restore();
+  }
+
+  function drawIdealGasLab(canvas, config, values, timeMs) {
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const size = resizeLabCanvas(canvas);
+    ctx.setTransform(size.ratio, 0, 0, size.ratio, 0, 0);
+    ctx.clearRect(0, 0, size.width, size.height);
+
+    const parameters = Array.isArray(config.parameters) ? config.parameters : [];
+    const volumeParam = parameters.find((param) => String(param && param.key || "") === "V") || {};
+    const minV = Number(volumeParam.min);
+    const maxV = Number(volumeParam.max);
+    const currentV = Number(values.V);
+    const volumeRatio = Number.isFinite(minV) && Number.isFinite(maxV) && maxV > minV
+        ? Math.max(0, Math.min(1, (currentV - minV) / (maxV - minV)))
+        : 0.5;
+    const boxScale = 0.42 + Math.sqrt(volumeRatio) * 0.48;
+    const boxWidth = Math.floor(size.width * boxScale);
+    const boxHeight = Math.floor(size.height * boxScale);
+    const boxX = Math.floor((size.width - boxWidth) / 2);
+    const boxY = Math.floor((size.height - boxHeight) / 2);
+    const moleculeCount = Math.max(12, Math.min(90, Math.round((Number(values.n) || 1) * 20)));
+    const temperature = Math.max(1, Number(values.T) || 273);
+    const speed = 0.00018 * Math.sqrt(temperature);
+
+    ctx.fillStyle = "#f8fafc";
+    ctx.fillRect(0, 0, size.width, size.height);
+    ctx.strokeStyle = "#111827";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(boxX, boxY, boxWidth, boxHeight);
+    ctx.fillStyle = "rgba(37, 99, 235, 0.08)";
+    ctx.fillRect(boxX, boxY, boxWidth, boxHeight);
+
+    if (!Array.isArray(canvas._nxlLabParticles) || canvas._nxlLabParticles.length !== moleculeCount) {
+        canvas._nxlLabParticles = Array.from({ length: moleculeCount }, (_item, idx) => {
+            const seed = (idx + 1) * 9301;
+            return {
+                x: ((seed * 17) % 1000) / 1000,
+                y: ((seed * 31) % 1000) / 1000,
+                vx: (((seed * 43) % 200) - 100) / 100,
+                vy: (((seed * 59) % 200) - 100) / 100,
+            };
+        });
+    }
+
+    canvas._nxlLabParticles.forEach((particle, idx) => {
+        const drift = timeMs * speed;
+        const radius = 3.2;
+        const x = boxX + radius + pingPongUnit(particle.x + particle.vx * drift) * Math.max(1, boxWidth - radius * 2);
+        const y = boxY + radius + pingPongUnit(particle.y + particle.vy * drift) * Math.max(1, boxHeight - radius * 2);
+        ctx.beginPath();
+        ctx.fillStyle = idx % 3 === 0 ? "#ef4444" : "#2563eb";
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        ctx.fill();
+    });
+  }
+
+  function bindFormulaSimulationLab(node) {
+    const config = decodeLearningLabConfig(node);
+    const canvas = node.querySelector("[data-lab-canvas]");
+    const resultNode = node.querySelector("[data-lab-result]");
+    let values = getFormulaLabValues(node, config);
+    let stopped = false;
+    let frameId = 0;
+
+    const render = () => {
+        values = getFormulaLabValues(node, config);
+        syncFormulaLabLabels(node, config, values);
+
+        try {
+            const result = calculateFormulaLabResult(config, values);
+            if (resultNode) {
+                const valueText = Number(result.value).toFixed(2).replace(/\.00$/, "");
+                resultNode.textContent = `${result.label} = ${valueText}${result.unit ? ` ${result.unit}` : ""}`;
+            }
+        } catch (err) {
+            if (resultNode) {
+                resultNode.textContent = String(err && err.message || "实验计算失败");
+            }
+        }
+    };
+
+    const animate = (timeMs) => {
+        if (stopped) return;
+        if (canvas instanceof HTMLCanvasElement) {
+            drawIdealGasLab(canvas, config, values, timeMs);
+        }
+        frameId = window.requestAnimationFrame(animate);
+    };
+
+    node.querySelectorAll("[data-lab-param]").forEach((input) => {
+        input.addEventListener("input", render);
+    });
+
+    render();
+    frameId = window.requestAnimationFrame(animate);
+    state.lpLabCleanups.push(() => {
+        stopped = true;
+        if (frameId) {
+            window.cancelAnimationFrame(frameId);
+        }
+    });
+  }
+
+  function bindCanvasSceneLab(node) {
+    const config = decodeLearningLabConfig(node);
+    const canvas = node.querySelector("[data-lab-canvas]");
+    const resultNode = node.querySelector("[data-lab-result]");
+    let values = getFormulaLabValues(node, config);
+    let stopped = false;
+    let frameId = 0;
+
+    const render = () => {
+      values = getFormulaLabValues(node, config);
+      syncFormulaLabLabels(node, config, values);
+
+      if (resultNode) {
+        const summary = Array.isArray(config.parameters)
+          ? config.parameters.map((param) => {
+              const key = String(param && param.key || "").trim();
+              const unit = String(param && param.unit || "").trim();
+              return key && Object.prototype.hasOwnProperty.call(values, key)
+                ? `${key}=${values[key]}${unit ? unit : ""}`
+                : "";
+            }).filter(Boolean).join(" · ")
+          : "";
+        resultNode.textContent = summary || "场景已渲染";
+      }
+    };
+
+    const animate = (timeMs) => {
+      if (stopped) return;
+
+      if (canvas instanceof HTMLCanvasElement) {
+        drawCanvasSceneLab(canvas, config, values, timeMs);
+      }
+
+      frameId = window.requestAnimationFrame(animate);
+    };
+
+    node.querySelectorAll("[data-lab-param]").forEach((input) => {
+      input.addEventListener("input", render);
+    });
+
+    render();
+    frameId = window.requestAnimationFrame(animate);
+    state.lpLabCleanups.push(() => {
+      stopped = true;
+
+      if (frameId) {
+        window.cancelAnimationFrame(frameId);
+      }
+    });
+  }
+
+  function renderTraceStep(node, config, index) {
+    const steps = Array.isArray(config.steps) ? config.steps : [];
+    const step = steps[Math.max(0, Math.min(index, steps.length - 1))] || {};
+    const lineIndex = Number(step.line_index || 0);
+    const varsNode = node.querySelector("[data-trace-vars]");
+    const outputNode = node.querySelector("[data-trace-output]");
+
+    node.querySelectorAll("[data-trace-line]").forEach((lineNode) => {
+        const current = Number(lineNode.getAttribute("data-trace-line")) === lineIndex;
+        lineNode.classList.toggle("is-active", current);
+    });
+
+    if (varsNode) {
+        const variables = step.variables && typeof step.variables === "object" ? step.variables : {};
+        const rows = Object.keys(variables).map((key) => `<span><strong>${escapeHtml(key)}</strong>${escapeHtml(String(variables[key]))}</span>`);
+        varsNode.innerHTML = rows.length ? rows.join("") : "当前步骤没有变量变化";
+    }
+
+    if (outputNode) {
+        const outputLines = [];
+
+        steps.slice(0, index + 1).forEach((row) => {
+            const output = String(row && row.output || "").trimEnd();
+            if (output) {
+                outputLines.push(output);
+            }
+        });
+
+        outputNode.textContent = outputLines.join("\n");
+    }
+  }
+
+  function bindCodeTraceLab(node) {
+    const config = decodeLearningLabConfig(node);
+    const steps = Array.isArray(config.steps) ? config.steps : [];
+    let index = 0;
+    let timer = 0;
+    let running = false;
+    const runBtn = node.querySelector('[data-trace-action="run"]');
+    const resetBtn = node.querySelector('[data-trace-action="reset"]');
+
+    const stop = () => {
+        running = false;
+        if (timer) {
+            window.clearInterval(timer);
+            timer = 0;
+        }
+        if (runBtn) {
+            runBtn.textContent = "运行";
+        }
+    };
+
+    const tick = () => {
+        renderTraceStep(node, config, index);
+        index += 1;
+
+        if (index >= steps.length) {
+            stop();
+        }
+    };
+
+    if (runBtn) {
+        runBtn.addEventListener("click", () => {
+            if (running) {
+                stop();
+                return;
+            }
+
+            running = true;
+            runBtn.textContent = "暂停";
+            tick();
+            timer = window.setInterval(tick, 700);
+        });
+    }
+
+    if (resetBtn) {
+        resetBtn.addEventListener("click", () => {
+            stop();
+            index = 0;
+            renderTraceStep(node, config, index);
+        });
+    }
+
+    renderTraceStep(node, config, index);
+    state.lpLabCleanups.push(stop);
+  }
+
+  // 章节正文渲染完成后统一绑定实验组件，便于切换章节时清理动画和定时器。
+  function bindLearningArticleExperiments(root) {
+    if (!root) return;
+
+    root.querySelectorAll(".lp-lab-formula").forEach((node) => {
+        if (node.dataset.labBound === "1") return;
+        node.dataset.labBound = "1";
+        bindFormulaSimulationLab(node);
+    });
+
+    root.querySelectorAll(".lp-lab-canvas-scene").forEach((node) => {
+        if (node.dataset.labBound === "1") return;
+        node.dataset.labBound = "1";
+        bindCanvasSceneLab(node);
+    });
+
+    root.querySelectorAll(".lp-lab-code-trace").forEach((node) => {
+        if (node.dataset.labBound === "1") return;
+        node.dataset.labBound = "1";
+        bindCodeTraceLab(node);
+    });
+  }
+
   function renderMarkdownSimple(text) {
     const source = stripLearningPathContentMarker(text).replace(/\r\n?/g, "\n");
     if (!source.trim()) return "";
@@ -2078,6 +3078,10 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     let quoteLines = [];
     let listTag = "";
     let listItems = [];
+    let codeFenceOpen = false;
+    let codeFenceLang = "";
+    let codeFenceLines = [];
+    let labBlockIndex = 0;
 
     const renderInline = (value) => escapeHtml(value)
       .replace(/`([^`]+?)`/g, "<code>$1</code>")
@@ -2103,9 +3107,49 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
       listItems = [];
     };
 
+    const flushCodeFence = () => {
+      if (!codeFenceLang && !codeFenceLines.length) return;
+
+      const lang = String(codeFenceLang || "").trim().toLowerCase();
+      const body = codeFenceLines.join("\n");
+
+      if (lang === "nxl-lab") {
+        html.push(renderLearningLabBlock(body, labBlockIndex));
+        labBlockIndex += 1;
+      } else {
+        const langLabel = lang ? `<span>${escapeHtml(lang)}</span>` : "";
+        html.push(`<pre class="lp-markdown-code">${langLabel}<code>${escapeHtml(body)}</code></pre>`);
+      }
+
+      codeFenceOpen = false;
+      codeFenceLang = "";
+      codeFenceLines = [];
+    };
+
     lines.forEach((line) => {
       const rawLine = String(line || "");
       const trimmed = rawLine.trim();
+      const fenceMatch = trimmed.match(/^```([A-Za-z0-9_-]+)?\s*$/);
+
+      if (codeFenceOpen) {
+        if (fenceMatch) {
+          flushCodeFence();
+          return;
+        }
+
+        codeFenceLines.push(rawLine);
+        return;
+      }
+
+      if (fenceMatch) {
+        flushParagraph();
+        flushQuote();
+        flushList();
+        codeFenceOpen = true;
+        codeFenceLang = String(fenceMatch[1] || "");
+        codeFenceLines = [];
+        return;
+      }
 
       if (!trimmed) {
         flushParagraph();
@@ -2155,6 +3199,7 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     flushParagraph();
     flushQuote();
     flushList();
+    flushCodeFence();
 
     return html.join("");
   }
@@ -2532,6 +3577,14 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     } else {
       startSettingsPolling();
     }
+    const resourceReaderActive = name === "resourceReader";
+    if (resourceReaderActive) {
+      notifyHostLayout("immersive", { hideInputDock: true });
+      notifyHostReaderState(true);
+    } else if (!state.isReaderOpen) {
+      notifyHostLayout("default", { hideInputDock: true });
+      notifyHostReaderState(false);
+    }
     notifyHostInputVisibility(true);
   }
 
@@ -2696,17 +3749,32 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     return normalizeReaderSelectionText(parts.join("\n\n"), maxLen);
   }
 
+  function trimReaderContextText(value, maxLen) {
+    const text = String(value || "").trim();
+    const limit = Math.max(0, Number(maxLen) || 0);
+    if (!text || !limit || text.length <= limit) return text;
+    return `${text.slice(0, limit).trim()}\n\n[content_truncated original_length=${text.length} limit=${limit}]`;
+  }
+
   function buildReaderContextPayload() {
     const windowText = collectReaderVisibleText(2800);
     if (!windowText) return null;
+    const row = getSelectedLectureRow();
+    const lecture = row ? (row.lecture || {}) : {};
+    const books = row && Array.isArray(row.books) ? row.books : [];
+    const book = books.find((item) => String((item && item.id) || "") === String(state.selectedBookId || "")) || {};
     const chapterMeta = getReaderCurrentChapterMeta();
     return {
       lecture_id: String(state.selectedLectureId || "").trim(),
+      lecture_title: getLectureTitle(lecture),
       book_id: String(state.selectedBookId || "").trim(),
+      book_title: String(book.title || book.name || "").trim(),
       chapter_index: chapterMeta.chapterIndex,
       chapter_title: chapterMeta.chapterTitle,
       reader_title: String(state.readerMeta && state.readerMeta.title ? state.readerMeta.title : "").trim(),
       reader_subtitle: String(state.readerMeta && state.readerMeta.subtitle ? state.readerMeta.subtitle : "").trim(),
+      book_info_xml: trimReaderContextText(state.readerBookInfoXml || (state.catalogContext && state.catalogContext.infoXml), 20000),
+      book_detail_xml: trimReaderContextText(state.readerBookDetailXml || (state.catalogContext && state.catalogContext.detailXml), 24000),
       window_text: windowText,
       captured_at: Date.now(),
     };
@@ -7202,6 +8270,8 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     void bookItem.offsetWidth;
     bookItem.classList.add("book-item-enter");
     state.selectedBookId = String(bookItem.getAttribute("data-book-id") || "");
+    state.readerBookInfoXml = "";
+    state.readerBookDetailXml = "";
     renderLectureDetail();
     const row = getSelectedLectureRow();
     const lecture = row ? (row.lecture || {}) : {};
@@ -7214,6 +8284,8 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
       bookId: String(book.id || ""),
       coverPath: getBookCoverPath(book),
       chapters: [],
+      infoXml: "",
+      detailXml: "",
       summaryBrief: "",
       summaryDetail: "",
       loading: true,
@@ -7228,12 +8300,15 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
       return;
     }
     const chapters = parseBookInfoChapters(bookInfoXml, Number(book.text_chars) || 0);
+    state.readerBookInfoXml = String(bookInfoXml || "");
+    state.readerBookDetailXml = String(bookDetailXml || "");
     state.catalogContext = {
       title: String(book.title || "教材目录"),
       subtitle: getLectureTitle(lecture),
       bookId: String(book.id || ""),
       coverPath: getBookCoverPath(book),
       chapters,
+      infoXml: String(bookInfoXml || ""),
       detailXml: String(bookDetailXml || ""),
       summaryBrief: String(summaryData.summary_brief || ""),
       summaryDetail: String(summaryData.summary_detail || ""),
@@ -7293,6 +8368,7 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     const requestToken = state.readerRequestToken + 1;
     state.readerRequestToken = requestToken;
     state.readerChapters = Array.isArray(state.catalogContext.chapters) ? state.catalogContext.chapters.slice() : [];
+    state.readerBookInfoXml = String(state.catalogContext.infoXml || "");
     state.readerBookDetailXml = String(state.catalogContext.detailXml || "");
     state.readerActiveChapterIndex = Math.max(0, Math.min(state.readerChapters.length - 1, Number.isFinite(idx) ? idx : 0));
     // 先打开Reader并显示加载状态
@@ -12683,6 +13759,7 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     state.readerActiveChapterIndex = 0;
     state.readerFullTextRaw = "";
     state.readerImages = [];
+    state.readerBookInfoXml = "";
     state.readerBookDetailXml = "";
     state.readerViewMode = "closed";
     state.readerMeta = { title: "", subtitle: "" };

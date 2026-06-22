@@ -326,10 +326,6 @@
                                 <label for="nexora_url">Nexora URL</label>
                                 <input id="nexora_url" type="text">
                             </div>
-                            <div class="field">
-                                <label for="preferred_model_id">默认模型 ID</label>
-                                <input id="preferred_model_id" type="text">
-                            </div>
                             <div class="field full">
                                 <label for="allowed_dirs">Allowed Dirs</label>
                                 <textarea id="allowed_dirs" placeholder="每行一个目录"></textarea>
@@ -466,7 +462,6 @@
                 const check = (id, value) => document.getElementById(id).checked = !!value;
 
                 pick('nexora_url', cfg.nexora_url || '');
-                pick('preferred_model_id', cfg.preferred_model_id || '');
                 pick('allowed_dirs', arrayToLines(cfg.allowed_dirs));
                 pick('shell_whitelist', arrayToLines(cfg.shell_whitelist));
                 pick('window_mode', cfg.window_mode || 'custom');
@@ -507,7 +502,6 @@
                 };
 
                 next.nexora_url = document.getElementById('nexora_url').value.trim();
-                next.preferred_model_id = document.getElementById('preferred_model_id').value.trim();
                 next.allowed_dirs = linesToArray(document.getElementById('allowed_dirs').value);
                 next.shell_whitelist = linesToArray(document.getElementById('shell_whitelist').value);
                 next.window_mode = document.getElementById('window_mode').value.trim() || 'custom';

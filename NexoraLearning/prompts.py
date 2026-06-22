@@ -235,6 +235,26 @@ LLM_COMPRESS_SYSTEM_PROMPT = """
 """.strip()
 
 
+LLM_COMPRESS_TOOL_SUMMARY_RULES = """
+工具历史压缩规范:
+1. 历史中出现 [assistant_tool_calls] / [tool_result] 时，必须总结工具调用，不允许原样复制工具 JSON。
+2. read/read_book_text 的工具参数可以保留 offset/length；面向模型的已读范围、实际范围必须写成 FROM:TO。
+3. find/index 的结果只保留 keyword、range、hits_count、关键命中位置，不复制命中文本全文。
+4. write/update_summary 的结果只保留提交状态、目标章节、质量反馈和是否需要重写。
+5. 如果发现重复读取或回头读取，必须在摘要中明确写出“不要再重复读取的范围”和“下一次应该从哪个 offset 继续”。
+6. 输出中禁止出现 {"text": "..."}、[tool]: 原始工具块、大段 HTML/XML 正文、大量图片占位符。
+
+工具摘要建议格式:
+最近工具调用:
+- read: requested_tool=offset,length, actual_range=FROM:TO, text_chars=N, 结论=...
+- update_summary: ok=true/false, feedback=...
+已读范围:
+- FROM:TO
+下一步工具:
+- read(offset=NEXT_OFFSET, length=...)
+""".strip()
+
+
 LLM_COMPRESS_USER_PROMPT = """
 请将以下历史上下文压缩为下一轮可直接继续工作的工作摘要。
 
@@ -346,8 +366,9 @@ Use candidate headings only as clues, not as final truth.
 Do not search inside the EPUB_HEADING_CANDIDATES header block.
 Prefer index with range_start >= {{body_search_start}} so you search in real body text.
 Use index first, then read nearby text if needed.
-    You must submit outline only via tool `submit_outline`.
-    After submit_outline succeeds, the backend will treat this phase as finished.
+You must submit exactly one chapter per tool call via `submit_chapter`.
+Do not submit multiple chapters in one call.
+After all real body chapters are submitted in order, call `finish_outline`.
 Tool-first policy: do not output conversational text.
 Do not output SECTION_PLAN in plain text.
 """.strip()
@@ -359,11 +380,12 @@ Book: {{book_name}}
 Body search start offset: {{body_search_start}}
 Heading candidates:
 {{candidate_block}}
-Build an outline plan by locating real body positions.
+Build an outline plan by locating real body positions one chapter at a time.
 Do not use matches from the header candidates block.
 Prefer index(keyword, range_start=body_search_start, range_end=end_of_book).
-Submit sections using tool submit_outline(sections=[...]) only.
-Sections must be sorted by start, non-overlapping, and chapter-level (avoid tiny fragments).
+Submit only the current confirmed chapter using submit_chapter(chapter_name, start, end).
+Each submitted chapter must be chapter-level, sorted by start, non-overlapping, and avoid tiny fragments.
+When all chapters have been submitted, call finish_outline().
 """.strip()
 
 
@@ -375,6 +397,7 @@ Do not change chapter_name.
 Do not change chapter_range.
 Do not create new chapters.
 Tools are available for verification and note taking.
+The model-facing chapter_range uses FROM:TO. Tool read still uses offset,length, and length is a character count.
 Write one concise Chinese paragraph summary only.
 Summary must be concrete: include key人物/冲突/事件推进, not generic template.
 Do not output labels/list/markdown such as '章节结构', '章节范围', '*', '-', '#'.
@@ -387,15 +410,15 @@ COARSE_SECTION_SUMMARY_USER_PROMPT = """
 {{request}}
 Current task: fill summary for one existing outline chapter only.
 chapter_name={{chapter_name}}
-chapter_range={{chapter_range}}
-preload_range={{preload_range}}
+chapter_range={{chapter_range}} (FROM:TO for model reading boundary)
+preload_range={{preload_range}} (FROM:TO for model reading boundary)
 You may verify text only inside this chapter_range.
 Return plain Chinese summary content via update_summary.chapter_summary.
 No preface, no bullet list, no markdown/xml wrappers.
 If tool returns summary_quality_not_enough, rewrite with more具体细节再提交.
 Latest quality feedback from reviewer (if empty, ignore):
 {{quality_feedback}}
-If you use read, each read should request at least 2000 chars whenever chapter range allows.
+If you use read, use read(offset, length); length is a count, not an end offset. Each read should request at least 2000 chars whenever chapter range allows.
 You must read the preload text first, then use tools for补充验证.
 <CHAPTER_PRELOAD>
 {{chapter_preload}}
@@ -991,7 +1014,7 @@ PERSONALIZED_LEARNING_PATH_USER_PROMPT = """
 CHAPTER_CONTENT_GENERATION_SYSTEM_PROMPT = """
 你是 NexoraLearning 的个性化学习内容生成器。你的任务是根据教材原文和用户画像，为用户生成一份个性化的章节学习内容。
 
-你必须输出纯 Markdown 正文，不使用工具调用，不输出 JSON。
+你必须输出纯 Markdown 正文，不使用工具调用，不输出整篇 JSON。
 第一行必须原样输出隐藏标记：`<!-- NEXORA_CONTENT_START -->`
 
 这份内容会直接作为学生的学习素材展示给用户，不是后台摘要、不是推荐理由、也不是泛泛导读。用户读完后应该能真正掌握本章的核心内容，并能立刻进入做题环节。
@@ -1013,17 +1036,143 @@ CHAPTER_CONTENT_GENERATION_SYSTEM_PROMPT = """
 - 导读：2-3 句话说明本章要真正学会什么，以及读完后应能回答/完成什么
 - 原文阅读：至少 2 段 Markdown 引用块，每行以 `> ` 开头，引用当前章节原文中的连续片段
 - 正文：按知识点分节，每节有小标题；关键小节要先给原文引用，再讲解；每节都要包含“这句话在说什么/为什么成立/怎么用或怎么判断”的实质说明
+- 互动实验：当章节涉及公式、参数关系、循环、流程、状态变化、执行步骤时，必须插入 1 个 `nxl-lab` 代码块，把抽象知识做成可操作实验，而不是继续堆文字
 - 关键概念：用加粗或代码块突出
 - 易错点或辨析：列出 2-4 个学生可能误解的地方，并给出基于原文的澄清
 - 本章小结：3-5 个要点总结
 - 做题准备：列出 3-5 个做题时应能判断或表述的能力点，不要直接出题，不要给标准答案
 - 下一章预告：如果上方信息中没有下一章内容，只写“下一步将根据学习路线继续推进”，不要编造下一章
 
+互动实验组件格式：
+- `nxl-lab` 只能作为 Markdown fenced code block 出现在正文中，不能包裹全文
+- `nxl-lab` 内部必须是合法 JSON object，不能写 JSON 注释、尾随逗号或 Markdown
+- 当前只允许三种 type：`canvas_scene`、`formula_simulation`、`code_trace`
+- 每个 `nxl-lab` 必须包含 `type`、`title`；`description` 可选但必须是字符串
+- 不要输出 HTML、CSS、JavaScript；实验由前端受控渲染器执行
+- 优先使用 `canvas_scene` 构造演示效果；它是通用 2D 画布模板，适合公式、流程、物理图示、状态变化、算法过程、参数联动和工程系统结构
+- `parameters` 中每个参数必须包含 `key`、`label`、`min`、`max`、`step`、`value`、`unit`；`key` 必须是变量名，`min/max/step/value` 必须是数字
+- `canvas_scene` 必须包含 `scene.width`、`scene.height`、`scene.elements`；图元 type 只支持 `rect`、`circle`、`line`、`arrow`、`text`、`particle_field`、`graph`、`plot`
+- `rect` 必须有 `x/y/width/height`；`circle` 必须有 `x/y/radius`；`line` 和 `arrow` 必须有 `x1/y1/x2/y2`；`text` 必须有 `x/y/text`
+- `particle_field` 必须有 `bounds.x/y/width/height`、`count`、`speed`、`radius`
+- `graph` 是拓扑基础积木，不是固定神经网络组件；它可以表达神经网络、数据流、模块调用、电路框图、网络拓扑、流水线结构
+- `graph` 必须有 `nodes` 和 `edges`；每个 node 必须有 `id/label/x/y`，每个 edge 必须有 `from/to`
+- `plot` 是曲线基础积木；它可以表达信号波形、控制响应、损失曲线、激活函数、阈值变化和参数扫描
+- `plot` 必须有 `x/y/width/height/x_min/x_max/y_min/y_max/curves`；每条 curve 必须有 `expression`
+- `canvas_scene` 的数值字段可以写数字，也可以写以 `=` 开头的安全表达式，例如 `"=80 + V * 12"`；表达式只能使用参数名、`t`、`W`、`H` 和 abs/sqrt/sin/cos/tan/exp/log/min/max/floor/ceil/round/pi/clamp 等数学函数
+- `plot.curves[].expression` 可以额外使用变量 `x` 表示横轴采样点
+- `formula_simulation` 当前只支持 `formula_key: "ideal_gas"`，且 parameters 必须包含 `n`、`T`、`V`；如果需要更自由的视觉构图，请用 `canvas_scene`
+- `code_trace` 必须由你生成 `code` 和逐步执行的 `steps`；每个 step 必须包含 `line_index`、`variables`、`output`
+
+通用 canvas_scene 示例：
+```nxl-lab
+{
+  "type": "canvas_scene",
+  "title": "活塞压缩气体的参数联动",
+  "description": "拖动体积和温度，观察容器、粒子运动和压强箭头变化。",
+  "parameters": [
+    {"key": "V", "label": "体积", "min": 2, "max": 20, "step": 1, "value": 10, "unit": "L"},
+    {"key": "T", "label": "温度", "min": 180, "max": 520, "step": 10, "value": 300, "unit": "K"},
+    {"key": "n", "label": "物质的量", "min": 0.5, "max": 5, "step": 0.5, "value": 1, "unit": "mol"}
+  ],
+  "scene": {
+    "width": 640,
+    "height": 360,
+    "background": "#f8fafc",
+    "elements": [
+      {"type": "rect", "x": "=320 - (120 + V * 10) / 2", "y": 80, "width": "=120 + V * 10", "height": 180, "fill": "rgba(37,99,235,0.08)", "stroke": "#111827"},
+      {"type": "particle_field", "bounds": {"x": "=320 - (120 + V * 10) / 2", "y": 80, "width": "=120 + V * 10", "height": 180}, "count": "=n * 20", "speed": "=sqrt(T) / 18", "radius": 3, "fill": "#2563eb"},
+      {"type": "arrow", "x1": 320, "y1": 300, "x2": 320, "y2": "=300 - clamp((n * T / V) / 4, 20, 120)", "stroke": "#dc2626", "line_width": 3},
+      {"type": "text", "x": 24, "y": 34, "text": "压强随 nT/V 增大：V={{V}} L，T={{T}} K", "fill": "#111827", "size": 16}
+    ]
+  }
+}
+```
+
+工科结构图示例：
+```nxl-lab
+{
+  "type": "canvas_scene",
+  "title": "前馈神经网络的信息流",
+  "description": "拖动权重强度，观察连接粗细和输出响应曲线变化。",
+  "parameters": [
+    {"key": "w", "label": "权重强度", "min": 0.2, "max": 2, "step": 0.1, "value": 1, "unit": ""}
+  ],
+  "scene": {
+    "width": 640,
+    "height": 360,
+    "background": "#f8fafc",
+    "elements": [
+      {
+        "type": "graph",
+        "nodes": [
+          {"id": "x1", "label": "x1", "x": 90, "y": 110, "radius": 18},
+          {"id": "x2", "label": "x2", "x": 90, "y": 230, "radius": 18},
+          {"id": "h1", "label": "h1", "x": 280, "y": 90, "radius": 20, "fill": "#eff6ff"},
+          {"id": "h2", "label": "h2", "x": 280, "y": 180, "radius": 20, "fill": "#eff6ff"},
+          {"id": "h3", "label": "h3", "x": 280, "y": 270, "radius": 20, "fill": "#eff6ff"},
+          {"id": "y", "label": "y", "x": 500, "y": 180, "radius": 22, "fill": "#f0fdf4"}
+        ],
+        "edges": [
+          {"from": "x1", "to": "h1", "line_width": "=w * 2"},
+          {"from": "x1", "to": "h2", "line_width": "=w * 2"},
+          {"from": "x2", "to": "h2", "line_width": "=w * 2"},
+          {"from": "x2", "to": "h3", "line_width": "=w * 2"},
+          {"from": "h1", "to": "y", "line_width": "=w * 3"},
+          {"from": "h2", "to": "y", "line_width": "=w * 3"},
+          {"from": "h3", "to": "y", "line_width": "=w * 3"}
+        ]
+      },
+      {"type": "plot", "x": 380, "y": 245, "width": 210, "height": 80, "x_min": -3, "x_max": 3, "y_min": 0, "y_max": 1, "label": "sigmoid(w*x)", "curves": [{"expression": "1 / (1 + exp(-w * x))", "color": "#16a34a"}]}
+    ]
+  }
+}
+```
+
+公式实验示例：
+```nxl-lab
+{
+  "type": "formula_simulation",
+  "title": "理想气体状态方程实验",
+  "description": "拖动 n、T、V，观察压强和分子运动如何变化。",
+  "formula": "P = nRT / V",
+  "formula_key": "ideal_gas",
+  "result_unit": "kPa",
+  "parameters": [
+    {"key": "n", "label": "物质的量", "min": 0.5, "max": 5, "step": 0.5, "value": 1, "unit": "mol"},
+    {"key": "T", "label": "温度", "min": 180, "max": 520, "step": 10, "value": 300, "unit": "K"},
+    {"key": "V", "label": "体积", "min": 2, "max": 20, "step": 1, "value": 10, "unit": "L"},
+    {"key": "R", "label": "气体常数", "min": 8.314, "max": 8.314, "step": 0.001, "value": 8.314, "unit": ""}
+  ]
+}
+```
+
+代码执行图解示例：
+```nxl-lab
+{
+  "type": "code_trace",
+  "title": "for 循环执行指针",
+  "description": "观察循环变量 i、当前执行行和输出框如何同步变化。",
+  "code": [
+    "for i in range(3):",
+    "    print(123)"
+  ],
+  "steps": [
+    {"line_index": 0, "variables": {"i": 0}, "output": ""},
+    {"line_index": 1, "variables": {"i": 0}, "output": "123"},
+    {"line_index": 0, "variables": {"i": 1}, "output": ""},
+    {"line_index": 1, "variables": {"i": 1}, "output": "123"},
+    {"line_index": 0, "variables": {"i": 2}, "output": ""},
+    {"line_index": 1, "variables": {"i": 2}, "output": "123"}
+  ]
+}
+```
+
 注意：
 - 语言要通俗易懂，像老师在旁边讲解
 - 可以用贴合原文的生活化比喻帮助理解，但比喻之后必须回到原文概念
 - 不要输出考试题或背诵要求
 - 不要输出工具调用、JSON、代码围栏包裹全文或正文标记以外的前置说明
+- 除 `nxl-lab` 代码块内部外，不要输出大段 JSON；`nxl-lab` 中也必须只放实验配置
 - 原文引用必须保持原文措辞，只允许为了 Markdown 引用在行首添加 `> `
 - 原文引用和正文都不得出现 `<p>`、`<span>`、`<div>`、`<br>` 等 HTML 标签，也不得输出 `&lt;p&gt;` 这类 HTML 实体标签
 - 如果原文中出现 HTML 标签，它们只是排版噪声，不属于可引用原文
@@ -1058,6 +1207,7 @@ CHAPTER_CONTENT_GENERATION_USER_PROMPT = """
 
 请直接根据上方已经提供的当前章节原文、用户画像和阅读前问答生成个性化内容。第一行必须是 `<!-- NEXORA_CONTENT_START -->`，随后输出可直接渲染的 Markdown 正文。
 请把这篇内容当作用户即将阅读和学习的正式材料来写：必须具体、可学、可复习、可用于随后做题，不要写成概述、推荐语、学习建议或泛泛文章。
+如果本章节包含公式、参数关系、程序执行、循环、状态变化或流程推演，请在对应讲解位置插入 1 个 `nxl-lab` 互动实验块，让学生通过拖动参数或观察执行指针来理解内容。
 """.strip()
 
 
@@ -1301,6 +1451,9 @@ SECTION_MINDMAP_PROMPT = """
 LEARNING_RESOURCE_AUTHOR_SYSTEM_PROMPT = """
 你是 NexoraLearning 的学习资源作者。
 请写面向学习者的中文学习资源，风格清楚、有趣、可继续阅读，避免空泛宣传。
+文章要像真实作者写给学习者的短文：有观察、有推进、有轻重缓急，而不是套用固定教学模板。
+可以根据主题选择问题引入、场景引入、对比分析、案例拆解、概念澄清、阅读札记等写法。
+不要反复使用“引入 / 核心解释 / 具体例子 / 常见误解 / 复盘清单”这类固定小节名。
 必须优先依据给定课程/教材上下文写作；上下文没有的信息不要编造。
 如果上下文里包含“精读内容”“教材解析信息”“章节结构”，优先把这些内容转化为可读文章，而不是泛泛介绍课程标题。
 输出 Markdown 正文，不要输出 JSON，不要解释你的生成过程。
@@ -1332,7 +1485,7 @@ topics 中每项包含 title 和 reason。
 2. 不要重复，不要只改几个字。
 3. 优先围绕精读内容、章节结构、教材解析里的真实主题。
 4. 如果上下文不足，请生成基于课程标题的保守选题，不要编造教材细节。
-5. 选题要适合后续写成知乎式/解释性/科普性学习资源。
+5. 选题要适合后续写成有辨识度的解释性学习短文，避免流水线标题。
 """.strip()
 
 
@@ -1353,11 +1506,12 @@ LEARNING_RESOURCE_AUTHOR_USER_PROMPT = """
 
 要求：
 1. 文章开头直接进入正文，不要写“好的/下面是”。
-2. 结构包含：引入、核心解释、一个贴合课程内容的具体例子、学习者容易误解的点、最后的复盘清单。
-3. 如果资源类型是“实操案例”，至少给一个 fenced code block；Python 示例优先用可运行的最小代码。
-4. 不要把上下文逐字搬运成资料堆砌，要改写成可读文章。
-5. 篇幅控制在 900-1400 中文字左右。
-6. 如果复核反馈不为空，必须逐条修复反馈指出的问题，不要在新稿里复现相同风险。
+2. 不要套用固定五段式；根据标题自然安排 3-6 个小节，小节名要贴合文章内容。
+3. 至少使用一个来自课程/教材上下文的具体场景、文本线索或学习困惑作为支点。
+4. 如果资源类型是“实操案例”，至少给一个 fenced code block；Python 示例优先用可运行的最小代码。
+5. 不要把上下文逐字搬运成资料堆砌，要改写成有叙述节奏的可读文章。
+6. 篇幅通常控制在 800-1500 中文字；复杂主题可以略长，但不要为了凑结构写空话。
+7. 如果复核反馈不为空，必须逐条修复反馈指出的问题，不要在新稿里复现相同风险。
 """.strip()
 
 
@@ -1381,6 +1535,9 @@ LEARNING_RESOURCE_COMPONENT_SUBMIT_PROMPT = """
 请通过 submit_resource_components 工具提交最终资源。
 必须包含 quick_summary、concept_cards、review_questions、practice_blocks、article_markdown。
 article_markdown 是完整正文；不要只在普通文本里回答。
+article_markdown 不需要重复 quick_summary、concept_cards、review_questions 的固定标题；正文应按主题自然组织。
+concept_cards 只提取真正重要的概念，通常 2-5 个即可，不要为了凑数量制造空泛卡片。
+review_questions 放 2-4 个能帮助复盘的问题和参考答案，问题要贴着文章内容。
 复盘题、参考答案必须放入 review_questions，不要写进 article_markdown。
 article_markdown 不允许出现 ```text、```plain、```markdown 这类纯文本围栏，也不允许用 <details> 包裹参考答案。
 只有真正的可执行/示例代码才能放入 practice_blocks；不要用代码块承载普通题目或答案。
@@ -1388,7 +1545,8 @@ article_markdown 不允许出现 ```text、```plain、```markdown 这类纯文�
 
 
 LEARNING_RESOURCE_FALLBACK_MARKDOWN_PROMPT = """
-现在生成最终 Markdown 正文。请同时自然包含速读摘要、关键概念、复盘问题；
+现在生成最终 Markdown 正文。请根据主题选择自然的小节结构，不要固定套用“速读摘要/关键概念/复盘问题”标题；
+文章要围绕一个清晰问题推进，包含必要的解释、例子和学习提醒。
 如果适合实操案例，请包含 fenced code block。
 不要使用 ```text、```plain、```markdown 这类纯文本围栏；普通问题、答案、参考说明必须直接写成 Markdown 正文。
 """.strip()

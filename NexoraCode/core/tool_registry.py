@@ -81,10 +81,23 @@ class ToolRegistry:
         return result
 
     def execute(self, tool_name: str, params: dict) -> dict[str, Any]:
-        if tool_name not in self._tools:
+        resolved_tool_name = str(tool_name or "").strip()
+
+        if resolved_tool_name not in self._tools:
+            try:
+                catalog_mod = importlib.import_module("tools.catalog")
+                aliases = getattr(catalog_mod, "TOOL_NAME_ALIASES", {}) or {}
+            except Exception:
+                aliases = {}
+
+            if isinstance(aliases, dict):
+                resolved_tool_name = str(aliases.get(resolved_tool_name, resolved_tool_name) or "").strip()
+
+        if resolved_tool_name not in self._tools:
             return {"success": False, "error": f"Unknown tool: {tool_name}"}
+
         try:
-            result = self._tools[tool_name]["handler"](**params)
+            result = self._tools[resolved_tool_name]["handler"](**params)
             
             # buffer long strings
             try:

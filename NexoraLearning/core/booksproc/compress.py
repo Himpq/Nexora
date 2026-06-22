@@ -55,10 +55,25 @@ def build_llm_compress_func(runner: Any, cfg: Mapping[str, Any]) -> Callable[[st
         "llm_compress_system",
         learning_prompts.LLM_COMPRESS_SYSTEM_PROMPT,
     )
+    tool_summary_rules = _load_prompt_text(
+        cfg,
+        "llm_compress_tool_summary_rules",
+        learning_prompts.LLM_COMPRESS_TOOL_SUMMARY_RULES,
+    )
     user_template = _load_prompt_text(
         cfg,
         "llm_compress_user",
         learning_prompts.LLM_COMPRESS_USER_PROMPT,
+    )
+    system_prompt = "\n\n".join(
+        [
+            item
+            for item in [
+                str(system_prompt or "").strip(),
+                str(tool_summary_rules or "").strip(),
+            ]
+            if item
+        ]
     )
 
     def _llm_compress_func(text: str) -> str:

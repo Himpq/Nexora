@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple
 
 from ..runlog import log_event
 
@@ -18,6 +19,39 @@ HTML_TAG_PATTERN = re.compile(
     r"(?is)<\s*/?\s*[a-z][a-z0-9:-]*(?:\s+[^>]*)?\s*/?\s*>|"
     r"&lt;\s*/?\s*[a-z][a-z0-9:-]*(?:\s+[^&]*?)?/?\s*&gt;"
 )
+NXL_LAB_FENCE_START_PATTERN = re.compile(r"^```nxl-lab[ \t]*$", re.IGNORECASE)
+NXL_LAB_FENCE_END_PATTERN = re.compile(r"^```[ \t]*$")
+NXL_LAB_NAME_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+NXL_LAB_EXPRESSION_PATTERN = re.compile(r"^[0-9A-Za-z_+\-*/%^().,\s]+$")
+NXL_LAB_ALLOWED_TYPES = {"canvas_scene", "formula_simulation", "code_trace"}
+NXL_LAB_ALLOWED_ELEMENT_TYPES = {
+    "rect",
+    "circle",
+    "line",
+    "arrow",
+    "text",
+    "particle_field",
+    "graph",
+    "plot",
+}
+NXL_LAB_ALLOWED_FORMULA_KEYS = {"ideal_gas"}
+NXL_LAB_MATH_NAMES = {
+    "abs",
+    "sqrt",
+    "sin",
+    "cos",
+    "tan",
+    "exp",
+    "log",
+    "min",
+    "max",
+    "floor",
+    "ceil",
+    "round",
+    "pi",
+    "clamp",
+}
+NXL_LAB_SCENE_NAMES = {"t", "W", "H"}
 _GENERATION_LOCK = threading.RLock()
 _CHAPTER_GENERATION_JOBS: Dict[str, "ChapterGenerationJob"] = {}
 
@@ -551,6 +585,500 @@ def load_pre_reading_qa(
 
 # ── 章节内容 ──────────────────────────────────────────────────────
 
+def _extract_nxl_lab_blocks(markdown: str) -> List[Tuple[int, str]]:
+    """提取正文中的 nxl-lab 配置块，并检查代码围栏是否完整闭合。"""
+    lines = str(markdown or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    blocks: List[Tuple[int, str]] = []
+    index = 0
+
+    while index < len(lines):
+        line = lines[index].strip()
+
+        if not NXL_LAB_FENCE_START_PATTERN.match(line):
+            index += 1
+            continue
+
+        start_line = index + 1
+        index += 1
+        block_lines: List[str] = []
+
+        while index < len(lines):
+
+            if NXL_LAB_FENCE_END_PATTERN.match(lines[index].strip()):
+                break
+
+            block_lines.append(lines[index])
+            index += 1
+
+        if index >= len(lines):
+            raise ValueError(f"第 {start_line} 行的 nxl-lab 代码块没有闭合。")
+
+        blocks.append((start_line, "\n".join(block_lines)))
+        index += 1
+
+    return blocks
+
+
+def _validate_nxl_lab_no_html(value: Any, path: str) -> None:
+    if isinstance(value, str) and HTML_TAG_PATTERN.search(value):
+        raise ValueError(f"{path} 包含 HTML 标签，nxl-lab 只允许结构化 JSON 配置。")
+
+    if isinstance(value, list):
+
+        for idx, item in enumerate(value):
+            _validate_nxl_lab_no_html(item, f"{path}[{idx}]")
+
+        return
+
+    if isinstance(value, dict):
+
+        for key, item in value.items():
+            _validate_nxl_lab_no_html(item, f"{path}.{key}")
+
+
+def _require_nxl_lab_object(value: Any, path: str) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{path} 必须是 JSON object。")
+
+    return value
+
+
+def _require_nxl_lab_array(value: Any, path: str) -> List[Any]:
+    if not isinstance(value, list):
+        raise ValueError(f"{path} 必须是 JSON array。")
+
+    return value
+
+
+def _validate_nxl_lab_text(value: Any, path: str, *, required: bool = False) -> str:
+    if value is None:
+
+        if required:
+            raise ValueError(f"{path} 不能为空。")
+
+        return ""
+
+    if not isinstance(value, str):
+        raise ValueError(f"{path} 必须是字符串。")
+
+    text = value.strip()
+
+    if required and not text:
+        raise ValueError(f"{path} 不能为空。")
+
+    return text
+
+
+def _validate_nxl_lab_number(value: Any, path: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        raise ValueError(f"{path} 必须是有效数字。")
+
+    return float(value)
+
+
+def _validate_nxl_lab_expression(expression: str, path: str, allowed_names: Set[str]) -> None:
+    source = str(expression or "").strip()
+
+    if not source:
+        raise ValueError(f"{path} 表达式不能为空。")
+
+    if not NXL_LAB_EXPRESSION_PATTERN.match(source):
+        raise ValueError(f"{path} 表达式包含未允许的字符。")
+
+    names = set(NXL_LAB_NAME_PATTERN.findall(source))
+    unknown_names = sorted(name for name in names if name not in allowed_names)
+
+    if unknown_names:
+        raise ValueError(f"{path} 表达式使用了未注册变量：{', '.join(unknown_names)}。")
+
+
+def _validate_nxl_lab_number_or_expression(value: Any, path: str, allowed_names: Set[str]) -> None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        _validate_nxl_lab_number(value, path)
+        return
+
+    if isinstance(value, str) and value.strip().startswith("="):
+        _validate_nxl_lab_expression(value.strip()[1:], path, allowed_names)
+        return
+
+    raise ValueError(f"{path} 必须是数字，或以 = 开头的安全表达式。")
+
+
+def _validate_nxl_lab_number_fields(
+    data: Mapping[str, Any],
+    fields: List[str],
+    path: str,
+    allowed_names: Set[str],
+    *,
+    required: bool,
+) -> None:
+    for field in fields:
+
+        if field not in data:
+
+            if required:
+                raise ValueError(f"{path}.{field} 不能为空。")
+
+            continue
+
+        _validate_nxl_lab_number_or_expression(data[field], f"{path}.{field}", allowed_names)
+
+
+def _validate_nxl_lab_parameters(value: Any, path: str, *, required: bool) -> Set[str]:
+    if value is None:
+
+        if required:
+            raise ValueError(f"{path} 不能为空。")
+
+        return set()
+
+    parameters = _require_nxl_lab_array(value, path)
+
+    if required and not parameters:
+        raise ValueError(f"{path} 至少需要 1 个参数。")
+
+    keys: Set[str] = set()
+
+    for idx, raw_param in enumerate(parameters):
+        item_path = f"{path}[{idx}]"
+        param = _require_nxl_lab_object(raw_param, item_path)
+        key = _validate_nxl_lab_text(param.get("key"), f"{item_path}.key", required=True)
+
+        if not NXL_LAB_NAME_PATTERN.fullmatch(key):
+            raise ValueError(f"{item_path}.key 必须是可用于表达式的变量名。")
+
+        if key in keys:
+            raise ValueError(f"{item_path}.key 重复：{key}。")
+
+        keys.add(key)
+        _validate_nxl_lab_text(param.get("label"), f"{item_path}.label", required=True)
+
+        if "unit" not in param:
+            raise ValueError(f"{item_path}.unit 必须提供，可为空字符串。")
+
+        _validate_nxl_lab_text(param.get("unit"), f"{item_path}.unit")
+
+        minimum = _validate_nxl_lab_number(param.get("min"), f"{item_path}.min")
+        maximum = _validate_nxl_lab_number(param.get("max"), f"{item_path}.max")
+        step = _validate_nxl_lab_number(param.get("step"), f"{item_path}.step")
+        value_number = _validate_nxl_lab_number(param.get("value"), f"{item_path}.value")
+
+        if maximum < minimum:
+            raise ValueError(f"{item_path}.max 不能小于 min。")
+
+        if step <= 0:
+            raise ValueError(f"{item_path}.step 必须大于 0。")
+
+        if value_number < minimum or value_number > maximum:
+            raise ValueError(f"{item_path}.value 必须位于 min 与 max 之间。")
+
+    return keys
+
+
+def _validate_nxl_lab_formula(config: Mapping[str, Any], path: str) -> None:
+    _validate_nxl_lab_text(config.get("formula"), f"{path}.formula", required=True)
+    _validate_nxl_lab_text(config.get("result_unit"), f"{path}.result_unit")
+
+    formula_key = _validate_nxl_lab_text(config.get("formula_key"), f"{path}.formula_key", required=True)
+
+    if formula_key not in NXL_LAB_ALLOWED_FORMULA_KEYS:
+        raise ValueError(f"{path}.formula_key 未注册：{formula_key}。")
+
+    parameter_keys = _validate_nxl_lab_parameters(config.get("parameters"), f"{path}.parameters", required=True)
+    required_keys = {"n", "T", "V"}
+    missing_keys = sorted(required_keys - parameter_keys)
+
+    if missing_keys:
+        raise ValueError(f"{path}.parameters 缺少理想气体实验参数：{', '.join(missing_keys)}。")
+
+
+def _validate_nxl_lab_graph(element: Mapping[str, Any], path: str, allowed_names: Set[str]) -> None:
+    nodes = _require_nxl_lab_array(element.get("nodes"), f"{path}.nodes")
+    edges = _require_nxl_lab_array(element.get("edges"), f"{path}.edges")
+
+    if not nodes:
+        raise ValueError(f"{path}.nodes 至少需要 1 个节点。")
+
+    if not edges:
+        raise ValueError(f"{path}.edges 至少需要 1 条连接。")
+
+    node_ids: Set[str] = set()
+
+    for idx, raw_node in enumerate(nodes):
+        node_path = f"{path}.nodes[{idx}]"
+        node = _require_nxl_lab_object(raw_node, node_path)
+        node_id = _validate_nxl_lab_text(node.get("id"), f"{node_path}.id", required=True)
+
+        if node_id in node_ids:
+            raise ValueError(f"{node_path}.id 重复：{node_id}。")
+
+        node_ids.add(node_id)
+        _validate_nxl_lab_text(node.get("label"), f"{node_path}.label", required=True)
+        _validate_nxl_lab_text(node.get("shape"), f"{node_path}.shape")
+        _validate_nxl_lab_text(node.get("fill"), f"{node_path}.fill")
+        _validate_nxl_lab_text(node.get("stroke"), f"{node_path}.stroke")
+        _validate_nxl_lab_text(node.get("text_color"), f"{node_path}.text_color")
+        _validate_nxl_lab_number_fields(
+            node,
+            ["x", "y"],
+            node_path,
+            allowed_names,
+            required=True,
+        )
+        _validate_nxl_lab_number_fields(
+            node,
+            ["radius", "width", "height", "line_width", "size"],
+            node_path,
+            allowed_names,
+            required=False,
+        )
+
+    for idx, raw_edge in enumerate(edges):
+        edge_path = f"{path}.edges[{idx}]"
+        edge = _require_nxl_lab_object(raw_edge, edge_path)
+        from_id = _validate_nxl_lab_text(edge.get("from"), f"{edge_path}.from", required=True)
+        to_id = _validate_nxl_lab_text(edge.get("to"), f"{edge_path}.to", required=True)
+
+        if from_id not in node_ids:
+            raise ValueError(f"{edge_path}.from 未引用已声明节点：{from_id}。")
+
+        if to_id not in node_ids:
+            raise ValueError(f"{edge_path}.to 未引用已声明节点：{to_id}。")
+
+        _validate_nxl_lab_text(edge.get("color"), f"{edge_path}.color")
+        _validate_nxl_lab_text(edge.get("label"), f"{edge_path}.label")
+        _validate_nxl_lab_number_fields(
+            edge,
+            ["line_width", "head_size"],
+            edge_path,
+            allowed_names,
+            required=False,
+        )
+
+
+def _validate_nxl_lab_plot(element: Mapping[str, Any], path: str, allowed_names: Set[str]) -> None:
+    _validate_nxl_lab_number_fields(
+        element,
+        ["x", "y", "width", "height", "x_min", "x_max", "y_min", "y_max"],
+        path,
+        allowed_names,
+        required=True,
+    )
+    _validate_nxl_lab_number_fields(
+        element,
+        ["samples", "line_width"],
+        path,
+        allowed_names,
+        required=False,
+    )
+    _validate_nxl_lab_text(element.get("label"), f"{path}.label")
+
+    curves = _require_nxl_lab_array(element.get("curves"), f"{path}.curves")
+
+    if not curves:
+        raise ValueError(f"{path}.curves 至少需要 1 条曲线。")
+
+    plot_names = set(allowed_names)
+    plot_names.add("x")
+
+    for idx, raw_curve in enumerate(curves):
+        curve_path = f"{path}.curves[{idx}]"
+        curve = _require_nxl_lab_object(raw_curve, curve_path)
+        expression = _validate_nxl_lab_text(curve.get("expression"), f"{curve_path}.expression", required=True)
+        _validate_nxl_lab_expression(expression, f"{curve_path}.expression", plot_names)
+        _validate_nxl_lab_text(curve.get("color"), f"{curve_path}.color")
+        _validate_nxl_lab_number_fields(
+            curve,
+            ["line_width"],
+            curve_path,
+            allowed_names,
+            required=False,
+        )
+
+
+def _validate_nxl_lab_canvas_element(element: Mapping[str, Any], path: str, allowed_names: Set[str]) -> None:
+    element_type = _validate_nxl_lab_text(element.get("type"), f"{path}.type", required=True)
+
+    if element_type not in NXL_LAB_ALLOWED_ELEMENT_TYPES:
+        raise ValueError(f"{path}.type 未注册：{element_type}。")
+
+    _validate_nxl_lab_text(element.get("fill"), f"{path}.fill")
+    _validate_nxl_lab_text(element.get("stroke"), f"{path}.stroke")
+    _validate_nxl_lab_text(element.get("color"), f"{path}.color")
+
+    if element_type == "rect":
+        _validate_nxl_lab_number_fields(
+            element,
+            ["x", "y", "width", "height"],
+            path,
+            allowed_names,
+            required=True,
+        )
+        _validate_nxl_lab_number_fields(element, ["line_width"], path, allowed_names, required=False)
+        return
+
+    if element_type == "circle":
+        _validate_nxl_lab_number_fields(
+            element,
+            ["x", "y", "radius"],
+            path,
+            allowed_names,
+            required=True,
+        )
+        _validate_nxl_lab_number_fields(element, ["line_width"], path, allowed_names, required=False)
+        return
+
+    if element_type in {"line", "arrow"}:
+        _validate_nxl_lab_number_fields(
+            element,
+            ["x1", "y1", "x2", "y2"],
+            path,
+            allowed_names,
+            required=True,
+        )
+        _validate_nxl_lab_number_fields(
+            element,
+            ["line_width", "head_size"],
+            path,
+            allowed_names,
+            required=False,
+        )
+        return
+
+    if element_type == "text":
+        _validate_nxl_lab_text(element.get("text"), f"{path}.text", required=True)
+        _validate_nxl_lab_number_fields(
+            element,
+            ["x", "y"],
+            path,
+            allowed_names,
+            required=True,
+        )
+        _validate_nxl_lab_number_fields(element, ["size"], path, allowed_names, required=False)
+        return
+
+    if element_type == "particle_field":
+        bounds = _require_nxl_lab_object(element.get("bounds"), f"{path}.bounds")
+        _validate_nxl_lab_number_fields(
+            bounds,
+            ["x", "y", "width", "height"],
+            f"{path}.bounds",
+            allowed_names,
+            required=True,
+        )
+        _validate_nxl_lab_number_fields(
+            element,
+            ["count", "speed", "radius"],
+            path,
+            allowed_names,
+            required=True,
+        )
+        return
+
+    if element_type == "graph":
+        _validate_nxl_lab_graph(element, path, allowed_names)
+        return
+
+    if element_type == "plot":
+        _validate_nxl_lab_plot(element, path, allowed_names)
+
+
+def _validate_nxl_lab_canvas_scene(config: Mapping[str, Any], path: str) -> None:
+    parameter_names = _validate_nxl_lab_parameters(config.get("parameters"), f"{path}.parameters", required=False)
+    allowed_names = set(parameter_names) | NXL_LAB_SCENE_NAMES | NXL_LAB_MATH_NAMES
+    scene = _require_nxl_lab_object(config.get("scene"), f"{path}.scene")
+    _validate_nxl_lab_text(scene.get("background"), f"{path}.scene.background")
+    _validate_nxl_lab_number_fields(
+        scene,
+        ["width", "height"],
+        f"{path}.scene",
+        allowed_names,
+        required=True,
+    )
+
+    elements = _require_nxl_lab_array(scene.get("elements"), f"{path}.scene.elements")
+
+    if not elements:
+        raise ValueError(f"{path}.scene.elements 至少需要 1 个图元。")
+
+    for idx, raw_element in enumerate(elements):
+        element_path = f"{path}.scene.elements[{idx}]"
+        element = _require_nxl_lab_object(raw_element, element_path)
+        _validate_nxl_lab_canvas_element(element, element_path, allowed_names)
+
+
+def _validate_nxl_lab_code_trace(config: Mapping[str, Any], path: str) -> None:
+    code_lines = _require_nxl_lab_array(config.get("code"), f"{path}.code")
+    steps = _require_nxl_lab_array(config.get("steps"), f"{path}.steps")
+
+    if not code_lines:
+        raise ValueError(f"{path}.code 至少需要 1 行代码。")
+
+    if not steps:
+        raise ValueError(f"{path}.steps 至少需要 1 个执行步骤。")
+
+    for idx, code_line in enumerate(code_lines):
+        _validate_nxl_lab_text(code_line, f"{path}.code[{idx}]", required=True)
+
+    for idx, raw_step in enumerate(steps):
+        step_path = f"{path}.steps[{idx}]"
+        step = _require_nxl_lab_object(raw_step, step_path)
+        line_index = step.get("line_index")
+
+        if isinstance(line_index, bool) or not isinstance(line_index, int):
+            raise ValueError(f"{step_path}.line_index 必须是整数。")
+
+        if line_index < 0 or line_index >= len(code_lines):
+            raise ValueError(f"{step_path}.line_index 超出 code 行范围。")
+
+        variables = step.get("variables")
+
+        if variables is not None:
+            _require_nxl_lab_object(variables, f"{step_path}.variables")
+
+        _validate_nxl_lab_text(step.get("output"), f"{step_path}.output")
+
+
+def _validate_nxl_lab_config(config: Mapping[str, Any], path: str) -> None:
+    _validate_nxl_lab_no_html(config, path)
+    lab_type = _validate_nxl_lab_text(config.get("type"), f"{path}.type", required=True)
+
+    if lab_type not in NXL_LAB_ALLOWED_TYPES:
+        raise ValueError(f"{path}.type 未注册：{lab_type}。")
+
+    _validate_nxl_lab_text(config.get("title"), f"{path}.title", required=True)
+    _validate_nxl_lab_text(config.get("description"), f"{path}.description")
+
+    if lab_type == "formula_simulation":
+        _validate_nxl_lab_formula(config, path)
+        return
+
+    if lab_type == "canvas_scene":
+        _validate_nxl_lab_canvas_scene(config, path)
+        return
+
+    if lab_type == "code_trace":
+        _validate_nxl_lab_code_trace(config, path)
+
+
+def validate_nxl_lab_blocks(markdown: str) -> int:
+    """校验 Markdown 中所有 nxl-lab 实验配置，返回实验块数量。"""
+    blocks = _extract_nxl_lab_blocks(markdown)
+
+    for block_index, (line_number, raw_config) in enumerate(blocks, start=1):
+        block_path = f"nxl-lab[{block_index}]"
+
+        try:
+            parsed = json.loads(raw_config)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"第 {line_number} 行的 nxl-lab JSON 无法解析：{exc.msg}。") from exc
+
+        config = _require_nxl_lab_object(parsed, block_path)
+        _validate_nxl_lab_config(config, block_path)
+
+    return len(blocks)
+
+
 def save_chapter_content(
     cfg: Mapping[str, Any],
     user_id: str,
@@ -564,13 +1092,31 @@ def save_chapter_content(
     if not safe_uid or not safe_lid:
         raise ValueError("user_id and lecture_id are required.")
 
+    markdown_text = str(markdown or "")
+
+    try:
+        lab_count = validate_nxl_lab_blocks(markdown_text)
+    except ValueError as exc:
+        log_event(
+            "personalized_chapter_lab_validation_error",
+            "个性化章节互动实验配置校验失败",
+            payload={"user_id": safe_uid, "lecture_id": safe_lid, "chapter_index": chapter_index},
+            content=str(exc),
+        )
+        raise
+
     target = _chapter_path(cfg, safe_uid, safe_lid, chapter_index)
-    _write_text(target, str(markdown or ""))
+    _write_text(target, markdown_text)
 
     log_event(
         "personalized_chapter_saved",
         "个性化章节内容已保存",
-        payload={"user_id": safe_uid, "lecture_id": safe_lid, "chapter_index": chapter_index},
+        payload={
+            "user_id": safe_uid,
+            "lecture_id": safe_lid,
+            "chapter_index": chapter_index,
+            "lab_count": lab_count,
+        },
     )
     return str(target)
 

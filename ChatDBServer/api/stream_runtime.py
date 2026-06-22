@@ -195,12 +195,18 @@ def list_sessions(
     *,
     username: Optional[str] = None,
     stream_ids: Optional[List[str]] = None,
+    conversation_ids: Optional[List[str]] = None,
     include_done: bool = True,
 ) -> List[Dict[str, Any]]:
     cleanup_sessions()
     requested_ids = {
         str(item or "").strip()
         for item in (stream_ids or [])
+        if str(item or "").strip()
+    }
+    requested_conversation_ids = {
+        str(item or "").strip()
+        for item in (conversation_ids or [])
         if str(item or "").strip()
     }
     with _SESSIONS_LOCK:
@@ -213,6 +219,10 @@ def list_sessions(
         meta = get_session_meta(sid, username=username)
         if not meta:
             continue
+        if requested_conversation_ids:
+            meta_cid = str(meta.get("conversation_id") or "").strip()
+            if meta_cid not in requested_conversation_ids:
+                continue
         if not include_done and str(meta.get("status") or "") != "running":
             continue
         rows.append(meta)

@@ -79,6 +79,55 @@ TOOL_CATALOG = [
     },
     {
         "module": "file_ops",
+        "name": "local_file_patch",
+        "handler": "file_patch",
+        "description": (
+            "对用户本地计算机上的单个文件执行精确 patch（NexoraCode 本地工具）。"
+            "必须且只能提供 patch 或 edits 其中一种输入：patch 使用统一 diff 格式；"
+            "edits 使用结构化精确编辑，支持 replace、insert_before、insert_after、delete。"
+            "所有上下文或 target 必须与文件内容完全匹配，适合代码修改。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "文件绝对路径"},
+                "patch": {
+                    "type": "string",
+                    "description": "统一 diff 内容。提供 patch 时不能同时提供 edits。",
+                },
+                "edits": {
+                    "type": "array",
+                    "description": "结构化精确编辑列表。提供 edits 时不能同时提供 patch。",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "action": {
+                                "type": "string",
+                                "enum": ["replace", "insert_before", "insert_after", "delete"],
+                                "description": "编辑动作",
+                            },
+                            "target": {"type": "string", "description": "文件中必须精确匹配的目标文本"},
+                            "replacement": {"type": "string", "description": "replace 动作使用的新文本"},
+                            "content": {"type": "string", "description": "insert_before/insert_after 动作插入的文本"},
+                            "occurrence": {
+                                "type": "integer",
+                                "description": "当 target 出现多次时，指定第几处，1 表示第一处。",
+                            },
+                        },
+                        "required": ["action", "target"],
+                    },
+                },
+                "encoding": {"type": "string", "description": "文件编码，默认 utf-8", "default": "utf-8"},
+                "expected_sha256": {
+                    "type": "string",
+                    "description": "可选。修改前文件内容的 SHA256，不一致时拒绝修改。",
+                },
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "module": "file_ops",
         "name": "local_file_list",
         "handler": "file_list",
         "description": "列出用户本地计算机指定目录下的文件和子目录（NexoraCode 本地工具）。",
@@ -123,9 +172,9 @@ TOOL_CATALOG = [
     },
     {
         "module": "renderer",
-        "name": "local_web_render",
+        "name": "browser_page_open",
         "handler": "web_render",
-        "description": "用本地真实浏览器打开并渲染网页。interactive 模式会创建或导航驻留页面，并返回稳定 page_id 与当前视窗交互节点；后续所有 local_web_* 页面操作都必须传这个 page_id。",
+        "description": "用本地真实浏览器打开并渲染网页。interactive 模式会创建或导航驻留页面，并返回稳定 page_id 与当前视窗交互节点；后续所有 browser_page_* 页面操作都必须传这个 page_id。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -152,13 +201,13 @@ TOOL_CATALOG = [
     },
     {
         "module": "renderer",
-        "name": "local_web_get_content",
+        "name": "browser_page_read",
         "handler": "handle_web_get_content",
         "description": "读取指定驻留页面当前真实内容。用户手动操作页面后，用这个工具传入同一个 page_id 重新获取页面正文和当前 DOM 节点。",
         "parameters": {
             "type": "object",
             "properties": {
-                "page_id": {"type": "integer", "description": "local_web_render(interactive) 返回的页面 ID"},
+                "page_id": {"type": "integer", "description": "browser_page_open(interactive) 返回的页面 ID"},
                 "extract_mode": {
                     "type": "string",
                     "enum": ["readability", "full_text", "html"],
@@ -171,13 +220,13 @@ TOOL_CATALOG = [
     },
     {
         "module": "renderer",
-        "name": "local_web_click",
+        "name": "browser_page_click",
         "handler": "handle_web_click",
-        "description": "在指定驻留页面中点击网页元素。必须传 local_web_render 返回的 page_id 和当前快照里的 node_id。",
+        "description": "在指定驻留页面中点击网页元素。必须传 browser_page_open 返回的 page_id 和当前快照里的 node_id。",
         "parameters": {
             "type": "object",
             "properties": {
-                "page_id": {"type": "integer", "description": "local_web_render(interactive) 返回的页面 ID"},
+                "page_id": {"type": "integer", "description": "browser_page_open(interactive) 返回的页面 ID"},
                 "node_id": {"type": "integer", "description": "要点击的元素的 data-nexora-id"},
             },
             "required": ["page_id", "node_id"],
@@ -185,13 +234,13 @@ TOOL_CATALOG = [
     },
     {
         "module": "renderer",
-        "name": "local_web_input",
+        "name": "browser_page_input",
         "handler": "handle_web_input",
         "description": "在指定驻留页面中向 input/textarea 等元素写入文本。适合登录、搜索、表单填写。必须传 page_id，并优先使用页面快照返回的 selector。",
         "parameters": {
             "type": "object",
             "properties": {
-                "page_id": {"type": "integer", "description": "local_web_render(interactive) 返回的页面 ID"},
+                "page_id": {"type": "integer", "description": "browser_page_open(interactive) 返回的页面 ID"},
                 "selector": {"type": "string", "description": "目标 input/textarea/select/contenteditable 的 CSS 定位器"},
                 "text": {"type": "string", "description": "要注入的文本内容"},
                 "submit": {"type": "boolean", "description": "是否在输入后尝试提交回车/表单提交", "default": False},
@@ -201,13 +250,13 @@ TOOL_CATALOG = [
     },
     {
         "module": "renderer",
-        "name": "local_web_exec_js",
+        "name": "browser_page_eval",
         "handler": "handle_web_exec_js",
         "description": "在指定驻留页面的真实网页 DOM 中执行 JS。网页交互时用它读取状态、筛选元素、触发站内脚本；必须传 page_id。",
         "parameters": {
             "type": "object",
             "properties": {
-                "page_id": {"type": "integer", "description": "local_web_render(interactive) 返回的页面 ID"},
+                "page_id": {"type": "integer", "description": "browser_page_open(interactive) 返回的页面 ID"},
                 "code": {"type": "string", "description": "要注入执行的 JavaScript 代码内容。内部需要包含 return 或者直接进行 DOM 操作。"},
             },
             "required": ["page_id", "code"],
@@ -215,13 +264,13 @@ TOOL_CATALOG = [
     },
     {
         "module": "renderer",
-        "name": "local_web_scroll",
+        "name": "browser_page_scroll",
         "handler": "handle_web_scroll",
         "description": "在指定驻留页面中滚动页面。仅在必须暴露新内容、触发懒加载或翻到目标区域时使用；必须传 page_id。",
         "parameters": {
             "type": "object",
             "properties": {
-                "page_id": {"type": "integer", "description": "local_web_render(interactive) 返回的页面 ID"},
+                "page_id": {"type": "integer", "description": "browser_page_open(interactive) 返回的页面 ID"},
                 "direction": {"type": "string", "enum": ["down", "up", "bottom", "top"], "description": "滚动方向"},
             },
             "required": ["page_id", "direction"],
@@ -229,9 +278,9 @@ TOOL_CATALOG = [
     },
     {
         "module": "renderer",
-        "name": "local_web_list_pages",
+        "name": "browser_page_list",
         "handler": "handle_web_list_pages",
-        "description": "列出当前 NexoraCode 驻留网页页面及其 page_id，用于确认后续 local_web_* 操作的目标页面。",
+        "description": "列出当前 NexoraCode 驻留网页页面及其 page_id，用于确认后续 browser_page_* 操作的目标页面。",
         "parameters": {
             "type": "object",
             "properties": {},
@@ -239,20 +288,20 @@ TOOL_CATALOG = [
     },
     {
         "module": "renderer",
-        "name": "local_web_close_page",
+        "name": "browser_page_close",
         "handler": "handle_web_close_page",
         "description": "关闭指定 page_id 的驻留网页页面。",
         "parameters": {
             "type": "object",
             "properties": {
-                "page_id": {"type": "integer", "description": "local_web_render(interactive) 返回的页面 ID"},
+                "page_id": {"type": "integer", "description": "browser_page_open(interactive) 返回的页面 ID"},
             },
             "required": ["page_id"],
         },
     },
     {
         "module": "long_context",
-        "name": "getContext",
+        "name": "local_context_read",
         "handler": "get_context_handler",
         "description": "获取被截断的长文本上下文内容。",
         "parameters": {
@@ -269,7 +318,7 @@ TOOL_CATALOG = [
     },
     {
         "module": "long_context",
-        "name": "clear_context",
+        "name": "local_context_clear",
         "handler": "clear_context",
         "description": "清理长文本上下文缓存，建议一轮对话结束后执行。",
         "parameters": {
@@ -278,6 +327,20 @@ TOOL_CATALOG = [
         },
     },
 ]
+
+
+TOOL_NAME_ALIASES = {
+    "local_web_render": "browser_page_open",
+    "local_web_get_content": "browser_page_read",
+    "local_web_click": "browser_page_click",
+    "local_web_input": "browser_page_input",
+    "local_web_exec_js": "browser_page_eval",
+    "local_web_scroll": "browser_page_scroll",
+    "local_web_list_pages": "browser_page_list",
+    "local_web_close_page": "browser_page_close",
+    "getContext": "local_context_read",
+    "clear_context": "local_context_clear",
+}
 
 
 def get_tool_modules():

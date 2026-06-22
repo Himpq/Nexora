@@ -15,8 +15,10 @@ from email.header import Header
 from email.utils import parsedate_to_datetime
 from tools import TOOLS, canonicalize_tool_name
 from tool_executor import ToolExecutor
+from tool_result_presenter import ToolResultPresenter
 from database import User, BASIS
 from conversation_manager import ConversationManager
+from context_manager import ChatContextManager
 from provider_factory import create_provider_adapter
 from temp_context_store import TempContextStore
 from server_quota import get_generation_quota_gate
@@ -142,10 +144,10 @@ CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_DEFAULT = 1500000
 CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MIN = 50000
 CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MAX = 4000000
 LEARNING_ALLOWED_BASE_TOOL_NAMES = {
-    "vector_search",
-    "get_knowledge_list",
-    "get_basis_content",
-    "search_keyword",
+    "knowledge_search_vector",
+    "knowledge_list",
+    "knowledge_basis_read",
+    "knowledge_search_keyword",
 }
 
 def _ensure_json_serializable(obj):
@@ -244,6 +246,7 @@ class Model:
                 self.model_name = default_model
             
         self.conversation_manager = ConversationManager(username)
+        self.chat_context_manager = ChatContextManager(self)
         
         # 对话ID管理
         if conversation_id:
@@ -347,6 +350,7 @@ class Model:
         # 工具定义
         self.tools = self._parse_tools(TOOLS)
         self.tool_executor = ToolExecutor(self)
+        self.tool_result_presenter = ToolResultPresenter()
         self._external_tool_definitions: List[Dict[str, Any]] = []
         self._external_tool_names: Set[str] = set()
         self._runtime_selector_enabled = False
@@ -359,7 +363,7 @@ class Model:
         self._runtime_tool_selection_changed = False
         self._runtime_hints_injected_in_request = False
         self._runtime_tool_mode = "force"
-        self._runtime_bootstrap_tool_name = "select_tools"
+        self._runtime_bootstrap_tool_name = "runtime_tool_select"
         self._temp_context_store = None
         self._temp_context_scope_id = ""
         self._temp_context_settings = {}
@@ -625,9 +629,13 @@ class Model:
                 continue
             required_tools_raw = item.get("required_tools", [])
             if isinstance(required_tools_raw, list):
-                required_tools = [str(x).strip() for x in required_tools_raw if str(x).strip()]
+                required_tools = self._normalize_required_tool_names(required_tools_raw)
             else:
-                required_tools = [seg.strip() for seg in str(required_tools_raw or "").split(",") if seg.strip()]
+                required_tools = self._normalize_required_tool_names([
+                    seg.strip()
+                    for seg in str(required_tools_raw or "").replace("，", ",").split(",")
+                    if seg.strip()
+                ])
             out.append({
                 "title": title,
                 "required_tools": required_tools,
@@ -1314,7 +1322,7 @@ class Model:
         def _ret(limit: int, source: str, fallback_default: bool = False) -> int:
             self._context_window_limit_source = str(source or "unknown").strip() or "unknown"
             self._context_window_limit_from_fallback_default = bool(fallback_default)
-            return int(max(1, limit))
+            return int(max(0, limit))
 
         def _safe_ctx_int(v) -> int:
             try:
@@ -1391,16 +1399,7 @@ class Model:
             if n >= 1024:
                 return _ret(min(n, 4_000_000), "model_config", fallback_default=False)
 
-        merged = f"{str(self.model_name or '')} {str(self.model_display_name or '')}".lower()
-        m = re.search(r"(?:^|[^0-9])(\d{2,4})k(?:[^0-9]|$)", merged)
-        if m:
-            try:
-                k = int(m.group(1))
-            except Exception:
-                k = 0
-            if k >= 16:
-                return _ret(min(k * 1000, 4_000_000), "model_name_heuristic", fallback_default=False)
-        return _ret(32768, "fallback_default", fallback_default=True)
+        return _ret(0, "missing_config", fallback_default=True)
 
     def _extract_completion_text(self, response_obj: Any) -> str:
         """
@@ -1575,256 +1574,23 @@ class Model:
         return masked, int(max(0, replaced_count))
 
     def _content_to_text_for_context_compression(self, content: Any) -> str:
-        if content is None:
-            return ""
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts: List[str] = []
-            for item in content:
-                if isinstance(item, str):
-                    if item.strip():
-                        parts.append(item)
-                    continue
-                if not isinstance(item, dict):
-                    continue
-                item_type = str(item.get("type", "") or "").strip().lower()
-                if item_type in {"text", "input_text", "output_text"}:
-                    text_val = item.get("text")
-                    if text_val is not None and str(text_val).strip():
-                        parts.append(str(text_val))
-                    continue
-                if item_type in {"image_url", "input_image"}:
-                    parts.append("[image]")
-                    continue
-                if item_type in {"input_file", "file"}:
-                    file_id = str(item.get("file_id", "") or item.get("id", "") or "").strip()
-                    parts.append(f"[file]{':' + file_id if file_id else ''}")
-                    continue
-                if isinstance(item.get("text"), str) and str(item.get("text")).strip():
-                    parts.append(str(item.get("text")))
-                    continue
-                if isinstance(item.get("content"), str) and str(item.get("content")).strip():
-                    parts.append(str(item.get("content")))
-            if parts:
-                return "\n".join(parts).strip()
-            try:
-                return json.dumps(content, ensure_ascii=False, default=str)
-            except Exception:
-                return str(content)
-        if isinstance(content, dict):
-            if isinstance(content.get("text"), str):
-                return str(content.get("text") or "")
-            if isinstance(content.get("content"), str):
-                return str(content.get("content") or "")
-            try:
-                return json.dumps(content, ensure_ascii=False, default=str)
-            except Exception:
-                return str(content)
-        return str(content)
+        return self.chat_context_manager.content_to_text_for_context_compression(content)
 
     def _build_context_compression_memory_block(self, summary_text: str) -> str:
-        summary = str(summary_text or "").strip()
-        if not summary:
-            return ""
-        return (
-            "[历史上下文压缩摘要]\n"
-            "以下为已压缩历史的稳定记忆，请将其视为更早对话的替代上下文：\n"
-            f"{summary}"
-        )
+        return self.chat_context_manager.build_context_compression_memory_block(summary_text)
 
     def _format_messages_for_context_compression(self, messages: List[Dict[str, Any]]) -> str:
-        compact_mode = self._resolve_context_compact_mode()
-        lines: List[str] = []
-        for item in (messages or []):
-            if not isinstance(item, dict):
-                continue
-            role = str(item.get("role", "") or "").strip().upper()
-            if role not in {"USER", "ASSISTANT"}:
-                continue
-            compacted = self._compact_context_content(item.get("content", ""), compact_mode)
-            text = self._content_to_text_for_context_compression(compacted).strip()
-            if not text:
-                continue
-            lines.append(f"[{role}] {text}")
-        text = "\n".join(lines).strip()
-        history_limit = int(max(
-            CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MIN,
-            min(
-                CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MAX,
-                int(getattr(self, "_context_compression_history_max_chars", CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_DEFAULT))
-            )
-        ))
-        if len(text) <= history_limit:
-            return text
-        head_len = int(max(20000, min(history_limit - 5000, int(history_limit * 0.35))))
-        tail_len = int(max(30000, history_limit - head_len - 80))
-        if head_len + tail_len > history_limit:
-            tail_len = max(12000, history_limit - head_len - 80)
-        head = text[:head_len]
-        tail = text[-tail_len:]
-        return f"{head}\n...[历史过长，已截断中段]...\n{tail}"
-
-    def _fallback_context_compression_summary(self, messages: List[Dict[str, Any]], max_chars: int = CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT) -> str:
-        safe_max_chars = max(
-            CONTEXT_COMPRESSION_MAX_CHARS_MIN,
-            min(CONTEXT_COMPRESSION_MAX_CHARS_MAX, int(max_chars or CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT))
-        )
-        snippets: List[str] = []
-        for item in (messages or [])[-24:]:
-            if not isinstance(item, dict):
-                continue
-            role = str(item.get("role", "") or "").strip()
-            if role not in {"user", "assistant"}:
-                continue
-            text = str(item.get("content", "") or "").strip()
-            if not text:
-                continue
-            snippets.append(f"{role}: {text[:180]}")
-        merged = " | ".join(snippets).strip()
-        if not merged:
-            return "暂无可压缩的稳定上下文"
-        return merged[:safe_max_chars]
+        return self.chat_context_manager.format_messages_for_context_compression(messages)
 
     def _run_context_compression_round(
         self,
         history_messages: List[Dict[str, Any]],
         max_chars: int = CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT
     ) -> Generator[Dict[str, Any], None, Dict[str, Any]]:
-        """
-        Run a dedicated compression completion with current model.
-
-        Yields optional debug stream events during compression round:
-        - {"type":"model_reply_delta","delta":str,"model_reply":str,"chars":int,"from_stream":bool}
-        - {"type":"error","error":str}
-
-        Returns debug-friendly payload:
-        {
-            summary, prompt_text, system_prompt, model_reply, fallback_used, error, history_chars
-        }
-        """
-        system_prompt = "你是对话上下文压缩器，只输出压缩后的上下文摘要。"
-        safe_max_chars = max(
-            CONTEXT_COMPRESSION_MAX_CHARS_MIN,
-            min(CONTEXT_COMPRESSION_MAX_CHARS_MAX, int(max_chars or CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT))
-        )
-        history_text = self._format_messages_for_context_compression(history_messages)
-        profile_text = self._get_user_profile_memory_text()
-        recent_dialogue_text = self._get_recent_dialogue_memory_text()
-        update_short_text = "可用 updateShort：覆盖更新当前用户短期记忆画像。"
-        add_short_text = "可用 addShort：追加一条短期记忆，适合记录新的离散偏好或近期事项。"
-        prompt_text = prompts.build_context_compression_prompt(
-            history_text,
-            profile_text=profile_text,
-            recent_dialogue=recent_dialogue_text,
-            update_short=update_short_text,
-            add_short=add_short_text,
-            max_chars=safe_max_chars
-        )
-        history_truncated = ("...[历史过长，已截断中段]..." in history_text)
-        out: Dict[str, Any] = {
-            "summary": "",
-            "prompt_text": str(prompt_text or ""),
-            "system_prompt": system_prompt,
-            "prompt_template": str(getattr(prompts, "context_compression_prompt_template", "") or ""),
-            "profile_text": str(profile_text or ""),
-            "recent_dialogue": str(recent_dialogue_text or ""),
-            "update_short": update_short_text,
-            "add_short": add_short_text,
-            "history_text": str(history_text or ""),
-            "model_reply": "",
-            "fallback_used": False,
-            "error": "",
-            "history_chars": int(len(str(history_text or ""))),
-            "history_truncated": bool(history_truncated),
-            "history_limit_chars": int(getattr(self, "_context_compression_history_max_chars", CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_DEFAULT)),
-            "summary_max_chars": int(safe_max_chars)
-        }
-
-        if not history_text:
-            out["fallback_used"] = True
-            out["error"] = "empty_history"
-            return out
-
-        req_messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt_text},
-        ]
-
-        stream_text = ""
-        stream_error = ""
-        stream_emitted = False
-        try:
-            stream_response = self.provider_adapter.create_chat_completion(
-                client=self.client,
-                model=self.model_name,
-                messages=req_messages,
-                stream=True
-            )
-            stream_events = self.provider_adapter.iter_stream_events(
-                stream_response,
-                use_responses_api=False,
-                native_web_search_enabled=False
-            )
-            for event in stream_events:
-                if not isinstance(event, dict):
-                    continue
-                ev_type = str(event.get("type", "") or "").strip()
-                if ev_type != "content_delta":
-                    continue
-                delta = str(event.get("delta", "") or "")
-                if not delta:
-                    continue
-                stream_emitted = True
-                stream_text += delta
-                yield {
-                    "type": "model_reply_delta",
-                    "delta": delta,
-                    "model_reply": stream_text,
-                    "chars": int(len(stream_text)),
-                    "from_stream": True
-                }
-        except Exception as e:
-            stream_error = str(e or "")
-            out["error"] = stream_error
-            print(f"[CTX_COMPRESS] stream compression round failed: {e}")
-            yield {"type": "error", "error": stream_error, "from_stream": True}
-
-        final_stream_text = str(stream_text or "").strip()
-        if final_stream_text:
-            out["model_reply"] = final_stream_text
-            out["summary"] = final_stream_text[:safe_max_chars]
-            return out
-
-        try:
-            response = self.provider_adapter.create_chat_completion(
-                client=self.client,
-                model=self.model_name,
-                messages=req_messages,
-                stream=False
-            )
-            text = self._extract_completion_text(response)
-            text = str(text or "").strip()
-            out["model_reply"] = text
-            if text:
-                if not stream_emitted:
-                    yield {
-                        "type": "model_reply_delta",
-                        "delta": text,
-                        "model_reply": text,
-                        "chars": int(len(text)),
-                        "from_stream": False
-                    }
-                out["summary"] = text[:safe_max_chars]
-                return out
-        except Exception as e:
-            print(f"[CTX_COMPRESS] model compression round failed: {e}")
-            out["error"] = str(e or "") or stream_error
-            yield {"type": "error", "error": out["error"], "from_stream": False}
-
-        out["fallback_used"] = True
-        out["summary"] = self._fallback_context_compression_summary(history_messages, max_chars=safe_max_chars)
-        return out
+        return (yield from self.chat_context_manager.run_context_compression_round(
+            history_messages,
+            max_chars=max_chars
+        ))
 
     def _prefix_suffix_overlap(self, previous: str, current: str, max_window: int = 12000) -> int:
         """计算 previous 后缀与 current 前缀的最大重叠长度，用于跨轮去重。"""
@@ -2444,6 +2210,16 @@ class Model:
         )
         provider = getattr(self, 'provider', 'volcengine')
         use_responses_api = self._provider_use_responses_api(provider)
+        disabled_injected_tool_names = {
+            "knowledge_graph_read",
+            "server_web_search",
+            "server_render_page",
+            "relay_web_search",
+            "arxiv_search",
+            "conversation_context_length",
+            "conversation_context_read",
+            "conversation_context_search",
+        }
 
         # 1) 优先注入 provider 级 native tools（由 model_adapters.json 驱动）
         if getattr(self, "native_search_tools", None):
@@ -2461,9 +2237,12 @@ class Model:
             if tool["type"] == "function":
                 func_def = tool["function"]
                 func_name = str(func_def.get("name") or "").strip()
+                if canonicalize_tool_name(func_name) in disabled_injected_tool_names:
+                    continue
+
                 if learning_mode and func_name not in LEARNING_ALLOWED_BASE_TOOL_NAMES:
                     continue
-                if func_def.get("name") in ["vector_search", "file_semantic_search"] and not rag_enabled:
+                if func_def.get("name") in ["knowledge_search_vector", "server_file_search_semantic"] and not rag_enabled:
                     continue
                 if func_def.get("name") in ["send_email", "get_email", "get_email_list"] and not mail_enabled:
                     continue
@@ -2637,12 +2416,12 @@ class Model:
         return prompts.build_runtime_tool_selector_hint(catalog_prompt)
 
     def _runtime_control_tool_names(self) -> Set[str]:
-        return {"select_tools", "enable_tools"}
+        return {"runtime_tool_select", "runtime_tool_enable"}
 
     def _init_runtime_tool_selection(self, enable_tools: bool, tool_mode: str = "force") -> None:
         normalized_mode = self._normalize_tool_mode(tool_mode, enable_tools)
         self._runtime_tool_mode = normalized_mode
-        self._runtime_bootstrap_tool_name = "select_tools"
+        self._runtime_bootstrap_tool_name = "runtime_tool_select"
         self._runtime_selector_enabled = False
         self._runtime_tool_catalog = []
         self._runtime_tool_catalog_by_id = {}
@@ -2662,9 +2441,9 @@ class Model:
                 all_function_names.add(spec["name"])
 
         if normalized_mode == "auto_off":
-            self._runtime_bootstrap_tool_name = "enable_tools"
+            self._runtime_bootstrap_tool_name = "runtime_tool_enable"
         else:
-            self._runtime_bootstrap_tool_name = "select_tools"
+            self._runtime_bootstrap_tool_name = "runtime_tool_select"
 
         self._runtime_selector_enabled = self._runtime_bootstrap_tool_name in all_function_names
         self._build_runtime_tool_catalog()
@@ -2706,7 +2485,7 @@ class Model:
         self._runtime_selected_tool_ids = []
         self._runtime_tool_selection_changed = False
         self._runtime_tool_mode = "force"
-        self._runtime_bootstrap_tool_name = "select_tools"
+        self._runtime_bootstrap_tool_name = "runtime_tool_select"
 
     def _current_runtime_function_tool_names(self) -> Set[str]:
         if self._runtime_selected_tool_names:
@@ -2736,14 +2515,14 @@ class Model:
         if not bool(getattr(self, "_runtime_selector_enabled", False)):
             return self._current_runtime_function_tool_names()
         if not self._runtime_has_user_tool_selection():
-            return {str(getattr(self, "_runtime_bootstrap_tool_name", "select_tools") or "select_tools")}
+            return {str(getattr(self, "_runtime_bootstrap_tool_name", "runtime_tool_select") or "runtime_tool_select")}
         return self._current_runtime_function_tool_names()
 
     def _should_attach_runtime_tool_selector_hint(self) -> bool:
         """
         仅在“尚未完成 select_tools 选择”阶段注入目录提示，避免后续轮次持续消耗 token。
         """
-        # 已弃用：工具选择目录改为写入 select_tools 的工具描述中，避免向 system message 注入长协议文本。
+        # 已弃用：工具选择目录改为写入 runtime_tool_select 的工具描述中，避免向 system message 注入长协议文本。
         return False
 
     def _build_runtime_select_tools_catalog_suffix(self, max_items: int = 128) -> str:
@@ -2757,7 +2536,7 @@ class Model:
             if not name or name in control_names:
                 continue
             names.append(name)
-        bootstrap = str(getattr(self, "_runtime_bootstrap_tool_name", "select_tools") or "select_tools")
+        bootstrap = str(getattr(self, "_runtime_bootstrap_tool_name", "runtime_tool_select") or "runtime_tool_select")
         return prompts.build_select_tools_catalog_suffix(
             names,
             max_items=max_items,
@@ -2771,8 +2550,8 @@ class Model:
     ) -> List[Dict[str, Any]]:
         payload = list(tools_payload or [])
         selected = {str(x).strip() for x in (selected_function_names or set()) if str(x).strip()}
-        # 目录后缀仅用于 select_tools；enable_tools 语义是“直接切 force”，不做精确选择。
-        target_controls = {"select_tools"} if "select_tools" in selected else set()
+        # 目录后缀仅用于 runtime_tool_select；runtime_tool_enable 语义是“直接切 force”，不做精确选择。
+        target_controls = {"runtime_tool_select"} if "runtime_tool_select" in selected else set()
         if not target_controls:
             return payload
 
@@ -2827,7 +2606,7 @@ class Model:
             if selected:
                 return fn in selected
             return True
-        bootstrap = str(getattr(self, "_runtime_bootstrap_tool_name", "select_tools") or "select_tools")
+        bootstrap = str(getattr(self, "_runtime_bootstrap_tool_name", "runtime_tool_select") or "runtime_tool_select")
         if fn == bootstrap:
             return True
         allowed = self._current_runtime_function_tool_names()
@@ -2852,7 +2631,7 @@ class Model:
 
     def _apply_runtime_tool_selection_by_names(self, names: List[Any]) -> Dict[str, Any]:
         if not self._runtime_selector_enabled:
-            bootstrap = str(getattr(self, "_runtime_bootstrap_tool_name", "select_tools") or "select_tools")
+            bootstrap = str(getattr(self, "_runtime_bootstrap_tool_name", "runtime_tool_select") or "runtime_tool_select")
             return {
                 "success": False,
                 "message": f"{bootstrap} 未启用或当前模型不支持运行时工具切换"
@@ -2913,7 +2692,7 @@ class Model:
             "success": True,
             "message": "工具选择已更新，当前回复后续轮次已生效",
             "selected_tool_names": selected_names,
-            "always_enabled": [str(getattr(self, "_runtime_bootstrap_tool_name", "select_tools") or "select_tools")],
+            "always_enabled": [str(getattr(self, "_runtime_bootstrap_tool_name", "runtime_tool_select") or "runtime_tool_select")],
             "invalid_tool_names": invalid_names,
         }
 
@@ -2987,7 +2766,7 @@ class Model:
 
         return {
             "success": True,
-            "message": "enable_tools 已启用：当前回复后续轮次进入 Force 模式",
+            "message": "runtime_tool_enable 已启用：当前回复后续轮次进入 Force 模式",
             "effective_mode": "force",
             "enabled_tool_names": enabled_names,
             "enabled_count": len(enabled_names),
@@ -3011,7 +2790,7 @@ class Model:
         try:
             if not self._is_runtime_function_call_allowed(function_name):
                 allowed_names = sorted(list(self._runtime_function_tool_names_for_request()))
-                control_tool = str(getattr(self, "_runtime_bootstrap_tool_name", "select_tools") or "select_tools")
+                control_tool = str(getattr(self, "_runtime_bootstrap_tool_name", "runtime_tool_select") or "runtime_tool_select")
                 if control_tool in allowed_names:
                     msg = prompts.build_runtime_tool_not_enabled_message(
                         function_name or original_function_name,
@@ -3184,7 +2963,88 @@ class Model:
     def _cache_tool_result_if_needed(self, result: str, func_name: str) -> Optional[str]:
         if str(getattr(self, "_runtime_conversation_mode", "") or "").strip().lower() == "learning":
             return None
-        no_cache_tools = {"readtmp", "searchtmp", "listtmp", "cleartmp"}
+        no_cache_tools = {
+            "temp_context_read",
+            "temp_context_search",
+            "temp_context_list",
+            "temp_context_clear",
+            "server_file_read",
+            "server_file_create",
+            "server_file_write",
+            "server_file_find",
+            "server_file_list",
+            "server_file_remove",
+            "server_file_search_semantic",
+            "local_file_read",
+            "local_file_write",
+            "local_file_list",
+            "local_file_patch",
+            "local_shell_exec",
+            "local_shell_session",
+            "image_search",
+            "browser_page_open",
+            "browser_page_read",
+            "browser_page_click",
+            "browser_page_input",
+            "browser_page_eval",
+            "browser_page_scroll",
+            "browser_page_list",
+            "browser_page_close",
+            "conversation_context_read",
+            "clear_context",
+            "server_render_page",
+            "arxiv_search",
+            "js_execute",
+            "client_js_exec",
+            "conversation_context_length",
+            "conversation_context_read",
+            "conversation_context_search",
+            "send_email",
+            "get_email",
+            "get_email_list",
+            "knowledge_list",
+            "memory_profile_read",
+            "memory_short_update",
+            "knowledge_basis_create",
+            "knowledge_basis_delete",
+            "knowledge_basis_update",
+            "knowledge_basis_read",
+            "knowledge_search_keyword",
+            "knowledge_search_vector",
+            "link_knowledge",
+            "categorize_knowledge",
+            "create_category",
+            "analyze_connections",
+            "knowledge_graph_read",
+            "get_knowledge_connections",
+            "find_path_between_knowledge",
+            "listLectures",
+            "createLecture",
+            "getLecture",
+            "updateLecture",
+            "listBooks",
+            "createBook",
+            "getBook",
+            "updateBook",
+            "getBookText",
+            "readBookTextRange",
+            "searchBookText",
+            "getBookInfoXml",
+            "getBookDetailXml",
+            "getBookQuestionsXml",
+            "saveBookInfoXml",
+            "saveBookDetailXml",
+            "saveBookQuestionsXml",
+            "triggerBookVectorization",
+            "vectorSearch",
+            "puzzle",
+            "question",
+            "learning_card",
+            "read_learning_memory",
+            "append_learning_memory",
+            "update_learning_memory",
+            "write_learning_memory",
+        }
         if func_name in no_cache_tools:
             return None
         settings = self._temp_context_settings if isinstance(self._temp_context_settings, dict) else {}
@@ -3213,7 +3073,7 @@ class Model:
                 "total_chars": int(cached.get("length") or len(text)),
                 "trigger_chars": trigger_chars,
                 "scope": "single_reply",
-                "hint": "Use readtmp(resource_id,start,count) or searchtmp(resource_id,keyword/regex).",
+                "hint": "Use temp_context_read(resource_id,start,count) or temp_context_search(resource_id,keyword/regex).",
                 "preview": text[:400]
             }
             return json.dumps(payload, ensure_ascii=False)
@@ -3270,21 +3130,86 @@ class Model:
             return cached_payload
 
         no_truncate_tools = {
-            "get_basis_content",
-            "get_context",
-            "get_context_find_keyword",
+            "knowledge_basis_read",
+            "knowledge_list",
+            "memory_profile_read",
+            "memory_short_update",
+            "knowledge_basis_create",
+            "knowledge_basis_delete",
+            "knowledge_basis_update",
+            "knowledge_search_keyword",
+            "knowledge_search_vector",
+            "server_file_search_semantic",
+            "link_knowledge",
+            "categorize_knowledge",
+            "create_category",
+            "analyze_connections",
+            "server_render_page",
+            "arxiv_search",
+            "js_execute",
+            "client_js_exec",
+            "conversation_context_length",
+            "conversation_context_read",
+            "conversation_context_search",
+            "send_email",
             "get_email",
             "get_email_list",
-            "get_knowledge_graph_structure",
+            "knowledge_graph_read",
             "get_knowledge_connections",
             "find_path_between_knowledge",
-            "file_read",
-            "file_find",
-            "file_list",
-            "readtmp",
-            "searchtmp",
-            "listtmp",
-            "cleartmp",
+            "server_file_create",
+            "server_file_read",
+            "server_file_write",
+            "server_file_find",
+            "server_file_list",
+            "server_file_remove",
+            "local_file_read",
+            "local_file_write",
+            "local_file_list",
+            "local_file_patch",
+            "local_shell_exec",
+            "local_shell_session",
+            "image_search",
+            "browser_page_open",
+            "browser_page_read",
+            "browser_page_click",
+            "browser_page_input",
+            "browser_page_eval",
+            "browser_page_scroll",
+            "browser_page_list",
+            "browser_page_close",
+            "conversation_context_read",
+            "clear_context",
+            "temp_context_read",
+            "temp_context_search",
+            "temp_context_list",
+            "temp_context_clear",
+            "listLectures",
+            "createLecture",
+            "getLecture",
+            "updateLecture",
+            "listBooks",
+            "createBook",
+            "getBook",
+            "updateBook",
+            "getBookText",
+            "readBookTextRange",
+            "searchBookText",
+            "getBookInfoXml",
+            "getBookDetailXml",
+            "getBookQuestionsXml",
+            "saveBookInfoXml",
+            "saveBookDetailXml",
+            "saveBookQuestionsXml",
+            "triggerBookVectorization",
+            "vectorSearch",
+            "puzzle",
+            "question",
+            "learning_card",
+            "read_learning_memory",
+            "append_learning_memory",
+            "update_learning_memory",
+            "write_learning_memory",
         }
         if func_name in no_truncate_tools:
             return result
@@ -3310,12 +3235,38 @@ class Model:
         """函数执行实现（委托给统一工具执行器）"""
         return self.tool_executor.execute(function_name, args)
 
-    def _model_visible_function_result(self, function_name: str, result: Any) -> str:
+    def _model_visible_function_result(self, function_name: str, result: Any, args: Optional[Dict[str, Any]] = None) -> str:
         """Extract the short result text that is sent back to the model."""
-        name = canonicalize_tool_name(function_name)
+        raw_name = str(function_name or "").strip()
+        name = canonicalize_tool_name(raw_name)
         text = str(result or "")
 
         if name != "generate_image":
+            presenter = getattr(self, "tool_result_presenter", None)
+
+            if presenter is not None:
+                safe_args = args if isinstance(args, dict) else {}
+                learning_mode = str(getattr(self, "_runtime_conversation_mode", "") or "").strip().lower() == "learning"
+                external_names = getattr(self, "_external_tool_names", set()) or set()
+                candidate_names = []
+
+                if raw_name and (learning_mode or raw_name in external_names):
+                    candidate_names.append(raw_name)
+                if name:
+                    candidate_names.append(name)
+                if raw_name:
+                    candidate_names.append(raw_name)
+
+                seen_names = set()
+                for candidate_name in candidate_names:
+                    if not candidate_name or candidate_name in seen_names:
+                        continue
+                    seen_names.add(candidate_name)
+                    rendered = presenter.render(candidate_name, safe_args, result)
+
+                    if isinstance(rendered, str) and rendered.strip():
+                        return rendered
+
             return text
 
         try:
@@ -4170,22 +4121,135 @@ class Model:
             def _debug_render_messages_text(messages) -> str:
                 if not isinstance(messages, list):
                     return _debug_render_content_text(messages)
+
                 blocks: List[str] = []
+
                 for msg_item in messages:
+
                     if isinstance(msg_item, dict) and "role" in msg_item:
                         role = str(msg_item.get("role", "message") or "message").strip().upper()
                         blocks.append(f"[{role}]")
                         content_text = _debug_render_content_text(msg_item.get("content", ""))
+
                         if content_text:
                             blocks.append(content_text)
+
                         tool_calls = msg_item.get("tool_calls")
+
                         if tool_calls:
                             blocks.append(json.dumps(_debug_sanitize(tool_calls), ensure_ascii=False, default=str))
+
                         blocks.append("")
                         continue
+
                     blocks.append(_debug_render_content_text(msg_item))
                     blocks.append("")
+
                 return "\n".join(blocks).strip()
+
+            def _debug_is_compressed_context_text(text: str) -> bool:
+                value = str(text or "")
+                return "[历史上下文压缩摘要]" in value or "[上下文压缩摘要]" in value
+
+            def _debug_build_context_manager_payload(messages) -> Dict[str, Any]:
+                """Build structured debug blocks matching the ChatContextManager flow."""
+                source_messages = messages if isinstance(messages, list) else [messages]
+                blocks: List[Dict[str, Any]] = []
+                ctx_index = 0
+                tool_call_index = 0
+                tool_result_index = 0
+                system_index = 0
+
+                def _append_block(
+                    kind: str,
+                    label: str,
+                    role: str,
+                    content: str = "",
+                    meta: Optional[Dict[str, Any]] = None,
+                ) -> None:
+                    block = {
+                        "kind": str(kind or "context"),
+                        "label": str(label or "Ctx"),
+                        "role": str(role or "message"),
+                        "content": str(content or ""),
+                    }
+
+                    if meta:
+                        block["meta"] = _debug_sanitize(meta)
+
+                    blocks.append(block)
+
+                for msg_item in source_messages:
+
+                    if not isinstance(msg_item, dict) or "role" not in msg_item:
+                        ctx_index += 1
+                        _append_block("context", f"Ctx{ctx_index}", "message", _debug_render_content_text(msg_item))
+                        continue
+
+                    role = str(msg_item.get("role", "message") or "message").strip().lower() or "message"
+                    content_text = _debug_render_content_text(msg_item.get("content", ""))
+                    tool_calls = msg_item.get("tool_calls")
+
+                    if role == "system":
+                        system_index += 1
+
+                        if _debug_is_compressed_context_text(content_text):
+                            _append_block("compressed", "Compressed", role, content_text)
+                            continue
+
+                        label = "SystemPrompt" if system_index == 1 else f"SystemCtx{system_index - 1}"
+                        kind = "system_prompt" if system_index == 1 else "system_context"
+                        _append_block(kind, label, role, content_text)
+                        continue
+
+                    if role == "tool":
+                        tool_result_index += 1
+                        _append_block(
+                            "tool_result",
+                            f"ToolResult{tool_result_index}",
+                            role,
+                            content_text,
+                            {
+                                "tool_call_id": str(msg_item.get("tool_call_id", "") or "").strip(),
+                                "name": str(msg_item.get("name", "") or "").strip(),
+                            },
+                        )
+                        continue
+
+                    if content_text:
+                        ctx_index += 1
+                        _append_block("context", f"Ctx{ctx_index}", role, content_text)
+
+                    if tool_calls:
+                        tool_call_index += 1
+                        _append_block(
+                            "tool_call",
+                            f"ToolCall{tool_call_index}",
+                            role,
+                            "",
+                            {"tool_calls": tool_calls},
+                        )
+                        continue
+
+                    if not content_text:
+                        ctx_index += 1
+                        _append_block("context", f"Ctx{ctx_index}", role, "")
+
+                counts = {
+                    "total": len(blocks),
+                    "context": sum(1 for block in blocks if block.get("kind") == "context"),
+                    "system": sum(1 for block in blocks if str(block.get("kind") or "").startswith("system")),
+                    "tool_call": sum(1 for block in blocks if block.get("kind") == "tool_call"),
+                    "tool_result": sum(1 for block in blocks if block.get("kind") == "tool_result"),
+                    "compressed": sum(1 for block in blocks if block.get("kind") == "compressed"),
+                }
+
+                return {
+                    "format": "context_manager",
+                    "blocks": blocks,
+                    "counts": counts,
+                    "text": _debug_render_messages_text(messages),
+                }
 
             def _build_debug_trace(direction: str, stage: str, payload, title: str = "", round_index: Optional[int] = None):
                 trace = {
@@ -4457,6 +4521,7 @@ class Model:
              
             # 构造本次用户消息内容 (多模态)
             user_content = self._build_user_content_payload(msg, image_urls, use_responses_api)
+            current_turn_system_injections: List[str] = []
             if normalized_conversation_mode == "learning":
                 learning_blocks = normalized_conversation_mode_payload.get("context_blocks", [])
                 if isinstance(learning_blocks, list) and learning_blocks:
@@ -4474,15 +4539,11 @@ class Model:
                         )
                     if rendered_blocks:
                         learning_hint = (
-                            "\n\n[系统注入] 当前对话处于 NexoraLearning 学习模式。以下是学习上下文，请优先参考：\n"
+                            "[系统注入] 当前对话处于 NexoraLearning 学习模式。以下是学习上下文，请优先参考：\n"
                             + "\n\n".join(rendered_blocks)
                             + "\n"
                         )
-                        user_content = self._append_text_to_user_content_payload(
-                            user_content,
-                            learning_hint,
-                            use_responses_api
-                        )
+                        current_turn_system_injections.append(learning_hint)
             sandbox_path_list: List[str] = []
             if isinstance(sandbox_paths, list):
                 seen_paths = set()
@@ -4496,16 +4557,12 @@ class Model:
                         break
             if sandbox_path_list:
                 sandbox_hint = (
-                    "\n\n[系统注入] 已上传文件到用户沙箱，请优先使用 "
-                    "file_list/file_create/file_read/file_find/file_write/file_remove 工具操作以下路径：\n"
+                    "[系统注入] 已上传文件到用户沙箱，请优先使用 "
+                    "server_file_list/server_file_create/server_file_read/server_file_find/server_file_write/server_file_remove 工具操作以下路径：\n"
                     + "\n".join([f"- {p}" for p in sandbox_path_list])
                     + "\n"
                 )
-                user_content = self._append_text_to_user_content_payload(
-                    user_content,
-                    sandbox_hint,
-                    use_responses_api
-                )
+                current_turn_system_injections.append(sandbox_hint)
 
             # Check Context Cache (provider-decided)
             last_response_id = None
@@ -4573,6 +4630,7 @@ class Model:
                 allow_history_images=allow_history_images,
                 include_context=effective_include_context,
                 system_prompt_text=request_system_prompt,
+                system_injection_texts=current_turn_system_injections,
                 history_end_index_exclusive=history_end_index_exclusive
             )
 
@@ -4580,7 +4638,10 @@ class Model:
                 # Cache Hit: 仅发送新消息
                 print(f"[CACHE] Hit! Resuming from: {last_response_id}")
                 previous_response_id = last_response_id
-                messages = [{"role": "user", "content": user_content}]
+                messages = self.chat_context_manager.build_current_turn_messages(
+                    current_user_content=user_content,
+                    system_injection_texts=current_turn_system_injections,
+                )
                 messages_has_full_context = False
             else:
                 # Cache Miss: 全量构建
@@ -4595,13 +4656,17 @@ class Model:
             first_round_tools_count = 0
             first_round_tools_chars = 0
             first_round_system_tokens = 0
-            first_round_system_tokens_est = self._estimate_token_count(request_system_prompt or "")
+            request_system_prompt_profile_text = "\n\n".join(
+                [str(request_system_prompt or "")]
+                + [str(x or "") for x in current_turn_system_injections]
+            ).strip()
+            first_round_system_tokens_est = self._estimate_token_count(request_system_prompt_profile_text or "")
             first_round_tools_tokens = 0
             first_round_tools_tokens_est = 0
             first_round_tokenization_exact = False
             response_id_seen_count = 0
             response_id_changed_count = 0
-            context_window_limit = int(max(1, self._resolve_model_context_window_limit()))
+            context_window_limit = int(max(0, self._resolve_model_context_window_limit()))
             context_window_source = str(getattr(self, "_context_window_limit_source", "unknown") or "unknown").strip() or "unknown"
             context_window_fallback_default = bool(getattr(self, "_context_window_limit_from_fallback_default", False))
             context_compression_checked = False
@@ -4628,6 +4693,16 @@ class Model:
                     request_system_prompt,
                     title="Server Prompt"
                 )
+                if current_turn_system_injections:
+                    yield _build_debug_trace(
+                        "server->model",
+                        "system_injections",
+                        {
+                            "count": len(current_turn_system_injections),
+                            "messages": list(current_turn_system_injections),
+                        },
+                        title="System Injections"
+                    )
                 if normalized_conversation_mode == "longterm":
                     yield _build_debug_trace(
                         "server->model",
@@ -4782,7 +4857,7 @@ class Model:
                             ctx_status = {
                                 "type": "context_compression_status",
                                 "status": "skipped",
-                                "content": "上下文压缩跳过（上下文窗口未加载，当前默认 32768）",
+                                "content": "上下文压缩跳过（当前模型未配置上下文窗口）",
                                 "forced": bool(force_context_compression),
                                 "trigger_mode": context_compression_trigger_mode,
                                 "context_window_source": context_window_source,
@@ -4800,7 +4875,7 @@ class Model:
                                         "forced": bool(force_context_compression),
                                         "skipped": True,
                                         "reason": "context_window_fallback_default",
-                                        "context_window": int(max(1, context_window_limit)),
+                                        "context_window": int(max(0, context_window_limit)),
                                         "context_window_source": context_window_source
                                     },
                                     title="Compression Trigger",
@@ -4814,7 +4889,7 @@ class Model:
                                         "trigger_mode": context_compression_trigger_mode,
                                         "skipped": True,
                                         "reason": "context_window_fallback_default",
-                                        "context_window": int(max(1, context_window_limit)),
+                                        "context_window": int(max(0, context_window_limit)),
                                         "context_window_source": context_window_source
                                     },
                                     title="Compression Compare",
@@ -4891,7 +4966,7 @@ class Model:
                                     "status": "start",
                                     "content": "上下文压缩中（强制）" if force_compression_trigger else "上下文压缩中",
                                     "raw_input_tokens": int(max(0, preflight_raw_input_tokens)),
-                                    "context_window": int(max(1, context_window_limit)),
+                                    "context_window": int(max(0, context_window_limit)),
                                     "context_window_source": context_window_source,
                                     "compression_threshold": int(max(1, compression_threshold)),
                                     "forced": bool(force_compression_trigger),
@@ -4910,7 +4985,7 @@ class Model:
                                             "forced": bool(force_compression_trigger),
                                             "trigger_raw_input_tokens": int(max(0, preflight_raw_input_tokens)),
                                             "compression_threshold": int(max(1, compression_threshold)),
-                                            "context_window": int(max(1, context_window_limit)),
+                                            "context_window": int(max(0, context_window_limit)),
                                             "context_window_source": context_window_source,
                                             "masked_image_data_urls": int(max(0, context_compression_masked_image_count))
                                         },
@@ -4927,6 +5002,7 @@ class Model:
                                             allow_history_images=allow_history_images,
                                             include_context=False,
                                             system_prompt_text=request_system_prompt,
+                                            system_injection_texts=current_turn_system_injections,
                                         )
                                         previous_response_id = None
                                         messages = list(full_context_messages)
@@ -4984,7 +5060,7 @@ class Model:
                                                     payload={
                                                         "conversation_id": str(self.conversation_id or "").strip(),
                                                         "preflight_raw_input_tokens": int(max(0, preflight_raw_input_tokens)),
-                                                        "context_window": int(max(1, context_window_limit)),
+                                                        "context_window": int(max(0, context_window_limit)),
                                                         "trigger_mode": context_compression_trigger_mode,
                                                         "recent_conversation_messages": learning_memory_history,
                                                     },
@@ -5004,7 +5080,7 @@ class Model:
                                             "post_raw_input_tokens": int(max(0, postflight_raw_input_tokens)),
                                             "saved_tokens": int(max(0, saved_raw_input_tokens)),
                                             "saved_ratio": float(max(0.0, saved_ratio_value)),
-                                            "context_window": int(max(1, context_window_limit)),
+                                            "context_window": int(max(0, context_window_limit)),
                                             "trigger_mode": context_compression_trigger_mode,
                                         }
                                         process_steps.append(dict(ctx_done_status))
@@ -5028,6 +5104,7 @@ class Model:
                                     cut_index = last_user_idx - 1
                                 else:
                                     cut_index = len(conv_msgs) - 1
+                                compression_error = ""
                                 if cut_index >= 1:
                                     compress_source = conv_msgs[:cut_index + 1]
                                     if debug_mode:
@@ -5038,7 +5115,7 @@ class Model:
                                                 "history_count": int(len(compress_source)),
                                                 "cut_index": int(cut_index),
                                                 "trigger_raw_input_tokens": int(max(0, preflight_raw_input_tokens)),
-                                                "context_window": int(max(1, context_window_limit)),
+                                                "context_window": int(max(0, context_window_limit)),
                                                 "context_window_source": context_window_source,
                                                 "trigger_mode": context_compression_trigger_mode,
                                                 "masked_image_data_urls": int(max(0, context_compression_masked_image_count))
@@ -5092,6 +5169,7 @@ class Model:
                                     if not isinstance(compression_run, dict):
                                         compression_run = {}
                                     compressed_summary = str(compression_run.get("summary", "") or "").strip()
+                                    compression_error = str(compression_run.get("error", "") or "").strip()
                                     if debug_mode:
                                         yield _build_debug_trace(
                                             "server->model",
@@ -5101,6 +5179,7 @@ class Model:
                                                 "prompt_template": str(compression_run.get("prompt_template", "") or ""),
                                                 "prompt_text": str(compression_run.get("prompt_text", "") or ""),
                                                 "history_text": str(compression_run.get("history_text", "") or ""),
+                                                "history_message_count": int(max(0, int(compression_run.get("history_message_count", 0) or 0))),
                                                 "history_chars": int(max(0, int(compression_run.get("history_chars", 0) or 0))),
                                                 "history_truncated": bool(compression_run.get("history_truncated", False)),
                                                 "history_limit_chars": int(max(0, int(compression_run.get("history_limit_chars", 0) or 0))),
@@ -5115,7 +5194,6 @@ class Model:
                                             "context_compression_model_reply",
                                             {
                                                 "model_reply": str(compression_run.get("model_reply", "") or ""),
-                                                "fallback_used": bool(compression_run.get("fallback_used", False)),
                                                 "error": str(compression_run.get("error", "") or ""),
                                                 "trigger_mode": context_compression_trigger_mode
                                             },
@@ -5138,10 +5216,12 @@ class Model:
                                                     "model": self.model_name,
                                                     "provider": self.provider,
                                                     "trigger_raw_input_tokens": int(max(0, preflight_raw_input_tokens)),
-                                                    "context_window": int(max(1, context_window_limit)),
+                                                    "context_window": int(max(0, context_window_limit)),
                                                     "forced": bool(force_compression_trigger),
                                                     "trigger_mode": context_compression_trigger_mode,
-                                                    "masked_image_data_urls": int(max(0, context_compression_masked_image_count))
+                                                    "masked_image_data_urls": int(max(0, context_compression_masked_image_count)),
+                                                    "history_message_count": int(max(0, int(compression_run.get("history_message_count", 0) or 0))),
+                                                    "history_chars": int(max(0, int(compression_run.get("history_chars", 0) or 0)))
                                                 }
                                             )
                                         except Exception as e:
@@ -5154,6 +5234,7 @@ class Model:
                                         allow_history_images=allow_history_images,
                                         include_context=effective_include_context,
                                         system_prompt_text=request_system_prompt,
+                                        system_injection_texts=current_turn_system_injections,
                                     )
                                     previous_response_id = None
                                     messages = list(full_context_messages)
@@ -5210,7 +5291,7 @@ class Model:
                                         "post_raw_input_tokens": int(max(0, context_compression_post_raw_input)),
                                         "saved_tokens": int(max(0, context_compression_saved_tokens)),
                                         "saved_ratio": float(max(0.0, context_compression_saved_ratio)),
-                                        "context_window": int(max(1, context_window_limit)),
+                                        "context_window": int(max(0, context_window_limit)),
                                         "trigger_mode": context_compression_trigger_mode
                                     }
                                     process_steps.append(dict(ctx_done_status))
@@ -5234,7 +5315,7 @@ class Model:
                                         "post_raw_input_tokens": int(max(0, context_compression_post_raw_input)),
                                         "saved_tokens": int(max(0, context_compression_saved_tokens)),
                                         "saved_ratio": float(max(0.0, context_compression_saved_ratio)),
-                                        "context_window": int(max(1, context_window_limit)),
+                                        "context_window": int(max(0, context_window_limit)),
                                         "context_window_source": context_window_source,
                                         "forced": bool(force_compression_trigger),
                                         "trigger_mode": context_compression_trigger_mode,
@@ -5253,16 +5334,22 @@ class Model:
                                             round_index=round_num
                                         )
                                 else:
+                                    skip_reason = "empty_history" if not compression_error else "compression_failed"
+                                    skip_content = "上下文压缩跳过（无可压缩历史）"
+                                    if compression_error:
+                                        skip_content = f"上下文压缩失败，已保留原始上下文：{compression_error[:200]}"
                                     ctx_status = {
                                         "type": "context_compression_status",
                                         "status": "skipped",
-                                        "content": "上下文压缩跳过（无可压缩历史）",
+                                        "content": skip_content,
                                         "raw_input_tokens": int(max(0, preflight_raw_input_tokens)),
-                                        "context_window": int(max(1, context_window_limit)),
+                                        "context_window": int(max(0, context_window_limit)),
                                         "context_window_source": context_window_source,
                                         "compression_threshold": int(max(1, compression_threshold)),
                                         "forced": bool(force_compression_trigger),
-                                        "trigger_mode": context_compression_trigger_mode
+                                        "trigger_mode": context_compression_trigger_mode,
+                                        "reason": skip_reason,
+                                        "error": compression_error
                                     }
                                     process_steps.append(dict(ctx_status))
                                     yield ctx_status
@@ -5281,7 +5368,7 @@ class Model:
                             first_round_system_tokens = int(max(0, first_round_system_tokens_est))
 
                             exact_pair = self._provider_tokenize_totals(
-                                [str(request_system_prompt or ""), str(tools_json_text or "")],
+                                [str(request_system_prompt_profile_text or ""), str(tools_json_text or "")],
                                 provider_name=self.provider,
                                 model_name=self.model_name,
                                 timeout=15.0
@@ -5291,8 +5378,12 @@ class Model:
                                 first_round_tools_tokens = int(max(0, exact_pair[1]))
                                 first_round_tokenization_exact = True
 
-                            system_chars = len(str(request_system_prompt or ""))
-                            history_count = max(0, len(messages) - 2)  # system + current user
+                            system_chars = len(str(request_system_prompt_profile_text or ""))
+                            system_message_count = len([
+                                m for m in messages
+                                if isinstance(m, dict) and str(m.get("role", "") or "").strip() == "system"
+                            ])
+                            history_count = max(0, len(messages) - system_message_count - 1)
                             history_chars = 0
                             for m in messages:
                                 if not isinstance(m, dict):
@@ -5427,7 +5518,7 @@ class Model:
                         yield _build_debug_trace(
                             "server->model",
                             "current_context",
-                            _debug_render_messages_text(full_context_messages),
+                            _debug_build_context_manager_payload(full_context_messages),
                             title="Current Context",
                             round_index=round_num
                         )
@@ -6015,9 +6106,17 @@ class Model:
 
                     # 本轮文本内容作为步骤加入
                     if round_reasoning:
-                        process_steps.append({"type": "reasoning_content", "content": round_reasoning})
+                        process_steps.append({
+                            "type": "reasoning_content",
+                            "content": round_reasoning,
+                            "round": int(round_num) + 1
+                        })
                     if round_content:
-                        process_steps.append({"type": "content", "content": round_content})
+                        process_steps.append({
+                            "type": "content",
+                            "content": round_content,
+                            "round": int(round_num) + 1
+                        })
                     
                     # 处理函数调用
                     if function_calls:
@@ -6056,14 +6155,28 @@ class Model:
                                 "type": "function_call",
                                 "name": func_name,
                                 "arguments": func_args,
-                                "call_id": call_id
+                                "call_id": call_id,
+                                "round": int(round_num) + 1
                             }
                             process_steps.append(step_call)
                             yield step_call
                             
                             # 执行函数
                             result = self._execute_function(func_name, func_args)
-                            model_visible_result = self._model_visible_function_result(func_name, result)
+                            model_visible_args = {}
+                            try:
+                                parsed_visible_args = json.loads(func_args) if isinstance(func_args, str) else func_args
+
+                                if isinstance(parsed_visible_args, dict):
+                                    model_visible_args = parsed_visible_args
+                            except Exception:
+                                model_visible_args = {}
+
+                            model_visible_result = self._model_visible_function_result(
+                                func_name,
+                                result,
+                                model_visible_args
+                            )
                             
                             print(f"[FUNCTION] 结果: {result[:100]}..." if len(result) > 100 else f"[FUNCTION] 结果: {result}")
                             if model_visible_result != result:
@@ -6074,7 +6187,9 @@ class Model:
                                 "type": "function_result",
                                 "name": func_name,
                                 "result": result,
-                                "call_id": call_id
+                                "model_visible_result": model_visible_result,
+                                "call_id": call_id,
+                                "round": int(round_num) + 1
                             }
                             process_steps.append(step_result)
                             if func_name == "question":
@@ -6402,7 +6517,7 @@ class Model:
                             "first_round_tools_tokens": int(max(0, first_round_tools_tokens)),
                             "first_round_tools_tokens_est": int(max(0, first_round_tools_tokens_est)),
                             "first_round_tokenization_exact": bool(first_round_tokenization_exact),
-                            "context_window_limit": int(max(1, context_window_limit)),
+                            "context_window_limit": int(max(0, context_window_limit)),
                             "context_window_source": context_window_source,
                             "context_window_is_fallback_default": bool(context_window_fallback_default),
                             "context_compression_triggered": bool(context_compression_triggered),
@@ -6701,6 +6816,7 @@ class Model:
                             "assistant",
                             error_msg,
                             metadata={
+                                "model_name": self.model_name,
                                 "process_steps": [{
                                     "type": "error",
                                     "code": "rate_limit",
@@ -6735,6 +6851,7 @@ class Model:
                             "assistant",
                             error_msg,
                             metadata={
+                                "model_name": self.model_name,
                                 "process_steps": [{
                                     "type": "error",
                                     "code": "network_error",
@@ -6768,6 +6885,7 @@ class Model:
                         "assistant",
                         error_msg,
                         metadata={
+                            "model_name": self.model_name,
                             "process_steps": [{
                                 "type": "error",
                                 "code": "server_error",
@@ -7011,99 +7129,20 @@ class Model:
         allow_history_images: bool = True,
         include_context: bool = True,
         system_prompt_text: Optional[str] = None,
+        system_injection_texts: Optional[List[str]] = None,
         history_end_index_exclusive: Optional[int] = None
     ) -> List[Dict]:
         """构建初始消息列表（真实上下文模式）"""
-        context_compact_mode = self._resolve_context_compact_mode()
-        effective_system_prompt = str(system_prompt_text or self.system_prompt or "").strip()
-        messages = [{"role": "system", "content": effective_system_prompt}]
-
-        # 真实上下文：注入当前会话历史 user/assistant 消息
-        history_messages: List[Dict[str, Any]] = []
-        compression_marker: Optional[Dict[str, Any]] = None
-        if include_context and self.conversation_id:
-            try:
-                history_messages = self.conversation_manager.get_messages(self.conversation_id)
-            except Exception:
-                history_messages = []
-            try:
-                compression_marker = self.conversation_manager.get_latest_context_compression(self.conversation_id)
-            except Exception:
-                compression_marker = None
-
-        if history_messages and history_end_index_exclusive is not None:
-            try:
-                cut_end = int(history_end_index_exclusive)
-            except Exception:
-                cut_end = None
-            if cut_end is not None:
-                if cut_end <= 0:
-                    history_messages = []
-                else:
-                    history_messages = history_messages[:cut_end]
-
-        if compression_marker and isinstance(compression_marker, dict):
-            try:
-                summary_text = str(compression_marker.get("summary", "") or "").strip()
-                cut_index = int(compression_marker.get("history_cut_index", -1) or -1)
-            except Exception:
-                summary_text = ""
-                cut_index = -1
-            if summary_text and cut_index >= 0 and history_messages:
-                if cut_index < len(history_messages):
-                    history_messages = history_messages[cut_index + 1:]
-                    memory_block = self._build_context_compression_memory_block(summary_text)
-                    if memory_block:
-                        messages.append({"role": "system", "content": memory_block})
-                else:
-                    # Regenerate/history-branch case: compression marker belongs to later timeline.
-                    # Ignore marker instead of clearing all remaining prefix history.
-                    pass
-
-        for item in history_messages:
-            role = str(item.get("role", "") or "").strip()
-            if role not in ("user", "assistant"):
-                continue
-            content = item.get("content", "")
-            metadata = item.get("metadata", {})
-
-            if role == "user" and allow_history_images and self.conversation_id:
-                image_urls = self._collect_history_attachment_image_urls(metadata, self.conversation_id)
-            else:
-                image_urls = []
-
-            if image_urls:
-                normalized = self._build_user_content_payload(content, image_urls, use_responses_api)
-                if not isinstance(normalized, list) or not normalized:
-                    continue
-            else:
-                if content is None:
-                    continue
-                if isinstance(content, str):
-                    if not content.strip():
-                        continue
-                    normalized = content
-                else:
-                    normalized = str(content)
-                    if not normalized.strip():
-                        continue
-            normalized = self._compact_context_content(normalized, context_compact_mode)
-            messages.append({"role": role, "content": normalized})
-
-        # 去重：sendMessage 在非 regenerate 路径已经先写入了当前 user 消息
-        final_user_content = current_user_content if current_user_content is not None else user_msg
-        final_user_sig = self._content_signature_for_dedupe(final_user_content)
-        last_is_same_user = bool(
-            messages
-            and messages[-1].get("role") == "user"
-            and self._content_signature_for_dedupe(messages[-1].get("content", "")) == final_user_sig
+        return self.chat_context_manager.build_initial_messages(
+            user_msg=user_msg,
+            current_user_content=current_user_content,
+            use_responses_api=use_responses_api,
+            allow_history_images=allow_history_images,
+            include_context=include_context,
+            system_prompt_text=system_prompt_text,
+            system_injection_texts=system_injection_texts,
+            history_end_index_exclusive=history_end_index_exclusive
         )
-        if not last_is_same_user:
-            messages.append({"role": "user", "content": final_user_content})
-
-        # 重要：剔除历史对话中的 reasoning_content 字段
-        # 根据文档：模型版本在251228之前需要剔除，避免影响推理逻辑
-        return self._strip_reasoning_content(messages)
 
     def _resolve_context_compact_mode(self) -> str:
         """
@@ -7532,7 +7571,7 @@ class Model:
             model_name=self.model_name,
         )
 
-        # 统一兜底：主聊天链路在 OpenAI 兼容 provider（如 Ollama/vLLM）上显式传递 think 开关，
+        # 主聊天链路在 OpenAI 兼容 provider（如 Ollama/vLLM）上显式传递 think 开关，
         # 避免前端关闭 Thinking 后上游仍默认开启思考模式。
         try:
             provider_info = self._get_provider_info(self.provider)
@@ -7550,8 +7589,7 @@ class Model:
                         extra_body["think"] = True
                 else:
                     extra_body["think"] = False
-                    # 对支持 reasoning_effort 的兼容网关一并兜底关闭。
-                    params["reasoning_effort"] = "none"
+                    params.pop("reasoning_effort", None)
                 params["extra_body"] = extra_body
                 print(
                     f"[CHAT_THINK] provider={self.provider} model={self.model_name} "

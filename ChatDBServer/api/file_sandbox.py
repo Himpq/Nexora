@@ -305,7 +305,7 @@ class UserFileSandbox:
             alias = f"{alias}.txt"
             ext = ".txt"
         if ext not in self.ALLOWED_TEXT_EXTS:
-            raise ValueError(f"file_create 仅支持文本后缀，当前不支持: {ext}")
+            raise ValueError(f"server_file_create 仅支持文本后缀，当前不支持: {ext}")
 
         text = "" if content is None else str(content)
         now = int(time.time())
@@ -513,9 +513,9 @@ class UserFileSandbox:
             absolute_cut_pos = selected_start_pos + effective_cut
             truncated_line, truncated_col = _line_col_at(content, absolute_cut_pos)
             truncate_notice = (
-                f"\n\n[系统提示] file_read 输出已截断（每次最多 {limit_lines} 行且 {limit_chars} 字）。"
+                f"\n\n[系统提示] server_file_read 输出已截断（每次最多 {limit_lines} 行且 {limit_chars} 字）。"
                 f" 截断位置: line={truncated_line}, column={truncated_col}。"
-                f" 若需继续读取，请从该位置之后继续调用 file_read。"
+                f" 若需继续读取，请从该位置之后继续调用 server_file_read。"
             )
             # Put notice in content body so model sees it directly.
             result_content += truncate_notice

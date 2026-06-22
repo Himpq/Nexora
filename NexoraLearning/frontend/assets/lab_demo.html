@@ -1,0 +1,897 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NexoraLearning 互动文章预览</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --ink: #111827;
+      --muted: #64748b;
+      --line: #dfe4ea;
+      --blue: #2563eb;
+      --green: #059669;
+      --red: #dc2626;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+    }
+
+    .demo-shell {
+      width: min(1180px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 28px 0 56px;
+    }
+
+    .demo-topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+
+    .demo-brand {
+      color: #111827;
+      font-size: 18px;
+      font-weight: 900;
+      line-height: 1.2;
+    }
+
+    .demo-pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #ffffff;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .article-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 260px;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .article-main,
+    .article-aside {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    .article-main {
+      padding: 30px;
+    }
+
+    .article-aside {
+      position: sticky;
+      top: 18px;
+      display: grid;
+      gap: 14px;
+      padding: 18px;
+    }
+
+    .article-kicker {
+      color: var(--blue);
+      font-size: 12px;
+      font-weight: 900;
+      line-height: 1.2;
+    }
+
+    h1 {
+      margin: 8px 0 10px;
+      font-size: clamp(26px, 4vw, 42px);
+      line-height: 1.12;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 28px 0 10px;
+      font-size: 22px;
+      line-height: 1.25;
+    }
+
+    p {
+      margin: 0 0 14px;
+      color: #263241;
+      font-size: 15px;
+      line-height: 1.8;
+    }
+
+    blockquote {
+      margin: 18px 0;
+      padding: 13px 16px;
+      border-left: 3px solid var(--blue);
+      background: #eff6ff;
+      color: #1e3a8a;
+      font-size: 14px;
+      line-height: 1.75;
+    }
+
+    .aside-title {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 900;
+    }
+
+    .aside-list {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .aside-list li {
+      padding: 8px 0;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.45;
+    }
+
+    .lab {
+      display: grid;
+      gap: 14px;
+      margin: 24px 0;
+      padding: 16px;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      background: #ffffff;
+      box-shadow: 0 14px 34px rgba(15, 23, 42, 0.08);
+    }
+
+    .lab-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .lab-kicker {
+      margin-bottom: 4px;
+      color: var(--blue);
+      font-size: 11px;
+      font-weight: 900;
+    }
+
+    .lab h3 {
+      margin: 0;
+      font-size: 18px;
+      line-height: 1.3;
+    }
+
+    .lab-desc {
+      margin: 5px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 650;
+      line-height: 1.55;
+    }
+
+    .formula-badge {
+      align-self: start;
+      padding: 8px 10px;
+      border-radius: 7px;
+      background: #111827;
+      color: #ffffff;
+      font-size: 13px;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .formula-grid,
+    .trace-grid {
+      display: grid;
+      grid-template-columns: minmax(230px, 0.8fr) minmax(0, 1.2fr);
+      gap: 14px;
+    }
+
+    .controls {
+      display: grid;
+      align-content: start;
+      gap: 12px;
+    }
+
+    .control {
+      display: grid;
+      gap: 7px;
+    }
+
+    .control span {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .control strong {
+      font-size: 13px;
+      font-weight: 900;
+    }
+
+    .control em {
+      color: var(--blue);
+      font-size: 12px;
+      font-style: normal;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .control input {
+      width: 100%;
+      accent-color: var(--blue);
+    }
+
+    .result {
+      min-height: 42px;
+      display: flex;
+      align-items: center;
+      padding: 10px 12px;
+      border: 1px solid #bfdbfe;
+      border-radius: 7px;
+      background: #eff6ff;
+      color: #1d4ed8;
+      font-size: 14px;
+      font-weight: 900;
+    }
+
+    .stage {
+      min-height: 300px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #f8fafc;
+    }
+
+    canvas {
+      width: 100%;
+      height: 100%;
+      min-height: 300px;
+      display: block;
+    }
+
+    .trace-actions {
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .trace-actions button {
+      min-height: 32px;
+      padding: 0 12px;
+      border: 1px solid #111827;
+      border-radius: 7px;
+      background: #ffffff;
+      color: #111827;
+      font-size: 12px;
+      font-weight: 900;
+      cursor: pointer;
+    }
+
+    .trace-actions button:first-child {
+      background: #111827;
+      color: #ffffff;
+    }
+
+    .code-lines {
+      min-width: 0;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #ffffff;
+    }
+
+    .code-line {
+      position: relative;
+      display: grid;
+      grid-template-columns: 36px minmax(0, 1fr);
+      min-height: 36px;
+      border-bottom: 1px solid #edf0f2;
+      color: #111827;
+      font-size: 13px;
+    }
+
+    .code-line::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 7px;
+      bottom: 7px;
+      width: 3px;
+      border-radius: 999px;
+      background: transparent;
+    }
+
+    .code-line:last-child {
+      border-bottom: 0;
+    }
+
+    .code-line span {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #64748b;
+      background: #f8fafc;
+      font-weight: 900;
+    }
+
+    .code-line code {
+      display: flex;
+      align-items: center;
+      padding: 8px 10px;
+      white-space: pre;
+    }
+
+    .code-line.is-active {
+      background: #eff6ff;
+      color: #111827;
+    }
+
+    .code-line.is-active::before {
+      background: var(--blue);
+    }
+
+    .code-line.is-active span {
+      color: #1d4ed8;
+      background: #dbeafe;
+    }
+
+    .trace-side {
+      display: grid;
+      grid-template-rows: auto minmax(170px, 1fr);
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .vars {
+      min-height: 42px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #f8fafc;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .vars span {
+      display: inline-flex;
+      gap: 8px;
+      padding: 5px 8px;
+      border: 1px solid #bbf7d0;
+      border-radius: 7px;
+      background: #f0fdf4;
+      color: var(--green);
+    }
+
+    .output {
+      margin: 0;
+      min-height: 170px;
+      padding: 12px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: #ffffff;
+      color: #111827;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    @media (max-width: 900px) {
+      .article-layout,
+      .formula-grid,
+      .trace-grid {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      .article-aside {
+        position: static;
+      }
+
+      .lab-head {
+        display: grid;
+      }
+
+      .formula-badge,
+      .trace-actions {
+        justify-self: start;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="demo-shell">
+    <header class="demo-topbar">
+      <div class="demo-brand">NexoraLearning 互动文章预览</div>
+      <div class="demo-pill">nxl-lab demo</div>
+    </header>
+
+    <div class="article-layout">
+      <article class="article-main">
+        <div class="article-kicker">Personalized Learning Article</div>
+        <h1>把抽象公式和代码执行变成可操作实验</h1>
+        <p>这是一篇用于验证互动文章组件的示例内容。它不依赖真实课程数据，重点展示模型以后可以在个性化学习路径文章中插入的实验块：公式参数沙盘、代码执行图解，以及由基础图元组合出来的工科系统场景。</p>
+
+        <h2>一、理想气体公式不应该只写成一行</h2>
+        <p>理想气体状态方程通常写作 <strong>P = nRT / V</strong>。如果只靠文字解释，学生很容易知道公式，却不理解参数之间的联动关系。更好的方式是让学生拖动参数，看到容器、分子运动和压强同步变化。</p>
+
+        <blockquote>
+          当体积 V 变小时，在物质的量 n 和温度 T 不变的情况下，单位空间中分子碰撞容器壁的频率会上升，因此压强 P 上升。
+        </blockquote>
+
+        <section class="lab" id="gasLab">
+          <div class="lab-head">
+            <div>
+              <div class="lab-kicker">Formula Playground</div>
+              <h3>理想气体状态方程实验</h3>
+              <p class="lab-desc">拖动 n、T、V，观察压强、容器大小和分子运动速度如何变化。</p>
+            </div>
+            <div class="formula-badge">P = nRT / V</div>
+          </div>
+
+          <div class="formula-grid">
+            <div class="controls">
+              <label class="control">
+                <span><strong>物质的量 n</strong><em data-value="n">1 mol</em></span>
+                <input type="range" min="0.5" max="5" step="0.5" value="1" data-param="n">
+              </label>
+              <label class="control">
+                <span><strong>温度 T</strong><em data-value="T">300 K</em></span>
+                <input type="range" min="180" max="520" step="10" value="300" data-param="T">
+              </label>
+              <label class="control">
+                <span><strong>体积 V</strong><em data-value="V">10 L</em></span>
+                <input type="range" min="2" max="20" step="1" value="10" data-param="V">
+              </label>
+              <div class="result" id="gasResult">P = 249.42 kPa</div>
+            </div>
+
+            <div class="stage">
+              <canvas id="gasCanvas"></canvas>
+            </div>
+          </div>
+        </section>
+
+        <p>拖动上面的体积滑块时，右侧容器会变大或变小；拖动温度时，分子的运动速度会改变。这种表现形式比“P 与 V 成反比”更直观，因为学生可以把公式关系和视觉变化对应起来。</p>
+
+        <h2>二、循环执行也不该只靠脑补</h2>
+        <p>下面这个例子用两行代码演示执行指针。模型生成文章时，可以同时生成代码行和每一步的变量状态，前端只负责播放。</p>
+
+        <section class="lab" id="traceLab">
+          <div class="lab-head">
+            <div>
+              <div class="lab-kicker">Execution Trace</div>
+              <h3>for 循环执行指针</h3>
+              <p class="lab-desc">点击运行后，左侧高亮当前执行行，右侧同步显示变量 i 和输出框。</p>
+            </div>
+            <div class="trace-actions">
+              <button type="button" id="runTraceBtn">运行</button>
+              <button type="button" id="resetTraceBtn">重置</button>
+            </div>
+          </div>
+
+          <div class="trace-grid">
+            <div class="code-lines" id="codeLines">
+              <div class="code-line" data-line="0"><span>1</span><code>for i in range(3):</code></div>
+              <div class="code-line" data-line="1"><span>2</span><code>    print(123)</code></div>
+            </div>
+            <div class="trace-side">
+              <div class="vars" id="traceVars">变量将在运行时显示</div>
+              <pre class="output" id="traceOutput"></pre>
+            </div>
+          </div>
+        </section>
+
+        <p>这个组件适合讲循环、递归、函数调用、状态机、排序算法。后续如果接入更强的执行沙箱，可以让模型只生成代码，由后端实际运行并返回 trace；现在这版先让模型生成受控步骤，管理员审核后发布。</p>
+
+        <h2>三、工程场景应该由模型组合基础积木</h2>
+        <p>下面不是一个写死的“神经网络组件”，而是模拟模型用 `graph + plot + text + 参数滑块` 组合出来的 canvas_scene。神经网络只是图结构的一种；同样的积木也能表达电路框图、控制系统、数据管线、网络拓扑或执行计划。</p>
+
+        <section class="lab" id="engineeringLab">
+          <div class="lab-head">
+            <div>
+              <div class="lab-kicker">Canvas Scene DSL</div>
+              <h3>神经网络拓扑 + 激活曲线</h3>
+              <p class="lab-desc">拖动权重和偏置，观察连接强度、输出节点状态和 sigmoid 曲线如何同步变化。</p>
+            </div>
+            <div class="formula-badge">graph + plot</div>
+          </div>
+
+          <div class="formula-grid">
+            <div class="controls">
+              <label class="control">
+                <span><strong>权重强度 w</strong><em data-eng-value="w">1.0</em></span>
+                <input type="range" min="0.2" max="2" step="0.1" value="1" data-eng-param="w">
+              </label>
+              <label class="control">
+                <span><strong>偏置 b</strong><em data-eng-value="b">0.0</em></span>
+                <input type="range" min="-2" max="2" step="0.2" value="0" data-eng-param="b">
+              </label>
+              <div class="result" id="engineeringResult">graph + plot 场景已渲染</div>
+            </div>
+
+            <div class="stage">
+              <canvas id="engineeringCanvas"></canvas>
+            </div>
+          </div>
+        </section>
+
+        <p>这才是后续真正值得推进的方向：模型根据章节内容生成结构化场景配置，管理员审核配置和效果；前端只提供受控渲染语言和基础积木，而不是给每个学科提前写一套固定组件。</p>
+      </article>
+
+      <aside class="article-aside">
+        <h2 class="aside-title">这篇示例验证什么</h2>
+        <ul class="aside-list">
+          <li>文章里可以混入可交互实验块。</li>
+          <li>公式实验使用 canvas 2D 渲染。</li>
+          <li>参数拖动会改变可视化结果。</li>
+          <li>代码图解可以播放执行指针、变量和输出。</li>
+          <li>graph 可以表达网络、模块、流程和电路拓扑。</li>
+          <li>plot 可以表达信号、响应曲线、激活函数和损失曲线。</li>
+          <li>后续模型只需要生成结构化配置，前端负责受控渲染。</li>
+        </ul>
+      </aside>
+    </div>
+  </main>
+
+  <script>
+    const gasLab = document.getElementById("gasLab");
+    const gasCanvas = document.getElementById("gasCanvas");
+    const gasResult = document.getElementById("gasResult");
+    const units = { n: "mol", T: "K", V: "L" };
+    let particles = [];
+
+    function readGasValues() {
+      const values = {};
+      gasLab.querySelectorAll("[data-param]").forEach((input) => {
+        values[input.dataset.param] = Number(input.value);
+      });
+      values.R = 8.314;
+      return values;
+    }
+
+    function resizeCanvas(canvas) {
+      const rect = canvas.getBoundingClientRect();
+      const ratio = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+      const width = Math.max(320, Math.floor(rect.width || 320));
+      const height = Math.max(240, Math.floor(rect.height || 240));
+      canvas.width = Math.floor(width * ratio);
+      canvas.height = Math.floor(height * ratio);
+      return { width, height, ratio };
+    }
+
+    function pingPongUnit(value) {
+      const wrapped = ((Number(value || 0) % 2) + 2) % 2;
+      return wrapped <= 1 ? wrapped : 2 - wrapped;
+    }
+
+    function syncGasLabels(values) {
+      Object.keys(units).forEach((key) => {
+        const node = gasLab.querySelector(`[data-value="${key}"]`);
+        if (node) {
+          node.textContent = `${values[key]} ${units[key]}`;
+        }
+      });
+
+      const pressure = (values.n * values.R * values.T) / values.V;
+      gasResult.textContent = `P = ${pressure.toFixed(2)} kPa`;
+    }
+
+    function drawGas(timeMs) {
+      const values = readGasValues();
+      const ctx = gasCanvas.getContext("2d");
+      const size = resizeCanvas(gasCanvas);
+      ctx.setTransform(size.ratio, 0, 0, size.ratio, 0, 0);
+      ctx.clearRect(0, 0, size.width, size.height);
+
+      const volumeRatio = (values.V - 2) / (20 - 2);
+      const boxScale = 0.42 + Math.sqrt(volumeRatio) * 0.48;
+      const boxWidth = Math.floor(size.width * boxScale);
+      const boxHeight = Math.floor(size.height * boxScale);
+      const boxX = Math.floor((size.width - boxWidth) / 2);
+      const boxY = Math.floor((size.height - boxHeight) / 2);
+      const count = Math.max(12, Math.min(90, Math.round(values.n * 20)));
+
+      if (particles.length !== count) {
+        particles = Array.from({ length: count }, (_item, index) => {
+          const seed = (index + 1) * 7919;
+          return {
+            x: ((seed * 13) % 1000) / 1000,
+            y: ((seed * 29) % 1000) / 1000,
+            vx: (((seed * 47) % 200) - 100) / 100,
+            vy: (((seed * 61) % 200) - 100) / 100,
+          };
+        });
+      }
+
+      ctx.fillStyle = "#f8fafc";
+      ctx.fillRect(0, 0, size.width, size.height);
+      ctx.fillStyle = "rgba(37, 99, 235, 0.08)";
+      ctx.fillRect(boxX, boxY, boxWidth, boxHeight);
+      ctx.strokeStyle = "#111827";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(boxX, boxY, boxWidth, boxHeight);
+
+      const speed = 0.00018 * Math.sqrt(values.T);
+      particles.forEach((particle, index) => {
+        const drift = timeMs * speed;
+        const radius = 3.2;
+        const x = boxX + radius + pingPongUnit(particle.x + particle.vx * drift) * Math.max(1, boxWidth - radius * 2);
+        const y = boxY + radius + pingPongUnit(particle.y + particle.vy * drift) * Math.max(1, boxHeight - radius * 2);
+        ctx.beginPath();
+        ctx.fillStyle = index % 3 === 0 ? "#ef4444" : "#2563eb";
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      requestAnimationFrame(drawGas);
+    }
+
+    gasLab.querySelectorAll("[data-param]").forEach((input) => {
+      input.addEventListener("input", () => syncGasLabels(readGasValues()));
+    });
+    syncGasLabels(readGasValues());
+    requestAnimationFrame(drawGas);
+
+    const traceSteps = [
+      { line: 0, vars: { i: 0 }, output: "" },
+      { line: 1, vars: { i: 0 }, output: "123" },
+      { line: 0, vars: { i: 1 }, output: "" },
+      { line: 1, vars: { i: 1 }, output: "123" },
+      { line: 0, vars: { i: 2 }, output: "" },
+      { line: 1, vars: { i: 2 }, output: "123" },
+    ];
+    let traceIndex = 0;
+    let traceTimer = 0;
+    let traceRunning = false;
+
+    function renderTraceStep(index) {
+      const step = traceSteps[Math.max(0, Math.min(index, traceSteps.length - 1))];
+      document.querySelectorAll("[data-line]").forEach((line) => {
+        line.classList.toggle("is-active", Number(line.dataset.line) === step.line);
+      });
+
+      document.getElementById("traceVars").innerHTML = Object.keys(step.vars)
+        .map((key) => `<span><strong>${key}</strong>${step.vars[key]}</span>`)
+        .join("");
+
+      document.getElementById("traceOutput").textContent = traceSteps
+        .slice(0, index + 1)
+        .map((row) => row.output)
+        .filter(Boolean)
+        .join("\n");
+    }
+
+    function stopTrace() {
+      traceRunning = false;
+      if (traceTimer) {
+        clearInterval(traceTimer);
+        traceTimer = 0;
+      }
+      document.getElementById("runTraceBtn").textContent = "运行";
+    }
+
+    function tickTrace() {
+      renderTraceStep(traceIndex);
+      traceIndex += 1;
+
+      if (traceIndex >= traceSteps.length) {
+        stopTrace();
+      }
+    }
+
+    document.getElementById("runTraceBtn").addEventListener("click", () => {
+      if (traceRunning) {
+        stopTrace();
+        return;
+      }
+
+      traceRunning = true;
+      document.getElementById("runTraceBtn").textContent = "暂停";
+      tickTrace();
+      traceTimer = setInterval(tickTrace, 700);
+    });
+
+    document.getElementById("resetTraceBtn").addEventListener("click", () => {
+      stopTrace();
+      traceIndex = 0;
+      renderTraceStep(0);
+    });
+
+    renderTraceStep(0);
+
+    const engineeringLab = document.getElementById("engineeringLab");
+    const engineeringCanvas = document.getElementById("engineeringCanvas");
+    const engineeringResult = document.getElementById("engineeringResult");
+
+    function readEngineeringValues() {
+      const values = {};
+
+      engineeringLab.querySelectorAll("[data-eng-param]").forEach((input) => {
+        values[input.dataset.engParam] = Number(input.value);
+      });
+
+      return values;
+    }
+
+    function sigmoid(value) {
+      return 1 / (1 + Math.exp(-value));
+    }
+
+    function drawArrowHead(ctx, x1, y1, x2, y2, color, size) {
+      const angle = Math.atan2(y2 - y1, x2 - x1);
+      const head = size || 9;
+
+      ctx.beginPath();
+      ctx.fillStyle = color;
+      ctx.moveTo(x2, y2);
+      ctx.lineTo(x2 - head * Math.cos(angle - Math.PI / 6), y2 - head * Math.sin(angle - Math.PI / 6));
+      ctx.lineTo(x2 - head * Math.cos(angle + Math.PI / 6), y2 - head * Math.sin(angle + Math.PI / 6));
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    function drawNode(ctx, node) {
+      ctx.beginPath();
+      ctx.fillStyle = node.fill || "#ffffff";
+      ctx.strokeStyle = node.stroke || "#111827";
+      ctx.lineWidth = 2;
+      ctx.arc(node.x, node.y, node.r || 18, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#111827";
+      ctx.font = "800 12px \"Segoe UI\", \"Microsoft YaHei\", sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(node.label, node.x, node.y);
+      ctx.textAlign = "start";
+      ctx.textBaseline = "alphabetic";
+    }
+
+    function drawEdge(ctx, from, to, width, color) {
+      const angle = Math.atan2(to.y - from.y, to.x - from.x);
+      const startX = from.x + Math.cos(angle) * (from.r || 18);
+      const startY = from.y + Math.sin(angle) * (from.r || 18);
+      const endX = to.x - Math.cos(angle) * (to.r || 18);
+      const endY = to.y - Math.sin(angle) * (to.r || 18);
+
+      ctx.beginPath();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      ctx.moveTo(startX, startY);
+      ctx.lineTo(endX, endY);
+      ctx.stroke();
+      drawArrowHead(ctx, startX, startY, endX, endY, color, 8);
+    }
+
+    function drawPlot(ctx, values, x, y, width, height) {
+      const w = values.w;
+      const b = values.b;
+      const xMin = -4;
+      const xMax = 4;
+      const yMin = 0;
+      const yMax = 1;
+      const toX = (value) => x + ((value - xMin) / (xMax - xMin)) * width;
+      const toY = (value) => y + height - ((value - yMin) / (yMax - yMin)) * height;
+
+      ctx.fillStyle = "#ffffff";
+      ctx.strokeStyle = "#d0d5dd";
+      ctx.lineWidth = 1;
+      ctx.fillRect(x, y, width, height);
+      ctx.strokeRect(x, y, width, height);
+
+      ctx.strokeStyle = "#edf0f2";
+      ctx.beginPath();
+      for (let i = 1; i < 4; i += 1) {
+        const gx = x + (width / 4) * i;
+        const gy = y + (height / 4) * i;
+        ctx.moveTo(gx, y);
+        ctx.lineTo(gx, y + height);
+        ctx.moveTo(x, gy);
+        ctx.lineTo(x + width, gy);
+      }
+      ctx.stroke();
+
+      ctx.strokeStyle = "#16a34a";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      for (let i = 0; i <= 120; i += 1) {
+        const sourceX = xMin + ((xMax - xMin) * i) / 120;
+        const sourceY = sigmoid(w * sourceX + b);
+        const px = toX(sourceX);
+        const py = toY(sourceY);
+
+        if (i === 0) {
+          ctx.moveTo(px, py);
+        } else {
+          ctx.lineTo(px, py);
+        }
+      }
+      ctx.stroke();
+
+      ctx.fillStyle = "#475467";
+      ctx.font = "800 12px \"Segoe UI\", \"Microsoft YaHei\", sans-serif";
+      ctx.fillText("sigmoid(w*x + b)", x, y - 8);
+    }
+
+    function syncEngineeringLabels(values) {
+      engineeringLab.querySelector('[data-eng-value="w"]').textContent = values.w.toFixed(1);
+      engineeringLab.querySelector('[data-eng-value="b"]').textContent = values.b.toFixed(1);
+      engineeringResult.textContent = `输出响应：sigmoid(${values.w.toFixed(1)}x ${values.b >= 0 ? "+" : "-"} ${Math.abs(values.b).toFixed(1)})`;
+    }
+
+    function drawEngineeringScene() {
+      const values = readEngineeringValues();
+      const ctx = engineeringCanvas.getContext("2d");
+      const size = resizeCanvas(engineeringCanvas);
+      const ratioX = size.width / 640;
+      const ratioY = size.height / 360;
+      const lineWidth = 1.4 + values.w * 2.2;
+      const outFill = values.b >= 0 ? "#f0fdf4" : "#fff7ed";
+      const nodes = {
+        x1: { label: "x1", x: 80, y: 105, r: 18 },
+        x2: { label: "x2", x: 80, y: 225, r: 18 },
+        h1: { label: "h1", x: 250, y: 80, r: 20, fill: "#eff6ff" },
+        h2: { label: "h2", x: 250, y: 165, r: 20, fill: "#eff6ff" },
+        h3: { label: "h3", x: 250, y: 250, r: 20, fill: "#eff6ff" },
+        y: { label: "y", x: 430, y: 165, r: 22, fill: outFill, stroke: values.b >= 0 ? "#059669" : "#ea580c" },
+      };
+      const edges = [
+        ["x1", "h1"], ["x1", "h2"], ["x2", "h2"], ["x2", "h3"],
+        ["h1", "y"], ["h2", "y"], ["h3", "y"],
+      ];
+
+      syncEngineeringLabels(values);
+      ctx.setTransform(size.ratio, 0, 0, size.ratio, 0, 0);
+      ctx.clearRect(0, 0, size.width, size.height);
+      ctx.fillStyle = "#f8fafc";
+      ctx.fillRect(0, 0, size.width, size.height);
+      ctx.save();
+      ctx.scale(ratioX, ratioY);
+
+      ctx.fillStyle = "#111827";
+      ctx.font = "900 15px \"Segoe UI\", \"Microsoft YaHei\", sans-serif";
+      ctx.fillText("graph：层、节点、连接权重", 24, 34);
+      ctx.fillStyle = "#64748b";
+      ctx.font = "700 12px \"Segoe UI\", \"Microsoft YaHei\", sans-serif";
+      ctx.fillText("模型可以把这套拓扑换成电路、数据管线或系统框图", 24, 55);
+
+      edges.forEach(([fromId, toId]) => {
+        drawEdge(ctx, nodes[fromId], nodes[toId], lineWidth, "#64748b");
+      });
+
+      Object.keys(nodes).forEach((key) => drawNode(ctx, nodes[key]));
+
+      drawPlot(ctx, values, 380, 245, 220, 82);
+
+      ctx.restore();
+    }
+
+    engineeringLab.querySelectorAll("[data-eng-param]").forEach((input) => {
+      input.addEventListener("input", drawEngineeringScene);
+    });
+    drawEngineeringScene();
+  </script>
+</body>
+</html>

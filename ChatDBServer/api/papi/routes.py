@@ -26,6 +26,12 @@ from .core import (
     _papi_create_openai_responses_payload,
     _papi_log,
 )
+from .token_logger import (
+    build_papi_token_log_context,
+    extract_usage_from_payload,
+    infer_papi_action,
+    record_papi_token_usage,
+)
 from api.database import User
 from api.conversation_manager import ConversationManager
 from api.server_quota import get_generation_quota_gate
@@ -422,6 +428,12 @@ def _papi_handle_completion_request(data=None, username=None, request_path=''):
     config = get_config_all()
     request_username = str(username or data.get('username') or '').strip()
     request_path = str(request_path or '').strip().lower()
+    token_log_context = build_papi_token_log_context(
+        request,
+        username=request_username or str(username or '').strip(),
+        request_path=request_path or str(request.path or '').strip().lower(),
+    )
+    token_log_action = infer_papi_action(request_path or str(request.path or '').strip().lower())
     use_responses_compat = ('/responses' in request_path)
     previous_response_id = str(
         data.get('previous_response_id')
@@ -641,16 +653,22 @@ def _papi_handle_completion_request(data=None, username=None, request_path=''):
             _mapped_effort = None
             if isinstance(_think_src, str):
                 _s = _think_src.strip().lower()
-                if _s in {"low", "medium", "high", "none"}:
+                if _s in {"low", "medium", "high"}:
                     _mapped_effort = _s
-                elif _s in {"false", "0", "off", "no", "n"}:
-                    _mapped_effort = "none"
+                elif _s in {"false", "0", "off", "no", "n", "none"}:
+                    request_kwargs.pop("reasoning_effort", None)
                 elif _s in {"true", "1", "on", "yes", "y"}:
                     _mapped_effort = "medium"
             elif isinstance(_think_src, bool):
-                _mapped_effort = "medium" if _think_src else "none"
+                if _think_src:
+                    _mapped_effort = "medium"
+                else:
+                    request_kwargs.pop("reasoning_effort", None)
             elif isinstance(_think_src, (int, float)):
-                _mapped_effort = "medium" if float(_think_src) != 0.0 else "none"
+                if float(_think_src) != 0.0:
+                    _mapped_effort = "medium"
+                else:
+                    request_kwargs.pop("reasoning_effort", None)
             if _mapped_effort:
                 request_kwargs["reasoning_effort"] = _mapped_effort
             _papi_log(
@@ -732,6 +750,24 @@ def _papi_handle_completion_request(data=None, username=None, request_path=''):
         f"stream={'yes' if want_stream else 'no'} api_type={adapter_api_type or 'unknown'}"
     )
 
+    def _record_usage(usage, *, stream: bool, response_id: str = '', extra=None):
+        try:
+            result = record_papi_token_usage(
+                token_log_context,
+                usage=usage,
+                provider=provider_name,
+                model=model_name,
+                action=token_log_action,
+                request_path=request_path or str(request.path or '').strip().lower(),
+                stream=stream,
+                response_id=response_id,
+                extra=extra if isinstance(extra, dict) else None,
+            )
+            if not result.get('success'):
+                _papi_log(f"[PAPI_TOKEN_LOG] skipped model={model_name} reason={result.get('message', '')}")
+        except Exception as log_error:
+            _papi_log(f"[PAPI_TOKEN_LOG] write failed model={model_name} error={log_error}", level='error')
+
     # ---- 流式响应 ----
     if want_stream:
         try:
@@ -746,6 +782,7 @@ def _papi_handle_completion_request(data=None, username=None, request_path=''):
                     input_items=responses_input_items,
                     allow_synthetic_fallback=allow_synthetic_fallback,
                     use_responses_upstream=use_responses_upstream,
+                    usage_recorder=_record_usage,
                 )
             else:
                 resp = _papi_stream_openai_chat(
@@ -754,6 +791,7 @@ def _papi_handle_completion_request(data=None, username=None, request_path=''):
                     model_name=model_name,
                     messages=messages,
                     request_kwargs=request_kwargs,
+                    usage_recorder=_record_usage,
                 )
             resp.headers['Cache-Control'] = 'no-cache, no-transform'
             resp.headers['X-Accel-Buffering'] = 'no'
@@ -807,6 +845,16 @@ def _papi_handle_completion_request(data=None, username=None, request_path=''):
                 request_username=request_username or (username or ''),
                 quota_status=quota_status,
             )
+        usage_payload = extract_usage_from_payload(payload)
+        response_id = str(payload.get('id') or '').strip()
+        _record_usage(
+            usage_payload,
+            stream=False,
+            response_id=response_id,
+            extra={
+                'response_object': str(payload.get('object') or '').strip(),
+            },
+        )
         return jsonify(payload)
     except Exception as e:
         _papi_log(f"[PAPI_COMPLETIONS] model={model_name} provider={provider_name} error={e}", level='error')

@@ -41,6 +41,35 @@
     }
   }
 
+  function isDirectVideoUrl(value) {
+    const text = String(value || "").trim();
+    if (!isOpenableVideoUrl(text)) return false;
+
+    try {
+      const url = new URL(text, window.location.origin);
+      const path = String(url.pathname || "").toLowerCase();
+      return /\.(mp4|webm|ogg|mov)$/.test(path);
+    } catch (_err) {
+      return /\.(mp4|webm|ogg|mov)(?:$|[?#])/.test(text.toLowerCase());
+    }
+  }
+
+  function getVideoPlayerUrl(item) {
+    const resource = item && typeof item === "object" ? item : {};
+    const previewUrl = String(resource.videoPreviewUrl || "").trim();
+    const externalUrl = String(resource.externalUrl || "").trim();
+
+    if (isDirectVideoUrl(previewUrl)) {
+      return previewUrl;
+    }
+
+    if (isDirectVideoUrl(externalUrl)) {
+      return externalUrl;
+    }
+
+    return "";
+  }
+
   async function loadPushItems(ctx, refresh) {
     if (resourceState.loading) return;
     resourceState.loading = true;
@@ -180,6 +209,7 @@
     const coverUrl = String(item && item.coverUrl || "").trim();
     const videoPreviewUrl = String(item && item.videoPreviewUrl || "").trim();
     const secondaryLabel = String(item && item.type || "").trim() === "video" ? "详情" : "阅读";
+
     return `
       <article class="learning-push-card is-${escapeHtml(String(item && item.type || "article"))}" data-push-resource-id="${escapeHtml(itemId)}">
         ${renderCardMedia(ctx, coverUrl, videoPreviewUrl, item)}
@@ -207,19 +237,33 @@
   function renderCardMedia(ctx, coverUrl, videoPreviewUrl, item) {
     const escapeHtml = ctx.escapeHtml || ((value) => String(value || ""));
     const title = String(item && item.title || "学习资源").trim();
+    const isVideo = String(item && item.type || "").trim() === "video";
+    const playerUrl = getVideoPlayerUrl(item);
 
-    if (isOpenableVideoUrl(videoPreviewUrl)) {
+    if (playerUrl) {
       return `
-        <div class="learning-push-media">
-          <video src="${escapeHtml(videoPreviewUrl)}" preload="metadata" muted playsinline></video>
+        <div class="learning-push-media is-video-preview">
+          <video src="${escapeHtml(playerUrl)}" preload="metadata" muted playsinline></video>
+          <span class="learning-push-play-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <path d="M8 5v14l11-7z"></path>
+            </svg>
+          </span>
         </div>
       `;
     }
 
     if (isOpenableVideoUrl(coverUrl)) {
       return `
-        <div class="learning-push-media">
+        <div class="learning-push-media${isVideo ? " is-video-cover" : ""}">
           <img src="${escapeHtml(coverUrl)}" alt="${escapeHtml(title)}" referrerpolicy="no-referrer">
+          ${isVideo ? `
+          <span class="learning-push-play-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false">
+              <path d="M8 5v14l11-7z"></path>
+            </svg>
+          </span>
+          ` : ""}
         </div>
       `;
     }
@@ -283,61 +327,252 @@
     `;
   }
 
-  function renderResourceComponents(ctx, components) {
+  function renderVideoReader(ctx, resource) {
+    const el = ctx.el || {};
     const escapeHtml = ctx.escapeHtml || ((value) => String(value || ""));
+    const playerUrl = getVideoPlayerUrl(resource);
+    const coverUrl = String(resource && resource.coverUrl || "").trim();
+    const externalUrl = String(resource && resource.externalUrl || "").trim();
+    const metaItems = [
+      String(resource && resource.badge || "").trim(),
+      String(resource && resource.subtitle || "").trim(),
+      String(resource && resource.description || "").trim(),
+    ].filter(Boolean);
+
+    if (el.learningResourceReaderTitle) {
+      el.learningResourceReaderTitle.textContent = String(resource && resource.title || "课程视频");
+    }
+
+    if (el.learningResourceReaderSubtitle) {
+      el.learningResourceReaderSubtitle.textContent = [resource && resource.badge, resource && resource.subtitle].filter(Boolean).join(" · ") || "Learning Video";
+    }
+
+    el.learningResourceReaderContent.innerHTML = `
+      <article class="learning-video-reader">
+        <section class="learning-video-stage">
+          ${playerUrl ? `
+          <video class="learning-video-player" src="${escapeHtml(playerUrl)}" controls preload="metadata" playsinline poster="${escapeHtml(coverUrl)}"></video>
+          ` : `
+          <a class="learning-video-poster-link" href="${escapeHtml(externalUrl)}" target="_blank" rel="noopener noreferrer">
+            ${isOpenableVideoUrl(coverUrl) ? `<img src="${escapeHtml(coverUrl)}" alt="${escapeHtml(String(resource && resource.title || "课程视频"))}" referrerpolicy="no-referrer">` : ""}
+            <span class="learning-video-poster-action">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="M8 5v14l11-7z"></path>
+              </svg>
+              <strong>打开原视频</strong>
+            </span>
+          </a>
+          `}
+        </section>
+        <aside class="learning-video-side">
+          <div class="learning-video-side-head">
+            <span class="learning-push-badge">${escapeHtml(String(resource && resource.badge || "课程视频"))}</span>
+            ${resource && resource.subtitle ? `<span class="learning-push-subtitle">${escapeHtml(resource.subtitle)}</span>` : ""}
+          </div>
+          <h2>${escapeHtml(String(resource && resource.title || "课程视频"))}</h2>
+          ${metaItems.length ? `<ul>${metaItems.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : ""}
+          ${resource && resource.reason ? `<div class="learning-push-reason">${escapeHtml(String(resource.reason || ""))}</div>` : ""}
+          ${renderReaderAction(ctx, resource)}
+        </aside>
+      </article>
+    `;
+  }
+
+  function buildResourceReaderToc(components, hasBodyBlocks) {
+    const data = components && typeof components === "object" ? components : {};
+    const rows = [];
+    if (String(data.quick_summary || "").trim()) {
+      rows.push({ id: "reader-summary", label: "速读摘要" });
+    }
+    if (Array.isArray(data.concept_cards) && data.concept_cards.length) {
+      rows.push({ id: "reader-concepts", label: "关键概念" });
+    }
+    if (hasBodyBlocks) {
+      rows.push({ id: "reader-body", label: "正文" });
+    }
+    if (Array.isArray(data.review_questions) && data.review_questions.length) {
+      rows.push({ id: "reader-review", label: "复盘问题" });
+    }
+    if (Array.isArray(data.practice_blocks) && data.practice_blocks.length) {
+      rows.push({ id: "reader-practice", label: "实操代码" });
+    }
+    return rows;
+  }
+
+  function renderResourceReaderToc(ctx, rows) {
+    const escapeHtml = ctx.escapeHtml || ((value) => String(value || ""));
+    const items = Array.isArray(rows) ? rows : [];
+    if (items.length < 2) return "";
+    return `
+      <nav class="resource-reader-toc" aria-label="文章目录">
+        <div class="resource-reader-toc-title">目录</div>
+        ${items.map((item) => `
+          <a href="#${escapeHtml(item.id)}" data-reader-toc-link="${escapeHtml(item.id)}">${escapeHtml(item.label)}</a>
+        `).join("")}
+      </nav>
+    `;
+  }
+
+  function syncResourceReaderToc(panel) {
+    if (!panel) return;
+
+    const links = Array.from(panel.querySelectorAll("[data-reader-toc-link]"));
+    if (!links.length) return;
+
+    const panelRect = panel.getBoundingClientRect();
+    const threshold = Math.max(72, Math.min(140, panelRect.height * 0.18));
+    let activeId = String(links[0].getAttribute("data-reader-toc-link") || "").trim();
+
+    links.forEach((link) => {
+      const targetId = String(link.getAttribute("data-reader-toc-link") || "").trim();
+      const section = targetId ? panel.querySelector(`#${targetId}`) : null;
+      if (!section) return;
+
+      const sectionTop = section.getBoundingClientRect().top - panelRect.top;
+      if (sectionTop <= threshold) {
+        activeId = targetId;
+      }
+    });
+
+    links.forEach((link) => {
+      const isActive = String(link.getAttribute("data-reader-toc-link") || "").trim() === activeId;
+      link.classList.toggle("is-active", isActive);
+
+      if (isActive) {
+        link.setAttribute("aria-current", "true");
+      } else {
+        link.removeAttribute("aria-current");
+      }
+    });
+  }
+
+  function bindResourceReaderToc(panel) {
+    if (!panel || panel.dataset.resourceReaderTocBound === "1") return;
+
+    panel.dataset.resourceReaderTocBound = "1";
+    panel.addEventListener("scroll", () => syncResourceReaderToc(panel), { passive: true });
+    panel.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+
+      const link = target.closest("[data-reader-toc-link]");
+      if (!link || !panel.contains(link)) return;
+
+      window.setTimeout(() => syncResourceReaderToc(panel), 80);
+    });
+    window.addEventListener("resize", () => syncResourceReaderToc(panel));
+  }
+
+  function renderResourceComponentGroup(parts, modifier) {
+    const visibleParts = Array.isArray(parts) ? parts.filter(Boolean) : [];
+    if (!visibleParts.length) return "";
+
+    const modifierClass = modifier ? ` ${modifier}` : "";
+    return `
+      <section class="resource-components${modifierClass}">
+        ${visibleParts.join("")}
+      </section>
+    `;
+  }
+
+  function renderResourceSummaryBlock(ctx, quickSummary) {
+    const summary = String(quickSummary || "").trim();
+    if (!summary) return "";
+
+    return `
+      <section class="resource-component-block resource-summary-block" id="reader-summary">
+        <h2>速读摘要</h2>
+        <p>${renderInlineMarkdown(ctx, summary)}</p>
+      </section>
+    `;
+  }
+
+  function renderResourceConceptCards(ctx, conceptCards) {
+    const escapeHtml = ctx.escapeHtml || ((value) => String(value || ""));
+    const cards = Array.isArray(conceptCards) ? conceptCards : [];
+    if (!cards.length) return "";
+
+    return `
+      <section class="resource-component-block" id="reader-concepts">
+        <h2>关键概念</h2>
+        <div class="resource-concept-list">
+          ${cards.map((card, index) => `
+            <details class="resource-concept-card" ${index === 0 ? "open" : ""}>
+              <summary>
+                <strong>${escapeHtml(String(card && (card.title || card.name) || "概念"))}</strong>
+              </summary>
+              <p>${renderInlineMarkdown(ctx, String(card && (card.content || card.description) || ""))}</p>
+            </details>
+          `).join("")}
+        </div>
+      </section>
+    `;
+  }
+
+  function renderResourceReviewQuestions(ctx, reviewQuestions) {
+    const rows = Array.isArray(reviewQuestions) ? reviewQuestions : [];
+    if (!rows.length) return "";
+
+    return `
+      <section class="resource-component-block" id="reader-review">
+        <h2>复盘问题</h2>
+        <ol class="resource-review-list">
+          ${rows.map((row) => `
+            <li>
+              <strong>${renderInlineMarkdown(ctx, String(row && (row.question || row.title) || ""))}</strong>
+              ${row && row.answer ? `<span>${renderInlineMarkdown(ctx, String(row.answer || ""))}</span>` : ""}
+            </li>
+          `).join("")}
+        </ol>
+      </section>
+    `;
+  }
+
+  function renderResourcePracticeBlocks(ctx, practiceBlocks) {
+    const blocks = Array.isArray(practiceBlocks) ? practiceBlocks : [];
+    if (!blocks.length) return "";
+
+    return `
+      <section class="resource-component-block" id="reader-practice">
+        <h2>实操代码</h2>
+        ${renderBlocks(ctx, blocks.map((block) => ({
+          type: "code",
+          language: String(block && (block.language || block.lang) || "text"),
+          content: String(block && (block.content || block.code) || ""),
+          runnable: !!(block && block.runnable),
+        })), "components")}
+      </section>
+    `;
+  }
+
+  function renderResourceComponents(ctx, components, placement) {
     const data = components && typeof components === "object" ? components : {};
     const quickSummary = String(data.quick_summary || "").trim();
     const conceptCards = Array.isArray(data.concept_cards) ? data.concept_cards : [];
     const reviewQuestions = Array.isArray(data.review_questions) ? data.review_questions : [];
     const practiceBlocks = Array.isArray(data.practice_blocks) ? data.practice_blocks : [];
     if (!quickSummary && !conceptCards.length && !reviewQuestions.length && !practiceBlocks.length) return "";
-    return `
-      <section class="resource-components">
-        ${quickSummary ? `
-          <div class="resource-component-block">
-            <h2>速读摘要</h2>
-            <p>${renderInlineMarkdown(ctx, quickSummary)}</p>
-          </div>
-        ` : ""}
-        ${conceptCards.length ? `
-          <div class="resource-component-block">
-            <h2>关键概念</h2>
-            <div class="resource-concept-grid">
-              ${conceptCards.map((card) => `
-                <article class="resource-concept-card">
-                  <strong>${escapeHtml(String(card && (card.title || card.name) || "概念"))}</strong>
-                  <p>${renderInlineMarkdown(ctx, String(card && (card.content || card.description) || ""))}</p>
-                </article>
-              `).join("")}
-            </div>
-          </div>
-        ` : ""}
-        ${reviewQuestions.length ? `
-          <div class="resource-component-block">
-            <h2>复盘问题</h2>
-            <ol class="resource-review-list">
-              ${reviewQuestions.map((row) => `
-                <li>
-                  <strong>${renderInlineMarkdown(ctx, String(row && (row.question || row.title) || ""))}</strong>
-                  ${row && row.answer ? `<span>${renderInlineMarkdown(ctx, String(row.answer || ""))}</span>` : ""}
-                </li>
-              `).join("")}
-            </ol>
-          </div>
-        ` : ""}
-        ${practiceBlocks.length ? `
-          <div class="resource-component-block">
-            <h2>实操代码</h2>
-            ${renderBlocks(ctx, practiceBlocks.map((block) => ({
-              type: "code",
-              language: String(block && (block.language || block.lang) || "text"),
-              content: String(block && (block.content || block.code) || ""),
-              runnable: !!(block && block.runnable),
-            })), "components")}
-          </div>
-        ` : ""}
-      </section>
-    `;
+
+    if (placement === "before-body") {
+      return renderResourceComponentGroup([
+        renderResourceSummaryBlock(ctx, quickSummary),
+        renderResourceConceptCards(ctx, conceptCards),
+      ], "is-before-body");
+    }
+
+    if (placement === "after-body") {
+      return renderResourceComponentGroup([
+        renderResourceReviewQuestions(ctx, reviewQuestions),
+        renderResourcePracticeBlocks(ctx, practiceBlocks),
+      ], "is-after-body");
+    }
+
+    return renderResourceComponentGroup([
+      renderResourceSummaryBlock(ctx, quickSummary),
+      renderResourceConceptCards(ctx, conceptCards),
+      renderResourceReviewQuestions(ctx, reviewQuestions),
+      renderResourcePracticeBlocks(ctx, practiceBlocks),
+    ], "");
   }
 
   function renderReader(ctx, item) {
@@ -351,36 +586,59 @@
       el.learningResourceReaderContent.innerHTML = '<div class="materials-empty">没有找到这条学习资源</div>';
       return;
     }
+
+    if (String(resource.type || "").trim() === "video") {
+      renderVideoReader(ctx, resource);
+      return;
+    }
+
     const itemId = String(resource.id || "").trim();
     const blocks = Array.isArray(resource.blocks) ? resource.blocks : [];
     const components = resource.components && typeof resource.components === "object" ? resource.components : {};
     const bodyBlocks = blocks.length
       ? renderBlocks(ctx, blocks, itemId)
       : `<div class="resource-reader-paragraph">${renderMarkdown(ctx, String(resource.content || resource.description || ""))}</div>`;
+    const hasBodyBlocks = !!String(bodyBlocks || "").trim();
+    const tocRows = buildResourceReaderToc(components, hasBodyBlocks);
+    const componentsBeforeBody = renderResourceComponents(ctx, components, "before-body");
+    const componentsAfterBody = renderResourceComponents(ctx, components, "after-body");
+    const hasStructuredComponents = !!String(`${componentsBeforeBody}${componentsAfterBody}`).trim();
+    const articleTitle = String(resource.title || "学习资源");
     if (el.learningResourceReaderTitle) {
-      el.learningResourceReaderTitle.textContent = String(resource.title || "学习资源");
+      el.learningResourceReaderTitle.textContent = articleTitle;
     }
     if (el.learningResourceReaderSubtitle) {
       el.learningResourceReaderSubtitle.textContent = [resource.badge, resource.subtitle].filter(Boolean).join(" · ") || "Learning Resource";
     }
     el.learningResourceReaderContent.innerHTML = `
       <article class="resource-reader-article">
-        <header class="resource-reader-hero">
-          <div class="learning-push-card-head">
-            <span class="learning-push-badge">${escapeHtml(String(resource.badge || "学习资源"))}</span>
-            ${resource.subtitle ? `<span class="learning-push-subtitle">${escapeHtml(resource.subtitle)}</span>` : ""}
-          </div>
-          <h1>${escapeHtml(String(resource.title || "学习资源"))}</h1>
-          ${resource.description ? `<p>${escapeHtml(String(resource.description || ""))}</p>` : ""}
-          ${resource.reason ? `<div class="learning-push-reason">${escapeHtml(String(resource.reason || ""))}</div>` : ""}
-          ${renderReaderAction(ctx, resource)}
-        </header>
-        <section class="resource-reader-body">
-          ${renderResourceComponents(ctx, components)}
-          ${bodyBlocks}
-        </section>
+        <div class="resource-reader-main">
+          <header class="resource-reader-overview">
+            <div class="resource-reader-meta">
+              <span class="learning-push-badge">${escapeHtml(String(resource.badge || "学习资源"))}</span>
+              ${resource.subtitle ? `<span class="learning-push-subtitle">${escapeHtml(resource.subtitle)}</span>` : ""}
+            </div>
+            <h1 class="resource-reader-heading">${escapeHtml(articleTitle)}</h1>
+            ${resource.description ? `<p class="resource-reader-lead">${escapeHtml(String(resource.description || ""))}</p>` : ""}
+            ${resource.reason ? `<div class="learning-push-reason resource-reader-reason">${escapeHtml(String(resource.reason || ""))}</div>` : ""}
+            ${renderReaderAction(ctx, resource)}
+          </header>
+          <section class="resource-reader-body">
+            ${componentsBeforeBody}
+            ${hasBodyBlocks ? `
+              <section class="resource-article-section${hasStructuredComponents ? "" : " is-plain"}" id="reader-body">
+                ${hasStructuredComponents ? '<div class="resource-section-label">正文</div>' : ""}
+                ${bodyBlocks}
+              </section>
+            ` : ""}
+            ${componentsAfterBody}
+          </section>
+        </div>
+        ${renderResourceReaderToc(ctx, tocRows)}
       </article>
     `;
+    bindResourceReaderToc(el.learningResourceReaderContent);
+    window.requestAnimationFrame(() => syncResourceReaderToc(el.learningResourceReaderContent));
   }
 
   function render(ctx) {

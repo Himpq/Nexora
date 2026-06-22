@@ -25,12 +25,19 @@ def extract_epub_text(epub_path: str) -> str:
     heading_candidates: List[str] = []
     try:
         with zipfile.ZipFile(epub_path, "r") as zf:
+            for name in _iter_epub_navigation_names(zf):
+                try:
+                    raw = zf.read(name).decode("utf-8", errors="ignore")
+                except Exception:
+                    continue
+                for row in extract_epub_heading_candidates_from_text(raw):
+                    heading_candidates.append(row)
             for name in _iter_epub_html_names(zf):
                 try:
                     raw = zf.read(name).decode("utf-8", errors="ignore")
                 except Exception:
                     continue
-                for row in _extract_heading_candidates(raw):
+                for row in extract_epub_heading_candidates_from_text(raw):
                     heading_candidates.append(row)
                 parsed = _preserve_html_for_model(raw)
                 if parsed:
@@ -62,12 +69,22 @@ def extract_epub_with_assets(
     assets_dir.mkdir(parents=True, exist_ok=True)
 
     with zipfile.ZipFile(epub_path, "r") as zf:
+        for name in _iter_epub_navigation_names(zf):
+            try:
+                raw = zf.read(name).decode("utf-8", errors="ignore")
+            except Exception:
+                continue
+            for row in extract_epub_heading_candidates_from_text(raw):
+                key = str(row or "").strip().lower()
+                if key and key not in seen_headings:
+                    seen_headings.add(key)
+                    heading_candidates.append(str(row).strip())
         for name in _iter_epub_html_names(zf):
             try:
                 raw = zf.read(name).decode("utf-8", errors="ignore")
             except Exception:
                 continue
-            for row in _extract_heading_candidates(raw):
+            for row in extract_epub_heading_candidates_from_text(raw):
                 key = str(row or "").strip().lower()
                 if key and key not in seen_headings:
                     seen_headings.add(key)
@@ -132,6 +149,19 @@ def _iter_epub_html_names(archive: zipfile.ZipFile) -> List[str]:
     )
 
 
+def _iter_epub_navigation_names(archive: zipfile.ZipFile) -> List[str]:
+    rows: List[str] = []
+    for name in archive.namelist():
+        lower = name.lower()
+        base_name = PurePosixPath(name).name.lower()
+        if lower.endswith((".ncx", ".opf")):
+            rows.append(name)
+            continue
+        if base_name in {"nav.xhtml", "nav.html", "toc.xhtml", "toc.html"}:
+            rows.append(name)
+    return sorted(rows)
+
+
 def _dedupe_keep_order(rows: List[str]) -> List[str]:
     seen = set()
     uniq: List[str] = []
@@ -152,12 +182,42 @@ def _build_image_url(base_url: str, lecture_id: str, book_id: str, image_id: str
     return f"{base}{path}" if base else path
 
 
+def extract_epub_heading_candidates_from_text(raw: str) -> List[str]:
+    """Extract structural heading candidates from EPUB navigation or HTML text."""
+    rows: List[str] = []
+    rows.extend(_extract_navigation_heading_candidates(raw))
+    rows.extend(_extract_heading_candidates(raw))
+    rows.extend(_extract_loose_heading_candidates(raw))
+    return _dedupe_keep_order(rows)
+
+
+def _extract_navigation_heading_candidates(raw: str) -> List[str]:
+    rows: List[str] = []
+    text = str(raw or "")
+    if not text:
+        return rows
+
+    for m in re.finditer(r"(?is)<navLabel\b[^>]*>.*?<text\b[^>]*>(.*?)</text>.*?</navLabel>", text):
+        value = _strip_candidate_heading_text(m.group(1) or "")
+        if _is_reasonable_heading(value):
+            rows.append(value)
+
+    for nav_match in re.finditer(r"(?is)<nav\b[^>]*(?:toc|目录)[^>]*>.*?</nav>", text):
+        block = nav_match.group(0) or ""
+        for link_match in re.finditer(r"(?is)<a\b[^>]*>(.*?)</a>", block):
+            value = _strip_candidate_heading_text(link_match.group(1) or "")
+            if _is_reasonable_heading(value):
+                rows.append(value)
+
+    return rows
+
+
 def _extract_heading_candidates(raw: str) -> List[str]:
     rows: List[str] = []
     if not raw:
         return rows
     for m in re.finditer(r"(?is)<(h[1-6])\b[^>]*>(.*?)</\1>", raw):
-        text = _strip_html_text(m.group(2) or "")
+        text = _strip_candidate_heading_text(m.group(2) or "")
         if _is_reasonable_heading(text):
             rows.append(text)
     hint_pattern = re.compile(r"(?is)<(p|div|span)\b([^>]*)>(.*?)</\1>")
@@ -166,9 +226,31 @@ def _extract_heading_candidates(raw: str) -> List[str]:
         inner = str(m.group(3) or "")
         if not _looks_like_heading_attrs(attrs):
             continue
-        text = _strip_html_text(inner)
+        text = _strip_candidate_heading_text(inner)
         if _is_reasonable_heading(text):
             rows.append(text)
+    return rows
+
+
+def _extract_loose_heading_candidates(raw: str) -> List[str]:
+    rows: List[str] = []
+    text = str(raw or "")
+    if not text:
+        return rows
+
+    block_pattern = re.compile(r"(?is)<(p|div|blockquote|span)\b([^>]*)>(.*?)</\1>")
+    for m in block_pattern.finditer(text):
+        attrs = str(m.group(2) or "")
+        inner = str(m.group(3) or "")
+        value = _strip_candidate_heading_text(inner)
+        if not _is_reasonable_heading(value):
+            continue
+        if (
+            _looks_like_heading_attrs(attrs)
+            or _looks_like_numbered_heading(value)
+            or _looks_like_anchor_heading(attrs, value)
+        ):
+            rows.append(value)
     return rows
 
 
@@ -299,6 +381,13 @@ def _strip_html_text(raw: str) -> str:
     return text.strip()
 
 
+def _strip_candidate_heading_text(raw: str) -> str:
+    text = IMAGE_TOKEN_RE.sub(" ", str(raw or ""))
+    text = _strip_html_text(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
 def _looks_like_heading_attrs(attrs: str) -> bool:
     lower = str(attrs or "").lower()
     if not lower:
@@ -322,12 +411,33 @@ def _looks_like_heading_attrs(attrs: str) -> bool:
     return False
 
 
+def _looks_like_anchor_heading(attrs: str, text: str) -> bool:
+    lower_attrs = str(attrs or "").lower()
+    value = str(text or "").strip()
+    if "filepos" not in lower_attrs and "chapter" not in lower_attrs:
+        return False
+    return 2 <= len(value) <= 80
+
+
+def _looks_like_numbered_heading(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+    if re.match(r"^第\s*[0-9零〇一二三四五六七八九十百千万两]+\s*(大部分|部分|章节|章|节|篇|卷|部)", value):
+        return True
+    if re.match(r"^[0-9]{1,3}(?:\.[0-9]{1,3}){0,3}\s+.{1,80}$", value):
+        return True
+    if re.match(r"(?i)^(chapter|part|section)\s+[0-9ivxlcdm]+", value):
+        return True
+    return False
+
+
 def _is_reasonable_heading(text: str) -> bool:
     value = str(text or "").strip()
     if not value:
         return False
     if len(value) > 120:
         return False
-    if not re.search(r"[\u4e00-\u9fffA-Za-z0-9]", value):
+    if not re.search(r"[一-鿿A-Za-z0-9]", value):
         return False
     return True

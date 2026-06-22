@@ -40,6 +40,7 @@ from ..lectures import (
     save_book_text,
     update_book,
 )
+from ..bookextract import extract_epub_heading_candidates_from_text
 from .modeling import (
     build_coarse_reading_runner,
     build_intensive_reading_runner,
@@ -2005,29 +2006,13 @@ def _run_coarse_reading_chunked(
             )
             if snapped_sections:
                 planned_sections = snapped_sections
-            reviewed_sections = _review_outline_sections_with_model(
-                runner=runner,
-                review_model_name=section_review_model_name,
-                lecture_name=lecture_name,
-                book_name=book_name,
-                full_text=full_text,
-                heading_candidates=heading_candidates,
-                planned_sections=planned_sections,
-                body_search_start=body_search_start,
-                temperature=float(section_review_temperature),
-                max_tokens=int(section_review_max_tokens),
-                request_timeout=int(section_review_timeout),
-                stream=bool(section_review_stream),
-                think=bool(section_review_think),
-            )
-            if reviewed_sections:
-                planned_sections = reviewed_sections
             log_event(
                 "section_review_status",
                 "分节复核阶段状态",
                 payload={
-                    "enabled": bool(str(section_review_model_name or "").strip()),
-                    "review_model": str(section_review_model_name or "").strip(),
+                    "enabled": False,
+                    "review_model": "",
+                    "reason": "phase1_incremental_submit_chapter",
                     "sections_count": len(planned_sections),
                 },
                 content=_format_section_plan(planned_sections)[:1600],
@@ -2035,8 +2020,8 @@ def _run_coarse_reading_chunked(
             log_model_text(
                 (
                     "[section_review_status]\n"
-                    f"enabled={bool(str(section_review_model_name or '').strip())}\n"
-                    f"review_model={str(section_review_model_name or '').strip()}\n"
+                    "enabled=False\n"
+                    "reason=phase1_incremental_submit_chapter\n"
                     f"sections_count={len(planned_sections)}\n"
                     f"{_format_section_plan(planned_sections)}"
                 ),
@@ -2069,6 +2054,63 @@ def _run_coarse_reading_chunked(
                     payload={"lecture_id": lecture_id, "book_id": book_id, "chapters_count": len(chapters)},
                     content=merged_output[:12000],
                 )
+    if plan_mode == "sectioned" and planned_sections:
+        existing_rows = _parse_existing_chapters(load_book_info_xml(_CFG, lecture_id, book_id))
+        rows_by_range = {
+            str(row.get("chapter_range") or "").strip(): dict(row)
+            for row in existing_rows
+            if str(row.get("chapter_range") or "").strip()
+        }
+        outline_changed = False
+
+        for section in planned_sections:
+            section_name = str(section.get("chapter_name") or "").strip()
+            start = int(section.get("start") or 0)
+            end = int(section.get("end") or 0)
+
+            if not section_name or end <= start:
+                continue
+
+            section_range = f"{start}:{end - start}"
+
+            if section_range in rows_by_range:
+                continue
+
+            rows_by_range[section_range] = {
+                "chapter_name": section_name,
+                "chapter_range": section_range,
+                "chapter_summary": "",
+                "chapter_status": "pending",
+            }
+            outline_changed = True
+
+        if outline_changed or (not existing_rows and rows_by_range):
+            def _range_start(row: Mapping[str, Any]) -> int:
+                try:
+                    return int(str(row.get("chapter_range") or "0:0").split(":", 1)[0])
+                except Exception:
+                    return 0
+
+            chapters = sorted(rows_by_range.values(), key=_range_start)
+            seen_signatures.clear()
+
+            for row in chapters:
+                seen_signatures.add(_chapter_signature(row))
+
+            merged_output = _render_chapters_xml(chapters)
+            outline_built = bool(chapters)
+            save_book_info_xml(_CFG, lecture_id, book_id, merged_output)
+            log_event(
+                "bookinfo_outline_written",
+                "第一阶段目录骨架已写入 bookinfo.xml",
+                payload={
+                    "lecture_id": lecture_id,
+                    "book_id": book_id,
+                    "chapters_count": len(chapters),
+                    "reason": str(section_plan.get("reason") or ""),
+                },
+                content=merged_output[:12000],
+            )
     log_event(
         "coarse_section_discovery",
         "概读分节发现阶段",
@@ -2554,7 +2596,9 @@ def _run_coarse_section_planning(
     heading_candidates: List[str],
     on_delta,
 ) -> Dict[str, Any]:
-    """模型驱动的第一阶段：仅通过工具提交目录骨架。"""
+    """模型驱动的第一阶段：通过工具逐章提交目录骨架。"""
+    from .context import Context, ContextPolicy
+
     effective_stream = bool(stream)
     stagnant_rounds = 0
     outline_sections: List[Dict[str, Any]] = []
@@ -2640,42 +2684,88 @@ def _run_coarse_section_planning(
         {
             "type": "function",
             "function": {
-                "name": "submit_outline",
-                "description": "Submit final outline sections. Each section needs chapter_name, start, end.",
+                "name": "submit_chapter",
+                "description": "Submit exactly one confirmed chapter boundary. Do not submit multiple chapters in one call.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "sections": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "chapter_name": {"type": "string"},
-                                    "start": {"type": "integer"},
-                                    "end": {"type": "integer"},
-                                },
-                                "required": ["chapter_name", "start", "end"],
-                            },
-                        },
+                        "chapter_name": {"type": "string"},
+                        "start": {"type": "integer"},
+                        "end": {"type": "integer"},
                     },
-                    "required": ["sections"],
+                    "required": ["chapter_name", "start", "end"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "finish_outline",
+                "description": "Finish phase 1 after all real body chapters have been submitted with submit_chapter.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
                 },
             },
         },
     ]
-    messages: List[Dict[str, Any]] = [
-        {"role": "system", "content": prompt},
-        {"role": "user", "content": user_prompt},
-    ]
-    turn_history: List[Dict[str, Any]] = []
     assistant_text = ""
     turn = 0
+    max_planning_turns = max(16, min(120, len(heading_candidates) + 12))
+    llm_compress_func = _build_llm_compress_func(runner, _CFG)
+    ctx = Context(
+        max_chars=max(18000, min(60000, int(len(candidate_block) + 18000))),
+        policy=ContextPolicy.LLM_COMPRESS,
+        llm_compress_func=llm_compress_func,
+        trace_meta={
+            "flow": "coarse_section_planning",
+            "lecture_id": str(lecture_id or ""),
+            "book_id": str(book_id or ""),
+        },
+    )
+
+    def _build_planning_state_prompt() -> str:
+        """生成逐章分节状态提示，明确历史章节和下一章起点。"""
+        if not outline_sections:
+            return (
+                "Backend state: no chapter has been submitted yet.\n"
+                f"Current task: locate and submit the first real body chapter. Search from offset {int(body_search_start)} or later."
+            )
+
+        last_section = outline_sections[-1]
+        next_start = int(last_section.get("end") or body_search_start)
+        submitted_outline = _format_section_plan(outline_sections)
+        return (
+            "Backend state: submitted chapters so far:\n"
+            f"{submitted_outline}\n\n"
+            f"Current task: locate and submit the next chapter after offset {next_start}. "
+            "Do not resubmit previous chapters. "
+            "Use submit_chapter(chapter_name,start,end) for exactly one next chapter, "
+            "or call finish_outline() only if the last submitted chapter reaches the real end of the book body."
+        )
+
+    ctx.add("system", prompt)
+    ctx.add("user", user_prompt)
+    ctx.add("user", _build_planning_state_prompt())
+
     while not outline_submitted:
         turn += 1
         _set_book_progress(lecture_id, book_id, "模型正在划分章节...")
-        request_messages = list(messages)
-        if turn_history:
-            request_messages.extend(turn_history)
+        context_executed = ctx.prepare()
+        if context_executed:
+            log_event(
+                "context_operation",
+                "分节规划上下文压缩",
+                payload={
+                    "turn": int(turn),
+                    "policy": ctx.policy.value,
+                    "context_chars": ctx.chars(),
+                    "messages_count": ctx.count(),
+                },
+            )
+
+        request_messages = ctx.build()
         log_event(
             "section_planning_round",
             "分节规划轮次",
@@ -2772,21 +2862,26 @@ def _run_coarse_section_planning(
                 },
             }
             tool_calls.append(normalized_call)
-        turn_history.append({"role": "assistant", "content": content if content else None, "tool_calls": tool_calls if tool_calls else None})
+        if tool_calls:
+            ctx.add("assistant", content if content else "", tool_calls=tool_calls)
+        elif content:
+            ctx.add("assistant", content)
+
         if not tool_calls:
-            turn_history.append(
-                {
-                    "role": "user",
-                    "content": (
-                        "No valid tool call detected. "
-                        "You must call submit_outline(sections=[...]) and finish the outline submission. "
-                        "Do not answer in plain text."
-                    ),
-                }
+            ctx.add(
+                "user",
+                (
+                    "No valid tool call detected. "
+                    "You must call submit_chapter(chapter_name, start, end) for one chapter, "
+                    "or finish_outline() after all chapters have been submitted. "
+                    "Do not answer in plain text."
+                ),
             )
             stagnant_rounds += 1
             continue
         had_progress = False
+        submitted_chapter_this_turn = False
+        submitted_state_prompt = ""
         for call in tool_calls:
             if not isinstance(call, dict):
                 continue
@@ -2825,8 +2920,7 @@ def _run_coarse_section_planning(
                     keyword = str(args_obj.get("keyword") or "").strip()
                     hits = result_obj.get("hits") if isinstance(result_obj, dict) else []
                     if keyword and isinstance(hits, list) and hits:
-                        first = hits[0] if isinstance(hits[0], dict) else {}
-                        offset = int(first.get("offset") or first.get("match_start") or -1)
+                        offset = _select_heading_hit_offset(hits)
                         if offset >= 0:
                             prev = discovered_offsets.get(keyword)
                             if prev is None or offset < prev:
@@ -2835,80 +2929,115 @@ def _run_coarse_section_planning(
                     pass
             elif tool_name in {"savemem", "save_tempmem"}:
                 result_obj = {"ok": True, "saved": True, "note": str(args_obj.get("note") or "").strip()}
-            elif tool_name == "submit_outline":
-                raw_sections = args_obj.get("sections")
-                parsed_sections: List[Dict[str, Any]] = []
-                if isinstance(raw_sections, list):
-                    for row in raw_sections:
-                        if not isinstance(row, dict):
-                            continue
-                        name = str(row.get("chapter_name") or "").strip()
-                        try:
-                            start = int(row.get("start"))
-                            end = int(row.get("end"))
-                        except Exception:
-                            continue
-                        if not name:
-                            continue
-                        if end <= start:
-                            continue
-                        start = max(0, min(len(full_text), start))
-                        end = max(start + 1, min(len(full_text), end))
-                        parsed_sections.append(
+            elif tool_name == "submit_chapter":
+                if submitted_chapter_this_turn:
+                    result_obj = {
+                        "ok": False,
+                        "error": "only one submit_chapter call is allowed per round",
+                        "next_action": "wait for the next model round before submitting another chapter",
+                    }
+                else:
+                    name = str(args_obj.get("chapter_name") or "").strip()
+                    try:
+                        start = int(args_obj.get("start"))
+                        end = int(args_obj.get("end"))
+                    except Exception:
+                        start = -1
+                        end = -1
+
+                    start = max(int(body_search_start), min(len(full_text) - 1, start))
+                    end = max(start + 1, min(len(full_text), end))
+                    previous_end = int(outline_sections[-1].get("end") or 0) if outline_sections else int(body_search_start)
+                    previous_start = int(outline_sections[-1].get("start") or 0) if outline_sections else -1
+
+                    if not name:
+                        result_obj = {"ok": False, "error": "chapter_name is required"}
+                    elif start <= previous_start:
+                        result_obj = {
+                            "ok": False,
+                            "error": f"chapter start must be after previous chapter start {previous_start}",
+                            "submitted_count": len(outline_sections),
+                        }
+                    elif start < previous_end:
+                        result_obj = {
+                            "ok": False,
+                            "error": f"chapter overlaps previous chapter ending at {previous_end}",
+                            "submitted_count": len(outline_sections),
+                        }
+                    else:
+                        outline_sections.append(
                             {
                                 "chapter_name": name,
                                 "start": int(start),
                                 "end": int(end),
-                                "range": f"{start}:{max(1, end - start)}",
+                                "range": f"{int(start)}:{max(1, int(end) - int(start))}",
                             }
                         )
-                parsed_sections.sort(key=lambda item: int(item.get("start") or 0))
-                deduped: List[Dict[str, Any]] = []
-                last_start = -1
-                for row in parsed_sections:
-                    current_start = int(row.get("start") or 0)
-                    if current_start <= last_start:
-                        continue
-                    deduped.append(row)
-                    last_start = current_start
-                if deduped:
-                    outline_sections = deduped
+                        submitted_chapter_this_turn = True
+                        had_progress = True
+                        stagnant_rounds = 0
+                        result_obj = {
+                            "ok": True,
+                            "submitted_count": len(outline_sections),
+                            "current_chapter": f"{name} | {start}:{max(1, end - start)}",
+                            "submitted_outline": _format_section_plan(outline_sections),
+                            "next_search_start": int(end),
+                            "next_action": "submit the next chapter with submit_chapter, or call finish_outline if this was the final chapter",
+                        }
+                        submitted_state_prompt = _build_planning_state_prompt()
+            elif tool_name == "finish_outline":
+                if outline_sections:
                     outline_submitted = True
                     result_obj = {"ok": True, "sections_count": len(outline_sections)}
                 else:
-                    result_obj = {"ok": False, "error": "sections is empty or invalid"}
+                    result_obj = {"ok": False, "error": "cannot finish outline before submit_chapter succeeds at least once"}
+            elif tool_name == "submit_outline":
+                result_obj = {
+                    "ok": False,
+                    "error": "submit_outline is disabled. Submit exactly one chapter with submit_chapter(chapter_name,start,end).",
+                }
             else:
                 result_obj = {"ok": False, "error": f"unsupported tool: {tool_name}"}
-            turn_history.append({"role": "tool", "tool_call_id": call_id, "content": _safe_json_dumps(result_obj)})
+            ctx.add("tool", _safe_json_dumps(result_obj), tool_call_id=call_id)
             log_event(
                 "section_planning_tool_result",
                 "分节规划工具结果",
                 payload={"turn": int(turn), "tool_name": tool_name, "tool_call_id": call_id},
                 content=_safe_json_dumps(result_obj)[:2400],
             )
-            had_progress = True
         if outline_submitted and outline_sections:
             break
-        if had_progress:
-            stagnant_rounds += 1
-        else:
+        if submitted_state_prompt:
+            ctx.add("user", submitted_state_prompt)
+        if not had_progress:
             stagnant_rounds += 1
         if stagnant_rounds >= 3:
             log_event(
                 "section_planning_stagnant",
                 "分节规划连续多轮未提交骨架",
                 payload={"turn": int(turn), "stagnant_rounds": int(stagnant_rounds)},
-                content="no valid submit_outline tool call produced after repeated tool rounds",
+                content="no valid submit_chapter or finish_outline tool call produced after repeated tool rounds",
             )
-            turn_history.append(
-                {
-                    "role": "user",
-                    "content": (
-                        "Hard constraint: this phase cannot finish without submit_outline. "
-                        "Call submit_outline(sections=[...]) now."
-                    ),
-                }
+            ctx.add(
+                "user",
+                (
+                    "Hard constraint: this phase can only progress through tools. "
+                    "Call submit_chapter(chapter_name,start,end) for exactly one next chapter, "
+                    "or finish_outline() if all chapters were already submitted."
+                ),
             )
+        if turn >= max_planning_turns:
+            log_event(
+                "section_planning_stop_no_submit",
+                "分节规划达到最大轮次仍未提交骨架",
+                payload={
+                    "turn": int(turn),
+                    "stagnant_rounds": int(stagnant_rounds),
+                    "submitted_count": len(outline_sections),
+                },
+                content="model kept using tools without submit_chapter or finish_outline; stop phase-1 loop",
+            )
+            break
     return {
         "sections": list(outline_sections if outline_submitted and outline_sections else []),
         "raw_text": assistant_text,
@@ -2977,6 +3106,15 @@ def _build_outline_from_discovered_offsets(
                 "section_planning_auto_outline_reject",
                 "自动骨架命中数量过少，拒绝写入，避免错误大分段",
                 payload={"sections_count": len(sections)},
+                content=_format_section_plan(sections)[:2000],
+            )
+            return []
+        first_start = int(sections[0].get("start") or 0)
+        if first_start > max(50000, int(total_len) // 4):
+            log_event(
+                "section_planning_auto_outline_reject",
+                "自动骨架起点过晚，拒绝写入，避免误用书末目录",
+                payload={"sections_count": len(sections), "first_start": int(first_start), "total_len": int(total_len)},
                 content=_format_section_plan(sections)[:2000],
             )
             return []
@@ -3702,12 +3840,12 @@ def _format_read_progress(state: Mapping[str, Any]) -> str:
 
 
 def _extract_epub_heading_candidates(full_text: str) -> List[str]:
-    """从提取文本头部的 EPUB 候选标题块中读取目录候选。"""
+    """读取 EPUB 候选标题块；旧文本缺块时从 XHTML 结构中重建候选。"""
     raw = str(full_text or "")
     begin = raw.find("[EPUB_HEADING_CANDIDATES]")
     end = raw.find("[/EPUB_HEADING_CANDIDATES]")
     if begin < 0 or end < 0 or end <= begin:
-        return []
+        return extract_epub_heading_candidates_from_text(raw)
     block = raw[begin + len("[EPUB_HEADING_CANDIDATES]"):end]
     rows: List[str] = []
     seen: set[str] = set()
@@ -3757,14 +3895,58 @@ def _is_probable_section_heading(value: str) -> bool:
         return False
     if len(text) <= 1:
         return False
+    if len(text) > 80:
+        return False
+    if "。" in text:
+        return False
     if re.fullmatch(r"[0-9\s.]+", text):
         return False
     return True
 
 
+def _heading_candidate_priority(value: str) -> int:
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    if not text:
+        return 2
+    if re.match(r"^第\s*[0-9零〇一二三四五六七八九十百千万两]+\s*(章节|章|篇|卷)", text):
+        return 0
+    if re.match(r"(?i)^(chapter|part|book)\s+[0-9ivxlcdm]+", text):
+        return 0
+    if re.match(r"^第\s*[0-9零〇一二三四五六七八九十百千万两]+\s*(大部分|部分|部)", text):
+        return 1
+    if re.match(r"^[0-9]{1,3}\s+.{1,80}$", text):
+        return 1
+    return 2
+
+
+def _prioritize_heading_candidates(headings: List[str]) -> List[str]:
+    """把章/篇级标题排在候选列表前面，避免小节标题挤占规划上下文。"""
+    primary: List[str] = []
+    secondary: List[str] = []
+    regular: List[str] = []
+    seen: set[str] = set()
+    for item in list(headings or []):
+        text = re.sub(r"\s+", " ", str(item or "").strip())
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        priority = _heading_candidate_priority(text)
+        if priority == 0:
+            primary.append(text)
+        elif priority == 1:
+            secondary.append(text)
+        else:
+            regular.append(text)
+    return primary + secondary + regular
+
+
 def _score_heading_hit(snippet: str) -> int:
     """优先选择更像正文标题节点的命中位置。"""
     text = str(snippet or "")
+    lower = text.lower()
     score = 0
     if re.search(r"<h[1-6][^>]*>", text, flags=re.IGNORECASE):
         score += 4
@@ -3772,20 +3954,151 @@ def _score_heading_hit(snippet: str) -> int:
         score += 2
     if re.search(r"<title>", text, flags=re.IGNORECASE):
         score += 1
+    if re.search(r"\b(id|class)\s*=\s*['\"][^'\"]*(chapter|heading|title|filepos)", lower):
+        score += 2
+    if re.search(r">\s*(?:<[^>]+>\s*){0,8}第\s*[0-9零〇一二三四五六七八九十百千万两]+\s*(大部分|部分|章节|章|节|篇|卷|部)", text):
+        score += 3
+    if re.search(r"<a\b[^>]*href\s*=", text, flags=re.IGNORECASE):
+        score -= 1
+    if re.search(r"\b(toc|nav)\b|目录", lower):
+        score -= 1
     return score
 
 
+def _select_heading_hit_offset(hits: List[Any]) -> int:
+    """从 index 命中中选择最像正文标题节点的位置。"""
+    ranked: List[Tuple[int, int, int]] = []
+    for item in list(hits or []):
+        if not isinstance(item, dict):
+            continue
+        try:
+            offset = int(item.get("offset") or item.get("match_start") or -1)
+        except Exception:
+            offset = -1
+        if offset < 0:
+            continue
+        snippet = str(item.get("text") or "")
+        ranked.append((_score_heading_hit(snippet), -offset, offset))
+    if not ranked:
+        return -1
+    ranked.sort(reverse=True)
+    return int(ranked[0][2])
+
+
+def _discover_html_chapter_heading_sections(full_text: str) -> List[Dict[str, Any]]:
+    """从 XHTML 正文标题节点直接提取章级边界，避免误用书末目录 filepos。"""
+    raw = str(full_text or "")
+    total_len = len(raw)
+    if total_len <= 0:
+        return []
+
+    span_pattern = re.compile(
+        r"(?is)<span\b([^>]*)>\s*(第\s*[0-9零〇一二三四五六七八九十百千两]+\s*章)\s*</span>"
+    )
+    title_pattern = re.compile(r"(?is)<span\b([^>]*)>\s*(.*?)\s*</span>")
+    rows: List[Dict[str, Any]] = []
+    seen_ordinals: set[int] = set()
+
+    for match in span_pattern.finditer(raw):
+        attrs = str(match.group(1) or "").lower()
+        if "calibre_54" not in attrs:
+            continue
+
+        chapter_label = _preview_plain_text(match.group(2), limit=0)
+        chapter_ordinal = _parse_chapter_ordinal(chapter_label)
+        if chapter_ordinal is None or chapter_ordinal in seen_ordinals:
+            continue
+
+        title = ""
+        follow_text = raw[match.end(): min(total_len, match.end() + 1800)]
+        for title_match in title_pattern.finditer(follow_text):
+            title_attrs = str(title_match.group(1) or "").lower()
+            if "calibre_54" not in title_attrs:
+                continue
+
+            candidate = _preview_plain_text(title_match.group(2), limit=0)
+            if not candidate:
+                continue
+            if _parse_chapter_ordinal(candidate) is not None:
+                continue
+            if len(candidate) > 80 or "。" in candidate:
+                continue
+
+            title = candidate
+            break
+
+        chapter_name = f"{chapter_label} {title}".strip()
+        section_start = raw.rfind("<?xml", 0, match.start())
+        if section_start < 0 or match.start() - section_start > 3000:
+            section_start = match.start()
+
+        rows.append(
+            {
+                "chapter_name": chapter_name,
+                "start": int(section_start),
+                "chapter_ordinal": int(chapter_ordinal),
+            }
+        )
+        seen_ordinals.add(int(chapter_ordinal))
+
+    rows.sort(key=lambda item: int(item.get("start") or 0))
+    if len(rows) < 4:
+        return []
+
+    last_ordinal = 0
+    for row in rows:
+        current_ordinal = int(row.get("chapter_ordinal") or 0)
+        if current_ordinal <= last_ordinal:
+            return []
+        last_ordinal = current_ordinal
+
+    sections: List[Dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        start = int(row.get("start") or 0)
+        end = int(rows[index + 1].get("start") or total_len) if index + 1 < len(rows) else total_len
+        end = max(start + 1, min(total_len, end))
+        sections.append(
+            {
+                "chapter_name": str(row.get("chapter_name") or "").strip(),
+                "start": int(start),
+                "end": int(end),
+                "range": f"{int(start)}:{max(1, int(end) - int(start))}",
+            }
+        )
+
+    return sections
+
+
 def _discover_coarse_sections(full_text: str) -> Dict[str, Any]:
-    """只提供 EPUB 结构线索；真正的分节交给模型处理。"""
+    """发现可用于概读的章级结构；可靠正文标题优先直接生成骨架。"""
     raw = str(full_text or "")
     total_len = len(raw)
     if total_len <= 0:
         return {"mode": "fallback", "sections": [], "reason": "empty_text", "candidates": []}
-    headings = [item for item in _extract_epub_heading_candidates(raw) if _is_probable_section_heading(item)]
+
+    raw_headings = _extract_epub_heading_candidates(raw)
+    headings = _prioritize_heading_candidates([item for item in raw_headings if _is_probable_section_heading(item)])
+    html_sections = _discover_html_chapter_heading_sections(raw)
+    if html_sections:
+        return {
+            "mode": "sectioned",
+            "sections": html_sections,
+            "reason": "html_chapter_heading_structure",
+            "candidates": headings,
+        }
+
+    reason = "no_structural_heading_candidates"
+
+    if headings:
+        if "[EPUB_HEADING_CANDIDATES]" in raw:
+            reason = "epub_heading_candidates_available"
+        else:
+            reason = "structural_heading_candidates_available"
+
     return {
         "mode": "model_planning" if headings else "fallback",
         "sections": [],
-        "reason": "epub_heading_candidates_available" if headings else "no_epub_heading_candidates",
+        "reason": reason,
         "candidates": headings,
     }
 
@@ -3916,7 +4229,7 @@ def _normalize_chapter_summary(summary: str) -> str:
     for line in lines:
         if not line:
             continue
-        line = re.sub(r"^[#>\-\*\u2022]+\s*", "", line)
+        line = re.sub(r"^[#>\-\*•]+\s*", "", line)
         line = re.sub(r"^\*+\s*", "", line)
         line = re.sub(r"\s*\*+$", "", line)
         lower = line.lower()

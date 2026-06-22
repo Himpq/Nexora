@@ -87,6 +87,62 @@ class ConversationManager:
 
         self._sync_conversation_index_from_file(file_path, payload)
 
+    def _normalize_message_model_fields(self, message):
+        """同步历史 assistant 消息的模型字段，保证重答可以读取确定的模型来源。"""
+        if not isinstance(message, dict):
+            return False
+
+        role = str(message.get("role") or "").strip()
+        if role != "assistant":
+            return False
+
+        changed = False
+        metadata = message.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+            message["metadata"] = metadata
+            changed = True
+
+        top_model = str(message.get("model_name") or "").strip()
+        meta_model = str(metadata.get("model_name") or "").strip()
+        resolved_model = top_model or meta_model
+
+        if resolved_model:
+            if top_model != resolved_model:
+                message["model_name"] = resolved_model
+                changed = True
+
+            if meta_model != resolved_model:
+                metadata["model_name"] = resolved_model
+                changed = True
+
+        return changed
+
+    def ensure_conversation_compatibility(self, conversation_id):
+        """
+        懒迁移历史对话结构。
+        只同步已经存在的字段，不猜测缺失模型，避免把错误模型写入历史记录。
+        """
+        with self._conversation_update_session(conversation_id) as (conversation_path, conversation_data):
+            messages = conversation_data.get("messages", [])
+            if not isinstance(messages, list):
+                raise ValueError(f"对话内容格式无效: {conversation_id}")
+
+            changed = False
+            for message in messages:
+                if self._normalize_message_model_fields(message):
+                    changed = True
+
+            if int(conversation_data.get("schema_version") or 1) < 2:
+                conversation_data["schema_version"] = 2
+                changed = True
+
+            if changed:
+                conversation_data["updated_at"] = datetime.now().isoformat()
+                self._save_json_atomic(conversation_path, conversation_data)
+
+            return conversation_data
+
     def _compact_preview_text(self, text, limit=120):
         value = " ".join(str(text or "").split())
         if len(value) <= limit:
@@ -430,6 +486,13 @@ class ConversationManager:
 
             if index is not None and 0 <= index < len(conversation_data["messages"]):
                 old_msg = conversation_data["messages"][index]
+                old_role = str((old_msg if isinstance(old_msg, dict) else {}).get("role") or "").strip()
+                new_role = str(role or "").strip()
+                if old_role != new_role:
+                    raise ValueError(
+                        f"消息索引角色不匹配: index={index}, expected={new_role}, actual={old_role}"
+                    )
+
                 old_metadata = old_msg.get("metadata", {}) if isinstance(old_msg.get("metadata", {}), dict) else {}
                 old_versions = old_metadata.get("versions", [])
                 if not isinstance(old_versions, list):
@@ -712,8 +775,6 @@ class ConversationManager:
         if not text:
             return False, "消息内容不能为空"
 
-            self._save_json_atomic(conversation_path, conversation_data)
-
         messages = conversation_data.get("messages", [])
         if not isinstance(messages, list):
             return False, "对话内容格式无效"
@@ -895,6 +956,8 @@ class ConversationManager:
                     "provider": str(marker.get("provider", "") or "").strip(),
                     "trigger_raw_input_tokens": int(marker.get("trigger_raw_input_tokens", 0) or 0),
                     "context_window": int(marker.get("context_window", 0) or 0),
+                    "history_message_count": int(marker.get("history_message_count", 0) or 0),
+                    "history_chars": int(marker.get("history_chars", 0) or 0),
                 }
                 arr.append(item)
                 if len(arr) > 40:

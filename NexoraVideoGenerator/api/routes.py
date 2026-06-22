@@ -177,7 +177,9 @@ def api_get_project_file(project_id: str, relative_path: str):
     except FileNotFoundError:
         return jsonify({"success": False, "message": "file not found"}), 404
 
-    return send_file(str(target))
+    response = send_file(str(target), conditional=True)
+    response.headers["Accept-Ranges"] = "bytes"
+    return response
 
 
 def _request_json() -> Dict[str, Any]:

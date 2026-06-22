@@ -4,7 +4,7 @@ import time
 import traceback
 import importlib
 import sys
-from typing import Any, Dict, List, Tuple, Optional, Generator
+from typing import Any, Callable, Dict, List, Tuple, Optional, Generator
 from flask import request, jsonify, Response, stream_with_context, current_app
 from functools import wraps
 
@@ -1037,6 +1037,7 @@ def _papi_stream_openai_chat(
     model_name: str,
     messages: List[Dict[str, Any]],
     request_kwargs: Dict[str, Any],
+    usage_recorder: Optional[Callable[..., None]] = None,
 ) -> Response:
     created_ts = int(time.time())
     completion_id = f'chatcmpl-{uuid.uuid4().hex}'
@@ -1215,6 +1216,13 @@ def _papi_stream_openai_chat(
             'model': model_name,
             'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'tool_calls' if saw_tool_calls else 'stop'}],
         }
+        if usage_payload and callable(usage_recorder):
+            usage_recorder(
+                usage_payload,
+                stream=True,
+                response_id=completion_id,
+                extra={'protocol': 'chat.completions'},
+            )
         if include_usage and usage_payload:
             final_chunk['usage'] = usage_payload
         yield f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n"
@@ -1637,6 +1645,7 @@ def _papi_stream_openai_responses(
     input_items: Optional[List[Dict[str, Any]]] = None,
     allow_synthetic_fallback: bool = False,
     use_responses_upstream: bool = True,
+    usage_recorder: Optional[Callable[..., None]] = None,
 ) -> Response:
     created_ts = int(time.time())
     response_id_box = [f'resp_{uuid.uuid4().hex}']
@@ -1718,6 +1727,7 @@ def _papi_stream_openai_responses(
     def _event_stream():
         text_parts: List[str] = []
         function_calls: Dict[str, Dict[str, Any]] = {}
+        usage_payload = None
         sequence_number = 0
 
         def _emit(payload: Dict[str, Any]):
@@ -1964,6 +1974,13 @@ def _papi_stream_openai_responses(
                             'delta': full_arguments,
                         })
                     continue
+                if ev_type == 'usage':
+                    usage_payload = {
+                        'input_tokens': int(ev.get('input_tokens', 0) or 0),
+                        'output_tokens': int(ev.get('output_tokens', 0) or 0),
+                        'total_tokens': int(ev.get('total_tokens', 0) or 0),
+                    }
+                    continue
         except Exception as stream_error:
             _papi_log(f"[PAPI_RESP_STREAM_ITER] model={model_name} error={stream_error}", level='error')
             yield _emit({
@@ -2066,6 +2083,19 @@ def _papi_stream_openai_responses(
                 'output_text': final_text,
             },
         }
+        if usage_payload:
+            completed['response']['usage'] = {
+                'input_tokens': int(usage_payload.get('input_tokens', 0) or 0),
+                'output_tokens': int(usage_payload.get('output_tokens', 0) or 0),
+                'total_tokens': int(usage_payload.get('total_tokens', 0) or 0),
+            }
+            if callable(usage_recorder):
+                usage_recorder(
+                    usage_payload,
+                    stream=True,
+                    response_id=response_id_box[0],
+                    extra={'protocol': 'responses'},
+                )
         yield _emit(completed)
         yield "data: [DONE]\n\n"
 

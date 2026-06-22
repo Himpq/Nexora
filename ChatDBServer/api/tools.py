@@ -1,51 +1,96 @@
 ﻿TOOL_NAME_ALIASES = {
-    "selectTools": "select_tools",
-    "EnableTools": "enable_tools",
-    "vectorSearch": "vector_search",
+    "selectTools": "runtime_tool_select",
+    "select_tools": "runtime_tool_select",
+    "EnableTools": "runtime_tool_enable",
+    "enable_tools": "runtime_tool_enable",
+    "vectorSearch": "knowledge_search_vector",
+    "vector_search": "knowledge_search_vector",
     "arxivSearch": "arxiv_search",
-    "getKnowledgeList": "get_knowledge_list",
-    "addBasis": "add_basis",
-    "removeBasis": "remove_basis",
-    "updateBasis": "update_basis",
-    "getBasisContent": "get_basis_content",
-    "searchKeyword": "search_keyword",
-    "readTmp": "readtmp",
-    "searchTmp": "searchtmp",
-    "listTmp": "listtmp",
-    "clearTmp": "cleartmp",
+    "getKnowledgeList": "knowledge_list",
+    "get_knowledge_list": "knowledge_list",
+    "addBasis": "knowledge_basis_create",
+    "add_basis": "knowledge_basis_create",
+    "removeBasis": "knowledge_basis_delete",
+    "remove_basis": "knowledge_basis_delete",
+    "updateBasis": "knowledge_basis_update",
+    "update_basis": "knowledge_basis_update",
+    "getBasisContent": "knowledge_basis_read",
+    "get_basis_content": "knowledge_basis_read",
+    "searchKeyword": "knowledge_search_keyword",
+    "search_keyword": "knowledge_search_keyword",
+    "readTmp": "temp_context_read",
+    "readtmp": "temp_context_read",
+    "searchTmp": "temp_context_search",
+    "searchtmp": "temp_context_search",
+    "listTmp": "temp_context_list",
+    "listtmp": "temp_context_list",
+    "clearTmp": "temp_context_clear",
+    "cleartmp": "temp_context_clear",
     "linkKnowledge": "link_knowledge",
     "categorizeKnowledge": "categorize_knowledge",
     "createCategory": "create_category",
     "analyzeConnections": "analyze_connections",
-    "getKnowledgeGraphStructure": "get_knowledge_graph_structure",
+    "getKnowledgeGraphStructure": "knowledge_graph_read",
+    "get_knowledge_graph_structure": "knowledge_graph_read",
     "getKnowledgeConnections": "get_knowledge_connections",
     "findPathBetweenKnowledge": "find_path_between_knowledge",
-    "getContextLength": "get_context_length",
-    "getContext": "get_context",
-    "getContext_findKeyword": "get_context_find_keyword",
-    "getMainTitle": "get_main_title",
+    "getContextLength": "conversation_context_length",
+    "get_context_length": "conversation_context_length",
+    "getContext": "conversation_context_read",
+    "get_context": "conversation_context_read",
+    "getContext_findKeyword": "conversation_context_search",
+    "get_context_find_keyword": "conversation_context_search",
     "sendEMail": "send_email",
     "getEMail": "get_email",
     "getEMailList": "get_email_list",
     "queryShortMemory": "query_short_memory",
-    "addShort": "add_short",
+    "addShort": "memory_short_add",
+    "add_short": "memory_short_add",
     "removeShort": "remove_short",
-    "getUserProfileMemory": "get_user_profile_memory",
-    "setUserProfileMemory": "updateShort",
-    "updateUserProfileMemory": "updateShort",
+    "getUserProfileMemory": "memory_profile_read",
+    "get_user_profile_memory": "memory_profile_read",
+    "setUserProfileMemory": "memory_short_update",
+    "updateUserProfileMemory": "memory_short_update",
+    "updateShort": "memory_short_update",
     "longtermPlan": "longterm_plan",
     "longtermUpdate": "longterm_update",
     "serverWebSearch": "server_web_search",
     "serverRenderPage": "server_render_page",
     "generateImage": "generate_image",
+    "file_create": "server_file_create",
+    "file_read": "server_file_read",
+    "file_write": "server_file_write",
+    "file_find": "server_file_find",
+    "file_list": "server_file_list",
+    "file_remove": "server_file_remove",
+    "file_semantic_search": "server_file_search_semantic",
+    "local_web_render": "browser_page_open",
+    "local_web_get_content": "browser_page_read",
+    "local_web_click": "browser_page_click",
+    "local_web_input": "browser_page_input",
+    "local_web_exec_js": "browser_page_eval",
+    "local_web_scroll": "browser_page_scroll",
+    "local_web_list_pages": "browser_page_list",
+    "local_web_close_page": "browser_page_close",
 }
 
 
 def canonicalize_tool_name(name):
     raw = str(name or "").strip()
+
     if not raw:
         return ""
-    return TOOL_NAME_ALIASES.get(raw, raw)
+
+    seen = set()
+
+    while raw in TOOL_NAME_ALIASES and raw not in seen:
+        seen.add(raw)
+        raw = str(TOOL_NAME_ALIASES.get(raw) or "").strip()
+
+        if not raw:
+            return ""
+
+    return raw
 
 
 TOOLS = [
@@ -187,14 +232,14 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "select_tools",
+            "name": "runtime_tool_select",
             "description": "可选：在 Auto 模式下按工具名请求当前轮更具体的工具子集。调用后立即生效，仅影响当前回复。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "tools": {
                         "type": "array",
-                        "description": "要启用的工具名数组，例如 [\"client_js_exec\",\"vector_search\"]。",
+                        "description": "要启用的工具名数组，例如 [\"client_js_exec\",\"knowledge_search_vector\"]。",
                         "items": {"type": "string"}
                     },
                     "tool_names": {
@@ -204,7 +249,7 @@ TOOLS = [
                     },
                     "name_text": {
                         "type": "string",
-                        "description": "可选，逗号分隔的工具名字符串，例如 \"client_js_exec,vector_search\"。"
+                        "description": "可选，逗号分隔的工具名字符串，例如 \"client_js_exec,knowledge_search_vector\"。"
                     },
                     "reason": {
                         "type": "string",
@@ -218,24 +263,24 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "enable_tools",
+            "name": "runtime_tool_enable",
             "description": "仅用于 Auto(OFF) 模式：调用后当前回复后续轮次立即进入 Force（开放全部业务工具）。本工具不做精确工具选择。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "tools": {
                         "type": "array",
-                        "description": "可选，占位参数。enable_tools 会忽略精确列表并直接切换到 Force。",
+                        "description": "可选，占位参数。runtime_tool_enable 会忽略精确列表并直接切换到 Force。",
                         "items": {"type": "string"}
                     },
                     "tool_names": {
                         "type": "array",
-                        "description": "可选，占位参数。enable_tools 会忽略精确列表并直接切换到 Force。",
+                        "description": "可选，占位参数。runtime_tool_enable 会忽略精确列表并直接切换到 Force。",
                         "items": {"type": "string"}
                     },
                     "name_text": {
                         "type": "string",
-                        "description": "可选，占位参数。enable_tools 会忽略精确列表并直接切换到 Force。"
+                        "description": "可选，占位参数。runtime_tool_enable 会忽略精确列表并直接切换到 Force。"
                     },
                     "reason": {
                         "type": "string",
@@ -249,7 +294,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "vector_search",
+            "name": "knowledge_search_vector",
             "description": "在向量库中做语义检索，仅能检索知识库的内容。",
             "parameters": {
                 "type": "object",
@@ -274,7 +319,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "file_semantic_search",
+            "name": "server_file_search_semantic",
             "description": "在临时文件向量库 temp_file 中做语义检索；不传 file_alias 时检索当前用户全部临时文件。",
             "parameters": {
                 "type": "object",
@@ -333,7 +378,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "client_js_exec",
-            "description": """在当前聊天页的隔离 JS Worker 中执行纯 JavaScript。适合轻量计算、文本处理和 Canvas；不能访问 DOM、页面状态或网络。若要操作真实网页 DOM，请用 local_web_render(extract_mode="interactive") 获取 page_id，再用 local_web_exec_js(page_id=...)。可用 const canvas = context.canvas 访问内置 canvas。Three.js 入口示例：const renderer = new THREE.WebGLRenderer({ canvas, antialias: true }); const scene = new THREE.Scene(); const camera = new THREE.PerspectiveCamera(60, canvas.width / canvas.height, 0.1, 1000); camera.position.z = 3; renderer.render(scene, camera); 如需拖拽/触摸绕原点旋转，可调用：const orbit = context.enableThreeOrbit({ camera, renderer, scene, target:[0,0,0] });""",
+            "description": """在当前聊天页的隔离 JS Worker 中执行纯 JavaScript。适合轻量计算、文本处理和 Canvas；不能访问 DOM、页面状态或网络。若要操作真实网页 DOM，请用 browser_page_open(extract_mode="interactive") 获取 page_id，再用 browser_page_eval(page_id=...)。可用 const canvas = context.canvas 访问内置 canvas。Three.js 入口示例：const renderer = new THREE.WebGLRenderer({ canvas, antialias: true }); const scene = new THREE.Scene(); const camera = new THREE.PerspectiveCamera(60, canvas.width / canvas.height, 0.1, 1000); camera.position.z = 3; renderer.render(scene, camera); 如需拖拽/触摸绕原点旋转，可调用：const orbit = context.enableThreeOrbit({ camera, renderer, scene, target:[0,0,0] });""",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -357,7 +402,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "get_knowledge_list",
+            "name": "knowledge_list",
             "description": "Read knowledge info: _type=0 returns current user profile short-memory; _type=1 returns basis entries with title and basis_id.",
 
             "parameters": {
@@ -376,7 +421,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "get_user_profile_memory",
+            "name": "memory_profile_read",
             "description": "读取当前用户短期记忆中的用户画像（约400字）。",
             "parameters": {
                 "type": "object",
@@ -388,7 +433,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "updateShort",
+            "name": "memory_short_update",
             "description": "覆盖更新当前用户短期记忆画像（无文本长度限制）",
             "parameters": {
                 "type": "object",
@@ -409,7 +454,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "addShort",
+            "name": "memory_short_add",
             "description": "向用户短期记忆追加一条记录，适合补充近期偏好、事项或临时关注点。",
 
             "parameters": {
@@ -428,7 +473,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "add_basis",
+            "name": "knowledge_basis_create",
             "description": "向用户知识库添加基础知识（长期记忆）- 学术报告级别要求。\n\n必须满足以下标准：\n1. 字数要求：最低3000字，推荐5000-10000字\n2. 结构完整：背景-核心概念-详细分析-数据支撑-对比总结-结论展望\n3. 数据精确：所有数据必须标注来源、时间、样本量，使用表格对比\n4. 引用规范：文中标注[来源](链接)，文末列出完整参考资料\n5. 格式严谨：Markdown格式，多级标题，表格对比，代码块标注\n6. 内容深度：横向对比覆盖所有关键维度，技术说明包含原理/实现/优缺点/场景/实践\n\n禁止简短概述，必须像撰写技术白皮书或学术论文那样全面、严谨、数据翔实。",
 
             "parameters": {
@@ -474,7 +519,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "remove_basis",
+            "name": "knowledge_basis_delete",
             "description": "删除用户知识库中的基础知识。",
 
             "parameters": {
@@ -493,7 +538,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "update_basis",
+            "name": "knowledge_basis_update",
             "description": "更新基础知识。支持重命名、整段覆盖、URL更新、公开/协作设置，以及按字符索引区间替换（单次或批量）。",
 
             "parameters": {
@@ -563,7 +608,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "get_basis_content",
+            "name": "knowledge_basis_read",
             "description": "读取基础知识内容。支持全文读取、按字符索引区间读取、按关键词邻域读取，以及 regex（rg风格）匹配读取。",
 
             "parameters": {
@@ -727,7 +772,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "get_knowledge_graph_structure",
+            "name": "knowledge_graph_read",
             "description": "获取当前知识图谱的整体结构，包括所有分类及其包含的知识点列表。用于了解知识库的宏观组织结构。",
             "parameters": {
                 "type": "object",
@@ -852,7 +897,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "search_keyword",
+            "name": "knowledge_search_keyword",
             "description": "在知识库（短期记忆和基础知识）中搜索关键词，返回包含关键词的标题和内容片段。用于快速查找知识库中的相关信息。",
 
             "parameters": {
@@ -875,7 +920,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "readtmp",
+            "name": "temp_context_read",
             "description": "Read long text from temporary cache by resource_id in ranged chunks.",
             "parameters": {
                 "type": "object",
@@ -901,7 +946,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "searchtmp",
+            "name": "temp_context_search",
             "description": "Search temporary long-text cache by keyword or regex, scoped to current reply and user.",
             "parameters": {
                 "type": "object",
@@ -939,7 +984,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "listtmp",
+            "name": "temp_context_list",
             "description": "List cached temporary resources for current reply scope.",
             "parameters": {
                 "type": "object",
@@ -952,7 +997,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "cleartmp",
+            "name": "temp_context_clear",
             "description": "Clear cached temporary resources for current reply scope.",
             "parameters": {
                 "type": "object",
@@ -961,29 +1006,10 @@ TOOLS = [
             }
         }
     },
-    
-    # {
-    #     "type": "function",
-    #     "function": {
-    #         "name": "getMainTitle",
-    #         "description": "获取之前某次交流的总结。用于快速了解历史交流的核心内容，无需加载完整对话。offset=1表示上一次交流，offset=2表示上上次。",
-
-    #         "parameters": {
-    #             "type": "object",
-    #             "properties": {
-    #                 "offset": {
-    #                     "type": "integer",
-    #                     "description": "从最新往前数第offset次交流（1=上一次交流，2=上上次交流）"
-    #                 }
-    #             },
-    #             "required": ["offset"]
-    #         }
-    #     }
-    # }
     {
         "type": "function",
         "function": {
-            "name": "file_create",
+            "name": "server_file_create",
             "description": "在用户文件沙箱中创建新文本文件。文件已存在时默认失败，可通过 overwrite=true 覆盖。",
             "parameters": {
                 "type": "object",
@@ -999,7 +1025,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "file_read",
+            "name": "server_file_read",
             "description": "读取用户文件沙箱中的文本文件，自动解析为纯文本。支持全文读取、按行范围读取、按字符索引范围读取。单次调用最多返回500行且10000字符，超出部分会自动截断并返回截断位置(line, column)。",
             "parameters": {
                 "type": "object",
@@ -1017,7 +1043,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "file_write",
+            "name": "server_file_write",
             "description": "写入用户文件沙箱中的文本文件。支持整文件覆盖、按行范围替换、按句子/关键词替换。",
             "parameters": {
                 "type": "object",
@@ -1039,7 +1065,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "file_find",
+            "name": "server_file_find",
             "description": "在用户文件沙箱中的文本文件内查找关键词或正则，返回行号、列号和命中文本。",
             "parameters": {
                 "type": "object",
@@ -1057,7 +1083,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "file_list",
+            "name": "server_file_list",
             "description": "读取用户文件沙箱中的文件，支持关键词筛选和 regex 匹配文件名。",
             "parameters": {
                 "type": "object",
@@ -1073,7 +1099,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "file_remove",
+            "name": "server_file_remove",
             "description": "删除用户文件沙箱中的文件。",
             "parameters": {
                 "type": "object",
