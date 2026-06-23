@@ -14,11 +14,24 @@ _STALE_RUNNING_TTL_SEC = 7200
 _CANCEL_SENTINEL = "__STREAM_CANCELLED__"
 
 
-def _new_session(username: str, conversation_id: str = "") -> Dict[str, Any]:
+class StreamCancelled(RuntimeError):
+    """Raised inside the stream worker after the server accepts a user cancel."""
+
+
+def is_stream_cancelled_error(error: BaseException) -> bool:
+    return isinstance(error, StreamCancelled) or _CANCEL_SENTINEL in str(error or "")
+
+
+def _new_session(username: str, conversation_id: str = "", metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    meta = metadata if isinstance(metadata, dict) else {}
+
     return {
         "stream_id": uuid.uuid4().hex,
         "username": str(username or "").strip(),
         "conversation_id": str(conversation_id or "").strip(),
+        "is_regenerate": bool(meta.get("is_regenerate", False)),
+        "assistant_index": meta.get("assistant_index"),
+        "regenerate_index": meta.get("regenerate_index"),
         "created_at": time.time(),
         "updated_at": time.time(),
         "status": "running",  # running | done
@@ -62,12 +75,14 @@ def start_session(
             Callable[[Dict[str, Any]], None],
             Callable[[str], None],
             Callable[[str, str], None],
+            Callable[[], bool],
         ],
         None,
     ],
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> str:
     cleanup_sessions()
-    session = _new_session(username=username, conversation_id=conversation_id)
+    session = _new_session(username=username, conversation_id=conversation_id, metadata=metadata)
     stream_id = session["stream_id"]
     with _SESSIONS_LOCK:
         _SESSIONS[stream_id] = session
@@ -94,6 +109,11 @@ def start_session(
             session["updated_at"] = time.time()
             cond.notify_all()
 
+    def _is_cancel_requested() -> bool:
+        cond = session["cond"]
+        with cond:
+            return bool(session.get("cancel_requested", False))
+
     def _push_chunk(chunk: Dict[str, Any]) -> None:
         payload = copy.deepcopy(chunk) if isinstance(chunk, dict) else {"type": "message", "content": str(chunk)}
         cid = str(payload.get("conversation_id") or "").strip()
@@ -101,7 +121,7 @@ def start_session(
         cond = session["cond"]
         with cond:
             if bool(session.get("cancel_requested", False)):
-                raise RuntimeError(_CANCEL_SENTINEL)
+                raise StreamCancelled(_CANCEL_SENTINEL)
             if cid:
                 session["conversation_id"] = cid
             if chunk_type:
@@ -118,6 +138,16 @@ def start_session(
     def _finish(status: str = "done", error: str = "") -> None:
         cond = session["cond"]
         with cond:
+            if bool(session.get("cancel_requested", False)):
+                session["status"] = "done"
+                session["error"] = str(session.get("error") or "cancelled")
+                session["stage"] = "cancelled"
+                session["stage_detail"] = str(session.get("cancel_reason") or "user_abort")
+                session["stage_updated_at"] = time.time()
+                session["updated_at"] = time.time()
+                cond.notify_all()
+                return
+
             session["status"] = str(status or "done")
             session["error"] = str(error or "")
             session["stage"] = "finished"
@@ -129,10 +159,10 @@ def start_session(
     def _run():
         try:
             _set_stage("worker_started")
-            worker(_push_chunk, _set_conversation_id, _set_stage)
+            worker(_push_chunk, _set_conversation_id, _set_stage, _is_cancel_requested)
             _finish("done", "")
         except RuntimeError as e:
-            if _CANCEL_SENTINEL in str(e):
+            if is_stream_cancelled_error(e):
                 _finish("done", "cancelled")
                 return
             try:
@@ -174,6 +204,9 @@ def get_session_meta(stream_id: str, username: Optional[str] = None) -> Optional
             "stream_id": sid,
             "username": str(s.get("username") or "").strip(),
             "conversation_id": str(s.get("conversation_id") or "").strip(),
+            "is_regenerate": bool(s.get("is_regenerate", False)),
+            "assistant_index": s.get("assistant_index"),
+            "regenerate_index": s.get("regenerate_index"),
             "status": str(s.get("status") or "done"),
             "head_seq": int(s.get("head_seq") or 1),
             "last_seq": int(s.get("last_seq") or 0),
@@ -189,6 +222,43 @@ def get_session_meta(stream_id: str, username: Optional[str] = None) -> Optional
             "cancel_requested": bool(s.get("cancel_requested", False)),
             "cancel_reason": str(s.get("cancel_reason") or ""),
         }
+
+
+def get_accumulated_content(
+    stream_id: str,
+    username: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Return the accumulated content and reasoning content from a stream session's chunks."""
+    sid = str(stream_id or "").strip()
+    if not sid:
+        return None
+    with _SESSIONS_LOCK:
+        s = _SESSIONS.get(sid)
+    if not s:
+        return None
+    if username is not None and str(s.get("username") or "").strip() != str(username or "").strip():
+        return None
+    cond = s["cond"]
+    with cond:
+        chunks = list(s.get("chunks") or [])
+        last_seq = int(s.get("last_seq") or 0)
+        status = str(s.get("status") or "done")
+    content_parts: List[str] = []
+    reasoning_parts: List[str] = []
+    for chunk in chunks:
+        ctype = str(chunk.get("type") or "").strip()
+        if ctype == "content":
+            content_parts.append(str(chunk.get("content") or ""))
+        elif ctype == "reasoning_content":
+            reasoning_parts.append(str(chunk.get("content") or ""))
+    return {
+        "stream_id": sid,
+        "conversation_id": str(s.get("conversation_id") or "").strip(),
+        "content": "".join(content_parts).rstrip(),
+        "reasoning_content": "".join(reasoning_parts).rstrip(),
+        "last_seq": last_seq,
+        "status": status,
+    }
 
 
 def list_sessions(
@@ -242,10 +312,29 @@ def request_cancel(stream_id: str, username: Optional[str] = None, reason: str =
         return False
     cond = s["cond"]
     with cond:
+        already_requested = bool(s.get("cancel_requested", False))
         s["cancel_requested"] = True
         s["cancel_reason"] = str(reason or "user_abort")
         s["status"] = "done"
+        s["error"] = "cancelled"
+        s["stage"] = "cancelled"
+        s["stage_detail"] = str(reason or "user_abort")
+        s["stage_updated_at"] = time.time()
         s["updated_at"] = time.time()
+        if not already_requested:
+            s["last_seq"] = int(s.get("last_seq") or 0) + 1
+            payload = {
+                "type": "stream_cancel_requested",
+                "stream_id": sid,
+                "conversation_id": str(s.get("conversation_id") or "").strip(),
+                "reason": str(reason or "user_abort"),
+                "_stream_seq": int(s["last_seq"]),
+            }
+            s["last_chunk_type"] = "stream_cancel_requested"
+            s["chunks"].append(payload)
+            if len(s["chunks"]) > _MAX_CHUNKS_PER_SESSION:
+                s["chunks"].pop(0)
+                s["head_seq"] = int(s.get("head_seq") or 1) + 1
         cond.notify_all()
     return True
 

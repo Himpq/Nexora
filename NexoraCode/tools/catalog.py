@@ -52,12 +52,52 @@ TOOL_CATALOG = [
         "module": "file_ops",
         "name": "local_file_read",
         "handler": "file_read",
-        "description": "读取用户本地计算机上指定文件的内容（NexoraCode 本地工具）。",
+        "description": (
+            "读取用户本地计算机上指定文件的内容（NexoraCode 本地工具）。"
+            "可读取全文，也可使用 start_line/end_line 按行读取，或使用 offset/limit 按字符读取。"
+            "两种范围不能混用；范围读取仍返回整个文件的 sha256 作为版本锁。"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "文件绝对路径"},
-                "encoding": {"type": "string", "default": "utf-8"},
+                "encoding": {
+                    "type": "string",
+                    "default": "utf-8",
+                    "description": "文件编码，默认 utf-8。读取结果会返回 sha256、content_sha256、换行类型和 BOM 信息。",
+                },
+                "start_line": {
+                    "type": "integer",
+                    "description": "可选。按行读取的起始行，1 表示第一行，必须和 end_line 同时提供。",
+                },
+                "end_line": {
+                    "type": "integer",
+                    "description": "可选。按行读取的结束行，包含该行，必须和 start_line 同时提供。",
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "可选。按字符读取的起始位置，0 表示第一个字符，必须和 limit 同时提供。",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "可选。按字符读取的字符数量，必须和 offset 同时提供。",
+                },
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "module": "file_ops",
+        "name": "local_file_probe",
+        "handler": "file_probe",
+        "description": (
+            "探测用户本地计算机上指定文件的元信息，不返回文件正文（NexoraCode 本地工具）。"
+            "用于修改前确认文件大小、BOM、编码提示、换行类型、sha256、是否二进制和写权限。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "文件绝对路径"},
             },
             "required": ["path"],
         },
@@ -86,6 +126,8 @@ TOOL_CATALOG = [
             "必须且只能提供 patch 或 edits 其中一种输入：patch 使用统一 diff 格式；"
             "edits 使用结构化精确编辑，支持 replace、insert_before、insert_after、delete。"
             "所有上下文或 target 必须与文件内容完全匹配，适合代码修改。"
+            "建议先调用 local_file_read 获取 sha256，再通过 expected_sha256 防止基于旧内容写入。"
+            "写入必须分两阶段：先 dry_run=true 生成 preview_id；真正写入时只传 path 和 confirm_preview_id。"
         ),
         "parameters": {
             "type": "object",
@@ -120,7 +162,16 @@ TOOL_CATALOG = [
                 "encoding": {"type": "string", "description": "文件编码，默认 utf-8", "default": "utf-8"},
                 "expected_sha256": {
                     "type": "string",
-                    "description": "可选。修改前文件内容的 SHA256，不一致时拒绝修改。",
+                    "description": "可选。修改前文件原始字节 SHA256，建议使用 local_file_read 返回的 sha256。不一致时拒绝修改。",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "必须先设置 true 生成 preview_id，不写入文件。",
+                    "default": False,
+                },
+                "confirm_preview_id": {
+                    "type": "string",
+                    "description": "dry_run 成功返回的 preview_id。确认写入时只传 path 和 confirm_preview_id，不能重新传 patch 或 edits。",
                 },
             },
             "required": ["path"],

@@ -60,7 +60,7 @@ def get_agent_prompt(username: str) -> str:
             return agent.get("prompt", "")
         return ""
 
-def call_local_tool_sync(username: str, tool_name: str, args: dict, timeout_sec: int = 30) -> dict:
+def call_local_tool_sync(username: str, tool_name: str, args: dict, timeout_sec: int = 30, cancel_checker=None) -> dict:
     started_at = time.perf_counter()
 
     with _AGENT_LOCK:
@@ -90,8 +90,21 @@ def call_local_tool_sync(username: str, tool_name: str, args: dict, timeout_sec:
         _PENDING_TASKS.pop(task_id, None)
         return {"error": f"Failed to send request to agent: {e}"}
         
-    # Wait for result
-    success = event.wait(timeout=timeout_sec)
+    success = False
+    deadline = time.time() + max(0.1, float(timeout_sec or 30))
+    while True:
+        if callable(cancel_checker) and cancel_checker():
+            _PENDING_TASKS.pop(task_id, None)
+            return {"success": False, "error": "stream_cancelled", "message": "用户已停止生成"}
+
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+
+        if event.wait(timeout=min(0.4, max(0.01, remaining))):
+            success = True
+            break
+
     task_data = _PENDING_TASKS.pop(task_id, None)
     
     if not success:

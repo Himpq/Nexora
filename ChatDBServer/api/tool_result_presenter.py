@@ -24,6 +24,7 @@ class ToolResultPresenter:
             "server_file_list": self._render_file_list,
             "server_file_remove": self._render_file_remove,
             "local_file_write": self._render_file_write,
+            "local_file_probe": self._render_local_file_probe,
             "local_file_list": self._render_local_file_list,
             "local_file_patch": self._render_file_patch,
             "local_shell_exec": self._render_shell_exec,
@@ -465,6 +466,9 @@ class ToolResultPresenter:
         if payload.get("mode"):
             lines.append(f"Mode: `{payload.get('mode')}`")
 
+        if payload.get("sha256"):
+            lines.append(f"SHA256: `{self._short_hash(payload.get('sha256'))}`")
+
         file_obj = payload.get("file") if isinstance(payload.get("file"), dict) else {}
 
         if file_obj.get("size") is not None:
@@ -474,6 +478,14 @@ class ToolResultPresenter:
 
         if file_obj.get("total_chars") is not None:
             lines.append(f"Total Chars: {file_obj.get('total_chars')}")
+        elif payload.get("total_chars") is not None:
+            lines.append(f"Total Chars: {payload.get('total_chars')}")
+
+        if payload.get("returned_chars") is not None:
+            lines.append(f"Returned Chars: {payload.get('returned_chars')}")
+
+        if payload.get("returned_line_count") is not None:
+            lines.append(f"Returned Lines: {payload.get('returned_line_count')}")
 
         slice_obj = payload.get("slice") if isinstance(payload.get("slice"), dict) else {}
 
@@ -669,6 +681,98 @@ class ToolResultPresenter:
             lines.extend(["", f"... omitted {len(files) - 100} more files ..."])
         return "\n".join(lines).strip()
 
+    def _render_local_file_probe(self, args: Dict[str, Any], result: Any) -> str:
+        payload = self._load_payload_unwrapped(result)
+
+        if isinstance(payload, dict) and payload.get("tmp_cached"):
+            return self._render_cached_payload("local_file_probe", payload)
+
+        if not isinstance(payload, dict):
+            return str(result or "")
+
+        success = payload.get("success", True) is not False and not payload.get("error")
+        file_label = str(payload.get("path") or args.get("path") or "(unknown)")
+        lines = [
+            self._status_title(success, "## Local File Probe", "## Local File Probe Failed"),
+            "",
+            f"File: `{file_label}`",
+        ]
+
+        if not success:
+            lines.extend(["", f"Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
+            return "\n".join(lines).strip()
+
+        lines.extend([
+            f"Size: {payload.get('size', 0)} bytes",
+            f"SHA256: `{payload.get('sha256', '')}`",
+            f"Encoding Hint: `{payload.get('encoding_hint') or 'unknown'}`",
+            f"BOM: `{payload.get('bom') or 'none'}`",
+            f"Binary: {self._as_bool_text(payload.get('is_binary'))}",
+            f"Line Separator: `{payload.get('line_separator') or 'none'}`",
+            f"Trailing Newline: {self._as_bool_text(payload.get('has_trailing_newline'))}",
+            f"Readable: {self._as_bool_text(payload.get('readable'))}",
+            f"Writable: {self._as_bool_text(payload.get('writable'))}",
+        ])
+
+        if payload.get("binary_reason"):
+            lines.append(f"Binary Reason: `{payload.get('binary_reason')}`")
+
+        line_endings = payload.get("line_endings") if isinstance(payload.get("line_endings"), dict) else {}
+
+        if line_endings:
+            lines.extend([
+                "",
+                "### Line Endings",
+                "",
+                "| CRLF | LF | CR | Total |",
+                "| --- | --- | --- | --- |",
+                "| {crlf} | {lf} | {cr} | {total} |".format(
+                    crlf=self._escape_table_cell(line_endings.get("crlf", 0)),
+                    lf=self._escape_table_cell(line_endings.get("lf", 0)),
+                    cr=self._escape_table_cell(line_endings.get("cr", 0)),
+                    total=self._escape_table_cell(line_endings.get("total", 0)),
+                ),
+            ])
+
+        lines.extend([
+            "",
+            "### Byte Signals",
+            "",
+            "| Null Bytes | Control Bytes | Control Ratio |",
+            "| --- | --- | --- |",
+            "| {nulls} | {controls} | {ratio} |".format(
+                nulls=self._escape_table_cell(payload.get("null_bytes", 0)),
+                controls=self._escape_table_cell(payload.get("control_bytes", 0)),
+                ratio=self._escape_table_cell(payload.get("control_byte_ratio", 0)),
+            ),
+        ])
+
+        encoding_checks = payload.get("encoding_checks") if isinstance(payload.get("encoding_checks"), list) else []
+
+        if encoding_checks:
+            lines.extend([
+                "",
+                "### Encoding Checks",
+                "",
+                "| Encoding | Decodable | Error |",
+                "| --- | --- | --- |",
+            ])
+
+            for item in encoding_checks:
+
+                if not isinstance(item, dict):
+                    continue
+
+                lines.append(
+                    "| {encoding} | {decodable} | {error} |".format(
+                        encoding=self._escape_table_cell(item.get("encoding")),
+                        decodable=self._escape_table_cell(self._as_bool_text(item.get("decodable"))),
+                        error=self._escape_table_cell(self._clip(item.get("error", ""), limit=180)),
+                    )
+                )
+
+        return "\n".join(lines).strip()
+
     def _render_local_file_list(self, args: Dict[str, Any], result: Any) -> str:
         payload = self._load_payload_unwrapped(result)
 
@@ -788,13 +892,29 @@ class ToolResultPresenter:
         success = payload.get("success", True) is not False and not payload.get("error")
         changed = bool(payload.get("changed", False))
         file_label = str(payload.get("path") or args.get("path") or "(unknown)")
-        title = self._status_title(success, "## File Modified Success", "## File Modify Failed")
+        success_title = "## File Patch Preview" if payload.get("dry_run") else "## File Modified Success"
+        title = self._status_title(success, success_title, "## File Modify Failed")
         lines = [
             title,
             "",
             f"File: `{file_label}`",
             f"Changed: {self._as_bool_text(changed)}",
         ]
+
+        if payload.get("dry_run") is not None:
+            lines.append(f"Dry Run: {self._as_bool_text(payload.get('dry_run'))}")
+
+        if payload.get("requires_confirm") is not None:
+            lines.append(f"Requires Confirm: {self._as_bool_text(payload.get('requires_confirm'))}")
+
+        if payload.get("preview_id"):
+            lines.append(f"Preview ID: `{payload.get('preview_id')}`")
+
+        if payload.get("confirmed_preview_id"):
+            lines.append(f"Confirmed Preview ID: `{payload.get('confirmed_preview_id')}`")
+
+        if payload.get("preview_expires_in_seconds") is not None:
+            lines.append(f"Preview Expires In: {payload.get('preview_expires_in_seconds')} seconds")
 
         if payload.get("mode"):
             lines.append(f"Mode: `{payload.get('mode')}`")
@@ -836,6 +956,14 @@ class ToolResultPresenter:
                     "",
                     edits_text,
                 ])
+
+        if payload.get("diff"):
+            lines.extend([
+                "",
+                "### Result Diff",
+                "",
+                self._fenced_text(payload.get("diff"), language="diff", limit=12000),
+            ])
 
         return "\n".join(lines).strip()
 

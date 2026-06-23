@@ -93,12 +93,20 @@ def wait_for_result(
     conversation_id: str,
     request_id: str,
     timeout_ms: int = 8000,
+    cancel_checker=None,
 ) -> Dict[str, Any]:
     timeout = _clamp_timeout_ms(timeout_ms)
     key = _make_key(username, conversation_id)
     deadline = time.time() + (timeout / 1000.0)
     with _COND:
         while True:
+            if callable(cancel_checker) and cancel_checker():
+                _remove_request_locked(key, request_id)
+                return {
+                    "success": False,
+                    "error": "stream_cancelled",
+                    "message": "用户已停止生成",
+                }
             resp = _RESPONSES.pop(request_id, None)
             if isinstance(resp, dict):
                 _remove_request_locked(key, request_id)

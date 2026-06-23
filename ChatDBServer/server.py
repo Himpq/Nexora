@@ -35,7 +35,7 @@ from file_sandbox import UserFileSandbox
 from provider_factory import create_provider_adapter
 from client_tool_bridge import pull_pending_request, submit_request_result, enqueue_request, wait_for_result, pull_local_tool_request
 from agent_tunnel import register_agent, unregister_agent, update_agent_tools, update_agent_prompt, update_ping, is_agent_online, handle_agent_result
-from stream_runtime import start_session as start_stream_session, iter_session_chunks as iter_stream_session_chunks, get_session_meta as get_stream_session_meta, request_cancel as request_stream_cancel, list_sessions as list_stream_sessions
+from stream_runtime import start_session as start_stream_session, iter_session_chunks as iter_stream_session_chunks, get_session_meta as get_stream_session_meta, request_cancel as request_stream_cancel, list_sessions as list_stream_sessions, is_stream_cancelled_error, StreamCancelled, get_accumulated_content as get_stream_accumulated_content
 from tools import canonicalize_tool_name
 from secure import normalize_text, resolve_configured_path, safe_filename, safe_join_path
 from timeline import list_entries as list_timeline_entries, record_notes_snapshot_change
@@ -8006,18 +8006,28 @@ def save_assistant_partial(conv_id):
         try:
             parsed = int(raw_index)
         except Exception:
-            parsed = None
+            return jsonify({
+                'success': False,
+                'message': '消息索引无效'
+            }), 400
         messages = conversation.get('messages', []) if isinstance(conversation.get('messages', []), list) else []
-        if parsed is not None and 0 <= parsed < len(messages):
-            target = messages[parsed] if isinstance(messages[parsed], dict) else {}
-            target_role = str(target.get('role') or '').strip()
-            if target_role != 'assistant':
-                return jsonify({
-                    'success': False,
-                    'message': '消息索引已过期，请同步后重试',
-                    'server_message_count': len(messages)
-                }), 409
-            index = parsed
+        if parsed < 0 or parsed >= len(messages):
+            return jsonify({
+                'success': False,
+                'message': '消息索引已过期，请同步后重试',
+                'server_message_count': len(messages)
+            }), 409
+
+        target = messages[parsed] if isinstance(messages[parsed], dict) else {}
+        target_role = str(target.get('role') or '').strip()
+        if target_role != 'assistant':
+            return jsonify({
+                'success': False,
+                'message': '消息索引角色不匹配，请同步后重试',
+                'server_message_count': len(messages),
+                'target_role': target_role
+            }), 409
+        index = parsed
 
     try:
         manager.add_message(
@@ -9633,6 +9643,9 @@ def _iter_sse_from_runtime_stream(stream_id: str, username: str, from_seq: int =
         "type": "stream_session",
         "stream_id": str(stream_id or ""),
         "conversation_id": str(meta.get("conversation_id") or ""),
+        "is_regenerate": bool(meta.get("is_regenerate", False)),
+        "assistant_index": meta.get("assistant_index"),
+        "regenerate_index": meta.get("regenerate_index"),
         "status": str(meta.get("status") or "running"),
         "from_seq": max(0, safe_from_seq),
         "head_seq": int(meta.get("head_seq") or 1),
@@ -9653,6 +9666,24 @@ def _iter_sse_from_runtime_stream(stream_id: str, username: str, from_seq: int =
             continue
         chunk_data = json.dumps(payload, ensure_ascii=False, default=str)
         yield f"data: {chunk_data}\n\n"
+
+    final_meta = get_stream_session_meta(stream_id, username=username) or {}
+    final_session_info = {
+        "type": "stream_session",
+        "stream_id": str(stream_id or ""),
+        "conversation_id": str(final_meta.get("conversation_id") or meta.get("conversation_id") or ""),
+        "is_regenerate": bool(final_meta.get("is_regenerate", meta.get("is_regenerate", False))),
+        "assistant_index": final_meta.get("assistant_index", meta.get("assistant_index")),
+        "regenerate_index": final_meta.get("regenerate_index", meta.get("regenerate_index")),
+        "status": str(final_meta.get("status") or "done"),
+        "done": True,
+        "cancel_requested": bool(final_meta.get("cancel_requested", False)),
+        "cancel_reason": str(final_meta.get("cancel_reason") or ""),
+        "error": str(final_meta.get("error") or ""),
+        "head_seq": int(final_meta.get("head_seq") or meta.get("head_seq") or 1),
+        "last_seq": int(final_meta.get("last_seq") or meta.get("last_seq") or 0),
+    }
+    yield f"data: {json.dumps(final_session_info, ensure_ascii=False, default=str)}\n\n"
     yield "data: [DONE]\n\n"
 
 
@@ -9829,6 +9860,47 @@ def chat_stream():
     conversation_id_from_request = bool(str(conversation_id or '').strip())
     skip_user_message = bool(data.get('skip_user_message', False))
     user_message_persisted = False
+
+    if is_regenerate:
+        if not str(conversation_id or '').strip():
+            return jsonify({
+                'success': False,
+                'message': '重答必须指定 conversation_id'
+            }), 400
+        if regenerate_index is None:
+            return jsonify({
+                'success': False,
+                'message': '重答必须指定 regenerate_index'
+            }), 400
+
+        manager = ConversationManager(username)
+        ok, validate_message, target_meta = manager.validate_regenerate_target(
+            conversation_id,
+            regenerate_index
+        )
+        if not ok:
+            print(
+                "[REGENERATE_VALIDATE] failed "
+                f"conversation_id={conversation_id} index={regenerate_index} "
+                f"reason={validate_message} meta={target_meta}"
+            )
+            return jsonify({
+                'success': False,
+                'message': validate_message,
+                'server_message_count': int(target_meta.get('message_count', 0) or 0),
+                'target_role': str(target_meta.get('target_role', '') or ''),
+                'source_role': str(target_meta.get('source_role', '') or '')
+            }), 409
+
+        if not str(message or '').strip():
+            message = str(target_meta.get('user_content') or '')
+
+        print(
+            "[REGENERATE_VALIDATE] ok "
+            f"conversation_id={conversation_id} assistant_index={regenerate_index} "
+            f"user_index={target_meta.get('user_index')} "
+            f"model={model_name or target_meta.get('assistant_model_name', '')}"
+        )
 
     _chat_latency_mark(
         "server_user_persist_deferred",
@@ -10036,17 +10108,6 @@ def chat_stream():
     _agent_info = _resolve_local_agent_info_for_chat()
     _chat_latency_mark("agent_info_prefetch", **_agent_info_latency_summary(_agent_info))
 
-    # 如果是重新生成，前端通常不再传 message；这里从历史中回填触发该回答的 user 消息。
-    # 版本快照改为在最终覆盖写入时原子落盘（ConversationManager.add_message），
-    # 避免预清空导致的“重答失败后回退/空版本”问题。
-    if is_regenerate and conversation_id and regenerate_index is not None:
-        manager = ConversationManager(username)
-        # 如果前端没传 message，从历史中取出触发该回答的 user 消息
-        if not message:
-            convo = manager.get_conversation(conversation_id)
-            if convo and regenerate_index > 0:
-                message = convo['messages'][regenerate_index - 1].get('content', "")
-
     if (not is_regenerate) and conversation_id:
         try:
             manager = ConversationManager(username)
@@ -10099,7 +10160,7 @@ def chat_stream():
         lines.append('以上是用户提交的拼图结果，请评价其正确性并给出反馈，不要再次输出拼图工具。')
         return '\n'.join(lines)
 
-    def _stream_worker(push_chunk, set_conversation_id, set_stage):
+    def _stream_worker(push_chunk, set_conversation_id, set_stage, is_cancel_requested):
         try:
             set_stage("normalizing_request")
             request_meta = normalize_longterm_request(
@@ -10227,10 +10288,12 @@ def chat_stream():
             _chat_latency_mark("agent_info_worker_resolve", **_agent_info_latency_summary(current_agent_info))
 
             if current_agent_info:
-                _inject_local_agent_tools(model, current_agent_info)
+                _inject_local_agent_tools(model, current_agent_info, cancel_checker=is_cancel_requested)
                 _chat_latency_mark("agent_tools_injected", **_agent_info_latency_summary(current_agent_info))
             else:
                 _chat_latency_mark("agent_tools_injected", agent_source="none", agent_tool_count=0, agent_schema_bytes=0)
+
+            model._stream_cancel_checker = is_cancel_requested
 
             try:
                 local_tool_names = []
@@ -10302,6 +10365,10 @@ def chat_stream():
                 conversation_mode_payload=raw_conversation_mode_payload,
                 skip_user_message=bool(skip_user_message or user_message_persisted)
             ):
+                if is_cancel_requested():
+                    set_stage("worker_cancelled", "user_abort")
+                    raise StreamCancelled("user_abort")
+
                 if not first_model_chunk_seen:
                     first_model_chunk_seen = True
                     set_stage("model_streaming", f"first_chunk={str((chunk or {}).get('type') if isinstance(chunk, dict) else type(chunk).__name__)}")
@@ -10316,6 +10383,10 @@ def chat_stream():
                 push_chunk(chunk if isinstance(chunk, dict) else {'type': 'content', 'content': str(chunk)})
             set_stage("model_stream_exhausted")
         except Exception as e:
+            if is_stream_cancelled_error(e):
+                set_stage("worker_cancelled", "user_abort")
+                raise
+
             set_stage("worker_error", str(e)[:500])
             error_details = _format_exception_details(e)
             print(f"[STREAM_ERROR]\n{error_details}")
@@ -10335,7 +10406,12 @@ def chat_stream():
     stream_id = start_stream_session(
         username=username,
         conversation_id=str(conversation_id or '').strip(),
-        worker=_stream_worker
+        worker=_stream_worker,
+        metadata={
+            'is_regenerate': bool(is_regenerate),
+            'assistant_index': int(regenerate_index) if is_regenerate and regenerate_index is not None else None,
+            'regenerate_index': int(regenerate_index) if is_regenerate and regenerate_index is not None else None,
+        }
     )
     _chat_latency_mark("runtime_stream_started", stream_id=str(stream_id or ""))
 
@@ -10347,6 +10423,7 @@ def chat_stream():
     resp.headers['Cache-Control'] = 'no-cache, no-transform'
     resp.headers['X-Accel-Buffering'] = 'no'
     resp.headers['Connection'] = 'keep-alive'
+    resp.headers['X-Stream-Id'] = str(stream_id or '')
     _chat_latency_mark("sse_response_ready")
     _chat_latency_flush("sse_response_ready")
     return resp
@@ -10357,9 +10434,30 @@ def chat_stream():
 def chat_stream_cancel():
     data = request.get_json(silent=True) or {}
     stream_id = str(data.get('stream_id') or '').strip()
-    if not stream_id:
-        return jsonify({'success': False, 'message': 'stream_id is required'}), 400
+    conversation_id = str(data.get('conversation_id') or '').strip()
+    if not stream_id and not conversation_id:
+        return jsonify({'success': False, 'message': 'stream_id or conversation_id is required'}), 400
     username = session['username']
+    if not stream_id:
+        rows = list_stream_sessions(
+            username=username,
+            conversation_ids=[conversation_id],
+            include_done=False
+        )
+        cancelled_ids = []
+        for row in rows:
+            sid = str(row.get('stream_id') or '').strip()
+            if sid and request_stream_cancel(sid, username=username, reason='user_abort'):
+                cancelled_ids.append(sid)
+        if not cancelled_ids:
+            return jsonify({'success': False, 'message': 'stream session not found'}), 404
+        return jsonify({
+            'success': True,
+            'stream_ids': cancelled_ids,
+            'conversation_id': conversation_id,
+            'cancel_requested': True
+        })
+
     ok = request_stream_cancel(stream_id, username=username, reason='user_abort')
     if not ok:
         return jsonify({'success': False, 'message': 'stream session not found'}), 404
@@ -10392,6 +10490,28 @@ def chat_stream_reconnect():
     resp.headers['X-Accel-Buffering'] = 'no'
     resp.headers['Connection'] = 'keep-alive'
     return resp
+
+
+@app.route('/api/chat/stream/content', methods=['GET'])
+@require_login
+def chat_stream_content():
+    """Return the accumulated content from a stream session's chunk buffer."""
+    stream_id = str(request.args.get('stream_id') or '').strip()
+    if not stream_id:
+        return jsonify({'success': False, 'message': 'stream_id is required'}), 400
+    username = session['username']
+    result = get_stream_accumulated_content(stream_id, username=username)
+    if not result:
+        return jsonify({'success': False, 'message': 'stream session not found'}), 404
+    return jsonify({
+        'success': True,
+        'stream_id': result.get('stream_id', ''),
+        'conversation_id': result.get('conversation_id', ''),
+        'content': result.get('content', ''),
+        'reasoning_content': result.get('reasoning_content', ''),
+        'last_seq': result.get('last_seq', 0),
+        'status': result.get('status', ''),
+    })
 
 
 @app.route('/api/chat/stream/status', methods=['GET', 'POST'])
@@ -10494,7 +10614,7 @@ def submit_client_tool_result_api():
 
 # ==================== NexoraCode 本地 Agent 桥接 ====================
 
-def _inject_local_agent_tools(model, agent_info: dict):
+def _inject_local_agent_tools(model, agent_info: dict, cancel_checker=None):
     """将本地 Agent 工具注入到 model 实例（工具定义 + 执行处理器）
 
     执行路径：服务器 enqueue_request → NexoraCode 长轮询 pull → 本地执行 →
@@ -10502,6 +10622,10 @@ def _inject_local_agent_tools(model, agent_info: dict):
     避免服务器直连 localhost（服务器端 localhost != 用户本机）。
     """
     username = agent_info.get("username", "")
+
+    def _raise_if_cancelled():
+        if callable(cancel_checker) and cancel_checker():
+            raise StreamCancelled("user_abort")
 
     # 判断当前 provider 是否使用 Responses API（扁平格式，无 "function" 包装层）
     use_responses_api = (
@@ -10546,19 +10670,33 @@ def _inject_local_agent_tools(model, agent_info: dict):
         def _make_handler(name: str, uname: str):
             def _handler(args: dict) -> str:
                 from agent_tunnel import is_agent_online, call_local_tool_sync
+
+                _raise_if_cancelled()
                 
                 # WebSocket 优先
                 if is_agent_online(uname):
                     try:
-                        result = call_local_tool_sync(uname, name, args, timeout_sec=120)
+                        result = call_local_tool_sync(
+                            uname,
+                            name,
+                            args,
+                            timeout_sec=120,
+                            cancel_checker=cancel_checker
+                        )
+                        _raise_if_cancelled()
+                        if result and str(result.get("error") or "") == "stream_cancelled":
+                            raise StreamCancelled("user_abort")
                         if result and "error" in result and not result.get("success", True):
                             return f"本地工具 WSS 执行失败: {result['error']}"
                         r = result.get("result", result)
                         return r if isinstance(r, str) else json.dumps(r, ensure_ascii=False)
                     except Exception as e:
+                        if is_stream_cancelled_error(e):
+                            raise
                         return f"本地工具 WSS 通信异常: {e}"
 
                 # 本地 Agent 未保持 WSS 在线时使用长轮询通道。
+                _raise_if_cancelled()
                 conv_id = str(getattr(model, 'conversation_id', '') or '')
                 req_obj = enqueue_request(
                     username=uname,
@@ -10572,7 +10710,11 @@ def _inject_local_agent_tools(model, agent_info: dict):
                     conversation_id=conv_id,
                     request_id=req_obj["request_id"],
                     timeout_ms=120000,
+                    cancel_checker=cancel_checker,
                 )
+                _raise_if_cancelled()
+                if str(result.get("error") or "") == "stream_cancelled":
+                    raise StreamCancelled("user_abort")
                 if not result.get("success"):
                     return f"本地工具执行失败: {result.get('error', result.get('message', '超时'))}"
                 r = result.get("result", result)

@@ -484,8 +484,18 @@ class ConversationManager:
                 "timestamp": datetime.now().isoformat()
             }
 
-            if index is not None and 0 <= index < len(conversation_data["messages"]):
-                old_msg = conversation_data["messages"][index]
+            if index is not None:
+                try:
+                    index = int(index)
+                except Exception:
+                    raise ValueError(f"消息索引无效: index={index}")
+
+                if index < 0 or index >= len(messages):
+                    raise ValueError(
+                        f"消息索引越界: index={index}, message_count={len(messages)}"
+                    )
+
+                old_msg = messages[index]
                 old_role = str((old_msg if isinstance(old_msg, dict) else {}).get("role") or "").strip()
                 new_role = str(role or "").strip()
                 if old_role != new_role:
@@ -551,13 +561,76 @@ class ConversationManager:
                 elif "model_name" in message:
                     del message["model_name"]
 
-            if index is not None and 0 <= index < len(messages):
+            if index is not None:
                 messages[index] = message
+                self._invalidate_resume_cache_fields(conversation_data)
             else:
                 messages.append(message)
             conversation_data["messages"] = messages
             conversation_data["updated_at"] = datetime.now().isoformat()
             self._save_json_atomic(conversation_path, conversation_data)
+
+    def validate_regenerate_target(self, conversation_id, message_index):
+        """
+        校验重答目标，确保覆盖点一定是 assistant，且前一条是触发它的 user。
+        """
+        try:
+            idx = int(message_index)
+        except Exception:
+            return False, "消息索引无效", {}
+
+        try:
+            conversation = self.get_conversation(conversation_id)
+        except Exception as e:
+            return False, str(e), {}
+
+        messages = conversation.get("messages", [])
+        if not isinstance(messages, list):
+            return False, "对话内容格式无效", {
+                "message_count": 0
+            }
+
+        if idx < 0 or idx >= len(messages):
+            return False, "消息索引已过期，请刷新后重试", {
+                "message_count": len(messages)
+            }
+
+        target = messages[idx] if isinstance(messages[idx], dict) else {}
+        target_role = str(target.get("role") or "").strip()
+        if target_role != "assistant":
+            return False, "重答目标必须是 assistant 消息", {
+                "message_count": len(messages),
+                "target_role": target_role,
+                "target_index": idx
+            }
+
+        user_index = idx - 1
+        if user_index < 0:
+            return False, "重答目标前缺少 user 消息", {
+                "message_count": len(messages),
+                "target_index": idx
+            }
+
+        source = messages[user_index] if isinstance(messages[user_index], dict) else {}
+        source_role = str(source.get("role") or "").strip()
+        if source_role != "user":
+            return False, "重答目标前一条不是 user 消息", {
+                "message_count": len(messages),
+                "target_index": idx,
+                "source_role": source_role
+            }
+
+        return True, "ok", {
+            "message_count": len(messages),
+            "target_index": idx,
+            "user_index": user_index,
+            "user_content": str(source.get("content") or ""),
+            "assistant_model_name": str(
+                target.get("model_name")
+                or (target.get("metadata", {}) if isinstance(target.get("metadata", {}), dict) else {}).get("model_name")
+                or ""
+            ).strip()
+        }
 
     def delete_message(self, conversation_id, message_index):
         """
@@ -799,6 +872,7 @@ class ConversationManager:
         msg["content"] = text
         msg["timestamp"] = datetime.now().isoformat()
         messages[idx] = msg
+        self._invalidate_resume_cache_fields(conversation_data)
         conversation_data["messages"] = messages
         conversation_data["updated_at"] = datetime.now().isoformat()
 

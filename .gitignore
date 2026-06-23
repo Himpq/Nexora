@@ -12,6 +12,8 @@ ChatDBServer/data/config.json
 ChatDBServer/data/models.json
 ChatDBServer/api/localsearch
 NexoraCode/data/
+NexoraCode/temp/
+NexoraCode/renderer_cookies.lwp
 todolist
 NexoraLearning/data
 NEXORALEARNING_WORKING.md

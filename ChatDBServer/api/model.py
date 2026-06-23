@@ -2977,6 +2977,7 @@ class Model:
             "server_file_search_semantic",
             "local_file_read",
             "local_file_write",
+            "local_file_probe",
             "local_file_list",
             "local_file_patch",
             "local_shell_exec",
@@ -3165,6 +3166,7 @@ class Model:
             "server_file_remove",
             "local_file_read",
             "local_file_write",
+            "local_file_probe",
             "local_file_list",
             "local_file_patch",
             "local_shell_exec",
@@ -6474,12 +6476,27 @@ class Model:
             finally:
                 # 统一保存消息（无论正常结束、Function调用中断、Client中断）
                 # 只有当有内容或有步骤时才保存
+                stream_cancel_checker = getattr(self, "_stream_cancel_checker", None)
+                stream_cancelled = False
+                if callable(stream_cancel_checker):
+                    try:
+                        stream_cancelled = bool(stream_cancel_checker())
+                    except Exception as cancel_check_error:
+                        print(f"[STREAM_CANCEL] cancel check failed before assistant persist: {cancel_check_error}")
+
+                if stream_cancelled:
+                    print(
+                        f"[STREAM_CANCEL] skip assistant persist conversation_id={self.conversation_id} "
+                        f"regenerate={bool(is_regenerate)} content_chars={len(str(accumulated_content or ''))} "
+                        f"steps={len(process_steps or [])}"
+                    )
+
                 has_persistable_step = any(
                     isinstance(step, dict)
                     and str(step.get("type") or "").strip() not in {"", "reasoning_content"}
                     for step in (process_steps or [])
                 )
-                if accumulated_content or terminal_error_content or has_persistable_step:
+                if (not stream_cancelled) and (accumulated_content or terminal_error_content or has_persistable_step):
                     print(f"[DEBUG] 保存助手消息，Steps: {len(process_steps)}")
                     saved_assistant_content = accumulated_content
                     if (not str(saved_assistant_content or "").strip()) and str(terminal_error_content or "").strip():
@@ -6720,7 +6737,7 @@ class Model:
                         except Exception as e:
                             print(f"[LONGTERM] 完成状态写入失败: {e}")
 
-                if self.persist_conversation and self.conversation_id and normalized_conversation_mode == "longterm":
+                if (not stream_cancelled) and self.persist_conversation and self.conversation_id and normalized_conversation_mode == "longterm":
                     try:
                         self.conversation_manager.update_conversation_fields(self.conversation_id, {
                             "conversation_mode": "longterm",

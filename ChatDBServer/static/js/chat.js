@@ -153,6 +153,9 @@ let tokenMiniState = {
     requestSeq: 0,
     streaming: false
 };
+let conversationNavigationSeq = 0;
+let activeConversationLoadController = null;
+let conversationListRequestSeq = 0;
 const TOKEN_BUDGET_DEFAULT_LIMIT = 0;
 let tokenBudgetState = {
     contextWindow: TOKEN_BUDGET_DEFAULT_LIMIT,
@@ -203,10 +206,15 @@ let userPromptEditState = {
 };
 const STREAM_RESUME_STATE_KEY = 'nexora_stream_resume_v1';
 const STREAM_RESUME_STATES_KEY = 'nexora_stream_resume_map_v1';
+const STREAM_STATUS_SYNC_INTERVAL_MS = 2500;
+const STREAM_ATTACH_RETRY_DELAY_MS = 350;
+const STREAM_ATTACH_RETRY_MAX = 12;
 let streamResumeRestoredOnce = false;
 let conversationStreamStates = new Map();
-let backgroundStreamStatusPollTimer = null;
 let backgroundStreamStatusSyncInFlight = false;
+let streamSessionMonitorIds = new Set();
+let streamStatusSyncTimer = null;
+let streamAttachRetryTimers = new Map();
 let hoverProxyMessageEl = null;
 let isMessageInputComposing = false;
 let selectedModelId = null;
@@ -380,6 +388,7 @@ let conversationRenameState = {
     initialTitle: '',
     saving: false
 };
+let pendingRegenerateFilter = { conversationId: '', index: -1 };
 let conversationListCache = [];
 let conversationListRenderSignature = '';
 let basisKnowledgeListCache = [];
@@ -5512,6 +5521,19 @@ function isLearningWorkspaceActive() {
     return !!(learningModeEnabled && String(learningSidebarMode || '').trim().toLowerCase() === 'learning');
 }
 
+// 学习模式偏好异步加载完成后，按当前会话状态恢复侧栏，避免覆盖 cid 导航结果。
+function resolveLearningSidebarModeAfterPreferenceLoad() {
+    if (!learningModeEnabled) return 'nexora';
+
+    const hasConversation = !!String(currentConversationId || '').trim();
+
+    if (hasConversation) {
+        return resolveLearningSidebarModeForConversation(currentConversationMode);
+    }
+
+    return 'learning';
+}
+
 function syncLearningWorkspaceLayout() {
     return window.NexoraLearningWorkspaceLayout.sync({
         enabled: learningModeEnabled,
@@ -5626,6 +5648,23 @@ function clearLearningWelcomeState(options = {}) {
     }
 }
 
+// Learning iframe 只能在当前 Learning 视图内接管输入区布局，普通对话保持聊天输入区所有权。
+function shouldHonorLearningHostLayoutRequest() {
+    if (!learningModeEnabled) return false;
+
+    if (learningReaderOpened || isLearningWorkspaceActive()) {
+        return true;
+    }
+
+    const hasConversation = !!String(currentConversationId || '').trim();
+
+    if (!hasConversation) {
+        return String(learningHeaderMode || '').trim().toLowerCase() === 'learning';
+    }
+
+    return String(currentConversationMode || '').trim().toLowerCase() === 'learning';
+}
+
 function setLearningEmbedLayoutMode(mode, options = {}) {
     const normalized = String(mode || 'default').trim().toLowerCase() === 'immersive' ? 'immersive' : 'default';
     learningEmbedLayoutMode = normalized;
@@ -5655,6 +5694,13 @@ function handleLearningHostMessage(payload) {
     if (String(payload.source || '').trim().toLowerCase() !== 'nexora-learning') return false;
     const msgType = String(payload.type || '').trim().toLowerCase();
     if (msgType === 'nexora:chat-input:visibility') {
+        if (!shouldHonorLearningHostLayoutRequest()) {
+            if (els.inputDock) {
+                els.inputDock.classList.remove('learning-mode-hidden');
+            }
+            return true;
+        }
+
         const layoutState = syncLearningWorkspaceLayout();
         if (!layoutState.active && els.inputDock) {
             els.inputDock.classList.toggle('learning-mode-hidden', !!payload.hidden);
@@ -5662,6 +5708,13 @@ function handleLearningHostMessage(payload) {
         return true;
     }
     if (msgType === 'nexora:layout:request') {
+        if (!shouldHonorLearningHostLayoutRequest()) {
+            if (els.inputDock) {
+                els.inputDock.classList.remove('learning-mode-hidden');
+            }
+            return true;
+        }
+
         if (String(payload.mode || '').trim().toLowerCase() === 'immersive') {
             closeReaderBlockedRightSidebars();
         }
@@ -5691,6 +5744,13 @@ function handleLearningHostMessage(payload) {
         return true;
     }
     if (msgType === 'nexora:reader:state') {
+        if (payload.opened && !shouldHonorLearningHostLayoutRequest()) {
+            if (els.inputDock) {
+                els.inputDock.classList.remove('learning-mode-hidden');
+            }
+            return true;
+        }
+
         const wasReaderOpened = !!learningReaderOpened;
         learningReaderOpened = !!payload.opened;
         if (learningReaderOpened) {
@@ -5702,8 +5762,9 @@ function handleLearningHostMessage(payload) {
             return true;
         }
         if (wasReaderOpened) {
-            learningHeaderMode = learningModeEnabled ? 'learning' : 'chat';
-            applyLearningSidebarMode(learningModeEnabled ? 'learning' : 'nexora');
+            const restoredSidebarMode = resolveLearningSidebarModeAfterPreferenceLoad();
+            learningHeaderMode = restoredSidebarMode === 'learning' ? 'learning' : 'chat';
+            applyLearningSidebarMode(restoredSidebarMode);
             void syncLearningHeaderMode();
         }
         return true;
@@ -5938,7 +5999,7 @@ async function applyLearningMode(enabled) {
     } else {
         clearLearningWelcomeState();
     }
-    learningSidebarMode = learningModeEnabled ? 'learning' : 'nexora';
+    learningSidebarMode = resolveLearningSidebarModeAfterPreferenceLoad();
     if (!learningModeEnabled) {
         if (currentConversationMode === 'learning') currentConversationMode = 'chat';
         if (learningHeaderMode === 'learning') learningHeaderMode = 'chat';
@@ -9707,6 +9768,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 await createNewConversation(false, 'learning');
                 await renderWelcomeScreen();
                 await learningPromise;
+                startStoredStreamSessionMonitors({
+                    skipConversationId: String(currentConversationId || '').trim()
+                });
+                startConversationStreamStatusSync();
+                syncGenerationStateForCurrentConversation();
                 return;
             }
             loadConversations();
@@ -9720,8 +9786,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     await learningPromise;
     await resumeActiveStreamAfterReload();
-    await syncStoredConversationStreamStatus();
-    startBackgroundStreamMonitors();
+    startStoredStreamSessionMonitors({
+        skipConversationId: String(currentConversationId || '').trim()
+    });
+    startConversationStreamStatusSync();
     syncGenerationStateForCurrentConversation();
 });
 
@@ -9759,6 +9827,8 @@ function initUI() {
     window.addEventListener('beforeunload', () => {
         stopMailPolling();
         stopClientToolPolling();
+        stopConversationStreamStatusSync();
+        clearAllStreamAttachRetries();
         if (agentStatusPollTimer) clearInterval(agentStatusPollTimer);
         if (notesCloudSyncTimer) {
             clearTimeout(notesCloudSyncTimer);
@@ -11401,8 +11471,12 @@ function onTokenStreamUsageChunk(chunk) {
 }
 
 async function refreshTokenMiniForConversation(conversationId, options = {}) {
-    const { keepStreamPart = false } = options;
+    const { keepStreamPart = false, allowInactive = false } = options;
     const cid = conversationId ? String(conversationId) : '';
+
+    if (!allowInactive && cid && String(currentConversationId || '').trim() !== cid) {
+        return;
+    }
 
     tokenMiniState.conversationId = cid || null;
     if (!keepStreamPart) resetTokenMiniStreamPart();
@@ -11488,10 +11562,114 @@ async function openTokenModal() {
 }
 
 // --- Conversations ---
+function beginConversationNavigation(conversationId) {
+    const cid = String(conversationId || '').trim();
+    conversationNavigationSeq += 1;
+
+    if (activeConversationLoadController) {
+        try {
+            activeConversationLoadController.abort();
+        } catch (abortError) {
+            console.error('[ConversationNav] abort previous load failed', abortError);
+        }
+    }
+
+    activeConversationLoadController = new AbortController();
+
+    return {
+        conversationId: cid,
+        seq: conversationNavigationSeq,
+        controller: activeConversationLoadController
+    };
+}
+
+function isActiveConversationNavigation(token) {
+    const nav = (token && typeof token === 'object') ? token : {};
+    const cid = String(nav.conversationId || '').trim();
+
+    return !!(
+        cid
+        && Number(nav.seq) === Number(conversationNavigationSeq)
+        && String(currentConversationId || '').trim() === cid
+    );
+}
+
+function getVisibleMessagesConversationId() {
+    if (!els.messagesContainer) return '';
+
+    const ids = Array.from(els.messagesContainer.querySelectorAll('.message'))
+        .map((row) => String(row && row.dataset ? row.dataset.conversationId || '' : '').trim())
+        .filter(Boolean);
+    const uniqueIds = Array.from(new Set(ids));
+
+    if (uniqueIds.length > 1) {
+        console.error('[ConversationNav] visible message list contains mixed conversation ids', {
+            conversation_ids: uniqueIds,
+            current_conversation_id: String(currentConversationId || '')
+        });
+        return '';
+    }
+
+    return uniqueIds[0] || '';
+}
+
+function hasVisibleLiveStreamPanel(conversationId) {
+    const cid = String(conversationId || '').trim();
+    if (!cid || !els.messagesContainer) return false;
+
+    const state = getConversationStreamState(cid);
+    if (!state || String(state.status || '') !== 'running') return false;
+
+    const assistantIndex = normalizeStreamMessageIndex(state.assistant_index)
+        ?? (state.is_regenerate ? normalizeStreamMessageIndex(state.regenerate_index) : null);
+    const rows = Array.from(els.messagesContainer.querySelectorAll('.message.assistant'))
+        .filter((row) => String(row && row.dataset ? row.dataset.conversationId || '' : '').trim() === cid);
+    const targetRows = assistantIndex === null
+        ? rows
+        : rows.filter((row) => normalizeStreamMessageIndex(row && row.dataset ? row.dataset.index : null) === assistantIndex);
+
+    return targetRows.some((row) => {
+        if (!row) return false;
+        if (row.querySelector('[data-stream-live="1"]')) return true;
+
+        const isPendingLocal = row.classList.contains('pending') && String(row.dataset.localOnly || '') === '1';
+        const hasStoredContent = !!row.querySelector('.content-body:not([data-stream-live="1"])');
+
+        return isPendingLocal && !hasStoredContent;
+    });
+}
+
+function shouldKeepCurrentRunningConversationPanel(targetConversationId, options = {}) {
+    const cid = String(targetConversationId || '').trim();
+    if (!cid || options.forceReload === true) return false;
+    if (String(currentConversationId || '').trim() !== cid) return false;
+    if (!isConversationStreamRunning(cid)) return false;
+
+    const visibleConversationId = getVisibleMessagesConversationId();
+    if (visibleConversationId && visibleConversationId !== cid) {
+        console.error('[ConversationNav] current conversation id and visible panel are out of sync', {
+            target_conversation_id: cid,
+            visible_conversation_id: visibleConversationId
+        });
+        return false;
+    }
+
+    if (!hasVisibleLiveStreamPanel(cid)) {
+        console.warn('[ConversationNav] current running conversation panel is not live stream DOM, reloading stream panel', {
+            target_conversation_id: cid
+        });
+        return false;
+    }
+
+    return true;
+}
+
 async function loadConversations() {
+    const requestSeq = ++conversationListRequestSeq;
     try {
         const res = await fetch('/api/conversations');
         const data = await res.json();
+        if (requestSeq !== conversationListRequestSeq) return;
         const list = Array.isArray(data) ? data : (data.conversations || []);
         conversationListCache = Array.isArray(list) ? [...list] : [];
         renderConversationList(conversationListCache);
@@ -11626,11 +11804,12 @@ function renderConversationList(conversations) {
 
     orderedConversations.forEach(c => {
         const div = document.createElement('div');
-        const cid = c.conversation_id || c.id; // Handle both
+        const cid = String(c.conversation_id || c.id || '').trim(); // Handle both
+        const currentId = String(currentConversationId || '').trim();
         const streamState = getConversationStreamState(cid);
         const streamRunning = !!(streamState && String(streamState.status || '') === 'running');
         const streamUnread = !!(streamState && streamState.unread && String(streamState.status || '') === 'done');
-        div.className = `conversation-item ${cid === currentConversationId ? 'active' : ''}${streamRunning ? ' is-streaming' : ''}${streamUnread ? ' has-stream-unread' : ''}`;
+        div.className = `conversation-item ${cid === currentId ? 'active' : ''}${streamRunning ? ' is-streaming' : ''}${streamUnread ? ' has-stream-unread' : ''}`;
         div.dataset.conversationId = String(cid || '');
         const isPinned = !!(c && c.pin);
         div.dataset.pin = isPinned ? '1' : '0';
@@ -12049,7 +12228,10 @@ function upsertLongtermPlanHookBlock(messageDiv, parsed, source = {}) {
         const cleanedText = String((parsed.summary || parsed.context || parsed.task || '') || '');
         const liveBodies = content.querySelectorAll('.content-body[data-stream-live="1"]');
         liveBodies.forEach((body) => {
-            body.innerHTML = renderMarkdownWithNewTabLinks(cleanedText, { streamingMathProvisional: true });
+            body.innerHTML = renderMarkdownWithNewTabLinks(cleanedText, {
+                breaks: false,
+                streamingMathProvisional: true
+            });
             bindSourceMarkdown(body, cleanedText);
             highlightCode(body);
             body.dataset.streamLive = '1';
@@ -12184,13 +12366,25 @@ async function createNewConversation(silent = false, targetMode = null, options 
 
 async function loadConversation(id, options = {}) {
     const opts = (options && typeof options === 'object') ? options : {};
-    detachCurrentVisibleStreamForNavigation(id);
-    await syncStoredConversationStreamStatus({ conversationIds: [id] });
+    const targetConversationId = String(id || '').trim();
+    if (!targetConversationId) return;
+
     const viewer = document.getElementById('knowledgeViewer');
     // 如果当前在知识/邮件等 viewer 页面，先统一恢复聊天 Header 与布局
     if (viewer && viewer.style.display !== 'none') {
         closeKnowledgeView();
     }
+
+    if (shouldKeepCurrentRunningConversationPanel(targetConversationId, opts)) {
+        markConversationStreamRead(targetConversationId);
+        attachRunningStreamToCurrentConversation(targetConversationId);
+        syncGenerationStateForCurrentConversation();
+        loadConversations();
+        return;
+    }
+
+    const navToken = beginConversationNavigation(targetConversationId);
+    detachCurrentVisibleStreamForNavigation(targetConversationId);
 
     // 清空导航栈和知识相关状态（直接跳转到新对话）
     navigationStack = [];
@@ -12199,13 +12393,16 @@ async function loadConversation(id, options = {}) {
     originalHeaderState = null;
     cachedPuzzleStates = {};
 
-    currentConversationId = id;
+    currentConversationId = targetConversationId;
+    invalidateConversationListForStreamState();
     syncGenerationStateForCurrentConversation();
     learningHeaderMode = learningReaderOpened ? 'learning' : 'chat';
     void syncLearningHeaderMode();
     clearLearningWelcomeState();
-    syncNotesForConversation(id);
+    syncNotesForConversation(targetConversationId);
     els.messagesContainer.innerHTML = ''; // Loading state
+    // DOM 已清空，先分离目标对话的旧读取器，再由后续 attach 绑定到新 DOM。
+    detachVisibleStreamReaderBeforeConversationRender(targetConversationId);
     // Clear turn indicator
     const turnIndicatorLines = document.getElementById('turnIndicatorLines');
     if (turnIndicatorLines) {
@@ -12214,7 +12411,7 @@ async function loadConversation(id, options = {}) {
     }
     turnIndicatorState.userMessages = [];
     hideTurnListPopup();
-    tokenMiniState.conversationId = id ? String(id) : null;
+    tokenMiniState.conversationId = targetConversationId;
     tokenMiniState.baseInput = 0;
     tokenMiniState.baseOutput = 0;
     resetTokenMiniStreamPart();
@@ -12223,16 +12420,42 @@ async function loadConversation(id, options = {}) {
     renderTokenMiniFromState();
     
     // Update URL
-    if(opts.pushHistory !== false && window.history.pushState) window.history.pushState({}, '', `/chat?cid=${id}`);
+    if(opts.pushHistory !== false && window.history.pushState) window.history.pushState({}, '', `/chat?cid=${targetConversationId}`);
 
     try {
         // Load messages
-        const res = await fetch(`/api/conversations/${encodeURIComponent(id)}?include_stream=1`);
+        const res = await fetch(`/api/conversations/${encodeURIComponent(targetConversationId)}?include_stream=1`, {
+            signal: navToken.controller.signal
+        });
         const data = await res.json();
+        if (!isActiveConversationNavigation(navToken)) return;
         
         if (data.success && data.conversation) {
-            applyStreamSessionMetaRows(data.stream_sessions, id);
-            markConversationStreamRead(id);
+            applyStreamSessionMetaRows(data.stream_sessions, targetConversationId);
+            markConversationStreamRead(targetConversationId);
+            // 如果 applyStreamSessionMetaRows 未发现 running stream，主动查询服务器
+            const stateAfterMeta = getConversationStreamState(targetConversationId);
+            if (!stateAfterMeta || String(stateAfterMeta.status || '') !== 'running') {
+                await syncStoredConversationStreamStatus({
+                    conversationIds: [targetConversationId],
+                    force: true
+                });
+            }
+            // 如果仍然没有发现 running stream，直接调 status API 兜底
+            const stateAfterSync = getConversationStreamState(targetConversationId);
+            if (!stateAfterSync || String(stateAfterSync.status || '') !== 'running') {
+                try {
+                    const statusRes = await fetch('/api/chat/stream/status', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ conversation_ids: [targetConversationId] })
+                    });
+                    const statusData = await statusRes.json().catch(() => ({}));
+                    if (statusData && Array.isArray(statusData.sessions)) {
+                        applyStreamSessionMetaRows(statusData.sessions, targetConversationId);
+                    }
+                } catch (_) {}
+            }
             syncGenerationStateForCurrentConversation();
 
             // 缓存服务端 puzzle 状态
@@ -12245,12 +12468,20 @@ async function loadConversation(id, options = {}) {
             learningHeaderMode = loadedSidebarMode === 'learning' ? 'learning' : 'chat';
             void syncLearningHeaderMode();
             // Render
-            renderMessages(data.conversation.messages, false, { instant: true });
+            let renderMsgs = data.conversation.messages;
+            if (pendingRegenerateFilter.index >= 0
+                && pendingRegenerateFilter.conversationId === targetConversationId
+                && pendingRegenerateFilter.index < renderMsgs.length) {
+                renderMsgs = renderMsgs.slice(0, pendingRegenerateFilter.index + 1);
+                pendingRegenerateFilter = { conversationId: '', index: -1 };
+            }
+            renderMessages(renderMsgs, false, { instant: true });
             applyTokenBudgetFromConversationMessages(data.conversation.messages || []);
-            if(els.conversationTitle) els.conversationTitle.textContent = data.conversation.title || "Conversation " + id;
-            await refreshTokenMiniForConversation(id);
-            attachRunningStreamToCurrentConversation(id);
+            if(els.conversationTitle) els.conversationTitle.textContent = data.conversation.title || "Conversation " + targetConversationId;
+            attachRunningStreamToCurrentConversation(targetConversationId);
+            void refreshTokenMiniForConversation(targetConversationId);
         } else {
+            if (!isActiveConversationNavigation(navToken)) return;
             currentConversationHasImageHistory = false;
             currentConversationMode = 'chat';
             currentConversationLongtermState = {
@@ -12272,12 +12503,18 @@ async function loadConversation(id, options = {}) {
         // Update Token Counts (if available in stored data, otherwise calc)
         
         // Load Knowledge
-        loadKnowledge(id);
+        if (isActiveConversationNavigation(navToken)) {
+            loadKnowledge(targetConversationId);
+        }
         
         // Highlight in sidebar
-        loadConversations(); 
+        if (isActiveConversationNavigation(navToken)) {
+            loadConversations();
+        }
         
     } catch (e) {
+        if (e && e.name === 'AbortError') return;
+        if (!isActiveConversationNavigation(navToken)) return;
         currentConversationHasImageHistory = false;
         currentConversationMode = 'chat';
         currentConversationLongtermState = {
@@ -12302,7 +12539,7 @@ async function deleteConversation(id) {
     if (!ok) return;
     removeConversationStreamState(id);
     await fetch(`/api/conversations/${id}`, { method: 'DELETE' });
-    if(currentConversationId === id) createNewConversation();
+    if(String(currentConversationId || '').trim() === String(id || '').trim()) createNewConversation();
     loadConversations();
 }
 
@@ -12313,11 +12550,13 @@ const stopIcon = `<svg width="18" height="18" viewBox="0 0 24 24" fill="currentC
 function updateSendButtonState() {
     if (!els.sendBtn) return;
     if (isGenerating) {
-        els.sendBtn.disabled = false;
+        const activeStreamState = getConversationStreamState(currentConversationId);
+        const stopping = !!(activeStreamState && activeStreamState.stopping);
+        els.sendBtn.disabled = stopping;
         els.sendBtn.classList.add('stop-mode');
         els.sendBtn.classList.remove('feed-mode');
         els.sendBtn.innerHTML = stopIcon;
-        els.sendBtn.title = "Stop Generation";
+        els.sendBtn.title = stopping ? "正在终止" : "Stop Generation";
     } else if (isUploadingFiles) {
         els.sendBtn.disabled = true;
         els.sendBtn.classList.remove('stop-mode');
@@ -12530,17 +12769,6 @@ async function readErrorMessageFromResponse(response, fallback = '') {
     try {
         const data = await response.clone().json();
         if (data && typeof data === 'object') {
-            try {
-                const cid = String(data.conversation_id || '').trim();
-                if (cid) {
-                    currentConversationId = cid;
-                    syncNotesForConversation(cid);
-                    noteTokenMiniConversationId(cid);
-                    const next = new URL(window.location.href);
-                    next.searchParams.set('id', cid);
-                    window.history.replaceState({}, '', next.toString());
-                }
-            } catch (_) {}
             const m = String(data.message || data.error || '').trim();
             if (m) return m;
         }
@@ -13009,6 +13237,15 @@ async function ensureConversationPanelReadyForMutation(conversationId, operation
         clearActiveStreamResumeState();
     }
 
+    const shouldRenderSnapshot = !(operationName === 'edit_user_prompt');
+    if (!shouldRenderSnapshot) {
+        console.debug('[ConversationPanel] mutation gate passed without render', {
+            conversation_id: cid,
+            operation: String(operationName || 'operation')
+        });
+        return true;
+    }
+
     const snapshot = await renderConversationSnapshotFromServer(cid, { instant: true, silent: true });
     if (!snapshot) {
         showToast('对话同步失败，请稍后再操作');
@@ -13079,114 +13316,17 @@ function rollbackOptimisticHide(state) {
 }
 
 async function requestServerCancelForActiveStream() {
-    const state = getConversationStreamState(currentConversationId) || loadActiveStreamResumeState();
+    const activeCid = String(currentConversationId || '').trim();
+    const state = getConversationStreamState(activeCid);
+    if (!activeCid) return false;
     const streamId = String((state && state.stream_id) || '').trim();
-    if (!streamId) return false;
     try {
         const res = await fetch('/api/chat/stream/cancel', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ stream_id: streamId })
-        });
-        const data = await res.json().catch(() => ({}));
-        return !!(res.ok && data && data.success);
-    } catch (_) {
-        return false;
-    }
-}
-
-async function persistAbortedAssistantPartial(conversationId, content, options = {}) {
-    const cid = String(conversationId || '').trim();
-    const text = String(content || '');
-    if (!cid || !text.trim()) return false;
-    const opts = (options && typeof options === 'object') ? options : {};
-    const payload = {
-        content: text,
-        model_name: String(opts.modelName || '').trim(),
-        metadata: {
-            source: String(opts.source || 'chat').trim() || 'chat',
-            aborted_by_user: true
-        }
-    };
-    const normalizedIndex = normalizeOptionalIndex(opts.index);
-    if (normalizedIndex !== null) {
-        payload.index = normalizedIndex;
-    }
-    try {
-        const res = await fetch(`/api/conversations/${encodeURIComponent(cid)}/assistant_partial`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        const data = await res.json().catch(() => ({}));
-        return !!(res.ok && data && data.success);
-    } catch (_) {
-        return false;
-    }
-}
-
-async function persistUserPartial(conversationId, content, options = {}) {
-    const cid = String(conversationId || '').trim();
-    const text = String(content || '');
-    if (!cid || !text.trim()) return false;
-    const opts = (options && typeof options === 'object') ? options : {};
-    const payload = {
-        content: text,
-        model_name: String(opts.modelName || '').trim(),
-        metadata: {
-            source: String(opts.source || 'chat').trim() || 'chat'
-        }
-    };
-    if (Array.isArray(opts.attachments) && opts.attachments.length > 0) {
-        payload.metadata.attachments = opts.attachments;
-    }
-    if (Array.isArray(opts.sandboxPaths) && opts.sandboxPaths.length > 0) {
-        payload.metadata.sandbox_paths = opts.sandboxPaths;
-    }
-    try {
-        const res = await fetch(`/api/conversations/${encodeURIComponent(cid)}/user_partial`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        const data = await res.json().catch(() => ({}));
-        return !!(res.ok && data && data.success);
-    } catch (_) {
-        return false;
-    }
-}
-
-async function persistAssistantErrorPartial(conversationId, content, options = {}) {
-    const cid = String(conversationId || '').trim();
-    if (!cid) return false;
-    const opts = (options && typeof options === 'object') ? options : {};
-    const errMsg = String(opts.errorMessage || '').trim() || '请求失败';
-    const errCode = String(opts.errorCode || '').trim();
-    const base = String(content || '').trim();
-    const marker = `[系统错误] ${errMsg}`;
-    const finalText = base
-        ? (base.includes(marker) ? base : `${base}\n\n${marker}`)
-        : marker;
-    const payload = {
-        content: finalText,
-        model_name: String(opts.modelName || '').trim(),
-        metadata: {
-            source: String(opts.source || 'chat').trim() || 'chat',
-            aborted_by_user: false,
-            terminal_error: true,
-            retryable: !!opts.retryable
-        }
-    };
-    if (errCode) payload.metadata.error_code = errCode;
-    const normalizedIndex = normalizeOptionalIndex(opts.index);
-    if (normalizedIndex !== null) {
-        payload.index = normalizedIndex;
-    }
-    try {
-        const res = await fetch(`/api/conversations/${encodeURIComponent(cid)}/assistant_partial`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+            body: JSON.stringify(streamId
+                ? { stream_id: streamId, conversation_id: activeCid }
+                : { conversation_id: activeCid })
         });
         const data = await res.json().catch(() => ({}));
         return !!(res.ok && data && data.success);
@@ -13202,18 +13342,6 @@ function buildTerminalErrorMessage(baseContent, errorMessage) {
     if (!base) return marker;
     if (base.includes(marker)) return base;
     return `${base}\n\n${marker}`;
-}
-
-function normalizeOptionalIndex(rawIndex) {
-    const indexType = typeof rawIndex;
-    if ((indexType !== 'number' && indexType !== 'string') || rawIndex === '') {
-        return null;
-    }
-    const parsedIndex = Number(rawIndex);
-    if (!Number.isInteger(parsedIndex) || parsedIndex < 0) {
-        return null;
-    }
-    return parsedIndex;
 }
 
 function extractStandaloneSystemErrorMessage(text) {
@@ -13248,22 +13376,50 @@ function stopGeneration() {
     const activeCid = String(currentConversationId || '').trim();
     const state = getConversationStreamState(activeCid);
     const controller = (state && state.controller) || currentAbortController;
-    if (controller || (state && state.stream_id)) {
-        void requestServerCancelForActiveStream();
-        if (controller) controller.abort();
+    if (activeCid && (state || controller)) {
         if (activeCid) {
             setConversationStreamState(activeCid, {
                 status: 'running',
-                controller: null,
                 monitoring: true,
                 stopping: true
             });
         }
         syncGenerationStateForCurrentConversation();
         updateSendButtonState();
+        void (async () => {
+            const ok = await requestServerCancelForActiveStream();
+            if (!ok) {
+                console.error('[StreamCancel] cancel request was not accepted', {
+                    conversation_id: activeCid,
+                    stream_id: String((state && state.stream_id) || '')
+                });
+            }
+
+            // 检查流状态是否仍存在（可能已被 markConversationStreamFinished 清除）
+            const currentState = getConversationStreamState(activeCid);
+            if (currentState && String(currentState.status || '') === 'running') {
+                setConversationStreamState(activeCid, {
+                    monitoring: false,
+                    stopping: true
+                });
+            }
+            if (controller) {
+                try {
+                    controller.abort();
+                } catch (abortError) {
+                    console.error('[StreamCancel] local stream abort failed', abortError);
+                }
+            }
+            syncGenerationStateForCurrentConversation();
+        })();
+    } else if (controller) {
+        try {
+            controller.abort();
+        } catch (abortError) {
+            console.error('[StreamCancel] local stream abort failed before stream id', abortError);
+        }
     }
     releaseLearningSidebarPendingSend();
-    clearActiveStreamResumeState();
 }
 
 function loadActiveStreamResumeState() {
@@ -13274,10 +13430,17 @@ function loadActiveStreamResumeState() {
         if (!parsed || typeof parsed !== 'object') return null;
         const streamId = String(parsed.stream_id || '').trim();
         if (!streamId) return null;
+        const assistantIndex = normalizeStreamMessageIndex(parsed.assistant_index);
+        const isRegenerate = readStreamRegenerateFlag(parsed, false);
+        const regenerateIndex = isRegenerate
+            ? (normalizeStreamMessageIndex(parsed.regenerate_index) ?? assistantIndex)
+            : null;
         return {
             stream_id: streamId,
             conversation_id: String(parsed.conversation_id || '').trim(),
-            assistant_index: Number.isFinite(Number(parsed.assistant_index)) ? Number(parsed.assistant_index) : null,
+            assistant_index: assistantIndex,
+            is_regenerate: isRegenerate,
+            regenerate_index: regenerateIndex,
             started_at: Number.isFinite(Number(parsed.started_at)) ? Number(parsed.started_at) : Date.now(),
             updated_at: Number.isFinite(Number(parsed.updated_at)) ? Number(parsed.updated_at) : Date.now(),
             last_seq: Number.isFinite(Number(parsed.last_seq)) ? Number(parsed.last_seq) : 0
@@ -13292,10 +13455,18 @@ function saveActiveStreamResumeState(nextState) {
     const streamId = String(incoming.stream_id || '').trim();
     if (!streamId) return;
     const now = Date.now();
+    const previous = loadActiveStreamResumeState() || {};
+    const assistantIndex = normalizeStreamMessageIndex(incoming.assistant_index) ?? normalizeStreamMessageIndex(previous.assistant_index);
+    const isRegenerate = readStreamRegenerateFlag(incoming, !!previous.is_regenerate);
+    const regenerateIndex = isRegenerate
+        ? (normalizeStreamMessageIndex(incoming.regenerate_index) ?? normalizeStreamMessageIndex(previous.regenerate_index) ?? assistantIndex)
+        : null;
     const payload = {
         stream_id: streamId,
         conversation_id: String(incoming.conversation_id || currentConversationId || '').trim(),
-        assistant_index: Number.isFinite(Number(incoming.assistant_index)) ? Number(incoming.assistant_index) : null,
+        assistant_index: assistantIndex,
+        is_regenerate: isRegenerate,
+        regenerate_index: regenerateIndex,
         started_at: Number.isFinite(Number(incoming.started_at)) ? Number(incoming.started_at) : now,
         updated_at: now,
         last_seq: Number.isFinite(Number(incoming.last_seq)) ? Number(incoming.last_seq) : 0
@@ -13320,18 +13491,61 @@ function attachRunningStreamToCurrentConversation(conversationId) {
     if (!cid || !isCurrentConversation(cid)) return;
 
     const state = getConversationStreamState(cid);
-    if (!state || String(state.status || '') !== 'running' || !String(state.stream_id || '').trim()) {
+    if (!state || String(state.status || '') !== 'running') {
+        console.debug('[StreamAttach] no running stream to attach', {
+            conversation_id: cid,
+            has_state: !!state,
+            status: state ? String(state.status || '') : '',
+            stream_id: state ? String(state.stream_id || '') : ''
+        });
         syncGenerationStateForCurrentConversation();
         return;
     }
-    if (state.controller) {
+
+    if (!String(state.stream_id || '').trim()) {
+        console.warn('[StreamAttach] running conversation has no stream id yet', {
+            conversation_id: cid,
+            has_controller: !!state.controller,
+            controller_aborted: isAbortControllerAborted(state.controller),
+            monitoring: !!state.monitoring
+        });
+        scheduleStreamAttachRetry(cid, 'missing_stream_id');
+        syncGenerationStateForCurrentConversation();
+        return;
+    }
+
+    clearStreamAttachRetry(cid);
+
+    if (!Number.isFinite(Number(state.assistant_index)) || Number(state.assistant_index) < 0) {
+        const regenerateIndex = state.is_regenerate ? normalizeStreamMessageIndex(state.regenerate_index) : null;
+        const nextAssistantIndex = regenerateIndex !== null
+            ? regenerateIndex
+            : (els.messagesContainer
+                ? els.messagesContainer.querySelectorAll('.message').length
+                : 0);
+        setConversationStreamState(cid, {
+            assistant_index: nextAssistantIndex
+        });
+        console.debug('[StreamAttach] inferred assistant index for running stream', {
+            conversation_id: cid,
+            stream_id: String(state.stream_id || ''),
+            assistant_index: nextAssistantIndex
+        });
+    }
+
+    const latestState = getConversationStreamState(cid) || state;
+    if (latestState.controller && !latestState.monitoring && !isAbortControllerAborted(latestState.controller)) {
+        console.debug('[StreamAttach] active stream reader is already bound', {
+            conversation_id: cid,
+            stream_id: String(latestState.stream_id || '')
+        });
         syncGenerationStateForCurrentConversation();
         return;
     }
 
     void resumeActiveStreamAfterReload({
         force: true,
-        state,
+        state: latestState,
         conversationId: cid,
         allowSwitch: false,
         showToast: false
@@ -13345,6 +13559,64 @@ function patchActiveStreamResumeState(patch) {
     saveActiveStreamResumeState(merged);
 }
 
+function clearStreamAttachRetry(conversationId) {
+    const cid = String(conversationId || '').trim();
+    if (!cid) return;
+
+    const timer = streamAttachRetryTimers.get(cid);
+    if (timer) {
+        clearTimeout(timer);
+    }
+    streamAttachRetryTimers.delete(cid);
+}
+
+function clearAllStreamAttachRetries() {
+    streamAttachRetryTimers.forEach((timer) => {
+        if (timer) clearTimeout(timer);
+    });
+    streamAttachRetryTimers.clear();
+}
+
+function scheduleStreamAttachRetry(conversationId, reason = 'pending_stream_id', attempt = 1) {
+    const cid = String(conversationId || '').trim();
+    if (!cid || !isCurrentConversation(cid)) return;
+    if (streamAttachRetryTimers.has(cid)) return;
+
+    const safeAttempt = Math.max(1, Number(attempt) || 1);
+    const delayMs = Math.min(1200, STREAM_ATTACH_RETRY_DELAY_MS * safeAttempt);
+    const timer = setTimeout(async () => {
+        streamAttachRetryTimers.delete(cid);
+
+        if (!isCurrentConversation(cid)) return;
+
+        await syncStoredConversationStreamStatus({ conversationIds: [cid] });
+        const latestState = getConversationStreamState(cid);
+        const latestStatus = String(latestState && latestState.status || '').trim();
+        const latestStreamId = String(latestState && latestState.stream_id || '').trim();
+
+        if (latestStatus === 'running' && latestStreamId) {
+            attachRunningStreamToCurrentConversation(cid);
+            return;
+        }
+
+        if (latestStatus === 'running' && safeAttempt < STREAM_ATTACH_RETRY_MAX) {
+            scheduleStreamAttachRetry(cid, reason, safeAttempt + 1);
+            return;
+        }
+
+        console.error('[StreamAttach] stream id still unresolved for running conversation', {
+            conversation_id: cid,
+            reason: String(reason || ''),
+            attempt: safeAttempt,
+            status: latestStatus || 'none',
+            has_state: !!latestState
+        });
+        syncGenerationStateForCurrentConversation();
+    }, delayMs);
+
+    streamAttachRetryTimers.set(cid, timer);
+}
+
 function clearActiveStreamResumeState() {
     try {
         localStorage.removeItem(STREAM_RESUME_STATE_KEY);
@@ -13353,30 +13625,196 @@ function clearActiveStreamResumeState() {
     }
 }
 
+function normalizeStreamMessageIndex(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) return null;
+    return Math.floor(n);
+}
+
+function readStreamRegenerateFlag(source, defaultValue = false) {
+    const src = (source && typeof source === 'object') ? source : {};
+    if (Object.prototype.hasOwnProperty.call(src, 'is_regenerate')) {
+        return !!src.is_regenerate;
+    }
+    if (Object.prototype.hasOwnProperty.call(src, 'isRegenerate')) {
+        return !!src.isRegenerate;
+    }
+    return !!defaultValue;
+}
+
+function readStreamAssistantIndexFromMeta(source, fallback = null) {
+    const src = (source && typeof source === 'object') ? source : {};
+    return normalizeStreamMessageIndex(src.assistant_index)
+        ?? normalizeStreamMessageIndex(src.assistantIndex)
+        ?? normalizeStreamMessageIndex(fallback);
+}
+
+function readStreamRegenerateIndexFromMeta(source, fallback = null) {
+    const src = (source && typeof source === 'object') ? source : {};
+    return normalizeStreamMessageIndex(src.regenerate_index)
+        ?? normalizeStreamMessageIndex(src.regenerateIndex)
+        ?? normalizeStreamMessageIndex(fallback);
+}
+
+function isAbortControllerAborted(controller) {
+    return !!(controller && controller.signal && controller.signal.aborted);
+}
+
+function markStreamControllerDetachOnly(controller, context = {}) {
+    if (!controller) return false;
+    if (isAbortControllerAborted(controller)) return false;
+
+    try {
+        controller.__nexoraDetachOnly = true;
+        controller.__nexoraSuppressDetachAutoAttach = !!context.suppressAutoAttach;
+        controller.abort();
+        console.debug('[StreamDetach] detached visible stream reader', {
+            conversation_id: String(context.conversation_id || ''),
+            stream_id: String(context.stream_id || ''),
+            reason: String(context.reason || 'navigation'),
+            suppress_auto_attach: !!context.suppressAutoAttach
+        });
+        return true;
+    } catch (abortError) {
+        console.error('[StreamDetach] abort visible stream reader failed', {
+            conversation_id: String(context.conversation_id || ''),
+            stream_id: String(context.stream_id || ''),
+            error: abortError
+        });
+        return false;
+    }
+}
+
+function shouldAutoAttachDetachedStream(controller) {
+    return !(controller && controller.__nexoraSuppressDetachAutoAttach);
+}
+
 function detachCurrentVisibleStreamForNavigation(nextConversationId = '') {
     const activeCid = String(currentConversationId || '').trim();
     const nextCid = String(nextConversationId || '').trim();
     if (!activeCid || (nextCid && activeCid === nextCid)) return;
 
     const state = getConversationStreamState(activeCid);
-    const controller = (state && state.controller) || currentAbortController;
-    if (!controller) return;
+    if (state && String(state.status || '') === 'running') {
+        const streamId = String(state.stream_id || '').trim();
+        const controller = state.controller || null;
+        const patch = {
+            status: 'running',
+            monitoring: false
+        };
+
+        if (streamId && controller) {
+            markStreamControllerDetachOnly(controller, {
+                conversation_id: activeCid,
+                stream_id: streamId,
+                reason: 'conversation_navigation'
+            });
+            patch.controller = null;
+        } else if (controller && !isAbortControllerAborted(controller)) {
+            try { controller.abort(); } catch (_) {}
+            patch.controller = null;
+        }
+
+        const latestState = setConversationStreamState(activeCid, patch) || state;
+
+        if (streamId) {
+            attachStreamSessionMonitor({
+                ...latestState,
+                conversation_id: activeCid,
+                stream_id: streamId,
+                controller: null,
+                monitoring: false
+            });
+        }
+    }
+}
+
+function detachVisibleStreamReaderBeforeConversationRender(conversationId = '') {
+    const cid = String(conversationId || '').trim();
+    if (!cid) return;
+
+    const state = getConversationStreamState(cid);
+    if (!state || String(state.status || '') !== 'running') return;
+
+    const controller = state.controller || null;
+    if (!controller || isAbortControllerAborted(controller)) return;
+
+    const streamId = String(state.stream_id || '').trim();
+    const patch = {
+        status: 'running',
+        controller: null,
+        monitoring: false
+    };
+
+    if (streamId && !state.monitoring) {
+        markStreamControllerDetachOnly(controller, {
+            conversation_id: cid,
+            stream_id: streamId,
+            reason: 'conversation_panel_reload',
+            suppressAutoAttach: true
+        });
+        setConversationStreamState(cid, patch);
+        return;
+    }
 
     try {
-        controller.__nexoraDetachOnly = true;
         controller.abort();
-    } catch (_) {}
-
-    if (state && String(state.status || '') === 'running') {
-        setConversationStreamState(activeCid, {
-            controller: null,
-            monitoring: false
+    } catch (abortError) {
+        console.error('[StreamDetach] abort stale stream reader before conversation render failed', {
+            conversation_id: cid,
+            stream_id: streamId,
+            monitoring: !!state.monitoring,
+            error: abortError
         });
     }
 
-    if (currentAbortController === controller) {
-        currentAbortController = null;
+    setConversationStreamState(cid, patch);
+}
+
+function attachDetachedStreamConsumer(conversationId, state = null) {
+    const cid = String(conversationId || '').trim();
+    if (!cid) return;
+
+    const latestState = normalizeConversationStreamState(state || getConversationStreamState(cid));
+    if (!latestState || !String(latestState.stream_id || '').trim()) return;
+
+    const detachedState = {
+        ...latestState,
+        conversation_id: cid,
+        controller: null,
+        monitoring: false
+    };
+
+    if (isCurrentConversation(cid)) {
+        const existingState = getConversationStreamState(cid);
+        if (
+            existingState
+            && existingState.monitoring
+            && existingState.controller
+            && !isAbortControllerAborted(existingState.controller)
+        ) {
+            try {
+                existingState.controller.abort();
+            } catch (abortError) {
+                console.error('[StreamAttach] abort background monitor for foreground takeover failed', {
+                    conversation_id: cid,
+                    stream_id: String(existingState.stream_id || ''),
+                    error: abortError
+                });
+            }
+        }
+
+        void resumeActiveStreamAfterReload({
+            force: true,
+            state: detachedState,
+            conversationId: cid,
+            allowSwitch: false,
+            showToast: false
+        });
+        return;
     }
+
+    attachStreamSessionMonitor(detachedState);
 }
 
 function normalizeConversationStreamState(raw) {
@@ -13385,12 +13823,19 @@ function normalizeConversationStreamState(raw) {
     const streamId = String(src.stream_id || src.streamId || '').trim();
     const status = String(src.status || (streamId ? 'running' : '')).trim().toLowerCase();
     if (!conversationId) return null;
+    const assistantIndex = normalizeStreamMessageIndex(src.assistant_index);
+    const isRegenerate = readStreamRegenerateFlag(src, false);
+    const regenerateIndex = isRegenerate
+        ? (normalizeStreamMessageIndex(src.regenerate_index) ?? assistantIndex)
+        : null;
     return {
         conversation_id: conversationId,
         stream_id: streamId,
         status: status === 'done' ? 'done' : 'running',
         unread: !!src.unread,
-        assistant_index: Number.isFinite(Number(src.assistant_index)) ? Number(src.assistant_index) : null,
+        assistant_index: assistantIndex,
+        is_regenerate: isRegenerate,
+        regenerate_index: regenerateIndex,
         started_at: Number.isFinite(Number(src.started_at)) ? Number(src.started_at) : Date.now(),
         updated_at: Number.isFinite(Number(src.updated_at)) ? Number(src.updated_at) : Date.now(),
         last_seq: Number.isFinite(Number(src.last_seq)) ? Number(src.last_seq) : 0,
@@ -13410,6 +13855,8 @@ function serializeConversationStreamState(state) {
         status: normalized.status,
         unread: !!normalized.unread,
         assistant_index: normalized.assistant_index,
+        is_regenerate: !!normalized.is_regenerate,
+        regenerate_index: normalized.regenerate_index,
         started_at: normalized.started_at,
         updated_at: normalized.updated_at,
         last_seq: normalized.last_seq,
@@ -13507,6 +13954,7 @@ function setConversationStreamState(conversationId, patch = {}) {
 function removeConversationStreamState(conversationId) {
     const cid = String(conversationId || '').trim();
     if (!cid) return;
+    clearStreamAttachRetry(cid);
     conversationStreamStates.delete(cid);
     persistConversationStreamStates();
     syncGenerationStateForCurrentConversation({ render: false });
@@ -13554,6 +14002,7 @@ function isCurrentConversation(conversationId) {
 function markConversationStreamFinished(conversationId, options = {}) {
     const cid = String(conversationId || '').trim();
     if (!cid) return;
+    clearStreamAttachRetry(cid);
     const opts = (options && typeof options === 'object') ? options : {};
     const activeCid = String(currentConversationId || '').trim();
     if (cid && activeCid === cid && !opts.forceUnread) {
@@ -13568,6 +14017,14 @@ function markConversationStreamFinished(conversationId, options = {}) {
         stopping: false,
         error: String(opts.error || '').trim()
     });
+}
+
+function isTerminalStreamSessionChunk(chunk) {
+    if (!chunk || typeof chunk !== 'object') return false;
+    if (String(chunk.type || '').trim() !== 'stream_session') return false;
+
+    const status = String(chunk.status || '').trim().toLowerCase();
+    return status === 'done' || chunk.done === true;
 }
 
 function markConversationStreamRead(conversationId) {
@@ -13614,12 +14071,23 @@ function applyStreamSessionMetaRows(rows, sourceConversationId = '') {
         const existing = getConversationStreamState(cid) || {};
         const sameStream = String(existing.stream_id || '').trim() === sid;
         if (status === 'running') {
+            const metaIsRegenerate = readStreamRegenerateFlag(meta, sameStream ? !!existing.is_regenerate : false);
+            const metaAssistantIndex = readStreamAssistantIndexFromMeta(
+                meta,
+                sameStream ? existing.assistant_index : null
+            );
+            const metaRegenerateIndex = metaIsRegenerate
+                ? readStreamRegenerateIndexFromMeta(meta, sameStream ? existing.regenerate_index : metaAssistantIndex)
+                : null;
+
             setConversationStreamState(cid, {
                 conversation_id: cid,
                 stream_id: sid,
                 status: 'running',
                 unread: !!existing.unread,
-                assistant_index: Number.isFinite(Number(existing.assistant_index)) ? Number(existing.assistant_index) : null,
+                is_regenerate: metaIsRegenerate,
+                assistant_index: metaAssistantIndex,
+                regenerate_index: metaRegenerateIndex,
                 last_seq: Number.isFinite(Number(meta.last_seq)) ? Number(meta.last_seq) : Number(existing.last_seq || 0),
                 stopping: !!existing.stopping,
                 error: String(meta.error || existing.error || '').trim()
@@ -13627,7 +14095,7 @@ function applyStreamSessionMetaRows(rows, sourceConversationId = '') {
             return;
         }
 
-        if (sameStream || String(existing.status || '') === 'running') {
+        if (sameStream) {
             markConversationStreamFinished(cid, {
                 error: String(meta.error || '').trim()
             });
@@ -13642,8 +14110,9 @@ async function syncStoredConversationStreamStatus(options = {}) {
         ? opts.conversationIds.map((item) => String(item || '').trim()).filter(Boolean)
         : [];
     if (!streamIds.length && !conversationIds.length) return;
-    if (backgroundStreamStatusSyncInFlight) return;
+    if (backgroundStreamStatusSyncInFlight && !opts.force) return;
     backgroundStreamStatusSyncInFlight = true;
+    const finishedVisibleConversationIds = [];
     try {
         const res = await fetch('/api/chat/stream/status', {
             method: 'POST',
@@ -13657,11 +14126,23 @@ async function syncStoredConversationStreamStatus(options = {}) {
         if (!res.ok || !data || data.success === false) return;
         const rows = Array.isArray(data.sessions) ? data.sessions : [];
         const metaById = new Map(rows.map((row) => [String(row && row.stream_id || '').trim(), row]));
+        const metaByCid = new Map(rows.filter((row) => row && row.conversation_id).map((row) => [String(row.conversation_id || '').trim(), row]));
         conversationStreamStates.forEach((state, cid) => {
             if (!state || String(state.status || '') !== 'running') return;
             if (state.controller) return;
             const sid = String(state.stream_id || '').trim();
-            const meta = sid ? metaById.get(sid) : null;
+            let meta = sid ? metaById.get(sid) : null;
+            if (!meta && !sid) {
+                // 本地无 stream_id，尝试从服务器响应中通过 conversation_id 发现
+                const discovered = metaByCid.get(cid) || null;
+                if (discovered && String(discovered.status || '').trim().toLowerCase() === 'running') {
+                    const discoveredSid = String(discovered.stream_id || '').trim();
+                    if (discoveredSid) {
+                        setConversationStreamState(cid, { stream_id: discoveredSid });
+                        meta = discovered;
+                    }
+                }
+            }
             if (!meta) {
                 markConversationStreamFinished(cid, { error: 'stream session not found' });
                 return;
@@ -13669,6 +14150,9 @@ async function syncStoredConversationStreamStatus(options = {}) {
             const status = String(meta.status || '').trim().toLowerCase();
             if (status !== 'running') {
                 markConversationStreamFinished(cid, { error: String(meta.error || '') });
+                if (isCurrentConversation(cid)) {
+                    finishedVisibleConversationIds.push(cid);
+                }
                 return;
             }
             const metaCid = String(meta.conversation_id || cid).trim() || cid;
@@ -13681,6 +14165,9 @@ async function syncStoredConversationStreamStatus(options = {}) {
             });
         });
         applyStreamSessionMetaRows(rows);
+        for (const cid of finishedVisibleConversationIds) {
+            await renderConversationSnapshotFromServer(cid, { instant: true, silent: true });
+        }
     } catch (_) {
         // Network errors should not clear local stream state.
     } finally {
@@ -13688,12 +14175,245 @@ async function syncStoredConversationStreamStatus(options = {}) {
     }
 }
 
-function startBackgroundStreamMonitors() {
-    if (backgroundStreamStatusPollTimer) return;
-    backgroundStreamStatusPollTimer = setInterval(() => {
-        if (!getConversationStreamIdsForStatusSync().length) return;
-        void syncStoredConversationStreamStatus();
-    }, 2500);
+function getStoredRunningStreamStates() {
+    const rows = [];
+    conversationStreamStates.forEach((state) => {
+        const normalized = normalizeConversationStreamState(state);
+        if (!normalized) return;
+        if (String(normalized.status || '') !== 'running') return;
+        rows.push(normalized);
+    });
+    return rows;
+}
+
+function startStoredStreamSessionMonitors(options = {}) {
+    const opts = (options && typeof options === 'object') ? options : {};
+    const skipConversationId = String(opts.skipConversationId || '').trim();
+    getStoredRunningStreamStates().forEach((state) => {
+        const cid = String(state.conversation_id || '').trim();
+        if (skipConversationId && cid === skipConversationId) return;
+        if (state.controller) return;
+        attachStreamSessionMonitor(state);
+    });
+}
+
+async function tickConversationStreamStatusSync() {
+    const runningStates = getStoredRunningStreamStates();
+    if (!runningStates.length) return;
+
+    startStoredStreamSessionMonitors({
+        skipConversationId: String(currentConversationId || '').trim()
+    });
+    await syncStoredConversationStreamStatus();
+}
+
+function startConversationStreamStatusSync() {
+    if (streamStatusSyncTimer) return;
+
+    streamStatusSyncTimer = setInterval(() => {
+        void tickConversationStreamStatusSync();
+    }, STREAM_STATUS_SYNC_INTERVAL_MS);
+}
+
+function stopConversationStreamStatusSync() {
+    if (!streamStatusSyncTimer) return;
+
+    clearInterval(streamStatusSyncTimer);
+    streamStatusSyncTimer = null;
+}
+
+function attachStreamSessionMonitor(state) {
+    const normalized = normalizeConversationStreamState(state);
+    if (!normalized || !normalized.stream_id) return;
+
+    const streamId = String(normalized.stream_id || '').trim();
+    if (!streamId || streamSessionMonitorIds.has(streamId)) return;
+
+    streamSessionMonitorIds.add(streamId);
+    void consumeStreamSessionMonitor(normalized).finally(() => {
+        streamSessionMonitorIds.delete(streamId);
+    });
+}
+
+async function consumeStreamSessionMonitor(state) {
+    const streamId = String(state.stream_id || '').trim();
+    let monitorConversationId = String(state.conversation_id || '').trim();
+    const fromSeq = Number.isFinite(Number(state.last_seq)) ? Number(state.last_seq) : 0;
+    const controller = new AbortController();
+    let monitorCompleted = false;
+
+    if (monitorConversationId) {
+        setConversationStreamState(monitorConversationId, {
+            controller,
+            monitoring: true,
+            status: 'running'
+        });
+    }
+
+    try {
+        const response = await fetch('/api/chat/stream/reconnect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify({
+                stream_id: streamId,
+                from_seq: fromSeq
+            }),
+            signal: controller.signal
+        });
+
+        if (!response.ok || !response.body) {
+            throw new Error(`stream monitor reconnect failed: HTTP ${response.status}`);
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { value, done } = await reader.read();
+
+            if (value) {
+                buffer += decoder.decode(value, { stream: !done });
+            }
+
+            if (done) {
+                buffer += decoder.decode();
+            }
+
+            const lines = buffer.split('\n');
+            buffer = done ? '' : (lines.pop() || '');
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+
+                const payloadText = line.slice(6);
+                if (payloadText === '[DONE]') {
+                    monitorCompleted = true;
+                    if (monitorConversationId) {
+                        markConversationStreamFinished(monitorConversationId);
+                    }
+                    continue;
+                }
+
+                let chunk = null;
+
+                try {
+                    chunk = JSON.parse(payloadText);
+                } catch (parseError) {
+                    console.error('[StreamMonitor] invalid SSE payload', parseError, payloadText);
+                    continue;
+                }
+
+                if (!chunk || typeof chunk !== 'object') continue;
+
+                const incomingCid = String(chunk.conversation_id || '').trim();
+                if (incomingCid && incomingCid !== monitorConversationId) {
+                    moveConversationStreamState(monitorConversationId, incomingCid);
+                    monitorConversationId = incomingCid;
+                } else if (incomingCid) {
+                    monitorConversationId = incomingCid;
+                }
+
+                if (Number.isFinite(Number(chunk._stream_seq)) && monitorConversationId) {
+                    setConversationStreamState(monitorConversationId, {
+                        last_seq: Number(chunk._stream_seq)
+                    });
+                }
+
+                if (chunk.type === 'stream_cancel_requested') {
+                    if (monitorConversationId) {
+                        setConversationStreamState(monitorConversationId, {
+                            stopping: true,
+                            monitoring: true
+                        });
+                    }
+                    continue;
+                }
+
+                if (chunk.type === 'stream_session') {
+                    const sid = String(chunk.stream_id || streamId || '').trim();
+                    const sessionCid = String(chunk.conversation_id || monitorConversationId || '').trim();
+
+                    if (sessionCid && sessionCid !== monitorConversationId) {
+                        moveConversationStreamState(monitorConversationId, sessionCid);
+                        monitorConversationId = sessionCid;
+                    } else if (sessionCid) {
+                        monitorConversationId = sessionCid;
+                    }
+
+                    if (monitorConversationId) {
+                        const previousState = getConversationStreamState(monitorConversationId) || {};
+                        const sameStream = String(previousState.stream_id || '').trim() === sid;
+                        const sessionIsRegenerate = readStreamRegenerateFlag(chunk, sameStream ? !!previousState.is_regenerate : false);
+                        const sessionAssistantIndex = readStreamAssistantIndexFromMeta(
+                            chunk,
+                            sameStream ? previousState.assistant_index : null
+                        );
+                        const sessionRegenerateIndex = sessionIsRegenerate
+                            ? readStreamRegenerateIndexFromMeta(chunk, sameStream ? previousState.regenerate_index : sessionAssistantIndex)
+                            : null;
+
+                        setConversationStreamState(monitorConversationId, {
+                            stream_id: sid,
+                            status: 'running',
+                            is_regenerate: sessionIsRegenerate,
+                            assistant_index: sessionAssistantIndex,
+                            regenerate_index: sessionRegenerateIndex,
+                            controller,
+                            monitoring: true,
+                            stopping: !!chunk.cancel_requested
+                        });
+                    }
+
+                    if (isTerminalStreamSessionChunk(chunk)) {
+                        monitorCompleted = true;
+                        if (monitorConversationId) {
+                            markConversationStreamFinished(monitorConversationId, {
+                                error: String(chunk.error || '').trim()
+                            });
+                        }
+                    }
+                }
+            }
+
+            if (done) break;
+        }
+    } catch (error) {
+        if (error && error.name === 'AbortError') return;
+
+        console.error('[StreamMonitor] SSE monitor failed', {
+            stream_id: streamId,
+            conversation_id: monitorConversationId,
+            error: String((error && error.message) || error || '')
+        });
+
+        if (monitorConversationId) {
+            setConversationStreamState(monitorConversationId, {
+                controller: null,
+                monitoring: false,
+                error: String((error && error.message) || error || 'stream monitor failed')
+            });
+        }
+    } finally {
+        if (monitorConversationId) {
+            const latest = getConversationStreamState(monitorConversationId);
+            if (latest && latest.controller === controller) {
+                setConversationStreamState(monitorConversationId, {
+                    controller: null,
+                    monitoring: false
+                });
+            }
+        }
+
+        loadConversations();
+        if (monitorCompleted && monitorConversationId && isCurrentConversation(monitorConversationId)) {
+            await renderConversationSnapshotFromServer(monitorConversationId, {
+                instant: true,
+                silent: true
+            });
+        }
+    }
 }
 
 function findAssistantIndexAfterUserMessage(userIndex) {
@@ -14179,6 +14899,7 @@ async function maybeConfirmContextCompressionBeforeSend(modelId, forceRequested 
 
 async function sendMessage(options = {}) {
     const isAutoContinue = !!(options && options.autoContinue);
+    const useExistingUserMessage = !!(options && options.useExistingUserMessage);
     const autoContinueKind = String(options && options.autoContinueKind ? options.autoContinueKind : '').trim();
     const isConfirmationAutoContinue = autoContinueKind === 'confirm';
     const overrideDisplayContent = String(options && options.displayContentOverride ? options.displayContentOverride : '').trim();
@@ -14350,7 +15071,7 @@ async function sendMessage(options = {}) {
     }
 
     // Add User Message to UI
-    if (!isAutoContinue) {
+    if (!isAutoContinue && !useExistingUserMessage) {
         appendMessage({
             role: 'user',
             content: displayContent,
@@ -14428,7 +15149,7 @@ async function sendMessage(options = {}) {
         user_attachments: pendingUserAttachments,
         allow_history_images: allowHistoryImages,
         include_context: !!tokenBudgetState.includeContext,
-        skip_user_message: isAutoContinue
+        skip_user_message: isAutoContinue || useExistingUserMessage
     };
     window.__nexoraInterviewPending = false;
     if (options && options.puzzle_submission) {
@@ -14462,11 +15183,11 @@ async function sendMessage(options = {}) {
     uploadedFileIds = [];
     updateFilePreview();
 
-    latencyProbe.mark('persist_user_partial_skipped', {
+    latencyProbe.mark('server_persists_user_message', {
         reason: 'stream_worker_persists_user_message',
         conversation_id: String(currentConversationId || '')
     });
-    payload.skip_user_message = !!isAutoContinue;
+    payload.skip_user_message = !!(isAutoContinue || useExistingUserMessage);
 
     latencyProbe.mark('ready_for_stream_fetch', {
         conversation_id: String(currentConversationId || ''),
@@ -14481,6 +15202,8 @@ async function sendMessage(options = {}) {
         status: 'running',
         unread: false,
         assistant_index: null,
+        is_regenerate: false,
+        regenerate_index: null,
         started_at: Date.now(),
         last_seq: 0,
         stopping: false
@@ -14493,7 +15216,7 @@ async function sendMessage(options = {}) {
     
     // Create Placeholder for AI Response
     const aiMsgId = Date.now().toString(); // Temporary ID
-    const aiMsgDiv = appendMessage({ role: 'assistant', content: '', id: aiMsgId, pending: true });
+    let aiMsgDiv = appendMessage({ role: 'assistant', content: '', id: aiMsgId, pending: true });
     notifyLearningSidebarBridge();
     const aiMsgIndex = Number(aiMsgDiv && aiMsgDiv.dataset ? aiMsgDiv.dataset.index : NaN);
     setConversationStreamState(streamConversationId, {
@@ -15258,6 +15981,67 @@ async function sendMessage(options = {}) {
             placeLearningCardsBelowToolChain(aiMsgDiv);
         } catch (_) {}
     }
+
+    function ensureVisibleAssistantStreamBinding() {
+        if (!isStreamVisible()) return aiMsgDiv;
+        if (aiMsgDiv && aiMsgDiv.isConnected) return aiMsgDiv;
+
+        let visibleDiv = Number.isFinite(aiMsgIndex)
+            ? document.querySelector(`.message.assistant[data-index="${aiMsgIndex}"]`)
+            : null;
+
+        if (!visibleDiv) {
+            visibleDiv = appendMessage(
+                { role: 'assistant', content: '', id: aiMsgId, pending: true },
+                Number.isFinite(aiMsgIndex) ? aiMsgIndex : undefined
+            );
+        }
+
+        if (!visibleDiv) return aiMsgDiv;
+
+        aiMsgDiv = visibleDiv;
+        aiMsgDiv.classList.add('pending');
+        aiMsgDiv.dataset.localOnly = '1';
+
+        if (!aiMsgDiv.__citationUrlMap) {
+            aiMsgDiv.__citationUrlMap = {};
+        }
+
+        aiMsgDiv.__toolCallState = {
+            seq: 0,
+            pendingByName: {},
+            callIdByIndex: {},
+            pendingQueue: [],
+            activeAnonCallId: ''
+        };
+        updateMessageModelBadge(aiMsgDiv, modelBadgeState);
+
+        currentContentSpan = null;
+        currentSegmentContent = String(currentFullContent || '');
+
+        if (currentSegmentContent) {
+            currentContentSpan = createContentSpan(aiMsgDiv);
+            currentContentSpan.dataset.streamRaw = currentSegmentContent;
+            currentContentSpan.dataset.streamLive = '1';
+            const streamState = ensureStreamBlockState(currentContentSpan);
+
+            if (streamState) {
+                streamState.liveRaw = currentSegmentContent;
+                flushStableStreamTail(currentContentSpan, aiMsgDiv.__citationUrlMap || {}, false);
+            } else {
+                renderStreamingContentSegment(aiMsgDiv, currentContentSpan, currentSegmentContent, 'rebind-live-segment');
+            }
+        }
+
+        console.debug('[StreamAttach] rebound visible assistant node', {
+            conversation_id: streamConversationId,
+            stream_id: String((getConversationStreamState(streamConversationId) || {}).stream_id || ''),
+            assistant_index: Number.isFinite(aiMsgIndex) ? aiMsgIndex : null,
+            content_chars: currentSegmentContent.length
+        });
+
+        return aiMsgDiv;
+    }
     
     // Create new abort controller
     const streamAbortController = new AbortController();
@@ -15281,6 +16065,37 @@ async function sendMessage(options = {}) {
             content_type: String(res.headers.get('content-type') || '')
         });
         latencyProbe.flush('stream_fetch_headers');
+
+        const headerStreamId = String(res.headers.get('X-Stream-Id') || '').trim();
+        if (headerStreamId) {
+            saveActiveStreamResumeState({
+                stream_id: headerStreamId,
+                conversation_id: streamConversationId,
+                assistant_index: Number.isFinite(aiMsgIndex) ? aiMsgIndex : null,
+                is_regenerate: false,
+                regenerate_index: null,
+                started_at: Date.now(),
+                last_seq: 0
+            });
+            setConversationStreamState(streamConversationId, {
+                stream_id: headerStreamId,
+                status: 'running',
+                unread: false,
+                assistant_index: Number.isFinite(aiMsgIndex) ? aiMsgIndex : null,
+                is_regenerate: false,
+                regenerate_index: null,
+                last_seq: 0,
+                stopping: false
+            });
+
+            if (!isStreamVisible()) {
+                markStreamControllerDetachOnly(streamAbortController, {
+                    conversation_id: streamConversationId,
+                    stream_id: headerStreamId,
+                    reason: 'headers_after_navigation'
+                });
+            }
+        }
 
         if (!res.ok) {
             const errMsg = await readErrorMessageFromResponse(res, `HTTP ${res.status}`);
@@ -15324,6 +16139,21 @@ async function sendMessage(options = {}) {
                         
                         if (chunk.type === 'stream_session') {
                             const sid = String(chunk.stream_id || '').trim();
+                            if (isTerminalStreamSessionChunk(chunk)) {
+                                const finalCid = String(chunk.conversation_id || streamConversationId || currentConversationId || '').trim();
+                                if (finalCid && finalCid !== streamConversationId) {
+                                    moveConversationStreamState(streamConversationId, finalCid);
+                                    streamConversationId = finalCid;
+                                } else if (finalCid) {
+                                    streamConversationId = finalCid;
+                                }
+                                streamCompleted = true;
+                                clearActiveStreamResumeState();
+                                markConversationStreamFinished(streamConversationId, {
+                                    error: String(chunk.error || '').trim()
+                                });
+                                continue;
+                            }
                             if (sid) {
                                 const sessionCid = String(chunk.conversation_id || streamConversationId || currentConversationId || '').trim();
                                 if (sessionCid && sessionCid !== streamConversationId) {
@@ -15336,6 +16166,8 @@ async function sendMessage(options = {}) {
                                     stream_id: sid,
                                     conversation_id: String(chunk.conversation_id || streamConversationId || currentConversationId || '').trim(),
                                     assistant_index: Number.isFinite(aiMsgIndex) ? aiMsgIndex : null,
+                                    is_regenerate: false,
+                                    regenerate_index: null,
                                     started_at: Date.now(),
                                     last_seq: 0
                                 });
@@ -15344,9 +16176,19 @@ async function sendMessage(options = {}) {
                                     status: 'running',
                                     unread: false,
                                     assistant_index: Number.isFinite(aiMsgIndex) ? aiMsgIndex : null,
+                                    is_regenerate: false,
+                                    regenerate_index: null,
                                     last_seq: 0,
                                     stopping: false
                                 });
+
+                                if (!isStreamVisible()) {
+                                    markStreamControllerDetachOnly(streamAbortController, {
+                                        conversation_id: streamConversationId,
+                                        stream_id: sid,
+                                        reason: 'session_after_navigation'
+                                    });
+                                }
                             }
                         }
 
@@ -15357,6 +16199,21 @@ async function sendMessage(options = {}) {
                             setConversationStreamState(streamConversationId, {
                                 last_seq: Number(chunk._stream_seq)
                             });
+                        }
+
+                        if (chunk.type === 'stream_cancel_requested') {
+                            streamAbortedByUser = true;
+                            setConversationStreamState(streamConversationId, {
+                                stopping: true,
+                                monitoring: false
+                            });
+                            syncGenerationStateForCurrentConversation();
+                            try {
+                                streamAbortController.abort();
+                            } catch (abortError) {
+                                console.error('[StreamCancel] abort after cancel event failed', abortError);
+                            }
+                            continue;
                         }
 
                         if (chunk.conversation_id) {
@@ -15385,6 +16242,8 @@ async function sendMessage(options = {}) {
                                 noteTokenMiniConversationId(chunk.conversation_id);
                             }
                         }
+
+                        ensureVisibleAssistantStreamBinding();
 
                         if (chunk.type === 'model_info') {
                             modelBadgeState.modelName = String(chunk.model_name || modelBadgeState.modelName || '');
@@ -15680,11 +16539,16 @@ async function sendMessage(options = {}) {
                 error: streamEndedWithError ? (streamErrorMessage || 'stream_error') : ''
             });
         } else if (streamDetachedByNavigation) {
-            setConversationStreamState(streamConversationId, {
+            const existingState = getConversationStreamState(streamConversationId);
+            const ownsController = !!(existingState && existingState.controller === streamAbortController);
+            const latestState = setConversationStreamState(streamConversationId, {
                 status: 'running',
-                controller: null,
-                monitoring: false
+                ...(ownsController ? { controller: null, monitoring: false } : {})
             });
+
+            if (shouldAutoAttachDetachedStream(streamAbortController)) {
+                attachDetachedStreamConsumer(streamConversationId, latestState);
+            }
         } else if (streamErroredRetryable) {
             setConversationStreamState(streamConversationId, {
                 status: 'running',
@@ -15695,19 +16559,8 @@ async function sendMessage(options = {}) {
         }
         syncGenerationStateForCurrentConversation();
         if (streamAbortedByUser && !streamCompleted) {
-            const saved = await persistAbortedAssistantPartial(streamConversationId, currentFullContent, {
-                modelName: model,
-                source: 'send',
-                index: Number.isFinite(aiMsgIndex) ? aiMsgIndex : null
-            });
-            aiMsgDiv.dataset.localOnly = saved ? '0' : '1';
-            if (saved) {
-                showToast('已中断，已保留当前回答');
-            } else if (String(currentFullContent || '').trim()) {
-                showToast('已中断，但保存当前回答失败');
-            } else {
-                showToast('已中断');
-            }
+            aiMsgDiv.dataset.localOnly = '1';
+            showToast('已中断，等待服务端同步结果');
         }
         if (streamEndedWithError && !streamErroredRetryable) {
             const terminalText = renderAssistantTerminalErrorMessage(
@@ -15717,15 +16570,7 @@ async function sendMessage(options = {}) {
                 streamErrorMessage || '请求失败'
             );
             currentFullContent = terminalText;
-            const saved = await persistAssistantErrorPartial(streamConversationId, currentFullContent, {
-                modelName: model,
-                source: 'send',
-                index: Number.isFinite(aiMsgIndex) ? aiMsgIndex : null,
-                errorMessage: streamErrorMessage || '请求失败',
-                errorCode: streamErrorCode || 'stream_error',
-                retryable: false
-            });
-            aiMsgDiv.dataset.localOnly = saved ? '0' : '1';
+            aiMsgDiv.dataset.localOnly = '1';
         }
         if (streamCompleted || streamAbortedByUser || (streamEndedWithError && !streamErroredRetryable)) {
             clearActiveStreamResumeState();
@@ -16802,6 +17647,41 @@ function createContentSpan(parentMsgDiv, options = {}) {
     return span;
 }
 
+function findLatestAppendableStreamContentBody(messageDiv) {
+    if (!messageDiv) return null;
+
+    const bodies = Array.from(messageDiv.querySelectorAll('.content-body')).filter((node) => {
+        return node
+            && !node.classList.contains('generated-image-result');
+    });
+    if (!bodies.length) return null;
+
+    return bodies[bodies.length - 1];
+}
+
+function prepareLatestContentBodyForStreamResume(messageDiv) {
+    const body = findLatestAppendableStreamContentBody(messageDiv);
+    if (!body) return null;
+
+    const raw = String(
+        body.dataset.streamRaw
+        || body.__sourceMarkdown
+        || ''
+    );
+    if (!raw) {
+        console.warn('[StreamResume] existing content body has no markdown source', {
+            conversation_id: String(currentConversationId || ''),
+            message_index: messageDiv && messageDiv.dataset ? String(messageDiv.dataset.index || '') : ''
+        });
+        return null;
+    }
+
+    body.dataset.streamLive = '1';
+    body.dataset.streamRaw = raw;
+    bindSourceMarkdown(body, raw);
+    return body;
+}
+
 function appendUserAttachments(contentEl, msg) {
     if (!contentEl || !msg || !msg.metadata || !Array.isArray(msg.metadata.attachments)) return;
     const allAttachments = msg.metadata.attachments.filter((att) => att && typeof att === 'object');
@@ -16994,6 +17874,9 @@ async function saveEditedUserPrompt(index, options = {}) {
         return;
     }
 
+    const operationReady = await ensureConversationPanelReadyForMutation(currentConversationId, 'edit_user_prompt');
+    if (!operationReady) return;
+
     state.saving = true;
     if (state.editBtn) state.editBtn.disabled = true;
     try {
@@ -17031,7 +17914,19 @@ async function saveEditedUserPrompt(index, options = {}) {
             ? findAssistantIndexAfterUserMessageInMessages(afterSaveSnapshot.messages, idx)
             : -1;
         if (assistantIndex < 0) {
-            showToast('提示词已更新，但未找到可重答的模型回复');
+            const afterSaveMessages = afterSaveSnapshot && Array.isArray(afterSaveSnapshot.messages)
+                ? afterSaveSnapshot.messages
+                : [];
+            if (idx === afterSaveMessages.length - 1) {
+                showToast('提示词已更新，正在生成回答');
+                await sendMessage({
+                    textOverride: nextText,
+                    displayContentOverride: nextText,
+                    useExistingUserMessage: true
+                });
+                return;
+            }
+            showToast('提示词已更新，但后端未找到可重答的模型回复');
             return;
         }
         showToast('提示词已更新，正在重新回答');
@@ -17644,19 +18539,152 @@ function renderLongtermHookBlock(hook) {
     return block;
 }
 
+function getActiveRegenerateStreamRenderPlan(conversationId) {
+    const cid = String(conversationId || currentConversationId || '').trim();
+    if (!cid) return null;
+
+    const state = getConversationStreamState(cid);
+    if (!state || String(state.status || '') !== 'running') return null;
+    if (!state.is_regenerate) return null;
+
+    const assistantIndex = normalizeStreamMessageIndex(state.assistant_index) ?? normalizeStreamMessageIndex(state.regenerate_index);
+    if (assistantIndex === null) return null;
+
+    return {
+        conversation_id: cid,
+        assistant_index: assistantIndex,
+        state
+    };
+}
+
+function buildRegeneratePendingAssistantMessage(sourceMessage, state = {}) {
+    const source = (sourceMessage && typeof sourceMessage === 'object') ? sourceMessage : {};
+    const metadataSource = (source.metadata && typeof source.metadata === 'object') ? source.metadata : {};
+    const modelName = String(
+        state.model_name
+        || source.model_name
+        || metadataSource.model_name
+        || ''
+    ).trim();
+    const metadata = {};
+
+    if (modelName) {
+        metadata.model_name = modelName;
+    }
+
+    return {
+        role: 'assistant',
+        content: '',
+        pending: true,
+        model_name: modelName,
+        metadata
+    };
+}
+
+function resolveMessagesForActiveStreamRender(messages) {
+    const rows = Array.isArray(messages) ? messages : [];
+    const plan = getActiveRegenerateStreamRenderPlan(currentConversationId);
+    if (!plan) return rows;
+
+    const assistantIndex = Number(plan.assistant_index);
+    if (assistantIndex < 0 || assistantIndex >= rows.length) {
+        console.warn('[RegenerateBranch] running stream target is outside snapshot', {
+            conversation_id: plan.conversation_id,
+            assistant_index: assistantIndex,
+            message_count: rows.length
+        });
+        return rows;
+    }
+
+    const visibleRows = rows.slice(0, assistantIndex + 1);
+    visibleRows[assistantIndex] = buildRegeneratePendingAssistantMessage(
+        rows[assistantIndex],
+        plan.state
+    );
+
+    console.debug('[RegenerateBranch] render active branch window', {
+        conversation_id: plan.conversation_id,
+        assistant_index: assistantIndex,
+        original_count: rows.length,
+        visible_count: visibleRows.length
+    });
+
+    return visibleRows;
+}
+
+function resetAssistantMessageForLiveStream(messageDiv, options = {}) {
+    if (!messageDiv) return null;
+
+    const opts = (options && typeof options === 'object') ? options : {};
+    const content = messageDiv.querySelector('.message-content');
+    const root = content || messageDiv;
+    root.querySelectorAll(
+        '.content-body,.thinking-block,.tool-usage,.add-basis-view,.model-badge,.puzzle-tool-card,.question-tool-card'
+    ).forEach((el) => el.remove());
+
+    messageDiv.__citationUrlMap = {};
+    messageDiv.__toolCallState = {
+        seq: 0,
+        pendingByName: {},
+        callIdByIndex: {},
+        pendingQueue: [],
+        activeAnonCallId: ''
+    };
+    messageDiv.__activeReasoningThinkingBlock = null;
+    messageDiv.__reasoningSegmentOpen = false;
+    messageDiv.__contentAfterGeneratedImage = false;
+    messageDiv.__generatedImageResultAnchor = null;
+    messageDiv.__generatedImageFollowupSpan = null;
+    messageDiv.__generatedImageTextPrefix = '';
+    messageDiv.classList.add('pending');
+    messageDiv.dataset.localOnly = opts.localOnly === false ? '0' : '1';
+
+    if (opts.modelBadgeState) {
+        updateMessageModelBadge(messageDiv, opts.modelBadgeState);
+    }
+
+    return messageDiv;
+}
+
+function applyRegenerateStreamDomWindow(conversationId, assistantIndex, preferredMessageDiv = null) {
+    const cid = String(conversationId || '').trim();
+    if (!cid || !isCurrentConversation(cid) || !els.messagesContainer) return preferredMessageDiv;
+
+    const idx = normalizeStreamMessageIndex(assistantIndex);
+    if (idx === null) return preferredMessageDiv;
+
+    Array.from(els.messagesContainer.querySelectorAll('.message')).forEach((row) => {
+        const rowIndex = normalizeStreamMessageIndex(row && row.dataset ? row.dataset.index : null);
+        if (rowIndex === null || rowIndex <= idx) return;
+        row.remove();
+    });
+
+    hideTurnListPopup();
+    markTurnIndicatorLayoutDirty();
+
+    return preferredMessageDiv && preferredMessageDiv.isConnected
+        ? preferredMessageDiv
+        : getMessageElementByIndex(idx, 'assistant');
+}
+
 function renderMessages(messages, noScroll, options = {}) {
     resetUserPromptInlineEditor();
+    const renderRows = resolveMessagesForActiveStreamRender(messages);
+
     // preserve welcome if empty
-    refreshConversationImageHistoryFlag(Array.isArray(messages) ? messages : []);
-        if(!messages || messages.length === 0) {
-            clearHoverProxyMessage();
-            void renderWelcomeScreen();
-            void syncLearningHeaderMode();
-            return;
-        }
+    refreshConversationImageHistoryFlag(renderRows);
+
+    if (!renderRows || renderRows.length === 0) {
         clearHoverProxyMessage();
-        clearLearningWelcomeState();
+        void renderWelcomeScreen();
         void syncLearningHeaderMode();
+        return;
+    }
+
+    clearHoverProxyMessage();
+    clearLearningWelcomeState();
+    void syncLearningHeaderMode();
+
     const opts = (options && typeof options === 'object') ? options : {};
     const instant = !!opts.instant;
     
@@ -17670,14 +18698,14 @@ function renderMessages(messages, noScroll, options = {}) {
         els.messagesContainer.style.scrollBehavior = 'auto';
     }
 
-    renderLastUserMessageIndexHint = getLastUserMessageIndexFromMessages(messages);
+    renderLastUserMessageIndexHint = getLastUserMessageIndexFromMessages(renderRows);
     isBatchRenderingMessages = true;
     try {
         els.messagesContainer.innerHTML = '';
         const _tRender0 = performance.now();
-        messages.forEach((m, i) => appendMessage(m, i));
+        renderRows.forEach((m, i) => appendMessage(m, i));
         const _tRender1 = performance.now();
-        console.log(`[renderMessages] appendMessage ×${messages.length} = ${(_tRender1-_tRender0).toFixed(1)}ms`);
+        console.log(`[renderMessages] appendMessage ×${renderRows.length} = ${(_tRender1-_tRender0).toFixed(1)}ms`);
     } finally {
         isBatchRenderingMessages = false;
         renderLastUserMessageIndexHint = -1;
@@ -17725,7 +18753,7 @@ function renderMessages(messages, noScroll, options = {}) {
     console.log(`[renderMessages] all sync work done, scheduling turnIndicator in 200ms`);
     setTimeout(() => {
         const _tTI = performance.now();
-        renderTurnIndicator(messages, { animate: false });
+        renderTurnIndicator(resolveMessagesForActiveStreamRender(renderRows), { animate: false });
         console.log(`[renderTurnIndicator] total = ${(performance.now()-_tTI).toFixed(1)}ms`);
     }, 200);
 }
@@ -18444,26 +19472,46 @@ async function startRegenerate(index) {
 
     const operationReady = await ensureConversationPanelReadyForMutation(currentConversationId, 'regenerate');
     if (!operationReady) return;
+    const regenerateConversationId = String(currentConversationId || '').trim();
     syncGenerationStateForCurrentConversation();
-    if (isConversationStreamRunning(currentConversationId)) return;
+    if (isConversationStreamRunning(regenerateConversationId)) return;
+
+    const normalizedRegenerateIndex = Number(index);
+    if (!Number.isInteger(normalizedRegenerateIndex) || normalizedRegenerateIndex < 0) {
+        showToast('重答消息索引无效');
+        return;
+    }
+
+    const targetSnapshot = await fetchConversationMessagesSnapshot(regenerateConversationId);
+    const serverMessages = targetSnapshot && Array.isArray(targetSnapshot.messages) ? targetSnapshot.messages : [];
+    const targetMessage = serverMessages[normalizedRegenerateIndex] || null;
+    const sourceUserMessage = normalizedRegenerateIndex > 0 ? serverMessages[normalizedRegenerateIndex - 1] : null;
+    const targetRole = String((targetMessage && targetMessage.role) || '').trim().toLowerCase();
+    const sourceRole = String((sourceUserMessage && sourceUserMessage.role) || '').trim().toLowerCase();
+    if (!targetSnapshot || targetRole !== 'assistant' || sourceRole !== 'user') {
+        if (targetSnapshot) {
+            renderMessages(serverMessages, true, { instant: true });
+        }
+        console.warn('[Regenerate] server target validation failed', {
+            conversation_id: regenerateConversationId,
+            regenerate_index: normalizedRegenerateIndex,
+            target_role: targetRole,
+            source_role: sourceRole,
+            server_message_count: serverMessages.length
+        });
+        showToast('对话已同步，请重新选择要重答的消息');
+        return;
+    }
     
     const regenLearningReaderContextBlocks = buildLearningReaderContextBlocks(
         (learningModeEnabled && currentConversationMode === 'learning') ? 'learning' : currentConversationMode
     );
     const toolsMode = getToolsMode();
     const enableTools = toolsMode !== 'off';
-    let regenMessageDiv = document.querySelector(`.message.assistant[data-index="${index}"]`);
-    if (!regenMessageDiv && currentConversationId) {
-        try {
-            const convRes = await fetch(`/api/conversations/${encodeURIComponent(String(currentConversationId))}`);
-            const convData = await convRes.json().catch(() => ({}));
-            if (convData && convData.success && convData.conversation && Array.isArray(convData.conversation.messages)) {
-                renderMessages(convData.conversation.messages, true, { instant: true });
-                regenMessageDiv = document.querySelector(`.message.assistant[data-index="${index}"]`);
-            }
-        } catch (_) {
-            // 同步失败时交由下方统一错误提示处理。
-        }
+    let regenMessageDiv = document.querySelector(`.message.assistant[data-index="${normalizedRegenerateIndex}"]`);
+    if (!regenMessageDiv && regenerateConversationId) {
+        renderMessages(serverMessages, true, { instant: true });
+        regenMessageDiv = document.querySelector(`.message.assistant[data-index="${normalizedRegenerateIndex}"]`);
     }
     if (!regenMessageDiv) {
         if (isDebugConsoleEnabled()) {
@@ -18472,8 +19520,8 @@ async function startRegenerate(index) {
                 stage: 'regenerate_target_missing',
                 title: 'Regenerate Target Missing',
                 payload: {
-                    conversation_id: String(currentConversationId || ''),
-                    regenerate_index: Number(index),
+                    conversation_id: regenerateConversationId,
+                    regenerate_index: normalizedRegenerateIndex,
                     reason: 'assistant_dom_not_found_after_sync'
                 }
             });
@@ -18481,7 +19529,8 @@ async function startRegenerate(index) {
         showToast('未找到可重答消息，请刷新后重试');
         return;
     }
-    const modelName = await resolveRegenerateModelName(index, regenMessageDiv);
+    regenMessageDiv.__messageData = targetMessage;
+    const modelName = await resolveRegenerateModelName(normalizedRegenerateIndex, regenMessageDiv);
     if (!modelName) return;
 
     const forceContextCompressionRequested = consumeForceContextCompressionOnce();
@@ -18492,7 +19541,7 @@ async function startRegenerate(index) {
     if (!compressionDecision.ok) return;
     const forceContextCompression = !!compressionDecision.forceCompression;
 
-    const regenUserMessageIndex = Math.max(0, Math.floor(Number(index) - 1));
+    const regenUserMessageIndex = normalizedRegenerateIndex - 1;
     const regenUserMessageDiv = getMessageElementByIndex(regenUserMessageIndex, 'user');
     const regenAttachmentPayload = buildAttachmentsPayloadFromMessage(
         regenUserMessageDiv && regenUserMessageDiv.__messageData ? regenUserMessageDiv.__messageData : null
@@ -18522,10 +19571,32 @@ async function startRegenerate(index) {
     isGenerating = true;
     updateSendButtonState();
     currentAbortController = new AbortController();
+    const regenAbortController = currentAbortController;
     clearActiveStreamResumeState();
+    setConversationStreamState(regenerateConversationId, {
+        status: 'running',
+        controller: regenAbortController,
+        assistant_index: normalizedRegenerateIndex,
+        is_regenerate: true,
+        regenerate_index: normalizedRegenerateIndex,
+        started_at: Date.now(),
+        last_seq: 0,
+        stopping: false
+    });
+    syncGenerationStateForCurrentConversation();
+    if (isCurrentConversation(regenerateConversationId)) {
+        beginTokenMiniStreaming(regenerateConversationId);
+    }
     if (regenMessageDiv) {
-        regenMessageDiv.classList.add('pending');
-        regenMessageDiv.dataset.localOnly = '1';
+        regenMessageDiv = applyRegenerateStreamDomWindow(
+            regenerateConversationId,
+            normalizedRegenerateIndex,
+            regenMessageDiv
+        );
+        resetAssistantMessageForLiveStream(regenMessageDiv, {
+            modelBadgeState,
+            localOnly: true
+        });
     }
     let streamCompleted = false;
     let streamAbortedByUser = false;
@@ -18544,10 +19615,10 @@ async function startRegenerate(index) {
             },
             credentials: 'include',
             body: JSON.stringify({
-                conversation_id: currentConversationId,
+                conversation_id: regenerateConversationId,
                 model_name: modelName,
                 is_regenerate: true,
-                regenerate_index: index,
+                regenerate_index: normalizedRegenerateIndex,
                 conversation_mode: (learningModeEnabled && currentConversationMode === 'learning') ? 'learning' : (currentConversationMode === 'longterm' ? 'longterm' : 'chat'),
                 conversation_mode_payload: currentConversationMode === 'longterm' ? {
                     task: String(currentConversationLongtermState.task || '').trim(),
@@ -18579,12 +19650,42 @@ async function startRegenerate(index) {
                 include_context: !!tokenBudgetState.includeContext,
                 force_context_compression: !!forceContextCompression
             }),
-            signal: currentAbortController.signal
+            signal: regenAbortController.signal
         });
 
         if (!response.ok) {
             const errMsg = await readErrorMessageFromResponse(response, `HTTP ${response.status}`);
             throw new Error(errMsg);
+        }
+        const headerStreamId = String(response.headers.get('X-Stream-Id') || '').trim();
+        if (headerStreamId) {
+            saveActiveStreamResumeState({
+                stream_id: headerStreamId,
+                conversation_id: regenerateConversationId,
+                assistant_index: normalizedRegenerateIndex,
+                is_regenerate: true,
+                regenerate_index: normalizedRegenerateIndex,
+                started_at: Date.now(),
+                last_seq: 0
+            });
+            setConversationStreamState(regenerateConversationId, {
+                stream_id: headerStreamId,
+                status: 'running',
+                unread: false,
+                assistant_index: normalizedRegenerateIndex,
+                is_regenerate: true,
+                regenerate_index: normalizedRegenerateIndex,
+                last_seq: 0,
+                stopping: false
+            });
+
+            if (!isCurrentConversation(regenerateConversationId)) {
+                markStreamControllerDetachOnly(regenAbortController, {
+                    conversation_id: regenerateConversationId,
+                    stream_id: headerStreamId,
+                    reason: 'regen_headers_after_navigation'
+                });
+            }
         }
         if (!isSseResponse(response)) {
             const errMsg = await readErrorMessageFromResponse(response, '服务端未返回流式响应');
@@ -18592,31 +19693,17 @@ async function startRegenerate(index) {
         }
         if (!response.body) throw new Error('stream body is empty');
         
-        // Target specific message index for regeneration
         if (regenMessageDiv) {
-            const content = regenMessageDiv.querySelector('.message-content');
-            // 清理旧内容/工具链，避免重新生成时复用历史展示节点
-            if (content) {
-                content.querySelectorAll('.content-body,.thinking-block,.tool-usage,.add-basis-view,.model-badge,.puzzle-tool-card,.question-tool-card').forEach(el => el.remove());
-            } else {
-                // fallback
-                regenMessageDiv.querySelectorAll('.content-body,.thinking-block,.tool-usage,.add-basis-view,.model-badge,.puzzle-tool-card,.question-tool-card').forEach(el => el.remove());
-            }
-            regenMessageDiv.__citationUrlMap = {};
-            regenMessageDiv.__toolCallState = {
-                seq: 0,
-                pendingByName: {},
-                callIdByIndex: {},
-                pendingQueue: [],
-                activeAnonCallId: ''
-            };
-            updateMessageModelBadge(regenMessageDiv, modelBadgeState);
+            resetAssistantMessageForLiveStream(regenMessageDiv, {
+                modelBadgeState,
+                localOnly: true
+            });
         }
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
-        const debugScopeKey = `regen:${currentConversationId || 'new'}:${index}:${Date.now()}`;
+        const debugScopeKey = `regen:${regenerateConversationId || 'new'}:${normalizedRegenerateIndex}:${Date.now()}`;
         if (forceContextCompression && isDebugConsoleEnabled()) {
             appendDebugConsoleEntry({
                 direction: 'client->local',
@@ -18624,7 +19711,7 @@ async function startRegenerate(index) {
                 title: 'Force Compression',
                 payload: {
                     applied: true,
-                    conversation_id: String(currentConversationId || ''),
+                    conversation_id: regenerateConversationId,
                     model_name: String(modelName || '')
                 }
             });
@@ -18654,17 +19741,59 @@ async function startRegenerate(index) {
                     
                     if (data.type === 'stream_session') {
                         const sid = String(data.stream_id || '').trim();
+                        if (isTerminalStreamSessionChunk(data)) {
+                            streamCompleted = true;
+                            clearActiveStreamResumeState();
+                            markConversationStreamFinished(regenerateConversationId, {
+                                error: String(data.error || '').trim()
+                            });
+                            continue;
+                        }
                         if (sid) {
                             saveActiveStreamResumeState({
                                 stream_id: sid,
-                                conversation_id: String(data.conversation_id || currentConversationId || '').trim(),
-                                assistant_index: Number(index),
+                                conversation_id: String(data.conversation_id || regenerateConversationId || '').trim(),
+                                assistant_index: normalizedRegenerateIndex,
+                                is_regenerate: true,
+                                regenerate_index: normalizedRegenerateIndex,
                                 started_at: Date.now()
                             });
+                            setConversationStreamState(regenerateConversationId, {
+                                stream_id: sid,
+                                status: 'running',
+                                unread: false,
+                                assistant_index: normalizedRegenerateIndex,
+                                is_regenerate: true,
+                                regenerate_index: normalizedRegenerateIndex,
+                                stopping: false
+                            });
+
+                            if (!isCurrentConversation(regenerateConversationId)) {
+                                markStreamControllerDetachOnly(regenAbortController, {
+                                    conversation_id: regenerateConversationId,
+                                    stream_id: sid,
+                                    reason: 'regen_session_after_navigation'
+                                });
+                            }
                         }
                     }
                     if (Number.isFinite(Number(data._stream_seq))) {
                         patchActiveStreamResumeState({ last_seq: Number(data._stream_seq) });
+                    }
+
+                    if (data.type === 'stream_cancel_requested') {
+                        streamAbortedByUser = true;
+                        setConversationStreamState(regenerateConversationId, {
+                            stopping: true,
+                            monitoring: false
+                        });
+                        syncGenerationStateForCurrentConversation();
+                        try {
+                            regenAbortController.abort();
+                        } catch (abortError) {
+                            console.error('[StreamCancel] regenerate abort after cancel event failed', abortError);
+                        }
+                        continue;
                     }
 
                     if (data.type === 'model_info') {
@@ -18705,13 +19834,13 @@ async function startRegenerate(index) {
                         if (doneContent) {
                             accumulatedContent = doneContent;
                             if (!hasRenderedContentDelta && !hasTimelineBoundary) {
-                                updateMessageDivContent(index, accumulatedContent, regenMessageDiv);
+                                updateMessageDivContent(normalizedRegenerateIndex, accumulatedContent, regenMessageDiv);
                             } else if (!hasRenderedContentDelta && hasTimelineBoundary) {
                                 needsCanonicalTimelineSync = true;
                             }
                         }
                     } else if (data.type === 'reasoning_content') {
-                        updateMessageDivThinking(index, data.content, regenMessageDiv);
+                        updateMessageDivThinking(normalizedRegenerateIndex, data.content, regenMessageDiv);
                         hasTimelineBoundary = true;
                         currentContentSpan = null;
                         currentSegmentContent = "";
@@ -18729,7 +19858,7 @@ async function startRegenerate(index) {
                         hasTimelineBoundary = true;
                         currentContentSpan = null;
                         currentSegmentContent = "";
-                        updateMessageDivTools(index, data, regenMessageDiv);
+                        updateMessageDivTools(normalizedRegenerateIndex, data, regenMessageDiv);
                     } else if (data.type === 'token_usage') {
                         onTokenStreamUsageChunk(data);
                         applyUsageChunkToBadgeState(modelBadgeUsageState, data);
@@ -18769,8 +19898,12 @@ async function startRegenerate(index) {
         
     } catch (e) {
         if (e.name === 'AbortError') {
-            streamAbortedByUser = true;
-            console.log("Generation stopped.");
+            if (regenAbortController && regenAbortController.__nexoraDetachOnly) {
+                streamDetachedByNavigation = true;
+            } else {
+                streamAbortedByUser = true;
+                console.log("Generation stopped.");
+            }
         } else {
             console.error(e);
             const errText = String((e && e.message) || e || 'unknown');
@@ -18795,8 +19928,8 @@ async function startRegenerate(index) {
         if (streamEndedTerminally && regenMessageDiv) regenMessageDiv.classList.remove('pending');
         if (streamCompleted) {
             if (regenMessageDiv) regenMessageDiv.dataset.localOnly = '0';
-            finalizeMessageRenderForIndex(index, regenMessageDiv);
-            const targetAfterStream = resolveAssistantStreamMessageDiv(index, regenMessageDiv);
+            finalizeMessageRenderForIndex(normalizedRegenerateIndex, regenMessageDiv);
+            const targetAfterStream = resolveAssistantStreamMessageDiv(normalizedRegenerateIndex, regenMessageDiv);
             const hasRenderedContent = !!(targetAfterStream && (() => {
                 const body = targetAfterStream.querySelector('.content-body');
                 if (body) {
@@ -18819,12 +19952,16 @@ async function startRegenerate(index) {
                 || !hasRenderedContent
                 || needsCanonicalTimelineSync
             );
-            if (shouldSyncFromServer && currentConversationId) {
+            if (shouldSyncFromServer && regenerateConversationId && isCurrentConversation(regenerateConversationId)) {
                 try {
-                    const convRes = await fetch(`/api/conversations/${encodeURIComponent(String(currentConversationId))}`);
+                    const convRes = await fetch(`/api/conversations/${encodeURIComponent(regenerateConversationId)}`);
                     const convData = await convRes.json().catch(() => ({}));
                     if (convData && convData.success && convData.conversation && Array.isArray(convData.conversation.messages)) {
-                        renderMessages(convData.conversation.messages, true, { instant: true });
+                        let syncMsgs = convData.conversation.messages;
+                        if (normalizedRegenerateIndex >= 0 && normalizedRegenerateIndex < syncMsgs.length) {
+                            syncMsgs = syncMsgs.slice(0, normalizedRegenerateIndex + 1);
+                        }
+                        renderMessages(syncMsgs, true, { instant: true });
                     }
                 } catch (_) {
                     // ignore canonical timeline sync errors
@@ -18832,43 +19969,63 @@ async function startRegenerate(index) {
             }
         }
         if (streamAbortedByUser && !streamCompleted) {
-            const saved = await persistAbortedAssistantPartial(currentConversationId, accumulatedContent, {
-                modelName: modelName,
-                source: 'regenerate',
-                index
-            });
-            if (regenMessageDiv) regenMessageDiv.dataset.localOnly = saved ? '0' : '1';
-            if (saved) {
-                showToast('已中断，已保留当前回答');
-            } else if (String(accumulatedContent || '').trim()) {
-                showToast('已中断，但保存当前回答失败');
-            } else {
-                showToast('已中断');
-            }
+            if (regenMessageDiv) regenMessageDiv.dataset.localOnly = '1';
+            showToast('已中断，等待服务端同步结果');
         }
         if (streamEndedWithError && !streamErroredRetryable) {
             const terminalText = renderAssistantTerminalErrorMessage(
                 regenMessageDiv,
-                index,
+                normalizedRegenerateIndex,
                 accumulatedContent,
                 streamErrorMessage || '重新回答失败'
             );
             accumulatedContent = terminalText;
-            const saved = await persistAssistantErrorPartial(currentConversationId, accumulatedContent, {
-                modelName: modelName,
-                source: 'regenerate',
-                index,
-                errorMessage: streamErrorMessage || '重新回答失败',
-                errorCode: streamErrorCode || 'stream_error',
-                retryable: false
-            });
-            if (regenMessageDiv) regenMessageDiv.dataset.localOnly = saved ? '0' : '1';
+            if (regenMessageDiv) regenMessageDiv.dataset.localOnly = '1';
         }
         if (streamCompleted || streamAbortedByUser || (streamEndedWithError && !streamErroredRetryable)) {
+            if (streamCompleted && normalizedRegenerateIndex >= 0) {
+                pendingRegenerateFilter = {
+                    conversationId: regenerateConversationId,
+                    index: normalizedRegenerateIndex
+                };
+            }
             clearActiveStreamResumeState();
+            removeConversationStreamState(regenerateConversationId);
+        } else if (streamDetachedByNavigation) {
+            const existingState = getConversationStreamState(regenerateConversationId);
+            const ownsController = !!(existingState && existingState.controller === regenAbortController);
+            const latestState = setConversationStreamState(regenerateConversationId, {
+                status: 'running',
+                ...(ownsController ? { controller: null, monitoring: false } : {})
+            });
+
+            if (shouldAutoAttachDetachedStream(regenAbortController)) {
+                attachDetachedStreamConsumer(regenerateConversationId, latestState);
+            }
+        } else if (streamErroredRetryable) {
+            setConversationStreamState(regenerateConversationId, {
+                status: 'running',
+                controller: null,
+                monitoring: false,
+                error: streamErrorMessage || ''
+            });
         }
-        if (streamEndedTerminally && currentConversationId) {
-            await renderConversationSnapshotFromServer(currentConversationId, { instant: true, silent: true });
+        if (streamEndedTerminally && regenerateConversationId && isCurrentConversation(regenerateConversationId)) {
+            await finishTokenMiniStreaming(regenerateConversationId);
+            try {
+                const convRes = await fetch(`/api/conversations/${encodeURIComponent(regenerateConversationId)}`);
+                const convData = await convRes.json().catch(() => ({}));
+                if (convData && convData.success && convData.conversation && Array.isArray(convData.conversation.messages)) {
+                    let msgs = convData.conversation.messages;
+                    if (streamEndedTerminally && normalizedRegenerateIndex >= 0 && normalizedRegenerateIndex < msgs.length) {
+                        msgs = msgs.slice(0, normalizedRegenerateIndex + 1);
+                    }
+                    renderMessages(msgs, true, { instant: true });
+                    refreshConversationImageHistoryFlag(msgs);
+                    applyTokenBudgetFromConversationMessages(msgs);
+                    await refreshTokenMiniForConversation(regenerateConversationId, { keepStreamPart: false });
+                }
+            } catch (_) {}
         }
         loadConversations();
         scheduleLearningSidebarBridgeNotify(0);
@@ -18953,7 +20110,10 @@ function renderStreamingContentSegment(messageDiv, body, rawText, source = 'stre
 
     body.dataset.streamLive = '1';
     body.dataset.streamRaw = bodyText;
-    body.innerHTML = renderMarkdownWithNewTabLinks(bodyText, { streamingMathProvisional: true });
+    body.innerHTML = renderMarkdownWithNewTabLinks(bodyText, {
+        breaks: false,
+        streamingMathProvisional: true
+    });
     bindSourceMarkdown(body, bodyText);
     highlightCode(body);
 }
@@ -18968,7 +20128,10 @@ function updateMessageDivContent(index, fullText, preferredMessageDiv = null) {
     const bodyText = resolved.text;
     
     body.dataset.streamLive = '1';
-    body.innerHTML = renderMarkdownWithNewTabLinks(bodyText, { streamingMathProvisional: true });
+    body.innerHTML = renderMarkdownWithNewTabLinks(bodyText, {
+        breaks: false,
+        streamingMathProvisional: true
+    });
     bindSourceMarkdown(body, bodyText);
     highlightCode(body);
     
@@ -19265,14 +20428,29 @@ async function resumeActiveStreamAfterReload(options = {}) {
         stopping: false
     });
 
-    let assistantIndex = Number(state.assistant_index);
-    if (!Number.isFinite(assistantIndex) || assistantIndex < 0) {
+    let assistantIndex = normalizeStreamMessageIndex(state.assistant_index)
+        ?? (state.is_regenerate ? normalizeStreamMessageIndex(state.regenerate_index) : null);
+    if (assistantIndex === null) {
         assistantIndex = els.messagesContainer
             ? els.messagesContainer.querySelectorAll('.message').length
             : 0;
     }
 
+    if (state.is_regenerate) {
+        applyRegenerateStreamDomWindow(reconnectBoundConversationId, assistantIndex);
+    }
+
     let assistantDiv = document.querySelector(`.message.assistant[data-index="${assistantIndex}"]`);
+    const isRegenerateResume = !!state.is_regenerate;
+    const hasExistingStreamContent = assistantDiv && assistantDiv.querySelector(
+        '.content-body[data-stream-live="1"], .thinking-content[data-stream-live="1"]'
+    );
+    // 只有 live DOM 才能续写；历史快照里的旧回答必须由流缓冲重建，不能继续拼接。
+    const canReuseExistingContent = !!hasExistingStreamContent;
+    let resumeFromSeq = canReuseExistingContent
+        ? (Number.isFinite(Number(state.last_seq)) ? Number(state.last_seq) : 0)
+        : 0;
+    let prefilledFromApi = false;
     if (!assistantDiv) {
         assistantDiv = appendMessage({ role: 'assistant', content: '', pending: true }, assistantIndex);
     }
@@ -19281,26 +20459,55 @@ async function resumeActiveStreamAfterReload(options = {}) {
         return;
     }
 
-    updateMessageModelBadge(assistantDiv, {
-        modelName: getStreamingModelBadgeName(),
-        searchFlag: 'unknown',
-        inputTokens: 0,
-        outputTokens: 0
-    });
-
-    const content = assistantDiv.querySelector('.message-content');
-    if (content) {
-        content.querySelectorAll('.content-body,.thinking-block,.tool-usage,.add-basis-view').forEach((el) => el.remove());
+    if (canReuseExistingContent) {
+        assistantDiv.classList.add('pending');
+    } else {
+        resetAssistantMessageForLiveStream(assistantDiv, {
+            modelBadgeState: {
+                modelName: getStreamingModelBadgeName(),
+                searchFlag: 'unknown',
+                inputTokens: 0,
+                outputTokens: 0
+            }
+        });
+        // 服务端快照无流式内容，尝试从流缓冲区获取累积内容
+        if (state.stream_id) {
+            try {
+                const accRes = await fetch(`/api/chat/stream/content?stream_id=${encodeURIComponent(state.stream_id)}`);
+                const accData = await accRes.json().catch(() => ({}));
+                if (accData && accData.success && accData.content) {
+                    const content = assistantDiv.querySelector('.message-content') || assistantDiv;
+                    const body = document.createElement('div');
+                    body.className = 'content-body';
+                    body.dataset.streamLive = '1';
+                    body.dataset.streamRaw = accData.content;
+                    body.innerHTML = renderMarkdownWithNewTabLinks(accData.content, {
+                        breaks: false,
+                        streamingMathProvisional: true
+                    });
+                    bindSourceMarkdown(body, accData.content);
+                    highlightCode(body);
+                    content.appendChild(body);
+                    resumeFromSeq = Number.isFinite(Number(accData.last_seq)) ? Number(accData.last_seq) : 0;
+                    prefilledFromApi = true;
+                }
+                if (accData && accData.success && accData.reasoning_content) {
+                    const content = assistantDiv.querySelector('.message-content') || assistantDiv;
+                    const thinkingBlock = createThinkingBlock(false);
+                    const thinkingContent = thinkingBlock.querySelector('.thinking-content');
+                    thinkingBlock.dataset.streamLive = '1';
+                    thinkingContent.dataset.streamRaw = accData.reasoning_content;
+                    thinkingContent.dataset.streamLive = '1';
+                    thinkingContent.innerHTML = renderMarkdownWithNewTabLinks(accData.reasoning_content, { breaks: false, streamingMathProvisional: true });
+                    bindSourceMarkdown(thinkingContent, accData.reasoning_content);
+                    highlightCode(thinkingContent);
+                    content.prepend(thinkingBlock);
+                }
+            } catch (_) {
+                // 缓冲读取失败时从第 0 个事件重新读取，避免旧回复内容参与续接。
+            }
+        }
     }
-    assistantDiv.__citationUrlMap = {};
-    assistantDiv.__toolCallState = {
-        seq: 0,
-        pendingByName: {},
-        callIdByIndex: {},
-        pendingQueue: [],
-        activeAnonCallId: ''
-    };
-    assistantDiv.classList.add('pending');
 
     if (opts.showToast !== false) {
         showToast('检测到未完成回复，正在重连...');
@@ -19330,6 +20537,13 @@ async function resumeActiveStreamAfterReload(options = {}) {
     let buffer = '';
     let replayCatchupSeq = 0;
     const decoder = new TextDecoder();
+    const resumeContentBody = prepareLatestContentBodyForStreamResume(assistantDiv);
+
+    if (resumeContentBody) {
+        currentContentSpan = resumeContentBody;
+        currentSegmentContent = String(resumeContentBody.dataset.streamRaw || '');
+        currentFullContent = currentSegmentContent;
+    }
 
     try {
         const response = await fetch('/api/chat/stream/reconnect', {
@@ -19337,7 +20551,7 @@ async function resumeActiveStreamAfterReload(options = {}) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 stream_id: state.stream_id,
-                from_seq: Number.isFinite(Number(opts.fromSeq)) ? Number(opts.fromSeq) : 0
+                from_seq: Number.isFinite(Number(opts.fromSeq)) ? Number(opts.fromSeq) : resumeFromSeq
             }),
             signal: reconnectAbortController.signal
         });
@@ -19355,6 +20569,7 @@ async function resumeActiveStreamAfterReload(options = {}) {
 
             let dirtiedContentSpans = new Set();
             let dirtiedThinkingBlocks = new Set();
+            let freshContentSpans = new Set();
 
             for (const line of lines) {
                 if (!line.startsWith('data: ')) continue;
@@ -19374,33 +20589,79 @@ async function resumeActiveStreamAfterReload(options = {}) {
                 if (chunk.type === 'stream_session') {
                     const sid = String(chunk.stream_id || '').trim();
                     replayCatchupSeq = Number.isFinite(Number(chunk.last_seq)) ? Number(chunk.last_seq) : 0;
+                    if (isTerminalStreamSessionChunk(chunk)) {
+                        const finalCid = String(chunk.conversation_id || reconnectStreamConversationId || currentConversationId || '').trim();
+                        if (finalCid && finalCid !== reconnectStreamConversationId) {
+                            moveConversationStreamState(reconnectStreamConversationId, finalCid);
+                            reconnectStreamConversationId = finalCid;
+                        }
+                        streamCompleted = true;
+                        clearActiveStreamResumeState();
+                        markConversationStreamFinished(reconnectStreamConversationId, {
+                            error: String(chunk.error || '').trim()
+                        });
+                        continue;
+                    }
                     if (sid) {
                         const sessionCid = String(chunk.conversation_id || reconnectStreamConversationId || currentConversationId || '').trim();
                         if (sessionCid && sessionCid !== reconnectStreamConversationId) {
                             moveConversationStreamState(reconnectStreamConversationId, sessionCid);
                             reconnectStreamConversationId = sessionCid;
                         }
+                        const previousState = getConversationStreamState(sessionCid || reconnectStreamConversationId) || {};
+                        const sameStream = String(previousState.stream_id || '').trim() === sid;
+                        const sessionIsRegenerate = readStreamRegenerateFlag(chunk, sameStream ? !!previousState.is_regenerate : !!state.is_regenerate);
+                        const sessionAssistantIndex = readStreamAssistantIndexFromMeta(
+                            chunk,
+                            sameStream ? previousState.assistant_index : assistantIndex
+                        );
+                        const sessionRegenerateIndex = sessionIsRegenerate
+                            ? readStreamRegenerateIndexFromMeta(chunk, sameStream ? previousState.regenerate_index : sessionAssistantIndex)
+                            : null;
+
                         patchActiveStreamResumeState({
                             stream_id: sid,
-                            conversation_id: sessionCid
+                            conversation_id: sessionCid,
+                            is_regenerate: sessionIsRegenerate,
+                            assistant_index: sessionAssistantIndex,
+                            regenerate_index: sessionRegenerateIndex
                         });
                         setConversationStreamState(sessionCid || reconnectStreamConversationId, {
                             stream_id: sid,
                             conversation_id: sessionCid || reconnectStreamConversationId,
                             status: 'running',
                             unread: false,
+                            is_regenerate: sessionIsRegenerate,
+                            assistant_index: sessionAssistantIndex,
+                            regenerate_index: sessionRegenerateIndex,
                             stopping: false
                         });
                     }
                 }
                 const chunkSeq = Number.isFinite(Number(chunk._stream_seq)) ? Number(chunk._stream_seq) : 0;
-                const isReplayChunk = replayCatchupSeq > 0 && chunkSeq > 0 && chunkSeq <= replayCatchupSeq;
+                const isReplayChunk = (canReuseExistingContent || prefilledFromApi) && replayCatchupSeq > 0 && chunkSeq > 0 && chunkSeq <= replayCatchupSeq;
                 if (chunkSeq > 0) {
                     patchActiveStreamResumeState({ last_seq: chunkSeq });
                     setConversationStreamState(reconnectStreamConversationId, {
                         last_seq: chunkSeq
                     });
                 }
+
+                if (chunk.type === 'stream_cancel_requested') {
+                    streamAbortedByUser = true;
+                    setConversationStreamState(reconnectStreamConversationId, {
+                        stopping: true,
+                        monitoring: false
+                    });
+                    syncGenerationStateForCurrentConversation();
+                    try {
+                        reconnectAbortController.abort();
+                    } catch (abortError) {
+                        console.error('[StreamCancel] reconnect abort after cancel event failed', abortError);
+                    }
+                    continue;
+                }
+
                 if (chunk.conversation_id) {
                     const incomingCid = String(chunk.conversation_id || '').trim();
                     patchActiveStreamResumeState({ conversation_id: incomingCid });
@@ -19434,35 +20695,40 @@ async function resumeActiveStreamAfterReload(options = {}) {
                     if (!isReplayChunk) {
                         onTokenStreamTextChunk(chunk.content);
                     }
-                    if (assistantDiv.__contentAfterGeneratedImage) {
-                        currentContentSpan = createContentSpan(assistantDiv, { afterGeneratedImage: true });
-                        currentSegmentContent = '';
-                        assistantDiv.__contentAfterGeneratedImage = false;
-                    } else if (!currentContentSpan || !currentContentSpan.isConnected) {
-                        currentContentSpan = createContentSpan(assistantDiv);
+                    if (!isReplayChunk) {
+                        if (assistantDiv.__contentAfterGeneratedImage) {
+                            currentContentSpan = createContentSpan(assistantDiv, { afterGeneratedImage: true });
+                            currentSegmentContent = '';
+                            assistantDiv.__contentAfterGeneratedImage = false;
+                        } else if (!currentContentSpan || !currentContentSpan.isConnected) {
+                            currentContentSpan = createContentSpan(assistantDiv);
+                        }
+                        currentSegmentContent += String(chunk.content || '');
+                        currentContentSpan.dataset.streamRaw = currentSegmentContent;
+                        dirtiedContentSpans.add(currentContentSpan);
+                        freshContentSpans.add(currentContentSpan);
                     }
-                    currentSegmentContent += String(chunk.content || '');
-                    currentContentSpan.dataset.streamRaw = currentSegmentContent;
-                    dirtiedContentSpans.add(currentContentSpan);
                 } else if (chunk.type === 'reasoning_content') {
                     if (!isReplayChunk) {
                         onTokenStreamReasoningChunk(chunk.content);
                     }
-                    const msgContentContainer = assistantDiv.querySelector('.message-content');
-                    let thinkingBlock = assistantDiv.__activeReasoningThinkingBlock;
-                    if(!assistantDiv.__reasoningSegmentOpen || !thinkingBlock || !thinkingBlock.isConnected || !thinkingBlock.classList.contains('reasoning-thinking-block')) {
-                        thinkingBlock = createThinkingBlock(false);
-                        msgContentContainer.appendChild(thinkingBlock);
-                        assistantDiv.__reasoningSegmentOpen = true;
-                        assistantDiv.__activeReasoningThinkingBlock = thinkingBlock;
+                    if (!isReplayChunk) {
+                        const msgContentContainer = assistantDiv.querySelector('.message-content');
+                        let thinkingBlock = assistantDiv.__activeReasoningThinkingBlock;
+                        if(!assistantDiv.__reasoningSegmentOpen || !thinkingBlock || !thinkingBlock.isConnected || !thinkingBlock.classList.contains('reasoning-thinking-block')) {
+                            thinkingBlock = createThinkingBlock(false);
+                            msgContentContainer.appendChild(thinkingBlock);
+                            assistantDiv.__reasoningSegmentOpen = true;
+                            assistantDiv.__activeReasoningThinkingBlock = thinkingBlock;
+                        }
+                        if (thinkingBlock.dataset.userToggled !== 'true') {
+                            thinkingBlock.classList.remove('collapsed');
+                        }
+                        const contentDiv = thinkingBlock.querySelector('.thinking-content');
+                        const nextRaw = `${String(contentDiv.dataset.streamRaw || '')}${String(chunk.content || '')}`;
+                        contentDiv.dataset.streamRaw = nextRaw;
+                        dirtiedThinkingBlocks.add(contentDiv);
                     }
-                    if (thinkingBlock.dataset.userToggled !== 'true') {
-                        thinkingBlock.classList.remove('collapsed');
-                    }
-                    const contentDiv = thinkingBlock.querySelector('.thinking-content');
-                    const nextRaw = `${String(contentDiv.dataset.streamRaw || '')}${String(chunk.content || '')}`;
-                    contentDiv.dataset.streamRaw = nextRaw;
-                    dirtiedThinkingBlocks.add(contentDiv);
                 } else if (chunk.type === 'prompt_token_profile') {
                     applyPromptTokenProfileChunk(chunk);
                 } else if (
@@ -19524,16 +20790,19 @@ async function resumeActiveStreamAfterReload(options = {}) {
                 scheduleLearningSidebarBridgeNotify();
             }
 
-            for (const contentDiv of dirtiedContentSpans) {
+            for (const contentDiv of freshContentSpans) {
                 const segmentRaw = contentDiv.dataset.streamRaw || '';
                 const segmentPlanInfo = applyLongtermPlanFromText(segmentRaw, { source: 'live-segment', messageDiv: assistantDiv });
                 const displaySegmentContent = String(segmentPlanInfo && segmentPlanInfo.text !== undefined ? segmentPlanInfo.text : segmentRaw || '');
                 contentDiv.dataset.streamLive = '1';
-                contentDiv.innerHTML = renderMarkdownWithNewTabLinks(displaySegmentContent, { streamingMathProvisional: true });
+                contentDiv.innerHTML = renderMarkdownWithNewTabLinks(displaySegmentContent, {
+                    breaks: false,
+                    streamingMathProvisional: true
+                });
                 bindSourceMarkdown(contentDiv, displaySegmentContent);
                 highlightCode(contentDiv);
             }
-            if (dirtiedContentSpans.size > 0 && shouldAutoScroll) {
+            if (freshContentSpans.size > 0 && shouldAutoScroll) {
                 els.messagesContainer.scrollTop = els.messagesContainer.scrollHeight;
                 syncStreamingModelBadgeEstimate(assistantDiv, {
                     modelName: getStreamingModelBadgeName(),
@@ -19614,11 +20883,16 @@ async function resumeActiveStreamAfterReload(options = {}) {
                 error: streamEndedWithError ? (streamErrorMessage || 'reconnect_error') : ''
             });
         } else if (streamDetachedByNavigation) {
-            setConversationStreamState(reconnectStreamConversationId, {
+            const existingState = getConversationStreamState(reconnectStreamConversationId);
+            const ownsController = !!(existingState && existingState.controller === reconnectAbortController);
+            const latestState = setConversationStreamState(reconnectStreamConversationId, {
                 status: 'running',
-                controller: null,
-                monitoring: false
+                ...(ownsController ? { controller: null, monitoring: false } : {})
             });
+
+            if (shouldAutoAttachDetachedStream(reconnectAbortController)) {
+                attachDetachedStreamConsumer(reconnectStreamConversationId, latestState);
+            }
         } else if (streamErroredRetryable) {
             setConversationStreamState(reconnectStreamConversationId, {
                 status: 'running',
@@ -19644,15 +20918,7 @@ async function resumeActiveStreamAfterReload(options = {}) {
                 streamErrorMessage || '重连失败'
             );
             currentFullContent = terminalText;
-            const saved = await persistAssistantErrorPartial(currentConversationId, currentFullContent, {
-                modelName: '',
-                source: 'reconnect',
-                index: assistantIndex,
-                errorMessage: streamErrorMessage || '重连失败',
-                errorCode: streamErrorCode || 'reconnect_error',
-                retryable: false
-            });
-            assistantDiv.dataset.localOnly = saved ? '0' : '1';
+            assistantDiv.dataset.localOnly = '1';
         }
         if (currentConversationMode === 'longterm') {
             currentConversationLongtermState = normalizeLongtermState({

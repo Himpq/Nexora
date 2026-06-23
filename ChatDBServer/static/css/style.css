@@ -854,8 +854,20 @@ body.learning-workspace-active #learningMainPanel.learning-main-panel {
 .thinking-content li,
 .thinking-content blockquote {
     max-width: 100%;
+    margin-top: 0;
     word-break: break-word;
     overflow-wrap: break-word;
+}
+
+.content-body p:last-child,
+.content-body ul:last-child,
+.content-body ol:last-child,
+.content-body blockquote:last-child,
+.thinking-content p:last-child,
+.thinking-content ul:last-child,
+.thinking-content ol:last-child,
+.thinking-content blockquote:last-child {
+    margin-bottom: 0;
 }
 
 .content-body a,
@@ -1019,6 +1031,42 @@ body.learning-workspace-active #learningMainPanel.learning-main-panel {
 .content-body .stream-live-tail.stream-live-raw,
 .thinking-content .stream-live-tail.stream-live-raw {
     white-space: pre-wrap;
+}
+
+.content-body .stream-rendered,
+.content-body .stream-live-tail,
+.content-body .stream-fragment,
+.thinking-content .stream-rendered,
+.thinking-content .stream-live-tail,
+.thinking-content .stream-fragment {
+    margin: 0;
+}
+
+.content-body .stream-rendered:empty,
+.content-body .stream-live-tail:empty,
+.content-body .stream-fragment:empty,
+.thinking-content .stream-rendered:empty,
+.thinking-content .stream-live-tail:empty,
+.thinking-content .stream-fragment:empty {
+    display: none;
+}
+
+.content-body .stream-rendered > :first-child,
+.content-body .stream-live-tail > :first-child,
+.content-body .stream-fragment > :first-child,
+.thinking-content .stream-rendered > :first-child,
+.thinking-content .stream-live-tail > :first-child,
+.thinking-content .stream-fragment > :first-child {
+    margin-top: 0;
+}
+
+.content-body .stream-rendered > :last-child,
+.content-body .stream-live-tail > :last-child,
+.content-body .stream-fragment > :last-child,
+.thinking-content .stream-rendered > :last-child,
+.thinking-content .stream-live-tail > :last-child,
+.thinking-content .stream-fragment > :last-child {
+    margin-bottom: 0;
 }
 
 .content-body .stream-live-tail .stream-live-tail-raw-segment,

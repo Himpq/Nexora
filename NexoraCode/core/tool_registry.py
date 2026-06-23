@@ -115,6 +115,13 @@ class ToolRegistry:
             except Exception:
                 pass
                 
+            if isinstance(result, dict) and result.get("error"):
+                return {
+                    "success": False,
+                    "error": str(result.get("error")),
+                    "result": result,
+                }
+
             return {"success": True, "result": result}
         except Exception as e:
             return {"success": False, "error": str(e), "traceback": traceback.format_exc()}
