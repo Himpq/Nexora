@@ -57,13 +57,14 @@
     "serverWebSearch": "server_web_search",
     "serverRenderPage": "server_render_page",
     "generateImage": "generate_image",
-    "file_create": "server_file_create",
-    "file_read": "server_file_read",
-    "file_write": "server_file_write",
-    "file_find": "server_file_find",
-    "file_list": "server_file_list",
-    "file_remove": "server_file_remove",
-    "file_semantic_search": "server_file_search_semantic",
+    "file_create": "cloud_file_create",
+    "file_read": "cloud_file_read",
+    "file_write": "cloud_file_write",
+    "file_patch": "cloud_file_patch",
+    "file_find": "cloud_file_find",
+    "file_list": "cloud_file_list",
+    "file_remove": "cloud_file_remove",
+    "file_semantic_search": "cloud_file_search_semantic",
     "local_web_render": "browser_page_open",
     "local_web_get_content": "browser_page_read",
     "local_web_click": "browser_page_click",
@@ -319,8 +320,8 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "server_file_search_semantic",
-            "description": "在临时文件向量库 temp_file 中做语义检索；不传 file_alias 时检索当前用户全部临时文件。",
+            "name": "cloud_file_search_semantic",
+            "description": "在用户云端文件向量库 temp_file 中做语义检索；不传 file_alias 时检索当前用户全部云端文件。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -378,7 +379,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "client_js_exec",
-            "description": """在当前聊天页的隔离 JS Worker 中执行纯 JavaScript。适合轻量计算、文本处理和 Canvas；不能访问 DOM、页面状态或网络。若要操作真实网页 DOM，请用 browser_page_open(extract_mode="interactive") 获取 page_id，再用 browser_page_eval(page_id=...)。可用 const canvas = context.canvas 访问内置 canvas。Three.js 入口示例：const renderer = new THREE.WebGLRenderer({ canvas, antialias: true }); const scene = new THREE.Scene(); const camera = new THREE.PerspectiveCamera(60, canvas.width / canvas.height, 0.1, 1000); camera.position.z = 3; renderer.render(scene, camera); 如需拖拽/触摸绕原点旋转，可调用：const orbit = context.enableThreeOrbit({ camera, renderer, scene, target:[0,0,0] });""",
+            "description": "在当前聊天页的隔离 JS Worker 中执行纯 JavaScript。适合轻量计算、文本处理和 Canvas 渲染；不能访问 DOM、页面状态或网络。操作真实网页请使用 browser_page_* 工具。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -474,7 +475,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "knowledge_basis_create",
-            "description": "向用户知识库添加基础知识（长期记忆）- 学术报告级别要求。\n\n必须满足以下标准：\n1. 字数要求：最低3000字，推荐5000-10000字\n2. 结构完整：背景-核心概念-详细分析-数据支撑-对比总结-结论展望\n3. 数据精确：所有数据必须标注来源、时间、样本量，使用表格对比\n4. 引用规范：文中标注[来源](链接)，文末列出完整参考资料\n5. 格式严谨：Markdown格式，多级标题，表格对比，代码块标注\n6. 内容深度：横向对比覆盖所有关键维度，技术说明包含原理/实现/优缺点/场景/实践\n\n禁止简短概述，必须像撰写技术白皮书或学术论文那样全面、严谨、数据翔实。",
+            "description": "向用户长期知识库新增一条基础知识。仅在用户要求保存、沉淀或复用资料时调用；context 应是已经整理好的完整 Markdown 内容。",
 
             "parameters": {
                 "type": "object",
@@ -485,7 +486,7 @@ TOOLS = [
                     },
                     "context": {
                         "type": "string",
-                        "description": "基础知识的内容。支持参数模板：{{file:path}}、{{file:path,lines,1,200}}、{{basis:title,chars,0,2000}}。"
+                        "description": "基础知识正文，使用 Markdown。支持模板：{{file:path}}、{{file:path,lines,1,200}}、{{basis:title,chars,start,end}}。"
                     },
                     "url": {
                         "type": "string",
@@ -539,7 +540,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "knowledge_basis_update",
-            "description": "更新基础知识。支持重命名、整段覆盖、URL更新、公开/协作设置，以及按字符索引区间替换（单次或批量）。",
+            "description": "更新基础知识。支持重命名、整段覆盖、URL更新、公开/协作设置、按字符索引区间替换，以及统一 diff/结构化 edits 精确 patch。内容更新方式 context、区间替换、patch/edits 三选一。",
 
             "parameters": {
                 "type": "object",
@@ -598,6 +599,49 @@ TOOLS = [
                             },
                             "required": ["from_pos", "to_pos", "replacement"]
                         }
+                    },
+                    "patch": {
+                        "type": "string",
+                        "description": "统一 diff 内容。提供 patch 时不能同时提供 context、区间替换或 edits。支持参数模板 {{file:...}} / {{basis:...}}。"
+                    },
+                    "edits": {
+                        "type": "array",
+                        "description": "结构化精确编辑列表。提供 edits 时不能同时提供 context、区间替换或 patch。",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "action": {
+                                    "type": "string",
+                                    "enum": ["replace", "insert_before", "insert_after", "delete"],
+                                    "description": "编辑动作。"
+                                },
+                                "target": {
+                                    "type": "string",
+                                    "description": "必须精确匹配的目标文本。"
+                                },
+                                "replacement": {
+                                    "type": "string",
+                                    "description": "replace 动作的新文本。支持参数模板 {{file:...}} / {{basis:...}}。"
+                                },
+                                "content": {
+                                    "type": "string",
+                                    "description": "insert_before/insert_after 动作插入的新文本。支持参数模板 {{file:...}} / {{basis:...}}。"
+                                },
+                                "occurrence": {
+                                    "type": "integer",
+                                    "description": "target 多次出现时指定第几处，从 1 开始。"
+                                }
+                            },
+                            "required": ["action", "target"]
+                        }
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "是否只预览不写入，默认 false。仅用于 patch/edits 或区间替换。"
+                    },
+                    "expected_sha256": {
+                        "type": "string",
+                        "description": "可选的知识内容当前 SHA256；不一致时拒绝修改。"
                     }
                 },
                 "required": ["title"]
@@ -609,34 +653,34 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "knowledge_basis_read",
-            "description": "读取基础知识内容。支持全文读取、按字符索引区间读取、按关键词邻域读取，以及 regex（rg风格）匹配读取。",
+            "description": "读取基础知识内容。三种读取方式三选一：不传范围参数读全文；传 offset+length 按字符切片；传 keyword 按关键词或 regex 返回命中邻域。",
 
             "parameters": {
                 "type": "object",
                 "properties": {
                     "title": {
                         "type": "string",
-                        "description": "根据标题获取基础知识的内容。"
+                        "description": "基础知识标题。title 和 basis_id 二选一。"
                     },
                     "basis_id": {
                         "type": "string",
-                        "description": "knowledge entry id (choose one of title or basis_id)"
+                        "description": "基础知识 ID。title 和 basis_id 二选一。"
                     },
                     "keyword": {
                         "type": "string",
-                        "description": "关键词或正则表达式（match_mode=regex/rg 时）。"
+                        "description": "关键词；当 match_mode=regex/rg 时按正则表达式解释。不要和 offset/length 同时使用。"
                     },
                     "range": {
                         "type": "integer",
                         "description": "关键词匹配时返回前后字符范围。默认 120。"
                     },
-                    "from_pos": {
+                    "offset": {
                         "type": "integer",
-                        "description": "按字符区间读取的起始索引（包含）。"
+                        "description": "字符切片起始位置，0 表示第一个字符。必须和 length 同时提供，不要和 keyword 同时使用。"
                     },
-                    "to_pos": {
+                    "length": {
                         "type": "integer",
-                        "description": "按字符区间读取的结束索引（不包含）。"
+                        "description": "字符切片读取数量。必须和 offset 同时提供，不要和 keyword 同时使用。"
                     },
                     "match_mode": {
                         "type": "string",
@@ -921,21 +965,21 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "temp_context_read",
-            "description": "Read long text from temporary cache by resource_id in ranged chunks.",
+            "description": "读取当前回复作用域中的临时长文本缓存。先从长工具结果中取得 resource_id，再用 offset+length 分段读取。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "resource_id": {
                         "type": "string",
-                        "description": "temporary resource id returned by previous long tool output"
+                        "description": "临时资源 ID，由前一次长工具结果返回。"
                     },
-                    "start": {
+                    "offset": {
                         "type": "integer",
-                        "description": "start offset (inclusive), default 0"
+                        "description": "读取起始位置，0 表示第一个字符，默认 0。"
                     },
-                    "count": {
+                    "length": {
                         "type": "integer",
-                        "description": "number of chars to read, default 2000"
+                        "description": "读取字符数量，默认 2000。"
                     }
                 },
                 "required": ["resource_id"]
@@ -947,33 +991,33 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "temp_context_search",
-            "description": "Search temporary long-text cache by keyword or regex, scoped to current reply and user.",
+            "description": "在当前回复作用域的临时长文本缓存中搜索。传 keyword 做普通匹配，传 regex 做正则匹配。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "resource_id": {
                         "type": "string",
-                        "description": "optional, when absent search all cached resources in current reply"
+                        "description": "可选。为空时搜索当前回复作用域内的全部临时资源。"
                     },
                     "keyword": {
                         "type": "string",
-                        "description": "keyword search text"
+                        "description": "普通搜索关键词。keyword 和 regex 二选一。"
                     },
                     "regex": {
                         "type": "string",
-                        "description": "regex pattern; use either keyword or regex"
+                        "description": "正则表达式。keyword 和 regex 二选一。"
                     },
                     "case_sensitive": {
                         "type": "boolean",
-                        "description": "default false"
+                        "description": "是否区分大小写，默认 false。"
                     },
                     "range": {
                         "type": "integer",
-                        "description": "snippet context chars around match, default 80"
+                        "description": "每个命中前后返回的上下文字符数，默认 80。"
                     },
                     "max_matches": {
                         "type": "integer",
-                        "description": "max returned matches, default 20"
+                        "description": "最大返回命中数，默认 20。"
                     }
                 },
                 "required": []
@@ -985,7 +1029,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "temp_context_list",
-            "description": "List cached temporary resources for current reply scope.",
+            "description": "列出当前回复作用域中仍可读取的临时长文本资源。",
             "parameters": {
                 "type": "object",
                 "properties": {},
@@ -998,7 +1042,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "temp_context_clear",
-            "description": "Clear cached temporary resources for current reply scope.",
+            "description": "清空当前回复作用域中的临时长文本资源。",
             "parameters": {
                 "type": "object",
                 "properties": {},
@@ -1009,8 +1053,8 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "server_file_create",
-            "description": "在用户文件沙箱中创建新文本文件。文件已存在时默认失败，可通过 overwrite=true 覆盖。",
+            "name": "cloud_file_create",
+            "description": "在用户云端文件区创建新文本文件。文件已存在时默认失败，可通过 overwrite=true 覆盖。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1025,16 +1069,16 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "server_file_read",
-            "description": "读取用户文件沙箱中的文本文件，自动解析为纯文本。支持全文读取、按行范围读取、按字符索引范围读取。单次调用最多返回500行且10000字符，超出部分会自动截断并返回截断位置(line, column)。",
+            "name": "cloud_file_read",
+            "description": "读取用户云端文件区中的文本文件。三种读取方式三选一：不传范围参数读全文；传 from_line/to_line 按行读取；传 offset/length 按字符切片读取。单次最多返回500行且10000字符。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "file_path": {"type": "string", "description": "文件路径，格式如 {username}/files/{filename} 或仅 filename"},
-                    "from_line": {"type": "integer", "description": "起始行（1-based，包含）"},
-                    "to_line": {"type": "integer", "description": "结束行（1-based，包含）"},
-                    "from_pos": {"type": "integer", "description": "起始字符索引（0-based，包含）"},
-                    "to_pos": {"type": "integer", "description": "结束字符索引（0-based，不包含）"}
+                    "from_line": {"type": "integer", "description": "按行读取的起始行，1 表示第一行。不要和 offset/length 同时使用。"},
+                    "to_line": {"type": "integer", "description": "按行读取的结束行，包含该行。不要和 offset/length 同时使用。"},
+                    "offset": {"type": "integer", "description": "按字符切片读取的起始位置，0 表示第一个字符。必须和 length 同时提供，不要和 from_line/to_line 同时使用。"},
+                    "length": {"type": "integer", "description": "按字符切片读取的字符数量。必须和 offset 同时提供，不要和 from_line/to_line 同时使用。"}
                 },
                 "required": ["file_path"]
             }
@@ -1043,19 +1087,19 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "server_file_write",
-            "description": "写入用户文件沙箱中的文本文件。支持整文件覆盖、按行范围替换、按句子/关键词替换。",
+            "name": "cloud_file_write",
+            "description": "写入用户云端文件区中的文本文件。三种写入方式三选一：content 整文件覆盖；from_line/to_line+replacement 按行替换；old_text/new_text 按文本或正则替换。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "file_path": {"type": "string", "description": "文件路径，格式如 {username}/files/{filename} 或仅 filename"},
-                    "content": {"type": "string", "description": "整文件覆盖内容（与其他替换参数互斥）"},
-                    "from_line": {"type": "integer", "description": "按行替换的起始行（1-based，包含）"},
-                    "to_line": {"type": "integer", "description": "按行替换的结束行（1-based，包含）"},
-                    "replacement": {"type": "string", "description": "按行替换内容（可多行）"},
-                    "old_text": {"type": "string", "description": "旧文本（用于文本替换）"},
-                    "new_text": {"type": "string", "description": "新文本（用于文本替换）"},
-                    "regex": {"type": "boolean", "description": "old_text 是否作为正则表达式，默认 false"},
+                    "content": {"type": "string", "description": "整文件覆盖内容。不要和其它替换参数同时使用。"},
+                    "from_line": {"type": "integer", "description": "按行替换的起始行，1 表示第一行。与 to_line 和 replacement 配合使用。"},
+                    "to_line": {"type": "integer", "description": "按行替换的结束行，包含该行。与 from_line 和 replacement 配合使用。"},
+                    "replacement": {"type": "string", "description": "按行替换的新内容，可多行。"},
+                    "old_text": {"type": "string", "description": "要查找的旧文本。与 new_text 配合使用。"},
+                    "new_text": {"type": "string", "description": "替换后的新文本。与 old_text 配合使用。"},
+                    "regex": {"type": "boolean", "description": "old_text 是否按正则表达式匹配，默认 false。"},
                     "max_replace": {"type": "integer", "description": "最大替换次数，默认全部替换"}
                 },
                 "required": ["file_path"]
@@ -1065,8 +1109,44 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "server_file_find",
-            "description": "在用户文件沙箱中的文本文件内查找关键词或正则，返回行号、列号和命中文本。",
+            "name": "cloud_file_patch",
+            "description": "对用户云端文件区中的单个文本文件执行精确 patch。必须且只能提供 patch 或 edits 其中一种；patch 使用统一 diff 格式，edits 使用结构化精确编辑。dry_run=true 时只返回预览 diff，不写入。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "文件路径，格式如 {username}/files/{filename} 或仅 filename。"},
+                    "patch": {"type": "string", "description": "统一 diff 内容。提供 patch 时不能同时提供 edits。"},
+                    "edits": {
+                        "type": "array",
+                        "description": "结构化精确编辑列表。提供 edits 时不能同时提供 patch。",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "action": {
+                                    "type": "string",
+                                    "enum": ["replace", "insert_before", "insert_after", "delete"],
+                                    "description": "编辑动作。"
+                                },
+                                "target": {"type": "string", "description": "必须精确匹配的目标文本。"},
+                                "replacement": {"type": "string", "description": "replace 动作的新文本。"},
+                                "content": {"type": "string", "description": "insert_before/insert_after 动作插入的新文本。"},
+                                "occurrence": {"type": "integer", "description": "target 多次出现时指定第几处，从 1 开始。"}
+                            },
+                            "required": ["action", "target"]
+                        }
+                    },
+                    "dry_run": {"type": "boolean", "description": "是否只预览不写入，默认 false。"},
+                    "expected_sha256": {"type": "string", "description": "可选的文件当前内容 SHA256；不一致时拒绝修改。"}
+                },
+                "required": ["file_path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cloud_file_find",
+            "description": "在用户云端文件区的文本文件内查找关键词或正则，返回行号、列号和命中文本。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1083,14 +1163,15 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "server_file_list",
-            "description": "读取用户文件沙箱中的文件，支持关键词筛选和 regex 匹配文件名。",
+            "name": "cloud_file_list",
+            "description": "分页列出用户云端文件区中的文件，按更新时间倒序返回。可用 query 筛选 alias、original_name 或 path。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "筛选关键词（匹配 alias/original_name/path）"},
                     "regex": {"type": "boolean", "description": "是否按 regex 匹配 query，默认 false"},
-                    "max_items": {"type": "integer", "description": "最大返回条数，默认 200"}
+                    "offset": {"type": "integer", "description": "分页起始位置，0 表示第一条，默认 0。"},
+                    "limit": {"type": "integer", "description": "分页返回数量，默认 200，最大 1000。"}
                 },
                 "required": []
             }
@@ -1099,8 +1180,8 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "server_file_remove",
-            "description": "删除用户文件沙箱中的文件。",
+            "name": "cloud_file_remove",
+            "description": "删除用户云端文件区中的文件。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1118,11 +1199,11 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "recipient": {"type": "string", "description": "Recipient email address"},
-                    "subject": {"type": "string", "description": "Email subject"},
-                    "content": {"type": "string", "description": "Email body content. 支持参数模板 {{file:path}}、{{file:path,lines,1,200}}、{{basis:title,chars,0,2000}}"},
-                    "knowledge_title": {"type": "string", "description": "Optional basis knowledge title; used when content is empty"},
-                    "is_html": {"type": "boolean", "description": "Send as HTML when true"}
+                    "recipient": {"type": "string", "description": "收件人邮箱地址。"},
+                    "subject": {"type": "string", "description": "邮件主题。"},
+                    "content": {"type": "string", "description": "邮件正文。支持模板：{{file:path}}、{{file:path,lines,1,200}}、{{basis:title,chars,start,end}}。"},
+                    "knowledge_title": {"type": "string", "description": "可选。content 为空时，从该标题的基础知识读取正文。"},
+                    "is_html": {"type": "boolean", "description": "是否按 HTML 邮件发送，默认 false。"}
                 },
                 "required": ["recipient", "subject"]
             }
@@ -1132,11 +1213,11 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_email",
-            "description": "获取用户绑定邮箱中的指定邮件。",
+            "description": "按 mail_id 获取用户绑定邮箱中的一封邮件。默认返回轻量文本内容，需要 HTML 或原始内容时设置 content_type=1。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "mail_id": {"type": "string", "description": "The ID of the email to retrieve"},
+                    "mail_id": {"type": "string", "description": "要读取的邮件 ID，来自 get_email_list 的返回结果。"},
                     "content_type": {
                         "type": "integer",
                         "description": "返回内容类型：0=提取文本（默认，轻量），1=完整内容（含HTML与原始内容）",
@@ -1159,7 +1240,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_email_list",
-            "description": "获取用户绑定邮箱中的邮件列表。",
+            "description": "获取用户绑定邮箱的邮件列表。流程：邮箱服务先按时间倒序执行 offset/limit 分页；随后在当前页内应用 type 和 date_range 过滤。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1171,6 +1252,14 @@ TOOLS = [
                     "date_range": {
                         "type": "integer",
                         "description": "时间范围（天），默认15，表示仅返回最近N天邮件"
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "分页起始位置，0 表示第一封邮件，默认 0。与 limit 配合使用，例如 offset=80, limit=20 表示从第 80 封开始返回 20 封。"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "分页返回数量，默认 20，范围 1-100。与 offset 配合使用。"
                     }
                 },
                 "required": []

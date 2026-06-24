@@ -9,8 +9,32 @@ _LOCK = threading.Lock()
 _COND = threading.Condition(_LOCK)
 _PENDING: Dict[str, List[Dict[str, Any]]] = {}
 _RESPONSES: Dict[str, Dict[str, Any]] = {}
+_REQUEST_LISTENERS = []
 
 _MAX_PENDING_PER_KEY = 8
+
+
+def add_request_listener(listener):
+    """注册客户端工具请求监听器，用于浏览器 WSS 推送。"""
+    if not callable(listener):
+        return
+
+    with _LOCK:
+        if listener not in _REQUEST_LISTENERS:
+            _REQUEST_LISTENERS.append(listener)
+
+
+def _notify_request_listeners(username: str, conversation_id: str, request_obj: Dict[str, Any]) -> None:
+    listeners = []
+
+    with _LOCK:
+        listeners = list(_REQUEST_LISTENERS)
+
+    for listener in listeners:
+        try:
+            listener(username, conversation_id, copy.deepcopy(request_obj))
+        except Exception as e:
+            print(f"[ClientToolBridge] request listener failed: {e}")
 
 
 def _make_key(username: str, conversation_id: str) -> str:
@@ -85,6 +109,8 @@ def enqueue_request(
         if len(queue) > _MAX_PENDING_PER_KEY:
             del queue[0 : len(queue) - _MAX_PENDING_PER_KEY]
         _COND.notify_all()
+
+    _notify_request_listeners(username, conversation_id, request_obj)
     return request_obj
 
 

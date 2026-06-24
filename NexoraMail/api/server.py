@@ -10,14 +10,16 @@ from email import message_from_string, policy
 from email.header import decode_header, Header
 
 from flask import Flask, jsonify, request
+from flask_sock import Sock
 
 try:
-    from core import Configure, UserManager, DebugLog, SMTPService
+    from core import Configure, UserManager, DebugLog, SMTPService, MailEventQueue
 except Exception:
     import Configure
     import UserManager
     import DebugLog
     import SMTPService
+    import MailEventQueue
 
 
 def _get_api_config():
@@ -83,21 +85,29 @@ def _extract_token():
     x_key = request.headers.get("X-API-Key", "").strip()
     if x_key:
         return x_key
+
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
         return auth[7:].strip()
+
     # backward compatibility
     old_key = request.headers.get("X-API-Token", "").strip()
     if old_key:
         return old_key
-    return (request.args.get("api_key") or "").strip()
+
+    return ""
+
+
+def _get_expected_api_key():
+    cfg = _get_api_config()
+    return (os.environ.get("NEXORAMAIL_API_KEY") or os.environ.get("NEXORAMAIL_API_TOKEN") or cfg["api_key"] or "").strip()
 
 
 def require_api_token(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
         cfg = _get_api_config()
-        expected = (os.environ.get("NEXORAMAIL_API_KEY") or os.environ.get("NEXORAMAIL_API_TOKEN") or cfg["api_key"] or "").strip()
+        expected = _get_expected_api_key()
         # If no token configured, keep API local-only by default.
         if not expected:
             if cfg.get("local_only_when_no_api_key", True):
@@ -565,11 +575,53 @@ def _compose_mail_raw(sender, recipient, subject, content):
 
 
 app = Flask(__name__)
+sock = Sock(app)
 
 
 @app.get("/api/health")
 def health():
     return jsonify({"success": True, "service": "NexoraMail API"})
+
+
+@sock.route("/api/events/ws")
+def mail_events_socket(ws):
+    expected = _get_expected_api_key()
+
+    if not expected:
+        ws.send(json.dumps({"type": "error", "message": "NexoraMail API key is not configured"}, ensure_ascii=False))
+        return
+
+    if _extract_token() != expected:
+        ws.send(json.dumps({"type": "error", "message": "Invalid API key"}, ensure_ascii=False))
+        return
+
+    raw_cursor = str(request.args.get("cursor") or "end").strip()
+
+    if raw_cursor.lower() == "end":
+        cursor = MailEventQueue.get_event_cursor_end()
+    else:
+        cursor = max(0, int(raw_cursor or 0))
+
+    ws.send(json.dumps({"type": "ready", "cursor": cursor}, ensure_ascii=False))
+    last_heartbeat = time.time()
+
+    while True:
+        events, cursor = MailEventQueue.read_events_after(cursor, limit=100)
+
+        for event in events:
+            event_cursor = int(event.pop("_cursor", cursor) or cursor)
+            cursor = event_cursor
+            ws.send(json.dumps({
+                "type": "mail_event",
+                "cursor": event_cursor,
+                "event": event,
+            }, ensure_ascii=False))
+
+        if time.time() - last_heartbeat >= 20:
+            ws.send(json.dumps({"type": "ping", "cursor": cursor}, ensure_ascii=False))
+            last_heartbeat = time.time()
+
+        time.sleep(1)
 
 
 @app.get("/api/status")

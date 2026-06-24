@@ -12,6 +12,22 @@ _MAX_CHUNKS_PER_SESSION = 12000
 _DONE_TTL_SEC = 900
 _STALE_RUNNING_TTL_SEC = 7200
 _CANCEL_SENTINEL = "__STREAM_CANCELLED__"
+_ACCUMULATED_RENDER_CHUNK_TYPES = {
+    "content",
+    "reasoning_content",
+    "web_search",
+    "search_meta",
+    "context_compression_status",
+    "function_call_delta",
+    "function_call",
+    "function_call_running",
+    "function_result",
+    "learning_card",
+    "question",
+    "puzzle",
+    "model_info",
+    "token_usage",
+}
 
 
 class StreamCancelled(RuntimeError):
@@ -228,7 +244,7 @@ def get_accumulated_content(
     stream_id: str,
     username: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Return the accumulated content and reasoning content from a stream session's chunks."""
+    """Return accumulated visible stream content and replayable render chunks."""
     sid = str(stream_id or "").strip()
     if not sid:
         return None
@@ -245,17 +261,23 @@ def get_accumulated_content(
         status = str(s.get("status") or "done")
     content_parts: List[str] = []
     reasoning_parts: List[str] = []
+    render_chunks: List[Dict[str, Any]] = []
     for chunk in chunks:
         ctype = str(chunk.get("type") or "").strip()
         if ctype == "content":
             content_parts.append(str(chunk.get("content") or ""))
         elif ctype == "reasoning_content":
             reasoning_parts.append(str(chunk.get("content") or ""))
+
+        if ctype in _ACCUMULATED_RENDER_CHUNK_TYPES:
+            render_chunks.append(copy.deepcopy(chunk))
+
     return {
         "stream_id": sid,
         "conversation_id": str(s.get("conversation_id") or "").strip(),
         "content": "".join(content_parts).rstrip(),
         "reasoning_content": "".join(reasoning_parts).rstrip(),
+        "render_chunks": render_chunks,
         "last_seq": last_seq,
         "status": status,
     }

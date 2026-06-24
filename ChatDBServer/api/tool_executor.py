@@ -58,7 +58,7 @@ class ToolExecutor:
             "memory_profile_read": self._get_user_profile_memory,
             "memory_short_update": self._set_user_profile_memory,
             "knowledge_search_vector": self._vector_search,
-            "server_file_search_semantic": self._file_semantic_search,
+            "cloud_file_search_semantic": self._file_semantic_search,
             "link_knowledge": self._link_knowledge,
             "categorize_knowledge": self._categorize_knowledge,
             "create_category": self._create_category,
@@ -73,12 +73,13 @@ class ToolExecutor:
             "send_email": self._send_email,
             "get_email_list": self._get_email_list,
             "get_email": self._get_email,
-            "server_file_create": self._file_create,
-            "server_file_read": self._file_read,
-            "server_file_write": self._file_write,
-            "server_file_find": self._file_find,
-            "server_file_list": self._file_list,
-            "server_file_remove": self._file_remove,
+            "cloud_file_create": self._file_create,
+            "cloud_file_read": self._file_read,
+            "cloud_file_write": self._file_write,
+            "cloud_file_patch": self._file_patch,
+            "cloud_file_find": self._file_find,
+            "cloud_file_list": self._file_list,
+            "cloud_file_remove": self._file_remove,
         }
         self._file_sandbox = UserFileSandbox(self.model.username)
         self._learning_executor = None
@@ -90,6 +91,53 @@ class ToolExecutor:
             return int(str(v).strip())
         except Exception:
             return default
+
+    def _safe_bool(self, value: Any, default: bool = False) -> bool:
+        if value is None:
+            return default
+
+        if isinstance(value, bool):
+            return value
+
+        if isinstance(value, str):
+            text = value.strip().lower()
+
+            if text in {"1", "true", "yes", "y", "on"}:
+                return True
+
+            if text in {"0", "false", "no", "n", "off"}:
+                return False
+
+            return default
+
+        return bool(value)
+
+    def _has_arg_value(self, args: Dict[str, Any], key: str) -> bool:
+        return key in args and args.get(key) is not None and str(args.get(key)).strip() != ""
+
+    def _resolve_offset_length_slice(self, args: Dict[str, Any]):
+        has_offset = self._has_arg_value(args, "offset")
+        has_length = self._has_arg_value(args, "length")
+
+        if has_offset != has_length:
+            return None, None, "offset 和 length 必须同时提供。"
+
+        if not has_offset:
+            return None, None, ""
+
+        offset = self._safe_int(args.get("offset"), None)
+        length = self._safe_int(args.get("length"), None)
+
+        if offset is None or length is None:
+            return None, None, "offset 和 length 必须是整数。"
+
+        if offset < 0:
+            return None, None, "offset 必须大于等于 0。"
+
+        if length <= 0:
+            return None, None, "length 必须大于 0。"
+
+        return offset, length, ""
 
     def _normalize_client_js_code(self, raw_code: Any) -> str:
         code = str(raw_code or "")
@@ -703,6 +751,10 @@ class ToolExecutor:
             to_pos=args.get("to_pos"),
             replacement=args.get("replacement"),
             replacements=args.get("replacements"),
+            patch=args.get("patch"),
+            edits=args.get("edits") if isinstance(args.get("edits"), list) else None,
+            dry_run=self._safe_bool(args.get("dry_run"), False),
+            expected_sha256=args.get("expected_sha256"),
             timeline_actor={
                 "actor_type": "model_tool",
                 "actor_name": str(getattr(self.model, "model_name", "") or "").strip() or "model",
@@ -710,6 +762,13 @@ class ToolExecutor:
                 "conversation_title": str(self.model.conversation_manager.get_conversation(self.model.conversation_id).get("title") if getattr(self.model, "conversation_id", None) else "").strip() if getattr(self.model, "conversation_id", None) else "",
             },
         )
+
+        if isinstance(message, dict):
+            if "success" not in message:
+                message["success"] = bool(success)
+
+            return json.dumps(message, ensure_ascii=False)
+
         if success:
             updates = []
             effective_title = str(args.get("new_title") or args.get("title") or "").strip()
@@ -719,6 +778,8 @@ class ToolExecutor:
                 updates.append("内容已更新")
             if args.get("replacement") is not None or args.get("replacements"):
                 updates.append("区间替换已应用")
+            if args.get("patch") or args.get("edits"):
+                updates.append("patch 已预览" if self._safe_bool(args.get("dry_run"), False) else "patch 已应用")
             if args.get("url"):
                 updates.append("来源链接已更新")
             if args.get("public") is not None:
@@ -745,6 +806,7 @@ class ToolExecutor:
     def _get_basis_content(self, args: Dict[str, Any]) -> str:
         mode = str(args.get("match_mode", "keyword") or "keyword").strip().lower()
         regex_mode = mode in {"regex", "rg", "re"}
+        has_keyword = bool(str(args.get("keyword") or "").strip())
         raw_case_sensitive = args.get("case_sensitive", True)
         if isinstance(raw_case_sensitive, bool):
             case_sensitive = raw_case_sensitive
@@ -753,13 +815,23 @@ class ToolExecutor:
         else:
             case_sensitive = bool(raw_case_sensitive)
 
+        offset, length, slice_error = self._resolve_offset_length_slice(args)
+        if slice_error:
+            return json.dumps({"success": False, "message": slice_error}, ensure_ascii=False)
+        if offset is not None and has_keyword:
+            return json.dumps({"success": False, "message": "keyword 不能和 offset/length 同时使用。"}, ensure_ascii=False)
+
+        to_pos = None
+        if offset is not None and length is not None:
+            to_pos = offset + length
+
         return self.model.user.getBasisContent(
             title=args.get("title", ""),
             basis_id=args.get("basis_id"),
             keyword=args.get("keyword"),
             range_size=args.get("range"),
-            from_pos=args.get("from_pos"),
-            to_pos=args.get("to_pos"),
+            from_pos=offset,
+            to_pos=to_pos,
             regex_mode=regex_mode,
             max_matches=args.get("max_matches", 5),
             case_sensitive=case_sensitive,
@@ -774,8 +846,8 @@ class ToolExecutor:
             return json.dumps({"success": False, "message": "resource_id is required"}, ensure_ascii=False)
         return self.model.temp_cache_read(
             resource_id=rid,
-            start=args.get("start", 0),
-            count=args.get("count", 2000),
+            offset=args.get("offset", 0),
+            length=args.get("length", 2000),
         )
 
     def _temp_context_search(self, args: Dict[str, Any]) -> str:
@@ -1440,12 +1512,25 @@ class ToolExecutor:
         if not file_ref:
             return json.dumps({"success": False, "message": "file_path is required"}, ensure_ascii=False)
         try:
+            has_line_range = self._has_arg_value(args, "from_line") or self._has_arg_value(args, "to_line")
+            has_char_range = self._has_arg_value(args, "offset") or self._has_arg_value(args, "length")
+            if has_line_range and has_char_range:
+                return json.dumps({"success": False, "message": "from_line/to_line 不能和 offset/length 同时使用。"}, ensure_ascii=False)
+
+            offset, length, slice_error = self._resolve_offset_length_slice(args)
+            if slice_error:
+                return json.dumps({"success": False, "message": slice_error}, ensure_ascii=False)
+
+            to_pos = None
+            if offset is not None and length is not None:
+                to_pos = offset + length
+
             payload = self._file_sandbox.read_file(
                 file_ref=str(file_ref),
                 from_line=args.get("from_line"),
                 to_line=args.get("to_line"),
-                from_pos=args.get("from_pos"),
-                to_pos=args.get("to_pos"),
+                from_pos=offset,
+                to_pos=to_pos,
             )
             return json.dumps(payload, ensure_ascii=False)
         except Exception as e:
@@ -1466,6 +1551,25 @@ class ToolExecutor:
                 new_text=args.get("new_text"),
                 regex=bool(args.get("regex", False)),
                 max_replace=args.get("max_replace"),
+            )
+            return json.dumps(payload, ensure_ascii=False)
+        except Exception as e:
+            return json.dumps({"success": False, "message": str(e)}, ensure_ascii=False)
+
+    def _file_patch(self, args: Dict[str, Any]) -> str:
+        file_ref = args.get("file_path") or args.get("path") or args.get("file")
+        if not file_ref:
+            return json.dumps({"success": False, "message": "file_path is required"}, ensure_ascii=False)
+
+        dry_run = self._safe_bool(args.get("dry_run"), False)
+
+        try:
+            payload = self._file_sandbox.patch_file(
+                file_ref=str(file_ref),
+                patch=args.get("patch"),
+                edits=args.get("edits") if isinstance(args.get("edits"), list) else None,
+                dry_run=dry_run,
+                expected_sha256=args.get("expected_sha256"),
             )
             return json.dumps(payload, ensure_ascii=False)
         except Exception as e:
@@ -1499,16 +1603,19 @@ class ToolExecutor:
 
     def _file_list(self, args: Dict[str, Any]) -> str:
         try:
-            files = self._file_sandbox.list_files(
+            payload = self._file_sandbox.list_files(
                 query=args.get("query"),
                 regex=bool(args.get("regex", False)),
-                max_items=args.get("max_items", 200),
+                offset=args.get("offset", 0),
+                limit=args.get("limit", 200),
             )
             return json.dumps({
                 "success": True,
                 "username": self.model.username,
-                "total": len(files),
-                "files": files,
+                "total": payload.get("total", 0),
+                "offset": payload.get("offset", 0),
+                "limit": payload.get("limit", 200),
+                "files": payload.get("files", []),
             }, ensure_ascii=False)
         except Exception as e:
             return json.dumps({"success": False, "message": str(e)}, ensure_ascii=False)

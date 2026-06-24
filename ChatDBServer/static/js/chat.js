@@ -80,6 +80,156 @@ function parseExecutionFlowJson(raw) {
     }
 }
 
+function unescapeExecutionFlowJsonFragment(value) {
+    const text = String(value || '');
+
+    try {
+        return JSON.parse(`"${text.replace(/"/g, '\\"')}"`);
+    } catch (_) {
+        return text
+            .replace(/\\"/g, '"')
+            .replace(/\\\\/g, '\\')
+            .replace(/\\n/g, '\n')
+            .replace(/\\r/g, '\r')
+            .replace(/\\t/g, '\t');
+    }
+}
+
+function readExecutionFlowJsonStringToken(text, start) {
+    let i = Number(start || 0);
+    let value = '';
+    let escaped = false;
+
+    if (text[i] !== '"') {
+        return { ok: false, closed: false, value: '', next: i };
+    }
+
+    i += 1;
+
+    while (i < text.length) {
+        const ch = text[i];
+
+        if (escaped) {
+            value += `\\${ch}`;
+            escaped = false;
+            i += 1;
+            continue;
+        }
+
+        if (ch === '\\') {
+            escaped = true;
+            i += 1;
+            continue;
+        }
+
+        if (ch === '"') {
+            return {
+                ok: true,
+                closed: true,
+                value: unescapeExecutionFlowJsonFragment(value),
+                next: i + 1
+            };
+        }
+
+        value += ch;
+        i += 1;
+    }
+
+    return {
+        ok: true,
+        closed: false,
+        value: unescapeExecutionFlowJsonFragment(value),
+        next: i
+    };
+}
+
+function parseExecutionFlowPartialJson(raw) {
+    const text = String(raw || '').trim();
+
+    if (!text.startsWith('{')) {
+        return {};
+    }
+
+    const out = {};
+    let i = 1;
+
+    while (i < text.length) {
+        while (i < text.length && /[\s,]/.test(text[i])) i += 1;
+        if (i >= text.length || text[i] === '}') break;
+        if (text[i] !== '"') break;
+
+        const keyToken = readExecutionFlowJsonStringToken(text, i);
+        if (!keyToken.ok || !keyToken.closed) break;
+        const key = String(keyToken.value || '').trim();
+        i = keyToken.next;
+
+        while (i < text.length && /\s/.test(text[i])) i += 1;
+        if (text[i] !== ':') break;
+        i += 1;
+        while (i < text.length && /\s/.test(text[i])) i += 1;
+        if (!key || i >= text.length) break;
+
+        if (text[i] === '"') {
+            const valueToken = readExecutionFlowJsonStringToken(text, i);
+            if (valueToken.ok && String(valueToken.value || '').trim()) {
+                out[key] = String(valueToken.value || '');
+            }
+            i = valueToken.next;
+            continue;
+        }
+
+        let valueStart = i;
+        let depth = 0;
+        let inString = false;
+        let escaped = false;
+
+        while (i < text.length) {
+            const ch = text[i];
+
+            if (inString) {
+                if (escaped) {
+                    escaped = false;
+                } else if (ch === '\\') {
+                    escaped = true;
+                } else if (ch === '"') {
+                    inString = false;
+                }
+                i += 1;
+                continue;
+            }
+
+            if (ch === '"') {
+                inString = true;
+                i += 1;
+                continue;
+            }
+
+            if (ch === '{' || ch === '[') {
+                depth += 1;
+                i += 1;
+                continue;
+            }
+
+            if (ch === '}' || ch === ']') {
+                if (depth <= 0) break;
+                depth -= 1;
+                i += 1;
+                continue;
+            }
+
+            if (ch === ',' && depth === 0) break;
+            i += 1;
+        }
+
+        const rawValue = text.slice(valueStart, i).trim();
+        if (rawValue && !/^[{\[]/.test(rawValue)) {
+            out[key] = rawValue.replace(/,$/, '').trim();
+        }
+    }
+
+    return out;
+}
+
 function basenameForExecutionFlow(value) {
     const text = String(value || '').trim();
 
@@ -127,7 +277,7 @@ function getExecutionFlowArgs(row) {
     }
 
     const parsed = parseExecutionFlowJson(row.dataset.argsRaw || '');
-    return parsed || {};
+    return parsed || parseExecutionFlowPartialJson(row.dataset.argsRaw || '') || {};
 }
 
 function getExecutionFlowPhaseText(rawStatus) {
@@ -749,13 +899,18 @@ const CHAT_INPUT_DRAFT_MAX_LEN = 12000;
 let NEXORA_LEARNING_FRONTEND_URL = `${window.location.protocol}//${window.location.hostname}:5001/api/frontend/`;
 const NEXORA_LEARNING_CSS_URL = '/static/css/learning_mode.css?v=20260620_01';
 const NEXORA_LEARNING_JS_URL = '/static/js/learning_mode.js?v=20260609_05';
-const MAIL_POLL_INTERVAL_MS = 5000;
 const AGENT_STATUS_POLL_VISIBLE_MS = 5000;
+const BROWSER_SYNC_RECONNECT_MS = 3000;
+const BROWSER_SYNC_PING_MS = 20000;
 const MODAL_STACK_BASE_Z = 12000;
 const MODAL_STACK_STEP_Z = 20;
 let modalStackCounter = 0;
-let mailPollTimer = null;
-let mailPollInFlight = false;
+let mailRefreshInFlight = false;
+let mailDeferredEventState = null;
+let browserSyncSocket = null;
+let browserSyncReconnectTimer = null;
+let browserSyncPingTimer = null;
+let browserSyncManuallyClosed = false;
 let mailNotifyState = {
     lastOpenTs: 0,
     newCount: 0,
@@ -802,6 +957,8 @@ let tokenBudgetTooltipState = {
 };
 let clientToolPollTimer = null;
 let clientToolPollInFlight = false;
+let clientToolWssDraining = false;
+const clientToolWssQueue = [];
 const clientToolHandledRequestIds = new Set();
 const clientJsCanvasRequestMap = new Map();
 const CLIENT_TOOL_POLL_MIN_MS = 700;
@@ -2509,6 +2666,33 @@ function renderMarkdownWithNewTabLinks(text, options = {}) {
     return rewriteHtmlFragmentLinksToNewTab(restoredHtml);
 }
 
+function shouldUseStreamingMarkdownBreaks(root) {
+    if (!root) return true;
+    if (root.classList && root.classList.contains('thinking-content')) return false;
+    if (root.classList && root.classList.contains('tool-output')) return false;
+    if (typeof root.closest === 'function') {
+        if (root.closest('.thinking-block')) return false;
+        if (root.closest('.tool-usage')) return false;
+    }
+    return true;
+}
+
+function renderStreamingMarkdownWithNewTabLinks(text, options = {}) {
+    const opts = (options && typeof options === 'object') ? options : {};
+    return renderMarkdownWithNewTabLinks(text, {
+        ...opts,
+        breaks: opts.breaks !== false
+    });
+}
+
+function renderStreamBlockMarkdown(root, text, options = {}) {
+    const opts = (options && typeof options === 'object') ? { ...options } : {};
+    if (!Object.prototype.hasOwnProperty.call(opts, 'breaks')) {
+        opts.breaks = shouldUseStreamingMarkdownBreaks(root);
+    }
+    return renderMarkdownWithNewTabLinks(text, opts);
+}
+
 
 
 function renderMarkdownForNotes(text) {
@@ -3820,6 +4004,78 @@ async function submitClientToolResult(conversationId, requestId, execRes) {
     return !!(data && data.success);
 }
 
+async function handleClientToolRequest(req, expectedConversationId = '') {
+    if (!req || typeof req !== 'object') return 'idle';
+    if (String(req.type || '').trim() !== 'js_execute') return 'idle';
+
+    const conversationId = String(req.conversation_id || expectedConversationId || currentConversationId || '').trim();
+    if (!conversationId) return 'no_conversation';
+    if (expectedConversationId && conversationId !== String(expectedConversationId || '').trim()) return 'idle';
+    if (currentConversationId && conversationId !== String(currentConversationId || '').trim()) return 'idle';
+
+    const requestId = String(req.request_id || '').trim();
+    if (!requestId) return 'idle';
+    if (clientToolHandledRequestIds.has(requestId)) return 'idle';
+
+    const reqPayload = (req.payload && typeof req.payload === 'object') ? req.payload : {};
+    const canvasMeta = extractCanvasMetaFromJsPayload(reqPayload);
+    let execRes = null;
+
+    if (canvasMeta.usedCanvas) {
+        rememberClientJsCanvasMeta(requestId, canvasMeta);
+        execRes = {
+            success: true,
+            result: {
+                accepted: true,
+                mode: 'canvas',
+                message: 'canvas draw code received'
+            },
+            error: '',
+            logs: [],
+            meta: {
+                execution_mode: 'canvas',
+                canvas_used: true,
+                canvas_width: canvasMeta.width,
+                canvas_height: canvasMeta.height,
+                code_normalized: !!canvasMeta.codeNormalized
+            }
+        };
+    } else {
+        execRes = await executeClientJsInWorker(reqPayload);
+    }
+
+    const submitted = await submitClientToolResult(conversationId, requestId, execRes);
+
+    if (submitted) {
+        rememberClientToolRequestId(requestId);
+        return 'handled';
+    }
+
+    return 'idle';
+}
+
+async function drainClientToolWssQueue() {
+    if (clientToolWssDraining) return;
+    clientToolWssDraining = true;
+
+    try {
+        while (clientToolWssQueue.length > 0) {
+            const item = clientToolWssQueue.shift();
+            await handleClientToolRequest(item.req, item.conversationId);
+        }
+    } finally {
+        clientToolWssDraining = false;
+    }
+}
+
+function enqueueClientToolWssRequest(req, conversationId) {
+    clientToolWssQueue.push({
+        req,
+        conversationId: String(conversationId || '').trim()
+    });
+    void drainClientToolWssQueue();
+}
+
 async function pollClientToolRequests() {
     if (clientToolPollInFlight) return 'in_flight';
     const conversationId = String(currentConversationId || '').trim();
@@ -3836,43 +4092,7 @@ async function pollClientToolRequests() {
         });
         const data = await res.json();
         if (!data || !data.success || !data.request) return 'idle';
-        const req = data.request;
-        if (String(req.type || '').trim() !== 'js_execute') return 'idle';
-        const requestId = String(req.request_id || '').trim();
-        if (!requestId) return 'idle';
-        if (clientToolHandledRequestIds.has(requestId)) return 'idle';
-
-        const reqPayload = (req.payload && typeof req.payload === 'object') ? req.payload : {};
-        const canvasMeta = extractCanvasMetaFromJsPayload(reqPayload);
-        let execRes = null;
-        if (canvasMeta.usedCanvas) {
-            rememberClientJsCanvasMeta(requestId, canvasMeta);
-            execRes = {
-                success: true,
-                result: {
-                    accepted: true,
-                    mode: 'canvas',
-                    message: 'canvas draw code received'
-                },
-                error: '',
-                logs: [],
-                meta: {
-                    execution_mode: 'canvas',
-                    canvas_used: true,
-                    canvas_width: canvasMeta.width,
-                    canvas_height: canvasMeta.height,
-                    code_normalized: !!canvasMeta.codeNormalized
-                }
-            };
-        } else {
-            execRes = await executeClientJsInWorker(reqPayload);
-        }
-        const submitted = await submitClientToolResult(conversationId, requestId, execRes);
-        if (submitted) {
-            rememberClientToolRequestId(requestId);
-            return 'handled';
-        }
-        return 'idle';
+        return await handleClientToolRequest(data.request, conversationId);
     } catch (e) {
         // keep silent to avoid noisy console in long-running polling
         return 'error';
@@ -3913,13 +4133,14 @@ function stopClientToolPolling() {
         clientToolPollTimer = null;
     }
     clientToolPollInFlight = false;
+    clientToolWssQueue.length = 0;
+    clientToolWssDraining = false;
     clientToolPollDelayMs = CLIENT_TOOL_POLL_MIN_MS;
 }
 
 function startClientToolPolling() {
     stopClientToolPolling();
     clientToolPollDelayMs = CLIENT_TOOL_POLL_MIN_MS;
-    scheduleNextClientToolPoll(true);
 }
 
 function loadMailSidebarCollapsedState() {
@@ -5187,7 +5408,7 @@ function updateMailNotifyFromMails(mails, options = {}) {
     renderMailNotifyBadge();
 }
 
-async function pollMailNotifyOnly() {
+async function refreshMailNotifyBadgeFromServer() {
     try {
         const res = await fetch('/api/mail/me/inbox?cache_mode=refresh&limit=20');
         const data = await res.json();
@@ -5195,78 +5416,284 @@ async function pollMailNotifyOnly() {
         const mails = Array.isArray(data.mails) ? data.mails.map(normalizeMailItem) : [];
         updateMailNotifyFromMails(mails, { markChecked: false });
     } catch (e) {
-        // ignore polling errors
+        // ignore refresh errors
     }
 }
 
-// === Agent Status Polling ===
+function setDesktopAgentIndicatorState(online, titleSuffix = '') {
+    lastAgentOnline = !!online;
+    const indicator = document.getElementById('desktopAgentIndicator');
+    if (!indicator) return;
+
+    if (online) {
+        indicator.style.backgroundColor = '#4caf50';
+        indicator.title = `NexoraCode (本地计算节点) - 在线${titleSuffix}`;
+    } else {
+        indicator.style.backgroundColor = '#9e9e9e';
+        indicator.title = `NexoraCode (本地计算节点) - 离线${titleSuffix}`;
+    }
+}
+
+function getBrowserSyncWsUrl() {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${window.location.host}/ws/browser`;
+}
+
+function syncBrowserCurrentConversation() {
+    if (!browserSyncSocket || browserSyncSocket.readyState !== WebSocket.OPEN) return;
+
+    browserSyncSocket.send(JSON.stringify({
+        type: 'subscribe_conversation',
+        conversation_id: String(currentConversationId || '').trim()
+    }));
+}
+
+function createMailEventState(payload = null) {
+    const state = {
+        pending: false,
+        inboxChanged: false,
+        sentChanged: false,
+        count: 0,
+        latestPayload: null
+    };
+
+    if (payload) {
+        appendMailEventToState(state, payload);
+    }
+
+    return state;
+}
+
+function normalizeBrowserMailEventFolder(payload) {
+    const folder = String(payload && payload.folder ? payload.folder : '').trim().toLowerCase();
+
+    if (folder === 'sent') return 'sent';
+    if (folder === 'inbox') return 'inbox';
+
+    return '';
+}
+
+function appendMailEventToState(state, payload) {
+    if (!state) return;
+
+    const eventPayload = (payload && typeof payload === 'object') ? payload : {};
+    const folder = normalizeBrowserMailEventFolder(eventPayload);
+
+    state.pending = true;
+    state.count += 1;
+    state.latestPayload = eventPayload;
+
+    if (folder === 'sent') {
+        state.sentChanged = true;
+        return;
+    }
+
+    if (folder === 'inbox') {
+        state.inboxChanged = true;
+        return;
+    }
+
+    state.inboxChanged = true;
+    state.sentChanged = true;
+}
+
+function mergeMailEventState(targetState, sourceState) {
+    if (!targetState || !sourceState || !sourceState.pending) return;
+
+    if (sourceState.inboxChanged) targetState.inboxChanged = true;
+    if (sourceState.sentChanged) targetState.sentChanged = true;
+
+    targetState.pending = true;
+    targetState.count += Math.max(1, Number(sourceState.count || 1));
+    targetState.latestPayload = sourceState.latestPayload;
+}
+
+function takeDeferredMailEventState() {
+    const state = mailDeferredEventState;
+    mailDeferredEventState = null;
+    return state;
+}
+
+function getMailCurrentFolderKey() {
+    return String(mailViewState.folder || '').trim().toLowerCase() === 'sent' ? 'sent' : 'inbox';
+}
+
+async function refreshMailByBrowserEventState(eventState) {
+    const state = eventState && eventState.pending ? eventState : createMailEventState({});
+    const mailViewActive = isMailViewActiveInDom();
+    const currentFolder = getMailCurrentFolderKey();
+    const shouldRefreshCurrentFolder = mailViewActive && (
+        (currentFolder === 'inbox' && state.inboxChanged)
+        || (currentFolder === 'sent' && state.sentChanged)
+        || (!state.inboxChanged && !state.sentChanged)
+    );
+
+    if (shouldRefreshCurrentFolder) {
+        await loadMailCurrentFolder(mailViewState.query || '', {
+            silent: true,
+            refreshDetail: false,
+            forceNetwork: true
+        });
+    }
+
+    if (state.inboxChanged && !(shouldRefreshCurrentFolder && currentFolder === 'inbox')) {
+        await refreshMailNotifyBadgeFromServer();
+    }
+}
+
+function flushDeferredMailEvents() {
+    if (!mailDeferredEventState || document.hidden) return;
+
+    const state = takeDeferredMailEventState();
+    void handleBrowserMailChangedEvent(state);
+}
+
+async function handleBrowserMailChangedEvent(eventPayload) {
+    const eventState = eventPayload && eventPayload.pending
+        ? eventPayload
+        : createMailEventState(eventPayload);
+
+    if (document.hidden) {
+        mergeMailEventState(
+            mailDeferredEventState || (mailDeferredEventState = createMailEventState()),
+            eventState
+        );
+        return;
+    }
+
+    if (mailRefreshInFlight) {
+        mergeMailEventState(
+            mailDeferredEventState || (mailDeferredEventState = createMailEventState()),
+            eventState
+        );
+        return;
+    }
+
+    mailRefreshInFlight = true;
+
+    try {
+        await refreshMailByBrowserEventState(eventState);
+    } finally {
+        mailRefreshInFlight = false;
+        flushDeferredMailEvents();
+    }
+}
+
+function handleBrowserSyncMessage(payload) {
+    const msgType = String(payload && payload.type ? payload.type : '').trim();
+
+    if (msgType === 'agent_status') {
+        setDesktopAgentIndicatorState(!!payload.online);
+        return;
+    }
+
+    if (msgType === 'mail_changed') {
+        void handleBrowserMailChangedEvent(payload);
+        return;
+    }
+
+    if (msgType === 'client_tool_request') {
+        enqueueClientToolWssRequest(payload.request, payload.conversation_id);
+    }
+}
+
+function clearBrowserSyncTimers() {
+    if (browserSyncReconnectTimer) {
+        clearTimeout(browserSyncReconnectTimer);
+        browserSyncReconnectTimer = null;
+    }
+
+    if (browserSyncPingTimer) {
+        clearInterval(browserSyncPingTimer);
+        browserSyncPingTimer = null;
+    }
+}
+
+function scheduleBrowserSyncReconnect() {
+    if (browserSyncManuallyClosed || browserSyncReconnectTimer) return;
+
+    browserSyncReconnectTimer = setTimeout(() => {
+        browserSyncReconnectTimer = null;
+        startAgentStatusPolling();
+    }, BROWSER_SYNC_RECONNECT_MS);
+}
+
+function startBrowserSyncPing() {
+    if (browserSyncPingTimer) clearInterval(browserSyncPingTimer);
+
+    browserSyncPingTimer = setInterval(() => {
+        if (!browserSyncSocket || browserSyncSocket.readyState !== WebSocket.OPEN) return;
+
+        browserSyncSocket.send(JSON.stringify({
+            type: 'ping',
+            ts: Date.now()
+        }));
+    }, BROWSER_SYNC_PING_MS);
+}
+
+// === Browser WSS Sync ===
 let agentStatusPollTimer = null;
 function startAgentStatusPolling() {
-    if (agentStatusPollTimer) clearInterval(agentStatusPollTimer);
-    
-    const checkStatus = () => {
-        if (document.hidden) return;
-        fetch('/api/agent/status')
-            .then(res => res.json())
-            .then(data => {
-                const indicator = document.getElementById('desktopAgentIndicator');
-                if (indicator) {
-                    if (data.online) {
-                        lastAgentOnline = true;
-                        indicator.style.backgroundColor = '#4caf50'; // green
-                        indicator.title = 'NexoraCode (本地计算节点) - 在线';
-                    } else {
-                        lastAgentOnline = false;
-                        indicator.style.backgroundColor = '#9e9e9e'; // grey
-                        indicator.title = 'NexoraCode (本地计算节点) - 离线';
-                    }
-                }
-            }).catch(() => {
-                lastAgentOnline = false;
-                const indicator = document.getElementById('desktopAgentIndicator');
-                if (indicator) {
-                    indicator.style.backgroundColor = '#9e9e9e';
-                    indicator.title = 'NexoraCode (本地计算节点) - 离线 (拉取失败)';
-                }
-            });
-    };
-    
-    checkStatus(); // Initial fetch
-    agentStatusPollTimer = setInterval(checkStatus, AGENT_STATUS_POLL_VISIBLE_MS);
-}
+    if (browserSyncSocket && browserSyncSocket.readyState === WebSocket.OPEN) return;
 
-function stopMailPolling() {
-    if (mailPollTimer) {
-        clearInterval(mailPollTimer);
-        mailPollTimer = null;
+    browserSyncManuallyClosed = false;
+    clearBrowserSyncTimers();
+
+    try {
+        browserSyncSocket = new WebSocket(getBrowserSyncWsUrl());
+    } catch (e) {
+        setDesktopAgentIndicatorState(false, ' (状态通道启动失败)');
+        scheduleBrowserSyncReconnect();
+        return;
     }
-    mailPollInFlight = false;
+
+    browserSyncSocket.addEventListener('open', () => {
+        syncBrowserCurrentConversation();
+        startBrowserSyncPing();
+    });
+
+    browserSyncSocket.addEventListener('message', (event) => {
+        try {
+            handleBrowserSyncMessage(JSON.parse(event.data || '{}'));
+        } catch (e) {
+        }
+    });
+
+    browserSyncSocket.addEventListener('close', () => {
+        browserSyncSocket = null;
+        clearBrowserSyncTimers();
+        setDesktopAgentIndicatorState(false, ' (状态通道断开)');
+        scheduleBrowserSyncReconnect();
+    });
+
+    browserSyncSocket.addEventListener('error', () => {
+        setDesktopAgentIndicatorState(false, ' (状态通道异常)');
+    });
 }
 
-function startMailPolling() {
+function stopBrowserSyncSocket() {
+    browserSyncManuallyClosed = true;
+    clearBrowserSyncTimers();
+
+    if (agentStatusPollTimer) {
+        clearInterval(agentStatusPollTimer);
+        agentStatusPollTimer = null;
+    }
+
+    if (browserSyncSocket) {
+        browserSyncSocket.close();
+        browserSyncSocket = null;
+    }
+}
+
+function stopMailRealtimeSync() {
+    mailRefreshInFlight = false;
+}
+
+function startMailRealtimeSync() {
     if (!document.getElementById('toggleMailView')) return;
-    stopMailPolling();
-    const tick = async () => {
-        if (mailPollInFlight) return;
-        if (document.hidden) return;
-        mailPollInFlight = true;
-        try {
-            if (isMailViewActiveInDom()) {
-                await loadMailCurrentFolder(mailViewState.query || '', { silent: true, refreshDetail: false });
-                if (mailViewState.folder === 'sent') {
-                    await pollMailNotifyOnly();
-                }
-            } else {
-                await pollMailNotifyOnly();
-            }
-        } catch (e) {
-            // ignore polling errors to keep UI stable
-        } finally {
-            mailPollInFlight = false;
-        }
-    };
-    tick();
-    mailPollTimer = setInterval(tick, MAIL_POLL_INTERVAL_MS);
+    stopMailRealtimeSync();
+    void handleBrowserMailChangedEvent({ action: 'initial_sync' });
 }
 
 function loadMailSelectedId() {
@@ -5930,6 +6357,43 @@ const els = {
     knowledgeSearchBtn: document.getElementById('knowledgeSearchBtn')
 };
 
+function parseCssPx(value, fallback = 0) {
+    const parsed = Number.parseFloat(String(value || ''));
+    return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function getMessageInputCollapsedHeight(input = null) {
+    const target = input || els.messageInput;
+    if (!target) return 0;
+    const styles = window.getComputedStyle ? window.getComputedStyle(target) : null;
+    if (!styles) return 0;
+
+    const fontSize = parseCssPx(styles.fontSize, 15);
+    const lineHeight = parseCssPx(styles.lineHeight, fontSize * 1.45);
+    const rows = Math.max(1, Number.parseInt(target.getAttribute('rows') || '1', 10) || 1);
+    const padding = parseCssPx(styles.paddingTop) + parseCssPx(styles.paddingBottom);
+    const border = parseCssPx(styles.borderTopWidth) + parseCssPx(styles.borderBottomWidth);
+    const cssMinHeight = parseCssPx(styles.minHeight);
+    const naturalMinHeight = Math.ceil((lineHeight * rows) + padding + border);
+
+    return Math.max(naturalMinHeight, cssMinHeight);
+}
+
+function resizeMessageInput(input = null) {
+    const target = input || els.messageInput;
+    if (!target) return;
+
+    const styles = window.getComputedStyle ? window.getComputedStyle(target) : null;
+    const minHeight = getMessageInputCollapsedHeight(target);
+    const maxHeight = styles ? parseCssPx(styles.maxHeight, Number.POSITIVE_INFINITY) : Number.POSITIVE_INFINITY;
+
+    target.style.height = 'auto';
+    const wantedHeight = Math.max(minHeight, Number(target.scrollHeight || 0));
+    const nextHeight = Math.min(wantedHeight, maxHeight);
+    target.style.height = `${nextHeight}px`;
+    target.style.overflowY = wantedHeight > maxHeight ? 'auto' : 'hidden';
+}
+
 let generatedImageSizeObserver = null;
 
 function syncGeneratedImageViewportLimit() {
@@ -6017,7 +6481,7 @@ function exitLearningFeedComposeMode(options = {}) {
     learningFeedPostInFlight = false;
     if (shouldClear && els.messageInput) {
         els.messageInput.value = '';
-        els.messageInput.style.height = 'auto';
+        resizeMessageInput();
         saveMessageDraftToStorage('');
     }
     resetLearningFeedMentionState();
@@ -6539,9 +7003,7 @@ async function syncLearningHeaderMode() {
     }
     if (!showLearningMain && els.messageInput && els.messageInput.value) {
         requestAnimationFrame(() => {
-            els.messageInput.style.height = 'auto';
-            const minHeight = 42;
-            els.messageInput.style.height = Math.max(minHeight, els.messageInput.scrollHeight) + 'px';
+            resizeMessageInput();
         });
     }
 }
@@ -8549,9 +9011,7 @@ function fillMessageInputWithExplainText(rawText) {
     learningSidebarDraftValue = prompt;
     input.dispatchEvent(new Event('input', { bubbles: true }));
     requestAnimationFrame(() => {
-        input.style.height = 'auto';
-        const minHeight = 42;
-        input.style.height = Math.max(minHeight, input.scrollHeight) + 'px';
+        resizeMessageInput(input);
     });
     try {
         const n = prompt.length;
@@ -10439,18 +10899,18 @@ function initUI() {
     
     setTimeout(() => {
         if (document.getElementById('toggleMailView')) {
-            startMailPolling();
+            startMailRealtimeSync();
         }
         startClientToolPolling();
         startAgentStatusPolling(); // Agent WSS
     }, 1500);
 
     window.addEventListener('beforeunload', () => {
-        stopMailPolling();
+        stopMailRealtimeSync();
         stopClientToolPolling();
+        stopBrowserSyncSocket();
         stopConversationStreamStatusSync();
         clearAllStreamAttachRetries();
-        if (agentStatusPollTimer) clearInterval(agentStatusPollTimer);
         if (notesCloudSyncTimer) {
             clearTimeout(notesCloudSyncTimer);
             notesCloudSyncTimer = null;
@@ -10463,6 +10923,12 @@ function initUI() {
     window.addEventListener('pageshow', async (e) => {
         if (e && e.persisted) {
             await ensureAuthenticatedSession();
+        }
+        flushDeferredMailEvents();
+    });
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) {
+            flushDeferredMailEvents();
         }
     });
     window.addEventListener('resize', () => {
@@ -10561,8 +11027,9 @@ function initUI() {
         const restoredDraft = loadMessageDraftFromStorage();
         if (restoredDraft) {
             els.messageInput.value = restoredDraft;
-            els.messageInput.style.height = 'auto';
-            els.messageInput.style.height = `${els.messageInput.scrollHeight}px`;
+            resizeMessageInput();
+        } else {
+            resizeMessageInput();
         }
         updateMobileMessageInputViewportBaseline();
         if (window.visualViewport) {
@@ -10655,10 +11122,7 @@ function initUI() {
         });
         // Auto-resize textarea
         els.messageInput.addEventListener('input', function() {
-            this.style.height = 'auto';
-            const minHeight = 42;
-            this.style.height = Math.max(minHeight, this.scrollHeight) + 'px';
-            if(this.value === '') this.style.height = 'auto'; // Reset
+            resizeMessageInput(this);
             saveMessageDraftToStorage(this.value);
             if (learningFeedComposeMode) {
                 updateLearningFeedMentionCandidates();
@@ -12849,8 +13313,7 @@ function upsertLongtermPlanHookBlock(messageDiv, parsed, source = {}) {
         const cleanedText = String((parsed.summary || parsed.context || parsed.task || '') || '');
         const liveBodies = content.querySelectorAll('.content-body[data-stream-live="1"]');
         liveBodies.forEach((body) => {
-            body.innerHTML = renderMarkdownWithNewTabLinks(cleanedText, {
-                breaks: false,
+            body.innerHTML = renderStreamingMarkdownWithNewTabLinks(cleanedText, {
                 streamingMathProvisional: true
             });
             bindSourceMarkdown(body, cleanedText);
@@ -13015,6 +13478,7 @@ async function loadConversation(id, options = {}) {
     cachedPuzzleStates = {};
 
     currentConversationId = targetConversationId;
+    syncBrowserCurrentConversation();
     invalidateConversationListForStreamState();
     syncGenerationStateForCurrentConversation();
     learningHeaderMode = learningReaderOpened ? 'learning' : 'chat';
@@ -13579,8 +14043,7 @@ async function submitQuestionAnswer(answerText, questionCard = null) {
     if (questionCard) applyQuestionAnswer(questionCard, finalAnswer);
     if (els.messageInput) {
         els.messageInput.value = finalAnswer;
-        els.messageInput.style.height = 'auto';
-        els.messageInput.style.height = `${els.messageInput.scrollHeight}px`;
+        resizeMessageInput();
     }
     await sendMessage({
         displayContentOverride: finalAnswer,
@@ -13748,6 +14211,7 @@ async function ensureConversationExistsForStreaming(seedText = '', conversationM
         const convId = String(data.conversation_id || '').trim();
         if (!convId) return '';
         currentConversationId = convId;
+        syncBrowserCurrentConversation();
         if (learningConversation) {
             currentConversationMode = 'learning';
         }
@@ -15644,7 +16108,7 @@ async function sendMessage(options = {}) {
     const isStreamVisible = () => isCurrentConversation(streamConversationId);
     // UI Updates
     els.messageInput.value = '';
-    els.messageInput.style.height = 'auto';
+    resizeMessageInput();
     saveMessageDraftToStorage('');
 
     // Prepare display content
@@ -16289,7 +16753,7 @@ async function sendMessage(options = {}) {
                 const composed = `${stablePrefix}${provisionalTail}`;
                 let rendered = false;
                 if (composed.trim()) {
-                    scratch.innerHTML = renderMarkdownWithNewTabLinks(composed, { breaks: false });
+                    scratch.innerHTML = renderStreamBlockMarkdown(state.liveEl, composed);
                     rendered = renderMathInElementSyncSafe(scratch);
                 }
                 if (!rendered) {
@@ -16310,7 +16774,7 @@ async function sendMessage(options = {}) {
                         });
                         return;
                     }
-                    scratch.innerHTML = renderMarkdownWithNewTabLinks(stablePrefix, { breaks: false });
+                    scratch.innerHTML = renderStreamBlockMarkdown(state.liveEl, stablePrefix);
                     if (hasLikelyMathDelimiter(stablePrefix) && !hasOpenMathDelimiters(stablePrefix)) {
                         renderMathInElementSyncSafe(scratch);
                     }
@@ -16324,7 +16788,7 @@ async function sendMessage(options = {}) {
                     });
                 }
             } else {
-                scratch.innerHTML = renderMarkdownWithNewTabLinks(sourceText, { breaks: false });
+                scratch.innerHTML = renderStreamBlockMarkdown(state.liveEl, sourceText);
                 if (job.hasMath) {
                     renderMathInElementSyncSafe(scratch);
                 }
@@ -16348,11 +16812,11 @@ async function sendMessage(options = {}) {
         }, waitMs);
     }
 
-    function renderStreamFragment(rawText, citationMap) {
+    function renderStreamFragment(rawText, citationMap, root = null) {
         const sourceText = rewriteCitationRefsMarkdown(String(rawText || ''), citationMap || {});
         const frag = document.createElement('div');
         frag.className = 'stream-fragment';
-        frag.innerHTML = renderMarkdownWithNewTabLinks(sourceText, { breaks: false });
+        frag.innerHTML = renderStreamBlockMarkdown(root, sourceText);
         bindSourceMarkdown(frag, sourceText);
         highlightCode(frag);
         return frag;
@@ -16402,7 +16866,7 @@ async function sendMessage(options = {}) {
                 return;
             }
             state.liveEl.classList.remove('stream-live-raw');
-            state.liveEl.innerHTML = renderMarkdownWithNewTabLinks(sourceText, { breaks: false });
+            state.liveEl.innerHTML = renderStreamBlockMarkdown(state.liveEl, sourceText);
             bindSourceMarkdown(state.liveEl, sourceText);
             state.lastRenderedSource = sourceText;
             state.lastRenderedMode = 'markdown_unbalanced';
@@ -16434,7 +16898,7 @@ async function sendMessage(options = {}) {
                     return;
                 }
                 state.liveEl.classList.remove('stream-live-raw');
-                state.liveEl.innerHTML = renderMarkdownWithNewTabLinks(sourceText, { breaks: false });
+                state.liveEl.innerHTML = renderStreamBlockMarkdown(state.liveEl, sourceText);
                 bindSourceMarkdown(state.liveEl, sourceText);
                 state.lastRenderedSource = sourceText;
                 state.lastRenderedMode = 'markdown_open_head';
@@ -16502,7 +16966,7 @@ async function sendMessage(options = {}) {
 
         clearLiveMathRenderSchedule(state);
         state.liveEl.classList.remove('stream-live-raw');
-        state.liveEl.innerHTML = renderMarkdownWithNewTabLinks(sourceText, { breaks: false });
+        state.liveEl.innerHTML = renderStreamBlockMarkdown(state.liveEl, sourceText);
         bindSourceMarkdown(state.liveEl, sourceText);
         highlightCode(state.liveEl);
         state.lastRenderedSource = sourceText;
@@ -16546,7 +17010,7 @@ async function sendMessage(options = {}) {
 
         // force=true is used when closing current stream block (e.g. tool row inserted).
         // Commit once and avoid showing raw latex before KaTeX by rendering sync first.
-        const fragment = renderStreamFragment(raw, citationMap);
+        const fragment = renderStreamFragment(raw, citationMap, block);
         if (hasLikelyMathDelimiter(raw)) {
             const syncOk = renderMathInElementSyncSafe(fragment);
             pushStreamRenderDebug('flush_force_math_sync', state, {
@@ -16633,6 +17097,7 @@ async function sendMessage(options = {}) {
             pendingByName: {},
             callIdByIndex: {},
             pendingQueue: [],
+            explicitIdByLocalId: {},
             activeAnonCallId: ''
         };
         updateMessageModelBadge(aiMsgDiv, modelBadgeState);
@@ -17554,6 +18019,7 @@ function getToolCallState(aiMsgDiv) {
             pendingByName: {},
             callIdByIndex: {},
             pendingQueue: [],
+            explicitIdByLocalId: {},
             activeAnonCallId: ''
         };
     }
@@ -17563,10 +18029,79 @@ function getToolCallState(aiMsgDiv) {
     if (!Array.isArray(aiMsgDiv.__toolCallState.pendingQueue)) {
         aiMsgDiv.__toolCallState.pendingQueue = [];
     }
+    if (!aiMsgDiv.__toolCallState.explicitIdByLocalId || typeof aiMsgDiv.__toolCallState.explicitIdByLocalId !== 'object') {
+        aiMsgDiv.__toolCallState.explicitIdByLocalId = {};
+    }
     if (typeof aiMsgDiv.__toolCallState.activeAnonCallId !== 'string') {
         aiMsgDiv.__toolCallState.activeAnonCallId = '';
     }
     return aiMsgDiv.__toolCallState;
+}
+
+function removePendingToolCallId(state, callId) {
+    const id = String(callId || '').trim();
+    if (!state || !id) return;
+
+    const pendingQueue = Array.isArray(state.pendingQueue) ? state.pendingQueue : [];
+    for (let i = pendingQueue.length - 1; i >= 0; i -= 1) {
+        if (pendingQueue[i] === id) pendingQueue.splice(i, 1);
+    }
+
+    const pendingByName = state.pendingByName && typeof state.pendingByName === 'object'
+        ? state.pendingByName
+        : {};
+    Object.keys(pendingByName).forEach((name) => {
+        const queue = Array.isArray(pendingByName[name]) ? pendingByName[name] : [];
+        for (let i = queue.length - 1; i >= 0; i -= 1) {
+            if (queue[i] === id) queue.splice(i, 1);
+        }
+    });
+}
+
+function rememberPendingToolCallId(aiMsgDiv, callId, toolName) {
+    const id = String(callId || '').trim();
+    const name = normalizeToolDisplayName(toolName);
+    if (!aiMsgDiv || !id || !name) return;
+
+    const state = getToolCallState(aiMsgDiv);
+    if (!state.pendingByName || typeof state.pendingByName !== 'object') {
+        state.pendingByName = {};
+    }
+
+    if (!Array.isArray(state.pendingByName[name])) {
+        state.pendingByName[name] = [];
+    }
+
+    if (!state.pendingByName[name].includes(id)) {
+        state.pendingByName[name].push(id);
+    }
+
+    if (!Array.isArray(state.pendingQueue)) {
+        state.pendingQueue = [];
+    }
+
+    if (!state.pendingQueue.includes(id)) {
+        state.pendingQueue.push(id);
+    }
+}
+
+function migratePendingToolCallId(aiMsgDiv, oldCallId, newCallId, toolName) {
+    const oldId = String(oldCallId || '').trim();
+    const newId = String(newCallId || '').trim();
+    const name = normalizeToolDisplayName(toolName);
+    if (!aiMsgDiv || !newId) return;
+
+    const state = getToolCallState(aiMsgDiv);
+    if (oldId && oldId !== newId) {
+        removePendingToolCallId(state, oldId);
+        state.explicitIdByLocalId[oldId] = newId;
+
+        if (state.activeAnonCallId === oldId) {
+            state.activeAnonCallId = newId;
+        }
+    }
+
+    rememberPendingToolCallId(aiMsgDiv, newId, name);
 }
 
 function allocateToolCallId(aiMsgDiv, toolName, phase, explicitCallId = '', toolIndex = null) {
@@ -17849,10 +18384,12 @@ function ensureToolUsageForDelta(aiMsgDiv, name, callId, toolIndex = null) {
             pending: true
         });
     }
+    const previousCallId = String((row && row.dataset && row.dataset.callId) || '').trim();
     row.dataset.pending = 'true';
     row.dataset.phase = 'build';
     if (safeCallId) row.dataset.callId = safeCallId;
     if (idxKey) row.dataset.toolIndex = idxKey;
+    migratePendingToolCallId(aiMsgDiv, previousCallId, row.dataset.callId || safeCallId, safeName);
     return row;
 }
 
@@ -17868,11 +18405,13 @@ function appendToolCallDelta(aiMsgDiv, data) {
     if (providedName) {
         row.dataset.nameAcc = providedName;
         renameToolUsageRow(row, providedName);
+        rememberPendingToolCallId(aiMsgDiv, row.dataset.callId || callId, providedName);
     } else if (nameDeltaPiece) {
         const acc = `${row.dataset.nameAcc || ''}${nameDeltaPiece}`;
         row.dataset.nameAcc = acc;
         if (String(acc || '').trim()) {
             renameToolUsageRow(row, acc);
+            rememberPendingToolCallId(aiMsgDiv, row.dataset.callId || callId, acc);
         }
     }
     if (!delta) return;
@@ -17929,11 +18468,13 @@ function finalizeToolCallBadge(aiMsgDiv, name, callId, argumentsText = '', optio
     }
     if (!row) return;
 
+    const previousCallId = String(row.dataset.callId || '').trim();
     if (finalArgs) row.dataset.argsRaw = finalArgs;
     renameToolUsageRow(row, safeName);
     row.dataset.phase = 'exec';
     if (safeCallId) row.dataset.callId = safeCallId;
     if (idxKey) row.dataset.toolIndex = idxKey;
+    migratePendingToolCallId(aiMsgDiv, previousCallId, row.dataset.callId || safeCallId, safeName);
     row.dataset.pending = 'false';
     row.dataset.resolved = 'false';
     setToolUsageStatus(row, `${safeName} 执行中`);
@@ -18017,6 +18558,8 @@ function updateToolCallRunning(aiMsgDiv, data) {
 
     const argsRaw = String(data.arguments || '').trim();
 
+    const previousCallId = String(row.dataset.callId || '').trim();
+
     if (argsRaw) {
         row.dataset.argsRaw = argsRaw;
     }
@@ -18034,6 +18577,7 @@ function updateToolCallRunning(aiMsgDiv, data) {
         row.dataset.toolIndex = idxKey;
     }
 
+    migratePendingToolCallId(aiMsgDiv, previousCallId, row.dataset.callId || callId, toolName);
     row.classList.add('is-running');
     row.classList.remove('done');
     setToolUsageStatus(row, '执行中');
@@ -18325,6 +18869,7 @@ function updateLastToolResult(aiMsgDiv, name, result, callId = '', options = {})
     }
 
     if (target) {
+        const previousCallId = String(target.dataset.callId || '').trim();
         if (safeName === 'tool') {
             const inherited = normalizeToolDisplayName(target.dataset.toolName || '');
             if (inherited && inherited !== 'tool') safeName = inherited;
@@ -18333,6 +18878,9 @@ function updateLastToolResult(aiMsgDiv, name, result, callId = '', options = {})
         target.dataset.phase = 'exec';
         if (safeCallId) target.dataset.callId = safeCallId;
         if (idxKey) target.dataset.toolIndex = idxKey;
+        const state = getToolCallState(aiMsgDiv);
+        removePendingToolCallId(state, previousCallId);
+        removePendingToolCallId(state, target.dataset.callId || safeCallId);
         target.dataset.pending = 'false';
         target.dataset.resolved = 'true';
         target.classList.remove('is-running');
@@ -18826,6 +19374,7 @@ function appendMessage(msg, index) {
         pendingByName: {},
         callIdByIndex: {},
         pendingQueue: [],
+        explicitIdByLocalId: {},
         activeAnonCallId: ''
     };
     
@@ -19380,6 +19929,7 @@ function resetAssistantMessageForLiveStream(messageDiv, options = {}) {
         pendingByName: {},
         callIdByIndex: {},
         pendingQueue: [],
+        explicitIdByLocalId: {},
         activeAnonCallId: ''
     };
     messageDiv.__activeReasoningThinkingBlock = null;
@@ -20863,8 +21413,7 @@ function renderStreamingContentSegment(messageDiv, body, rawText, source = 'stre
 
     body.dataset.streamLive = '1';
     body.dataset.streamRaw = bodyText;
-    body.innerHTML = renderMarkdownWithNewTabLinks(bodyText, {
-        breaks: false,
+    body.innerHTML = renderStreamingMarkdownWithNewTabLinks(bodyText, {
         streamingMathProvisional: true
     });
     bindSourceMarkdown(body, bodyText);
@@ -20881,8 +21430,7 @@ function updateMessageDivContent(index, fullText, preferredMessageDiv = null) {
     const bodyText = resolved.text;
     
     body.dataset.streamLive = '1';
-    body.innerHTML = renderMarkdownWithNewTabLinks(bodyText, {
-        breaks: false,
+    body.innerHTML = renderStreamingMarkdownWithNewTabLinks(bodyText, {
         streamingMathProvisional: true
     });
     bindSourceMarkdown(body, bodyText);
@@ -21149,6 +21697,173 @@ function updateMessageDivTools(index, data, preferredMessageDiv = null) {
     scheduleLearningSidebarBridgeNotify();
 }
 
+const STREAM_PREFILL_RENDER_CHUNK_TYPES = new Set([
+    'content',
+    'reasoning_content',
+    'web_search',
+    'search_meta',
+    'context_compression_status',
+    'function_call_delta',
+    'function_call',
+    'function_call_running',
+    'function_result',
+    'learning_card',
+    'question',
+    'puzzle',
+    'model_info',
+    'token_usage'
+]);
+
+function getStreamPrefillChunkSeq(chunk) {
+    const seq = Number(chunk && chunk._stream_seq);
+
+    return Number.isFinite(seq) && seq > 0 ? Math.floor(seq) : 0;
+}
+
+function renderStreamPrefillContentChunk(assistantDiv, prefillState, chunk) {
+    const contentText = String(chunk && chunk.content || '');
+
+    if (!contentText) {
+        return false;
+    }
+
+    assistantDiv.__reasoningSegmentOpen = false;
+
+    if (assistantDiv.__contentAfterGeneratedImage) {
+        prefillState.currentContentSpan = createContentSpan(assistantDiv, { afterGeneratedImage: true });
+        prefillState.currentSegmentContent = '';
+        assistantDiv.__contentAfterGeneratedImage = false;
+    } else if (!prefillState.currentContentSpan || !prefillState.currentContentSpan.isConnected) {
+        prefillState.currentContentSpan = createContentSpan(assistantDiv);
+        prefillState.currentSegmentContent = '';
+    }
+
+    prefillState.currentSegmentContent += contentText;
+
+    const contentSpan = prefillState.currentContentSpan;
+    contentSpan.dataset.streamRaw = prefillState.currentSegmentContent;
+    contentSpan.dataset.streamLive = '1';
+    contentSpan.innerHTML = renderStreamingMarkdownWithNewTabLinks(prefillState.currentSegmentContent, {
+        streamingMathProvisional: true
+    });
+    bindSourceMarkdown(contentSpan, prefillState.currentSegmentContent);
+    highlightCode(contentSpan);
+
+    return true;
+}
+
+function renderStreamPrefillReasoningChunk(assistantDiv, chunk) {
+    const reasoningText = String(chunk && chunk.content || '');
+
+    if (!reasoningText) {
+        return false;
+    }
+
+    const msgContentContainer = assistantDiv.querySelector('.message-content') || assistantDiv;
+    let thinkingBlock = assistantDiv.__activeReasoningThinkingBlock;
+
+    if (!assistantDiv.__reasoningSegmentOpen || !thinkingBlock || !thinkingBlock.isConnected || !thinkingBlock.classList.contains('reasoning-thinking-block')) {
+        thinkingBlock = createThinkingBlock(false);
+        msgContentContainer.appendChild(thinkingBlock);
+        assistantDiv.__reasoningSegmentOpen = true;
+        assistantDiv.__activeReasoningThinkingBlock = thinkingBlock;
+    }
+
+    const thinkingContent = thinkingBlock.querySelector('.thinking-content');
+    const nextRaw = `${String(thinkingContent.dataset.streamRaw || '')}${reasoningText}`;
+    thinkingBlock.dataset.streamLive = '1';
+    thinkingContent.dataset.streamRaw = nextRaw;
+    thinkingContent.dataset.streamLive = '1';
+    thinkingContent.innerHTML = renderMarkdownWithNewTabLinks(nextRaw, {
+        breaks: false,
+        streamingMathProvisional: true
+    });
+    bindSourceMarkdown(thinkingContent, nextRaw);
+    highlightCode(thinkingContent);
+    updateThinkingBlockSummary(thinkingBlock, nextRaw);
+
+    return true;
+}
+
+function renderStreamPrefillProcessChunk(assistantDiv, assistantIndex, prefillState, chunk) {
+    const chunkType = String(chunk && chunk.type || '').trim();
+
+    if (!STREAM_PREFILL_RENDER_CHUNK_TYPES.has(chunkType)) {
+        return false;
+    }
+
+    if (chunkType === 'content') {
+        return renderStreamPrefillContentChunk(assistantDiv, prefillState, chunk);
+    }
+
+    if (chunkType === 'reasoning_content') {
+        return renderStreamPrefillReasoningChunk(assistantDiv, chunk);
+    }
+
+    if (chunkType === 'model_info') {
+        updateMessageModelBadge(assistantDiv, {
+            modelName: String(chunk.model_name || getStreamingModelBadgeName()),
+            searchFlag: (typeof chunk.search_enabled === 'boolean') ? chunk.search_enabled : 'unknown',
+            inputTokens: 0,
+            outputTokens: Math.max(safeTokenInt(tokenMiniState.streamOutput), safeTokenInt(tokenMiniState.estimatedStreamOutput))
+        });
+
+        return false;
+    }
+
+    if (chunkType === 'token_usage') {
+        updateMessageModelBadge(assistantDiv, {
+            modelName: getStreamingModelBadgeName(),
+            searchFlag: 'unknown',
+            inputTokens: safeTokenInt(chunk.input_tokens),
+            outputTokens: Math.max(safeTokenInt(chunk.output_tokens), safeTokenInt(tokenMiniState.streamOutput), safeTokenInt(tokenMiniState.estimatedStreamOutput))
+        });
+
+        return false;
+    }
+
+    assistantDiv.__reasoningSegmentOpen = false;
+    prefillState.currentContentSpan = null;
+    prefillState.currentSegmentContent = '';
+    updateMessageDivTools(assistantIndex, chunk, assistantDiv);
+
+    return true;
+}
+
+function replayStreamPrefillChunks(assistantDiv, chunks, assistantIndex) {
+    const rows = Array.isArray(chunks) ? chunks : [];
+    const prefillState = {
+        currentContentSpan: null,
+        currentSegmentContent: ''
+    };
+    let rendered = false;
+    let lastSeq = 0;
+    let lastRenderedType = '';
+
+    rows.forEach((chunk) => {
+        if (!chunk || typeof chunk !== 'object') {
+            return;
+        }
+
+        const seq = getStreamPrefillChunkSeq(chunk);
+
+        if (seq > 0) {
+            lastSeq = Math.max(lastSeq, seq);
+        }
+
+        if (renderStreamPrefillProcessChunk(assistantDiv, assistantIndex, prefillState, chunk)) {
+            rendered = true;
+            lastRenderedType = String(chunk.type || '').trim();
+        }
+    });
+
+    return {
+        rendered,
+        lastSeq,
+        endedWithContent: lastRenderedType === 'content'
+    };
+}
+
 async function resumeActiveStreamAfterReload(options = {}) {
     const opts = (options && typeof options === 'object') ? options : {};
     const forceResume = !!opts.force;
@@ -21207,6 +21922,7 @@ async function resumeActiveStreamAfterReload(options = {}) {
         ? (Number.isFinite(Number(state.last_seq)) ? Number(state.last_seq) : 0)
         : 0;
     let prefilledFromApi = false;
+    let prefillEndedWithContent = canReuseExistingContent;
     if (!assistantDiv) {
         assistantDiv = appendMessage({ role: 'assistant', content: '', pending: true }, assistantIndex);
     }
@@ -21231,14 +21947,27 @@ async function resumeActiveStreamAfterReload(options = {}) {
             try {
                 const accRes = await fetch(`/api/chat/stream/content?stream_id=${encodeURIComponent(state.stream_id)}`);
                 const accData = await accRes.json().catch(() => ({}));
-                if (accData && accData.success && accData.content) {
+                const prefillResult = replayStreamPrefillChunks(
+                    assistantDiv,
+                    accData && Array.isArray(accData.render_chunks) ? accData.render_chunks : [],
+                    assistantIndex
+                );
+
+                if (prefillResult.rendered) {
+                    resumeFromSeq = Number.isFinite(Number(accData.last_seq))
+                        ? Number(accData.last_seq)
+                        : prefillResult.lastSeq;
+                    prefilledFromApi = true;
+                    prefillEndedWithContent = !!prefillResult.endedWithContent;
+                }
+
+                if (!prefillResult.rendered && accData && accData.success && accData.content) {
                     const content = assistantDiv.querySelector('.message-content') || assistantDiv;
                     const body = document.createElement('div');
                     body.className = 'content-body';
                     body.dataset.streamLive = '1';
                     body.dataset.streamRaw = accData.content;
-                    body.innerHTML = renderMarkdownWithNewTabLinks(accData.content, {
-                        breaks: false,
+                    body.innerHTML = renderStreamingMarkdownWithNewTabLinks(accData.content, {
                         streamingMathProvisional: true
                     });
                     bindSourceMarkdown(body, accData.content);
@@ -21246,8 +21975,10 @@ async function resumeActiveStreamAfterReload(options = {}) {
                     content.appendChild(body);
                     resumeFromSeq = Number.isFinite(Number(accData.last_seq)) ? Number(accData.last_seq) : 0;
                     prefilledFromApi = true;
+                    prefillEndedWithContent = true;
                 }
-                if (accData && accData.success && accData.reasoning_content) {
+
+                if (!prefillResult.rendered && accData && accData.success && accData.reasoning_content) {
                     const content = assistantDiv.querySelector('.message-content') || assistantDiv;
                     const thinkingBlock = createThinkingBlock(false);
                     const thinkingContent = thinkingBlock.querySelector('.thinking-content');
@@ -21259,6 +21990,9 @@ async function resumeActiveStreamAfterReload(options = {}) {
                     highlightCode(thinkingContent);
                     updateThinkingBlockSummary(thinkingBlock, accData.reasoning_content);
                     content.prepend(thinkingBlock);
+                    resumeFromSeq = Number.isFinite(Number(accData.last_seq)) ? Number(accData.last_seq) : resumeFromSeq;
+                    prefilledFromApi = true;
+                    prefillEndedWithContent = false;
                 }
             } catch (_) {
                 // 缓冲读取失败时从第 0 个事件重新读取，避免旧回复内容参与续接。
@@ -21294,7 +22028,9 @@ async function resumeActiveStreamAfterReload(options = {}) {
     let buffer = '';
     let replayCatchupSeq = 0;
     const decoder = new TextDecoder();
-    const resumeContentBody = prepareLatestContentBodyForStreamResume(assistantDiv);
+    const resumeContentBody = (!canReuseExistingContent && prefilledFromApi && !prefillEndedWithContent)
+        ? null
+        : prepareLatestContentBodyForStreamResume(assistantDiv);
 
     if (resumeContentBody) {
         currentContentSpan = resumeContentBody;
@@ -21497,10 +22233,13 @@ async function resumeActiveStreamAfterReload(options = {}) {
                     chunk.type === 'function_call_running' ||
                     chunk.type === 'function_result' ||
                     chunk.type === 'learning_card' ||
+                    chunk.type === 'question' ||
                     chunk.type === 'puzzle'
                 ) {
                     if (chunk.type === 'learning_card') {
                         appendLearningCardStep(assistantDiv, chunk);
+                    } else if (chunk.type === 'question') {
+                        appendQuestionStep(assistantDiv, chunk);
                     } else if (chunk.type === 'puzzle') {
                         appendPuzzleStep(assistantDiv, chunk);
                     } else if (chunk.type === 'function_call_delta') {
@@ -21512,7 +22251,7 @@ async function resumeActiveStreamAfterReload(options = {}) {
                             onTokenStreamToolArgsChunk(chunk.arguments || '');
                         }
                     }
-                    if (chunk.type !== 'learning_card' && chunk.type !== 'puzzle') {
+                    if (chunk.type !== 'learning_card' && chunk.type !== 'question' && chunk.type !== 'puzzle') {
                         assistantDiv.__reasoningSegmentOpen = false;
                         currentContentSpan = null; currentSegmentContent = '';
                         updateMessageDivTools(assistantIndex, chunk, assistantDiv);
@@ -21553,8 +22292,7 @@ async function resumeActiveStreamAfterReload(options = {}) {
                 const segmentPlanInfo = applyLongtermPlanFromText(segmentRaw, { source: 'live-segment', messageDiv: assistantDiv });
                 const displaySegmentContent = String(segmentPlanInfo && segmentPlanInfo.text !== undefined ? segmentPlanInfo.text : segmentRaw || '');
                 contentDiv.dataset.streamLive = '1';
-                contentDiv.innerHTML = renderMarkdownWithNewTabLinks(displaySegmentContent, {
-                    breaks: false,
+                contentDiv.innerHTML = renderStreamingMarkdownWithNewTabLinks(displaySegmentContent, {
                     streamingMathProvisional: true
                 });
                 bindSourceMarkdown(contentDiv, displaySegmentContent);
@@ -23725,9 +24463,7 @@ function closeKnowledgeView() {
     if(inputWrapper) inputWrapper.style.display = 'block';
     if (els.messageInput && els.messageInput.value) {
         requestAnimationFrame(() => {
-            els.messageInput.style.height = 'auto';
-            const minHeight = 42;
-            els.messageInput.style.height = Math.max(minHeight, els.messageInput.scrollHeight) + 'px';
+            resizeMessageInput();
         });
     }
     navigationStack = []; // 清空栈
@@ -23773,7 +24509,7 @@ window.openMailPlaceholderView = function() {
     }
     setMailViewUrl(mailViewState.selectedId || '');
     if (mailViewState.folder === 'sent') {
-        pollMailNotifyOnly();
+        refreshMailNotifyBadgeFromServer();
     } else {
         updateMailNotifyFromMails(mailViewState.mails, { markChecked: true });
     }
@@ -25364,9 +26100,7 @@ function closeKnowledgeSearchResultView() {
     if(inputWrapper) inputWrapper.style.display = 'block';
     if (els.messageInput && els.messageInput.value) {
         requestAnimationFrame(() => {
-            els.messageInput.style.height = 'auto';
-            const minHeight = 42;
-            els.messageInput.style.height = Math.max(minHeight, els.messageInput.scrollHeight) + 'px';
+            resizeMessageInput();
         });
     }
 

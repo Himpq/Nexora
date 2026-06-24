@@ -159,22 +159,22 @@ class TempContextStore:
                 return item
         return None
 
-    def read(self, resource_id: str, start: int = 0, count: int = 2000) -> Dict[str, Any]:
+    def read(self, resource_id: str, offset: int = 0, length: int = 2000) -> Dict[str, Any]:
         item = self._get_entry(resource_id)
         if not item:
             return {"success": False, "message": "resource_id not found or expired"}
         text = str(item.get("content") or "")
         total = len(text)
-        s = max(0, min(_safe_int(start, 0), total))
-        n = max(1, min(_safe_int(count, 2000), 200000))
+        s = max(0, min(_safe_int(offset, 0), total))
+        n = max(1, min(_safe_int(length, 2000), 200000))
         e = max(s, min(total, s + n))
         return {
             "success": True,
             "resource_id": str(item.get("resource_id") or ""),
             "source_tool": str(item.get("source_tool") or ""),
-            "start": s,
-            "count": n,
-            "end": e,
+            "offset": s,
+            "length": n,
+            "end_offset": e,
             "total_length": total,
             "content": text[s:e],
         }

@@ -9,10 +9,38 @@ _ACTIVE_AGENTS = {}
 _AGENT_LOCK = threading.Lock()
 # Pending results map: task_id -> {"event": threading.Event(), "result": None}
 _PENDING_TASKS = {}
+_STATUS_LISTENERS = []
+_STATUS_LISTENERS_LOCK = threading.Lock()
+
+
+def add_agent_status_listener(listener):
+    """注册 Agent 在线状态监听器，用于浏览器 WSS 状态推送。"""
+    if not callable(listener):
+        return
+
+    with _STATUS_LISTENERS_LOCK:
+        if listener not in _STATUS_LISTENERS:
+            _STATUS_LISTENERS.append(listener)
+
+
+def _notify_agent_status(username: str, online: bool):
+    listeners = []
+
+    with _STATUS_LISTENERS_LOCK:
+        listeners = list(_STATUS_LISTENERS)
+
+    for listener in listeners:
+        try:
+            listener(username, bool(online))
+        except Exception as e:
+            print(f"[WSS] agent status listener failed: {e}")
+
 
 def register_agent(username, ws):
     with _AGENT_LOCK:
         _ACTIVE_AGENTS[username] = {"ws": ws, "tools": [], "last_ping": time.time()}
+
+    _notify_agent_status(username, True)
 
 def update_agent_tools(username, tools: list):
     with _AGENT_LOCK:
@@ -30,12 +58,20 @@ def update_ping(username):
             _ACTIVE_AGENTS[username]["last_ping"] = time.time()
 
 def unregister_agent(username, ws):
+    removed = False
+
     with _AGENT_LOCK:
         agent = _ACTIVE_AGENTS.get(username)
         if agent and agent["ws"] == ws:
             del _ACTIVE_AGENTS[username]
+            removed = True
+
+    if removed:
+        _notify_agent_status(username, False)
 
 def is_agent_online(username: str) -> bool:
+    expired = False
+
     with _AGENT_LOCK:
         agent = _ACTIVE_AGENTS.get(username)
         # 简单判定：最近60秒内有活跃
@@ -44,7 +80,12 @@ def is_agent_online(username: str) -> bool:
         elif agent:
             # Drop stale connection internally
             del _ACTIVE_AGENTS[username]
-        return False
+            expired = True
+
+    if expired:
+        _notify_agent_status(username, False)
+
+    return False
 
 def get_agent_tools(username: str) -> list:
     with _AGENT_LOCK:

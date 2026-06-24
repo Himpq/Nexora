@@ -2242,7 +2242,7 @@ class Model:
 
                 if learning_mode and func_name not in LEARNING_ALLOWED_BASE_TOOL_NAMES:
                     continue
-                if func_def.get("name") in ["knowledge_search_vector", "server_file_search_semantic"] and not rag_enabled:
+                if func_def.get("name") in ["knowledge_search_vector", "cloud_file_search_semantic"] and not rag_enabled:
                     continue
                 if func_def.get("name") in ["send_email", "get_email", "get_email_list"] and not mail_enabled:
                     continue
@@ -3059,13 +3059,14 @@ class Model:
             "temp_context_search",
             "temp_context_list",
             "temp_context_clear",
-            "server_file_read",
-            "server_file_create",
-            "server_file_write",
-            "server_file_find",
-            "server_file_list",
-            "server_file_remove",
-            "server_file_search_semantic",
+            "cloud_file_read",
+            "cloud_file_create",
+            "cloud_file_write",
+            "cloud_file_patch",
+            "cloud_file_find",
+            "cloud_file_list",
+            "cloud_file_remove",
+            "cloud_file_search_semantic",
             "local_file_read",
             "local_file_write",
             "local_file_probe",
@@ -3165,7 +3166,7 @@ class Model:
                 "total_chars": int(cached.get("length") or len(text)),
                 "trigger_chars": trigger_chars,
                 "scope": "single_reply",
-                "hint": "Use temp_context_read(resource_id,start,count) or temp_context_search(resource_id,keyword/regex).",
+                "hint": "Use temp_context_read(resource_id,offset,length) or temp_context_search(resource_id,keyword/regex).",
                 "preview": text[:400]
             }
             return json.dumps(payload, ensure_ascii=False)
@@ -3173,11 +3174,11 @@ class Model:
             print(f"[TMP_CACHE] cache failed: {e}")
             return None
 
-    def temp_cache_read(self, resource_id: str, start: int = 0, count: int = 2000) -> str:
+    def temp_cache_read(self, resource_id: str, offset: int = 0, length: int = 2000) -> str:
         store = self._temp_context_store
         if store is None:
             return json.dumps({"success": False, "message": "tmp cache is unavailable for this reply"}, ensure_ascii=False)
-        return json.dumps(store.read(resource_id=resource_id, start=start, count=count), ensure_ascii=False)
+        return json.dumps(store.read(resource_id=resource_id, offset=offset, length=length), ensure_ascii=False)
 
     def temp_cache_search(
         self,
@@ -3231,7 +3232,7 @@ class Model:
             "knowledge_basis_update",
             "knowledge_search_keyword",
             "knowledge_search_vector",
-            "server_file_search_semantic",
+            "cloud_file_search_semantic",
             "link_knowledge",
             "categorize_knowledge",
             "create_category",
@@ -3249,12 +3250,13 @@ class Model:
             "knowledge_graph_read",
             "get_knowledge_connections",
             "find_path_between_knowledge",
-            "server_file_create",
-            "server_file_read",
-            "server_file_write",
-            "server_file_find",
-            "server_file_list",
-            "server_file_remove",
+            "cloud_file_create",
+            "cloud_file_read",
+            "cloud_file_write",
+            "cloud_file_patch",
+            "cloud_file_find",
+            "cloud_file_list",
+            "cloud_file_remove",
             "local_file_read",
             "local_file_write",
             "local_file_probe",
@@ -4651,7 +4653,7 @@ class Model:
             if sandbox_path_list:
                 sandbox_hint = (
                     "[系统注入] 已上传文件到用户沙箱，请优先使用 "
-                    "server_file_list/server_file_create/server_file_read/server_file_find/server_file_write/server_file_remove 工具操作以下路径：\n"
+                    "cloud_file_list/cloud_file_create/cloud_file_read/cloud_file_find/cloud_file_write/cloud_file_remove 工具操作以下路径：\n"
                     + "\n".join([f"- {p}" for p in sandbox_path_list])
                     + "\n"
                 )

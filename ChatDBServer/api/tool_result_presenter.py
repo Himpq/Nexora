@@ -16,13 +16,14 @@ class ToolResultPresenter:
             "temp_context_search": self._render_tmp_search,
             "temp_context_list": self._render_tmp_list,
             "temp_context_clear": self._render_tmp_clear,
-            "server_file_read": self._render_file_read,
+            "cloud_file_read": self._render_file_read,
             "local_file_read": self._render_file_read,
-            "server_file_create": self._render_file_create,
-            "server_file_write": self._render_file_write,
-            "server_file_find": self._render_file_find,
-            "server_file_list": self._render_file_list,
-            "server_file_remove": self._render_file_remove,
+            "cloud_file_create": self._render_file_create,
+            "cloud_file_write": self._render_file_write,
+            "cloud_file_patch": self._render_file_patch,
+            "cloud_file_find": self._render_file_find,
+            "cloud_file_list": self._render_file_list,
+            "cloud_file_remove": self._render_file_remove,
             "local_file_write": self._render_file_write,
             "local_file_probe": self._render_local_file_probe,
             "local_file_list": self._render_local_file_list,
@@ -44,7 +45,7 @@ class ToolResultPresenter:
             "arxiv_search": self._render_arxiv_search,
             "js_execute": self._render_js_execute,
             "client_js_exec": self._render_js_execute,
-            "server_file_search_semantic": self._render_file_semantic_search,
+            "cloud_file_search_semantic": self._render_file_semantic_search,
             "conversation_context_length": self._render_context_length,
             "conversation_context_read": self._render_context,
             "conversation_context_search": self._render_context_keyword_search,
@@ -247,7 +248,7 @@ class ToolResultPresenter:
             f"- Tool: `{tool_name}`",
             f"- Resource: `{payload.get('resource_id', '')}`",
             f"- Total Chars: {payload.get('total_chars', payload.get('length', ''))}",
-            f"- Hint: `{payload.get('hint', 'temp_context_read(resource_id,start,count)')}`",
+            f"- Hint: `{payload.get('hint', 'temp_context_read(resource_id,offset,length)')}`",
         ]
 
         if preview:
@@ -304,9 +305,9 @@ class ToolResultPresenter:
             f"- Source Tool: `{payload.get('source_tool', '')}`",
         ]
 
-        if "start" in payload or "end" in payload or "total_length" in payload:
+        if "offset" in payload or "end_offset" in payload or "total_length" in payload:
             lines.append(
-                f"- Range: {payload.get('start', 0)}:{payload.get('end', '')} / {payload.get('total_length', '')}"
+                f"- Range: {payload.get('offset', 0)}:{payload.get('end_offset', '')} / {payload.get('total_length', '')}"
             )
 
         if not success:
@@ -449,7 +450,7 @@ class ToolResultPresenter:
         payload = self._load_payload_unwrapped(result)
 
         if isinstance(payload, dict) and payload.get("tmp_cached"):
-            return self._render_cached_payload("server_file_read", payload)
+            return self._render_cached_payload("cloud_file_read", payload)
 
         if not isinstance(payload, dict):
             return str(result or "")
@@ -512,7 +513,7 @@ class ToolResultPresenter:
         payload = self._load_payload(result)
 
         if isinstance(payload, dict) and payload.get("tmp_cached"):
-            return self._render_cached_payload("server_file_create", payload)
+            return self._render_cached_payload("cloud_file_create", payload)
 
         if not isinstance(payload, dict):
             return str(result or "")
@@ -542,7 +543,7 @@ class ToolResultPresenter:
         payload = self._load_payload_unwrapped(result)
 
         if isinstance(payload, dict) and payload.get("tmp_cached"):
-            return self._render_cached_payload("server_file_write", payload)
+            return self._render_cached_payload("cloud_file_write", payload)
 
         if not isinstance(payload, dict):
             return str(result or "")
@@ -585,7 +586,7 @@ class ToolResultPresenter:
         payload = self._load_payload(result)
 
         if isinstance(payload, dict) and payload.get("tmp_cached"):
-            return self._render_cached_payload("server_file_find", payload)
+            return self._render_cached_payload("cloud_file_find", payload)
 
         if not isinstance(payload, dict):
             return str(result or "")
@@ -635,7 +636,7 @@ class ToolResultPresenter:
         payload = self._load_payload(result)
 
         if isinstance(payload, dict) and payload.get("tmp_cached"):
-            return self._render_cached_payload("server_file_list", payload)
+            return self._render_cached_payload("cloud_file_list", payload)
 
         if not isinstance(payload, dict):
             return str(result or "")
@@ -824,7 +825,7 @@ class ToolResultPresenter:
         payload = self._load_payload(result)
 
         if isinstance(payload, dict) and payload.get("tmp_cached"):
-            return self._render_cached_payload("server_file_remove", payload)
+            return self._render_cached_payload("cloud_file_remove", payload)
 
         if not isinstance(payload, dict):
             return str(result or "")
@@ -1485,7 +1486,7 @@ class ToolResultPresenter:
         payload = self._load_payload(result)
 
         if isinstance(payload, dict) and payload.get("tmp_cached"):
-            return self._render_cached_payload("server_file_search_semantic", payload)
+            return self._render_cached_payload("cloud_file_search_semantic", payload)
 
         if not isinstance(payload, list):
             text = str(result or "").strip()
@@ -1811,8 +1812,6 @@ class ToolResultPresenter:
         if isinstance(payload, dict) and payload.get("tmp_cached"):
             return self._render_cached_payload("knowledge_mutation", payload)
 
-        raw_text = str(result or "").strip()
-        success = self._looks_successful_text(raw_text)
         tool_title = {
             "knowledge_basis_create": ("## Knowledge Added", "## Knowledge Add Failed"),
             "knowledge_basis_delete": ("## Knowledge Removed", "## Knowledge Remove Failed"),
@@ -1823,6 +1822,80 @@ class ToolResultPresenter:
         }
         tool_name = str(args.get("_tool_name") or "").strip()
         success_title, failed_title = tool_title.get(tool_name, ("## Knowledge Tool Completed", "## Knowledge Tool Failed"))
+
+        if isinstance(payload, dict) and (
+            payload.get("mode")
+            or payload.get("diff")
+            or payload.get("old_sha256")
+            or payload.get("new_sha256")
+        ):
+            success = payload.get("success", True) is not False and not payload.get("error")
+            changed = bool(payload.get("changed", False))
+            preview_title = "## Knowledge Patch Preview" if payload.get("dry_run") else success_title
+            title = self._status_title(success, preview_title, failed_title)
+            lines = [
+                title,
+                "",
+                f"- Knowledge: `{payload.get('title') or args.get('title') or ''}`",
+                f"- Changed: {self._as_bool_text(changed)}",
+            ]
+
+            if payload.get("dry_run") is not None:
+                lines.append(f"- Dry Run: {self._as_bool_text(payload.get('dry_run'))}")
+
+            if payload.get("mode"):
+                lines.append(f"- Mode: `{payload.get('mode')}`")
+
+            if payload.get("edit_count") is not None:
+                lines.append(f"- Edits: {payload.get('edit_count')}")
+
+            if payload.get("hunk_count") is not None:
+                lines.append(f"- Hunks: {payload.get('hunk_count')}")
+
+            if payload.get("added_lines") is not None or payload.get("removed_lines") is not None:
+                lines.append(f"- Lines: +{payload.get('added_lines', 0)} / -{payload.get('removed_lines', 0)}")
+
+            if payload.get("old_sha256") or payload.get("new_sha256"):
+                lines.append(
+                    f"- SHA256: `{self._short_hash(payload.get('old_sha256'))}` -> `{self._short_hash(payload.get('new_sha256'))}`"
+                )
+
+            if not success:
+                lines.extend(["", f"Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
+                return "\n".join(lines).strip()
+
+            patch_text = str(args.get("patch") or "").strip()
+
+            if patch_text:
+                lines.extend([
+                    "",
+                    "### Patch",
+                    "",
+                    self._fenced_text(patch_text, language="diff", limit=8000),
+                ])
+            else:
+                edits_text = self._format_structured_edits(args.get("edits"))
+
+                if edits_text:
+                    lines.extend([
+                        "",
+                        "### Structured Edits",
+                        "",
+                        edits_text,
+                    ])
+
+            if payload.get("diff"):
+                lines.extend([
+                    "",
+                    "### Result Diff",
+                    "",
+                    self._fenced_text(payload.get("diff"), language="diff", limit=12000),
+                ])
+
+            return "\n".join(lines).strip()
+
+        raw_text = str(result or "").strip()
+        success = payload.get("success", True) is not False if isinstance(payload, dict) else self._looks_successful_text(raw_text)
         title = self._status_title(success, success_title, failed_title)
         lines = [title]
 
@@ -1848,6 +1921,8 @@ class ToolResultPresenter:
             changed.append(f"content ({len(str(args.get('context') or ''))} chars)")
         if args.get("replacement") is not None or args.get("replacements"):
             changed.append("range replacement")
+        if args.get("patch") or args.get("edits"):
+            changed.append("patch")
         if args.get("public") is not None:
             changed.append(f"public={bool(args.get('public'))}")
         if args.get("collaborative") is not None:
@@ -1905,7 +1980,11 @@ class ToolResultPresenter:
             return "\n".join(lines).strip()
 
         if mode == "slice":
-            lines.append(f"- Range: {payload.get('from_pos', 0)}:{payload.get('to_pos', '')}")
+            offset = int(payload.get("offset", 0) or 0)
+            end_offset = payload.get("end_offset")
+            if end_offset is None:
+                end_offset = offset + int(payload.get("length", 0) or 0)
+            lines.append(f"- Range: {offset}:{end_offset}")
             lines.extend(["", "### Content", "", self._markdown_body(payload.get("content", ""), limit=16000)])
             return "\n".join(lines).strip()
 

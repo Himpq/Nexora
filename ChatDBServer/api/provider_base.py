@@ -1021,3 +1021,318 @@ class ProviderInterface(ABC):
                 "arguments": args,
                 "call_id": call_id,
             }
+
+    def _iter_openai_responses_stream_events(
+        self,
+        chunks,
+        *,
+        native_web_search_enabled: bool = False,
+        web_search_status_searching: str = "searching",
+        web_search_status_completed: str = "completed",
+        native_web_search_content_prefix: str = "",
+        native_web_search_query_from_name: bool = True,
+    ):
+        """
+        Parse OpenAI Responses API streaming chunks into unified events.
+
+        Responses streams often split tool metadata and arguments across different
+        events. In particular, response.function_call_arguments.delta may only
+        carry item_id/output_index, while name/call_id arrived earlier on
+        response.output_item.added. Keep an item map so the UI can render the tool
+        card as soon as the model starts building arguments.
+        """
+        has_emitted_content_delta = False
+        has_received_detail_reasoning = False
+        calls_by_item_id: Dict[str, Dict[str, Any]] = {}
+        calls_by_output_index: Dict[str, Dict[str, Any]] = {}
+        emitted_added_ids: set = set()
+        completed_call_ids: set = set()
+
+        def _obj_get_raw(obj: Any, key: str, default: Any = None) -> Any:
+            if obj is None:
+                return default
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            try:
+                extra = getattr(obj, "model_extra", None)
+                if isinstance(extra, dict) and key in extra:
+                    return extra.get(key, default)
+            except Exception:
+                pass
+            try:
+                return getattr(obj, key)
+            except Exception:
+                return default
+
+        def _text(value: Any) -> str:
+            if value is None:
+                return ""
+            if isinstance(value, str):
+                return value
+            return str(value)
+
+        def _extract_response_id(chunk_obj: Any, response_obj: Any) -> str:
+            candidates = [
+                _text(_obj_get_raw(response_obj, "id", "")),
+                _text(_obj_get_raw(chunk_obj, "response_id", "")),
+                _text(_obj_get_raw(chunk_obj, "id", "")),
+            ]
+            for candidate in candidates:
+                rid = str(candidate or "").strip()
+                if rid.startswith("resp_"):
+                    return rid
+            for candidate in candidates:
+                rid = str(candidate or "").strip()
+                if rid:
+                    return rid
+            return ""
+
+        def _output_index_key(value: Any) -> str:
+            try:
+                return str(int(value))
+            except Exception:
+                return str(value or "").strip()
+
+        def _remember_function_call_item(item: Any, chunk_obj: Any = None) -> Dict[str, Any]:
+            name = _text(_obj_get_raw(item, "name", "")).strip()
+            call_id = _text(_obj_get_raw(item, "call_id", "")).strip()
+            item_id = _text(_obj_get_raw(item, "id", "")).strip() or call_id
+            arguments = _text(_obj_get_raw(item, "arguments", ""))
+            output_index = _obj_get_raw(item, "output_index", None)
+            if output_index is None and chunk_obj is not None:
+                output_index = _obj_get_raw(chunk_obj, "output_index", None)
+            output_key = _output_index_key(output_index)
+
+            state = None
+            for key in (item_id, call_id):
+                if key and key in calls_by_item_id:
+                    state = calls_by_item_id[key]
+                    break
+            if state is None and output_key and output_key in calls_by_output_index:
+                state = calls_by_output_index[output_key]
+            if state is None:
+                state = {
+                    "name": "",
+                    "call_id": "",
+                    "item_id": "",
+                    "arguments": "",
+                    "output_index": "",
+                }
+
+            if name:
+                state["name"] = name
+            if call_id:
+                state["call_id"] = call_id
+            if item_id:
+                state["item_id"] = item_id
+            if arguments:
+                state["arguments"] = arguments
+            if output_key:
+                state["output_index"] = output_key
+
+            for key in (state.get("item_id"), state.get("call_id"), item_id, call_id):
+                key_text = str(key or "").strip()
+                if key_text:
+                    calls_by_item_id[key_text] = state
+            if output_key:
+                calls_by_output_index[output_key] = state
+
+            return state
+
+        def _state_for_arguments_delta(chunk_obj: Any) -> Dict[str, Any]:
+            fc_obj = (
+                _obj_get_raw(chunk_obj, "function_call", None)
+                or _obj_get_raw(chunk_obj, "item", None)
+                or _obj_get_raw(chunk_obj, "output_item", None)
+            )
+            if fc_obj is not None:
+                item_type = _text(_obj_get_raw(fc_obj, "type", "")).strip()
+                if item_type == "function_call" or _obj_get_raw(fc_obj, "name", None) is not None:
+                    return _remember_function_call_item(fc_obj, chunk_obj)
+
+            item_id = _text(_obj_get_raw(chunk_obj, "item_id", "")).strip()
+            call_id = _text(_obj_get_raw(chunk_obj, "call_id", "")).strip()
+            output_key = _output_index_key(_obj_get_raw(chunk_obj, "output_index", None))
+
+            for key in (item_id, call_id):
+                if key and key in calls_by_item_id:
+                    return calls_by_item_id[key]
+            if output_key and output_key in calls_by_output_index:
+                return calls_by_output_index[output_key]
+
+            state = {
+                "name": "",
+                "call_id": call_id or item_id,
+                "item_id": item_id,
+                "arguments": "",
+                "output_index": output_key,
+            }
+            for key in (item_id, call_id):
+                if key:
+                    calls_by_item_id[key] = state
+            if output_key:
+                calls_by_output_index[output_key] = state
+            return state
+
+        def _emit_added_delta(state: Dict[str, Any], index_value: Any = None):
+            call_id = str(state.get("call_id") or state.get("item_id") or "").strip()
+            name = str(state.get("name") or "").strip()
+            key = call_id or str(state.get("output_index") or "")
+            if not name or not key or key in emitted_added_ids:
+                return None
+            emitted_added_ids.add(key)
+            payload = {
+                "type": "function_call_delta",
+                "name": name,
+                "call_id": call_id,
+                "arguments_delta": "",
+                "name_delta": name,
+            }
+            idx = _output_index_key(index_value if index_value is not None else state.get("output_index"))
+            if idx:
+                payload["index"] = idx
+            return payload
+
+        for chunk in chunks:
+            response_obj = _obj_get_raw(chunk, "response", None)
+            response_id = _extract_response_id(chunk, response_obj)
+            if response_id:
+                yield {"type": "response_id", "response_id": response_id}
+
+            chunk_type = _text(_obj_get_raw(chunk, "type", "")).strip()
+
+            if chunk_type in {"response.output_text.delta", "response.message.delta"}:
+                delta = _text(_obj_get_raw(chunk, "delta", ""))
+                if delta:
+                    has_emitted_content_delta = True
+                    yield {"type": "content_delta", "delta": delta}
+                continue
+
+            if ("reasoning" in chunk_type) and ("delta" in chunk_type):
+                is_detail = ("reasoning_text.delta" in chunk_type) or (chunk_type == "response.reasoning.delta")
+                is_summary = "reasoning_summary_text.delta" in chunk_type
+                if is_detail:
+                    has_received_detail_reasoning = True
+                if is_summary and has_received_detail_reasoning:
+                    continue
+                delta = _text(_obj_get_raw(chunk, "delta", ""))
+                if delta:
+                    yield {"type": "reasoning_delta", "delta": delta}
+                continue
+
+            if chunk_type == "response.output_item.added":
+                item = _obj_get_raw(chunk, "item", None)
+                item_type = _text(_obj_get_raw(item, "type", "")).strip()
+                if item is not None and item_type == "function_call":
+                    state = _remember_function_call_item(item, chunk)
+                    added = _emit_added_delta(state, _obj_get_raw(chunk, "output_index", None))
+                    if added:
+                        yield added
+                continue
+
+            if "function_call_arguments.delta" in chunk_type:
+                arg_delta = _text(_obj_get_raw(chunk, "delta", ""))
+                state = _state_for_arguments_delta(chunk)
+                if arg_delta:
+                    state["arguments"] = str(state.get("arguments") or "") + arg_delta
+                added = _emit_added_delta(state, _obj_get_raw(chunk, "output_index", None))
+                if added:
+                    yield added
+                payload = {
+                    "type": "function_call_delta",
+                    "name": str(state.get("name") or ""),
+                    "call_id": str(state.get("call_id") or state.get("item_id") or ""),
+                    "arguments_delta": arg_delta,
+                }
+                idx = _output_index_key(_obj_get_raw(chunk, "output_index", state.get("output_index")))
+                if idx:
+                    payload["index"] = idx
+                yield payload
+                continue
+
+            if chunk_type == "response.output_item.done":
+                item = _obj_get_raw(chunk, "item", None)
+                if item is None:
+                    continue
+                item_type = _text(_obj_get_raw(item, "type", "")).strip()
+                if item_type == "function_call":
+                    state = _remember_function_call_item(item, chunk)
+                    added = _emit_added_delta(state, _obj_get_raw(chunk, "output_index", None))
+                    if added:
+                        yield added
+                elif "web_search" in item_type:
+                    action = _obj_get_raw(item, "action", None)
+                    query = _text(_obj_get_raw(action, "query", "")).strip() if action is not None else ""
+                    yield {
+                        "type": "web_search",
+                        "status": web_search_status_searching,
+                        "query": query,
+                        "content": f"{web_search_status_searching}: {query}" if query else web_search_status_searching,
+                    }
+                elif (item_type == "text") and (not has_emitted_content_delta):
+                    text_content = _text(_obj_get_raw(item, "content", ""))
+                    if text_content:
+                        has_emitted_content_delta = True
+                        yield {"type": "content_delta", "delta": text_content}
+                continue
+
+            if ("web_search_call.searching" in chunk_type) or ("web_search_call.completed" in chunk_type):
+                status = web_search_status_searching if "searching" in chunk_type else web_search_status_completed
+                ws_obj = _obj_get_raw(chunk, "web_search_call", None) or _obj_get_raw(chunk, "web_search", None)
+                query = _text(_obj_get_raw(ws_obj, "query", "")).strip() if ws_obj is not None else ""
+                yield {
+                    "type": "web_search",
+                    "status": status,
+                    "query": query,
+                    "content": f"{status}: {query}" if query else status,
+                }
+                continue
+
+            if chunk_type == "response.completed":
+                if response_obj is not None:
+                    output_items = _obj_get_raw(response_obj, "output", None) or []
+                    for item in output_items:
+                        if _text(_obj_get_raw(item, "type", "")).strip() != "function_call":
+                            continue
+                        state = _remember_function_call_item(item, chunk)
+                        name = str(state.get("name") or "").strip()
+                        call_id = str(state.get("call_id") or state.get("item_id") or "").strip()
+                        if not name:
+                            continue
+                        if native_web_search_enabled and name in {"web_search", "web_extractor", "code_interpreter"}:
+                            query = name if native_web_search_query_from_name else ""
+                            content = (
+                                f"{native_web_search_content_prefix}{name}"
+                                if native_web_search_content_prefix
+                                else name
+                            )
+                            yield {
+                                "type": "web_search",
+                                "status": web_search_status_completed,
+                                "query": query,
+                                "content": content,
+                            }
+                            continue
+                        complete_key = call_id or str(state.get("output_index") or name)
+                        if complete_key in completed_call_ids:
+                            continue
+                        completed_call_ids.add(complete_key)
+                        yield {
+                            "type": "function_call",
+                            "name": name,
+                            "arguments": str(state.get("arguments") or "{}"),
+                            "call_id": call_id,
+                        }
+
+                    usage_obj = _obj_get_raw(response_obj, "usage", None)
+                    if usage_obj is not None:
+                        input_tokens = int(_obj_get_raw(usage_obj, "input_tokens", 0) or 0)
+                        output_tokens = int(_obj_get_raw(usage_obj, "output_tokens", 0) or 0)
+                        total_tokens = int(_obj_get_raw(usage_obj, "total_tokens", 0) or 0)
+                        yield {
+                            "type": "usage",
+                            "usage": usage_obj,
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                            "total_tokens": total_tokens or (input_tokens + output_tokens),
+                        }
