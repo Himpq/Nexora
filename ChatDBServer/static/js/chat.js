@@ -8,22 +8,34 @@ function toggleThinkingBlockCollapsed(thinkingBlock) {
 
 function createThinkingBlock(isCollapsed = false) {
     const block = document.createElement('div');
-    block.className = 'thinking-block reasoning-thinking-block';
+    block.className = 'thinking-block reasoning-thinking-block execution-flow-item execution-flow-thinking';
     block.dataset.streamLive = '0';
     block.dataset.userToggled = 'false';
+    block.dataset.autoCollapsed = isCollapsed ? 'true' : 'false';
     if (isCollapsed) {
         block.classList.add('collapsed');
     }
 
     const header = document.createElement('div');
-    header.className = 'thinking-header';
+    header.className = 'thinking-header execution-flow-header';
 
     const icon = document.createElement('i');
     icon.className = 'fa-solid fa-brain thinking-icon';
 
+    const node = document.createElement('span');
+    node.className = 'execution-flow-node thinking-flow-node';
+    node.appendChild(icon);
+
+    const main = document.createElement('span');
+    main.className = 'execution-flow-main';
+
     const title = document.createElement('span');
-    title.className = 'thinking-title';
-    title.textContent = 'Thinking';
+    title.className = 'thinking-title execution-flow-title';
+    title.textContent = '思考过程';
+
+    const summary = document.createElement('span');
+    summary.className = 'thinking-summary execution-flow-summary';
+    summary.textContent = '等待内容';
 
     const chevron = document.createElement('i');
     chevron.className = 'fa-solid fa-chevron-down chevron-icon';
@@ -31,13 +43,622 @@ function createThinkingBlock(isCollapsed = false) {
     const content = document.createElement('div');
     content.className = 'thinking-content';
 
-    header.appendChild(icon);
-    header.appendChild(title);
+    main.appendChild(title);
+    main.appendChild(summary);
+    header.appendChild(node);
+    header.appendChild(main);
     header.appendChild(chevron);
     header.addEventListener('click', () => toggleThinkingBlockCollapsed(block));
     block.appendChild(header);
     block.appendChild(content);
+    updateThinkingBlockSummary(block, '');
     return block;
+}
+
+function clipExecutionFlowText(text, limit = 96) {
+    const value = String(text || '').replace(/\s+/g, ' ').trim();
+
+    if (value.length <= limit) {
+        return value;
+    }
+
+    return `${value.slice(0, Math.max(0, limit - 1)).trim()}...`;
+}
+
+function parseExecutionFlowJson(raw) {
+    const text = String(raw || '').trim();
+
+    if (!text) {
+        return null;
+    }
+
+    try {
+        const value = JSON.parse(text);
+        return value && typeof value === 'object' ? value : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+function basenameForExecutionFlow(value) {
+    const text = String(value || '').trim();
+
+    if (!text) {
+        return '';
+    }
+
+    const cleaned = text.replace(/^file:\/\//i, '');
+    const parts = cleaned.split(/[\\/]+/).filter(Boolean);
+    return parts.length > 0 ? parts[parts.length - 1] : cleaned;
+}
+
+function hostForExecutionFlow(value) {
+    const text = String(value || '').trim();
+
+    if (!text) {
+        return '';
+    }
+
+    try {
+        const url = new URL(text);
+        return url.hostname || text;
+    } catch (_) {
+        return text.replace(/^https?:\/\//i, '').split(/[/?#]/)[0] || text;
+    }
+}
+
+function readExecutionFlowArg(args, names) {
+    const source = args && typeof args === 'object' ? args : {};
+
+    for (const name of names) {
+        const value = source[name];
+
+        if (value !== undefined && value !== null && String(value).trim()) {
+            return String(value).trim();
+        }
+    }
+
+    return '';
+}
+
+function getExecutionFlowArgs(row) {
+    if (!row) {
+        return {};
+    }
+
+    const parsed = parseExecutionFlowJson(row.dataset.argsRaw || '');
+    return parsed || {};
+}
+
+function getExecutionFlowPhaseText(rawStatus) {
+    const text = String(rawStatus || '').trim();
+
+    if (!text) {
+        return '';
+    }
+
+    if (/参数|构建|准备/.test(text)) {
+        return '准备中';
+    }
+
+    if (/执行中|运行中|搜索中|打开中/.test(text)) {
+        return '执行中';
+    }
+
+    if (/完成|成功|done|completed/i.test(text)) {
+        return '完成';
+    }
+
+    return clipExecutionFlowText(text.replace(/^[\w.-]+\s*/, '').replace(/:$/, ''), 28);
+}
+
+function parseExecutionFlowPayload(raw) {
+    if (raw && typeof raw === 'object') {
+        return raw;
+    }
+
+    const text = String(raw || '').trim();
+
+    if (!text) {
+        return null;
+    }
+
+    try {
+        return JSON.parse(text);
+    } catch (_) {
+        return null;
+    }
+}
+
+function unwrapExecutionFlowPayload(payload) {
+    let current = payload;
+    const wrapperKeys = new Set([
+        'success',
+        'result',
+        'error',
+        'message',
+        'traceback',
+        'elapsed_ms',
+        'duration_ms',
+        'request_id'
+    ]);
+
+    for (let i = 0; i < 2; i += 1) {
+        if (!current || typeof current !== 'object' || Array.isArray(current) || !Object.prototype.hasOwnProperty.call(current, 'result')) {
+            break;
+        }
+
+        const keys = Object.keys(current);
+        const looksWrapped = keys.length > 0 && keys.every((key) => wrapperKeys.has(key));
+
+        if (!looksWrapped) {
+            break;
+        }
+
+        const inner = current.result;
+        const parsedInner = parseExecutionFlowPayload(inner);
+        current = parsedInner !== null ? parsedInner : inner;
+    }
+
+    return current;
+}
+
+function normalizeExecutionFlowCount(value) {
+    if (value === undefined || value === null || value === '') {
+        return null;
+    }
+
+    const match = String(value).replace(/,/g, '').match(/\d+/);
+    const count = match ? Number.parseInt(match[0], 10) : Number.NaN;
+
+    return Number.isFinite(count) && count >= 0 ? count : null;
+}
+
+function readExecutionFlowMarkdownCount(markdownText, fieldNames) {
+    const fields = Array.isArray(fieldNames) ? fieldNames : [];
+
+    for (const field of fields) {
+        const raw = extractMarkdownField(markdownText, field);
+        const count = normalizeExecutionFlowCount(raw);
+
+        if (count !== null) {
+            return count;
+        }
+    }
+
+    return null;
+}
+
+function readExecutionFlowPayloadPath(payload, path) {
+    const parts = String(path || '').split('.').filter(Boolean);
+    let current = payload;
+
+    for (const part of parts) {
+        if (!current || typeof current !== 'object') {
+            return undefined;
+        }
+
+        current = current[part];
+    }
+
+    return current;
+}
+
+function readExecutionFlowPayloadCount(payload, numberKeys = [], arrayKeys = []) {
+    const data = unwrapExecutionFlowPayload(payload);
+
+    if (Array.isArray(data)) {
+        return data.length;
+    }
+
+    if (!data || typeof data !== 'object') {
+        return null;
+    }
+
+    for (const key of numberKeys) {
+        const count = normalizeExecutionFlowCount(readExecutionFlowPayloadPath(data, key));
+
+        if (count !== null) {
+            return count;
+        }
+    }
+
+    for (const key of arrayKeys) {
+        const value = readExecutionFlowPayloadPath(data, key);
+
+        if (Array.isArray(value)) {
+            return value.length;
+        }
+    }
+
+    return null;
+}
+
+function readExecutionFlowResultCount(markdownText, resultText, markdownFields, numberKeys, arrayKeys) {
+    const fromMarkdown = readExecutionFlowMarkdownCount(markdownText, markdownFields);
+
+    if (fromMarkdown !== null) {
+        return fromMarkdown;
+    }
+
+    return readExecutionFlowPayloadCount(parseExecutionFlowPayload(resultText), numberKeys, arrayKeys);
+}
+
+function readExecutionFlowResultText(markdownText, resultText, markdownFields, payloadPaths) {
+    const fields = Array.isArray(markdownFields) ? markdownFields : [];
+
+    for (const field of fields) {
+        const value = extractMarkdownField(markdownText, field);
+
+        if (value) {
+            return value;
+        }
+    }
+
+    const data = unwrapExecutionFlowPayload(parseExecutionFlowPayload(resultText));
+    const paths = Array.isArray(payloadPaths) ? payloadPaths : [];
+
+    for (const path of paths) {
+        const value = readExecutionFlowPayloadPath(data, path);
+
+        if (value !== undefined && value !== null && String(value).trim()) {
+            return String(value).trim();
+        }
+    }
+
+    return '';
+}
+
+function appendExecutionFlowCount(text, count, unit) {
+    return count !== null ? `${text} 获取到${count}${unit}` : text;
+}
+
+function buildChineseToolAction(toolName, args = {}, markdownText = '', resultText = '', row = null) {
+    const name = String(toolName || '').trim();
+    const compact = name.replace(/[\s_-]+/g, '').toLowerCase();
+    const markdown = String(markdownText || '');
+    const result = String(resultText || '');
+    const fileFromMarkdown = extractMarkdownField(markdown, 'File');
+    const commandFromMarkdown = extractMarkdownField(markdown, 'Command');
+    const title = extractMarkdownTitle(markdown);
+    const path = readExecutionFlowArg(args, ['path', 'file', 'file_path', 'filepath', 'sandbox_path', 'target_path']);
+    const url = readExecutionFlowArg(args, ['url', 'href', 'page_url']);
+    const query = readExecutionFlowArg(args, ['query', 'keyword', 'q']) || String((row && row.dataset.query) || '').trim();
+    const command = readExecutionFlowArg(args, ['command', 'cmd']) || commandFromMarkdown;
+    const objectTitle = readExecutionFlowArg(args, ['title', 'name', 'key']);
+    const fileName = basenameForExecutionFlow(fileFromMarkdown || path);
+    const urlHost = hostForExecutionFlow(url);
+
+    if (compact === 'memoryprofileread' || compact === 'getuserprofilememory' || compact === 'memoryread') {
+        return '读取用户画像';
+    }
+
+    if (compact.includes('memory') && (compact.includes('update') || compact.includes('write') || compact.includes('append'))) {
+        return '写入用户画像';
+    }
+
+    if (compact.includes('localfileprobe') || /local file probe/i.test(title)) {
+        return fileName ? `探测文件 ${fileName}` : '探测文件';
+    }
+
+    if (compact.includes('fileread') || /file read/i.test(title)) {
+        return fileName ? `读取文件 ${fileName}` : '读取文件';
+    }
+
+    if (compact.includes('filewrite') || /file written/i.test(title)) {
+        return fileName ? `写入文件 ${fileName}` : '写入文件';
+    }
+
+    if (compact.includes('filepatch') || /file patch preview|file modified/i.test(title)) {
+        if (/preview/i.test(title) || /preview_id/i.test(result)) {
+            return fileName ? `预览文件修改 ${fileName}` : '预览文件修改';
+        }
+
+        return fileName ? `写入文件 ${fileName}` : '写入文件';
+    }
+
+    if (compact.includes('filelist')) {
+        return fileName ? `读取目录 ${fileName}` : '读取目录';
+    }
+
+    if (compact.includes('browserpageopen') || compact.includes('webrender') || compact.includes('openpage')) {
+        return urlHost ? `打开网页 ${urlHost}` : '打开网页';
+    }
+
+    if (compact.includes('browserpageread') || compact.includes('webgetcontent') || compact.includes('readpage')) {
+        return urlHost ? `读取网页 ${urlHost}` : '读取网页';
+    }
+
+    if (compact.includes('browserpageclick') || compact.includes('webclick')) {
+        return '点击网页元素';
+    }
+
+    if (compact.includes('browserpageinput') || compact.includes('webinput')) {
+        return '输入网页内容';
+    }
+
+    if (compact.includes('browserpageeval') || compact.includes('webexecjs')) {
+        return '执行网页脚本';
+    }
+
+    if (compact.includes('browserpagescroll')) {
+        return '滚动网页';
+    }
+
+    if (compact.includes('browserpagelist')) {
+        return '读取浏览器页面';
+    }
+
+    if (compact.includes('shell') || compact.includes('terminal')) {
+        return command ? `执行命令 ${clipExecutionFlowText(command, 34)}` : '执行命令';
+    }
+
+    if (compact.includes('websearch') || compact.includes('searchkeyword') || compact === 'websearchmeta') {
+        return query ? `搜索网页 ${clipExecutionFlowText(query, 34)}` : '搜索网页';
+    }
+
+    if (compact.includes('imagesearch')) {
+        return query ? `搜索图片 ${clipExecutionFlowText(query, 34)}` : '搜索图片';
+    }
+
+    if (compact.includes('generateimage')) {
+        return '生成图片';
+    }
+
+    if (compact.includes('contextcompression')) {
+        return '压缩上下文';
+    }
+
+    if (compact.includes('contextread') || compact === 'getcontext') {
+        return '读取长上下文';
+    }
+
+    if (compact.includes('contextclear') || compact === 'clearcontext') {
+        return '清理上下文';
+    }
+
+    if (compact === 'knowledgelist') {
+        const count = readExecutionFlowResultCount(
+            markdown,
+            result,
+            ['Total', 'Results', 'Items'],
+            ['total', 'count', 'results'],
+            ['items', 'results']
+        );
+        return appendExecutionFlowCount('读取知识库信息', count, '条信息');
+    }
+
+    if (compact.includes('knowledgegraphread')) {
+        return '读取知识图谱';
+    }
+
+    if (compact.includes('knowledgesearch') || compact.includes('searchknowledge')) {
+        const count = readExecutionFlowResultCount(
+            markdown,
+            result,
+            ['Results', 'Matched', 'Total', 'Articles', 'Returned'],
+            ['results', 'matched', 'total', 'returned', 'count'],
+            ['items', 'matches', 'articles', 'results']
+        );
+        const base = query ? `搜索知识库 ${clipExecutionFlowText(query, 34)}` : '搜索知识库';
+        return appendExecutionFlowCount(base, count, '条信息');
+    }
+
+    if (compact.includes('knowledgebasisread')) {
+        const count = readExecutionFlowResultCount(
+            markdown,
+            result,
+            ['Matched', 'Results', 'Total'],
+            ['matched', 'total', 'count'],
+            ['matches', 'items', 'results']
+        );
+        if (count !== null && (/knowledge content matches/i.test(title) || /Matched:/i.test(markdown))) {
+            return appendExecutionFlowCount('读取知识库信息', count, '条信息');
+        }
+
+        return objectTitle ? `读取知识库信息 ${clipExecutionFlowText(objectTitle, 34)}` : '读取知识库信息';
+    }
+
+    if (compact.includes('knowledge') && (compact.includes('create') || compact.includes('update') || compact.includes('delete') || compact.includes('link'))) {
+        return objectTitle ? `写入知识库 ${clipExecutionFlowText(objectTitle, 34)}` : '写入知识库';
+    }
+
+    const isMailTool = compact.includes('email') || compact.includes('mail');
+
+    if (isMailTool && compact.includes('send')) {
+        const subject = readExecutionFlowArg(args, ['subject', 'title'])
+            || readExecutionFlowResultText(markdown, result, ['Subject', 'Title'], ['subject', 'title']);
+        return subject ? `发送邮件 ${clipExecutionFlowText(subject, 34)}` : '发送邮件';
+    }
+
+    if (isMailTool && compact.includes('list')) {
+        const count = readExecutionFlowResultCount(
+            markdown,
+            result,
+            ['Total', 'Results', 'Mails', 'Emails'],
+            ['total', 'count', 'results'],
+            ['mails', 'emails', 'items']
+        );
+        return appendExecutionFlowCount('读取邮件', count, '封邮件');
+    }
+
+    if (isMailTool && (compact.includes('get') || compact.includes('read'))) {
+        const mailTitle = readExecutionFlowResultText(
+            markdown,
+            result,
+            ['Subject', 'Title'],
+            ['mail.subject', 'mail.title', 'subject', 'title']
+        );
+        const mailId = readExecutionFlowArg(args, ['mail_id', 'id']);
+        const label = mailTitle || mailId;
+        return label ? `读取邮件内容 打开邮件 ${clipExecutionFlowText(label, 42)}` : '读取邮件内容';
+    }
+
+    if (compact.includes('read') || compact.includes('get') || compact.includes('list')) {
+        return '读取信息';
+    }
+
+    if (compact.includes('write') || compact.includes('update') || compact.includes('create') || compact.includes('delete') || compact.includes('save')) {
+        return '写入信息';
+    }
+
+    if (compact.includes('search') || compact.includes('find')) {
+        return '搜索信息';
+    }
+
+    return '执行工具';
+}
+
+function setToolUsagePrimaryText(row, text) {
+    if (!row) return;
+
+    const titleEl = row.querySelector('.tool-name');
+
+    if (titleEl) {
+        const value = text || '执行工具';
+        titleEl.textContent = clipExecutionFlowText(value, 96);
+        titleEl.title = value;
+    }
+}
+
+function updateThinkingBlockSummary(thinkingBlock, sourceText = '') {
+    if (!thinkingBlock) return;
+
+    const contentEl = thinkingBlock.querySelector('.thinking-content');
+    const summaryEl = thinkingBlock.querySelector('.thinking-summary');
+    const raw = String(
+        sourceText
+        || (contentEl && (contentEl.dataset.rawText || contentEl.dataset.streamRaw || contentEl.textContent))
+        || ''
+    );
+    const charCount = raw.length;
+    const isLive = String(thinkingBlock.dataset.streamLive || '') === '1'
+        || !!(contentEl && String(contentEl.dataset.streamLive || '') === '1');
+    const summary = charCount > 0
+        ? `${isLive ? '正在思考' : '已记录'} · ${charCount} 字`
+        : '等待内容';
+
+    if (summaryEl) {
+        summaryEl.textContent = summary;
+    }
+
+    thinkingBlock.classList.toggle('is-live', isLive);
+}
+
+function getToolExecutionFlowKind(toolName) {
+    const compact = String(toolName || '').trim().replace(/[\s_-]+/g, '').toLowerCase();
+
+    if (!compact) return 'tool';
+    if (compact.includes('error')) return 'error';
+    if (compact.includes('file') || compact.includes('patch')) return 'file';
+    if (compact.includes('shell') || compact.includes('terminal') || compact.includes('exec')) return 'shell';
+    if (compact.includes('search') || compact.includes('web')) return 'web';
+    if (compact.includes('browser') || compact.includes('page')) return 'browser';
+    if (compact.includes('context') || compact.includes('compression')) return 'context';
+    if (compact.includes('image')) return 'image';
+    if (compact.includes('knowledge') || compact.includes('memory')) return 'knowledge';
+
+    return 'tool';
+}
+
+function applyToolExecutionFlowKind(row, toolName) {
+    if (!row) return;
+
+    const kind = getToolExecutionFlowKind(toolName);
+    row.classList.add('execution-flow-item');
+    row.dataset.flowKind = kind;
+}
+
+function cleanExecutionFlowMarkdownValue(value) {
+    return String(value || '')
+        .replace(/`/g, '')
+        .replace(/\*\*/g, '')
+        .trim();
+}
+
+function extractMarkdownField(markdownText, fieldName) {
+    const name = String(fieldName || '').trim().toLowerCase();
+    const lines = String(markdownText || '').split(/\r?\n/);
+
+    for (const line of lines) {
+        const idx = line.indexOf(':');
+
+        if (idx <= 0) {
+            continue;
+        }
+
+        const key = line.slice(0, idx).replace(/^#+\s*/, '').replace(/^[-*]\s*/, '').trim().toLowerCase();
+
+        if (key === name) {
+            return cleanExecutionFlowMarkdownValue(line.slice(idx + 1));
+        }
+    }
+
+    return '';
+}
+
+function extractMarkdownTitle(markdownText) {
+    const lines = String(markdownText || '').split(/\r?\n/);
+
+    for (const line of lines) {
+        const value = line.trim();
+
+        if (value.startsWith('## ')) {
+            return cleanExecutionFlowMarkdownValue(value.replace(/^#+\s*/, ''));
+        }
+    }
+
+    return '';
+}
+
+function buildToolResultSummaryFromMarkdown(toolName, markdownText) {
+    const title = extractMarkdownTitle(markdownText);
+    const file = extractMarkdownField(markdownText, 'File');
+    const changed = extractMarkdownField(markdownText, 'Changed');
+    const mode = extractMarkdownField(markdownText, 'Mode');
+    const size = extractMarkdownField(markdownText, 'Size');
+    const lines = extractMarkdownField(markdownText, 'Lines');
+    const previewId = extractMarkdownField(markdownText, 'Preview ID');
+    const encodingHint = extractMarkdownField(markdownText, 'Encoding Hint');
+    const exitCode = extractMarkdownField(markdownText, 'Exit Code');
+    const command = extractMarkdownField(markdownText, 'Command');
+
+    if (/file patch preview/i.test(title)) {
+        return clipExecutionFlowText(['Patch 预览', file, lines, previewId].filter(Boolean).join(' · '));
+    }
+
+    if (/file modified/i.test(title)) {
+        return clipExecutionFlowText(['写入完成', file, changed ? `changed=${changed}` : '', lines].filter(Boolean).join(' · '));
+    }
+
+    if (/local file probe/i.test(title)) {
+        return clipExecutionFlowText(['探测文件', file, encodingHint, size].filter(Boolean).join(' · '));
+    }
+
+    if (/file read/i.test(title)) {
+        return clipExecutionFlowText(['读取文件', file, mode, size].filter(Boolean).join(' · '));
+    }
+
+    if (/shell command/i.test(title)) {
+        return clipExecutionFlowText(['Shell', exitCode ? `exit=${exitCode}` : '', command].filter(Boolean).join(' · '));
+    }
+
+    return clipExecutionFlowText(title || toolName || '工具完成');
+}
+
+function updateToolUsageResultSummary(row, toolName, result, markdownText, resultText = '') {
+    if (!row) return;
+
+    const args = getExecutionFlowArgs(row);
+    const primaryText = buildChineseToolAction(toolName, args, markdownText, resultText, row);
+    setToolUsagePrimaryText(row, primaryText);
+
+    const statusEl = row.querySelector('.tool-status');
+    if (!statusEl) return;
+
+    const summary = '完成';
+    statusEl.textContent = summary;
+    statusEl.title = summary;
 }
 
 function getLatestReasoningThinkingBlock(messageDiv) {
@@ -16327,8 +16948,9 @@ async function sendMessage(options = {}) {
                                 flushStableStreamTail(contentDiv, aiMsgDiv.__citationUrlMap || {}, false);
                             } else {
                                 contentDiv.textContent = nextRaw;
-                            }
-                            thinkingBlock.dataset.streamLive = '1';
+                             }
+                             thinkingBlock.dataset.streamLive = '1';
+                             updateThinkingBlockSummary(thinkingBlock, nextRaw);
                                syncStreamingModelBadgeEstimate(aiMsgDiv, modelBadgeState, model);
                         }
                         else if (chunk.type === 'context_compression_status') {
@@ -16391,6 +17013,12 @@ async function sendMessage(options = {}) {
                                 } catch(e) { console.error("Error parsing addBasis args", e); }
                             }
                             finalizeToolCallBadge(aiMsgDiv, toolName, callId, chunk.arguments, { toolIndex });
+                            syncStreamingModelBadgeEstimate(aiMsgDiv, modelBadgeState, model);
+                        }
+                        else if (chunk.type === 'function_call_running') {
+                            aiMsgDiv.__reasoningSegmentOpen = false;
+                            currentContentSpan = null; currentSegmentContent = '';
+                            updateMessageDivTools(aiMsgIndex, chunk, aiMsgDiv);
                             syncStreamingModelBadgeEstimate(aiMsgDiv, modelBadgeState, model);
                         }
                         else if (chunk.type === 'function_result') {
@@ -16488,7 +17116,7 @@ async function sendMessage(options = {}) {
                 streamCompleted = true;
                 aiMsgDiv.dataset.localOnly = '0';
                 finalizeStreamingContentRender();
-                setTimeout(() => collapseReasoningBlocksForMessage(aiMsgDiv), 420);
+                setTimeout(() => expandReasoningBlocksForMessage(aiMsgDiv), 420);
                 setTimeout(() => collapseModelBadgeForMessage(aiMsgDiv), 520);
                 break;
              }
@@ -16631,8 +17259,9 @@ function updateWebSearchStatus(aiMsgDiv, status, query, fullContent, isHistory =
     if (!badge) {
         // Create new
         const div = document.createElement('div');
-        div.className = 'tool-usage';
+        div.className = 'tool-usage execution-flow-item';
         div.dataset.toolName = 'Web Search';
+        applyToolExecutionFlowKind(div, 'Web Search');
         div.dataset.query = query || ''; // Store query
         div.dataset.pending = 'true';
         div.dataset.resolved = 'false';
@@ -16640,10 +17269,12 @@ function updateWebSearchStatus(aiMsgDiv, status, query, fullContent, isHistory =
         const iconSvg = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>';
         
         div.innerHTML = `
-            <div class="tool-badge">
-                ${iconSvg}
-                <span>Web Search</span>
-                <span class="tool-status"></span>
+            <div class="tool-badge execution-flow-header">
+                <span class="execution-flow-node" aria-hidden="true">${iconSvg}</span>
+                <span class="execution-flow-main">
+                    <span class="tool-name execution-flow-title" title="Web Search">搜索网页</span>
+                </span>
+                <span class="tool-status execution-flow-summary"></span>
                 <span class="tool-toggle" aria-hidden="true">▸</span>
             </div>
             <div class="tool-output"></div>
@@ -16666,7 +17297,7 @@ function updateWebSearchStatus(aiMsgDiv, status, query, fullContent, isHistory =
         displayText = `${status}: ${currentQuery}`;
     }
     
-    badge.querySelector('.tool-status').textContent = displayText;
+    setToolUsageStatus(badge, displayText);
 
     // 完成态后关闭复用；下一次搜索必须 append 新行
     const doneText = String(status || '').toLowerCase();
@@ -16749,7 +17380,7 @@ function appendSearchMeta(aiMsgDiv, meta, isHistory = false) {
         outDiv.textContent = lines.join('\n').trim() || 'No search metadata';
         if (outDiv.textContent.trim()) {
             row.classList.add('has-output');
-            row.classList.add('expanded');
+            row.classList.remove('expanded');
             scrollToolOutputToBottom(outDiv);
             scheduleToolAutoCollapse(row, 900);
         }
@@ -16761,14 +17392,17 @@ function appendSearchMeta(aiMsgDiv, meta, isHistory = false) {
 function appendErrorEvent(aiMsgDiv, message, isHistory = false) {
     const parent = aiMsgDiv.querySelector('.message-content') || aiMsgDiv;
     const div = document.createElement('div');
-    div.className = 'tool-usage tool-error';
+    div.className = 'tool-usage tool-error execution-flow-item';
     div.dataset.toolName = 'Error';
+    applyToolExecutionFlowKind(div, 'Error');
     const iconSvg = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="13"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>';
     div.innerHTML = `
-        <div class="tool-badge">
-            ${iconSvg}
-            <span class="tool-name">Error</span>
-            <span class="tool-status">${message || ''}</span>
+        <div class="tool-badge execution-flow-header">
+            <span class="execution-flow-node" aria-hidden="true">${iconSvg}</span>
+            <span class="execution-flow-main">
+                <span class="tool-name execution-flow-title" title="Error">发生错误</span>
+            </span>
+            <span class="tool-status execution-flow-summary">${escapeHtml(clipExecutionFlowText(message || '', 112))}</span>
             <span class="tool-toggle" aria-hidden="true">▸</span>
         </div>
         <div class="tool-output"></div>
@@ -16807,18 +17441,19 @@ function appendToolEvent(aiMsgDiv, name, details, isFunction = false, options = 
     }
     if (!div) {
         div = document.createElement('div');
-        div.className = 'tool-usage';
+        div.className = 'tool-usage execution-flow-item';
         parent.appendChild(div);
         div.dataset.resolved = 'false';
     }
     div.dataset.toolName = toolName;
+    applyToolExecutionFlowKind(div, toolName);
     if (callId) div.dataset.callId = callId;
     div.dataset.pending = pending ? 'true' : 'false';
     if (pending) div.dataset.resolved = 'false';
     div.dataset.userToggled = 'false';
-    div.dataset.autoLock = pending ? '1' : '0';
+    div.dataset.autoLock = '0';
     if (pending) {
-        div.classList.add('expanded');
+        div.classList.add('is-running');
     }
 
     // Icon selection
@@ -16827,17 +17462,21 @@ function appendToolEvent(aiMsgDiv, name, details, isFunction = false, options = 
         iconSvg = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>';
     }
 
-    let detailText = typeof details === 'object' ? JSON.stringify(details) : details;
-    detailText = String(detailText || '');
+    const rawDetailText = typeof details === 'object' ? JSON.stringify(details) : details;
+    let detailText = String(rawDetailText || '');
     if (isFunction && detailText) {
-        detailText = `参数: ${detailText.replace(/\s+/g, ' ').slice(0, 56)}${detailText.length > 56 ? '...' : ''}`;
+        detailText = `参数: ${clipExecutionFlowText(detailText, 72)}`;
     }
+    const primaryText = buildChineseToolAction(toolName, parseExecutionFlowJson(rawDetailText) || {}, '', '', div);
+    const phaseText = pending ? '准备中' : getExecutionFlowPhaseText(detailText);
 
     div.innerHTML = `
-        <div class="tool-badge">
-            ${iconSvg}
-            <span class="tool-name">${toolName}</span>
-            <span class="tool-status">${detailText || ''}</span>
+        <div class="tool-badge execution-flow-header">
+            <span class="execution-flow-node" aria-hidden="true">${iconSvg}</span>
+            <span class="execution-flow-main">
+                <span class="tool-name execution-flow-title" title="${escapeHtml(toolName)}">${escapeHtml(primaryText)}</span>
+            </span>
+            <span class="tool-status execution-flow-summary">${escapeHtml(phaseText || '准备中')}</span>
             <span class="tool-toggle" aria-hidden="true">▸</span>
         </div>
         <div class="tool-output"></div>
@@ -17085,11 +17724,43 @@ function resolveToolNameFromEvent(data, fallback = '') {
     const src = (data && typeof data === 'object') ? data : {};
     const direct = String(src.name || src.function_name || src.tool_name || '').trim();
     if (direct) return direct;
+
     const funcObj = (src.function && typeof src.function === 'object') ? src.function : null;
     if (funcObj) {
         const n = String(funcObj.name || '').trim();
         if (n) return n;
     }
+
+    const toolCallObj = (src.tool_call && typeof src.tool_call === 'object') ? src.tool_call : null;
+    const toolCallFunction = toolCallObj && typeof toolCallObj.function === 'object' ? toolCallObj.function : null;
+    if (toolCallFunction) {
+        const n = String(toolCallFunction.name || '').trim();
+        if (n) return n;
+    }
+
+    const deltaObj = (src.delta && typeof src.delta === 'object') ? src.delta : null;
+    const deltaFunction = deltaObj && typeof deltaObj.function === 'object' ? deltaObj.function : null;
+    if (deltaFunction) {
+        const n = String(deltaFunction.name || '').trim();
+        if (n) return n;
+    }
+
+    const toolCalls = Array.isArray(src.tool_calls) ? src.tool_calls : [];
+    for (const call of toolCalls) {
+        if (!call || typeof call !== 'object') continue;
+        const fn = call.function && typeof call.function === 'object' ? call.function : null;
+        const n = String((fn && fn.name) || call.name || '').trim();
+        if (n) return n;
+    }
+
+    const deltaToolCalls = deltaObj && Array.isArray(deltaObj.tool_calls) ? deltaObj.tool_calls : [];
+    for (const call of deltaToolCalls) {
+        if (!call || typeof call !== 'object') continue;
+        const fn = call.function && typeof call.function === 'object' ? call.function : null;
+        const n = String((fn && fn.name) || call.name || '').trim();
+        if (n) return n;
+    }
+
     return String(fallback || '').trim();
 }
 
@@ -17097,14 +17768,25 @@ function renameToolUsageRow(row, name) {
     if (!row) return;
     const safeName = normalizeToolDisplayName(name);
     row.dataset.toolName = safeName;
+    applyToolExecutionFlowKind(row, safeName);
     const nameEl = row.querySelector('.tool-name');
-    if (nameEl) nameEl.textContent = safeName;
+    if (nameEl) {
+        nameEl.textContent = buildChineseToolAction(safeName, getExecutionFlowArgs(row), '', '', row);
+        nameEl.title = safeName;
+    }
 }
 
 function setToolUsageStatus(row, statusText) {
     if (!row) return;
+    const safeName = normalizeToolDisplayName(row.dataset.toolName || '');
+    setToolUsagePrimaryText(row, buildChineseToolAction(safeName, getExecutionFlowArgs(row), '', '', row));
     const statusEl = row.querySelector('.tool-status');
-    if (statusEl) statusEl.textContent = String(statusText || '');
+    if (statusEl) {
+        const raw = String(statusText || '');
+        const compact = getExecutionFlowPhaseText(raw);
+        statusEl.textContent = compact;
+        statusEl.title = compact;
+    }
 }
 
 function scrollToolOutputToBottom(outputEl) {
@@ -17212,8 +17894,8 @@ function appendToolCallDelta(aiMsgDiv, data) {
         outDiv.textContent = formatToolArgsForOutput(nextRaw);
         if (outDiv.textContent) {
             row.classList.add('has-output');
-            row.classList.add('expanded'); // 调用进行中自动展开
-            row.dataset.autoLock = '1';
+            row.classList.add('expanded');
+            row.dataset.autoLock = '0';
             row.dataset.userToggled = 'false';
             scrollToolOutputToBottom(outDiv);
         }
@@ -17230,46 +17912,14 @@ function finalizeToolCallBadge(aiMsgDiv, name, callId, argumentsText = '', optio
     const idxKey = (toolIndex === null || Number.isNaN(toolIndex)) ? '' : String(toolIndex);
     const autoExpand = !(options && options.autoExpand === false);
 
-    // Keep a dedicated "build" row so args are not overwritten by result.
-    let buildRow = findPendingToolUsageFallback(parent, safeName, safeCallId, toolIndex)
-        || findToolUsageByPhase(parent, safeName, safeCallId, 'build', false);
-    if ((safeName === 'tool') && buildRow) {
-        const inherited = normalizeToolDisplayName(buildRow.dataset.toolName || '');
+    let row = findPendingToolUsageFallback(parent, safeName, safeCallId, toolIndex)
+        || findToolUsageByPhase(parent, safeName, safeCallId, 'build', false)
+        || findToolUsageByPhase(parent, safeName, safeCallId, 'exec', false);
+    if ((safeName === 'tool') && row) {
+        const inherited = normalizeToolDisplayName(row.dataset.toolName || '');
         if (inherited && inherited !== 'tool') safeName = inherited;
     }
-    const finalArgs = String(argumentsText || (buildRow && buildRow.dataset ? buildRow.dataset.argsRaw : '') || '');
-    if (!buildRow && finalArgs) {
-        buildRow = appendToolEvent(aiMsgDiv, safeName, '', true, {
-            callId: safeCallId,
-            reuseIfExists: false,
-            pending: false
-        });
-    }
-    if (buildRow) {
-        renameToolUsageRow(buildRow, safeName);
-        buildRow.dataset.phase = 'build';
-        if (safeCallId) buildRow.dataset.callId = safeCallId;
-        if (idxKey) buildRow.dataset.toolIndex = idxKey;
-        buildRow.dataset.pending = 'false';
-        buildRow.dataset.resolved = 'true';
-        if (finalArgs) buildRow.dataset.argsRaw = finalArgs;
-        setToolUsageStatus(buildRow, `${safeName} 参数构建中:`);
-        const buildOut = buildRow.querySelector('.tool-output');
-        if (buildOut && buildRow.dataset.argsRaw) {
-            buildOut.textContent = formatToolArgsForOutput(buildRow.dataset.argsRaw);
-            if (buildOut.textContent.trim()) {
-                buildRow.classList.add('has-output');
-                buildRow.classList.add('expanded');
-                buildRow.dataset.autoLock = '1';
-                buildRow.dataset.userToggled = 'false';
-                scrollToolOutputToBottom(buildOut);
-                scheduleToolAutoCollapse(buildRow, 380);
-            }
-        }
-    }
-
-    // Create/update dedicated exec row for runtime status/result.
-    let row = findToolUsageByPhase(parent, safeName, safeCallId, 'exec', false);
+    const finalArgs = String(argumentsText || (row && row.dataset ? row.dataset.argsRaw : '') || '');
     if (!row) {
         row = appendToolEvent(aiMsgDiv, safeName, '', true, {
             callId: safeCallId,
@@ -17277,6 +17927,9 @@ function finalizeToolCallBadge(aiMsgDiv, name, callId, argumentsText = '', optio
             pending: false
         });
     }
+    if (!row) return;
+
+    if (finalArgs) row.dataset.argsRaw = finalArgs;
     renameToolUsageRow(row, safeName);
     row.dataset.phase = 'exec';
     if (safeCallId) row.dataset.callId = safeCallId;
@@ -17286,14 +17939,115 @@ function finalizeToolCallBadge(aiMsgDiv, name, callId, argumentsText = '', optio
     setToolUsageStatus(row, `${safeName} 执行中`);
     const outDiv = row.querySelector('.tool-output');
     if (outDiv) {
-        outDiv.textContent = '';
-        row.classList.remove('has-output');
+        outDiv.textContent = row.dataset.argsRaw ? formatToolArgsForOutput(row.dataset.argsRaw) : '';
+        row.classList.toggle('has-output', !!outDiv.textContent.trim());
         if (autoExpand) {
-            row.classList.add('expanded');
-            row.dataset.autoLock = '1';
+            row.classList.add('is-running');
+            row.classList.toggle('expanded', !!outDiv.textContent.trim());
+            row.dataset.autoLock = '0';
             row.dataset.userToggled = 'false';
         } else {
             row.dataset.autoLock = '0';
+        }
+        if (outDiv.textContent.trim()) {
+            scrollToolOutputToBottom(outDiv);
+            scheduleToolAutoCollapse(row, 260);
+        }
+    }
+}
+
+function findToolUsageForRunning(parent, name, callId, toolIndex = null) {
+    const safeName = normalizeToolDisplayName(name);
+    const safeCallId = String(callId || '').trim();
+
+    return findPendingToolUsageFallback(parent, safeName, safeCallId, toolIndex)
+        || findToolUsageByPhase(parent, safeName, safeCallId, 'exec', false)
+        || findToolUsageByPhase(parent, safeName, safeCallId, 'build', false)
+        || findToolUsage(parent, safeName, safeCallId, false);
+}
+
+function resolveToolCallIdForRunning(aiMsgDiv, name, rawCallId, toolIndex = null) {
+    const safeName = normalizeToolDisplayName(name);
+    const safeRawCallId = String(rawCallId || '').trim();
+
+    if (safeRawCallId || (toolIndex !== null && toolIndex !== undefined && !Number.isNaN(Number(toolIndex)))) {
+        return allocateToolCallId(aiMsgDiv, safeName, 'call', safeRawCallId, toolIndex);
+    }
+
+    const parent = aiMsgDiv.querySelector('.message-content') || aiMsgDiv;
+    const row = findToolUsageForRunning(parent, safeName, '', toolIndex);
+    const existingCallId = String((row && row.dataset && row.dataset.callId) || '').trim();
+
+    if (existingCallId) {
+        return existingCallId;
+    }
+
+    return allocateToolCallId(aiMsgDiv, safeName, 'call', '', toolIndex);
+}
+
+function updateToolCallRunning(aiMsgDiv, data) {
+    if (!aiMsgDiv || !data || typeof data !== 'object') {
+        return;
+    }
+
+    const parent = aiMsgDiv.querySelector('.message-content') || aiMsgDiv;
+    const toolName = resolveToolNameFromEvent(data, data.name) || 'tool';
+
+    if (toolName === 'question' || toolName === 'learning_card' || toolName === 'puzzle') {
+        return;
+    }
+
+    const rawCallId = String(data.call_id || data.callId || '').trim();
+    const toolIndex = (data.index === undefined || data.index === null) ? null : Number(data.index);
+    const callId = resolveToolCallIdForRunning(aiMsgDiv, toolName, rawCallId, toolIndex);
+    const idxKey = (toolIndex === null || Number.isNaN(toolIndex)) ? '' : String(toolIndex);
+    let row = findToolUsageForRunning(parent, toolName, callId, toolIndex);
+
+    if (!row) {
+        row = appendToolEvent(aiMsgDiv, toolName, '执行中', true, {
+            callId,
+            reuseIfExists: false,
+            pending: false
+        });
+    }
+
+    if (!row) {
+        return;
+    }
+
+    const argsRaw = String(data.arguments || '').trim();
+
+    if (argsRaw) {
+        row.dataset.argsRaw = argsRaw;
+    }
+
+    renameToolUsageRow(row, toolName);
+    row.dataset.phase = 'exec';
+    row.dataset.pending = 'false';
+    row.dataset.resolved = 'false';
+
+    if (callId) {
+        row.dataset.callId = callId;
+    }
+
+    if (idxKey) {
+        row.dataset.toolIndex = idxKey;
+    }
+
+    row.classList.add('is-running');
+    row.classList.remove('done');
+    setToolUsageStatus(row, '执行中');
+
+    const outDiv = row.querySelector('.tool-output');
+
+    if (outDiv && row.dataset.argsRaw) {
+        outDiv.textContent = formatToolArgsForOutput(row.dataset.argsRaw);
+        row.classList.toggle('has-output', !!outDiv.textContent.trim());
+
+        if (outDiv.textContent.trim() && row.dataset.userToggled !== 'true') {
+            row.classList.add('expanded');
+            row.dataset.autoLock = '0';
+            scrollToolOutputToBottom(outDiv);
         }
     }
 }
@@ -17521,8 +18275,10 @@ function setToolResultMarkdownSource(outDiv, markdownText) {
 
     outDiv.classList.remove('generate-image-tool-output');
     outDiv.classList.add('tool-output-markdown');
-    outDiv.textContent = source;
+    outDiv.innerHTML = renderMarkdownWithNewTabLinks(source, { breaks: false });
     bindSourceMarkdown(outDiv, source);
+    renderMathSafe(outDiv);
+    highlightCode(outDiv);
     return true;
 }
 
@@ -17562,21 +18318,10 @@ function updateLastToolResult(aiMsgDiv, name, result, callId = '', options = {})
         });
     }
 
-    // Never overwrite build-row content with result; keep a dedicated exec row.
+    // Results update the same row that streamed the tool call args.
     const targetNameHint = target ? normalizeToolDisplayName(target.dataset.toolName || '') : '';
     if (safeName === 'tool' && targetNameHint && targetNameHint !== 'tool') {
         safeName = targetNameHint;
-    }
-    if (target && String(target.dataset.phase || '') === 'build') {
-        let execRow = findToolUsageByPhase(parent, safeName, safeCallId, 'exec', false);
-        if (!execRow) {
-            execRow = appendToolEvent(aiMsgDiv, safeName, '', true, {
-                callId: safeCallId,
-                reuseIfExists: false,
-                pending: false
-            });
-        }
-        target = execRow;
     }
 
     if (target) {
@@ -17585,11 +18330,12 @@ function updateLastToolResult(aiMsgDiv, name, result, callId = '', options = {})
             if (inherited && inherited !== 'tool') safeName = inherited;
         }
         renameToolUsageRow(target, safeName);
-        target.dataset.phase = target.dataset.phase || 'exec';
+        target.dataset.phase = 'exec';
         if (safeCallId) target.dataset.callId = safeCallId;
         if (idxKey) target.dataset.toolIndex = idxKey;
         target.dataset.pending = 'false';
         target.dataset.resolved = 'true';
+        target.classList.remove('is-running');
         setToolUsageStatus(target, `${safeName} 完成:`);
         const outDiv = target.querySelector('.tool-output');
         const displayMarkdown = resolveToolResultDisplayMarkdown(result, options);
@@ -17618,6 +18364,10 @@ function updateLastToolResult(aiMsgDiv, name, result, callId = '', options = {})
                 target.classList.add('expanded');
             }
             scrollToolOutputToBottom(outDiv);
+        }
+
+        if (!renderedGenerateImage) {
+            updateToolUsageResultSummary(target, safeName, result, displayMarkdown, resultText);
         }
 
         if (!renderedGenerateImage) {
@@ -18141,20 +18891,22 @@ function appendMessage(msg, index) {
 
         // 兼容老数据：仅 metadata.reasoning_content（无分段 step）
         if (msg.metadata && msg.metadata.reasoning_content && !hasReasoningStep) {
-            const thinkingBlock = createThinkingBlock(true);
+            const thinkingBlock = createThinkingBlock(false);
             const thinkingContent = thinkingBlock.querySelector('.thinking-content');
             thinkingContent.textContent = msg.metadata.reasoning_content;
             renderMathSafe(thinkingContent);
+            updateThinkingBlockSummary(thinkingBlock, msg.metadata.reasoning_content);
             content.appendChild(thinkingBlock);
         }
         
         if (processSteps.length > 0) {
             processSteps.forEach(step => {
                 if (step.type === 'reasoning_content') {
-                    const thinkingBlock = createThinkingBlock(true);
+                    const thinkingBlock = createThinkingBlock(false);
                     const thinkingContent = thinkingBlock.querySelector('.thinking-content');
                     thinkingContent.textContent = String(step.content || '');
                     renderMathSafe(thinkingContent);
+                    updateThinkingBlockSummary(thinkingBlock, step.content || '');
                     content.appendChild(thinkingBlock);
                 }
                 else if (step.type === 'web_search') {
@@ -19849,6 +20601,7 @@ async function startRegenerate(index) {
                         data.type === 'search_meta' ||
                         data.type === 'function_call_delta' ||
                         data.type === 'function_call' ||
+                        data.type === 'function_call_running' ||
                         data.type === 'function_result' ||
                         data.type === 'context_compression_status' ||
                         data.type === 'learning_card' ||
@@ -20170,6 +20923,7 @@ function updateMessageDivThinking(index, delta, preferredMessageDiv = null) {
     });
     bindSourceMarkdown(textTarget, raw);
     highlightCode(textTarget);
+    updateThinkingBlockSummary(thinkingBlock, raw);
     scheduleLearningSidebarBridgeNotify();
 }
 
@@ -20211,15 +20965,16 @@ function finalizeMessageRenderForIndex(index, preferredMessageDiv = null) {
         bindSourceMarkdown(contentDiv, sourceText);
         renderMathSafe(contentDiv);
         highlightCode(contentDiv);
+        updateThinkingBlockSummary(block, sourceText);
     });
 }
 
-function collapseReasoningBlocksForMessage(messageDiv) {
+function expandReasoningBlocksForMessage(messageDiv) {
     if (!messageDiv) return;
     const blocks = messageDiv.querySelectorAll('.thinking-block.reasoning-thinking-block');
     blocks.forEach((thinkingBlock) => {
         if (thinkingBlock.dataset.userToggled === 'true') return;
-        thinkingBlock.classList.add('collapsed');
+        thinkingBlock.classList.remove('collapsed');
     });
 }
 
@@ -20304,8 +21059,7 @@ function upsertContextCompressionCard(messageDiv, status = 'start', text = '上�
         row.classList.add('context-compression-card');
     } else {
         row.classList.add('context-compression-card');
-        const statusEl = row.querySelector('.tool-status');
-        if (statusEl) statusEl.textContent = String(text || '').trim() || '上下文压缩中';
+        setToolUsageStatus(row, String(text || '').trim() || '上下文压缩中');
     }
 
     const outDiv = row.querySelector('.tool-output');
@@ -20355,6 +21109,8 @@ function updateMessageDivTools(index, data, preferredMessageDiv = null) {
         const callId = allocateToolCallId(messageDiv, toolName, 'call', rawCallId, toolIndex);
         rememberJsExecuteCanvasCall(messageDiv, toolName, callId, toolIndex, data.arguments || '');
         finalizeToolCallBadge(messageDiv, toolName, callId, data.arguments || '', { toolIndex });
+    } else if (data.type === 'function_call_running') {
+        updateToolCallRunning(messageDiv, data);
     } else if (data.type === 'function_result') {
         const toolName = resolveToolNameFromEvent(data, data.name);
         if (toolName === 'question' || toolName === 'puzzle') return;
@@ -20501,6 +21257,7 @@ async function resumeActiveStreamAfterReload(options = {}) {
                     thinkingContent.innerHTML = renderMarkdownWithNewTabLinks(accData.reasoning_content, { breaks: false, streamingMathProvisional: true });
                     bindSourceMarkdown(thinkingContent, accData.reasoning_content);
                     highlightCode(thinkingContent);
+                    updateThinkingBlockSummary(thinkingBlock, accData.reasoning_content);
                     content.prepend(thinkingBlock);
                 }
             } catch (_) {
@@ -20737,6 +21494,7 @@ async function resumeActiveStreamAfterReload(options = {}) {
                     chunk.type === 'context_compression_status' ||
                     chunk.type === 'function_call_delta' ||
                     chunk.type === 'function_call' ||
+                    chunk.type === 'function_call_running' ||
                     chunk.type === 'function_result' ||
                     chunk.type === 'learning_card' ||
                     chunk.type === 'puzzle'
@@ -20819,7 +21577,10 @@ async function resumeActiveStreamAfterReload(options = {}) {
                 bindSourceMarkdown(contentDiv, nextRaw);
                 highlightCode(contentDiv);
                 const pt = contentDiv.closest('.thinking-block');
-                if (pt) pt.dataset.streamLive = '1';
+                if (pt) {
+                    pt.dataset.streamLive = '1';
+                    updateThinkingBlockSummary(pt, nextRaw);
+                }
             }
             if (dirtiedThinkingBlocks.size > 0) {
                 syncStreamingModelBadgeEstimate(assistantDiv, {
@@ -20904,7 +21665,7 @@ async function resumeActiveStreamAfterReload(options = {}) {
         syncGenerationStateForCurrentConversation();
         if (streamCompleted) {
             finalizeMessageRenderForIndex(assistantIndex, assistantDiv);
-            collapseReasoningBlocksForMessage(assistantDiv);
+            expandReasoningBlocksForMessage(assistantDiv);
             collapseModelBadgeForMessage(assistantDiv);
         }
         if (streamEndedTerminally) {

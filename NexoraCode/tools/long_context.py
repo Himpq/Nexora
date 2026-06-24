@@ -1,7 +1,5 @@
-import os
 import uuid
 import re
-from pathlib import Path
 from core.config import config, get_app_root
 
 TOOL_MANIFEST = [
@@ -15,6 +13,7 @@ TOOL_MANIFEST = [
                 "ctxId": {"type": "string", "description": "被截断时返回的上下文ID"},
                 "regex": {"type": "string", "description": "要匹配的正则表达式（可选）"},
                 "keyword": {"type": "string", "description": "要搜索包含的关键词（可选）"},
+                "range": {"type": "string", "description": "行号范围别名（可选），格式如 '10:80'。推荐优先使用 range_start/range_end。"},
                 "range_start": {"type": "integer", "description": "起始行号（可选）"},
                 "range_end": {"type": "integer", "description": "结束行号（可选）"}
             },
@@ -71,7 +70,44 @@ def process_large_output(content: str) -> str:
         return f"[Content truncated due to length. Full content saved with Context ID: {ctx_id}. Use tool getContext(ctxId='{ctx_id}', regex=..., range_start=..., range_end=..., keyword=...) to read it.]\n" + content[:6000]
     return content
 
-def get_context_handler(ctxId: str, regex: str = None, range_start: int = None, range_end: int = None, keyword: str = None):
+def _coerce_int(value, default=None):
+    try:
+        if value is None or value == "":
+            return default
+        return int(value)
+    except Exception:
+        return default
+
+def _parse_range_arg(value):
+    if value is None or value == "":
+        return None, None
+
+    if isinstance(value, (list, tuple)) and len(value) >= 2:
+        return _coerce_int(value[0]), _coerce_int(value[1])
+
+    if isinstance(value, dict):
+        start = value.get("start", value.get("from", value.get("range_start")))
+        end = value.get("end", value.get("to", value.get("range_end")))
+        return _coerce_int(start), _coerce_int(end)
+
+    text = str(value or "").strip()
+    match = re.match(r"^\s*(\d+)\s*[:,-]\s*(\d+)\s*$", text)
+    if match:
+        return _coerce_int(match.group(1)), _coerce_int(match.group(2))
+
+    return None, None
+
+def get_context_handler(ctxId: str = "", regex: str = None, range_start: int = None, range_end: int = None, keyword: str = None, range=None, ctx_id: str = "", **kwargs):
+    if not ctxId:
+        ctxId = ctx_id or str(kwargs.get("context_id") or "").strip()
+
+    if (range_start is None or range_end is None) and range is not None:
+        parsed_start, parsed_end = _parse_range_arg(range)
+        if range_start is None:
+            range_start = parsed_start
+        if range_end is None:
+            range_end = parsed_end
+
     cache_type = config.get("long_content_cache_type", "file")
     text = ""
     if cache_type == "memory":
@@ -85,7 +121,9 @@ def get_context_handler(ctxId: str, regex: str = None, range_start: int = None, 
     lines = text.splitlines()
     res = []
     if range_start is not None and range_end is not None:
-        res = lines[max(0, range_start):min(len(lines), range_end)]
+        start = max(0, _coerce_int(range_start, 0))
+        end = min(len(lines), max(start, _coerce_int(range_end, start)))
+        res = lines[start:end]
     elif regex:
         try:
             r = re.compile(regex)

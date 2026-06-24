@@ -109,8 +109,8 @@ class ToolResultPresenter:
         except Exception as exc:
             return (
                 "## Tool Result Render Failed\n\n"
-                f"Tool: `{name}`\n\n"
-                f"Reason: {str(exc)}\n\n"
+                f"- Tool: `{name}`\n"
+                f"- Reason: {str(exc)}\n\n"
                 "### Raw Result\n\n"
                 f"{self._fenced_text(str(result or ''), language='text')}"
             )
@@ -244,10 +244,10 @@ class ToolResultPresenter:
         lines = [
             "## Tool Output Cached",
             "",
-            f"Tool: `{tool_name}`",
-            f"Resource: `{payload.get('resource_id', '')}`",
-            f"Total Chars: {payload.get('total_chars', payload.get('length', ''))}",
-            f"Hint: `{payload.get('hint', 'temp_context_read(resource_id,start,count)')}`",
+            f"- Tool: `{tool_name}`",
+            f"- Resource: `{payload.get('resource_id', '')}`",
+            f"- Total Chars: {payload.get('total_chars', payload.get('length', ''))}",
+            f"- Hint: `{payload.get('hint', 'temp_context_read(resource_id,start,count)')}`",
         ]
 
         if preview:
@@ -300,17 +300,17 @@ class ToolResultPresenter:
         lines = [
             title,
             "",
-            f"Resource: `{payload.get('resource_id') or args.get('resource_id') or ''}`",
-            f"Source Tool: `{payload.get('source_tool', '')}`",
+            f"- Resource: `{payload.get('resource_id') or args.get('resource_id') or ''}`",
+            f"- Source Tool: `{payload.get('source_tool', '')}`",
         ]
 
         if "start" in payload or "end" in payload or "total_length" in payload:
             lines.append(
-                f"Range: {payload.get('start', 0)}:{payload.get('end', '')} / {payload.get('total_length', '')}"
+                f"- Range: {payload.get('start', 0)}:{payload.get('end', '')} / {payload.get('total_length', '')}"
             )
 
         if not success:
-            lines.extend(["", f"Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
             return "\n".join(lines).strip()
 
         lines.extend([
@@ -332,21 +332,21 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, "## Temporary Context Search", "## Temporary Context Search Failed"),
             "",
-            f"Resource: `{payload.get('resource_id') or args.get('resource_id') or '(all)'}`",
-            f"Keyword: `{query.get('keyword') or args.get('keyword') or ''}`",
-            f"Regex: `{query.get('regex') or args.get('regex') or ''}`",
-            f"Case Sensitive: {self._as_bool_text(query.get('case_sensitive', args.get('case_sensitive', False)))}",
+            f"- Resource: `{payload.get('resource_id') or args.get('resource_id') or '(all)'}`",
+            f"- Keyword: `{query.get('keyword') or args.get('keyword') or ''}`",
+            f"- Regex: `{query.get('regex') or args.get('regex') or ''}`",
+            f"- Case Sensitive: {self._as_bool_text(query.get('case_sensitive', args.get('case_sensitive', False)))}",
         ]
 
         if not success:
-            lines.extend(["", f"Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
             return "\n".join(lines).strip()
 
         articles = payload.get("articles") if isinstance(payload.get("articles"), list) else []
         matches = payload.get("matches") if isinstance(payload.get("matches"), list) else []
         lines.extend([
-            f"Matched: {payload.get('matched', len(matches))}",
-            f"Resources: {len(articles)}",
+            f"- Matched: {payload.get('matched', len(matches))}",
+            f"- Resources: {len(articles)}",
         ])
 
         if articles:
@@ -370,10 +370,10 @@ class ToolResultPresenter:
                     "",
                     f"#### Match {index}",
                     "",
-                    f"Resource: `{match.get('resource_id', '')}`",
-                    f"Source Tool: `{match.get('article', '')}`",
-                    f"Position: {match.get('start', '')}:{match.get('end', '')} (line {match.get('line', '')}, col {match.get('col', '')})",
-                    f"Match: `{match.get('match', '')}`",
+                    f"- Resource: `{match.get('resource_id', '')}`",
+                    f"- Source Tool: `{match.get('article', '')}`",
+                    f"- Position: {match.get('start', '')}:{match.get('end', '')} (line {match.get('line', '')}, col {match.get('col', '')})",
+                    f"- Match: `{match.get('match', '')}`",
                     "",
                     "##### Snippet",
                     "",
@@ -399,11 +399,11 @@ class ToolResultPresenter:
         ]
 
         if not success:
-            lines.append(f"Reason: {payload.get('message') or payload.get('error') or 'unknown error'}")
+            lines.append(f"- Reason: {payload.get('message') or payload.get('error') or 'unknown error'}")
             return "\n".join(lines).strip()
 
         items = payload.get("items") if isinstance(payload.get("items"), list) else []
-        lines.append(f"Count: {payload.get('count', len(items))}")
+        lines.append(f"- Count: {payload.get('count', len(items))}")
         if not items:
             lines.extend(["", "(empty)"])
             return "\n".join(lines).strip()
@@ -439,10 +439,10 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, "## Temporary Context Cleared", "## Temporary Context Clear Failed"),
             "",
-            f"Removed: {payload.get('removed', 0)}",
+            f"- Removed: {payload.get('removed', 0)}",
         ]
         if not success:
-            lines.extend(["", f"Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
         return "\n".join(lines).strip()
 
     def _render_file_read(self, args: Dict[str, Any], result: Any) -> str:
@@ -460,44 +460,44 @@ class ToolResultPresenter:
         lines = [
             title,
             "",
-            f"File: `{file_label}`",
+            f"- File: `{file_label}`",
         ]
 
         if payload.get("mode"):
-            lines.append(f"Mode: `{payload.get('mode')}`")
+            lines.append(f"- Mode: `{payload.get('mode')}`")
 
         if payload.get("sha256"):
-            lines.append(f"SHA256: `{self._short_hash(payload.get('sha256'))}`")
+            lines.append(f"- SHA256: `{str(payload.get('sha256') or '').strip()}`")
 
         file_obj = payload.get("file") if isinstance(payload.get("file"), dict) else {}
 
         if file_obj.get("size") is not None:
-            lines.append(f"Size: {file_obj.get('size')} bytes")
+            lines.append(f"- Size: {file_obj.get('size')} bytes")
         elif payload.get("size") is not None:
-            lines.append(f"Size: {payload.get('size')} bytes")
+            lines.append(f"- Size: {payload.get('size')} bytes")
 
         if file_obj.get("total_chars") is not None:
-            lines.append(f"Total Chars: {file_obj.get('total_chars')}")
+            lines.append(f"- Total Chars: {file_obj.get('total_chars')}")
         elif payload.get("total_chars") is not None:
-            lines.append(f"Total Chars: {payload.get('total_chars')}")
+            lines.append(f"- Total Chars: {payload.get('total_chars')}")
 
         if payload.get("returned_chars") is not None:
-            lines.append(f"Returned Chars: {payload.get('returned_chars')}")
+            lines.append(f"- Returned Chars: {payload.get('returned_chars')}")
 
         if payload.get("returned_line_count") is not None:
-            lines.append(f"Returned Lines: {payload.get('returned_line_count')}")
+            lines.append(f"- Returned Lines: {payload.get('returned_line_count')}")
 
         slice_obj = payload.get("slice") if isinstance(payload.get("slice"), dict) else {}
 
         if slice_obj:
             slice_bits = [f"{key}={value}" for key, value in slice_obj.items()]
-            lines.append(f"Slice: {', '.join(slice_bits)}")
+            lines.append(f"- Slice: {', '.join(slice_bits)}")
 
         if "truncated" in payload:
-            lines.append(f"Truncated: {self._as_bool_text(payload.get('truncated'))}")
+            lines.append(f"- Truncated: {self._as_bool_text(payload.get('truncated'))}")
 
         if not success:
-            lines.extend(["", f"Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
             return "\n".join(lines).strip()
 
         lines.extend([
@@ -523,16 +523,16 @@ class ToolResultPresenter:
         lines = [
             title,
             "",
-            f"File: `{file_label}`",
-            f"Created: {self._as_bool_text(payload.get('created', False))}",
-            f"Overwritten: {self._as_bool_text(payload.get('overwritten', False))}",
+            f"- File: `{file_label}`",
+            f"- Created: {self._as_bool_text(payload.get('created', False))}",
+            f"- Overwritten: {self._as_bool_text(payload.get('overwritten', False))}",
         ]
 
         file_obj = payload.get("file") if isinstance(payload.get("file"), dict) else {}
         if file_obj.get("size") is not None:
-            lines.append(f"Size: {file_obj.get('size')} bytes")
+            lines.append(f"- Size: {file_obj.get('size')} bytes")
         if args.get("content") is not None:
-            lines.append(f"Content Chars: {len(str(args.get('content') or ''))}")
+            lines.append(f"- Content Chars: {len(str(args.get('content') or ''))}")
 
         if not success:
             lines.extend(["", f"Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
@@ -553,29 +553,29 @@ class ToolResultPresenter:
         lines = [
             title,
             "",
-            f"File: `{file_label}`",
+            f"- File: `{file_label}`",
         ]
 
         if payload.get("mode"):
-            lines.append(f"Mode: `{payload.get('mode')}`")
+            lines.append(f"- Mode: `{payload.get('mode')}`")
         if payload.get("replaced_count") is not None:
-            lines.append(f"Replaced: {payload.get('replaced_count')}")
+            lines.append(f"- Replaced: {payload.get('replaced_count')}")
 
         file_obj = payload.get("file") if isinstance(payload.get("file"), dict) else {}
         if file_obj.get("size") is not None:
-            lines.append(f"Size: {file_obj.get('size')} bytes")
+            lines.append(f"- Size: {file_obj.get('size')} bytes")
         if payload.get("bytes_written") is not None:
-            lines.append(f"Bytes Written: {payload.get('bytes_written')}")
+            lines.append(f"- Bytes Written: {payload.get('bytes_written')}")
 
         if args.get("from_line") is not None or args.get("to_line") is not None:
-            lines.append(f"Line Range: {args.get('from_line', '')}:{args.get('to_line', '')}")
+            lines.append(f"- Line Range: {args.get('from_line', '')}:{args.get('to_line', '')}")
         if args.get("old_text") is not None:
-            lines.append(f"Old Text Chars: {len(str(args.get('old_text') or ''))}")
-            lines.append(f"New Text Chars: {len(str(args.get('new_text') or ''))}")
+            lines.append(f"- Old Text Chars: {len(str(args.get('old_text') or ''))}")
+            lines.append(f"- New Text Chars: {len(str(args.get('new_text') or ''))}")
         elif args.get("content") is not None:
-            lines.append(f"Content Chars: {len(str(args.get('content') or ''))}")
+            lines.append(f"- Content Chars: {len(str(args.get('content') or ''))}")
         elif args.get("replacement") is not None:
-            lines.append(f"Replacement Chars: {len(str(args.get('replacement') or ''))}")
+            lines.append(f"- Replacement Chars: {len(str(args.get('replacement') or ''))}")
 
         if not success:
             lines.extend(["", f"Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
@@ -595,18 +595,18 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, "## File Search Results", "## File Search Failed"),
             "",
-            f"File: `{file_label}`",
-            f"Keyword: `{payload.get('keyword') or args.get('keyword') or args.get('query') or args.get('pattern') or ''}`",
-            f"Regex: {self._as_bool_text(payload.get('regex', args.get('regex', False)))}",
-            f"Case Sensitive: {self._as_bool_text(payload.get('case_sensitive', args.get('case_sensitive', True)))}",
+            f"- File: `{file_label}`",
+            f"- Keyword: `{payload.get('keyword') or args.get('keyword') or args.get('query') or args.get('pattern') or ''}`",
+            f"- Regex: {self._as_bool_text(payload.get('regex', args.get('regex', False)))}",
+            f"- Case Sensitive: {self._as_bool_text(payload.get('case_sensitive', args.get('case_sensitive', True)))}",
         ]
 
         if not success:
-            lines.extend(["", f"Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
             return "\n".join(lines).strip()
 
         results = payload.get("results") if isinstance(payload.get("results"), list) else []
-        lines.append(f"Matched: {payload.get('matched', len(results))}")
+        lines.append(f"- Matched: {payload.get('matched', len(results))}")
 
         if not results:
             lines.extend(["", "(no matches)"])
@@ -623,7 +623,7 @@ class ToolResultPresenter:
                 "",
                 f"#### Line {line_no}, Col {col}:{end_col}",
                 "",
-                f"Match: `{item.get('match', '')}`",
+                f"- Match: `{item.get('match', '')}`",
                 "",
                 self._fenced_text(item.get("text", ""), language=self._language_for_path(file_label), limit=2000),
             ])
@@ -644,17 +644,17 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, "## File List", "## File List Failed"),
             "",
-            f"User: `{payload.get('username', '')}`",
+            f"- User: `{payload.get('username', '')}`",
         ]
         if args.get("query"):
-            lines.append(f"Query: `{args.get('query')}`")
+            lines.append(f"- Query: `{args.get('query')}`")
 
         if not success:
-            lines.extend(["", f"Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
             return "\n".join(lines).strip()
 
         files = payload.get("files") if isinstance(payload.get("files"), list) else []
-        lines.append(f"Total: {payload.get('total', len(files))}")
+        lines.append(f"- Total: {payload.get('total', len(files))}")
         if not files:
             lines.extend(["", "(empty)"])
             return "\n".join(lines).strip()
@@ -695,27 +695,27 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, "## Local File Probe", "## Local File Probe Failed"),
             "",
-            f"File: `{file_label}`",
+            f"- File: `{file_label}`",
         ]
 
         if not success:
-            lines.extend(["", f"Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
             return "\n".join(lines).strip()
 
         lines.extend([
-            f"Size: {payload.get('size', 0)} bytes",
-            f"SHA256: `{payload.get('sha256', '')}`",
-            f"Encoding Hint: `{payload.get('encoding_hint') or 'unknown'}`",
-            f"BOM: `{payload.get('bom') or 'none'}`",
-            f"Binary: {self._as_bool_text(payload.get('is_binary'))}",
-            f"Line Separator: `{payload.get('line_separator') or 'none'}`",
-            f"Trailing Newline: {self._as_bool_text(payload.get('has_trailing_newline'))}",
-            f"Readable: {self._as_bool_text(payload.get('readable'))}",
-            f"Writable: {self._as_bool_text(payload.get('writable'))}",
+            f"- Size: {payload.get('size', 0)} bytes",
+            f"- SHA256: `{payload.get('sha256', '')}`",
+            f"- Encoding Hint: `{payload.get('encoding_hint') or 'unknown'}`",
+            f"- BOM: `{payload.get('bom') or 'none'}`",
+            f"- Binary: {self._as_bool_text(payload.get('is_binary'))}",
+            f"- Line Separator: `{payload.get('line_separator') or 'none'}`",
+            f"- Trailing Newline: {self._as_bool_text(payload.get('has_trailing_newline'))}",
+            f"- Readable: {self._as_bool_text(payload.get('readable'))}",
+            f"- Writable: {self._as_bool_text(payload.get('writable'))}",
         ])
 
         if payload.get("binary_reason"):
-            lines.append(f"Binary Reason: `{payload.get('binary_reason')}`")
+            lines.append(f"- Binary Reason: `{payload.get('binary_reason')}`")
 
         line_endings = payload.get("line_endings") if isinstance(payload.get("line_endings"), dict) else {}
 
@@ -788,14 +788,14 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, "## Local Directory Listed", "## Local Directory List Failed"),
             "",
-            f"Directory: `{directory}`",
+            f"- Directory: `{directory}`",
         ]
 
         if not success:
-            lines.extend(["", f"Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
             return "\n".join(lines).strip()
 
-        lines.append(f"Entries: {payload.get('count', len(entries))}")
+        lines.append(f"- Entries: {payload.get('count', len(entries))}")
         if not entries:
             lines.extend(["", "(empty)"])
             return "\n".join(lines).strip()
@@ -835,18 +835,18 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, "## File Removed", "## File Remove Failed"),
             "",
-            f"File: `{file_label}`",
+            f"- File: `{file_label}`",
         ]
 
         if "vector_deleted" in payload:
-            lines.append(f"Vector Deleted: {self._as_bool_text(payload.get('vector_deleted'))}")
+            lines.append(f"- Vector Deleted: {self._as_bool_text(payload.get('vector_deleted'))}")
         if payload.get("vector_delete_skipped"):
-            lines.append(f"Vector Delete Skipped: `{payload.get('vector_delete_skipped')}`")
+            lines.append(f"- Vector Delete Skipped: `{payload.get('vector_delete_skipped')}`")
         if payload.get("vector_delete_error"):
-            lines.append(f"Vector Delete Error: {payload.get('vector_delete_error')}")
+            lines.append(f"- Vector Delete Error: {payload.get('vector_delete_error')}")
 
         if not success:
-            lines.extend(["", f"Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
         return "\n".join(lines).strip()
 
     def _format_structured_edits(self, edits: Any) -> str:
@@ -897,40 +897,40 @@ class ToolResultPresenter:
         lines = [
             title,
             "",
-            f"File: `{file_label}`",
-            f"Changed: {self._as_bool_text(changed)}",
+            f"- File: `{file_label}`",
+            f"- Changed: {self._as_bool_text(changed)}",
         ]
 
         if payload.get("dry_run") is not None:
-            lines.append(f"Dry Run: {self._as_bool_text(payload.get('dry_run'))}")
+            lines.append(f"- Dry Run: {self._as_bool_text(payload.get('dry_run'))}")
 
         if payload.get("requires_confirm") is not None:
-            lines.append(f"Requires Confirm: {self._as_bool_text(payload.get('requires_confirm'))}")
+            lines.append(f"- Requires Confirm: {self._as_bool_text(payload.get('requires_confirm'))}")
 
         if payload.get("preview_id"):
-            lines.append(f"Preview ID: `{payload.get('preview_id')}`")
+            lines.append(f"- Preview ID: `{payload.get('preview_id')}`")
 
         if payload.get("confirmed_preview_id"):
-            lines.append(f"Confirmed Preview ID: `{payload.get('confirmed_preview_id')}`")
+            lines.append(f"- Confirmed Preview ID: `{payload.get('confirmed_preview_id')}`")
 
         if payload.get("preview_expires_in_seconds") is not None:
-            lines.append(f"Preview Expires In: {payload.get('preview_expires_in_seconds')} seconds")
+            lines.append(f"- Preview Expires In: {payload.get('preview_expires_in_seconds')} seconds")
 
         if payload.get("mode"):
-            lines.append(f"Mode: `{payload.get('mode')}`")
+            lines.append(f"- Mode: `{payload.get('mode')}`")
 
         if payload.get("edit_count") is not None:
-            lines.append(f"Edits: {payload.get('edit_count')}")
+            lines.append(f"- Edits: {payload.get('edit_count')}")
 
         if payload.get("hunk_count") is not None:
-            lines.append(f"Hunks: {payload.get('hunk_count')}")
+            lines.append(f"- Hunks: {payload.get('hunk_count')}")
 
         if payload.get("added_lines") is not None or payload.get("removed_lines") is not None:
-            lines.append(f"Lines: +{payload.get('added_lines', 0)} / -{payload.get('removed_lines', 0)}")
+            lines.append(f"- Lines: +{payload.get('added_lines', 0)} / -{payload.get('removed_lines', 0)}")
 
         if payload.get("old_sha256") or payload.get("new_sha256"):
             lines.append(
-                f"SHA256: `{self._short_hash(payload.get('old_sha256'))}` -> `{self._short_hash(payload.get('new_sha256'))}`"
+                f"- SHA256: `{self._short_hash(payload.get('old_sha256'))}` -> `{self._short_hash(payload.get('new_sha256'))}`"
             )
 
         if not success:
@@ -983,17 +983,17 @@ class ToolResultPresenter:
         lines = [
             title,
             "",
-            f"Command: `{args.get('command', '')}`",
+            f"- Command: `{args.get('command', '')}`",
         ]
 
         if args.get("cwd"):
-            lines.append(f"CWD: `{args.get('cwd')}`")
+            lines.append(f"- CWD: `{args.get('cwd')}`")
 
         if returncode is not None:
-            lines.append(f"Exit Code: `{returncode}`")
+            lines.append(f"- Exit Code: `{returncode}`")
 
         if has_error:
-            lines.extend(["", f"Reason: {payload.get('error')}"])
+            lines.extend(["", f"- Reason: {payload.get('error')}"])
 
         stdout = str(payload.get("stdout") or "")
         stderr = str(payload.get("stderr") or "")
@@ -1015,7 +1015,7 @@ class ToolResultPresenter:
             ])
 
         if payload.get("_hint"):
-            lines.extend(["", f"Hint: {payload.get('_hint')}"])
+            lines.extend(["", f"- Hint: {payload.get('_hint')}"])
 
         return "\n".join(lines).strip()
 
@@ -1040,22 +1040,22 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, success_title, failed_title),
             "",
-            f"Action: `{action or '(unknown)'}`",
-            f"Session: `{payload.get('session_id') or args.get('session_id') or ''}`",
-            f"Status: `{payload.get('status', '')}`",
+            f"- Action: `{action or '(unknown)'}`",
+            f"- Session: `{payload.get('session_id') or args.get('session_id') or ''}`",
+            f"- Status: `{payload.get('status', '')}`",
         ]
 
         if args.get("cwd") or payload.get("cwd"):
-            lines.append(f"CWD: `{payload.get('cwd') or args.get('cwd')}`")
+            lines.append(f"- CWD: `{payload.get('cwd') or args.get('cwd')}`")
         if args.get("command"):
-            lines.append(f"Command: `{args.get('command')}`")
+            lines.append(f"- Command: `{args.get('command')}`")
         if payload.get("pending_output") is not None:
-            lines.append(f"Pending Output: {payload.get('pending_output')} chars")
+            lines.append(f"- Pending Output: {payload.get('pending_output')} chars")
         if payload.get("total_chunks") is not None:
-            lines.append(f"Chunks: {payload.get('current_chunk', 1)} / {payload.get('total_chunks')}")
+            lines.append(f"- Chunks: {payload.get('current_chunk', 1)} / {payload.get('total_chunks')}")
 
         if not success:
-            lines.extend(["", f"Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
             return "\n".join(lines).strip()
 
         content = str(payload.get("content") or "")
@@ -1081,18 +1081,18 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, "## Image Search Results", "## Image Search Failed"),
             "",
-            f"Query: `{payload.get('query') or args.get('query') or ''}`",
-            f"Source: `{payload.get('engine') or args.get('source') or ''}`",
-            f"Status: `{payload.get('status', '')}`",
-            f"Results: {len(results)}",
+            f"- Query: `{payload.get('query') or args.get('query') or ''}`",
+            f"- Source: `{payload.get('engine') or args.get('source') or ''}`",
+            f"- Status: `{payload.get('status', '')}`",
+            f"- Results: {len(results)}",
         ]
 
         anti_spider = payload.get("anti_spider") if isinstance(payload.get("anti_spider"), dict) else {}
         if anti_spider.get("detected"):
-            lines.append(f"Anti Spider: {anti_spider.get('reason') or 'detected'}")
+            lines.append(f"- Anti Spider: {anti_spider.get('reason') or 'detected'}")
 
         if not success:
-            lines.extend(["", f"Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
             return "\n".join(lines).strip()
 
         if not results:
@@ -1107,14 +1107,14 @@ class ToolResultPresenter:
             source_url = str(item.get("source_url") or item.get("page_url") or "").strip()
             lines.extend(["", f"### {index}. {title}", ""])
             if item.get("width") or item.get("height"):
-                lines.append(f"Size: {item.get('width') or '?'}x{item.get('height') or '?'}")
+                lines.append(f"- Size: {item.get('width') or '?'}x{item.get('height') or '?'}")
             if item.get("license") or item.get("author"):
-                lines.append(f"Credit: {self._escape_table_cell(item.get('author'))} {self._escape_table_cell(item.get('license'))}".strip())
+                lines.append(f"- Credit: {self._escape_table_cell(item.get('author'))} {self._escape_table_cell(item.get('license'))}".strip())
             if image_url:
                 alt = title.replace("[", "\\[").replace("]", "\\]")
                 lines.append(f"![{alt}]({image_url})")
             if source_url:
-                lines.append(f"Source: {source_url}")
+                lines.append(f"- Source: {source_url}")
         if len(results) > 16:
             lines.extend(["", f"... omitted {len(results) - 16} more images ..."])
         return "\n".join(lines).strip()
@@ -1174,22 +1174,22 @@ class ToolResultPresenter:
             "",
         ]
         if args.get("url"):
-            lines.append(f"Requested URL: {args.get('url')}")
+            lines.append(f"- Requested URL: {args.get('url')}")
         if payload.get("page_id") is not None or args.get("page_id") is not None:
-            lines.append(f"Page ID: `{payload.get('page_id', args.get('page_id'))}`")
+            lines.append(f"- Page ID: `{payload.get('page_id', args.get('page_id'))}`")
         if payload.get("url"):
-            lines.append(f"Current URL: {payload.get('url')}")
+            lines.append(f"- Current URL: {payload.get('url')}")
         if payload.get("title"):
-            lines.append(f"Title: {payload.get('title')}")
+            lines.append(f"- Title: {payload.get('title')}")
         if args.get("extract_mode") or payload.get("extract_mode"):
-            lines.append(f"Mode: `{payload.get('extract_mode') or args.get('extract_mode')}`")
+            lines.append(f"- Mode: `{payload.get('extract_mode') or args.get('extract_mode')}`")
         if payload.get("engine"):
-            lines.append(f"Engine: `{payload.get('engine')}`")
+            lines.append(f"- Engine: `{payload.get('engine')}`")
         if payload.get("warning"):
-            lines.append(f"Warning: {payload.get('warning')}")
+            lines.append(f"- Warning: {payload.get('warning')}")
 
         if not success:
-            lines.extend(["", f"Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
             return "\n".join(lines).strip()
 
         if "result" in payload and payload.get("result") is not None:
@@ -1225,11 +1225,11 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, "## Local Web Pages", "## Local Web Pages Failed"),
             "",
-            f"Active Page ID: `{payload.get('active_page_id', '')}`",
-            f"Pages: {len(pages)}",
+            f"- Active Page ID: `{payload.get('active_page_id', '')}`",
+            f"- Pages: {len(pages)}",
         ]
         if not success:
-            lines.extend(["", f"Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
             return "\n".join(lines).strip()
         if not pages:
             lines.extend(["", "(no open pages)"])
@@ -1261,15 +1261,15 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, "## Local Web Page Closed", "## Local Web Page Close Failed"),
             "",
-            f"Page ID: `{payload.get('page_id') or args.get('page_id') or ''}`",
-            f"Closed: {self._as_bool_text(payload.get('closed', success))}",
+            f"- Page ID: `{payload.get('page_id') or args.get('page_id') or ''}`",
+            f"- Closed: {self._as_bool_text(payload.get('closed', success))}",
         ]
         if not success:
-            lines.extend(["", f"Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
             return "\n".join(lines).strip()
         pages = payload.get("pages") if isinstance(payload.get("pages"), list) else []
         if pages:
-            lines.append(f"Remaining Pages: {len(pages)}")
+            lines.append(f"- Remaining Pages: {len(pages)}")
         return "\n".join(lines).strip()
 
     def _render_local_long_context(self, args: Dict[str, Any], result: Any) -> str:
@@ -1278,17 +1278,17 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, "## Local Long Context Read", "## Local Long Context Read Failed"),
             "",
-            f"Context ID: `{args.get('ctxId') or args.get('ctx_id') or ''}`",
+            f"- Context ID: `{args.get('ctxId') or args.get('ctx_id') or ''}`",
         ]
         if args.get("keyword"):
-            lines.append(f"Keyword: `{args.get('keyword')}`")
+            lines.append(f"- Keyword: `{args.get('keyword')}`")
         if args.get("regex"):
-            lines.append(f"Regex: `{args.get('regex')}`")
+            lines.append(f"- Regex: `{args.get('regex')}`")
         if args.get("range_start") is not None or args.get("range_end") is not None:
-            lines.append(f"Line Range: {args.get('range_start', '')}:{args.get('range_end', '')}")
+            lines.append(f"- Line Range: {args.get('range_start', '')}:{args.get('range_end', '')}")
 
         if not success:
-            lines.extend(["", f"Reason: {text or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {text or 'unknown error'}"])
             return "\n".join(lines).strip()
 
         lines.extend(["", "### Content", "", self._fenced_text(text, language="markdown", limit=12000)])
@@ -1317,7 +1317,7 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, "## Web Page Rendered", "## Web Page Render Failed"),
             "",
-            f"Requested URL: {args.get('url', '')}",
+            f"- Requested URL: {args.get('url', '')}",
         ]
 
         if isinstance(payload, dict):
@@ -1325,15 +1325,15 @@ class ToolResultPresenter:
             title = payload.get("title") or ""
             content = str(payload.get("content") or "")
             lines.extend([
-                f"Final URL: {final_url}",
-                f"Title: {title or '(empty)'}",
-                f"Mode: `{payload.get('mode') or payload.get('warning') or 'unknown'}`",
-                f"Content Chars: {len(content)}",
+                f"- Final URL: {final_url}",
+                f"- Title: {title or '(empty)'}",
+                f"- Mode: `{payload.get('mode') or payload.get('warning') or 'unknown'}`",
+                f"- Content Chars: {len(content)}",
             ])
             if payload.get("warning"):
-                lines.append(f"Warning: {payload.get('warning')}")
+                lines.append(f"- Warning: {payload.get('warning')}")
             if not success:
-                lines.extend(["", f"Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
+                lines.extend(["", f"- Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
             elif content:
                 lines.extend(["", "### Content", "", self._fenced_text(content, language="markdown", limit=12000)])
             return "\n".join(lines).strip()
@@ -1355,17 +1355,17 @@ class ToolResultPresenter:
             key = key.strip()
             value = value.strip()
             if key == "original_url":
-                lines.append(f"Original URL: {value}")
+                lines.append(f"- Original URL: {value}")
             elif key == "final_url":
-                lines.append(f"Final URL: {value}")
+                lines.append(f"- Final URL: {value}")
             elif key == "title":
-                lines.append(f"Title: {value or '(empty)'}")
+                lines.append(f"- Title: {value or '(empty)'}")
             elif key == "mode":
-                lines.append(f"Mode: `{value}`")
+                lines.append(f"- Mode: `{value}`")
             elif key == "content_length":
-                lines.append(f"Content Chars: {value}")
+                lines.append(f"- Content Chars: {value}")
             elif key == "warning":
-                lines.append(f"Warning: {value}")
+                lines.append(f"- Warning: {value}")
 
         if content:
             lines.extend(["", "### Content", "", self._fenced_text(content, language="markdown", limit=12000)])
@@ -1386,21 +1386,21 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, "## arXiv Search Results", "## arXiv Search Failed"),
             "",
-            f"Query: `{payload.get('query') or args.get('query') or ''}`",
+            f"- Query: `{payload.get('query') or args.get('query') or ''}`",
         ]
         if payload.get("effective_query"):
-            lines.append(f"Effective Query: `{payload.get('effective_query')}`")
+            lines.append(f"- Effective Query: `{payload.get('effective_query')}`")
 
         if not success:
-            lines.extend(["", f"Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
             return "\n".join(lines).strip()
 
         items = payload.get("items") if isinstance(payload.get("items"), list) else []
         lines.extend([
-            f"Total Results: {payload.get('total_results', '')}",
-            f"Fetched: {payload.get('fetched', '')}",
-            f"Returned: {payload.get('returned', len(items))}",
-            f"Strict: {self._as_bool_text(payload.get('strict', False))}",
+            f"- Total Results: {payload.get('total_results', '')}",
+            f"- Fetched: {payload.get('fetched', '')}",
+            f"- Returned: {payload.get('returned', len(items))}",
+            f"- Strict: {self._as_bool_text(payload.get('strict', False))}",
         ])
 
         if not items:
@@ -1417,19 +1417,19 @@ class ToolResultPresenter:
                 "",
                 f"### {index}. {title}",
                 "",
-                f"ID: {item.get('id', '')}",
-                f"PDF: {item.get('pdf_url', '')}",
-                f"Published: {item.get('published', '')}",
-                f"Updated: {item.get('updated', '')}",
-                f"Score: {self._format_score(item.get('relevance_score'))}",
+                f"- ID: {item.get('id', '')}",
+                f"- PDF: {item.get('pdf_url', '')}",
+                f"- Published: {item.get('published', '')}",
+                f"- Updated: {item.get('updated', '')}",
+                f"- Score: {self._format_score(item.get('relevance_score'))}",
             ])
             if authors:
                 author_text = ", ".join(str(a) for a in authors[:8])
                 if len(authors) > 8:
                     author_text += f", ... +{len(authors) - 8}"
-                lines.append(f"Authors: {author_text}")
+                lines.append(f"- Authors: {author_text}")
             if cats:
-                lines.append(f"Categories: {', '.join(str(c) for c in cats[:12])}")
+                lines.append(f"- Categories: {', '.join(str(c) for c in cats[:12])}")
             summary = str(item.get("summary") or "").strip()
             if summary:
                 lines.extend(["", "#### Summary", "", self._markdown_body(summary, limit=2500)])
@@ -1450,14 +1450,14 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, "## JavaScript Executed", "## JavaScript Execution Failed"),
             "",
-            f"Executed On: `{payload.get('executed_on', 'client_js')}`",
+            f"- Executed On: `{payload.get('executed_on', 'client_js')}`",
         ]
         if payload.get("elapsed_ms") is not None:
-            lines.append(f"Elapsed: {payload.get('elapsed_ms')} ms")
+            lines.append(f"- Elapsed: {payload.get('elapsed_ms')} ms")
         if payload.get("request_id"):
-            lines.append(f"Request ID: `{payload.get('request_id')}`")
+            lines.append(f"- Request ID: `{payload.get('request_id')}`")
         if payload.get("code_normalized") or (isinstance(payload.get("meta"), dict) and payload.get("meta", {}).get("code_normalized")):
-            lines.append("Code Normalized: yes")
+            lines.append("- Code Normalized: yes")
 
         if args.get("code"):
             lines.extend(["", "### Code", "", self._fenced_text(args.get("code"), language="javascript", limit=4000)])
@@ -1467,7 +1467,7 @@ class ToolResultPresenter:
             lines.extend(["", "### Console", "", self._fenced_text("\n".join(str(x) for x in logs), language="text", limit=5000)])
 
         if not success:
-            lines.extend(["", f"Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
 
         if "result" in payload and payload.get("result") is not None:
             value = payload.get("result")
@@ -1493,8 +1493,8 @@ class ToolResultPresenter:
             return "\n".join([
                 self._status_title(success, "## File Semantic Search", "## File Semantic Search Failed"),
                 "",
-                f"Query: `{args.get('query', '')}`",
-                f"File Filter: `{args.get('file_alias', '')}`" if args.get("file_alias") else "File Filter: `(all files)`",
+                f"- Query: `{args.get('query', '')}`",
+                f"- File Filter: `{args.get('file_alias', '')}`" if args.get("file_alias") else "- File Filter: `(all files)`",
                 "",
                 self._markdown_body(text or "(empty)", limit=4000),
             ]).strip()
@@ -1502,9 +1502,9 @@ class ToolResultPresenter:
         lines = [
             "## File Semantic Search",
             "",
-            f"Query: `{args.get('query', '')}`",
-            f"File Filter: `{args.get('file_alias', '')}`" if args.get("file_alias") else "File Filter: `(all files)`",
-            f"Results: {len(payload)}",
+            f"- Query: `{args.get('query', '')}`",
+            f"- File Filter: `{args.get('file_alias', '')}`" if args.get("file_alias") else "- File Filter: `(all files)`",
+            f"- Results: {len(payload)}",
         ]
 
         for index, item in enumerate(payload[:20], start=1):
@@ -1517,10 +1517,10 @@ class ToolResultPresenter:
                 "",
             ])
             if item.get("score") is not None:
-                lines.append(f"Score: {self._format_score(item.get('score'))}")
-            lines.append(f"Chunk: `{item.get('chunk_id', '')}` {item.get('chunk_start', '')}:{item.get('chunk_end', '')}")
+                lines.append(f"- Score: {self._format_score(item.get('score'))}")
+            lines.append(f"- Chunk: `{item.get('chunk_id', '')}` {item.get('chunk_start', '')}:{item.get('chunk_end', '')}")
             if item.get("query_position_abs") is not None:
-                lines.append(f"Query Position: {item.get('query_position_abs')}")
+                lines.append(f"- Query Position: {item.get('query_position_abs')}")
             preview = str(item.get("preview") or "").strip()
             if preview:
                 lines.extend(["", "#### Preview", "", self._fenced_text(preview, language="markdown", limit=2500)])
@@ -1532,7 +1532,7 @@ class ToolResultPresenter:
         return "\n".join([
             "## Conversation Context Length",
             "",
-            f"Offset: `{args.get('offset', 0)}`",
+            f"- Offset: `{args.get('offset', 0)}`",
             "",
             self._markdown_body(result, limit=1000),
         ]).strip()
@@ -1541,8 +1541,8 @@ class ToolResultPresenter:
         return "\n".join([
             "## Conversation Context Read",
             "",
-            f"Offset: `{args.get('offset', 0)}`",
-            f"Range: {args.get('from_pos', 0)}:{args.get('to_pos', '')}",
+            f"- Offset: `{args.get('offset', 0)}`",
+            f"- Range: {args.get('from_pos', 0)}:{args.get('to_pos', '')}",
             "",
             "### Content",
             "",
@@ -1555,9 +1555,9 @@ class ToolResultPresenter:
         return "\n".join([
             self._status_title(success, "## Conversation Context Search", "## Conversation Context Search Failed"),
             "",
-            f"Offset: `{args.get('offset', 0)}`",
-            f"Keyword: `{args.get('keyword', '')}`",
-            f"Range: {args.get('range', 10)}",
+            f"- Offset: `{args.get('offset', 0)}`",
+            f"- Keyword: `{args.get('keyword', '')}`",
+            f"- Range: {args.get('range', 10)}",
             "",
             "### Matches",
             "",
@@ -1570,13 +1570,13 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, "## Email Sent", "## Email Send Failed"),
             "",
-            f"To: `{args.get('recipient') or args.get('to') or ''}`",
-            f"Subject: {args.get('subject') or '(No Subject)'}",
+            f"- To: `{args.get('recipient') or args.get('to') or ''}`",
+            f"- Subject: {args.get('subject') or '(No Subject)'}",
         ]
         if args.get("knowledge_title"):
-            lines.append(f"Knowledge Source: `{args.get('knowledge_title')}`")
+            lines.append(f"- Knowledge Source: `{args.get('knowledge_title')}`")
         if args.get("content") is not None:
-            lines.append(f"Content Chars: {len(str(args.get('content') or ''))}")
+            lines.append(f"- Content Chars: {len(str(args.get('content') or ''))}")
         lines.extend(["", "### Result", "", self._markdown_body(text, limit=3000)])
         return "\n".join(lines).strip()
 
@@ -1598,18 +1598,18 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, "## Email List", "## Email List Failed"),
             "",
-            f"Mailbox: `{payload.get('group', '')}/{payload.get('username', '')}`",
-            f"Type: `{payload.get('type', '')}`",
-            f"Date Range: {payload.get('date_range', '')} days",
-            f"Offset: {payload.get('offset', '')}",
-            f"Limit: {payload.get('limit', '')}",
+            f"- Mailbox: `{payload.get('group', '')}/{payload.get('username', '')}`",
+            f"- Type: `{payload.get('type', '')}`",
+            f"- Date Range: {payload.get('date_range', '')} days",
+            f"- Offset: {payload.get('offset', '')}",
+            f"- Limit: {payload.get('limit', '')}",
         ]
         if not success:
-            lines.extend(["", f"Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
             return "\n".join(lines).strip()
 
         mails = payload.get("mails") if isinstance(payload.get("mails"), list) else []
-        lines.append(f"Total: {payload.get('total', len(mails))}")
+        lines.append(f"- Total: {payload.get('total', len(mails))}")
         if not mails:
             lines.extend(["", "(empty)"])
             return "\n".join(lines).strip()
@@ -1654,21 +1654,21 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, "## Email Read", "## Email Read Failed"),
             "",
-            f"Mailbox: `{payload.get('group', '')}/{payload.get('username', '')}`",
-            f"Mail ID: `{mail.get('id') or args.get('mail_id') or ''}`",
+            f"- Mailbox: `{payload.get('group', '')}/{payload.get('username', '')}`",
+            f"- Mail ID: `{mail.get('id') or args.get('mail_id') or ''}`",
         ]
         if not success:
-            lines.extend(["", f"Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
             return "\n".join(lines).strip()
 
         lines.extend([
-            f"Subject: {mail.get('subject', '')}",
-            f"From: {mail.get('sender', '')}",
-            f"To: {mail.get('recipient', '')}",
-            f"Date: {mail.get('date', '')}",
-            f"Read: {self._as_bool_text(mail.get('is_read', False))}",
-            f"Size: {mail.get('size', '')} bytes",
-            f"Truncated: {self._as_bool_text(mail.get('truncated', False))}",
+            f"- Subject: {mail.get('subject', '')}",
+            f"- From: {mail.get('sender', '')}",
+            f"- To: {mail.get('recipient', '')}",
+            f"- Date: {mail.get('date', '')}",
+            f"- Read: {self._as_bool_text(mail.get('is_read', False))}",
+            f"- Size: {mail.get('size', '')} bytes",
+            f"- Truncated: {self._as_bool_text(mail.get('truncated', False))}",
         ])
 
         content_text = str(mail.get("content_text") or "").strip()
@@ -1693,7 +1693,7 @@ class ToolResultPresenter:
             return "\n".join([
                 "## User Profile Memory",
                 "",
-                "Type: short-term profile",
+                "- Type: short-term profile",
                 "",
                 "### Content",
                 "",
@@ -1708,12 +1708,12 @@ class ToolResultPresenter:
         lines = [
             title,
             "",
-            f"Type: `{payload.get('type') or args.get('_type') or 'basis'}`",
-            f"Total: {payload.get('total', 0)}",
+            f"- Type: `{payload.get('type') or args.get('_type') or 'basis'}`",
+            f"- Total: {payload.get('total', 0)}",
         ]
 
         if not success:
-            lines.extend(["", f"Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
             return "\n".join(lines).strip()
 
         items = payload.get("items")
@@ -1760,11 +1760,11 @@ class ToolResultPresenter:
         lines = [
             title,
             "",
-            f"Length: {payload.get('length', '')} / {payload.get('max_length', '')}",
+            f"- Length: {payload.get('length', '')} / {payload.get('max_length', '')}",
         ]
 
         if not success:
-            lines.extend(["", f"Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
             return "\n".join(lines).strip()
 
         lines.extend([
@@ -1789,12 +1789,12 @@ class ToolResultPresenter:
         lines = [
             title,
             "",
-            f"Reset: {self._as_bool_text(payload.get('reset', False))}",
-            f"Length: {payload.get('length', '')} / {payload.get('max_length', '')}",
+            f"- Reset: {self._as_bool_text(payload.get('reset', False))}",
+            f"- Length: {payload.get('length', '')} / {payload.get('max_length', '')}",
         ]
 
         if not success:
-            lines.extend(["", f"Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
             return "\n".join(lines).strip()
 
         lines.extend([
@@ -1830,18 +1830,18 @@ class ToolResultPresenter:
         new_title = str(args.get("new_title") or "").strip()
         if title_value or new_title:
             if new_title and new_title != title_value:
-                lines.extend(["", f"Knowledge: `{title_value}` -> `{new_title}`"])
+                lines.extend(["", f"- Knowledge: `{title_value}` -> `{new_title}`"])
             else:
-                lines.extend(["", f"Knowledge: `{title_value or new_title}`"])
+                lines.extend(["", f"- Knowledge: `{title_value or new_title}`"])
 
         if args.get("source") or args.get("target"):
-            lines.append(f"Connection: `{args.get('source', '')}` -> `{args.get('target', '')}`")
+            lines.append(f"- Connection: `{args.get('source', '')}` -> `{args.get('target', '')}`")
         if args.get("relation"):
-            lines.append(f"Relation: `{args.get('relation')}`")
+            lines.append(f"- Relation: `{args.get('relation')}`")
         if args.get("category") or args.get("name"):
-            lines.append(f"Category: `{args.get('category') or args.get('name')}`")
+            lines.append(f"- Category: `{args.get('category') or args.get('name')}`")
         if args.get("url"):
-            lines.append(f"URL: {args.get('url')}")
+            lines.append(f"- URL: {args.get('url')}")
 
         changed = []
         if args.get("context") is not None:
@@ -1853,7 +1853,7 @@ class ToolResultPresenter:
         if args.get("collaborative") is not None:
             changed.append(f"collaborative={bool(args.get('collaborative'))}")
         if changed:
-            lines.append(f"Changed: {', '.join(changed)}")
+            lines.append(f"- Changed: {', '.join(changed)}")
 
         if raw_text:
             lines.extend(["", "### Result", "", self._markdown_body(raw_text, limit=4000)])
@@ -1875,9 +1875,9 @@ class ToolResultPresenter:
             basis_id = str(args.get("basis_id") or "").strip()
             lines = ["## Knowledge Content"]
             if title:
-                lines.extend(["", f"Knowledge: `{title}`"])
+                lines.extend(["", f"- Knowledge: `{title}`"])
             if basis_id:
-                lines.append(f"Basis ID: `{basis_id}`")
+                lines.append(f"- Basis ID: `{basis_id}`")
             lines.extend(["", "### Content", "", self._markdown_body(result, limit=16000)])
             return "\n".join(lines).strip()
 
@@ -1894,26 +1894,26 @@ class ToolResultPresenter:
 
         lines = [heading]
         if title:
-            lines.extend(["", f"Knowledge: `{title}`"])
+            lines.extend(["", f"- Knowledge: `{title}`"])
         if basis_id:
-            lines.append(f"Basis ID: `{basis_id}`")
+            lines.append(f"- Basis ID: `{basis_id}`")
         if payload.get("total_length") is not None:
-            lines.append(f"Total Chars: {payload.get('total_length')}")
+            lines.append(f"- Total Chars: {payload.get('total_length')}")
 
         if not success:
-            lines.extend(["", f"Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
             return "\n".join(lines).strip()
 
         if mode == "slice":
-            lines.append(f"Range: {payload.get('from_pos', 0)}:{payload.get('to_pos', '')}")
+            lines.append(f"- Range: {payload.get('from_pos', 0)}:{payload.get('to_pos', '')}")
             lines.extend(["", "### Content", "", self._markdown_body(payload.get("content", ""), limit=16000)])
             return "\n".join(lines).strip()
 
         matches = payload.get("matches")
         if isinstance(matches, list):
             lines.extend([
-                f"Keyword: `{payload.get('keyword', '')}`",
-                f"Matched: {payload.get('matched', len(matches))}",
+                f"- Keyword: `{payload.get('keyword', '')}`",
+                f"- Matched: {payload.get('matched', len(matches))}",
             ])
             for match in matches[:20]:
                 if not isinstance(match, dict):
@@ -1923,9 +1923,9 @@ class ToolResultPresenter:
                     "",
                     f"### Match {index}",
                     "",
-                    f"Position: {match.get('start', '')}:{match.get('end', '')}",
-                    f"Line: {match.get('start_line', match.get('line', ''))}, Col: {match.get('start_col', match.get('col', ''))}",
-                    f"Match: `{match.get('match', '')}`",
+                    f"- Position: {match.get('start', '')}:{match.get('end', '')}",
+                    f"- Line: {match.get('start_line', match.get('line', ''))}, Col: {match.get('start_col', match.get('col', ''))}",
+                    f"- Match: `{match.get('match', '')}`",
                     "",
                     "#### Snippet",
                     "",
@@ -1951,18 +1951,18 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, "## Knowledge Keyword Search", "## Knowledge Keyword Search Failed"),
             "",
-            f"Keyword: `{payload.get('keyword') or args.get('keyword') or ''}`",
+            f"- Keyword: `{payload.get('keyword') or args.get('keyword') or ''}`",
         ]
 
         if not success:
-            lines.extend(["", f"Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
             return "\n".join(lines).strip()
 
         articles = payload.get("articles") if isinstance(payload.get("articles"), list) else []
         matches = payload.get("matches") if isinstance(payload.get("matches"), list) else []
         lines.extend([
-            f"Matched: {payload.get('matched', len(matches))}",
-            f"Articles: {len(articles)}",
+            f"- Matched: {payload.get('matched', len(matches))}",
+            f"- Articles: {len(articles)}",
         ])
 
         if articles:
@@ -1988,10 +1988,10 @@ class ToolResultPresenter:
                     "",
                 ])
                 if match.get("basis_id"):
-                    lines.append(f"Basis ID: `{match.get('basis_id', '')}`")
+                    lines.append(f"- Basis ID: `{match.get('basis_id', '')}`")
                 lines.extend([
-                    f"Position: {match.get('start', '')}:{match.get('end', '')} (line {match.get('line', '')}, col {match.get('col', '')})",
-                    f"Match: `{match.get('match', '')}`",
+                    f"- Position: {match.get('start', '')}:{match.get('end', '')} (line {match.get('line', '')}, col {match.get('col', '')})",
+                    f"- Match: `{match.get('match', '')}`",
                     "",
                     self._fenced_text(match.get("snippet", ""), language="markdown", limit=2500),
                 ])
@@ -2013,8 +2013,8 @@ class ToolResultPresenter:
             return "\n".join([
                 title,
                 "",
-                f"Query: `{args.get('query', '')}`",
-                f"Library: `{args.get('library', 'knowledge')}`",
+                f"- Query: `{args.get('query', '')}`",
+                f"- Library: `{args.get('library', 'knowledge')}`",
                 "",
                 self._markdown_body(text or "(empty)", limit=4000),
             ]).strip()
@@ -2022,9 +2022,9 @@ class ToolResultPresenter:
         lines = [
             "## Knowledge Vector Search",
             "",
-            f"Query: `{args.get('query', '')}`",
-            f"Library: `{args.get('library', 'knowledge')}`",
-            f"Results: {len(payload)}",
+            f"- Query: `{args.get('query', '')}`",
+            f"- Library: `{args.get('library', 'knowledge')}`",
+            f"- Results: {len(payload)}",
         ]
 
         for index, item in enumerate(payload[:20], start=1):
@@ -2036,12 +2036,12 @@ class ToolResultPresenter:
                 "",
             ])
             if item.get("basis_id"):
-                lines.append(f"Basis ID: `{item.get('basis_id', '')}`")
+                lines.append(f"- Basis ID: `{item.get('basis_id', '')}`")
             if item.get("score") is not None:
-                lines.append(f"Score: {self._format_score(item.get('score'))}")
-            lines.append(f"Chunk: `{item.get('chunk_id', '')}` {item.get('chunk_start', '')}:{item.get('chunk_end', '')}")
+                lines.append(f"- Score: {self._format_score(item.get('score'))}")
+            lines.append(f"- Chunk: `{item.get('chunk_id', '')}` {item.get('chunk_start', '')}:{item.get('chunk_end', '')}")
             if item.get("query_position_abs") is not None:
-                lines.append(f"Query Position: {item.get('query_position_abs')}")
+                lines.append(f"- Query Position: {item.get('query_position_abs')}")
             preview = str(item.get("preview") or "").strip()
             if preview:
                 lines.extend(["", "#### Preview", "", self._fenced_text(preview, language="markdown", limit=2500)])
@@ -2135,32 +2135,32 @@ class ToolResultPresenter:
         lines = [self._status_title(success, success_title, failed_title)]
 
         if not success:
-            lines.extend(["", f"Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
             return "\n".join(lines).strip()
 
         lecture = payload.get("lecture") if isinstance(payload.get("lecture"), dict) else None
         if lecture:
             lines.extend([
                 "",
-                f"Lecture: `{self._learning_lecture_label(lecture)}`",
-                f"Lecture ID: `{lecture.get('id') or args.get('lecture_id') or ''}`",
-                f"Status: `{lecture.get('status', '')}`",
-                f"Progress: {lecture.get('progress', 0)}%",
+                f"- Lecture: `{self._learning_lecture_label(lecture)}`",
+                f"- Lecture ID: `{lecture.get('id') or args.get('lecture_id') or ''}`",
+                f"- Status: `{lecture.get('status', '')}`",
+                f"- Progress: {lecture.get('progress', 0)}%",
             ])
             if lecture.get("category"):
-                lines.append(f"Category: `{lecture.get('category')}`")
+                lines.append(f"- Category: `{lecture.get('category')}`")
             if lecture.get("books_count") is not None or payload.get("total_books") is not None:
-                lines.append(f"Books: {lecture.get('books_count', payload.get('total_books', ''))}")
+                lines.append(f"- Books: {lecture.get('books_count', payload.get('total_books', ''))}")
             if lecture.get("description"):
                 lines.extend(["", "### Description", "", self._markdown_body(lecture.get("description"), limit=1200)])
 
         lectures = payload.get("lectures") if isinstance(payload.get("lectures"), list) else []
         if lectures:
-            lines.extend(["", f"Total: {payload.get('total', len(lectures))}"])
+            lines.extend(["", f"- Total: {payload.get('total', len(lectures))}"])
             self._append_learning_lecture_table(lines, lectures)
         books = payload.get("books") if isinstance(payload.get("books"), list) else []
         if books:
-            lines.append(f"Total Books: {payload.get('total_books', len(books))}")
+            lines.append(f"- Total Books: {payload.get('total_books', len(books))}")
             self._append_learning_book_table(lines, books)
         if not lecture and not lectures and not books:
             lines.extend(["", "(empty)"])
@@ -2184,36 +2184,36 @@ class ToolResultPresenter:
         lines = [self._status_title(success, success_title, failed_title)]
 
         if not success:
-            lines.extend(["", f"Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
             return "\n".join(lines).strip()
 
         lecture = payload.get("lecture") if isinstance(payload.get("lecture"), dict) else None
         if lecture:
-            lines.extend(["", f"Lecture: `{self._learning_lecture_label(lecture)}`", f"Lecture ID: `{lecture.get('id') or args.get('lecture_id') or ''}`"])
+            lines.extend(["", f"- Lecture: `{self._learning_lecture_label(lecture)}`", f"- Lecture ID: `{lecture.get('id') or args.get('lecture_id') or ''}`"])
 
         book = payload.get("book") if isinstance(payload.get("book"), dict) else None
         if book:
             lines.extend([
                 "",
-                f"Book: `{self._learning_book_label(book)}`",
-                f"Book ID: `{book.get('id') or args.get('book_id') or ''}`",
-                f"Lecture ID: `{book.get('lecture_id') or args.get('lecture_id') or ''}`",
-                f"Source: `{book.get('source_type', '')}`",
-                f"Text: `{book.get('text_status', '')}` ({book.get('text_chars', 0)} chars)",
-                f"Coarse: `{book.get('coarse_status', '')}`",
-                f"Intensive: `{book.get('intensive_status', '')}`",
-                f"Questions: `{book.get('question_status', '')}`",
-                f"Sections: `{book.get('section_status', '')}`",
-                f"Vectors: `{book.get('vector_status', '')}` ({book.get('vector_count', 0)})",
+                f"- Book: `{self._learning_book_label(book)}`",
+                f"- Book ID: `{book.get('id') or args.get('book_id') or ''}`",
+                f"- Lecture ID: `{book.get('lecture_id') or args.get('lecture_id') or ''}`",
+                f"- Source: `{book.get('source_type', '')}`",
+                f"- Text: `{book.get('text_status', '')}` ({book.get('text_chars', 0)} chars)",
+                f"- Coarse: `{book.get('coarse_status', '')}`",
+                f"- Intensive: `{book.get('intensive_status', '')}`",
+                f"- Questions: `{book.get('question_status', '')}`",
+                f"- Sections: `{book.get('section_status', '')}`",
+                f"- Vectors: `{book.get('vector_status', '')}` ({book.get('vector_count', 0)})",
             ])
             if book.get("error"):
-                lines.append(f"Error: {book.get('error')}")
+                lines.append(f"- Error: {book.get('error')}")
             if book.get("description"):
                 lines.extend(["", "### Description", "", self._markdown_body(book.get("description"), limit=1200)])
 
         books = payload.get("books") if isinstance(payload.get("books"), list) else []
         if books:
-            lines.extend(["", f"Total: {payload.get('total', len(books))}"])
+            lines.extend(["", f"- Total: {payload.get('total', len(books))}"])
             self._append_learning_book_table(lines, books)
         if not book and not books:
             lines.extend(["", "(empty)"])
@@ -2236,17 +2236,17 @@ class ToolResultPresenter:
         lines = [
             title,
             "",
-            f"Book: `{self._learning_book_label(book) or args.get('book_id') or ''}`",
-            f"Book ID: `{book.get('id') or args.get('book_id') or ''}`",
-            f"Lecture ID: `{book.get('lecture_id') or args.get('lecture_id') or ''}`",
+            f"- Book: `{self._learning_book_label(book) or args.get('book_id') or ''}`",
+            f"- Book ID: `{book.get('id') or args.get('book_id') or ''}`",
+            f"- Lecture ID: `{book.get('lecture_id') or args.get('lecture_id') or ''}`",
         ]
         if payload.get("offset") is not None:
-            lines.append(f"Range: {payload.get('offset', 0)}:{int(payload.get('offset', 0) or 0) + int(payload.get('length', 0) or 0)}")
+            lines.append(f"- Range: {payload.get('offset', 0)}:{int(payload.get('offset', 0) or 0) + int(payload.get('length', 0) or 0)}")
         if payload.get("chars") is not None:
-            lines.append(f"Total Chars: {payload.get('chars')}")
+            lines.append(f"- Total Chars: {payload.get('chars')}")
 
         if not success:
-            lines.extend(["", f"Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
             return "\n".join(lines).strip()
 
         content = str(payload.get("content") if payload.get("content") is not None else payload.get("text") or "")
@@ -2264,15 +2264,15 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, "## Learning Book Text Search", "## Learning Book Text Search Failed"),
             "",
-            f"Lecture ID: `{payload.get('lecture_id') or args.get('lecture_id') or ''}`",
-            f"Book Filter: `{payload.get('book_id') or args.get('book_id') or '(all)'}`",
-            f"Query: `{payload.get('query') or args.get('keyword') or ''}`",
-            f"Hits: {payload.get('count', len(hits))}",
-            f"Truncated: {self._as_bool_text(payload.get('truncated', False))}",
+            f"- Lecture ID: `{payload.get('lecture_id') or args.get('lecture_id') or ''}`",
+            f"- Book Filter: `{payload.get('book_id') or args.get('book_id') or '(all)'}`",
+            f"- Query: `{payload.get('query') or args.get('keyword') or ''}`",
+            f"- Hits: {payload.get('count', len(hits))}",
+            f"- Truncated: {self._as_bool_text(payload.get('truncated', False))}",
         ]
 
         if not success:
-            lines.extend(["", f"Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
             return "\n".join(lines).strip()
 
         if not hits:
@@ -2286,8 +2286,8 @@ class ToolResultPresenter:
                 "",
                 f"### Hit {index}: {hit.get('book_title') or hit.get('book_id') or '(unknown book)'}",
                 "",
-                f"Book ID: `{hit.get('book_id', '')}`",
-                f"Offset: {hit.get('match_start', hit.get('offset', ''))}:{hit.get('match_end', '')}",
+                f"- Book ID: `{hit.get('book_id', '')}`",
+                f"- Offset: {hit.get('match_start', hit.get('offset', ''))}:{hit.get('match_end', '')}",
                 "",
                 self._fenced_text(hit.get("text", ""), language="markdown", limit=2500),
             ])
@@ -2307,13 +2307,13 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, "## Learning Book XML Read", "## Learning Book XML Read Failed"),
             "",
-            f"Kind: `{kind}`",
-            f"Book: `{self._learning_book_label(book) or args.get('book_id') or ''}`",
-            f"Book ID: `{book.get('id') or args.get('book_id') or ''}`",
-            f"Chars: {payload.get('chars', len(str(payload.get('content') or '')))}",
+            f"- Kind: `{kind}`",
+            f"- Book: `{self._learning_book_label(book) or args.get('book_id') or ''}`",
+            f"- Book ID: `{book.get('id') or args.get('book_id') or ''}`",
+            f"- Chars: {payload.get('chars', len(str(payload.get('content') or '')))}",
         ]
         if not success:
-            lines.extend(["", f"Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
             return "\n".join(lines).strip()
         lines.extend(["", "### XML", "", self._fenced_text(payload.get("content", ""), language="xml", limit=16000)])
         return "\n".join(lines).strip()
@@ -2335,13 +2335,13 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, "## Learning Book XML Saved", "## Learning Book XML Save Failed"),
             "",
-            f"Kind: `{kind}`",
-            f"Book: `{self._learning_book_label(book) or args.get('book_id') or ''}`",
-            f"Book ID: `{book.get('id') or args.get('book_id') or ''}`",
-            f"Chars Written: {payload.get('chars', len(str(args.get('content') or '')))}",
+            f"- Kind: `{kind}`",
+            f"- Book: `{self._learning_book_label(book) or args.get('book_id') or ''}`",
+            f"- Book ID: `{book.get('id') or args.get('book_id') or ''}`",
+            f"- Chars Written: {payload.get('chars', len(str(args.get('content') or '')))}",
         ]
         if not success:
-            lines.extend(["", f"Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
         elif payload.get("summary"):
             lines.extend(["", "### Result", "", self._markdown_body(payload.get("summary"), limit=2000)])
         return "\n".join(lines).strip()
@@ -2357,11 +2357,11 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, "## Learning Book Vectorization", "## Learning Book Vectorization Failed"),
             "",
-            f"Lecture ID: `{args.get('lecture_id', '')}`",
-            f"Book ID: `{args.get('book_id', '')}`",
-            f"Status: `{vectorization.get('status', '')}`",
-            f"Chunks: {vectorization.get('chunks_count', 0)}",
-            f"Vectors: {vectorization.get('vector_count', 0)}",
+            f"- Lecture ID: `{args.get('lecture_id', '')}`",
+            f"- Book ID: `{args.get('book_id', '')}`",
+            f"- Status: `{vectorization.get('status', '')}`",
+            f"- Chunks: {vectorization.get('chunks_count', 0)}",
+            f"- Vectors: {vectorization.get('vector_count', 0)}",
         ]
         message = vectorization.get("message") or payload.get("message") or payload.get("error")
         if message:
@@ -2379,16 +2379,16 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, "## Learning Vector Search", "## Learning Vector Search Failed"),
             "",
-            f"Lecture ID: `{args.get('lecture_id') or payload.get('lecture_id') or ''}`",
-            f"Book Filter: `{args.get('book_id') or '(all)'}`",
-            f"Query: `{payload.get('query') or args.get('query') or ''}`",
-            f"Results: {payload.get('count', len(results))}",
+            f"- Lecture ID: `{args.get('lecture_id') or payload.get('lecture_id') or ''}`",
+            f"- Book Filter: `{args.get('book_id') or '(all)'}`",
+            f"- Query: `{payload.get('query') or args.get('query') or ''}`",
+            f"- Results: {payload.get('count', len(results))}",
         ]
         if payload.get("placeholder"):
-            lines.append("Backend: `local fallback`")
+            lines.append("- Backend: `local`")
 
         if not success:
-            lines.extend(["", f"Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
             return "\n".join(lines).strip()
 
         if not results:
@@ -2402,9 +2402,9 @@ class ToolResultPresenter:
                 "",
                 f"### Result {index}: {item.get('book_title') or item.get('book_id') or '(unknown book)'}",
                 "",
-                f"Book ID: `{item.get('book_id', '')}`",
-                f"Chunk: `{item.get('chunk_index', '')}`",
-                f"Score: {self._format_score(item.get('score'))}",
+                f"- Book ID: `{item.get('book_id', '')}`",
+                f"- Chunk: `{item.get('chunk_index', '')}`",
+                f"- Score: {self._format_score(item.get('score'))}",
                 "",
                 self._fenced_text(item.get("text", ""), language="markdown", limit=3000),
             ])
@@ -2424,12 +2424,12 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, "## Learning Puzzle Created", "## Learning Puzzle Failed"),
             "",
-            f"Puzzle ID: `{puzzle.get('puzzle_id', '')}`",
-            f"Title: {puzzle.get('title') or args.get('title') or ''}",
-            f"Steps: {len(steps)}",
+            f"- Puzzle ID: `{puzzle.get('puzzle_id', '')}`",
+            f"- Title: {puzzle.get('title') or args.get('title') or ''}",
+            f"- Steps: {len(steps)}",
         ]
         if not success:
-            lines.extend(["", f"Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
             return "\n".join(lines).strip()
         if steps:
             lines.extend(["", "### Candidate Steps", "", *[f"- {step}" for step in steps[:60]]])
@@ -2447,13 +2447,13 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, "## Learning Question Created", "## Learning Question Failed"),
             "",
-            f"Question ID: `{question.get('question_id', '')}`",
-            f"Title: {question.get('question_title') or args.get('question_title') or ''}",
-            f"Track Answer: {self._as_bool_text(question.get('track_answer', False))}",
-            f"Await: {self._as_bool_text(payload.get('await', True))}",
+            f"- Question ID: `{question.get('question_id', '')}`",
+            f"- Title: {question.get('question_title') or args.get('question_title') or ''}",
+            f"- Track Answer: {self._as_bool_text(question.get('track_answer', False))}",
+            f"- Await: {self._as_bool_text(payload.get('await', True))}",
         ]
         if not success:
-            lines.extend(["", f"Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
             return "\n".join(lines).strip()
         content = question.get("question_content") or args.get("question_content") or ""
         if content:
@@ -2474,19 +2474,19 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, "## Learning Card Created", "## Learning Card Failed"),
             "",
-            f"Type: `{card.get('type') or args.get('type') or ''}`",
-            f"Lecture ID: `{card.get('lecture_id') or args.get('lecture_id') or ''}`",
+            f"- Type: `{card.get('type') or args.get('type') or ''}`",
+            f"- Lecture ID: `{card.get('lecture_id') or args.get('lecture_id') or ''}`",
         ]
         if card.get("book_id") or args.get("book_id"):
-            lines.append(f"Book ID: `{card.get('book_id') or args.get('book_id')}`")
+            lines.append(f"- Book ID: `{card.get('book_id') or args.get('book_id')}`")
         if card.get("range"):
-            lines.append(f"Range: `{card.get('range')}`")
+            lines.append(f"- Range: `{card.get('range')}`")
         if lecture:
-            lines.append(f"Lecture: `{self._learning_lecture_label(lecture)}`")
+            lines.append(f"- Lecture: `{self._learning_lecture_label(lecture)}`")
         if card.get("books_count") is not None:
-            lines.append(f"Books: {card.get('books_count')}")
+            lines.append(f"- Books: {card.get('books_count')}")
         if not success:
-            lines.extend(["", f"Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
             return "\n".join(lines).strip()
         html = str(card.get("html") or "").strip()
         if html:
@@ -2503,13 +2503,13 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, "## Learning Memory Read", "## Learning Memory Read Failed"),
             "",
-            f"Memory Type: `{payload.get('memory_type') or args.get('memory_type') or ''}`",
-            f"Lecture ID: `{payload.get('lecture_id') or args.get('lecture_id') or ''}`",
-            f"Total Lines: {payload.get('total_lines', '')}",
-            f"Range: {args.get('start_line', 1)}:{args.get('end_line', '')}",
+            f"- Memory Type: `{payload.get('memory_type') or args.get('memory_type') or ''}`",
+            f"- Lecture ID: `{payload.get('lecture_id') or args.get('lecture_id') or ''}`",
+            f"- Total Lines: {payload.get('total_lines', '')}",
+            f"- Range: {args.get('start_line', 1)}:{args.get('end_line', '')}",
         ]
         if not success:
-            lines.extend(["", f"Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
             return "\n".join(lines).strip()
         lines_payload = payload.get("lines") if isinstance(payload.get("lines"), list) else []
         content = "\n".join(str(line or "") for line in lines_payload) if lines_payload else str(payload.get("content") or "")
@@ -2533,16 +2533,16 @@ class ToolResultPresenter:
         lines = [
             self._status_title(success, success_title, failed_title),
             "",
-            f"Memory Type: `{payload.get('memory_type') or args.get('memory_type') or ''}`",
-            f"Lecture ID: `{payload.get('lecture_id') or args.get('lecture_id') or ''}`",
-            f"Path: `{payload.get('path', '')}`",
+            f"- Memory Type: `{payload.get('memory_type') or args.get('memory_type') or ''}`",
+            f"- Lecture ID: `{payload.get('lecture_id') or args.get('lecture_id') or ''}`",
+            f"- Path: `{payload.get('path', '')}`",
         ]
         if args.get("start_line") is not None or args.get("end_line") is not None:
-            lines.append(f"Line Range: {args.get('start_line', '')}:{args.get('end_line', '')}")
+            lines.append(f"- Line Range: {args.get('start_line', '')}:{args.get('end_line', '')}")
         if args.get("content") is not None:
-            lines.append(f"Content Chars: {len(str(args.get('content') or ''))}")
+            lines.append(f"- Content Chars: {len(str(args.get('content') or ''))}")
         if not success:
-            lines.extend(["", f"Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
+            lines.extend(["", f"- Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
         return "\n".join(lines).strip()
 
     def _render_knowledge_graph_structure(self, args: Dict[str, Any], result: Any) -> str:
@@ -2558,8 +2558,8 @@ class ToolResultPresenter:
         lines = [
             "## Knowledge Graph Structure",
             "",
-            f"Categories: {len(categories)}",
-            f"Connections: {payload.get('connections_count', 0)}",
+            f"- Categories: {len(categories)}",
+            f"- Connections: {payload.get('connections_count', 0)}",
         ]
 
         for category in categories:
@@ -2570,7 +2570,7 @@ class ToolResultPresenter:
                 "",
                 f"### {category.get('name', '(unnamed)')}",
                 "",
-                f"Knowledge Count: {category.get('knowledge_count', len(knowledge_list))}",
+                f"- Knowledge Count: {category.get('knowledge_count', len(knowledge_list))}",
             ])
             if knowledge_list:
                 lines.extend(["", *[f"- {item}" for item in knowledge_list[:80]]])
@@ -2593,8 +2593,8 @@ class ToolResultPresenter:
         lines = [
             "## Knowledge Connections",
             "",
-            f"Knowledge: `{args.get('title', '')}`" if args.get("title") else "Knowledge: `(all)`",
-            f"Connections: {len(connections)}",
+            f"- Knowledge: `{args.get('title', '')}`" if args.get("title") else "- Knowledge: `(all)`",
+            f"- Connections: {len(connections)}",
         ]
 
         if not connections:
@@ -2631,9 +2631,9 @@ class ToolResultPresenter:
         lines = [
             "## Knowledge Path",
             "",
-            f"Start: `{args.get('start', '')}`",
-            f"End: `{args.get('end', '')}`",
-            f"Found: {self._as_bool_text(bool(path))}",
+            f"- Start: `{args.get('start', '')}`",
+            f"- End: `{args.get('end', '')}`",
+            f"- Found: {self._as_bool_text(bool(path))}",
         ]
         if path:
             lines.extend(["", "### Path", "", " -> ".join(f"`{item}`" for item in path)])

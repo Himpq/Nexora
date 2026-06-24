@@ -2844,6 +2844,97 @@ class Model:
             self._log_tool_usage(function_name or original_function_name, args, msg, False, start_ts)
             return msg
 
+    def _build_function_running_step(
+        self,
+        function_name: str,
+        arguments: str,
+        call_id: str,
+        round_num: int,
+        func_call: Optional[Dict[str, Any]] = None,
+        *,
+        status: str = "running",
+        started_at: Optional[float] = None,
+        tick: int = 0,
+        include_arguments: bool = False
+    ) -> Dict[str, Any]:
+        """构建工具执行中的流式状态事件，让前端在长工具执行期间保持可见进度。"""
+        elapsed_ms = 0
+
+        if started_at is not None:
+            elapsed_ms = int(max(0.0, time.time() - float(started_at)) * 1000.0)
+
+        step = {
+            "type": "function_call_running",
+            "name": str(function_name or "").strip(),
+            "call_id": str(call_id or ""),
+            "round": int(round_num) + 1,
+            "status": str(status or "running").strip() or "running",
+            "elapsed_ms": elapsed_ms,
+            "tick": int(max(0, tick)),
+            "streaming": True
+        }
+
+        if include_arguments:
+            step["arguments"] = str(arguments or "{}")
+
+        if isinstance(func_call, dict) and "index" in func_call:
+            step["index"] = func_call.get("index")
+
+        return step
+
+    def _start_function_running_heartbeat(
+        self,
+        function_name: str,
+        arguments: str,
+        call_id: str,
+        round_num: int,
+        func_call: Optional[Dict[str, Any]],
+        started_at: float
+    ) -> Optional[threading.Event]:
+        """在同步工具执行期间推送业务级心跳，避免前端误判为长时间无响应。"""
+        push_chunk = getattr(self, "_stream_direct_push_chunk", None)
+
+        if not callable(push_chunk):
+            return None
+
+        stop_event = threading.Event()
+        interval_sec = 4.0
+
+        def _heartbeat_loop():
+            tick = 0
+
+            while not stop_event.wait(interval_sec):
+                tick += 1
+                running_step = self._build_function_running_step(
+                    function_name,
+                    arguments,
+                    call_id,
+                    round_num,
+                    func_call,
+                    status="running",
+                    started_at=started_at,
+                    tick=tick,
+                    include_arguments=False
+                )
+
+                try:
+                    push_chunk(running_step)
+                except Exception as heartbeat_error:
+                    stop_event.set()
+                    print(f"[FUNCTION_STREAM] running heartbeat stopped: {heartbeat_error}")
+                    break
+
+        safe_tool_name = canonicalize_tool_name(function_name) or "tool"
+        thread_name = f"function-running-{safe_tool_name[:32]}"
+        heartbeat_thread = threading.Thread(target=_heartbeat_loop, name=thread_name, daemon=True)
+        heartbeat_thread.start()
+        return stop_event
+
+    def _stop_function_running_heartbeat(self, stop_event: Optional[threading.Event]) -> None:
+        """停止工具执行状态心跳。"""
+        if stop_event is not None:
+            stop_event.set()
+
     def _infer_tool_success(self, result: Any) -> bool:
         """根据工具返回文本做轻量成功率判定（无异常但业务失败也计失败）。"""
         text = str(result or "").strip()
@@ -5855,11 +5946,26 @@ class Model:
                                 fc_name = str(event.get("name", "") or "").strip()
                                 if not fc_name:
                                     continue
-                                function_calls.append({
+                                fc_arguments = str(event.get("arguments", "{}") or "{}")
+                                fc_call_id = str(event.get("call_id", "") or "")
+                                immediate_call = {
+                                    "type": "function_call",
                                     "name": fc_name,
-                                    "arguments": str(event.get("arguments", "{}") or "{}"),
-                                    "call_id": str(event.get("call_id", "") or ""),
-                                })
+                                    "arguments": fc_arguments,
+                                    "call_id": fc_call_id,
+                                    "round": int(round_num) + 1,
+                                }
+                                stored_call = {
+                                    "name": fc_name,
+                                    "arguments": fc_arguments,
+                                    "call_id": fc_call_id,
+                                    "_emitted_call_chunk": True,
+                                }
+                                if "index" in event:
+                                    immediate_call["index"] = event.get("index")
+                                    stored_call["index"] = event.get("index")
+                                function_calls.append(stored_call)
+                                yield immediate_call
                                 continue
 
                             if ev_type == "usage":
@@ -6160,11 +6266,41 @@ class Model:
                                 "call_id": call_id,
                                 "round": int(round_num) + 1
                             }
+                            if "index" in func_call:
+                                step_call["index"] = func_call.get("index")
                             process_steps.append(step_call)
-                            yield step_call
+                            if not bool(func_call.get("_emitted_call_chunk")):
+                                yield step_call
                             
                             # 执行函数
-                            result = self._execute_function(func_name, func_args)
+                            function_started_at = time.time()
+                            running_step = self._build_function_running_step(
+                                func_name,
+                                func_args,
+                                call_id,
+                                round_num,
+                                func_call,
+                                status="started",
+                                started_at=function_started_at,
+                                tick=0,
+                                include_arguments=True
+                            )
+                            yield running_step
+
+                            heartbeat_stop_event = self._start_function_running_heartbeat(
+                                func_name,
+                                func_args,
+                                call_id,
+                                round_num,
+                                func_call,
+                                function_started_at
+                            )
+
+                            try:
+                                result = self._execute_function(func_name, func_args)
+                            finally:
+                                self._stop_function_running_heartbeat(heartbeat_stop_event)
+
                             model_visible_args = {}
                             try:
                                 parsed_visible_args = json.loads(func_args) if isinstance(func_args, str) else func_args

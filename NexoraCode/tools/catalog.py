@@ -123,11 +123,16 @@ TOOL_CATALOG = [
         "handler": "file_patch",
         "description": (
             "对用户本地计算机上的单个文件执行精确 patch（NexoraCode 本地工具）。"
-            "必须且只能提供 patch 或 edits 其中一种输入：patch 使用统一 diff 格式；"
+            "\n\n重要：local_file_patch 必须两步调用，这不是建议，是强制流程。"
+            "\n1. 预览阶段：传 path，并且必须提供 patch 或 edits 其中一种；同时设置 dry_run=true。"
+            "本阶段只校验和生成 preview_id，不写入文件。"
+            "\n2. 确认阶段：只传 path 和 confirm_preview_id。confirm_preview_id 必须来自第 1 步返回的 preview_id。"
+            "本阶段禁止重新传 patch、edits、expected_sha256 或 dry_run=true。"
+            "\n如果首次写入直接传 dry_run=false 且没有 confirm_preview_id，工具会拒绝执行，并提示必须先 dry_run=true 获取 preview_id。"
+            "\n\n输入要求：必须且只能提供 patch 或 edits 其中一种。patch 使用统一 diff 格式；"
             "edits 使用结构化精确编辑，支持 replace、insert_before、insert_after、delete。"
             "所有上下文或 target 必须与文件内容完全匹配，适合代码修改。"
             "建议先调用 local_file_read 获取 sha256，再通过 expected_sha256 防止基于旧内容写入。"
-            "写入必须分两阶段：先 dry_run=true 生成 preview_id；真正写入时只传 path 和 confirm_preview_id。"
         ),
         "parameters": {
             "type": "object",
@@ -166,12 +171,12 @@ TOOL_CATALOG = [
                 },
                 "dry_run": {
                     "type": "boolean",
-                    "description": "必须先设置 true 生成 preview_id，不写入文件。",
+                    "description": "第 1 步必须设置为 true，用于生成 preview_id 且不写入文件。第 2 步确认写入时不要传 dry_run=true，只传 path 和 confirm_preview_id。",
                     "default": False,
                 },
                 "confirm_preview_id": {
                     "type": "string",
-                    "description": "dry_run 成功返回的 preview_id。确认写入时只传 path 和 confirm_preview_id，不能重新传 patch 或 edits。",
+                    "description": "第 2 步确认写入使用，值必须来自第 1 步 dry_run=true 返回的 preview_id。传入 confirm_preview_id 时只能同时传 path，不能重新传 patch、edits、expected_sha256 或 dry_run=true。",
                 },
             },
             "required": ["path"],
@@ -361,6 +366,7 @@ TOOL_CATALOG = [
                 "ctxId": {"type": "string", "description": "被截断时返回的上下文ID"},
                 "regex": {"type": "string", "description": "要匹配的正则表达式（可选）"},
                 "keyword": {"type": "string", "description": "要搜索包含的关键词（可选）"},
+                "range": {"type": "string", "description": "行号范围别名（可选），格式如 '10:80'。推荐优先使用 range_start/range_end。"},
                 "range_start": {"type": "integer", "description": "起始行号（可选）"},
                 "range_end": {"type": "integer", "description": "结束行号（可选）"},
             },

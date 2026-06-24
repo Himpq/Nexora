@@ -10294,6 +10294,7 @@ def chat_stream():
                 _chat_latency_mark("agent_tools_injected", agent_source="none", agent_tool_count=0, agent_schema_bytes=0)
 
             model._stream_cancel_checker = is_cancel_requested
+            model._stream_direct_push_chunk = push_chunk
 
             try:
                 local_tool_names = []

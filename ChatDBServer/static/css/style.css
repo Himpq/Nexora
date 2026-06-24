@@ -3800,6 +3800,8 @@ body.settings-companion-mode #adminPublicApiDeleteModal {
     border-left: 2px solid #ddd;
     padding-left: 10px;
     margin-top: 5px;
+    max-height: none !important;
+    overflow-y: visible !important;
 }
 .thinking-block.collapsed .thinking-content { display: none; }
 
