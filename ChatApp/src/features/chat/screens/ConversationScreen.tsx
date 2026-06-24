@@ -1,867 +1,706 @@
-import type { BottomTabScreenProps } from "@react-navigation/bottom-tabs";
-import type { CompositeScreenProps } from "@react-navigation/native";
-import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
-import Animated, {
-  useAnimatedStyle,
-  useSharedValue,
-  withDelay,
-  withRepeat,
-  withSequence,
-  withTiming,
-} from "react-native-reanimated";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  Keyboard,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  View,
+} from "react-native";
+import { Feather } from "@expo/vector-icons";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useSession } from "../../../app/providers/SessionProvider";
+import { AppText, colors, haptics, radius, spacing } from "../../../design";
+import { getChatConfig, type ChatModel } from "../../../services/chatConfigService";
+import { ChatStreamError, streamChat } from "../../../services/chatService";
 import {
-  AnimatedPressable,
-  AppButton,
-  AppCard,
-  AppText,
-  colors,
-  haptics,
-  radius,
-  Screen,
-  ScreenHeader,
-  Skeleton,
-  spacing,
-  StateView,
-} from "../../../design";
-import type { MainTabParamList, RootStackParamList } from "../../../navigation/types";
-import { getDashboard } from "../../../services/frontendService";
-import { listNexoraModels } from "../../../services/nexoraModelService";
-import {
-  getLearningRuntimeContext,
-  sendLearningChat,
-  streamLearningChat,
-} from "../../../services/learningChatService";
-import type { DashboardResponse, LectureRow, LearningRuntimeContext, ModelOption } from "../../../services/types";
+  createConversation,
+  deleteConversation,
+  getConversation,
+  listConversations,
+  pinConversation,
+  renameConversation,
+  type ConversationSummary,
+} from "../../../services/conversationService";
+import { ApiClientError } from "../../../services/apiClient";
 import { normalizeError } from "../../../utils/errors";
+import { ChatComposer } from "../components/ChatComposer";
+import { ChatEmptyState } from "../components/ChatEmptyState";
+import { ChatMessageItem } from "../components/ChatMessageItem";
+import { ConversationDrawer } from "../components/ConversationDrawer";
+import { ModelPicker } from "../components/ModelPicker";
 import { parseAssistantResponse } from "../utils/parseAssistantResponse";
+import type { ChatErrorCategory, ChatMessage } from "../types";
 
-type ConversationScreenProps = CompositeScreenProps<
-  BottomTabScreenProps<MainTabParamList, "Chat">,
-  NativeStackScreenProps<RootStackParamList>
->;
-
-type ChatMessage = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  thinkingTitle?: string;
-  thinking?: string;
-  status?: "streaming" | "completed" | "cancelled" | "error";
-};
-
-type ChatTarget = {
-  lectureId: string;
-  lectureTitle: string;
-  bookId?: string;
-  bookTitle?: string;
-};
-
-type FailedChatRequest = {
-  content: string;
-  assistantId: string;
-};
-
-function getLectureTitle(row: LectureRow) {
-  return String(row.lecture?.title || "").trim() || "未命名课程";
-}
-
-function buildTargetLabel(target: ChatTarget | null) {
-  if (!target) {
-    return "全局学习对话";
+let idCounter = 0;
+function genId() {
+  // crypto.randomUUID is available on RN 0.83+; fall back to a counter-backed id
+  // for older runtimes / SSR. The counter disambiguates same-millisecond sends.
+  const uuid =
+    typeof globalThis !== "undefined" &&
+    typeof globalThis.crypto?.randomUUID === "function"
+      ? globalThis.crypto.randomUUID()
+      : null;
+  if (uuid) {
+    return `m-${uuid}`;
   }
-  if (target.bookId) {
-    return `${target.lectureTitle} / ${target.bookTitle || target.bookId}`;
-  }
-  return target.lectureTitle;
+  idCounter += 1;
+  return `m-${Date.now().toString(36)}-${idCounter.toString(36)}`;
 }
 
-function buildRuntimeContextPayload(runtime: LearningRuntimeContext | null, target: ChatTarget | null) {
-  const baseBlocks = Array.isArray(runtime?.context_blocks) ? runtime.context_blocks : [];
-  const targetBlock = target
-    ? [
-        {
-          type: "target_context",
-          title: "当前对话目标",
-          content: JSON.stringify(target, null, 2),
-        },
-      ]
-    : [];
-  return [...targetBlock, ...baseBlocks];
-}
+const HISTORY_LIMIT = 80;
 
-function createMessage(role: ChatMessage["role"], content: string, extra?: Partial<ChatMessage>) {
-  return {
-    id: `${role}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    role,
-    content,
-    thinkingTitle: extra?.thinkingTitle,
-    thinking: extra?.thinking,
-    status: extra?.status,
-  };
-}
+export function ConversationScreen() {
+  const { username } = useSession();
+  const insets = useSafeAreaInsets();
 
-function applyParsedMessage(message: ChatMessage, rawContent: string, status?: ChatMessage["status"]) {
-  const parsed = parseAssistantResponse(rawContent);
-  return {
-    ...message,
-    content: parsed.final || rawContent,
-    thinkingTitle: parsed.thinkingTitle,
-    thinking: parsed.thinking,
-    status,
-  };
-}
-
-function getModelValue(model?: ModelOption | null) {
-  return String(model?.model || model?.id || model?.name || "").trim();
-}
-
-function getModelLabel(model?: ModelOption | null, fallback = "") {
-  return String(model?.name || model?.model || model?.id || fallback || "").trim();
-}
-
-function findAvailableModelValue(models: ModelOption[], value?: string) {
-  const targetValue = String(value || "").trim();
-  if (!targetValue) {
-    return "";
-  }
-  return models.some((model) => getModelValue(model) === targetValue) ? targetValue : "";
-}
-
-export function ConversationScreen({ navigation, route }: ConversationScreenProps) {
-  const { username, context } = useSession();
-  const [models, setModels] = useState<ModelOption[]>([]);
+  const [models, setModels] = useState<ChatModel[]>([]);
   const [selectedModel, setSelectedModel] = useState("");
-  const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
-  const [runtimeContext, setRuntimeContext] = useState<LearningRuntimeContext | null>(null);
-  const [target, setTarget] = useState<ChatTarget | null>(null);
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [activeId, setActiveId] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
-  const [loadingModels, setLoadingModels] = useState(true);
-  const [loadingContext, setLoadingContext] = useState(true);
-  const [loadingConversation, setLoadingConversation] = useState(false);
-  const [error, setError] = useState<Error | null>(null);
-  const [contextError, setContextError] = useState<Error | null>(null);
-  const [sendError, setSendError] = useState<Error | null>(null);
-  const [failedRequest, setFailedRequest] = useState<FailedChatRequest | null>(null);
-  const contextRequestIdRef = useRef(0);
-  const dashboardRequestIdRef = useRef(0);
-  const sendingRef = useRef(false);
-  const abortControllerRef = useRef<AbortController | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [loadingConversations, setLoadingConversations] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [enableThinking, setEnableThinking] = useState(false);
+  const [enableWebSearch, setEnableWebSearch] = useState(true);
+  const [error, setError] = useState<string>("");
+  const [kbHeight, setKbHeight] = useState(0);
 
-  const selectedModelOption = useMemo(
-    () => models.find((model) => getModelValue(model) === selectedModel) || null,
-    [models, selectedModel],
-  );
-  const selectedModelValue = useMemo(
-    () => getModelValue(selectedModelOption) || selectedModel,
-    [selectedModel, selectedModelOption],
-  );
-  const selectedModelLabel = useMemo(
-    () => getModelLabel(selectedModelOption, selectedModel) || "后端默认",
-    [selectedModel, selectedModelOption],
-  );
+  const scrollRef = useRef<ScrollView>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const busyRef = useRef(false);
+  // Live mirror of `activeId` so stream callbacks read the current value
+  // instead of a stale closure capture (see runStream).
+  const activeIdRef = useRef("");
+  // Monotonic token bumped on every conversation switch / new stream. An
+  // in-flight stream captures its token and bails from state writes once the
+  // token advances — this is what prevents a just-aborted stream from writing
+  // its tail into the newly selected conversation.
+  const streamTokenRef = useRef(0);
+  // Resolves when the current in-flight runStream finishes its finally block,
+  // so a conversation switch can await full teardown before loading history.
+  const inflightRef = useRef<Promise<void> | null>(null);
+  // Cancels the previous in-flight /api/conversations listing so rapid
+  // send/regenerate calls don't stack overlapping GETs and flicker the drawer.
+  const listAbortRef = useRef<AbortController | null>(null);
 
-  const contextBlocks = useMemo(
-    () => buildRuntimeContextPayload(runtimeContext, target),
-    [runtimeContext, target],
-  );
+  const switchActiveId = useCallback((id: string) => {
+    activeIdRef.current = id;
+    setActiveId(id);
+  }, []);
 
-  const loadModels = useCallback(async () => {
-    setLoadingModels(true);
-    setError(null);
+  const activeConversation = conversations.find((c) => c.conversation_id === activeId);
+  const currentTitle = activeConversation?.title || "新对话";
+  const selectedModelLabel =
+    models.find((m) => m.id === selectedModel)?.name || selectedModel || "模型";
+
+  // ── keyboard + scroll ───────────────────────────────────────────────
+  // Track the keyboard height so the composer can stick to the keyboard top
+  // (Gemini/Grok/GPT-style) on both iOS and Android. endCoordinates.height is
+  // accurate on both platforms.
+  useEffect(() => {
+    const showEvt = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvt = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+    const show = Keyboard.addListener(showEvt, (e) => setKbHeight(e.endCoordinates?.height ?? 0));
+    const hide = Keyboard.addListener(hideEvt, () => setKbHeight(0));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
+
+  const scrollToEnd = useCallback(() => {
+    requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
+  }, []);
+
+  // ── data loading ────────────────────────────────────────────────────
+  const refreshConversations = useCallback(async () => {
+    // Cancel any prior in-flight listing so overlapping refreshes (rapid
+    // send/regenerate) don't resolve out of order and flicker the drawer.
+    listAbortRef.current?.abort();
+    const controller = new AbortController();
+    listAbortRef.current = controller;
+    setLoadingConversations(true);
     try {
-      const result = await listNexoraModels(username);
-      const nextModels = Array.isArray(result.data) ? result.data : [];
-      setModels(nextModels);
-      setSelectedModel((current) =>
-        findAvailableModelValue(nextModels, current) ||
-        findAvailableModelValue(nextModels, result.defaultModel) ||
-        getModelValue(nextModels[0]),
-      );
+      const list = await listConversations({ signal: controller.signal });
+      if (!controller.signal.aborted) {
+        setConversations(list);
+      }
     } catch (err) {
-      setError(normalizeError(err));
-      setModels([]);
-      setSelectedModel("");
+      if (!controller.signal.aborted) {
+        setError(normalizeError(err).message);
+      }
     } finally {
-      setLoadingModels(false);
-    }
-  }, [username]);
-
-  const loadDashboard = useCallback(async () => {
-    const requestId = dashboardRequestIdRef.current + 1;
-    dashboardRequestIdRef.current = requestId;
-    try {
-      const result = await getDashboard();
-      if (dashboardRequestIdRef.current !== requestId) {
-        return;
+      if (listAbortRef.current === controller) {
+        listAbortRef.current = null;
+        setLoadingConversations(false);
       }
-      setDashboard(result);
-      const firstLecture = Array.isArray(result.lectures) ? result.lectures[0] : null;
-      if (firstLecture) {
-        const lectureId = String(firstLecture.lecture?.id || "").trim();
-        if (lectureId) {
-          setTarget({
-            lectureId,
-            lectureTitle: getLectureTitle(firstLecture),
-          });
-        }
-      }
-    } catch (err) {
-      setError(normalizeError(err));
     }
   }, []);
 
-  const loadRuntimeContext = useCallback(
-    async (lectureId?: string, bookId?: string) => {
-      if (!username) {
-        return;
-      }
-      const requestId = contextRequestIdRef.current + 1;
-      contextRequestIdRef.current = requestId;
-      setLoadingContext(true);
-      setContextError(null);
+  const loadModels = useCallback(async () => {
+    try {
+      const { models: nextModels, defaultModel } = await getChatConfig();
+      setModels(nextModels);
+      setSelectedModel(
+        (current) =>
+          current ||
+          (nextModels.some((m) => m.id === defaultModel) ? defaultModel : "") ||
+          nextModels[0]?.id ||
+          "",
+      );
+    } catch (err) {
+      setError(normalizeError(err).message);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!username) {
+      return;
+    }
+    void loadModels();
+    void refreshConversations();
+  }, [username, loadModels, refreshConversations]);
+
+  // ── message helpers ─────────────────────────────────────────────────
+  const updateMessage = useCallback(
+    (id: string, fn: (message: ChatMessage) => ChatMessage) => {
+      setMessages((prev) => prev.map((m) => (m.id === id ? fn(m) : m)));
+    },
+    [],
+  );
+
+  const runStream = useCallback(
+    async (
+      assistantId: string,
+      payload: {
+        message: string;
+        conversationId: string;
+        isRegenerate?: boolean;
+        regenerateIndex?: number;
+      },
+    ) => {
+      const controller = new AbortController();
+      abortRef.current = controller;
+      // Capture a token so callbacks can tell if this stream is still the
+      // "current" one. A conversation switch bumps the token and any later
+      // state writes from this stream bail out.
+      const token = ++streamTokenRef.current;
+      const isCurrent = () => streamTokenRef.current === token;
+      setBusy(true);
+      busyRef.current = true;
+      setError("");
+      let capturedConversationId = payload.conversationId;
+      let inflightResolve: () => void = () => {};
+      inflightRef.current = new Promise<void>((resolve) => {
+        inflightResolve = resolve;
+      });
+
+      const finalizeError = (err: unknown, aborted: boolean) => {
+        const category: ChatErrorCategory = aborted
+          ? "cancelled"
+          : err instanceof ChatStreamError || err instanceof ApiClientError
+            ? "server"
+            : "network";
+        const message = aborted
+          ? "已取消生成。"
+          : category === "server"
+            ? normalizeError(err).message
+            : "网络连接失败，请检查网络后重试。";
+        if (category !== "cancelled") {
+          setError(message);
+        }
+        const code =
+          err instanceof ApiClientError
+            ? err.status
+            : err instanceof ChatStreamError
+              ? undefined
+              : undefined;
+        updateMessage(assistantId, (m) => ({
+          ...m,
+          content: m.content || message,
+          status: category === "cancelled" ? "cancelled" : "error",
+          errorCategory: category,
+          errorCode: code,
+        }));
+      };
+
       try {
-        const result = await getLearningRuntimeContext(username, { lectureId, bookId });
-        if (contextRequestIdRef.current !== requestId) {
+        await streamChat(
+          {
+            message: payload.message,
+            conversationId: payload.conversationId || undefined,
+            modelName: selectedModel || undefined,
+            enableThinking,
+            enableWebSearch,
+            isRegenerate: payload.isRegenerate,
+            regenerateIndex: payload.regenerateIndex,
+          },
+          {
+            signal: controller.signal,
+            onEvent: (event) => {
+              // Stale stream (conversation switched / superseded) — drop.
+              if (!isCurrent()) {
+                return;
+              }
+              if (event.type === "content") {
+                updateMessage(assistantId, (m) => ({
+                  ...m,
+                  content: m.content + event.delta,
+                  status: "streaming",
+                }));
+                scrollToEnd();
+              } else if (event.type === "reasoning") {
+                updateMessage(assistantId, (m) => ({
+                  ...m,
+                  reasoning: (m.reasoning || "") + event.delta,
+                  status: "streaming",
+                }));
+              } else if (event.type === "conversation_id") {
+                capturedConversationId = event.conversationId;
+                // Functional update — never trust the closure's activeId.
+                setActiveId((prev) => prev || event.conversationId);
+                activeIdRef.current = activeIdRef.current || event.conversationId;
+              } else if (event.type === "error") {
+                throw new ChatStreamError(event.message, event.raw);
+              }
+            },
+          },
+        );
+
+        if (!isCurrent()) {
           return;
         }
-        setRuntimeContext(result.payload || null);
-        const runtimeLectureId = String(result.payload?.lecture_id || lectureId || "").trim();
-        if (runtimeLectureId && !lectureId) {
-          setTarget({
-            lectureId: runtimeLectureId,
-            lectureTitle: runtimeLectureId,
-            bookId,
-            bookTitle: bookId,
+        if (controller.signal.aborted) {
+          updateMessage(assistantId, (m) => ({
+            ...m,
+            content: m.content || "已取消生成。",
+            status: "cancelled",
+          }));
+        } else {
+          updateMessage(assistantId, (m) => {
+            // Defensive: some models embed thinking in the content via
+            // <THINKING>/<FINAL> tags instead of a separate reasoning_content
+            // frame. If present, split it out so it renders in ReasoningBlock
+            // instead of as raw tags.
+            if (/<THINKING>|<FINAL>/i.test(m.content)) {
+              const parsed = parseAssistantResponse(m.content);
+              return {
+                ...m,
+                content: parsed.final || "（无内容）",
+                reasoning: parsed.thinking
+                  ? (m.reasoning ? `${m.reasoning}\n` : "") + parsed.thinking
+                  : m.reasoning,
+                status: "completed",
+              };
+            }
+            return { ...m, content: m.content || "（无内容）", status: "completed" };
           });
         }
       } catch (err) {
-        if (contextRequestIdRef.current !== requestId) {
+        if (!isCurrent()) {
           return;
         }
-        setRuntimeContext(null);
-        setContextError(normalizeError(err));
+        finalizeError(err, controller.signal.aborted);
       } finally {
-        if (contextRequestIdRef.current === requestId) {
-          setLoadingContext(false);
+        setBusy(false);
+        busyRef.current = false;
+        if (abortRef.current === controller) {
+          abortRef.current = null;
+        }
+        inflightResolve();
+        // Only the current stream may mutate conversation-level state post-run;
+        // a superseded stream must not revert activeId or trigger a refresh.
+        if (isCurrent()) {
+          void refreshConversations();
+          if (!activeIdRef.current && capturedConversationId) {
+            setActiveId(capturedConversationId);
+            activeIdRef.current = capturedConversationId;
+          }
         }
       }
     },
-    [username],
+    [enableThinking, enableWebSearch, refreshConversations, scrollToEnd, selectedModel, updateMessage],
   );
 
-  useEffect(() => {
-    void loadModels();
-    void loadDashboard();
-  }, [loadDashboard, loadModels]);
+  // ── actions ─────────────────────────────────────────────────────────
+  const send = useCallback(
+    async (text: string) => {
+      const content = text.trim();
+      if (!content || busyRef.current) {
+        return;
+      }
 
-  useEffect(() => {
-    const lectureId = String(route.params?.lectureId || "").trim();
-    const lectureTitle = String(route.params?.lectureTitle || "").trim();
-    const bookId = String(route.params?.bookId || "").trim();
-    const bookTitle = String(route.params?.bookTitle || "").trim();
-    if (lectureId || bookId) {
-      setTarget({
-        lectureId,
-        lectureTitle: lectureTitle || lectureId || "未命名课程",
-        bookId: bookId || undefined,
-        bookTitle: bookTitle || undefined,
-      });
-    }
-  }, [route.params?.bookId, route.params?.bookTitle, route.params?.lectureId, route.params?.lectureTitle]);
+      let conversationId = activeIdRef.current;
+      if (!conversationId) {
+        try {
+          const created = await createConversation(content.slice(0, 30));
+          conversationId = created.conversation_id;
+          switchActiveId(conversationId);
+        } catch (err) {
+          // createConversation is best-effort: if it fails (transient network /
+          // auth), fall back to letting the stream's conversation_id frame
+          // establish the conversation server-side. Surface the underlying
+          // error only if the stream also fails — otherwise we'd cry wolf on a
+          // successful fallback.
+          console.warn("createConversation failed, deferring to stream", err);
+          conversationId = "";
+        }
+      }
 
-  useEffect(() => {
-    void loadRuntimeContext(target?.lectureId, target?.bookId);
-  }, [loadRuntimeContext, target?.bookId, target?.lectureId]);
-
-  const openCourse = useCallback(() => {
-    navigation.navigate("Courses");
-  }, [navigation]);
-
-  const buildChatRequest = useCallback(
-    (content: string) => ({
-      username,
-      model: selectedModelValue || undefined,
-      messages: [{ role: "user" as const, content }],
-      conversation_id: target?.bookId
-        ? `${target.lectureId}:${target.bookId}`
-        : target?.lectureId || undefined,
-      conversation_title: buildTargetLabel(target),
-      system_prompt: String(runtimeContext?.system_prompt || "").trim(),
-      context_blocks: contextBlocks,
-      active_tool_skills: Array.isArray(runtimeContext?.active_tool_skills)
-        ? runtimeContext.active_tool_skills
-        : [],
-      cards: Array.isArray(runtimeContext?.cards) ? runtimeContext.cards : [],
-      meta: {
-        ...(runtimeContext?.meta || {}),
-        source: "chatapp",
-        lecture_id: target?.lectureId || runtimeContext?.lecture_id || "",
-        book_id: target?.bookId || "",
-      },
-      api_mode: "chat" as const,
-      think: false,
-    }),
-    [contextBlocks, runtimeContext, selectedModelValue, target, username],
-  );
-
-  const sendMessageFallback = useCallback(
-    async (assistantId: string, content: string) => {
-      const result = await sendLearningChat({
-        ...buildChatRequest(content),
-        stream: false,
-      });
-      const raw = String(result.content || "");
-      setMessages((current) =>
-        current.map((message) =>
-          message.id === assistantId
-            ? applyParsedMessage(message, raw, "completed")
-            : message,
-        ),
-      );
-    },
-    [buildChatRequest],
-  );
-
-  const submitMessage = useCallback(async (content: string, options?: { retryAssistantId?: string }) => {
-    const normalizedContent = content.trim();
-    if (!normalizedContent || !username || sendingRef.current) {
-      return;
-    }
-
-    sendingRef.current = true;
-    const assistantId =
-      options?.retryAssistantId || `assistant-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    if (options?.retryAssistantId) {
-      setMessages((current) =>
-        current.map((message) =>
-          message.id === assistantId
-            ? { ...message, content: "", thinkingTitle: undefined, thinking: undefined, status: "streaming" }
-            : message,
-        ),
-      );
-    } else {
-      const userMessage = createMessage("user", normalizedContent);
-      setMessages((current) => [
-        ...current,
-        userMessage,
+      const assistantId = genId();
+      setMessages((prev) => [
+        ...prev,
+        { id: genId(), role: "user", content, status: "completed" },
         { id: assistantId, role: "assistant", content: "", status: "streaming" },
       ]);
       setInput("");
-    }
-    setLoadingConversation(true);
-    setSendError(null);
-    setFailedRequest(null);
-    const abortController = new AbortController();
-    abortControllerRef.current = abortController;
+      Keyboard.dismiss();
+      scrollToEnd();
+      await runStream(assistantId, { message: content, conversationId });
+    },
+    [runStream, scrollToEnd, switchActiveId],
+  );
 
-    try {
-      let streamedContent = "";
-      await streamLearningChat({
-        ...buildChatRequest(normalizedContent),
-        stream: true,
-      }, {
-        signal: abortController.signal,
-        onEvent: (event) => {
-          if (event.type === "content" || event.type === "reasoning") {
-            streamedContent += event.delta;
-            setMessages((current) =>
-              current.map((message) =>
-                message.id === assistantId
-                  ? applyParsedMessage(message, streamedContent, "streaming")
-                  : message,
-              ),
-            );
-          }
-          if (event.type === "done") {
-            const finalContent = event.content || streamedContent;
-            setMessages((current) =>
-              current.map((message) =>
-                message.id === assistantId
-                  ? applyParsedMessage(message, finalContent, "completed")
-                  : message,
-              ),
-            );
-          }
-          if (event.type === "error") {
-            throw new Error(event.message);
-          }
-        },
-      });
-      if (abortController.signal.aborted) {
-        setMessages((current) =>
-          current.map((message) =>
-            message.id === assistantId
-              ? { ...message, content: message.content || "已取消生成。", status: "cancelled" }
-              : message,
-          ),
-        );
-        return;
-      }
-      if (!streamedContent.trim()) {
-        await sendMessageFallback(assistantId, normalizedContent);
-      }
-    } catch (err) {
-      if (abortController.signal.aborted) {
-        setMessages((current) =>
-          current.map((message) =>
-            message.id === assistantId
-              ? { ...message, content: message.content || "已取消生成。", status: "cancelled" }
-              : message,
-          ),
-        );
-      } else {
-        try {
-          await sendMessageFallback(assistantId, normalizedContent);
-        } catch (fallbackErr) {
-          setSendError(normalizeError(fallbackErr || err));
-          setFailedRequest({ content: normalizedContent, assistantId });
-          setMessages((current) =>
-            current.map((message) =>
-              message.id === assistantId
-                ? { ...message, content: "请求失败，请重试。", status: "error" }
-                : message,
-            ),
-          );
-        }
-      }
-    } finally {
-      sendingRef.current = false;
-      abortControllerRef.current = null;
-      setLoadingConversation(false);
-    }
-  }, [buildChatRequest, sendMessageFallback, username]);
-
-  const sendMessage = useCallback(() => {
-    void submitMessage(input, undefined);
-  }, [input, submitMessage]);
-
-  const retryFailedMessage = useCallback(() => {
-    if (!failedRequest) {
+  const regenerate = useCallback(async () => {
+    if (busyRef.current || !activeIdRef.current) {
       return;
     }
-    void submitMessage(failedRequest.content, {
-      retryAssistantId: failedRequest.assistantId,
+    let lastAssistantId = "";
+    let lastServerIndex: number | undefined;
+    setMessages((prev) => {
+      const next = [...prev];
+      for (let i = next.length - 1; i >= 0; i -= 1) {
+        if (next[i].role === "assistant") {
+          lastAssistantId = next[i].id;
+          lastServerIndex = next[i].serverIndex;
+          next[i] = {
+            ...next[i],
+            content: "",
+            reasoning: undefined,
+            status: "streaming",
+            errorCategory: undefined,
+            errorCode: undefined,
+          };
+          break;
+        }
+      }
+      return next;
     });
-  }, [failedRequest, submitMessage]);
+    if (!lastAssistantId) {
+      return;
+    }
+    scrollToEnd();
 
-  const cancelGeneration = useCallback(() => {
-    abortControllerRef.current?.abort();
+    // The backend's regenerate_index is the assistant message's position in the
+    // server's messages array (it reads the triggering user message at
+    // index-1 and overwrites the assistant at that index). History-loaded
+    // messages carry their real serverIndex, but a freshly streamed message in
+    // the current session has none — and we can't reliably recompute it locally
+    // (HISTORY_LIMIT truncation, version overwrites, etc.). So when we lack the
+    // index, sync from the server first, mirroring the web client. This is a
+    // deliberate user action so one extra GET is acceptable.
+    let regenerateIndex = lastServerIndex;
+    if (regenerateIndex === undefined) {
+      try {
+        const conversation = await getConversation(activeIdRef.current);
+        const rows = Array.isArray(conversation?.messages) ? conversation!.messages : [];
+        // Server stores only user/assistant roles, so the array index is the
+        // server index directly. Target the last assistant.
+        for (let i = rows.length - 1; i >= 0; i -= 1) {
+          if (rows[i]?.role === "assistant") {
+            regenerateIndex = i;
+            break;
+          }
+        }
+      } catch {
+        // Leave undefined; backend will run without a target index.
+      }
+    }
+
+    await runStream(lastAssistantId, {
+      message: "",
+      conversationId: activeIdRef.current,
+      isRegenerate: true,
+      regenerateIndex,
+    });
+  }, [runStream, scrollToEnd]);
+
+  const stop = useCallback(() => {
+    abortRef.current?.abort();
   }, []);
 
-  if (loadingModels && loadingContext) {
-    return (
-      <Screen scroll tabBarSpace>
-        <Skeleton width="55%" height={26} style={styles.skLine} />
-        <Skeleton height={120} borderRadius={radius.lg} style={styles.skLine} />
-        <Skeleton height={64} borderRadius={radius.lg} style={styles.skLine} />
-        <Skeleton height={64} borderRadius={radius.lg} />
-      </Screen>
-    );
-  }
+  const selectConversation = useCallback(
+    async (id: string) => {
+      setDrawerOpen(false);
+      if (id === activeIdRef.current) {
+        return;
+      }
+      // Invalidate any in-flight stream and await its full teardown before we
+      // touch messages/activeId — otherwise the old stream's onEvent could
+      // still land a content delta or its finally could setActiveId back to the
+      // previous conversation.
+      streamTokenRef.current += 1;
+      abortRef.current?.abort();
+      await inflightRef.current?.catch(() => undefined);
+      switchActiveId(id);
+      setMessages([]);
+      setLoadingHistory(true);
+      setError("");
+      try {
+        const conversation = await getConversation(id);
+        const rows = Array.isArray(conversation?.messages) ? conversation!.messages : [];
+        const visible = rows.filter((m) => m.role === "user" || m.role === "assistant");
+        // Preserve the REAL server index (position in the server's message
+        // array) even after truncating to the last HISTORY_LIMIT messages, so
+        // regenerate_index stays aligned with the backend.
+        const start = Math.max(0, visible.length - HISTORY_LIMIT);
+        const mapped: ChatMessage[] = visible
+          .slice(start)
+          .map((m, i) => ({
+            id: `${id}-${start + i}`,
+            role: m.role === "user" ? "user" : "assistant",
+            content: String(m.content || ""),
+            reasoning: String(m.reasoning_content || "") || undefined,
+            status: "completed" as const,
+            // Real server index (position in the server array), preserved
+            // across the HISTORY_LIMIT truncation so regenerate_index stays
+            // aligned with the backend.
+            serverIndex: start + i,
+          }));
+        setMessages(mapped);
+        scrollToEnd();
+      } catch (err) {
+        setError(normalizeError(err).message);
+      } finally {
+        setLoadingHistory(false);
+      }
+    },
+    [scrollToEnd, switchActiveId],
+  );
 
-  if (error) {
-    return (
-      <Screen tabBarSpace>
-        <StateView
-          icon="alert-triangle"
-          title="AI 问答加载失败"
-          message={error.message}
-          actionLabel="重试"
-          onAction={() => void loadModels()}
-        />
-      </Screen>
-    );
-  }
+  const newChat = useCallback(() => {
+    streamTokenRef.current += 1;
+    abortRef.current?.abort();
+    setDrawerOpen(false);
+    switchActiveId("");
+    setMessages([]);
+    setError("");
+  }, [switchActiveId]);
+
+  const handleDelete = useCallback(
+    async (id: string) => {
+      try {
+        await deleteConversation(id);
+        if (id === activeIdRef.current) {
+          newChat();
+        }
+        void refreshConversations();
+      } catch (err) {
+        setError(normalizeError(err).message);
+      }
+    },
+    [newChat, refreshConversations],
+  );
+
+  const handleRename = useCallback(
+    async (id: string, title: string) => {
+      setConversations((prev) =>
+        prev.map((c) => (c.conversation_id === id ? { ...c, title } : c)),
+      );
+      try {
+        await renameConversation(id, title);
+      } catch (err) {
+        setError(normalizeError(err).message);
+        void refreshConversations();
+      }
+    },
+    [refreshConversations],
+  );
+
+  const handlePin = useCallback(
+    async (id: string, pin: boolean) => {
+      setConversations((prev) =>
+        prev.map((c) => (c.conversation_id === id ? { ...c, pin } : c)),
+      );
+      try {
+        await pinConversation(id, pin);
+        void refreshConversations();
+      } catch (err) {
+        setError(normalizeError(err).message);
+        void refreshConversations();
+      }
+    },
+    [refreshConversations],
+  );
+
+  // When the keyboard is up, lift the composer to sit on the keyboard top.
+  // Otherwise reserve space for the floating tab bar.
+  const bottomGap = kbHeight > 0 ? kbHeight : Math.max(insets.bottom, spacing.md) + 66;
 
   return (
-    <Screen scroll tabBarSpace>
-      <ScreenHeader
-        overline="AI 问答"
-        title={buildTargetLabel(target)}
-        trailing={
-          <AppButton
-            title="刷新"
-            variant="ghost"
-            size="sm"
-            onPress={() => void loadRuntimeContext(target?.lectureId, target?.bookId)}
+    <SafeAreaView style={styles.safe} edges={["top", "left", "right"]}>
+      <View style={styles.topBar}>
+        <Pressable style={styles.iconBtn} hitSlop={8} onPress={() => setDrawerOpen(true)}>
+          <Feather name="menu" size={22} color={colors.text} />
+        </Pressable>
+        <AppText variant="heading" numberOfLines={1} style={styles.topTitle}>
+          {currentTitle}
+        </AppText>
+        <Pressable
+          style={styles.iconBtn}
+          hitSlop={8}
+          onPress={() => {
+            haptics.selection();
+            newChat();
+          }}
+        >
+          <Feather name="edit" size={19} color={colors.text} />
+        </Pressable>
+      </View>
+
+      <View style={styles.flex}>
+        {messages.length === 0 && !loadingHistory ? (
+          <ChatEmptyState username={username} onPick={(prompt) => void send(prompt)} />
+        ) : (
+          <ScrollView
+            ref={scrollRef}
+            style={styles.thread}
+            contentContainerStyle={styles.threadContent}
+            keyboardShouldPersistTaps="handled"
+            onContentSizeChange={() => {
+              if (busyRef.current) {
+                scrollRef.current?.scrollToEnd({ animated: true });
+              }
+            }}
+          >
+            {loadingHistory ? (
+              <AppText tone="muted" style={styles.loadingHint}>
+                正在加载对话…
+              </AppText>
+            ) : null}
+            {messages.map((message, index) => (
+              <ChatMessageItem
+                key={message.id}
+                message={message}
+                canRegenerate={
+                  !busy && message.role === "assistant" && index === messages.length - 1
+                }
+                onRegenerate={regenerate}
+              />
+            ))}
+          </ScrollView>
+        )}
+
+        <View style={[styles.composerWrap, { paddingBottom: bottomGap }]}>
+          {error ? (
+            <Pressable onPress={() => setError("")} style={styles.errorBanner}>
+              <Feather name="alert-triangle" size={13} color={colors.danger} />
+              <AppText variant="caption" tone="danger" style={styles.errorText} numberOfLines={2}>
+                {error}
+              </AppText>
+            </Pressable>
+          ) : null}
+          <ChatComposer
+            value={input}
+            onChangeText={setInput}
+            onSend={() => void send(input)}
+            onStop={stop}
+            busy={busy}
+            modelLabel={selectedModelLabel}
+            onPickModel={() => setModelPickerOpen(true)}
+            enableThinking={enableThinking}
+            onToggleThinking={() => setEnableThinking((v) => !v)}
+            enableWebSearch={enableWebSearch}
+            onToggleWebSearch={() => setEnableWebSearch((v) => !v)}
           />
-        }
+        </View>
+      </View>
+
+      <ConversationDrawer
+        visible={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        conversations={conversations}
+        activeId={activeId}
+        loading={loadingConversations}
+        onSelect={(id) => void selectConversation(id)}
+        onNew={newChat}
+        onDelete={(id) => void handleDelete(id)}
+        onRename={(id, title) => void handleRename(id, title)}
+        onPin={(id, pin) => void handlePin(id, pin)}
       />
 
-      <AppCard variant="muted" style={styles.summaryCard}>
-        <View style={styles.summaryRow}>
-          <AppText variant="caption" tone="muted">
-            模型
-          </AppText>
-          <AppText variant="label">{selectedModelLabel}</AppText>
-        </View>
-        <View style={styles.summaryRow}>
-          <AppText variant="caption" tone="muted">
-            用户
-          </AppText>
-          <AppText variant="label">{context?.username || username || "未设置"}</AppText>
-        </View>
-        <View style={styles.summaryRow}>
-          <AppText variant="caption" tone="muted">
-            上下文块
-          </AppText>
-          <AppText variant="label">{contextBlocks.length} 段</AppText>
-        </View>
-        {models.length > 1 ? (
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.modelOptions}
-          >
-            {models.map((model) => {
-              const value = getModelValue(model);
-              if (!value) {
-                return null;
-              }
-              const active = selectedModelValue === value;
-              return (
-                <AnimatedPressable
-                  key={value}
-                  onPress={() => {
-                    haptics.selection();
-                    setSelectedModel(value);
-                  }}
-                  press={{ pressedScale: 0.95 }}
-                  style={[styles.modelChip, active && styles.modelChipActive]}
-                >
-                  <AppText
-                    variant="caption"
-                    style={active ? styles.modelChipTextActive : styles.modelChipText}
-                  >
-                    {getModelLabel(model, value)}
-                  </AppText>
-                </AnimatedPressable>
-              );
-            })}
-          </ScrollView>
-        ) : null}
-        {!loadingModels && models.length === 0 ? (
-          <AppText variant="caption" tone="muted">
-            后端未返回模型，聊天接口将使用后端默认配置。
-          </AppText>
-        ) : null}
-        {contextError ? (
-          <AppText variant="caption" tone="danger">
-            {contextError.message}
-          </AppText>
-        ) : null}
-      </AppCard>
-
-      {messages.length === 0 ? (
-        <StateView
-          icon="message-circle"
-          title="还没有对话"
-          message="先选一个课程，然后开始提问。"
-          actionLabel="去课程"
-          onAction={openCourse}
-        />
-      ) : (
-        <View style={styles.thread}>
-          {messages.map((message) => (
-            <ChatBubble key={message.id} message={message} />
-          ))}
-        </View>
-      )}
-
-      {sendError ? (
-        <AppCard variant="outlined" style={styles.errorCard}>
-          <AppText tone="danger" variant="caption" style={styles.flexText}>
-            ⚠ {sendError.message}
-          </AppText>
-          {failedRequest ? (
-            <AppButton
-              title="重试"
-              variant="outline"
-              size="sm"
-              loading={loadingConversation}
-              onPress={retryFailedMessage}
-              style={styles.retryButton}
-            />
-          ) : null}
-        </AppCard>
-      ) : null}
-
-      <AppCard style={styles.composerCard}>
-        <TextInput
-          value={input}
-          onChangeText={setInput}
-          multiline
-          placeholder="结合当前学习上下文继续提问..."
-          placeholderTextColor={colors.textMuted}
-          style={styles.composerInput}
-          textAlignVertical="top"
-        />
-        <View style={styles.composerActions}>
-          <View style={styles.statusDot}>
-            <View
-              style={[
-                styles.dot,
-                {
-                  backgroundColor: loadingConversation
-                    ? colors.warning
-                    : loadingContext
-                      ? colors.textMuted
-                      : colors.success,
-                },
-              ]}
-            />
-            <AppText variant="caption" tone="muted">
-              {loadingConversation ? "生成中" : loadingContext ? "上下文加载中" : "就绪"}
-            </AppText>
-          </View>
-          {loadingConversation ? (
-            <AppButton
-              title="取消"
-              variant="outline"
-              size="sm"
-              onPress={cancelGeneration}
-              style={styles.sendButton}
-            />
-          ) : (
-            <AppButton
-              title="发送"
-              size="sm"
-              disabled={!input.trim()}
-              onPress={sendMessage}
-              style={styles.sendButton}
-            />
-          )}
-        </View>
-      </AppCard>
-    </Screen>
-  );
-}
-
-function ChatBubble({ message }: { message: ChatMessage }) {
-  const isUser = message.role === "user";
-  const streaming = message.status === "streaming";
-  return (
-    <View style={[styles.bubbleRow, isUser ? styles.bubbleRowUser : styles.bubbleRowAssistant]}>
-      <View style={[styles.bubble, isUser ? styles.userBubble : styles.assistantBubble]}>
-        <AppText
-          variant="overline"
-          style={isUser ? styles.bubbleRoleUser : styles.bubbleRoleAssistant}
-        >
-          {isUser ? "你" : streaming ? "助手 · 生成中" : "助手"}
-        </AppText>
-        {message.thinkingTitle ? (
-          <AppText
-            variant="caption"
-            style={isUser ? styles.bubbleMetaUser : styles.bubbleMetaAssistant}
-          >
-            {message.thinkingTitle}
-          </AppText>
-        ) : null}
-        {message.thinking ? (
-          <View style={styles.thinkingBox}>
-            <AppText variant="caption" tone="muted">
-              {message.thinking}
-            </AppText>
-          </View>
-        ) : null}
-        {streaming && !message.content ? (
-          <TypingDots />
-        ) : (
-          <AppText style={isUser ? styles.bubbleTextUser : styles.bubbleTextAssistant}>
-            {message.content}
-            {streaming ? <AppText style={styles.cursor}>▍</AppText> : null}
-          </AppText>
-        )}
-      </View>
-    </View>
-  );
-}
-
-// Three pulsing dots while the assistant spins up its first token.
-function TypingDots() {
-  const a = useSharedValue(0);
-  const b = useSharedValue(0);
-  const c = useSharedValue(0);
-
-  useEffect(() => {
-    const loop = (v: typeof a) =>
-      withRepeat(
-        withSequence(withTiming(1, { duration: 380 }), withTiming(0.3, { duration: 380 })),
-        -1,
-        false,
-      );
-    a.value = loop(a);
-    b.value = withDelay(140, loop(b));
-    c.value = withDelay(280, loop(c));
-  }, [a, b, c]);
-
-  const s1 = useAnimatedStyle(() => ({ opacity: a.value }));
-  const s2 = useAnimatedStyle(() => ({ opacity: b.value }));
-  const s3 = useAnimatedStyle(() => ({ opacity: c.value }));
-
-  return (
-    <View style={styles.typingRow}>
-      <Animated.View style={[styles.typingDot, s1]} />
-      <Animated.View style={[styles.typingDot, s2]} />
-      <Animated.View style={[styles.typingDot, s3]} />
-    </View>
+      <ModelPicker
+        visible={modelPickerOpen}
+        onClose={() => setModelPickerOpen(false)}
+        models={models}
+        selectedModel={selectedModel}
+        onSelect={setSelectedModel}
+      />
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  summaryCard: {
-    gap: spacing.sm,
+  safe: {
+    flex: 1,
+    backgroundColor: colors.background,
   },
-  summaryRow: {
+  flex: {
+    flex: 1,
+  },
+  topBar: {
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
-  },
-  modelOptions: {
     gap: spacing.sm,
-    paddingTop: spacing.xs,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.borderFaint,
+    backgroundColor: colors.background,
   },
-  modelChip: {
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radius.pill,
+  iconBtn: {
+    width: 40,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  topTitle: {
+    flex: 1,
+    textAlign: "center",
+  },
+  thread: {
+    flex: 1,
+  },
+  threadContent: {
+    padding: spacing.lg,
+    gap: spacing.lg,
+  },
+  loadingHint: {
+    textAlign: "center",
+    paddingVertical: spacing.md,
+  },
+  composerWrap: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+    gap: spacing.sm,
+  },
+  errorBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    backgroundColor: colors.dangerMuted,
+    borderRadius: radius.md,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
   },
-  modelChipActive: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-  modelChipText: {
-    color: colors.textSecondary,
-    fontWeight: "600",
-  },
-  modelChipTextActive: {
-    color: colors.onPrimary,
-    fontWeight: "600",
-  },
-  thread: {
-    gap: spacing.md,
-  },
-  bubbleRow: {
-    flexDirection: "row",
-  },
-  bubbleRowUser: {
-    justifyContent: "flex-end",
-  },
-  bubbleRowAssistant: {
-    justifyContent: "flex-start",
-  },
-  bubble: {
-    maxWidth: "86%",
-    borderRadius: radius.lg,
-    padding: spacing.md,
-    gap: spacing.xs,
-  },
-  userBubble: {
-    backgroundColor: colors.primary,
-    borderBottomRightRadius: radius.sm,
-  },
-  assistantBubble: {
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderBottomLeftRadius: radius.sm,
-  },
-  bubbleRoleUser: {
-    color: "rgba(255,255,255,0.6)",
-  },
-  bubbleRoleAssistant: {
-    color: colors.textMuted,
-  },
-  bubbleMetaUser: {
-    color: "rgba(255,255,255,0.75)",
-  },
-  bubbleMetaAssistant: {
-    color: colors.textSecondary,
-  },
-  bubbleTextUser: {
-    color: colors.onPrimary,
-    fontSize: 15,
-    lineHeight: 22,
-  },
-  bubbleTextAssistant: {
-    color: colors.text,
-    fontSize: 15,
-    lineHeight: 22,
-  },
-  thinkingBox: {
-    backgroundColor: colors.surfaceMuted,
-    borderRadius: radius.sm,
-    padding: spacing.sm,
-  },
-  cursor: {
-    color: colors.textTertiary,
-    fontWeight: "700",
-  },
-  typingRow: {
-    flexDirection: "row",
-    gap: 5,
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.xs,
-  },
-  typingDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-    backgroundColor: colors.textTertiary,
-  },
-  skLine: {
-    marginBottom: spacing.lg,
-  },
-  errorCard: {
-    alignItems: "center",
-    flexDirection: "row",
-    gap: spacing.md,
-    borderLeftWidth: 4,
-    borderLeftColor: colors.danger,
-  },
-  flexText: {
+  errorText: {
     flex: 1,
-  },
-  retryButton: {
-    minWidth: 72,
-  },
-  composerCard: {
-    gap: spacing.md,
-  },
-  composerInput: {
-    backgroundColor: colors.surfaceMuted,
-    borderColor: colors.border,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    color: colors.text,
-    minHeight: 96,
-    padding: spacing.md,
-    fontSize: 15,
-  },
-  composerActions: {
-    alignItems: "center",
-    flexDirection: "row",
-    justifyContent: "space-between",
-  },
-  statusDot: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-  },
-  dot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  sendButton: {
-    minWidth: 96,
   },
 });

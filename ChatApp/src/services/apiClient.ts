@@ -41,10 +41,14 @@ function normalizeBaseUrl(nextBaseUrl: string) {
   return String(nextBaseUrl || "").trim().replace(/\/+$/, "");
 }
 
-export function createApiClient(initialBaseUrl: string): ApiClient {
+export function createApiClient(
+  initialBaseUrl: string,
+  options: { credentials?: RequestCredentials } = {},
+): ApiClient {
   let baseUrl = normalizeBaseUrl(initialBaseUrl);
   let currentUsername = "";
   let currentPublicApiKey = "";
+  const defaultCredentials = options.credentials;
 
   function getBasePathPrefix() {
     const withoutOrigin = baseUrl.replace(/^[a-z][a-z\d+\-.]*:\/\/[^/?#]+/i, "");
@@ -89,11 +93,14 @@ export function createApiClient(initialBaseUrl: string): ApiClient {
   }
 
   const request = async (path: string, options: RequestOptions = {}): Promise<Response> => {
-    const { query, headers, body, ...rest } = options;
+    const { query, headers, body, credentials, ...rest } = options;
     return fetch(buildUrl(path, query), {
       ...rest,
       body,
       headers: buildHeaders(headers),
+      // Session-aware clients (chat) opt into cookie credentials so the Flask
+      // session set by /login is stored and replayed on later requests.
+      credentials: credentials ?? defaultCredentials,
     });
   };
 
@@ -180,7 +187,13 @@ export function createApiClient(initialBaseUrl: string): ApiClient {
 }
 
 export const learningApiClient = createApiClient(appEnv.nexoraLearningBaseUrl);
-export const chatApiClient = createApiClient(appEnv.chatDBServerBaseUrl);
+// The chat backend authenticates the rich endpoints (/api/chat/stream,
+// /api/conversations/*) with a Flask session cookie from /login, so this client
+// must send/store cookies. Native fetch persists cookies automatically; this
+// makes it explicit and also covers react-native-web.
+export const chatApiClient = createApiClient(appEnv.chatDBServerBaseUrl, {
+  credentials: "include",
+});
 chatApiClient.setPublicApiKey(appEnv.chatDBServerPublicApiKey);
 learningApiClient.setPublicApiKey(appEnv.nexoraLearningRuntimeApiKey);
 

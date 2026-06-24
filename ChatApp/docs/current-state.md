@@ -49,7 +49,9 @@
 - 章节级完成 UI 只覆盖 `bookinfo` / `bookdetail` 可解析出真实章节边界的场景；原文阅读仍不伪造章节边界。
 - `bookinfo` / `bookdetail` 的富格式化。
 - 全面 UI/UX 统一。
-- 长期聊天历史、断线重连、工具调用 UI、多模态、Web Chat 对齐。
+- 长期聊天历史（当前前端按最近 80 条截断展示，保留真实 server index 供 regenerate 对齐；「加载更多」未接入）、断线重连、多模态、Web Chat 对齐。
+- 工具调用：`chatService` 已把 `function_call_*` 等未知帧作为 `type: "unknown"` 事件透出（不静默丢弃），观测点已就位，但工具调用 UI 未接入。
+- 取消生成仍为客户端中断（`AbortController` 中断读流）；服务端 `/api/chat/stream/cancel` 需 `stream_id`，当前未透出，故中断后服务端可能继续生成并计费——列入技术债。
 
 ## 验证
 

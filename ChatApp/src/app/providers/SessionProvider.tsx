@@ -12,6 +12,7 @@ import React, {
 import { setApiUsername } from "../../services/apiClient";
 import { getFrontendContext } from "../../services/frontendService";
 import { setNexoraPortalBaseUrl } from "../../services/imageService";
+import { login as sessionLogin, logout as sessionLogout } from "../../services/sessionService";
 import type { FrontendContext } from "../../services/types";
 import { normalizeError } from "../../utils/errors";
 
@@ -24,6 +25,8 @@ type SessionState = {
   isContextLoading: boolean;
   contextError: Error | null;
   isAdmin: boolean;
+  /** Logs into the chat backend (sets the session cookie) and loads context. */
+  signIn: (username: string, password: string) => Promise<void>;
   setUsername: (username: string) => Promise<void>;
   refreshContext: () => Promise<void>;
   clearUsername: () => Promise<void>;
@@ -121,11 +124,25 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     await loadContext(normalized);
   }, [loadContext]);
 
+  const signIn = useCallback(
+    async (nextUsername: string, password: string) => {
+      const normalized = String(nextUsername || "").trim();
+      // Throws ApiClientError on bad credentials; let the caller surface it.
+      await sessionLogin(normalized, password);
+      await AsyncStorage.setItem(USERNAME_STORAGE_KEY, normalized);
+      setUsernameState(normalized);
+      setApiUsername(normalized);
+      await loadContext(normalized);
+    },
+    [loadContext],
+  );
+
   const refreshContext = useCallback(async () => {
     await loadContext(username);
   }, [loadContext, username]);
 
   const clearUsername = useCallback(async () => {
+    await sessionLogout();
     await AsyncStorage.removeItem(USERNAME_STORAGE_KEY);
     contextRequestIdRef.current += 1;
     setUsernameState("");
@@ -144,6 +161,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       isContextLoading,
       contextError,
       isAdmin: resolveIsAdmin(context),
+      signIn,
       setUsername,
       refreshContext,
       clearUsername,
@@ -154,6 +172,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       isBootstrapping,
       isContextLoading,
       contextError,
+      signIn,
       setUsername,
       refreshContext,
       clearUsername,

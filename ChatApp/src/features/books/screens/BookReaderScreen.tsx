@@ -20,6 +20,8 @@ import { getBookDetail, getBookInfo, getBookText } from "../../../services/bookS
 import { completeLearningChapter } from "../../../services/frontendService";
 import type { Book } from "../../../services/types";
 import { normalizeError } from "../../../utils/errors";
+import { FloatingAssistant } from "../../reading/FloatingAssistant";
+import type { ReaderContext } from "../../reading/types";
 
 type BookReaderScreenProps = NativeStackScreenProps<RootStackParamList, "BookReader">;
 
@@ -162,6 +164,25 @@ export function BookReaderScreen({ navigation, route }: BookReaderScreenProps) {
   );
   const firstChapter = parsedChapters[0] || null;
 
+  const readerContext: ReaderContext = useMemo(
+    () => ({
+      lectureId,
+      bookId,
+      lectureTitle: route.params.lectureTitle,
+      bookTitle: getBookTitle(readerState.book, bookTitle),
+      chapter: firstChapter
+        ? {
+            name: firstChapter.name,
+            range: firstChapter.range,
+            summary: firstChapter.summary,
+            index: firstChapter.index,
+            detailXml: firstChapter.detailXml,
+          }
+        : null,
+    }),
+    [lectureId, bookId, route.params.lectureTitle, bookTitle, readerState.book, firstChapter],
+  );
+
   const loadReader = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -259,51 +280,58 @@ export function BookReaderScreen({ navigation, route }: BookReaderScreenProps) {
   }
 
   return (
-    <Screen scroll>
-      <ScreenHeader
-        overline={config.label}
-        title={getBookTitle(readerState.book, bookTitle)}
-        trailing={<AppButton title="刷新" variant="ghost" size="sm" onPress={() => void loadReader()} />}
-      />
+    <View style={styles.readerRoot}>
+      <Screen scroll>
+        <ScreenHeader
+          overline={config.label}
+          title={getBookTitle(readerState.book, bookTitle)}
+          trailing={<AppButton title="刷新" variant="ghost" size="sm" onPress={() => void loadReader()} />}
+        />
 
-      {firstChapter ? (
-        <AppCard variant="muted" style={styles.chapterCard}>
-          <View style={styles.chapterCopy}>
-            <AppText variant="overline" tone="tertiary">
-              章节进度
-            </AppText>
-            <AppText variant="bodyStrong">{firstChapter.name}</AppText>
-            <AppText variant="caption" tone="tertiary">
-              range: {firstChapter.range}
-            </AppText>
-            {chapterCompleteMessage ? (
-              <AppText variant="caption" tone="success">
-                {chapterCompleteMessage}
+        {firstChapter ? (
+          <AppCard variant="muted" style={styles.chapterCard}>
+            <View style={styles.chapterCopy}>
+              <AppText variant="overline" tone="tertiary">
+                章节进度
               </AppText>
-            ) : null}
-            {chapterCompleteError ? (
-              <AppText variant="caption" tone="danger">
-                {chapterCompleteError.message}
+              <AppText variant="bodyStrong">{firstChapter.name}</AppText>
+              <AppText variant="caption" tone="tertiary">
+                range: {firstChapter.range}
               </AppText>
-            ) : null}
-          </View>
-          <AppButton
-            title="标记完成"
-            size="sm"
-            variant="outline"
-            loading={chapterCompleteLoading}
-            onPress={() => void handleCompleteChapter()}
-            style={styles.chapterButton}
-          />
-        </AppCard>
-      ) : null}
+              {chapterCompleteMessage ? (
+                <AppText variant="caption" tone="success">
+                  {chapterCompleteMessage}
+                </AppText>
+              ) : null}
+              {chapterCompleteError ? (
+                <AppText variant="caption" tone="danger">
+                  {chapterCompleteError.message}
+                </AppText>
+              ) : null}
+            </View>
+            <AppButton
+              title="标记完成"
+              size="sm"
+              variant="outline"
+              loading={chapterCompleteLoading}
+              onPress={() => void handleCompleteChapter()}
+              style={styles.chapterButton}
+            />
+          </AppCard>
+        ) : null}
 
-      <BookContentSection title={config.sectionTitle} content={content} />
-    </Screen>
+        <BookContentSection title={config.sectionTitle} content={content} />
+      </Screen>
+
+      <FloatingAssistant context={readerContext} />
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  readerRoot: {
+    flex: 1,
+  },
   chapterCard: {
     alignItems: "center",
     flexDirection: "row",

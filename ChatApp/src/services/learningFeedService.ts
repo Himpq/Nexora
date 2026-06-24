@@ -29,6 +29,8 @@ export type LearningFeedComment = {
   author_is_admin?: boolean;
   can_delete?: boolean;
   content: string;
+  liked_user_ids?: string[];
+  likes_count?: number;
   [key: string]: unknown;
 };
 

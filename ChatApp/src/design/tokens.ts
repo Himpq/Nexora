@@ -35,6 +35,9 @@ export const colors = {
   // Focus / accent
   focus: "#0A0A0A",
 
+  // Links / @mentions — the single sanctioned accent in the mono palette.
+  mention: "#2563EB",
+
   // Brand gradients (ink ramp for the "N" mark, brand surfaces, fills)
   gradient: {
     inkStart: "#1C1C1F",

@@ -20,7 +20,7 @@ import Animated, {
 } from "react-native-reanimated";
 
 import { useSession } from "../../../app/providers/SessionProvider";
-import { ApiClientError, chatApiClient } from "../../../services/apiClient";
+import { ApiClientError } from "../../../services/apiClient";
 import {
   AppButton,
   AppInput,
@@ -34,10 +34,10 @@ import {
 import { BrandMark3D } from "../components/BrandMark3D";
 import { BrandWordmark } from "../components/BrandWordmark";
 
-type Mode = "landing" | "admin";
+type Mode = "landing" | "login";
 
 export function LoginScreen() {
-  const { setUsername } = useSession();
+  const { signIn } = useSession();
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
 
@@ -47,12 +47,11 @@ export function LoginScreen() {
   const [showPassword, setShowPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const [comingSoon, setComingSoon] = useState(false);
 
-  // Horizontal page transition: 0 = landing, 1 = admin.
+  // Horizontal page transition: 0 = landing, 1 = login.
   const page = useSharedValue(0);
   useEffect(() => {
-    page.value = withSpring(mode === "admin" ? 1 : 0, motion.spring.gentle);
+    page.value = withSpring(mode === "login" ? 1 : 0, motion.spring.gentle);
   }, [mode, page]);
 
   // Staggered entrance on the landing page: greeting → mark → wordmark → actions.
@@ -96,18 +95,8 @@ export function LoginScreen() {
     setError("");
 
     try {
-      const response = await chatApiClient.postJson<any>("/login", {
-        username: normalizedUsername,
-        password,
-      });
-
-      if (response.success) {
-        haptics.notify("success");
-        await setUsername(normalizedUsername);
-      } else {
-        setError(response.message || "登录失败");
-        haptics.notify("error");
-      }
+      await signIn(normalizedUsername, password);
+      haptics.notify("success");
     } catch (err) {
       if (err instanceof ApiClientError) {
         setError(err.message || "登录失败");
@@ -120,16 +109,10 @@ export function LoginScreen() {
     }
   }
 
-  function handleUserLogin() {
+  function goLogin() {
     haptics.impact("light");
-    setComingSoon(true);
-    setTimeout(() => setComingSoon(false), 2200);
-  }
-
-  function goAdmin() {
-    haptics.impact("light");
-    setComingSoon(false);
-    setMode("admin");
+    setError("");
+    setMode("login");
   }
 
   function goLanding() {
@@ -176,22 +159,15 @@ export function LoginScreen() {
               variant="primary"
               fullWidth
               style={styles.pill}
-              onPress={handleUserLogin}
+              onPress={goLogin}
             />
             <AppButton
               title="管理员登录"
               variant="outline"
               fullWidth
               style={styles.pill}
-              onPress={goAdmin}
+              onPress={goLogin}
             />
-            <View style={styles.hintSlot}>
-              {comingSoon ? (
-                <AppText variant="caption" tone="muted" style={styles.hintText}>
-                  用户登录即将开放
-                </AppText>
-              ) : null}
-            </View>
           </Animated.View>
 
           <View style={styles.spacerBottom} />
@@ -201,7 +177,7 @@ export function LoginScreen() {
       {/* ---- Admin login page -------------------------------------------- */}
       <Animated.View
         style={[StyleSheet.absoluteFill, adminStyle]}
-        pointerEvents={mode === "admin" ? "auto" : "none"}
+        pointerEvents={mode === "login" ? "auto" : "none"}
       >
         <KeyboardAvoidingView
           behavior={Platform.OS === "ios" ? "padding" : undefined}
@@ -222,7 +198,7 @@ export function LoginScreen() {
             showsVerticalScrollIndicator={false}
           >
             <AppText variant="title" style={styles.adminTitle}>
-              管理员登录
+              登录
             </AppText>
 
             {error ? (
@@ -339,16 +315,8 @@ const styles = StyleSheet.create({
     minHeight: 54,
     borderRadius: radius.pill,
   },
-  hintSlot: {
-    height: 18,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  hintText: {
-    textAlign: "center",
-  },
 
-  // Admin
+  // Login form
   adminTopBar: {
     height: 48,
     justifyContent: "center",
