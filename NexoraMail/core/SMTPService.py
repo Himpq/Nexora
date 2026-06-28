@@ -20,10 +20,11 @@ except Exception:
     import SocketUtils
 import tempfile
 try:
-    from . import Configure, AuthTracker
+    from . import Configure, AuthTracker, MailEventQueue
 except Exception:
     import Configure
     import AuthTracker
+    import MailEventQueue
 import html
 import importlib
 from dataclasses import dataclass, field
@@ -1036,20 +1037,17 @@ def sendMail(sender, recipient, data, session: Optional[SessionState], userGroup
                 f.write(_read_mail_data_text(data))
 
             with open(os.path.join(mail_dir, 'mail.json'), 'w', encoding='utf-8') as f:
-                json.dump(
-                    {
-                        'sender': sender,
-                        'recipient': recipient,
-                        'timestamp': int(time.time()),
-                        'id': mail_id,
-                        'box': 'sent',
-                        'is_read': True
-                    },
-                    f,
-                    ensure_ascii=False,
-                    indent=2
-                )
+                sent_info = {
+                    'sender': sender,
+                    'recipient': recipient,
+                    'timestamp': int(time.time()),
+                    'id': mail_id,
+                    'box': 'sent',
+                    'is_read': True
+                }
+                json.dump(sent_info, f, ensure_ascii=False, indent=2)
             loginfo.write(f"[{sender}][SMTP] Sent copy saved: {mail_id} -> {recipient}")
+            MailEventQueue.append_mail_event("sent", "sent", userGroup, sent_info)
             return True, mail_id
         except Exception as e:
             loginfo.write(f"[{sender}][SMTP] Sent copy save failed: {e}")
@@ -1098,6 +1096,7 @@ def sendMail(sender, recipient, data, session: Optional[SessionState], userGroup
         with open(os.path.join(mail_dir, 'mail.json'), 'w', encoding='utf-8') as f:
             json.dump(mail_info, f, indent=2)
             loginfo.write(f"[{sender}][SMTP] Mail {mail_id} saved successfully")
+            MailEventQueue.append_mail_event("received", "inbox", userGroup, mail_info)
             _save_sender_sent_copy()
             # Provide a synthetic attempt entry for local delivery so DSN aggregation
             # can count attempts and successes correctly.
@@ -1304,6 +1303,7 @@ def sendErrorMail(sender, recipient, data, userGroup, reason="Email delivery fai
     with open(os.path.join(error_mail_dir, 'mail.json'), 'w', encoding='utf-8') as f:
         json.dump(mail_info, f, indent=2)
     loginfo.write(f"[{sender}][SMTP] Error mail {error_mail_id} sent successfully")
+    MailEventQueue.append_mail_event("received", "inbox", userGroup, mail_info)
 
 
 def sendDsnMail(sender, original, attempts, userGroup):
@@ -1408,7 +1408,8 @@ def sendDsnMail(sender, original, attempts, userGroup):
             with open(os.path.join(note_dir, 'content.txt'), 'w', encoding='utf-8') as f:
                 f.write(html)
             with open(os.path.join(note_dir, 'mail.json'), 'w', encoding='utf-8') as f:
-                json.dump({'sender': userGroup.getErrorMailFrom(), 'recipient': note_recipient, 'timestamp': int(time.time()), 'id': note_id}, f, indent=2)
+                note_info = {'sender': userGroup.getErrorMailFrom(), 'recipient': note_recipient, 'timestamp': int(time.time()), 'id': note_id}
+                json.dump(note_info, f, indent=2)
         else:
             # 构建简易 MIME
             boundary = '====boundary_' + ''.join(random.choices(string.ascii_letters + string.digits, k=12))
@@ -1478,9 +1479,11 @@ def sendDsnMail(sender, original, attempts, userGroup):
             with open(os.path.join(note_dir, 'content.txt'), 'w', encoding='utf-8') as f:
                 f.write(mime_text)
             with open(os.path.join(note_dir, 'mail.json'), 'w', encoding='utf-8') as f:
-                json.dump({'sender': from_addr, 'recipient': note_recipient, 'timestamp': int(time.time()), 'id': note_id}, f, indent=2)
+                note_info = {'sender': from_addr, 'recipient': note_recipient, 'timestamp': int(time.time()), 'id': note_id}
+                json.dump(note_info, f, indent=2)
 
         loginfo.write(f"[{sender}][SMTP] DSN saved as {note_id} for {len(attempts)} recipients")
+        MailEventQueue.append_mail_event("received", "inbox", userGroup, note_info)
     except Exception as e:
         loginfo.write(f"[{sender}][SMTP] Failed to save DSN for {sender}: {e}")
 

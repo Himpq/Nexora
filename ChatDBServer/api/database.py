@@ -631,7 +631,7 @@ class User:
         if has_range_arg and not has_keyword and not has_slice:
             return json.dumps({
                 "success": False,
-                "message": "range requires keyword, or use from_pos/to_pos for slice mode"
+                "message": "range requires keyword, or use offset/length for slice mode"
             }, ensure_ascii=False)
 
         # regex 模式必须提供 keyword（正则表达式）
@@ -651,7 +651,7 @@ class User:
             except Exception:
                 return json.dumps({
                     "success": False,
-                    "message": "from_pos/to_pos must be integers"
+                    "message": "offset/length must be integers"
                 }, ensure_ascii=False)
 
             start = max(0, min(start, total_len))
@@ -819,11 +819,43 @@ class User:
             or replacement is not None
             or (isinstance(replacements, list) and len(replacements) > 0)
         )
+        has_patch_update = bool(str(patch or "").strip()) or (isinstance(edits, list) and len(edits) > 0)
+        content_mode_count = sum([
+            1 if context is not None else 0,
+            1 if has_range_replace else 0,
+            1 if has_patch_update else 0,
+        ])
 
-        if context is not None and has_range_replace:
-            return False, "context and range replacement are mutually exclusive"
+        if content_mode_count > 1:
+            return False, "context, range replacement, patch/edits are mutually exclusive"
+
+        is_dry_run = bool(dry_run)
+
+        if is_dry_run and not (has_patch_update or has_range_replace):
+            return False, "dry_run requires patch/edits or range replacement"
+
+        if is_dry_run and (
+            new_title
+            or url is not None
+            or is_public is not None
+            or is_collaborative is not None
+        ):
+            return False, "dry_run cannot update title, url, public or collaborative settings"
+
+        expected = str(expected_sha256 or "").strip().lower()
+        old_sha256 = hashlib.sha256(str(original_content or "").encode("utf-8")).hexdigest()
+
+        if expected and expected != old_sha256:
+            return False, {
+                "success": False,
+                "message": "知识内容 SHA256 与 expected_sha256 不一致，已拒绝修改。",
+                "title": title,
+                "old_sha256": old_sha256,
+                "expected_sha256": expected,
+            }
 
         content_updated = False
+        content_payload = {}
 
         # 更新内容（整段覆盖）
         if context is not None:
@@ -837,38 +869,55 @@ class User:
                     content_updated = True
             except Exception as e:
                 return False, f"Failed to update content: {str(e)}"
+        # 更新内容（统一 diff 或结构化 edits）
+        elif has_patch_update:
+            try:
+                original = safe_read_text(src)
+                current, stats, patch_error = apply_text_patch(
+                    original,
+                    patch_text=str(patch or ""),
+                    edits=edits,
+                )
+
+                if patch_error:
+                    return False, patch_error
+
+                diff_text = build_preview_diff(title, original, current)
+                new_sha256 = hashlib.sha256(str(current or "").encode("utf-8")).hexdigest()
+                content_updated = current != original
+
+                if content_updated and not is_dry_run:
+                    safe_write_text(src, current)
+
+                content_payload = {
+                    "success": True,
+                    "message": "Patch preview generated" if is_dry_run else "Success",
+                    "title": title,
+                    "changed": content_updated,
+                    "dry_run": is_dry_run,
+                    "old_sha256": old_sha256,
+                    "new_sha256": new_sha256,
+                    "diff": diff_text,
+                    "line_separator": line_separator_name(current),
+                    **stats,
+                }
+
+                if is_dry_run:
+                    return True, content_payload
+            except Exception as e:
+                return False, f"Failed to apply patch: {str(e)}"
         # 更新内容（区间替换）
         elif has_range_replace:
             try:
                 original = safe_read_text(src)
                 current = original
 
-                ops = []
-                if isinstance(replacements, list) and replacements:
-                    for item in replacements:
-                        if not isinstance(item, dict):
-                            return False, "replacements must be a list of objects"
-                        s = item.get("from_pos")
-                        e = item.get("to_pos")
-                        rep = item.get("replacement", "")
-                        if s is None or e is None:
-                            return False, "each replacement requires from_pos and to_pos"
-                        ops.append((int(s), int(e), str(rep)))
-                else:
-                    s = 0 if from_pos is None else int(from_pos)
-                    e = len(current) if to_pos is None else int(to_pos)
-                    rep = "" if replacement is None else str(replacement)
-                    ops.append((s, e, rep))
+                if range_error:
+                    return False, range_error
 
-                # 倒序替换，避免索引偏移
-                for s, e, rep in sorted(ops, key=lambda x: x[0], reverse=True):
-                    if s < 0 or e < 0:
-                        return False, "range index cannot be negative"
-                    if s > e:
-                        s, e = e, s
-                    if e > len(current):
-                        return False, f"range out of bounds: ({s}, {e}) > {len(current)}"
-                    current = current[:s] + rep + current[e:]
+                diff_text = build_preview_diff(title, original, current)
+                new_sha256 = hashlib.sha256(str(current or "").encode("utf-8")).hexdigest()
+                content_updated = current != original
 
                 if current != original:
                     safe_write_text(src, current)

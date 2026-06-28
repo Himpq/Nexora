@@ -15,6 +15,7 @@ Each provider adapter must implement `ProviderInterface`:
 - `create_client(api_key, base_url, timeout=120.0)`
 - `create_embedding_client(api_key, base_url, timeout=120.0)` (default=use chat client)
 - `create_chat_completion(client, model, messages, stream=False, **kwargs)`
+- `list_models(client, capability='', request_options=None) -> dict`
 - `upload_file(client, file_obj, purpose='user_data')`
 - `use_responses_api(request_options: dict) -> bool`
 - `create_stream_iterator(client, request_params, use_responses_api) -> iterator`
@@ -42,7 +43,9 @@ Unified stream events consumed by `Model`:
 
 - `providers/volcengine.py`: Ark runtime adapter (`api_type=volcengine`)
 - `providers/dashscope.py`: DashScope compatible-mode adapter (`api_type=dashscope`)
-- `providers/openai.py`: Generic OpenAI adapter (`api_type=openai`)
+- `providers/openai.py`: Generic OpenAI adapter (`api_type=openai`), including OpenAI-compatible `/models` catalog loading and `vision` capability filtering.
+
+For OpenAI-compatible providers whose `/models` response lacks explicit capability fields, `providers.<name>.vision_model_ids` and `providers.<name>.vision_model_patterns` can be set in `models.json` to mark exact vision-capable models.
 
 ## Factory routing
 

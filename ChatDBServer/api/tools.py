@@ -440,7 +440,7 @@ TOOLS = [
                     },
                     "context": {
                         "type": "string",
-                        "description": "基础知识的内容。支持参数模板：{{file:path}}、{{file:path,lines,1,200}}、{{basis:title,chars,0,2000}}。"
+                        "description": "基础知识正文，使用 Markdown。支持模板：{{file:path}}、{{file:path,lines,1,200}}、{{basis:title,chars,start,end}}。"
                     },
                     "url": {
                         "type": "string",
@@ -553,6 +553,49 @@ TOOLS = [
                             },
                             "required": ["from_pos", "to_pos", "replacement"]
                         }
+                    },
+                    "patch": {
+                        "type": "string",
+                        "description": "统一 diff 内容。提供 patch 时不能同时提供 context、区间替换或 edits。支持参数模板 {{file:...}} / {{basis:...}}。"
+                    },
+                    "edits": {
+                        "type": "array",
+                        "description": "结构化精确编辑列表。提供 edits 时不能同时提供 context、区间替换或 patch。",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "action": {
+                                    "type": "string",
+                                    "enum": ["replace", "insert_before", "insert_after", "delete"],
+                                    "description": "编辑动作。"
+                                },
+                                "target": {
+                                    "type": "string",
+                                    "description": "必须精确匹配的目标文本。"
+                                },
+                                "replacement": {
+                                    "type": "string",
+                                    "description": "replace 动作的新文本。支持参数模板 {{file:...}} / {{basis:...}}。"
+                                },
+                                "content": {
+                                    "type": "string",
+                                    "description": "insert_before/insert_after 动作插入的新文本。支持参数模板 {{file:...}} / {{basis:...}}。"
+                                },
+                                "occurrence": {
+                                    "type": "integer",
+                                    "description": "target 多次出现时指定第几处，从 1 开始。"
+                                }
+                            },
+                            "required": ["action", "target"]
+                        }
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "是否只预览不写入，默认 false。仅用于 patch/edits 或区间替换。"
+                    },
+                    "expected_sha256": {
+                        "type": "string",
+                        "description": "可选的知识内容当前 SHA256；不一致时拒绝修改。"
                     }
                 },
                 "required": ["title"]
@@ -571,7 +614,11 @@ TOOLS = [
                 "properties": {
                     "title": {
                         "type": "string",
-                        "description": "根据标题获取基础知识的内容。"
+                        "description": "基础知识标题。title 和 basis_id 二选一。"
+                    },
+                    "basis_id": {
+                        "type": "string",
+                        "description": "基础知识 ID。title 和 basis_id 二选一。"
                     },
                     "basis_id": {
                         "type": "string",
@@ -579,19 +626,19 @@ TOOLS = [
                     },
                     "keyword": {
                         "type": "string",
-                        "description": "关键词或正则表达式（match_mode=regex/rg 时）。"
+                        "description": "关键词；当 match_mode=regex/rg 时按正则表达式解释。不要和 offset/length 同时使用。"
                     },
                     "range": {
                         "type": "integer",
                         "description": "关键词匹配时返回前后字符范围。默认 120。"
                     },
-                    "from_pos": {
+                    "offset": {
                         "type": "integer",
-                        "description": "按字符区间读取的起始索引（包含）。"
+                        "description": "字符切片起始位置，0 表示第一个字符。必须和 length 同时提供，不要和 keyword 同时使用。"
                     },
-                    "to_pos": {
+                    "length": {
                         "type": "integer",
-                        "description": "按字符区间读取的结束索引（不包含）。"
+                        "description": "字符切片读取数量。必须和 offset 同时提供，不要和 keyword 同时使用。"
                     },
                     "match_mode": {
                         "type": "string",
@@ -968,23 +1015,100 @@ TOOLS = [
     #         "name": "getMainTitle",
     #         "description": "获取之前某次交流的总结。用于快速了解历史交流的核心内容，无需加载完整对话。offset=1表示上一次交流，offset=2表示上上次。",
 
-    #         "parameters": {
-    #             "type": "object",
-    #             "properties": {
-    #                 "offset": {
-    #                     "type": "integer",
-    #                     "description": "从最新往前数第offset次交流（1=上一次交流，2=上上次交流）"
-    #                 }
-    #             },
-    #             "required": ["offset"]
-    #         }
-    #     }
-    # }
     {
         "type": "function",
         "function": {
-            "name": "file_create",
-            "description": "在用户文件沙箱中创建新文本文件。文件已存在时默认失败，可通过 overwrite=true 覆盖。",
+            "name": "temp_context_read",
+            "description": "读取当前回复作用域中的临时长文本缓存。先从长工具结果中取得 resource_id，再用 offset+length 分段读取。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "resource_id": {
+                        "type": "string",
+                        "description": "临时资源 ID，由前一次长工具结果返回。"
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "读取起始位置，0 表示第一个字符，默认 0。"
+                    },
+                    "length": {
+                        "type": "integer",
+                        "description": "读取字符数量，默认 2000。"
+                    }
+                },
+                "required": ["resource_id"]
+            }
+        }
+    },
+
+    {
+        "type": "function",
+        "function": {
+            "name": "temp_context_search",
+            "description": "在当前回复作用域的临时长文本缓存中搜索。传 keyword 做普通匹配，传 regex 做正则匹配。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "resource_id": {
+                        "type": "string",
+                        "description": "可选。为空时搜索当前回复作用域内的全部临时资源。"
+                    },
+                    "keyword": {
+                        "type": "string",
+                        "description": "普通搜索关键词。keyword 和 regex 二选一。"
+                    },
+                    "regex": {
+                        "type": "string",
+                        "description": "正则表达式。keyword 和 regex 二选一。"
+                    },
+                    "case_sensitive": {
+                        "type": "boolean",
+                        "description": "是否区分大小写，默认 false。"
+                    },
+                    "range": {
+                        "type": "integer",
+                        "description": "每个命中前后返回的上下文字符数，默认 80。"
+                    },
+                    "max_matches": {
+                        "type": "integer",
+                        "description": "最大返回命中数，默认 20。"
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+
+    {
+        "type": "function",
+        "function": {
+            "name": "temp_context_list",
+            "description": "列出当前回复作用域中仍可读取的临时长文本资源。",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+
+    {
+        "type": "function",
+        "function": {
+            "name": "temp_context_clear",
+            "description": "清空当前回复作用域中的临时长文本资源。",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cloud_file_create",
+            "description": "在用户云端文件区创建新文本文件。文件已存在时默认失败，可通过 overwrite=true 覆盖。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1005,10 +1129,10 @@ TOOLS = [
                 "type": "object",
                 "properties": {
                     "file_path": {"type": "string", "description": "文件路径，格式如 {username}/files/{filename} 或仅 filename"},
-                    "from_line": {"type": "integer", "description": "起始行（1-based，包含）"},
-                    "to_line": {"type": "integer", "description": "结束行（1-based，包含）"},
-                    "from_pos": {"type": "integer", "description": "起始字符索引（0-based，包含）"},
-                    "to_pos": {"type": "integer", "description": "结束字符索引（0-based，不包含）"}
+                    "from_line": {"type": "integer", "description": "按行读取的起始行，1 表示第一行。不要和 offset/length 同时使用。"},
+                    "to_line": {"type": "integer", "description": "按行读取的结束行，包含该行。不要和 offset/length 同时使用。"},
+                    "offset": {"type": "integer", "description": "按字符切片读取的起始位置，0 表示第一个字符。必须和 length 同时提供，不要和 from_line/to_line 同时使用。"},
+                    "length": {"type": "integer", "description": "按字符切片读取的字符数量。必须和 offset 同时提供，不要和 from_line/to_line 同时使用。"}
                 },
                 "required": ["file_path"]
             }
@@ -1017,19 +1141,19 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "file_write",
-            "description": "写入用户文件沙箱中的文本文件。支持整文件覆盖、按行范围替换、按句子/关键词替换。",
+            "name": "cloud_file_write",
+            "description": "写入用户云端文件区中的文本文件。三种写入方式三选一：content 整文件覆盖；from_line/to_line+replacement 按行替换；old_text/new_text 按文本或正则替换。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "file_path": {"type": "string", "description": "文件路径，格式如 {username}/files/{filename} 或仅 filename"},
-                    "content": {"type": "string", "description": "整文件覆盖内容（与其他替换参数互斥）"},
-                    "from_line": {"type": "integer", "description": "按行替换的起始行（1-based，包含）"},
-                    "to_line": {"type": "integer", "description": "按行替换的结束行（1-based，包含）"},
-                    "replacement": {"type": "string", "description": "按行替换内容（可多行）"},
-                    "old_text": {"type": "string", "description": "旧文本（用于文本替换）"},
-                    "new_text": {"type": "string", "description": "新文本（用于文本替换）"},
-                    "regex": {"type": "boolean", "description": "old_text 是否作为正则表达式，默认 false"},
+                    "content": {"type": "string", "description": "整文件覆盖内容。不要和其它替换参数同时使用。"},
+                    "from_line": {"type": "integer", "description": "按行替换的起始行，1 表示第一行。与 to_line 和 replacement 配合使用。"},
+                    "to_line": {"type": "integer", "description": "按行替换的结束行，包含该行。与 from_line 和 replacement 配合使用。"},
+                    "replacement": {"type": "string", "description": "按行替换的新内容，可多行。"},
+                    "old_text": {"type": "string", "description": "要查找的旧文本。与 new_text 配合使用。"},
+                    "new_text": {"type": "string", "description": "替换后的新文本。与 old_text 配合使用。"},
+                    "regex": {"type": "boolean", "description": "old_text 是否按正则表达式匹配，默认 false。"},
                     "max_replace": {"type": "integer", "description": "最大替换次数，默认全部替换"}
                 },
                 "required": ["file_path"]
@@ -1039,8 +1163,44 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "file_find",
-            "description": "在用户文件沙箱中的文本文件内查找关键词或正则，返回行号、列号和命中文本。",
+            "name": "cloud_file_patch",
+            "description": "对用户云端文件区中的单个文本文件执行精确 patch。必须且只能提供 patch 或 edits 其中一种；patch 使用统一 diff 格式，edits 使用结构化精确编辑。dry_run=true 时只返回预览 diff，不写入。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "文件路径，格式如 {username}/files/{filename} 或仅 filename。"},
+                    "patch": {"type": "string", "description": "统一 diff 内容。提供 patch 时不能同时提供 edits。"},
+                    "edits": {
+                        "type": "array",
+                        "description": "结构化精确编辑列表。提供 edits 时不能同时提供 patch。",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "action": {
+                                    "type": "string",
+                                    "enum": ["replace", "insert_before", "insert_after", "delete"],
+                                    "description": "编辑动作。"
+                                },
+                                "target": {"type": "string", "description": "必须精确匹配的目标文本。"},
+                                "replacement": {"type": "string", "description": "replace 动作的新文本。"},
+                                "content": {"type": "string", "description": "insert_before/insert_after 动作插入的新文本。"},
+                                "occurrence": {"type": "integer", "description": "target 多次出现时指定第几处，从 1 开始。"}
+                            },
+                            "required": ["action", "target"]
+                        }
+                    },
+                    "dry_run": {"type": "boolean", "description": "是否只预览不写入，默认 false。"},
+                    "expected_sha256": {"type": "string", "description": "可选的文件当前内容 SHA256；不一致时拒绝修改。"}
+                },
+                "required": ["file_path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cloud_file_find",
+            "description": "在用户云端文件区的文本文件内查找关键词或正则，返回行号、列号和命中文本。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1057,14 +1217,15 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "file_list",
-            "description": "读取用户文件沙箱中的文件，支持关键词筛选和 regex 匹配文件名。",
+            "name": "cloud_file_list",
+            "description": "分页列出用户云端文件区中的文件，按更新时间倒序返回。可用 query 筛选 alias、original_name 或 path。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "筛选关键词（匹配 alias/original_name/path）"},
                     "regex": {"type": "boolean", "description": "是否按 regex 匹配 query，默认 false"},
-                    "max_items": {"type": "integer", "description": "最大返回条数，默认 200"}
+                    "offset": {"type": "integer", "description": "分页起始位置，0 表示第一条，默认 0。"},
+                    "limit": {"type": "integer", "description": "分页返回数量，默认 200，最大 1000。"}
                 },
                 "required": []
             }
@@ -1073,8 +1234,8 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "file_remove",
-            "description": "删除用户文件沙箱中的文件。",
+            "name": "cloud_file_remove",
+            "description": "删除用户云端文件区中的文件。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1092,11 +1253,11 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "recipient": {"type": "string", "description": "Recipient email address"},
-                    "subject": {"type": "string", "description": "Email subject"},
-                    "content": {"type": "string", "description": "Email body content. 支持参数模板 {{file:path}}、{{file:path,lines,1,200}}、{{basis:title,chars,0,2000}}"},
-                    "knowledge_title": {"type": "string", "description": "Optional basis knowledge title; used when content is empty"},
-                    "is_html": {"type": "boolean", "description": "Send as HTML when true"}
+                    "recipient": {"type": "string", "description": "收件人邮箱地址。"},
+                    "subject": {"type": "string", "description": "邮件主题。"},
+                    "content": {"type": "string", "description": "邮件正文。支持模板：{{file:path}}、{{file:path,lines,1,200}}、{{basis:title,chars,start,end}}。"},
+                    "knowledge_title": {"type": "string", "description": "可选。content 为空时，从该标题的基础知识读取正文。"},
+                    "is_html": {"type": "boolean", "description": "是否按 HTML 邮件发送，默认 false。"}
                 },
                 "required": ["recipient", "subject"]
             }
@@ -1110,7 +1271,7 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "mail_id": {"type": "string", "description": "The ID of the email to retrieve"},
+                    "mail_id": {"type": "string", "description": "要读取的邮件 ID，来自 get_email_list 的返回结果。"},
                     "content_type": {
                         "type": "integer",
                         "description": "返回内容类型：0=提取文本（默认，轻量），1=完整内容（含HTML与原始内容）",
@@ -1145,6 +1306,14 @@ TOOLS = [
                     "date_range": {
                         "type": "integer",
                         "description": "时间范围（天），默认15，表示仅返回最近N天邮件"
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "分页起始位置，0 表示第一封邮件，默认 0。与 limit 配合使用，例如 offset=80, limit=20 表示从第 80 封开始返回 20 封。"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "分页返回数量，默认 20，范围 1-100。与 offset 配合使用。"
                     }
                 },
                 "required": []

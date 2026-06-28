@@ -3627,6 +3627,8 @@ body.settings-companion-mode #adminPublicApiDeleteModal {
     border-left: 2px solid #ddd;
     padding-left: 10px;
     margin-top: 5px;
+    max-height: none !important;
+    overflow-y: visible !important;
 }
 .thinking-block.collapsed .thinking-content { display: none; }
 
@@ -4578,6 +4580,13 @@ textarea {
   padding: 5px 0;
   outline: none;
   background: transparent;
+}
+#messageInput {
+  box-sizing: border-box;
+  display: block;
+  line-height: 1.45;
+  min-height: calc(15px * 1.45 + 10px);
+  overflow-y: hidden;
 }
 .input-footer {
   display: flex;

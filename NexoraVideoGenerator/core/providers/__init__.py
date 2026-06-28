@@ -1,0 +1,1 @@
+# NexoraVideoGenerator provider module

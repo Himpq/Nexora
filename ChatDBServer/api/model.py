@@ -17,6 +17,7 @@ from tools import TOOLS, canonicalize_tool_name
 from tool_executor import ToolExecutor
 from database import User, BASIS
 from conversation_manager import ConversationManager
+from context_manager import ChatContextManager
 from provider_factory import create_provider_adapter
 from temp_context_store import TempContextStore
 from server_quota import get_generation_quota_gate
@@ -244,6 +245,7 @@ class Model:
                 self.model_name = default_model
             
         self.conversation_manager = ConversationManager(username)
+        self.chat_context_manager = ChatContextManager(self)
         
         # 对话ID管理
         if conversation_id:
@@ -2444,6 +2446,16 @@ class Model:
         )
         provider = getattr(self, 'provider', 'volcengine')
         use_responses_api = self._provider_use_responses_api(provider)
+        disabled_injected_tool_names = {
+            "knowledge_graph_read",
+            "server_web_search",
+            "server_render_page",
+            "relay_web_search",
+            "arxiv_search",
+            "conversation_context_length",
+            "conversation_context_read",
+            "conversation_context_search",
+        }
 
         # 1) 优先注入 provider 级 native tools（由 model_adapters.json 驱动）
         if getattr(self, "native_search_tools", None):
@@ -3064,6 +3076,97 @@ class Model:
             msg = f"错误：{str(e)}"
             self._log_tool_usage(function_name or original_function_name, args, msg, False, start_ts)
             return msg
+
+    def _build_function_running_step(
+        self,
+        function_name: str,
+        arguments: str,
+        call_id: str,
+        round_num: int,
+        func_call: Optional[Dict[str, Any]] = None,
+        *,
+        status: str = "running",
+        started_at: Optional[float] = None,
+        tick: int = 0,
+        include_arguments: bool = False
+    ) -> Dict[str, Any]:
+        """构建工具执行中的流式状态事件，让前端在长工具执行期间保持可见进度。"""
+        elapsed_ms = 0
+
+        if started_at is not None:
+            elapsed_ms = int(max(0.0, time.time() - float(started_at)) * 1000.0)
+
+        step = {
+            "type": "function_call_running",
+            "name": str(function_name or "").strip(),
+            "call_id": str(call_id or ""),
+            "round": int(round_num) + 1,
+            "status": str(status or "running").strip() or "running",
+            "elapsed_ms": elapsed_ms,
+            "tick": int(max(0, tick)),
+            "streaming": True
+        }
+
+        if include_arguments:
+            step["arguments"] = str(arguments or "{}")
+
+        if isinstance(func_call, dict) and "index" in func_call:
+            step["index"] = func_call.get("index")
+
+        return step
+
+    def _start_function_running_heartbeat(
+        self,
+        function_name: str,
+        arguments: str,
+        call_id: str,
+        round_num: int,
+        func_call: Optional[Dict[str, Any]],
+        started_at: float
+    ) -> Optional[threading.Event]:
+        """在同步工具执行期间推送业务级心跳，避免前端误判为长时间无响应。"""
+        push_chunk = getattr(self, "_stream_direct_push_chunk", None)
+
+        if not callable(push_chunk):
+            return None
+
+        stop_event = threading.Event()
+        interval_sec = 4.0
+
+        def _heartbeat_loop():
+            tick = 0
+
+            while not stop_event.wait(interval_sec):
+                tick += 1
+                running_step = self._build_function_running_step(
+                    function_name,
+                    arguments,
+                    call_id,
+                    round_num,
+                    func_call,
+                    status="running",
+                    started_at=started_at,
+                    tick=tick,
+                    include_arguments=False
+                )
+
+                try:
+                    push_chunk(running_step)
+                except Exception as heartbeat_error:
+                    stop_event.set()
+                    print(f"[FUNCTION_STREAM] running heartbeat stopped: {heartbeat_error}")
+                    break
+
+        safe_tool_name = canonicalize_tool_name(function_name) or "tool"
+        thread_name = f"function-running-{safe_tool_name[:32]}"
+        heartbeat_thread = threading.Thread(target=_heartbeat_loop, name=thread_name, daemon=True)
+        heartbeat_thread.start()
+        return stop_event
+
+    def _stop_function_running_heartbeat(self, stop_event: Optional[threading.Event]) -> None:
+        """停止工具执行状态心跳。"""
+        if stop_event is not None:
+            stop_event.set()
 
     def _infer_tool_success(self, result: Any) -> bool:
         """根据工具返回文本做轻量成功率判定（无异常但业务失败也计失败）。"""
@@ -4580,7 +4683,10 @@ class Model:
                 # Cache Hit: 仅发送新消息
                 print(f"[CACHE] Hit! Resuming from: {last_response_id}")
                 previous_response_id = last_response_id
-                messages = [{"role": "user", "content": user_content}]
+                messages = self.chat_context_manager.build_current_turn_messages(
+                    current_user_content=user_content,
+                    system_injection_texts=current_turn_system_injections,
+                )
                 messages_has_full_context = False
             else:
                 # Cache Miss: 全量构建
@@ -5762,11 +5868,26 @@ class Model:
                                 fc_name = str(event.get("name", "") or "").strip()
                                 if not fc_name:
                                     continue
-                                function_calls.append({
+                                fc_arguments = str(event.get("arguments", "{}") or "{}")
+                                fc_call_id = str(event.get("call_id", "") or "")
+                                immediate_call = {
+                                    "type": "function_call",
                                     "name": fc_name,
-                                    "arguments": str(event.get("arguments", "{}") or "{}"),
-                                    "call_id": str(event.get("call_id", "") or ""),
-                                })
+                                    "arguments": fc_arguments,
+                                    "call_id": fc_call_id,
+                                    "round": int(round_num) + 1,
+                                }
+                                stored_call = {
+                                    "name": fc_name,
+                                    "arguments": fc_arguments,
+                                    "call_id": fc_call_id,
+                                    "_emitted_call_chunk": True,
+                                }
+                                if "index" in event:
+                                    immediate_call["index"] = event.get("index")
+                                    stored_call["index"] = event.get("index")
+                                function_calls.append(stored_call)
+                                yield immediate_call
                                 continue
 
                             if ev_type == "usage":
@@ -6015,9 +6136,17 @@ class Model:
 
                     # 本轮文本内容作为步骤加入
                     if round_reasoning:
-                        process_steps.append({"type": "reasoning_content", "content": round_reasoning})
+                        process_steps.append({
+                            "type": "reasoning_content",
+                            "content": round_reasoning,
+                            "round": int(round_num) + 1
+                        })
                     if round_content:
-                        process_steps.append({"type": "content", "content": round_content})
+                        process_steps.append({
+                            "type": "content",
+                            "content": round_content,
+                            "round": int(round_num) + 1
+                        })
                     
                     # 处理函数调用
                     if function_calls:
@@ -6056,10 +6185,14 @@ class Model:
                                 "type": "function_call",
                                 "name": func_name,
                                 "arguments": func_args,
-                                "call_id": call_id
+                                "call_id": call_id,
+                                "round": int(round_num) + 1
                             }
+                            if "index" in func_call:
+                                step_call["index"] = func_call.get("index")
                             process_steps.append(step_call)
-                            yield step_call
+                            if not bool(func_call.get("_emitted_call_chunk")):
+                                yield step_call
                             
                             # 执行函数
                             result = self._execute_function(func_name, func_args)
@@ -6074,7 +6207,9 @@ class Model:
                                 "type": "function_result",
                                 "name": func_name,
                                 "result": result,
-                                "call_id": call_id
+                                "model_visible_result": model_visible_result,
+                                "call_id": call_id,
+                                "round": int(round_num) + 1
                             }
                             process_steps.append(step_result)
                             if func_name == "question":
@@ -7098,8 +7233,6 @@ class Model:
             and messages[-1].get("role") == "user"
             and self._content_signature_for_dedupe(messages[-1].get("content", "")) == final_user_sig
         )
-        if not last_is_same_user:
-            messages.append({"role": "user", "content": final_user_content})
 
         # 重要：剔除历史对话中的 reasoning_content 字段
         # 根据文档：模型版本在251228之前需要剔除，避免影响推理逻辑

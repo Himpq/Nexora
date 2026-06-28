@@ -5,6 +5,7 @@ import re
 import threading
 import time
 import uuid
+import hashlib
 from typing import Any, Dict, List, Optional, Tuple
 
 from secure import safe_filename
@@ -305,7 +306,7 @@ class UserFileSandbox:
             alias = f"{alias}.txt"
             ext = ".txt"
         if ext not in self.ALLOWED_TEXT_EXTS:
-            raise ValueError(f"file_create 仅支持文本后缀，当前不支持: {ext}")
+            raise ValueError(f"cloud_file_create 仅支持文本后缀，当前不支持: {ext}")
 
         text = "" if content is None else str(content)
         now = int(time.time())
@@ -385,7 +386,13 @@ class UserFileSandbox:
                 },
             }
 
-    def list_files(self, query: Optional[str] = None, regex: bool = False, max_items: int = 200) -> List[Dict[str, Any]]:
+    def list_files(
+        self,
+        query: Optional[str] = None,
+        regex: bool = False,
+        offset: int = 0,
+        limit: int = 200,
+    ) -> Dict[str, Any]:
         with self._lock:
             files = self._load_index().get("files", {})
             items = list(files.values())
@@ -411,7 +418,16 @@ class UserFileSandbox:
             items = filtered
 
         items.sort(key=lambda x: int(x.get("updated_at", 0) or 0), reverse=True)
-        return items[:max(1, min(int(max_items or 200), 1000))]
+        total = len(items)
+        safe_offset = max(0, min(int(offset or 0), total))
+        safe_limit = max(1, min(int(limit or 200), 1000))
+
+        return {
+            "total": total,
+            "offset": safe_offset,
+            "limit": safe_limit,
+            "files": items[safe_offset:safe_offset + safe_limit],
+        }
 
     def _get_entry(self, file_ref: str) -> Dict[str, Any]:
         alias = self._resolve_alias(file_ref)
@@ -489,7 +505,7 @@ class UserFileSandbox:
             result_content = content[start:end]
             selected_start_pos = start
             mode = "char_range"
-            slice_meta = {"from_pos": start, "to_pos": end}
+            slice_meta = {"offset": start, "length": end - start, "end_offset": end}
 
         # Enforce a hard read cap for model-facing outputs:
         # at most 500 lines and 10,000 chars per call.
@@ -513,9 +529,9 @@ class UserFileSandbox:
             absolute_cut_pos = selected_start_pos + effective_cut
             truncated_line, truncated_col = _line_col_at(content, absolute_cut_pos)
             truncate_notice = (
-                f"\n\n[系统提示] file_read 输出已截断（每次最多 {limit_lines} 行且 {limit_chars} 字）。"
+                f"\n\n[系统提示] cloud_file_read 输出已截断（每次最多 {limit_lines} 行且 {limit_chars} 字）。"
                 f" 截断位置: line={truncated_line}, column={truncated_col}。"
-                f" 若需继续读取，请从该位置之后继续调用 file_read。"
+                f" 若需继续读取，请从该位置之后继续调用 cloud_file_read。"
             )
             # Put notice in content body so model sees it directly.
             result_content += truncate_notice
@@ -628,6 +644,93 @@ class UserFileSandbox:
                     "alias": entry.get("alias"),
                     "sandbox_path": entry.get("sandbox_path"),
                     "size": entry.get("size"),
+                    "updated_at": entry.get("updated_at"),
+                },
+            }
+
+    def patch_file(
+        self,
+        file_ref: str,
+        patch: Optional[str] = None,
+        edits: Optional[List[Dict[str, Any]]] = None,
+        dry_run: bool = False,
+        expected_sha256: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """对云端文本文件应用统一 diff 或结构化 edits。"""
+        entry = self._get_entry(file_ref)
+        alias = str(entry.get("alias"))
+
+        with self._lock:
+            index = self._load_index()
+            files = index.get("files", {})
+            entry = files.get(alias)
+
+            if not entry:
+                raise FileNotFoundError(f"file not found: {file_ref}")
+
+            abs_path = self._get_abs_path(entry)
+
+            with open(abs_path, "r", encoding="utf-8") as f:
+                current = f.read()
+
+            old_raw = current.encode("utf-8")
+            old_sha256 = hashlib.sha256(old_raw).hexdigest()
+            expected = str(expected_sha256 or "").strip().lower()
+
+            if expected and expected != old_sha256:
+                return {
+                    "success": False,
+                    "message": "文件内容 SHA256 与 expected_sha256 不一致，已拒绝修改。",
+                    "path": entry.get("sandbox_path") or file_ref,
+                    "old_sha256": old_sha256,
+                    "expected_sha256": expected,
+                }
+
+            updated, stats, apply_error = apply_text_patch(
+                current,
+                patch_text=str(patch or ""),
+                edits=edits,
+            )
+
+            if apply_error:
+                return {
+                    "success": False,
+                    "message": apply_error,
+                    "path": entry.get("sandbox_path") or file_ref,
+                    "old_sha256": old_sha256,
+                }
+
+            new_raw = updated.encode("utf-8")
+            new_sha256 = hashlib.sha256(new_raw).hexdigest()
+            diff_text = build_preview_diff(alias, current, updated)
+            changed = updated != current
+
+            if changed and not bool(dry_run):
+                with open(abs_path, "w", encoding="utf-8") as f:
+                    f.write(updated)
+
+                now = int(time.time())
+                entry["updated_at"] = now
+                entry["size"] = os.path.getsize(abs_path)
+                files[alias] = entry
+                index["files"] = files
+                self._save_index(index)
+
+            return {
+                "success": True,
+                "changed": changed,
+                "dry_run": bool(dry_run),
+                "path": entry.get("sandbox_path") or file_ref,
+                "mode": stats.get("mode", ""),
+                "old_sha256": old_sha256,
+                "new_sha256": new_sha256,
+                "diff": diff_text,
+                "line_separator": line_separator_name(updated),
+                **stats,
+                "file": {
+                    "alias": entry.get("alias"),
+                    "sandbox_path": entry.get("sandbox_path"),
+                    "size": len(new_raw) if bool(dry_run) else entry.get("size"),
                     "updated_at": entry.get("updated_at"),
                 },
             }

@@ -28,7 +28,6 @@ _DEFAULTS = {
     "window_frameless": False,
     "window_width": 1000,
     "window_height": 700,
-    "preferred_model_id": "deepseek-v3-2-251201",
     "notes_window_width": 410,
     "notes_window_height": 473,
     "notes_window_pinned": False,
@@ -61,14 +60,29 @@ class Config:
         else:
             self._data = dict(_DEFAULTS)
 
+        changed = self._drop_deprecated_local_keys()
+
         # 首次运行时生成持久化 agent_token（每台设备唯一，重启不变）
         if not self._data.get("agent_token"):
             self._data["agent_token"] = secrets.token_hex(24)
+            changed = True
+
+        if changed:
             self._save()
 
     def _save(self):
         with open(_CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(self._data, f, ensure_ascii=False, indent=2)
+
+    def _drop_deprecated_local_keys(self) -> bool:
+        changed = False
+
+        for key in _DEPRECATED_LOCAL_KEYS:
+            if key in self._data:
+                self._data.pop(key, None)
+                changed = True
+
+        return changed
 
     def get(self, key: str, default=None):
         return self._data.get(key, _DEFAULTS.get(key, default))

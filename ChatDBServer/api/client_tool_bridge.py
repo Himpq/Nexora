@@ -9,8 +9,32 @@ _LOCK = threading.Lock()
 _COND = threading.Condition(_LOCK)
 _PENDING: Dict[str, List[Dict[str, Any]]] = {}
 _RESPONSES: Dict[str, Dict[str, Any]] = {}
+_REQUEST_LISTENERS = []
 
 _MAX_PENDING_PER_KEY = 8
+
+
+def add_request_listener(listener):
+    """注册客户端工具请求监听器，用于浏览器 WSS 推送。"""
+    if not callable(listener):
+        return
+
+    with _LOCK:
+        if listener not in _REQUEST_LISTENERS:
+            _REQUEST_LISTENERS.append(listener)
+
+
+def _notify_request_listeners(username: str, conversation_id: str, request_obj: Dict[str, Any]) -> None:
+    listeners = []
+
+    with _LOCK:
+        listeners = list(_REQUEST_LISTENERS)
+
+    for listener in listeners:
+        try:
+            listener(username, conversation_id, copy.deepcopy(request_obj))
+        except Exception as e:
+            print(f"[ClientToolBridge] request listener failed: {e}")
 
 
 def _make_key(username: str, conversation_id: str) -> str:
@@ -85,6 +109,8 @@ def enqueue_request(
         if len(queue) > _MAX_PENDING_PER_KEY:
             del queue[0 : len(queue) - _MAX_PENDING_PER_KEY]
         _COND.notify_all()
+
+    _notify_request_listeners(username, conversation_id, request_obj)
     return request_obj
 
 
@@ -93,12 +119,20 @@ def wait_for_result(
     conversation_id: str,
     request_id: str,
     timeout_ms: int = 8000,
+    cancel_checker=None,
 ) -> Dict[str, Any]:
     timeout = _clamp_timeout_ms(timeout_ms)
     key = _make_key(username, conversation_id)
     deadline = time.time() + (timeout / 1000.0)
     with _COND:
         while True:
+            if callable(cancel_checker) and cancel_checker():
+                _remove_request_locked(key, request_id)
+                return {
+                    "success": False,
+                    "error": "stream_cancelled",
+                    "message": "用户已停止生成",
+                }
             resp = _RESPONSES.pop(request_id, None)
             if isinstance(resp, dict):
                 _remove_request_locked(key, request_id)

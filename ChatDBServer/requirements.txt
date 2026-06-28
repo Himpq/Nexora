@@ -8,3 +8,4 @@ python-docx
 pypdf
 python-pptx
 flask-sock
+websocket-client

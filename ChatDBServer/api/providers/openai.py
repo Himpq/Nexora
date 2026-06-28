@@ -8,6 +8,20 @@ from openai import OpenAI
 from provider_base import ProviderInterface
 
 
+OPENAI_CONTEXT_WINDOW_KEYS = (
+    "context_window",
+    "context_length",
+    "max_context_tokens",
+    "max_input_tokens",
+    "max_prompt_tokens",
+    "input_token_limit",
+    "prompt_token_limit",
+    "contextsize",
+    "context_size",
+)
+OPENAI_CONTEXT_WINDOW_MAX = 4_000_000
+
+
 class OpenAIProvider(ProviderInterface):
     @property
     def api_type(self) -> str:
@@ -53,6 +67,99 @@ class OpenAIProvider(ProviderInterface):
             base_url=base_url,
             timeout=timeout,
         )
+
+    def list_models(
+        self,
+        *,
+        client: Any,
+        capability: str = "",
+        request_options: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        cap = str(capability or "").strip().lower()
+        req_opts = request_options if isinstance(request_options, dict) else {}
+        catalog_url = str(self.provider_config.get("models_catalog_url", "") or "").strip()
+
+        if catalog_url:
+            api_key = self._resolve_api_key(client)
+            if not api_key:
+                return {
+                    "ok": False,
+                    "provider": self.provider_name,
+                    "api_type": self.api_type,
+                    "capability": cap,
+                    "error": "missing_api_key",
+                    "models": [],
+                }
+
+            ok, payload, err = self._fetch_models_payload(
+                url=catalog_url,
+                api_key=api_key,
+                timeout=self._resolve_models_catalog_timeout(req_opts),
+            )
+            if not ok:
+                return {
+                    "ok": False,
+                    "provider": self.provider_name,
+                    "api_type": self.api_type,
+                    "capability": cap,
+                    "source": "models_catalog_url",
+                    "error": err or "fetch_models_failed",
+                    "models": [],
+                }
+
+            source = "models_catalog_url"
+        else:
+            if client is None:
+                return {
+                    "ok": False,
+                    "provider": self.provider_name,
+                    "api_type": self.api_type,
+                    "capability": cap,
+                    "error": "missing_client",
+                    "models": [],
+                }
+
+            try:
+                payload = self._to_plain_payload(client.models.list())
+            except Exception as e:
+                return {
+                    "ok": False,
+                    "provider": self.provider_name,
+                    "api_type": self.api_type,
+                    "capability": cap,
+                    "source": "openai_models_api",
+                    "error": f"fetch_models_failed: {str(e)}",
+                    "models": [],
+                }
+
+            source = "openai_models_api"
+
+        raw_items = self._extract_model_items(payload)
+        if raw_items is None:
+            return {
+                "ok": False,
+                "provider": self.provider_name,
+                "api_type": self.api_type,
+                "capability": cap,
+                "source": source,
+                "error": "invalid_models_payload",
+                "models": [],
+            }
+
+        normalized = self._normalize_model_items(raw_items)
+        if cap:
+            normalized = [m for m in normalized if self._model_matches_capability(m, cap)]
+
+        return {
+            "ok": True,
+            "provider": self.provider_name,
+            "api_type": self.api_type,
+            "capability": cap,
+            "source": source,
+            "count": len(normalized),
+            "context_window_status": self._build_context_window_status(normalized),
+            "models": normalized,
+        }
 
     def use_responses_api(self, request_options=None) -> bool:
         return False

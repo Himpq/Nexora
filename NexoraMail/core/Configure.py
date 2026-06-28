@@ -79,14 +79,6 @@ def _default_config():
             "auth": {"api_key": ""},
             "security": {"local_only_when_no_api_key": True},
         },
-        "integrations": {
-            "nexora": {
-                "enabled": False,
-                "base_url": "http://127.0.0.1:5000",
-                "api_key": "",
-                "timeout": 10,
-            }
-        },
     }
 
 
@@ -150,7 +142,6 @@ def _normalize_legacy_keys(cfg):
         "UserGroups": "user_groups",
         "wMailServerSettings": "wmailserver_settings",
         "APIServer": "api_server",
-        "Integrations": "integrations",
     }
     for old, new in top_map.items():
         if old in cfg and new not in cfg:
@@ -162,7 +153,14 @@ def _normalize_legacy_keys(cfg):
     user_groups = cfg.setdefault("user_groups", {})
     wset = cfg.setdefault("wmailserver_settings", {})
     api = cfg.setdefault("api_server", {})
-    integrations = cfg.setdefault("integrations", {})
+
+    if "integrations" in cfg:
+        cfg.pop("integrations", None)
+        changed = True
+
+    if "Integrations" in cfg:
+        cfg.pop("Integrations", None)
+        changed = True
 
     if isinstance(smtp, dict):
         if "MailRelay" in smtp and "mail_relay" not in smtp:
@@ -299,11 +297,6 @@ def _normalize_legacy_keys(cfg):
             security["local_only_when_no_api_key"] = security["localOnlyWhenNoApiKey"]
             changed = True
 
-    if isinstance(integrations, dict):
-        if "Nexora" in integrations and "nexora" not in integrations:
-            integrations["nexora"] = integrations["Nexora"]
-            changed = True
-
     return changed
 
 
@@ -314,7 +307,6 @@ def _inject_runtime_aliases(cfg):
     cfg["UserGroups"] = cfg.get("user_groups", {})
     cfg["wMailServerSettings"] = cfg.get("wmailserver_settings", {})
     cfg["APIServer"] = cfg.get("api_server", {})
-    cfg["Integrations"] = cfg.get("integrations", {})
 
     smtp = cfg.get("smtp_services", {})
     if isinstance(smtp, dict):
@@ -387,10 +379,6 @@ def _inject_runtime_aliases(cfg):
         api["listen"] = listen
         api["auth"] = auth
         api["security"] = security
-
-    ints = cfg.get("integrations", {})
-    if isinstance(ints, dict):
-        ints["Nexora"] = ints.get("nexora", ints.get("Nexora", {}))
 
 
 def _sync_alias_back_to_canonical(cfg):
@@ -483,11 +471,6 @@ def _sync_alias_back_to_canonical(cfg):
         api["auth"] = auth
         api["security"] = security
 
-    ints = cfg.get("integrations", {})
-    if isinstance(ints, dict):
-        if "Nexora" in ints:
-            ints["nexora"] = ints["Nexora"]
-
 
 def _build_canonical_for_save(cfg):
     out = json.loads(json.dumps(cfg, ensure_ascii=False))
@@ -497,6 +480,8 @@ def _build_canonical_for_save(cfg):
     # Remove legacy top-level aliases
     for k in ["SMTPServices", "POP3Services", "UserGroups", "wMailServerSettings", "APIServer", "Integrations"]:
         out.pop(k, None)
+
+    out.pop("integrations", None)
 
     # Remove legacy nested aliases
     smtp = out.get("smtp_services", {})
@@ -550,10 +535,6 @@ def _build_canonical_for_save(cfg):
         security = api.get("security", {})
         if isinstance(security, dict):
             security.pop("localOnlyWhenNoApiKey", None)
-
-    ints = out.get("integrations", {})
-    if isinstance(ints, dict):
-        ints.pop("Nexora", None)
 
     return out
 
@@ -625,4 +606,3 @@ def ensureDefaults(defaults: dict):
     if updated:
         save()
     return updated
-

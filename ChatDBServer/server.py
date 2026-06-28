@@ -53,8 +53,36 @@ from server_quota import (
 )
 from flask_sock import Sock
 
+
+def _load_flask_secret_key() -> str:
+    env_key = str(os.environ.get('CHATDB_SECRET_KEY') or os.environ.get('NEXORA_SECRET_KEY') or '').strip()
+
+    if env_key:
+        return env_key
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    data_dir = os.path.join(base_dir, 'data')
+    secret_path = os.path.join(data_dir, 'flask_secret.key')
+
+    os.makedirs(data_dir, exist_ok=True)
+
+    if os.path.exists(secret_path):
+        with open(secret_path, 'r', encoding='utf-8') as f:
+            existing = f.read().strip()
+
+        if existing:
+            return existing
+
+    secret = secrets.token_urlsafe(48)
+
+    with open(secret_path, 'w', encoding='utf-8') as f:
+        f.write(secret)
+
+    return secret
+
+
 app = Flask(__name__)
-app.secret_key = 'chatdb-secret-key-change-in-production'
+app.secret_key = _load_flask_secret_key()
 app.config['SESSION_TYPE'] = 'filesystem'
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)
 app.config.setdefault('SESSION_COOKIE_HTTPONLY', True)
@@ -1867,6 +1895,277 @@ def _get_nexora_mail_config():
 
 _MAIL_CACHE_LOCKS = {}
 _MAIL_CACHE_LOCKS_GUARD = threading.Lock()
+_BROWSER_WS_CLIENTS = {}
+_BROWSER_WS_LOCK = threading.Lock()
+_NEXORA_MAIL_EVENT_STREAM_LOCK = threading.Lock()
+_NEXORA_MAIL_EVENT_STREAM_STARTED = False
+
+
+def _browser_ws_client_payload(event_type: str, payload: Dict[str, Any]) -> str:
+    data = dict(payload if isinstance(payload, dict) else {})
+    data['type'] = str(event_type or '').strip()
+    data.setdefault('sent_at', int(time.time()))
+    return json.dumps(data, ensure_ascii=False)
+
+
+def _send_browser_ws_client(client: Dict[str, Any], event_type: str, payload: Dict[str, Any]) -> bool:
+    ws = client.get('ws')
+    lock = client.get('lock')
+    if not ws or not lock:
+        return False
+
+    try:
+        message = _browser_ws_client_payload(event_type, payload)
+
+        with lock:
+            ws.send(message)
+
+        return True
+    except Exception:
+        return False
+
+
+def _drop_browser_ws_client(username: str, client_id: str) -> None:
+    with _BROWSER_WS_LOCK:
+        user_clients = _BROWSER_WS_CLIENTS.get(username)
+        if not user_clients:
+            return
+
+        user_clients.pop(client_id, None)
+
+        if not user_clients:
+            _BROWSER_WS_CLIENTS.pop(username, None)
+
+
+def _send_browser_event_to_user(username: str, event_type: str, payload: Dict[str, Any]) -> None:
+    user = str(username or '').strip()
+    if not user:
+        return
+
+    with _BROWSER_WS_LOCK:
+        user_clients = dict(_BROWSER_WS_CLIENTS.get(user) or {})
+
+    dead_client_ids = []
+
+    for client_id, client in user_clients.items():
+
+        if not _send_browser_ws_client(client, event_type, payload):
+            dead_client_ids.append(client_id)
+
+    for client_id in dead_client_ids:
+        _drop_browser_ws_client(user, client_id)
+
+
+def _send_browser_event_to_conversation(username: str, conversation_id: str, event_type: str, payload: Dict[str, Any]) -> None:
+    user = str(username or '').strip()
+    target_conversation_id = str(conversation_id or '').strip()
+    if not user or not target_conversation_id:
+        return
+
+    with _BROWSER_WS_LOCK:
+        user_clients = dict(_BROWSER_WS_CLIENTS.get(user) or {})
+
+    dead_client_ids = []
+
+    for client_id, client in user_clients.items():
+        client_conversation_id = str(client.get('conversation_id') or '').strip()
+
+        if client_conversation_id != target_conversation_id:
+            continue
+
+        if _send_browser_ws_client(client, event_type, payload):
+            break
+
+        dead_client_ids.append(client_id)
+
+    for client_id in dead_client_ids:
+        _drop_browser_ws_client(user, client_id)
+
+
+def _publish_agent_status_event(username: str, online: bool) -> None:
+    _send_browser_event_to_user(
+        username,
+        'agent_status',
+        {
+            'online': bool(online),
+            'source': 'agent_tunnel',
+        }
+    )
+
+
+def _publish_client_tool_request_event(username: str, conversation_id: str, request_obj: Dict[str, Any]) -> None:
+    if not isinstance(request_obj, dict):
+        return
+
+    _send_browser_event_to_conversation(
+        username,
+        conversation_id,
+        'client_tool_request',
+        {
+            'conversation_id': str(conversation_id or '').strip(),
+            'request': request_obj,
+        }
+    )
+
+
+def _normalize_mail_event_identity(value: Any) -> str:
+    return str(value or '').strip().lower()
+
+
+def _find_users_for_mail_event(group: str, mail_username: str, address: str) -> List[str]:
+    group_key = _normalize_mail_event_identity(group)
+    username_key = _normalize_mail_event_identity(mail_username)
+    address_key = _normalize_mail_event_identity(address)
+    address_local = address_key.split('@', 1)[0] if '@' in address_key else ''
+    users = load_users()
+    matched = []
+
+    if not isinstance(users, dict):
+        return matched
+
+    for user_id, user_data in users.items():
+        if not isinstance(user_data, dict):
+            continue
+
+        local_mail = user_data.get('local_mail')
+        if not isinstance(local_mail, dict):
+            continue
+
+        if _normalize_mail_event_identity(local_mail.get('provider')) != 'nexoramail':
+            continue
+
+        bound_group = _normalize_mail_event_identity(local_mail.get('group') or 'default')
+        bound_username = _normalize_mail_event_identity(local_mail.get('username'))
+        bound_address = _normalize_mail_event_identity(local_mail.get('address'))
+
+        if group_key and bound_group != group_key:
+            continue
+
+        username_matched = username_key and bound_username == username_key
+        address_matched = address_key and bound_address == address_key
+        localpart_matched = address_local and bound_username == address_local
+
+        if username_matched or address_matched or localpart_matched:
+            matched.append(str(user_id))
+
+    return matched
+
+
+def _publish_mail_event_for_users(user_ids: List[str], payload: Dict[str, Any]) -> None:
+    event_payload = dict(payload if isinstance(payload, dict) else {})
+    event_payload['source'] = 'nexora_mail'
+
+    for user_id in user_ids:
+        _mail_cache_invalidate_user(user_id)
+        _send_browser_event_to_user(user_id, 'mail_changed', event_payload)
+
+
+def _build_nexora_mail_event_ws_url(service_url: str, cursor: Any) -> str:
+    parsed = urllib_parse.urlsplit(str(service_url or '').strip().rstrip('/'))
+
+    if parsed.scheme == 'https':
+        scheme = 'wss'
+    elif parsed.scheme == 'http':
+        scheme = 'ws'
+    else:
+        raise ValueError('NexoraMail service_url must start with http:// or https://')
+
+    query = urllib_parse.urlencode({'cursor': str(cursor if cursor is not None else 'end')})
+    return urllib_parse.urlunsplit((scheme, parsed.netloc, '/api/events/ws', query, ''))
+
+
+def _handle_nexora_mail_stream_event(event_payload: Dict[str, Any]) -> None:
+    if not isinstance(event_payload, dict):
+        return
+
+    group = str(event_payload.get('group') or _get_nexora_mail_config().get('default_group') or 'default').strip() or 'default'
+    mail_username = str(event_payload.get('mail_username') or event_payload.get('username') or '').strip()
+    address = str(event_payload.get('address') or event_payload.get('recipient') or '').strip()
+    user_ids = _find_users_for_mail_event(group, mail_username, address)
+
+    if not user_ids:
+        print(
+            '[NexoraMail WSS] no matched user '
+            f'group={group} mail_username={mail_username} address={address}'
+        )
+        return
+
+    payload = dict(event_payload)
+    payload['group'] = group
+    _publish_mail_event_for_users(user_ids, payload)
+
+
+def _nexora_mail_event_stream_loop() -> None:
+    cursor: Any = 'end'
+
+    while True:
+        cfg = _get_nexora_mail_config()
+
+        if not cfg.get('enabled') or not cfg.get('api_key'):
+            time.sleep(10)
+            continue
+
+        ws = None
+
+        try:
+            import websocket
+
+            ws_url = _build_nexora_mail_event_ws_url(cfg.get('service_url'), cursor)
+            ws = websocket.WebSocket()
+            ws.connect(
+                ws_url,
+                timeout=10,
+                header=[f"X-API-Key: {cfg.get('api_key')}"]
+            )
+            print(f"[NexoraMail WSS] connected {ws_url}")
+
+            while True:
+                raw = ws.recv()
+
+                if not raw:
+                    continue
+
+                data = json.loads(raw)
+                msg_type = str(data.get('type') or '').strip()
+
+                if data.get('cursor') is not None:
+                    cursor = data.get('cursor')
+
+                if msg_type == 'mail_event':
+                    _handle_nexora_mail_stream_event(data.get('event') if isinstance(data.get('event'), dict) else {})
+                elif msg_type == 'error':
+                    raise RuntimeError(str(data.get('message') or 'NexoraMail event stream error'))
+
+        except Exception as e:
+            print(f"[NexoraMail WSS] disconnected: {e}")
+            time.sleep(5)
+        finally:
+            if ws is not None:
+                try:
+                    ws.close()
+                except Exception:
+                    pass
+
+
+def start_nexora_mail_event_stream() -> None:
+    global _NEXORA_MAIL_EVENT_STREAM_STARTED
+
+    with _NEXORA_MAIL_EVENT_STREAM_LOCK:
+        if _NEXORA_MAIL_EVENT_STREAM_STARTED:
+            return
+
+        _NEXORA_MAIL_EVENT_STREAM_STARTED = True
+
+    worker = threading.Thread(
+        target=_nexora_mail_event_stream_loop,
+        daemon=True,
+        name='nexora-mail-event-wss'
+    )
+    worker.start()
+
+
+add_agent_status_listener(_publish_agent_status_event)
+add_request_listener(_publish_client_tool_request_event)
 
 # Async upload tasks (in-memory)
 _UPLOAD_TASKS = {}
@@ -3064,9 +3363,27 @@ def _safe_context_window_int(raw):
         n = int(raw)
     except Exception:
         return 0
+
     if n < 1024:
         return 0
-    return min(n, 4_000_000)
+
+    return min(n, MODEL_CONTEXT_WINDOW_MAX)
+
+
+def _parse_model_context_window_for_save(raw):
+    text = str(raw or '').strip()
+    if not text:
+        return 0
+
+    try:
+        n = int(text)
+    except Exception:
+        raise ValueError('context_window 必须是 1024 到 4000000 之间的整数，或留空')
+
+    if n < 1024 or n > MODEL_CONTEXT_WINDOW_MAX:
+        raise ValueError('context_window 必须是 1024 到 4000000 之间的整数，或留空')
+
+    return n
 
 
 def _normalize_model_id_for_ctx(raw):
@@ -3119,12 +3436,13 @@ def _save_models_context_window_cache(cache_obj):
 
 def _extract_context_window_from_provider_row(row_obj):
     row = row_obj if isinstance(row_obj, dict) else {}
-    for key in ('context_window', 'context_length', 'max_context_tokens', 'max_input_tokens', 'max_prompt_tokens'):
+    for key in MODEL_CONTEXT_WINDOW_KEYS:
         n = _safe_context_window_int(row.get(key))
         if n > 0:
             return n
+
     raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
-    for key in ('context_window', 'context_length', 'max_context_tokens', 'max_input_tokens', 'max_prompt_tokens'):
+    for key in MODEL_CONTEXT_WINDOW_KEYS:
         n = _safe_context_window_int(raw.get(key))
         if n > 0:
             return n
@@ -4942,6 +5260,14 @@ def mail_me_mark_read(mail_id):
     if not ok:
         return jsonify({'success': False, 'message': data.get('message', '更新邮件状态失败'), 'upstream': data}), status
     _mail_cache_invalidate_user(binding['user_id'])
+    _publish_mail_event_for_users([binding['user_id']], {
+        'action': 'read_state_changed',
+        'folder': 'inbox',
+        'id': str(mail_id),
+        'is_read': bool(data.get('is_read', is_read)),
+        'group': binding['group'],
+        'mail_username': binding['mail_username'],
+    })
 
     return jsonify({
         'success': True,
@@ -4964,6 +5290,13 @@ def mail_me_delete(mail_id):
     if not ok:
         return jsonify({'success': False, 'message': data.get('message', '删除邮件失败'), 'upstream': data}), status
     _mail_cache_invalidate_user(binding['user_id'])
+    _publish_mail_event_for_users([binding['user_id']], {
+        'action': 'deleted',
+        'folder': 'inbox',
+        'id': str(mail_id),
+        'group': binding['group'],
+        'mail_username': binding['mail_username'],
+    })
     return jsonify({'success': True, 'id': mail_id})
 
 
@@ -4980,6 +5313,13 @@ def mail_me_sent_delete(mail_id):
     if not ok:
         return jsonify({'success': False, 'message': data.get('message', '删除发件失败'), 'upstream': data}), status
     _mail_cache_invalidate_user(binding['user_id'])
+    _publish_mail_event_for_users([binding['user_id']], {
+        'action': 'deleted',
+        'folder': 'sent',
+        'id': str(mail_id),
+        'group': binding['group'],
+        'mail_username': binding['mail_username'],
+    })
     return jsonify({'success': True, 'id': mail_id})
 
 
@@ -5036,6 +5376,14 @@ def mail_me_send():
     if not ok:
         return jsonify({'success': False, 'message': data.get('message', '发送失败'), 'upstream': data}), status
     _mail_cache_invalidate_user(binding['user_id'])
+    _publish_mail_event_for_users([binding['user_id']], {
+        'action': 'sent',
+        'folder': 'sent',
+        'group': binding['group'],
+        'mail_username': binding['mail_username'],
+        'sender': sender,
+        'recipient': recipient,
+    })
 
     return jsonify({
         'success': True,
@@ -7194,6 +7542,12 @@ def list_cloud_files():
         limit_raw = request.args.get('limit', 200)
 
         try:
+            offset = int(offset_raw)
+        except Exception:
+            offset = 0
+        offset = max(0, offset)
+
+        try:
             limit = int(limit_raw)
         except Exception:
             limit = 200
@@ -7202,11 +7556,13 @@ def list_cloud_files():
         regex = regex_raw in {'1', 'true', 'yes', 'y', 'on'}
 
         sandbox = UserFileSandbox(username)
-        files = sandbox.list_files(query=query or None, regex=regex, max_items=limit)
+        payload = sandbox.list_files(query=query or None, regex=regex, offset=offset, limit=limit)
         return jsonify({
             'success': True,
-            'files': files,
-            'total': len(files)
+            'files': payload.get('files', []),
+            'total': payload.get('total', 0),
+            'offset': payload.get('offset', offset),
+            'limit': payload.get('limit', limit)
         })
     except ValueError as e:
         return jsonify({'success': False, 'message': str(e)}), 400
@@ -7399,8 +7755,17 @@ def get_conversation(conv_id):
     username = session['username']
     manager = ConversationManager(username)
     try:
-        conversation = manager.get_conversation(conv_id)
-        return jsonify({'success': True, 'conversation': conversation})
+        conversation = manager.ensure_conversation_compatibility(conv_id)
+        payload = {'success': True, 'conversation': conversation}
+
+        if _as_bool(request.args.get('include_stream'), default=False):
+            payload['stream_sessions'] = list_stream_sessions(
+                username=username,
+                conversation_ids=[conv_id],
+                include_done=True
+            )
+
+        return jsonify(payload)
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 
@@ -7919,10 +8284,52 @@ def admin_get_models_config():
     """管理员读取模型/Provider配置"""
     try:
         cfg = load_models_config()
+        models = deepcopy(cfg.get('models', {}))
+        providers = cfg.get('providers', {})
+        has_volcengine_model = any(
+            isinstance(info, dict) and str(info.get('provider', 'volcengine')).strip().lower() == 'volcengine'
+            for info in (models or {}).values()
+        )
+        has_aliyun_model = any(
+            isinstance(info, dict) and str(info.get('provider', '')).strip().lower() in {'aliyun', 'dashscope'}
+            for info in (models or {}).values()
+        )
+        has_ollama_model = any(
+            isinstance(provider_cfg, dict) and str(provider_cfg.get('api_type', '')).strip().lower() == 'ollama'
+            for provider_cfg in (providers or {}).values()
+        )
+        volc_context_map = _refresh_volc_context_window_map(cfg, timeout=8.0) if has_volcengine_model else {}
+        aliyun_context_map = _refresh_aliyun_context_window_map(cfg, timeout=8.0) if has_aliyun_model else {}
+        ollama_context_map = _refresh_ollama_context_window_map(cfg, timeout=8.0) if has_ollama_model else {}
+        generic_context_maps = _refresh_generic_context_window_maps(cfg, timeout=8.0)
+
+        for model_id, info in models.items():
+            if not isinstance(info, dict):
+                continue
+
+            context_window = _extract_context_window_from_provider_row(info)
+            provider_label = str(info.get('provider', 'volcengine') or 'volcengine').strip()
+            provider_name = provider_label.lower()
+            provider_cfg = providers.get(provider_label, {}) if isinstance(providers, dict) else {}
+            provider_api_type = _normalize_provider_api_type(
+                provider_cfg.get('api_type') if isinstance(provider_cfg, dict) else ''
+            )
+
+            if not context_window and provider_name == 'volcengine':
+                context_window = _resolve_volc_context_window_by_model_id(model_id, volc_context_map)
+            if not context_window and provider_name in {'aliyun', 'dashscope'}:
+                context_window = _resolve_aliyun_context_window_by_model_id(model_id, aliyun_context_map)
+            if not context_window and provider_api_type == 'ollama':
+                context_window = _resolve_context_window_by_model_id(model_id, ollama_context_map)
+            if not context_window and provider_name in generic_context_maps:
+                context_window = _resolve_context_window_by_model_id(model_id, generic_context_maps.get(provider_name))
+            if context_window:
+                info['context_window'] = context_window
+
         return jsonify({
             'success': True,
-            'models': cfg.get('models', {}),
-            'providers': cfg.get('providers', {})
+            'models': models,
+            'providers': providers
         })
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
@@ -9187,6 +9594,11 @@ def admin_upsert_model():
             return jsonify({'success': False, 'message': f'Provider 不存在: {provider}'}), 400
 
         is_rename = bool(original_model_id and original_model_id != model_id)
+        existing_key = original_model_id if is_rename else model_id
+        existing_model = models.get(existing_key, {})
+        if not isinstance(existing_model, dict):
+            existing_model = {}
+
         if is_rename:
             if original_model_id not in models:
                 return jsonify({'success': False, 'message': f'原模型不存在: {original_model_id}'}), 404
@@ -9194,11 +9606,19 @@ def admin_upsert_model():
                 return jsonify({'success': False, 'message': f'目标模型ID已存在: {model_id}'}), 400
             del models[original_model_id]
 
-        models[model_id] = {
-            'name': name or model_id,
-            'provider': provider,
-            'status': status or 'normal'
-        }
+        model_record = dict(existing_model)
+        model_record['name'] = name or model_id
+        model_record['provider'] = provider
+        model_record['status'] = status or 'normal'
+
+        if has_context_window_input:
+            if context_window > 0:
+                model_record['context_window'] = context_window
+            else:
+                for key in MODEL_CONTEXT_WINDOW_KEYS:
+                    model_record.pop(key, None)
+
+        models[model_id] = model_record
         save_models_config(cfg)
         if is_rename:
             return jsonify({'success': True, 'message': f'模型 {original_model_id} 已重命名为 {model_id}'})
@@ -10085,7 +10505,7 @@ def submit_client_tool_result_api():
 
 # ==================== NexoraCode 本地 Agent 桥接 ====================
 
-def _inject_local_agent_tools(model, agent_info: dict):
+def _inject_local_agent_tools(model, agent_info: dict, cancel_checker=None):
     """将本地 Agent 工具注入到 model 实例（工具定义 + 执行处理器）
 
     执行路径：服务器 enqueue_request → NexoraCode 长轮询 pull → 本地执行 →
@@ -10093,6 +10513,10 @@ def _inject_local_agent_tools(model, agent_info: dict):
     避免服务器直连 localhost（服务器端 localhost != 用户本机）。
     """
     username = agent_info.get("username", "")
+
+    def _raise_if_cancelled():
+        if callable(cancel_checker) and cancel_checker():
+            raise StreamCancelled("user_abort")
 
     # 判断当前 provider 是否使用 Responses API（扁平格式，无 "function" 包装层）
     use_responses_api = (
@@ -10105,7 +10529,8 @@ def _inject_local_agent_tools(model, agent_info: dict):
             continue
         # 兼容两种输入格式：OpenAI 嵌套格式 或 Responses API 扁平格式
         func = tool_def.get("function") or {}
-        tool_name = func.get("name") or tool_def.get("name")
+        raw_tool_name = str(func.get("name") or tool_def.get("name") or "").strip()
+        tool_name = canonicalize_tool_name(raw_tool_name)
         description = func.get("description") or tool_def.get("description", "")
         parameters = func.get("parameters") or tool_def.get("parameters", {})
         if not tool_name:
@@ -10132,23 +10557,37 @@ def _inject_local_agent_tools(model, agent_info: dict):
         # 注入工具定义并登记为外部运行时工具，避免 sendMessage 重建基础工具时被清空。
         model.register_external_function_tool(formatted)
 
-        # 注入执行处理器：尝试走 agent_tunnel_socket 执行，否则回退
+        # 注入执行处理器：WSS 在线时走 agent_tunnel_socket，不在线时走长轮询通道。
         def _make_handler(name: str, uname: str):
             def _handler(args: dict) -> str:
                 from agent_tunnel import is_agent_online, call_local_tool_sync
+
+                _raise_if_cancelled()
                 
                 # WebSocket 优先
                 if is_agent_online(uname):
                     try:
-                        result = call_local_tool_sync(uname, name, args, timeout_sec=120)
+                        result = call_local_tool_sync(
+                            uname,
+                            name,
+                            args,
+                            timeout_sec=120,
+                            cancel_checker=cancel_checker
+                        )
+                        _raise_if_cancelled()
+                        if result and str(result.get("error") or "") == "stream_cancelled":
+                            raise StreamCancelled("user_abort")
                         if result and "error" in result and not result.get("success", True):
                             return f"本地工具 WSS 执行失败: {result['error']}"
                         r = result.get("result", result)
                         return r if isinstance(r, str) else json.dumps(r, ensure_ascii=False)
                     except Exception as e:
+                        if is_stream_cancelled_error(e):
+                            raise
                         return f"本地工具 WSS 通信异常: {e}"
 
-                # 回退：长轮询模式
+                # 本地 Agent 未保持 WSS 在线时使用长轮询通道。
+                _raise_if_cancelled()
                 conv_id = str(getattr(model, 'conversation_id', '') or '')
                 req_obj = enqueue_request(
                     username=uname,
@@ -10162,7 +10601,11 @@ def _inject_local_agent_tools(model, agent_info: dict):
                     conversation_id=conv_id,
                     request_id=req_obj["request_id"],
                     timeout_ms=120000,
+                    cancel_checker=cancel_checker,
                 )
+                _raise_if_cancelled()
+                if str(result.get("error") or "") == "stream_cancelled":
+                    raise StreamCancelled("user_abort")
                 if not result.get("success"):
                     return f"本地工具执行失败: {result.get('error', result.get('message', '超时'))}"
                 r = result.get("result", result)
@@ -12217,6 +12660,65 @@ def get_agent_status():
     return jsonify({'online': online})
 
 from agent_tunnel import handle_agent_result
+
+
+@sock.route('/ws/browser')
+def browser_sync_socket(ws):
+    username = str(session.get('username') or '').strip()
+    client_id = uuid.uuid4().hex
+
+    if not username:
+        ws.send(json.dumps({'type': 'error', 'message': 'Unauthorized'}, ensure_ascii=False))
+        return
+
+    client = {
+        'ws': ws,
+        'lock': threading.Lock(),
+        'connected_at': int(time.time()),
+    }
+
+    with _BROWSER_WS_LOCK:
+        _BROWSER_WS_CLIENTS.setdefault(username, {})[client_id] = client
+
+    _send_browser_ws_client(client, 'browser_ready', {
+        'client_id': client_id,
+        'username': username,
+    })
+    _send_browser_ws_client(client, 'agent_status', {
+        'online': is_agent_online(username),
+        'source': 'browser_connect',
+    })
+
+    try:
+        while True:
+            raw = ws.receive()
+
+            if raw is None:
+                break
+
+            try:
+                data = json.loads(raw) if raw else {}
+            except Exception:
+                data = {}
+
+            msg_type = str(data.get('type') or '').strip()
+
+            if msg_type == 'ping':
+                _send_browser_ws_client(client, 'pong', {'client_id': client_id})
+            elif msg_type == 'subscribe_conversation':
+                conversation_id = str(data.get('conversation_id') or '').strip()
+
+                with _BROWSER_WS_LOCK:
+                    current_client = (_BROWSER_WS_CLIENTS.get(username) or {}).get(client_id)
+
+                    if current_client is not None:
+                        current_client['conversation_id'] = conversation_id
+
+    except Exception as e:
+        print(f"[Browser WSS] disconnected username={username} client={client_id}: {e}")
+    finally:
+        _drop_browser_ws_client(username, client_id)
+
 
 @sock.route('/ws/agent')
 def agent_tunnel_socket(ws):

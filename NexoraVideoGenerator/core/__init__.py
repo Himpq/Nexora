@@ -1,0 +1,1 @@
+# NexoraVideoGenerator core module
