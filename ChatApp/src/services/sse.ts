@@ -15,8 +15,19 @@ export type SseHandlers = {
    * May be async — the reader awaits it before consuming the next frame, so a
    * handler that needs to await something (e.g. a tool call) won't race ahead.
    * A thrown error aborts the read loop and propagates to the caller.
+   *
+   * Ignored when `onEvent` is provided — in that case `onEvent` receives both
+   * the SSE event name and the parsed data, and `onData` is not called.
    */
-  onData: (data: unknown) => unknown;
+  onData?: (data: unknown) => unknown;
+  /**
+   * Called for each parsed JSON data object together with its SSE `event:`
+   * name (defaulting to `"message"` when the frame has no event line). When
+   * provided, this replaces `onData` so callers of named-event streams (e.g.
+   * `/frontend/outline/<id>/generate-stream` with `status`/`delta`/`done`) can
+   * dispatch by event name. May be async.
+   */
+  onEvent?: (event: string, data: unknown) => unknown;
   /** Called once when `[DONE]` arrives or the stream ends without an abort. */
   onDone?: () => void;
 };
@@ -29,14 +40,23 @@ function splitSseFrames(buffer: string) {
   };
 }
 
-function parseSseFrame(frame: string) {
-  return frame
-    .split(/\r?\n/)
-    .map((line) => line.trimEnd())
-    .filter((line) => line.startsWith("data:"))
-    .map((line) => line.slice(5).trimStart())
-    .join("\n")
-    .trim();
+type ParsedSseFrame = {
+  event: string;
+  data: string;
+};
+
+function parseSseFrame(frame: string): ParsedSseFrame {
+  let event = "";
+  const dataLines: string[] = [];
+  for (const line of frame.split(/\r?\n/)) {
+    const trimmed = line.trimEnd();
+    if (trimmed.startsWith("event:")) {
+      event = trimmed.slice(6).trimStart();
+    } else if (trimmed.startsWith("data:")) {
+      dataLines.push(trimmed.slice(5).trimStart());
+    }
+  }
+  return { event: event || "message", data: dataLines.join("\n").trim() };
 }
 
 export async function readSseStream(response: Response, handlers: SseHandlers) {
@@ -51,7 +71,7 @@ export async function readSseStream(response: Response, handlers: SseHandlers) {
   let aborted = false;
 
   const handleFrame = async (frame: string) => {
-    const dataText = parseSseFrame(frame);
+    const { event, data: dataText } = parseSseFrame(frame);
     if (!dataText) {
       return;
     }
@@ -67,7 +87,11 @@ export async function readSseStream(response: Response, handlers: SseHandlers) {
       // Tolerate non-JSON keepalive/comment frames.
       return;
     }
-    await handlers.onData(parsed);
+    if (handlers.onEvent) {
+      await handlers.onEvent(event, parsed);
+    } else if (handlers.onData) {
+      await handlers.onData(parsed);
+    }
   };
 
   while (!done) {

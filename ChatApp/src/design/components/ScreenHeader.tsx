@@ -1,7 +1,8 @@
 import React from "react";
-import { StyleSheet, View } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
+import { Feather } from "@expo/vector-icons";
 
-import { spacing } from "../tokens";
+import { colors, spacing } from "../tokens";
 import { AppText } from "./AppText";
 
 type ScreenHeaderProps = {
@@ -9,11 +10,24 @@ type ScreenHeaderProps = {
   subtitle?: string;
   overline?: string;
   trailing?: React.ReactNode;
+  /** When provided, renders a back chevron to the left of the title. */
+  onBack?: () => void;
 };
 
-export function ScreenHeader({ title, subtitle, overline, trailing }: ScreenHeaderProps) {
+export function ScreenHeader({ title, subtitle, overline, trailing, onBack }: ScreenHeaderProps) {
   return (
     <View style={styles.container}>
+      {onBack ? (
+        <Pressable
+          onPress={onBack}
+          hitSlop={12}
+          accessibilityLabel="返回"
+          accessibilityRole="button"
+          style={styles.back}
+        >
+          <Feather name="chevron-left" size={26} color={colors.text} />
+        </Pressable>
+      ) : null}
       <View style={styles.text}>
         {overline ? (
           <AppText variant="overline" tone="muted">
@@ -37,7 +51,15 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-start",
     justifyContent: "space-between",
-    gap: spacing.md,
+    gap: spacing.sm,
+  },
+  back: {
+    width: 44,
+    height: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: -spacing.xs,
+    marginTop: -spacing.xs,
   },
   text: {
     flex: 1,

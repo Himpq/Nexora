@@ -16,6 +16,7 @@ import {
   loadPersonalizedLearningPath,
   refreshLearningVideos,
   removeLearningNotification,
+  streamCourseOutline,
 } from "../learningExperienceService";
 
 type FetchCall = {
@@ -133,3 +134,61 @@ test("learning experience service posts generation and learning progress payload
   );
   assert.equal(calls[6].url, "https://chat.himpqblog.cn:5002/api/frontend/quiz/chapter");
 });
+
+test("streamCourseOutline opens a GET SSE stream for outline generation", async () => {
+  const calls: FetchCall[] = [];
+  const encoder = new TextEncoder();
+  globalThis.fetch = (async (url, init) => {
+    calls.push({ url: String(url), init: init || {} });
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode("event: status\ndata: {\"message\":\"start\"}\n\n"),
+        );
+        controller.enqueue(encoder.encode("event: delta\ndata: {\"content\":\"hi\"}\n\n"));
+        controller.enqueue(
+          encoder.encode("event: done\ndata: {\"success\":true,\"outline\":{\"a\":1}}\n\n"),
+        );
+        controller.close();
+      },
+    });
+    return { ok: true, status: 200, body: stream } as Response;
+  }) as typeof fetch;
+
+  const statuses: string[] = [];
+  const deltas: string[] = [];
+  let doneOutline: unknown = "unset";
+  await streamCourseOutline("lecture 1", {
+    onStatus: (message) => statuses.push(message),
+    onDelta: (content) => deltas.push(content),
+    onDone: (outline) => {
+      doneOutline = outline;
+    },
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(
+    calls[0].url,
+    "https://chat.himpqblog.cn:5002/api/frontend/outline/lecture%201/generate-stream",
+  );
+  assert.equal(calls[0].init.method, "GET");
+  const headers = new Headers(calls[0].init.headers);
+  assert.equal(headers.get("Accept"), "text/event-stream");
+  assert.deepEqual(statuses, ["start"]);
+  assert.deepEqual(deltas, ["hi"]);
+  assert.deepEqual(doneOutline, { a: 1 });
+});
+
+test("streamCourseOutline reports an error when the stream fails to start", async () => {
+  globalThis.fetch = (async () => ({ ok: false, status: 503, body: null }) as Response) as typeof fetch;
+
+  let errorMessage = "";
+  await streamCourseOutline("lecture 1", {
+    onError: (message) => {
+      errorMessage = message;
+    },
+  });
+
+  assert.match(errorMessage, /HTTP 503/);
+});
+

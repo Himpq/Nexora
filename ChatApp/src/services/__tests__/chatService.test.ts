@@ -2,7 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { ApiClientError } from "../apiClient";
-import { ChatStreamError, mapChatStreamChunk, streamChat, type ChatStreamEvent } from "../chatService";
+import {
+  cancelChatStream,
+  ChatStreamError,
+  mapChatStreamChunk,
+  streamChat,
+  type ChatStreamEvent,
+} from "../chatService";
 
 function streamResponse(chunks: string[]) {
   let index = 0;
@@ -45,8 +51,21 @@ test("mapChatStreamChunk normalizes runtime chunk types", () => {
   const cid = mapChatStreamChunk({ type: "conversation_id", conversation_id: "42" });
   assert.equal(cid.type, "conversation_id");
   assert.equal(cid.type === "conversation_id" ? cid.conversationId : "", "42");
-  assert.equal(mapChatStreamChunk({ type: "error", message: "boom" }).type, "error");
-  assert.equal(mapChatStreamChunk({ type: "done" }).type, "done");
+  const error = mapChatStreamChunk({ type: "error", content: "boom" });
+  assert.equal(error.type, "error");
+  assert.equal(error.type === "error" ? error.message : "", "boom");
+  const done = mapChatStreamChunk({ type: "done", content: "final" });
+  assert.equal(done.type, "done");
+  assert.equal(done.type === "done" ? done.content : "", "final");
+  const session = mapChatStreamChunk({
+    type: "stream_session",
+    stream_id: "s_1",
+    conversation_id: "c_1",
+    status: "running",
+  });
+  assert.equal(session.type, "stream_session");
+  assert.equal(session.type === "stream_session" ? session.streamId : "", "s_1");
+  assert.equal(session.type === "stream_session" ? session.conversationId : "", "c_1");
 });
 
 test("mapChatStreamChunk surfaces unknown frames instead of dropping them", () => {
@@ -74,6 +93,20 @@ test("streamChat accumulates content + reasoning, captures conversation id, obse
   assert.equal(result.conversationId, "207");
   assert.ok(events.some((e) => e.type === "unknown"));
   assert.ok(events.some((e) => e.type === "done"));
+});
+
+test("streamChat uses done content when backend sends final answer at end", async () => {
+  const frames = [
+    'data: {"type":"stream_session","stream_id":"s_1","conversation_id":"207"}\n\n',
+    'data: {"type":"done","content":"final answer"}\n\n',
+    "data: [DONE]\n\n",
+  ];
+  installStreamFetch(streamResponse(frames));
+
+  const result = await streamChat({ message: "hi" });
+
+  assert.equal(result.content, "final answer");
+  assert.equal(result.conversationId, "207");
 });
 
 test("streamChat throws ApiClientError on HTTP non-200", async () => {
@@ -165,4 +198,37 @@ test("streamChat awaits async onEvent handlers in order", async () => {
   });
 
   assert.deepEqual(order, ["before:a", "after:a", "before:b", "after:b"]);
+});
+
+test("streamChat sends tools and retry skip-user flags", async () => {
+  const frames = ["data: [DONE]\n\n"];
+  const calls = installStreamFetch(streamResponse(frames));
+
+  await streamChat({
+    message: "retry",
+    enableTools: true,
+    skipUserMessage: true,
+  });
+
+  const body = JSON.parse(String(calls[0].init.body || "{}"));
+  assert.equal(body.enable_tools, true);
+  assert.equal(body.skip_user_message, true);
+});
+
+test("cancelChatStream posts stream id to server cancel endpoint", async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  globalThis.fetch = (async (url, init) => {
+    calls.push({ url: String(url), init: init || {} });
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ success: true, stream_id: "s_1", cancel_requested: true }),
+    } as unknown as Response;
+  }) as typeof fetch;
+
+  const result = await cancelChatStream("s_1");
+
+  assert.equal(result.cancelRequested, true);
+  assert.match(calls[0].url, /\/api\/chat\/stream\/cancel$/);
+  assert.deepEqual(JSON.parse(String(calls[0].init.body || "{}")), { stream_id: "s_1" });
 });

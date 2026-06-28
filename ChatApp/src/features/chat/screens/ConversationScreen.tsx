@@ -14,7 +14,12 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useSession } from "../../../app/providers/SessionProvider";
 import { AppText, colors, haptics, radius, spacing } from "../../../design";
 import { getChatConfig, type ChatModel } from "../../../services/chatConfigService";
-import { ChatStreamError, streamChat } from "../../../services/chatService";
+import {
+  cancelChatStream,
+  ChatStreamError,
+  streamChat,
+  type ChatStreamEvent,
+} from "../../../services/chatService";
 import {
   createConversation,
   deleteConversation,
@@ -52,6 +57,37 @@ function genId() {
 
 const HISTORY_LIMIT = 80;
 
+function describeStreamActivity(event: ChatStreamEvent) {
+  if (event.type !== "unknown") {
+    return "";
+  }
+  const eventType = String(event.eventType || "").trim();
+  if (!eventType) {
+    return "";
+  }
+  if (eventType === "model_info") {
+    const raw = event.raw && typeof event.raw === "object"
+      ? (event.raw as Record<string, unknown>)
+      : {};
+    const model = String(raw.model || raw.model_name || "").trim();
+    return model ? `模型：${model}` : "模型已就绪";
+  }
+  if (eventType.includes("search")) {
+    return "正在联网检索…";
+  }
+  if (eventType.includes("function_call") || eventType.includes("tool")) {
+    return "正在调用工具…";
+  }
+  if (eventType.includes("context_compression")) {
+    return "正在整理上下文…";
+  }
+  return "";
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export function ConversationScreen() {
   const { username } = useSession();
   const insets = useSafeAreaInsets();
@@ -69,11 +105,13 @@ export function ConversationScreen() {
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [enableThinking, setEnableThinking] = useState(false);
   const [enableWebSearch, setEnableWebSearch] = useState(true);
+  const [enableTools, setEnableTools] = useState(false);
   const [error, setError] = useState<string>("");
   const [kbHeight, setKbHeight] = useState(0);
 
   const scrollRef = useRef<ScrollView>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const streamIdRef = useRef("");
   const busyRef = useRef(false);
   // Live mirror of `activeId` so stream callbacks read the current value
   // instead of a stale closure capture (see runStream).
@@ -184,6 +222,7 @@ export function ConversationScreen() {
         conversationId: string;
         isRegenerate?: boolean;
         regenerateIndex?: number;
+        skipUserMessage?: boolean;
       },
     ) => {
       const controller = new AbortController();
@@ -231,6 +270,72 @@ export function ConversationScreen() {
         }));
       };
 
+      const finishAssistantMessage = (assistantContent?: string, assistantReasoning?: string) => {
+        updateMessage(assistantId, (m) => {
+          const nextContent = assistantContent ?? m.content;
+          const nextReasoning = assistantReasoning ?? m.reasoning;
+          // Defensive: some models embed thinking in the content via
+          // <THINKING>/<FINAL> tags instead of a separate reasoning_content
+          // frame. If present, split it out so it renders in ReasoningBlock
+          // instead of as raw tags.
+          if (/<THINKING>|<FINAL>/i.test(nextContent)) {
+            const parsed = parseAssistantResponse(nextContent);
+            return {
+              ...m,
+              content: parsed.final || "（无内容）",
+              reasoning: parsed.thinking
+                ? (nextReasoning ? `${nextReasoning}\n` : "") + parsed.thinking
+                : nextReasoning,
+              status: "completed",
+              activity: undefined,
+              errorCategory: undefined,
+              errorCode: undefined,
+            };
+          }
+          return {
+            ...m,
+            content: nextContent || "（无内容）",
+            reasoning: nextReasoning,
+            status: "completed",
+            activity: undefined,
+            errorCategory: undefined,
+            errorCode: undefined,
+          };
+        });
+      };
+
+      const recoverAssistantFromHistory = async () => {
+        const conversationId = String(capturedConversationId || activeIdRef.current || "").trim();
+        if (!conversationId) {
+          return false;
+        }
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          if (attempt > 0) {
+            await delay(450 * attempt);
+          }
+          const conversation = await getConversation(conversationId);
+          const rows = Array.isArray(conversation?.messages) ? conversation!.messages : [];
+          let row = payload.regenerateIndex != null
+            ? rows[payload.regenerateIndex]
+            : undefined;
+          if (!row || row.role !== "assistant") {
+            for (let i = rows.length - 1; i >= 0; i -= 1) {
+              if (rows[i]?.role === "assistant") {
+                row = rows[i];
+                break;
+              }
+            }
+          }
+          const content = String(row?.content || "").trim();
+          if (content) {
+            finishAssistantMessage(content, String(row?.reasoning_content || "") || undefined);
+            setError("");
+            return true;
+          }
+        }
+        return false;
+      };
+
       try {
         await streamChat(
           {
@@ -239,8 +344,10 @@ export function ConversationScreen() {
             modelName: selectedModel || undefined,
             enableThinking,
             enableWebSearch,
+            enableTools,
             isRegenerate: payload.isRegenerate,
             regenerateIndex: payload.regenerateIndex,
+            skipUserMessage: payload.skipUserMessage,
           },
           {
             signal: controller.signal,
@@ -267,8 +374,22 @@ export function ConversationScreen() {
                 // Functional update — never trust the closure's activeId.
                 setActiveId((prev) => prev || event.conversationId);
                 activeIdRef.current = activeIdRef.current || event.conversationId;
+              } else if (event.type === "stream_session") {
+                streamIdRef.current = event.streamId;
+                if (event.conversationId) {
+                  capturedConversationId = event.conversationId;
+                  setActiveId((prev) => prev || event.conversationId || "");
+                  activeIdRef.current = activeIdRef.current || event.conversationId || "";
+                }
               } else if (event.type === "error") {
                 throw new ChatStreamError(event.message, event.raw);
+              } else if (event.type === "done" && event.content) {
+                finishAssistantMessage(event.content);
+              } else if (event.type === "unknown") {
+                const activity = describeStreamActivity(event);
+                if (activity) {
+                  updateMessage(assistantId, (m) => ({ ...m, activity }));
+                }
               }
             },
           },
@@ -284,28 +405,21 @@ export function ConversationScreen() {
             status: "cancelled",
           }));
         } else {
-          updateMessage(assistantId, (m) => {
-            // Defensive: some models embed thinking in the content via
-            // <THINKING>/<FINAL> tags instead of a separate reasoning_content
-            // frame. If present, split it out so it renders in ReasoningBlock
-            // instead of as raw tags.
-            if (/<THINKING>|<FINAL>/i.test(m.content)) {
-              const parsed = parseAssistantResponse(m.content);
-              return {
-                ...m,
-                content: parsed.final || "（无内容）",
-                reasoning: parsed.thinking
-                  ? (m.reasoning ? `${m.reasoning}\n` : "") + parsed.thinking
-                  : m.reasoning,
-                status: "completed",
-              };
-            }
-            return { ...m, content: m.content || "（无内容）", status: "completed" };
-          });
+          finishAssistantMessage();
         }
       } catch (err) {
         if (!isCurrent()) {
           return;
+        }
+        if (!controller.signal.aborted && !(err instanceof ChatStreamError) && !(err instanceof ApiClientError)) {
+          try {
+            const recovered = await recoverAssistantFromHistory();
+            if (recovered) {
+              return;
+            }
+          } catch {
+            // Fall through to the normal network error UI.
+          }
         }
         finalizeError(err, controller.signal.aborted);
       } finally {
@@ -313,6 +427,7 @@ export function ConversationScreen() {
         busyRef.current = false;
         if (abortRef.current === controller) {
           abortRef.current = null;
+          streamIdRef.current = "";
         }
         inflightResolve();
         // Only the current stream may mutate conversation-level state post-run;
@@ -326,7 +441,15 @@ export function ConversationScreen() {
         }
       }
     },
-    [enableThinking, enableWebSearch, refreshConversations, scrollToEnd, selectedModel, updateMessage],
+    [
+      enableThinking,
+      enableTools,
+      enableWebSearch,
+      refreshConversations,
+      scrollToEnd,
+      selectedModel,
+      updateMessage,
+    ],
   );
 
   // ── actions ─────────────────────────────────────────────────────────
@@ -432,9 +555,63 @@ export function ConversationScreen() {
     });
   }, [runStream, scrollToEnd]);
 
-  const stop = useCallback(() => {
-    abortRef.current?.abort();
+  const requestServerCancel = useCallback(() => {
+    const streamId = streamIdRef.current;
+    if (streamId) {
+      void cancelChatStream(streamId).catch(() => undefined);
+    }
   }, []);
+
+  const retryAssistant = useCallback(
+    async (assistantId: string) => {
+      if (busyRef.current || !activeIdRef.current) {
+        return;
+      }
+      let retryText = "";
+      setMessages((prev) => {
+        const index = prev.findIndex((m) => m.id === assistantId);
+        if (index < 0) {
+          return prev;
+        }
+        for (let i = index - 1; i >= 0; i -= 1) {
+          if (prev[i].role === "user") {
+            retryText = prev[i].content;
+            break;
+          }
+        }
+        return prev.map((m) =>
+          m.id === assistantId
+            ? {
+                ...m,
+                content: "",
+                reasoning: undefined,
+                status: "streaming",
+                activity: undefined,
+                errorCategory: undefined,
+                errorCode: undefined,
+              }
+            : m,
+        );
+      });
+      const content = retryText.trim();
+      if (!content) {
+        return;
+      }
+      setError("");
+      scrollToEnd();
+      await runStream(assistantId, {
+        message: content,
+        conversationId: activeIdRef.current,
+        skipUserMessage: true,
+      });
+    },
+    [runStream, scrollToEnd],
+  );
+
+  const stop = useCallback(() => {
+    requestServerCancel();
+    abortRef.current?.abort();
+  }, [requestServerCancel]);
 
   const selectConversation = useCallback(
     async (id: string) => {
@@ -447,6 +624,7 @@ export function ConversationScreen() {
       // still land a content delta or its finally could setActiveId back to the
       // previous conversation.
       streamTokenRef.current += 1;
+      requestServerCancel();
       abortRef.current?.abort();
       await inflightRef.current?.catch(() => undefined);
       switchActiveId(id);
@@ -482,17 +660,18 @@ export function ConversationScreen() {
         setLoadingHistory(false);
       }
     },
-    [scrollToEnd, switchActiveId],
+    [requestServerCancel, scrollToEnd, switchActiveId],
   );
 
   const newChat = useCallback(() => {
     streamTokenRef.current += 1;
+    requestServerCancel();
     abortRef.current?.abort();
     setDrawerOpen(false);
     switchActiveId("");
     setMessages([]);
     setError("");
-  }, [switchActiveId]);
+  }, [requestServerCancel, switchActiveId]);
 
   const handleDelete = useCallback(
     async (id: string) => {
@@ -593,6 +772,11 @@ export function ConversationScreen() {
                   !busy && message.role === "assistant" && index === messages.length - 1
                 }
                 onRegenerate={regenerate}
+                onRetry={
+                  message.status === "error" && index === messages.length - 1
+                    ? () => void retryAssistant(message.id)
+                    : undefined
+                }
               />
             ))}
           </ScrollView>
@@ -619,6 +803,8 @@ export function ConversationScreen() {
             onToggleThinking={() => setEnableThinking((v) => !v)}
             enableWebSearch={enableWebSearch}
             onToggleWebSearch={() => setEnableWebSearch((v) => !v)}
+            enableTools={enableTools}
+            onToggleTools={() => setEnableTools((v) => !v)}
           />
         </View>
       </View>

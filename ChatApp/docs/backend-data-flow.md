@@ -43,7 +43,7 @@
 - 模型列表：`ConversationScreen` -> `chatConfigService.getChatConfig` -> `ChatDBServer GET /api/config`（`models` + `default_model`）。
 - 流式对话：`ConversationScreen` -> `chatService.streamChat` -> `ChatDBServer POST /api/chat/stream`，字段 `message / conversation_id / model_name / enable_thinking / enable_web_search / enable_tools / is_regenerate`。
 - SSE 为 `{type,...}` 运行时帧：`content` / `reasoning_content` / `conversation_id` / `error`，结尾 `[DONE]`；解析在 `services/sse.ts` + `chatService.mapChatStreamChunk`，未知帧通过 `type: "unknown"` 事件交给调用方，不静默丢弃。
-- 取消：客户端 `AbortController` 中断读流（服务端 `/api/chat/stream/cancel` 需 `stream_id`，当前未透出，故仅客户端中断；服务端可能继续生成并计费——已知技术债）。
+- 取消：`/api/chat/stream` 的 `stream_session` 帧提供 `stream_id`；`ConversationScreen` 停止、切换对话或新建对话时会先请求 `POST /api/chat/stream/cancel`，再用 `AbortController` 中断本地读流。
 - 重生成：`is_regenerate=true` + `regenerate_index`（历史消息的真实服务端 index，前端在按最近 80 条截断时仍保留原 index 对齐后端；流式新消息无 index 时省略，由后端按「最后一条 assistant」默认处理）。
 - 流式竞态：`ConversationScreen` 用单调递增的 stream token 守卫回调，切换对话/新会话时令旧流失效，避免旧流把内容写进新对话或把 `activeId` 改回旧对话；`activeId` 经 `activeIdRef` + 函数式 `setActiveId` 更新，避免闭包捕获陈旧值。
 - 会话历史/管理：`conversationService` -> `ChatDBServer`：`GET /api/conversations`、`GET /api/conversations/{id}`、`POST /api/conversations`、`DELETE /api/conversations/{id}`、`PUT /api/conversations/{id}/title`、`POST /api/conversations/{id}/pin`。历史由 Nexora 服务端持久化，App 内可新建/切换/删除/重命名/置顶。
@@ -53,7 +53,7 @@
 - `BookReaderScreen` 挂 `FloatingAssistant`（`src/features/reading/`）：可拖动书本气泡（贴边自动隐藏/点击恢复）+ 可拖动/缩放面板，布局持久化 AsyncStorage。
 - 面板 Tab：导读 | AI | 测验 | 知识点 | 进度，全部复用既有 service contract（无新增后端接口）：
   - 导读 -> `learningContentService.generateReaderGuide`（本地缓存，不写对话历史）。
-  - AI（教材问答）-> `learningChatService.getLearningRuntimeContext` + `streamLearningChat` -> `ChatDBServer POST /api/learning/chat`（公钥鉴权），conversation 固定 `${lecture_id}:${book_id}`。
+  - AI（教材问答）-> `learningChatService.getLearningRuntimeContext` + `streamLearningChat` -> `ChatDBServer POST /api/learning/chat`（公钥鉴权），conversation 按 `lecture_id + book_id + chapter` 分区；前端会把浮窗本地最近对话作为上下文块补入，并在流式不可用时走非流式兜底，兜底请求带 `skip_user_message=true`，避免重复写入同一条用户消息。
   - 测验 -> `learningExperienceService.getChapterQuiz` + `learningContentService.submitQuizAnswerBatch`。
   - 知识点 -> `learningExperienceService.getKnowledgeGraph` / `generateKnowledgeGraph`。
   - 进度 -> `learningContentService.getLearningReport` + `frontendService.completeLearningChapter`。
@@ -61,7 +61,7 @@
 ## 管理员内容流
 
 - `AdminHomeScreen` -> `BookUploadScreen` / `RefinementQueueScreen` / `VectorizeScreen` -> `bookService` / `refinementService` / `vectorizeService` -> `NexoraLearning`
-- 能力：Book metadata 和文件上传、refinement settings/start/intensive/section/stop/queue、单本 Book vectorize 状态和触发
+- 能力：Book metadata 和文件上传、refinement settings/start/intensive/section/annotation/summary/video/stop/queue；settings 列表显示后端返回的状态、错误和队列态；视频状态仅在列表实际返回 `video_status` / `video_error` / `video_job_status` 时展示，避免把缺失字段误显示成“未开始”；单本 Book vectorize 状态和触发
 - 管理员入口必须由 frontend context 控制，不要靠客户端猜
 
 ## Learning Feed

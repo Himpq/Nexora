@@ -43,19 +43,19 @@ const CONTENT_ACTIONS: ContentAction[] = [
     mode: "text",
     icon: "file-text",
     title: "原文",
-    description: "查看教材已上传或解析后的全文内容。",
+    description: "教材完整全文",
   },
   {
     mode: "bookinfo",
     icon: "book-open",
     title: "概读",
-    description: "查看管理员提炼生成的 bookinfo 内容。",
+    description: "快速把握全书要点的概览",
   },
   {
     mode: "bookdetail",
     icon: "layers",
     title: "精读",
-    description: "查看管理员提炼生成的 bookdetail 内容。",
+    description: "逐章深入的精细解读",
   },
 ];
 
@@ -173,10 +173,6 @@ export function BookDetailScreen({ navigation, route }: BookDetailScreenProps) {
     void loadKnowledgeGraph();
   }, [loadKnowledgeGraph]);
 
-  useEffect(() => {
-    navigation.setOptions({ title });
-  }, [navigation, title]);
-
   const openReader = useCallback(
     (mode: BookContentMode) => {
       navigation.navigate("BookReader", {
@@ -220,7 +216,7 @@ export function BookDetailScreen({ navigation, route }: BookDetailScreenProps) {
 
   return (
     <Screen scroll>
-      <ScreenHeader title={title} subtitle={meta || undefined} />
+      <ScreenHeader title={title} subtitle={meta || undefined} onBack={() => navigation.goBack()} />
 
       {book?.description ? (
         <AppCard variant="muted">
@@ -228,7 +224,7 @@ export function BookDetailScreen({ navigation, route }: BookDetailScreenProps) {
         </AppCard>
       ) : null}
 
-      <SectionHeader title="阅读内容" subtitle="原文、概读和精读分别独立加载" />
+      <SectionHeader title="阅读内容" />
 
       {CONTENT_ACTIONS.map((action, index) => (
         <FadeIn key={action.mode} index={index}>
@@ -249,18 +245,12 @@ export function BookDetailScreen({ navigation, route }: BookDetailScreenProps) {
         </FadeIn>
       ))}
 
-      <AppCard variant="muted">
-        <AppText variant="caption" tone="tertiary">
-          概读和精读由管理员提炼生成。尚未生成时，阅读页会显示等待处理状态。
-        </AppText>
-      </AppCard>
-
       <SectionHeader
         title="知识图谱"
         subtitle={
           graphChapters.length > 0
-            ? `${graphCached ? "缓存" : "最新"} · ${graphChapters.length} 组知识结构`
-            : "从概读/精读中提取章节和知识点"
+            ? `${graphCached ? "缓存" : "最新"} · ${graphChapters.length} 组`
+            : undefined
         }
       />
 
@@ -299,7 +289,7 @@ export function BookDetailScreen({ navigation, route }: BookDetailScreenProps) {
           })
         ) : (
           <AppText variant="caption" tone="tertiary">
-            暂无知识图谱缓存。生成需要后端模型处理，可能需要一些时间。
+            暂无知识图谱，可点击下方生成。
           </AppText>
         )}
 

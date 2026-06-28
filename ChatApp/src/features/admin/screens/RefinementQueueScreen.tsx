@@ -17,9 +17,12 @@ import {
 import {
   getRefinementSettings,
   enqueueLectureBooks,
+  startAnnotationRefinement,
   startIntensiveRefinement,
   startRefinement,
   startSectionRefinement,
+  startSummaryRefinement,
+  startVideoSearch,
   stopRefinement,
   type RefinementSettingsItem,
   type RefinementSettingsResponse,
@@ -38,6 +41,7 @@ function getJobStatusSummary(item: RefinementSettingsItem) {
   const statuses = [
     ["粗/精读", item.job_status],
     ["分节", item.section_job_status],
+    ["视频", item.video_job_status],
   ]
     .map(([label, value]) => {
       const text = String(value || "").trim();
@@ -45,6 +49,10 @@ function getJobStatusSummary(item: RefinementSettingsItem) {
     })
     .filter(Boolean);
   return statuses.length > 0 ? statuses.join(" · ") : "未开始";
+}
+
+function hasStatusValue(...values: unknown[]) {
+  return values.some((value) => String(value || "").trim().length > 0);
 }
 
 export function RefinementQueueScreen() {
@@ -267,6 +275,15 @@ export function RefinementQueueScreen() {
                 <StatusCell label="粗读" value={item.coarse_status} error={item.coarse_error} />
                 <StatusCell label="精读" value={item.intensive_status} error={item.intensive_error} />
                 <StatusCell label="分节" value={item.section_status} error={item.section_error} />
+                <StatusCell label="批注" value={item.annotation_status} error={item.annotation_error} />
+                <StatusCell label="概述" value={item.summary_status} error={item.summary_error} />
+                {hasStatusValue(item.video_status, item.video_job_status, item.video_error) ? (
+                  <StatusCell
+                    label="视频"
+                    value={item.video_status || item.video_job_status}
+                    error={item.video_error}
+                  />
+                ) : null}
               </View>
 
               {item.progress_text ? (
@@ -308,6 +325,45 @@ export function RefinementQueueScreen() {
                   onPress={() =>
                     void runAction(`${itemKey}:section`, item, (nextLectureId, nextBookId) =>
                       startSectionRefinement(nextLectureId, nextBookId, {
+                        actor: username,
+                      }),
+                    )
+                  }
+                  style={styles.actionButton}
+                />
+                <AppButton
+                  title="批注"
+                  variant="secondary"
+                  loading={activeAction === `${itemKey}:annotation`}
+                  onPress={() =>
+                    void runAction(`${itemKey}:annotation`, item, (nextLectureId, nextBookId) =>
+                      startAnnotationRefinement(nextLectureId, nextBookId, {
+                        actor: username,
+                      }),
+                    )
+                  }
+                  style={styles.actionButton}
+                />
+                <AppButton
+                  title="概述"
+                  variant="secondary"
+                  loading={activeAction === `${itemKey}:summary`}
+                  onPress={() =>
+                    void runAction(`${itemKey}:summary`, item, (nextLectureId, nextBookId) =>
+                      startSummaryRefinement(nextLectureId, nextBookId, {
+                        actor: username,
+                      }),
+                    )
+                  }
+                  style={styles.actionButton}
+                />
+                <AppButton
+                  title="视频"
+                  variant="secondary"
+                  loading={activeAction === `${itemKey}:video`}
+                  onPress={() =>
+                    void runAction(`${itemKey}:video`, item, (nextLectureId, nextBookId) =>
+                      startVideoSearch(nextLectureId, nextBookId, {
                         actor: username,
                       }),
                     )

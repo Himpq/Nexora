@@ -20,6 +20,8 @@ export type LearningChatRequest = {
   api_mode?: "chat" | "responses" | "auto";
   stream?: boolean;
   think?: boolean;
+  /** Used when retrying the same user turn through a fallback path. */
+  skip_user_message?: boolean;
   temperature?: number;
   max_tokens?: number;
 };
@@ -69,6 +71,7 @@ function buildLearningChatPayload(payload: LearningChatRequest) {
     api_mode: payload.api_mode || "chat",
     stream: payload.stream ?? false,
     think: payload.think ?? false,
+    skip_user_message: payload.skip_user_message || undefined,
     temperature: payload.temperature,
     max_tokens: payload.max_tokens,
   };
@@ -283,7 +286,12 @@ async function readStreamText(response: Response, handlers?: LearningChatStreamH
       streamDone = true;
       return;
     }
-    const parsed = JSON.parse(dataText) as unknown;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(dataText) as unknown;
+    } catch {
+      return;
+    }
     const event = mapStreamObject(parsed);
     if (event.type === "content" || event.type === "reasoning") {
       content += event.delta;

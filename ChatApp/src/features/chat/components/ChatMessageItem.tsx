@@ -26,10 +26,12 @@ export const ChatMessageItem = memo(function ChatMessageItem({
   message,
   canRegenerate,
   onRegenerate,
+  onRetry,
 }: {
   message: ChatMessageModel;
   canRegenerate?: boolean;
   onRegenerate?: () => void;
+  onRetry?: () => void;
 }) {
   const isUser = message.role === "user";
   const streaming = message.status === "streaming";
@@ -76,15 +78,31 @@ export const ChatMessageItem = memo(function ChatMessageItem({
         <MarkdownMessage content={message.content} />
       )}
 
-      {!streaming && message.content && message.status !== "error" ? (
+      {message.activity && streaming ? (
+        <AppText variant="caption" tone="tertiary" style={styles.activity}>
+          {message.activity}
+        </AppText>
+      ) : null}
+
+      {!streaming && (message.content || canRegenerate || onRetry) ? (
         <View style={styles.actions}>
-          <Pressable style={styles.actionBtn} onPress={copy} hitSlop={6}>
-            <Feather name={copied ? "check" : "copy"} size={14} color={colors.textTertiary} />
-            <AppText variant="caption" tone="tertiary">
-              {copied ? "已复制" : "复制"}
-            </AppText>
-          </Pressable>
-          {canRegenerate && onRegenerate ? (
+          {message.content && message.status !== "error" ? (
+            <Pressable style={styles.actionBtn} onPress={copy} hitSlop={6}>
+              <Feather name={copied ? "check" : "copy"} size={14} color={colors.textTertiary} />
+              <AppText variant="caption" tone="tertiary">
+                {copied ? "已复制" : "复制"}
+              </AppText>
+            </Pressable>
+          ) : null}
+          {message.status === "error" && onRetry ? (
+            <Pressable style={styles.actionBtn} onPress={onRetry} hitSlop={6}>
+              <Feather name="rotate-cw" size={14} color={colors.textTertiary} />
+              <AppText variant="caption" tone="tertiary">
+                重试
+              </AppText>
+            </Pressable>
+          ) : null}
+          {message.status !== "error" && canRegenerate && onRegenerate ? (
             <Pressable style={styles.actionBtn} onPress={onRegenerate} hitSlop={6}>
               <Feather name="refresh-cw" size={14} color={colors.textTertiary} />
               <AppText variant="caption" tone="tertiary">
@@ -124,6 +142,9 @@ const styles = StyleSheet.create({
   },
   errorHint: {
     opacity: 0.8,
+  },
+  activity: {
+    marginTop: spacing.xs,
   },
   actions: {
     flexDirection: "row",

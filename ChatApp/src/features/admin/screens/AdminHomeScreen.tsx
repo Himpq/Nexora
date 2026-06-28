@@ -46,6 +46,13 @@ const ADMIN_ACTIONS: AdminAction[] = [
     onPress: (navigation) => navigation.navigate("RefinementQueue"),
   },
   {
+    key: "runtime",
+    icon: "activity",
+    title: "Runtime / 记忆",
+    description: "长上下文与学习画像记忆控制台。",
+    onPress: (navigation) => navigation.navigate("RuntimeMemory"),
+  },
+  {
     key: "feed",
     icon: "rss",
     title: "学习动态",

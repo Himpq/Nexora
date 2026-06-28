@@ -1,11 +1,12 @@
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Linking, StyleSheet, View } from "react-native";
 import { Feather } from "@expo/vector-icons";
 
 import { BookListItem } from "../../books/components/BookListItem";
 import {
   AnimatedPressable,
+  AppButton,
   AppCard,
   AppText,
   colors,
@@ -24,6 +25,7 @@ import { getLecture } from "../../../services/lectureService";
 import {
   getCourseOutline,
   getLectureVideos,
+  streamCourseOutline,
   type CourseOutlineResponse,
   type LearningVideo,
 } from "../../../services/learningExperienceService";
@@ -80,9 +82,11 @@ export function CourseDetailScreen({ navigation, route }: CourseDetailScreenProp
   const [outline, setOutline] = useState<CourseOutlineResponse["outline"] | null>(null);
   const [videos, setVideos] = useState<LearningVideo[]>([]);
   const [coverAssets, setCoverAssets] = useState<CoverAsset[]>([]);
-  const [extrasError, setExtrasError] = useState<Error | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+  const [outlineGenerating, setOutlineGenerating] = useState(false);
+  const [outlineLog, setOutlineLog] = useState("");
+  const outlineAbortRef = useRef<AbortController | null>(null);
 
   const title = useMemo(
     () => getLectureTitle(lecture, lectureTitle),
@@ -115,7 +119,6 @@ export function CourseDetailScreen({ navigation, route }: CourseDetailScreenProp
       const result = await getLecture(normalizedLectureId);
       setLecture(result.lecture || null);
       setBooks(result.books);
-      setExtrasError(null);
       const [outlineResult, videosResult, coversResult] = await Promise.allSettled([
         getCourseOutline(normalizedLectureId),
         getLectureVideos(normalizedLectureId),
@@ -132,19 +135,12 @@ export function CourseDetailScreen({ navigation, route }: CourseDetailScreenProp
           ? coversResult.value.items
           : [],
       );
-      const firstFailure = [outlineResult, videosResult, coversResult].find(
-        (entry) => entry.status === "rejected",
-      ) as PromiseRejectedResult | undefined;
-      if (firstFailure) {
-        setExtrasError(normalizeError(firstFailure.reason));
-      }
     } catch (err) {
       setLecture(null);
       setBooks([]);
       setOutline(null);
       setVideos([]);
       setCoverAssets([]);
-      setExtrasError(null);
       setError(normalizeError(err));
     } finally {
       setLoading(false);
@@ -156,8 +152,57 @@ export function CourseDetailScreen({ navigation, route }: CourseDetailScreenProp
   }, [loadLecture]);
 
   useEffect(() => {
-    navigation.setOptions({ title });
-  }, [navigation, title]);
+    return () => {
+      outlineAbortRef.current?.abort();
+    };
+  }, []);
+
+  const regenerateOutline = useCallback(async () => {
+    const normalizedLectureId = String(lectureId || "").trim();
+    if (!normalizedLectureId || outlineGenerating) {
+      return;
+    }
+    outlineAbortRef.current?.abort();
+    const controller = new AbortController();
+    outlineAbortRef.current = controller;
+    setOutlineGenerating(true);
+    setOutlineLog("大纲生成已启动…");
+    try {
+      await streamCourseOutline(normalizedLectureId, {
+        signal: controller.signal,
+        onStatus: (message) => {
+          if (message) {
+            setOutlineLog(message);
+          }
+        },
+        onDelta: (content) => {
+          if (content) {
+            setOutlineLog((prev) => `${prev}${content}`);
+          }
+        },
+        onError: (message) => {
+          throw new Error(message || "大纲生成失败。");
+        },
+      });
+      // Reload the persisted outline once the stream settles.
+      try {
+        const result = await getCourseOutline(normalizedLectureId);
+        setOutline(result.outline || null);
+      } catch {
+        // The streamed outline may not be persisted immediately; keep existing.
+      }
+      setOutlineLog("大纲已生成。");
+    } catch (err) {
+      if (controller.signal.aborted) {
+        setOutlineLog("已取消大纲生成。");
+      } else {
+        setOutlineLog(normalizeError(err).message);
+      }
+    } finally {
+      setOutlineGenerating(false);
+      outlineAbortRef.current = null;
+    }
+  }, [lectureId, outlineGenerating]);
 
   const openBook = useCallback(
     (book: Book) => {
@@ -218,6 +263,7 @@ export function CourseDetailScreen({ navigation, route }: CourseDetailScreenProp
       <ScreenHeader
         title={title}
         subtitle={`${books.length} 本教材${lecture?.description ? ` · ${String(lecture.description)}` : ""}`}
+        onBack={() => navigation.goBack()}
       />
 
       {lectureCoverUri ? (
@@ -244,11 +290,11 @@ export function CourseDetailScreen({ navigation, route }: CourseDetailScreenProp
         ) : null}
       </View>
 
-      <Section first title="教材列表" subtitle="选择一本教材查看原文、概读和精读">
+      <Section first title="教材列表">
         {books.length === 0 ? (
           <AppCard variant="muted">
             <AppText variant="caption" tone="muted">
-              这门课程还没有可阅读的教材，请等待管理员上传。
+              这门课程还没有可阅读的教材。
             </AppText>
           </AppCard>
         ) : (
@@ -273,9 +319,36 @@ export function CourseDetailScreen({ navigation, route }: CourseDetailScreenProp
         subtitle={
           outlineSections.length > 0
             ? `共 ${outline?.total_sections ?? outlineSections.length} 个单元`
-            : "后端生成后会在这里展示"
+            : undefined
         }
       >
+        <View style={styles.outlineActions}>
+          <AppButton
+            title={outlineGenerating ? "生成中…" : "重新生成大纲"}
+            variant="secondary"
+            size="sm"
+            loading={outlineGenerating}
+            disabled={outlineGenerating}
+            onPress={() => void regenerateOutline()}
+            style={styles.outlineActionButton}
+          />
+          {outlineGenerating ? (
+            <AppButton
+              title="取消"
+              variant="ghost"
+              size="sm"
+              onPress={() => outlineAbortRef.current?.abort()}
+              style={styles.outlineActionButton}
+            />
+          ) : null}
+        </View>
+        {outlineLog ? (
+          <AppCard variant="muted" style={styles.outlineLogCard}>
+            <AppText variant="caption" tone="secondary" numberOfLines={6}>
+              {outlineLog}
+            </AppText>
+          </AppCard>
+        ) : null}
         {outlineSections.length > 0 ? (
           <AppCard style={styles.outlineCard}>
             {outlineSections.slice(0, 4).map((section, index) => {
@@ -308,7 +381,7 @@ export function CourseDetailScreen({ navigation, route }: CourseDetailScreenProp
         ) : (
           <AppCard variant="muted">
             <AppText variant="caption" tone="muted">
-              课程大纲尚未生成；管理员生成后，学习路径和推荐内容会复用这份结构。
+              大纲生成后将在这里展示。
             </AppText>
           </AppCard>
         )}
@@ -316,7 +389,7 @@ export function CourseDetailScreen({ navigation, route }: CourseDetailScreenProp
 
       <Section
         title="推荐视频"
-        subtitle={visibleVideos.length > 0 ? `已缓存 ${videos.length} 个视频` : "粗读/视频任务生成后可用"}
+        subtitle={visibleVideos.length > 0 ? `共 ${videos.length} 个视频` : undefined}
       >
         {visibleVideos.length > 0 ? (
           <View style={styles.videoList}>
@@ -360,19 +433,11 @@ export function CourseDetailScreen({ navigation, route }: CourseDetailScreenProp
         ) : (
           <AppCard variant="muted">
             <AppText variant="caption" tone="muted">
-              暂无课程推荐视频缓存。管理员的视频任务或教材页刷新后会补齐这里。
+              暂无推荐视频。
             </AppText>
           </AppCard>
         )}
       </Section>
-
-      {extrasError ? (
-        <AppCard variant="outlined" style={styles.errorCard}>
-          <AppText variant="caption" tone="danger">
-            附加学习数据加载失败：{extrasError.message}
-          </AppText>
-        </AppCard>
-      ) : null}
     </Screen>
   );
 }
@@ -403,6 +468,18 @@ const styles = StyleSheet.create({
   },
   outlineCard: {
     gap: spacing.md,
+  },
+  outlineActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.sm,
+    marginBottom: spacing.sm,
+  },
+  outlineActionButton: {
+    flexGrow: 1,
+  },
+  outlineLogCard: {
+    marginBottom: spacing.sm,
   },
   outlineItem: {
     alignItems: "flex-start",
@@ -441,9 +518,5 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(10,10,10,0.55)",
-  },
-  errorCard: {
-    borderLeftColor: colors.danger,
-    borderLeftWidth: 4,
   },
 });

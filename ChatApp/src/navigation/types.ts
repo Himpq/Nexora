@@ -5,6 +5,7 @@ export type RootStackParamList = {
   AdminHome: undefined;
   BookUpload: undefined;
   RefinementQueue: undefined;
+  RuntimeMemory: undefined;
   Vectorize: undefined;
   CourseDetail: {
     lectureId: string;

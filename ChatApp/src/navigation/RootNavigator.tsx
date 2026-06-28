@@ -5,6 +5,7 @@ import { colors, Screen, Skeleton, spacing, typography } from "../design";
 import { AdminHomeScreen } from "../features/admin/screens/AdminHomeScreen";
 import { BookUploadScreen } from "../features/admin/screens/BookUploadScreen";
 import { RefinementQueueScreen } from "../features/admin/screens/RefinementQueueScreen";
+import { RuntimeMemoryScreen } from "../features/admin/screens/RuntimeMemoryScreen";
 import { VectorizeScreen } from "../features/admin/screens/VectorizeScreen";
 import { BookDetailScreen } from "../features/books/screens/BookDetailScreen";
 import { BookReaderScreen } from "../features/books/screens/BookReaderScreen";
@@ -67,6 +68,11 @@ export function RootNavigator() {
             options={{ title: "提炼队列" }}
           />
           <Stack.Screen
+            name="RuntimeMemory"
+            component={RuntimeMemoryScreen}
+            options={{ title: "Runtime / 记忆" }}
+          />
+          <Stack.Screen
             name="Vectorize"
             component={VectorizeScreen}
             options={{ title: "向量化" }}
@@ -76,23 +82,17 @@ export function RootNavigator() {
       <Stack.Screen
         name="CourseDetail"
         component={CourseDetailScreen}
-        options={({ route }) => ({
-          title: route.params.lectureTitle || "课程详情",
-        })}
+        options={{ headerShown: false }}
       />
       <Stack.Screen
         name="BookDetail"
         component={BookDetailScreen}
-        options={({ route }) => ({
-          title: route.params.bookTitle || "教材详情",
-        })}
+        options={{ headerShown: false }}
       />
       <Stack.Screen
         name="BookReader"
         component={BookReaderScreen}
-        options={({ route }) => ({
-          title: route.params.bookTitle || "教材阅读",
-        })}
+        options={{ headerShown: false }}
       />
     </Stack.Navigator>
   );

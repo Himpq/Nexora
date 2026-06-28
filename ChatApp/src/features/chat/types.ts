@@ -19,6 +19,8 @@ export type ChatMessage = {
   status?: ChatMessageStatus;
   /** Server message index, when loaded from history (used for regenerate). */
   serverIndex?: number;
+  /** Short streaming activity hint, e.g. model/search/tool status frames. */
+  activity?: string;
   /** Populated when `status === "error"` to drive retry guidance. */
   errorCategory?: ChatErrorCategory;
   errorCode?: string | number;

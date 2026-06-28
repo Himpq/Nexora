@@ -6,6 +6,7 @@ import { useSession } from "../../../app/providers/SessionProvider";
 import { AppText, colors, haptics, radius, spacing } from "../../../design";
 import {
   getLearningRuntimeContext,
+  sendLearningChat,
   streamLearningChat,
 } from "../../../services/learningChatService";
 import type { LearningRuntimeContext } from "../../../services/types";
@@ -43,6 +44,61 @@ function buildContextBlocks(runtime: LearningRuntimeContext | null, context: Rea
   return [targetBlock, ...base];
 }
 
+function contextKey(context: ReaderContext) {
+  return [
+    context.lectureId,
+    context.bookId,
+    context.chapter?.index ?? "",
+    context.chapter?.name ?? "",
+    context.chapter?.range ?? "",
+  ].join("|");
+}
+
+function safeConversationPart(value: unknown) {
+  return encodeURIComponent(String(value || "").trim()).replace(/%/g, "").slice(0, 80) || "_";
+}
+
+function buildConversationId(context: ReaderContext) {
+  const chapter = context.chapter?.index != null
+    ? `chapter-${context.chapter.index}`
+    : context.chapter?.name || "book";
+  return [
+    "chatapp-reader",
+    safeConversationPart(context.lectureId),
+    safeConversationPart(context.bookId),
+    safeConversationPart(chapter),
+  ].join(":");
+}
+
+function buildRecentDialogueBlock(messages: ChatMessage[]) {
+  const rows = messages
+    .filter((message) => message.status === "completed" && message.content.trim())
+    .slice(-8)
+    .map((message) => `${message.role === "user" ? "用户" : "助手"}：${message.content.trim()}`);
+  if (rows.length === 0) {
+    return null;
+  }
+  return {
+    type: "recent_local_dialogue",
+    title: "浮窗本地最近对话",
+    content: rows.join("\n\n"),
+  };
+}
+
+function describeLearningActivity(eventType?: string) {
+  const type = String(eventType || "").trim();
+  if (!type) {
+    return "";
+  }
+  if (type.includes("function") || type.includes("tool")) {
+    return "正在调用学习工具…";
+  }
+  if (type.includes("reasoning")) {
+    return "正在推理…";
+  }
+  return "";
+}
+
 export function AiTab({ context }: { context: ReaderContext }) {
   const { username } = useSession();
   const [runtime, setRuntime] = useState<LearningRuntimeContext | null>(null);
@@ -54,6 +110,8 @@ export function AiTab({ context }: { context: ReaderContext }) {
   const scrollRef = useRef<ScrollView>(null);
   const abortRef = useRef<AbortController | null>(null);
   const busyRef = useRef(false);
+  const activeContextKey = contextKey(context);
+  const conversationId = buildConversationId(context);
 
   useEffect(() => {
     let active = true;
@@ -76,24 +134,60 @@ export function AiTab({ context }: { context: ReaderContext }) {
     return () => {
       active = false;
     };
-  }, [username, context.lectureId, context.bookId]);
+  }, [username, context.lectureId, context.bookId, activeContextKey]);
+
+  useEffect(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    busyRef.current = false;
+    setBusy(false);
+    setMessages([]);
+    setInput("");
+    setError("");
+  }, [activeContextKey]);
+
+  useEffect(
+    () => () => {
+      abortRef.current?.abort();
+    },
+    [],
+  );
 
   const scrollToEnd = useCallback(() => {
     requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
   }, []);
 
   const send = useCallback(
-    async (text: string) => {
+    async (text: string, existingAssistantId?: string) => {
       const content = text.trim();
       if (!content || busyRef.current || !username) {
         return;
       }
-      const assistantId = genId();
-      setMessages((prev) => [
-        ...prev,
-        { id: genId(), role: "user", content, status: "completed" },
-        { id: assistantId, role: "assistant", content: "", status: "streaming" },
-      ]);
+      const assistantId = existingAssistantId || genId();
+      const localMessagesSnapshot = messages;
+      if (existingAssistantId) {
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === existingAssistantId
+              ? {
+                  ...message,
+                  content: "",
+                  reasoning: undefined,
+                  status: "streaming",
+                  activity: undefined,
+                  errorCategory: undefined,
+                  errorCode: undefined,
+                }
+              : message,
+          ),
+        );
+      } else {
+        setMessages((prev) => [
+          ...prev,
+          { id: genId(), role: "user", content, status: "completed" },
+          { id: assistantId, role: "assistant", content: "", status: "streaming" },
+        ]);
+      }
       setInput("");
       setBusy(true);
       busyRef.current = true;
@@ -103,29 +197,55 @@ export function AiTab({ context }: { context: ReaderContext }) {
       const controller = new AbortController();
       abortRef.current = controller;
       let raw = "";
+      const recentDialogue = buildRecentDialogueBlock(localMessagesSnapshot);
+      const contextBlocks = buildContextBlocks(runtime, context);
+      if (recentDialogue) {
+        contextBlocks.push(recentDialogue);
+      }
+      const requestPayload = {
+        username,
+        messages: [{ role: "user" as const, content }],
+        conversation_id: conversationId,
+        conversation_title: context.chapter?.name || context.bookTitle || context.lectureTitle || "教材问答",
+        system_prompt: String(runtime?.system_prompt || "").trim(),
+        context_blocks: contextBlocks,
+        active_tool_skills: Array.isArray(runtime?.active_tool_skills)
+          ? runtime!.active_tool_skills
+          : [],
+        cards: Array.isArray(runtime?.cards) ? runtime!.cards : [],
+        meta: {
+          ...(runtime?.meta || {}),
+          source: "chatapp-reader",
+          lecture_id: context.lectureId,
+          book_id: context.bookId,
+          chapter_name: context.chapter?.name,
+          chapter_range: context.chapter?.range,
+        },
+        api_mode: "chat" as const,
+        think: false,
+        stream: true,
+      };
+
+      const completeAssistant = (finalRaw: string) => {
+        const parsed = parseAssistantResponse(finalRaw);
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId
+              ? {
+                  ...m,
+                  content: parsed.final || finalRaw || "（无内容）",
+                  reasoning: parsed.thinking,
+                  status: "completed",
+                  activity: undefined,
+                }
+              : m,
+          ),
+        );
+      };
+
       try {
         await streamLearningChat(
-          {
-            username,
-            messages: [{ role: "user", content }],
-            conversation_id: `${context.lectureId}:${context.bookId}`,
-            conversation_title: context.bookTitle || context.lectureTitle || "教材问答",
-            system_prompt: String(runtime?.system_prompt || "").trim(),
-            context_blocks: buildContextBlocks(runtime, context),
-            active_tool_skills: Array.isArray(runtime?.active_tool_skills)
-              ? runtime!.active_tool_skills
-              : [],
-            cards: Array.isArray(runtime?.cards) ? runtime!.cards : [],
-            meta: {
-              ...(runtime?.meta || {}),
-              source: "chatapp-reader",
-              lecture_id: context.lectureId,
-              book_id: context.bookId,
-            },
-            api_mode: "chat",
-            think: false,
-            stream: true,
-          },
+          requestPayload,
           {
             signal: controller.signal,
             onEvent: (event) => {
@@ -147,21 +267,16 @@ export function AiTab({ context }: { context: ReaderContext }) {
                 scrollToEnd();
               } else if (event.type === "done") {
                 const finalRaw = event.content || raw;
-                const parsed = parseAssistantResponse(finalRaw);
-                setMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === assistantId
-                      ? {
-                          ...m,
-                          content: parsed.final || finalRaw,
-                          reasoning: parsed.thinking,
-                          status: "completed",
-                        }
-                      : m,
-                  ),
-                );
+                completeAssistant(finalRaw);
               } else if (event.type === "error") {
                 throw new Error(event.message);
+              } else if (event.type === "unknown") {
+                const activity = describeLearningActivity(event.eventType);
+                if (activity) {
+                  setMessages((prev) =>
+                    prev.map((m) => (m.id === assistantId ? { ...m, activity } : m)),
+                  );
+                }
               }
             },
           },
@@ -183,14 +298,24 @@ export function AiTab({ context }: { context: ReaderContext }) {
             ),
           );
         } else {
-          setError(normalizeError(err).message);
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantId
-                ? { ...m, content: m.content || "请求失败，请重试。", status: "error" }
-                : m,
-            ),
-          );
+          try {
+            const result = await sendLearningChat({
+              ...requestPayload,
+              stream: false,
+              skip_user_message: true,
+            });
+            const fallbackContent = String(result.content || result.answer || result.message || "").trim();
+            completeAssistant(fallbackContent || "（无内容）");
+          } catch {
+            setError(normalizeError(err).message);
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantId
+                  ? { ...m, content: m.content || "请求失败，请重试。", status: "error" }
+                  : m,
+              ),
+            );
+          }
         }
       } finally {
         setBusy(false);
@@ -198,10 +323,25 @@ export function AiTab({ context }: { context: ReaderContext }) {
         abortRef.current = null;
       }
     },
-    [context, runtime, scrollToEnd, username],
+    [context, conversationId, messages, runtime, scrollToEnd, username],
   );
 
   const stop = useCallback(() => abortRef.current?.abort(), []);
+  const retryAssistant = useCallback(
+    (assistantId: string) => {
+      const index = messages.findIndex((message) => message.id === assistantId);
+      if (index < 0) {
+        return;
+      }
+      for (let i = index - 1; i >= 0; i -= 1) {
+        if (messages[i].role === "user") {
+          void send(messages[i].content, assistantId);
+          return;
+        }
+      }
+    },
+    [messages, send],
+  );
   const canSend = input.trim().length > 0 && !busy;
 
   return (
@@ -221,7 +361,11 @@ export function AiTab({ context }: { context: ReaderContext }) {
           }}
         >
           {messages.map((message) => (
-            <ChatMessageItem key={message.id} message={message} />
+            <ChatMessageItem
+              key={message.id}
+              message={message}
+              onRetry={message.status === "error" ? () => retryAssistant(message.id) : undefined}
+            />
           ))}
         </ScrollView>
       )}

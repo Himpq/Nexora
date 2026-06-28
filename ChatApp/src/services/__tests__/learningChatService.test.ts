@@ -2,7 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { chatApiClient } from "../apiClient";
-import { streamLearningChat, type LearningChatStreamEvent } from "../learningChatService";
+import {
+  sendLearningChat,
+  streamLearningChat,
+  type LearningChatStreamEvent,
+} from "../learningChatService";
 
 function streamResponse(chunks: string[]) {
   let readCount = 0;
@@ -118,4 +122,56 @@ test("streamLearningChat maps provider reasoning and done variants", async () =>
     events.map((event) => event.type),
     ["reasoning", "content", "done"],
   );
+});
+
+test("streamLearningChat ignores non-JSON data frames", async () => {
+  chatApiClient.setBaseUrl("http://chat.local");
+  const response = streamResponse([
+    "data: keepalive\n\n",
+    'data: {"type":"response.output_text.delta","delta":"ok"}\n\n',
+    "data: [DONE]\n\n",
+  ]);
+  globalThis.fetch = (async () => response) as typeof fetch;
+
+  const events: LearningChatStreamEvent[] = [];
+  const result = await streamLearningChat(
+    {
+      username: "ada",
+      messages: [{ role: "user", content: "Hi" }],
+    },
+    {
+      onEvent: (event) => events.push(event),
+    },
+  );
+
+  assert.equal(result.content, "ok");
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ["content", "done"],
+  );
+});
+
+test("sendLearningChat can skip persisting an already-recorded user message", async () => {
+  chatApiClient.setBaseUrl("http://chat.local");
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  globalThis.fetch = (async (url, init) => {
+    calls.push({ url: String(url), init: init || {} });
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ success: true, content: "ok" }),
+    } as Response;
+  }) as typeof fetch;
+
+  await sendLearningChat({
+    username: "ada",
+    messages: [{ role: "user", content: "Hi" }],
+    conversation_id: "reader:c1",
+    skip_user_message: true,
+  });
+
+  assert.equal(calls[0].url, "http://chat.local/api/learning/chat");
+  const body = JSON.parse(String(calls[0].init.body || "{}"));
+  assert.equal(body.stream, false);
+  assert.equal(body.skip_user_message, true);
 });

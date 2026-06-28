@@ -53,6 +53,8 @@ export function ChatComposer({
   onToggleThinking,
   enableWebSearch,
   onToggleWebSearch,
+  enableTools,
+  onToggleTools,
   placeholder = "给 Nexora 发消息…",
 }: {
   value: string;
@@ -66,6 +68,8 @@ export function ChatComposer({
   onToggleThinking: () => void;
   enableWebSearch: boolean;
   onToggleWebSearch: () => void;
+  enableTools: boolean;
+  onToggleTools: () => void;
   placeholder?: string;
 }) {
   const canSend = value.trim().length > 0 && !busy;
@@ -124,6 +128,12 @@ export function ChatComposer({
             active={enableWebSearch}
             onPress={onToggleWebSearch}
           />
+          <ComposerChip
+            icon="tool"
+            label="工具"
+            active={enableTools}
+            onPress={onToggleTools}
+          />
         </View>
         {busy ? (
           <Pressable
@@ -181,6 +191,7 @@ const styles = StyleSheet.create({
   chips: {
     flex: 1,
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
     gap: spacing.xs,
   },

@@ -35,7 +35,7 @@
 ## 关键事实
 
 - 学习域主要走 `NexoraLearning`。
-- 聊天模型列表走 `GET /api/nexora/models`，优先 `default_model`。
+- 通用聊天模型列表走 ChatDBServer `GET /api/config`；NexoraLearning/PAPI 模型能力仍保留 `GET /api/nexora/models` service contract。
 - 学习聊天走 `ChatDBServer /api/learning/chat`。
 - 课程大纲、推荐视频、知识图谱、学习进度记录走 `NexoraLearning /api/frontend/*`，由 `learningExperienceService` / `frontendService` 承接。
 - Lecture / Book 封面资源走 `NexoraLearning /api/lectures/*/cover-assets` 以及实体上的 `cover_path` / `cover` 字段，由 `imageService` 统一补全 URL。
@@ -52,8 +52,8 @@
 - `bookinfo` / `bookdetail` 的富格式化。
 - 全面 UI/UX 统一。
 - 长期聊天历史（当前前端按最近 80 条截断展示，保留真实 server index 供 regenerate 对齐；「加载更多」未接入）、断线重连、多模态、Web Chat 对齐。
-- 工具调用：`chatService` 已把 `function_call_*` 等未知帧作为 `type: "unknown"` 事件透出（不静默丢弃），观测点已就位，但工具调用 UI 未接入。
-- 取消生成仍为客户端中断（`AbortController` 中断读流）；服务端 `/api/chat/stream/cancel` 需 `stream_id`，当前未透出，故中断后服务端可能继续生成并计费——列入技术债。
+- 工具调用：`chatService` 已把 `function_call_*` 等未知帧作为 `type: "unknown"` 事件透出（不静默丢弃）；问答输入栏可开启工具，流式期间会显示工具/搜索活动提示，但完整工具结果卡片仍未接入。
+- 通用问答已捕获 `/api/chat/stream` 的 `stream_session.stream_id`，停止生成时会请求 ChatDBServer `POST /api/chat/stream/cancel` 并同时中断本地读流；教材浮窗学习聊天仍为客户端中断。
 
 ## 验证
 

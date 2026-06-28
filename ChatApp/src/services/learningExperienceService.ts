@@ -1,4 +1,5 @@
-import { getJson, postJson } from "./apiClient";
+import { getJson, postJson, learningApiClient } from "./apiClient";
+import { readSseStream } from "./sse";
 
 export type LearningNotification = {
   id?: string;
@@ -231,6 +232,73 @@ export function generateCourseOutline(lectureId: string) {
   return postJson<{ success: boolean; message?: string; [key: string]: unknown }>(
     `/api/frontend/outline/${encodeURIComponent(lectureId)}/generate`,
   );
+}
+
+/**
+ * Streaming outline generation — opens the SSE GET stream
+ * `GET /api/frontend/outline/<lecture_id>/generate-stream` and dispatches the
+ * backend's named events (`status` / `delta` / `done` / `error`) to semantic
+ * callbacks. The stream runs `generate_outline` synchronously and emits the
+ * finished outline on the `done` event; callers should reload the cached
+ * outline via `getCourseOutline` afterwards (or use the `outline` payload).
+ */
+export type CourseOutlineStreamHandlers = {
+  signal?: AbortSignal;
+  onStatus?: (message: string) => void;
+  onDelta?: (content: string) => void;
+  onDone?: (outline: unknown) => void;
+  onError?: (error: string) => void;
+};
+
+export async function streamCourseOutline(
+  lectureId: string,
+  handlers: CourseOutlineStreamHandlers,
+) {
+  const response = await learningApiClient.request(
+    `/api/frontend/outline/${encodeURIComponent(lectureId)}/generate-stream`,
+    {
+      method: "GET",
+      headers: { Accept: "text/event-stream" },
+      signal: handlers.signal,
+    },
+  );
+  if (!response.ok || !response.body) {
+    const message = `大纲流式生成启动失败 (HTTP ${response.status})。`;
+    handlers.onError?.(message);
+    return;
+  }
+  let settled = false;
+  await readSseStream(response, {
+    signal: handlers.signal,
+    onEvent: (event, data) => {
+      const payload = (data || {}) as Record<string, unknown>;
+      switch (event) {
+        case "status":
+          handlers.onStatus?.(String(payload.message || ""));
+          break;
+        case "delta":
+          handlers.onDelta?.(String(payload.content || ""));
+          break;
+        case "done":
+          settled = true;
+          handlers.onDone?.(payload.outline);
+          break;
+        case "error":
+          settled = true;
+          handlers.onError?.(String(payload.error || "大纲生成失败。"));
+          break;
+        default:
+          // `ping` / `close` / unknown keepalive events — no-op.
+          break;
+      }
+    },
+    onDone: () => {
+      // Natural stream end — only fire if no explicit `done`/`error` settled it.
+      if (!settled) {
+        handlers.onDone?.(undefined);
+      }
+    },
+  });
 }
 
 export function completeLearningSession(payload: {

@@ -17,13 +17,21 @@ export type ChatStreamRequest = {
   enableTools?: boolean;
   isRegenerate?: boolean;
   regenerateIndex?: number;
+  skipUserMessage?: boolean;
 };
 
 export type ChatStreamEvent =
   | { type: "content"; delta: string; raw?: unknown }
   | { type: "reasoning"; delta: string; raw?: unknown }
   | { type: "conversation_id"; conversationId: string; raw?: unknown }
-  | { type: "done"; raw?: unknown }
+  | {
+      type: "stream_session";
+      streamId: string;
+      conversationId?: string;
+      status?: string;
+      raw?: unknown;
+    }
+  | { type: "done"; content?: string; raw?: unknown }
   | { type: "error"; message: string; raw?: unknown }
   | { type: "unknown"; eventType?: string; raw?: unknown };
 
@@ -60,6 +68,7 @@ function buildChatStreamPayload(req: ChatStreamRequest) {
     enable_tools: req.enableTools ?? false,
     is_regenerate: req.isRegenerate ?? false,
     regenerate_index: req.regenerateIndex,
+    skip_user_message: req.skipUserMessage || undefined,
   };
 }
 
@@ -88,11 +97,28 @@ export function mapChatStreamChunk(obj: unknown): ChatStreamEvent {
       ? { type: "conversation_id", conversationId, raw: obj }
       : { type: "unknown", eventType: type, raw: obj };
   }
+  if (type === "stream_session") {
+    const streamId = String(row.stream_id || row.streamId || "").trim();
+    const conversationId = String(row.conversation_id || row.conversationId || "").trim();
+    return streamId
+      ? {
+          type: "stream_session",
+          streamId,
+          conversationId: conversationId || undefined,
+          status: String(row.status || "").trim() || undefined,
+          raw: obj,
+        }
+      : { type: "unknown", eventType: type, raw: obj };
+  }
   if (type === "error") {
-    return { type: "error", message: String(row.message || row.error || "流式请求失败"), raw: obj };
+    return {
+      type: "error",
+      message: String(row.message || row.error || row.content || "流式请求失败"),
+      raw: obj,
+    };
   }
   if (type === "done" || type === "model_done" || type === "stream_done") {
-    return { type: "done", raw: obj };
+    return { type: "done", content: String(row.content || ""), raw: obj };
   }
   return { type: "unknown", eventType: type || undefined, raw: obj };
 }
@@ -128,6 +154,10 @@ export async function streamChat(req: ChatStreamRequest, handlers?: ChatStreamHa
         reasoning += event.delta;
       } else if (event.type === "conversation_id") {
         conversationId = event.conversationId;
+      } else if (event.type === "stream_session" && event.conversationId) {
+        conversationId = event.conversationId;
+      } else if (event.type === "done" && event.content) {
+        content = event.content;
       }
       // Propagate the handler's return (possibly a Promise) so the SSE reader
       // awaits async onEvent handlers frame-by-frame.
@@ -139,4 +169,21 @@ export async function streamChat(req: ChatStreamRequest, handlers?: ChatStreamHa
   });
 
   return { conversationId, content, reasoning };
+}
+
+export async function cancelChatStream(streamId: string) {
+  const id = String(streamId || "").trim();
+  if (!id) {
+    return { success: false, cancelRequested: false };
+  }
+  const result = await chatApiClient.postJson<{
+    success?: boolean;
+    cancel_requested?: boolean;
+    stream_id?: string;
+  }>("/api/chat/stream/cancel", { stream_id: id });
+  return {
+    success: result.success !== false,
+    cancelRequested: Boolean(result.cancel_requested),
+    streamId: String(result.stream_id || id),
+  };
 }

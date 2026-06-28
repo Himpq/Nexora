@@ -865,22 +865,24 @@ def papi_learning_chat():
     merged_messages.extend(_strip_system_rows(history_messages))
     merged_messages.extend(_strip_system_rows(incoming_messages))
 
-    for row in incoming_messages:
-        if not isinstance(row, dict):
-            continue
-        role = str(row.get('role') or '').strip().lower()
-        if role != 'user':
-            continue
-        manager.add_message(
-            conversation_id,
-            'user',
-            row.get('content'),
-            metadata={
-                'source': 'nexoralearning',
-                'learning_mode': True,
-                'conversation_id': conversation_id,
-            },
-        )
+    skip_user_message = _as_bool(data.get('skip_user_message', False), False)
+    if not skip_user_message:
+        for row in incoming_messages:
+            if not isinstance(row, dict):
+                continue
+            role = str(row.get('role') or '').strip().lower()
+            if role != 'user':
+                continue
+            manager.add_message(
+                conversation_id,
+                'user',
+                row.get('content'),
+                metadata={
+                    'source': 'nexoralearning',
+                    'learning_mode': True,
+                    'conversation_id': conversation_id,
+                },
+            )
 
     request_payload = dict(data)
     request_payload['username'] = username
