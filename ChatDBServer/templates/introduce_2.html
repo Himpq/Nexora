@@ -1,0 +1,545 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Nexora | 介绍</title>
+    <link rel="stylesheet" href="/static/vendor/fontawesome/css/all.min.css">
+    <link rel="stylesheet" href="/static/css/introduce_2.css">
+</head>
+<body>
+    <header class="site-header">
+        <a class="brand" href="/" aria-label="Nexora 首页">Nexora<span class="brand-mark" aria-hidden="true"></span></a>
+
+        <nav class="main-nav" aria-label="主导航">
+            <div class="nav-menu-group">
+                <a class="nav-link nav-trigger" href="/introduce" aria-haspopup="true" aria-current="page">
+                    <span>项目</span>
+                </a>
+
+                <div class="nav-dropdown" role="group" aria-label="项目菜单">
+                    <div class="nav-dropdown-inner">
+                        <section class="nav-dropdown-primary" aria-labelledby="nav-products-title">
+                            <p class="nav-dropdown-label" id="nav-products-title">探索产品</p>
+                            <div class="nav-mega-list">
+                                <span class="nav-mega-link">Nexora</span>
+                                <span class="nav-mega-link">NexoraLearning</span>
+                                <span class="nav-mega-link">NexoraMail</span>
+                                <span class="nav-mega-link">NexoraVideoGenerator</span>
+                                <span class="nav-mega-link">NexoraDB</span>
+                            </div>
+                        </section>
+                    </div>
+                </div>
+            </div>
+
+            <div class="nav-menu-group">
+                <a class="nav-link nav-trigger" href="/status" aria-haspopup="true">
+                    <span>状态</span>
+                </a>
+
+                <div class="nav-dropdown" role="group" aria-label="状态菜单">
+                    <div class="nav-dropdown-inner">
+                        <section class="nav-dropdown-primary" aria-labelledby="nav-status-title">
+                            <p class="nav-dropdown-label" id="nav-status-title">状态</p>
+                            <div class="nav-mega-list">
+                                <a class="nav-mega-link" href="/status">状态</a>
+                            </div>
+                        </section>
+                    </div>
+                </div>
+            </div>
+
+            <div class="nav-menu-group">
+                <a class="nav-link nav-trigger" href="/blog" aria-haspopup="true">
+                    <span>博客</span>
+                </a>
+
+                <div class="nav-dropdown nav-blog-menu" role="group" aria-label="博客菜单">
+                    <div class="nav-dropdown-inner">
+                        <section class="nav-dropdown-primary" aria-labelledby="nav-blog-title">
+                            <p class="nav-dropdown-label" id="nav-blog-title">博客</p>
+                            <div class="nav-mega-list">
+                                <a class="nav-mega-link" href="https://himpqblog.cn">
+                                    <span>Himpqの博客</span>
+                                    <i class="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i>
+                                </a>
+                                <a class="nav-mega-link" href="/blog">
+                                    <span>Nexora博客</span>
+                                    <i class="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i>
+                                </a>
+                            </div>
+                        </section>
+                    </div>
+                </div>
+            </div>
+        </nav>
+
+        <div class="header-actions">
+            <a class="ghost-button" href="/login">登录</a>
+        </div>
+    </header>
+
+    <main>
+        <section class="hero-section" id="platform" aria-labelledby="hero-title">
+            <div class="hero-workspace-panel" id="product" aria-label="Nexora 工作台预览">
+                <div class="visual-frame visual-workspace">
+                    <div class="workspace-backdrop"></div>
+
+                    <div class="hero-copy">
+                        <h1 id="hero-title">Nexora</h1>
+                        <p class="hero-desc">模型、知识库、远程任务，放进一个本地可控的 AI 工作台。</p>
+
+                        <div class="hero-actions" aria-label="主要操作">
+                            <a class="primary-button hero-button" href="/login">
+                                <span>开始使用</span>
+                                <svg viewBox="0 0 24 24" aria-hidden="true">
+                                    <path d="M7 17L17 7M9 7H17V15" />
+                                </svg>
+                            </a>
+                            <a class="secondary-button hero-button" href="/status">查看模型榜单</a>
+                        </div>
+                    </div>
+
+                    <div class="workspace-window">
+                        <div class="workspace-image-placeholder">
+                            <div class="mock-chat-shell">
+                                <aside class="mock-sidebar">
+                                    <div class="mock-logo">Nexora<span></span></div>
+                                    <div class="mock-new-chat"><i></i><span>New Chat</span></div>
+
+                                    <div class="mock-sidebar-list">
+                                        <div>Nexora 接入的 AI 大模型</div>
+                                        <div>构建知识图谱需补充知识库内容</div>
+                                        <div>Nexora AI 助手问候并邀请用户提问</div>
+                                    </div>
+
+                                    <div class="mock-sidebar-footer">
+                                        <div class="mock-footer-link"><i></i><span>User</span></div>
+                                        <div class="mock-user">
+                                            <b>T</b>
+                                            <span>test_user</span>
+                                        </div>
+                                    </div>
+                                </aside>
+
+                                <div class="mock-chat-main">
+                                    <header class="mock-chat-header">
+                                        <div class="mock-model-select">
+                                            <i></i>
+                                            <strong>qwen3.5-27b</strong>
+                                            <span></span>
+                                        </div>
+                                        <div class="mock-chat-title">Nexora</div>
+                                        <div class="mock-header-actions">
+                                            <i></i>
+                                            <i></i>
+                                            <i></i>
+                                        </div>
+                                    </header>
+
+                                    <div class="mock-chat-corner-body">
+                                        <h3>Hello.</h3>
+                                        <p>Start a new conversation.</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="signal-section" aria-labelledby="signal-title">
+            <div class="signal-heading">
+                <p class="eyebrow">运行视图</p>
+                <h2 id="signal-title">让系统状态一眼可见</h2>
+            </div>
+
+            <div class="signal-panel" aria-label="运行状态摘要">
+                <div class="signal-streams" aria-hidden="true">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+
+                <div class="signal-metric metric-provider">
+                    <span>Provider</span>
+                    <strong>统一接入</strong>
+                </div>
+
+                <div class="signal-metric metric-context">
+                    <span>Context</span>
+                    <strong>知识命中</strong>
+                </div>
+
+                <div class="signal-metric metric-task">
+                    <span>Task</span>
+                    <strong>远程执行</strong>
+                </div>
+
+                <div class="signal-metric metric-cost">
+                    <span>Token</span>
+                    <strong>消耗追踪</strong>
+                </div>
+            </div>
+        </section>
+
+        <section class="capability-section" id="all" aria-labelledby="capability-title">
+            <div class="section-heading">
+                <p class="eyebrow">能力</p>
+                <h2 id="capability-title">Nexora 包含什么</h2>
+            </div>
+
+            <div class="capability-grid" data-capability-carousel aria-label="Nexora 能力切换展示">
+                <div class="capability-viewport">
+                    <div class="capability-track">
+                        <article class="capability-card capability-provider is-active" id="provider" data-capability-slide>
+                            <div class="capability-body">
+                                <div class="capability-title-panel">
+                                    <span>01</span>
+                                    <h3>模型入口</h3>
+                                    <p>统一配置 Provider 与模型参数。</p>
+                                </div>
+
+                                <div class="capability-preview-window" aria-hidden="true">
+                                    <div class="capability-mock-window provider-mock">
+                                        <div class="capability-window-bar">
+                                            <span></span>
+                                            <span></span>
+                                            <span></span>
+                                            <strong>Provider Console</strong>
+                                        </div>
+
+                                        <div class="provider-mock-layout">
+                                            <aside class="provider-source-list">
+                                                <div class="provider-source-row">
+                                                    <img class="provider-logo" src="/static/img/Index/static/icons/aliyun.png" alt="">
+                                                    <div class="provider-source-copy">
+                                                        <b>aliyun</b>
+                                                        <em>api_type: <small>dashscope</small></em>
+                                                        <div class="provider-policy">
+                                                            <span>超额策略</span>
+                                                            <strong>停用模型<i class="fa-solid fa-chevron-down"></i></strong>
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <div class="provider-source-row">
+                                                    <img class="provider-logo" src="/static/img/Index/static/icons/volcengine.png" alt="">
+                                                    <div class="provider-source-copy">
+                                                        <b>volcengine</b>
+                                                        <em>api_type: <small>volcengine</small></em>
+                                                        <div class="provider-policy">
+                                                            <span>超额策略</span>
+                                                            <strong>停用模型<i class="fa-solid fa-chevron-down"></i></strong>
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <div class="provider-source-row is-selected">
+                                                    <img class="provider-logo" src="/static/img/icons/ollama_single_icon.svg" alt="">
+                                                    <div class="provider-source-copy">
+                                                        <b>实验室</b>
+                                                        <em>api_type: <small>ollama</small></em>
+                                                        <div class="provider-policy">
+                                                            <span>超额策略</span>
+                                                            <strong>无操作<i class="fa-solid fa-chevron-down"></i></strong>
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <div class="provider-source-row">
+                                                    <img class="provider-logo" src="/static/img/Index/static/icons/openai.png" alt="">
+                                                    <div class="provider-source-copy">
+                                                        <b>usst</b>
+                                                        <em>api_type: <small>openai</small></em>
+                                                        <div class="provider-policy">
+                                                            <span>超额策略</span>
+                                                            <strong>停用模型<i class="fa-solid fa-chevron-down"></i></strong>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </aside>
+
+                                            <div class="provider-quota-list">
+                                                <div class="quota-card quota-card-green">
+                                                    <img class="quota-provider-icon" src="/static/img/icons/deepseek_single_icon.svg" alt="">
+                                                    <div class="quota-card-copy">
+                                                        <div class="quota-model-title">
+                                                            <span class="quota-status-dot"></span>
+                                                            <b>deepseek-r1:32b (Deepseek-R1:32B)</b>
+                                                        </div>
+                                                        <p>上下文 131,072 tokens</p>
+                                                        <div class="quota-bar"><span></span><i></i></div>
+                                                        <div class="quota-values"><span>剩1,140</span><b>共1,140</b></div>
+                                                    </div>
+                                                </div>
+
+                                                <div class="quota-card">
+                                                    <img class="quota-provider-icon" src="/static/img/icons/deepseek_single_icon.svg" alt="">
+                                                    <div class="quota-card-copy">
+                                                        <div class="quota-model-title">
+                                                            <span class="quota-status-dot"></span>
+                                                            <b>deepseek-r1:7b (Deepseek-R1:7b)</b>
+                                                        </div>
+                                                        <p>上下文 131,072 tokens</p>
+                                                        <div class="quota-bar"><i></i></div>
+                                                        <div class="quota-values"><b></b><b>共0</b></div>
+                                                    </div>
+                                                </div>
+
+                                                <div class="quota-card quota-card-red">
+                                                    <img class="quota-provider-icon" src="/static/img/icons/zhipu_single_icon.svg" alt="">
+                                                    <div class="quota-card-copy">
+                                                        <div class="quota-model-title">
+                                                            <span class="quota-status-dot"></span>
+                                                            <b>glm-4.7-flash:latest (glm-4.7-flash:latest)</b>
+                                                        </div>
+                                                        <p>上下文 202,752 tokens</p>
+                                                        <div class="quota-bar"><span></span><i></i></div>
+                                                        <div class="quota-values"><span>负6,691</span><b>共514</b></div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </article>
+
+                        <article class="capability-card capability-knowledge" id="knowledge" data-capability-slide>
+                            <div class="capability-body">
+                                <div class="capability-title-panel">
+                                    <span>02</span>
+                                    <h3>知识库</h3>
+                                    <p>让文件和共享资料进入可检索上下文。</p>
+                                </div>
+
+                                <div class="capability-preview-window" aria-hidden="true">
+                                    <div class="capability-mock-window knowledge-mock">
+                                        <div class="knowledge-editor-topbar">
+                                            <button type="button"><i class="fa-solid fa-arrow-left"></i></button>
+                                            <button type="button"><i class="fa-solid fa-gear"></i></button>
+                                            <button type="button"><i class="fa-regular fa-floppy-disk"></i></button>
+                                            <button class="danger" type="button"><i class="fa-regular fa-trash-can"></i></button>
+                                            <strong>知识库模型Token开销优化指南</strong>
+                                        </div>
+
+                                        <div class="knowledge-editor-toolbar">
+                                            <i class="fa-solid fa-heading"></i>
+                                            <i class="fa-solid fa-bold"></i>
+                                            <i class="fa-solid fa-italic"></i>
+                                            <i class="fa-solid fa-strikethrough"></i>
+                                            <span></span>
+                                            <i class="fa-solid fa-quote-left"></i>
+                                            <i class="fa-solid fa-list-ul"></i>
+                                            <i class="fa-solid fa-list-ol"></i>
+                                            <i class="fa-solid fa-link"></i>
+                                            <i class="fa-regular fa-image"></i>
+                                            <i class="fa-solid fa-table"></i>
+                                            <span></span>
+                                            <b><i class="fa-solid fa-eye"></i></b>
+                                            <i class="fa-solid fa-table-columns"></i>
+                                            <i class="fa-solid fa-up-down-left-right"></i>
+                                        </div>
+
+                                        <div class="knowledge-editor-page">
+                                            <h4>知识库模型Token开销优化指南</h4>
+                                            <h5>1. 背景</h5>
+                                            <p>随着大模型应用的普及，知识库接入场景（如RAG架构）的Token消耗问题日益凸显。据行业数据显示，低效的数据库调用会让 Token 成本成为 AI 部署的主要经济负担。</p>
+                                            <h5>2. 核心概念</h5>
+                                            <p>通过上下文复用、资料分段和检索命中率优化，让知识库响应更稳定。</p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </article>
+
+                        <article class="capability-card capability-workflow" id="workflow" data-capability-slide>
+                            <div class="capability-body">
+                                <div class="capability-title-panel">
+                                    <span>03</span>
+                                    <h3>NexoraCode</h3>
+                                    <p>把远程执行放回同一个工作台。</p>
+                                </div>
+
+                                <div class="capability-preview-window" aria-hidden="true">
+                                    <div class="capability-mock-window workflow-mock">
+                                        <aside class="workflow-sidebar">
+                                            <div class="workflow-brand-row">
+                                                <strong>Nexora<span>.</span></strong>
+                                                <b>Learning</b>
+                                            </div>
+
+                                            <button class="workflow-new-chat" type="button">
+                                                <i class="fa-solid fa-plus"></i>
+                                                <span>New Chat</span>
+                                            </button>
+
+                                            <div class="workflow-chat-list">
+                                                <div>
+                                                    <i class="fa-solid fa-thumbtack"></i>
+                                                    <span>近代史纲要期末复习11大...</span>
+                                                </div>
+                                                <div>
+                                                    <i class="fa-solid fa-thumbtack"></i>
+                                                    <span>测试相关知识库信息概览</span>
+                                                </div>
+                                                <div>
+                                                    <i class="fa-solid fa-thumbtack"></i>
+                                                    <span>索尼 A7R5 测评</span>
+                                                </div>
+
+                                                <span class="workflow-scrollbar"></span>
+                                            </div>
+                                        </aside>
+
+                                        <div class="workflow-chat-main">
+                                            <header class="workflow-chat-header">
+                                                <strong>GLM-4.7</strong>
+                                                <i class="fa-solid fa-chevron-down"></i>
+                                            </header>
+
+                                            <div class="workflow-chat-canvas">
+                                                <span>H</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </article>
+
+                        <article class="capability-card capability-observe" id="observe" data-capability-slide>
+                            <div class="capability-body">
+                                <div class="capability-title-panel">
+                                    <span>04</span>
+                                    <h3>数据监控</h3>
+                                    <p>持续看见调用、工具和 Token 成本。</p>
+                                </div>
+
+                                <div class="capability-preview-window" aria-hidden="true">
+                                    <div class="capability-mock-window observe-mock">
+                                        <div class="observe-stat-grid">
+                                            <div class="observe-stat-card">
+                                                <span>总用户数</span>
+                                                <b>4</b>
+                                            </div>
+                                            <div class="observe-stat-card">
+                                                <span>管理员数</span>
+                                                <b>1</b>
+                                            </div>
+                                            <div class="observe-stat-card">
+                                                <span>总Token消耗</span>
+                                                <b>13,019,549</b>
+                                            </div>
+                                        </div>
+
+                                        <div class="observe-trend-panel">
+                                            <div class="observe-trend-head">
+                                                <strong>Token Trend (30d)</strong>
+                                                <span>总请求 662 · 总Token 10,294,201</span>
+                                            </div>
+
+                                            <div class="observe-trend-chart">
+                                                <div class="observe-y-axis">
+                                                    <span>2,490,995</span>
+                                                    <span>1,868,246</span>
+                                                    <span>1,245,498</span>
+                                                    <span>622,749</span>
+                                                    <span>0</span>
+                                                </div>
+
+                                                <svg viewBox="0 0 820 230" preserveAspectRatio="none" aria-hidden="true">
+                                                    <path class="observe-grid-line" d="M0 15H820M0 65H820M0 115H820M0 165H820M0 215H820"></path>
+                                                    <polyline class="observe-token-line" points="0,208 38,214 76,218 114,216 152,217 190,210 228,218 266,215 304,217 342,217 380,198 418,212 456,62 494,210 532,206 570,178 608,216 646,210 684,210 722,100 760,15 782,214 800,140 820,216"></polyline>
+                                                </svg>
+
+                                                <div class="observe-x-axis">
+                                                    <span>2026-05-29</span>
+                                                    <span>2026-06-13</span>
+                                                    <span>2026-06-27</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </article>
+
+                    </div>
+                </div>
+
+                <div class="capability-controls" aria-label="能力页码">
+                    <button class="is-active" type="button" data-capability-index="0" aria-label="查看模型入口"></button>
+                    <button type="button" data-capability-index="1" aria-label="查看知识库"></button>
+                    <button type="button" data-capability-index="2" aria-label="查看 NexoraCode"></button>
+                    <button type="button" data-capability-index="3" aria-label="查看数据监控"></button>
+                </div>
+            </div>
+        </section>
+
+        <section class="updates-section" id="updates" aria-labelledby="updates-title">
+            <div class="updates-head">
+                <div>
+                    <p class="updates-kicker">Build Log</p>
+                    <h2 id="updates-title">开发日志</h2>
+                </div>
+                <a href="/blog">完整记录</a>
+            </div>
+
+            <div class="updates-visual-panel">
+                <div class="updates-visual-copy">
+                    <h3 id="updatesVisualTitle">Nexora 前端 UI 继续调整</h3>
+                    <p id="updatesVisualDesc">继续收束介绍页、工作台入口和核心界面的视觉层级，让产品页面更接近真实使用状态。</p>
+                </div>
+
+                <div class="updates-visual-art" aria-hidden="true"></div>
+
+                <div class="updates-visual-points" aria-label="本轮开发日志">
+                    <article class="is-active" tabindex="0" data-update-title="Nexora 前端 UI 继续调整" data-update-desc="继续收束介绍页、工作台入口和核心界面的视觉层级，让产品页面更接近真实使用状态。" data-update-image="/static/img/cover/gen_aca28f34.png">
+                        <strong>Nexora 前端 UI 继续调整</strong>
+                        <time datetime="2026-06-25">06.25</time>
+                    </article>
+                    <article tabindex="0" data-update-title="知识库新增 Patch 修改能力" data-update-desc="知识库编辑流程加入 Patch 修改能力，面向真实内容迭代时可以更直接地定位和更新局部内容。" data-update-image="/static/img/cover/gen_b0660acc.png">
+                        <strong>知识库新增 Patch 修改能力</strong>
+                        <time datetime="2026-06-25">06.25</time>
+                    </article>
+                    <article tabindex="0" data-update-title="NexoraCode 长上下文工具修复" data-update-desc="修复 NexoraCode 长上下文工具流程，让本地执行节点在长任务中保持更稳定的上下文衔接。" data-update-image="/static/img/cover/gen_2868fdef.png">
+                        <strong>NexoraCode 长上下文工具修复</strong>
+                        <time datetime="2026-06-24">06.24</time>
+                    </article>
+                    <article tabindex="0" data-update-title="流式会话展示问题修复" data-update-desc="修复多轮流式会话的展示问题，并调整工具结果注入方式，让对话过程更连贯。" data-update-image="/static/img/cover/gen_f1e5a85a.png">
+                        <strong>流式会话展示问题修复</strong>
+                        <time datetime="2026-06-23">06.23</time>
+                    </article>
+                </div>
+            </div>
+        </section>
+
+        <section class="final-section" aria-labelledby="final-title">
+            <p class="eyebrow">Nexora</p>
+            <h2 id="final-title">把 AI 工作台放回自己的系统</h2>
+            <div class="final-actions">
+                <a class="primary-button" href="/login">
+                    <span>进入 Nexora</span>
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M7 17L17 7M9 7H17V15" />
+                    </svg>
+                </a>
+                <a class="secondary-button" href="/blog">阅读博客</a>
+            </div>
+        </section>
+    </main>
+
+    <footer class="site-footer">
+        <span>Nexora</span>
+        <a href="https://github.com/Himpq/Nexora">GitHub</a>
+        <a href="/status">模型榜单</a>
+        <a href="/login">登录</a>
+    </footer>
+
+    <script src="/static/js/introduce_2.js"></script>
+</body>
+</html>

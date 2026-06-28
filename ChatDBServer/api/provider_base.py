@@ -6,6 +6,36 @@ from typing import Any, Dict, List, Optional
 import prompts
 
 
+TOOL_ARGUMENT_DELTA_CHUNK_CHARS = 384
+
+
+def _iter_chunked_function_call_delta(event: Dict[str, Any]):
+    """Split oversized tool argument deltas so UI can render file writes progressively."""
+    if not isinstance(event, dict):
+        return
+
+    arguments_delta = str(event.get("arguments_delta") or "")
+    chunk_size = max(64, int(TOOL_ARGUMENT_DELTA_CHUNK_CHARS or 384))
+
+    if len(arguments_delta) <= chunk_size:
+        yield event
+        return
+
+    total_parts = (len(arguments_delta) + chunk_size - 1) // chunk_size
+
+    for part_index, start in enumerate(range(0, len(arguments_delta), chunk_size), 1):
+        chunk = dict(event)
+        chunk["arguments_delta"] = arguments_delta[start:start + chunk_size]
+        chunk["arguments_delta_part"] = part_index
+        chunk["arguments_delta_total_parts"] = total_parts
+        chunk["arguments_delta_source_chars"] = len(arguments_delta)
+
+        if part_index > 1:
+            chunk.pop("name_delta", None)
+
+        yield chunk
+
+
 class ProviderInterface(ABC):
     """
     Nexora provider interface.
@@ -48,9 +78,11 @@ class ProviderInterface(ABC):
         """
         Non-stream/stream chat completion helper.
         """
+        normalized_messages = self._normalize_chat_messages_payload(messages)
+
         return client.chat.completions.create(
             model=model,
-            messages=messages,
+            messages=normalized_messages,
             stream=stream,
             **kwargs
         )
@@ -313,13 +345,11 @@ class ProviderInterface(ABC):
     def _normalize_chat_messages_payload(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Normalize chat.completions messages before request dispatch.
-        Some OpenAI-compatible providers (e.g. Tencent Hunyuan) require:
-        - all system messages to be at the very beginning.
+        Chat Completions providers require system messages to be at the beginning.
+        Compression summaries and runtime hints may introduce additional system
+        messages, so merge them into the first message before dispatch.
         """
         raw = list(messages or [])
-        provider_low = str(getattr(self, "provider_name", "") or "").strip().lower()
-        if provider_low not in {"tencent", "hunyuan", "腾讯", "混元", "tencent_hunyuan"}:
-            return raw
         return self._coalesce_system_messages_to_front(raw)
 
     def _coalesce_system_messages_to_front(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -667,6 +697,7 @@ class ProviderInterface(ABC):
         unknown_delta_key_logged: set = set()
         thinking_mode = False
         think_buffer = ""
+        explicit_reasoning_accumulator = ""
         first_chunk_processed = False
 
         def _obj_get_raw(obj: Any, key: str, default: Any = None) -> Any:
@@ -715,12 +746,45 @@ class ProviderInterface(ABC):
             return str(val) if val is not None else ""
 
         def _extract_reasoning_fields(delta_obj: Any) -> str:
-            pieces: List[str] = []
+            merged = ""
+
             for key in ("reasoning_content", "reasoning", "reasoning_text", "thinking", "thinking_content"):
                 piece = _extract_text_piece(_obj_get_raw(delta_obj, key, None))
                 if piece:
-                    pieces.append(piece)
-            return "".join(pieces)
+                    if not merged:
+                        merged = piece
+                    elif piece == merged or piece in merged:
+                        continue
+                    elif merged in piece:
+                        merged = piece
+                    else:
+                        merged += piece
+
+            return merged
+
+        def _normalize_explicit_reasoning_delta(text: str) -> str:
+            nonlocal explicit_reasoning_accumulator
+
+            piece = str(text or "")
+
+            if not piece:
+                return ""
+
+            previous = explicit_reasoning_accumulator
+
+            if previous and piece == previous:
+                return ""
+
+            if previous and piece.startswith(previous):
+                delta = piece[len(previous):]
+                explicit_reasoning_accumulator = piece
+                return delta
+
+            if previous and previous.startswith(piece):
+                return ""
+
+            explicit_reasoning_accumulator = previous + piece
+            return piece
 
         def _split_delta_content(content_val: Any) -> Dict[str, str]:
             content_parts: List[str] = []
@@ -931,15 +995,17 @@ class ProviderInterface(ABC):
 
             choice0 = choices[0] if isinstance(choices, list) and choices else None
             delta = _obj_get_raw(choice0, "delta", None)
+            finish_reason = str(_obj_get_raw(choice0, "finish_reason", "") or "").strip()
             # Some OpenAI-compatible gateways may put final tool_calls/message on choice.message.
             if not delta:
                 msg_obj = _obj_get_raw(choice0, "message", None)
                 if msg_obj is not None:
                     msg_split = _split_delta_content(_obj_get_raw(msg_obj, "content", None))
-                    msg_reasoning = _merge_stream_fragment(
+                    msg_reasoning_raw = _merge_stream_fragment(
                         _split_think_markup(msg_split.get("reasoning", "")).get("reasoning", ""),
                         _extract_reasoning_fields(msg_obj),
                     )
+                    msg_reasoning = _normalize_explicit_reasoning_delta(msg_reasoning_raw)
                     msg_content = _split_think_markup(msg_split.get("content", "")).get("content", "")
                     if msg_content:
                         yield {"type": "content_delta", "delta": str(msg_content)}
@@ -953,16 +1019,20 @@ class ProviderInterface(ABC):
                         for tc in msg_tool_calls:
                             fc_delta = _apply_tool_call_delta(tc, idx_default=0)
                             if fc_delta:
-                                yield fc_delta
+                                yield from _iter_chunked_function_call_delta(fc_delta)
+
+                if finish_reason:
+                    yield {"type": "finish_reason", "finish_reason": finish_reason}
                 continue
 
             split_payload = _split_delta_content(_obj_get_raw(delta, "content", None))
             think_split = _split_think_markup(split_payload.get("content", ""))
             content_piece = think_split.get("content", "")
-            reasoning_piece = _merge_stream_fragment(
+            reasoning_piece_raw = _merge_stream_fragment(
                 _merge_stream_fragment(split_payload.get("reasoning", ""), think_split.get("reasoning", "")),
                 _extract_reasoning_fields(delta),
             )
+            reasoning_piece = _normalize_explicit_reasoning_delta(reasoning_piece_raw)
 
             if content_piece:
                 yield {"type": "content_delta", "delta": str(content_piece)}
@@ -977,14 +1047,14 @@ class ProviderInterface(ABC):
                 for tc in tool_calls:
                     fc_delta = _apply_tool_call_delta(tc, idx_default=0)
                     if fc_delta:
-                        yield fc_delta
+                        yield from _iter_chunked_function_call_delta(fc_delta)
 
             # Legacy stream shape: delta.function_call.{name,arguments}
             legacy_fc = _obj_get_raw(delta, "function_call", None)
             if legacy_fc is not None:
                 fc_delta = _apply_tool_call_delta(legacy_fc, idx_default=0)
                 if fc_delta:
-                    yield fc_delta
+                    yield from _iter_chunked_function_call_delta(fc_delta)
 
             if debug_unknown_stream and (not content_piece) and (not reasoning_piece) and (not tool_calls):
                 key_sig = ",".join(_collect_obj_keys(delta))
@@ -1001,6 +1071,9 @@ class ProviderInterface(ABC):
                     "output_tokens": int(getattr(usage_obj, "completion_tokens", 0) or 0),
                     "total_tokens": int(getattr(usage_obj, "total_tokens", 0) or 0),
                 }
+
+            if finish_reason:
+                yield {"type": "finish_reason", "finish_reason": finish_reason}
 
         # Flush any remaining buffered think tag
         final_think_split = _split_think_markup("", is_final=True)
@@ -1227,7 +1300,7 @@ class ProviderInterface(ABC):
                     state = _remember_function_call_item(item, chunk)
                     added = _emit_added_delta(state, _obj_get_raw(chunk, "output_index", None))
                     if added:
-                        yield added
+                        yield from _iter_chunked_function_call_delta(added)
                 continue
 
             if "function_call_arguments.delta" in chunk_type:
@@ -1237,7 +1310,7 @@ class ProviderInterface(ABC):
                     state["arguments"] = str(state.get("arguments") or "") + arg_delta
                 added = _emit_added_delta(state, _obj_get_raw(chunk, "output_index", None))
                 if added:
-                    yield added
+                    yield from _iter_chunked_function_call_delta(added)
                 payload = {
                     "type": "function_call_delta",
                     "name": str(state.get("name") or ""),
@@ -1247,7 +1320,7 @@ class ProviderInterface(ABC):
                 idx = _output_index_key(_obj_get_raw(chunk, "output_index", state.get("output_index")))
                 if idx:
                     payload["index"] = idx
-                yield payload
+                yield from _iter_chunked_function_call_delta(payload)
                 continue
 
             if chunk_type == "response.output_item.done":
@@ -1259,15 +1332,15 @@ class ProviderInterface(ABC):
                     state = _remember_function_call_item(item, chunk)
                     added = _emit_added_delta(state, _obj_get_raw(chunk, "output_index", None))
                     if added:
-                        yield added
+                        yield from _iter_chunked_function_call_delta(added)
                 elif "web_search" in item_type:
                     action = _obj_get_raw(item, "action", None)
                     query = _text(_obj_get_raw(action, "query", "")).strip() if action is not None else ""
                     yield {
                         "type": "web_search",
-                        "status": web_search_status_searching,
+                        "status": web_search_status_completed,
                         "query": query,
-                        "content": f"{web_search_status_searching}: {query}" if query else web_search_status_searching,
+                        "content": f"{web_search_status_completed}: {query}" if query else web_search_status_completed,
                     }
                 elif (item_type == "text") and (not has_emitted_content_delta):
                     text_content = _text(_obj_get_raw(item, "content", ""))

@@ -528,10 +528,11 @@ class UserFileSandbox:
             result_content = result_content[:effective_cut]
             absolute_cut_pos = selected_start_pos + effective_cut
             truncated_line, truncated_col = _line_col_at(content, absolute_cut_pos)
-            truncate_notice = (
-                f"\n\n[系统提示] cloud_file_read 输出已截断（每次最多 {limit_lines} 行且 {limit_chars} 字）。"
-                f" 截断位置: line={truncated_line}, column={truncated_col}。"
-                f" 若需继续读取，请从该位置之后继续调用 cloud_file_read。"
+            truncate_notice = prompts.build_cloud_file_read_truncate_notice(
+                limit_lines,
+                limit_chars,
+                truncated_line,
+                truncated_col,
             )
             # Put notice in content body so model sees it directly.
             result_content += truncate_notice

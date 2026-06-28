@@ -44,6 +44,40 @@ _PENDING_TOAST_LOCK = threading.Lock()
 _PENDING_TOAST_MESSAGE = ""
 _NOTES_TRACE = str(config.get("notes_trace", True)).strip().lower() not in {"0", "false", "off", "no"}
 _AUTH_TRACE_HEARTBEAT = str(config.get("auth_trace_heartbeat", False)).strip().lower() in {"1", "true", "on", "yes"}
+_TOOL_CANCEL_LOCK = threading.Lock()
+_CANCELLED_TOOL_TASKS = set()
+
+
+def _mark_tool_task_cancelled(task_id: str) -> bool:
+    safe_task_id = str(task_id or "").strip()
+
+    if not safe_task_id:
+        return False
+
+    with _TOOL_CANCEL_LOCK:
+        _CANCELLED_TOOL_TASKS.add(safe_task_id)
+
+    return True
+
+
+def _clear_tool_task_cancelled(task_id: str) -> None:
+    safe_task_id = str(task_id or "").strip()
+
+    if not safe_task_id:
+        return
+
+    with _TOOL_CANCEL_LOCK:
+        _CANCELLED_TOOL_TASKS.discard(safe_task_id)
+
+
+def _is_tool_task_cancelled(task_id: str) -> bool:
+    safe_task_id = str(task_id or "").strip()
+
+    if not safe_task_id:
+        return False
+
+    with _TOOL_CANCEL_LOCK:
+        return safe_task_id in _CANCELLED_TOOL_TASKS
 
 
 def _notes_log(msg: str):
@@ -3112,12 +3146,17 @@ def _agent_tunnel_loop(registry: ToolRegistry, agent_token: str, base_url: str):
         try:
             ws = websocket.WebSocket()
             ws.connect(ws_url, timeout=10)
+            ws_send_lock = threading.Lock()
+
+            def _send_ws_payload(payload_obj: dict) -> None:
+                with ws_send_lock:
+                    ws.send(json.dumps(payload_obj))
 
             # 1. 认证
-            ws.send(json.dumps({
+            _send_ws_payload({
                 "type": "auth",
                 "agent_token": agent_token
-            }))
+            })
             auth_msg = ws.recv()
             if not auth_msg:
                 raise Exception("Empty auth response")
@@ -3138,10 +3177,10 @@ def _agent_tunnel_loop(registry: ToolRegistry, agent_token: str, base_url: str):
                 if isinstance(tool, dict)
             ]
             print(f"[NexoraCode WSS] sync_tools sending count={len(tool_names)} tools={tool_names}")
-            ws.send(json.dumps({
+            _send_ws_payload({
                 "type": "sync_tools",
                 "tools": tools
-            }))
+            })
 
             # 2.5 同步本地提示词
             prompt_file = get_app_root() / "data" / "agent_prompt.txt"
@@ -3152,10 +3191,10 @@ def _agent_tunnel_loop(registry: ToolRegistry, agent_token: str, base_url: str):
             
             try:
                 custom_prompt = prompt_file.read_text(encoding="utf-8")
-                ws.send(json.dumps({
+                _send_ws_payload({
                     "type": "sync_prompt",
                     "prompt": custom_prompt
-                }))
+                })
             except Exception as e:
                 print(f"[NexoraCode WSS] Failed to sync prompt: {e}")
 
@@ -3167,7 +3206,7 @@ def _agent_tunnel_loop(registry: ToolRegistry, agent_token: str, base_url: str):
                 # 心跳保活
                 if time.time() - last_ping > 15:
                     try:
-                        ws.send(json.dumps({"type": "ping"}))
+                        _send_ws_payload({"type": "ping"})
                     except Exception:
                         break # 连接断开，触发重连
                     last_ping = time.time()
@@ -3198,37 +3237,75 @@ def _agent_tunnel_loop(registry: ToolRegistry, agent_token: str, base_url: str):
                             server_to_agent_ms = None
 
                         print(f"[NexoraCode WSS] Executing tool {tool_name} (task={task_id})")
-                        try:
-                            exec_started_at = time.perf_counter()
-                            result = registry.execute(tool_name, args)
-                            exec_ms = (time.perf_counter() - exec_started_at) * 1000.0
-                        except Exception as e:
-                            print(f"[NexoraCode WSS] Tool Execution Exception: {e}")
-                            result = {"error": str(e), "success": False}
-                            exec_ms = 0.0
+                        _clear_tool_task_cancelled(task_id)
 
-                        # 回传结果
-                        send_started_at = time.perf_counter()
-                        ws.send(json.dumps({
-                            "type": "tool_result",
-                            "task_id": task_id,
-                            "result": result
-                        }))
-                        send_ms = (time.perf_counter() - send_started_at) * 1000.0
-                        total_ms = (time.time() - received_at) * 1000.0
+                        def _run_wss_tool_task(
+                            task_id=task_id,
+                            tool_name=tool_name,
+                            args=args,
+                            received_at=received_at,
+                            server_to_agent_ms=server_to_agent_ms,
+                        ):
+                            try:
+                                exec_started_at = time.perf_counter()
+                                task_context = {
+                                    "task_id": str(task_id or ""),
+                                    "is_cancelled": lambda: _is_tool_task_cancelled(task_id),
+                                }
+                                result = registry.execute(tool_name, args, context=task_context)
+                                exec_ms = (time.perf_counter() - exec_started_at) * 1000.0
+                            except Exception as e:
+                                print(f"[NexoraCode WSS] Tool Execution Exception: {e}")
+                                result = {"error": str(e), "success": False}
+                                exec_ms = 0.0
 
-                        if total_ms >= 500.0 or (server_to_agent_ms is not None and server_to_agent_ms >= 500.0):
-                            print(
-                                "[NexoraCode ToolLatency] "
-                                + json.dumps({
-                                    "tool_name": tool_name,
+                            if _is_tool_task_cancelled(task_id):
+                                result = {
+                                    "success": False,
+                                    "error": "stream_cancelled",
+                                    "message": "用户已停止生成",
+                                }
+
+                            # 回传结果
+                            send_started_at = time.perf_counter()
+                            try:
+                                _send_ws_payload({
+                                    "type": "tool_result",
                                     "task_id": task_id,
-                                    "server_to_agent_ms": round(server_to_agent_ms, 1) if server_to_agent_ms is not None else None,
-                                    "exec_ms": round(exec_ms, 1),
-                                    "result_send_ms": round(send_ms, 1),
-                                    "agent_total_ms": round(total_ms, 1),
-                                }, ensure_ascii=False, default=str)
-                            )
+                                    "result": result
+                                })
+                                send_ms = (time.perf_counter() - send_started_at) * 1000.0
+                            except Exception as send_error:
+                                print(f"[NexoraCode WSS] Tool Result Send Exception: {send_error}")
+                                send_ms = 0.0
+
+                            total_ms = (time.time() - received_at) * 1000.0
+
+                            if total_ms >= 500.0 or (server_to_agent_ms is not None and server_to_agent_ms >= 500.0):
+                                print(
+                                    "[NexoraCode ToolLatency] "
+                                    + json.dumps({
+                                        "tool_name": tool_name,
+                                        "task_id": task_id,
+                                        "server_to_agent_ms": round(server_to_agent_ms, 1) if server_to_agent_ms is not None else None,
+                                        "exec_ms": round(exec_ms, 1),
+                                        "result_send_ms": round(send_ms, 1),
+                                        "agent_total_ms": round(total_ms, 1),
+                                        "cancelled": _is_tool_task_cancelled(task_id),
+                                    }, ensure_ascii=False, default=str)
+                                )
+
+                            _clear_tool_task_cancelled(task_id)
+
+                        threading.Thread(
+                            target=_run_wss_tool_task,
+                            name=f"nexoracode-tool-{str(tool_name or 'tool')[:32]}",
+                            daemon=True
+                        ).start()
+                    elif ctype == "cancel_tool":
+                        task_id = str(payload.get("task_id") or "").strip()
+                        if _mark_tool_task_cancelled(task_id):
+                            print(f"[NexoraCode WSS] Cancel tool task={task_id}")
 
                 except websocket.WebSocketTimeoutException:
                     pass

@@ -46,6 +46,73 @@ function getLatestReasoningThinkingBlock(messageDiv) {
     return blocks.length > 0 ? blocks[blocks.length - 1] : null;
 }
 
+function getPrimaryReasoningThinkingBlock(messageDiv) {
+    if (!messageDiv) return null;
+    const blocks = messageDiv.querySelectorAll('.thinking-block.reasoning-thinking-block');
+    return blocks.length > 0 ? blocks[0] : null;
+}
+
+function readReasoningContentRaw(contentEl) {
+    if (!contentEl) return '';
+
+    if (contentEl.dataset && typeof contentEl.dataset.streamRaw === 'string' && contentEl.dataset.streamRaw) {
+        return String(contentEl.dataset.streamRaw || '');
+    }
+
+    if (contentEl.dataset && typeof contentEl.dataset.rawText === 'string' && contentEl.dataset.rawText) {
+        return String(contentEl.dataset.rawText || '');
+    }
+
+    if (typeof contentEl.__sourceMarkdown === 'string') {
+        return String(contentEl.__sourceMarkdown || '');
+    }
+
+    return String(contentEl.textContent || '');
+}
+
+function buildReasoningAppendText(existingRaw, nextText, separateSegment = false) {
+    const existing = String(existingRaw || '');
+    const next = String(nextText || '');
+
+    if (!next) {
+        return '';
+    }
+
+    if (!separateSegment || !existing) {
+        return next;
+    }
+
+    if (existing.endsWith('\n') || next.startsWith('\n')) {
+        return next;
+    }
+
+    return `\n\n${next}`;
+}
+
+function resolveReasoningThinkingBlockForAppend(messageDiv, container) {
+    if (!messageDiv) return null;
+
+    let thinkingBlock = messageDiv.__activeReasoningThinkingBlock;
+
+    if (thinkingBlock && (!thinkingBlock.isConnected || !thinkingBlock.classList.contains('reasoning-thinking-block'))) {
+        thinkingBlock = null;
+    }
+
+    if (!thinkingBlock) {
+        thinkingBlock = getPrimaryReasoningThinkingBlock(messageDiv);
+    }
+
+    if (!thinkingBlock) {
+        thinkingBlock = createThinkingBlock(false);
+        const target = container || messageDiv.querySelector('.message-content') || messageDiv;
+        target.prepend(thinkingBlock);
+    }
+
+    messageDiv.__activeReasoningThinkingBlock = thinkingBlock;
+    messageDiv.__reasoningSegmentOpen = true;
+    return thinkingBlock;
+}
+
 function isLearningConversationView() {
     if (!learningModeEnabled) return false;
     return String(currentConversationMode || '').trim().toLowerCase() === 'learning'
@@ -77,6 +144,7 @@ let currentUserRole = 'member';
 let currentUserAvatarUrl = '';
 let currentUserPreferences = null;
 let learningModeEnabled = false;
+let learningRuntimeEnabled = true;
 let learningSidebarMode = 'nexora';
 let learningHeaderMode = 'chat';
 let learningWelcomeMounted = false;
@@ -88,6 +156,12 @@ let pendingAvatarDataUrl = '';
 let adminUsersCache = [];
 let adminSelectedUserId = null;
 let adminUserFilterKeyword = '';
+let adminSystemSettingsState = null;
+let adminSystemCustomControlsBound = false;
+let adminSystemSelectMenuSeq = 0;
+const adminSystemSelectDockState = new WeakMap();
+const ADMIN_SYSTEM_HEALTH_TIMEOUT_MS = 3000;
+let adminSystemSelectedModule = 'runtime';
 let adminGenImageApisCache = [];
 let adminSelectedGenImageApiId = '';
 let adminGenImageApiFilterKeyword = '';
@@ -456,6 +530,7 @@ const learningInteractionLocks = {
     questions: new Map(),
     puzzles: new Map(),
 };
+const QUESTION_LOCK_STORAGE_KEY = 'nexora_question_locks_v1';
 let cachedPuzzleStates = {};
 
 function getLearningInteractionLockKey(conversationIdOverride = null) {
@@ -469,11 +544,13 @@ function getLearningInteractionLockKey(conversationIdOverride = null) {
 function rememberLockedQuestion(questionId, answerText = '') {
     const qid = String(questionId || '').trim();
     if (!qid) return;
+    const answer = String(answerText || '').trim();
     const key = getLearningInteractionLockKey();
     if (!learningInteractionLocks.questions.has(key)) {
         learningInteractionLocks.questions.set(key, new Map());
     }
-    learningInteractionLocks.questions.get(key).set(qid, String(answerText || '').trim());
+    learningInteractionLocks.questions.get(key).set(qid, answer);
+    writeStoredQuestionLock(key, qid, answer);
 }
 
 function getLockedQuestionAnswer(questionId) {
@@ -481,8 +558,41 @@ function getLockedQuestionAnswer(questionId) {
     if (!qid) return '';
     const key = getLearningInteractionLockKey();
     const bucket = learningInteractionLocks.questions.get(key);
-    if (!bucket) return '';
-    return String(bucket.get(qid) || '').trim();
+    const memoryAnswer = bucket ? String(bucket.get(qid) || '').trim() : '';
+    if (memoryAnswer) return memoryAnswer;
+    return readStoredQuestionLock(key, qid);
+}
+
+function readQuestionLockStore() {
+    try {
+        const parsed = JSON.parse(localStorage.getItem(QUESTION_LOCK_STORAGE_KEY) || '{}');
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (err) {
+        console.warn('[QuestionTool] failed to read stored question locks', err);
+        return {};
+    }
+}
+
+function writeStoredQuestionLock(conversationKey, questionId, answerText) {
+    const qid = String(questionId || '').trim();
+    const answer = String(answerText || '').trim();
+    if (!qid || !answer) return;
+    try {
+        const store = readQuestionLockStore();
+        const scopedKey = `${String(conversationKey || '__draft__')}::${qid}`;
+        store[scopedKey] = answer;
+        localStorage.setItem(QUESTION_LOCK_STORAGE_KEY, JSON.stringify(store));
+    } catch (err) {
+        console.warn('[QuestionTool] failed to persist question lock', err);
+    }
+}
+
+function readStoredQuestionLock(conversationKey, questionId) {
+    const qid = String(questionId || '').trim();
+    if (!qid) return '';
+    const store = readQuestionLockStore();
+    const scopedKey = `${String(conversationKey || '__draft__')}::${qid}`;
+    return String(store[scopedKey] || '').trim();
 }
 
 function rememberLockedPuzzle(puzzleId, submission = null) {
@@ -792,15 +902,20 @@ function getLearningSidebarMessages() {
                     const questionTitle = String((item.querySelector('.question-card-title') || {}).textContent || '').trim();
                     const questionContent = String((item.querySelector('.question-card-content') || {}).textContent || '').trim();
                     const choices = Array.from(item.querySelectorAll('.question-choice-btn'))
-                        .map((btn) => String(btn.textContent || '').trim())
+                        .map((btn) => String((btn.dataset && btn.dataset.choiceValue) || btn.textContent || '').trim())
                         .filter(Boolean);
                     const allowOther = !!item.querySelector('.question-other-input');
                     const resolved = (
                         String(item.dataset.resolved || '').trim().toLowerCase() === 'true'
                         || !!(questionBody && questionBody.classList.contains('answered'))
                     );
-                    let answerText = String((item.querySelector('.question-card-answer') || {}).textContent || '').trim();
-                    answerText = answerText.replace(/^your answer:\s*/i, '').trim();
+                    const answerNode = item.querySelector('.question-card-answer');
+                    let answerText = String(
+                        (answerNode && answerNode.dataset && answerNode.dataset.answer)
+                        || (answerNode ? answerNode.textContent : '')
+                        || ''
+                    ).trim();
+                    answerText = answerText.replace(/^your answer:\s*/i, '').replace(/^已回答[：:]\s*/i, '').trim();
                     markConsumed(item);
                     parts.push({
                         kind: 'question',
@@ -1135,6 +1250,177 @@ function rewriteHtmlDocumentLinksToNewTab(html) {
         return src;
     }
 }
+
+function hasOddBackslashBefore(text, index) {
+    const src = String(text || '');
+    let count = 0;
+
+    for (let i = Number(index || 0) - 1; i >= 0 && src[i] === '\\'; i -= 1) {
+        count += 1;
+    }
+
+    return count % 2 === 1;
+}
+
+function isStrongFence(text, index) {
+    const src = String(text || '');
+    const i = Number(index || 0);
+
+    if (src.slice(i, i + 2) !== '**') {
+        return false;
+    }
+
+    if (hasOddBackslashBefore(src, i)) {
+        return false;
+    }
+
+    return src[i - 1] !== '*' && src[i + 2] !== '*';
+}
+
+function readBacktickFenceLength(text, index) {
+    const src = String(text || '');
+    let end = Number(index || 0);
+
+    while (end < src.length && src[end] === '`') {
+        end += 1;
+    }
+
+    return end - Number(index || 0);
+}
+
+function findInlineBacktickFenceEnd(text, start, length) {
+    const src = String(text || '');
+    const fence = '`'.repeat(Number(length || 0));
+
+    if (!fence) {
+        return -1;
+    }
+
+    return src.indexOf(fence, Number(start || 0) + fence.length);
+}
+
+function findStrongFenceEnd(text, start) {
+    const src = String(text || '');
+    let i = Number(start || 0) + 2;
+
+    while (i < src.length) {
+        const next = src.indexOf('**', i);
+
+        if (next < 0) {
+            return -1;
+        }
+
+        if (isStrongFence(src, next)) {
+            return next;
+        }
+
+        i = next + 2;
+    }
+
+    return -1;
+}
+
+function shouldNormalizeStrongPunctuationBoundary(body, nextChar) {
+    const src = String(body || '');
+
+    if (!src || /^\s|\s$/.test(src)) {
+        return false;
+    }
+
+    const chars = Array.from(src);
+    const lastChar = chars.length ? chars[chars.length - 1] : '';
+
+    if (!lastChar || !/\p{P}/u.test(lastChar)) {
+        return false;
+    }
+
+    return /[\p{L}\p{N}_]/u.test(String(nextChar || ''));
+}
+
+function normalizeStrongPunctuationBoundariesInLine(line) {
+    const src = String(line || '');
+
+    if (!src.includes('**')) {
+        return src;
+    }
+
+    let out = '';
+    let i = 0;
+
+    while (i < src.length) {
+        if (src[i] === '`') {
+            const fenceLength = readBacktickFenceLength(src, i);
+            const end = findInlineBacktickFenceEnd(src, i, fenceLength);
+
+            if (end >= 0) {
+                const next = end + fenceLength;
+                out += src.slice(i, next);
+                i = next;
+                continue;
+            }
+        }
+
+        if (isStrongFence(src, i)) {
+            const end = findStrongFenceEnd(src, i);
+
+            if (end > i) {
+                const body = src.slice(i + 2, end);
+                const next = src[end + 2] || '';
+
+                if (shouldNormalizeStrongPunctuationBoundary(body, next)) {
+                    out += `<strong>${escapeHtml(body)}</strong>`;
+                    i = end + 2;
+                    continue;
+                }
+            }
+        }
+
+        out += src[i];
+        i += 1;
+    }
+
+    return out;
+}
+
+function normalizeStrongPunctuationBoundaries(text) {
+    const src = String(text || '');
+
+    if (!src.includes('**')) {
+        return src;
+    }
+
+    const lines = src.split('\n');
+    const out = [];
+    let activeFence = null;
+
+    for (const line of lines) {
+        const fence = String(line || '').match(/^\s*(`{3,}|~{3,})/);
+
+        if (activeFence) {
+            out.push(line);
+
+            if (fence && fence[1][0] === activeFence.char && fence[1].length >= activeFence.length) {
+                activeFence = null;
+            }
+
+            continue;
+        }
+
+        if (fence) {
+            activeFence = {
+                char: fence[1][0],
+                length: fence[1].length
+            };
+            out.push(line);
+            continue;
+        }
+
+        out.push(normalizeStrongPunctuationBoundariesInLine(line));
+    }
+
+    return out.join('\n');
+}
+
 function stripUnbalancedInlineDollarsByLine(text) {
     const src = String(text || '');
     if (!src) return src;
@@ -1820,6 +2106,82 @@ function wrapBareLatexFragmentsOutsideMath(text) {
     }).join('');
 }
 
+function splitKnowledgeReferencePayload(payload) {
+    const raw = String(payload || '').trim();
+    const commaIndex = raw.indexOf(',');
+
+    if (commaIndex < 0) {
+        return {
+            source: raw,
+            snippet: ''
+        };
+    }
+
+    return {
+        source: raw.slice(0, commaIndex).trim(),
+        snippet: raw.slice(commaIndex + 1).trim()
+    };
+}
+
+function clipKnowledgeReferenceLabel(text, limit = 18) {
+    const value = String(text || '').replace(/\s+/g, ' ').trim();
+
+    if (value.length <= limit) {
+        return value;
+    }
+
+    return `${value.slice(0, Math.max(0, limit - 1)).trim()}...`;
+}
+
+function renderKnowledgeReferenceTag(payload) {
+    const parsed = splitKnowledgeReferencePayload(payload);
+    const source = String(parsed.source || '').trim();
+    const snippet = String(parsed.snippet || '').trim();
+
+    if (!source) {
+        return escapeHtml(`[kb]${String(payload || '')}[/kb]`);
+    }
+
+    const label = clipKnowledgeReferenceLabel(source);
+    const title = snippet ? `知识来源：${source}\n${snippet}` : `知识来源：${source}`;
+
+    return [
+        '<button type="button" class="kb-reference" data-kb-source="',
+        escapeHtml(source),
+        '" data-kb-snippet="',
+        escapeHtml(snippet),
+        '" title="',
+        escapeHtml(title),
+        '"><i class="fa-solid fa-book-open" aria-hidden="true"></i><span>',
+        escapeHtml(label),
+        '</span></button>'
+    ].join('');
+}
+
+function protectKnowledgeReferencesInMarkdown(text) {
+    const refs = [];
+    const protectedText = String(text || '').replace(/\[kb\]([\s\S]*?)\[\/kb\]/g, (_match, payload) => {
+        const index = refs.length;
+        refs.push(renderKnowledgeReferenceTag(payload));
+        return `@@NEXORA_KB_REF_${index}@@`;
+    });
+
+    return {
+        text: protectedText,
+        refs
+    };
+}
+
+function restoreKnowledgeReferencesInHtml(html, refs = []) {
+    let output = String(html || '');
+
+    refs.forEach((refHtml, index) => {
+        output = output.split(`@@NEXORA_KB_REF_${index}@@`).join(refHtml);
+    });
+
+    return output;
+}
+
 function renderMarkdownWithNewTabLinks(text, options = {}) {
     let raw = String(text || '');
     const opts = (options && typeof options === 'object') ? options : {};
@@ -1832,22 +2194,24 @@ function renderMarkdownWithNewTabLinks(text, options = {}) {
             raw = `${stable}${streamMathBuildProvisionalClosedTail(tail, openInfo.type)}`;
         }
     }
-    const normalizedText = normalizeLatexSyntax(raw);
+    const normalizedText = normalizeStrongPunctuationBoundaries(normalizeLatexSyntax(raw));
     const withBareLatexWrapped = needsAggressiveLatexRecovery(raw)
         ? wrapBareLatexFragmentsOutsideMath(normalizedText)
         : normalizedText;
-    const shielded = protectMathSegmentsForMarkdown(withBareLatexWrapped);
+    const protectedKnowledgeReferences = protectKnowledgeReferencesInMarkdown(withBareLatexWrapped);
+    const shielded = protectMathSegmentsForMarkdown(protectedKnowledgeReferences.text);
     const html = marked.parse(String(shielded.text || ''), { gfm: true, breaks: opts.breaks !== false });
     const restoredHtml = restoreMathSegmentsFromHtml(html, shielded.map);
-    captureLatexRenderDebug('chat_markdown', raw, withBareLatexWrapped, restoredHtml);
-    return rewriteHtmlFragmentLinksToNewTab(restoredHtml);
+    const restoredKnowledgeHtml = restoreKnowledgeReferencesInHtml(restoredHtml, protectedKnowledgeReferences.refs);
+    captureLatexRenderDebug('chat_markdown', raw, withBareLatexWrapped, restoredKnowledgeHtml);
+    return rewriteHtmlFragmentLinksToNewTab(restoredKnowledgeHtml);
 }
 
 
 
 function renderMarkdownForNotes(text) {
     const raw = String(text || '');
-    const normalizedText = normalizeLatexSyntax(raw);
+    const normalizedText = normalizeStrongPunctuationBoundaries(normalizeLatexSyntax(raw));
     const withBareLatexWrapped = needsAggressiveLatexRecovery(raw)
         ? wrapBareLatexFragmentsOutsideMath(normalizedText)
         : normalizedText;
@@ -4902,10 +5266,12 @@ function closeKnowledgePanel(options = {}) {
 
     if (immediate) {
         hideRightSidebarPanelImmediately(els.knowledgePanel);
+        _syncTurnIndicatorVisibility();
         return;
     }
 
     setRightSidebarPanelVisible(els.knowledgePanel, false);
+    _syncTurnIndicatorVisibility();
 }
 
 function isLearningImmersiveLayoutActive() {
@@ -4953,6 +5319,7 @@ function openKnowledgePanel() {
     }
     if (els.filePanel) setRightSidebarPanelVisible(els.filePanel, false);
     setRightSidebarPanelVisible(els.knowledgePanel, true);
+    _syncTurnIndicatorVisibility();
     void loadKnowledge(currentConversationId);
 }
 
@@ -4973,7 +5340,22 @@ function toggleKnowledgePanel() {
 function isKnowledgeViewerOpen() {
     const viewer = document.getElementById('knowledgeViewer');
     if (!viewer) return false;
-    return viewer.style.display !== 'none' && viewer.offsetParent !== null;
+
+    // knowledgeViewer 的显示开关由 style.display 驱动，直接读取源状态，避免布局属性误判。
+    return String(viewer.style.display || '').trim().toLowerCase() !== 'none';
+}
+
+function isKnowledgePanelOpen() {
+    const panel = document.getElementById('knowledgePanel');
+
+    if (!panel) return false;
+
+    // 知识库侧栏占用右侧空间时，关闭 turnIndicator，避免覆盖知识库内容。
+    if (typeof panel.__panelVisibleTarget === 'boolean') {
+        return panel.__panelVisibleTarget;
+    }
+
+    return panel.classList.contains('visible');
 }
 
 function closeCloudFilePanel(options = {}) {
@@ -5417,6 +5799,7 @@ const els = {
     toolsModeTrigger: document.getElementById('toolsModeTrigger'),
     toolsModeMenu: document.getElementById('toolsModeMenu'),
     toolsModeLabel: document.getElementById('toolsModeLabel'),
+    inputCollapseBtn: document.getElementById('inputCollapseBtn'),
     // Admin & User Menu
     userMenu: document.getElementById('userMenu'),
     usernameBtn: document.getElementById('usernameBtn'),
@@ -6058,6 +6441,10 @@ async function renderWelcomeScreen() {
 }
 
 async function applyLearningMode(enabled) {
+    if (enabled && !learningRuntimeEnabled) {
+        enabled = false;
+    }
+
     learningModeEnabled = !!enabled;
     if (!learningModeEnabled) {
         learningReaderOpened = false;
@@ -6102,10 +6489,16 @@ async function loadCurrentUserPreferences() {
     const learningRuntime = (prefsData && typeof prefsData.learning_runtime === 'object' && prefsData.learning_runtime)
         ? prefsData.learning_runtime
         : {};
+    learningRuntimeEnabled = learningRuntime.enabled !== false;
     const frontendUrl = String(learningRuntime.frontend_url || '').trim();
     if (frontendUrl) {
         NEXORA_LEARNING_FRONTEND_URL = frontendUrl.endsWith('/') ? frontendUrl : `${frontendUrl}/`;
     }
+
+    if (!learningRuntimeEnabled) {
+        currentUserPreferences.learning_mode = false;
+    }
+
     return currentUserPreferences;
 }
 
@@ -6122,6 +6515,10 @@ function getSaveLearningModeBtn() {
 }
 
 function setLearningModeToggleUi(enabled) {
+    if (!learningRuntimeEnabled) {
+        enabled = false;
+    }
+
     pendingLearningModeValue = !!enabled;
     const offBtn = getLearningModeOffBtn();
     const onBtn = getLearningModeOnBtn();
@@ -6132,11 +6529,19 @@ function setLearningModeToggleUi(enabled) {
     if (onBtn) {
         onBtn.classList.toggle('active', pendingLearningModeValue);
         onBtn.setAttribute('aria-pressed', pendingLearningModeValue ? 'true' : 'false');
+        onBtn.disabled = !learningRuntimeEnabled;
     }
 }
 
 async function saveLearningModePreference() {
     const enabled = !!pendingLearningModeValue;
+
+    if (enabled && !learningRuntimeEnabled) {
+        setLearningModeToggleUi(false);
+        showToast('NexoraLearning 未启用');
+        return;
+    }
+
     const saveBtn = getSaveLearningModeBtn();
     try {
         if (saveBtn) {
@@ -6814,8 +7219,9 @@ async function fetchKnowledgeByTitle(title) {
 
 async function resolveKnowledgeSourceForJump(anchor, fallbackTitle = '') {
     const anchorTitle = String((anchor && anchor.title) || '').trim();
+    const anchorBasisId = String((anchor && anchor.basis_id) || (anchor && anchor.basisId) || '').trim();
     const altTitle = String(fallbackTitle || '').trim();
-    const directCandidates = [anchorTitle, altTitle].filter(Boolean);
+    const directCandidates = [anchorTitle, anchorBasisId, altTitle].filter(Boolean);
 
     for (const candidate of directCandidates) {
         const result = await fetchKnowledgeByTitle(candidate);
@@ -6834,6 +7240,18 @@ async function resolveKnowledgeSourceForJump(anchor, fallbackTitle = '') {
         : {};
     const allTitles = Object.keys(basis);
     if (!allTitles.length) return { ok: false, title: '', data: null };
+
+    for (const candidate of directCandidates) {
+        const matchedTitle = allTitles.find((title) => {
+            const meta = basis[title] && typeof basis[title] === 'object' ? basis[title] : {};
+            return String(meta.basis_id || '').trim() === candidate;
+        });
+
+        if (matchedTitle) {
+            const result = await fetchKnowledgeByTitle(matchedTitle);
+            if (result.ok) return result;
+        }
+    }
 
     const byNorm = new Map();
     allTitles.forEach((t) => {
@@ -6913,6 +7331,29 @@ window.__nexoraJumpToNoteAnchor = async function(payload = {}) {
     const sourceTitle = String(p.sourceTitle || '').trim();
     return await jumpToNoteAnchorPayload(anchor, sourceTitle);
 };
+
+document.addEventListener('click', async (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+
+    const ref = target.closest('.kb-reference');
+    if (!ref) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const source = String(ref.getAttribute('data-kb-source') || '').trim();
+    const snippet = String(ref.getAttribute('data-kb-snippet') || '').trim();
+    if (!source) return;
+
+    await jumpToKnowledgeSource({
+        type: 'knowledge',
+        title: source,
+        basis_id: source,
+        snippet,
+        plainSnippet: snippet
+    }, source);
+});
 
 function buildFallbackAnchorFromNote(note) {
     const n = (note && typeof note === 'object') ? note : {};
@@ -7418,7 +7859,7 @@ function applyTimelinePanelPosition(forceDefault = false) {
     const saved = loadTimelinePanelPosition();
     if (!saved && !forceDefault) return;
     if (saved) {
-        const minWidth = 280;
+        const minWidth = Math.min(320, Math.max(260, window.innerWidth - 24));
         const minHeight = 180;
         const maxWidth = Math.max(minWidth, window.innerWidth - 24);
         const maxHeight = Math.max(minHeight, window.innerHeight - 24);
@@ -7454,7 +7895,7 @@ function bindTimelinePanelDrag() {
     bindFloatingPanelFront(panel);
 
     const clampRect = (left, top, width, height) => {
-        const minWidth = 280;
+        const minWidth = Math.min(320, Math.max(260, window.innerWidth - 24));
         const minHeight = 180;
         const maxWidth = Math.max(minWidth, window.innerWidth - 24);
         const maxHeight = Math.max(minHeight, window.innerHeight - 24);
@@ -7582,14 +8023,19 @@ function bindTimelinePanelDrag() {
 
 function formatTimelineDateParts(ts) {
     const n = Number(ts || 0);
-    if (!n) return { date: '-' };
+    if (!n) {
+        return { date: '-', time: '--:--' };
+    }
+
     try {
         const d = new Date(n * 1000);
+
         return {
-            date: d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
+            date: d.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }),
+            time: d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
         };
     } catch (_) {
-        return { date: '-' };
+        return { date: '-', time: '--:--' };
     }
 }
 
@@ -7599,6 +8045,43 @@ function timelineEntryIconClass(entry) {
     if (kind === 'notebook') return 'fa-solid fa-book-bookmark';
     if (kind === 'knowledge') return 'fa-solid fa-book-open';
     return 'fa-solid fa-clock';
+}
+
+function timelineEntryKindLabel(entry) {
+    const kind = String((entry && (entry.kind || entry.type)) || '').toLowerCase();
+
+    if (kind === 'note') {
+        return '笔记';
+    }
+
+    if (kind === 'notebook') {
+        return '笔记本';
+    }
+
+    if (kind === 'knowledge') {
+        return '知识库';
+    }
+
+    return '记录';
+}
+
+function timelineEntryActionLabel(entry) {
+    const rawTitle = String((entry && entry.title) || '').trim();
+
+    if (/^新增\s/.test(rawTitle)) {
+        return '新增';
+    }
+
+    if (/^删除\s/.test(rawTitle)) {
+        return '删除';
+    }
+
+    return '修改';
+}
+
+function timelineEntrySubject(entry) {
+    const rawTitle = String((entry && entry.title) || '记录').trim();
+    return rawTitle.replace(/^(新增|删除|修改)\s+/, '').trim() || '记录';
 }
 
 async function fetchTimelineEntries() {
@@ -7616,6 +8099,7 @@ function renderTimelineList() {
     const listEl = els.timelineList || document.getElementById('timelineList');
     if (!listEl) return;
     const items = Array.isArray(timelineState.items) ? timelineState.items : [];
+
     if (!items.length) {
         listEl.innerHTML = '<div class="timeline-empty">暂无时间线记录</div>';
         return;
@@ -7625,21 +8109,32 @@ function renderTimelineList() {
     const track = document.createElement('div');
     track.className = 'timeline-track';
     let lastDateLabel = '';
+
     items.forEach((entry) => {
         const item = document.createElement('article');
         item.className = 'timeline-item';
         const parts = formatTimelineDateParts(entry.ts);
-        item.title = String(parts.date || '').trim();
+        item.title = `${String(parts.date || '').trim()} ${String(parts.time || '').trim()}`.trim();
         item.dataset.ts = String(entry.ts || '');
 
         const rail = document.createElement('div');
         rail.className = 'timeline-rail';
+
         const dateMain = document.createElement('div');
         dateMain.className = 'timeline-date-main';
         const currentDate = String(parts.date || '').trim();
         dateMain.textContent = currentDate === lastDateLabel ? '' : currentDate;
-        if (currentDate) lastDateLabel = currentDate;
+
+        if (currentDate) {
+            lastDateLabel = currentDate;
+        }
+
+        const dateTime = document.createElement('div');
+        dateTime.className = 'timeline-date-time';
+        dateTime.textContent = String(parts.time || '').trim();
+
         rail.appendChild(dateMain);
+        rail.appendChild(dateTime);
 
         const node = document.createElement('div');
         node.className = 'timeline-node';
@@ -7653,39 +8148,52 @@ function renderTimelineList() {
         const icon = document.createElement('span');
         icon.className = 'timeline-type-icon';
         icon.innerHTML = `<i class="${timelineEntryIconClass(entry)}"></i>`;
+
         const title = document.createElement('div');
         title.className = 'timeline-title';
         title.textContent = String(entry.title || '未命名').trim() || '未命名';
+
+        const kindLabel = document.createElement('span');
+        kindLabel.className = 'timeline-kind-label';
+        kindLabel.textContent = timelineEntryKindLabel(entry);
+
         top.appendChild(icon);
         top.appendChild(title);
+        top.appendChild(kindLabel);
 
         const updateBy = document.createElement('div');
         updateBy.className = 'timeline-update-by';
-        updateBy.textContent = `updateBy：${String(entry.update_by || '用户').trim() || '用户'}`;
+        updateBy.innerHTML = '<i class="fa-regular fa-user"></i>';
+        const updateByText = document.createElement('span');
+        updateByText.textContent = String(entry.update_by || '用户').trim() || '用户';
+        updateBy.appendChild(updateByText);
 
         const diffText = String(entry.difference || '').trim() || '无变更';
         const diff = document.createElement('div');
         diff.className = 'timeline-diff';
         const diffSign = diffText.startsWith('+') ? '+' : (diffText.startsWith('-') ? '-' : '');
+
         if (diffSign) {
             diff.classList.add(diffSign === '+' ? 'positive' : 'negative');
+
             const body = document.createElement('span');
             body.className = 'timeline-diff-body';
             body.textContent = diffText.slice(1).trim() || '无变更';
+
             const sign = document.createElement('span');
             sign.className = 'timeline-diff-sign';
-            sign.textContent = diffSign;
+            sign.textContent = diffSign === '+' ? '新增' : '删除';
+
             diff.appendChild(sign);
             diff.appendChild(body);
             diff.title = diffText;
         } else {
             diff.classList.add('neutral');
+
             const summary = document.createElement('span');
             summary.className = 'timeline-diff-summary';
-            const actionLabel = /^新增\s/.test(String(entry.title || '')) ? '新增'
-                : (/^删除\s/.test(String(entry.title || '')) ? '删除' : '修改');
-            const subject = String(entry.title || '记录').replace(/^(新增|删除|修改)\s+/, '').trim() || '记录';
-            summary.textContent = `${actionLabel} ${subject}`;
+            summary.textContent = `${timelineEntryActionLabel(entry)} ${timelineEntrySubject(entry)}`;
+
             diff.appendChild(summary);
             diff.title = summary.textContent;
         }
@@ -9836,7 +10344,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         if (cid) {
-            await loadConversation(cid);
+            await loadConversation(cid, {
+                deferStreamAttach: !!(resumeCid && cid === resumeCid)
+            });
         } else {
             if (learningModeEnabled) {
                 await createNewConversation(false, 'learning');
@@ -9867,6 +10377,7 @@ function initUI() {
     bindGeneratedImageViewportLimit();
     bindImageViewerEvents();
     bindToolsModeDropdown();
+    bindInputCollapseBtn();
     applyComposerPrefsFromStorage();
     bindMobileHeaderMenu();
     bindDebugConsoleUi();
@@ -9937,6 +10448,7 @@ function initUI() {
     if(els.sendBtn) els.sendBtn.addEventListener('click', sendMessage);
     if (els.sidebarBrandNexoraTab) {
         els.sidebarBrandNexoraTab.addEventListener('click', () => {
+            closeLearningReaderFromHost('host_nexora_sidebar', 'nexora');
             learningHeaderMode = 'chat';
             applyLearningSidebarMode('nexora');
             void syncLearningHeaderMode();
@@ -10403,13 +10915,6 @@ function initUI() {
             if (!e || e.key !== 'Escape') return;
             const settingsModal = document.getElementById('settingsModal');
             if (!settingsModal || !settingsModal.classList.contains('active')) return;
-            const genImageApiModal = document.getElementById('adminGenImageApiModal');
-            if (genImageApiModal && genImageApiModal.classList.contains('active')) {
-                e.preventDefault();
-                e.stopPropagation();
-                closeAdminGenImageApiModal();
-                return;
-            }
             const publicApiModal = document.getElementById('adminPublicApiKeyModal');
             if (publicApiModal && publicApiModal.classList.contains('active')) {
                 e.preventDefault();
@@ -10431,7 +10936,6 @@ function initUI() {
                 'avatarCropModal',
                 'adminTextConfirmModal',
                 'adminConfigModal',
-                'adminGenImageApiModal',
                 'skillEditorModal',
                 'adminPublicApiKeyModal',
                 'adminPublicApiDeleteModal'
@@ -10575,6 +11079,10 @@ function initUI() {
     if (applyAvatarCropBtn) {
         applyAvatarCropBtn.addEventListener('click', applyAvatarCropAndPreview);
     }
+    const avatarCropResetBtn = document.getElementById('avatarCropResetBtn');
+    if (avatarCropResetBtn) {
+        avatarCropResetBtn.addEventListener('click', resetAvatarCropPosition);
+    }
     const avatarCropModal = document.getElementById('avatarCropModal');
     if (avatarCropModal) {
         bindBackdropSafeClose(avatarCropModal, closeAvatarCropModal);
@@ -10675,17 +11183,6 @@ function initUI() {
     const configModal = document.getElementById('adminConfigModal');
     if (configModal) {
         bindBackdropSafeClose(configModal, closeAdminConfigModal);
-    }
-    const genImageModal = document.getElementById('adminGenImageApiModal');
-    if (genImageModal) {
-        bindBackdropSafeClose(genImageModal, closeAdminGenImageApiModal);
-    }
-    const genImageSaveBtn = document.getElementById('adminGenImageApiSaveBtn');
-    if (genImageSaveBtn) {
-        genImageSaveBtn.addEventListener('click', async (e) => {
-            e.preventDefault();
-            await saveAdminGenImageApiModal();
-        });
     }
     const adminProviderApiTypeInput = document.getElementById('adminProviderApiTypeInput');
     if (adminProviderApiTypeInput) {
@@ -10801,7 +11298,7 @@ function hasNonZeroIoTokens(tokens) {
 
 function readMessageIoTokens(metadata, preferWindow = true) {
     const md = (metadata && typeof metadata === 'object') ? metadata : {};
-    const cumulative = normalizeIoTokensPayload(md.io_tokens);
+    const cumulative = normalizeIoTokensPayload(md.io_tokens_cumulative || md.io_tokens);
     const windowTokens = normalizeIoTokensPayload(md.io_tokens_window);
     const sanitizeWindowTokens = (tokens) => {
         const t = (tokens && typeof tokens === 'object') ? tokens : { input: 0, rawInput: 0, cachedInput: 0, output: 0 };
@@ -10898,9 +11395,10 @@ function applyTokenBudgetPromptBreakdownFromConversationMessages(messages) {
         const ioWindow = readMessageIoTokens(md, true);
         const ioCumulative = readMessageIoTokens(md, false);
         const debug = (md.request_debug && typeof md.request_debug === 'object') ? md.request_debug : {};
-        latestInput = Math.max(safeTokenInt(ioWindow.input), safeTokenInt(ioCumulative.input));
-        latestRawInput = Math.max(safeTokenInt(ioWindow.rawInput), safeTokenInt(ioCumulative.rawInput));
-        latestCachedInput = Math.max(safeTokenInt(ioWindow.cachedInput), safeTokenInt(ioCumulative.cachedInput));
+        // 上下文窗口只看最后一轮请求口径，累计计费输入单独展示，避免工具多轮累计值污染窗口占用。
+        latestInput = safeTokenInt(ioWindow.input);
+        latestRawInput = safeTokenInt(ioWindow.rawInput);
+        latestCachedInput = safeTokenInt(ioWindow.cachedInput);
         if (latestCachedInput <= 0 && latestRawInput >= latestInput) {
             latestCachedInput = Math.max(0, latestRawInput - latestInput);
         }
@@ -11690,9 +12188,8 @@ function estimateTokenBudgetUsedFromConversationMessages(messages) {
         if (String(msg.role || '').trim() !== 'assistant') continue;
         const md = (msg.metadata && typeof msg.metadata === 'object') ? msg.metadata : {};
         const ioWindow = readMessageIoTokens(md, true);
-        const ioCumulative = readMessageIoTokens(md, false);
-        const inTok = Math.max(safeTokenInt(ioWindow.input), safeTokenInt(ioCumulative.input));
-        const rawTok = Math.max(safeTokenInt(ioWindow.rawInput), safeTokenInt(ioCumulative.rawInput));
+        const inTok = safeTokenInt(ioWindow.input);
+        const rawTok = safeTokenInt(ioWindow.rawInput);
         if (rawTok > 0) return rawTok;
         if (inTok > 0) return inTok;
     }
@@ -12835,7 +13332,9 @@ async function loadConversation(id, options = {}) {
         closeKnowledgeView();
     }
 
-    if (shouldKeepCurrentRunningConversationPanel(targetConversationId, opts)) {
+    const deferStreamAttach = !!opts.deferStreamAttach;
+
+    if (!deferStreamAttach && shouldKeepCurrentRunningConversationPanel(targetConversationId, opts)) {
         markConversationStreamRead(targetConversationId);
         attachRunningStreamToCurrentConversation(targetConversationId);
         syncGenerationStateForCurrentConversation();
@@ -13243,6 +13742,45 @@ function createLearningCardNode(card) {
     return wrap;
 }
 
+function buildQuestionIdentityHash(sourceText) {
+    const src = String(sourceText || '');
+    let hash = 2166136261;
+
+    for (let i = 0; i < src.length; i += 1) {
+        hash ^= src.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+    }
+
+    return (hash >>> 0).toString(36);
+}
+
+function buildQuestionCardId(payload, options = {}) {
+    const explicitCardId = String((options && options.cardId) || '').trim();
+
+    if (explicitCardId) {
+        return explicitCardId;
+    }
+
+    const persistentQuestionId = String((payload && payload.question_id) || '').trim();
+
+    if (persistentQuestionId) {
+        return persistentQuestionId;
+    }
+
+    const choices = Array.isArray(payload && payload.choices)
+        ? payload.choices.map((choice) => String(choice || '').trim()).filter(Boolean)
+        : [];
+    const identityParts = [
+        String((payload && payload.question_title) || '').trim(),
+        String((payload && payload.question_content) || '').trim(),
+        choices.join('\n'),
+        String((payload && payload.allow_other) !== false)
+    ];
+
+    // 一次性 question 没有后端 question_id，需要用内容生成稳定 ID，避免刷新后重新开放作答。
+    return `question_${buildQuestionIdentityHash(identityParts.join('\n---\n'))}`;
+}
+
 function createQuestionCardNode(question, options = {}) {
     const payload = (question && typeof question === 'object') ? question : {};
     const wrap = document.createElement('div');
@@ -13255,7 +13793,7 @@ function createQuestionCardNode(question, options = {}) {
     const choices = Array.isArray(payload.choices) ? payload.choices : [];
     const allowOther = payload.allow_other !== false;
     const persistentQuestionId = String(payload.question_id || '').trim();
-    const cardId = String(options.cardId || persistentQuestionId || `question_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`);
+    const cardId = buildQuestionCardId(payload, options);
     const cardIdAttr = escapeHtml(cardId);
     const persistentQuestionAttr = persistentQuestionId ? ` data-question-id="${escapeHtml(persistentQuestionId)}"` : '';
     wrap.dataset.questionCardId = cardId;
@@ -13323,37 +13861,24 @@ function resolvePuzzleCardId(payload, step, messageDiv) {
     return `puzzle_fallback_${Date.now()}`;
 }
 
-function buildQuestionAnswerInjectionText(questionPayload, answerText) {
-    const payload = (questionPayload && typeof questionPayload === 'object') ? questionPayload : {};
-    const finalAnswer = String(answerText || '').trim();
-    const title = String(payload.question_title || '').trim();
-    const content = String(payload.question_content || '').trim();
-    const questionId = String(payload.question_id || '').trim();
-    const choices = Array.isArray(payload.choices)
-        ? payload.choices.map((item) => String(item || '').trim()).filter(Boolean)
-        : [];
-    const lines = ['[Question Response]'];
-    if (questionId) lines.push(`Question ID: ${questionId}`);
-    if (title) lines.push(`Title: ${title}`);
-    if (content) lines.push(`Question: ${content}`);
-    if (choices.length) lines.push(`Choices: ${choices.join(' | ')}`);
-    lines.push(`Answer: ${finalAnswer}`);
-    return lines.join('\n');
-}
-
 function applyQuestionAnswer(questionCard, answerText) {
     if (!questionCard) return;
     const body = questionCard.querySelector('.question-card-body');
+    const finalAnswer = String(answerText || '').trim();
     if (body) {
         body.classList.add('answered');
-        const controls = body.querySelectorAll('button, input');
+        const controls = body.querySelectorAll('button, input, textarea');
         controls.forEach((el) => {
             el.disabled = true;
         });
-        const answer = document.createElement('div');
-        answer.className = 'question-card-answer';
-        answer.textContent = `Your answer: ${String(answerText || '').trim()}`;
-        body.appendChild(answer);
+        let answer = body.querySelector('.question-card-answer');
+        if (!answer) {
+            answer = document.createElement('div');
+            answer.className = 'question-card-answer';
+            body.appendChild(answer);
+        }
+        answer.dataset.answer = finalAnswer;
+        answer.textContent = `Your answer: ${finalAnswer}`;
         const pill = body.querySelector('.question-card-pill');
         if (pill) pill.textContent = 'Answered';
     }
@@ -13371,6 +13896,13 @@ function applyPuzzleAnswer(puzzleCard, orderedSteps) {
 async function submitQuestionAnswer(answerText, questionCard = null) {
     const finalAnswer = String(answerText || '').trim();
     if (!finalAnswer) return;
+    if (questionCard) {
+        const cardState = String(questionCard.dataset.resolved || '').trim().toLowerCase();
+        const submitState = String(questionCard.dataset.submitting || '').trim().toLowerCase();
+        const answered = !!questionCard.querySelector('.question-card-body.answered');
+        if (cardState === 'true' || submitState === 'true' || answered) return;
+        questionCard.dataset.submitting = 'true';
+    }
     const body = questionCard ? questionCard.querySelector('.question-card-body') : null;
     const questionCardId = String((body && body.dataset && body.dataset.questionCardId) || '').trim();
     const persistentQuestionId = String((body && body.dataset && body.dataset.questionId) || '').trim();
@@ -13380,7 +13912,7 @@ async function submitQuestionAnswer(answerText, questionCard = null) {
         question_title: String((questionCard.querySelector('.question-card-title') || {}).textContent || '').trim(),
         question_content: String((questionCard.querySelector('.question-card-content') || {}).textContent || '').trim(),
         choices: Array.from(questionCard.querySelectorAll('.question-choice-btn'))
-            .map((btn) => String(btn.textContent || '').trim())
+            .map((btn) => String((btn.dataset && btn.dataset.choiceValue) || btn.textContent || '').trim())
             .filter(Boolean),
     } : {};
     if (payload.question_card_id) {
@@ -13393,7 +13925,7 @@ async function submitQuestionAnswer(answerText, questionCard = null) {
     }
     await sendMessage({
         displayContentOverride: finalAnswer,
-        textOverride: buildQuestionAnswerInjectionText(payload, finalAnswer)
+        textOverride: finalAnswer
     });
 }
 
@@ -13413,7 +13945,8 @@ function appendQuestionStep(messageDiv, step) {
     if (!node) return;
     const body = node.querySelector('.question-card-body');
     const questionCardId = String((body && body.dataset && body.dataset.questionCardId) || payload.question_id || '').trim();
-    const rememberedAnswer = getLockedQuestionAnswer(questionCardId);
+    const payloadAnswer = String(payload.answer || '').trim();
+    const rememberedAnswer = payloadAnswer || getLockedQuestionAnswer(questionCardId);
     if (rememberedAnswer) {
         applyQuestionAnswer(node, rememberedAnswer);
     }
@@ -13764,6 +14297,78 @@ async function requestServerCancelForActiveStream() {
     } catch (_) {
         return false;
     }
+}
+
+function findStreamStatusSession(rows, streamId, conversationId) {
+    const sid = String(streamId || '').trim();
+    const cid = String(conversationId || '').trim();
+    const list = Array.isArray(rows) ? rows : [];
+
+    if (sid) {
+        const byStreamId = list.find((row) => String(row && row.stream_id || '').trim() === sid);
+        if (byStreamId) return byStreamId;
+    }
+
+    if (cid) {
+        return list.find((row) => String(row && row.conversation_id || '').trim() === cid) || null;
+    }
+
+    return null;
+}
+
+async function waitForStreamServerFinalized(streamId, conversationId, options = {}) {
+    const sid = String(streamId || '').trim();
+    const cid = String(conversationId || '').trim();
+    if (!sid && !cid) return true;
+
+    const opts = (options && typeof options === 'object') ? options : {};
+    const maxWaitMs = Number.isFinite(Number(opts.maxWaitMs)) ? Math.max(0, Number(opts.maxWaitMs)) : 8000;
+    const intervalMs = Number.isFinite(Number(opts.intervalMs)) ? Math.max(120, Number(opts.intervalMs)) : 250;
+    const startedAt = Date.now();
+
+    while ((Date.now() - startedAt) <= maxWaitMs) {
+        try {
+            const res = await fetch('/api/chat/stream/status', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    stream_ids: sid ? [sid] : [],
+                    conversation_ids: cid ? [cid] : []
+                })
+            });
+            const data = await res.json().catch(() => ({}));
+
+            if (res.ok && data && data.success !== false) {
+                const sessionRow = findStreamStatusSession(data.sessions, sid, cid);
+                if (!sessionRow) return true;
+
+                const status = String(sessionRow.status || '').trim().toLowerCase();
+                if (status && status !== 'running') return true;
+            } else {
+                console.error('[StreamCancel] stream status sync failed', {
+                    status: res.status,
+                    stream_id: sid,
+                    conversation_id: cid,
+                    message: String((data && data.message) || '')
+                });
+            }
+        } catch (err) {
+            console.error('[StreamCancel] stream status sync exception', {
+                stream_id: sid,
+                conversation_id: cid,
+                error: String((err && err.message) || err || '')
+            });
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+
+    console.error('[StreamCancel] stream server finalization wait timeout', {
+        stream_id: sid,
+        conversation_id: cid,
+        max_wait_ms: maxWaitMs
+    });
+    return false;
 }
 
 function buildTerminalErrorMessage(baseContent, errorMessage) {
@@ -15241,6 +15846,89 @@ function setToolsMode(mode, options = {}) {
     }
 }
 
+const INPUT_COLLAPSE_ANIMATION_MS = 280;
+
+function setInputContainerCollapsed(container, collapsed) {
+    const messagesContainer = els.messagesContainer || document.getElementById('messagesContainer');
+    const wrapper = container.closest('#inputWrapper');
+    const dock = container.closest('.input-dock');
+
+    if (container.__inputCollapseTimer) {
+        window.clearTimeout(container.__inputCollapseTimer);
+        container.__inputCollapseTimer = 0;
+    }
+
+    if (collapsed) {
+        if (dock) {
+            dock.classList.add('input-dock-collapsing');
+            dock.classList.remove('input-dock-collapsed');
+        }
+
+        if (wrapper) {
+            wrapper.classList.remove('input-wrapper-collapsed');
+        }
+
+        if (messagesContainer) {
+            messagesContainer.classList.remove('messages-input-collapsed');
+        }
+
+        container.classList.add('input-collapsed');
+
+        container.__inputCollapseTimer = window.setTimeout(() => {
+            container.__inputCollapseTimer = 0;
+
+            if (dock) {
+                dock.classList.remove('input-dock-collapsing');
+                dock.classList.add('input-dock-collapsed');
+            }
+
+            if (wrapper) {
+                wrapper.classList.add('input-wrapper-collapsed');
+            }
+
+            if (messagesContainer) {
+                messagesContainer.classList.add('messages-input-collapsed');
+            }
+        }, INPUT_COLLAPSE_ANIMATION_MS);
+    } else {
+        if (dock) {
+            dock.classList.remove('input-dock-collapsed', 'input-dock-collapsing');
+        }
+
+        if (wrapper) {
+            wrapper.classList.remove('input-wrapper-collapsed');
+        }
+
+        if (messagesContainer) {
+            messagesContainer.classList.remove('messages-input-collapsed');
+        }
+
+        window.requestAnimationFrame(() => {
+            container.classList.remove('input-collapsed');
+        });
+    }
+
+    els.inputCollapseBtn.classList.toggle('collapsed', collapsed);
+    els.inputCollapseBtn.setAttribute('aria-expanded', String(!collapsed));
+    els.inputCollapseBtn.setAttribute('aria-label', collapsed ? '展开输入框' : '折叠输入框');
+    els.inputCollapseBtn.title = collapsed ? '展开输入框' : '折叠输入框';
+}
+
+// 输入区折叠按钮：点击收起整个 input-container，仅保留按钮用于再次展开
+function bindInputCollapseBtn() {
+    if (!els.inputCollapseBtn) return;
+    if (els.inputCollapseBtn.dataset.bindDone === '1') return;
+    els.inputCollapseBtn.dataset.bindDone = '1';
+
+    const container = els.inputCollapseBtn.closest('.input-container');
+    setInputContainerCollapsed(container, container.classList.contains('input-collapsed'));
+
+    els.inputCollapseBtn.addEventListener('click', () => {
+        const collapsed = !container.classList.contains('input-collapsed');
+        setInputContainerCollapsed(container, collapsed);
+    });
+}
+
 function bindToolsModeDropdown() {
     if (!els.toolsModeDropdown || !els.toolsModeTrigger || !els.toolsModeMenu) return;
     if (els.toolsModeDropdown.dataset.bindDone === '1') return;
@@ -15685,6 +16373,7 @@ async function sendMessage(options = {}) {
     let currentFullContent = '';
     let currentSegmentContent = '';
     let currentContentSpan = null;
+    let liveHistoryTimeMarkerBuffer = '';
     let streamRenderFinalized = false;
     const toolArgsDeltaSeenByCallId = new Set();
     const debugScopeKey = `chat:${aiMsgId}`;
@@ -16417,7 +17106,7 @@ async function sendMessage(options = {}) {
                 const raw = String(contentDiv.dataset.streamRaw || '');
                 if (raw) {
                     const sourceText = rewriteCitationRefsMarkdown(raw, aiMsgDiv.__citationUrlMap || {});
-                    contentDiv.innerHTML = renderMarkdownWithNewTabLinks(sourceText, { breaks: false });
+                    contentDiv.innerHTML = renderMarkdownWithNewTabLinks(sourceText, { breaks: true });
                     bindSourceMarkdown(contentDiv, sourceText);
                     highlightCode(contentDiv);
                     try { renderMathSafe(contentDiv); } catch (_) {}
@@ -16425,7 +17114,7 @@ async function sendMessage(options = {}) {
                     try { renderMathSafe(contentDiv); } catch (_) {}
                 }
                 const host = contentDiv.closest('.thinking-block.reasoning-thinking-block');
-                if (host) host.dataset.streamLive = '0';
+                if (host) finishReasoningThinkingBlock(host, raw);
             });
             const longtermBlocks = aiMsgDiv.querySelectorAll('.thinking-block.longterm-hook-block[data-longterm-plan="1"]');
             longtermBlocks.forEach((block) => {
@@ -16455,6 +17144,7 @@ async function sendMessage(options = {}) {
         aiMsgDiv = visibleDiv;
         aiMsgDiv.classList.add('pending');
         aiMsgDiv.dataset.localOnly = '1';
+        aiMsgDiv.dataset.streamId = String((getConversationStreamState(streamConversationId) || {}).stream_id || '');
 
         if (!aiMsgDiv.__citationUrlMap) {
             aiMsgDiv.__citationUrlMap = {};
@@ -16466,7 +17156,8 @@ async function sendMessage(options = {}) {
             callIdByIndex: {},
             pendingQueue: [],
             explicitIdByLocalId: {},
-            activeAnonCallId: ''
+            activeAnonCallId: '',
+            argsDeltaSeenByCallId: {}
         };
         updateMessageModelBadge(aiMsgDiv, modelBadgeState);
 
@@ -16563,6 +17254,9 @@ async function sendMessage(options = {}) {
                         if (chunk.type === 'stream_session') {
                             const sid = String(chunk.stream_id || '').trim();
                             if (sid) {
+                                if (aiMsgDiv) {
+                                    aiMsgDiv.dataset.streamId = sid;
+                                }
                                 const sessionCid = String(chunk.conversation_id || streamConversationId || currentConversationId || '').trim();
                                 if (sessionCid && sessionCid !== streamConversationId) {
                                     moveConversationStreamState(streamConversationId, sessionCid);
@@ -16641,9 +17335,31 @@ async function sendMessage(options = {}) {
 
                         else if (chunk.type === 'content') {
                             aiMsgDiv.__reasoningSegmentOpen = false;
-                            currentFullContent += chunk.content;
+                            let chunkContent = String(chunk.content || '');
+
+                            if (!currentFullContent && !currentSegmentContent) {
+                                const checked = stripHistoryTimeMarkerEchoForStream(`${liveHistoryTimeMarkerBuffer}${chunkContent}`);
+
+                                if (checked.pending) {
+                                    liveHistoryTimeMarkerBuffer = `${liveHistoryTimeMarkerBuffer}${chunkContent}`;
+                                    continue;
+                                }
+
+                                liveHistoryTimeMarkerBuffer = '';
+                                chunkContent = checked.text;
+
+                                if (checked.removed) {
+                                    console.warn('[StreamSanitize] stripped echoed history time marker from live stream chunk');
+                                }
+
+                                if (!chunkContent) {
+                                    continue;
+                                }
+                            }
+
+                            currentFullContent += chunkContent;
                             if (isStreamVisible()) {
-                                onTokenStreamTextChunk(chunk.content);
+                                onTokenStreamTextChunk(chunkContent);
                             }
                             const planInfo = applyLongtermPlanFromText(currentFullContent, { source: 'live-stream', messageDiv: aiMsgDiv });
                             const displayFullContent = String(planInfo && planInfo.text !== undefined ? planInfo.text : currentFullContent || '');
@@ -16669,7 +17385,7 @@ async function sendMessage(options = {}) {
                                 currentContentSpan = createContentSpan(aiMsgDiv);
                             }
 
-                            currentSegmentContent += chunk.content;
+                            currentSegmentContent += chunkContent;
                             const segmentPlanInfo = applyLongtermPlanFromText(currentSegmentContent, { source: 'live-segment', messageDiv: aiMsgDiv });
                             const displaySegmentContent = String(segmentPlanInfo && segmentPlanInfo.text !== undefined ? segmentPlanInfo.text : currentSegmentContent || '');
                             currentContentSpan.dataset.streamRaw = displaySegmentContent;
@@ -16699,11 +17415,17 @@ async function sendMessage(options = {}) {
                            }
 
                             const contentDiv = thinkingBlock.querySelector('.thinking-content');
-                            const nextRaw = `${String(contentDiv.dataset.streamRaw || '')}${String(chunk.content || '')}`;
+                            const currentRaw = readReasoningContentRaw(contentDiv);
+                            const appendText = buildReasoningAppendText(
+                                currentRaw,
+                                chunk.content || '',
+                                !wasReasoningSegmentOpen
+                            );
+                            const nextRaw = `${currentRaw}${appendText}`;
                             contentDiv.dataset.streamRaw = nextRaw;
                             const streamState = ensureStreamBlockState(contentDiv);
                             if (streamState) {
-                                streamState.liveRaw += String(chunk.content || '');
+                                streamState.liveRaw += appendText;
                                 flushStableStreamTail(contentDiv, aiMsgDiv.__citationUrlMap || {}, false);
                             } else {
                                 contentDiv.textContent = nextRaw;
@@ -16734,7 +17456,10 @@ async function sendMessage(options = {}) {
                             const rawCallId = String(chunk.call_id || chunk.callId || '').trim();
                             const toolIndex = (chunk.index === undefined || chunk.index === null) ? null : Number(chunk.index);
                             const callId = allocateToolCallId(aiMsgDiv, toolName, 'delta', rawCallId, toolIndex);
-                            if (rawCallId) toolArgsDeltaSeenByCallId.add(rawCallId);
+                            if (rawCallId) {
+                                toolArgsDeltaSeenByCallId.add(rawCallId);
+                                rememberToolArgsDeltaSeen(aiMsgDiv, rawCallId);
+                            }
                             if (isStreamVisible()) {
                                 onTokenStreamToolArgsChunk(chunk.arguments_delta || chunk.delta || '');
                             }
@@ -16745,6 +17470,7 @@ async function sendMessage(options = {}) {
                                 __raw_call_id: rawCallId,
                                 __tool_index: toolIndex
                             });
+                            await yieldToolStreamPaintForChunk(aiMsgDiv, chunk);
                         }
                         else if (chunk.type === 'function_call') {
                             aiMsgDiv.__reasoningSegmentOpen = false;
@@ -16758,7 +17484,7 @@ async function sendMessage(options = {}) {
                             const callId = allocateToolCallId(aiMsgDiv, toolName, 'call', rawCallId, toolIndex);
                             rememberJsExecuteCanvasCall(aiMsgDiv, toolName, callId, toolIndex, chunk.arguments || '');
                             // 某些 provider 不发 delta，只在 done 里给完整 arguments；这种情况也要计入估算
-                            if (!rawCallId || !toolArgsDeltaSeenByCallId.has(rawCallId)) {
+                            if (!rawCallId || (!toolArgsDeltaSeenByCallId.has(rawCallId) && !hasToolArgsDeltaSeen(aiMsgDiv, rawCallId))) {
                                 if (isStreamVisible()) {
                                     onTokenStreamToolArgsChunk(chunk.arguments || '');
                                 }
@@ -16772,6 +17498,7 @@ async function sendMessage(options = {}) {
                             }
                             finalizeToolCallBadge(aiMsgDiv, toolName, callId, chunk.arguments, { toolIndex });
                             syncStreamingModelBadgeEstimate(aiMsgDiv, modelBadgeState, model);
+                            await yieldToolStreamPaintForChunk(aiMsgDiv, chunk, true);
                         }
                         else if (chunk.type === 'function_result') {
                             aiMsgDiv.__reasoningSegmentOpen = false;
@@ -16911,6 +17638,7 @@ async function sendMessage(options = {}) {
         finalizeStreamingContentRender();
         const streamErroredRetryable = !!(streamEndedWithError && (streamErrorRetryable || streamErrorCode === 'network_error'));
         const streamEndedTerminally = !!(streamCompleted || streamAbortedByUser || (streamEndedWithError && !streamErroredRetryable));
+        let streamServerFinalized = true;
         if (streamEndedTerminally) {
             markConversationStreamFinished(streamConversationId, {
                 error: streamEndedWithError ? (streamErrorMessage || 'stream_error') : ''
@@ -17315,7 +18043,8 @@ function getToolCallState(aiMsgDiv) {
             callIdByIndex: {},
             pendingQueue: [],
             explicitIdByLocalId: {},
-            activeAnonCallId: ''
+            activeAnonCallId: '',
+            argsDeltaSeenByCallId: {}
         };
     }
     if (!aiMsgDiv.__toolCallState.callIdByIndex || typeof aiMsgDiv.__toolCallState.callIdByIndex !== 'object') {
@@ -17330,7 +18059,32 @@ function getToolCallState(aiMsgDiv) {
     if (typeof aiMsgDiv.__toolCallState.activeAnonCallId !== 'string') {
         aiMsgDiv.__toolCallState.activeAnonCallId = '';
     }
+    if (!aiMsgDiv.__toolCallState.argsDeltaSeenByCallId || typeof aiMsgDiv.__toolCallState.argsDeltaSeenByCallId !== 'object') {
+        aiMsgDiv.__toolCallState.argsDeltaSeenByCallId = {};
+    }
     return aiMsgDiv.__toolCallState;
+}
+
+function rememberToolArgsDeltaSeen(aiMsgDiv, callId) {
+    const id = String(callId || '').trim();
+
+    if (!aiMsgDiv || !id) {
+        return;
+    }
+
+    const state = getToolCallState(aiMsgDiv);
+    state.argsDeltaSeenByCallId[id] = true;
+}
+
+function hasToolArgsDeltaSeen(aiMsgDiv, callId) {
+    const id = String(callId || '').trim();
+
+    if (!aiMsgDiv || !id) {
+        return false;
+    }
+
+    const state = getToolCallState(aiMsgDiv);
+    return !!state.argsDeltaSeenByCallId[id];
 }
 
 function removePendingToolCallId(state, callId) {
@@ -17619,6 +18373,88 @@ function setToolUsageStatus(row, statusText) {
     }
 }
 
+function yieldToolStreamPaint() {
+    // 本地文件写入常在同一批 SSE 中完成；让执行中状态先进入浏览器绘制队列。
+    return new Promise((resolve) => {
+        requestAnimationFrame(() => resolve());
+    });
+}
+
+const TOOL_STREAM_PAINT_MIN_INTERVAL_MS = 80;
+const TOOL_STREAM_PAINT_DEBT_LIMIT = 3;
+const TOOL_STREAM_PAINT_DEBT_CHARS = 384;
+const toolStreamPaintAtByMessage = new WeakMap();
+const toolStreamPaintDebtByMessage = new WeakMap();
+
+function getToolStreamPaintDebt(data) {
+    const type = String(data && data.type || '').trim();
+
+    if (type !== 'function_call_delta') {
+        return 1;
+    }
+
+    const delta = String(
+        (data && (data.arguments_delta || data.delta || data.name_delta))
+        || ''
+    );
+
+    return Math.max(1, Math.ceil(delta.length / TOOL_STREAM_PAINT_DEBT_CHARS));
+}
+
+function shouldYieldToolStreamPaintForChunk(data) {
+    const type = String(data && data.type || '').trim();
+
+    if (type === 'function_call' || type === 'function_call_running') {
+        return true;
+    }
+
+    if (type !== 'function_call_delta') {
+        return false;
+    }
+
+    const delta = String(
+        (data && (data.arguments_delta || data.delta || data.name_delta))
+        || ''
+    );
+
+    if (!delta) {
+        return false;
+    }
+
+    const toolName = resolveToolNameFromEvent(data, data && data.name);
+    const compact = String(toolName || '').replace(/[\s_-]+/g, '').toLowerCase();
+
+    return compact.includes('file') || delta.length >= 64;
+}
+
+async function yieldToolStreamPaintForChunk(messageDiv, data, force = false) {
+    if (!messageDiv) {
+        return;
+    }
+
+    if (!force && !shouldYieldToolStreamPaintForChunk(data)) {
+        return;
+    }
+
+    const now = (window.performance && typeof window.performance.now === 'function')
+        ? window.performance.now()
+        : Date.now();
+    const lastPaintAt = Number(toolStreamPaintAtByMessage.get(messageDiv) || 0);
+
+    if (!force && now - lastPaintAt < TOOL_STREAM_PAINT_MIN_INTERVAL_MS) {
+        const nextDebt = Number(toolStreamPaintDebtByMessage.get(messageDiv) || 0) + getToolStreamPaintDebt(data);
+
+        if (nextDebt < TOOL_STREAM_PAINT_DEBT_LIMIT) {
+            toolStreamPaintDebtByMessage.set(messageDiv, nextDebt);
+            return;
+        }
+    }
+
+    toolStreamPaintDebtByMessage.set(messageDiv, 0);
+    toolStreamPaintAtByMessage.set(messageDiv, now);
+    await yieldToolStreamPaint();
+}
+
 function scrollToolOutputToBottom(outputEl) {
     if (!outputEl) return;
     const doScroll = () => {
@@ -17722,10 +18558,14 @@ function appendToolCallDelta(aiMsgDiv, data) {
     const nextRaw = `${row.dataset.argsRaw || ''}${delta}`;
     row.dataset.argsRaw = nextRaw;
     const displayName = normalizeToolDisplayName(row.dataset.toolName || providedName || name);
+    const partialArgs = parseExecutionFlowPartialJson(nextRaw) || {};
+    const fileRunningDisplay = buildFileToolRunningDisplay(displayName, partialArgs);
     setToolUsageStatus(row, `${displayName} ${formatToolDeltaStatus(nextRaw)}:`);
     const outDiv = row.querySelector('.tool-output');
     if (outDiv) {
-        outDiv.textContent = formatToolArgsForOutput(nextRaw);
+        outDiv.textContent = fileRunningDisplay
+            ? fileRunningDisplay.progressText
+            : formatToolArgsForOutput(nextRaw);
         if (outDiv.textContent) {
             row.classList.add('has-output');
             row.classList.add('expanded'); // 调用进行中自动展开
@@ -17804,7 +18644,9 @@ function finalizeToolCallBadge(aiMsgDiv, name, callId, argumentsText = '', optio
     migratePendingToolCallId(aiMsgDiv, previousCallId, row.dataset.callId || safeCallId, safeName);
     row.dataset.pending = 'false';
     row.dataset.resolved = 'false';
-    setToolUsageStatus(row, `${safeName} 执行中`);
+    const finalArgsObj = parseExecutionFlowJson(finalArgs) || parseExecutionFlowPartialJson(finalArgs) || {};
+    const fileRunningDisplay = buildFileToolRunningDisplay(safeName, finalArgsObj);
+    setToolUsageStatus(row, fileRunningDisplay ? fileRunningDisplay.statusText : `${safeName} 执行中`);
     const outDiv = row.querySelector('.tool-output');
     if (outDiv) {
         outDiv.textContent = '';
@@ -17842,6 +18684,110 @@ function parseToolResultPayload(result) {
     }
 }
 
+function isMapToolName(name) {
+    const compact = String(name || '').trim().replace(/[\s-]/g, '_').toLowerCase();
+    const mapToolNames = new Set([
+        'map_render',
+        'maprenderscene',
+        'maprender',
+        'map_render_scene',
+        'map_calc_distance',
+        'mapcalcdistance',
+        'map_calc_straight_distance',
+        'map_calc_route',
+        'mapcalcroute',
+        'map_route_plan',
+        'map_geocode',
+        'mapgeocode',
+        'map_poi_search',
+        'mappoisearch',
+        'map_search_place'
+    ]);
+
+    return mapToolNames.has(compact);
+}
+
+function readMapResultId(payload) {
+    if (!payload || typeof payload !== 'object') {
+        return '';
+    }
+
+    return String(
+        payload.map_id
+        || payload.mapId
+        || payload.render_id
+        || payload.renderId
+        || payload.record_id
+        || payload.recordId
+        || ''
+    ).trim();
+}
+
+function readMapResultConversationId(payload) {
+    if (!payload || typeof payload !== 'object') {
+        return String(currentConversationId || '').trim();
+    }
+
+    return String(
+        payload.conversation_id
+        || payload.conversationId
+        || currentConversationId
+        || ''
+    ).trim();
+}
+
+function buildMapResultMarkdown(payload) {
+    if (!payload || typeof payload !== 'object') {
+        return '';
+    }
+
+    const markdown = String(payload.markdown || '').trim();
+
+    if (markdown) {
+        return markdown;
+    }
+
+    if (payload.scene && typeof payload.scene === 'object' && !Array.isArray(payload.scene)) {
+        return `\`\`\`nexora-map\n${JSON.stringify(payload.scene, null, 4)}\n\`\`\``;
+    }
+
+    const mapId = readMapResultId(payload);
+    const conversationId = readMapResultConversationId(payload);
+
+    if (!mapId || !conversationId) {
+        return '';
+    }
+
+    const title = String(payload.title || '地图').trim() || '地图';
+    const mapRef = {
+        type: 'nexora-map-ref',
+        mapId,
+        map_id: mapId,
+        renderId: mapId,
+        conversationId,
+        conversation_id: conversationId,
+        title
+    };
+
+    return `\`\`\`nexora-map-ref\n${JSON.stringify(mapRef, null, 4)}\n\`\`\``;
+}
+
+function stripMapSceneSection(markdownText) {
+    const source = String(markdownText || '').trim();
+
+    if (!source) {
+        return '';
+    }
+
+    const match = source.match(/(?:^|\n)### Scene(?:\n|$)/);
+
+    if (!match) {
+        return source;
+    }
+
+    return source.slice(0, match.index).trim();
+}
+
 function readContentBodySourceText(node) {
     if (!node) {
         return '';
@@ -17871,7 +18817,10 @@ function collectContentMarkdownBeforeNode(parent, stopNode) {
             continue;
         }
 
-        if (node.classList.contains('generated-image-result')) {
+        if (
+            node.classList.contains('generated-image-result')
+            || node.classList.contains('generated-map-result')
+        ) {
             continue;
         }
 
@@ -18077,6 +19026,8 @@ function updateLastToolResult(aiMsgDiv, name, result, callId = '', options = {})
         setToolUsageStatus(target, `${safeName} 完成:`);
         const outDiv = target.querySelector('.tool-output');
         const displayMarkdown = resolveToolResultDisplayMarkdown(result, options);
+        const renderedMap = renderMapResultInMessage(aiMsgDiv, safeName, result, safeCallId, target);
+        const outputMarkdown = renderedMap ? stripMapSceneSection(displayMarkdown) : displayMarkdown;
         const resultText = (typeof result === 'object') ? JSON.stringify(result, null, 2) : String(result || '');
 
         const renderedGenerateImage = renderGenerateImageToolOutput(outDiv, safeName, result);
@@ -18133,7 +19084,8 @@ function findLatestAppendableStreamContentBody(messageDiv) {
 
     const bodies = Array.from(messageDiv.querySelectorAll('.content-body')).filter((node) => {
         return node
-            && !node.classList.contains('generated-image-result');
+            && !node.classList.contains('generated-image-result')
+            && !node.classList.contains('generated-map-result');
     });
     if (!bodies.length) return null;
 
@@ -18161,6 +19113,75 @@ function prepareLatestContentBodyForStreamResume(messageDiv) {
     body.dataset.streamRaw = raw;
     bindSourceMarkdown(body, raw);
     return body;
+}
+
+function getLatestLiveStreamResumeNode(messageDiv) {
+    if (!messageDiv) {
+        return { type: '', node: null };
+    }
+
+    const root = messageDiv.querySelector('.message-content') || messageDiv;
+    const candidates = [];
+
+    root.querySelectorAll('.content-body, .thinking-block.reasoning-thinking-block').forEach((node) => {
+        if (!node) return;
+
+        if (node.classList.contains('content-body')) {
+            if (String(node.dataset.streamLive || '') === '1') {
+                candidates.push({ type: 'content', node });
+            }
+
+            return;
+        }
+
+        const content = node.querySelector('.thinking-content');
+        const live = String(node.dataset.streamLive || '') === '1'
+            || !!(content && String(content.dataset.streamLive || '') === '1');
+
+        if (live) {
+            candidates.push({ type: 'reasoning', node });
+        }
+    });
+
+    return candidates.length > 0
+        ? candidates[candidates.length - 1]
+        : { type: '', node: null };
+}
+
+function prepareLatestThinkingBlockForStreamResume(messageDiv, preferredBlock = null) {
+    if (!messageDiv) return null;
+
+    let thinkingBlock = preferredBlock
+        && preferredBlock.isConnected
+        && preferredBlock.classList.contains('reasoning-thinking-block')
+        ? preferredBlock
+        : null;
+
+    if (!thinkingBlock) {
+        const latest = getLatestLiveStreamResumeNode(messageDiv);
+        thinkingBlock = latest.type === 'reasoning' ? latest.node : null;
+    }
+
+    if (!thinkingBlock) return null;
+
+    const contentDiv = thinkingBlock.querySelector('.thinking-content');
+    if (!contentDiv) return null;
+
+    const raw = String(
+        contentDiv.dataset.streamRaw
+        || contentDiv.dataset.rawText
+        || (typeof contentDiv.__sourceMarkdown === 'string' ? contentDiv.__sourceMarkdown : '')
+        || contentDiv.textContent
+        || ''
+    );
+
+    contentDiv.dataset.streamRaw = raw;
+    markReasoningThinkingBlockLive(thinkingBlock);
+    messageDiv.__activeReasoningThinkingBlock = thinkingBlock;
+    messageDiv.__reasoningSegmentOpen = true;
+    updateThinkingBlockSummary(thinkingBlock, raw);
+
+    return thinkingBlock;
 }
 
 function appendUserAttachments(contentEl, msg) {
@@ -18564,7 +19585,8 @@ function appendMessage(msg, index) {
         callIdByIndex: {},
         pendingQueue: [],
         explicitIdByLocalId: {},
-        activeAnonCallId: ''
+        activeAnonCallId: '',
+        argsDeltaSeenByCallId: {}
     };
 
     if (msg.role === 'user') {
@@ -18628,6 +19650,7 @@ function appendMessage(msg, index) {
         }
 
         // 兼容老数据：仅 metadata.reasoning_content（无分段 step）
+        let historyReasoningBlock = null;
         if (msg.metadata && msg.metadata.reasoning_content && !hasReasoningStep) {
             const thinkingBlock = createThinkingBlock(true);
             const thinkingContent = thinkingBlock.querySelector('.thinking-content');
@@ -19262,6 +20285,7 @@ function findActiveTurnIndexByViewportMiddle(viewportMiddle) {
 function _shouldShowTurnIndicator() {
     if (!String(currentConversationId || '').trim()) return false;
     if (typeof isKnowledgeViewerOpen === 'function' && isKnowledgeViewerOpen()) return false;
+    if (typeof isKnowledgePanelOpen === 'function' && isKnowledgePanelOpen()) return false;
     if (typeof isLearningWorkspaceActive === 'function' && isLearningWorkspaceActive()) return false;
     return true;
 }
@@ -19890,6 +20914,7 @@ async function startRegenerate(index) {
     let accumulatedContent = "";
     let currentSegmentContent = "";
     let currentContentSpan = null;
+    let liveHistoryTimeMarkerBuffer = "";
     let hasRenderedContentDelta = false;
     let hasTimelineBoundary = false;
     let needsCanonicalTimelineSync = false;
@@ -20045,6 +21070,9 @@ async function startRegenerate(index) {
                     if (data.type === 'stream_session') {
                         const sid = String(data.stream_id || '').trim();
                         if (sid) {
+                            if (regenMessageDiv) {
+                                regenMessageDiv.dataset.streamId = sid;
+                            }
                             saveActiveStreamResumeState({
                                 stream_id: sid,
                                 conversation_id: String(data.conversation_id || currentConversationId || '').trim(),
@@ -20068,7 +21096,28 @@ async function startRegenerate(index) {
                     } else if (data.type === 'debug_trace') {
                         appendDebugTraceChunk(data, debugScopeKey);
                     } else if (data.type === 'content') {
-                        const contentDelta = String(data.content || '');
+                        let contentDelta = String(data.content || '');
+
+                        if (!accumulatedContent && !currentSegmentContent) {
+                            const checked = stripHistoryTimeMarkerEchoForStream(`${liveHistoryTimeMarkerBuffer}${contentDelta}`);
+
+                            if (checked.pending) {
+                                liveHistoryTimeMarkerBuffer = `${liveHistoryTimeMarkerBuffer}${contentDelta}`;
+                                continue;
+                            }
+
+                            liveHistoryTimeMarkerBuffer = "";
+                            contentDelta = checked.text;
+
+                            if (checked.removed) {
+                                console.warn('[StreamSanitize] stripped echoed history time marker from regenerate stream chunk');
+                            }
+
+                            if (!contentDelta) {
+                                continue;
+                            }
+                        }
+
                         accumulatedContent += contentDelta;
                         if (isDebugConsoleEnabled()) {
                             appendDebugConsoleEntry({
@@ -20117,6 +21166,7 @@ async function startRegenerate(index) {
                         data.type === 'puzzle'
                     ) {
                         hasTimelineBoundary = true;
+                        regenMessageDiv.__reasoningSegmentOpen = false;
                         currentContentSpan = null;
                         currentSegmentContent = "";
                         updateMessageDivTools(index, data, regenMessageDiv);
@@ -20318,7 +21368,8 @@ function resolveContentBodyForFullTextUpdate(messageDiv, displayText) {
 
     let body = Array.from(contentRoot.querySelectorAll('.content-body')).find((node) => {
         return !node.classList.contains('generated-image-result')
-            && !node.classList.contains('generated-image-followup');
+            && !node.classList.contains('generated-image-followup')
+            && !node.classList.contains('generated-map-result');
     });
 
     if (!body) {
@@ -20373,24 +21424,27 @@ function updateMessageDivThinking(index, delta, preferredMessageDiv = null) {
     if (thinkingBlock && (!thinkingBlock.isConnected || !thinkingBlock.classList.contains('reasoning-thinking-block'))) {
         thinkingBlock = null;
     }
-    if (!thinkingBlock && messageDiv.__reasoningSegmentOpen) {
-        thinkingBlock = getLatestReasoningThinkingBlock(messageDiv);
+    if (!thinkingBlock) {
+        thinkingBlock = getPrimaryReasoningThinkingBlock(messageDiv);
     }
     if (!thinkingBlock) {
         thinkingBlock = createThinkingBlock(false);
         content.prepend(thinkingBlock);
         messageDiv.__activeReasoningThinkingBlock = thinkingBlock;
-    } else if (thinkingBlock.dataset.userToggled !== 'true') {
-        thinkingBlock.classList.remove('collapsed');
     }
 
     const textTarget = thinkingBlock.querySelector('.thinking-content');
-    let raw = textTarget.dataset.rawText || '';
-    raw += delta;
+    const currentRaw = readReasoningContentRaw(textTarget);
+    const appendText = buildReasoningAppendText(
+        currentRaw,
+        delta,
+        !wasReasoningSegmentOpen
+    );
+    const raw = `${currentRaw}${appendText}`;
     textTarget.dataset.rawText = raw;
-    textTarget.dataset.streamLive = '1';
+    textTarget.dataset.streamRaw = raw;
     textTarget.innerHTML = renderMarkdownWithNewTabLinks(raw, {
-        breaks: false,
+        breaks: true,
         streamingMathProvisional: true
     });
     bindSourceMarkdown(textTarget, raw);
@@ -20430,9 +21484,7 @@ function finalizeMessageRenderForIndex(index, preferredMessageDiv = null) {
                 ? contentDiv.__sourceMarkdown
                 : (contentDiv.dataset.rawText || contentDiv.dataset.streamRaw || contentDiv.textContent || '')
         );
-        contentDiv.dataset.streamLive = '0';
-        block.dataset.streamLive = '0';
-        contentDiv.innerHTML = renderMarkdownWithNewTabLinks(sourceText, { breaks: false });
+        contentDiv.innerHTML = renderMarkdownWithNewTabLinks(sourceText, { breaks: true });
         bindSourceMarkdown(contentDiv, sourceText);
         renderMathSafe(contentDiv);
         highlightCode(contentDiv);
@@ -20641,7 +21693,7 @@ async function resumeActiveStreamAfterReload(options = {}) {
         if (opts.allowSwitch === false) {
             return;
         }
-        await loadConversation(targetConversationId);
+        await loadConversation(targetConversationId, { deferStreamAttach: true });
     }
     const reconnectBoundConversationId = String(targetConversationId || currentConversationId || '').trim();
     let reconnectStreamConversationId = reconnectBoundConversationId;
@@ -20666,6 +21718,7 @@ async function resumeActiveStreamAfterReload(options = {}) {
         clearActiveStreamResumeState();
         return;
     }
+    assistantDiv.dataset.streamId = String(state.stream_id || '');
 
     updateMessageModelBadge(assistantDiv, {
         modelName: getStreamingModelBadgeName(),
@@ -20713,8 +21766,18 @@ async function resumeActiveStreamAfterReload(options = {}) {
     let currentFullContent = '';
     let currentSegmentContent = '';
     let currentContentSpan = null;
+    let liveHistoryTimeMarkerBuffer = '';
     let buffer = '';
     const decoder = new TextDecoder();
+
+    if (resumeThinkingBlock) {
+        console.debug('[StreamResume] resume live reasoning block', {
+            conversation_id: reconnectBoundConversationId,
+            stream_id: String(state.stream_id || ''),
+            assistant_index: assistantIndex,
+            reasoning_chars: String((resumeThinkingBlock.querySelector('.thinking-content') || {}).dataset?.streamRaw || '').length
+        });
+    }
 
     try {
         const response = await fetch('/api/chat/stream/reconnect', {
@@ -20759,6 +21822,7 @@ async function resumeActiveStreamAfterReload(options = {}) {
                 if (chunk.type === 'stream_session') {
                     const sid = String(chunk.stream_id || '').trim();
                     if (sid) {
+                        assistantDiv.dataset.streamId = sid;
                         const sessionCid = String(chunk.conversation_id || reconnectStreamConversationId || currentConversationId || '').trim();
                         if (sessionCid && sessionCid !== reconnectStreamConversationId) {
                             moveConversationStreamState(reconnectStreamConversationId, sessionCid);
@@ -20871,6 +21935,21 @@ async function resumeActiveStreamAfterReload(options = {}) {
                             inputTokens: 0,
                             outputTokens: 0
                         });
+
+                        if (
+                            !isReplayChunk &&
+                            (
+                                chunk.type === 'function_call_delta' ||
+                                chunk.type === 'function_call' ||
+                                chunk.type === 'function_call_running'
+                            )
+                        ) {
+                            await yieldToolStreamPaintForChunk(
+                                assistantDiv,
+                                chunk,
+                                chunk.type !== 'function_call_delta'
+                            );
+                        }
                     }
                 } else if (chunk.type === 'token_usage') {
                     onTokenStreamUsageChunk(chunk);
@@ -20918,8 +21997,7 @@ async function resumeActiveStreamAfterReload(options = {}) {
 
             for (const contentDiv of dirtiedThinkingBlocks) {
                 const nextRaw = contentDiv.dataset.streamRaw || '';
-                contentDiv.dataset.streamLive = '1';
-                contentDiv.innerHTML = renderMarkdownWithNewTabLinks(nextRaw, { breaks: false, streamingMathProvisional: true });
+                contentDiv.innerHTML = renderMarkdownWithNewTabLinks(nextRaw, { breaks: true, streamingMathProvisional: true });
                 bindSourceMarkdown(contentDiv, nextRaw);
                 highlightCode(contentDiv);
                 const pt = contentDiv.closest('.thinking-block');
@@ -20982,6 +22060,7 @@ async function resumeActiveStreamAfterReload(options = {}) {
     } finally {
         const streamErroredRetryable = !!(streamEndedWithError && (streamErrorRetryable || streamErrorCode === 'network_error'));
         const streamEndedTerminally = !!(streamCompleted || streamAbortedByUser || (streamEndedWithError && !streamErroredRetryable));
+        let streamServerFinalized = true;
         if (streamEndedTerminally) {
             markConversationStreamFinished(reconnectStreamConversationId, {
                 error: streamEndedWithError ? (streamErrorMessage || 'reconnect_error') : ''
@@ -21008,6 +22087,19 @@ async function resumeActiveStreamAfterReload(options = {}) {
         }
         if (streamEndedTerminally) {
             assistantDiv.classList.remove('pending');
+        }
+        if (streamAbortedByUser && !streamCompleted) {
+            assistantDiv.dataset.localOnly = '1';
+            const activeStreamId = String(
+                (assistantDiv && assistantDiv.dataset && assistantDiv.dataset.streamId)
+                || state.stream_id
+                || ''
+            ).trim();
+            streamServerFinalized = await waitForStreamServerFinalized(activeStreamId, reconnectStreamConversationId);
+
+            if (!streamServerFinalized && String(currentConversationId || '').trim() === reconnectBoundConversationId) {
+                showToast('已中断，服务端仍在保存已输出内容');
+            }
         }
         if (streamEndedWithError && !streamErroredRetryable) {
             const terminalText = renderAssistantTerminalErrorMessage(
@@ -21274,7 +22366,10 @@ function renderKnowledgeList(container, items, type) {
             pinIcon.setAttribute('aria-hidden', 'true');
             label.appendChild(pinIcon);
         }
-        label.appendChild(document.createTextNode(type === 'short' ? shortContent : rawTitle));
+        const titleText = document.createElement('span');
+        titleText.className = 'knowledge-item-title-text';
+        titleText.textContent = type === 'short' ? shortContent : rawTitle;
+        label.appendChild(titleText);
         row.appendChild(label);
 
         const actions = document.createElement('div');
@@ -22749,6 +23844,7 @@ async function viewKnowledge(title, options = {}) {
     if(inputWrapper) inputWrapper.style.display = 'none';
     viewer.style.display = 'flex';
     viewer.style.flexDirection = 'column';
+    _syncTurnIndicatorVisibility();
     // 如果当前viewer是搜索页，先恢复为编辑器容器
     const existingEditorMount = document.getElementById('knowledgeEditor');
     if (!existingEditorMount || String(existingEditorMount.tagName || '').toUpperCase() !== 'DIV') {
@@ -24739,6 +25835,7 @@ function closeKnowledgeSearchResultView() {
         if(toggleMail) toggleMail.onclick = () => openMailPlaceholderView();
     }
     originalHeaderState = null;
+    _syncTurnIndicatorVisibility();
 }
 
 function closeKnowledgeSearchModal() {
@@ -26016,8 +27113,9 @@ async function openKnowledgeSettingsModal() {
     const title = currentViewingKnowledge;
 
     try {
-        // Ensure we have username
-        if(!currentUsername) await checkUserRole();
+        if (!currentUsername) {
+            await checkUserRole();
+        }
 
         const resMeta = await fetch('/api/knowledge/list');
         const metaData = await resMeta.json();
@@ -26038,16 +27136,39 @@ async function openKnowledgeSettingsModal() {
             document.getElementById('lastModifyTime').textContent = new Date(metadata.updated_at * 1000).toLocaleString();
         }
 
-        loadVectorChunks(title);
-        initKnowledgeSettingsTabs();
-        if (vectorizeTitle && vectorizeTitle !== title) {
-            resetVectorProgressUI();
+        knowledgeMetaCache[safeTitle] = metadata;
+
+        const titleInput = document.getElementById('settingTargetTitle');
+        const modalTitle = titleInput ? String(titleInput.value || '').trim() : safeTitle;
+
+        if (String(currentViewingKnowledge || '').trim() === safeTitle && modalTitle === safeTitle) {
+            applyKnowledgeSettingsMetadata(safeTitle, metadata);
         }
-        vectorizeTitle = title;
-        document.getElementById('knowledgeSettingsModal').classList.add('active');
-        setVectorStatus('加载中...');
-        loadVectorChunks(title);
-    } catch(e) { console.error(e); }
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+function openKnowledgeSettingsModal() {
+    if (!currentViewingKnowledge) return;
+    const title = currentViewingKnowledge;
+
+    const metadata = (knowledgeMetaCache && knowledgeMetaCache[title] && typeof knowledgeMetaCache[title] === 'object')
+        ? knowledgeMetaCache[title]
+        : {};
+
+    applyKnowledgeSettingsMetadata(title, metadata);
+    initKnowledgeSettingsTabs();
+    setKnowledgeSettingsActiveTab('ks-basic');
+
+    if (vectorizeTitle && vectorizeTitle !== title) {
+        resetVectorProgressUI();
+    }
+
+    vectorizeTitle = title;
+    resetKnowledgeSettingsVectorPanel();
+    document.getElementById('knowledgeSettingsModal').classList.add('active');
+    void refreshKnowledgeSettingsMetadata(title);
 }
 
 function closeKnowledgeSettingsModal() {
@@ -26069,6 +27190,9 @@ function initKnowledgeSettingsTabs() {
             contents.forEach(c => c.classList.remove('active'));
             const panel = modal.querySelector(`#${target}-tab`);
             if (panel) panel.classList.add('active');
+            if (target === 'ks-vector') {
+                ensureKnowledgeSettingsVectorLoaded();
+            }
         });
     });
 }
@@ -26104,7 +27228,8 @@ async function applyKnowledgeSettings() {
                 title: oldTitle,
                 new_title: newTitle,
                 public: isPublic,
-                collaborative: isCollaborative
+                collaborative: isCollaborative,
+                model_readonly: isModelReadonly
             })
         });
         const data = await res.json();
@@ -26119,6 +27244,9 @@ async function applyKnowledgeSettings() {
             } else {
                 const shareUrl = data.share_url || '';
                 setShareLinkDisplay(shareUrl, isPublic);
+                if (knowledgeMetaCache[oldTitle]) {
+                    knowledgeMetaCache[oldTitle].model_readonly = isModelReadonly;
+                }
             }
             loadKnowledge();
         } else {
@@ -26263,6 +27391,65 @@ function renderProviderInlineHtml(provider, labelText = '') {
     `;
 }
 
+const MODEL_PROVIDER_LABEL_MAP = {
+    volcengine: '火山引擎',
+    aliyun: '阿里云',
+    dashscope: '阿里云',
+    stepfun: '阶跃星辰',
+    github: 'GitHub',
+    suanli: '算力猫',
+    openai: 'OpenAI',
+    deepseek: 'DeepSeek',
+    ollama: 'Ollama',
+    openrouter: 'OpenRouter',
+    siliconflow: '硅基流动',
+    moonshot: '月之暗面',
+    zhipu: '智谱',
+    hunyuan: '腾讯混元',
+    minimax: 'MiniMax',
+    nvidia: 'NVIDIA',
+};
+
+const MODEL_PROVIDER_ORDER_MAP = {
+    volcengine: 10,
+    aliyun: 20,
+    dashscope: 20,
+    stepfun: 30,
+    github: 40,
+    suanli: 50,
+    openai: 60,
+    deepseek: 70,
+    ollama: 80,
+    openrouter: 90,
+    siliconflow: 100,
+    moonshot: 110,
+    zhipu: 120,
+    hunyuan: 130,
+    minimax: 140,
+    nvidia: 150,
+};
+
+function normalizeModelProviderKey(provider) {
+    return String(provider || 'other').trim().toLowerCase() || 'other';
+}
+
+function getModelProviderLabel(provider) {
+    const key = normalizeModelProviderKey(provider);
+
+    return MODEL_PROVIDER_LABEL_MAP[key] || (provider ? String(provider) : '其他');
+}
+
+function compareModelProviderKeys(a, b) {
+    const left = normalizeModelProviderKey(a);
+    const right = normalizeModelProviderKey(b);
+    const leftOrder = MODEL_PROVIDER_ORDER_MAP[left] || 999;
+    const rightOrder = MODEL_PROVIDER_ORDER_MAP[right] || 999;
+
+    if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+
+    return getModelProviderLabel(left).localeCompare(getModelProviderLabel(right), 'zh-CN');
+}
+
 function getChatProviderApiType(providerKey) {
     const key = String(providerKey || '').trim();
     const providerInfo = key ? (providerCatalogByKey[key] || providerCatalogByKey[key.toLowerCase()] || {}) : {};
@@ -26378,6 +27565,70 @@ function renderCurrentModelDisplayHtml(model) {
     `;
 }
 
+function refreshChatOllamaStatusIndicators() {
+    const selectedModel = modelCatalog.find((m) => m && String(m.id || '') === String(selectedModelId || ''));
+
+    if (els.currentModelDisplay && selectedModel) {
+        els.currentModelDisplay.innerHTML = renderCurrentModelDisplayHtml(selectedModel);
+    }
+
+    if (!els.modelOptions) return;
+
+    els.modelOptions.querySelectorAll('.model-chip').forEach((chip) => {
+        const modelId = String(chip.dataset.modelId || '').trim();
+        const model = modelCatalog.find((item) => item && String(item.id || '') === modelId);
+        const providerKey = String(model && model.provider ? model.provider : '').trim();
+
+        if (getChatProviderApiType(providerKey) !== 'ollama') return;
+
+        const statusDot = chip.querySelector('.model-chip-ollama-dot');
+        if (!statusDot) return;
+
+        const circleClass = getChatModelOllamaCircleClass(model, providerKey);
+        const statusText = circleClass === 'status-success'
+            ? '在线'
+            : (circleClass === 'status-danger'
+                ? '未安装'
+                : (circleClass === 'status-loading' ? '加载中' : '不在线'));
+
+        statusDot.className = `model-chip-ollama-dot ${circleClass}`;
+        statusDot.title = statusText;
+        statusDot.setAttribute('aria-label', statusText);
+    });
+}
+
+function setKnowledgeSettingsActiveTab(target) {
+    const modal = document.getElementById('knowledgeSettingsModal');
+    if (!modal) return;
+
+    const safeTarget = String(target || 'ks-basic').trim() || 'ks-basic';
+    const tabs = modal.querySelectorAll('.admin-tab');
+    const contents = modal.querySelectorAll('.admin-tab-content');
+
+    tabs.forEach((tab) => {
+        tab.classList.toggle('active', String(tab.getAttribute('data-tab') || '') === safeTarget);
+    });
+
+    contents.forEach((content) => {
+        content.classList.remove('active');
+    });
+
+    const panel = modal.querySelector(`#${safeTarget}-tab`);
+    if (panel) panel.classList.add('active');
+    if (safeTarget === 'ks-vector') {
+        ensureKnowledgeSettingsVectorLoaded();
+    }
+}
+
+async function refreshChatOllamaProviderStatuses(providerKeys = []) {
+    const keys = Array.from(new Set((providerKeys || []).map((item) => String(item || '').trim()).filter(Boolean)));
+
+    if (!keys.length) return;
+
+    await Promise.all(keys.map((providerKey) => loadChatOllamaProviderStatus(providerKey)));
+    refreshChatOllamaStatusIndicators();
+}
+
 async function loadModels() {
     try {
         const res = await fetch('/api/config');
@@ -26402,12 +27653,13 @@ async function loadModels() {
                     )
                 });
             });
-                const ollamaProviderKeys = Object.keys(providerCatalogByKey || {}).filter((providerKey) => getChatProviderApiType(providerKey) === 'ollama');
-                if (ollamaProviderKeys.length) {
-                    await Promise.all(ollamaProviderKeys.map((providerKey) => loadChatOllamaProviderStatus(providerKey)));
-                }
+            const ollamaProviderKeys = Object.keys(providerCatalogByKey || {}).filter((providerKey) => getChatProviderApiType(providerKey) === 'ollama');
             renderCustomModelSelect(modelCatalog, data.default_model);
             updateTokenBudgetContextFromSelectedModel();
+
+            if (ollamaProviderKeys.length) {
+                void refreshChatOllamaProviderStatuses(ollamaProviderKeys);
+            }
         }
     } catch(e) { console.error("Error loading models", e); }
 }
@@ -26431,27 +27683,6 @@ function renderCustomModelSelect(models, defaultModel) {
 
     selectedModelId = (isValidStored ? stored : (isValidDefault ? defaultModel : models[0].id));
 
-    const providerLabelMap = {
-        volcengine: '火山引擎',
-        aliyun: '阿里云',
-        stepfun: '阶跃星辰',
-        github: 'GitHub',
-        suanli: '算力猫',
-        openai: 'OpenAI'
-    };
-    const providerOrderMap = {
-        volcengine: 10,
-        aliyun: 20,
-        stepfun: 30,
-        github: 40,
-        suanli: 50,
-        openai: 60
-    };
-    const normalizeProvider = (provider) => String(provider || 'other').toLowerCase();
-    const providerLabel = (provider) => {
-        const key = normalizeProvider(provider);
-        return providerLabelMap[key] || (provider ? String(provider) : '其他');
-    };
     const statusLabelMap = {
         good: '良好',
         normal: '正常',
@@ -26464,18 +27695,13 @@ function renderCustomModelSelect(models, defaultModel) {
     // Group by provider
     const groups = new Map();
     models.forEach((m) => {
-        const key = normalizeProvider(m.provider);
+        const key = normalizeModelProviderKey(m.provider);
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key).push(m);
     });
 
     // Render grouped chips
-    const sortedProviders = Array.from(groups.keys()).sort((a, b) => {
-        const ao = providerOrderMap[a] || 999;
-        const bo = providerOrderMap[b] || 999;
-        if (ao !== bo) return ao - bo;
-        return providerLabel(a).localeCompare(providerLabel(b), 'zh-CN');
-    });
+    const sortedProviders = Array.from(groups.keys()).sort(compareModelProviderKeys);
 
     sortedProviders.forEach((providerKey) => {
         const section = document.createElement('div');
@@ -26484,7 +27710,7 @@ function renderCustomModelSelect(models, defaultModel) {
 
         const title = document.createElement('div');
         title.className = 'model-group-title';
-        const providerText = providerLabel(providerKey);
+        const providerText = getModelProviderLabel(providerKey);
         title.innerHTML = `
             <span class="provider-title-main">
                 ${renderProviderIconHtml(providerKey, { className: 'provider-logo provider-logo-sm', label: providerText })}
@@ -26516,7 +27742,7 @@ function renderCustomModelSelect(models, defaultModel) {
             if (providerApiType === 'ollama') {
                 const statusDot = document.createElement('span');
                 const circleClass = getChatModelOllamaCircleClass(m, providerKey);
-                const statusText = circleClass === 'status-success' ? '在线' : (circleClass === 'status-danger' ? '未安装' : '不在线');
+                const statusText = circleClass === 'status-success' ? '在线' : (circleClass === 'status-danger' ? '未安装' : (circleClass === 'status-loading' ? '加载中' : '不在线'));
                 statusDot.className = `model-chip-ollama-dot ${circleClass}`;
                 statusDot.title = statusText;
                 statusDot.setAttribute('aria-label', statusText);
@@ -26532,7 +27758,7 @@ function renderCustomModelSelect(models, defaultModel) {
         });
 
         section.appendChild(chips);
-        els.modelOptions.appendChild(section);
+        modelOptionsScroll.appendChild(section);
     });
 
     // Set initial display
@@ -26557,6 +27783,7 @@ function renderCustomModelSelect(models, defaultModel) {
 
     if (!modelSelectListenersBound) {
         document.addEventListener('click', closeAllSelects);
+        window.addEventListener('nexora:learning-frame-pointerdown', closeModelSelectFromLearningFrame);
         window.addEventListener('resize', () => {
             if (!els.modelOptions || els.modelOptions.classList.contains('select-hide')) return;
             if (isMobileViewport()) {
@@ -26696,6 +27923,10 @@ async function selectModel(id, name) {
     els.currentModelDisplay.classList.remove('select-arrow-active');
     undockModelOptionsForMobile();
     updateTokenBudgetContextFromSelectedModel();
+}
+
+function closeModelSelectFromLearningFrame() {
+    closeAllSelects();
 }
 
 function closeAllSelects(e) {
@@ -27689,6 +28920,7 @@ async function openAdminDashboard(defaultTab = 'users') {
     // Kept for compatibility, now routes into settings modal.
     await openSettingsModal();
     const tabMap = {
+        system: 'admin-system',
         users: 'admin-users',
         mail: 'admin-mail',
         stats: 'admin-stats',
@@ -27699,6 +28931,1119 @@ async function openAdminDashboard(defaultTab = 'users') {
         chroma: 'admin-chroma'
     };
     switchSettingsTab(tabMap[defaultTab] || 'admin-users');
+}
+
+function initAdminSystemSettingsControls() {
+    initAdminSystemCustomControls();
+    renderAdminSystemModuleSelection();
+
+    document.querySelectorAll('#settingsModal [data-admin-system-module]').forEach((item) => {
+
+        if (item.dataset.bound === '1') return;
+
+        item.dataset.bound = '1';
+        item.addEventListener('click', () => {
+            selectAdminSystemModule(item.dataset.adminSystemModule || '');
+        });
+    });
+
+    const saveBtn = document.getElementById('adminSystemSaveBtn');
+
+    if (saveBtn && saveBtn.dataset.bound !== '1') {
+        saveBtn.dataset.bound = '1';
+        saveBtn.addEventListener('click', () => {
+            void saveAdminSystemSettings();
+        });
+    }
+
+    document.querySelectorAll('#settingsModal [data-admin-system-save]').forEach((button) => {
+
+        if (button.dataset.bound === '1') return;
+
+        button.dataset.bound = '1';
+        button.addEventListener('click', () => {
+            void saveAdminSystemSettingsSection(button.dataset.adminSystemSave || '', button);
+        });
+    });
+
+    bindAdminSystemHealthTestButtons();
+
+    const reloadBtn = document.getElementById('adminSystemReloadBtn');
+
+    if (reloadBtn && reloadBtn.dataset.bound !== '1') {
+        reloadBtn.dataset.bound = '1';
+        reloadBtn.addEventListener('click', () => {
+            void loadAdminSystemSettings(true);
+        });
+    }
+}
+
+function getAdminSystemModuleNames() {
+    return [
+        'runtime',
+        'default_models',
+        'rag_database',
+        'nexora_search',
+        'nexora_learning',
+        'nexora_mail',
+    ];
+}
+
+function normalizeAdminSystemModuleName(moduleName) {
+    const name = String(moduleName || '').trim();
+
+    return getAdminSystemModuleNames().includes(name) ? name : 'runtime';
+}
+
+function renderAdminSystemModuleSelection() {
+    const selected = normalizeAdminSystemModuleName(adminSystemSelectedModule);
+
+    adminSystemSelectedModule = selected;
+
+    document.querySelectorAll('#settingsModal [data-admin-system-module]').forEach((item) => {
+        const active = String(item.dataset.adminSystemModule || '') === selected;
+
+        item.classList.toggle('active', active);
+    });
+
+    document.querySelectorAll('#settingsModal [data-admin-system-section]').forEach((section) => {
+        const active = String(section.dataset.adminSystemSection || '') === selected;
+
+        section.classList.toggle('active', active);
+    });
+}
+
+function selectAdminSystemModule(moduleName) {
+    adminSystemSelectedModule = normalizeAdminSystemModuleName(moduleName);
+    renderAdminSystemModuleSelection();
+    closeAdminSystemSelects();
+}
+
+function getAdminSystemHealthTestButtons() {
+    return Array.from(document.querySelectorAll('#settingsModal [data-admin-system-health-test]'));
+}
+
+function getAdminSystemHealthTestLabel(button) {
+    const section = button ? String(button.dataset.adminSystemHealthTest || '').trim() : '';
+
+    return getAdminSystemSettingsSectionLabel(section);
+}
+
+function setAdminSystemHealthTestButtonState(button, state) {
+    if (!button) return;
+
+    const icon = button.querySelector('i');
+    const text = button.querySelector('span');
+    const label = getAdminSystemHealthTestLabel(button);
+    const currentState = String(state || 'idle').trim();
+    const states = ['is-testing', 'is-success', 'is-error'];
+
+    states.forEach((className) => button.classList.remove(className));
+    button.disabled = currentState === 'testing';
+
+    if (currentState === 'testing') {
+        button.classList.add('is-testing');
+        button.setAttribute('aria-label', `${label} 测试中`);
+
+        if (icon) icon.className = 'fa-solid fa-spinner fa-spin';
+        if (text) text.textContent = '测试中';
+
+        return;
+    }
+
+    if (currentState === 'success') {
+        button.classList.add('is-success');
+        button.setAttribute('aria-label', `${label} 服务正常`);
+
+        if (icon) icon.className = 'fa-solid fa-circle-check';
+        if (text) text.textContent = '正常';
+
+        return;
+    }
+
+    if (currentState === 'error') {
+        button.classList.add('is-error');
+        button.setAttribute('aria-label', `${label} 服务异常`);
+
+        if (icon) icon.className = 'fa-solid fa-triangle-exclamation';
+        if (text) text.textContent = '异常';
+
+        return;
+    }
+
+    button.setAttribute('aria-label', `${label} 测试`);
+
+    if (icon) icon.className = 'fa-solid fa-plug';
+    if (text) text.textContent = '测试';
+}
+
+function resetAdminSystemHealthTestButton(button) {
+    setAdminSystemHealthTestButtonState(button, 'idle');
+}
+
+function resetAdminSystemHealthTestButtons() {
+    getAdminSystemHealthTestButtons().forEach(resetAdminSystemHealthTestButton);
+}
+
+function resetAdminSystemHealthTestButtonsByInput(inputId) {
+    const id = String(inputId || '').trim();
+
+    if (!id) return;
+
+    getAdminSystemHealthTestButtons().forEach((button) => {
+        const buttonInputId = String(button.dataset.adminSystemUrlInput || '').trim();
+
+        if (buttonInputId === id) resetAdminSystemHealthTestButton(button);
+    });
+}
+
+// 健康检查必须由浏览器直接访问组件服务，避免经过 Nexora 后端和任何 API Key。
+function buildAdminSystemHealthUrl(baseUrl, healthPath) {
+    const text = String(baseUrl || '').trim();
+    const path = String(healthPath || '').trim();
+
+    if (!text) throw new Error('Service URL 不能为空');
+    if (!path || path.charAt(0) !== '/') throw new Error('Health Path 未配置');
+
+    const url = new URL(text);
+
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+        throw new Error('Service URL 必须以 http:// 或 https:// 开头');
+    }
+
+    const basePath = url.pathname.replace(/\/+$/, '');
+    url.pathname = `${basePath}${path}`;
+    url.search = '';
+    url.hash = '';
+
+    return url.toString();
+}
+
+function formatAdminSystemHealthFetchError(err) {
+    if (err && err.name === 'AbortError') return '测试超时';
+
+    const message = String((err && err.message) || '访问失败');
+
+    if (err instanceof TypeError && /failed to fetch/i.test(message)) {
+        return '浏览器无法读取响应，请检查 health 接口是否返回 Access-Control-Allow-Origin';
+    }
+
+    return message;
+}
+
+async function testAdminSystemServiceHealth(button) {
+    if (currentUserRole !== 'admin') {
+        showToast('只有管理员可以测试系统服务状态');
+        return;
+    }
+
+    const inputId = button ? String(button.dataset.adminSystemUrlInput || '').trim() : '';
+    const input = inputId ? document.getElementById(inputId) : null;
+    const label = getAdminSystemHealthTestLabel(button);
+    let healthUrl = '';
+
+    try {
+        healthUrl = buildAdminSystemHealthUrl(input ? input.value : '', button ? button.dataset.adminSystemHealthPath : '');
+    } catch (err) {
+        const message = String((err && err.message) || '服务测试配置错误');
+
+        setAdminSystemHealthTestButtonState(button, 'error');
+        setAdminSystemStatus(`${label} 测试失败：${message}`, 'error');
+        showToast(`${label} 测试失败：${message}`);
+        console.error('[AdminSystemHealthTest] invalid config', { label, inputId, error: err });
+        return;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => {
+        controller.abort();
+    }, ADMIN_SYSTEM_HEALTH_TIMEOUT_MS);
+
+    setAdminSystemHealthTestButtonState(button, 'testing');
+    setAdminSystemStatus(`${label} 正在测试...`);
+
+    try {
+        const response = await fetch(healthUrl, {
+            method: 'GET',
+            cache: 'no-store',
+            credentials: 'omit',
+            signal: controller.signal,
+        });
+
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+        setAdminSystemHealthTestButtonState(button, 'success');
+        setAdminSystemStatus(`${label} 服务正常`, 'ok');
+        showToast(`${label} 服务正常`);
+    } catch (err) {
+        const message = formatAdminSystemHealthFetchError(err);
+
+        setAdminSystemHealthTestButtonState(button, 'error');
+        setAdminSystemStatus(`${label} 服务异常：${message}`, 'error');
+        showToast(`${label} 服务异常：${message}`);
+        console.error('[AdminSystemHealthTest] failed', { label, healthUrl, error: err });
+    } finally {
+        window.clearTimeout(timeoutId);
+    }
+}
+
+function bindAdminSystemHealthTestButtons() {
+    getAdminSystemHealthTestButtons().forEach((button) => {
+
+        if (button.dataset.healthBound !== '1') {
+            button.dataset.healthBound = '1';
+            resetAdminSystemHealthTestButton(button);
+            button.addEventListener('click', () => {
+                void testAdminSystemServiceHealth(button);
+            });
+        }
+
+        const inputId = String(button.dataset.adminSystemUrlInput || '').trim();
+        const input = inputId ? document.getElementById(inputId) : null;
+
+        if (input && input.dataset.adminSystemHealthBound !== '1') {
+            input.dataset.adminSystemHealthBound = '1';
+            input.addEventListener('input', () => {
+                resetAdminSystemHealthTestButtonsByInput(input.id);
+            });
+        }
+    });
+}
+
+function getAdminSystemSelectRoot(valueId) {
+    const id = String(valueId || '').trim();
+
+    if (!id) return null;
+
+    const roots = document.querySelectorAll('#settingsModal [data-admin-system-select]');
+
+    return Array.from(roots).find((node) => String(node.dataset.adminSystemSelect || '') === id) || null;
+}
+
+function getAdminSystemSelectValueId(root) {
+    return root ? String(root.dataset.adminSystemSelect || '').trim() : '';
+}
+
+function getAdminSystemSelectMenu(root) {
+    if (!root) return null;
+
+    const dockState = adminSystemSelectDockState.get(root);
+
+    if (dockState && dockState.menu) return dockState.menu;
+
+    const menu = root.querySelector('[data-admin-system-select-menu]');
+
+    if (menu) {
+        menu.dataset.adminSystemSelectOwner = getAdminSystemSelectValueId(root);
+    }
+
+    return menu;
+}
+
+function getAdminSystemSelectRootFromMenu(menu) {
+    const ownerId = menu ? String(menu.dataset.adminSystemSelectOwner || '').trim() : '';
+
+    return ownerId ? getAdminSystemSelectRoot(ownerId) : null;
+}
+
+function dockAdminSystemSelectMenu(root) {
+    const menu = getAdminSystemSelectMenu(root);
+    const dockTarget = document.getElementById('settingsModal') || document.body;
+
+    if (!root || !menu || menu.parentElement === dockTarget) return menu;
+
+    const dockState = {
+        menu,
+        parent: menu.parentNode,
+        nextSibling: menu.nextSibling,
+    };
+
+    adminSystemSelectMenuSeq += 1;
+    menu.dataset.adminSystemSelectOwner = getAdminSystemSelectValueId(root);
+    menu.dataset.adminSystemDocked = '1';
+    menu.id = menu.id || `adminSystemSelectMenu${adminSystemSelectMenuSeq}`;
+    adminSystemSelectDockState.set(root, dockState);
+    dockTarget.appendChild(menu);
+
+    return menu;
+}
+
+function undockAdminSystemSelectMenu(root) {
+    const dockState = root ? adminSystemSelectDockState.get(root) : null;
+
+    if (!dockState || !dockState.menu) return;
+
+    const menu = dockState.menu;
+    const parent = dockState.parent;
+    const nextSibling = dockState.nextSibling;
+
+    if (parent && parent.isConnected) {
+
+        if (nextSibling && nextSibling.parentNode === parent) {
+            parent.insertBefore(menu, nextSibling);
+        } else {
+            parent.appendChild(menu);
+        }
+    }
+
+    delete menu.dataset.adminSystemDocked;
+    menu.classList.remove('is-open');
+    adminSystemSelectDockState.delete(root);
+}
+
+function resetAdminSystemSelectMenuPosition(root) {
+    const menu = getAdminSystemSelectMenu(root);
+
+    if (!menu) return;
+
+    menu.style.left = '';
+    menu.style.top = '';
+    menu.style.width = '';
+    menu.style.maxHeight = '';
+    menu.style.setProperty('--admin-system-select-menu-width', '');
+}
+
+function positionAdminSystemSelectMenu(root) {
+    if (!root) return;
+
+    const trigger = root.querySelector('[data-admin-system-select-trigger]');
+    const menu = getAdminSystemSelectMenu(root);
+
+    if (!trigger || !menu) return;
+
+    const rect = trigger.getBoundingClientRect();
+    const viewportWidth = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
+    const viewportHeight = Math.max(document.documentElement.clientHeight || 0, window.innerHeight || 0);
+    const margin = 12;
+    const isModelMenu = menu.classList.contains('is-model-menu');
+    const preferredWidth = isModelMenu ? Math.max(rect.width, 560) : rect.width;
+    const width = Math.max(220, Math.min(preferredWidth, viewportWidth - margin * 2));
+    const left = Math.max(margin, Math.min(rect.left, viewportWidth - width - margin));
+    const belowSpace = viewportHeight - rect.bottom - margin;
+    const aboveSpace = rect.top - margin;
+    const menuMaxHeight = Math.max(160, Math.min(isModelMenu ? 420 : 280, Math.max(belowSpace, aboveSpace)));
+    const openBelow = belowSpace >= Math.min(menuMaxHeight, 220) || belowSpace >= aboveSpace;
+    const top = openBelow
+        ? Math.min(rect.bottom + 8, viewportHeight - margin - menuMaxHeight)
+        : Math.max(margin, rect.top - 8 - menuMaxHeight);
+
+    menu.style.setProperty('--admin-system-select-menu-width', `${width}px`);
+    menu.style.width = `${width}px`;
+    menu.style.left = `${left}px`;
+    menu.style.top = `${Math.max(margin, top)}px`;
+    menu.style.maxHeight = `${menuMaxHeight}px`;
+}
+
+function repositionOpenAdminSystemSelect() {
+    const root = document.querySelector('#settingsModal [data-admin-system-select].open');
+
+    if (root) positionAdminSystemSelectMenu(root);
+}
+
+function closeAdminSystemSelects(exceptRoot = null) {
+    document.querySelectorAll('#settingsModal [data-admin-system-select].open').forEach((root) => {
+
+        if (exceptRoot && root === exceptRoot) return;
+
+        root.classList.remove('open');
+        const menu = getAdminSystemSelectMenu(root);
+
+        if (menu) menu.classList.remove('is-open');
+
+        resetAdminSystemSelectMenuPosition(root);
+        undockAdminSystemSelectMenu(root);
+
+        const trigger = root.querySelector('[data-admin-system-select-trigger]');
+
+        if (trigger) trigger.setAttribute('aria-expanded', 'false');
+    });
+}
+
+function setAdminSystemSelectOpen(root, open) {
+    if (!root) return;
+
+    const shouldOpen = !!open;
+    const trigger = root.querySelector('[data-admin-system-select-trigger]');
+    const menu = shouldOpen ? dockAdminSystemSelectMenu(root) : getAdminSystemSelectMenu(root);
+
+    root.classList.toggle('open', shouldOpen);
+
+    if (trigger) trigger.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+
+    if (menu) menu.classList.toggle('is-open', shouldOpen);
+
+    if (shouldOpen) {
+        positionAdminSystemSelectMenu(root);
+    } else {
+        resetAdminSystemSelectMenuPosition(root);
+        undockAdminSystemSelectMenu(root);
+    }
+}
+
+function syncAdminSystemSelectDisplay(valueId) {
+    const id = String(valueId || '').trim();
+    const input = document.getElementById(id);
+    const root = getAdminSystemSelectRoot(id);
+
+    if (!input || !root) return;
+
+    const value = String(input.value || '');
+    const labelEl = root.querySelector('[data-admin-system-select-label]');
+    const menu = getAdminSystemSelectMenu(root);
+    const optionNodes = menu ? Array.from(menu.querySelectorAll('[data-admin-system-select-option]')) : [];
+    const selectedOption = optionNodes.find((node) => String(node.dataset.value || '') === value) || null;
+    const labelText = selectedOption
+        ? String(selectedOption.dataset.label || selectedOption.textContent || '').trim()
+        : (value || '不指定');
+
+    optionNodes.forEach((node) => {
+        const active = String(node.dataset.value || '') === value;
+        node.classList.toggle('active', active);
+        node.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+
+    if (labelEl) labelEl.textContent = labelText || '不指定';
+}
+
+function setAdminSystemCustomSelectValue(valueId, value) {
+    const id = String(valueId || '').trim();
+    const input = document.getElementById(id);
+
+    if (!input) return;
+
+    input.value = value == null ? '' : String(value);
+    syncAdminSystemSelectDisplay(id);
+}
+
+function buildAdminSystemSelectOption(item, currentValue) {
+    const value = String(item && item.value != null ? item.value : '');
+    const label = String(item && item.label != null ? item.label : (value || '不指定'));
+    const meta = String(item && item.meta != null ? item.meta : '');
+    const active = value === currentValue;
+    const option = document.createElement('button');
+    const main = document.createElement('span');
+
+    option.type = 'button';
+    option.className = 'admin-system-select-option';
+    option.dataset.adminSystemSelectOption = '1';
+    option.dataset.value = value;
+    option.dataset.label = label;
+    option.setAttribute('role', 'option');
+    option.setAttribute('aria-selected', active ? 'true' : 'false');
+    option.classList.toggle('active', active);
+
+    if (item && item.stale) option.classList.add('is-stale');
+
+    main.className = 'admin-system-select-option-main';
+    main.textContent = label || '不指定';
+    option.appendChild(main);
+
+    if (meta) {
+        const metaEl = document.createElement('span');
+        metaEl.className = 'admin-system-select-option-meta';
+        metaEl.textContent = meta;
+        option.appendChild(metaEl);
+    }
+
+    return option;
+}
+
+function buildAdminSystemModelSelectChip(item, currentValue) {
+    const value = String(item && item.value != null ? item.value : '');
+    const label = String(item && item.label != null ? item.label : (value || '不指定'));
+    const meta = String(item && item.meta != null ? item.meta : '');
+    const active = value === currentValue;
+    const chip = document.createElement('button');
+    const name = document.createElement('span');
+
+    chip.type = 'button';
+    chip.className = 'admin-system-select-option admin-system-model-chip';
+    chip.dataset.adminSystemSelectOption = '1';
+    chip.dataset.value = value;
+    chip.dataset.label = label;
+    chip.setAttribute('role', 'option');
+    chip.setAttribute('aria-selected', active ? 'true' : 'false');
+    chip.classList.toggle('active', active);
+
+    if (item && item.stale) chip.classList.add('is-stale');
+
+    name.className = 'admin-system-model-chip-name';
+    name.textContent = label || '不指定';
+    chip.appendChild(name);
+
+    if (meta) {
+        const metaEl = document.createElement('span');
+        metaEl.className = 'admin-system-model-chip-meta';
+        metaEl.textContent = meta;
+        chip.appendChild(metaEl);
+    }
+
+    if (value) chip.title = value;
+
+    return chip;
+}
+
+function appendAdminSystemModelSelectGroups(menu, optionItems, currentValue) {
+    const groups = new Map();
+
+    optionItems.forEach((item) => {
+        const value = String(item && item.value != null ? item.value : '');
+        const provider = value ? normalizeModelProviderKey(item && item.provider) : '__default__';
+
+        if (!groups.has(provider)) groups.set(provider, []);
+
+        groups.get(provider).push(item);
+    });
+
+    const sortedProviders = Array.from(groups.keys()).sort((a, b) => {
+
+        if (a === '__default__') return -1;
+        if (b === '__default__') return 1;
+
+        return compareModelProviderKeys(a, b);
+    });
+
+    sortedProviders.forEach((providerKey) => {
+        const group = document.createElement('div');
+        const title = document.createElement('div');
+        const main = document.createElement('span');
+        const label = document.createElement('span');
+        const providerLabel = providerKey === '__default__' ? '默认' : getModelProviderLabel(providerKey);
+
+        group.className = 'admin-system-model-group';
+        title.className = 'admin-system-model-group-title';
+        main.className = 'provider-title-main';
+        label.className = 'label';
+        label.textContent = providerLabel;
+        main.innerHTML = renderProviderIconHtml(providerKey, { className: 'provider-logo provider-logo-sm', label: providerLabel });
+        main.appendChild(label);
+        title.appendChild(main);
+        group.appendChild(title);
+
+        const chips = document.createElement('div');
+        chips.className = 'admin-system-model-chip-wrap';
+
+        groups.get(providerKey).forEach((item) => {
+            chips.appendChild(buildAdminSystemModelSelectChip(item, currentValue));
+        });
+
+        group.appendChild(chips);
+        menu.appendChild(group);
+    });
+}
+
+function setAdminSystemSelectOptions(valueId, optionItems, selectedValue, options = {}) {
+    const id = String(valueId || '').trim();
+    const root = getAdminSystemSelectRoot(id);
+    const menu = getAdminSystemSelectMenu(root);
+
+    if (!root || !menu) return;
+
+    menu.dataset.adminSystemSelectOwner = id;
+
+    const currentValue = String(selectedValue == null ? '' : selectedValue).trim();
+    const items = Array.isArray(optionItems) ? optionItems : [];
+    const modelMenu = !!(options && options.modelMenu);
+
+    menu.innerHTML = '';
+    menu.classList.toggle('is-model-menu', modelMenu);
+
+    if (modelMenu) {
+        const scroll = document.createElement('div');
+
+        scroll.className = 'admin-system-select-scroll';
+        appendAdminSystemModelSelectGroups(scroll, items, currentValue);
+        menu.appendChild(scroll);
+    } else {
+        items.forEach((item) => {
+            menu.appendChild(buildAdminSystemSelectOption(item, currentValue));
+        });
+    }
+
+    setAdminSystemCustomSelectValue(id, currentValue);
+}
+
+function setAdminSystemSwitchState(button, value) {
+    if (!button) return;
+
+    const enabled = !!value;
+    const isCheckbox = button instanceof HTMLInputElement && button.type === 'checkbox';
+
+    if (isCheckbox) {
+        const wrap = button.closest('.admin-system-enable-check');
+        const label = wrap ? wrap.querySelector('span') : null;
+
+        button.checked = enabled;
+        button.dataset.checked = enabled ? '1' : '0';
+        button.setAttribute('aria-checked', enabled ? 'true' : 'false');
+
+        if (wrap) wrap.classList.toggle('is-on', enabled);
+        if (label) label.textContent = enabled ? '启用' : '关闭';
+
+        return;
+    }
+
+    const stateText = button.querySelector('[data-admin-system-switch-text]');
+
+    button.dataset.checked = enabled ? '1' : '0';
+    button.classList.toggle('is-on', enabled);
+    button.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+
+    if (stateText) stateText.textContent = enabled ? '启用' : '停用';
+}
+
+function initAdminSystemCustomControls() {
+    document.querySelectorAll('#settingsModal [data-admin-system-switch]').forEach((button) => {
+
+        if (button.dataset.bound === '1') return;
+
+        button.dataset.bound = '1';
+        setAdminSystemSwitchState(button, button.checked || button.classList.contains('is-on') || button.dataset.checked === '1');
+
+        if (button instanceof HTMLInputElement && button.type === 'checkbox') {
+            button.addEventListener('change', () => {
+                setAdminSystemSwitchState(button, button.checked);
+            });
+        } else {
+            button.addEventListener('click', () => {
+                setAdminSystemSwitchState(button, button.dataset.checked !== '1');
+            });
+        }
+    });
+
+    document.querySelectorAll('#settingsModal [data-admin-system-select]').forEach((root) => {
+        syncAdminSystemSelectDisplay(getAdminSystemSelectValueId(root));
+    });
+
+    if (adminSystemCustomControlsBound) return;
+
+    adminSystemCustomControlsBound = true;
+
+    document.addEventListener('click', (event) => {
+        const target = event.target;
+
+        if (!(target instanceof Element)) {
+            closeAdminSystemSelects();
+            return;
+        }
+
+        const option = target.closest('[data-admin-system-select-option]');
+
+        if (option) {
+            const menu = option.closest('[data-admin-system-select-menu]');
+            const root = option.closest('[data-admin-system-select]') || getAdminSystemSelectRootFromMenu(menu);
+
+            if (root) {
+                event.preventDefault();
+                setAdminSystemCustomSelectValue(getAdminSystemSelectValueId(root), option.dataset.value || '');
+                closeAdminSystemSelects();
+                return;
+            }
+        }
+
+        const trigger = target.closest('[data-admin-system-select-trigger]');
+
+        if (trigger) {
+            const root = trigger.closest('[data-admin-system-select]');
+
+            if (root) {
+                event.preventDefault();
+                const shouldOpen = !root.classList.contains('open');
+                closeAdminSystemSelects(root);
+                setAdminSystemSelectOpen(root, shouldOpen);
+                return;
+            }
+        }
+
+        if (target.closest('[data-admin-system-select-menu][data-admin-system-docked="1"]')) return;
+
+        if (!target.closest('[data-admin-system-select]')) closeAdminSystemSelects();
+    });
+
+    document.addEventListener('keydown', (event) => {
+
+        if (event.key === 'Escape') closeAdminSystemSelects();
+    });
+
+    window.addEventListener('resize', repositionOpenAdminSystemSelect);
+    document.addEventListener('scroll', repositionOpenAdminSystemSelect, true);
+}
+
+function setAdminSystemStatus(text, tone = '') {
+    const statusEl = document.getElementById('adminSystemStatus');
+    if (!statusEl) return;
+    statusEl.textContent = String(text || '-');
+    statusEl.style.color = tone === 'error' ? '#dc2626' : (tone === 'ok' ? '#166534' : '#334155');
+}
+
+function setAdminSystemValue(id, value) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.value = value == null ? '' : String(value);
+
+    if (el.hasAttribute('data-admin-system-value')) syncAdminSystemSelectDisplay(id);
+}
+
+function getAdminSystemValue(id) {
+    const el = document.getElementById(id);
+    return el ? String(el.value || '').trim() : '';
+}
+
+function setAdminSystemChecked(id, value) {
+    const el = document.getElementById(id);
+    if (!el) return;
+
+    if (el.hasAttribute('data-admin-system-switch')) {
+        setAdminSystemSwitchState(el, value);
+        return;
+    }
+
+    el.checked = !!value;
+}
+
+function getAdminSystemChecked(id) {
+    const el = document.getElementById(id);
+
+    if (el && el.hasAttribute('data-admin-system-switch')) {
+        if (el instanceof HTMLInputElement && el.type === 'checkbox') return !!el.checked;
+
+        return el.dataset.checked === '1';
+    }
+
+    return !!(el && el.checked);
+}
+
+function populateAdminSystemModelSelect(selectId, selectedValue, modelOptions) {
+    const currentValue = String(selectedValue || '').trim();
+    const options = Array.isArray(modelOptions) ? modelOptions : [];
+    const items = [{ value: '', label: '不指定', provider: '' }];
+    let currentValueExists = !currentValue;
+
+    options.forEach((item) => {
+        const modelId = String(item && item.id ? item.id : '').trim();
+
+        if (!modelId) return;
+
+        const name = String(item.name || modelId).trim();
+        const provider = String(item.provider || '').trim();
+        const registered = item.registered !== false;
+        const label = name || modelId;
+        const metaParts = [];
+
+        if (!registered) metaParts.push('未登记');
+
+        if (modelId === currentValue) currentValueExists = true;
+
+        items.push({
+            value: modelId,
+            label,
+            provider,
+            meta: metaParts.join(' · '),
+        });
+    });
+
+    if (currentValue && !currentValueExists) {
+        items.push({
+            value: currentValue,
+            label: currentValue,
+            provider: '',
+            meta: '当前配置',
+            stale: true,
+        });
+    }
+
+    setAdminSystemSelectOptions(selectId, items, currentValue, { modelMenu: true });
+}
+
+function fillAdminSystemSettingsForm(settings) {
+    const payload = settings && typeof settings === 'object' ? settings : {};
+    const runtime = payload.runtime && typeof payload.runtime === 'object' ? payload.runtime : {};
+    const defaultModels = payload.default_models && typeof payload.default_models === 'object' ? payload.default_models : {};
+    const services = payload.services && typeof payload.services === 'object' ? payload.services : {};
+    const modelOptions = Array.isArray(payload.model_options) ? payload.model_options : [];
+
+    setAdminSystemValue('adminSystemPublicBaseUrlInput', runtime.public_base_url || '');
+    populateAdminSystemModelSelect('adminSystemDefaultModelSelect', defaultModels.default_model, modelOptions);
+    populateAdminSystemModelSelect('adminSystemConclusionModelSelect', defaultModels.conclusion_model, modelOptions);
+    populateAdminSystemModelSelect('adminSystemOrganizationModelSelect', defaultModels.organization_model, modelOptions);
+    populateAdminSystemModelSelect('adminSystemWebsearchModelSelect', defaultModels.websearch_model, modelOptions);
+
+    const rag = services.rag_database && typeof services.rag_database === 'object' ? services.rag_database : {};
+    setAdminSystemChecked('adminSystemRagEnabledInput', rag.enabled);
+    setAdminSystemValue('adminSystemRagModeInput', rag.mode || 'service');
+    setAdminSystemValue('adminSystemRagHostInput', rag.host || '');
+    setAdminSystemValue('adminSystemRagPortInput', rag.port || '');
+    setAdminSystemValue('adminSystemRagServiceUrlInput', rag.service_url || '');
+    setAdminSystemValue('adminSystemRagApiKeyInput', rag.api_key || '');
+
+    const search = services.nexora_search && typeof services.nexora_search === 'object' ? services.nexora_search : {};
+    setAdminSystemChecked('adminSystemSearchEnabledInput', search.enabled);
+    setAdminSystemValue('adminSystemSearchHostInput', search.host || '');
+    setAdminSystemValue('adminSystemSearchPortInput', search.port || '');
+    setAdminSystemValue('adminSystemSearchServiceUrlInput', search.service_url || '');
+    setAdminSystemValue('adminSystemSearchApiKeyInput', search.api_key || '');
+    setAdminSystemValue('adminSystemSearchTimeoutInput', search.timeout || '');
+
+    const learning = services.nexora_learning && typeof services.nexora_learning === 'object' ? services.nexora_learning : {};
+    setAdminSystemChecked('adminSystemLearningEnabledInput', learning.enabled);
+    setAdminSystemValue('adminSystemLearningHostInput', learning.host || '');
+    setAdminSystemValue('adminSystemLearningPortInput', learning.port || '');
+    setAdminSystemValue('adminSystemLearningFrontendUrlInput', learning.frontend_url || '');
+    setAdminSystemValue('adminSystemLearningApiKeyInput', learning.api_key || '');
+    setAdminSystemValue('adminSystemLearningTimeoutInput', learning.request_timeout || '');
+
+    const mail = services.nexora_mail && typeof services.nexora_mail === 'object' ? services.nexora_mail : {};
+    setAdminSystemChecked('adminSystemMailEnabledInput', mail.enabled);
+    setAdminSystemValue('adminSystemMailHostInput', mail.host || '');
+    setAdminSystemValue('adminSystemMailPortInput', mail.port || '');
+    setAdminSystemValue('adminSystemMailServiceUrlInput', mail.service_url || '');
+    setAdminSystemValue('adminSystemMailApiKeyInput', mail.api_key || '');
+    setAdminSystemValue('adminSystemMailTimeoutInput', mail.timeout || '');
+    setAdminSystemValue('adminSystemMailSendTimeoutInput', mail.send_timeout || '');
+    setAdminSystemValue('adminSystemMailDefaultGroupInput', mail.default_group || 'default');
+    resetAdminSystemHealthTestButtons();
+}
+
+async function loadAdminSystemSettings(force = false) {
+    if (currentUserRole !== 'admin') return;
+
+    initAdminSystemSettingsControls();
+
+    if (adminSystemSettingsState && !force) {
+        fillAdminSystemSettingsForm(adminSystemSettingsState);
+        return;
+    }
+
+    setAdminSystemStatus('加载中...');
+
+    try {
+        const res = await fetch('/api/admin/system/settings');
+        const data = await res.json();
+
+        if (!res.ok || !data || !data.success) {
+            throw new Error((data && data.message) ? data.message : '加载系统设置失败');
+        }
+
+        adminSystemSettingsState = data.settings || {};
+        fillAdminSystemSettingsForm(adminSystemSettingsState);
+        setAdminSystemStatus('配置已加载', 'ok');
+    } catch (err) {
+        const message = String((err && err.message) || '加载系统设置失败');
+        setAdminSystemStatus(message, 'error');
+        showToast(message);
+    }
+}
+
+// 系统设置分块保存：每个入口只提交自己管理的配置分支。
+function mergeAdminSystemSettingsPayload(target, source) {
+    const base = target && typeof target === 'object' ? target : {};
+    const patch = source && typeof source === 'object' ? source : {};
+
+    Object.keys(patch).forEach((key) => {
+        const value = patch[key];
+
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+            base[key] = mergeAdminSystemSettingsPayload(base[key], value);
+            return;
+        }
+
+        base[key] = value;
+    });
+
+    return base;
+}
+
+function collectAdminSystemRuntimePayload() {
+    return {
+        runtime: {
+            public_base_url: getAdminSystemValue('adminSystemPublicBaseUrlInput'),
+        },
+    };
+}
+
+function collectAdminSystemDefaultModelsPayload() {
+    return {
+        default_models: {
+            default_model: getAdminSystemValue('adminSystemDefaultModelSelect'),
+            conclusion_model: getAdminSystemValue('adminSystemConclusionModelSelect'),
+            organization_model: getAdminSystemValue('adminSystemOrganizationModelSelect'),
+            websearch_model: getAdminSystemValue('adminSystemWebsearchModelSelect'),
+        },
+    };
+}
+
+function collectAdminSystemRagPayload() {
+    return {
+        services: {
+            rag_database: {
+                enabled: getAdminSystemChecked('adminSystemRagEnabledInput'),
+                mode: getAdminSystemValue('adminSystemRagModeInput'),
+                host: getAdminSystemValue('adminSystemRagHostInput'),
+                port: getAdminSystemValue('adminSystemRagPortInput'),
+                api_key: getAdminSystemValue('adminSystemRagApiKeyInput'),
+                service_url: getAdminSystemValue('adminSystemRagServiceUrlInput'),
+            },
+        },
+    };
+}
+
+function collectAdminSystemSearchPayload() {
+    return {
+        services: {
+            nexora_search: {
+                enabled: getAdminSystemChecked('adminSystemSearchEnabledInput'),
+                host: getAdminSystemValue('adminSystemSearchHostInput'),
+                port: getAdminSystemValue('adminSystemSearchPortInput'),
+                api_key: getAdminSystemValue('adminSystemSearchApiKeyInput'),
+                service_url: getAdminSystemValue('adminSystemSearchServiceUrlInput'),
+                timeout: getAdminSystemValue('adminSystemSearchTimeoutInput'),
+            },
+        },
+    };
+}
+
+function collectAdminSystemLearningPayload() {
+    return {
+        services: {
+            nexora_learning: {
+                enabled: getAdminSystemChecked('adminSystemLearningEnabledInput'),
+                host: getAdminSystemValue('adminSystemLearningHostInput'),
+                port: getAdminSystemValue('adminSystemLearningPortInput'),
+                api_key: getAdminSystemValue('adminSystemLearningApiKeyInput'),
+                frontend_url: getAdminSystemValue('adminSystemLearningFrontendUrlInput'),
+                request_timeout: getAdminSystemValue('adminSystemLearningTimeoutInput'),
+            },
+        },
+    };
+}
+
+function collectAdminSystemMailPayload() {
+    return {
+        services: {
+            nexora_mail: {
+                enabled: getAdminSystemChecked('adminSystemMailEnabledInput'),
+                host: getAdminSystemValue('adminSystemMailHostInput'),
+                port: getAdminSystemValue('adminSystemMailPortInput'),
+                api_key: getAdminSystemValue('adminSystemMailApiKeyInput'),
+                service_url: getAdminSystemValue('adminSystemMailServiceUrlInput'),
+                timeout: getAdminSystemValue('adminSystemMailTimeoutInput'),
+                send_timeout: getAdminSystemValue('adminSystemMailSendTimeoutInput'),
+                default_group: getAdminSystemValue('adminSystemMailDefaultGroupInput'),
+            },
+        },
+    };
+}
+
+function collectAdminSystemSettingsPayload() {
+    return [
+        collectAdminSystemRuntimePayload(),
+        collectAdminSystemDefaultModelsPayload(),
+        collectAdminSystemRagPayload(),
+        collectAdminSystemSearchPayload(),
+        collectAdminSystemLearningPayload(),
+        collectAdminSystemMailPayload(),
+    ].reduce((payload, part) => mergeAdminSystemSettingsPayload(payload, part), {});
+}
+
+function getAdminSystemSettingsSectionPayload(sectionName) {
+    const section = String(sectionName || '').trim();
+
+    if (section === 'runtime') return collectAdminSystemRuntimePayload();
+    if (section === 'default_models') return collectAdminSystemDefaultModelsPayload();
+    if (section === 'rag_database') return collectAdminSystemRagPayload();
+    if (section === 'nexora_search') return collectAdminSystemSearchPayload();
+    if (section === 'nexora_learning') return collectAdminSystemLearningPayload();
+    if (section === 'nexora_mail') return collectAdminSystemMailPayload();
+    if (section === 'all') return collectAdminSystemSettingsPayload();
+
+    throw new Error('未知系统设置分块');
+}
+
+function getAdminSystemSettingsSectionLabel(sectionName) {
+    const labels = {
+        runtime: '基础运行',
+        default_models: '默认模型',
+        rag_database: 'RAG 向量库',
+        nexora_search: 'NexoraSearch',
+        nexora_learning: 'NexoraLearning',
+        nexora_mail: 'NexoraMail',
+        all: '系统设置',
+    };
+
+    return labels[String(sectionName || '').trim()] || '系统设置';
+}
+
+function formatAdminSystemRuntimeSyncMessage(label, data) {
+    const sync = data && data.runtime_sync ? data.runtime_sync : {};
+    const actions = Array.isArray(sync.actions) ? sync.actions.filter(Boolean) : [];
+
+    if (actions.length > 0) {
+        return `${label} 已保存，已同步：${actions.join('、')}`;
+    }
+
+    return `${label} 已保存，进程配置已同步`;
+}
+
+async function submitAdminSystemSettingsPayload(payload, options = {}) {
+    if (currentUserRole !== 'admin') {
+        showToast('只有管理员可以保存系统设置');
+        return;
+    }
+
+    const button = options && options.button ? options.button : null;
+    const label = getAdminSystemSettingsSectionLabel(options && options.section ? options.section : 'all');
+    const originalHtml = button ? button.innerHTML : '';
+
+    try {
+        if (button) {
+            button.disabled = true;
+            button.innerHTML = '<i class="fa-solid fa-spinner fa-spin" aria-hidden="true"></i><span>保存中</span>';
+        }
+
+        setAdminSystemStatus(`${label} 保存中...`);
+        const res = await fetch('/api/admin/system/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+
+        if (!res.ok || !data || !data.success) {
+            throw new Error((data && data.message) ? data.message : '保存系统设置失败');
+        }
+
+        adminSystemSettingsState = data.settings || {};
+        fillAdminSystemSettingsForm(adminSystemSettingsState);
+        const syncMessage = formatAdminSystemRuntimeSyncMessage(label, data);
+        setAdminSystemStatus(syncMessage, 'ok');
+        showToast(`${label} 已保存，进程配置已同步`);
+        await loadCurrentUserPreferences();
+    } catch (err) {
+        const message = String((err && err.message) || '保存系统设置失败');
+        setAdminSystemStatus(message, 'error');
+        showToast(message);
+    } finally {
+        if (button) {
+            button.disabled = false;
+            button.innerHTML = originalHtml || '<i class="fa-solid fa-floppy-disk" aria-hidden="true"></i><span>保存</span>';
+        }
+    }
+}
+
+async function saveAdminSystemSettingsSection(sectionName, button = null) {
+    const section = String(sectionName || '').trim();
+    const payload = getAdminSystemSettingsSectionPayload(section);
+
+    await submitAdminSystemSettingsPayload(payload, { section, button });
+}
+
+async function saveAdminSystemSettings() {
+    const saveBtn = document.getElementById('adminSystemSaveBtn');
+
+    await submitAdminSystemSettingsPayload(collectAdminSystemSettingsPayload(), {
+        section: 'all',
+        button: saveBtn,
+    });
 }
 
 // 加载用户列表
@@ -28921,20 +31266,21 @@ function ensureAdminPublicApiLayout() {
     const deleteBtn = document.getElementById('adminPublicApiRevokeBtn');
     const saveGroup = saveBtn ? saveBtn.closest('.form-group') : null;
     if (saveGroup && saveBtn && regenerateBtn && deleteBtn) {
-        saveGroup.classList.add('admin-public-api-save-row');
+        saveGroup.classList.remove('admin-public-api-save-row');
+        saveGroup.classList.add('admin-public-api-action-row');
         if (saveBtn.parentElement !== saveGroup) saveGroup.appendChild(saveBtn);
-        let dangerRow = saveGroup.parentElement?.querySelector('.admin-public-api-danger-row');
-        if (!dangerRow) {
-            dangerRow = document.createElement('div');
-            dangerRow.className = 'admin-public-api-danger-row';
-            saveGroup.insertAdjacentElement('afterend', dangerRow);
-        }
-        if (regenerateBtn.parentElement !== dangerRow) dangerRow.appendChild(regenerateBtn);
-        if (deleteBtn.parentElement !== dangerRow) dangerRow.appendChild(deleteBtn);
+        const dangerRow = saveGroup.parentElement?.querySelector('.admin-public-api-danger-row');
+        if (regenerateBtn.parentElement !== saveGroup) saveGroup.appendChild(regenerateBtn);
+        if (deleteBtn.parentElement !== saveGroup) saveGroup.appendChild(deleteBtn);
+        if (dangerRow && dangerRow.parentElement) dangerRow.remove();
         regenerateBtn.classList.remove('btn-primary');
+        regenerateBtn.classList.remove('btn-warning');
+        saveBtn.classList.add('admin-public-api-action-btn');
+        regenerateBtn.classList.add('admin-public-api-action-btn');
+        deleteBtn.classList.add('admin-public-api-action-btn');
         deleteBtn.classList.remove('btn-cancel');
-        regenerateBtn.classList.add('btn-warning');
-        deleteBtn.classList.add('btn-danger-solid');
+        deleteBtn.classList.remove('btn-danger-solid');
+        deleteBtn.classList.add('btn-danger-small');
     }
 }
 
@@ -28976,7 +31322,9 @@ function renderAdminPublicApiKeyList(payload) {
         const activeCls = id === selectedId ? ' active' : '';
         return `
             <div class="admin-user-item${activeCls}" data-papi-key-id="${escapeHtml(id)}">
-                <div class="admin-user-avatar" style="display:flex;align-items:center;justify-content:center;font-size:12px;">🔑</div>
+                <div class="admin-user-avatar admin-public-api-key-icon">
+                    <i class="fa-solid fa-key" aria-hidden="true"></i>
+                </div>
                 <div>
                     <div class="admin-user-name">${name}</div>
                     <div class="admin-user-meta mono">${preview}</div>
@@ -29028,6 +31376,8 @@ function renderAdminPublicApiAuth(auth, options = {}) {
         const hasSelection = !!selected;
         emptyEl.style.display = hasSelection ? 'none' : 'block';
         detailBlocks.forEach((node) => {
+            // 详情区按钮行使用了强制 grid 样式，必须用类名统一控制无选中状态。
+            node.classList.toggle('admin-public-api-hidden', !hasSelection);
             node.style.display = hasSelection ? '' : 'none';
         });
     }
@@ -29341,6 +31691,84 @@ function getSelectedAdminGenImageApi() {
     }) || null;
 }
 
+function createAdminGenImageApiFormModel(item) {
+    const source = item && typeof item === 'object' ? item : {};
+
+    return {
+        api_id: String(source.api_id || '').trim(),
+        name: String(source.name || '').trim(),
+        api_type: String(source.api_type || 'openai').trim() || 'openai',
+        api_key: String(source.api_key || '').trim(),
+        base_url: String(source.base_url || 'https://api.openai.com/v1').trim(),
+        model: String(source.model || 'gpt-image-1').trim(),
+        size: String(source.size || '1024x1024').trim(),
+        quality: String(source.quality || 'auto').trim(),
+        response_format: String(source.response_format || 'b64_json').trim(),
+        timeout: String(source.timeout || 120).trim(),
+        enabled: !!source.enabled,
+        created_at: source.created_at,
+        updated_at: source.updated_at,
+    };
+}
+
+function readAdminGenImageApiControl(id) {
+    const control = document.getElementById(id);
+
+    if (!control) {
+        throw new Error(`缺少生图接口表单字段: ${id}`);
+    }
+
+    return control;
+}
+
+function readAdminGenImageApiText(id) {
+    return String(readAdminGenImageApiControl(id).value || '').trim();
+}
+
+function readAdminGenImageApiChecked(id) {
+    return !!readAdminGenImageApiControl(id).checked;
+}
+
+function validateAdminGenImageApiPayload(payload) {
+    if (!payload.api_id) {
+        return '接口标识不能为空';
+    }
+
+    if (!/^[a-zA-Z0-9_.-]{1,64}$/.test(payload.api_id)) {
+        return '接口标识只能包含字母、数字、下划线、横线和点';
+    }
+
+    if (!payload.model) {
+        return '模型 ID 不能为空';
+    }
+
+    if (!/^\d{2,5}x\d{2,5}$/i.test(payload.size)) {
+        return '图片尺寸格式必须是 1024x1024 这样的 宽x高';
+    }
+
+    if (!payload.quality) {
+        return '质量不能为空';
+    }
+
+    if (!payload.response_format) {
+        return '返回格式不能为空';
+    }
+
+    if (!Number.isInteger(payload.timeout) || payload.timeout < 10 || payload.timeout > 600) {
+        return '超时秒数必须是 10 到 600 之间的整数';
+    }
+
+    if (payload.enabled && !payload.api_key) {
+        return '启用生图接口前必须填写 API Key';
+    }
+
+    if (payload.enabled && !payload.base_url) {
+        return '启用生图接口前必须填写 Base URL';
+    }
+
+    return '';
+}
+
 function renderAdminGenImageApiList() {
     const listEl = document.getElementById('adminGenImageApiList');
 
@@ -29374,8 +31802,8 @@ function renderAdminGenImageApiList() {
             : '<span class="model-status-pill muted">关闭</span>';
         return `
             <div class="admin-user-item ${active}" onclick="adminSelectGenImageApi('${encodeURIComponent(apiId)}')">
-                <div class="model-admin-model-icon" style="width:32px; height:32px;">
-                    <i class="fa-regular fa-image"></i>
+                <div class="model-admin-model-icon admin-gen-image-icon" style="width:32px; height:32px;">
+                    <i class="fa-regular fa-image" aria-hidden="true"></i>
                 </div>
                 <div>
                     <div class="admin-user-name">${escapeHtml(item.name || apiId)}</div>
@@ -29393,65 +31821,95 @@ function renderAdminGenImageApiDetail() {
     if (!detailEl) return;
 
     const item = getSelectedAdminGenImageApi();
+    const formModel = createAdminGenImageApiFormModel(item);
+    const isExisting = !!item;
+    const apiId = String(formModel.api_id || '').trim();
+    const createdAt = formModel.created_at ? new Date(Number(formModel.created_at) * 1000).toLocaleString() : '-';
+    const updatedAt = formModel.updated_at ? new Date(Number(formModel.updated_at) * 1000).toLocaleString() : '-';
+    const openaiSelected = formModel.api_type === 'openai_compatible' ? '' : 'selected';
+    const compatibleSelected = formModel.api_type === 'openai_compatible' ? 'selected' : '';
+    const enabledAction = !isExisting
+        ? ''
+        : formModel.enabled
+            ? `<button class="btn-primary-outline btn-compact" type="button" onclick="adminDisableGenImageApi()"><i class="fa-solid fa-power-off" aria-hidden="true"></i><span>关闭接口</span></button>`
+            : `<button class="btn-primary-outline btn-compact" type="button" onclick="adminEnableGenImageApi('${encodeURIComponent(apiId)}')"><i class="fa-solid fa-check" aria-hidden="true"></i><span>启用接口</span></button>`;
+    const deleteAction = isExisting
+        ? `<button class="btn-danger-small btn-compact" type="button" onclick="adminDeleteGenImageApi('${encodeURIComponent(apiId)}')"><i class="fa-solid fa-trash-can" aria-hidden="true"></i><span>删除</span></button>`
+        : '';
+    const resetAction = isExisting
+        ? `<button class="btn-primary-outline btn-compact" type="button" onclick="openAdminGenImageApiEditor('${encodeURIComponent(apiId)}')"><i class="fa-solid fa-rotate-left" aria-hidden="true"></i><span>重置</span></button>`
+        : '';
 
-    if (!item) {
-        detailEl.innerHTML = '<div class="admin-user-detail-empty">请选择左侧接口查看详情</div>';
-        return;
-    }
-
-    const apiId = String(item.api_id || '').trim();
-    const createdAt = item.created_at ? new Date(Number(item.created_at) * 1000).toLocaleString() : '-';
-    const updatedAt = item.updated_at ? new Date(Number(item.updated_at) * 1000).toLocaleString() : '-';
-    const enabledAction = item.enabled
-        ? `<button class="btn-primary-outline btn-compact" type="button" onclick="adminDisableGenImageApi()">关闭接口</button>`
-        : `<button class="btn-primary-outline btn-compact" type="button" onclick="adminEnableGenImageApi('${encodeURIComponent(apiId)}')">启用接口</button>`;
+    adminGenImageApiEditorState = { originalApiId: isExisting ? apiId : '' };
 
     detailEl.innerHTML = `
-        <div class="admin-user-detail-head">
-            <div class="model-admin-model-icon" style="width:40px; height:40px;">
-                <i class="fa-regular fa-image"></i>
+        <div class="admin-user-detail-head admin-gen-image-detail-head">
+            <div class="admin-gen-image-head-main">
+                <div class="model-admin-model-icon admin-gen-image-icon" style="width:40px; height:40px;">
+                    <i class="fa-regular fa-image" aria-hidden="true"></i>
+                </div>
+                <div>
+                    <div class="admin-user-name" style="font-size:16px;">${escapeHtml(isExisting ? (formModel.name || apiId) : '新增生图接口')}</div>
+                    <div class="admin-user-meta">${escapeHtml(isExisting ? `ID: ${apiId}` : '填写接口数据后保存')}</div>
+                </div>
             </div>
-            <div>
-                <div class="admin-user-name" style="font-size:16px;">${escapeHtml(item.name || apiId)}</div>
-                <div class="admin-user-meta">ID: ${escapeHtml(apiId)}</div>
+            <div class="admin-user-actions admin-gen-image-actions">
+                <button class="btn-primary-outline btn-compact" type="button" onclick="saveAdminGenImageApiDetail()"><i class="fa-solid fa-floppy-disk" aria-hidden="true"></i><span>保存</span></button>
+                ${resetAction}
+                ${enabledAction}
+                ${deleteAction}
             </div>
         </div>
         <div class="admin-user-detail-grid">
             <div class="form-group">
-                <label>状态</label>
-                <div class="admin-info-text">${item.enabled ? '启用' : '关闭'}</div>
+                <label>接口标识</label>
+                <input id="adminGenImageApiIdInput" class="input-modern" value="${escapeHtml(formModel.api_id)}" placeholder="openai_image">
+            </div>
+            <div class="form-group">
+                <label>接口名称</label>
+                <input id="adminGenImageNameInput" class="input-modern" value="${escapeHtml(formModel.name)}" placeholder="OpenAI Image">
             </div>
             <div class="form-group">
                 <label>API Type</label>
-                <div class="admin-info-text mono">${escapeHtml(item.api_type || 'openai')}</div>
-            </div>
-            <div class="form-group" style="grid-column: 1 / -1;">
-                <label>Base URL</label>
-                <div class="admin-info-text mono">${escapeHtml(item.base_url || '-')}</div>
-            </div>
-            <div class="form-group">
-                <label>模型 ID</label>
-                <div class="admin-info-text mono">${escapeHtml(item.model || '-')}</div>
+                <select id="adminGenImageApiTypeInput" class="input-modern">
+                    <option value="openai" ${openaiSelected}>openai</option>
+                    <option value="openai_compatible" ${compatibleSelected}>openai_compatible</option>
+                </select>
             </div>
             <div class="form-group">
                 <label>API Key</label>
-                <div class="admin-info-text mono">${escapeHtml(maskSecret(item.api_key || ''))}</div>
+                <input id="adminGenImageApiKeyInput" class="input-modern" value="${escapeHtml(formModel.api_key)}" placeholder="api key">
+            </div>
+            <div class="form-group" style="grid-column: 1 / -1;">
+                <label>Base URL</label>
+                <input id="adminGenImageBaseUrlInput" class="input-modern" value="${escapeHtml(formModel.base_url)}" placeholder="https://api.openai.com/v1">
+            </div>
+            <div class="form-group">
+                <label>模型 ID</label>
+                <input id="adminGenImageModelInput" class="input-modern" value="${escapeHtml(formModel.model)}" placeholder="gpt-image-1">
             </div>
             <div class="form-group">
                 <label>尺寸</label>
-                <div class="admin-info-text mono">${escapeHtml(item.size || '-')}</div>
+                <input id="adminGenImageSizeInput" class="input-modern" value="${escapeHtml(formModel.size)}" placeholder="1024x1024">
             </div>
             <div class="form-group">
                 <label>质量</label>
-                <div class="admin-info-text mono">${escapeHtml(item.quality || '-')}</div>
+                <input id="adminGenImageQualityInput" class="input-modern" value="${escapeHtml(formModel.quality)}" placeholder="auto">
             </div>
             <div class="form-group">
                 <label>返回格式</label>
-                <div class="admin-info-text mono">${escapeHtml(item.response_format || '-')}</div>
+                <input id="adminGenImageResponseFormatInput" class="input-modern" value="${escapeHtml(formModel.response_format)}" placeholder="b64_json">
             </div>
             <div class="form-group">
-                <label>超时</label>
-                <div class="admin-info-text mono">${escapeHtml(String(item.timeout || '-'))}s</div>
+                <label>超时秒数</label>
+                <input id="adminGenImageTimeoutInput" class="input-modern" type="number" min="10" max="600" value="${escapeHtml(formModel.timeout)}" placeholder="120">
+            </div>
+            <div class="form-group">
+                <label>状态</label>
+                <label style="display:flex; align-items:center; gap:8px; min-height: 38px; color:#334155;">
+                    <input id="adminGenImageEnabledInput" type="checkbox" ${formModel.enabled ? 'checked' : ''}>
+                    保存后作为当前启用接口
+                </label>
             </div>
             <div class="form-group">
                 <label>创建时间</label>
@@ -29462,73 +31920,55 @@ function renderAdminGenImageApiDetail() {
                 <div class="admin-info-text">${escapeHtml(updatedAt)}</div>
             </div>
         </div>
-        <div class="admin-user-actions">
-            ${enabledAction}
-            <button class="btn-primary-outline btn-compact" type="button" onclick="adminEditGenImageApi('${encodeURIComponent(apiId)}')">编辑</button>
-            <button class="btn-danger-small btn-compact" type="button" onclick="adminDeleteGenImageApi('${encodeURIComponent(apiId)}')">删除</button>
-        </div>
     `;
 }
 
 function openAdminGenImageApiEditor(apiId = '') {
-    const modal = document.getElementById('adminGenImageApiModal');
-    const title = document.getElementById('adminGenImageApiModalTitle');
+    const normalizedApiId = String(apiId || '').trim();
+    adminSelectedGenImageApiId = normalizedApiId;
+    adminGenImageApiEditorState = { originalApiId: normalizedApiId };
+    renderAdminGenImageApis();
 
-    if (!modal) return;
+    window.setTimeout(() => {
+        const firstInput = document.getElementById('adminGenImageApiIdInput');
 
-    const current = apiId
-        ? ((adminGenImageApisCache || []).find((item) => String((item && item.api_id) || '') === apiId) || {})
-        : {};
-
-    adminGenImageApiEditorState = { originalApiId: apiId || '' };
-
-    if (title) title.textContent = apiId ? '编辑生图接口' : '新增生图接口';
-
-    document.getElementById('adminGenImageApiIdInput').value = current.api_id || '';
-    document.getElementById('adminGenImageNameInput').value = current.name || '';
-    document.getElementById('adminGenImageApiTypeInput').value = current.api_type || 'openai';
-    document.getElementById('adminGenImageApiKeyInput').value = current.api_key || '';
-    document.getElementById('adminGenImageBaseUrlInput').value = current.base_url || 'https://api.openai.com/v1';
-    document.getElementById('adminGenImageModelInput').value = current.model || 'gpt-image-1';
-    document.getElementById('adminGenImageSizeInput').value = current.size || '1024x1024';
-    document.getElementById('adminGenImageQualityInput').value = current.quality || 'auto';
-    document.getElementById('adminGenImageResponseFormatInput').value = current.response_format || 'b64_json';
-    document.getElementById('adminGenImageTimeoutInput').value = current.timeout || 120;
-    document.getElementById('adminGenImageEnabledInput').checked = !!current.enabled;
-
-    modal.classList.add('active');
+        if (firstInput) firstInput.focus();
+    }, 0);
 }
 
-function closeAdminGenImageApiModal() {
-    const modal = document.getElementById('adminGenImageApiModal');
+async function saveAdminGenImageApiDetail() {
+    let payload = null;
 
-    if (modal) modal.classList.remove('active');
+    try {
+        const timeoutText = readAdminGenImageApiText('adminGenImageTimeoutInput');
+        const timeoutValue = /^\d+$/.test(timeoutText) ? Number.parseInt(timeoutText, 10) : NaN;
+        const apiId = readAdminGenImageApiText('adminGenImageApiIdInput');
 
-    adminGenImageApiEditorState = { originalApiId: '' };
-}
+        payload = {
+            original_api_id: String(adminGenImageApiEditorState.originalApiId || '').trim(),
+            api_id: apiId,
+            name: readAdminGenImageApiText('adminGenImageNameInput') || apiId,
+            api_type: readAdminGenImageApiText('adminGenImageApiTypeInput'),
+            api_key: readAdminGenImageApiText('adminGenImageApiKeyInput'),
+            base_url: readAdminGenImageApiText('adminGenImageBaseUrlInput'),
+            model: readAdminGenImageApiText('adminGenImageModelInput'),
+            size: readAdminGenImageApiText('adminGenImageSizeInput'),
+            quality: readAdminGenImageApiText('adminGenImageQualityInput'),
+            response_format: readAdminGenImageApiText('adminGenImageResponseFormatInput'),
+            timeout: timeoutValue,
+            enabled: readAdminGenImageApiChecked('adminGenImageEnabledInput'),
+        };
 
-async function saveAdminGenImageApiModal() {
-    const apiId = String(document.getElementById('adminGenImageApiIdInput').value || '').trim();
+        const validationMessage = validateAdminGenImageApiPayload(payload);
 
-    if (!apiId) {
-        showToast('接口标识不能为空');
+        if (validationMessage) {
+            showToast(validationMessage);
+            return;
+        }
+    } catch (err) {
+        showToast(err && err.message ? err.message : '生图接口表单读取失败');
         return;
     }
-
-    const payload = {
-        original_api_id: String(adminGenImageApiEditorState.originalApiId || '').trim(),
-        api_id: apiId,
-        name: String(document.getElementById('adminGenImageNameInput').value || '').trim() || apiId,
-        api_type: String(document.getElementById('adminGenImageApiTypeInput').value || 'openai').trim(),
-        api_key: String(document.getElementById('adminGenImageApiKeyInput').value || '').trim(),
-        base_url: String(document.getElementById('adminGenImageBaseUrlInput').value || '').trim(),
-        model: String(document.getElementById('adminGenImageModelInput').value || '').trim(),
-        size: String(document.getElementById('adminGenImageSizeInput').value || '').trim(),
-        quality: String(document.getElementById('adminGenImageQualityInput').value || '').trim(),
-        response_format: String(document.getElementById('adminGenImageResponseFormatInput').value || '').trim(),
-        timeout: parseInt(document.getElementById('adminGenImageTimeoutInput').value || 120, 10) || 120,
-        enabled: !!document.getElementById('adminGenImageEnabledInput').checked,
-    };
 
     try {
         const res = await fetch('/api/admin/gen-image/apis/upsert', {
@@ -29543,9 +31983,9 @@ async function saveAdminGenImageApiModal() {
             return;
         }
 
-        adminSelectedGenImageApiId = apiId;
+        adminSelectedGenImageApiId = payload.api_id;
+        adminGenImageApiEditorState = { originalApiId: payload.api_id };
         applyAdminGenImageApiPayload(data);
-        closeAdminGenImageApiModal();
         renderAdminGenImageApis();
         showToast('生图接口已保存');
     } catch (err) {
@@ -29561,6 +32001,9 @@ window.adminSelectGenImageApi = function(encodedApiId) {
 window.adminEditGenImageApi = function(encodedApiId) {
     openAdminGenImageApiEditor(decodeURIComponent(encodedApiId || ''));
 };
+
+window.openAdminGenImageApiEditor = openAdminGenImageApiEditor;
+window.saveAdminGenImageApiDetail = saveAdminGenImageApiDetail;
 
 window.adminEnableGenImageApi = async function(encodedApiId) {
     const apiId = decodeURIComponent(encodedApiId || '');
@@ -29644,8 +32087,6 @@ window.adminDeleteGenImageApi = async function(encodedApiId) {
         showToast('删除失败: ' + (err && err.message ? err.message : '未知错误'));
     }
 };
-
-window.closeAdminGenImageApiModal = closeAdminGenImageApiModal;
 
 async function loadAdminModelConfig() {
     const providerPaneEl = document.getElementById('adminModelProviderList');
@@ -31310,6 +33751,7 @@ async function openSettingsModal() {
 
 function closeSettingsModal() {
     if (document.body) document.body.classList.remove('settings-modal-open');
+    closeSkillModeDropdowns();
     if (SETTINGS_COMPANION_MODE) {
         try {
             const api = window.pywebview && window.pywebview.api;
@@ -31380,6 +33822,9 @@ function switchSettingsTab(tabName) {
         if (filterInput) filterInput.value = '';
         loadAdminUsersList();
         loadAdminStats();
+    }
+    if (tabName === 'admin-system') {
+        void loadAdminSystemSettings();
     }
     if (tabName === 'admin-mail') {
         adminMailUserFilterKeyword = '';
@@ -31483,6 +33928,16 @@ function closeSkillModeDropdowns(targetList = null) {
     skillModeFloatingAnchorEl = null;
 }
 
+// Skill Mode 菜单挂在 body 下，需要跟随当前设置弹窗层级，避免被 modal-backdrop 覆盖。
+function resolveSkillModeFloatingZIndex() {
+    const settingsModal = document.getElementById('settingsModal');
+    const rawZIndex = settingsModal ? window.getComputedStyle(settingsModal).zIndex : '';
+    const modalZIndex = Number.parseInt(String(rawZIndex || ''), 10);
+    const baseZIndex = Number.isFinite(modalZIndex) ? modalZIndex : MODAL_STACK_BASE_Z;
+
+    return baseZIndex + Math.max(2, MODAL_STACK_STEP_Z);
+}
+
 function positionSkillModeFloatingMenu(triggerEl, menuEl) {
     if (!triggerEl || !menuEl) return;
     const rect = triggerEl.getBoundingClientRect();
@@ -31511,6 +33966,7 @@ function positionSkillModeFloatingMenu(triggerEl, menuEl) {
     menuEl.style.setProperty('top', `${top}px`, 'important');
     menuEl.style.setProperty('right', 'auto', 'important');
     menuEl.style.setProperty('bottom', 'auto', 'important');
+    menuEl.style.setProperty('z-index', String(resolveSkillModeFloatingZIndex()), 'important');
 }
 
 function openSkillModeFloatingMenu(skillId, triggerEl, listEl) {
@@ -31539,7 +33995,7 @@ function openSkillModeFloatingMenu(skillId, triggerEl, listEl) {
     menu.style.setProperty('position', 'fixed', 'important');
     menu.style.setProperty('right', 'auto', 'important');
     menu.style.setProperty('bottom', 'auto', 'important');
-    menu.style.setProperty('z-index', '9600', 'important');
+    menu.style.setProperty('z-index', String(resolveSkillModeFloatingZIndex()), 'important');
     menu.style.display = 'grid';
     menu.style.gap = '6px';
     document.body.appendChild(menu);
@@ -32798,21 +35254,12 @@ function openAvatarCropModal(file) {
             avatarCropState.offsetX = 0;
             avatarCropState.offsetY = 0;
             zoomInput.value = '100';
-            const width = Math.max(480, Math.min(880, img.width));
-            const height = Math.max(280, Math.min(460, img.height));
-            canvas.width = width;
-            canvas.height = height;
-            avatarCropState.circleX = Math.round(width / 2);
-            avatarCropState.circleY = Math.round(height / 2);
-            avatarCropState.circleR = Math.round(Math.min(width, height) * 0.32);
-            const minCoverScale = Math.max(
-                (avatarCropState.circleR * 2) / img.width,
-                (avatarCropState.circleR * 2) / img.height
-            );
-            avatarCropState.baseScale = minCoverScale;
             bindAvatarCropCanvasEvents();
-            drawAvatarCropCanvas();
             modal.classList.add('active');
+            requestAnimationFrame(() => {
+                initializeAvatarCropCanvasSize();
+                drawAvatarCropCanvas();
+            });
         };
         img.src = reader.result;
     };
@@ -32882,6 +35329,17 @@ function bindAvatarCropCanvasEvents() {
     };
     canvas.addEventListener('pointerup', stopDrag);
     canvas.addEventListener('pointercancel', stopDrag);
+    canvas.addEventListener('dblclick', resetAvatarCropPosition);
+    canvas.addEventListener('wheel', (e) => {
+        if (!zoomInput) return;
+        e.preventDefault();
+        const current = Number(zoomInput.value || 100);
+        const delta = e.deltaY < 0 ? 8 : -8;
+        const next = Math.max(100, Math.min(250, current + delta));
+        zoomInput.value = String(next);
+        avatarCropState.zoom = next / 100;
+        queueDraw();
+    }, { passive: false });
 
     if (zoomInput) {
         zoomInput.addEventListener('input', (e) => {
@@ -32891,15 +35349,85 @@ function bindAvatarCropCanvasEvents() {
     }
 }
 
+function initializeAvatarCropCanvasSize() {
+    const { canvas, img } = avatarCropState;
+    if (!canvas || !img) return;
+
+    const wrap = canvas.parentElement;
+    if (!wrap) {
+        console.error('[AVATAR_CROP] canvas wrap not found');
+        return;
+    }
+
+    const rect = wrap.getBoundingClientRect();
+    const cssWidth = Math.round(rect.width);
+    const cssHeight = Math.round(rect.height);
+
+    if (cssWidth <= 0 || cssHeight <= 0) {
+        console.error('[AVATAR_CROP] invalid canvas wrap size', { cssWidth, cssHeight });
+        return;
+    }
+
+    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    const width = Math.round(cssWidth * dpr);
+    const height = Math.round(cssHeight * dpr);
+
+    canvas.width = width;
+    canvas.height = height;
+    avatarCropState.circleX = Math.round(width / 2);
+    avatarCropState.circleY = Math.round(height / 2);
+    avatarCropState.circleR = Math.round(Math.min(width, height) * 0.34);
+    avatarCropState.baseScale = Math.max(
+        (avatarCropState.circleR * 2) / img.width,
+        (avatarCropState.circleR * 2) / img.height
+    );
+    avatarCropState.offsetX = 0;
+    avatarCropState.offsetY = 0;
+}
+
+function resetAvatarCropPosition() {
+    const zoomInput = document.getElementById('avatarCropZoom');
+    avatarCropState.zoom = 1;
+    avatarCropState.offsetX = 0;
+    avatarCropState.offsetY = 0;
+
+    if (zoomInput) {
+        zoomInput.value = '100';
+    }
+
+    drawAvatarCropCanvas();
+}
+
+function clampAvatarCropOffset() {
+    const { canvas, img, zoom, baseScale, circleX, circleY, circleR } = avatarCropState;
+    if (!canvas || !img) return;
+
+    const scale = baseScale * zoom;
+    const drawWidth = img.width * scale;
+    const drawHeight = img.height * scale;
+    const centeredX = (canvas.width - drawWidth) / 2;
+    const centeredY = (canvas.height - drawHeight) / 2;
+    const minDrawX = circleX + circleR - drawWidth;
+    const maxDrawX = circleX - circleR;
+    const minDrawY = circleY + circleR - drawHeight;
+    const maxDrawY = circleY - circleR;
+
+    avatarCropState.offsetX = Math.max(minDrawX - centeredX, Math.min(maxDrawX - centeredX, avatarCropState.offsetX));
+    avatarCropState.offsetY = Math.max(minDrawY - centeredY, Math.min(maxDrawY - centeredY, avatarCropState.offsetY));
+}
+
 function drawAvatarCropCanvas() {
-    const { canvas, ctx, img, zoom, baseScale, offsetX, offsetY, circleX, circleY, circleR } = avatarCropState;
+    const { canvas, ctx, img, zoom, baseScale, circleX, circleY, circleR } = avatarCropState;
     if (!canvas || !ctx || !img) return;
+    clampAvatarCropOffset();
+    const clampedOffsetX = avatarCropState.offsetX;
+    const clampedOffsetY = avatarCropState.offsetY;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     const scale = baseScale * zoom;
     const drawWidth = img.width * scale;
     const drawHeight = img.height * scale;
-    const drawX = (canvas.width - drawWidth) / 2 + offsetX;
-    const drawY = (canvas.height - drawHeight) / 2 + offsetY;
+    const drawX = (canvas.width - drawWidth) / 2 + clampedOffsetX;
+    const drawY = (canvas.height - drawHeight) / 2 + clampedOffsetY;
     avatarCropState.drawWidth = drawWidth;
     avatarCropState.drawHeight = drawHeight;
     avatarCropState.drawX = drawX;

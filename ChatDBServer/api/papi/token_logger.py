@@ -13,6 +13,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 DATA_DIR = os.path.join(BASE_DIR, "data")
 PAPI_LOG_ROOT = os.path.join(DATA_DIR, "papi")
 TOKEN_LOG_FILENAME = "token_log.jsonl"
+IMAGE_LOG_FILENAME = "image_log.jsonl"
 
 
 def _utc_iso_now() -> str:
@@ -90,7 +91,7 @@ def infer_papi_action(request_path: Any) -> str:
     return "papi_model_inference"
 
 
-def build_papi_token_log_context(
+def build_papi_log_context(
     request_obj: Any,
     *,
     username: str = "",
@@ -119,12 +120,66 @@ def build_papi_token_log_context(
     }
 
 
+def build_papi_token_log_context(
+    request_obj: Any,
+    *,
+    username: str = "",
+    request_path: str = "",
+) -> Dict[str, Any]:
+    return build_papi_log_context(
+        request_obj,
+        username=username,
+        request_path=request_path,
+    )
+
+
+def build_image_generation_log_context(
+    *,
+    username: str = "",
+    conversation_id: str = "",
+    request_path: str = "chat.generate_image",
+    method: str = "TOOL",
+    log_group: str = "chat_internal",
+    source: str = "chat",
+    action: str = "chat_image_generation",
+    remote_addr: str = "",
+    user_agent: str = "",
+) -> Dict[str, Any]:
+    log_group_id = str(log_group or "chat_internal").strip() or "chat_internal"
+
+    return {
+        "log_id": f"image_log_{uuid.uuid4().hex}",
+        "request_started_at": time.time(),
+        "request_path": str(request_path or "").strip(),
+        "method": str(method or "TOOL").strip().upper(),
+        "username": str(username or "").strip(),
+        "conversation_id": str(conversation_id or "").strip(),
+        "api_key_id": log_group_id,
+        "api_key_slug": _clean_slug(log_group_id),
+        "api_key_name": "Chat Internal Image Generation",
+        "api_key_preview": "",
+        "required_permission": "chat_generate_image",
+        "remote_addr": str(remote_addr or "").strip(),
+        "user_agent": str(user_agent or "").strip()[:240],
+        "source": str(source or "chat").strip() or "chat",
+        "action": str(action or "chat_image_generation").strip() or "chat_image_generation",
+    }
+
+
 def token_log_path_for_context(context: Dict[str, Any]) -> str:
     ctx = context if isinstance(context, dict) else {}
     key_slug = str(ctx.get("api_key_slug") or "").strip()
     if not key_slug:
         raise ValueError("PAPI token log requires api_key_id in request auth context")
     return os.path.join(PAPI_LOG_ROOT, key_slug, TOKEN_LOG_FILENAME)
+
+
+def image_log_path_for_context(context: Dict[str, Any]) -> str:
+    ctx = context if isinstance(context, dict) else {}
+    key_slug = str(ctx.get("api_key_slug") or "").strip()
+    if not key_slug:
+        raise ValueError("PAPI image log requires api_key_id in request auth context")
+    return os.path.join(PAPI_LOG_ROOT, key_slug, IMAGE_LOG_FILENAME)
 
 
 def record_papi_token_usage(
@@ -195,7 +250,108 @@ def record_papi_token_usage(
     }
 
 
-def iter_papi_token_log_entries() -> Iterator[Dict[str, Any]]:
+def _normalize_image_output_rows(rows: Any) -> list:
+    normalized = []
+    image_rows = rows if isinstance(rows, list) else []
+
+    for index, item in enumerate(image_rows):
+        if not isinstance(item, dict):
+            continue
+
+        b64_json = str(item.get("b64_json") or "").strip()
+        image_url = str(item.get("url") or item.get("asset_url") or "").strip()
+        revised_prompt = str(item.get("revised_prompt") or "").strip()
+        row = {
+            "index": index,
+            "has_b64_json": bool(b64_json),
+            "b64_json_length": len(b64_json),
+            "has_url": bool(image_url),
+            "url": image_url,
+            "revised_prompt": revised_prompt,
+        }
+        normalized.append(row)
+
+    return normalized
+
+
+def record_papi_image_generation(
+    context: Dict[str, Any],
+    *,
+    prompt: str,
+    provider: str,
+    model: str,
+    size: str,
+    quality: str,
+    response_format: str,
+    requested_count: int,
+    images: Any,
+    request_path: str,
+    status: str = "success",
+    duration_ms: Optional[int] = None,
+    error: str = "",
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Record one PAPI image generation request without storing image binary payloads."""
+    ctx = context if isinstance(context, dict) else {}
+    started_at = ctx.get("request_started_at")
+
+    if duration_ms is None:
+        try:
+            duration_ms = int(max(0, (time.time() - float(started_at)) * 1000))
+        except Exception:
+            duration_ms = 0
+
+    image_outputs = _normalize_image_output_rows(images)
+    log_path = image_log_path_for_context(ctx)
+    now_ts = time.time()
+    payload = {
+        "id": str(ctx.get("log_id") or f"papi_log_{uuid.uuid4().hex}"),
+        "timestamp": _utc_iso_now(),
+        "timestamp_ms": int(now_ts * 1000),
+        "source": str(ctx.get("source") or "papi").strip() or "papi",
+        "status": str(status or "success").strip() or "success",
+        "api_key_id": str(ctx.get("api_key_id") or "").strip(),
+        "api_key_name": str(ctx.get("api_key_name") or "").strip(),
+        "api_key_preview": str(ctx.get("api_key_preview") or "").strip(),
+        "username": str(ctx.get("username") or "").strip(),
+        "request_path": str(request_path or ctx.get("request_path") or "").strip(),
+        "method": str(ctx.get("method") or "").strip(),
+        "action": str(ctx.get("action") or "papi_image_generation").strip() or "papi_image_generation",
+        "provider": str(provider or "unknown").strip() or "unknown",
+        "model": str(model or "unknown").strip() or "unknown",
+        "size": str(size or "").strip(),
+        "quality": str(quality or "").strip(),
+        "response_format": str(response_format or "").strip(),
+        "requested_count": _safe_int(requested_count),
+        "image_count": len(image_outputs),
+        "prompt": str(prompt or "").strip(),
+        "prompt_length": len(str(prompt or "")),
+        "images": image_outputs,
+        "duration_ms": _safe_int(duration_ms),
+        "remote_addr": str(ctx.get("remote_addr") or "").strip(),
+        "user_agent": str(ctx.get("user_agent") or "").strip(),
+        "required_permission": str(ctx.get("required_permission") or "").strip(),
+    }
+
+    conversation_id = str(ctx.get("conversation_id") or "").strip()
+    if conversation_id:
+        payload["conversation_id"] = conversation_id
+
+    if error:
+        payload["error"] = str(error or "").strip()
+
+    if isinstance(extra, dict) and extra:
+        payload["extra"] = extra
+
+    safe_append_jsonl(log_path, payload)
+    return {
+        "success": True,
+        "path": log_path,
+        "image_count": len(image_outputs),
+    }
+
+
+def _iter_papi_log_entries(filename: str) -> Iterator[Dict[str, Any]]:
     if not os.path.isdir(PAPI_LOG_ROOT):
         return
 
@@ -204,7 +360,7 @@ def iter_papi_token_log_entries() -> Iterator[Dict[str, Any]]:
         if not os.path.isdir(key_dir):
             continue
 
-        log_path = os.path.join(key_dir, TOKEN_LOG_FILENAME)
+        log_path = os.path.join(key_dir, filename)
         if not os.path.exists(log_path):
             continue
 
@@ -225,3 +381,11 @@ def iter_papi_token_log_entries() -> Iterator[Dict[str, Any]]:
                         yield item
         except Exception:
             continue
+
+
+def iter_papi_token_log_entries() -> Iterator[Dict[str, Any]]:
+    yield from _iter_papi_log_entries(TOKEN_LOG_FILENAME)
+
+
+def iter_papi_image_log_entries() -> Iterator[Dict[str, Any]]:
+    yield from _iter_papi_log_entries(IMAGE_LOG_FILENAME)

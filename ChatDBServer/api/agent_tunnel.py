@@ -122,6 +122,26 @@ def call_local_tool_sync(username: str, tool_name: str, args: dict, timeout_sec:
         "args": args,
         "sent_at": time.time(),
     }
+    cancel_sent = False
+
+    def _send_cancel_tool() -> None:
+        nonlocal cancel_sent
+
+        if cancel_sent:
+            return
+
+        cancel_sent = True
+
+        try:
+            ws.send(json.dumps({
+                "type": "cancel_tool",
+                "task_id": task_id,
+                "tool_name": tool_name,
+                "reason": "user_abort",
+                "sent_at": time.time(),
+            }))
+        except Exception as cancel_send_error:
+            print(f"[NEXORACODE_TOOL_CANCEL] send failed task_id={task_id} error={cancel_send_error}")
 
     try:
         send_started_at = time.perf_counter()
@@ -135,6 +155,7 @@ def call_local_tool_sync(username: str, tool_name: str, args: dict, timeout_sec:
     deadline = time.time() + max(0.1, float(timeout_sec or 30))
     while True:
         if callable(cancel_checker) and cancel_checker():
+            _send_cancel_tool()
             _PENDING_TASKS.pop(task_id, None)
             return {"success": False, "error": "stream_cancelled", "message": "用户已停止生成"}
 

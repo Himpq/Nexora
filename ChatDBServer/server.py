@@ -37,12 +37,15 @@ from client_tool_bridge import pull_pending_request, submit_request_result, enqu
 from agent_tunnel import register_agent, unregister_agent, update_agent_tools, update_agent_prompt, update_ping, is_agent_online, handle_agent_result
 from stream_runtime import start_session as start_stream_session, iter_session_chunks as iter_stream_session_chunks, get_session_meta as get_stream_session_meta, request_cancel as request_stream_cancel, list_sessions as list_stream_sessions
 from tools import canonicalize_tool_name
+from map.baidu import load_map_scene_for_map_id
 from secure import normalize_text, resolve_configured_path, safe_filename, safe_join_path
 from timeline import list_entries as list_timeline_entries, record_notes_snapshot_change
 from datastorage import safe_read_json, safe_write_json, get_path_lock
 import conversation_asset_store
+import prompts
 from learning_runtime import build_learning_context_payload, build_learning_memory_blocks
-from learning_runtime import get_learning_runtime_config
+from learning_runtime import get_learning_runtime_local_config
+from system_settings_runtime import SystemSettingsRuntimeSyncer
 from server_quota import (
     get_server_quota_status,
     update_server_quota_config,
@@ -119,6 +122,38 @@ OPENROUTER_MODEL_ALIAS_LIST_PATH = os.path.join(DATA_RES_DIR, 'openrouter_model_
 STATUS_MODEL_RULES_LEGACY_PATH = os.path.join(DATA_DIR, 'status_model_rules.json')
 STATUS_MODEL_RULES_PATH = os.path.join(DATA_RES_DIR, 'status_model_rules.json')
 STATUS_PROVIDER_ICON_MAP_PATH = os.path.join(DATA_RES_DIR, 'provider_icon_map.json')
+MAP_PROVIDER_BAIDU = 'baidu'
+MAP_PROVIDER_TIANDITU = 'tianditu'
+SUPPORTED_MAP_PROVIDERS = (MAP_PROVIDER_BAIDU, MAP_PROVIDER_TIANDITU)
+MAP_PROVIDER_EDITABLE_FIELDS = {
+    MAP_PROVIDER_BAIDU: (
+        'browser_ak',
+        'browser_version',
+        'server_ak',
+        'server_sk',
+        'auth_mode',
+        'timeout',
+        'coord_type',
+        'ret_coordtype',
+        'direction_base_url',
+        'geocoding_url',
+        'place_search_url',
+    ),
+    MAP_PROVIDER_TIANDITU: (
+        'tk',
+        'browser_tk',
+        'server_tk',
+        'browser_version',
+        'timeout',
+        'coord_type',
+        'driving_style',
+        'transit_linetype',
+        'drive_url',
+        'transit_url',
+        'geocoding_url',
+        'place_search_url',
+    ),
+}
 _MODELS_CTX_CACHE_LOCK = threading.Lock()
 _PROVIDER_CTX_BG_REFRESH_LOCK = threading.Lock()
 _PROVIDER_CTX_BG_REFRESHING: Dict[str, bool] = {}
@@ -129,6 +164,7 @@ _PROVIDER_MODELS_BG_LOCK = threading.Lock()
 _PROVIDER_MODELS_BG_REFRESHING: Dict[str, bool] = {}
 _PROVIDER_MODELS_BG_LAST_TS: Dict[str, float] = {}
 _CLIENT_CACHE: Dict[str, Any] = {}
+_SYSTEM_SETTINGS_RUNTIME_SYNCER = SystemSettingsRuntimeSyncer()
 
 
 def _move_resource_file_if_needed(old_path: str, new_path: str):
@@ -300,6 +336,37 @@ DEFAULT_MAIN_CONFIG = {
         "service_url": "http://127.0.0.1:45678",
         "timeout": 15
     },
+    "map_service": {
+        "provider": "baidu",
+        "record_ttl_seconds": 21600,
+        "record_max_items": 200,
+        "baidu": {
+            "browser_ak": "",
+            "browser_version": "1.0",
+            "server_ak": "",
+            "server_sk": "",
+            "auth_mode": "ak",
+            "timeout": 12,
+            "coord_type": "bd09ll",
+            "ret_coordtype": "bd09ll",
+            "direction_base_url": "https://api.map.baidu.com/direction/v2",
+            "geocoding_url": "https://api.map.baidu.com/geocoding/v3/",
+            "place_search_url": "https://api.map.baidu.com/place/v2/search"
+        },
+        "tianditu": {
+            "browser_tk": "",
+            "server_tk": "",
+            "browser_version": "4.0",
+            "timeout": 12,
+            "coord_type": "cgcs2000",
+            "driving_style": "0",
+            "transit_linetype": "7",
+            "drive_url": "https://api.tianditu.gov.cn/drive",
+            "transit_url": "https://api.tianditu.gov.cn/transit",
+            "geocoding_url": "https://api.tianditu.gov.cn/geocoder",
+            "place_search_url": "https://api.tianditu.gov.cn/v2/search"
+        }
+    },
     "gen_image": {
         "enabled_api": "",
         "apis": {}
@@ -312,6 +379,7 @@ DEFAULT_MAIN_CONFIG = {
         "file_path": "./data/temp/ContextTemp.tmp"
     },
     "nexora_learning": {
+        "enabled": True,
         "host": "127.0.0.1",
         "port": 5001,
         "frontend_url": "http://127.0.0.1:5001",
@@ -940,6 +1008,7 @@ def resolve_public_api_key_auth(auth_key: Any, *, request_path: str = "", method
         or path.startswith("/api/papi/chat/completions")
         or path.startswith("/api/papi/responses")
         or path.startswith("/api/papi/models")
+        or path.startswith("/api/papi/model_list")
         or path.startswith("/api/papi/v1")
     ):
         required_permission = "model_inference"
@@ -1091,6 +1160,487 @@ def save_main_config(cfg):
         json.dump(payload, f, indent=4, ensure_ascii=False)
     _config_cache = None
     return payload
+
+
+def _normalize_map_provider_value(value: Any) -> str:
+    """校验并规范化地图 provider 配置值。"""
+    provider = str(value or '').strip().lower()
+
+    if provider not in SUPPORTED_MAP_PROVIDERS:
+        raise ValueError('地图 provider 必须是 baidu 或 tianditu')
+
+    return provider
+
+
+def _map_cfg_node(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    map_cfg = cfg.get('map_service') if isinstance(cfg.get('map_service'), dict) else {}
+
+    return map_cfg
+
+
+def _map_provider_default_config(provider: str) -> Dict[str, Any]:
+    default_map_cfg = DEFAULT_MAIN_CONFIG.get('map_service', {})
+    default_provider_cfg = default_map_cfg.get(provider, {}) if isinstance(default_map_cfg, dict) else {}
+
+    return default_provider_cfg if isinstance(default_provider_cfg, dict) else {}
+
+
+def _map_provider_text_value(source: Dict[str, Any], defaults: Dict[str, Any], field: str) -> str:
+    if field in source:
+        raw_value = source.get(field)
+    else:
+        raw_value = defaults.get(field, '')
+
+    if raw_value is None:
+        return ''
+
+    return str(raw_value).strip()
+
+
+def _coerce_map_provider_timeout(raw: Any, default: int = 12) -> int:
+    try:
+        value = int(raw)
+    except Exception:
+        value = default
+
+    return max(1, min(value, 120))
+
+
+def _parse_map_provider_timeout(raw: Any) -> int:
+    text = str(raw if raw is not None else '').strip()
+
+    if not text:
+        raise ValueError('地图 API timeout 不能为空')
+
+    try:
+        value = int(text)
+    except Exception:
+        raise ValueError('地图 API timeout 必须是整数')
+
+    if value < 1 or value > 120:
+        raise ValueError('地图 API timeout 必须在 1 到 120 秒之间')
+
+    return value
+
+
+def _normalize_map_auth_mode(raw: Any) -> str:
+    auth_mode = str(raw or '').strip().lower()
+
+    if auth_mode not in {'ak', 'sn'}:
+        raise ValueError('百度地图 auth_mode 必须是 ak 或 sn')
+
+    return auth_mode
+
+
+def _map_provider_admin_config(map_cfg: Dict[str, Any], provider: str) -> Dict[str, Any]:
+    provider_cfg = map_cfg.get(provider) if isinstance(map_cfg.get(provider), dict) else {}
+    defaults = _map_provider_default_config(provider)
+    fields = MAP_PROVIDER_EDITABLE_FIELDS.get(provider, ())
+    editable: Dict[str, Any] = {}
+
+    for field in fields:
+
+        if field == 'timeout':
+            raw_timeout = provider_cfg.get(field) if field in provider_cfg else defaults.get(field, 12)
+            editable[field] = _coerce_map_provider_timeout(raw_timeout)
+            continue
+
+        editable[field] = _map_provider_text_value(provider_cfg, defaults, field)
+
+    return editable
+
+
+def _extract_map_provider_config_payload(payload: Dict[str, Any], provider: str) -> Dict[str, Any]:
+    fields = MAP_PROVIDER_EDITABLE_FIELDS.get(provider, ())
+
+    if 'config' in payload:
+        config_data = payload.get('config')
+    elif 'provider_config' in payload:
+        config_data = payload.get('provider_config')
+    else:
+        config_data = {
+            field: payload.get(field)
+            for field in fields
+            if field in payload
+        }
+
+    if config_data is None:
+        return {}
+
+    if not isinstance(config_data, dict):
+        raise ValueError('地图 provider 配置必须是对象')
+
+    return config_data
+
+
+def _apply_map_provider_config_payload(map_cfg: Dict[str, Any], provider: str, payload: Dict[str, Any]) -> None:
+    fields = MAP_PROVIDER_EDITABLE_FIELDS.get(provider, ())
+    config_data = _extract_map_provider_config_payload(payload, provider)
+
+    if not config_data:
+        return
+
+    provider_cfg = map_cfg.get(provider) if isinstance(map_cfg.get(provider), dict) else {}
+    updated = dict(provider_cfg)
+
+    for field in fields:
+
+        if field not in config_data:
+            continue
+
+        if field == 'timeout':
+            updated[field] = _parse_map_provider_timeout(config_data.get(field))
+            continue
+
+        if field == 'auth_mode':
+            updated[field] = _normalize_map_auth_mode(config_data.get(field))
+            continue
+
+        raw_value = config_data.get(field)
+        updated[field] = str(raw_value if raw_value is not None else '').strip()
+
+    map_cfg[provider] = updated
+
+
+def _map_provider_readiness(map_cfg: Dict[str, Any], provider: str) -> Dict[str, Any]:
+    """检查 provider 是否具备前端渲染和后端地图服务调用所需配置。"""
+    normalized_provider = _normalize_map_provider_value(provider)
+    missing = []
+    details: Dict[str, Any] = {}
+
+    if normalized_provider == MAP_PROVIDER_BAIDU:
+        baidu_cfg = map_cfg.get('baidu') if isinstance(map_cfg.get('baidu'), dict) else {}
+        auth_mode = str(baidu_cfg.get('auth_mode') or 'ak').strip().lower()
+        details['auth_mode'] = auth_mode
+        details['browser_configured'] = bool(str(baidu_cfg.get('browser_ak') or '').strip())
+        details['server_configured'] = bool(str(baidu_cfg.get('server_ak') or '').strip())
+        details['coord_type'] = str(baidu_cfg.get('ret_coordtype') or baidu_cfg.get('coord_type') or 'bd09ll').strip()
+        details['browser_version'] = str(baidu_cfg.get('browser_version') or '1.0').strip()
+
+        if auth_mode not in {'ak', 'sn'}:
+            missing.append('map_service.baidu.auth_mode 必须是 ak 或 sn')
+
+        if not details['browser_configured']:
+            missing.append('map_service.baidu.browser_ak')
+
+        if not details['server_configured']:
+            missing.append('map_service.baidu.server_ak')
+
+        if auth_mode == 'sn' and not str(baidu_cfg.get('server_sk') or '').strip():
+            missing.append('map_service.baidu.server_sk')
+
+    if normalized_provider == MAP_PROVIDER_TIANDITU:
+        tianditu_cfg = map_cfg.get('tianditu') if isinstance(map_cfg.get('tianditu'), dict) else {}
+        tk = str(tianditu_cfg.get('tk') or '').strip()
+        browser_tk = str(tianditu_cfg.get('browser_tk') or '').strip()
+        server_tk = str(tianditu_cfg.get('server_tk') or '').strip()
+        details['browser_configured'] = bool(browser_tk or tk)
+        details['server_configured'] = bool(server_tk or tk)
+        details['coord_type'] = str(tianditu_cfg.get('coord_type') or 'cgcs2000').strip()
+        details['browser_version'] = str(tianditu_cfg.get('browser_version') or '4.0').strip()
+
+        if not details['browser_configured']:
+            missing.append('map_service.tianditu.browser_tk')
+
+        if not details['server_configured']:
+            missing.append('map_service.tianditu.server_tk')
+
+    return {
+        'provider': normalized_provider,
+        'ready': len(missing) == 0,
+        'missing': missing,
+        **details,
+    }
+
+
+def _build_map_provider_config_payload(cfg: Dict[str, Any], include_admin_config: bool = False) -> Dict[str, Any]:
+    """构建地图 provider 配置摘要；管理员编辑模式会附带可保存配置值。"""
+    map_cfg = _map_cfg_node(cfg)
+    provider = str(map_cfg.get('provider') or '').strip().lower()
+    config_errors = []
+
+    if not provider:
+        config_errors.append('map_service.provider 不能为空')
+    elif provider not in SUPPORTED_MAP_PROVIDERS:
+        config_errors.append('map_service.provider 必须是 baidu 或 tianditu')
+
+    provider_status = {
+        item: _map_provider_readiness(map_cfg, item)
+        for item in SUPPORTED_MAP_PROVIDERS
+    }
+
+    if include_admin_config:
+
+        for item, status in provider_status.items():
+            status['config'] = _map_provider_admin_config(map_cfg, item)
+
+    active_provider_ready = provider_status.get(provider, {}).get('ready') if provider in provider_status else False
+
+    return {
+        'provider': provider,
+        'provider_ready': bool(active_provider_ready),
+        'config_errors': config_errors,
+        'supported_providers': list(SUPPORTED_MAP_PROVIDERS),
+        'providers': provider_status,
+        'history_policy': {
+            'mode': 'scene_provider_pinned',
+            'summary': '历史地图记录保留 scene.provider，新默认 provider 只影响之后生成的地图。',
+            'baidu_records': '历史百度地图继续按 baidu 渲染，保留 bd09ll 等原始坐标系。',
+            'tianditu_records': '历史天地图继续按 tianditu 渲染，保留 cgcs2000 等原始坐标系。',
+        },
+    }
+
+
+SYSTEM_DEFAULT_MODEL_KEYS = (
+    'default_model',
+    'conclusion_model',
+    'organization_model',
+    'websearch_model',
+)
+
+
+def _system_settings_text(value: Any, max_length: int = 500) -> str:
+    if value is None:
+        return ''
+
+    return str(value).strip()[:max_length]
+
+
+def _system_settings_bool(value: Any) -> bool:
+    return _coerce_bool_flag(value, False)
+
+
+def _system_settings_int(value: Any, field_name: str, minimum: int = 1, maximum: int = 65535) -> int:
+    try:
+        parsed = int(value)
+    except Exception as exc:
+        raise ValueError(f'{field_name} 必须是整数') from exc
+
+    if parsed < minimum or parsed > maximum:
+        raise ValueError(f'{field_name} 必须在 {minimum}-{maximum} 范围内')
+
+    return parsed
+
+
+def _system_settings_float(value: Any, field_name: str, minimum: float = 1.0, maximum: float = 3600.0) -> float:
+    try:
+        parsed = float(value)
+    except Exception as exc:
+        raise ValueError(f'{field_name} 必须是数字') from exc
+
+    if parsed < minimum or parsed > maximum:
+        raise ValueError(f'{field_name} 必须在 {minimum:g}-{maximum:g} 范围内')
+
+    return parsed
+
+
+def _system_settings_url(value: Any, field_name: str) -> str:
+    text = _system_settings_text(value, 500).rstrip('/')
+
+    if text and not text.startswith(('http://', 'https://')):
+        raise ValueError(f'{field_name} 必须以 http:// 或 https:// 开头')
+
+    return text
+
+
+def _system_settings_branch(cfg: Dict[str, Any], key: str) -> Dict[str, Any]:
+    branch = cfg.get(key)
+
+    if not isinstance(branch, dict):
+        branch = {}
+        cfg[key] = branch
+
+    return branch
+
+
+def _build_admin_system_model_options(cfg: Dict[str, Any], models_cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    models = models_cfg.get('models', {}) if isinstance(models_cfg.get('models'), dict) else {}
+    option_ids = set(str(model_id or '').strip() for model_id in models.keys())
+
+    for key in SYSTEM_DEFAULT_MODEL_KEYS:
+        current_model = str(cfg.get(key) or '').strip()
+
+        if current_model:
+            option_ids.add(current_model)
+
+    options: List[Dict[str, Any]] = []
+
+    for model_id in sorted(option_ids, key=lambda item: item.lower()):
+        if not model_id:
+            continue
+
+        info = models.get(model_id)
+        name = ''
+        provider = ''
+        registered = isinstance(info, dict)
+
+        if isinstance(info, dict):
+            name = str(info.get('name') or '').strip()
+            provider = str(info.get('provider') or '').strip()
+
+        options.append({
+            'id': model_id,
+            'name': name or model_id,
+            'provider': provider,
+            'registered': registered,
+        })
+
+    return options
+
+
+def _build_admin_system_settings_payload(cfg: Dict[str, Any], models_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    rag_cfg = cfg.get('rag_database') if isinstance(cfg.get('rag_database'), dict) else {}
+    search_cfg = cfg.get('nexora_search') if isinstance(cfg.get('nexora_search'), dict) else {}
+    learning_cfg = cfg.get('nexora_learning') if isinstance(cfg.get('nexora_learning'), dict) else {}
+    mail_cfg = cfg.get('nexora_mail') if isinstance(cfg.get('nexora_mail'), dict) else {}
+
+    return {
+        'runtime': {
+            'public_base_url': str(cfg.get('public_base_url') or '').strip(),
+        },
+        'default_models': {
+            key: str(cfg.get(key) or '').strip()
+            for key in SYSTEM_DEFAULT_MODEL_KEYS
+        },
+        'model_options': _build_admin_system_model_options(cfg, models_cfg),
+        'services': {
+            'rag_database': {
+                'enabled': bool(rag_cfg.get('rag_database_enabled', False)),
+                'mode': str(rag_cfg.get('mode') or 'service').strip() or 'service',
+                'host': str(rag_cfg.get('host') or '').strip(),
+                'port': int(rag_cfg.get('port') or 8100),
+                'api_key': str(rag_cfg.get('api_key') or ''),
+                'service_url': str(rag_cfg.get('service_url') or '').strip(),
+            },
+            'nexora_search': {
+                'enabled': bool(search_cfg.get('nexora_search_enabled', False)),
+                'host': str(search_cfg.get('host') or '').strip(),
+                'port': int(search_cfg.get('port') or 45678),
+                'api_key': str(search_cfg.get('api_key') or ''),
+                'service_url': str(search_cfg.get('service_url') or '').strip(),
+                'timeout': float(search_cfg.get('timeout') or 15),
+            },
+            'nexora_learning': {
+                'enabled': bool(learning_cfg.get('enabled', True)),
+                'host': str(learning_cfg.get('host') or '').strip(),
+                'port': int(learning_cfg.get('port') or 5001),
+                'api_key': str(learning_cfg.get('api_key') or ''),
+                'frontend_url': str(learning_cfg.get('frontend_url') or '').strip(),
+                'request_timeout': float(learning_cfg.get('request_timeout') or 30),
+            },
+            'nexora_mail': {
+                'enabled': bool(mail_cfg.get('nexora_mail_enabled', False)),
+                'host': str(mail_cfg.get('host') or '').strip(),
+                'port': int(mail_cfg.get('port') or 17171),
+                'api_key': str(mail_cfg.get('api_key') or ''),
+                'service_url': str(mail_cfg.get('service_url') or '').strip(),
+                'timeout': float(mail_cfg.get('timeout') or 10),
+                'send_timeout': float(mail_cfg.get('send_timeout') or 120),
+                'default_group': str(mail_cfg.get('default_group') or 'default').strip() or 'default',
+            },
+        },
+    }
+
+
+def _apply_admin_system_default_models(
+    cfg: Dict[str, Any],
+    models_cfg: Dict[str, Any],
+    default_models: Any,
+) -> None:
+    if not isinstance(default_models, dict):
+        return
+
+    models = models_cfg.get('models', {}) if isinstance(models_cfg.get('models'), dict) else {}
+
+    for key in SYSTEM_DEFAULT_MODEL_KEYS:
+        if key not in default_models:
+            continue
+
+        model_id = _system_settings_text(default_models.get(key), 200)
+        current_model_id = str(cfg.get(key) or '').strip()
+
+        if model_id and model_id not in models and model_id != current_model_id:
+            raise ValueError(f'{key} 指向的模型不存在: {model_id}')
+
+        cfg[key] = model_id
+
+
+def _apply_admin_system_runtime(cfg: Dict[str, Any], runtime: Any) -> None:
+    if not isinstance(runtime, dict):
+        return
+
+    if 'public_base_url' in runtime:
+        cfg['public_base_url'] = _system_settings_url(runtime.get('public_base_url'), 'Public Base URL')
+
+
+def _apply_admin_system_services(cfg: Dict[str, Any], services: Any) -> None:
+    if not isinstance(services, dict):
+        return
+
+    rag_payload = services.get('rag_database')
+
+    if isinstance(rag_payload, dict):
+        rag_cfg = _system_settings_branch(cfg, 'rag_database')
+        mode = _system_settings_text(rag_payload.get('mode'), 20) or 'service'
+
+        if mode not in {'service', 'local'}:
+            raise ValueError('RAG 模式只能是 service 或 local')
+
+        rag_cfg['rag_database_enabled'] = _system_settings_bool(rag_payload.get('enabled'))
+        rag_cfg['mode'] = mode
+        rag_cfg['host'] = _system_settings_text(rag_payload.get('host'), 120)
+        rag_cfg['port'] = _system_settings_int(rag_payload.get('port'), 'RAG 端口')
+        rag_cfg['api_key'] = _system_settings_text(rag_payload.get('api_key'), 500)
+        rag_cfg['service_url'] = _system_settings_url(rag_payload.get('service_url'), 'RAG Service URL')
+
+    search_payload = services.get('nexora_search')
+
+    if isinstance(search_payload, dict):
+        search_cfg = _system_settings_branch(cfg, 'nexora_search')
+        search_cfg['nexora_search_enabled'] = _system_settings_bool(search_payload.get('enabled'))
+        search_cfg['host'] = _system_settings_text(search_payload.get('host'), 120)
+        search_cfg['port'] = _system_settings_int(search_payload.get('port'), 'NexoraSearch 端口')
+        search_cfg['api_key'] = _system_settings_text(search_payload.get('api_key'), 500)
+        search_cfg['service_url'] = _system_settings_url(search_payload.get('service_url'), 'NexoraSearch Service URL')
+        search_cfg['timeout'] = _system_settings_float(search_payload.get('timeout'), 'NexoraSearch 超时')
+
+    learning_payload = services.get('nexora_learning')
+
+    if isinstance(learning_payload, dict):
+        learning_cfg = _system_settings_branch(cfg, 'nexora_learning')
+        learning_cfg['enabled'] = _system_settings_bool(learning_payload.get('enabled'))
+        learning_cfg['host'] = _system_settings_text(learning_payload.get('host'), 120)
+        learning_cfg['port'] = _system_settings_int(learning_payload.get('port'), 'NexoraLearning 端口')
+        learning_cfg['api_key'] = _system_settings_text(learning_payload.get('api_key'), 500)
+        learning_cfg['frontend_url'] = _system_settings_url(learning_payload.get('frontend_url'), 'NexoraLearning Frontend URL')
+        learning_cfg['request_timeout'] = _system_settings_float(learning_payload.get('request_timeout'), 'NexoraLearning 超时')
+
+    mail_payload = services.get('nexora_mail')
+
+    if isinstance(mail_payload, dict):
+        mail_cfg = _system_settings_branch(cfg, 'nexora_mail')
+        mail_cfg['nexora_mail_enabled'] = _system_settings_bool(mail_payload.get('enabled'))
+        mail_cfg['host'] = _system_settings_text(mail_payload.get('host'), 120)
+        mail_cfg['port'] = _system_settings_int(mail_payload.get('port'), 'NexoraMail 端口')
+        mail_cfg['api_key'] = _system_settings_text(mail_payload.get('api_key'), 500)
+        mail_cfg['service_url'] = _system_settings_url(mail_payload.get('service_url'), 'NexoraMail Service URL')
+        mail_cfg['timeout'] = _system_settings_float(mail_payload.get('timeout'), 'NexoraMail 超时')
+        mail_cfg['send_timeout'] = _system_settings_float(mail_payload.get('send_timeout'), 'NexoraMail 发送超时')
+        mail_cfg['default_group'] = _system_settings_text(mail_payload.get('default_group'), 120) or 'default'
+
+
+def _apply_admin_system_settings_payload(
+    cfg: Dict[str, Any],
+    models_cfg: Dict[str, Any],
+    payload: Any,
+) -> Dict[str, Any]:
+    data = payload if isinstance(payload, dict) else {}
+
+    _apply_admin_system_runtime(cfg, data.get('runtime'))
+    _apply_admin_system_default_models(cfg, models_cfg, data.get('default_models'))
+    _apply_admin_system_services(cfg, data.get('services'))
+
+    return cfg
 
 
 def _normalize_gen_image_api_id(raw: Any) -> str:
@@ -1899,6 +2449,21 @@ _BROWSER_WS_CLIENTS = {}
 _BROWSER_WS_LOCK = threading.Lock()
 _NEXORA_MAIL_EVENT_STREAM_LOCK = threading.Lock()
 _NEXORA_MAIL_EVENT_STREAM_STARTED = False
+_NEXORA_MAIL_EVENT_STREAM_CONFIG_VERSION = 0
+
+
+def notify_nexora_mail_event_stream_config_changed() -> int:
+    """递增邮件事件监听配置版本，让已连接监听按新配置重连。"""
+    global _NEXORA_MAIL_EVENT_STREAM_CONFIG_VERSION
+
+    with _NEXORA_MAIL_EVENT_STREAM_LOCK:
+        _NEXORA_MAIL_EVENT_STREAM_CONFIG_VERSION += 1
+        return _NEXORA_MAIL_EVENT_STREAM_CONFIG_VERSION
+
+
+def _get_nexora_mail_event_stream_config_version() -> int:
+    with _NEXORA_MAIL_EVENT_STREAM_LOCK:
+        return _NEXORA_MAIL_EVENT_STREAM_CONFIG_VERSION
 
 
 def _browser_ws_client_payload(event_type: str, payload: Dict[str, Any]) -> str:
@@ -2100,6 +2665,7 @@ def _nexora_mail_event_stream_loop() -> None:
 
     while True:
         cfg = _get_nexora_mail_config()
+        observed_config_version = _get_nexora_mail_event_stream_config_version()
 
         if not cfg.get('enabled') or not cfg.get('api_key'):
             time.sleep(10)
@@ -2117,10 +2683,18 @@ def _nexora_mail_event_stream_loop() -> None:
                 timeout=10,
                 header=[f"X-API-Key: {cfg.get('api_key')}"]
             )
+            ws.settimeout(5)
             print(f"[NexoraMail WSS] connected {ws_url}")
 
             while True:
-                raw = ws.recv()
+                if observed_config_version != _get_nexora_mail_event_stream_config_version():
+                    print("[NexoraMail WSS] reconnect requested by system settings update")
+                    break
+
+                try:
+                    raw = ws.recv()
+                except websocket.WebSocketTimeoutException:
+                    continue
 
                 if not raw:
                     continue
@@ -2845,6 +3419,21 @@ def _mail_cache_invalidate_user(user_id):
     lock = _get_mail_cache_lock(user_id)
     with lock:
         _mail_cache_save(user_id, _mail_cache_empty())
+
+
+def _mail_cache_invalidate_all_users() -> int:
+    users = load_users()
+
+    if not isinstance(users, dict):
+        return 0
+
+    invalidated_count = 0
+
+    for user_id in users.keys():
+        _mail_cache_invalidate_user(user_id)
+        invalidated_count += 1
+
+    return invalidated_count
 
 
 def _nexora_mail_call(path, method='GET', payload=None, query=None, timeout=None):
@@ -4568,10 +5157,120 @@ def jsonify_safe(payload, status=200):
     )
 
 
+TOOL_STREAM_CHUNK_TYPES = {
+    "function_call_delta",
+    "function_call",
+    "function_call_running",
+    "function_result",
+}
+
+
+def _clip_stream_debug_text(value, limit=600):
+    text = str(value or "")
+    safe_limit = max(80, int(limit or 600))
+
+    if len(text) <= safe_limit:
+        return text
+
+    return f"{text[:safe_limit]}...<truncated chars={len(text)}>"
+
+
+def _is_tool_stream_chunk(chunk):
+    if not isinstance(chunk, dict):
+        return False
+
+    return str(chunk.get("type") or "").strip() in TOOL_STREAM_CHUNK_TYPES
+
+
+def _get_tool_chunk_debug_content(chunk):
+    """Build compact tool stream logs without dumping whole file contents."""
+    if not isinstance(chunk, dict):
+        return chunk
+
+    chunk_type = str(chunk.get("type") or "").strip()
+    out = {
+        "name": str(chunk.get("name") or chunk.get("tool_name") or "").strip(),
+        "call_id": str(chunk.get("call_id") or chunk.get("callId") or "").strip(),
+    }
+
+    for key in (
+        "round",
+        "index",
+        "status",
+        "elapsed_ms",
+        "tick",
+        "arguments_delta_part",
+        "arguments_delta_total_parts",
+        "arguments_delta_source_chars",
+    ):
+
+        if key in chunk:
+            out[key] = chunk.get(key)
+
+    if chunk_type == "function_call_delta":
+        delta = str(chunk.get("arguments_delta") or chunk.get("delta") or "")
+        name_delta = str(chunk.get("name_delta") or "")
+        out["arguments_delta_chars"] = len(delta)
+
+        if name_delta:
+            out["name_delta"] = name_delta
+
+        if delta:
+            out["arguments_delta_preview"] = _clip_stream_debug_text(delta, 240)
+
+        return out
+
+    if chunk_type == "function_call":
+        arguments = str(chunk.get("arguments") or "")
+        out["arguments_chars"] = len(arguments)
+
+        if arguments:
+            out["arguments_preview"] = _clip_stream_debug_text(arguments, 400)
+
+        return out
+
+    if chunk_type == "function_call_running":
+        for key in ("status_text", "tool_phase"):
+            if key in chunk:
+                out[key] = chunk.get(key)
+
+        progress_text = str(chunk.get("progress_text") or "")
+
+        if progress_text:
+            out["progress_text"] = _clip_stream_debug_text(progress_text, 400)
+
+        progress = chunk.get("progress")
+
+        if isinstance(progress, dict):
+            out["progress"] = progress
+
+        return out
+
+    if chunk_type == "function_result":
+        result = chunk.get("result")
+        result_text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
+        model_visible = str(chunk.get("model_visible_result") or "")
+        out["result_chars"] = len(str(result_text or ""))
+
+        if result_text:
+            out["result_preview"] = _clip_stream_debug_text(result_text, 500)
+
+        if model_visible:
+            out["model_visible_result_chars"] = len(model_visible)
+            out["model_visible_result_preview"] = _clip_stream_debug_text(model_visible, 500)
+
+        return out
+
+    return {k: v for k, v in chunk.items() if k != "type"}
+
+
 def _get_chunk_debug_content(chunk):
     """Extract display content for stream debug logs."""
     if not isinstance(chunk, dict):
         return chunk
+
+    if _is_tool_stream_chunk(chunk):
+        return _get_tool_chunk_debug_content(chunk)
 
     if "content" in chunk and chunk.get("content") is not None:
         return chunk.get("content")
@@ -4580,7 +5279,7 @@ def _get_chunk_debug_content(chunk):
     return {k: v for k, v in chunk.items() if k != "type"}
 
 
-def _log_stream_chunk(chunk, model_name=None):
+def _log_stream_chunk(chunk, model_name=None, source="yield"):
     """Print every stream chunk type + content when log_status=all."""
     chunk_type = "unknown"
     if isinstance(chunk, dict):
@@ -4592,10 +5291,24 @@ def _log_stream_chunk(chunk, model_name=None):
     except Exception:
         content_dump = str(content)
 
-    prefix = "[MODEL_STREAM]"
+    prefix_name = "TOOL_STREAM" if _is_tool_stream_chunk(chunk) else "MODEL_STREAM"
+    prefix = f"[{prefix_name}]"
+
     if model_name:
-        prefix = f"[MODEL_STREAM][{model_name}]"
-    print(f"{prefix} type={chunk_type} content={content_dump}")
+        prefix = f"[{prefix_name}][{model_name}]"
+
+    source_text = str(source or "").strip()
+    source_part = f" source={source_text}" if source_text else ""
+    print(f"{prefix}{source_part} type={chunk_type} content={content_dump}")
+
+
+def _should_log_tool_stream_chunks():
+    try:
+        cfg = get_config_all()
+        log_status = str(cfg.get("log_status", "silent") or "silent").strip().lower()
+        return log_status in {"all", "debug", "verbose"}
+    except Exception:
+        return False
 
 
 @app.route('/')
@@ -4603,17 +5316,44 @@ def index():
     """首页：未登录展示 Landing，已登录进入聊天"""
     if 'username' in session:
         return redirect(url_for('chat', **request.args))
-    return render_template('introduce.html')
+
+    return render_template('introduce_2.html')
+
+
+@app.route('/introduce')
+def introduce_page():
+    """公开介绍页"""
+    return render_template('introduce_2.html')
+
+
+@app.route('/introduce_2')
+def introduce_2_page():
+    """新版介绍页历史入口"""
+    return redirect(url_for('introduce_page'))
+
 
 @app.route('/status')
 def status_page():
     """公开状态页"""
-    return render_template('status.html')
+    return render_template('status_2.html')
+
+
+@app.route('/status_2')
+def status_2_page():
+    """新版公开状态页历史入口"""
+    return redirect(url_for('status_page'))
+
 
 @app.route('/blog')
 def board_page():
     """公告栏"""
-    return render_template('blog.html')
+    return render_template('blog_2.html')
+
+
+@app.route('/blog_2')
+def blog_2_page():
+    """新版博客历史入口"""
+    return redirect(url_for('board_page'))
     
 @app.route('/favicon.ico')
 def favicon():
@@ -6048,6 +6788,14 @@ def build_status_overview() -> Dict[str, Any]:
     tool_failure_map: Dict[str, Dict[str, Any]] = {}
     fallback_tool_complexity_tasks: Dict[str, Dict[str, Any]] = {}
     complexity = {'simple': 0, 'medium': 0, 'complex': 0}
+    image_stats = {
+        'requests': 0,
+        'successes': 0,
+        'failures': 0,
+        'images': 0,
+        'recent24hRequests': 0,
+        'recent24hImages': 0
+    }
     total_tokens = 0
     total_tool_calls = 0
     total_tool_failures = 0
@@ -6058,6 +6806,7 @@ def build_status_overview() -> Dict[str, Any]:
             'snapshotAt': datetime.now().strftime('%Y-%m-%d %H:%M:%S CST'),
             'source': 'ChatDBServer/data/users/*/{token_usage,tool_usage,conversations}',
             'totals': {'tokens': 0, 'modelCalls': 0, 'toolCalls': 0, 'toolFailures': 0},
+            'imageStats': image_stats,
             'complexity': complexity,
             'models': [],
             'speedModels': [],
@@ -6494,6 +7243,7 @@ def build_status_overview() -> Dict[str, Any]:
             'toolCalls': total_tool_calls,
             'toolFailures': total_tool_failures
         },
+        'imageStats': image_stats,
         'complexity': complexity,
         'models': models[:12],
         'speedModels': speed_rows,
@@ -6614,6 +7364,11 @@ def get_user_stats_api():
         return jsonify({'success': False, 'message': '获取统计信息失败'}), 500
 
 
+def _get_learning_runtime_for_user_preferences() -> Dict[str, Any]:
+    """偏好接口只读取本地 Learning runtime 配置，避免刷新时同步探测可选服务。"""
+    return get_learning_runtime_local_config()
+
+
 @app.route('/api/user/preferences', methods=['GET', 'PUT'])
 def get_user_preferences():
     """获取当前用户的偏好设置"""
@@ -6643,11 +7398,9 @@ def get_user_preferences():
                     updates.update(legacy_quota_payload)
 
             saved = user.update_preferences(updates)
-            learning_runtime = {}
-            try:
-                learning_runtime = get_learning_runtime_config()
-            except Exception as runtime_error:
-                print(f"[LEARNING_RUNTIME] failed to load runtime config: {runtime_error}")
+
+            # 偏好接口不做运行时探测，避免可选 Learning 服务拖慢页面刷新。
+            learning_runtime = _get_learning_runtime_for_user_preferences()
             return jsonify({
                 'success': True,
                 'preferences': saved,
@@ -6656,11 +7409,9 @@ def get_user_preferences():
             })
 
         preferences = user.get_preferences()
-        learning_runtime = {}
-        try:
-            learning_runtime = get_learning_runtime_config()
-        except Exception as runtime_error:
-            print(f"[LEARNING_RUNTIME] failed to load runtime config: {runtime_error}")
+
+        # 偏好接口不做运行时探测，避免可选 Learning 服务拖慢页面刷新。
+        learning_runtime = _get_learning_runtime_for_user_preferences()
         return jsonify({
             'success': True,
             'preferences': preferences,
@@ -7401,7 +8152,128 @@ def chat():
     cfg = get_config_all()
     mail_cfg = cfg.get('nexora_mail', {}) if isinstance(cfg, dict) else {}
     mail_enabled = bool(mail_cfg.get('nexora_mail_enabled', False))
-    return render_template('chat.html', username=session['username'], nexora_mail_enabled=mail_enabled)
+    map_cfg = cfg.get('map_service', {}) if isinstance(cfg.get('map_service'), dict) else {}
+    baidu_map_cfg = map_cfg.get('baidu', {}) if isinstance(map_cfg.get('baidu'), dict) else {}
+    tianditu_map_cfg = map_cfg.get('tianditu', {}) if isinstance(map_cfg.get('tianditu'), dict) else {}
+    map_renderer_config = {
+        'provider': str(map_cfg.get('provider') or 'baidu').strip().lower() or 'baidu',
+        'baiduMapAk': str(baidu_map_cfg.get('browser_ak') or '').strip(),
+        'baiduMapVersion': str(baidu_map_cfg.get('browser_version') or '1.0').strip() or '1.0',
+        'tiandituMapTk': str(tianditu_map_cfg.get('browser_tk') or tianditu_map_cfg.get('tk') or '').strip(),
+        'tiandituMapVersion': str(tianditu_map_cfg.get('browser_version') or '4.0').strip() or '4.0'
+    }
+
+    return render_template(
+        'chat.html',
+        username=session['username'],
+        nexora_mail_enabled=mail_enabled,
+        map_renderer_config=map_renderer_config
+    )
+
+
+@app.route('/api/map/provider', methods=['GET'])
+@require_login
+def get_map_provider_config():
+    """读取当前地图 provider 配置摘要。"""
+    try:
+        cfg = ensure_main_config_defaults()
+
+        return jsonify({
+            'success': True,
+            'map_provider': _build_map_provider_config_payload(cfg),
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/admin/map/provider', methods=['GET'])
+@require_admin
+def admin_get_map_provider_config():
+    """管理员读取当前地图 provider 配置摘要。"""
+    try:
+        cfg = ensure_main_config_defaults()
+
+        return jsonify({
+            'success': True,
+            'map_provider': _build_map_provider_config_payload(cfg, include_admin_config=True),
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/admin/map/provider', methods=['POST', 'PUT'])
+@require_admin
+def admin_update_map_provider_config():
+    """管理员保存地图 provider 配置，并按请求切换全局默认 provider。"""
+    payload = request.get_json(silent=True) or {}
+    requested_provider = payload.get('provider', payload.get('map_provider'))
+    set_default_requested = _coerce_bool_flag(payload.get('set_default'), 'config' not in payload and 'provider_config' not in payload)
+
+    try:
+        provider = _normalize_map_provider_value(requested_provider)
+        cfg = ensure_main_config_defaults()
+        map_cfg = cfg.get('map_service') if isinstance(cfg.get('map_service'), dict) else {}
+        _apply_map_provider_config_payload(map_cfg, provider, payload)
+        cfg['map_service'] = map_cfg
+        readiness = _map_provider_readiness(map_cfg, provider)
+
+        if set_default_requested and not readiness.get('ready'):
+            missing = readiness.get('missing') if isinstance(readiness.get('missing'), list) else []
+            saved = save_main_config(cfg)
+
+            return jsonify({
+                'success': False,
+                'message': '目标地图 provider 配置不完整，无法切换',
+                'provider': provider,
+                'missing': missing,
+                'map_provider': _build_map_provider_config_payload(saved, include_admin_config=True),
+            }), 400
+
+        if set_default_requested:
+            map_cfg['provider'] = provider
+
+        cfg['map_service'] = map_cfg
+        saved = save_main_config(cfg)
+        message = f'地图 provider 已切换为 {provider}' if set_default_requested else f'地图 provider {provider} 配置已保存'
+
+        return jsonify({
+            'success': True,
+            'message': message,
+            'map_provider': _build_map_provider_config_payload(saved, include_admin_config=True),
+        })
+    except ValueError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/map/conversations/<conv_id>/maps/<map_id>/scene', methods=['GET'])
+@require_login
+def get_conversation_map_scene(conv_id, map_id):
+    """按 conversation_id + map_id 读取当前用户地图 scene，供前端地图渲染器使用。"""
+    cid = str(conv_id or '').strip()
+    mid = str(map_id or '').strip()
+
+    if not cid:
+        return jsonify({'success': False, 'message': 'conversation_id 不能为空'}), 400
+
+    if not mid:
+        return jsonify({'success': False, 'message': 'map_id 不能为空'}), 400
+
+    try:
+        ConversationManager(session['username']).get_conversation(cid)
+    except Exception:
+        return jsonify({'success': False, 'message': '对话不存在'}), 404
+
+    try:
+        scene = load_map_scene_for_map_id(session['username'], cid, mid)
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'地图记录读取失败：{str(e)}'}), 400
+
+    if not isinstance(scene, dict):
+        return jsonify({'success': False, 'message': '地图记录不存在'}), 404
+
+    return jsonify({'success': True, 'scene': scene})
 
 
 @app.route('/api/upload', methods=['POST'])
@@ -8274,8 +9146,56 @@ def admin_update_user_models():
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 
-    
+
     return jsonify({'success': False, 'message': '配置加载失败'})
+
+
+@app.route('/api/admin/system/settings', methods=['GET'])
+@require_admin
+def admin_get_system_settings():
+    """管理员读取系统总设置。"""
+    try:
+        cfg = ensure_main_config_defaults()
+        models_cfg = load_models_config()
+        return jsonify({
+            'success': True,
+            'settings': _build_admin_system_settings_payload(cfg, models_cfg),
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/admin/system/settings', methods=['POST'])
+@require_admin
+def admin_update_system_settings():
+    """管理员保存系统总设置。"""
+    payload = request.get_json(silent=True) or {}
+
+    try:
+        cfg = ensure_main_config_defaults()
+        previous_cfg = deepcopy(cfg)
+        models_cfg = load_models_config()
+        next_cfg = _apply_admin_system_settings_payload(cfg, models_cfg, payload)
+        saved = save_main_config(next_cfg)
+        runtime_sync = _SYSTEM_SETTINGS_RUNTIME_SYNCER.sync_after_save(
+            saved_config=saved,
+            previous_config=previous_cfg,
+            server_client_cache=_CLIENT_CACHE,
+            start_mail_event_stream=start_nexora_mail_event_stream,
+            notify_mail_event_stream_config_changed=notify_nexora_mail_event_stream_config_changed,
+            invalidate_all_mail_cache=_mail_cache_invalidate_all_users,
+        )
+
+        return jsonify({
+            'success': True,
+            'message': '系统设置已保存，进程配置已同步',
+            'settings': _build_admin_system_settings_payload(saved, models_cfg),
+            'runtime_sync': runtime_sync,
+        })
+    except ValueError as e:
+        return jsonify({'success': False, 'message': str(e)}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 
 @app.route('/api/admin/models/config', methods=['GET'])
@@ -8405,6 +9325,8 @@ def admin_upsert_gen_image_api():
         if enable_requested:
             _assert_gen_image_record_ready(record)
             gen_cfg['enabled_api'] = api_id
+        elif gen_cfg.get('enabled_api') == api_id:
+            gen_cfg['enabled_api'] = ''
 
         apis[api_id] = record
         gen_cfg = _normalize_gen_image_config(gen_cfg)
@@ -9668,6 +10590,7 @@ def _iter_sse_from_runtime_stream(stream_id: str, username: str, from_seq: int =
         "from_seq": max(0, safe_from_seq),
     }
     yield f"data: {json.dumps(session_info, ensure_ascii=False, default=str)}\n\n"
+    log_tool_sse_chunks = _should_log_tool_stream_chunks()
 
     for _, payload in iter_stream_session_chunks(
         stream_id,
@@ -9681,6 +10604,19 @@ def _iter_sse_from_runtime_stream(stream_id: str, username: str, from_seq: int =
             yield ": ping\n\n"
             continue
         chunk_data = json.dumps(payload, ensure_ascii=False, default=str)
+        if log_tool_sse_chunks and _is_tool_stream_chunk(payload):
+            seq = payload.get("_stream_seq")
+            content = _get_tool_chunk_debug_content(payload)
+
+            try:
+                content_dump = json.dumps(content, ensure_ascii=False, default=str)
+            except Exception:
+                content_dump = str(content)
+
+            print(
+                f"[TOOL_SSE] stream_id={stream_id} seq={seq} "
+                f"type={payload.get('type')} content={content_dump}"
+            )
         yield f"data: {chunk_data}\n\n"
     yield "data: [DONE]\n\n"
 
@@ -9755,6 +10691,7 @@ def chat_stream():
     sys_config = get_config_all()
     log_status = str(sys_config.get('log_status', 'silent')).lower()
     log_all_chunks = (log_status == 'all')
+    log_tool_chunks = log_status in {'all', 'debug', 'verbose'}
     message = data.get('message')
     conversation_id = data.get('conversation_id')
     model_name = data.get('model_name')
@@ -10090,6 +11027,41 @@ def chat_stream():
         except Exception:
             pass
 
+    def _resolve_stream_assistant_index() -> Optional[int]:
+        """计算本次流式回复对应的 assistant 消息索引，供重连恢复精确绑定 DOM。"""
+        if is_regenerate and regenerate_index is not None:
+            return int(regenerate_index)
+
+        target_conversation_id = str(conversation_id or '').strip()
+        message_count = 0
+
+        if target_conversation_id:
+            manager = ConversationManager(username)
+            conversation = manager.get_conversation(target_conversation_id)
+            messages = conversation.get('messages', []) if isinstance(conversation, dict) else []
+
+            if not isinstance(messages, list):
+                raise ValueError(f"对话消息格式无效: {target_conversation_id}")
+
+            message_count = len(messages)
+
+        if skip_user_message:
+            return message_count
+
+        return message_count + 1
+
+    try:
+        stream_assistant_index = _resolve_stream_assistant_index()
+    except Exception as stream_index_error:
+        stream_assistant_index = None
+        print(
+            "[STREAM_INDEX] failed to resolve assistant index "
+            f"conversation_id={conversation_id} "
+            f"is_regenerate={is_regenerate} "
+            f"skip_user_message={skip_user_message} "
+            f"error={stream_index_error}"
+        )
+
     def _build_puzzle_submission_injection(puzzle_state, client_steps=None):
         """从服务端存储的 puzzle_state 构建注入文本，不信任客户端数据。"""
         submission = puzzle_state.get('submission') if isinstance(puzzle_state, dict) else None
@@ -10236,6 +11208,21 @@ def chat_stream():
                 conversation_id=conversation_id,
                 auto_create=(not bool(str(conversation_id or '').strip()))
             )
+
+            stream_log_model_name = model_name or getattr(model, "model_name", "")
+
+            def _push_model_stream_chunk(raw_chunk, source="yield"):
+                payload = raw_chunk if isinstance(raw_chunk, dict) else {'type': 'content', 'content': str(raw_chunk)}
+
+                if log_all_chunks or (log_tool_chunks and _is_tool_stream_chunk(payload)):
+                    _log_stream_chunk(
+                        payload,
+                        model_name=stream_log_model_name,
+                        source=source
+                    )
+
+                push_chunk(payload)
+
             _chat_latency_mark(
                 "model_created",
                 conversation_id=str(model.conversation_id or ""),
@@ -10333,9 +11320,7 @@ def chat_stream():
                     )
                     _chat_latency_flush("model_first_chunk")
 
-                if log_all_chunks:
-                    _log_stream_chunk(chunk, model_name=model_name or model.model_name)
-                push_chunk(chunk if isinstance(chunk, dict) else {'type': 'content', 'content': str(chunk)})
+                _push_model_stream_chunk(chunk, source="yield")
             set_stage("model_stream_exhausted")
         except Exception as e:
             set_stage("worker_error", str(e)[:500])
@@ -10557,6 +11542,48 @@ def _inject_local_agent_tools(model, agent_info: dict, cancel_checker=None):
         # 注入工具定义并登记为外部运行时工具，避免 sendMessage 重建基础工具时被清空。
         model.register_external_function_tool(formatted)
 
+        def _format_local_tool_failure_markdown(tool_name: str, result: dict, title: str) -> str:
+            error_text = str(result.get("error") or result.get("message") or "未知错误").strip()
+            lines = [
+                f"### {title}",
+                "",
+                f"- 工具: `{tool_name}`",
+                f"- 原因: {error_text}",
+            ]
+            detail_keys = [
+                "path",
+                "encoding",
+                "line_separator",
+                "bom",
+                "old_sha256",
+                "actual_sha256",
+                "expected_sha256",
+            ]
+            details = []
+
+            for key in detail_keys:
+                value = result.get(key)
+
+                if value is None or value == "":
+                    continue
+
+                details.append(f"- {key}: `{value}`")
+
+            if details:
+                lines.extend(["", "文件状态:", *details])
+
+            if tool_name == "local_file_patch":
+                lines.extend([
+                    "",
+                    "修正建议:",
+                    "- 多条 edits 会按顺序串行执行，后一条 target 会在前面 edit 修改后的内容中匹配。",
+                    "- 多行 target 可以使用 LF，工具会在 CRLF/CR/LF 换行归一化后做唯一匹配。",
+                    "- replace 使用 replacement；insert_before/insert_after 使用 content。",
+                    "- 如果是 SHA 不一致，请先重新 local_file_read 或 local_file_probe 获取最新 sha256。",
+                ])
+
+            return "\n".join(lines)
+
         # 注入执行处理器：WSS 在线时走 agent_tunnel_socket，不在线时走长轮询通道。
         def _make_handler(name: str, uname: str):
             def _handler(args: dict) -> str:
@@ -10578,7 +11605,7 @@ def _inject_local_agent_tools(model, agent_info: dict, cancel_checker=None):
                         if result and str(result.get("error") or "") == "stream_cancelled":
                             raise StreamCancelled("user_abort")
                         if result and "error" in result and not result.get("success", True):
-                            return f"本地工具 WSS 执行失败: {result['error']}"
+                            return _format_local_tool_failure_markdown(name, result, "本地工具 WSS 执行失败")
                         r = result.get("result", result)
                         return r if isinstance(r, str) else json.dumps(r, ensure_ascii=False)
                     except Exception as e:
@@ -10607,7 +11634,7 @@ def _inject_local_agent_tools(model, agent_info: dict, cancel_checker=None):
                 if str(result.get("error") or "") == "stream_cancelled":
                     raise StreamCancelled("user_abort")
                 if not result.get("success"):
-                    return f"本地工具执行失败: {result.get('error', result.get('message', '超时'))}"
+                    return _format_local_tool_failure_markdown(name, result, "本地工具执行失败")
                 r = result.get("result", result)
                 return r if isinstance(r, str) else json.dumps(r, ensure_ascii=False)
             return _handler
@@ -11149,10 +12176,12 @@ def list_knowledge():
             for title, meta in basis_knowledge.items():
                 meta['vector_exists'] = title in vector_titles
                 meta['pin'] = bool(meta.get('pin', False))
+                meta['model_readonly'] = bool(meta.get('model_readonly', False))
         else:
             for _, meta in basis_knowledge.items():
                 if isinstance(meta, dict):
                     meta['pin'] = bool(meta.get('pin', False))
+                    meta['model_readonly'] = bool(meta.get('model_readonly', False))
         
         return jsonify({
             'success': True,
@@ -11188,7 +12217,8 @@ def get_all_basis():
             result.append({
                 'title': safe_title,
                 'content': content,
-                'pin': bool((meta or {}).get('pin', False)) if isinstance(meta, dict) else False
+                'pin': bool((meta or {}).get('pin', False)) if isinstance(meta, dict) else False,
+                'model_readonly': bool((meta or {}).get('model_readonly', False)) if isinstance(meta, dict) else False
             })
         return jsonify({'success': True, 'knowledge': result})
     except Exception as e:
@@ -11340,9 +12370,10 @@ def update_knowledge_settings():
     new_title = data.get('new_title')
     is_public = data.get('public')
     is_collaborative = data.get('collaborative')
+    model_readonly = data.get('model_readonly')
     
     user = User(username)
-    success, msg = user.updateBasisSettings(title, new_title, is_public, is_collaborative)
+    success, msg = user.updateBasisSettings(title, new_title, is_public, is_collaborative, model_readonly)
     
     if success:
         # 如果获取了新标题或状态，返回新的 share_url
@@ -12077,26 +13108,8 @@ def ai_organize():
         for title in basis_list.keys():
             content = user.getBasisContent(title)
             all_knowledge.append(f"【{title}】\n{content[:300]}...")
-        
-        prompt = f"""分析以下知识库内容，构建更符合人类认知脉络的知识图谱。
-1. 分类方案：将知识点归纳到3-5个主要领域。
-2. 关系脉络：识别知识点之间的演化、推导、依赖或提及关系。
 
-知识列表：
-{chr(10).join(all_knowledge)}
-
-请以JSON格式返回：
-{{
-    "categories": [
-        {{"name": "分类名", "color": "#颜色代码", "knowledge": ["知识标题1", "知识标题2"]}}
-    ],
-    "nodes": [
-        {{"title": "知识标题", "summary": "一句话核心脉络"}}
-    ],
-    "connections": [
-        {{"from": "知识标题A", "to": "知识标题B", "type": "脉络/提及/依赖/属于", "description": "简短描述关系"}}
-    ]
-}}"""
+        prompt = prompts.build_knowledge_graph_analysis_prompt(all_knowledge)
         
 
         # 调用AI模型
@@ -12295,17 +13308,7 @@ def ai_generate_index():
             return jsonify({'success': False, 'error': '该分类下没有知识'})
         
         # 构建知识标题列表
-        titles_text = "\n".join([f"- {title}" for title in knowledge_ids])
-        
-        prompt = f"""请为【{category}】分类生成一个简洁的知识索引。
-
-该分类包含以下知识：
-{titles_text}
-
-请生成：
-1. 该分类的整体概述（1-2句话）
-2. 知识点之间的关联和主题分布
-3. 使用Markdown格式输出，简洁明了"""
+        prompt = prompts.build_knowledge_category_index_prompt(category, knowledge_ids)
         
         # 调用AI模型
         model = Model(username, auto_create=False)

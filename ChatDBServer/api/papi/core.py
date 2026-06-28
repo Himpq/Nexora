@@ -559,50 +559,170 @@ def _papi_normalize_tool_choice(tool_choice: Any, *, use_responses_api: bool) ->
     return tool_choice
 
 
-def _papi_extract_completion_text(response_obj: Any) -> str:
-    """从 provider 返回中尽量提取完整文本。"""
-    def _stringify_any(value: Any) -> str:
-        if value is None:
-            return ''
-        if isinstance(value, str):
-            return value
-        if isinstance(value, list):
-            parts: List[str] = []
-            for item in value:
-                piece = _stringify_any(item)
-                if piece:
-                    parts.append(piece)
-            return ''.join(parts)
-        if isinstance(value, dict):
-            for key in ('text', 'content', 'reasoning_content', 'reasoning_text', 'value', 'delta'):
-                if key in value:
-                    piece = _stringify_any(value.get(key))
-                    if piece:
-                        return piece
-            return ''
-        try:
-            return str(value)
-        except Exception:
-            return ''
+def _papi_read_obj_field(obj: Any, key: str, default: Any = None) -> Any:
+    if obj is None:
+        return default
 
-    def _extract_reasoning_like(container: Any) -> str:
-        if container is None:
-            return ''
-        if isinstance(container, dict):
-            for key in ('reasoning_content', 'reasoning', 'reasoning_text', 'thinking', 'thinking_content'):
-                piece = _stringify_any(container.get(key))
-                if piece and piece.strip():
-                    return piece.strip()
-        else:
-            for key in ('reasoning_content', 'reasoning', 'reasoning_text', 'thinking', 'thinking_content'):
-                try:
-                    piece = _stringify_any(getattr(container, key, None))
-                except Exception:
-                    piece = ''
-                if piece and piece.strip():
-                    return piece.strip()
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+
+    try:
+        extra = getattr(obj, 'model_extra', None)
+        if isinstance(extra, dict) and key in extra:
+            return extra.get(key, default)
+    except Exception:
+        pass
+
+    try:
+        return getattr(obj, key)
+    except Exception:
+        pass
+
+    try:
+        dump_fn = getattr(obj, 'model_dump', None)
+        if callable(dump_fn):
+            dumped = dump_fn(mode='python')
+            if isinstance(dumped, dict):
+                return dumped.get(key, default)
+    except Exception:
+        pass
+
+    return default
+
+
+def _papi_stringify_reasoning_value(value: Any) -> str:
+    if value is None:
         return ''
 
+    if isinstance(value, str):
+        return value
+
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+
+    if isinstance(value, list):
+        parts: List[str] = []
+
+        for item in value:
+            piece = _papi_stringify_reasoning_value(item)
+            if piece:
+                parts.append(piece)
+
+        return ''.join(parts)
+
+    if isinstance(value, dict):
+        for key in (
+            'text',
+            'content',
+            'summary',
+            'reasoning_content',
+            'reasoning_text',
+            'thinking',
+            'thinking_content',
+            'value',
+            'delta',
+        ):
+            if key in value:
+                piece = _papi_stringify_reasoning_value(value.get(key))
+                if piece:
+                    return piece
+
+        return ''
+
+    try:
+        return str(value)
+    except Exception:
+        return ''
+
+
+def _papi_extract_reasoning_text(response_obj: Any) -> str:
+    """提取 provider 返回的 reasoning 内容，禁止把它并入正文。"""
+    def _extract_from_container(container: Any, *, allow_reasoning_key: bool = True) -> str:
+        keys = ['reasoning_content', 'reasoning_text', 'thinking', 'thinking_content']
+        if allow_reasoning_key:
+            keys.insert(1, 'reasoning')
+
+        for key in keys:
+            piece = _papi_stringify_reasoning_value(_papi_read_obj_field(container, key, None))
+            if piece and piece.strip():
+                return piece.strip()
+
+        content = _papi_read_obj_field(container, 'content', None)
+        if isinstance(content, list):
+            parts: List[str] = []
+
+            for item in content:
+                item_type = str(_papi_read_obj_field(item, 'type', '') or '').strip().lower()
+                if 'reason' not in item_type and 'think' not in item_type:
+                    continue
+
+                piece = _papi_stringify_reasoning_value(item)
+                if piece and piece.strip():
+                    parts.append(piece.strip())
+
+            merged = ''.join(parts).strip()
+            if merged:
+                return merged
+
+        return ''
+
+    if response_obj is None:
+        return ''
+
+    direct_reasoning = _extract_from_container(response_obj, allow_reasoning_key=False)
+    if direct_reasoning:
+        return direct_reasoning
+
+    choices = _papi_read_obj_field(response_obj, 'choices', None)
+    if isinstance(choices, list) and choices:
+        choice0 = choices[0]
+        message = _papi_read_obj_field(choice0, 'message', None)
+        if message is not None:
+            message_reasoning = _extract_from_container(message)
+            if message_reasoning:
+                return message_reasoning
+
+        delta_obj = _papi_read_obj_field(choice0, 'delta', None)
+        if delta_obj is not None:
+            delta_reasoning = _extract_from_container(delta_obj)
+            if delta_reasoning:
+                return delta_reasoning
+
+    output_items = _papi_read_obj_field(response_obj, 'output', None)
+    if isinstance(output_items, list):
+        parts: List[str] = []
+
+        for item in output_items:
+            item_type = str(_papi_read_obj_field(item, 'type', '') or '').strip().lower()
+            if 'reason' in item_type or 'think' in item_type:
+                piece = _papi_stringify_reasoning_value(item)
+                if piece and piece.strip():
+                    parts.append(piece.strip())
+
+                continue
+
+            content = _papi_read_obj_field(item, 'content', None)
+            if not isinstance(content, list):
+                continue
+
+            for content_piece in content:
+                piece_type = str(_papi_read_obj_field(content_piece, 'type', '') or '').strip().lower()
+                if 'reason' not in piece_type and 'think' not in piece_type:
+                    continue
+
+                piece = _papi_stringify_reasoning_value(content_piece)
+                if piece and piece.strip():
+                    parts.append(piece.strip())
+
+        merged = ''.join(parts).strip()
+        if merged:
+            return merged
+
+    return ''
+
+
+def _papi_extract_completion_text(response_obj: Any) -> str:
+    """从 provider 返回中提取正文，reasoning 必须由独立字段承载。"""
     if response_obj is None:
         return ''
 
@@ -619,18 +739,13 @@ def _papi_extract_completion_text(response_obj: Any) -> str:
                 content = msg.get('content', '')
                 if isinstance(content, str):
                     return content.strip()
-                reasoning_text = _extract_reasoning_like(msg)
-                if reasoning_text:
-                    return reasoning_text
+
             if isinstance(choice0, dict):
                 delta_obj = choice0.get('delta')
                 if isinstance(delta_obj, dict):
                     delta_content = delta_obj.get('content')
                     if isinstance(delta_content, str) and delta_content.strip():
                         return delta_content.strip()
-                    reasoning_text = _extract_reasoning_like(delta_obj)
-                    if reasoning_text:
-                        return reasoning_text
 
         output_items = response_obj.get('output')
         if isinstance(output_items, list):
@@ -681,17 +796,13 @@ def _papi_extract_completion_text(response_obj: Any) -> str:
                     merged = ''.join([p for p in parts if str(p or '').strip()]).strip()
                     if merged:
                         return merged
-                reasoning_text = _extract_reasoning_like(message)
-                if reasoning_text:
-                    return reasoning_text
+
             delta_obj = getattr(choice0, 'delta', None)
             if delta_obj is not None:
                 delta_content = getattr(delta_obj, 'content', None)
                 if isinstance(delta_content, str) and delta_content.strip():
                     return delta_content.strip()
-                reasoning_text = _extract_reasoning_like(delta_obj)
-                if reasoning_text:
-                    return reasoning_text
+
     except Exception:
         pass
 
@@ -856,10 +967,13 @@ def _papi_build_openai_payload(
     quota_status: Dict[str, Any],
 ) -> Dict[str, Any]:
     content = _papi_extract_completion_text(response_obj)
+    reasoning_content = _papi_extract_reasoning_text(response_obj)
     tool_calls = _papi_extract_tool_calls(response_obj)
     finish_reason = _papi_extract_finish_reason(response_obj)
+
     if tool_calls and finish_reason == 'stop':
         finish_reason = 'tool_calls'
+
     usage = _papi_extract_usage(response_obj)
     payload = {
         'id': _papi_extract_response_id(response_obj),
@@ -889,8 +1003,13 @@ def _papi_build_openai_payload(
     if tool_calls:
         payload['message']['tool_calls'] = tool_calls
         payload['choices'][0]['message']['tool_calls'] = tool_calls
+    if reasoning_content:
+        payload['reasoning_content'] = reasoning_content
+        payload['message']['reasoning_content'] = reasoning_content
+        payload['choices'][0]['message']['reasoning_content'] = reasoning_content
     if usage:
         payload['usage'] = usage
+
     return payload
 
 
@@ -930,33 +1049,19 @@ def _papi_stream_openai_chat(
         role_emitted = False
         usage_payload = None
         saw_tool_calls = False
-        reasoning_started = False
-        reasoning_ended = False
+        finish_reason = 'stop'
+
         for ev in event_iter:
             if not isinstance(ev, dict):
                 continue
+
             ev_type = str(ev.get('type') or '').strip()
             if ev_type == 'content_delta':
-                # 如果 reasoning 还没结束，先关闭 <think> 标签
-                if reasoning_started and not reasoning_ended:
-                    reasoning_ended = True
-                    delta_payload: Dict[str, Any] = {}
-                    if not role_emitted:
-                        delta_payload['role'] = 'assistant'
-                        role_emitted = True
-                    delta_payload['content'] = '</think>'
-                    chunk = {
-                        'id': completion_id,
-                        'object': 'chat.completion.chunk',
-                        'created': created_ts,
-                        'model': model_name,
-                        'choices': [{'index': 0, 'delta': delta_payload, 'finish_reason': None}],
-                    }
-                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
                 delta_payload: Dict[str, Any] = {}
                 if not role_emitted:
                     delta_payload['role'] = 'assistant'
                     role_emitted = True
+
                 delta_payload['content'] = str(ev.get('delta') or '')
                 chunk = {
                     'id': completion_id,
@@ -967,26 +1072,12 @@ def _papi_stream_openai_chat(
                 }
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
             elif ev_type == 'reasoning_delta':
-                # 对外保持 chat.completions 兼容：把 reasoning 映射到 delta.content，
-                # 并用 <think> 标签包裹，让客户端能够识别 thinking 内容。
                 delta_payload: Dict[str, Any] = {}
                 if not role_emitted:
                     delta_payload['role'] = 'assistant'
                     role_emitted = True
-                # 如果 reasoning 还没开始，先发送 <think> 标签
-                if not reasoning_started:
-                    reasoning_started = True
-                    delta_payload['content'] = '<think>'
-                    chunk = {
-                        'id': completion_id,
-                        'object': 'chat.completion.chunk',
-                        'created': created_ts,
-                        'model': model_name,
-                        'choices': [{'index': 0, 'delta': delta_payload, 'finish_reason': None}],
-                    }
-                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-                    delta_payload = {}
-                delta_payload['content'] = str(ev.get('delta') or '')
+
+                delta_payload['reasoning_content'] = str(ev.get('delta') or '')
                 chunk = {
                     'id': completion_id,
                     'object': 'chat.completion.chunk',
@@ -1058,26 +1149,21 @@ def _papi_stream_openai_chat(
                     'completion_tokens': int(ev.get('output_tokens', 0) or 0),
                     'total_tokens': int(ev.get('total_tokens', 0) or 0),
                 }
+            elif ev_type == 'finish_reason':
+                reason = str(ev.get('finish_reason') or '').strip()
+                if reason:
+                    finish_reason = reason
 
-        # 如果 reasoning 已经开始但还没结束，关闭 <think> 标签
-        if reasoning_started and not reasoning_ended:
-            reasoning_ended = True
-            delta_payload = {'content': '</think>'}
-            chunk = {
-                'id': completion_id,
-                'object': 'chat.completion.chunk',
-                'created': created_ts,
-                'model': model_name,
-                'choices': [{'index': 0, 'delta': delta_payload, 'finish_reason': None}],
-            }
-            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+        final_finish_reason = finish_reason or 'stop'
+        if saw_tool_calls and final_finish_reason == 'stop':
+            final_finish_reason = 'tool_calls'
 
         final_chunk = {
             'id': completion_id,
             'object': 'chat.completion.chunk',
             'created': created_ts,
             'model': model_name,
-            'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'tool_calls' if saw_tool_calls else 'stop'}],
+            'choices': [{'index': 0, 'delta': {}, 'finish_reason': final_finish_reason}],
         }
         if include_usage and usage_payload:
             final_chunk['usage'] = usage_payload
@@ -1096,11 +1182,14 @@ def _papi_build_responses_payload(
     quota_status: Dict[str, Any],
 ) -> Dict[str, Any]:
     content = _papi_extract_completion_text(response_obj)
+    reasoning_content = _papi_extract_reasoning_text(response_obj)
     tool_calls = _papi_extract_tool_calls(response_obj)
     usage = _papi_extract_usage(response_obj)
     response_id = _papi_extract_response_id(response_obj)
+
     if not str(response_id or '').startswith('resp_'):
         response_id = f'resp_{uuid.uuid4().hex}'
+
     message_item_id = f'msg_{uuid.uuid4().hex}'
     output_items: List[Dict[str, Any]] = [
         {
@@ -1141,12 +1230,16 @@ def _papi_build_responses_payload(
         'success': True,
         'quota': quota_status,
     }
+    if reasoning_content:
+        payload['reasoning_content'] = reasoning_content
+
     if usage:
         payload['usage'] = {
             'input_tokens': int(usage.get('prompt_tokens', 0) or 0),
             'output_tokens': int(usage.get('completion_tokens', 0) or 0),
             'total_tokens': int(usage.get('total_tokens', 0) or 0),
         }
+
     return payload
 
 
@@ -1581,6 +1674,7 @@ def _papi_stream_openai_responses(
 
     def _event_stream():
         text_parts: List[str] = []
+        reasoning_parts: List[str] = []
         function_calls: Dict[str, Dict[str, Any]] = {}
         sequence_number = 0
 
@@ -1681,34 +1775,25 @@ def _papi_stream_openai_responses(
             native_web_search_enabled=False,
         )
         first_event_seen = False
-        reasoning_started = False
-        reasoning_ended = False
+
         try:
             for ev in event_iter:
                 if not isinstance(ev, dict):
                     continue
+
                 if not first_event_seen:
                     first_event_seen = True
                     _papi_log(f"[PAPI_RESP_STREAM_OPEN] model={model_name} first_event_received")
+
                 ev_type = str(ev.get('type') or '').strip()
                 if ev_type == 'response_id':
                     rid = str(ev.get('response_id') or '').strip()
                     if rid:
                         response_id_box[0] = rid if rid.startswith('resp_') else f'resp_{rid}'
+
                     continue
+
                 if ev_type == 'content_delta':
-                    # 如果 reasoning 还没结束，先关闭 <think> 标签
-                    if reasoning_started and not reasoning_ended:
-                        reasoning_ended = True
-                        text_parts.append('</think>')
-                        yield _emit({
-                            'type': 'response.output_text.delta',
-                            'response_id': response_id_box[0],
-                            'item_id': message_item_id,
-                            'output_index': message_output_index,
-                            'content_index': message_content_index,
-                            'delta': '</think>',
-                        })
                     delta = str(ev.get('delta') or '')
                     if delta:
                         text_parts.append(delta)
@@ -1720,34 +1805,21 @@ def _papi_stream_openai_responses(
                             'content_index': message_content_index,
                             'delta': delta,
                         })
+
                     continue
+
                 if ev_type == 'reasoning_delta':
-                    # 与 content 统一通道输出，避免上游仅 thinking 时客户端拿不到文本。
-                    # 用 <think> 标签包裹，让客户端能够识别 thinking 内容。
                     delta = str(ev.get('delta') or '')
                     if delta:
-                        # 如果 reasoning 还没开始，先发送 <think> 标签
-                        if not reasoning_started:
-                            reasoning_started = True
-                            text_parts.append('<think>')
-                            yield _emit({
-                                'type': 'response.output_text.delta',
-                                'response_id': response_id_box[0],
-                                'item_id': message_item_id,
-                                'output_index': message_output_index,
-                                'content_index': message_content_index,
-                                'delta': '<think>',
-                            })
-                        text_parts.append(delta)
+                        reasoning_parts.append(delta)
                         yield _emit({
-                            'type': 'response.output_text.delta',
+                            'type': 'response.reasoning.delta',
                             'response_id': response_id_box[0],
-                            'item_id': message_item_id,
-                            'output_index': message_output_index,
-                            'content_index': message_content_index,
                             'delta': delta,
                         })
+
                     continue
+
                 if ev_type == 'function_call_delta':
                     call_id = str(ev.get('call_id') or f'fc_{len(function_calls)}').strip()
                     entry = function_calls.setdefault(call_id, {
@@ -1788,7 +1860,9 @@ def _papi_stream_openai_responses(
                                 'output_index': int(entry['output_index']),
                                 'delta': str(ev.get('arguments_delta') or ''),
                             })
+
                     continue
+
                 if ev_type == 'function_call':
                     call_id = str(ev.get('call_id') or f'fc_{len(function_calls)}').strip()
                     entry = function_calls.setdefault(call_id, {
@@ -1827,6 +1901,7 @@ def _papi_stream_openai_responses(
                             'output_index': int(entry['output_index']),
                             'delta': full_arguments,
                         })
+
                     continue
         except Exception as stream_error:
             _papi_log(f"[PAPI_RESP_STREAM_ITER] model={model_name} error={stream_error}", level='error')
@@ -1847,20 +1922,8 @@ def _papi_stream_openai_responses(
             yield "data: [DONE]\n\n"
             return
 
-        # 如果 reasoning 已经开始但还没结束，关闭 <think> 标签
-        if reasoning_started and not reasoning_ended:
-            reasoning_ended = True
-            text_parts.append('</think>')
-            yield _emit({
-                'type': 'response.output_text.delta',
-                'response_id': response_id_box[0],
-                'item_id': message_item_id,
-                'output_index': message_output_index,
-                'content_index': message_content_index,
-                'delta': '</think>',
-            })
-
         final_text = ''.join(text_parts)
+        reasoning_text = ''.join(reasoning_parts)
         yield _emit({
             'type': 'response.output_text.done',
             'response_id': response_id_box[0],

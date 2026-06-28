@@ -24,6 +24,9 @@ from .utils import CHUNK_OVERLAP, CHUNK_SIZE, chunk_text
 # NexoraLearning 使用固定 username，用 library 区分课程或讲座。
 _NEXORA_USERNAME = "nexoralearning"
 _THREAD_LOCK = threading.Lock()
+_SERVICE_STATE_LOCK = threading.Lock()
+_SERVICE_STATE: Dict[str, Dict[str, Any]] = {}
+_DEFAULT_UNAVAILABLE_COOLDOWN_SECONDS = 60
 
 
 def get_chunking_config(cfg: Dict[str, Any]) -> Dict[str, int]:
@@ -71,18 +74,93 @@ def _get_key(cfg: Dict[str, Any]) -> str:
     return str(db_cfg.get("api_key") or "")
 
 
-def _post(cfg: Dict[str, Any], path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    """向 NexoraDB 发起 JSON POST 请求。"""
+def _get_service_state_key(cfg: Dict[str, Any]) -> str:
+    """按服务地址隔离 NexoraDB 运行状态。"""
+    return _get_url(cfg)
+
+
+def _as_config_bool(value: Any, default: bool = True) -> bool:
+    """读取配置布尔值。"""
+    if value is None:
+        return default
+
+    if isinstance(value, bool):
+        return value
+
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _get_unavailable_cooldown(cfg: Dict[str, Any]) -> int:
+    """读取连接失败后的停用窗口。"""
+    db_cfg = cfg.get("nexoradb") or {}
+
+    try:
+        value = int(db_cfg.get("unavailable_cooldown_seconds") or _DEFAULT_UNAVAILABLE_COOLDOWN_SECONDS)
+    except Exception:
+        value = _DEFAULT_UNAVAILABLE_COOLDOWN_SECONDS
+
+    return max(1, value)
+
+
+def _mark_nexoradb_available(cfg: Dict[str, Any]) -> None:
+    """真实请求成功后清除不可用标记。"""
+    key = _get_service_state_key(cfg)
+
+    with _SERVICE_STATE_LOCK:
+        _SERVICE_STATE.pop(key, None)
+
+
+def _mark_nexoradb_unavailable(cfg: Dict[str, Any], message: str) -> None:
+    """真实请求失败后短暂停用向量流程。"""
+    key = _get_service_state_key(cfg)
+
+    with _SERVICE_STATE_LOCK:
+        _SERVICE_STATE[key] = {
+            "available": False,
+            "message": str(message or "NexoraDB 连接失败"),
+            "disabled_until": time.time() + _get_unavailable_cooldown(cfg),
+        }
+
+
+def _get_timeout(cfg: Dict[str, Any], default: float) -> float:
+    """读取 NexoraDB 请求超时配置。"""
+    db_cfg = cfg.get("nexoradb") or {}
+
+    try:
+        timeout = float(db_cfg.get("request_timeout") or default)
+    except Exception:
+        timeout = default
+
+    return max(0.5, timeout)
+
+
+def _request_json(
+    cfg: Dict[str, Any],
+    method: str,
+    path: str,
+    payload: Optional[Dict[str, Any]] = None,
+    timeout: Optional[float] = None,
+) -> Dict[str, Any]:
+    """向 NexoraDB 发起 JSON 请求。"""
     url = f"{_get_url(cfg)}{path}"
-    headers: Dict[str, str] = {"Content-Type": "application/json"}
+    headers: Dict[str, str] = {}
     key = _get_key(cfg)
+
     if key:
         headers["X-API-Key"] = key
-    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+
+    data = None
+
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=_get_timeout(cfg, 30.0) if timeout is None else timeout) as resp:
             body = resp.read().decode("utf-8")
+            _mark_nexoradb_available(cfg)
             return json.loads(body) if body else {}
     except urllib.error.HTTPError as exc:
         try:
@@ -91,7 +169,65 @@ def _post(cfg: Dict[str, Any], path: str, payload: Dict[str, Any]) -> Dict[str, 
         except Exception:
             return {"success": False, "message": str(exc)}
     except Exception as exc:
-        return {"success": False, "message": str(exc)}
+        message = str(exc)
+        _mark_nexoradb_unavailable(cfg, message)
+        return {"success": False, "message": message}
+
+
+def _post(cfg: Dict[str, Any], path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """向 NexoraDB 发起 JSON POST 请求。"""
+    return _request_json(cfg, "POST", path, payload=payload)
+
+
+def get_nexoradb_status(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """读取本地记录的 NexoraDB 运行状态，不发起网络探测。"""
+    service_url = _get_url(cfg)
+    db_cfg = cfg.get("nexoradb") if isinstance(cfg.get("nexoradb"), dict) else {}
+
+    if "enabled" in db_cfg and not _as_config_bool(db_cfg.get("enabled"), default=True):
+        return {
+            "available": False,
+            "service_url": service_url,
+            "message": "NexoraDB 已在配置中关闭",
+        }
+
+    key = _get_service_state_key(cfg)
+    now = time.time()
+
+    with _SERVICE_STATE_LOCK:
+        state = dict(_SERVICE_STATE.get(key) or {})
+
+        if state and now < float(state.get("disabled_until") or 0):
+            return {
+                "available": False,
+                "service_url": service_url,
+                "message": str(state.get("message") or "NexoraDB 暂时不可用"),
+                "disabled_until": state.get("disabled_until"),
+            }
+
+        if state:
+            _SERVICE_STATE.pop(key, None)
+
+    return {
+        "available": True,
+        "service_url": service_url,
+        "message": "",
+    }
+
+
+def is_nexoradb_available(cfg: Dict[str, Any]) -> bool:
+    """返回 NexoraDB 当前是否可用。"""
+    return bool(get_nexoradb_status(cfg).get("available"))
+
+
+def require_nexoradb_available(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """要求 NexoraDB 已连接，否则停止向量流程。"""
+    status = get_nexoradb_status(cfg)
+
+    if not status.get("available"):
+        raise RuntimeError(str(status.get("message") or "NexoraDB 未连接，向量检索与向量化已停用"))
+
+    return status
 
 
 def upsert_chunks(
@@ -123,6 +259,9 @@ def upsert_chunks_to_library(
     """将切片写入指定 library。"""
     if not chunks:
         return 0
+
+    require_nexoradb_available(cfg)
+
     extra = dict(metadata_extra or {})
     items = []
     for index, chunk in enumerate(chunks):
@@ -181,12 +320,50 @@ def query(
     material_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """检索课程向量，返回 [{text, metadata, distance}]。"""
+    return query_library(
+        cfg,
+        library=_library(course_id),
+        query_text=query_text,
+        top_k=top_k,
+        material_id=material_id,
+    )
+
+
+def query_lecture(
+    cfg: Dict[str, Any],
+    lecture_id: str,
+    query_text: str,
+    top_k: int = 5,
+    book_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """检索讲座教材向量，返回 [{text, metadata, distance}]。"""
+    return query_library(
+        cfg,
+        library=f"lecture_{lecture_id}",
+        query_text=query_text,
+        top_k=top_k,
+        material_id=book_id,
+    )
+
+
+def query_library(
+    cfg: Dict[str, Any],
+    *,
+    library: str,
+    query_text: str,
+    top_k: int = 5,
+    material_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """检索指定 NexoraDB library。"""
+    require_nexoradb_available(cfg)
+
     payload: Dict[str, Any] = {
         "username": _NEXORA_USERNAME,
         "text": query_text,
         "top_k": top_k,
-        "library": _library(course_id),
+        "library": str(library),
     }
+
     if material_id:
         payload["where"] = {"material_id": material_id}
 
@@ -240,6 +417,8 @@ def vectorize_book(
         raise ValueError("Book text is empty.")
     if not force and str(book.get("vector_status") or "").strip().lower() == "vectorizing":
         return {"success": True, "queued": False, "status": "vectorizing", "book": book}
+
+    require_nexoradb_available(cfg)
 
     update_book(cfg, lecture_id, book_id, {"vector_status": "vectorizing", "error": ""})
     chunks = split_text_for_vector(cfg, text)
@@ -308,6 +487,8 @@ def queue_vectorize_book(
     book = get_book(cfg, lecture_id, book_id)
     if book is None:
         raise ValueError(f"Book not found: {lecture_id}/{book_id}")
+    require_nexoradb_available(cfg)
+
     with _THREAD_LOCK:
         update_book(cfg, lecture_id, book_id, {"vector_status": "queued", "error": ""})
         threading.Thread(
