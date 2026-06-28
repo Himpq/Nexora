@@ -7,6 +7,7 @@ Model 只负责主流程编排和 Provider 调用细节。
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from enum import Enum
 from typing import Any, Callable, Dict, Generator, List, Mapping, Optional, Tuple
 
@@ -470,6 +471,7 @@ class ChatContextManager:
 
         model = self.model
         normalized = model._compact_context_content(normalized, context_compact_mode)
+        normalized = self._prefix_history_time_to_content(normalized, item)
         context.add(role, normalized)
 
     def _normalize_history_message_content(
@@ -611,6 +613,7 @@ class ChatContextManager:
 
         if normalized_final is not None:
             normalized_final = model._compact_context_content(normalized_final, context_compact_mode)
+            normalized_final = self._prefix_history_time_to_content(normalized_final, item)
             messages.append({"role": "assistant", "content": normalized_final})
 
         return messages
@@ -920,6 +923,80 @@ class ChatContextManager:
 
         return normalized
 
+    def _format_history_time_prefix(self, item: Dict[str, Any]) -> str:
+        if not isinstance(item, dict):
+            return ""
+
+        timestamp = str(item.get("timestamp", "") or "").strip()
+
+        if not timestamp:
+            return ""
+
+        try:
+            dt = datetime.fromisoformat(timestamp)
+            text = dt.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return ""
+
+        text = text.strip()
+
+        if not text:
+            return ""
+
+        return f"[TIME] {text}"
+
+    def _prefix_history_time_to_content(self, content: Any, item: Dict[str, Any]) -> Any:
+        prefix = self._format_history_time_prefix(item)
+
+        if not prefix:
+            return content
+
+        if isinstance(content, str):
+            text = content.strip()
+
+            if not text:
+                return content
+
+            if text.startswith("[TIME]") or text.startswith("[{TIME:") or text.startswith("[历史消息时间:"):
+                return content
+
+            return f"{prefix}\n{text}"
+
+        if isinstance(content, list):
+            out: List[Any] = []
+            applied = False
+
+            for part in content:
+                if not isinstance(part, dict):
+                    out.append(part)
+                    continue
+
+                copied = dict(part)
+                item_type = str(copied.get("type", "") or "").strip().lower()
+
+                if (
+                    not applied
+                    and item_type in {"text", "input_text", "output_text"}
+                    and isinstance(copied.get("text"), str)
+                    and str(copied.get("text") or "").strip()
+                ):
+                    text = str(copied.get("text") or "").strip()
+
+                    if not (
+                        text.startswith("[TIME]")
+                        or text.startswith("[{TIME:")
+                        or text.startswith("[历史消息时间:")
+                    ):
+                        copied["text"] = f"{prefix}\n{text}"
+
+                    applied = True
+
+                out.append(copied)
+
+            return out
+
+        return content
+
     def content_to_text_for_context_compression(self, content: Any) -> str:
         """将多模态消息内容转换为可压缩的纯文本表达。"""
         if content is None:
@@ -1018,6 +1095,7 @@ class ChatContextManager:
                 continue
 
             compacted = model._compact_context_content(item.get("content", ""), compact_mode)
+            compacted = self._prefix_history_time_to_content(compacted, item)
             text = self.content_to_text_for_context_compression(compacted).strip()
 
             if not text:
@@ -1054,7 +1132,7 @@ class ChatContextManager:
     ) -> Generator[Dict[str, Any], None, Dict[str, Any]]:
         """执行专用上下文压缩轮次。"""
         model = self.model
-        system_prompt = "你是对话上下文压缩器，只输出压缩后的上下文摘要。"
+        system_prompt = str(prompts.context_compression_system_prompt or "")
         safe_max_chars = max(
             CONTEXT_COMPRESSION_MAX_CHARS_MIN,
             min(CONTEXT_COMPRESSION_MAX_CHARS_MAX, int(max_chars or CONTEXT_COMPRESSION_MAX_CHARS_DEFAULT)),
@@ -1069,8 +1147,8 @@ class ChatContextManager:
             f"profile_chars={len(str(profile_text or ''))} "
             f"recent_chars={len(str(recent_dialogue_text or ''))}"
         )
-        update_short_text = "可用 updateShort：覆盖更新当前用户短期记忆画像。"
-        add_short_text = "可用 addShort：追加一条短期记忆，适合记录新的离散偏好或近期事项。"
+        update_short_text = str(prompts.context_compression_update_short_instruction or "")
+        add_short_text = str(prompts.context_compression_add_short_instruction or "")
         prompt_text = prompts.build_context_compression_prompt(
             history_text,
             profile_text=profile_text,

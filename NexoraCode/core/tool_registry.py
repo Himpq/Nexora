@@ -3,6 +3,7 @@
 """
 
 import importlib
+import inspect
 import sys
 import traceback
 from pathlib import Path
@@ -80,7 +81,7 @@ class ToolRegistry:
             })
         return result
 
-    def execute(self, tool_name: str, params: dict) -> dict[str, Any]:
+    def execute(self, tool_name: str, params: dict, context: dict[str, Any] | None = None) -> dict[str, Any]:
         resolved_tool_name = str(tool_name or "").strip()
 
         if resolved_tool_name not in self._tools:

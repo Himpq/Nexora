@@ -4,14 +4,14 @@
   --bg-sidebar-active: #ffffff;
   --text-sidebar: #a0a0a0;
   --text-sidebar-active: #000000;
-  
+
   --bg-main: #ffffff;
   --text-main: #111111;
   --text-secondary: #666666;
-  
+
   --border-light: #eaeaea;
   --border-input: #e0e0e0;
-  
+
   --bg-user-msg: #f4f4f4;
   --bg-ai-msg: #ffffff;
   --sidebar-width-normal: 260px;
@@ -158,24 +158,19 @@ body.learning-workspace-active .sidebar .btn-icon:hover {
 }
 
 @keyframes multiPhaseDots {
-    /* 1. 闪烁 1s (0% - 22%) */
     0%   { content: "."; opacity: 1; }
     5%   { content: "."; opacity: 0; }
     10%  { content: "."; opacity: 1; }
     15%  { content: "."; opacity: 0; }
     20%  { content: "."; opacity: 1; }
-    
-    /* 2. 增长动态 1.5s (22% - 55%) */
     22%  { content: "."; opacity: 1; }
     33%  { content: ".."; opacity: 1; }
     44%  { content: "..."; opacity: 1; }
     55%  { content: "...?"; opacity: 1; }
-    
-    /* 3. 问号滞留 1s (55% - 77%) */
     77%  { content: "...?"; opacity: 1; }
-    
-    /* 4. 回到 "." 并滞留 1s (77% - 100%) */
-    78%  { content: "."; opacity: 1; }
+    78%  { content: "..."; opacity: 1; }
+    82%  { content: ".."; opacity: 1; }
+    86%  { content: "."; opacity: 1; }
     100% { content: "."; opacity: 1; }
 }
 .btn-icon { background: none; border: none; color: inherit; cursor: pointer; padding: 5px; border-radius: 4px; transition: all 0.2s; }
@@ -336,11 +331,11 @@ body.learning-workspace-active .sidebar-content::-webkit-scrollbar-thumb:hover {
     color: #ff4d4f;
     background-color: rgba(255,255,255,0.1);
 }
-.conversation-item .title { 
-    flex: 1; 
-    overflow: hidden; 
-    text-overflow: ellipsis; 
-    white-space: nowrap; 
+.conversation-item .title {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     min-width: 0; /* Critical for flex child truncation */
 }
 .conversation-item-right {
@@ -407,21 +402,21 @@ body.learning-workspace-active .sidebar-footer {
   display: none;
 }
 
-.user-profile { 
-    display: flex; 
-    align-items: center; 
-    gap: 12px; 
-    border-top: 1px solid #1a1a1a; 
+.user-profile {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    border-top: 1px solid #1a1a1a;
     padding-top: 15px;
     margin-top: 5px;
 }
-.user-profile .avatar { 
-    width: 32px; height: 32px; 
-    background: #333; color: #fff; 
+.user-profile .avatar {
+    width: 32px; height: 32px;
+    background: #333; color: #fff;
     font-size: 12px; border-radius: 50%;
     display: flex; align-items: center; justify-content: center;
 }
-.user-profile .username { 
+.user-profile .username {
     flex: 1; color: #fff; font-size: 14px; font-weight: 500;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
@@ -556,6 +551,14 @@ body.learning-workspace-active .sidebar-footer {
   margin-bottom: 20px;
   align-items: center; /* Center the message blocks horizontally */
 }
+
+.messages-area.messages-input-collapsed {
+    flex: 1 1 100%;
+    height: 100%;
+    min-height: 0;
+    margin-bottom: 0;
+}
+
 .learning-main-panel {
   background: var(--bg-main);
 }
@@ -862,6 +865,48 @@ body.learning-workspace-active #learningMainPanel.learning-main-panel {
 .thinking-content a {
     word-break: break-all;
     overflow-wrap: anywhere;
+}
+
+.kb-reference {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 220px;
+    min-height: 22px;
+    margin: 0 3px;
+    padding: 2px 7px;
+    border: 1px solid var(--border-input);
+    border-radius: 999px;
+    background: #f7f7f7;
+    color: var(--text-main);
+    font: inherit;
+    font-size: 12px;
+    line-height: 1.35;
+    vertical-align: baseline;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.kb-reference:hover {
+    background: #ffffff;
+    border-color: #111111;
+    color: #000000;
+}
+
+.kb-reference i {
+    flex: 0 0 auto;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.kb-reference:hover i {
+    color: #111111;
+}
+
+.kb-reference span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 /* --- LaTeX spacing --- */
@@ -2062,20 +2107,19 @@ body.learning-workspace-active #learningMainPanel.learning-main-panel {
     position: fixed;
     right: 20px;
     top: 78px;
-    width: 360px;
-    min-width: 280px;
+    width: 420px;
+    min-width: 320px;
     min-height: 240px;
     max-width: calc(100vw - 24px);
-    height: min(62vh, 560px);
-    background: #fff;
-    border: 1px solid #dbe4f1;
-    border-radius: 14px;
-    box-shadow: 0 14px 36px rgba(15, 23, 42, 0.16);
+    height: min(68vh, 620px);
+    background: #f8fafc;
+    border: 1px solid rgba(148, 163, 184, 0.34);
+    border-radius: 12px;
+    box-shadow: 0 18px 48px rgba(15, 23, 42, 0.18);
     z-index: 3601;
     display: none;
     flex-direction: column;
     overflow: hidden;
-    min-width: 0;
 }
 
 .timeline-panel.active {
@@ -2091,10 +2135,10 @@ body.learning-workspace-active #learningMainPanel.learning-main-panel {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
-    padding: 10px 12px;
-    border-bottom: 1px solid #edf2f9;
-    background: linear-gradient(180deg, #f8fbff 0%, #ffffff 100%);
+    gap: 12px;
+    padding: 14px 16px 12px;
+    border-bottom: 1px solid rgba(226, 232, 240, 0.95);
+    background: #ffffff;
     cursor: move;
     touch-action: none;
 }
@@ -2110,14 +2154,16 @@ body.learning-workspace-active #learningMainPanel.learning-main-panel {
 
 .timeline-panel-head h3 {
     margin: 0;
-    font-size: 14px;
+    font-size: 15px;
+    line-height: 1.2;
     color: #0f172a;
+    font-weight: 800;
 }
 
 .timeline-panel-hint {
-    color: #64748b;
+    color: #6b7280;
     font-size: 11px;
-    line-height: 1.2;
+    line-height: 1.35;
 }
 
 .timeline-panel-head-actions {
@@ -2127,11 +2173,11 @@ body.learning-workspace-active #learningMainPanel.learning-main-panel {
 }
 
 .timeline-panel-close {
-    width: 28px;
-    height: 28px;
+    width: 30px;
+    height: 30px;
     border-radius: 8px;
-    border: 1px solid #dbe4f1;
-    background: #fff;
+    border: 1px solid #e2e8f0;
+    background: #f8fafc;
     color: #475569;
     display: inline-flex;
     align-items: center;
@@ -2141,8 +2187,8 @@ body.learning-workspace-active #learningMainPanel.learning-main-panel {
 
 .timeline-panel-close:hover {
     color: #0f172a;
-    border-color: #cbd5e1;
-    background: #f8fafc;
+    border-color: #94a3b8;
+    background: #ffffff;
 }
 
 .timeline-list {
@@ -2151,15 +2197,30 @@ body.learning-workspace-active #learningMainPanel.learning-main-panel {
     overflow-y: auto;
     overflow-x: hidden;
     scrollbar-gutter: stable;
-    padding: 8px;
+    padding: 12px 12px 14px;
     display: block;
     position: relative;
+    background: #f8fafc;
+}
+
+.timeline-list::-webkit-scrollbar {
+    width: 10px;
+}
+
+.timeline-list::-webkit-scrollbar-thumb {
+    border: 3px solid #f8fafc;
+    border-radius: 999px;
+    background: #cbd5e1;
+}
+
+.timeline-list::-webkit-scrollbar-track {
+    background: transparent;
 }
 
 .timeline-track {
     position: relative;
     display: grid;
-    gap: 12px;
+    gap: 10px;
     align-content: start;
     min-height: 100%;
 }
@@ -2167,23 +2228,24 @@ body.learning-workspace-active #learningMainPanel.learning-main-panel {
 .timeline-track::before {
     content: '';
     position: absolute;
-    left: 73px;
-    top: 14px;
-    bottom: 14px;
+    left: 87px;
+    top: 18px;
+    bottom: 18px;
     width: 2px;
     border-radius: 999px;
-    background: #dbe4f1;
+    background: linear-gradient(180deg, transparent 0%, #cbd5e1 8%, #cbd5e1 92%, transparent 100%);
     pointer-events: none;
 }
 
 .timeline-empty {
     border: 1px dashed #cbd5e1;
-    border-radius: 10px;
+    border-radius: 8px;
     background: #fff;
     color: #64748b;
     font-size: 12px;
     line-height: 1.6;
-    padding: 12px;
+    padding: 16px;
+    text-align: center;
 }
 
 .debug-console-panel {
@@ -2939,11 +3001,11 @@ body.learning-workspace-active #learningMainPanel.learning-main-panel {
 .timeline-item {
     position: relative;
     display: grid;
-    grid-template-columns: 78px minmax(0, 1fr);
-    gap: 10px;
+    grid-template-columns: 92px minmax(0, 1fr);
+    gap: 12px;
     align-items: start;
-    padding: 6px 0 6px 0;
-    border-radius: 12px;
+    padding: 4px 0;
+    border-radius: 8px;
     background: transparent;
     min-width: 0;
     overflow: visible;
@@ -2957,7 +3019,7 @@ body.learning-workspace-active #learningMainPanel.learning-main-panel {
     position: relative;
     grid-column: 1;
     min-width: 0;
-    padding: 8px 14px 8px 0;
+    padding: 10px 18px 8px 0;
     color: #64748b;
     font-size: 10px;
     line-height: 1.25;
@@ -2965,24 +3027,32 @@ body.learning-workspace-active #learningMainPanel.learning-main-panel {
 }
 
 .timeline-date-main {
-    font-weight: 700;
+    font-weight: 800;
     color: #0f172a;
-    font-size: 11px;
+    font-size: 12px;
     line-height: 1.1;
     text-align: right;
     padding-right: 0;
 }
 
+.timeline-date-time {
+    margin-top: 4px;
+    color: #94a3b8;
+    font-size: 10px;
+    line-height: 1;
+    text-align: right;
+}
+
 .timeline-node {
     position: absolute;
-    right: -1px;
-    top: 14px;
-    width: 8px;
-    height: 8px;
+    right: 0;
+    top: 16px;
+    width: 9px;
+    height: 9px;
     border-radius: 999px;
     background: #fff;
-    border: 2px solid #111827;
-    box-shadow: 0 0 0 2px #fff;
+    border: 2px solid #2563eb;
+    box-shadow: 0 0 0 3px #f8fafc;
     z-index: 2;
     transform: translateX(50%);
 }
@@ -2993,99 +3063,152 @@ body.learning-workspace-active #learningMainPanel.learning-main-panel {
     width: 100%;
     display: flex;
     flex-direction: column;
-    gap: 3px;
-    padding: 8px 10px 8px;
-    border: 1px solid #e5e7eb;
-    border-radius: 12px;
+    gap: 8px;
+    padding: 11px 12px 12px;
+    border: 1px solid rgba(226, 232, 240, 0.95);
+    border-radius: 8px;
     background: #fff;
     overflow: hidden;
     position: relative;
     z-index: 1;
     cursor: pointer;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+    transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
 }
 
 .timeline-content:hover {
-    background: #f8fafc;
+    border-color: #bfdbfe;
+    box-shadow: 0 8px 22px rgba(37, 99, 235, 0.1);
+    transform: translateY(-1px);
     cursor: pointer;
 }
 
 .timeline-top {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     min-width: 0;
 }
 
 .timeline-type-icon {
-    width: 18px;
-    height: 18px;
-    border-radius: 5px;
-    border: 1px solid #e5e7eb;
-    background: #f3f4f6;
-    color: #111827;
+    width: 24px;
+    height: 24px;
+    border-radius: 8px;
+    border: 1px solid #dbeafe;
+    background: #eff6ff;
+    color: #2563eb;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     flex: 0 0 auto;
+    font-size: 12px;
 }
 
 .timeline-title {
     min-width: 0;
+    flex: 1 1 auto;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     color: #0f172a;
-    font-size: 12px;
-    font-weight: 700;
+    font-size: 13px;
+    line-height: 1.3;
+    font-weight: 800;
+}
+
+.timeline-kind-label {
+    flex: 0 0 auto;
+    max-width: 58px;
+    height: 22px;
+    padding: 0 7px;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    background: #f8fafc;
+    color: #475569;
+    font-size: 11px;
+    line-height: 20px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .timeline-update-by {
     min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    overflow: hidden;
+    color: #6b7280;
+    font-size: 11px;
+    line-height: 1.2;
+}
+
+.timeline-update-by i {
+    flex: 0 0 auto;
+    color: #94a3b8;
+    font-size: 10px;
+}
+
+.timeline-update-by span {
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: #64748b;
-    font-size: 10px;
 }
 
 .timeline-diff {
     min-width: 0;
     display: flex;
     align-items: flex-start;
-    gap: 4px;
+    gap: 7px;
     overflow: hidden;
     white-space: normal;
     color: #475569;
-    font-size: 11px;
-    line-height: 1.32;
+    font-size: 12px;
+    line-height: 1.45;
+    padding: 8px 9px;
+    border-radius: 8px;
+    background: #f8fafc;
+    border: 1px solid #edf2f7;
 }
 
 .timeline-diff.positive {
-    color: #16a34a;
+    color: #166534;
+    background: #f0fdf4;
+    border-color: #bbf7d0;
 }
 
 .timeline-diff.negative {
-    color: #dc2626;
+    color: #991b1b;
+    background: #fef2f2;
+    border-color: #fecaca;
 }
 
 .timeline-diff.neutral {
-    color: #475569;
+    color: #334155;
 }
 
 .timeline-diff-sign {
     flex: 0 0 auto;
-    font-weight: 700;
-    line-height: 1.32;
+    height: 18px;
+    padding: 0 6px;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.72);
+    font-size: 10px;
+    font-weight: 800;
+    line-height: 18px;
 }
 
 .timeline-diff-body,
 .timeline-diff-summary {
     min-width: 0;
-    display: block;
     overflow: hidden;
-    white-space: nowrap;
+    white-space: normal;
     text-overflow: ellipsis;
-    word-break: normal;
+    word-break: break-word;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
 }
 
 .timeline-resize-handle {
@@ -3434,6 +3557,40 @@ body.settings-companion-mode #adminPublicApiDeleteModal {
         box-shadow: 0 14px 36px rgba(15, 23, 42, 0.2);
         z-index: 4600;
     }
+    .timeline-panel {
+        left: 8px;
+        right: 8px;
+        top: calc(62px + env(safe-area-inset-top));
+        width: auto;
+        min-width: 0;
+        max-width: none;
+        height: min(64dvh, 560px);
+        max-height: calc(100dvh - 78px - env(safe-area-inset-top));
+        border-radius: 12px;
+        z-index: 4601;
+    }
+    .timeline-panel-head {
+        padding: 12px 14px 10px;
+    }
+    .timeline-list {
+        padding: 10px 10px 12px;
+    }
+    .timeline-item {
+        grid-template-columns: 72px minmax(0, 1fr);
+        gap: 10px;
+    }
+    .timeline-track::before {
+        left: 67px;
+    }
+    .timeline-rail {
+        padding-right: 14px;
+    }
+    .timeline-title {
+        font-size: 12px;
+    }
+    .timeline-kind-label {
+        max-width: 52px;
+    }
     .debug-console-panel {
         left: 8px;
         right: 8px;
@@ -3510,7 +3667,7 @@ body.settings-companion-mode #adminPublicApiDeleteModal {
     position: relative;
     border: 1px solid #eee;
 }
-.modal-head { 
+.modal-head {
     padding: 20px 24px;
     border-bottom: 1px solid #f5f5f5;
     display: flex;
@@ -3530,9 +3687,9 @@ body.settings-companion-mode #adminPublicApiDeleteModal {
 .btn-modal-close:hover { color: #333; }
 
 .modal-body { padding: 24px; }
-.modal-body p { 
-    margin: 0 0 24px 0; 
-    line-height: 1.6; 
+.modal-body p {
+    margin: 0 0 24px 0;
+    line-height: 1.6;
     color: #666;
     font-size: 14px;
 }
@@ -3551,19 +3708,19 @@ body.settings-companion-mode #adminPublicApiDeleteModal {
     border: none;
     min-width: 80px;
 }
-.btn-confirm { 
-    background: #000; 
-    color: #fff; 
+.btn-confirm {
+    background: #000;
+    color: #fff;
 }
 .btn-confirm:hover { background: #333; }
-.btn-cancel { 
-    background: #f5f5f5; 
+.btn-cancel {
+    background: #f5f5f5;
     color: #666;
     border: 1px solid transparent;
 }
 .btn-cancel:hover { background: #eee; color: #333; }
-.btn-confirm-del { 
-    background: #ff4d4f !important; 
+.btn-confirm-del {
+    background: #ff4d4f !important;
     color: white !important;
 }
 .btn-confirm-del:hover { background: #ff7875 !important; }
@@ -3961,8 +4118,11 @@ body.settings-companion-mode #adminPublicApiDeleteModal {
     color: #555;
     max-height: 200px;
     overflow-y: auto;
+    overflow-x: hidden;
     display: none;
     white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: anywhere;
 }
 .tool-usage.expanded .tool-output {
     display: block;
@@ -4322,8 +4482,8 @@ body.settings-companion-mode #adminPublicApiDeleteModal {
     right: 12px;
     top: 50%;
     transform: translateY(-50%);
-    width: 8px; 
-    height: 8px; 
+    width: 8px;
+    height: 8px;
     background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%23333333' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
     background-position: center;
@@ -4334,47 +4494,222 @@ body.settings-companion-mode #adminPublicApiDeleteModal {
 
 /* Input Area */
 .input-dock {
-        position: relative;
-        width: 100%;
-        margin-top: -30px;
+    position: relative;
+    width: 100%;
+    margin-top: -30px;
+}
+
+.input-dock.input-dock-collapsed {
+    flex: 0 0 0;
+    height: 0;
+    min-height: 0;
+    margin-top: 0;
+    overflow: visible;
+    pointer-events: none;
+}
+
+.input-dock.input-dock-collapsing {
+    overflow: visible;
 }
 
 .input-dock.learning-mode-hidden,
 body.learning-workspace-active .input-dock {
-  display: none !important;
+    display: none !important;
 }
 .input-wrapper {
     position: relative;
     /* padding: 0 40px 40px; */
-  margin: 0 40px 40px;
-  background: var(--bg-main);
-  /* background: linear-gradient(180deg, rgba(255,255,255,0) 0%, rgba(255,255,255,1) 20%); */
+    margin: 0 40px 40px;
+    background: var(--bg-main);
+    /* background: linear-gradient(180deg, rgba(255,255,255,0) 0%, rgba(255,255,255,1) 20%); */
 }
+
+.input-wrapper.input-wrapper-collapsed {
+    position: absolute;
+    right: 40px;
+    bottom: 24px;
+    z-index: 40;
+    width: 38px;
+    height: 38px;
+    min-height: 0;
+    margin: 0;
+    background: transparent;
+    pointer-events: none;
+}
+
+.input-wrapper.input-wrapper-collapsed .input-container,
+.input-wrapper.input-wrapper-collapsed .input-collapse-btn {
+    pointer-events: auto;
+}
+
+.input-wrapper.input-wrapper-collapsed .input-container {
+    transition: none;
+}
+
+@media (max-width: 980px) {
+    .input-wrapper.input-wrapper-collapsed {
+        right: 16px;
+        bottom: max(16px, env(safe-area-inset-bottom));
+    }
+}
+
 .input-container {
-  max-width: 800px;
-  margin: 0 auto;
-  border: 1px solid var(--border-input);
-  border-radius: 12px;
-  padding: 12px 16px;
-  background: #fff;
-  box-shadow: 0 5px 20px rgba(0,0,0,0.03);
-  transition: border-color 0.2s, box-shadow 0.2s;
+    width: 100%;
+    max-width: 800px;
+    margin: 0 auto;
+    border: 1px solid var(--border-input);
+    border-radius: 12px;
+    padding: 12px 16px;
+    overflow: hidden;
+    background: #fff;
+    box-shadow: 0 5px 20px rgba(0,0,0,0.03);
+    box-sizing: border-box;
+    transition:
+        max-width 0.28s ease,
+        border-color 0.2s,
+        box-shadow 0.2s,
+        padding 0.26s ease;
 }
 .input-container:focus-within {
-  border-color: #999;
-  box-shadow: 0 5px 20px rgba(0,0,0,0.08);
+    border-color: #999;
+    box-shadow: 0 5px 20px rgba(0,0,0,0.08);
 }
 .input-container.file-drop-active {
-  border-color: #2563eb;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.16), 0 5px 20px rgba(0,0,0,0.08);
+    border-color: #2563eb;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.16), 0 5px 20px rgba(0,0,0,0.08);
 }
 .input-options {
-  display: flex;
-  gap: 15px;
-  margin-bottom: 10px;
-  border-bottom: 1px solid #f5f5f5;
-  padding-bottom: 8px;
-  user-select: none;
+    display: flex;
+    gap: 15px;
+    margin-bottom: 10px;
+    border-bottom: 1px solid #f5f5f5;
+    padding-bottom: 8px;
+    user-select: none;
+    transition: margin 0.26s ease, padding 0.26s ease, border-color 0.26s ease;
+}
+
+/* 工具项容器：grid 行高过渡实现展开/收起动画 */
+.input-options-tools {
+    flex: 1;
+    min-width: 0;
+    display: grid;
+    grid-template-rows: 1fr;
+    opacity: 1;
+    transform: translateY(0);
+    transition: grid-template-rows 0.26s ease, opacity 0.2s ease, transform 0.26s ease;
+}
+
+.input-options-tools-inner {
+    display: flex;
+    gap: 15px;
+    align-items: center;
+    overflow: hidden;
+    min-width: 0;
+    min-height: 0;
+}
+
+/* 输入容器向下收起：保留右上角按钮，其余内容向下滑出并被容器裁剪 */
+#messageInput,
+.input-footer,
+.file-preview-area,
+.upload-progress-chip {
+    max-height: 220px;
+    overflow: hidden;
+    opacity: 1;
+    transform: translateY(0);
+    transition:
+        max-height 0.28s ease,
+        min-height 0.28s ease,
+        margin 0.28s ease,
+        padding 0.28s ease,
+        opacity 0.18s ease,
+        transform 0.28s ease;
+}
+
+.input-container.input-collapsed .input-options {
+    overflow: hidden;
+    gap: 0;
+    justify-content: flex-end;
+    margin-bottom: 0;
+    padding-bottom: 0;
+    border-bottom: 0;
+}
+
+.input-container.input-collapsed {
+    max-width: 38px;
+    margin: 0 0 0 auto;
+    padding: 4px;
+    overflow: hidden !important;
+    box-shadow: none;
+}
+
+.input-container.input-collapsed .input-options-tools {
+    grid-template-rows: 0fr;
+    opacity: 0;
+    transform: translateY(14px);
+    pointer-events: none;
+}
+
+.input-container.input-collapsed .file-preview-area,
+.input-container.input-collapsed .upload-progress-chip {
+    max-height: 0 !important;
+    min-height: 0 !important;
+    margin-top: 0 !important;
+    margin-bottom: 0 !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    opacity: 0;
+    transform: translateY(14px);
+    pointer-events: none;
+}
+
+.input-container.input-collapsed #messageInput,
+.input-container.input-collapsed .input-footer {
+    max-height: 0 !important;
+    min-height: 0 !important;
+    margin-top: 0 !important;
+    margin-bottom: 0 !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+    opacity: 0;
+    transform: translateY(14px);
+    pointer-events: none;
+}
+
+.input-container.input-collapsed #messageInput {
+    border: 0;
+}
+
+.input-container.input-collapsed .input-collapse-btn {
+    margin-left: 0;
+}
+.input-collapse-btn {
+    margin-left: auto;
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    border-radius: 6px;
+    transition: background 0.15s, color 0.15s;
+}
+
+.input-collapse-btn:hover {
+    background: rgba(0,0,0,0.05);
+    color: var(--text-main);
+}
+
+/* 折叠态：箭头由向下转为向上 */
+.input-collapse-btn svg {
+    transition: transform 0.2s ease;
+}
+
+.input-collapse-btn.collapsed svg {
+    transform: rotate(180deg);
 }
 .file-preview-area,
 #filePreviewArea.file-preview-area {
@@ -5050,7 +5385,9 @@ textarea {
   padding-right: 66px;
 }
 .knowledge-item-label {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -5060,8 +5397,13 @@ textarea {
   line-height: 26px;
   padding-right: 2px;
 }
+.knowledge-item-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .knowledge-pin-icon {
-  margin-right: 6px;
   font-size: 11px;
   color: #2563eb;
   opacity: 0.9;
@@ -5142,6 +5484,117 @@ textarea {
     opacity: 1;
     pointer-events: auto;
   }
+}
+
+.knowledge-settings-modal {
+  width: 520px;
+  height: 560px;
+  max-width: 520px;
+  max-height: 560px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.knowledge-settings-head {
+  flex: 0 0 auto;
+  padding: 16px 20px;
+  border-bottom: 1px solid #eeeeee;
+  align-items: flex-start;
+}
+
+.knowledge-settings-head h3 {
+  margin: 0;
+}
+
+.knowledge-settings-head p {
+  margin: 5px 0 0;
+  color: #71717a;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.knowledge-settings-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 18px 20px 20px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.knowledge-settings-tabs {
+  margin-bottom: 16px;
+}
+
+.knowledge-settings-field {
+  margin-bottom: 14px;
+}
+
+.knowledge-settings-field label {
+  display: block;
+  margin-bottom: 8px;
+  color: #27272a;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.knowledge-settings-switch {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 13px 14px;
+  margin-bottom: 12px;
+  border: 1px solid #e4e4e7;
+  border-radius: 8px;
+  background: #fafafa;
+  cursor: pointer;
+}
+
+.knowledge-settings-switch:hover {
+  border-color: #d4d4d8;
+  background: #ffffff;
+}
+
+.knowledge-settings-switch input {
+  margin-top: 3px;
+}
+
+.knowledge-settings-switch-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.knowledge-settings-switch-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #18181b;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.knowledge-settings-switch-title i {
+  width: 14px;
+  color: #52525b;
+  text-align: center;
+}
+
+.knowledge-settings-switch-desc {
+  color: #71717a;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.knowledge-settings-footer {
+  flex: 0 0 auto;
+  padding: 16px 20px;
+  border-top: 1px solid #eeeeee;
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
 }
 @media (max-width: 980px) {
   .knowledge-item-actions {
@@ -5366,8 +5819,8 @@ textarea {
   to { opacity: 1; transform: translateY(0); }
 }
 
-.welcome-screen { display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100%; width: 100%; color: #888; text-align: center; } 
-.welcome-screen h1 { color: #000; font-weight: 600; margin-bottom: 12px; font-size: 24px; letter-spacing: -0.5px; } 
+.welcome-screen { display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100%; width: 100%; color: #888; text-align: center; }
+.welcome-screen h1 { color: #000; font-weight: 600; margin-bottom: 12px; font-size: 24px; letter-spacing: -0.5px; }
 .welcome-screen p { font-size: 15px; max-width: 400px; line-height: 1.5; }
 .learning-sidebar-panel {
   padding: 16px 14px 18px;
@@ -5434,49 +5887,57 @@ body.learning-workspace-active .learning-sidebar-panel {
 }
 
 .custom-select-container { position: relative; width: 220px; font-family: inherit; font-size: 14px; user-select: none; }
-.select-selected { 
-    background-color: transparent; 
-    padding: 8px 12px; 
-    border-radius: 8px; 
-    cursor: pointer; 
-    display: flex; 
-    align-items: center; 
-    justify-content: space-between; 
-    font-weight: 600; 
-    transition: background 0.2s ease; 
-    border: 1px solid transparent; 
+.select-selected {
+    background-color: transparent;
+    padding: 8px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-weight: 600;
+    transition: background 0.2s ease;
+    border: 1px solid transparent;
     color: var(--text-main);
     letter-spacing: -0.2px;
 }
 .select-selected:hover { background-color: rgba(0, 0, 0, 0.05); }
-.select-selected::after { 
-    content: ''; 
-    width: 10px; 
-    height: 10px; 
+.select-selected::after {
+    content: '';
+    width: 10px;
+    height: 10px;
     margin-left: 8px;
-    background-image: url('data:image/svg+xml,%3Csvg width=%2210%22 height=%226%22 viewBox=%220 0 10 6%22 fill=%22none%22 xmlns=%22http://www.w3.org/2000/svg%22%3E%3Cpath d=%22M1 1.5L5 4.5L9 1.5%22 stroke=%22%23666666%22 stroke-width=%221.8%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22/%3E%3C/svg%3E'); 
-    background-repeat: no-repeat; 
-    background-position: center; 
-    transition: transform 0.2s; 
+    background-image: url('data:image/svg+xml,%3Csvg width=%2210%22 height=%226%22 viewBox=%220 0 10 6%22 fill=%22none%22 xmlns=%22http://www.w3.org/2000/svg%22%3E%3Cpath d=%22M1 1.5L5 4.5L9 1.5%22 stroke=%22%23666666%22 stroke-width=%221.8%22 stroke-linecap=%22round%22 stroke-linejoin=%22round%22/%3E%3C/svg%3E');
+    background-repeat: no-repeat;
+    background-position: center;
+    transition: transform 0.2s;
     opacity: 0.6;
 }
 .select-selected.select-arrow-active { background-color: rgba(0, 0, 0, 0.05); }
 .select-selected.select-arrow-active::after { transform: rotate(180deg); opacity: 1; }
 
-.select-items { 
-    position: absolute; 
-    background-color: #ffffff; 
-    top: calc(100% + 8px); 
-    left: 0; 
-    min-width: 600px; 
+.select-items {
+    position: absolute;
+    background-color: #ffffff;
+    top: calc(100% + 8px);
+    left: 0;
+    min-width: 600px;
     max-width: calc(100vw - 40px);
-    z-index: 1000; 
-    border: 1px solid #e5e7eb; 
-    border-radius: 16px; 
-    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04); 
-    overflow-y: auto; 
-    max-height: 540px; 
-    padding: 20px; 
+    z-index: 1000;
+    border: 1px solid #e5e7eb;
+    border-radius: 16px;
+    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+    overflow: hidden;
+    max-height: 540px;
+    padding: 0;
+}
+.select-items .model-options-scroll {
+    max-height: inherit;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 20px;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(100, 116, 139, 0.42) transparent;
 }
 .select-hide { display: none; }
 .select-items .model-group { margin-bottom: 24px; }
@@ -7085,7 +7546,7 @@ body.learning-workspace-active .learning-sidebar-panel {
 }
 
 /* Add Basis Special View */
-.add-basis-view { 
+.add-basis-view {
     margin: 16px 0;
     border: 1px solid #e5e5e5;
     border-radius: 12px;
@@ -7093,7 +7554,7 @@ body.learning-workspace-active .learning-sidebar-panel {
     overflow: hidden;
     box-shadow: 0 2px 8px rgba(0,0,0,0.02);
 }
-.add-basis-header { 
+.add-basis-header {
     background: #fcfcfc;
     padding: 10px 16px;
     font-size: 12px;
@@ -7106,7 +7567,7 @@ body.learning-workspace-active .learning-sidebar-panel {
     align-items: center;
     text-transform: uppercase;
 }
-.add-basis-content { 
+.add-basis-content {
     padding: 16px;
     font-size: 14px;
     color: #333;
@@ -7115,7 +7576,7 @@ body.learning-workspace-active .learning-sidebar-panel {
     max-height: 250px;
     overflow-y: auto;
     background: #fff;
-    font-family: 'JetBrains Mono', monospace; 
+    font-family: 'JetBrains Mono', monospace;
 }
 .add-basis-content::-webkit-scrollbar { width: 6px; }
 .add-basis-content::-webkit-scrollbar-thumb { background: #eee; border-radius: 3px; }
@@ -7580,6 +8041,645 @@ body.is-admin .menu-item.admin-only {
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.04em;
+}
+
+#settingsModal .admin-system-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 14px;
+    flex-wrap: nowrap;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 10px;
+    background: #ffffff;
+}
+
+#settingsModal .admin-system-toolbar-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+    min-width: 0;
+}
+
+#settingsModal .admin-system-toolbar button,
+#settingsModal .admin-system-section-save,
+#settingsModal .admin-system-section-health {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    white-space: nowrap;
+}
+
+#settingsModal .admin-system-toolbar .settings-field {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 9px 12px;
+    text-align: right;
+}
+
+#settingsModal .admin-system-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+}
+
+#settingsModal .admin-system-section {
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 14px;
+    background: #ffffff;
+    min-width: 0;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+#settingsModal .admin-system-section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 14px;
+    flex-wrap: nowrap;
+}
+
+#settingsModal .admin-system-section-head h4 {
+    margin: 0;
+    color: #0f172a;
+    font-size: 14px;
+    font-weight: 800;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+#settingsModal .admin-system-section-head h4 i {
+    width: 26px;
+    height: 26px;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    color: #334155;
+    background: #f8fafc;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    flex: 0 0 auto;
+}
+
+#settingsModal .admin-system-section-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    justify-content: flex-end;
+    flex: 0 0 auto;
+    min-width: 0;
+}
+
+#settingsModal .admin-system-section-save,
+#settingsModal .admin-system-section-health,
+#settingsModal .btn-primary-outline.admin-system-section-save,
+#settingsModal .btn-primary-outline.admin-system-section-health,
+#settingsModal .btn-primary.admin-system-section-save,
+#settingsModal .btn-primary.admin-system-section-health {
+    flex: 0 0 86px;
+    width: 86px;
+    min-width: 86px;
+    max-width: 86px;
+    height: 32px;
+    min-height: 32px !important;
+    box-sizing: border-box;
+    padding: 0 12px !important;
+    border: 1px solid #d6dbe3 !important;
+    border-radius: 8px;
+    background: #ffffff !important;
+    color: #18181b !important;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1;
+    box-shadow: none;
+    transition: color 0.16s ease, background 0.16s ease, border-color 0.16s ease;
+}
+
+#settingsModal .admin-system-section-save:hover,
+#settingsModal .admin-system-section-health:hover,
+#settingsModal .btn-primary-outline.admin-system-section-save:hover,
+#settingsModal .btn-primary-outline.admin-system-section-health:hover,
+#settingsModal .btn-primary.admin-system-section-save:hover,
+#settingsModal .btn-primary.admin-system-section-health:hover {
+    border-color: #94a3b8 !important;
+    background: #f8fafc !important;
+    color: #0f172a !important;
+}
+
+#settingsModal .admin-system-section-save:disabled,
+#settingsModal .admin-system-section-health:disabled,
+#settingsModal .btn-primary-outline.admin-system-section-save:disabled,
+#settingsModal .btn-primary-outline.admin-system-section-health:disabled,
+#settingsModal .btn-primary.admin-system-section-save:disabled,
+#settingsModal .btn-primary.admin-system-section-health:disabled {
+    opacity: 0.58;
+    cursor: not-allowed;
+}
+
+#settingsModal .admin-system-section-health.is-testing,
+#settingsModal .btn-primary-outline.admin-system-section-health.is-testing,
+#settingsModal .btn-primary.admin-system-section-health.is-testing {
+    opacity: 1;
+    cursor: progress;
+    border-color: #93c5fd !important;
+    background: #eff6ff !important;
+    color: #1d4ed8 !important;
+}
+
+#settingsModal .admin-system-section-health.is-success,
+#settingsModal .btn-primary-outline.admin-system-section-health.is-success,
+#settingsModal .btn-primary.admin-system-section-health.is-success {
+    border-color: #86efac !important;
+    background: #dcfce7 !important;
+    color: #166534 !important;
+}
+
+#settingsModal .admin-system-section-health.is-error,
+#settingsModal .btn-primary-outline.admin-system-section-health.is-error,
+#settingsModal .btn-primary.admin-system-section-health.is-error {
+    border-color: #fecaca !important;
+    background: #fef2f2 !important;
+    color: #b91c1c !important;
+}
+
+#settingsModal .admin-system-enable-check {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    flex: 0 0 86px;
+    width: 86px;
+    min-width: 86px;
+    max-width: 86px;
+    height: 32px;
+    min-height: 32px;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0 12px;
+    border: 1px solid #d6dbe3;
+    border-radius: 8px;
+    background: #ffffff;
+    color: #18181b;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
+}
+
+#settingsModal .admin-system-enable-check:hover {
+    border-color: #94a3b8;
+    background: #ffffff;
+    color: #0f172a;
+}
+
+#settingsModal .admin-system-enable-check.is-on {
+    border-color: #16a34a;
+    background: #16a34a;
+    color: #ffffff;
+    box-shadow: none;
+}
+
+#settingsModal .admin-system-enable-check.is-on:hover {
+    border-color: #15803d;
+    background: #15803d;
+    color: #ffffff;
+}
+
+#settingsModal .admin-system-enable-check input {
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    accent-color: #16a34a;
+}
+
+#settingsModal .admin-system-form-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 12px;
+}
+
+#settingsModal .admin-system-form-grid .form-group {
+    margin-bottom: 0;
+    min-width: 0;
+}
+
+#settingsModal .admin-system-form-grid .form-group label {
+    font-size: 12px;
+    margin-bottom: 6px;
+}
+
+#settingsModal .admin-system-form-grid .input-modern {
+    min-height: 38px;
+    padding: 8px 10px;
+    font-size: 13px;
+    border-radius: 8px;
+}
+
+#settingsModal .admin-system-select {
+    position: relative;
+    min-width: 0;
+    max-width: 100%;
+}
+
+#settingsModal .admin-system-select-trigger {
+    appearance: none;
+    width: 100%;
+    min-height: 38px;
+    border: 1px solid #d6dbe3;
+    border-radius: 8px;
+    background: #ffffff;
+    color: #334155;
+    padding: 8px 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: color 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+}
+
+#settingsModal .admin-system-select-trigger:hover {
+    color: #0f172a;
+    border-color: #94a3b8;
+    background: #f8fafc;
+}
+
+#settingsModal .admin-system-select.open .admin-system-select-trigger {
+    color: #0f172a;
+    border-color: #6366f1;
+    background: #ffffff;
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.12);
+}
+
+#settingsModal .admin-system-select-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#settingsModal .admin-system-select-trigger i {
+    color: #64748b;
+    font-size: 11px;
+    flex: 0 0 auto;
+    transition: transform 0.16s ease;
+}
+
+#settingsModal .admin-system-select.open .admin-system-select-trigger i {
+    transform: rotate(180deg);
+}
+
+#settingsModal .admin-system-select-menu {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: auto;
+    z-index: 5400;
+    display: none;
+    width: var(--admin-system-select-menu-width, 260px);
+    max-width: calc(100vw - 24px);
+    max-height: min(280px, 42vh);
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+    border: 1px solid #d6dbe4;
+    border-radius: 10px;
+    padding: 6px;
+    background: #ffffff;
+    box-shadow: 0 12px 26px rgba(15, 23, 42, 0.14);
+    box-sizing: border-box;
+}
+
+#settingsModal .admin-system-select.open .admin-system-select-menu,
+#settingsModal .admin-system-select-menu.is-open,
+#settingsModal > .admin-system-select-menu.is-open {
+    display: grid !important;
+    gap: 4px;
+}
+
+#settingsModal .admin-system-select-option {
+    width: 100%;
+    min-height: 34px;
+    border: none;
+    border-radius: 7px;
+    background: transparent;
+    color: #475569;
+    padding: 7px 9px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    text-align: left;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.25;
+    cursor: pointer;
+    transition: color 0.14s ease, background 0.14s ease;
+}
+
+#settingsModal .admin-system-select-option:hover {
+    color: #0f172a;
+    background: #f1f5f9;
+}
+
+#settingsModal .admin-system-select-option.active {
+    color: #3730a3;
+    background: #eef2ff;
+}
+
+#settingsModal .admin-system-select-option.is-stale {
+    color: #7c2d12;
+    background: #fff7ed;
+}
+
+#settingsModal .admin-system-select-option-main {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#settingsModal .admin-system-select-option-meta {
+    color: #94a3b8;
+    font-size: 11px;
+    font-weight: 600;
+    flex: 0 0 auto;
+}
+
+#settingsModal .admin-system-select-menu.is-model-menu {
+    max-height: min(420px, 50vh);
+    overflow: hidden;
+    padding: 0;
+}
+
+#settingsModal .admin-system-select-menu.is-model-menu .admin-system-select-option {
+    width: auto;
+}
+
+#settingsModal .admin-system-select-menu.is-model-menu .admin-system-select-scroll {
+    max-height: inherit;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 16px;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(100, 116, 139, 0.42) transparent;
+}
+
+#settingsModal .admin-system-model-group {
+    margin-bottom: 18px;
+    min-width: 0;
+}
+
+#settingsModal .admin-system-model-group:last-child {
+    margin-bottom: 0;
+}
+
+#settingsModal .admin-system-model-group-title {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 0 0 12px;
+    min-width: 0;
+}
+
+#settingsModal .admin-system-model-group-title .provider-title-main {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+#settingsModal .admin-system-model-group-title .label {
+    color: #9ca3af;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+#settingsModal .admin-system-model-group-title::after {
+    content: "";
+    height: 1px;
+    flex: 1 1 auto;
+    min-width: 24px;
+    background: #f3f4f6;
+}
+
+#settingsModal .admin-system-model-chip-wrap {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    min-width: 0;
+}
+
+#settingsModal .admin-system-model-chip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 8px;
+    max-width: 100%;
+    min-height: 34px;
+    border: 1px solid #f3f4f6;
+    border-radius: 10px;
+    background: #f9fafb;
+    color: #4b5563;
+    padding: 8px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.2;
+    cursor: pointer;
+    transition: color 0.16s ease, background 0.16s ease, border-color 0.16s ease;
+}
+
+#settingsModal .admin-system-model-chip:hover {
+    border-color: #d1d5db;
+    background: #f3f4f6;
+    color: #111827;
+}
+
+#settingsModal .admin-system-model-chip.active {
+    border-color: #111827;
+    background: #111827;
+    color: #ffffff;
+}
+
+#settingsModal .admin-system-model-chip.is-stale {
+    border-color: #fed7aa;
+    background: #fff7ed;
+    color: #7c2d12;
+}
+
+#settingsModal .admin-system-model-chip.active.is-stale {
+    border-color: #111827;
+    background: #111827;
+    color: #ffffff;
+}
+
+#settingsModal .admin-system-model-chip-name {
+    min-width: 0;
+    max-width: 360px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#settingsModal .admin-system-model-chip-meta {
+    flex: 0 0 auto;
+    border-radius: 6px;
+    padding: 2px 6px;
+    background: #f8fafc;
+    color: #64748b;
+    border: 1px solid #e2e8f0;
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    line-height: 1.1;
+    white-space: nowrap;
+}
+
+#settingsModal .admin-system-model-chip.active .admin-system-model-chip-meta {
+    background: rgba(255, 255, 255, 0.16);
+    color: #ffffff;
+    border-color: transparent;
+}
+
+#settingsModal .admin-system-wide {
+    grid-column: 1 / -1;
+}
+
+#settingsModal #settings-admin-system-tab.admin-tab-content.active {
+    display: grid !important;
+    grid-template-rows: auto minmax(0, 1fr) !important;
+    min-height: 0 !important;
+    height: auto !important;
+    overflow: hidden !important;
+}
+
+#settingsModal #settings-admin-system-tab .admin-system-layout {
+    display: grid !important;
+    grid-template-columns: 280px minmax(0, 1fr) !important;
+    min-height: 0 !important;
+    height: auto !important;
+    overflow: hidden !important;
+}
+
+#settingsModal #settings-admin-system-tab .admin-system-module-list,
+#settingsModal #settings-admin-system-tab .admin-system-detail {
+    min-height: 0 !important;
+    height: auto !important;
+    overflow-y: auto !important;
+}
+
+#settingsModal #settings-admin-system-tab .admin-system-toolbar-row {
+    align-items: center;
+}
+
+#settingsModal #settings-admin-system-tab .admin-system-toolbar-row .settings-field {
+    flex: 1 1 220px;
+    min-width: 220px;
+    height: 34px;
+    min-height: 34px;
+    padding: 0 10px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    font-size: 12px;
+    line-height: 1.2;
+}
+
+#settingsModal #settings-admin-system-tab .admin-system-module-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #334155;
+    font-size: 14px;
+}
+
+#settingsModal #settings-admin-system-tab .admin-system-grid {
+    display: block;
+    min-width: 0;
+}
+
+#settingsModal #settings-admin-system-tab .admin-system-detail .admin-system-section {
+    display: none;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    background: transparent;
+    box-shadow: none;
+}
+
+#settingsModal #settings-admin-system-tab .admin-system-detail .admin-system-section.active {
+    display: block;
+}
+
+@media (max-width: 980px) {
+    #settingsModal .admin-system-form-grid {
+        grid-template-columns: 1fr;
+    }
+
+    #settingsModal .admin-system-toolbar {
+        align-items: center;
+    }
+
+    #settingsModal .admin-system-toolbar .settings-field {
+        font-size: 12px;
+    }
+
+    #settingsModal .admin-system-section-head,
+    #settingsModal .admin-system-section-actions {
+        align-items: center;
+    }
+
+    #settingsModal #settings-admin-system-tab .admin-system-layout {
+        grid-template-columns: 1fr !important;
+    }
+}
+
+@media (max-width: 640px) {
+    #settingsModal .admin-system-toolbar {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    #settingsModal .admin-system-toolbar .settings-field {
+        text-align: left;
+    }
+
+    #settingsModal .admin-system-section-head {
+        flex-wrap: wrap;
+    }
+
+    #settingsModal .admin-system-section-actions {
+        flex: 1 1 100%;
+        justify-content: flex-start;
+        flex-wrap: wrap;
+    }
+
+    #settingsModal .admin-system-section-save,
+    #settingsModal .admin-system-section-health {
+        flex: 0 0 auto;
+    }
+
+    #settingsModal .admin-system-model-chip-name {
+        max-width: 210px;
+    }
 }
 
 #settingsModal .modal-footer {
@@ -8682,15 +9782,85 @@ body.is-admin .menu-item.admin-only {
     background: #fef2f2;
 }
 
+.avatar-crop-modal {
+    width: min(900px, calc(100vw - 32px)) !important;
+    max-width: 900px !important;
+    height: min(760px, calc(100vh - 32px)) !important;
+    max-height: calc(100vh - 32px) !important;
+    padding: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: hidden !important;
+}
+
+.avatar-crop-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+    padding: 18px;
+    background: #ffffff;
+}
+
 .avatar-crop-layout {
     display: grid;
-    grid-template-columns: 1fr 200px;
-    gap: 14px;
-    align-items: start;
+    grid-template-columns: minmax(0, 1fr) 200px;
+    gap: 16px;
+    align-items: stretch;
+    height: 100%;
+    min-height: 0;
 }
 
 .avatar-crop-main {
     min-width: 0;
+    min-height: 0;
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) auto;
+    gap: 12px;
+}
+
+.avatar-crop-canvas-wrap {
+    min-width: 0;
+    min-height: 360px;
+    overflow: hidden;
+    border: 1px solid #d6deea;
+    border-radius: 10px;
+    background: #9ca3af;
+}
+
+.avatar-crop-canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    cursor: grab;
+}
+
+.avatar-crop-controls {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    background: #f8fafc;
+}
+
+.avatar-crop-controls label {
+    color: #475569;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.avatar-crop-controls input[type="range"] {
+    width: 100%;
+    min-width: 0;
+}
+
+.avatar-crop-reset {
+    min-width: 64px;
+    white-space: nowrap;
 }
 
 .avatar-crop-preview-wrap {
@@ -8702,6 +9872,10 @@ body.is-admin .menu-item.admin-only {
     flex-direction: column;
     align-items: center;
     gap: 10px;
+}
+
+.avatar-crop-footer {
+    flex: 0 0 auto;
 }
 
 .avatar-crop-preview-title {
@@ -9164,6 +10338,7 @@ body.is-admin .menu-item.admin-only {
 }
 
 /* Avoid window-level scrollbar in merged settings admin tabs */
+#settings-admin-system-tab.admin-tab-content.active,
 #settings-admin-users-tab.admin-tab-content.active,
 #settings-admin-mail-tab.admin-tab-content.active {
     display: flex;
@@ -9271,6 +10446,7 @@ body.is-admin .menu-item.admin-only {
     flex-direction: column !important;
 }
 
+#settingsModal #settings-admin-system-tab.admin-tab-content.active,
 #settingsModal #settings-admin-users-tab.admin-tab-content.active,
 #settingsModal #settings-admin-mail-tab.admin-tab-content.active {
     display: grid !important;
@@ -9280,6 +10456,7 @@ body.is-admin .menu-item.admin-only {
     overflow: hidden !important;
 }
 
+#settingsModal #settings-admin-system-tab .admin-users-layout,
 #settingsModal #settings-admin-users-tab .admin-users-layout,
 #settingsModal #settings-admin-mail-tab .admin-users-layout {
     display: grid !important;
@@ -9289,6 +10466,8 @@ body.is-admin .menu-item.admin-only {
     overflow: hidden !important;
 }
 
+#settingsModal #settings-admin-system-tab .admin-users-list,
+#settingsModal #settings-admin-system-tab .admin-user-detail,
 #settingsModal #settings-admin-users-tab .admin-users-list,
 #settingsModal #settings-admin-users-tab .admin-user-detail,
 #settingsModal #settings-admin-mail-tab .admin-users-list,
@@ -9379,6 +10558,14 @@ body.is-admin .menu-item.admin-only {
     }
     .avatar-crop-layout {
         grid-template-columns: 1fr;
+        height: auto;
+    }
+    .avatar-crop-body {
+        overflow-y: auto;
+    }
+    .avatar-crop-canvas-wrap {
+        height: min(52vh, 460px);
+        min-height: 300px;
     }
     .avatar-crop-preview-wrap {
         flex-direction: row;
@@ -9468,6 +10655,7 @@ body.is-admin .menu-item.admin-only {
         min-height: 0 !important;
     }
 
+    #settingsModal #settings-admin-system-tab.admin-tab-content.active,
     #settingsModal #settings-admin-users-tab.admin-tab-content.active,
     #settingsModal #settings-admin-mail-tab.admin-tab-content.active,
     #settingsModal #settings-admin-models-tab.admin-tab-content.active {
@@ -9476,12 +10664,15 @@ body.is-admin .menu-item.admin-only {
         height: auto !important;
     }
 
+    #settingsModal #settings-admin-system-tab .admin-users-layout,
     #settingsModal #settings-admin-users-tab .admin-users-layout,
     #settingsModal #settings-admin-mail-tab .admin-users-layout {
         grid-template-columns: 1fr !important;
         overflow: visible !important;
     }
 
+    #settingsModal #settings-admin-system-tab .admin-users-list,
+    #settingsModal #settings-admin-system-tab .admin-user-detail,
     #settingsModal #settings-admin-users-tab .admin-users-list,
     #settingsModal #settings-admin-users-tab .admin-user-detail,
     #settingsModal #settings-admin-mail-tab .admin-users-list,
@@ -10025,6 +11216,10 @@ body.is-admin .menu-item.admin-only {
         align-items: center !important;
         flex-wrap: nowrap !important;
         overflow: visible !important;
+    }
+
+    .input-options-tools-inner {
+        gap: 8px !important;
     }
 
     .check-box {
@@ -10594,9 +11789,12 @@ body.is-admin .menu-item.admin-only {
 }
 
 .settings-skill-mode-floating {
+    position: fixed !important;
+    display: grid !important;
+    gap: 6px;
     min-width: 116px;
     max-width: 220px;
-    z-index: 9600 !important;
+    z-index: 12020 !important;
     max-height: min(54vh, 260px);
     overflow-y: auto;
     overscroll-behavior: contain;
@@ -10823,7 +12021,8 @@ body:not(.settings-companion-mode) #settingsModal .admin-users-toolbar {
 }
 
 body:not(.settings-companion-mode) #settingsModal #settings-admin-users-tab.admin-tab-content.active,
-body:not(.settings-companion-mode) #settingsModal #settings-admin-mail-tab.admin-tab-content.active {
+body:not(.settings-companion-mode) #settingsModal #settings-admin-mail-tab.admin-tab-content.active,
+body:not(.settings-companion-mode) #settingsModal #settings-admin-system-tab.admin-tab-content.active {
     display: grid !important;
     grid-template-rows: auto minmax(0, 1fr) !important;
     gap: 12px;
@@ -10831,7 +12030,8 @@ body:not(.settings-companion-mode) #settingsModal #settings-admin-mail-tab.admin
 }
 
 body:not(.settings-companion-mode) #settingsModal #settings-admin-users-tab .admin-users-layout,
-body:not(.settings-companion-mode) #settingsModal #settings-admin-mail-tab .admin-users-layout {
+body:not(.settings-companion-mode) #settingsModal #settings-admin-mail-tab .admin-users-layout,
+body:not(.settings-companion-mode) #settingsModal #settings-admin-system-tab .admin-users-layout {
     min-height: 0 !important;
     height: 100% !important;
     overflow: hidden !important;
@@ -10840,7 +12040,9 @@ body:not(.settings-companion-mode) #settingsModal #settings-admin-mail-tab .admi
 body:not(.settings-companion-mode) #settingsModal #settings-admin-users-tab .admin-users-list,
 body:not(.settings-companion-mode) #settingsModal #settings-admin-users-tab .admin-user-detail,
 body:not(.settings-companion-mode) #settingsModal #settings-admin-mail-tab .admin-users-list,
-body:not(.settings-companion-mode) #settingsModal #settings-admin-mail-tab .admin-user-detail {
+body:not(.settings-companion-mode) #settingsModal #settings-admin-mail-tab .admin-user-detail,
+body:not(.settings-companion-mode) #settingsModal #settings-admin-system-tab .admin-users-list,
+body:not(.settings-companion-mode) #settingsModal #settings-admin-system-tab .admin-user-detail {
     min-height: 0 !important;
     overflow: auto !important;
 }
@@ -10896,7 +12098,8 @@ body:not(.settings-companion-mode) #settingsModal #settings-admin-models-tab .mo
     }
 
     body:not(.settings-companion-mode) #settingsModal #settings-admin-users-tab .admin-users-layout,
-    body:not(.settings-companion-mode) #settingsModal #settings-admin-mail-tab .admin-users-layout {
+    body:not(.settings-companion-mode) #settingsModal #settings-admin-mail-tab .admin-users-layout,
+    body:not(.settings-companion-mode) #settingsModal #settings-admin-system-tab .admin-users-layout {
         display: flex !important;
         gap: 8px;
         overflow-x: auto !important;
@@ -10904,13 +12107,15 @@ body:not(.settings-companion-mode) #settingsModal #settings-admin-models-tab .mo
     }
 
     body:not(.settings-companion-mode) #settingsModal #settings-admin-users-tab .admin-users-list,
-    body:not(.settings-companion-mode) #settingsModal #settings-admin-mail-tab .admin-users-list {
+    body:not(.settings-companion-mode) #settingsModal #settings-admin-mail-tab .admin-users-list,
+    body:not(.settings-companion-mode) #settingsModal #settings-admin-system-tab .admin-users-list {
         min-width: 280px;
         flex: 0 0 280px;
     }
 
     body:not(.settings-companion-mode) #settingsModal #settings-admin-users-tab .admin-user-detail,
-    body:not(.settings-companion-mode) #settingsModal #settings-admin-mail-tab .admin-user-detail {
+    body:not(.settings-companion-mode) #settingsModal #settings-admin-mail-tab .admin-user-detail,
+    body:not(.settings-companion-mode) #settingsModal #settings-admin-system-tab .admin-user-detail {
         min-width: 520px;
         flex: 1 0 520px;
     }
@@ -11678,31 +12883,32 @@ body:not(.settings-companion-mode) #settingsModal #settings-admin-models-tab.adm
 
 /* ===== Final admin auth/model fix lock ===== */
 #settingsModal #settings-admin-auth-tab #adminPublicApiRegenerateBtn {
-    background: #fff6cf !important;
-    border: 1px solid #f7de8a !important;
-    color: #6b5200 !important;
+    background: #ffffff !important;
+    border: 1px solid #cbd5e1 !important;
+    color: #334155 !important;
 }
 
 #settingsModal #settings-admin-auth-tab #adminPublicApiRegenerateBtn:hover {
-    background: #fcecad !important;
-    border-color: #e8cb67 !important;
-    color: #4d3b00 !important;
+    background: #f8fafc !important;
+    border-color: #94a3b8 !important;
+    color: #0f172a !important;
 }
 
 #settingsModal #settings-admin-auth-tab #adminPublicApiRevokeBtn {
-    background: #dc2626 !important;
-    border: 1px solid #dc2626 !important;
-    color: #ffffff !important;
+    background: #ffffff !important;
+    border: 1px solid #fecaca !important;
+    color: #dc2626 !important;
 }
 
 #settingsModal #settings-admin-auth-tab #adminPublicApiRevokeBtn:hover {
-    background: #b91c1c !important;
-    border-color: #b91c1c !important;
+    background: #fef2f2 !important;
+    border-color: #fca5a5 !important;
 }
 
 #settingsModal #settings-admin-auth-tab.admin-tab-content.active {
     display: grid !important;
     grid-template-rows: auto minmax(0, 1fr) !important;
+    gap: 12px !important;
     min-height: 0 !important;
     overflow: hidden !important;
 }
@@ -11739,6 +12945,289 @@ body:not(.settings-companion-mode) #settingsModal #settings-admin-models-tab.adm
 #settingsModal #settings-admin-models-tab #adminModelConfigList {
     border: 1px solid #e5e7eb !important;
     border-radius: 10px !important;
+}
+
+#settingsModal #settings-admin-models-tab.admin-tab-content.active,
+body:not(.settings-companion-mode) #settingsModal #settings-admin-models-tab.admin-tab-content.active {
+    display: grid !important;
+    grid-template-rows: auto minmax(0, 1fr) !important;
+    gap: 12px !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+    padding-top: 0 !important;
+}
+
+#settingsModal #settings-admin-models-tab.admin-tab-content.active > .admin-users-toolbar {
+    display: grid !important;
+    grid-template-columns: max-content max-content minmax(180px, 1fr) max-content !important;
+    gap: 12px !important;
+    width: 100% !important;
+    margin-top: 0 !important;
+    margin-bottom: 12px !important;
+    align-items: center !important;
+    flex-wrap: nowrap !important;
+}
+
+#settingsModal #settings-admin-models-tab.admin-tab-content.active > .admin-users-toolbar .btn-primary {
+    white-space: nowrap !important;
+}
+
+#settingsModal #settings-admin-models-tab.admin-tab-content.active > .admin-users-toolbar .model-admin-search {
+    width: 100% !important;
+    min-width: 0 !important;
+    flex: 0 1 auto !important;
+}
+
+#settingsModal #settings-admin-models-tab.admin-tab-content.active > .admin-users-toolbar .model-admin-toolbar-unit {
+    margin-left: 0 !important;
+    height: 36px !important;
+    flex: 0 0 auto !important;
+}
+
+#settingsModal #settings-admin-models-tab.admin-tab-content.active > .admin-users-toolbar .model-admin-toolbar-unit select {
+    min-width: 112px !important;
+    height: 36px !important;
+}
+
+#settingsModal #settings-admin-models-tab.admin-tab-content.active > .admin-users-layout,
+#settingsModal #settings-admin-models-tab.admin-tab-content.active > .model-admin-users-layout {
+    padding-top: 0 !important;
+    margin-top: 0 !important;
+    min-height: 0 !important;
+}
+
+@media (max-width: 980px) {
+    #settingsModal #settings-admin-models-tab.admin-tab-content.active > .admin-users-toolbar {
+        grid-template-columns: max-content max-content minmax(260px, 1fr) max-content !important;
+        overflow-x: auto !important;
+        overflow-y: hidden !important;
+    }
+}
+
+/* ===== Settings admin control layout polish ===== */
+#settingsModal #settings-admin-gen-image-tab.admin-tab-content.active {
+    display: grid !important;
+    grid-template-rows: auto minmax(0, 1fr) !important;
+    gap: 12px !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+}
+
+#settingsModal #settings-admin-gen-image-tab.admin-tab-content.active > .admin-users-toolbar {
+    display: flex !important;
+    align-items: center !important;
+    gap: 12px !important;
+    margin-bottom: 12px !important;
+}
+
+#settingsModal #settings-admin-gen-image-tab #btnAddGenImageApi {
+    width: auto !important;
+    min-width: 112px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 8px !important;
+    white-space: nowrap !important;
+}
+
+#settingsModal #settings-admin-gen-image-tab #adminGenImageApiSearchInput {
+    width: 100% !important;
+    min-width: 0 !important;
+}
+
+#settingsModal #settings-admin-gen-image-tab .admin-users-layout {
+    display: grid !important;
+    grid-template-columns: 280px minmax(0, 1fr) !important;
+    gap: 12px !important;
+    min-height: 0 !important;
+    height: 100% !important;
+    margin-top: 0 !important;
+    padding-top: 0 !important;
+    overflow: hidden !important;
+}
+
+#settingsModal #settings-admin-gen-image-tab .admin-users-list,
+#settingsModal #settings-admin-gen-image-tab .admin-user-detail {
+    min-height: 0 !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+}
+
+#settingsModal #settings-admin-gen-image-tab .admin-user-item {
+    grid-template-columns: 40px minmax(0, 1fr);
+}
+
+#settingsModal #settings-admin-gen-image-tab .admin-gen-image-icon {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    background: #f8fafc;
+    color: #0f172a;
+    box-sizing: border-box;
+    line-height: 1;
+}
+
+#settingsModal #settings-admin-gen-image-tab .admin-gen-image-icon i {
+    line-height: 1;
+}
+
+#settingsModal #settings-admin-gen-image-tab .admin-gen-image-detail-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+#settingsModal #settings-admin-gen-image-tab .admin-gen-image-head-main {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+}
+
+#settingsModal #settings-admin-gen-image-tab .admin-gen-image-actions {
+    margin-top: 0 !important;
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+#settingsModal #settings-admin-gen-image-tab .admin-gen-image-actions > button {
+    width: auto !important;
+    min-width: 88px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 6px !important;
+    white-space: nowrap !important;
+    flex: 0 0 auto !important;
+    border-radius: 8px !important;
+}
+
+#settingsModal #settings-admin-gen-image-tab .admin-user-detail-grid {
+    gap: 12px 16px;
+}
+
+#settingsModal #settings-admin-auth-tab #adminPublicApiGenerateBtn,
+#settingsModal #settings-admin-auth-tab #adminPublicApiSaveSettingsBtn {
+    width: auto !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 8px !important;
+    background: #ffffff !important;
+    border: 1px solid #cbd5e1 !important;
+    color: #334155 !important;
+}
+
+#settingsModal #settings-admin-auth-tab.admin-tab-content.active > .admin-users-toolbar {
+    margin-bottom: 12px !important;
+}
+
+#settingsModal #settings-admin-auth-tab.admin-tab-content.active > .admin-users-layout {
+    margin-top: 0 !important;
+    padding-top: 0 !important;
+}
+
+#settingsModal #settings-admin-auth-tab .admin-public-api-global-toggle,
+#settingsModal #settings-admin-auth-tab .admin-public-api-global-save,
+#settingsModal #settings-admin-auth-tab .admin-public-api-status-group {
+    display: none !important;
+}
+
+#settingsModal #settings-admin-auth-tab #adminPublicApiGenerateBtn:hover,
+#settingsModal #settings-admin-auth-tab #adminPublicApiSaveSettingsBtn:hover {
+    background: #f8fafc !important;
+    border-color: #94a3b8 !important;
+    color: #0f172a !important;
+}
+
+#settingsModal #settings-admin-auth-tab .admin-public-api-key-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #334155;
+    font-size: 14px;
+}
+
+#settingsModal #settings-admin-auth-tab .admin-public-api-action-row {
+    display: grid !important;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    gap: 10px !important;
+    margin-bottom: 0 !important;
+}
+
+#settingsModal #settings-admin-auth-tab .admin-public-api-hidden {
+    display: none !important;
+}
+
+#settingsModal #settings-admin-auth-tab .admin-public-api-action-row > button {
+    width: 100% !important;
+    min-width: 0 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 8px !important;
+    border-radius: 8px !important;
+    font-weight: 700 !important;
+    white-space: nowrap !important;
+}
+
+#settingsModal #settings-admin-auth-tab #adminPublicApiRegenerateBtn {
+    background: #ffffff !important;
+    border: 1px solid #cbd5e1 !important;
+    color: #334155 !important;
+}
+
+#settingsModal #settings-admin-auth-tab #adminPublicApiRegenerateBtn:hover {
+    background: #f8fafc !important;
+    border-color: #94a3b8 !important;
+    color: #0f172a !important;
+}
+
+#settingsModal #settings-admin-auth-tab #adminPublicApiRevokeBtn {
+    background: #fef2f2 !important;
+    border: 1px solid #fecaca !important;
+    color: #b91c1c !important;
+}
+
+#settingsModal #settings-admin-auth-tab #adminPublicApiRevokeBtn:hover {
+    background: #fee2e2 !important;
+    border-color: #fca5a5 !important;
+    color: #991b1b !important;
+}
+
+@media (max-width: 980px) {
+    #settingsModal #settings-admin-gen-image-tab.admin-tab-content.active > .admin-users-toolbar {
+        overflow-x: auto !important;
+        overflow-y: hidden !important;
+    }
+
+    #settingsModal #settings-admin-gen-image-tab .admin-users-layout {
+        display: flex !important;
+        gap: 8px;
+        overflow-x: auto !important;
+        overflow-y: hidden !important;
+    }
+
+    #settingsModal #settings-admin-gen-image-tab .admin-users-list {
+        min-width: 280px;
+        flex: 0 0 280px;
+    }
+
+    #settingsModal #settings-admin-gen-image-tab .admin-user-detail {
+        min-width: 560px;
+        flex: 1 0 560px;
+    }
+
+    #settingsModal #settings-admin-auth-tab .admin-public-api-action-row {
+        grid-template-columns: minmax(0, 1fr) !important;
+    }
 }
 
 /* ── Turn Indicator Popup ────────────────────────── */
@@ -11867,4 +13356,77 @@ body:not(.settings-companion-mode) #settingsModal #settings-admin-models-tab.adm
     .turn-indicator-popup {
         display: none !important;
     }
+}
+
+/* Model menu scrollbars live inside a clipped rounded shell. */
+#modelOptions.select-items,
+#settingsModal .admin-system-select-menu.is-model-menu,
+#settingsModal > .admin-system-select-menu.is-model-menu {
+    overflow: hidden !important;
+    background-clip: padding-box;
+}
+
+#modelOptions.select-items {
+    padding: 0 !important;
+}
+
+#modelOptions.select-items .model-options-scroll,
+#settingsModal .admin-system-select-menu.is-model-menu .admin-system-select-scroll,
+#settingsModal > .admin-system-select-menu.is-model-menu .admin-system-select-scroll {
+    max-height: inherit;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(100, 116, 139, 0.42) transparent;
+}
+
+#modelOptions.select-items .model-options-scroll {
+    padding: 20px;
+}
+
+#settingsModal .admin-system-select-menu.is-model-menu,
+#settingsModal > .admin-system-select-menu.is-model-menu {
+    padding: 0 !important;
+}
+
+#settingsModal .admin-system-select-menu.is-model-menu .admin-system-select-scroll,
+#settingsModal > .admin-system-select-menu.is-model-menu .admin-system-select-scroll {
+    padding: 16px;
+}
+
+#modelOptions.select-items .model-options-scroll::-webkit-scrollbar,
+#settingsModal .admin-system-select-menu.is-model-menu .admin-system-select-scroll::-webkit-scrollbar,
+#settingsModal > .admin-system-select-menu.is-model-menu .admin-system-select-scroll::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+#modelOptions.select-items .model-options-scroll::-webkit-scrollbar-track,
+#settingsModal .admin-system-select-menu.is-model-menu .admin-system-select-scroll::-webkit-scrollbar-track,
+#settingsModal > .admin-system-select-menu.is-model-menu .admin-system-select-scroll::-webkit-scrollbar-track {
+    margin: 10px 0;
+    border-radius: 999px;
+    background: transparent;
+}
+
+#modelOptions.select-items .model-options-scroll::-webkit-scrollbar-thumb,
+#settingsModal .admin-system-select-menu.is-model-menu .admin-system-select-scroll::-webkit-scrollbar-thumb,
+#settingsModal > .admin-system-select-menu.is-model-menu .admin-system-select-scroll::-webkit-scrollbar-thumb {
+    border: 3px solid transparent;
+    border-radius: 999px;
+    background: rgba(100, 116, 139, 0.42);
+    background-clip: content-box;
+}
+
+#modelOptions.select-items .model-options-scroll::-webkit-scrollbar-thumb:hover,
+#settingsModal .admin-system-select-menu.is-model-menu .admin-system-select-scroll::-webkit-scrollbar-thumb:hover,
+#settingsModal > .admin-system-select-menu.is-model-menu .admin-system-select-scroll::-webkit-scrollbar-thumb:hover {
+    background: rgba(71, 85, 105, 0.56);
+    background-clip: content-box;
+}
+
+#modelOptions.select-items .model-options-scroll::-webkit-scrollbar-corner,
+#settingsModal .admin-system-select-menu.is-model-menu .admin-system-select-scroll::-webkit-scrollbar-corner,
+#settingsModal > .admin-system-select-menu.is-model-menu .admin-system-select-scroll::-webkit-scrollbar-corner {
+    background: transparent;
 }

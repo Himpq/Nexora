@@ -535,6 +535,23 @@ def _papi_handle_completion_request(data=None, username=None, request_path=''):
                 f"[PAPI_THINK_MAP] model={model_name} provider={provider_name} "
                 f"api_type=ollama think={_think_src!r} reasoning_effort={request_kwargs.get('reasoning_effort', None)}"
             )
+    limit_extra_body = request_kwargs.get('extra_body', {})
+    limit_extra_preview = ''
+    if isinstance(limit_extra_body, dict) and limit_extra_body:
+        try:
+            limit_extra_preview = json.dumps(limit_extra_body, ensure_ascii=False, default=str)[:500]
+        except Exception:
+            limit_extra_preview = str(limit_extra_body)[:500]
+    _papi_log(
+        f"[PAPI_LIMITS] model={model_name} provider={provider_name} api_type={adapter_api_type or 'unknown'} "
+        f"stream={'yes' if want_stream else 'no'} "
+        f"input_max_tokens={data.get('max_tokens', None)!r} "
+        f"input_max_completion_tokens={data.get('max_completion_tokens', None)!r} "
+        f"input_max_output_tokens={data.get('max_output_tokens', None)!r} "
+        f"request_max_tokens={request_kwargs.get('max_tokens', None)!r} "
+        f"request_max_output_tokens={request_kwargs.get('max_output_tokens', None)!r} "
+        f"extra_body={limit_extra_preview or '-'}"
+    )
     use_responses_upstream = bool(adapter.use_responses_api(request_kwargs)) if use_responses_compat else False
     provider_settings = provider_info.get('settings') if isinstance(provider_info.get('settings'), dict) else {}
     timeout_candidates = [
@@ -968,6 +985,7 @@ def papi_v1_root():
             'models': '/api/papi/v1/models',
             'chat_completions': '/api/papi/v1/chat/completions',
             'responses': '/api/papi/v1/responses',
+            'images_generations': '/api/papi/v1/images/generations',
         },
     })
 

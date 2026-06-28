@@ -333,6 +333,19 @@ class VolcengineProvider(ProviderInterface):
                     params["expire_at"] = int(req_opts.get("responses_expire_at"))
                 except Exception:
                     pass
+
+            if enable_web_search and native_web_search_enabled:
+                timeout_raw = req_opts.get(
+                    "native_search_timeout_sec",
+                    req_opts.get("web_search_timeout_sec", 45.0),
+                )
+                try:
+                    native_search_timeout = float(timeout_raw or 45.0)
+                except Exception:
+                    native_search_timeout = 45.0
+
+                native_search_timeout = max(5.0, min(native_search_timeout, 120.0))
+                params["timeout"] = native_search_timeout
         return params
 
     def relay_web_search(

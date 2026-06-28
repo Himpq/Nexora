@@ -253,7 +253,7 @@ class NexoraTools:
             ),
             _object_tool(
                 "vectorSearch",
-                "Search vectorized lecture chunks (local fallback over chunks when needed).",
+                "Search lecture chunks through NexoraDB vector retrieval.",
                 {
                     "lecture_id": _string_field("Target lecture id."),
                     "query": _string_field("Search query text."),

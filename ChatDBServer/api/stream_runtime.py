@@ -106,6 +106,21 @@ def start_session(
                 session["conversation_id"] = cid
             if chunk_type:
                 session["last_chunk_type"] = chunk_type
+            if chunk_type == "stream_session":
+                payload["stream_id"] = str(payload.get("stream_id") or session.get("stream_id") or "")
+
+                if not cid:
+                    payload["conversation_id"] = str(session.get("conversation_id") or "")
+
+                if "assistant_index" in payload:
+                    session["assistant_index"] = payload.get("assistant_index")
+
+                if "regenerate_index" in payload:
+                    session["regenerate_index"] = payload.get("regenerate_index")
+
+                if "is_regenerate" in payload:
+                    session["is_regenerate"] = bool(payload.get("is_regenerate", False))
+
             session["last_seq"] = int(session["last_seq"]) + 1
             payload["_stream_seq"] = int(session["last_seq"])
             session["chunks"].append(payload)

@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Nexora | 状态</title>
+    <link rel="stylesheet" href="/static/vendor/fontawesome/css/all.min.css">
+    <link rel="stylesheet" href="/static/css/status_2.css">
+</head>
+<body>
+    <header class="site-header">
+        <a class="brand" href="/" aria-label="Nexora 首页">Nexora<span class="brand-mark" aria-hidden="true"></span></a>
+
+        <nav class="main-nav" aria-label="主导航">
+            <div class="nav-menu-group">
+                <a class="nav-link nav-trigger" href="/introduce" aria-haspopup="true">
+                    <span>项目</span>
+                </a>
+
+                <div class="nav-dropdown" role="group" aria-label="项目菜单">
+                    <div class="nav-dropdown-inner">
+                        <section class="nav-dropdown-primary" aria-labelledby="nav-products-title">
+                            <p class="nav-dropdown-label" id="nav-products-title">探索产品</p>
+                            <div class="nav-mega-list">
+                                <a class="nav-mega-link" href="/introduce">Nexora</a>
+                                <span class="nav-mega-link">NexoraLearning</span>
+                                <span class="nav-mega-link">NexoraMail</span>
+                                <span class="nav-mega-link">NexoraVideoGenerator</span>
+                                <span class="nav-mega-link">NexoraDB</span>
+                            </div>
+                        </section>
+                    </div>
+                </div>
+            </div>
+
+            <div class="nav-menu-group">
+                <a class="nav-link nav-trigger" href="/status" aria-haspopup="true" aria-current="page">
+                    <span>状态</span>
+                </a>
+
+                <div class="nav-dropdown" role="group" aria-label="状态菜单">
+                    <div class="nav-dropdown-inner">
+                        <section class="nav-dropdown-primary" aria-labelledby="nav-status-title">
+                            <p class="nav-dropdown-label" id="nav-status-title">状态</p>
+                            <div class="nav-mega-list">
+                                <a class="nav-mega-link" href="/status">模型榜单</a>
+                            </div>
+                        </section>
+                    </div>
+                </div>
+            </div>
+
+            <div class="nav-menu-group">
+                <a class="nav-link nav-trigger" href="/blog" aria-haspopup="true">
+                    <span>博客</span>
+                </a>
+
+                <div class="nav-dropdown nav-blog-menu" role="group" aria-label="博客菜单">
+                    <div class="nav-dropdown-inner">
+                        <section class="nav-dropdown-primary" aria-labelledby="nav-blog-title">
+                            <p class="nav-dropdown-label" id="nav-blog-title">博客</p>
+                            <div class="nav-mega-list">
+                                <a class="nav-mega-link" href="https://himpqblog.cn">
+                                    <span>Himpqの博客</span>
+                                    <i class="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i>
+                                </a>
+                                <a class="nav-mega-link" href="/blog">
+                                    <span>Nexora博客</span>
+                                    <i class="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i>
+                                </a>
+                            </div>
+                        </section>
+                    </div>
+                </div>
+            </div>
+        </nav>
+
+        <div class="header-actions">
+            <a class="ghost-button" href="/login">登录</a>
+        </div>
+    </header>
+
+    <main class="status-page">
+        <section class="status-command" aria-labelledby="status-title">
+            <div class="status-command-copy">
+                <p class="status-kicker">Nexora Model Board</p>
+                <h1 id="status-title">模型榜单</h1>
+                <p class="status-lead" id="heroStatusText">正在读取后端聚合数据。</p>
+
+                <div class="summary-grid" id="summaryGrid" aria-label="状态摘要">
+                    <div class="metric-tile is-loading">
+                        <span>加载中</span>
+                        <strong>--</strong>
+                        <small>等待后端统计数据</small>
+                    </div>
+                </div>
+            </div>
+
+            <div class="snapshot-strip" aria-hidden="true">
+                <div class="visual-report">
+                    <div class="visual-report-kicker"></div>
+                    <div class="visual-report-title">Model Board</div>
+
+                    <div class="visual-report-lines">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                    </div>
+
+                    <div class="visual-report-chart">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                    </div>
+
+                    <div class="visual-report-footer">
+                        <span></span>
+                        <span></span>
+                    </div>
+                </div>
+            </div>
+
+        </section>
+
+        <section class="board-shell" aria-labelledby="ranking-title">
+            <div class="section-heading">
+                <div>
+                    <p class="eyebrow">Ranking</p>
+                    <h2 id="ranking-title">综合榜单</h2>
+                </div>
+                <p id="rankingHint">综合分由成功率、调用次数、Token 和工具负载共同计算。</p>
+            </div>
+
+            <div class="leader-layout">
+                <article class="leader-card" id="leaderCard"></article>
+
+                <article class="status-panel">
+                    <div class="panel-head">
+                        <h3>排名概览</h3>
+                        <span>Top Models</span>
+                    </div>
+                    <div class="rank-list" id="rankList"></div>
+                </article>
+            </div>
+        </section>
+
+        <section class="board-grid board-grid-balanced" aria-label="榜单明细">
+            <article class="status-panel">
+                <div class="panel-head">
+                    <h3>近 24h 热度</h3>
+                    <span>Calls + Token</span>
+                </div>
+                <div class="stack-list" id="recent24hList"></div>
+            </article>
+
+            <article class="status-panel">
+                <div class="panel-head">
+                    <h3>Token 用量</h3>
+                    <span>Total Usage</span>
+                </div>
+                <div class="stack-list" id="tokenChart"></div>
+            </article>
+        </section>
+
+        <section class="board-grid board-grid-speed" aria-label="性能与任务">
+            <article class="status-panel">
+                <div class="panel-head">
+                    <h3>速度榜</h3>
+                    <span>TTFT / TPS</span>
+                </div>
+                <div class="stack-list" id="speedRankList"></div>
+            </article>
+
+            <article class="status-panel">
+                <div class="panel-head">
+                    <h3>任务复杂度承受度</h3>
+                    <span>Workload</span>
+                </div>
+                <div class="complexity-summary-grid" id="complexitySummary"></div>
+                <div class="stack-list" id="complexityList"></div>
+            </article>
+        </section>
+
+        <section class="status-panel tool-panel" aria-labelledby="failure-title">
+            <div class="panel-head">
+                <div>
+                    <p class="eyebrow">Tools</p>
+                    <h2 id="failure-title">工具失误榜</h2>
+                </div>
+                <span>Failure Count</span>
+            </div>
+            <div class="failure-list" id="toolFailList"></div>
+            <p class="status-footnote" id="statusFootnote"></p>
+        </section>
+    </main>
+
+    <footer class="site-footer">
+        <span>Nexora</span>
+        <a href="https://github.com/Himpq/Nexora">GitHub</a>
+        <a href="/introduce">Nexora</a>
+        <a href="/login">登录</a>
+    </footer>
+
+    <script src="/static/js/secure_render.js"></script>
+    <script src="/static/js/introduce_2.js"></script>
+    <script src="/static/js/status_2.js"></script>
+</body>
+</html>

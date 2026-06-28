@@ -624,6 +624,46 @@
         }
     }
 
+    function postToSharedMainFrame(payload) {
+        const win = getSharedMainWindow();
+        const data = payload && typeof payload === 'object' ? payload : {};
+        const type = String(data.type || '').trim();
+
+        if (!win) {
+            console.error('[LearningMode] main iframe is not ready for host command', { type });
+            return false;
+        }
+
+        const frontendUrl = String(currentFrontendUrl || '').trim();
+        const origin = (() => {
+            try { return frontendUrl ? new URL(frontendUrl).origin : '*'; } catch (_) { return '*'; }
+        })();
+
+        try {
+            win.postMessage(data, origin === '*' ? '*' : origin);
+            return true;
+        } catch (err) {
+            console.error('[LearningMode] post host command failed', {
+                type,
+                message: err && err.message ? String(err.message) : String(err || '')
+            });
+            return false;
+        }
+    }
+
+    function closeReaderFromHost(options = {}) {
+        const source = options && typeof options === 'object' ? options : {};
+        const closeReason = String(source.closeReason || source.reason || 'host_reader_close').trim();
+        const closeTarget = String(source.closeTarget || source.targetSidebarMode || source.target || '').trim();
+
+        return postToSharedMainFrame({
+            source: 'nexora-host',
+            type: 'nexora:reader:close',
+            close_reason: closeReason,
+            close_target: closeTarget,
+        });
+    }
+
     function renderWelcome(container, options = {}) {
         if (!container) return;
         const frontendUrl = buildLearningFrontendUrl(options.frontendUrl, options.username);
@@ -1229,11 +1269,20 @@
         if (handlePuzzleStateUpdateFromIframe(event)) return;
         if (handlePuzzleFramePayload(event)) return;
         handleReaderStatePayload(event && event.data);
-        // 处理来自 NexoraLearning iframe 的提示词注入请求
         const data = event && event.data;
+        const msgType = String(data && data.type ? data.type : '').trim().toLowerCase();
+
         if (data && typeof data === 'object'
             && String(data.source || '').trim().toLowerCase() === 'nexora-learning'
-            && String(data.type || '').trim().toLowerCase() === 'nexora:inject-prompt') {
+            && msgType === 'nexora:learning:pointerdown') {
+            window.dispatchEvent(new CustomEvent('nexora:learning-frame-pointerdown'));
+            return;
+        }
+
+        // 处理来自 NexoraLearning iframe 的提示词注入请求
+        if (data && typeof data === 'object'
+            && String(data.source || '').trim().toLowerCase() === 'nexora-learning'
+            && msgType === 'nexora:inject-prompt') {
             injectPromptToMainInput(String(data.text || '').trim());
         }
     });
@@ -1480,6 +1529,7 @@
         renderMainPanel,
         renderSidebarPanel,
         destroySidebarPanel,
+        closeReaderFromHost,
         postFeedViaIframe,
         searchFeedUsersViaIframe,
         createPuzzleCardNode,

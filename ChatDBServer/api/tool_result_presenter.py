@@ -42,6 +42,11 @@ class ToolResultPresenter:
             "conversation_context_read": self._render_local_long_context,
             "clear_context": self._render_local_long_context_clear,
             "server_render_page": self._render_server_render_page,
+            "map_render": self._render_map_result,
+            "map_calc_distance": self._render_map_result,
+            "map_calc_route": self._render_map_result,
+            "map_geocode": self._render_map_result,
+            "map_poi_search": self._render_map_result,
             "arxiv_search": self._render_arxiv_search,
             "js_execute": self._render_js_execute,
             "client_js_exec": self._render_js_execute,
@@ -88,7 +93,7 @@ class ToolResultPresenter:
             "triggerBookVectorization": self._render_learning_vectorization,
             "vectorSearch": self._render_learning_vector_search,
             "puzzle": self._render_learning_puzzle,
-            "question": self._render_learning_question,
+            "question": self._render_question,
             "learning_card": self._render_learning_card,
             "read_learning_memory": self._render_learning_memory_read,
             "append_learning_memory": self._render_learning_memory_write,
@@ -1374,6 +1379,358 @@ class ToolResultPresenter:
             lines.extend(["", "### Content", "", "(empty)"])
         return "\n".join(lines).strip()
 
+    def _render_map_result(self, args: Dict[str, Any], result: Any) -> str:
+        payload = self._load_payload_unwrapped(result)
+
+        if not isinstance(payload, dict):
+            return "\n".join([
+                "## Map Tool Result",
+                "",
+                self._fenced_text(str(result or ""), language="text", limit=4000),
+            ]).strip()
+
+        tool_name = str(payload.get("tool") or args.get("_tool_name") or "map_tool").strip()
+        success = payload.get("success", True) is not False
+        lines = [
+            self._status_title(success, "## Map Tool Completed", "## Map Tool Failed"),
+            "",
+            f"- Tool: `{tool_name}`",
+        ]
+
+        provider = str(payload.get("provider") or "").strip()
+        if provider:
+            lines.append(f"- Provider: `{provider}`")
+
+        provider_status = payload.get("provider_status")
+        if isinstance(provider_status, dict):
+            status_text = provider_status.get("status", "")
+            message_text = str(provider_status.get("message") or "").strip()
+            lines.append(f"- Provider Status: `{status_text}`")
+
+            if message_text:
+                lines.append(f"- Provider Message: {message_text}")
+
+        if not success:
+            lines.extend(["", f"- Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
+            return "\n".join(lines).strip()
+
+        self._append_map_handle_lines(lines, payload)
+        self._append_map_metric_lines(lines, payload)
+        self._append_map_point_lines(lines, payload)
+        self._append_map_poi_table(lines, payload)
+        self._append_map_transit_schemes(lines, payload)
+
+        markdown = str(payload.get("markdown") or "").strip()
+
+        if markdown:
+            lines.extend(["", "### Scene", "", markdown])
+        elif isinstance(payload.get("scene"), dict):
+            lines.extend([
+                "",
+                "### Scene",
+                "",
+                self._fenced_text(json.dumps(payload.get("scene"), ensure_ascii=False, indent=4), language="nexora-map", limit=16000),
+            ])
+
+        return "\n".join(lines).strip()
+
+    def _append_map_handle_lines(self, lines: list, payload: Dict[str, Any]) -> None:
+        record = payload.get("record") if isinstance(payload.get("record"), dict) else {}
+        map_id = payload.get("map_id") or record.get("map_id")
+        record_id = payload.get("record_id") or record.get("record_id")
+        render_id = payload.get("render_id") or record.get("render_id")
+        conversation_id = payload.get("conversation_id") or record.get("conversation_id")
+        title = payload.get("title") or record.get("title")
+        summary = payload.get("summary")
+
+        if summary is None and isinstance(record.get("summary"), dict):
+            summary = record.get("summary")
+
+        if map_id:
+            lines.append(f"- Map ID: `{map_id}`")
+        elif record_id:
+            lines.append(f"- Record ID: `{record_id}`")
+
+        if render_id and render_id != map_id:
+            lines.append(f"- Render ID: `{render_id}`")
+
+        if conversation_id:
+            lines.append(f"- Conversation ID: `{conversation_id}`")
+
+        if title:
+            lines.append(f"- Title: {title}")
+
+        if isinstance(summary, dict) and summary:
+            lines.extend(["", "### Summary"])
+
+            for key, value in summary.items():
+                if key == "transit_schemes":
+                    continue
+
+                if isinstance(value, (dict, list)):
+                    value = json.dumps(value, ensure_ascii=False)
+
+                lines.append(f"- {key}: {value}")
+
+    def _append_map_transit_schemes(self, lines: list, payload: Dict[str, Any]) -> None:
+        schemes = self._map_transit_schemes(payload)
+
+        if not schemes:
+            return
+
+        recommended = schemes[0] if isinstance(schemes[0], dict) else {}
+        lines.extend([
+            "",
+            "### Transit Schemes",
+            "",
+            f"- Schemes: {len(schemes)}",
+        ])
+
+        if recommended:
+            route_label = self._transit_scheme_route_label(recommended)
+            duration_text = self._format_minutes(recommended.get("duration_minutes"))
+            distance_text = self._format_kilometers(recommended.get("distance_kilometers"))
+            summary_bits = [bit for bit in (duration_text, distance_text) if bit]
+
+            lines.extend([
+                f"- Recommended: 方案 {recommended.get('index', 1)}" + (f" ({' | '.join(summary_bits)})" if summary_bits else ""),
+            ])
+
+            if route_label:
+                lines.append(f"- Route: {route_label}")
+
+            steps = recommended.get("steps") if isinstance(recommended.get("steps"), list) else []
+
+            if steps:
+                lines.extend(["", f"#### Recommended Scheme {recommended.get('index', 1)} Steps", ""])
+
+                for fallback_index, step in enumerate(steps[:30], start=1):
+                    if isinstance(step, dict):
+                        lines.append(f"{step.get('index') or fallback_index}. {self._format_transit_step(step)}")
+
+                if len(steps) > 30:
+                    lines.append(f"{len(steps) - 30} more steps omitted.")
+
+        if len(schemes) > 1:
+            lines.extend([
+                "",
+                "#### Scheme Comparison",
+                "",
+                "| Scheme | Route | Duration | Distance | Steps |",
+                "| --- | --- | --- | --- | --- |",
+            ])
+
+            for scheme in schemes[:10]:
+                if not isinstance(scheme, dict):
+                    continue
+
+                lines.append(
+                    "| {scheme} | {route} | {duration} | {distance} | {steps} |".format(
+                        scheme=self._escape_table_cell(f"方案 {scheme.get('index', '')}".strip()),
+                        route=self._escape_table_cell(self._transit_scheme_route_label(scheme)),
+                        duration=self._escape_table_cell(self._format_minutes(scheme.get("duration_minutes"))),
+                        distance=self._escape_table_cell(self._format_kilometers(scheme.get("distance_kilometers"))),
+                        steps=self._escape_table_cell(scheme.get("step_count", "")),
+                    )
+                )
+
+            if len(schemes) > 10:
+                lines.append(f"\n... omitted {len(schemes) - 10} more transit schemes ...")
+
+    def _map_transit_schemes(self, payload: Dict[str, Any]) -> list:
+        route = payload.get("route") if isinstance(payload.get("route"), dict) else {}
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+
+        for value in (
+            payload.get("transit_schemes"),
+            route.get("transit_schemes"),
+            summary.get("transit_schemes"),
+        ):
+            if isinstance(value, list) and value:
+                return value
+
+        return []
+
+    def _transit_scheme_route_label(self, scheme: Dict[str, Any]) -> str:
+        line_name = str(scheme.get("line_name") or "").strip()
+
+        if line_name:
+            return self._normalize_transit_line_name(line_name)
+
+        steps = scheme.get("steps") if isinstance(scheme.get("steps"), list) else []
+        names = []
+
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+
+            name = str(step.get("line_name") or "").strip()
+
+            if name:
+                names.append(self._normalize_transit_line_name(name))
+
+        return " -> ".join(names)
+
+    def _normalize_transit_line_name(self, value: Any) -> str:
+        text = str(value or "").strip()
+        text = text.replace(" | ", " -> ")
+        text = text.replace(" - ", " -> ")
+        text = text.strip(" ->|")
+
+        return text
+
+    def _format_transit_step(self, step: Dict[str, Any]) -> str:
+        step_type = str(step.get("type") or "").strip()
+        line_name = self._normalize_transit_line_name(step.get("line_name"))
+        instruction = str(step.get("instruction") or "").strip()
+        start_station = str(step.get("start_station") or "").strip()
+        end_station = str(step.get("end_station") or "").strip()
+        stop_count = step.get("stop_count")
+        direction = str(step.get("direction") or "").strip()
+        distance_text = self._format_meters(step.get("distance_meters"))
+        duration_text = self._format_seconds(step.get("duration_seconds"))
+        detail_bits = [bit for bit in (distance_text, duration_text) if bit]
+
+        if instruction:
+            text = instruction
+        elif start_station and end_station and start_station == end_station:
+            text = f"换乘 {line_name or step_type}".strip()
+
+            if direction and direction != line_name:
+                text += f"（{direction}）"
+        elif line_name:
+            text = f"乘坐 {line_name}"
+
+            if direction and direction != line_name:
+                text += f"（{direction}）"
+
+            if start_station or end_station:
+                text += f"：{start_station or '起点'} 到 {end_station or '终点'}"
+
+            if stop_count not in (None, ""):
+                text += f"，{stop_count} 站"
+        elif step_type:
+            text = step_type
+
+            if start_station or end_station:
+                text += f"：{start_station or '起点'} 到 {end_station or '终点'}"
+        else:
+            text = "路线分段"
+
+        if detail_bits:
+            text += f"（{'，'.join(detail_bits)}）"
+
+        return text
+
+    def _format_kilometers(self, value: Any) -> str:
+        try:
+            num = float(value)
+        except Exception:
+            return ""
+
+        return f"{num:.1f} km" if num >= 10 else f"{num:.2f} km"
+
+    def _format_meters(self, value: Any) -> str:
+        try:
+            num = float(value)
+        except Exception:
+            return ""
+
+        if num >= 1000:
+            return self._format_kilometers(num / 1000)
+
+        return f"{round(num):.0f} m"
+
+    def _format_minutes(self, value: Any) -> str:
+        try:
+            minutes = float(value)
+        except Exception:
+            return ""
+
+        if minutes >= 60:
+            hours = int(minutes // 60)
+            rest = int(round(minutes % 60))
+
+            if rest:
+                return f"{hours} h {rest} min"
+
+            return f"{hours} h"
+
+        if 0 < minutes < 1:
+            return "<1 min"
+
+        return f"{int(round(minutes))} min"
+
+    def _format_seconds(self, value: Any) -> str:
+        try:
+            seconds = float(value)
+        except Exception:
+            return ""
+
+        return self._format_minutes(seconds / 60)
+
+    def _append_map_metric_lines(self, lines: list, payload: Dict[str, Any]) -> None:
+        route = payload.get("route") if isinstance(payload.get("route"), dict) else {}
+
+        if route:
+            if route.get("distance_kilometers") is not None:
+                lines.append(f"- Distance: {route.get('distance_kilometers')} km")
+
+            if route.get("duration_minutes") is not None:
+                lines.append(f"- Duration: {route.get('duration_minutes')} min")
+
+            if route.get("point_count") is not None:
+                lines.append(f"- Route Points: {route.get('point_count')}")
+
+            return
+
+        if payload.get("distance_kilometers") is not None:
+            lines.append(f"- Straight Distance: {payload.get('distance_kilometers')} km")
+
+        if payload.get("bearing_degrees") is not None:
+            lines.append(f"- Initial Bearing: {payload.get('bearing_degrees')} deg")
+
+    def _append_map_point_lines(self, lines: list, payload: Dict[str, Any]) -> None:
+        for key, label in (("origin", "Origin"), ("destination", "Destination"), ("point", "Point")):
+            point = payload.get(key)
+
+            if not isinstance(point, dict):
+                continue
+
+            lng = point.get("lng")
+            lat = point.get("lat")
+            lines.append(f"- {label}: `{lng},{lat}`")
+
+    def _append_map_poi_table(self, lines: list, payload: Dict[str, Any]) -> None:
+        results = payload.get("results")
+
+        if not isinstance(results, list) or not results:
+            return
+
+        lines.extend([
+            "",
+            "### POI Results",
+            "",
+            "| Name | Address | Coordinate |",
+            "| --- | --- | --- |",
+        ])
+
+        for item in results[:10]:
+            if not isinstance(item, dict):
+                continue
+
+            point = item.get("point") if isinstance(item.get("point"), dict) else {}
+            coord = f"{point.get('lng', '')},{point.get('lat', '')}".strip(",")
+            lines.append(
+                "| "
+                + self._escape_table_cell(item.get("name"))
+                + " | "
+                + self._escape_table_cell(item.get("address"))
+                + " | "
+                + self._escape_table_cell(coord)
+                + " |"
+            )
+
     def _render_arxiv_search(self, args: Dict[str, Any], result: Any) -> str:
         payload = self._load_payload(result)
 
@@ -1737,6 +2094,8 @@ class ToolResultPresenter:
                 flags.append("public")
             if item.get("collaborative"):
                 flags.append("collab")
+            if item.get("model_readonly", False):
+                flags.append("readonly")
             lines.append(
                 "| {idx} | {title} | `{basis_id}` | {flags} |".format(
                     idx=index,
@@ -2514,7 +2873,7 @@ class ToolResultPresenter:
             lines.extend(["", "### Candidate Steps", "", *[f"- {step}" for step in steps[:60]]])
         return "\n".join(lines).strip()
 
-    def _render_learning_question(self, args: Dict[str, Any], result: Any) -> str:
+    def _render_question(self, args: Dict[str, Any], result: Any) -> str:
         payload = self._load_payload(result)
 
         if not isinstance(payload, dict):
@@ -2524,7 +2883,7 @@ class ToolResultPresenter:
         question = payload.get("question") if isinstance(payload.get("question"), dict) else payload
         choices = question.get("choices") if isinstance(question.get("choices"), list) else []
         lines = [
-            self._status_title(success, "## Learning Question Created", "## Learning Question Failed"),
+            self._status_title(success, "## Question Created", "## Question Failed"),
             "",
             f"- Question ID: `{question.get('question_id', '')}`",
             f"- Title: {question.get('question_title') or args.get('question_title') or ''}",

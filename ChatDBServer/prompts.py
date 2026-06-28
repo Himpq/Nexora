@@ -4,11 +4,23 @@ from datetime import datetime
 from typing import Any, Dict, Iterable, List
 
 
+KB_CITATION_RULES = """知识库引用规则：
+- 只有当你的回答结论实际依赖 knowledge_basis_read、knowledge_search_keyword、knowledge_search_vector 等知识库工具返回的内容时，才添加 [kb] 引用标记。
+- 禁止为了演示引用格式、测试引用能力或随机举例而主动读取用户知识库；用户只问引用格式时，用普通文字或代码块说明格式，不要输出真实 [kb] 引用。
+- 每个 [kb] 引用必须紧跟在它支撑的句子后面，格式为：[kb]知识标题或basis_id,原文连续片段[/kb]。
+- 原文连续片段必须是工具返回内容里的真实连续子串，不能改写、不能拼接、不能跨越不连续位置；优先选择 6 到 80 个字的短片段。
+- 不要引用无语义的测试文本、乱码、随机字符、脏数据片段；如果知识条目本身内容质量不足，直接说明该知识条目内容不可用或需要清理。
+- 没有实际读取或检索知识库内容时，不要输出 [kb] 标记。
+- 默认不要修改用户知识库文档；如需修改，只提出建议并等待用户明确要求。"""
+
+
 default_verbose = """
 你是Nexora接入的大模型，是知识库的AI助手，能够高效、精准地回答用户的问题。
 现在是{{time}}。
 你是由{{provider_name}}提供的{{model_name}}模型，与你对话的用户为{{user}}，权限为{{permission}}。
 请使用 Markdown 回答。
+
+""" + KB_CITATION_RULES + """
 """
 
 
@@ -26,6 +38,7 @@ default_base = """
 
 补充：
 - 短期记忆记录近期事项、偏好、情绪；长期记忆/知识库记录稳定知识。
+""" + KB_CITATION_RULES + """
 - 系统可能自动注入时间；除非用户明确问时间，否则忽略该注入。
 - 回答风格：准确、直接、可执行。使用 Markdown。
 
@@ -251,6 +264,40 @@ tool_completion_hint_template = (
     "请根据返回的工具结果，继续完成对用户的回答或做出最终总结。"
 )
 
+learning_mode_default_prompt = """
+你当前处于 NexoraLearning 学习模式。
+请优先围绕课程学习、教材理解、章节梳理、题目讲解与学习规划提供帮助。
+如果用户问题与学习直接无关，也可以正常回答，但应优先尝试连接到学习场景。
+"""
+
+learning_context_injection_header = "[系统注入] 当前对话处于 NexoraLearning 学习模式。以下是学习上下文，请优先参考："
+
+learning_context_block_template = """<LEARNING_CONTEXT_BLOCK type="{{block_type}}" title="{{block_title}}">
+{{block_content}}
+</LEARNING_CONTEXT_BLOCK>"""
+
+learning_mode_tool_nudge_prompt = (
+    "当前为 NexoraLearning 学习模式。不要只输出思考。"
+    "请直接调用一个最相关的 Learning 或知识库读取工具，"
+    "再基于工具结果继续回答用户。"
+)
+
+cloud_file_sandbox_paths_prompt_template = """[系统注入] 已上传文件到用户沙箱，请优先使用 cloud_file_list/cloud_file_create/cloud_file_read/cloud_file_find/cloud_file_write/cloud_file_remove 工具操作以下路径：
+{{paths}}
+"""
+
+cloud_file_read_tool_description = (
+    "读取用户云端文件区文件的模型可读文本内容。上传文件已由系统完成文本提取并存为 UTF-8 文本，"
+    "本工具返回转换后的正文，不返回原始二进制内容。三种读取方式三选一：不传范围参数读全文；"
+    "传 from_line/to_line 按行读取；传 offset/length 按字符切片读取。单次最多返回500行且10000字符。"
+)
+
+cloud_file_read_truncate_notice_template = (
+    "[系统提示] cloud_file_read 输出已截断（每次最多 {{limit_lines}} 行且 {{limit_chars}} 字）。"
+    " 截断位置: line={{line}}, column={{column}}。"
+    " 若需继续读取，请从该位置之后继续调用 cloud_file_read。"
+)
+
 conversation_title_prompt_template = """根据以下对话内容，生成一个简洁准确的标题（10-20字）。
 
 用户问题：{{user_message}}
@@ -317,6 +364,42 @@ context_compression_prompt_template = """[上下文压缩任务]
 回答方式
 """
 
+context_compression_system_prompt = "你是对话上下文压缩器，只输出压缩后的上下文摘要。"
+
+context_compression_update_short_instruction = "可用 updateShort：覆盖更新当前用户短期记忆画像。"
+
+context_compression_add_short_instruction = "可用 addShort：追加一条短期记忆，适合记录新的离散偏好或近期事项。"
+
+knowledge_graph_analysis_prompt_template = """分析以下知识库内容，构建更符合人类认知脉络的知识图谱。
+1. 分类方案：将知识点归纳到3-5个主要领域。
+2. 关系脉络：识别知识点之间的演化、推导、依赖或提及关系。
+
+知识列表：
+{{knowledge_list}}
+
+请以JSON格式返回：
+{
+    "categories": [
+        {"name": "分类名", "color": "#颜色代码", "knowledge": ["知识标题1", "知识标题2"]}
+    ],
+    "nodes": [
+        {"title": "知识标题", "summary": "一句话核心脉络"}
+    ],
+    "connections": [
+        {"from": "知识标题A", "to": "知识标题B", "type": "脉络/提及/依赖/属于", "description": "简短描述关系"}
+    ]
+}"""
+
+knowledge_category_index_prompt_template = """请为【{{category}}】分类生成一个简洁的知识索引。
+
+该分类包含以下知识：
+{{titles_text}}
+
+请生成：
+1. 该分类的整体概述（1-2句话）
+2. 知识点之间的关联和主题分布
+3. 使用Markdown格式输出，简洁明了"""
+
 
 def build_runtime_tool_selector_hint(catalog_prompt: str) -> str:
     catalog = str(catalog_prompt or "").strip()
@@ -349,6 +432,82 @@ def build_conversation_title_prompt(user_message: str, assistant_response: str) 
     out = conversation_title_prompt_template.replace("{{user_message}}", str(user_message or "")[:100])
     out = out.replace("{{assistant_response}}", str(assistant_response or "")[:100])
     return out
+
+
+def build_learning_mode_default_prompt() -> str:
+    return str(learning_mode_default_prompt or "").strip()
+
+
+def build_learning_mode_tool_nudge_prompt() -> str:
+    return str(learning_mode_tool_nudge_prompt or "").strip()
+
+
+def build_learning_context_injection_prompt(context_blocks: List[Dict[str, Any]]) -> str:
+    rendered_blocks: List[str] = []
+    for item in (context_blocks or []):
+        if not isinstance(item, dict):
+            continue
+
+        block_type = str(item.get("type", "") or "").strip() or "learning_context"
+        block_title = str(item.get("title", "") or "").strip() or block_type
+        block_content = str(item.get("content", "") or "").strip()
+
+        if not block_content:
+            continue
+
+        block = learning_context_block_template.replace("{{block_type}}", block_type)
+        block = block.replace("{{block_title}}", block_title)
+        block = block.replace("{{block_content}}", block_content)
+        rendered_blocks.append(block)
+
+    if not rendered_blocks:
+        return ""
+
+    return f"{learning_context_injection_header}\n" + "\n\n".join(rendered_blocks) + "\n"
+
+
+def build_cloud_file_sandbox_paths_prompt(sandbox_paths: Iterable[str]) -> str:
+    paths = [str(path or "").strip() for path in (sandbox_paths or []) if str(path or "").strip()]
+
+    if not paths:
+        return ""
+
+    lines = "\n".join([f"- {path}" for path in paths])
+    out = cloud_file_sandbox_paths_prompt_template.replace("{{paths}}", lines)
+    return out.rstrip() + "\n"
+
+
+def build_cloud_file_read_truncate_notice(
+    limit_lines: int,
+    limit_chars: int,
+    line: int,
+    column: int
+) -> str:
+    out = str(cloud_file_read_truncate_notice_template or "")
+    out = out.replace("{{limit_lines}}", str(int(limit_lines or 0)))
+    out = out.replace("{{limit_chars}}", str(int(limit_chars or 0)))
+    out = out.replace("{{line}}", str(int(line or 0)))
+    out = out.replace("{{column}}", str(int(column or 0)))
+    return "\n\n" + out
+
+
+def build_knowledge_graph_analysis_prompt(knowledge_entries: Iterable[str]) -> str:
+    knowledge_list = "\n".join([str(item or "").strip() for item in (knowledge_entries or []) if str(item or "").strip()])
+    return knowledge_graph_analysis_prompt_template.replace("{{knowledge_list}}", knowledge_list)
+
+
+def build_knowledge_category_index_prompt(category: str, knowledge_titles: Iterable[str]) -> str:
+    title_lines = []
+    for title in (knowledge_titles or []):
+        title_text = str(title or "").strip()
+
+        if title_text:
+            title_lines.append(f"- {title_text}")
+
+    out = knowledge_category_index_prompt_template.replace("{{category}}", str(category or "").strip())
+    out = out.replace("{{titles_text}}", "\n".join(title_lines))
+    return out
+
 
 def build_user_profile_memory_prompt(
     profile_text: str = "",
