@@ -38,6 +38,7 @@ def _learning_cfg() -> Dict[str, Any]:
         legacy_branch=merged,
     )
     merged = {
+        "enabled": bool(merged.get("enabled", True)),
         "host": str(merged.get("host") or "").strip(),
         "port": int(merged.get("port") or 5001),
         "frontend_url": frontend_url,
@@ -125,10 +126,10 @@ def _normalize_frontend_url(frontend_url: str, cfg: Optional[Mapping[str, Any]] 
     return _derive_frontend_url(cfg)
 
 
-def _fallback_runtime_config() -> Dict[str, Any]:
+def get_learning_runtime_local_config() -> Dict[str, Any]:
     cfg = _learning_cfg()
     return {
-        "enabled": True,
+        "enabled": bool(cfg.get("enabled", True)),
         "base_path": "/api/runtime",
         "frontend_url": _derive_frontend_url(cfg),
         "request_timeout": int(float(cfg.get("request_timeout") or 30)),
@@ -343,15 +344,20 @@ def increment_learning_turn_and_maybe_enqueue(
 
 
 def get_learning_runtime_config() -> Dict[str, Any]:
-    fallback = _fallback_runtime_config()
+    local_config = get_learning_runtime_local_config()
+
+    if not bool(local_config.get("enabled", True)):
+        return local_config
+
     try:
         response = _get_json("/config")
     except Exception:
-        return fallback
+        return local_config
     result = response.get("runtime_api")
     if not isinstance(result, dict):
-        return fallback
-    merged = dict(fallback)
+        return local_config
+    merged = dict(local_config)
     merged.update(dict(result))
+    merged["enabled"] = bool(local_config.get("enabled", True)) and bool(merged.get("enabled", True))
     merged["frontend_url"] = _derive_frontend_url(_learning_cfg())
     return merged

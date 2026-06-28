@@ -134,8 +134,11 @@ from core.vector import (
     collection_stats as vector_collection_stats,
     delete_course_collection as vector_delete_course_collection,
     delete_material_chunks as vector_delete_material_chunks,
+    get_nexoradb_status,
+    is_nexoradb_available,
     query as vector_query,
     queue_vectorize_book,
+    require_nexoradb_available,
     split_text_for_vector,
     upsert_chunks as vector_upsert_chunks,
     vectorize_book,
@@ -170,6 +173,7 @@ _LEARNING_RESOURCE_GENERATION_LOCK = threading.RLock()
 _LEARNING_RESOURCE_GENERATION_ACTIVE_TASKS: set[str] = set()
 
 ALLOWED_EXT = {".pdf", ".txt", ".md", ".docx", ".doc", ".epub", ".c", ".h", ".py", ".rst"}
+VECTOR_TOOL_NAMES = {"triggerBookVectorization", "vectorSearch"}
 _NEXORA_OPTION_FIELDS = (
     "temperature",
     "top_p",
@@ -286,6 +290,35 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(value)
     except Exception:
         return int(default)
+
+
+def _vector_disabled_payload(status: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    status = status or get_nexoradb_status(_cfg)
+    return {
+        "success": False,
+        "status": "disabled",
+        "available": False,
+        "service_url": str(status.get("service_url") or ""),
+        "message": str(status.get("message") or "NexoraDB 未连接，向量流程已停用"),
+    }
+
+
+def _vector_unavailable_response(status: Optional[Dict[str, Any]] = None):
+    payload = _vector_disabled_payload(status)
+    return jsonify({"success": False, "error": payload["message"], "nexoradb": payload}), 503
+
+
+def _vector_tools_available() -> bool:
+    return is_nexoradb_available(_cfg)
+
+
+def _filter_vector_tool_names(names: List[str], vector_tools_available: Optional[bool] = None) -> List[str]:
+    available = _vector_tools_available() if vector_tools_available is None else bool(vector_tools_available)
+
+    if available:
+        return list(names)
+
+    return [name for name in names if name not in VECTOR_TOOL_NAMES]
 
 
 def parse_book_info_xml_chapters(xml_text: str, full_text_length: int) -> List[Dict[str, Any]]:
@@ -673,35 +706,109 @@ def _is_runtime_teacher() -> bool:
     return _resolve_runtime_role() in ("admin", "teacher")
 
 
+def _append_model_option(
+    rows: List[Dict[str, str]],
+    model_id: Any,
+    *,
+    label: Any = "",
+    provider: Any = "",
+    status: Any = "",
+) -> None:
+    """追加模型选项，并保留前端展示所需的 provider 元数据。"""
+    normalized_id = str(model_id or "").strip()
+
+    if not normalized_id:
+        return
+
+    normalized_label = str(label or normalized_id).strip() or normalized_id
+    row = {
+        "id": normalized_id,
+        "label": normalized_label,
+        "provider": str(provider or "").strip(),
+    }
+    normalized_status = str(status or "").strip()
+
+    if normalized_status:
+        row["status"] = normalized_status
+
+    rows.append(row)
+
+
 def _extract_model_options(payload: Dict[str, Any]) -> List[Dict[str, str]]:
     """从 Nexora model list 响应中抽取模型选项。"""
     rows: List[Dict[str, str]] = []
+
     if not isinstance(payload, dict):
         return rows
+
     data_list = payload.get("data")
+
     if isinstance(data_list, list):
         for item in data_list:
             if not isinstance(item, dict):
                 continue
+
             model_id = str(item.get("id") or "").strip()
-            if not model_id:
-                continue
-            label = str(item.get("name") or item.get("label") or model_id).strip() or model_id
-            rows.append({"id": model_id, "label": label})
+            _append_model_option(
+                rows,
+                model_id,
+                label=item.get("name") or item.get("label") or model_id,
+                provider=item.get("provider") or item.get("owned_by") or item.get("provider_key") or item.get("vendor"),
+                status=item.get("status") or item.get("state"),
+            )
+
     models_field = payload.get("models")
+
     if isinstance(models_field, list):
-        for raw_name in models_field:
-            model_id = str(raw_name or "").strip()
-            if model_id:
-                rows.append({"id": model_id, "label": model_id})
+        for item in models_field:
+            if isinstance(item, dict):
+                model_id = item.get("id") or item.get("model") or item.get("name")
+                _append_model_option(
+                    rows,
+                    model_id,
+                    label=item.get("label") or item.get("name") or model_id,
+                    provider=item.get("provider") or item.get("owned_by") or item.get("provider_key") or item.get("vendor"),
+                    status=item.get("status") or item.get("state"),
+                )
+            else:
+                _append_model_option(rows, item, label=item)
+
     elif isinstance(models_field, dict):
-        for raw_name in models_field.keys():
-            model_id = str(raw_name or "").strip()
-            if model_id:
-                rows.append({"id": model_id, "label": model_id})
+        for raw_name, item in models_field.items():
+            if isinstance(item, dict):
+                _append_model_option(
+                    rows,
+                    raw_name,
+                    label=item.get("label") or item.get("name") or raw_name,
+                    provider=item.get("provider") or item.get("owned_by") or item.get("provider_key") or item.get("vendor"),
+                    status=item.get("status") or item.get("state"),
+                )
+            else:
+                _append_model_option(rows, raw_name, label=raw_name)
+
     dedup: Dict[str, Dict[str, str]] = {}
+
     for row in rows:
-        dedup[row["id"]] = row
+        model_id = row["id"]
+        existing = dedup.get(model_id)
+
+        if not existing:
+            dedup[model_id] = row
+            continue
+
+        merged = dict(existing)
+
+        if row.get("label") and (not merged.get("label") or merged.get("label") == model_id):
+            merged["label"] = row["label"]
+
+        if row.get("provider") and not merged.get("provider"):
+            merged["provider"] = row["provider"]
+
+        if row.get("status") and not merged.get("status"):
+            merged["status"] = row["status"]
+
+        dedup[model_id] = merged
+
     return list(dedup.values())
 
 
@@ -3666,31 +3773,40 @@ def _legacy_frontend_chat_context_removed():
         },
     ]
 
+    vector_tools_available = _vector_tools_available()
+    required_tools = [
+        "listLectures",
+        "createLecture",
+        "getLecture",
+        "updateLecture",
+        "listBooks",
+        "createBook",
+        "getBook",
+        "updateBook",
+        "getBookText",
+        "readBookTextRange",
+        "searchBookText",
+        "getBookInfoXml",
+        "saveBookInfoXml",
+        "getBookDetailXml",
+        "saveBookDetailXml",
+        "getBookQuestionsXml",
+        "saveBookQuestionsXml",
+        "triggerBookVectorization",
+        "vectorSearch",
+    ]
+    required_tools = _filter_vector_tool_names(required_tools, vector_tools_available)
+    vector_tool_instruction = (
+        "向量化与检索使用 triggerBookVectorization 和 vectorSearch。"
+        if vector_tools_available
+        else "NexoraDB 未连接，当前不要使用向量化或 vectorSearch；需要检索原文时使用 searchBookText。"
+    )
+
     active_tool_skills = [
         {
             "id": "learning-course-book-tools",
             "title": "Learning Course and Book Tools",
-            "required_tools": [
-                "listLectures",
-                "createLecture",
-                "getLecture",
-                "updateLecture",
-                "listBooks",
-                "createBook",
-                "getBook",
-                "updateBook",
-                "getBookText",
-                "readBookTextRange",
-                "searchBookText",
-                "getBookInfoXml",
-                "saveBookInfoXml",
-                "getBookDetailXml",
-                "saveBookDetailXml",
-                "getBookQuestionsXml",
-                "saveBookQuestionsXml",
-                "triggerBookVectorization",
-                "vectorSearch",
-            ],
+            "required_tools": required_tools,
             "mode": "auto",
             "author": "NexoraLearning",
             "version": "1.0",
@@ -3702,7 +3818,7 @@ def _legacy_frontend_chat_context_removed():
                 "教材相关操作使用 listBooks/createBook/getBook/updateBook；"
                 "正文与片段读取使用 getBookText/readBookTextRange/searchBookText；"
                 "结构 XML 读写使用 getBookInfoXml/saveBookInfoXml、getBookDetailXml/saveBookDetailXml、getBookQuestionsXml/saveBookQuestionsXml；"
-                "向量化与检索使用 triggerBookVectorization 和 vectorSearch。"
+                f"{vector_tool_instruction}"
             ),
         },
     ]
@@ -4745,6 +4861,10 @@ def ingest_material(course_id: str, material_id: str):
     if not chunks:
         return jsonify({"success": False, "error": "No parsed chunks available."}), 400
 
+    nexoradb_status = get_nexoradb_status(_cfg)
+    if not nexoradb_status.get("available"):
+        return _vector_unavailable_response(nexoradb_status)
+
     threading.Thread(
         target=_ingest_chunks,
         args=(_cfg, course_id, material_id, chunks, material.get("filename", "")),
@@ -4768,6 +4888,10 @@ def query_course(course_id: str):
         return jsonify({"success": False, "error": "q is required."}), 400
 
     top_k = min(int(request.args.get("top_k") or 5), 20)
+    nexoradb_status = get_nexoradb_status(_cfg)
+    if not nexoradb_status.get("available"):
+        return _vector_unavailable_response(nexoradb_status)
+
     results = vector_query(_cfg, course_id, query_text, top_k=top_k)
     return jsonify({"success": True, "results": results, "count": len(results)})
 
@@ -5203,7 +5327,12 @@ def upload_book_text(lecture_id: str, book_id: str):
 
     vectorization_result = None
     if auto_vectorize:
-        vectorization_result = queue_vectorize_book(_cfg, lecture_id, book_id, force=True)
+        nexoradb_status = get_nexoradb_status(_cfg)
+        vectorization_result = (
+            queue_vectorize_book(_cfg, lecture_id, book_id, force=True)
+            if nexoradb_status.get("available")
+            else _vector_disabled_payload(nexoradb_status)
+        )
 
     return jsonify({
         "success": True,
@@ -6095,6 +6224,10 @@ def trigger_book_vectorize(lecture_id: str, book_id: str):
     force = _as_bool(data.get("force"), default=False)
     async_mode = _as_bool(data.get("async"), default=True)
 
+    nexoradb_status = get_nexoradb_status(_cfg)
+    if not nexoradb_status.get("available"):
+        return _vector_unavailable_response(nexoradb_status)
+
     if async_mode:
         result = queue_vectorize_book(_cfg, lecture_id, book_id, force=force)
         return jsonify({"success": True, "vectorization": result}), 202
@@ -6118,7 +6251,20 @@ def _parse_and_store(cfg: Dict[str, Any], course_id: str, material_id: str, file
                 "chunks_count": chunk_count,
             },
         )
-        _ingest_chunks(cfg, course_id, material_id, chunks, filename)
+        nexoradb_status = get_nexoradb_status(cfg)
+        if nexoradb_status.get("available"):
+            _ingest_chunks(cfg, course_id, material_id, chunks, filename)
+        else:
+            storage.update_material_meta(
+                cfg,
+                course_id,
+                material_id,
+                {
+                    "ingest_status": "pending",
+                    "vector_count": 0,
+                    "error": str(nexoradb_status.get("message") or "NexoraDB 未连接，已跳过自动向量入库"),
+                },
+            )
     except Exception as exc:
         storage.update_material_meta(
             cfg,
@@ -6133,6 +6279,7 @@ def _parse_and_store(cfg: Dict[str, Any], course_id: str, material_id: str, file
 
 def _ingest_chunks(cfg: Dict[str, Any], course_id: str, material_id: str, chunks, title: str) -> None:
     try:
+        require_nexoradb_available(cfg)
         storage.update_material_meta(cfg, course_id, material_id, {"ingest_status": "ingesting"})
         vector_count = vector_upsert_chunks(cfg, course_id, material_id, chunks, title)
         storage.update_material_meta(
@@ -6169,40 +6316,11 @@ _RUNTIME_READONLY_TOOL_NAMES = {
     "getBookDetailXml",
     "getBookQuestionsXml",
     "vectorSearch",
-    "question",
     "read_learning_memory",
     "append_learning_memory",
     "update_learning_memory",
     "write_learning_memory",
 }
-
-
-def _runtime_question_tool_spec() -> Dict[str, Any]:
-    return {
-        "type": "function",
-        "function": {
-            "name": "question",
-            "description": "Ask the user a structured question and wait for an explicit response before continuing.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "track_answer": {
-                        "type": "boolean",
-                        "description": "Set true only when this question answer must be tracked or reused as durable learning state. For one-off clarification questions, set false and omit question_id.",
-                    },
-                    "question_id": {
-                        "type": "string",
-                        "description": "Stable ID for tracked questions. Required only when track_answer is true.",
-                    },
-                    "question_title": {"type": "string"},
-                    "question_content": {"type": "string"},
-                    "choices": {"type": "array", "items": {"type": "string"}},
-                    "allow_other": {"type": "boolean"},
-                },
-                "required": ["question_title", "question_content"],
-            },
-        },
-    }
 
 
 def _runtime_learning_card_tool_spec() -> Dict[str, Any]:
@@ -6253,6 +6371,8 @@ def _runtime_memory_tool_spec(
 def _runtime_tool_specs() -> List[Dict[str, Any]]:
     names = set()
     rows: List[Dict[str, Any]] = []
+    vector_tools_available = _vector_tools_available()
+
     for tool in list(LEARNING_TOOLS or []):
         if not isinstance(tool, dict) or str(tool.get("type") or "").strip() != "function":
             continue
@@ -6260,10 +6380,10 @@ def _runtime_tool_specs() -> List[Dict[str, Any]]:
         name = str(fn.get("name") or "").strip()
         if not name or name not in _RUNTIME_READONLY_TOOL_NAMES or name in names:
             continue
+        if name in VECTOR_TOOL_NAMES and not vector_tools_available:
+            continue
         rows.append(json.loads(json.dumps(tool, ensure_ascii=False)))
         names.add(name)
-    if "question" not in names:
-        rows.append(_runtime_question_tool_spec())
     if "read_learning_memory" not in names:
         rows.append(
             _runtime_memory_tool_spec(
@@ -6367,30 +6487,6 @@ def _runtime_execute_tool(username: str, tool_name: str, arguments: Dict[str, An
     safe_args = dict(arguments or {})
     if name not in _RUNTIME_READONLY_TOOL_NAMES:
         raise ValueError(f"Learning mode only supports configured runtime tools: {name}")
-
-    if name == "question":
-        title = str(safe_args.get("question_title") or "").strip()
-        content = str(safe_args.get("question_content") or "").strip()
-        if not title or not content:
-            raise ValueError("question_title and question_content are required.")
-        choices = [str(item or "").strip() for item in (safe_args.get("choices") or []) if str(item or "").strip()]
-        track_answer = safe_args.get("track_answer") is True
-        question_id = str(safe_args.get("question_id") or "").strip()
-        if track_answer and not question_id:
-            raise ValueError("question_id is required when track_answer is true.")
-
-        return {
-            "success": True,
-            "question": {
-                "track_answer": track_answer,
-                "question_id": question_id if track_answer else "",
-                "question_title": title,
-                "question_content": content,
-                "choices": choices,
-                "allow_other": bool(safe_args.get("allow_other", True)),
-            },
-            "await": True,
-        }
 
     if name == "learning_card":
         card_type = str(safe_args.get("type") or "").strip()
@@ -6512,23 +6608,32 @@ def _runtime_execute_tool(username: str, tool_name: str, arguments: Dict[str, An
 
 
 def _runtime_active_tool_skills() -> List[Dict[str, Any]]:
+    vector_tools_available = _vector_tools_available()
+    required_tools = [
+        "listLectures",
+        "getLecture",
+        "listBooks",
+        "getBook",
+        "getBookText",
+        "readBookTextRange",
+        "searchBookText",
+        "getBookInfoXml",
+        "getBookDetailXml",
+        "getBookQuestionsXml",
+        "vectorSearch",
+        "question",
+    ]
+    required_tools = _filter_vector_tool_names(required_tools, vector_tools_available)
+    search_instruction = (
+        "and searchBookText/vectorSearch for browsing and searching course textbook information. "
+        if vector_tools_available
+        else "and searchBookText for browsing and searching course textbook information. NexoraDB is not connected, so vectorSearch is disabled. "
+    )
+
     return [
         {
             "title": "Learning Read-Only Mode",
-            "required_tools": [
-                "listLectures",
-                "getLecture",
-                "listBooks",
-                "getBook",
-                "getBookText",
-                "readBookTextRange",
-                "searchBookText",
-                "getBookInfoXml",
-                "getBookDetailXml",
-                "getBookQuestionsXml",
-                "vectorSearch",
-                "question",
-            ],
+            "required_tools": required_tools,
             "mode": "force",
             "version": "1.0",
             "author": "NexoraLearning",
@@ -6536,7 +6641,7 @@ def _runtime_active_tool_skills() -> List[Dict[str, Any]]:
                 "This conversation is in NexoraLearning mode. Use listLectures/getLecture/listBooks/getBook to inspect course and textbook metadata. "
                 "Use getBookInfoXml for textbook coarse-reading content, getBookDetailXml for intensive-reading content, "
                 "getBookQuestionsXml for generated questions, readBookTextRange/getBookText for original text reading, "
-                "and searchBookText/vectorSearch for browsing and searching course textbook information. "
+                f"{search_instruction}"
                 "Do not answer from guesses when course or textbook information can be read with these tools."
             ),
         }

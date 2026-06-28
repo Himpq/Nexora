@@ -23,6 +23,7 @@ _PATCH_PREVIEW_TTL_SECONDS = 30 * 60
 _PATCH_PREVIEW_MAX_ITEMS = 128
 _PROBE_ENCODINGS = ("utf-8-sig", "utf-8", "gbk", "utf-16", "utf-16-le", "utf-16-be")
 _PROBE_CHUNK_SIZE = 64 * 1024
+_WRITE_CHUNK_SIZE = 1024 * 1024
 
 TOOL_MANIFEST = [
     {
@@ -172,11 +173,35 @@ def _encode_text(content: str, encoding: str) -> bytes:
     return content.encode(encoding)
 
 
-def _write_bytes_atomic(path: Path, content: bytes) -> None:
+def _context_cancel_checker(context: dict | None):
+    if not isinstance(context, dict):
+        return None
+
+    checker = context.get("is_cancelled")
+
+    if callable(checker):
+        return checker
+
+    return None
+
+
+def _raise_if_cancelled(cancel_checker) -> None:
+    if callable(cancel_checker) and cancel_checker():
+        raise RuntimeError("stream_cancelled")
+
+
+def _write_bytes_atomic(path: Path, content: bytes, cancel_checker=None) -> None:
     """通过临时文件和 os.replace 写入，保证单次写入不会留下半截文件。"""
     temp_path = path.with_name(f".{path.name}.nexora_patch_tmp")
     try:
-        temp_path.write_bytes(content)
+        _raise_if_cancelled(cancel_checker)
+
+        with open(temp_path, "wb") as f:
+            for start in range(0, len(content), _WRITE_CHUNK_SIZE):
+                _raise_if_cancelled(cancel_checker)
+                f.write(content[start:start + _WRITE_CHUNK_SIZE])
+
+        _raise_if_cancelled(cancel_checker)
         os.replace(temp_path, path)
     finally:
         if temp_path.exists():
@@ -721,10 +746,7 @@ def _apply_unified_diff(original: str, patch_text: str) -> tuple[str, dict, str]
     return new_content, stats, ""
 
 
-def _find_target_occurrence(content: str, target: str, occurrence) -> tuple[int, str]:
-    if not target:
-        return -1, "target 不能为空。"
-
+def _collect_text_positions(content: str, target: str) -> list[int]:
     positions = []
     start = 0
 
@@ -737,13 +759,14 @@ def _find_target_occurrence(content: str, target: str, occurrence) -> tuple[int,
         positions.append(index)
         start = index + len(target)
 
-    if not positions:
-        return -1, "target 在文件中不存在。"
+    return positions
 
+
+def _select_occurrence_position(positions: list[int], occurrence, target_name: str) -> tuple[int, str]:
     if occurrence is None:
 
         if len(positions) != 1:
-            return -1, f"target 出现 {len(positions)} 次，请传入 occurrence 指定第几处。"
+            return -1, f"{target_name} 出现 {len(positions)} 次，请传入 occurrence 指定第几处。"
 
         return positions[0], ""
 
@@ -756,9 +779,111 @@ def _find_target_occurrence(content: str, target: str, occurrence) -> tuple[int,
         return -1, "occurrence 必须是正整数。"
 
     if occurrence_index > len(positions):
-        return -1, f"target 只出现 {len(positions)} 次，无法选择第 {occurrence_index} 处。"
+        return -1, f"{target_name} 只出现 {len(positions)} 次，无法选择第 {occurrence_index} 处。"
 
     return positions[occurrence_index - 1], ""
+
+
+def _normalize_newlines_with_offsets(content: str) -> tuple[str, list[int], list[int]]:
+    normalized_chars = []
+    start_offsets = []
+    end_offsets = []
+    index = 0
+
+    while index < len(content):
+        char = content[index]
+
+        if char == "\r":
+
+            if index + 1 < len(content) and content[index + 1] == "\n":
+                normalized_chars.append("\n")
+                start_offsets.append(index)
+                end_offsets.append(index + 2)
+                index += 2
+                continue
+
+            normalized_chars.append("\n")
+            start_offsets.append(index)
+            end_offsets.append(index + 1)
+            index += 1
+            continue
+
+        normalized_chars.append(char)
+        start_offsets.append(index)
+        end_offsets.append(index + 1)
+        index += 1
+
+    return "".join(normalized_chars), start_offsets, end_offsets
+
+
+def _normalize_text_line_separator(content: str, line_separator: str) -> str:
+    return re.sub(r"\r\n|\r|\n", line_separator, content)
+
+
+def _find_target_occurrence(content: str, target: str, occurrence) -> tuple[int, int, dict, str]:
+    if not target:
+        return -1, -1, {}, "target 不能为空。"
+
+    positions = _collect_text_positions(content, target)
+
+    if positions:
+        target_index, target_error = _select_occurrence_position(positions, occurrence, "target")
+
+        if target_error:
+            return -1, -1, {}, target_error
+
+        return target_index, target_index + len(target), {"match_strategy": "exact"}, ""
+
+    normalized_content, start_offsets, end_offsets = _normalize_newlines_with_offsets(content)
+    normalized_target, _target_start_offsets, _target_end_offsets = _normalize_newlines_with_offsets(target)
+    normalized_positions = _collect_text_positions(normalized_content, normalized_target)
+
+    if normalized_positions:
+        normalized_index, target_error = _select_occurrence_position(normalized_positions, occurrence, "换行归一化后的 target")
+
+        if target_error:
+            return -1, -1, {}, target_error
+
+        normalized_end_index = normalized_index + len(normalized_target) - 1
+        target_start = start_offsets[normalized_index]
+        target_end = end_offsets[normalized_end_index]
+
+        return target_start, target_end, {
+            "match_strategy": "newline_normalized",
+            "message": "target 未精确匹配，已将 CRLF/CR/LF 按换行归一化后唯一命中。",
+        }, ""
+
+    return -1, -1, {}, "target 在文件中不存在。"
+
+
+def _validate_structured_edit(edit: dict, edit_index: int) -> str:
+    action = str(edit.get("action") or "").strip()
+
+    if action not in {"replace", "insert_before", "insert_after", "delete"}:
+        return f"第 {edit_index} 个 edit 的 action 不支持: {action}"
+
+    if action == "replace":
+
+        if "replacement" not in edit:
+            return f"第 {edit_index} 个 edit 使用 replace 时必须提供 replacement。"
+
+        return ""
+
+    if action in {"insert_before", "insert_after"}:
+
+        if "content" not in edit:
+
+            if "replacement" in edit:
+                return f"第 {edit_index} 个 edit 使用 {action} 时必须提供 content，不能使用 replacement。"
+
+            return f"第 {edit_index} 个 edit 使用 {action} 时必须提供 content。"
+
+        return ""
+
+    if "replacement" in edit or "content" in edit:
+        return f"第 {edit_index} 个 edit 使用 delete 时不能提供 replacement 或 content。"
+
+    return ""
 
 
 def _apply_structured_edits(original: str, edits: list) -> tuple[str, dict, str]:
@@ -767,38 +892,56 @@ def _apply_structured_edits(original: str, edits: list) -> tuple[str, dict, str]
 
     content = original
     applied_count = 0
+    match_messages = []
 
     for edit_index, edit in enumerate(edits, start=1):
 
         if not isinstance(edit, dict):
             return original, {}, f"第 {edit_index} 个 edit 必须是对象。"
 
+        validation_error = _validate_structured_edit(edit, edit_index)
+
+        if validation_error:
+            return original, {}, validation_error
+
         action = str(edit.get("action") or "").strip()
         target = str(edit.get("target") or "")
         occurrence = edit.get("occurrence")
-        target_index, target_error = _find_target_occurrence(content, target, occurrence)
+        target_start, target_end, match_meta, target_error = _find_target_occurrence(content, target, occurrence)
 
         if target_error:
-            return original, {}, f"第 {edit_index} 个 edit 失败: {target_error}"
+            return original, {}, (
+                f"第 {edit_index} 个 edit 失败: {target_error} "
+                "注意：edits 会按顺序串行执行，后一条 target 会在前面 edit 修改后的内容中匹配。"
+            )
 
-        before = content[:target_index]
-        after = content[target_index + len(target):]
+        before = content[:target_start]
+        matched_target = content[target_start:target_end]
+        after = content[target_end:]
+        line_separator = _detect_line_separator(content)
 
         if action == "replace":
             replacement = str(edit.get("replacement") or "")
+            replacement = _normalize_text_line_separator(replacement, line_separator)
             content = before + replacement + after
         elif action == "insert_before":
             insert_content = str(edit.get("content") or "")
-            content = before + insert_content + target + after
+            insert_content = _normalize_text_line_separator(insert_content, line_separator)
+            content = before + insert_content + matched_target + after
         elif action == "insert_after":
             insert_content = str(edit.get("content") or "")
-            content = before + target + insert_content + after
+            insert_content = _normalize_text_line_separator(insert_content, line_separator)
+            content = before + matched_target + insert_content + after
         elif action == "delete":
             content = before + after
-        else:
-            return original, {}, f"第 {edit_index} 个 edit 的 action 不支持: {action}"
 
         applied_count += 1
+
+        if match_meta.get("match_strategy") != "exact":
+            message = str(match_meta.get("message") or "").strip()
+
+            if message:
+                match_messages.append(message)
 
     stats = {
         "mode": "structured_edits",
@@ -806,6 +949,10 @@ def _apply_structured_edits(original: str, edits: list) -> tuple[str, dict, str]
         "added_lines": max(0, len(content.splitlines()) - len(original.splitlines())),
         "removed_lines": max(0, len(original.splitlines()) - len(content.splitlines())),
     }
+
+    if match_messages:
+        stats["match_notes"] = match_messages
+
     return content, stats, ""
 
 
@@ -894,16 +1041,19 @@ def file_probe(path: str) -> dict:
         return {"success": False, "error": str(e)}
 
 
-def file_write(path: str, content: str, encoding: str = "utf-8") -> dict:
+def file_write(path: str, content: str, encoding: str = "utf-8", _nexora_context=None) -> dict:
     p = Path(path)
     if not _check_allowed(p):
         return {"success": False, "error": f"Path not in allowed_dirs: {path}. Add it in NexoraCode settings."}
     try:
+        cancel_checker = _context_cancel_checker(_nexora_context)
+        _raise_if_cancelled(cancel_checker)
         p.parent.mkdir(parents=True, exist_ok=True)
         raw_content = _encode_text(content, encoding)
+        _raise_if_cancelled(cancel_checker)
 
         with _get_file_lock(p):
-            _write_bytes_atomic(p, raw_content)
+            _write_bytes_atomic(p, raw_content, cancel_checker=cancel_checker)
 
         return {
             "success": True,
@@ -913,6 +1063,9 @@ def file_write(path: str, content: str, encoding: str = "utf-8") -> dict:
             "sha256": _sha256_bytes(raw_content),
         }
     except Exception as e:
+        if str(e) == "stream_cancelled":
+            return {"success": False, "error": "stream_cancelled", "message": "用户已停止生成"}
+
         return {"success": False, "error": str(e)}
 
 
@@ -943,7 +1096,16 @@ def _build_patch_preview_locked(
         new_content, stats, apply_error = _apply_structured_edits(original, edits)
 
     if apply_error:
-        return {"success": False, "error": apply_error, "old_sha256": old_sha256}
+        return {
+            "success": False,
+            "error": apply_error,
+            "path": str(p),
+            "encoding": encoding,
+            "old_sha256": old_sha256,
+            "old_content_sha256": old_content_sha256,
+            "line_separator": _line_separator_name(original),
+            "bom": _detect_bom(old_raw_content),
+        }
 
     new_raw_content = _encode_text(new_content, encoding)
     new_sha256 = _sha256_bytes(new_raw_content)
@@ -1029,8 +1191,9 @@ def _build_patch_preview_locked(
     return result
 
 
-def _confirm_patch_preview_locked(p: Path, preview_id: str) -> dict:
+def _confirm_patch_preview_locked(p: Path, preview_id: str, cancel_checker=None) -> dict:
     """按 dry_run 保存的预览内容写入文件。调用方必须持有该文件锁。"""
+    _raise_if_cancelled(cancel_checker)
     preview, preview_error = _load_patch_preview(preview_id)
 
     if preview_error:
@@ -1087,7 +1250,7 @@ def _confirm_patch_preview_locked(p: Path, preview_id: str) -> dict:
         return {"success": False, "error": "preview 内容无效，请重新 dry_run 生成预览。"}
 
     if changed:
-        _write_bytes_atomic(p, new_raw_content)
+        _write_bytes_atomic(p, new_raw_content, cancel_checker=cancel_checker)
 
     _remove_patch_preview(preview_id)
 
@@ -1123,9 +1286,11 @@ def file_patch(
     expected_sha256: str = "",
     dry_run: bool = False,
     confirm_preview_id: str = "",
+    _nexora_context=None,
 ) -> dict:
     """对单个文件执行精确 patch，支持统一 diff 或结构化编辑。"""
     p = Path(path)
+    cancel_checker = _context_cancel_checker(_nexora_context)
 
     if not _check_allowed(p):
         return {"success": False, "error": f"Path not in allowed_dirs: {path}. Add it in NexoraCode settings."}
@@ -1154,7 +1319,12 @@ def file_patch(
 
         try:
             with _get_file_lock(p):
-                return _confirm_patch_preview_locked(p, confirm_preview_id)
+                return _confirm_patch_preview_locked(p, confirm_preview_id, cancel_checker=cancel_checker)
+        except RuntimeError as e:
+            if str(e) == "stream_cancelled":
+                return {"success": False, "error": "stream_cancelled", "message": "用户已停止生成"}
+
+            return {"success": False, "error": str(e)}
         except UnicodeDecodeError as e:
             return {
                 "success": False,

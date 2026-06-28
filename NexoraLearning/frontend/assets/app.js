@@ -320,8 +320,10 @@
     readerSessionProgress: {},  // { "lectureId::bookId": { completedIndices: Set, currentChapterIndex: 0 } }
     readerSectionsData: {},     // { chapterName: { range, sessions: [{name, range, summary}] } }
     readerAnnotations: [],      // [{ chapterName, offset, length, type, content, anchorText }]
+    readerPendingRestorePosition: null,
   };
   let readerContextSyncTimer = null;
+  let readerPositionSaveTimer = null;
   const readerSelectionTelemetryState = {
     pointerActive: false,
     pointerDownKey: "",
@@ -876,6 +878,15 @@
     } catch (_err) {}
     return payload;
   }
+
+  function notifyHostPointerDown() {
+    emitHostPayload("nexora:learning:pointerdown");
+  }
+
+  document.addEventListener("pointerdown", notifyHostPointerDown, {
+    capture: true,
+    passive: true,
+  });
 
   function getRuntimeUsername() {
     const q = new URLSearchParams(window.location.search);
@@ -1633,9 +1644,9 @@
       String(currentMeta.lectureId || "") === resolvedLectureId &&
       String(currentMeta.bookId || "") === bookId &&
       Number(currentMeta.chapterIndex) === idx &&
-      Array.isArray(quizState.questions) &&
-      quizState.questions.length
+      normalizeQuizQuestions(quizState.questions).length
     ) {
+      setQuizQuestions(quizState.questions);
       openFloatingPanel();
       setFloatingTab("quiz");
       renderQuizPanel();
@@ -1679,11 +1690,13 @@
       const answers = result.answers && typeof result.answers === "object" ? result.answers : quiz.answers && typeof quiz.answers === "object" ? quiz.answers : {};
       const quizId = String(result.quiz_id || quiz.quiz_id || "").trim();
 
-      if (!quizId || !questions.length) {
+      const normalizedQuestions = normalizeQuizQuestions(questions);
+
+      if (!quizId || !normalizedQuestions.length) {
         throw new Error("本章练习没有返回有效题目");
       }
 
-      quizState.questions = questions;
+      setQuizQuestions(normalizedQuestions);
       quizState.answers = answers;
       quizState.currentMeta = {
         quizType: "personalized_chapter",
@@ -3588,9 +3601,10 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     notifyHostInputVisibility(true);
   }
 
-  function notifyHostReaderState(opened) {
+  function notifyHostReaderState(opened, extra) {
     emitHostPayload("nexora:reader:state", {
       opened: !!opened,
+      ...(extra && typeof extra === "object" ? extra : {}),
     });
   }
 
@@ -6495,9 +6509,25 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     renderLearningFeeds();
   }
 
+  function handleHostReaderCommand(data) {
+    if (!data || typeof data !== "object") return false;
+    if (String(data.source || "").trim().toLowerCase() !== "nexora-host") return false;
+
+    const msgType = String(data.type || "").trim().toLowerCase();
+
+    if (msgType !== "nexora:reader:close") return false;
+
+    closeReader(false, {
+      closeReason: String(data.close_reason || data.reason || "host_reader_close").trim(),
+      closeTarget: String(data.close_target || data.target || "").trim(),
+    });
+    return true;
+  }
+
   window.addEventListener("message", async (event) => {
     const data = event && event.data;
     if (!data || typeof data !== "object") return;
+    if (handleHostReaderCommand(data)) return;
     if (String(data.source || "").trim().toLowerCase() !== "nexora-learning") return;
     const msgType = String(data.type || "").trim().toLowerCase();
     const requestId = String(data.requestId || "").trim();
@@ -7882,6 +7912,167 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     }).join("");
   }
 
+  const SETTINGS_MODEL_PROVIDER_LABELS = Object.freeze({
+    aliyun: "阿里云",
+    baidu: "百度智能云",
+    dashscope: "通义千问",
+    deepseek: "DeepSeek",
+    github: "GitHub",
+    hunyuan: "腾讯混元",
+    minimax: "MiniMax",
+    moonshot: "月之暗面",
+    ollama: "Ollama",
+    openai: "OpenAI",
+    openrouter: "OpenRouter",
+    siliconflow: "SiliconFlow",
+    stepfun: "阶跃星辰",
+    tencent_cloud: "腾讯云",
+    tongyi: "通义千问",
+    volcengine: "火山引擎",
+    xunfei_spark: "讯飞星火",
+    zhipu: "智谱清言",
+  });
+
+  function normalizeSettingsModelOption(row) {
+    if (!row || typeof row !== "object") return null;
+
+    const id = String(row.id || row.model || row.name || "").trim();
+
+    if (!id) return null;
+
+    return {
+      id,
+      label: String(row.label || row.name || id).trim() || id,
+      provider: String(row.provider || row.owned_by || row.provider_key || row.vendor || "").trim(),
+      status: String(row.status || row.state || "").trim(),
+    };
+  }
+
+  function normalizeSettingsModelOptions(rows) {
+    const out = [];
+    const seen = new Set();
+
+    (Array.isArray(rows) ? rows : []).forEach((row) => {
+      const option = normalizeSettingsModelOption(row);
+
+      if (!option || seen.has(option.id)) return;
+
+      seen.add(option.id);
+      out.push(option);
+    });
+
+    return out;
+  }
+
+  function getSettingsModelProviderLabel(provider) {
+    const raw = String(provider || "").trim();
+
+    if (!raw) return "未标注 Provider";
+
+    const key = raw.toLowerCase();
+
+    return SETTINGS_MODEL_PROVIDER_LABELS[key] || raw;
+  }
+
+  function getSettingsModelDisplayOption(value, optionsById) {
+    const id = String(value || "").trim();
+
+    if (!id) {
+      return {
+        id: "",
+        label: "(空)",
+        provider: "",
+        status: "",
+      };
+    }
+
+    if (optionsById.has(id)) return optionsById.get(id);
+
+    return {
+      id,
+      label: id,
+      provider: "",
+      status: "missing",
+    };
+  }
+
+  function renderSettingsModelSelectedHtml(option) {
+    const data = option || {};
+
+    if (!data.id) {
+      return `<span class="settings-model-selected settings-model-selected-empty"><span class="settings-model-selected-name">(空)</span></span>`;
+    }
+
+    const providerLabel = getSettingsModelProviderLabel(data.provider);
+    const missingClass = data.status === "missing" || !data.provider ? " is-missing" : "";
+    const missingText = data.status === "missing" ? `<span class="settings-model-state-badge">未在可用列表</span>` : "";
+
+    return `
+      <span class="settings-model-selected">
+        <span class="settings-model-selected-name">${escapeHtml(data.label || data.id)}</span>
+        <span class="settings-model-provider-badge${missingClass}">${escapeHtml(providerLabel)}</span>
+        ${missingText}
+      </span>
+    `;
+  }
+
+  function renderSettingsModelOptionHtml(option, selectedValue) {
+    const providerLabel = getSettingsModelProviderLabel(option.provider);
+    const selectedClass = String(option.id) === String(selectedValue) ? " is-selected" : "";
+    const idMeta = option.label && option.label !== option.id
+      ? `<span class="settings-model-option-id">${escapeHtml(option.id)}</span>`
+      : "";
+
+    return `
+      <div class="nxl-custom-select-option settings-model-option${selectedClass}" data-value="${escapeHtml(option.id)}">
+        <span class="settings-model-option-main">
+          <span class="settings-model-option-name">${escapeHtml(option.label || option.id)}</span>
+          ${idMeta}
+        </span>
+        <span class="settings-model-provider-badge">${escapeHtml(providerLabel)}</span>
+      </div>
+    `;
+  }
+
+  function renderSettingsModelOptionGroups(options, selectedValue) {
+    const groups = new Map();
+
+    options.forEach((option) => {
+      const providerKey = String(option.provider || "").trim().toLowerCase();
+      const key = providerKey || "__missing_provider__";
+
+      if (!groups.has(key)) {
+        groups.set(key, {
+          provider: option.provider,
+          rows: [],
+        });
+      }
+
+      groups.get(key).rows.push(option);
+    });
+
+    const sortedGroups = Array.from(groups.values()).sort((a, b) => {
+      const aLabel = getSettingsModelProviderLabel(a.provider);
+      const bLabel = getSettingsModelProviderLabel(b.provider);
+
+      return aLabel.localeCompare(bLabel, "zh-CN");
+    });
+
+    return sortedGroups.map((group) => {
+      const providerLabel = getSettingsModelProviderLabel(group.provider);
+
+      return `
+        <div class="settings-model-provider-group">
+          <div class="settings-model-provider-title">
+            <span>${escapeHtml(providerLabel)}</span>
+            <span class="settings-model-provider-count">${group.rows.length}</span>
+          </div>
+          ${group.rows.map((row) => renderSettingsModelOptionHtml(row, selectedValue)).join("")}
+        </div>
+      `;
+    }).join("");
+  }
+
   function renderSettingsModel() {
     const settings = state.modelSettings || {};
     const rough = settings.rough_reading || {};
@@ -7889,7 +8080,8 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     const splitChapters = settings.split_chapters || {};
     const memory = settings.memory || {};
     const profileQuestion = settings.profile_question || {};
-    const options = Array.isArray(state.modelOptions) ? state.modelOptions : [];
+    const options = normalizeSettingsModelOptions(state.modelOptions);
+    const optionsById = new Map(options.map((row) => [row.id, row]));
     const disabledAttr = state.isAdmin ? "" : "disabled";
 
     // 模型配置项定义
@@ -7907,12 +8099,16 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
         <label class="materials-form-label settings-model-label" for="${field.id}">${escapeHtml(field.label)}</label>
         <div class="nxl-custom-select" data-select-id="${field.id}" data-value="${escapeHtml(String(field.value))}">
           <button class="nxl-custom-select-trigger" type="button" ${disabledAttr}>
-            <span class="nxl-custom-select-value">${escapeHtml(String(field.value) || "(空)")}</span>
+            <span class="nxl-custom-select-value">${renderSettingsModelSelectedHtml(getSettingsModelDisplayOption(field.value, optionsById))}</span>
             <svg class="nxl-custom-select-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
           </button>
           <div class="nxl-custom-select-dropdown">
-            <div class="nxl-custom-select-option ${!field.value ? "is-selected" : ""}" data-value="">(空)</div>
-            ${options.map((row) => `<div class="nxl-custom-select-option ${String(row.id) === String(field.value) ? "is-selected" : ""}" data-value="${escapeHtml(row.id)}">${escapeHtml(row.label || row.id)}</div>`).join("")}
+            <div class="nxl-custom-select-option settings-model-option settings-model-option-empty ${!field.value ? "is-selected" : ""}" data-value="">
+              <span class="settings-model-option-main">
+                <span class="settings-model-option-name">(空)</span>
+              </span>
+            </div>
+            ${renderSettingsModelOptionGroups(options, field.value)}
           </div>
         </div>
       </div>
@@ -7958,8 +8154,12 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
         dropdown.querySelectorAll(".nxl-custom-select-option").forEach((opt) => {
           opt.addEventListener("click", () => {
             const value = String(opt.getAttribute("data-value") || "");
+            const selectedOption = getSettingsModelDisplayOption(value, optionsById);
+
             selectEl.setAttribute("data-value", value);
-            if (valueEl) valueEl.textContent = value || "(空)";
+
+            if (valueEl) valueEl.innerHTML = renderSettingsModelSelectedHtml(selectedOption);
+
             dropdown.querySelectorAll(".nxl-custom-select-option").forEach((o) => o.classList.remove("is-selected"));
             opt.classList.add("is-selected");
             selectEl.classList.remove("is-open");
@@ -8365,18 +8565,21 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     const item = target.closest("[data-material-catalog-index]");
     if (!item || !state.catalogContext) return;
     const idx = Number(item.getAttribute("data-material-catalog-index") || "0");
+    flushReaderPosition();
     const requestToken = state.readerRequestToken + 1;
     state.readerRequestToken = requestToken;
     state.readerChapters = Array.isArray(state.catalogContext.chapters) ? state.catalogContext.chapters.slice() : [];
     state.readerBookInfoXml = String(state.catalogContext.infoXml || "");
     state.readerBookDetailXml = String(state.catalogContext.detailXml || "");
-    state.readerActiveChapterIndex = Math.max(0, Math.min(state.readerChapters.length - 1, Number.isFinite(idx) ? idx : 0));
+    const savedPosition = getSavedReaderPosition();
+    const openIndex = savedPosition ? savedPosition.chapterIndex : idx;
+    state.readerActiveChapterIndex = Math.max(0, Math.min(state.readerChapters.length - 1, Number.isFinite(openIndex) ? openIndex : 0));
     // 先打开Reader并显示加载状态
     openReader(
       state.catalogContext.title || "教材阅读",
       state.catalogContext.subtitle || "",
       "",
-      { chapterIndex: state.readerActiveChapterIndex, loading: true }
+      { chapterIndex: state.readerActiveChapterIndex, loading: true, restorePosition: savedPosition }
     );
     // 按章节加载内容
     await loadChapterContent(state.readerActiveChapterIndex);
@@ -10189,6 +10392,8 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     if (scrollToOffset !== undefined && scrollToOffset !== null) {
       const chapterStart = chapter ? chapter.start : 0;
       scrollToChapterOffset(chapterStart, scrollToOffset);
+    } else {
+      restoreReaderPositionAfterRender(idx);
     }
   }
 
@@ -10541,6 +10746,23 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     return `${lectureId}::${bookId}`;
   }
 
+  function normalizeReaderPositionSnapshot(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    const chapterIndex = Number(raw.chapterIndex);
+    const scrollTop = Number(raw.scrollTop);
+    const scrollPercent = Number(raw.scrollPercent);
+    if (!Number.isFinite(chapterIndex) || chapterIndex < 0) return null;
+    if (!Number.isFinite(scrollTop) || scrollTop < 0) return null;
+    return {
+      chapterIndex: Math.max(0, Math.floor(chapterIndex)),
+      scrollTop: Math.max(0, scrollTop),
+      scrollPercent: Number.isFinite(scrollPercent) ? Math.max(0, Math.min(1, scrollPercent)) : 0,
+      scrollHeight: Math.max(0, Number(raw.scrollHeight) || 0),
+      clientHeight: Math.max(0, Number(raw.clientHeight) || 0),
+      updatedAt: Math.max(0, Number(raw.updatedAt) || 0),
+    };
+  }
+
   function loadSessionProgress() {
     try {
       const raw = localStorage.getItem(SESSION_STORAGE_KEY);
@@ -10554,7 +10776,8 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
               completedIndices: new Set(entry.completedIndices),
               completedSessions: new Set(entry.completedSessions || []),
               reportedChapterKeys: new Set(entry.reportedChapterKeys || []),
-              currentChapterIndex: Number(entry.currentChapterIndex) || 0
+              currentChapterIndex: Number(entry.currentChapterIndex) || 0,
+              readerPosition: normalizeReaderPositionSnapshot(entry.readerPosition)
             };
           }
         });
@@ -10572,7 +10795,8 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
             completedIndices: Array.from(entry.completedIndices || []),
             completedSessions: Array.from(entry.completedSessions || []),
             reportedChapterKeys: Array.from(entry.reportedChapterKeys || []),
-            currentChapterIndex: entry.currentChapterIndex || 0
+            currentChapterIndex: entry.currentChapterIndex || 0,
+            readerPosition: normalizeReaderPositionSnapshot(entry.readerPosition)
           };
         }
       });
@@ -10588,7 +10812,8 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
         completedIndices: new Set(),
         completedSessions: new Set(),
         reportedChapterKeys: new Set(),
-        currentChapterIndex: 0
+        currentChapterIndex: 0,
+        readerPosition: null
       };
     }
     const session = state.readerSessionProgress[key];
@@ -10604,13 +10829,94 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
         completedIndices: new Set(),
         completedSessions: new Set(),
         reportedChapterKeys: new Set(),
-        currentChapterIndex: 0
+        currentChapterIndex: 0,
+        readerPosition: null
       };
     }
     if (!(state.readerSessionProgress[key].reportedChapterKeys instanceof Set)) {
       state.readerSessionProgress[key].reportedChapterKeys = new Set();
     }
     return state.readerSessionProgress[key];
+  }
+
+  function getSavedReaderPosition() {
+    const key = getSessionKey();
+    if (!key) return null;
+    const progress = state.readerSessionProgress[key];
+    if (!progress) return null;
+    const position = normalizeReaderPositionSnapshot(progress.readerPosition);
+    const chapters = Array.isArray(state.readerChapters) ? state.readerChapters : [];
+    if (!position || !chapters.length) return null;
+    if (position.chapterIndex >= chapters.length) return null;
+    return position;
+  }
+
+  function updateReaderPositionSnapshot(scrollContainer) {
+    if (!state.isReaderOpen) return false;
+    const container = scrollContainer || getReaderScrollContainer();
+    if (!container) return false;
+    const progress = ensureReaderSessionProgress();
+    if (!progress) return false;
+    const chapterMeta = getReaderCurrentChapterMeta();
+    if (chapterMeta.chapterIndex === null || chapterMeta.chapterIndex === undefined) return false;
+
+    const scrollHeight = Number(container.scrollHeight || 0);
+    const clientHeight = Number(container.clientHeight || 0);
+    const maxScroll = Math.max(0, scrollHeight - clientHeight);
+    const scrollTop = Math.max(0, Number(container.scrollTop || 0));
+    const scrollPercent = maxScroll > 0 ? Math.max(0, Math.min(1, scrollTop / maxScroll)) : 0;
+
+    progress.currentChapterIndex = Number(chapterMeta.chapterIndex) || 0;
+    progress.readerPosition = {
+      chapterIndex: Number(chapterMeta.chapterIndex) || 0,
+      scrollTop,
+      scrollPercent: Number(scrollPercent.toFixed(6)),
+      scrollHeight,
+      clientHeight,
+      updatedAt: Date.now(),
+    };
+    return true;
+  }
+
+  function flushReaderPosition() {
+    if (readerPositionSaveTimer) {
+      clearTimeout(readerPositionSaveTimer);
+      readerPositionSaveTimer = null;
+    }
+    if (updateReaderPositionSnapshot()) {
+      saveSessionProgress();
+    }
+  }
+
+  function scheduleReaderPositionSave(scrollContainer) {
+    if (!updateReaderPositionSnapshot(scrollContainer)) return;
+    if (readerPositionSaveTimer) return;
+    readerPositionSaveTimer = setTimeout(() => {
+      readerPositionSaveTimer = null;
+      saveSessionProgress();
+    }, 600);
+  }
+
+  function restoreReaderPositionAfterRender(chapterIndex) {
+    const position = normalizeReaderPositionSnapshot(state.readerPendingRestorePosition);
+    if (!position || position.chapterIndex !== chapterIndex) return;
+    state.readerPendingRestorePosition = null;
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const container = getReaderScrollContainer();
+        if (!container) return;
+        const scrollHeight = Number(container.scrollHeight || 0);
+        const clientHeight = Number(container.clientHeight || 0);
+        const maxScroll = Math.max(0, scrollHeight - clientHeight);
+        const percentTop = maxScroll > 0 ? maxScroll * position.scrollPercent : 0;
+        const targetTop = Math.max(0, Math.min(maxScroll, percentTop || position.scrollTop));
+        container.scrollTop = targetTop;
+        updateReaderPositionSnapshot(container);
+        saveSessionProgress();
+        scheduleHostReaderContextSync(0);
+      });
+    });
   }
 
   function getChapterCompleteReportKey(lectureId, bookId, chapterIndex, chapterName, chapterRange) {
@@ -10925,6 +11231,7 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
 
 // ─────── Reader: Chapter Navigation ───────────────────────────────────
   function openReaderChapter(index, scrollToOffset, guideOptions) {
+    flushReaderPosition();
     resetReaderSelectionTelemetry();
     const chapters = Array.isArray(state.readerChapters) ? state.readerChapters : [];
     if (!chapters.length) {
@@ -11350,6 +11657,7 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     state.readerMeta.title = String(title || "教材阅读");
     state.readerMeta.subtitle = String(subtitle || "");
     state.readerReportedChapterKey = "";
+    state.readerPendingRestorePosition = normalizeReaderPositionSnapshot(opts.restorePosition);
     el.readerTitle.textContent = state.readerMeta.title;
     el.readerSubTitle.textContent = state.readerMeta.subtitle;
     state.readerFullTextRaw = String(content || "");
@@ -12792,13 +13100,77 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     error: null,
   };
 
+  function normalizeQuizQuestionOptions(value) {
+    const rawItems = Array.isArray(value)
+      ? value
+      : String(value || "").split(/\r?\n/);
+
+    return rawItems.map((item) => {
+      const text = item && typeof item === "object"
+        ? String(item.text || item.content || item.value || item.title || "").trim()
+        : String(item || "").trim();
+
+      return text.replace(/^[A-Da-d][.、)\s]+/, "").trim();
+    }).filter(Boolean).slice(0, 4);
+  }
+
+  function getQuizRawOptions(question) {
+    if (!question || typeof question !== "object") return [];
+
+    if (Array.isArray(question.options) && question.options.length) return question.options;
+
+    if (!Array.isArray(question.options) && String(question.options || "").trim()) return question.options;
+
+    return question.question_options || [];
+  }
+
+  function normalizeQuizQuestion(rawQuestion) {
+    if (!rawQuestion || typeof rawQuestion !== "object") return null;
+
+    const title = String(rawQuestion.title || rawQuestion.question_title || rawQuestion.question || "").trim();
+    const content = String(rawQuestion.content || rawQuestion.question_content || "").trim();
+    const answer = String(rawQuestion.answer || rawQuestion.question_answer || rawQuestion.reference_answer || "").trim();
+    const options = normalizeQuizQuestionOptions(getQuizRawOptions(rawQuestion));
+    const rawType = String(rawQuestion.type || rawQuestion.question_type || "").trim().toLowerCase();
+    const type = (["choice", "single_choice", "multiple_choice", "选择题", "单选题"].includes(rawType) && options.length >= 2) || options.length >= 2
+      ? "choice"
+      : "text";
+    const normalizedTitle = title || content;
+    const normalizedContent = content || title;
+
+    if (!normalizedTitle || !normalizedContent || !answer) return null;
+
+    return {
+      title: normalizedTitle,
+      difficulty: String(rawQuestion.difficulty || rawQuestion.question_difficulty || "").trim(),
+      type,
+      options: type === "choice" ? options : [],
+      content: normalizedContent,
+      hint: String(rawQuestion.hint || rawQuestion.question_hint || rawQuestion.question_reason || "").trim(),
+      answer,
+      source: String(rawQuestion.source || "").trim(),
+      source_id: String(rawQuestion.source_id || rawQuestion.question_id || "").trim(),
+    };
+  }
+
+  function normalizeQuizQuestions(rawQuestions) {
+    if (!Array.isArray(rawQuestions)) return [];
+
+    return rawQuestions.map((question) => normalizeQuizQuestion(question)).filter(Boolean);
+  }
+
+  function setQuizQuestions(rawQuestions) {
+    quizState.questions = normalizeQuizQuestions(rawQuestions);
+    return quizState.questions;
+  }
+
   function loadQuizState() {
     try {
       const raw = localStorage.getItem(QUIZ_STATE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed && typeof parsed === "object") {
-          quizState.questions = Array.isArray(parsed.questions) ? parsed.questions : [];
+          setQuizQuestions(parsed.questions);
           quizState.currentChapter = String(parsed.currentChapter || "");
           quizState.currentSession = String(parsed.currentSession || "");
           quizState.currentMeta = parsed.currentMeta && typeof parsed.currentMeta === "object" ? parsed.currentMeta : null;
@@ -12811,7 +13183,7 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
   function saveQuizState() {
     try {
       localStorage.setItem(QUIZ_STATE_KEY, JSON.stringify({
-        questions: quizState.questions,
+        questions: normalizeQuizQuestions(quizState.questions),
         currentChapter: quizState.currentChapter,
         currentSession: quizState.currentSession,
         currentMeta: quizState.currentMeta,
@@ -12861,7 +13233,7 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
 
     const storedQuizzes = JSON.parse(localStorage.getItem("nxl_quiz_generated_v1") || "{}");
     storedQuizzes[quizKey] = {
-      questions: Array.isArray(questions) ? questions : [],
+      questions: normalizeQuizQuestions(questions),
       answers: answers && typeof answers === "object" ? answers : {},
       meta: meta && typeof meta === "object" ? meta : null,
       timestamp: Date.now(),
@@ -12894,8 +13266,7 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
   }
 
   function getQuizQuestionOptions(question) {
-    const raw = Array.isArray(question && question.options) ? question.options : [];
-    return raw.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 4);
+    return normalizeQuizQuestionOptions(getQuizRawOptions(question));
   }
 
   function getQuizQuestionType(question) {
@@ -13011,6 +13382,8 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
       `;
       return;
     }
+
+    setQuizQuestions(quizState.questions);
 
     if (!quizState.questions || quizState.questions.length === 0) {
       content.innerHTML = `
@@ -13397,9 +13770,9 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
       String(currentMeta.lectureId || "") === lectureId &&
       String(currentMeta.bookId || "") === bookId &&
       Number(currentMeta.chapterIndex) === safeChapterIndex &&
-      Array.isArray(quizState.questions) &&
-      quizState.questions.length
+      normalizeQuizQuestions(quizState.questions).length
     ) {
+      setQuizQuestions(quizState.questions);
       openFloatingPanel();
       setFloatingTab("quiz");
       renderQuizPanel();
@@ -13448,11 +13821,13 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
       const answers = result.answers && typeof result.answers === "object" ? result.answers : quiz.answers && typeof quiz.answers === "object" ? quiz.answers : {};
       const quizId = String(result.quiz_id || quiz.quiz_id || "").trim();
 
-      if (!quizId || !questions.length) {
+      const normalizedQuestions = normalizeQuizQuestions(questions);
+
+      if (!quizId || !normalizedQuestions.length) {
         throw new Error("章节小测没有返回有效题目");
       }
 
-      quizState.questions = questions;
+      setQuizQuestions(normalizedQuestions);
       quizState.answers = answers;
       quizState.currentMeta = {
         quizType: "chapter",
@@ -13490,24 +13865,31 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     const storedQuizzes = JSON.parse(localStorage.getItem("nxl_quiz_generated_v1") || "{}");
     if (storedQuizzes[quizKey]) {
       const stored = storedQuizzes[quizKey];
-      quizState.questions = stored.questions || [];
-      quizState.currentChapter = chapterName;
-      quizState.currentSession = sessionName;
-      quizState.currentMeta = stored.meta && typeof stored.meta === "object" ? stored.meta : {
-        quizType: "session",
-        lectureId,
-        bookId,
-        chapterIndex,
-        sessionIndex,
-        chapterName,
-        sessionName,
-      };
-      quizState.answers = stored.answers && typeof stored.answers === "object" ? stored.answers : {};
-      saveQuizState();
-      renderQuizPanel();
-      openFloatingPanel();
-      setFloatingTab("quiz");
-      return;
+      const storedQuestions = normalizeQuizQuestions(stored.questions);
+
+      if (!storedQuestions.length) {
+        delete storedQuizzes[quizKey];
+        localStorage.setItem("nxl_quiz_generated_v1", JSON.stringify(storedQuizzes));
+      } else {
+        setQuizQuestions(storedQuestions);
+        quizState.currentChapter = chapterName;
+        quizState.currentSession = sessionName;
+        quizState.currentMeta = stored.meta && typeof stored.meta === "object" ? stored.meta : {
+          quizType: "session",
+          lectureId,
+          bookId,
+          chapterIndex,
+          sessionIndex,
+          chapterName,
+          sessionName,
+        };
+        quizState.answers = stored.answers && typeof stored.answers === "object" ? stored.answers : {};
+        saveQuizState();
+        renderQuizPanel();
+        openFloatingPanel();
+        setFloatingTab("quiz");
+        return;
+      }
     }
 
     quizState.loading = true;
@@ -13545,8 +13927,14 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
       });
 
       if (result && result.success && Array.isArray(result.questions)) {
-        quizState.questions = result.questions;
-        writeStoredQuiz(quizKey, result.questions, {}, quizState.currentMeta);
+        const resultQuestions = normalizeQuizQuestions(result.questions);
+
+        if (!resultQuestions.length) {
+          quizState.error = "生成题目返回了无效结构";
+        } else {
+          setQuizQuestions(resultQuestions);
+          writeStoredQuiz(quizKey, quizState.questions, {}, quizState.currentMeta);
+        }
       } else {
         quizState.error = result.error || "生成题目失败";
       }
@@ -13727,8 +14115,22 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
 
   initFloatingPanel();
 
-  function closeReader(isUnload) {
+  function closeReader(isUnload, options) {
+    const closeOptions = (options && typeof options === "object") ? options : {};
+    const readerStateMeta = {};
+    const closeReason = String(closeOptions.closeReason || closeOptions.reason || "").trim();
+    const closeTarget = String(closeOptions.closeTarget || closeOptions.target || "").trim();
+
+    if (closeReason) {
+      readerStateMeta.close_reason = closeReason;
+    }
+
+    if (closeTarget) {
+      readerStateMeta.close_target = closeTarget;
+    }
+
     resetReaderSelectionTelemetry();
+    flushReaderPosition();
     if (state.isReaderOpen && Array.isArray(state.readerChapters) && state.readerChapters.length) {
       reportReaderChapterComplete(state.readerActiveChapterIndex, isUnload).catch((err) => {
         console.warn("[NXL-Reader] chapter complete on close failed", err);
@@ -13770,6 +14172,7 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     state.readerAnnotations = [];
     state.readerChapterCache = {};
     state.readerGuidePromptedKey = "";
+    state.readerPendingRestorePosition = null;
     readerGuideState = { status: "empty", target: null, guide: null, error: "", draft: "" };
     renderReaderGuidePanel();
     syncFloatingBtnVisibility();
@@ -13777,7 +14180,7 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
     el.readerPane.hidden = true;
     syncMaterialsPageMode();
     notifyHostLayout("default", { hideInputDock: true });
-    notifyHostReaderState(false);
+    notifyHostReaderState(false, readerStateMeta);
     notifyHostReaderContext();
   }
 
@@ -16074,10 +16477,10 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
       }
       if (state.readerViewMode === "reading") {
         setReaderFullscreen(false);
-        closeReader();
+        closeReader(false, { closeReason: "reader_back", closeTarget: "learning" });
         return;
       }
-      closeReader();
+      closeReader(false, { closeReason: "reader_back", closeTarget: "learning" });
     });
     if (el.readerSettingsBtn) {
       el.readerSettingsBtn.addEventListener("click", (event) => {
@@ -16348,6 +16751,7 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
         client_height: clientHeight,
         scroll_percent: Number(scrollPercent.toFixed(4)),
       });
+      scheduleReaderPositionSave(scrollContainer);
       scheduleHostReaderContextSync(120);
       checkSessionProgressByScroll();
     }, { passive: true, capture: true });
@@ -17204,7 +17608,7 @@ async function generatePersonalizedChapterContent(lectureId, chapterIndex, optio
         closeReader();
         renderLectureList();
         renderLectureDetail();
-        showToast("教材上传成功，已完成文本提取并提交向量化");
+        showToast("教材上传成功，已进入教材管理流程");
       } catch (err) {
         showToast(`上传失败：${err.message || "未知错误"}`);
       }

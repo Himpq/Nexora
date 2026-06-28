@@ -3,6 +3,7 @@
 """
 
 import importlib
+import inspect
 import sys
 import traceback
 from pathlib import Path
@@ -80,7 +81,7 @@ class ToolRegistry:
             })
         return result
 
-    def execute(self, tool_name: str, params: dict) -> dict[str, Any]:
+    def execute(self, tool_name: str, params: dict, context: dict[str, Any] | None = None) -> dict[str, Any]:
         resolved_tool_name = str(tool_name or "").strip()
 
         if resolved_tool_name not in self._tools:
@@ -97,7 +98,16 @@ class ToolRegistry:
             return {"success": False, "error": f"Unknown tool: {tool_name}"}
 
         try:
-            result = self._tools[resolved_tool_name]["handler"](**params)
+            handler = self._tools[resolved_tool_name]["handler"]
+            call_params = dict(params or {})
+            try:
+                handler_signature = inspect.signature(handler)
+                if "_nexora_context" in handler_signature.parameters and "_nexora_context" not in call_params:
+                    call_params["_nexora_context"] = context or {}
+            except (TypeError, ValueError):
+                pass
+
+            result = handler(**call_params)
             
             # buffer long strings
             try:

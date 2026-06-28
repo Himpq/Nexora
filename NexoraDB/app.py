@@ -46,6 +46,18 @@ if START_TIME is None:
     START_TIME = time.time()
 
 
+@app.after_request
+def add_public_health_cors_headers(response):
+    """允许 Nexora 设置页从浏览器直连读取公开健康检查结果。"""
+    if request.path == "/health":
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        response.headers["Access-Control-Max-Age"] = "600"
+
+    return response
+
+
 def get_embedder() -> SentenceTransformer:
     global _EMBEDDER
     if _EMBEDDER is None:

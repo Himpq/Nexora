@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Nexora | 博客</title>
+    <link rel="stylesheet" href="/static/vendor/fontawesome/css/all.min.css">
+    <link rel="stylesheet" href="/static/css/blog_2.css">
+</head>
+<body>
+    <header class="site-header">
+        <a class="brand" href="/" aria-label="Nexora 首页">Nexora<span class="brand-mark" aria-hidden="true"></span></a>
+
+        <nav class="main-nav" aria-label="主导航">
+            <div class="nav-menu-group">
+                <a class="nav-link nav-trigger" href="/introduce" aria-haspopup="true">
+                    <span>项目</span>
+                </a>
+
+                <div class="nav-dropdown" role="group" aria-label="项目菜单">
+                    <div class="nav-dropdown-inner">
+                        <section class="nav-dropdown-primary" aria-labelledby="nav-products-title">
+                            <p class="nav-dropdown-label" id="nav-products-title">探索产品</p>
+                            <div class="nav-mega-list">
+                                <a class="nav-mega-link" href="/introduce">Nexora</a>
+                                <span class="nav-mega-link">NexoraLearning</span>
+                                <span class="nav-mega-link">NexoraMail</span>
+                                <span class="nav-mega-link">NexoraVideoGenerator</span>
+                                <span class="nav-mega-link">NexoraDB</span>
+                            </div>
+                        </section>
+                    </div>
+                </div>
+            </div>
+
+            <div class="nav-menu-group">
+                <a class="nav-link nav-trigger" href="/status" aria-haspopup="true">
+                    <span>状态</span>
+                </a>
+
+                <div class="nav-dropdown" role="group" aria-label="状态菜单">
+                    <div class="nav-dropdown-inner">
+                        <section class="nav-dropdown-primary" aria-labelledby="nav-status-title">
+                            <p class="nav-dropdown-label" id="nav-status-title">状态</p>
+                            <div class="nav-mega-list">
+                                <a class="nav-mega-link" href="/status">模型榜单</a>
+                            </div>
+                        </section>
+                    </div>
+                </div>
+            </div>
+
+            <div class="nav-menu-group">
+                <a class="nav-link nav-trigger" href="/blog" aria-haspopup="true" aria-current="page">
+                    <span>博客</span>
+                </a>
+
+                <div class="nav-dropdown nav-blog-menu" role="group" aria-label="博客菜单">
+                    <div class="nav-dropdown-inner">
+                        <section class="nav-dropdown-primary" aria-labelledby="nav-blog-title">
+                            <p class="nav-dropdown-label" id="nav-blog-title">博客</p>
+                            <div class="nav-mega-list">
+                                <a class="nav-mega-link" href="https://himpqblog.cn">
+                                    <span>Himpqの博客</span>
+                                    <i class="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i>
+                                </a>
+                                <a class="nav-mega-link" href="/blog">
+                                    <span>Nexora博客</span>
+                                    <i class="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i>
+                                </a>
+                            </div>
+                        </section>
+                    </div>
+                </div>
+            </div>
+        </nav>
+
+        <div class="header-actions">
+            <a class="ghost-button" href="/login">登录</a>
+        </div>
+    </header>
+
+    <main>
+        <section class="blog-hero" aria-labelledby="blog-title">
+            <div class="blog-hero-panel">
+                <div class="blog-hero-copy">
+                    <p class="eyebrow">Nexora Blog</p>
+                    <h1 id="blog-title">开发日志</h1>
+                    <p>记录 Nexora 的产品更新、学习流、模型入口和本地工作台迭代。</p>
+                </div>
+
+                <div class="blog-hero-art" aria-hidden="true">
+                    <div class="report-sheet">
+                        <span></span>
+                        <strong>Update Log</strong>
+                        <i></i>
+                        <i></i>
+                        <i></i>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="blog-layout" aria-label="博客内容">
+            <article class="featured-post">
+                <div class="post-cover" aria-hidden="true"></div>
+                <div class="post-body">
+                    <p class="post-meta">Himpq · May 17, 2026</p>
+                    <h2>Update Learning Feeds</h2>
+                    <p>We have updated new features: learning feeds. Now you can create learning feeds to share your learning interests and goals, and interact with the community by commenting and liking learning feeds.</p>
+                </div>
+            </article>
+
+            <aside class="post-list" aria-label="近期日志">
+                <article style="--post-image: url('/static/img/cover/f97c3aec25254fd38382e381813f6f0d.png')">
+                    <span>06.26</span>
+                    <strong>新增地图API</strong>
+                </article>
+                <article style="--post-image: url('/static/img/cover/gen_b0660acc.png')">
+                    <span>06.25</span>
+                    <strong>知识库新增 Patch 修改能力</strong>
+                </article>
+                <article style="--post-image: url('/static/img/cover/gen_2868fdef.png')">
+                    <span>06.25</span>
+                    <strong>NexoraCode 长上下文工具修复</strong>
+                </article>
+            </aside>
+        </section>
+    </main>
+
+    <footer class="site-footer">
+        <span>Nexora</span>
+        <a href="/introduce">Nexora</a>
+        <a href="/status">模型榜单</a>
+        <a href="https://github.com/Himpq/Nexora">GitHub</a>
+    </footer>
+
+    <script src="/static/js/introduce_2.js"></script>
+</body>
+</html>

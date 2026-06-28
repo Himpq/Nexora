@@ -22,6 +22,7 @@ from context_manager import ChatContextManager
 from provider_factory import create_provider_adapter
 from temp_context_store import TempContextStore
 from server_quota import get_generation_quota_gate
+from stream_runtime import is_stream_cancelled_error
 from longterm.longterm_api import (
     build_longterm_hook_payload,
     build_longterm_prompt_block,
@@ -143,7 +144,23 @@ CONTEXT_COMPRESSION_MAX_CHARS_MAX = 120000
 CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_DEFAULT = 1500000
 CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MIN = 50000
 CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MAX = 4000000
+STREAM_VISIBLE_FILE_TOOL_ACTIONS = {
+    "cloud_file_create": "write",
+    "cloud_file_write": "write",
+    "cloud_file_patch": "patch",
+    "cloud_file_read": "read",
+    "cloud_file_find": "find",
+    "cloud_file_list": "list",
+    "cloud_file_remove": "remove",
+    "cloud_file_search_semantic": "find",
+    "local_file_write": "write",
+    "local_file_patch": "patch",
+    "local_file_read": "read",
+    "local_file_probe": "probe",
+    "local_file_list": "list",
+}
 LEARNING_ALLOWED_BASE_TOOL_NAMES = {
+    "question",
     "knowledge_search_vector",
     "knowledge_list",
     "knowledge_basis_read",
@@ -462,11 +479,7 @@ class Model:
                 self._runtime_learning_prompt_block = learning_system_prompt
                 combined_template = f"{combined_template}\n\n{learning_system_prompt}".strip()
             else:
-                self._runtime_learning_prompt_block = (
-                    "你当前处于 NexoraLearning 学习模式。\n"
-                    "请优先围绕课程学习、教材理解、章节梳理、题目讲解与学习规划提供帮助。\n"
-                    "如果用户问题与学习直接无关，也可以正常回答，但应优先尝试连接到学习场景。"
-                )
+                self._runtime_learning_prompt_block = prompts.build_learning_mode_default_prompt()
                 combined_template = f"{combined_template}\n\n{self._runtime_learning_prompt_block}".strip()
         rendered = self._render_prompt_template(combined_template)
         profile_block = self._build_user_profile_memory_prompt_block()
@@ -598,6 +611,8 @@ class Model:
                 tags.append("公开")
             if meta_map.get("collaborative"):
                 tags.append("协作")
+            if bool(meta_map.get("model_readonly", False)):
+                tags.append("模型只读")
             suffix = f"（{'，'.join(tags)}）" if tags else ""
             line = f"- {title_text}{suffix}"
             if len(line) > item_limit:
@@ -2840,6 +2855,9 @@ class Model:
             self._log_tool_usage(function_name or original_function_name, args, msg, False, start_ts)
             return msg
         except Exception as e:
+            if is_stream_cancelled_error(e):
+                raise
+
             msg = f"错误：{str(e)}"
             self._log_tool_usage(function_name or original_function_name, args, msg, False, start_ts)
             return msg
@@ -2863,6 +2881,13 @@ class Model:
         if started_at is not None:
             elapsed_ms = int(max(0.0, time.time() - float(started_at)) * 1000.0)
 
+        progress_payload = self._build_function_running_progress(
+            function_name,
+            arguments,
+            status=status,
+            elapsed_ms=elapsed_ms,
+            tick=tick
+        )
         step = {
             "type": "function_call_running",
             "name": str(function_name or "").strip(),
@@ -2873,6 +2898,7 @@ class Model:
             "tick": int(max(0, tick)),
             "streaming": True
         }
+        step.update(progress_payload)
 
         if include_arguments:
             step["arguments"] = str(arguments or "{}")
@@ -2881,6 +2907,200 @@ class Model:
             step["index"] = func_call.get("index")
 
         return step
+
+    def _parse_function_progress_args(self, arguments: Any) -> Dict[str, Any]:
+        """解析工具参数，供执行中进度提取文件路径和写入规模。"""
+        try:
+            parsed = json.loads(arguments) if isinstance(arguments, str) else arguments
+
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+
+        return {}
+
+    def _read_function_progress_file_path(self, args: Dict[str, Any]) -> str:
+        """统一读取本地文件工具和云端文件工具的路径参数。"""
+        for key in ("file_path", "path", "file", "sandbox_path", "target_path"):
+            value = args.get(key)
+
+            if value is not None and str(value).strip():
+                return str(value).strip()
+
+        return ""
+
+    def _read_file_write_mode(self, args: Dict[str, Any]) -> str:
+        """识别文件写入方式，避免执行中卡片只显示普通工具状态。"""
+        if args.get("content") is not None:
+            return "overwrite"
+
+        if args.get("from_line") is not None or args.get("to_line") is not None:
+            return "line_replace"
+
+        if args.get("old_text") is not None:
+            return "text_replace"
+
+        return "unresolved"
+
+    def _build_file_function_running_progress(
+        self,
+        function_name: str,
+        args: Dict[str, Any],
+        *,
+        status: str,
+        elapsed_sec: float
+    ) -> Dict[str, Any]:
+        """生成文件工具的流式执行进度，覆盖云端文件和本地文件两套参数。"""
+        action = STREAM_VISIBLE_FILE_TOOL_ACTIONS.get(function_name, "tool")
+        path = self._read_function_progress_file_path(args)
+        status_value = str(status or "running").strip() or "running"
+        details = {
+            "path": path,
+            "operation": action,
+        }
+
+        if str(function_name or "").startswith("local_file_"):
+            details["encoding"] = str(args.get("encoding") or "").strip() or "utf-8"
+
+        if action == "write":
+            write_mode = self._read_file_write_mode(args)
+            content = str(args.get("content") or "")
+            replacement = str(args.get("replacement") or "")
+            new_text = str(args.get("new_text") or "")
+            old_text = str(args.get("old_text") or "")
+            status_text = "准备写入文件" if status_value == "started" else f"正在写入文件，已等待 {elapsed_sec:.1f}s"
+            details.update({
+                "mode": write_mode,
+                "content_chars": len(content),
+                "replacement_chars": len(replacement),
+                "new_text_chars": len(new_text),
+                "old_text_chars": len(old_text),
+            })
+            progress_lines = [
+                status_text,
+                f"path: {path or '(未提供)'}",
+                f"mode: {write_mode}",
+            ]
+
+            if content:
+                progress_lines.append(f"content_chars: {len(content)}")
+
+            if replacement:
+                progress_lines.append(f"replacement_chars: {len(replacement)}")
+
+            if old_text or new_text:
+                progress_lines.append(f"old_text_chars: {len(old_text)}")
+                progress_lines.append(f"new_text_chars: {len(new_text)}")
+
+            return {
+                "status_text": status_text,
+                "progress_text": "\n".join(progress_lines),
+                "tool_phase": status_value,
+                "progress": details,
+            }
+
+        if action == "patch":
+            dry_run = bool(args.get("dry_run", False))
+            confirm_preview_id = str(args.get("confirm_preview_id") or "").strip()
+            edits = args.get("edits")
+            patch_text = str(args.get("patch") or "")
+            edit_count = len(edits) if isinstance(edits, list) else 0
+            mode = "confirm" if confirm_preview_id else "dry_run" if dry_run else "prepare"
+            status_text = (
+                "准备确认写入 patch"
+                if status_value == "started" and mode == "confirm"
+                else "准备生成 patch 预览"
+                if status_value == "started"
+                else f"正在确认写入 patch，已等待 {elapsed_sec:.1f}s"
+                if mode == "confirm"
+                else f"正在生成 patch 预览，已等待 {elapsed_sec:.1f}s"
+            )
+            details.update({
+                "mode": mode,
+                "edit_count": edit_count,
+                "patch_chars": len(patch_text),
+                "confirm_preview_id": confirm_preview_id,
+            })
+            progress_lines = [
+                status_text,
+                f"path: {path or '(未提供)'}",
+                f"mode: {mode}",
+            ]
+
+            if edit_count:
+                progress_lines.append(f"edit_count: {edit_count}")
+
+            if patch_text:
+                progress_lines.append(f"patch_chars: {len(patch_text)}")
+
+            if confirm_preview_id:
+                progress_lines.append(f"confirm_preview_id: {confirm_preview_id}")
+
+            return {
+                "status_text": status_text,
+                "progress_text": "\n".join(progress_lines),
+                "tool_phase": status_value,
+                "progress": details,
+            }
+
+        label_map = {
+            "read": "读取文件",
+            "find": "查找文件",
+            "list": "列出文件",
+            "remove": "删除文件",
+            "probe": "探测文件",
+        }
+        label = label_map.get(action, "执行文件工具")
+        status_text = f"准备{label}" if status_value == "started" else f"正在{label}，已等待 {elapsed_sec:.1f}s"
+        progress_lines = [
+            status_text,
+            f"path: {path or '(未提供)'}",
+        ]
+
+        return {
+            "status_text": status_text,
+            "progress_text": "\n".join(progress_lines),
+            "tool_phase": status_value,
+            "progress": details,
+        }
+
+    def _should_log_function_stream(self) -> bool:
+        """按全局日志开关输出工具流式状态，便于定位前端是否收到执行中事件。"""
+        log_status = str((self.config or {}).get("log_status", "silent") or "silent").strip().lower()
+        return log_status in {"all", "debug", "verbose"}
+
+    def _build_function_running_progress(
+        self,
+        function_name: str,
+        arguments: str,
+        *,
+        status: str,
+        elapsed_ms: int,
+        tick: int
+    ) -> Dict[str, Any]:
+        """生成工具执行中给前端展示的阶段信息，尤其让文件写入类工具不再像卡住。"""
+        raw_name = str(function_name or "").strip()
+        name = canonicalize_tool_name(raw_name) or raw_name
+        status_value = str(status or "running").strip() or "running"
+        args = self._parse_function_progress_args(arguments)
+        elapsed_sec = max(0.0, float(elapsed_ms or 0) / 1000.0)
+
+        if name not in STREAM_VISIBLE_FILE_TOOL_ACTIONS:
+            status_text = "准备执行工具" if status_value == "started" else f"执行中 {elapsed_sec:.1f}s"
+
+            return {
+                "status_text": status_text,
+                "progress_text": status_text,
+                "tool_phase": status_value,
+            }
+
+        return self._build_file_function_running_progress(
+            name,
+            args,
+            status=status_value,
+            elapsed_sec=elapsed_sec
+        )
 
     def _start_function_running_heartbeat(
         self,
@@ -2898,7 +3118,8 @@ class Model:
             return None
 
         stop_event = threading.Event()
-        interval_sec = 4.0
+        safe_tool_name = canonicalize_tool_name(function_name) or str(function_name or "").strip()
+        interval_sec = 1.0 if safe_tool_name in STREAM_VISIBLE_FILE_TOOL_ACTIONS else 4.0
 
         def _heartbeat_loop():
             tick = 0
@@ -2918,14 +3139,19 @@ class Model:
                 )
 
                 try:
+                    if self._should_log_function_stream():
+                        print(
+                            f"[FUNCTION_STREAM] heartbeat round={int(round_num) + 1} "
+                            f"name={safe_tool_name} call_id={str(call_id or '')} "
+                            f"tick={tick} elapsed_ms={running_step.get('elapsed_ms')}"
+                        )
                     push_chunk(running_step)
                 except Exception as heartbeat_error:
                     stop_event.set()
                     print(f"[FUNCTION_STREAM] running heartbeat stopped: {heartbeat_error}")
                     break
 
-        safe_tool_name = canonicalize_tool_name(function_name) or "tool"
-        thread_name = f"function-running-{safe_tool_name[:32]}"
+        thread_name = f"function-running-{(safe_tool_name or 'tool')[:32]}"
         heartbeat_thread = threading.Thread(target=_heartbeat_loop, name=thread_name, daemon=True)
         heartbeat_thread.start()
         return stop_event
@@ -3086,6 +3312,11 @@ class Model:
             "conversation_context_read",
             "clear_context",
             "server_render_page",
+            "map_render",
+            "map_calc_distance",
+            "map_calc_route",
+            "map_geocode",
+            "map_poi_search",
             "arxiv_search",
             "js_execute",
             "client_js_exec",
@@ -3634,6 +3865,124 @@ class Model:
             if len(out) >= 64:
                 break
         return out
+
+    def _normalize_sandbox_path_for_prompt(self, raw_path: Any) -> str:
+        path = str(raw_path or "").strip().replace("\\", "/")
+
+        if not path:
+            return ""
+
+        return path
+
+    def _append_sandbox_path_for_prompt(
+        self,
+        paths: List[str],
+        seen_paths: Set[str],
+        raw_path: Any,
+    ) -> None:
+        path = self._normalize_sandbox_path_for_prompt(raw_path)
+
+        if not path or path in seen_paths:
+            return
+
+        seen_paths.add(path)
+        paths.append(path)
+
+    def _append_sandbox_paths_from_attachments(
+        self,
+        paths: List[str],
+        seen_paths: Set[str],
+        attachments: Any,
+    ) -> None:
+        if not isinstance(attachments, list):
+            return
+
+        for item in attachments:
+
+            if not isinstance(item, dict):
+                continue
+
+            self._append_sandbox_path_for_prompt(
+                paths,
+                seen_paths,
+                item.get("sandbox_path"),
+            )
+
+            if len(paths) >= 64:
+                return
+
+    def _append_history_sandbox_paths_for_prompt(
+        self,
+        paths: List[str],
+        seen_paths: Set[str],
+        history_end_index_exclusive: Optional[int] = None,
+    ) -> None:
+        if not self.conversation_id:
+            return
+
+        try:
+            history_messages = self.conversation_manager.get_messages(self.conversation_id)
+        except Exception as e:
+            print(f"[FILE_CONTEXT] history attachment read failed: {e}")
+            return
+
+        if not isinstance(history_messages, list):
+            return
+
+        if history_end_index_exclusive is not None:
+            try:
+                end_index = max(0, int(history_end_index_exclusive))
+                history_messages = history_messages[:end_index]
+            except Exception:
+                history_messages = []
+
+        for item in history_messages:
+
+            if not isinstance(item, dict):
+                continue
+
+            metadata = item.get("metadata", {}) if isinstance(item.get("metadata", {}), dict) else {}
+            self._append_sandbox_paths_from_attachments(
+                paths,
+                seen_paths,
+                metadata.get("attachments", []),
+            )
+
+            if len(paths) >= 64:
+                return
+
+    def _build_sandbox_path_list_for_prompt(
+        self,
+        sandbox_paths: Any,
+        user_attachments: Any,
+        *,
+        include_history: bool,
+        history_end_index_exclusive: Optional[int] = None,
+    ) -> List[str]:
+        paths: List[str] = []
+        seen_paths: Set[str] = set()
+
+        if isinstance(sandbox_paths, list):
+
+            for item in sandbox_paths:
+                self._append_sandbox_path_for_prompt(paths, seen_paths, item)
+
+                if len(paths) >= 64:
+                    return paths
+
+        self._append_sandbox_paths_from_attachments(paths, seen_paths, user_attachments)
+
+        if len(paths) >= 64:
+            return paths
+
+        if include_history:
+            self._append_history_sandbox_paths_for_prompt(
+                paths,
+                seen_paths,
+                history_end_index_exclusive=history_end_index_exclusive,
+            )
+
+        return paths[:64]
 
     def _content_signature_for_dedupe(self, content: Any) -> str:
         try:
@@ -4477,6 +4826,11 @@ class Model:
                             lines.append(f"- {label} [{tool_type}]")
                 return "\n".join(lines).strip()
             
+            # 外层异常处理会把错误合并回本轮 assistant；这些默认值保证早期异常也可安全持久化。
+            accumulated_content = ""
+            process_steps = []
+            saved_assistant_message_index = None
+
             provider_req_opts = self._get_provider_request_options(self.provider)
             request_enable_search_cfg = self._as_bool(provider_req_opts.get("enable_search", True), default=True)
             badge_search_enabled = bool(
@@ -4569,8 +4923,35 @@ class Model:
                 metadata["attachments"] = attachment_summary
              
             # 重新生成逻辑：不添加新消息，而是使用历史消息
-            if self.persist_conversation and not is_regenerate and self.conversation_id and not skip_user_message:
-                self.conversation_manager.add_message(self.conversation_id, "user", msg, metadata=metadata)
+            skip_user_message_bool = self._as_bool(skip_user_message, default=False)
+            persisted_user_index = None
+            if self.persist_conversation and not is_regenerate and self.conversation_id and not skip_user_message_bool:
+                persisted_user_index = self.conversation_manager.add_message(self.conversation_id, "user", msg, metadata=metadata)
+
+            stream_push_chunk = getattr(self, "_stream_direct_push_chunk", None)
+            if self.persist_conversation and not is_regenerate and self.conversation_id and callable(stream_push_chunk):
+                assistant_index_for_stream = None
+
+                if persisted_user_index is not None:
+                    assistant_index_for_stream = int(persisted_user_index) + 1
+
+                elif skip_user_message_bool:
+                    conversation = self.conversation_manager.get_conversation(self.conversation_id)
+                    messages = conversation.get("messages", []) if isinstance(conversation, dict) else []
+
+                    if isinstance(messages, list):
+                        assistant_index_for_stream = len(messages)
+
+                if assistant_index_for_stream is not None:
+                    stream_push_chunk({
+                        "type": "stream_session",
+                        "conversation_id": self.conversation_id,
+                        "is_regenerate": False,
+                        "assistant_index": int(assistant_index_for_stream),
+                        "regenerate_index": None,
+                        "status": "running"
+                    })
+
             if self.persist_conversation and self.conversation_id and normalized_conversation_mode == "longterm":
                 try:
                     self.conversation_manager.update_conversation_fields(self.conversation_id, {
@@ -4613,50 +4994,43 @@ class Model:
                     })
                 except Exception as e:
                     print(f"[LEARNING] 进入模式状态写入失败: {e}")
-             
+
+            history_end_index_exclusive = None
+            if is_regenerate and regenerate_index is not None:
+                try:
+                    parsed_regen_index = int(regenerate_index)
+
+                    if parsed_regen_index >= 0:
+                        # Regenerate should branch from the user turn before target assistant,
+                        # excluding the target assistant and any later messages.
+                        history_end_index_exclusive = parsed_regen_index
+                except Exception:
+                    history_end_index_exclusive = None
+
             # 构造本次用户消息内容 (多模态)
             user_content = self._build_user_content_payload(msg, image_urls, use_responses_api)
             current_turn_system_injections: List[str] = []
             if normalized_conversation_mode == "learning":
                 learning_blocks = normalized_conversation_mode_payload.get("context_blocks", [])
                 if isinstance(learning_blocks, list) and learning_blocks:
-                    rendered_blocks = []
-                    for item in learning_blocks:
-                        if not isinstance(item, dict):
-                            continue
-                        block_type = str(item.get("type", "") or "").strip() or "learning_context"
-                        block_title = str(item.get("title", "") or "").strip() or block_type
-                        block_content = str(item.get("content", "") or "").strip()
-                        if not block_content:
-                            continue
-                        rendered_blocks.append(
-                            f"<LEARNING_CONTEXT_BLOCK type=\"{block_type}\" title=\"{block_title}\">\n{block_content}\n</LEARNING_CONTEXT_BLOCK>"
-                        )
-                    if rendered_blocks:
-                        learning_hint = (
-                            "[系统注入] 当前对话处于 NexoraLearning 学习模式。以下是学习上下文，请优先参考：\n"
-                            + "\n\n".join(rendered_blocks)
-                            + "\n"
-                        )
+                    learning_hint = prompts.build_learning_context_injection_prompt(learning_blocks)
+
+                    if learning_hint:
                         current_turn_system_injections.append(learning_hint)
-            sandbox_path_list: List[str] = []
-            if isinstance(sandbox_paths, list):
-                seen_paths = set()
-                for p in sandbox_paths:
-                    v = str(p or "").strip().replace("\\", "/")
-                    if (not v) or (v in seen_paths):
-                        continue
-                    seen_paths.add(v)
-                    sandbox_path_list.append(v)
-                    if len(sandbox_path_list) >= 64:
-                        break
+
+            sandbox_path_list = self._build_sandbox_path_list_for_prompt(
+                sandbox_paths,
+                user_attachments,
+                include_history=bool(include_context),
+                history_end_index_exclusive=history_end_index_exclusive,
+            )
+
             if sandbox_path_list:
-                sandbox_hint = (
-                    "[系统注入] 已上传文件到用户沙箱，请优先使用 "
-                    "cloud_file_list/cloud_file_create/cloud_file_read/cloud_file_find/cloud_file_write/cloud_file_remove 工具操作以下路径：\n"
-                    + "\n".join([f"- {p}" for p in sandbox_path_list])
-                    + "\n"
+                print(
+                    f"[FILE_CONTEXT] inject sandbox paths count={len(sandbox_path_list)} "
+                    f"include_history={bool(include_context)} conversation_id={self.conversation_id or ''}"
                 )
+                sandbox_hint = prompts.build_cloud_file_sandbox_paths_prompt(sandbox_path_list)
                 current_turn_system_injections.append(sandbox_hint)
 
             # Check Context Cache (provider-decided)
@@ -4708,16 +5082,6 @@ class Model:
                 if tool_skill_prompt_block:
                     request_system_prompt = f"{request_system_prompt}\n\n{tool_skill_prompt_block}".strip()
             self.system_prompt = request_system_prompt
-            history_end_index_exclusive = None
-            if is_regenerate and regenerate_index is not None:
-                try:
-                    parsed_regen_index = int(regenerate_index)
-                    if parsed_regen_index >= 0:
-                        # Regenerate should branch from the user turn before target assistant,
-                        # excluding the target assistant and any later messages.
-                        history_end_index_exclusive = parsed_regen_index
-                except Exception:
-                    history_end_index_exclusive = None
             full_context_messages = self._build_initial_messages(
                 user_msg=msg,
                 current_user_content=user_content,
@@ -4862,6 +5226,7 @@ class Model:
             terminal_error_content = ""
             terminal_error_code = ""
             terminal_error_retryable = False
+            saved_assistant_message_index = None
             awaiting_question_response = False
             empty_output_recovery_rounds = 0
             reasoning_only_recovery_rounds = 0
@@ -4876,6 +5241,22 @@ class Model:
             request_last_round_output_tokens = 0
             request_last_round_input_tokens_raw = 0
             request_last_round_input_tokens_cached = 0
+            last_request_timeout_sec = 0.0
+            stream_event_trace = {
+                "event_count": 0,
+                "last_type": "",
+                "last_at": 0.0,
+            }
+            native_search_trace = {
+                "triggered": False,
+                "event_count": 0,
+                "started_at": 0.0,
+                "last_event_at": 0.0,
+                "last_status": "",
+                "last_query": "",
+                "last_content": "",
+                "last_round": 0,
+            }
             
             # previous_response_id 已在上面初始化
             current_function_outputs = []  # 当前轮的function输出
@@ -4886,6 +5267,157 @@ class Model:
             normalized_thinking_level = str(thinking_level or "").strip().lower()
             if normalized_thinking_level not in {"low", "medium", "high"}:
                 normalized_thinking_level = ""
+
+            def _build_native_search_trace_snapshot(now_value: Optional[float] = None) -> Dict[str, Any]:
+                if not native_search_trace.get("triggered"):
+                    return {}
+
+                now_ts = float(now_value or time.time())
+                started_at = float(native_search_trace.get("started_at") or 0.0)
+                last_event_at = float(native_search_trace.get("last_event_at") or 0.0)
+                trace = {
+                    "provider": self.provider,
+                    "model": self.model_name,
+                    "conversation_id": str(self.conversation_id or ""),
+                    "event_count": int(max(0, native_search_trace.get("event_count") or 0)),
+                    "last_status": str(native_search_trace.get("last_status") or ""),
+                    "last_query": str(native_search_trace.get("last_query") or ""),
+                    "last_content": str(native_search_trace.get("last_content") or ""),
+                    "last_round": int(max(0, native_search_trace.get("last_round") or 0)),
+                }
+
+                if started_at > 0:
+                    trace["elapsed_ms"] = int(max(0, (now_ts - started_at) * 1000))
+
+                if last_event_at > 0:
+                    trace["idle_ms"] = int(max(0, (now_ts - last_event_at) * 1000))
+
+                return trace
+
+            def _classify_stream_exception(exc: Exception, round_index: Optional[int] = None) -> Tuple[str, bool, str]:
+                err_text = str(exc or "").strip()
+                lower_error = err_text.lower()
+                error_type_name = type(exc).__name__
+                current_round_number = int(round_index) + 1 if round_index is not None else 0
+                current_round_has_native_search = bool(
+                    native_search_trace.get("triggered")
+                    and int(native_search_trace.get("last_round") or 0) == current_round_number
+                )
+                rate_limit_hints = (
+                    "rate limit",
+                    "too many requests",
+                    "insufficient_quota",
+                    "global rate limit",
+                    "quota exceeded",
+                    "resource exhausted",
+                    "429",
+                )
+                network_hints = (
+                    "connection reset",
+                    "connection aborted",
+                    "connection error",
+                    "connection refused",
+                    "failed to establish a new connection",
+                    "name or service not known",
+                    "temporary failure in name resolution",
+                    "timed out",
+                    "timeout",
+                    "incomplete chunked read",
+                    "remoteprotocolerror",
+                    "readerror",
+                    "eof",
+                    "peer closed connection",
+                )
+                timeout_type_names = {
+                    "APITimeoutError",
+                    "ReadTimeout",
+                    "TimeoutException",
+                    "TimeoutError",
+                }
+                network_type_names = {
+                    "APIConnectionError",
+                    "RemoteProtocolError",
+                    "ReadError",
+                }
+
+                if any(hint in lower_error for hint in rate_limit_hints):
+                    return "rate_limit", True, f"模型限流/额度超限: {err_text}"
+
+                if (
+                    any(hint in lower_error for hint in network_hints)
+                    or error_type_name in timeout_type_names
+                    or error_type_name in network_type_names
+                ):
+                    timeout_like = (
+                        "timeout" in lower_error
+                        or "timed out" in lower_error
+                        or error_type_name in timeout_type_names
+                    )
+                    if timeout_like and current_round_has_native_search:
+                        return "native_web_search_timeout", True, f"原生联网搜索阶段超时: {err_text}"
+
+                    return "network_error", True, f"网络异常，流式连接中断: {err_text}"
+
+                return "", False, err_text
+
+            def _build_terminal_stream_error_payload(
+                exc: Exception,
+                *,
+                round_index: int,
+                round_started_at: float
+            ) -> Optional[Dict[str, Any]]:
+                nonlocal terminal_error_content, terminal_error_code, terminal_error_retryable
+
+                error_code, retryable, error_content = _classify_stream_exception(exc, round_index=round_index)
+                if not error_code:
+                    return None
+
+                now_ts = time.time()
+                trace_payload = {
+                    "provider": self.provider,
+                    "model": self.model_name,
+                    "conversation_id": str(self.conversation_id or ""),
+                    "round": int(round_index) + 1,
+                    "request_timeout_sec": float(last_request_timeout_sec or 0.0),
+                    "round_elapsed_ms": int(max(0, (now_ts - float(round_started_at or now_ts)) * 1000)),
+                }
+
+                if stream_event_trace.get("event_count"):
+                    last_event_at = float(stream_event_trace.get("last_at") or 0.0)
+                    trace_payload["stream_event_count"] = int(max(0, stream_event_trace.get("event_count") or 0))
+                    trace_payload["last_stream_event_type"] = str(stream_event_trace.get("last_type") or "")
+
+                    if last_event_at > 0:
+                        trace_payload["stream_idle_ms"] = int(max(0, (now_ts - last_event_at) * 1000))
+
+                native_trace_payload = _build_native_search_trace_snapshot(now_ts)
+                if native_trace_payload:
+                    trace_payload["native_search"] = native_trace_payload
+
+                terminal_error_content = str(error_content or "").strip() or str(exc or "")
+                terminal_error_code = error_code
+                terminal_error_retryable = bool(retryable)
+                error_step = {
+                    "type": "error",
+                    "code": terminal_error_code,
+                    "retryable": terminal_error_retryable,
+                    "content": terminal_error_content,
+                    "round": int(round_index) + 1,
+                    "stream_trace": trace_payload,
+                }
+                process_steps.append(error_step)
+                print(
+                    f"[STREAM_ERROR] code={terminal_error_code} retryable={terminal_error_retryable} "
+                    f"round={int(round_index) + 1} trace={json.dumps(trace_payload, ensure_ascii=False, default=str)}"
+                )
+
+                return {
+                    "type": "error",
+                    "error_code": terminal_error_code,
+                    "retryable": terminal_error_retryable,
+                    "content": terminal_error_content,
+                    "stream_trace": trace_payload,
+                }
             
             try:
                 for round_num in range(max_rounds):
@@ -4944,6 +5476,10 @@ class Model:
                         current_function_outputs=request_function_outputs,
                         runtime_function_tool_names=self._runtime_function_tool_names_for_request()
                     )
+                    try:
+                        last_request_timeout_sec = float(request_params.get("timeout") or 0.0)
+                    except Exception:
+                        last_request_timeout_sec = 0.0
 
                     if round_num == 0:
                         if context_window_fallback_default and include_context and messages_has_full_context:
@@ -5788,6 +6324,51 @@ class Model:
                     round_usage = None
                     round_response_id_emitted = False
 
+                    def _strip_history_time_marker_echo(text):
+                        value = str(text or "")
+                        if not value:
+                            return "", False, False
+
+                        time_match = re.match(
+                            r'^\[TIME\]\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s*(?:\r?\n)?',
+                            value
+                        )
+                        if time_match:
+                            return value[time_match.end():], True, False
+
+                        old_match = re.match(
+                            r'^\[\{TIME:\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\}?\]?\s*(?:\r?\n)?',
+                            value
+                        )
+                        if old_match:
+                            return value[old_match.end():], True, False
+
+                        new_match = re.match(
+                            r'^\[历史消息时间:\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\]\s*(?:\([^)\n]*不要在回答中复述[^)\n]*\)\s*)?(?:\r?\n)?',
+                            value
+                        )
+                        if new_match:
+                            return value[new_match.end():], True, False
+
+                        wait_prefixes = (
+                            "[TIME]",
+                            "[{TIME:",
+                            "[历史消息时间:",
+                        )
+                        if any(prefix.startswith(value) for prefix in wait_prefixes):
+                            return "", False, True
+
+                        if value.startswith("[{TIME:") and "\n" not in value and len(value) < 64:
+                            return "", False, True
+
+                        if value.startswith("[TIME]") and "\n" not in value and len(value) < 64:
+                            return "", False, True
+
+                        if value.startswith("[历史消息时间:") and "\n" not in value and len(value) < 96:
+                            return "", False, True
+
+                        return value, False, False
+
                     def _append_round_delta(delta_text):
                         nonlocal raw_round_content, round_content, emitted_round_content_len, accumulated_content
                         if delta_text is None:
@@ -5795,6 +6376,30 @@ class Model:
                         piece = str(delta_text)
                         if not piece:
                             return ""
+
+                        if not round_content and emitted_round_content_len == 0:
+                            candidate = raw_round_content + piece
+                            stripped_candidate, removed_marker, pending_marker = _strip_history_time_marker_echo(candidate)
+
+                            if pending_marker:
+                                raw_round_content = candidate
+                                return ""
+
+                            if removed_marker:
+                                if candidate != stripped_candidate:
+                                    print(
+                                        "[STREAM_SANITIZE] stripped echoed history time marker "
+                                        f"conversation_id={self.conversation_id}"
+                                    )
+                                raw_round_content = ""
+                                piece = stripped_candidate
+
+                                if not piece:
+                                    return ""
+                            elif raw_round_content:
+                                piece = candidate
+                                raw_round_content = ""
+
                         if not citation_url_map:
                             # Fast path: no citation remap required for this round.
                             raw_round_content += piece
@@ -5833,6 +6438,9 @@ class Model:
                             ev_type = str(event.get("type", "") or "").strip()
                             if not ev_type:
                                 continue
+                            stream_event_trace["event_count"] = int(stream_event_trace.get("event_count") or 0) + 1
+                            stream_event_trace["last_type"] = ev_type
+                            stream_event_trace["last_at"] = time.time()
 
                             if ev_type == "response_id":
                                 rid = str(event.get("response_id", "") or "").strip()
@@ -5920,6 +6528,16 @@ class Model:
                                     step_delta["name_delta"] = str(event.get("name_delta", "") or "")
                                 if "index" in event:
                                     step_delta["index"] = event.get("index")
+
+                                for meta_key in (
+                                    "arguments_delta_part",
+                                    "arguments_delta_total_parts",
+                                    "arguments_delta_source_chars",
+                                ):
+
+                                    if meta_key in event:
+                                        step_delta[meta_key] = event.get(meta_key)
+
                                 yield step_delta
                                 continue
 
@@ -5932,12 +6550,28 @@ class Model:
                                     "status": str(event.get("status", "") or ""),
                                     "query": str(event.get("query", "") or ""),
                                     "content": str(event.get("content", "") or ""),
+                                    "round": int(round_num) + 1,
                                 }
                                 if not step["content"]:
                                     if step["status"] and step["query"]:
                                         step["content"] = f"{step['status']}: {step['query']}"
                                     else:
                                         step["content"] = step["status"] or "联网搜索"
+                                now_ts = time.time()
+                                if not native_search_trace.get("triggered"):
+                                    native_search_trace["triggered"] = True
+                                    native_search_trace["started_at"] = now_ts
+                                native_search_trace["event_count"] = int(native_search_trace.get("event_count") or 0) + 1
+                                native_search_trace["last_event_at"] = now_ts
+                                native_search_trace["last_status"] = step["status"]
+                                native_search_trace["last_query"] = step["query"]
+                                native_search_trace["last_content"] = step["content"]
+                                native_search_trace["last_round"] = int(round_num) + 1
+                                print(
+                                    f"[NATIVE_WEB_SEARCH] round={int(round_num) + 1} "
+                                    f"status={step['status']} query={step['query']} "
+                                    f"content={step['content']}"
+                                )
                                 yield step
                                 process_steps.append(step)
                                 continue
@@ -6027,6 +6661,15 @@ class Model:
                         if eof_like_error and (round_content or accumulated_content or round_reasoning or function_calls):
                             print("[WARN] 上游流提前断开，已收到部分内容，按正常结束处理以便继续 longterm 续跑。")
                         else:
+                            terminal_payload = _build_terminal_stream_error_payload(
+                                e,
+                                round_index=round_num,
+                                round_started_at=round_started_at,
+                            )
+                            if terminal_payload:
+                                yield terminal_payload
+                                return
+
                             # 如果是上下文错误，在这里其实很难直接retry，因为已经yield了部分内容
                             # 但至少我们捕获它，防止整个Server崩掉
                             if "previous response" in str(e):
@@ -6276,6 +6919,12 @@ class Model:
                             
                             # 执行函数
                             function_started_at = time.time()
+                            if self._should_log_function_stream():
+                                print(
+                                    f"[FUNCTION_STREAM] start round={int(round_num) + 1} "
+                                    f"name={func_name} call_id={str(call_id or '')} "
+                                    f"args_chars={len(str(func_args or ''))}"
+                                )
                             running_step = self._build_function_running_step(
                                 func_name,
                                 func_args,
@@ -6302,6 +6951,14 @@ class Model:
                                 result = self._execute_function(func_name, func_args)
                             finally:
                                 self._stop_function_running_heartbeat(heartbeat_stop_event)
+
+                            if self._should_log_function_stream():
+                                function_elapsed_ms = int(max(0.0, time.time() - float(function_started_at)) * 1000.0)
+                                print(
+                                    f"[FUNCTION_STREAM] done round={int(round_num) + 1} "
+                                    f"name={func_name} call_id={str(call_id or '')} "
+                                    f"elapsed_ms={function_elapsed_ms} result_chars={len(str(result or ''))}"
+                                )
 
                             model_visible_args = {}
                             try:
@@ -6491,10 +7148,10 @@ class Model:
                             }
                             process_steps.append(dict(guard_step))
                             yield guard_step
-                            if not str(accumulated_content or "").strip():
-                                accumulated_content = tool_loop_guard_message
-                            else:
-                                accumulated_content = f"{accumulated_content}\n\n{tool_loop_guard_message}".strip()
+
+                    if tool_loop_guard_triggered:
+                        # 工具循环保护触发后必须优先退出，避免恢复分支继续续跑工具轮。
+                        break
 
                     if round_content and (not round_had_tool_activity):
                         tool_activity_after_last_text = False
@@ -6513,11 +7170,7 @@ class Model:
                         if normalized_conversation_mode == "learning" and (not round_had_tool_activity):
                             learning_nudge = {
                                 "role": "system",
-                                "content": (
-                                    "当前为 NexoraLearning 学习模式。不要只输出思考。"
-                                    "请直接调用一个最相关的 Learning 或知识库读取工具，"
-                                    "再基于工具结果继续回答用户。"
-                                ),
+                                "content": prompts.build_learning_mode_tool_nudge_prompt(),
                             }
                             messages.append(dict(learning_nudge))
                             full_context_messages.append(dict(learning_nudge))
@@ -6622,19 +7275,27 @@ class Model:
                     except Exception as cancel_check_error:
                         print(f"[STREAM_CANCEL] cancel check failed before assistant persist: {cancel_check_error}")
 
-                if stream_cancelled:
-                    print(
-                        f"[STREAM_CANCEL] skip assistant persist conversation_id={self.conversation_id} "
-                        f"regenerate={bool(is_regenerate)} content_chars={len(str(accumulated_content or ''))} "
-                        f"steps={len(process_steps or [])}"
-                    )
-
                 has_persistable_step = any(
                     isinstance(step, dict)
                     and str(step.get("type") or "").strip() not in {"", "reasoning_content"}
                     for step in (process_steps or [])
                 )
-                if (not stream_cancelled) and (accumulated_content or terminal_error_content or has_persistable_step):
+                has_persistable_assistant_output = bool(
+                    accumulated_content
+                    or accumulated_reasoning
+                    or terminal_error_content
+                    or has_persistable_step
+                )
+
+                if stream_cancelled:
+                    print(
+                        f"[STREAM_CANCEL] assistant persist check conversation_id={self.conversation_id} "
+                        f"regenerate={bool(is_regenerate)} content_chars={len(str(accumulated_content or ''))} "
+                        f"reasoning_chars={len(str(accumulated_reasoning or ''))} "
+                        f"steps={len(process_steps or [])} persist={has_persistable_assistant_output}"
+                    )
+
+                if has_persistable_assistant_output:
                     print(f"[DEBUG] 保存助手消息，Steps: {len(process_steps)}")
                     saved_assistant_content = accumulated_content
                     if (not str(saved_assistant_content or "").strip()) and str(terminal_error_content or "").strip():
@@ -6661,6 +7322,9 @@ class Model:
                             "started_with_resume_id": bool(request_started_with_resume_id),
                             "resume_id_seed": request_resume_id_seed,
                             "promoted_to_full_context": bool(request_promoted_to_full_context),
+                            "request_timeout_sec": float(last_request_timeout_sec or 0.0),
+                            "stream_event_count": int(max(0, stream_event_trace.get("event_count") or 0)),
+                            "last_stream_event_type": str(stream_event_trace.get("last_type") or ""),
                             "response_id_seen_count": int(max(0, response_id_seen_count)),
                             "response_id_changed_count": int(max(0, response_id_changed_count)),
                             "first_round_input_count": int(max(0, first_round_input_count)),
@@ -6687,6 +7351,13 @@ class Model:
                             "context_compression_forced": bool(force_context_compression)
                         },
                         "io_tokens": {
+                            "input": int(max(0, request_last_round_input_tokens)),
+                            "output": int(max(0, request_last_round_output_tokens)),
+                            "raw_input": int(max(0, request_last_round_input_tokens_raw)),
+                            "cached_input": int(max(0, request_last_round_input_tokens_cached)),
+                            "effective_input": int(max(0, request_last_round_input_tokens))
+                        },
+                        "io_tokens_cumulative": {
                             "input": int(max(0, request_input_tokens_total)),
                             "output": int(max(0, request_output_tokens_total)),
                             "raw_input": int(max(0, request_input_tokens_raw_total)),
@@ -6701,6 +7372,10 @@ class Model:
                             "effective_input": int(max(0, request_last_round_input_tokens))
                         }
                     }
+                    native_search_trace_snapshot = _build_native_search_trace_snapshot()
+                    if native_search_trace_snapshot:
+                        metadata["native_search_trace"] = native_search_trace_snapshot
+
                     if longterm_hook_payload:
                         metadata["longterm_hook"] = longterm_hook_payload
                     
@@ -6714,6 +7389,9 @@ class Model:
                                 should_generate = is_first_round
 
                             if skip_user_message:
+                                should_generate = False
+
+                            if stream_cancelled:
                                 should_generate = False
                             
                             if should_generate and self.persist_conversation and self.conversation_id:
@@ -6821,9 +7499,14 @@ class Model:
                             "code": str(terminal_error_code or "").strip(),
                             "retryable": bool(terminal_error_retryable),
                         }
+
+                    if stream_cancelled:
+                        metadata["stream_cancelled"] = True
+                        metadata["partial_output"] = True
+                        metadata["stream_cancel_reason"] = "user_abort"
                     
                     if self.persist_conversation and self.conversation_id:
-                        self.conversation_manager.add_message(
+                        saved_assistant_message_index = self.conversation_manager.add_message(
                             self.conversation_id,
                             "assistant",
                             saved_assistant_content,
@@ -6836,6 +7519,7 @@ class Model:
                         and self.conversation_id
                         and learning_lecture_id
                         and (not is_regenerate)
+                        and (not stream_cancelled)
                     ):
                         try:
                             learning_memory_history = self._build_learning_memory_history_payload(
@@ -6855,7 +7539,12 @@ class Model:
                             print(f"[LEARNING_MEMORY] turn increment result: {learning_memory_turn_result}")
                         except Exception as learning_turn_error:
                             print(f"[LEARNING_MEMORY] increment turn failed: {learning_turn_error}")
-                    if self.persist_conversation and self.conversation_id and normalized_conversation_mode == "longterm":
+                    if (
+                        (not stream_cancelled)
+                        and self.persist_conversation
+                        and self.conversation_id
+                        and normalized_conversation_mode == "longterm"
+                    ):
                         try:
                             self.conversation_manager.update_conversation_fields(self.conversation_id, {
                                 "conversation_mode": "longterm",
@@ -6961,34 +7650,113 @@ class Model:
                 "eof",
                 "peer closed connection",
             )
+
+            def _persist_terminal_error_on_current_assistant(
+                error_msg: str,
+                error_code: str,
+                retryable: bool
+            ) -> None:
+                if not self.persist_conversation or not self.conversation_id:
+                    return
+
+                target_index = saved_assistant_message_index
+
+                if target_index is None and is_regenerate:
+                    target_index = regenerate_index
+
+                existing_content = ""
+                existing_metadata = {}
+
+                if target_index is not None:
+
+                    try:
+                        conversation = self.conversation_manager.get_conversation(self.conversation_id)
+                        messages = conversation.get("messages", []) if isinstance(conversation, dict) else []
+                        target_message = messages[int(target_index)] if isinstance(messages, list) else {}
+
+                        if isinstance(target_message, dict) and str(target_message.get("role") or "").strip() == "assistant":
+                            existing_content = str(target_message.get("content") or "")
+                            raw_metadata = target_message.get("metadata", {})
+
+                            if isinstance(raw_metadata, dict):
+                                existing_metadata = {
+                                    key: value
+                                    for key, value in raw_metadata.items()
+                                    if key != "versions"
+                                }
+                    except Exception as read_error:
+                        print(f"[ERROR_PERSIST] read current assistant failed: {read_error}")
+
+                base_content = str(existing_content or accumulated_content or "").strip()
+                clean_error_msg = str(error_msg or "").strip()
+                if base_content and clean_error_msg and clean_error_msg not in base_content:
+                    content_to_save = f"{base_content}\n\n{clean_error_msg}"
+                else:
+                    content_to_save = base_content or clean_error_msg
+
+                merged_steps = existing_metadata.get("process_steps", [])
+
+                if not isinstance(merged_steps, list):
+                    merged_steps = []
+
+                if not merged_steps and isinstance(process_steps, list):
+                    merged_steps = list(process_steps)
+                else:
+                    merged_steps = list(merged_steps)
+
+                error_step = {
+                    "type": "error",
+                    "code": error_code,
+                    "retryable": bool(retryable),
+                    "content": clean_error_msg,
+                }
+                has_same_error_step = any(
+                    isinstance(step, dict)
+                    and str(step.get("type") or "").strip() == "error"
+                    and str(step.get("code") or "").strip() == str(error_code or "").strip()
+                    and str(step.get("content") or "").strip() == clean_error_msg
+                    for step in merged_steps
+                )
+
+                if not has_same_error_step:
+                    merged_steps.append(error_step)
+
+                try:
+                    current_conversation_mode = str(normalized_conversation_mode or "chat")
+                except Exception:
+                    current_conversation_mode = "chat"
+
+                metadata = dict(existing_metadata)
+                metadata.update({
+                    "model_name": self.model_name,
+                    "process_steps": merged_steps,
+                    "terminal_error": {
+                        "content": clean_error_msg,
+                        "code": error_code,
+                        "retryable": bool(retryable),
+                    },
+                    "conversation_mode": current_conversation_mode,
+                })
+
+                try:
+                    saved_index = self.conversation_manager.add_message(
+                        self.conversation_id,
+                        "assistant",
+                        content_to_save,
+                        metadata=metadata,
+                        index=target_index,
+                    )
+                    print(
+                        "[ERROR_PERSIST] merged terminal error into assistant "
+                        f"conversation_id={self.conversation_id} index={saved_index} code={error_code}"
+                    )
+                except Exception as persist_error:
+                    print(f"[ERROR_PERSIST] merge terminal error failed: {persist_error}")
+
             if any(hint in err_text.lower() for hint in rate_limit_hints):
                 error_msg = f"模型限流/额度超限: {err_text}"
                 print(f"[ERROR] {error_msg}")
-                if self.persist_conversation and self.conversation_id:
-                    try:
-                        self.conversation_manager.add_message(
-                            self.conversation_id,
-                            "assistant",
-                            error_msg,
-                            metadata={
-                                "model_name": self.model_name,
-                                "process_steps": [{
-                                    "type": "error",
-                                    "code": "rate_limit",
-                                    "retryable": True,
-                                    "content": error_msg
-                                }],
-                                "terminal_error": {
-                                    "content": error_msg,
-                                    "code": "rate_limit",
-                                    "retryable": True
-                                },
-                                "conversation_mode": str(locals().get("normalized_conversation_mode", "chat") or "chat")
-                            },
-                            index=regenerate_index if is_regenerate else None
-                        )
-                    except Exception:
-                        pass
+                _persist_terminal_error_on_current_assistant(error_msg, "rate_limit", True)
                 yield {
                     "type": "error",
                     "error_code": "rate_limit",
@@ -6999,31 +7767,7 @@ class Model:
             if any(hint in err_text.lower() for hint in network_hints):
                 error_msg = f"网络异常，流式连接中断: {err_text}"
                 print(f"[ERROR] {error_msg}")
-                if self.persist_conversation and self.conversation_id:
-                    try:
-                        self.conversation_manager.add_message(
-                            self.conversation_id,
-                            "assistant",
-                            error_msg,
-                            metadata={
-                                "model_name": self.model_name,
-                                "process_steps": [{
-                                    "type": "error",
-                                    "code": "network_error",
-                                    "retryable": True,
-                                    "content": error_msg
-                                }],
-                                "terminal_error": {
-                                    "content": error_msg,
-                                    "code": "network_error",
-                                    "retryable": True
-                                },
-                                "conversation_mode": str(locals().get("normalized_conversation_mode", "chat") or "chat")
-                            },
-                            index=regenerate_index if is_regenerate else None
-                        )
-                    except Exception:
-                        pass
+                _persist_terminal_error_on_current_assistant(error_msg, "network_error", True)
                 yield {
                     "type": "error",
                     "error_code": "network_error",
@@ -7033,31 +7777,7 @@ class Model:
                 return
             error_msg = f"错误: {err_text}"
             print(f"[ERROR] {error_msg}")
-            if self.persist_conversation and self.conversation_id:
-                try:
-                    self.conversation_manager.add_message(
-                        self.conversation_id,
-                        "assistant",
-                        error_msg,
-                        metadata={
-                            "model_name": self.model_name,
-                            "process_steps": [{
-                                "type": "error",
-                                "code": "server_error",
-                                "retryable": False,
-                                "content": error_msg
-                            }],
-                            "terminal_error": {
-                                "content": error_msg,
-                                "code": "server_error",
-                                "retryable": False
-                            },
-                            "conversation_mode": str(locals().get("normalized_conversation_mode", "chat") or "chat")
-                        },
-                        index=regenerate_index if is_regenerate else None
-                    )
-                except Exception:
-                    pass
+            _persist_terminal_error_on_current_assistant(error_msg, "server_error", False)
             yield {"type": "error", "content": error_msg}
         finally:
             self._clear_runtime_tool_selection()

@@ -13,7 +13,6 @@ from .lectures import (
     get_lecture as get_learning_lecture,
     list_books as list_learning_books,
     list_lectures as list_learning_lectures,
-    load_book_chunks as load_learning_book_chunks,
     load_book_detail_xml as load_learning_book_detail_xml,
     load_book_info_xml as load_learning_book_info_xml,
     load_book_questions_xml as load_learning_book_questions_xml,
@@ -26,12 +25,13 @@ from .lectures import (
     update_lecture as update_learning_lecture,
 )
 from .tools import TOOLS
-from .vector import queue_vectorize_book, vectorize_book
+from .vector import get_nexoradb_status, is_nexoradb_available, query_lecture, queue_vectorize_book, vectorize_book
 
 
 MAX_BOOK_TEXT_READ_CHARS = 8000
 MAX_BOOK_TEXT_SEARCH_CONTEXT = 600
 MAX_BOOK_TEXT_SEARCH_HITS = 50
+VECTOR_TOOL_NAMES = {"triggerBookVectorization", "vectorSearch"}
 
 
 class ToolExecutor:
@@ -64,7 +64,37 @@ class ToolExecutor:
 
     @property
     def tools(self) -> List[Dict[str, Any]]:
-        return TOOLS
+        if is_nexoradb_available(self.cfg):
+            return TOOLS
+
+        rows: List[Dict[str, Any]] = []
+
+        for tool in TOOLS:
+            fn = tool.get("function") if isinstance(tool.get("function"), dict) else {}
+            name = str(fn.get("name") or "").strip()
+
+            if name in VECTOR_TOOL_NAMES:
+                continue
+
+            rows.append(tool)
+
+        return rows
+
+    def _disabled_vectorization_payload(self, status: Mapping[str, Any] | None = None) -> Dict[str, Any]:
+        row = dict(status or get_nexoradb_status(self.cfg))
+        return {
+            "success": False,
+            "queued": False,
+            "status": "disabled",
+            "message": str(row.get("message") or "NexoraDB 未连接，未启动自动向量化"),
+        }
+
+    def _require_vector_service(self, action: str) -> None:
+        status = get_nexoradb_status(self.cfg)
+
+        if not status.get("available"):
+            message = str(status.get("message") or "NexoraDB 未连接")
+            raise RuntimeError(f"{message}，{action} 已停用")
 
     def execute(self, tool_name: str, arguments: Mapping[str, Any] | None = None) -> Dict[str, Any]:
         try:
@@ -460,7 +490,12 @@ class ToolExecutor:
 
         vectorization = None
         if auto_vectorize:
-            vectorization = queue_vectorize_book(self.cfg, lecture_id, book_id, force=True)
+            nexoradb_status = get_nexoradb_status(self.cfg)
+            vectorization = (
+                queue_vectorize_book(self.cfg, lecture_id, book_id, force=True)
+                if nexoradb_status.get("available")
+                else self._disabled_vectorization_payload(nexoradb_status)
+            )
 
         return {
             "success": True,
@@ -475,6 +510,14 @@ class ToolExecutor:
         force: bool = False,
         **kwargs: Any,
     ) -> Dict[str, Any]:
+        nexoradb_status = get_nexoradb_status(self.cfg)
+
+        if not nexoradb_status.get("available"):
+            return {
+                "success": False,
+                "vectorization": self._vectorization_payload(self._disabled_vectorization_payload(nexoradb_status)),
+            }
+
         async_mode = bool(kwargs.get("async", True))
         if async_mode:
             result = queue_vectorize_book(self.cfg, lecture_id, book_id, force=force)
@@ -494,41 +537,41 @@ class ToolExecutor:
             raise ValueError("query is required.")
 
         if book_id:
-            candidate_books = [self._require_book(lecture_id, book_id)]
+            self._require_book(lecture_id, book_id)
         else:
             self._require_lecture(lecture_id)
-            candidate_books = list_learning_books(self.cfg, lecture_id)
 
-        rows: List[Dict[str, Any]] = []
-        for current_book in candidate_books:
-            current_book_id = str(current_book.get("id") or "").strip()
-            if not current_book_id:
-                continue
-            chunks = load_learning_book_chunks(self.cfg, lecture_id, current_book_id)
-            for index, chunk in enumerate(chunks):
-                score = _score_text(query_text, chunk)
-                if score <= 0:
-                    continue
-                rows.append(
-                    {
-                        "lecture_id": lecture_id,
-                        "book_id": current_book_id,
-                        "book_title": current_book.get("title") or "",
-                        "chunk_index": index,
-                        "score": score,
-                        "text": chunk,
-                    }
-                )
-
-        rows.sort(key=lambda item: item["score"], reverse=True)
         limit = max(1, min(self._coerce_int(top_k, default=5), 20))
+        self._require_vector_service("vectorSearch")
+        results = query_lecture(
+            self.cfg,
+            lecture_id,
+            query_text,
+            top_k=limit,
+            book_id=str(book_id or "").strip() or None,
+        )
+        rows: List[Dict[str, Any]] = []
+
+        for item in results:
+            meta = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            rows.append(
+                {
+                    "lecture_id": str(meta.get("lecture_id") or lecture_id),
+                    "book_id": str(meta.get("book_id") or meta.get("material_id") or book_id or ""),
+                    "book_title": str(meta.get("book_title") or ""),
+                    "chunk_index": self._coerce_int(meta.get("chunk_index"), default=0),
+                    "distance": item.get("distance"),
+                    "text": str(item.get("text") or ""),
+                }
+            )
+
         return {
             "success": True,
             "query": query_text,
-            "results": rows[:limit],
-            "count": min(len(rows), limit),
-            "placeholder": True,
-            "summary": f"向量检索返回 {min(len(rows), limit)} 条与“{query_text}”最相关的片段",
+            "results": rows,
+            "count": len(rows),
+            "provider": "nexoradb_service",
+            "summary": f"向量检索返回 {len(rows)} 条与“{query_text}”最相关的片段",
         }
 
     def launch_puzzle(
@@ -553,26 +596,3 @@ class ToolExecutor:
             "puzzle": payload,
             "summary": f"已创建拼接题“{puzzle_title}”，共 {len(normalized_steps)} 个步骤。",
         }
-
-
-def _score_text(query: str, text: str) -> float:
-    query_value = str(query or "").strip().lower()
-    text_value = str(text or "").lower()
-    if not query_value or not text_value:
-        return 0.0
-
-    score = 0.0
-    if query_value in text_value:
-        score += 10.0
-
-    tokens = [token for token in re.split(r"\s+", query_value) if token]
-    if tokens:
-        for token in tokens:
-            if token in text_value:
-                score += 2.0
-    else:
-        for char in set(query_value):
-            if char.strip() and char in text_value:
-                score += 0.2
-
-    return score

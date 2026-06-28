@@ -473,6 +473,8 @@ class ConversationManager:
             metadata: 额外元数据（如函数调用信息、交流总结等）
             index: 如果提供且有效，则覆盖该索引处的消息（用于重新生成覆盖旧回答）
         """
+        saved_index = None
+
         with self._conversation_update_session(conversation_id) as (conversation_path, conversation_data):
             messages = conversation_data.get("messages", [])
             if not isinstance(messages, list):
@@ -563,12 +565,17 @@ class ConversationManager:
 
             if index is not None:
                 messages[index] = message
+                saved_index = index
                 self._invalidate_resume_cache_fields(conversation_data)
             else:
                 messages.append(message)
+                saved_index = len(messages) - 1
+
             conversation_data["messages"] = messages
             conversation_data["updated_at"] = datetime.now().isoformat()
             self._save_json_atomic(conversation_path, conversation_data)
+
+        return saved_index
 
     def validate_regenerate_target(self, conversation_id, message_index):
         """

@@ -15,9 +15,12 @@ from chroma_client import ChromaStore
 from file_sandbox import UserFileSandbox
 from client_tool_bridge import request_client_js_execution
 from conversation_asset_store import persist_conversation_image_bytes
+from papi.token_logger import build_image_generation_log_context, record_papi_image_generation
 from provider_factory import create_provider_adapter
 from tools import canonicalize_tool_name
 from learning_runtime import LearningRuntimeExecutor, get_learning_tools
+from map.baidu import BaiduMapToolService
+from map.tianditu import create_map_tool_service
 
 
 class ToolExecutor:
@@ -34,6 +37,7 @@ class ToolExecutor:
         self.handlers: Dict[str, Callable[[Dict[str, Any]], str]] = {
             "runtime_tool_select": self._runtime_tool_select,
             "runtime_tool_enable": self._runtime_tool_enable,
+            "question": self._question,
             "knowledge_list": self._get_knowledge_list,
             "memory_short_add": self._add_short,
             # "queryShortMemory": self._query_short_memory,  # short-memory tools disabled
@@ -80,9 +84,15 @@ class ToolExecutor:
             "cloud_file_find": self._file_find,
             "cloud_file_list": self._file_list,
             "cloud_file_remove": self._file_remove,
+            "map_render": self._map_render,
+            "map_calc_distance": self._map_calc_distance,
+            "map_calc_route": self._map_calc_route,
+            "map_geocode": self._map_geocode,
+            "map_poi_search": self._map_poi_search,
         }
         self._file_sandbox = UserFileSandbox(self.model.username)
         self._learning_executor = None
+        self._map_tool_service = None
 
     def _safe_int(self, v, default=None):
         try:
@@ -431,6 +441,50 @@ class ToolExecutor:
             return f"错误：参数模板解析失败: {str(e)}"
         return handler(resolved_args)
 
+    def _question(self, args: Dict[str, Any]) -> str:
+        """创建一个需要前端等待用户回答的结构化问题。"""
+        safe_args = args if isinstance(args, dict) else {}
+        title = str(safe_args.get("question_title") or "").strip()
+        content = str(safe_args.get("question_content") or "").strip()
+
+        if not title or not content:
+            return "错误：question_title 和 question_content 为必填"
+
+        raw_choices = safe_args.get("choices", [])
+        if raw_choices is None:
+            raw_choices = []
+
+        if not isinstance(raw_choices, list):
+            return "错误：choices 必须是数组"
+
+        choices = [str(item or "").strip() for item in raw_choices if str(item or "").strip()]
+        track_answer = safe_args.get("track_answer", False)
+
+        if not isinstance(track_answer, bool):
+            return "错误：track_answer 必须是布尔值"
+
+        question_id = str(safe_args.get("question_id") or "").strip()
+        if track_answer and not question_id:
+            return "错误：track_answer 为 true 时 question_id 必填"
+
+        allow_other = safe_args.get("allow_other", True)
+        if not isinstance(allow_other, bool):
+            return "错误：allow_other 必须是布尔值"
+
+        payload = {
+            "success": True,
+            "question": {
+                "track_answer": track_answer,
+                "question_id": question_id if track_answer else "",
+                "question_title": title,
+                "question_content": content,
+                "choices": choices,
+                "allow_other": allow_other,
+            },
+            "await": True,
+        }
+        return json.dumps(payload, ensure_ascii=False)
+
     def _is_learning_runtime_tool(self, function_name: str) -> bool:
         if str(getattr(self.model, "_runtime_conversation_mode", "") or "").strip().lower() != "learning":
             return False
@@ -457,6 +511,32 @@ class ToolExecutor:
             }
             self._learning_executor = LearningRuntimeExecutor(cfg)
         return self._learning_executor
+
+    def _get_map_tool_service(self) -> BaiduMapToolService:
+        if self._map_tool_service is None:
+            config = getattr(self.model, "config", {}) if isinstance(getattr(self.model, "config", {}), dict) else {}
+            self._map_tool_service = create_map_tool_service(
+                config,
+                username=str(getattr(self.model, "username", "") or "").strip(),
+                conversation_id=str(getattr(self.model, "conversation_id", "") or "").strip(),
+            )
+
+        return self._map_tool_service
+
+    def _map_render(self, args: Dict[str, Any]) -> str:
+        return self._get_map_tool_service().render(args)
+
+    def _map_calc_distance(self, args: Dict[str, Any]) -> str:
+        return self._get_map_tool_service().calc_distance(args)
+
+    def _map_calc_route(self, args: Dict[str, Any]) -> str:
+        return self._get_map_tool_service().calc_route(args)
+
+    def _map_geocode(self, args: Dict[str, Any]) -> str:
+        return self._get_map_tool_service().geocode(args)
+
+    def _map_poi_search(self, args: Dict[str, Any]) -> str:
+        return self._get_map_tool_service().poi_search(args)
 
     def _longterm_plan(self, args: Dict[str, Any]) -> str:
         safe_args = args if isinstance(args, dict) else {}
@@ -530,6 +610,7 @@ class ToolExecutor:
                     "basis_id": str(safe_meta.get("basis_id") or "").strip() or None,
                     "public": bool(safe_meta.get("public", False)),
                     "collaborative": bool(safe_meta.get("collaborative", False)),
+                    "model_readonly": bool(safe_meta.get("model_readonly", False)),
                     "pin": bool(safe_meta.get("pin", False)),
                     "created_at": safe_meta.get("created_at"),
                     "updated_at": safe_meta.get("updated_at"),
@@ -728,8 +809,13 @@ class ToolExecutor:
         return "已删除短期记忆"
 
     def _remove_basis(self, args: Dict[str, Any]) -> str:
+        title = str(args.get("title", "") or "").strip()
+        meta = self.model.user.getBasisMetadata(title) or {}
+        if isinstance(meta, dict) and meta and bool(meta.get("model_readonly", False)):
+            return "删除失败: 该知识已启用模型只读，模型只能查阅和引用，不能删除。"
+
         self.model.user.removeBasis(
-            args.get("title", ""),
+            title,
             timeline_actor={
                 "actor_type": "model_tool",
                 "actor_name": str(getattr(self.model, "model_name", "") or "").strip() or "model",
@@ -740,8 +826,13 @@ class ToolExecutor:
         return "已删除基础知识"
 
     def _update_basis(self, args: Dict[str, Any]) -> str:
+        title = str(args.get("title", "") or "").strip()
+        meta = self.model.user.getBasisMetadata(title) or {}
+        if isinstance(meta, dict) and meta and bool(meta.get("model_readonly", False)):
+            return "更新失败: 该知识已启用模型只读，模型只能查阅和引用，不能修改内容、标题或共享设置。"
+
         success, message = self.model.user.updateBasis(
-            title=args.get("title", ""),
+            title=title,
             new_title=args.get("new_title"),
             context=args.get("context"),
             url=args.get("url"),
@@ -1870,6 +1961,52 @@ class ToolExecutor:
         if not prompt:
             return json.dumps({"success": False, "message": "prompt 不能为空"}, ensure_ascii=False)
 
+        api_name = "gen_image"
+        api_type = "openai"
+        model_id = ""
+        size = str(safe_args.get("size") or "1024x1024").strip()
+        quality = str(safe_args.get("quality") or "auto").strip()
+        response_format = "b64_json"
+        image_count = self._safe_gen_image_count(safe_args.get("n", 1))
+        remote_addr = ""
+        user_agent = ""
+
+        if has_request_context():
+            remote_addr = str(getattr(request, "remote_addr", "") or "").strip()
+            user_agent = str(request.headers.get("User-Agent") or "").strip()
+
+        image_log_context = build_image_generation_log_context(
+            username=str(getattr(self.model, "username", "") or "").strip(),
+            conversation_id=str(getattr(self.model, "conversation_id", "") or "").strip(),
+            request_path="chat.generate_image",
+            method="TOOL",
+            remote_addr=remote_addr,
+            user_agent=user_agent,
+        )
+
+        def write_image_generation_log(status: str, images=None, error: str = "") -> None:
+            try:
+                record_papi_image_generation(
+                    image_log_context,
+                    prompt=prompt,
+                    provider=api_name,
+                    model=model_id,
+                    size=size,
+                    quality=quality,
+                    response_format=response_format,
+                    requested_count=image_count,
+                    images=images if isinstance(images, list) else [],
+                    request_path="chat.generate_image",
+                    status=status,
+                    error=error,
+                    extra={
+                        "api_type": api_type,
+                        "conversation_id": str(getattr(self.model, "conversation_id", "") or "").strip(),
+                    },
+                )
+            except Exception as log_error:
+                print(f"[GEN_IMAGE_LOG] write failed: {log_error}")
+
         try:
             api_cfg = self._get_enabled_gen_image_api()
             api_name = str(api_cfg.get("api_id") or api_cfg.get("name") or "gen_image").strip() or "gen_image"
@@ -1994,7 +2131,9 @@ class ToolExecutor:
                 "markdown": markdown,
                 "progress": progress_logs,
             }
+            write_image_generation_log("success", images=images)
             return json.dumps(payload, ensure_ascii=False)
         except Exception as e:
             print(f"[GEN_IMAGE] failed: {e}")
+            write_image_generation_log("error", error=str(e))
             return json.dumps({"success": False, "message": str(e)}, ensure_ascii=False)

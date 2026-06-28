@@ -27,9 +27,11 @@ from .core import (
     _papi_log,
 )
 from .token_logger import (
+    build_papi_log_context,
     build_papi_token_log_context,
     extract_usage_from_payload,
     infer_papi_action,
+    record_papi_image_generation,
     record_papi_token_usage,
 )
 from api.database import User
@@ -261,6 +263,12 @@ def papi_generate_image():
     if not isinstance(data, dict):
         return jsonify({'success': False, 'message': 'request body must be an object'}), 400
 
+    request_path = str(request.path or '').strip()
+    image_log_context = build_papi_log_context(
+        request,
+        request_path=request_path,
+    )
+
     prompt = str(data.get('prompt') or '').strip()
     if not prompt:
         return jsonify({'success': False, 'message': 'prompt is required'}), 400
@@ -302,6 +310,27 @@ def papi_generate_image():
         return jsonify({'success': False, 'message': '生图模型不能为空'}), 400
 
     extra_body = data.get('extra_body') if isinstance(data.get('extra_body'), dict) else None
+
+    def write_image_generation_log(status, images=None, error='', extra=None):
+        try:
+            record_papi_image_generation(
+                image_log_context,
+                prompt=prompt,
+                provider=api_name,
+                model=model_id,
+                size=size,
+                quality=quality,
+                response_format=response_format,
+                requested_count=image_count,
+                images=images if isinstance(images, list) else [],
+                request_path=request_path,
+                status=status,
+                error=error,
+                extra=extra,
+            )
+        except Exception as log_error:
+            _papi_log(f"[PAPI_IMAGE_LOG] write failed model={model_id} error={log_error}", level='error')
+
     try:
         adapter = create_provider_adapter(api_name, {
             'api_key': api_key,
@@ -322,6 +351,11 @@ def papi_generate_image():
         )
     except Exception as exc:
         _papi_log(f"[PAPI_IMAGE_GENERATION] api={api_name} model={model_id} error={exc}", level='error')
+        write_image_generation_log(
+            'error',
+            error=str(exc),
+            extra={'api_type': api_type},
+        )
         return jsonify({
             'success': False,
             'message': str(exc),
@@ -331,6 +365,11 @@ def papi_generate_image():
 
     raw_images = result.get('images') if isinstance(result, dict) else []
     if not isinstance(raw_images, list) or not raw_images:
+        write_image_generation_log(
+            'error',
+            error='image provider returned no images',
+            extra={'api_type': api_type},
+        )
         return jsonify({'success': False, 'message': '生图接口没有返回图片', 'provider': api_name, 'model': model_id}), 502
 
     data_rows = []
@@ -351,12 +390,24 @@ def papi_generate_image():
             data_rows.append(row)
 
     if not data_rows:
+        write_image_generation_log(
+            'error',
+            images=raw_images,
+            error='image provider returned no visible image fields',
+            extra={'api_type': api_type},
+        )
         return jsonify({
             'success': False,
             'message': '生图接口返回了图片数据，但没有可用图片字段',
             'provider': api_name,
             'model': model_id,
         }), 502
+
+    write_image_generation_log(
+        'success',
+        images=data_rows,
+        extra={'api_type': api_type},
+    )
 
     return jsonify({
         'success': True,
@@ -675,6 +726,23 @@ def _papi_handle_completion_request(data=None, username=None, request_path=''):
                 f"[PAPI_THINK_MAP] model={model_name} provider={provider_name} "
                 f"api_type=ollama think={_think_src!r} reasoning_effort={request_kwargs.get('reasoning_effort', None)}"
             )
+    limit_extra_body = request_kwargs.get('extra_body', {})
+    limit_extra_preview = ''
+    if isinstance(limit_extra_body, dict) and limit_extra_body:
+        try:
+            limit_extra_preview = json.dumps(limit_extra_body, ensure_ascii=False, default=str)[:500]
+        except Exception:
+            limit_extra_preview = str(limit_extra_body)[:500]
+    _papi_log(
+        f"[PAPI_LIMITS] model={model_name} provider={provider_name} api_type={adapter_api_type or 'unknown'} "
+        f"stream={'yes' if want_stream else 'no'} "
+        f"input_max_tokens={data.get('max_tokens', None)!r} "
+        f"input_max_completion_tokens={data.get('max_completion_tokens', None)!r} "
+        f"input_max_output_tokens={data.get('max_output_tokens', None)!r} "
+        f"request_max_tokens={request_kwargs.get('max_tokens', None)!r} "
+        f"request_max_output_tokens={request_kwargs.get('max_output_tokens', None)!r} "
+        f"extra_body={limit_extra_preview or '-'}"
+    )
     use_responses_upstream = bool(adapter.use_responses_api(request_kwargs)) if use_responses_compat else False
     provider_settings = provider_info.get('settings') if isinstance(provider_info.get('settings'), dict) else {}
     timeout_candidates = [
@@ -1136,6 +1204,7 @@ def papi_v1_root():
             'models': '/api/papi/v1/models',
             'chat_completions': '/api/papi/v1/chat/completions',
             'responses': '/api/papi/v1/responses',
+            'images_generations': '/api/papi/v1/images/generations',
         },
     })
 

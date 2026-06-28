@@ -8,6 +8,7 @@ import json
 import re
 import threading
 import time
+from collections.abc import Mapping as MappingABC
 from pathlib import Path
 from typing import Any, Dict, List, Mapping
 
@@ -53,7 +54,16 @@ def _normalize_options(value: Any) -> List[str]:
     rows: List[str] = []
 
     for item in raw_items:
-        text = _safe_text(item)
+        if isinstance(item, MappingABC):
+            text = _safe_text(
+                item.get("text")
+                or item.get("content")
+                or item.get("value")
+                or item.get("title")
+            )
+        else:
+            text = _safe_text(item)
+
         text = re.sub(r"^[A-Da-d][.、)\s]+", "", text).strip()
 
         if text:
@@ -156,11 +166,15 @@ def _normalize_question(
     source_id: str = "",
 ) -> Dict[str, Any]:
     question = dict(raw_question or {})
-    title = _safe_text(question.get("question_title") or question.get("title"))
+    title = _safe_text(question.get("question_title") or question.get("title") or question.get("question"))
     content = _safe_text(question.get("question_content") or question.get("content"))
     options = _normalize_options(question.get("question_options") or question.get("options"))
     question_type = _normalize_question_type(question.get("question_type") or question.get("type"), options)
-    answer = _strip_markdown_answer(question.get("question_answer") or question.get("answer"))
+    answer = _strip_markdown_answer(
+        question.get("question_answer")
+        or question.get("answer")
+        or question.get("reference_answer")
+    )
 
     if question_type == "choice" and len(options) < 2:
         question_type = "text"
@@ -183,9 +197,109 @@ def _normalize_question(
         "content": content,
         "hint": _safe_text(question.get("question_hint") or question.get("hint") or question.get("question_reason")),
         "answer": answer,
-        "source": _safe_text(source),
-        "source_id": _safe_text(source_id),
+        "source": _safe_text(source) or _safe_text(question.get("source")),
+        "source_id": _safe_text(source_id) or _safe_text(question.get("source_id") or question.get("question_id")),
     }
+
+
+def _canonicalize_existing_quiz_questions(questions: Any) -> Dict[str, Any]:
+    """把历史固化小测题目统一为阅读器渲染所需的标准结构。"""
+    if not isinstance(questions, list) or not questions:
+        return {
+            "questions": [],
+            "changed": False,
+            "invalid_indexes": [],
+        }
+
+    normalized_questions: List[Dict[str, Any]] = []
+    invalid_indexes: List[int] = []
+    changed = False
+
+    for idx, raw_question in enumerate(questions):
+        if not isinstance(raw_question, MappingABC):
+            invalid_indexes.append(idx)
+            changed = True
+            continue
+
+        normalized = _normalize_question(
+            raw_question,
+            source=_safe_text(raw_question.get("source")) or "chapter_quiz_cache",
+            source_id=_safe_text(raw_question.get("source_id") or raw_question.get("question_id")),
+        )
+
+        if not normalized:
+            invalid_indexes.append(idx)
+            changed = True
+            continue
+
+        normalized_questions.append(normalized)
+
+        for key, value in normalized.items():
+            if raw_question.get(key) != value:
+                changed = True
+                break
+
+        if not changed:
+            for key in raw_question.keys():
+                if key not in normalized:
+                    changed = True
+                    break
+
+    return {
+        "questions": normalized_questions,
+        "changed": changed,
+        "invalid_indexes": invalid_indexes,
+    }
+
+
+def _load_existing_chapter_quiz(path: Path, *, user_id: str, lecture_id: str, book_id: str, chapter_name: str) -> Dict[str, Any]:
+    """读取固化小测，并在返回前保证题目结构可被 Web Reader 直接渲染。"""
+    existing = _read_json(path)
+
+    if not existing or not isinstance(existing.get("questions"), list) or not existing.get("questions"):
+        return {}
+
+    result = _canonicalize_existing_quiz_questions(existing.get("questions"))
+    invalid_indexes = list(result.get("invalid_indexes") or [])
+    normalized_questions = result.get("questions") if isinstance(result.get("questions"), list) else []
+
+    if invalid_indexes or not normalized_questions:
+        log_event(
+            "chapter_quiz_existing_schema_invalid",
+            "固化章节小测题目结构无效，已停止复用旧文件并重新生成",
+            payload={
+                "user_id": user_id,
+                "lecture_id": lecture_id,
+                "book_id": book_id,
+                "chapter_name": chapter_name,
+                "path": str(path),
+                "question_count": len(existing.get("questions") or []),
+                "invalid_indexes": invalid_indexes,
+            },
+        )
+        return {}
+
+    if bool(result.get("changed")):
+        repaired = dict(existing)
+        repaired["questions"] = normalized_questions
+        repaired["updated_at"] = int(time.time())
+        repaired["schema_version"] = "reader_quiz_v1"
+        _write_json(path, repaired)
+        log_event(
+            "chapter_quiz_existing_schema_repaired",
+            "固化章节小测题目结构已标准化",
+            payload={
+                "user_id": user_id,
+                "lecture_id": lecture_id,
+                "book_id": book_id,
+                "chapter_name": chapter_name,
+                "path": str(path),
+                "question_count": len(normalized_questions),
+            },
+        )
+        return repaired
+
+    return existing
 
 
 def _chapter_text_matches(value: Any, chapter_name: str) -> bool:
@@ -606,9 +720,15 @@ def load_or_create_chapter_quiz(
     path = _chapter_quiz_path(cfg, safe_user_id, quiz_id)
 
     with _QUIZ_LOCK:
-        existing = _read_json(path)
+        existing = _load_existing_chapter_quiz(
+            path,
+            user_id=safe_user_id,
+            lecture_id=safe_lecture_id,
+            book_id=safe_book_id,
+            chapter_name=safe_chapter_name,
+        )
 
-    if existing and isinstance(existing.get("questions"), list) and existing.get("questions"):
+    if existing:
         return existing
 
     questions = _select_chapter_quiz_questions(
@@ -643,9 +763,15 @@ def load_or_create_chapter_quiz(
     }
 
     with _QUIZ_LOCK:
-        existing = _read_json(path)
+        existing = _load_existing_chapter_quiz(
+            path,
+            user_id=safe_user_id,
+            lecture_id=safe_lecture_id,
+            book_id=safe_book_id,
+            chapter_name=safe_chapter_name,
+        )
 
-        if existing and isinstance(existing.get("questions"), list) and existing.get("questions"):
+        if existing:
             return existing
 
         _write_json(path, quiz)

@@ -896,12 +896,20 @@
     function createEmptyStatusData() {
       return {
         snapshotAt: '-',
-        source: 'ChatDBServer/data/users/*/{token_usage,tool_usage,conversations}',
+        source: 'ChatDBServer/data/users/*/{token_usage,tool_usage,conversations} + ChatDBServer/data/papi/*/{token_log,image_log}.jsonl',
         totals: {
           tokens: 0,
           modelCalls: 0,
           toolCalls: 0,
           toolFailures: 0
+        },
+        imageStats: {
+          requests: 0,
+          successes: 0,
+          failures: 0,
+          images: 0,
+          recent24hRequests: 0,
+          recent24hImages: 0
         },
         complexity: {
           simple: 0,
@@ -924,6 +932,18 @@
         simple: Math.max(0, Number(src.simple || 0) || 0),
         medium: Math.max(0, Number(src.medium || 0) || 0),
         complex: Math.max(0, Number(src.complex || 0) || 0)
+      };
+    }
+
+    function normalizeImageStats(raw) {
+      const src = (raw && typeof raw === 'object') ? raw : {};
+      return {
+        requests: Math.max(0, Number(src.requests || 0) || 0),
+        successes: Math.max(0, Number(src.successes || 0) || 0),
+        failures: Math.max(0, Number(src.failures || 0) || 0),
+        images: Math.max(0, Number(src.images || 0) || 0),
+        recent24hRequests: Math.max(0, Number(src.recent24hRequests || 0) || 0),
+        recent24hImages: Math.max(0, Number(src.recent24hImages || 0) || 0)
       };
     }
 
@@ -1004,13 +1024,14 @@
 
       return {
         snapshotAt: String(src.snapshotAt || '-'),
-        source: String(src.source || 'ChatDBServer/data/users/*/{token_usage,tool_usage,conversations}'),
+        source: String(src.source || 'ChatDBServer/data/users/*/{token_usage,tool_usage,conversations} + ChatDBServer/data/papi/*/{token_log,image_log}.jsonl'),
         totals: {
           tokens: Number((src.totals && src.totals.tokens) || 0),
           modelCalls: Number((src.totals && src.totals.modelCalls) || 0),
           toolCalls: Number((src.totals && src.totals.toolCalls) || 0),
           toolFailures: Number((src.totals && src.totals.toolFailures) || 0)
         },
+        imageStats: normalizeImageStats(src.imageStats),
         complexity,
         models,
         speedModels: Array.isArray(src.speedModels) ? src.speedModels : [],
@@ -1067,11 +1088,13 @@
     function renderSummary() {
       const root = document.getElementById('summaryGrid');
       const t = statusData.totals;
+      const imageStats = statusData.imageStats;
+      const imageHint = `${formatNum(imageStats.requests)} 次请求 · ${formatNum(imageStats.failures)} 次失败`;
       window.NexoraSecureRender.setSafeHTML(root, [
         ['总 Token', formatNum(t.tokens), '样本内所有模型累计 I/O。'],
         ['模型调用', formatNum(t.modelCalls), '按单轮模型响应计数。'],
         ['工具调用', formatNum(t.toolCalls), '用于衡量任务执行强度。'],
-        ['工具失误', formatNum(t.toolFailures), '用于观察工具链稳定性。']
+        ['生图统计', formatNum(imageStats.images), imageHint]
       ].map(([label, value, hint]) => `
         <div class="summary-card">
           <div class="summary-label">${label}</div>

@@ -131,7 +131,10 @@ TOOL_CATALOG = [
             "\n如果首次写入直接传 dry_run=false 且没有 confirm_preview_id，工具会拒绝执行，并提示必须先 dry_run=true 获取 preview_id。"
             "\n\n输入要求：必须且只能提供 patch 或 edits 其中一种。patch 使用统一 diff 格式；"
             "edits 使用结构化精确编辑，支持 replace、insert_before、insert_after、delete。"
-            "所有上下文或 target 必须与文件内容完全匹配，适合代码修改。"
+            "edits 会按顺序串行执行，后一条 target 会在前面 edit 修改后的内容中匹配。"
+            "target 会先精确匹配；未命中时允许 CRLF/CR/LF 换行归一化后的唯一匹配。"
+            "replace 必须使用 replacement，insert_before/insert_after 必须使用 content。"
+            "replacement/content 写入时会跟随文件原有换行类型，避免引入混合换行。"
             "建议先调用 local_file_read 获取 sha256，再通过 expected_sha256 防止基于旧内容写入。"
         ),
         "parameters": {

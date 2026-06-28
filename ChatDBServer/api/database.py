@@ -235,6 +235,14 @@ class User:
                         if meta.get("pin") is not normalized_pin:
                             meta["pin"] = normalized_pin
                             migrated = True
+                    if "model_readonly" not in meta:
+                        meta["model_readonly"] = False
+                        migrated = True
+                    else:
+                        normalized_model_readonly = bool(meta.get("model_readonly", False))
+                        if meta.get("model_readonly") is not normalized_model_readonly:
+                            meta["model_readonly"] = normalized_model_readonly
+                            migrated = True
                 if self._ensure_basis_ids_in_db(db):
                     migrated = True
             if migrated:
@@ -260,7 +268,7 @@ class User:
                 return title, meta
         return None, None
 
-    def updateBasisSettings(self, old_title, new_title=None, is_public=None, is_collaborative=None, timeline_actor=None):
+    def updateBasisSettings(self, old_title, new_title=None, is_public=None, is_collaborative=None, model_readonly=None, timeline_actor=None):
         """更新基础知识设置"""
         lock = get_user_lock(self.user)
         with lock:
@@ -272,9 +280,11 @@ class User:
             meta = db["data_basis"][old_title]
             
             if is_public is not None:
-                meta["public"] = is_public
+                meta["public"] = bool(is_public)
             if is_collaborative is not None:
-                meta["collaborative"] = is_collaborative
+                meta["collaborative"] = bool(is_collaborative)
+            if model_readonly is not None:
+                meta["model_readonly"] = bool(model_readonly)
             
             if new_title and new_title != old_title:
                 if new_title in db["data_basis"]:
@@ -302,15 +312,16 @@ class User:
                     timeline_actor=timeline_actor,
                     extra={"old_title": old_title, "new_title": new_title}
                 )
-            elif is_public is not None or is_collaborative is not None:
+            elif is_public is not None or is_collaborative is not None or model_readonly is not None:
                 self._record_knowledge_timeline(
                     title=new_title or old_title,
                     action="update",
                     timeline_actor=timeline_actor,
                     extra={
                         "field": "settings",
-                        "public": is_public,
-                        "collaborative": is_collaborative
+                        "public": bool(is_public) if is_public is not None else None,
+                        "collaborative": bool(is_collaborative) if is_collaborative is not None else None,
+                        "model_readonly": bool(model_readonly) if model_readonly is not None else None
                     }
                 )
             return True, "更新成功"
@@ -381,6 +392,7 @@ class User:
                 "url": url,
                 "public": False,  # 默认不公开
                 "collaborative": False, # 默认不开启协同编辑
+                "model_readonly": False, # 默认允许模型按用户要求维护；可在设置中开启模型只读
                 "pin": False,
                 "share_id": share_id,
                 "basis_id": basis_id,
@@ -471,8 +483,30 @@ class User:
     def getBasisMetadata(self, title):
         """获取元数据"""
         try:
-            db = safe_read_json(self.path + "database.json", default={})
-            return db.get("data_basis", {}).get(title)
+            lock = get_user_lock(self.user)
+            with lock:
+                db = safe_read_json(self.path + "database.json", default={})
+                meta = db.get("data_basis", {}).get(title)
+                if isinstance(meta, dict):
+                    changed = False
+
+                    if not str(meta.get("basis_id") or "").strip():
+                        meta["basis_id"] = self._build_basis_id(title, meta)
+                        changed = True
+
+                    if "model_readonly" not in meta:
+                        meta["model_readonly"] = False
+                        changed = True
+                    else:
+                        normalized_model_readonly = bool(meta.get("model_readonly", False))
+                        if meta.get("model_readonly") is not normalized_model_readonly:
+                            meta["model_readonly"] = normalized_model_readonly
+                            changed = True
+
+                    if changed:
+                        safe_write_json(self.path + "database.json", db)
+
+                return meta
         except:
             return None
 

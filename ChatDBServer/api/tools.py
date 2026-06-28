@@ -56,6 +56,15 @@
     "longtermUpdate": "longterm_update",
     "serverWebSearch": "server_web_search",
     "serverRenderPage": "server_render_page",
+    "mapRender": "map_render",
+    "map_render_scene": "map_render",
+    "mapCalcDistance": "map_calc_distance",
+    "map_calc_straight_distance": "map_calc_distance",
+    "mapCalcRoute": "map_calc_route",
+    "map_route_plan": "map_calc_route",
+    "mapGeocode": "map_geocode",
+    "mapPoiSearch": "map_poi_search",
+    "map_search_place": "map_poi_search",
     "generateImage": "generate_image",
     "file_create": "cloud_file_create",
     "file_read": "cloud_file_read",
@@ -94,7 +103,48 @@ def canonicalize_tool_name(name):
     return raw
 
 
+import prompts
+
+
 TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "question",
+            "description": "向用户提出结构化问题并等待明确回答。当继续执行前必须确认用户意图、选择方案或补充缺失信息时使用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "track_answer": {
+                        "type": "boolean",
+                        "description": "仅当该回答需要作为长期状态追踪或复用时设为 true。一次性澄清问题设为 false。"
+                    },
+                    "question_id": {
+                        "type": "string",
+                        "description": "可追踪问题的稳定 ID。track_answer 为 true 时必填；一次性澄清问题留空。"
+                    },
+                    "question_title": {
+                        "type": "string",
+                        "description": "问题标题，简短说明需要用户决定什么。"
+                    },
+                    "question_content": {
+                        "type": "string",
+                        "description": "问题正文，清楚说明需要用户补充的信息。"
+                    },
+                    "choices": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "可选选项列表。没有明确互斥选项时传空数组。"
+                    },
+                    "allow_other": {
+                        "type": "boolean",
+                        "description": "是否允许用户自由输入其他答案，默认 true。"
+                    }
+                },
+                "required": ["question_title", "question_content"]
+            }
+        }
+    },
     {
         "type": "function",
         "function": {
@@ -130,6 +180,351 @@ TOOLS = [
                     }
                 },
                 "required": ["url"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "map_render",
+            "description": "生成 Nexora 前端可渲染的地图 scene。只负责渲染标记、路线图层和视野，不做真实路线规划；需要计算路线时先调用 map_calc_route。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "地图标题"
+                    },
+                    "provider": {
+                        "type": "string",
+                        "enum": ["baidu", "tianditu"],
+                        "description": "地图 provider，目前支持 baidu、tianditu"
+                    },
+                    "coordinate_system": {
+                        "type": "string",
+                        "description": "坐标系标记，例如 bd09ll"
+                    },
+                    "center": {
+                        "type": "object",
+                        "description": "地图中心点，包含 lng 和 lat",
+                        "properties": {
+                            "lng": {"type": "number"},
+                            "lat": {"type": "number"}
+                        },
+                        "required": ["lng", "lat"]
+                    },
+                    "zoom": {
+                        "type": "integer",
+                        "description": "缩放级别，范围 3-19"
+                    },
+                    "markers": {
+                        "type": "array",
+                        "description": "标记点列表",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "label": {"type": "string"},
+                                "lng": {"type": "number"},
+                                "lat": {"type": "number"}
+                            },
+                            "required": ["lng", "lat"]
+                        }
+                    },
+                    "routes": {
+                        "type": "array",
+                        "description": "路线或折线图层。points 必须是真实路径点，避免只连起终点。",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "label": {"type": "string"},
+                                "color": {"type": "string"},
+                                "width": {"type": "number"},
+                                "points": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "lng": {"type": "number"},
+                                            "lat": {"type": "number"}
+                                        },
+                                        "required": ["lng", "lat"]
+                                    }
+                                }
+                            },
+                            "required": ["points"]
+                        }
+                    },
+                    "layers": {
+                        "type": "array",
+                        "description": "开放图层数组，支持 marker 和 route。高级场景可直接传 layers。",
+                        "items": {"type": "object"}
+                    },
+                    "scene": {
+                        "type": "object",
+                        "description": "完整 nexora-map scene；提供 scene 时优先使用 scene。"
+                    },
+                    "fit_bounds": {
+                        "type": "boolean",
+                        "description": "是否自动适配所有图层视野，默认 true。"
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "map_calc_distance",
+            "description": "计算两个坐标点之间的球面直线距离和初始方位角，并可返回可渲染地图 scene。只用于直线距离，不代表真实道路距离。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "provider": {
+                        "type": "string",
+                        "enum": ["baidu", "tianditu"],
+                        "description": "地图 provider，目前支持 baidu、tianditu"
+                    },
+                    "origin": {
+                        "type": "object",
+                        "description": "起点，包含 lng 和 lat",
+                        "properties": {
+                            "lng": {"type": "number"},
+                            "lat": {"type": "number"}
+                        },
+                        "required": ["lng", "lat"]
+                    },
+                    "origin_text": {
+                        "type": "string",
+                        "description": "起点文本。提供文本时必须同时提供 origin_city、origin_region 或 city，工具会先做地理编码再计算。"
+                    },
+                    "origin_city": {
+                        "type": "string",
+                        "description": "起点文本所属城市/行政区；origin_text 为文本时必填，例如 南宁、上海。"
+                    },
+                    "origin_region": {
+                        "type": "string",
+                        "description": "起点文本所属行政区；可替代 origin_city。"
+                    },
+                    "destination": {
+                        "type": "object",
+                        "description": "终点，包含 lng 和 lat",
+                        "properties": {
+                            "lng": {"type": "number"},
+                            "lat": {"type": "number"}
+                        },
+                        "required": ["lng", "lat"]
+                    },
+                    "destination_text": {
+                        "type": "string",
+                        "description": "终点文本。提供文本时必须同时提供 destination_city、destination_region 或 city，工具会先做地理编码再计算。"
+                    },
+                    "destination_city": {
+                        "type": "string",
+                        "description": "终点文本所属城市/行政区；destination_text 为文本时必填，例如 南宁、上海。"
+                    },
+                    "destination_region": {
+                        "type": "string",
+                        "description": "终点文本所属行政区；可替代 destination_city。"
+                    },
+                    "city": {
+                        "type": "string",
+                        "description": "起终点在同一城市时使用的统一城市限定；文本地理编码不能省略城市限定。"
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "可选地图标题"
+                    },
+                    "render": {
+                        "type": "boolean",
+                        "description": "是否保存 scene 并让前端根据 map_id 渲染地图，默认 true。false 时只返回基础信息摘要。"
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "map_calc_route",
+            "description": "调用地图 provider 规划路线并返回距离、耗时、路径点和可渲染地图 scene。用于真实驾车、步行、骑行或公共交通路线计算；mode=transit 时会额外返回公共交通方案 transit_schemes。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "provider": {
+                        "type": "string",
+                        "enum": ["baidu", "tianditu"],
+                        "description": "地图 provider，目前支持 baidu、tianditu"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["driving", "walking", "riding", "transit"],
+                        "description": "路线类型：driving 驾车，walking 步行，riding 骑行，transit 公共交通"
+                    },
+                    "origin": {
+                        "type": "object",
+                        "description": "起点，包含 lng 和 lat",
+                        "properties": {
+                            "lng": {"type": "number"},
+                            "lat": {"type": "number"}
+                        },
+                        "required": ["lng", "lat"]
+                    },
+                    "origin_text": {
+                        "type": "string",
+                        "description": "起点文本，例如 上海理工大学。提供文本时必须同时提供 origin_city、origin_region 或 city。"
+                    },
+                    "origin_city": {
+                        "type": "string",
+                        "description": "起点文本所属城市/行政区；origin_text 为文本时必填，例如 上海、南宁。"
+                    },
+                    "destination": {
+                        "type": "object",
+                        "description": "终点，包含 lng 和 lat",
+                        "properties": {
+                            "lng": {"type": "number"},
+                            "lat": {"type": "number"}
+                        },
+                        "required": ["lng", "lat"]
+                    },
+                    "destination_text": {
+                        "type": "string",
+                        "description": "终点文本，例如 东方明珠广播电视塔。提供文本时必须同时提供 destination_city、destination_region 或 city。"
+                    },
+                    "destination_city": {
+                        "type": "string",
+                        "description": "终点文本所属城市/行政区；destination_text 为文本时必填，例如 上海、南宁。"
+                    },
+                    "coord_type": {
+                        "type": "string",
+                        "description": "输入坐标系，百度常用 bd09ll、gcj02、wgs84"
+                    },
+                    "ret_coordtype": {
+                        "type": "string",
+                        "description": "返回坐标系，默认 bd09ll"
+                    },
+                    "origin_region": {
+                        "type": "string",
+                        "description": "起点文本所属行政区；可替代 origin_city，公共交通路线也会传给 provider。"
+                    },
+                    "destination_region": {
+                        "type": "string",
+                        "description": "终点文本所属行政区；可替代 destination_city，公共交通路线也会传给 provider。"
+                    },
+                    "city": {
+                        "type": "string",
+                        "description": "起终点在同一城市时使用的统一城市限定；文本地理编码不能省略城市限定。"
+                    },
+                    "tactics": {
+                        "type": "string",
+                        "description": "provider 支持的路线策略参数"
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "可选地图标题"
+                    },
+                    "render": {
+                        "type": "boolean",
+                        "description": "是否保存 scene 并让前端根据 map_id 渲染地图，默认 true。false 时只返回基础信息摘要。"
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "map_geocode",
+            "description": "把地址解析成坐标，并返回可渲染地图标记。适合用户给出地点文本但后续工具需要经纬度时调用。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "provider": {
+                        "type": "string",
+                        "enum": ["baidu", "tianditu"],
+                        "description": "地图 provider，目前支持 baidu、tianditu"
+                    },
+                    "address": {
+                        "type": "string",
+                        "description": "要解析的地址或地点文本"
+                    },
+                    "city": {
+                        "type": "string",
+                        "description": "必填城市名/行政区，用于限定 provider 的文本地理编码结果，例如 上海、南宁。"
+                    },
+                    "region": {
+                        "type": "string",
+                        "description": "行政区限定；可替代 city。"
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "可选地图标题"
+                    },
+                    "render": {
+                        "type": "boolean",
+                        "description": "是否保存 scene 并让前端根据 map_id 渲染地图，默认 true。false 时只返回坐标信息。"
+                    }
+                },
+                "required": ["address"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "map_poi_search",
+            "description": "搜索地点 POI，返回地点列表和可渲染地图标记。必须提供 region，或提供 location + radius。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "provider": {
+                        "type": "string",
+                        "enum": ["baidu", "tianditu"],
+                        "description": "地图 provider，目前支持 baidu、tianditu"
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "地点关键词，例如 北京南站、咖啡馆"
+                    },
+                    "region": {
+                        "type": "string",
+                        "description": "检索区域，例如 北京、上海"
+                    },
+                    "location": {
+                        "type": "object",
+                        "description": "中心点，提供后按周边检索",
+                        "properties": {
+                            "lng": {"type": "number"},
+                            "lat": {"type": "number"}
+                        },
+                        "required": ["lng", "lat"]
+                    },
+                    "radius": {
+                        "type": "integer",
+                        "description": "周边检索半径，单位米，范围 1-50000"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "返回条数，范围 1-20，默认 8"
+                    },
+                    "page_num": {
+                        "type": "integer",
+                        "description": "页码，从 0 开始"
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "可选地图标题"
+                    },
+                    "render": {
+                        "type": "boolean",
+                        "description": "是否保存 scene 并让前端根据 map_id 渲染地图，默认 true。false 时只返回地点列表。"
+                    }
+                },
+                "required": ["query"]
             }
         }
     },
@@ -1070,7 +1465,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "cloud_file_read",
-            "description": "读取用户云端文件区中的文本文件。三种读取方式三选一：不传范围参数读全文；传 from_line/to_line 按行读取；传 offset/length 按字符切片读取。单次最多返回500行且10000字符。",
+            "description": prompts.cloud_file_read_tool_description,
             "parameters": {
                 "type": "object",
                 "properties": {
