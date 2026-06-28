@@ -3,6 +3,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import type { CompositeScreenProps } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { StyleSheet, View } from "react-native";
+import { Feather } from "@expo/vector-icons";
 
 import { useSession } from "../../../app/providers/SessionProvider";
 import {
@@ -61,58 +62,54 @@ function CourseCard({ row, selected, updating, onToggle, onOpen }: CourseCardPro
   const coverUri = getLectureCoverUri(lecture);
 
   return (
-    <AppCard style={styles.card} active={selected}>
-      {coverUri ? (
-        <CoverImage
-          uri={coverUri}
-          fallbackIcon="book-open"
-          style={styles.cardCover}
-          accessibilityLabel={getLectureTitle(row)}
-        />
-      ) : null}
-      <View style={styles.cardHeader}>
-        <View style={styles.titleBlock}>
-          <AppText variant="heading">{getLectureTitle(row)}</AppText>
-          {meta ? (
-            <AppText variant="caption" tone="tertiary">
-              {meta}
+    <AppCard style={styles.card} active={selected} onPress={onOpen}>
+      <View style={styles.cardRow}>
+        {coverUri ? (
+          <CoverImage
+            uri={coverUri}
+            fallbackIcon="book-open"
+            style={styles.cardCover}
+            accessibilityLabel={getLectureTitle(row)}
+          />
+        ) : (
+          <View style={styles.cardCoverFallback}>
+            <Feather name="book-open" size={22} color={colors.textTertiary} />
+          </View>
+        )}
+        <View style={styles.cardBody}>
+          <View style={styles.cardHeader}>
+            <View style={styles.titleBlock}>
+              <AppText variant="heading" numberOfLines={1}>
+                {getLectureTitle(row)}
+              </AppText>
+              {meta ? (
+                <AppText variant="caption" tone="tertiary" numberOfLines={1}>
+                  {meta}
+                </AppText>
+              ) : null}
+            </View>
+            <AppBadge label={selected ? "已加入" : "未加入"} tone={selected ? "solid" : "muted"} />
+          </View>
+
+          {description ? (
+            <AppText variant="caption" tone="secondary" numberOfLines={2}>
+              {description}
             </AppText>
           ) : null}
+
+          <View style={styles.cardFooter}>
+            <AppText variant="caption" tone="tertiary">
+              教材 {booksCount} 本
+            </AppText>
+            <AppButton
+              title={selected ? "退出学习" : "加入学习"}
+              variant={selected ? "ghost" : "primary"}
+              size="sm"
+              loading={updating}
+              onPress={onToggle}
+            />
+          </View>
         </View>
-        <AppBadge label={selected ? "已加入" : "未加入"} tone={selected ? "solid" : "muted"} />
-      </View>
-
-      {description ? (
-        <AppText tone="secondary" numberOfLines={3}>
-          {description}
-        </AppText>
-      ) : null}
-
-      <View style={styles.metaRow}>
-        <AppText variant="caption" tone="tertiary">
-          教材 {booksCount} 本
-        </AppText>
-      </View>
-
-      <View style={styles.actions}>
-        {selected ? (
-          <AppButton
-            title="查看教材"
-            variant="outline"
-            size="sm"
-            loading={updating}
-            onPress={onOpen}
-            style={styles.actionButton}
-          />
-        ) : null}
-        <AppButton
-          title={selected ? "退出学习" : "加入学习"}
-          variant={selected ? "ghost" : "primary"}
-          size="sm"
-          loading={updating}
-          onPress={onToggle}
-          style={styles.actionButton}
-        />
       </View>
     </AppCard>
   );
@@ -213,15 +210,15 @@ export function CourseListScreen({ navigation }: CourseListScreenProps) {
     [navigation],
   );
 
-  if (loading) {
+  if (loading && rows.length === 0) {
     return (
       <Screen scroll tabBarSpace>
         <Skeleton width="45%" height={28} style={styles.skeletonHeader} />
         <Skeleton width="70%" height={14} style={styles.skeletonSub} />
         <View style={styles.skeletonList}>
-          <Skeleton height={172} borderRadius={radius.lg} />
-          <Skeleton height={172} borderRadius={radius.lg} />
-          <Skeleton height={172} borderRadius={radius.lg} />
+          <Skeleton height={120} borderRadius={radius.lg} />
+          <Skeleton height={120} borderRadius={radius.lg} />
+          <Skeleton height={120} borderRadius={radius.lg} />
         </View>
       </Screen>
     );
@@ -256,26 +253,19 @@ export function CourseListScreen({ navigation }: CourseListScreenProps) {
   }
 
   return (
-    <Screen scroll tabBarSpace>
+    <Screen scroll tabBarSpace onRefresh={() => void loadCourses()} refreshing={loading}>
       <ScreenHeader
-        overline="Nexora"
         title="课程库"
         subtitle={`共 ${rows.length} 门课程，已加入 ${selectedLectureIdSet.size} 门`}
-        trailing={<AppButton title="刷新" variant="ghost" size="sm" onPress={() => void loadCourses()} />}
       />
 
       {operationError ? (
-        <AppCard variant="outlined" style={styles.errorBanner}>
+        <AppCard variant="muted" style={styles.errorBanner}>
           <View style={styles.errorContent}>
-            <AppText tone="danger" variant="caption">
+            <AppText tone="danger" variant="caption" numberOfLines={2}>
               ⚠ {operationError.message}
             </AppText>
-            <AppButton
-              title="关闭"
-              variant="ghost"
-              size="sm"
-              onPress={() => setOperationError(null)}
-            />
+            <AppButton title="关闭" variant="ghost" size="sm" onPress={() => setOperationError(null)} />
           </View>
         </AppCard>
       ) : null}
@@ -310,23 +300,44 @@ export function CourseListScreen({ navigation }: CourseListScreenProps) {
 const styles = StyleSheet.create({
   titleBlock: {
     flex: 1,
-    gap: spacing.xs,
+    gap: 2,
   },
   card: {
+    padding: spacing.md,
+  },
+  cardRow: {
+    flexDirection: "row",
     gap: spacing.md,
   },
   cardCover: {
-    width: "100%",
-    aspectRatio: 16 / 9,
+    width: 88,
+    height: 64,
     borderRadius: radius.md,
+  },
+  cardCoverFallback: {
+    width: 88,
+    height: 64,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceMuted,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cardBody: {
+    flex: 1,
+    gap: spacing.xs,
+    justifyContent: "center",
   },
   cardHeader: {
     alignItems: "flex-start",
     flexDirection: "row",
-    gap: spacing.md,
+    gap: spacing.sm,
   },
-  metaRow: {
-    paddingVertical: spacing.xs,
+  cardFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+    marginTop: 2,
   },
   skeletonHeader: {
     marginBottom: spacing.sm,
@@ -336,15 +347,6 @@ const styles = StyleSheet.create({
   },
   skeletonList: {
     gap: spacing.lg,
-  },
-  actions: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    justifyContent: "flex-end",
-  },
-  actionButton: {
-    minWidth: 100,
   },
   errorBanner: {
     borderLeftWidth: 4,
@@ -357,6 +359,7 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   warningBanner: {
-    borderRadius: radius.md,
+    borderLeftWidth: 4,
+    borderLeftColor: colors.warning,
   },
 });

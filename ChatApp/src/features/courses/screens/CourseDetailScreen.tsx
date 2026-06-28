@@ -6,17 +6,15 @@ import { Feather } from "@expo/vector-icons";
 import { BookListItem } from "../../books/components/BookListItem";
 import {
   AnimatedPressable,
-  AppButton,
   AppCard,
   AppText,
   colors,
   CoverImage,
-  FadeIn,
   ProgressBar,
   radius,
   Screen,
   ScreenHeader,
-  SectionHeader,
+  Section,
   Skeleton,
   spacing,
   StateView,
@@ -177,7 +175,7 @@ export function CourseDetailScreen({ navigation, route }: CourseDetailScreenProp
     [lectureId, navigation, title],
   );
 
-  if (loading) {
+  if (loading && !lecture) {
     return (
       <Screen scroll>
         <Skeleton width="60%" height={26} style={styles.skLine} />
@@ -206,13 +204,20 @@ export function CourseDetailScreen({ navigation, route }: CourseDetailScreenProp
   const outlineSections = Array.isArray(outline?.sections) ? outline.sections : [];
   const visibleVideos = videos.slice(0, 3);
   const lectureCoverUri = getLectureCoverUri(lecture);
+  const chapterLine = [lecture?.current_chapter, lecture?.next_chapter]
+    .map((part, idx) => {
+      const text = String(part || "").trim();
+      if (!text) return "";
+      return idx === 0 ? `当前：${text}` : `下一章：${text}`;
+    })
+    .filter(Boolean)
+    .join(" · ");
 
   return (
-    <Screen scroll>
+    <Screen scroll onRefresh={() => void loadLecture()} refreshing={loading}>
       <ScreenHeader
         title={title}
-        subtitle={lecture?.description ? String(lecture.description) : "查看课程下的教材和阅读内容"}
-        trailing={<AppButton title="刷新" variant="ghost" size="sm" onPress={() => void loadLecture()} />}
+        subtitle={`${books.length} 本教材${lecture?.description ? ` · ${String(lecture.description)}` : ""}`}
       />
 
       {lectureCoverUri ? (
@@ -224,152 +229,142 @@ export function CourseDetailScreen({ navigation, route }: CourseDetailScreenProp
         />
       ) : null}
 
-      <AppCard style={styles.summaryCard}>
-        <View style={styles.summaryRow}>
-          <View style={styles.summaryItem}>
-            <AppText style={styles.summaryValue}>{books.length}</AppText>
-            <AppText variant="caption" tone="tertiary">
-              教材数量
-            </AppText>
-          </View>
-          <View style={styles.summaryDivider} />
-          <View style={styles.summaryItem}>
-            <AppText style={styles.summaryValue}>{progress}%</AppText>
-            <AppText variant="caption" tone="tertiary">
-              学习进度
-            </AppText>
-          </View>
+      <View style={styles.progressBlock}>
+        <View style={styles.progressLabelRow}>
+          <AppText variant="caption" tone="tertiary">
+            学习进度
+          </AppText>
+          <AppText variant="label">{progress}%</AppText>
         </View>
         <ProgressBar value={progress} />
-        {lecture?.current_chapter ? (
-          <AppText variant="caption" tone="tertiary">
-            当前章节：{String(lecture.current_chapter)}
-            {lecture.next_chapter ? ` · 下一章：${String(lecture.next_chapter)}` : ""}
+        {chapterLine ? (
+          <AppText variant="caption" tone="tertiary" numberOfLines={1}>
+            {chapterLine}
           </AppText>
         ) : null}
-      </AppCard>
+      </View>
 
-      <SectionHeader title="教材列表" subtitle="选择一本教材查看原文、概读和精读" />
+      <Section first title="教材列表" subtitle="选择一本教材查看原文、概读和精读">
+        {books.length === 0 ? (
+          <AppCard variant="muted">
+            <AppText variant="caption" tone="muted">
+              这门课程还没有可阅读的教材，请等待管理员上传。
+            </AppText>
+          </AppCard>
+        ) : (
+          <View style={styles.bookList}>
+            {books.map((book) => {
+              const bookId = String(book.id || "").trim();
+              return (
+                <BookListItem
+                  key={bookId || getBookTitle(book)}
+                  book={book}
+                  coverUri={bookCoverByBookId.get(bookId)}
+                  onPress={() => openBook(book)}
+                />
+              );
+            })}
+          </View>
+        )}
+      </Section>
 
-      {books.length === 0 ? (
-        <StateView
-          icon="inbox"
-          title="暂无教材"
-          message="这门课程还没有可阅读的教材，请等待管理员上传。"
-          actionLabel="刷新"
-          onAction={() => void loadLecture()}
-        />
-      ) : (
-        books.map((book) => {
-          const bookId = String(book.id || "").trim();
-          return (
-            <BookListItem
-              key={bookId || getBookTitle(book)}
-              book={book}
-              coverUri={bookCoverByBookId.get(bookId)}
-              onPress={() => openBook(book)}
-            />
-          );
-        })
-      )}
-
-      <SectionHeader
+      <Section
         title="学习大纲"
         subtitle={
           outlineSections.length > 0
             ? `共 ${outline?.total_sections ?? outlineSections.length} 个单元`
             : "后端生成后会在这里展示"
         }
-      />
-
-      {outlineSections.length > 0 ? (
-        <AppCard style={styles.outlineCard}>
-          {outlineSections.slice(0, 4).map((section, index) => {
-            const sectionTitle = String(section.title || section.id || section.section_id || "").trim();
-            const concepts = Array.isArray(section.key_concepts) ? section.key_concepts : [];
-            return (
-              <View key={String(section.id || section.section_id || index)} style={styles.outlineItem}>
-                <View style={styles.outlineIndex}>
-                  <AppText variant="caption" tone="inverse">
-                    {index + 1}
-                  </AppText>
-                </View>
-                <View style={styles.titleBlock}>
-                  <AppText variant="bodyStrong">{sectionTitle || "未命名单元"}</AppText>
-                  {section.summary ? (
-                    <AppText variant="caption" tone="muted" numberOfLines={2}>
-                      {String(section.summary)}
+      >
+        {outlineSections.length > 0 ? (
+          <AppCard style={styles.outlineCard}>
+            {outlineSections.slice(0, 4).map((section, index) => {
+              const sectionTitle = String(section.title || section.id || section.section_id || "").trim();
+              const concepts = Array.isArray(section.key_concepts) ? section.key_concepts : [];
+              return (
+                <View key={String(section.id || section.section_id || index)} style={styles.outlineItem}>
+                  <View style={styles.outlineIndex}>
+                    <AppText variant="caption" tone="inverse">
+                      {index + 1}
                     </AppText>
-                  ) : null}
-                  {concepts.length > 0 ? (
-                    <AppText variant="caption" tone="secondary" numberOfLines={1}>
-                      {concepts.slice(0, 4).join(" · ")}
-                    </AppText>
-                  ) : null}
-                </View>
-              </View>
-            );
-          })}
-        </AppCard>
-      ) : (
-        <AppCard variant="muted">
-          <AppText variant="caption" tone="muted">
-            课程大纲尚未生成；管理员生成后，学习路径和推荐内容会复用这份结构。
-          </AppText>
-        </AppCard>
-      )}
-
-      <SectionHeader
-        title="推荐视频"
-        subtitle={visibleVideos.length > 0 ? `已缓存 ${videos.length} 个视频` : "粗读/视频任务生成后可用"}
-      />
-
-      {visibleVideos.length > 0 ? (
-        <View style={styles.videoList}>
-          {visibleVideos.map((video, index) => {
-            const url = String(video.url || "").trim();
-            const videoCover = getVideoCoverUri(video);
-            return (
-              <AnimatedPressable
-                key={url || `${getVideoTitle(video)}-${index}`}
-                disabled={!url}
-                onPress={() => void Linking.openURL(url)}
-                style={styles.videoPressable}
-              >
-                <AppCard style={styles.videoCard}>
-                  <CoverImage
-                    uri={videoCover}
-                    fallbackIcon="play"
-                    style={styles.videoThumb}
-                    overlay={
-                      <View style={styles.videoPlayBadge}>
-                        <Feather name="play" size={14} color={colors.textInverse} />
-                      </View>
-                    }
-                  />
+                  </View>
                   <View style={styles.titleBlock}>
-                    <AppText variant="bodyStrong" numberOfLines={2}>
-                      {getVideoTitle(video)}
-                    </AppText>
-                    {getVideoMeta(video) ? (
-                      <AppText variant="caption" tone="tertiary" numberOfLines={1}>
-                        {getVideoMeta(video)}
+                    <AppText variant="bodyStrong">{sectionTitle || "未命名单元"}</AppText>
+                    {section.summary ? (
+                      <AppText variant="caption" tone="muted" numberOfLines={2}>
+                        {String(section.summary)}
+                      </AppText>
+                    ) : null}
+                    {concepts.length > 0 ? (
+                      <AppText variant="caption" tone="secondary" numberOfLines={1}>
+                        {concepts.slice(0, 4).join(" · ")}
                       </AppText>
                     ) : null}
                   </View>
-                  <Feather name="external-link" size={16} color={colors.textTertiary} />
-                </AppCard>
-              </AnimatedPressable>
-            );
-          })}
-        </View>
-      ) : (
-        <AppCard variant="muted">
-          <AppText variant="caption" tone="muted">
-            暂无课程推荐视频缓存。管理员的视频任务或教材页刷新后会补齐这里。
-          </AppText>
-        </AppCard>
-      )}
+                </View>
+              );
+            })}
+          </AppCard>
+        ) : (
+          <AppCard variant="muted">
+            <AppText variant="caption" tone="muted">
+              课程大纲尚未生成；管理员生成后，学习路径和推荐内容会复用这份结构。
+            </AppText>
+          </AppCard>
+        )}
+      </Section>
+
+      <Section
+        title="推荐视频"
+        subtitle={visibleVideos.length > 0 ? `已缓存 ${videos.length} 个视频` : "粗读/视频任务生成后可用"}
+      >
+        {visibleVideos.length > 0 ? (
+          <View style={styles.videoList}>
+            {visibleVideos.map((video, index) => {
+              const url = String(video.url || "").trim();
+              const videoCover = getVideoCoverUri(video);
+              return (
+                <AnimatedPressable
+                  key={url || `${getVideoTitle(video)}-${index}`}
+                  disabled={!url}
+                  onPress={() => void Linking.openURL(url)}
+                  style={styles.videoPressable}
+                >
+                  <AppCard style={styles.videoCard}>
+                    <CoverImage
+                      uri={videoCover}
+                      fallbackIcon="play"
+                      style={styles.videoThumb}
+                      overlay={
+                        <View style={styles.videoPlayBadge}>
+                          <Feather name="play" size={14} color={colors.textInverse} />
+                        </View>
+                      }
+                    />
+                    <View style={styles.titleBlock}>
+                      <AppText variant="bodyStrong" numberOfLines={2}>
+                        {getVideoTitle(video)}
+                      </AppText>
+                      {getVideoMeta(video) ? (
+                        <AppText variant="caption" tone="tertiary" numberOfLines={1}>
+                          {getVideoMeta(video)}
+                        </AppText>
+                      ) : null}
+                    </View>
+                    <Feather name="external-link" size={16} color={colors.textTertiary} />
+                  </AppCard>
+                </AnimatedPressable>
+              );
+            })}
+          </View>
+        ) : (
+          <AppCard variant="muted">
+            <AppText variant="caption" tone="muted">
+              暂无课程推荐视频缓存。管理员的视频任务或教材页刷新后会补齐这里。
+            </AppText>
+          </AppCard>
+        )}
+      </Section>
 
       {extrasError ? (
         <AppCard variant="outlined" style={styles.errorCard}>
@@ -387,29 +382,21 @@ const styles = StyleSheet.create({
     flex: 1,
     gap: spacing.xs,
   },
-  summaryCard: {
-    gap: spacing.md,
+  lectureCover: {
+    width: "100%",
+    aspectRatio: 3 / 2,
+    borderRadius: radius.lg,
   },
-  summaryRow: {
+  progressBlock: {
+    gap: spacing.sm,
+  },
+  progressLabelRow: {
     flexDirection: "row",
+    justifyContent: "space-between",
     alignItems: "center",
   },
-  summaryItem: {
-    flex: 1,
-    gap: spacing.xs,
-    alignItems: "center",
-  },
-  summaryValue: {
-    fontSize: 28,
-    fontWeight: "800",
-    color: colors.text,
-    letterSpacing: -0.5,
-    includeFontPadding: false,
-  },
-  summaryDivider: {
-    width: 1,
-    height: 40,
-    backgroundColor: colors.border,
+  bookList: {
+    gap: spacing.sm,
   },
   skLine: {
     marginBottom: spacing.lg,
@@ -426,9 +413,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     backgroundColor: colors.surfaceInverse,
     borderRadius: radius.pill,
-    height: 24,
+    height: 28,
     justifyContent: "center",
-    width: 24,
+    minWidth: 28,
+    paddingHorizontal: spacing.xs,
   },
   videoList: {
     gap: spacing.sm,
@@ -453,20 +441,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(10,10,10,0.55)",
-  },
-  videoBadge: {
-    alignItems: "center",
-    backgroundColor: colors.surfaceInverse,
-    borderRadius: radius.md,
-    height: 36,
-    justifyContent: "center",
-    width: 36,
-  },
-  lectureCover: {
-    width: "100%",
-    aspectRatio: 16 / 9,
-    borderRadius: radius.lg,
-    marginBottom: spacing.lg,
   },
   errorCard: {
     borderLeftColor: colors.danger,

@@ -16,7 +16,7 @@ import type { RootStackParamList } from "./types";
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
 export function RootNavigator() {
-  const { username, isBootstrapping } = useSession();
+  const { username, isBootstrapping, isAdmin } = useSession();
 
   if (isBootstrapping) {
     return (
@@ -49,26 +49,30 @@ export function RootNavigator() {
       }}
     >
       <Stack.Screen name="MainTabs" component={MainTabs} options={{ headerShown: false }} />
-      <Stack.Screen
-        name="AdminHome"
-        component={AdminHomeScreen}
-        options={{ title: "内容管理" }}
-      />
-      <Stack.Screen
-        name="BookUpload"
-        component={BookUploadScreen}
-        options={{ title: "上传教材" }}
-      />
-      <Stack.Screen
-        name="RefinementQueue"
-        component={RefinementQueueScreen}
-        options={{ title: "提炼队列" }}
-      />
-      <Stack.Screen
-        name="Vectorize"
-        component={VectorizeScreen}
-        options={{ title: "向量化" }}
-      />
+      {isAdmin ? (
+        <>
+          <Stack.Screen
+            name="AdminHome"
+            component={AdminHomeScreen}
+            options={{ title: "内容管理" }}
+          />
+          <Stack.Screen
+            name="BookUpload"
+            component={BookUploadScreen}
+            options={{ title: "上传教材" }}
+          />
+          <Stack.Screen
+            name="RefinementQueue"
+            component={RefinementQueueScreen}
+            options={{ title: "提炼队列" }}
+          />
+          <Stack.Screen
+            name="Vectorize"
+            component={VectorizeScreen}
+            options={{ title: "向量化" }}
+          />
+        </>
+      ) : null}
       <Stack.Screen
         name="CourseDetail"
         component={CourseDetailScreen}

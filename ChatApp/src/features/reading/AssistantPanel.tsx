@@ -467,7 +467,9 @@ const styles = StyleSheet.create({
   },
   scrim: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(10,10,10,0.12)",
+    // Transparent: the scrim only captures taps-to-close now, so the reading
+    // text behind the panel is no longer dimmed.
+    backgroundColor: "transparent",
   },
   panel: {
     position: "absolute",

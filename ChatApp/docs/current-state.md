@@ -1,6 +1,6 @@
 # 当前状态
 
-最后核对日期：2026-06-17。
+最后核对日期：2026-06-27。
 
 这是 ChatApp 的当前事实快照，不是流水账。和历史切片冲突时，以这里为准。
 
@@ -19,6 +19,7 @@
 ## 已接入
 
 - 本地 username 会话和 `/api/frontend/context`。
+- 登录页已区分用户登录和管理员登录入口；两者共用后端 `/login` 认证，登录后以 `/api/frontend/context` 的 `is_admin` / `user.role` 校验入口角色，不匹配时退出并提示切换入口。
 - 学习看板、已选课程、课程进度。
 - Lecture / Book 列表、详情、阅读。
 - Dashboard、Courses、Course Detail、Book 列表已接入后端封面资源；Feed 和 Settings 已接入头像 URL，失败时回退到字母占位。
@@ -40,6 +41,7 @@
 - Lecture / Book 封面资源走 `NexoraLearning /api/lectures/*/cover-assets` 以及实体上的 `cover_path` / `cover` 字段，由 `imageService` 统一补全 URL。
 - 头像 URL 可来自 frontend context 或 Learning Feed author 的 `avatar_url`，由 `imageService` 统一解析相对路径。
 - `SessionProvider` 持有 username，并通过 `setApiUsername` 给两个 client 注入 `X-Nexora-Username`。
+- `SessionProvider` 登录时可接收期望角色；普通用户只进入学习主路径，管理员进入带 Admin 的路径，Admin Tab 和管理员 Stack 页面都由真实 admin 状态控制。
 - public API key 由 `src/config/env.ts` 读取，再由 `apiClient` 注入 `X-API-Key`。
 - Expo 默认真实环境地址为 `NexoraLearning=https://chat.himpqblog.cn:5002` 和 `ChatDBServer=https://chat.himpqblog.cn`；真机调试不要把后端改成仅宿主机可访问的 `localhost`。
 

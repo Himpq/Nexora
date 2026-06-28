@@ -13,10 +13,10 @@
 
 ## 用户上下文
 
-- 登录：`LoginScreen` -> `SessionProvider.signIn` -> `sessionService.login` -> `ChatDBServer POST /login`（账号+密码，写 Flask session cookie；账号与 NexoraLearning 用户名同一套）。成功后用户名注入两个 client 的 `X-Nexora-Username`。
+- 登录：`LoginScreen` 区分用户登录 / 管理员登录入口，但认证仍共用 `SessionProvider.signIn` -> `sessionService.login` -> `ChatDBServer POST /login`（账号+密码，写 Flask session cookie；账号与 NexoraLearning 用户名同一套）。登录后 `SessionProvider` 读取 `NexoraLearning GET /api/frontend/context`，用 `is_admin` 或 `user.role === "admin"` 校验入口角色；用户入口遇到 admin 账号会退出并提示“请使用管理员登录”，管理员入口遇到非 admin 账号会退出并提示使用用户登录。校验通过后用户名注入两个 client 的 `X-Nexora-Username`。
 - `SettingsScreen` 退出 -> `SessionProvider.clearUsername` -> `sessionService.logout` -> `ChatDBServer POST /logout`。
 - 上下文：`SessionProvider` -> `frontendService.getFrontendContext` -> `NexoraLearning GET /api/frontend/context`
-- 管理员状态只认 `is_admin` 或 `user.role === "admin"`
+- 管理员状态只认 `is_admin` 或 `user.role === "admin"`；Admin Tab 和管理员 Stack 页面都必须由该状态控制。
 
 ## 学习看板与课程
 

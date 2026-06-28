@@ -19,7 +19,11 @@ import Animated, {
   withSpring,
 } from "react-native-reanimated";
 
-import { useSession } from "../../../app/providers/SessionProvider";
+import {
+  SessionRoleMismatchError,
+  useSession,
+  type LoginRole,
+} from "../../../app/providers/SessionProvider";
 import { ApiClientError } from "../../../services/apiClient";
 import {
   AppButton,
@@ -42,6 +46,7 @@ export function LoginScreen() {
   const insets = useSafeAreaInsets();
 
   const [mode, setMode] = useState<Mode>("landing");
+  const [loginRole, setLoginRole] = useState<LoginRole>("user");
   const [draftUsername, setDraftUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -95,11 +100,13 @@ export function LoginScreen() {
     setError("");
 
     try {
-      await signIn(normalizedUsername, password);
+      await signIn(normalizedUsername, password, { expectedRole: loginRole });
       haptics.notify("success");
     } catch (err) {
       if (err instanceof ApiClientError) {
         setError(err.message || "登录失败");
+      } else if (err instanceof SessionRoleMismatchError) {
+        setError(err.message);
       } else {
         setError("网络错误，请稍后重试");
       }
@@ -109,8 +116,9 @@ export function LoginScreen() {
     }
   }
 
-  function goLogin() {
+  function goLogin(role: LoginRole) {
     haptics.impact("light");
+    setLoginRole(role);
     setError("");
     setMode("login");
   }
@@ -159,14 +167,14 @@ export function LoginScreen() {
               variant="primary"
               fullWidth
               style={styles.pill}
-              onPress={goLogin}
+              onPress={() => goLogin("user")}
             />
             <AppButton
               title="管理员登录"
               variant="outline"
               fullWidth
               style={styles.pill}
-              onPress={goLogin}
+              onPress={() => goLogin("admin")}
             />
           </Animated.View>
 
@@ -198,7 +206,7 @@ export function LoginScreen() {
             showsVerticalScrollIndicator={false}
           >
             <AppText variant="title" style={styles.adminTitle}>
-              登录
+              {loginRole === "admin" ? "管理员登录" : "用户登录"}
             </AppText>
 
             {error ? (

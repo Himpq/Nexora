@@ -1,0 +1,22 @@
+diff --git a/node_modules/@react-native/gradle-plugin/settings.gradle.kts b/node_modules/@react-native/gradle-plugin/settings.gradle.kts
+index b3c46a3..36f6d0e 100644
+--- a/node_modules/@react-native/gradle-plugin/settings.gradle.kts
++++ b/node_modules/@react-native/gradle-plugin/settings.gradle.kts
+@@ -7,13 +7,16 @@
+ 
+ pluginManagement {
+   repositories {
++    maven { url = uri("https://maven.aliyun.com/repository/public") }
++    maven { url = uri("https://maven.aliyun.com/repository/google") }
++    maven { url = uri("https://maven.aliyun.com/repository/gradle-plugin") }
+     mavenCentral()
+     google()
+     gradlePluginPortal()
+   }
+ }
+ 
+-plugins { id("org.gradle.toolchains.foojay-resolver-convention").version("0.5.0") }
++plugins { id("org.gradle.toolchains.foojay-resolver-convention").version("0.9.0") }
+ 
+ include(
+     ":react-native-gradle-plugin",

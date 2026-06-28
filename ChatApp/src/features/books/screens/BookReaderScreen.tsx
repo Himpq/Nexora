@@ -1,12 +1,22 @@
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { StyleSheet, View } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type NativeSyntheticEvent,
+  type NativeScrollEvent,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  View,
+} from "react-native";
 
 import { BookContentSection } from "../components/BookContentSection";
+import { parseBookContent, firstChapterOf } from "../utils/parseBookContent";
 import {
   AppButton,
   AppCard,
   AppText,
+  colors,
+  ProgressBar,
   radius,
   Screen,
   ScreenHeader,
@@ -28,14 +38,6 @@ type BookReaderScreenProps = NativeStackScreenProps<RootStackParamList, "BookRea
 type ReaderState = {
   book: Book | null;
   content: string;
-};
-
-type ParsedChapter = {
-  index: number;
-  name: string;
-  range: string;
-  summary?: string;
-  detailXml?: string;
 };
 
 type ModeConfig = {
@@ -74,51 +76,6 @@ function getBookTitle(book: Book | null, fallback?: string) {
   return String(book?.title || fallback || "").trim() || "未命名教材";
 }
 
-function parseChapters(content: string) {
-  const chapters: ParsedChapter[] = [];
-  const source = String(content || "");
-  const blockPattern = /<chapter(?:\s[^>]*)?>([\s\S]*?)<\/chapter>/gi;
-  const namedPattern =
-    /<chapter_name>\s*([\s\S]*?)\s*<\/chapter_name>[\s\S]*?<chapter_range>\s*([\s\S]*?)\s*<\/chapter_range>[\s\S]*?(?:<chapter_summary>\s*([\s\S]*?)\s*<\/chapter_summary>)?/gi;
-
-  let blockMatch: RegExpExecArray | null;
-  while ((blockMatch = blockPattern.exec(source))) {
-    const block = String(blockMatch[0] || "");
-    const name = String(block.match(/<chapter_name>\s*([\s\S]*?)\s*<\/chapter_name>/i)?.[1] || "").trim();
-    const range = String(block.match(/<chapter_range>\s*([\s\S]*?)\s*<\/chapter_range>/i)?.[1] || "").trim();
-    if (!name || !range) {
-      continue;
-    }
-    chapters.push({
-      index: chapters.length,
-      name,
-      range,
-      summary: String(block.match(/<chapter_summary>\s*([\s\S]*?)\s*<\/chapter_summary>/i)?.[1] || "").trim(),
-      detailXml: block,
-    });
-  }
-
-  if (chapters.length > 0) {
-    return chapters;
-  }
-
-  let match: RegExpExecArray | null;
-  while ((match = namedPattern.exec(source))) {
-    const name = String(match[1] || "").trim();
-    const range = String(match[2] || "").trim();
-    if (!name || !range) {
-      continue;
-    }
-    chapters.push({
-      index: chapters.length,
-      name,
-      range,
-      summary: String(match[3] || "").trim(),
-    });
-  }
-  return chapters;
-}
-
 async function loadContent(lectureId: string, bookId: string, mode: BookContentMode) {
   if (mode === "text") {
     const result = await getBookText(lectureId, bookId);
@@ -153,16 +110,22 @@ export function BookReaderScreen({ navigation, route }: BookReaderScreenProps) {
   const [chapterCompleteLoading, setChapterCompleteLoading] = useState(false);
   const [chapterCompleteError, setChapterCompleteError] = useState<Error | null>(null);
   const [chapterCompleteMessage, setChapterCompleteMessage] = useState("");
+  const [readProgress, setReadProgress] = useState(0);
+  const lastPctRef = useRef(0);
 
   const title = useMemo(
     () => `${getBookTitle(readerState.book, bookTitle)} · ${config.label}`,
     [bookTitle, config.label, readerState.book],
   );
-  const parsedChapters = useMemo(
-    () => (mode === "bookinfo" || mode === "bookdetail" ? parseChapters(readerState.content) : []),
-    [mode, readerState.content],
+  const parsed = useMemo(
+    () => parseBookContent(readerState.content, mode),
+    [readerState.content, mode],
   );
-  const firstChapter = parsedChapters[0] || null;
+  const firstChapter = useMemo(() => firstChapterOf(parsed), [parsed]);
+  const hasContent =
+    parsed.kind === "chapters"
+      ? parsed.chapters.some((c) => c.paragraphs.length > 0 || c.name)
+      : parsed.paragraphs.length > 0;
 
   const readerContext: ReaderContext = useMemo(
     () => ({
@@ -190,6 +153,8 @@ export function BookReaderScreen({ navigation, route }: BookReaderScreenProps) {
     setChapterCompleteMessage("");
     try {
       setReaderState(await loadContent(lectureId, bookId, mode));
+      lastPctRef.current = 0;
+      setReadProgress(0);
     } catch (err) {
       setReaderState({ book: null, content: "" });
       setError(normalizeError(err));
@@ -222,6 +187,20 @@ export function BookReaderScreen({ navigation, route }: BookReaderScreenProps) {
     }
   }, [bookId, firstChapter, lectureId]);
 
+  const handleScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
+    const scrollable = contentSize.height - layoutMeasurement.height;
+    if (scrollable <= 0) {
+      return;
+    }
+    const pct = Math.max(0, Math.min(100, (contentOffset.y / scrollable) * 100));
+    const rounded = Math.round(pct);
+    if (rounded !== lastPctRef.current) {
+      lastPctRef.current = rounded;
+      setReadProgress(rounded);
+    }
+  }, []);
+
   useEffect(() => {
     void loadReader();
   }, [loadReader]);
@@ -230,7 +209,7 @@ export function BookReaderScreen({ navigation, route }: BookReaderScreenProps) {
     navigation.setOptions({ title });
   }, [navigation, title]);
 
-  if (loading) {
+  if (loading && !readerState.content) {
     return (
       <Screen scroll>
         <Skeleton width="50%" height={26} style={styles.skTitle} />
@@ -263,9 +242,7 @@ export function BookReaderScreen({ navigation, route }: BookReaderScreenProps) {
     );
   }
 
-  const content = readerState.content.trim();
-
-  if (!content) {
+  if (!hasContent && !readerState.content.trim()) {
     return (
       <Screen>
         <StateView
@@ -281,46 +258,56 @@ export function BookReaderScreen({ navigation, route }: BookReaderScreenProps) {
 
   return (
     <View style={styles.readerRoot}>
-      <Screen scroll>
-        <ScreenHeader
-          overline={config.label}
-          title={getBookTitle(readerState.book, bookTitle)}
-          trailing={<AppButton title="刷新" variant="ghost" size="sm" onPress={() => void loadReader()} />}
-        />
+      <Screen>
+        <ScreenHeader overline={config.label} title={getBookTitle(readerState.book, bookTitle)} />
+        <ProgressBar value={readProgress} height={3} style={styles.readProgress} />
 
-        {firstChapter ? (
-          <AppCard variant="muted" style={styles.chapterCard}>
-            <View style={styles.chapterCopy}>
-              <AppText variant="overline" tone="tertiary">
-                章节进度
-              </AppText>
-              <AppText variant="bodyStrong">{firstChapter.name}</AppText>
-              <AppText variant="caption" tone="tertiary">
-                range: {firstChapter.range}
-              </AppText>
-              {chapterCompleteMessage ? (
-                <AppText variant="caption" tone="success">
-                  {chapterCompleteMessage}
-                </AppText>
-              ) : null}
-              {chapterCompleteError ? (
-                <AppText variant="caption" tone="danger">
-                  {chapterCompleteError.message}
-                </AppText>
-              ) : null}
-            </View>
-            <AppButton
-              title="标记完成"
-              size="sm"
-              variant="outline"
-              loading={chapterCompleteLoading}
-              onPress={() => void handleCompleteChapter()}
-              style={styles.chapterButton}
+        <ScrollView
+          style={styles.scroll}
+          contentContainerStyle={styles.scrollBody}
+          showsVerticalScrollIndicator={false}
+          scrollEventThrottle={16}
+          onScroll={handleScroll}
+          refreshControl={
+            <RefreshControl
+              refreshing={loading}
+              onRefresh={() => void loadReader()}
+              tintColor={colors.textTertiary}
+              colors={[colors.text]}
             />
-          </AppCard>
-        ) : null}
+          }
+        >
+          {firstChapter ? (
+            <AppCard variant="muted" style={styles.chapterCard}>
+              <View style={styles.chapterCopy}>
+                <AppText variant="caption" tone="tertiary" numberOfLines={1}>
+                  {firstChapter.name}
+                  {firstChapter.range ? ` · ${firstChapter.range}` : ""}
+                </AppText>
+                {chapterCompleteMessage ? (
+                  <AppText variant="caption" tone="success">
+                    {chapterCompleteMessage}
+                  </AppText>
+                ) : null}
+                {chapterCompleteError ? (
+                  <AppText variant="caption" tone="danger">
+                    {chapterCompleteError.message}
+                  </AppText>
+                ) : null}
+              </View>
+              <AppButton
+                title="标记完成"
+                size="sm"
+                variant="outline"
+                loading={chapterCompleteLoading}
+                onPress={() => void handleCompleteChapter()}
+                style={styles.chapterButton}
+              />
+            </AppCard>
+          ) : null}
 
-        <BookContentSection title={config.sectionTitle} content={content} />
+          <BookContentSection title={config.sectionTitle} parsed={parsed} />
+        </ScrollView>
       </Screen>
 
       <FloatingAssistant context={readerContext} />
@@ -331,6 +318,15 @@ export function BookReaderScreen({ navigation, route }: BookReaderScreenProps) {
 const styles = StyleSheet.create({
   readerRoot: {
     flex: 1,
+  },
+  readProgress: {
+    marginVertical: 0,
+  },
+  scroll: {
+    flex: 1,
+  },
+  scrollBody: {
+    gap: spacing.lg,
   },
   chapterCard: {
     alignItems: "center",

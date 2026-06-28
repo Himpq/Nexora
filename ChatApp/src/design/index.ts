@@ -11,6 +11,7 @@ export * from "./components/FadeIn";
 export * from "./components/ProgressBar";
 export * from "./components/Screen";
 export * from "./components/ScreenHeader";
+export * from "./components/Section";
 export * from "./components/SectionHeader";
 export * from "./components/Skeleton";
 export * from "./components/StateView";

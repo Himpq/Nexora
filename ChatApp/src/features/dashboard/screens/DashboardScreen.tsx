@@ -8,7 +8,6 @@ import { Feather } from "@expo/vector-icons";
 import { useSession } from "../../../app/providers/SessionProvider";
 import {
   AppBadge,
-  AppButton,
   AppCard,
   AppText,
   colors,
@@ -18,7 +17,6 @@ import {
   radius,
   Screen,
   SectionHeader,
-  shadow,
   spacing,
   StateView,
   Skeleton,
@@ -68,7 +66,7 @@ type MetricCardProps = {
 function MetricCard({ icon, label, value, unit }: MetricCardProps) {
   return (
     <View style={styles.metricCard}>
-      <Feather name={icon} size={16} color={colors.textTertiary} />
+      <Feather name={icon} size={15} color={colors.textTertiary} />
       <View style={styles.metricValueRow}>
         <AppText style={styles.metricValue}>{value}</AppText>
         {unit ? (
@@ -77,7 +75,7 @@ function MetricCard({ icon, label, value, unit }: MetricCardProps) {
           </AppText>
         ) : null}
       </View>
-      <AppText variant="caption" tone="tertiary">
+      <AppText variant="caption" tone="tertiary" numberOfLines={1}>
         {label}
       </AppText>
     </View>
@@ -95,73 +93,64 @@ function LearningCourseCard({ row, onContinue }: LearningCourseCardProps) {
   const status = String(lecture.status || "").trim();
   const description = String(lecture.description || "").trim();
   const currentChapter = String(lecture.current_chapter || "").trim();
-  const nextChapter = String(lecture.next_chapter || "").trim();
   const progress = clampProgress(lecture.progress);
   const meta = [category, status].filter(Boolean).join(" · ");
   const coverUri = getLectureCoverUri(lecture);
+  const metaLine = [
+    `${getBooksCount(row)} 本`,
+    `${formatHours(lecture.study_hours)} 小时`,
+    currentChapter ? `当前：${currentChapter}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
     <AppCard style={styles.courseCard} onPress={onContinue}>
-      {coverUri ? (
-        <CoverImage
-          uri={coverUri}
-          fallbackIcon="book-open"
-          style={styles.courseCover}
-          accessibilityLabel={getLectureTitle(row)}
-        />
-      ) : null}
-      <View style={styles.courseHeader}>
-        <View style={styles.titleBlock}>
-          <AppText variant="heading">{getLectureTitle(row)}</AppText>
-          {meta ? (
-            <AppText variant="caption" tone="tertiary">
-              {meta}
+      <View style={styles.courseRow}>
+        {coverUri ? (
+          <CoverImage
+            uri={coverUri}
+            fallbackIcon="book-open"
+            style={styles.courseCover}
+            accessibilityLabel={getLectureTitle(row)}
+          />
+        ) : (
+          <View style={styles.courseCoverFallback}>
+            <Feather name="book-open" size={22} color={colors.textTertiary} />
+          </View>
+        )}
+        <View style={styles.courseBody}>
+          <View style={styles.courseHeader}>
+            <View style={styles.titleBlock}>
+              <AppText variant="heading" numberOfLines={1}>
+                {getLectureTitle(row)}
+              </AppText>
+              {meta ? (
+                <AppText variant="caption" tone="tertiary" numberOfLines={1}>
+                  {meta}
+                </AppText>
+              ) : null}
+            </View>
+            <AppBadge label="已加入" tone="solid" />
+          </View>
+
+          {description ? (
+            <AppText variant="caption" tone="secondary" numberOfLines={2}>
+              {description}
+            </AppText>
+          ) : null}
+
+          <View style={styles.progressRow}>
+            <ProgressBar value={progress} style={styles.progressFill} />
+            <AppText variant="label">{progress}%</AppText>
+          </View>
+
+          {metaLine ? (
+            <AppText variant="caption" tone="tertiary" numberOfLines={1}>
+              {metaLine}
             </AppText>
           ) : null}
         </View>
-        <AppBadge label="已加入" tone="solid" />
-      </View>
-
-      {description ? (
-        <AppText tone="secondary" numberOfLines={2}>
-          {description}
-        </AppText>
-      ) : null}
-
-      <View style={styles.progressBlock}>
-        <View style={styles.progressLabelRow}>
-          <AppText variant="caption" tone="tertiary">
-            学习进度
-          </AppText>
-          <AppText variant="label">{progress}%</AppText>
-        </View>
-        <ProgressBar value={progress} />
-      </View>
-
-      <View style={styles.courseMeta}>
-        <View style={styles.metaItem}>
-          <Feather name="book" size={14} color={colors.textTertiary} />
-          <AppText variant="bodyStrong">{getBooksCount(row)} 本</AppText>
-        </View>
-        <View style={styles.metaDivider} />
-        <View style={styles.metaItem}>
-          <Feather name="clock" size={14} color={colors.textTertiary} />
-          <AppText variant="bodyStrong">{formatHours(lecture.study_hours)} 小时</AppText>
-        </View>
-      </View>
-
-      {currentChapter ? (
-        <AppText variant="caption" tone="tertiary">
-          当前章节：{currentChapter}
-          {nextChapter ? ` · 下一章：${nextChapter}` : ""}
-        </AppText>
-      ) : null}
-
-      <View style={styles.continueRow}>
-        <AppText variant="label" tone="secondary">
-          继续学习
-        </AppText>
-        <Feather name="arrow-right" size={16} color={colors.text} />
       </View>
     </AppCard>
   );
@@ -170,14 +159,13 @@ function LearningCourseCard({ row, onContinue }: LearningCourseCardProps) {
 function DashboardSkeleton() {
   return (
     <View style={styles.skeletonWrap}>
-      <Skeleton height={132} borderRadius={radius.xl} />
       <View style={styles.metrics}>
-        <Skeleton height={92} borderRadius={radius.lg} style={styles.skeletonFlex} />
-        <Skeleton height={92} borderRadius={radius.lg} style={styles.skeletonFlex} />
-        <Skeleton height={92} borderRadius={radius.lg} style={styles.skeletonFlex} />
+        <Skeleton height={84} borderRadius={radius.lg} style={styles.skeletonFlex} />
+        <Skeleton height={84} borderRadius={radius.lg} style={styles.skeletonFlex} />
+        <Skeleton height={84} borderRadius={radius.lg} style={styles.skeletonFlex} />
       </View>
-      <Skeleton height={200} borderRadius={radius.lg} />
-      <Skeleton height={200} borderRadius={radius.lg} />
+      <Skeleton height={120} borderRadius={radius.lg} />
+      <Skeleton height={120} borderRadius={radius.lg} />
     </View>
   );
 }
@@ -221,7 +209,7 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
     [navigation],
   );
 
-  if (loading) {
+  if (loading && !dashboard) {
     return (
       <Screen scroll tabBarSpace>
         <DashboardSkeleton />
@@ -260,46 +248,32 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
   }
 
   return (
-    <Screen scroll tabBarSpace>
+    <Screen scroll tabBarSpace onRefresh={() => void loadDashboard()} refreshing={loading}>
       <FadeIn index={0}>
-        <View style={styles.hero}>
-          <View style={styles.heroText}>
-            <AppText variant="caption" tone="inverseMuted">
-              欢迎回来{username ? `，${username}` : ""}
-            </AppText>
-            <AppText variant="title" tone="inverse" style={styles.heroTitle}>
-              继续你的学习
-            </AppText>
-            <AppText variant="caption" tone="inverseMuted" style={styles.heroSub}>
-              已加入 {dashboard?.total_lectures ?? rows.length} 门课程 · 保持节奏
-            </AppText>
-          </View>
-          <View style={styles.heroMark}>
-            <AppText style={styles.heroMarkText}>N</AppText>
-          </View>
+        <View style={styles.metrics}>
+          <MetricCard
+            icon="layers"
+            label="已加入课程"
+            value={`${dashboard?.total_lectures ?? rows.length}`}
+          />
+          <MetricCard icon="book-open" label="教材总数" value={`${dashboard?.total_books ?? 0}`} />
+          <MetricCard
+            icon="clock"
+            label="学习时长"
+            value={formatHours(dashboard?.total_study_hours)}
+            unit="h"
+          />
         </View>
       </FadeIn>
 
       <FadeIn index={1}>
-        <View style={styles.metrics}>
-          <MetricCard icon="layers" label="已加入课程" value={`${dashboard?.total_lectures ?? rows.length}`} />
-          <MetricCard icon="book-open" label="教材总数" value={`${dashboard?.total_books ?? 0}`} />
-          <MetricCard icon="clock" label="学习时长" value={formatHours(dashboard?.total_study_hours)} unit="h" />
-        </View>
-      </FadeIn>
-
-      <FadeIn index={2}>
-        <SectionHeader
-          title="继续学习"
-          subtitle={`共 ${rows.length} 门课程`}
-          trailing={<AppButton title="刷新" variant="ghost" size="sm" onPress={() => void loadDashboard()} />}
-        />
+        <SectionHeader title="继续学习" subtitle={`欢迎回来${username ? `，${username}` : ""} · 共 ${rows.length} 门课程`} />
       </FadeIn>
 
       {rows.map((row, i) => {
         const lectureId = String(row.lecture?.id || "").trim();
         return (
-          <FadeIn key={lectureId || getLectureTitle(row)} index={3 + i}>
+          <FadeIn key={lectureId || getLectureTitle(row)} index={2 + i}>
             <LearningCourseCard row={row} onContinue={() => openCourseDetail(row)} />
           </FadeIn>
         );
@@ -309,44 +283,6 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
 }
 
 const styles = StyleSheet.create({
-  titleBlock: {
-    flex: 1,
-    gap: spacing.xs,
-  },
-  hero: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: colors.surfaceInverse,
-    borderRadius: radius.xl,
-    padding: spacing.xl,
-    ...shadow.lg,
-  },
-  heroText: {
-    flex: 1,
-    gap: spacing.xs,
-  },
-  heroTitle: {
-    marginTop: 2,
-  },
-  heroSub: {
-    marginTop: 2,
-  },
-  heroMark: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: "rgba(255,255,255,0.1)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.16)",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  heroMarkText: {
-    color: colors.textInverse,
-    fontSize: 26,
-    fontWeight: "800",
-    includeFontPadding: false,
-  },
   metrics: {
     flexDirection: "row",
     gap: spacing.sm,
@@ -359,7 +295,6 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     padding: spacing.md,
     gap: spacing.xs,
-    ...shadow.xs,
   },
   metricValueRow: {
     flexDirection: "row",
@@ -367,7 +302,7 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   metricValue: {
-    fontSize: 24,
+    fontSize: 22,
     fontWeight: "800",
     color: colors.text,
     letterSpacing: -0.5,
@@ -377,63 +312,52 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   courseCard: {
+    padding: spacing.md,
+  },
+  courseRow: {
+    flexDirection: "row",
     gap: spacing.md,
   },
   courseCover: {
-    width: "100%",
-    aspectRatio: 16 / 9,
+    width: 88,
+    height: 64,
     borderRadius: radius.md,
+  },
+  courseCoverFallback: {
+    width: 88,
+    height: 64,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceMuted,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  courseBody: {
+    flex: 1,
+    gap: spacing.xs,
+    justifyContent: "center",
   },
   courseHeader: {
     alignItems: "flex-start",
     flexDirection: "row",
-    gap: spacing.md,
-  },
-  progressBlock: {
     gap: spacing.sm,
   },
-  progressLabelRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  courseMeta: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: colors.surfaceMuted,
-    borderRadius: radius.md,
-    padding: spacing.md,
-  },
-  metaItem: {
+  titleBlock: {
     flex: 1,
-    flexDirection: "row",
-    gap: spacing.sm,
-    alignItems: "center",
-    justifyContent: "center",
+    gap: 2,
   },
-  metaDivider: {
-    width: 1,
-    alignSelf: "stretch",
-    backgroundColor: colors.border,
-  },
-  continueRow: {
+  progressRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
     gap: spacing.sm,
-    paddingTop: spacing.xs,
-    borderTopWidth: 1,
-    borderTopColor: colors.borderFaint,
-    marginTop: spacing.xs,
-    paddingVertical: spacing.sm,
+    marginTop: 2,
+  },
+  progressFill: {
+    flex: 1,
   },
   skeletonWrap: {
     gap: spacing.lg,
   },
   skeletonFlex: {
-    flex: 1,
-  },
-  metaText: {
     flex: 1,
   },
 });

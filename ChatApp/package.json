@@ -9,7 +9,8 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
-    "test:unit": "tsc -p tsconfig.test.json && node --test .test-build/src/services/__tests__/*.test.js"
+    "test:unit": "tsc -p tsconfig.test.json && node --test .test-build/src/services/__tests__/*.test.js .test-build/src/features/books/utils/__tests__/*.test.js",
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.1.1",
@@ -42,6 +43,13 @@
     "@types/react": "^19.2.0",
     "@types/three": "^0.166.0",
     "babel-preset-expo": "~55.0.19",
+    "patch-package": "^8.0.1",
     "typescript": "^5.3.3"
+  },
+  "overrides": {
+    "expo-file-system": "~55.0.22",
+    "expo-asset": "~55.0.17",
+    "expo-constants": "~55.0.16",
+    "expo-font": "~55.0.8"
   }
 }

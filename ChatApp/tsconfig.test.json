@@ -20,6 +20,8 @@
     "src/services/settingsAdminService.ts",
     "src/services/types.ts",
     "src/config/env.ts",
-    "src/services/__tests__/**/*.ts"
+    "src/features/books/utils/parseBookContent.ts",
+    "src/services/__tests__/**/*.ts",
+    "src/features/books/utils/__tests__/**/*.ts"
   ]
 }
