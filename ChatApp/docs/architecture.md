@@ -1,16 +1,18 @@
-# ChatApp 架构
+# 架构边界
 
-应用按“稳定底座 + 纵向功能切片”组织。
+ChatApp 是一个 Expo + React Native 移动端学习客户端。目标只有一个：让后端数据流、状态和用户路径容易追踪。
+
+## 目录职责
 
 ```txt
 src/
 ├── app/          启动入口和全局 providers
-├── config/       环境变量和运行时配置
-├── design/       设计 tokens 与基础组件
-├── navigation/   根导航、Tab、路由类型
-├── services/     API Client 和后端 service 模块
-├── features/     session、dashboard、courses、books、chat、admin、settings
-├── hooks/        共享 React hooks
+├── config/       运行时配置和应用信息
+├── design/       tokens 与基础组件
+├── navigation/   Stack、Tab 和路由类型
+├── services/     API client 与后端 service 模块
+├── features/     面向用户的纵向功能
+├── hooks/        共享 hooks
 └── utils/        纯工具函数
 ```
 
@@ -20,47 +22,24 @@ src/
 features -> services -> apiClient
 features -> design
 navigation -> features
-app -> navigation/providers
+app -> providers/navigation
 ```
 
-Screen 不直接调用 `fetch`。后端路径、Header、错误处理等细节留在 `src/services`。
+硬规则：
 
-## 初始功能切片
+- Screen / Component 不直接调用 `fetch`。
+- 后端路径、header、JSON 解析、stream 解析和错误处理属于 `src/services/*`。
+- `src/services/apiClient.ts` 负责 base URL 拼接和共享 header。
+- `SessionProvider` 负责 username 持久化，并把身份同步给两个 API client。
+- 后端字段不稳定时，类型保留 `[key: string]: unknown`，不要脑补确定字段。
+- 各 service 的具体职责见 `backend-data-flow.md`。
 
-1. 项目底座
-2. 用户设置与 frontend context
-3. 课程库与加入学习
-4. 学习看板
-5. 教材列表与阅读
-6. AI 问答底座：流式优先设计，非流式兜底
-7. 管理员内容流：创建教材、上传文件、触发教材提炼（粗读/精读生成）
-8. 向量化监控
+## 命名规则
 
-## 运行时身份
+新开发使用 `Lecture` / `Book`。旧的 `course` / `material` 只允许出现在历史文档或既有用户文案里。
 
-0.1.0 不启用运行时身份。App 可在没有 username、本地 session 或后端服务的情况下启动。
+用户可见区域统一称为：Session、Dashboard、Courses、Books、Chat、Admin、Feed、Settings。
 
-0.2.0 开始，在后端提供正式移动端登录/token 契约前，移动端使用显式 username。届时 `SessionProvider` 保存当前 username，并传给 `apiClient`，由 `apiClient` 统一注入：
+## UI/UX 顺序
 
-```txt
-X-Nexora-Username: <username>
-```
-
-## AI 问答传输层
-
-ChatApp 最终应接近 Nexora 原版的流式体验，但移动端不能直接假设浏览器流式代码可复用。
-
-0.6.0 先建立传输层边界：
-
-```txt
-Chat UI -> ChatTransport -> services/apiClient
-```
-
-推荐保留两条实现：
-
-```txt
-NonStreamingChatTransport  当前可运行兜底
-StreamingChatTransport     0.6.1 验证后接入
-```
-
-这样流式通道验证失败时，AI 问答仍可用；流式接入成功后，也不需要重写 Chat UI。
+UI/UX 放最后。先稳定后端契约、service、状态和测试，再统一视觉层；做 UI/UX 时不得绕过 service 边界。
