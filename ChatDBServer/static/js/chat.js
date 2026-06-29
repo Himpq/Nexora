@@ -1108,6 +1108,12 @@ let pendingAvatarDataUrl = '';
 let adminUsersCache = [];
 let adminSelectedUserId = null;
 let adminUserFilterKeyword = '';
+let adminUserTokenSelectorState = {
+    users: [],
+    filteredUsers: [],
+    activeIndex: 0,
+    visible: false,
+};
 let adminSystemSettingsState = null;
 let adminSystemCustomControlsBound = false;
 let adminSystemSelectMenuSeq = 0;
@@ -2324,7 +2330,17 @@ function findStrongFenceEnd(text, start) {
     return -1;
 }
 
-function shouldNormalizeStrongPunctuationBoundary(body, nextChar) {
+function isStrongPunctuationBoundaryAdjacentChar(value) {
+    const char = String(value || '');
+
+    if (!char) {
+        return false;
+    }
+
+    return /[\p{L}\p{N}_\p{P}\p{S}]/u.test(char);
+}
+
+function hasStrongPunctuationEdge(body) {
     const src = String(body || '');
 
     if (!src || /^\s|\s$/.test(src)) {
@@ -2332,13 +2348,26 @@ function shouldNormalizeStrongPunctuationBoundary(body, nextChar) {
     }
 
     const chars = Array.from(src);
+    const firstChar = chars.length ? chars[0] : '';
     const lastChar = chars.length ? chars[chars.length - 1] : '';
 
-    if (!lastChar || !/\p{P}/u.test(lastChar)) {
+    return /\p{P}/u.test(firstChar) || /\p{P}/u.test(lastChar);
+}
+
+/**
+ * 修正 marked 对中文正文相邻全角标点粗体的边界误判。
+ */
+function shouldNormalizeStrongPunctuationBoundary(body, previousChar, nextChar) {
+    if (!hasStrongPunctuationEdge(body)) {
         return false;
     }
 
-    return /[\p{L}\p{N}_]/u.test(String(nextChar || ''));
+    if (!previousChar && !nextChar) {
+        return true;
+    }
+
+    return isStrongPunctuationBoundaryAdjacentChar(previousChar)
+        || isStrongPunctuationBoundaryAdjacentChar(nextChar);
 }
 
 function normalizeStrongPunctuationBoundariesInLine(line) {
@@ -2369,9 +2398,10 @@ function normalizeStrongPunctuationBoundariesInLine(line) {
 
             if (end > i) {
                 const body = src.slice(i + 2, end);
+                const previous = src[i - 1] || '';
                 const next = src[end + 2] || '';
 
-                if (shouldNormalizeStrongPunctuationBoundary(body, next)) {
+                if (shouldNormalizeStrongPunctuationBoundary(body, previous, next)) {
                     out += `<strong>${escapeHtml(body)}</strong>`;
                     i = end + 2;
                     continue;
@@ -3162,6 +3192,84 @@ function renderKnowledgeReferenceTag(payload) {
     ].join('');
 }
 
+function normalizeFileReferencePath(fileRef) {
+    const raw = String(fileRef || '').trim().replace(/\\/g, '/');
+
+    if (/^\/[^/]+\/files\/.+/.test(raw)) {
+        return raw.slice(1);
+    }
+
+    return raw;
+}
+
+function clipFileReferenceLabel(text, limit = 28) {
+    const raw = String(text || '').replace(/\\/g, '/').trim();
+    const filename = raw.split('/').filter(Boolean).pop() || raw;
+    const value = filename.replace(/\s+/g, ' ').trim();
+
+    if (value.length <= limit) {
+        return value;
+    }
+
+    return `${value.slice(0, Math.max(0, limit - 1)).trim()}...`;
+}
+
+function readFileReferenceExtension(fileRef) {
+    const extMatch = String(fileRef || '').trim().toLowerCase().match(/\.([a-z0-9]+)(?:[?#].*)?$/);
+    return extMatch ? extMatch[1] : '';
+}
+
+function resolveFileReferenceIconClass(fileRef) {
+    const key = readFileReferenceExtension(fileRef);
+
+    if (/^(md|markdown|txt|text|log|json|yaml|yml|xml|csv)$/i.test(key)) {
+        return 'fa-regular fa-file-lines';
+    }
+
+    if (/^(doc|docx|word)$/i.test(key)) {
+        return 'fa-regular fa-file-word';
+    }
+
+    if (/^(pdf)$/i.test(key)) {
+        return 'fa-regular fa-file-pdf';
+    }
+
+    if (/^(sql|db|sqlite)$/i.test(key)) {
+        return 'fa-solid fa-database';
+    }
+
+    return 'fa-regular fa-file';
+}
+
+function renderFileReferenceTag(payload) {
+    const fileRef = normalizeFileReferencePath(payload);
+
+    if (!fileRef) {
+        return escapeHtml(`[file]${String(payload || '')}[/file]`);
+    }
+
+    const label = clipFileReferenceLabel(fileRef);
+    const iconClass = resolveFileReferenceIconClass(fileRef);
+
+    return [
+        '<span class="file-reference" data-file-ref="',
+        escapeHtml(fileRef),
+        '" title="',
+        escapeHtml(`文件：${fileRef}`),
+        '"><span class="file-reference-main"><span class="file-reference-icon"><i class="',
+        escapeHtml(iconClass),
+        '" aria-hidden="true"></i></span><span class="file-reference-text"><span class="file-reference-name">',
+        escapeHtml(label),
+        '</span><span class="file-reference-meta">',
+        escapeHtml('读取中'),
+        '</span></span><button type="button" class="file-reference-download" title="下载文件" data-file-ref="',
+        escapeHtml(fileRef),
+        '"><i class="fa-solid fa-download" aria-hidden="true"></i></button></span>',
+        '<span class="file-reference-summary" hidden></span>',
+        '</span>'
+    ].join('');
+}
+
 function protectKnowledgeReferencesInMarkdown(text) {
     const refs = [];
     const protectedText = String(text || '').replace(/\[kb\]([\s\S]*?)\[\/kb\]/g, (_match, payload) => {
@@ -3176,11 +3284,35 @@ function protectKnowledgeReferencesInMarkdown(text) {
     };
 }
 
+function protectFileReferencesInMarkdown(text) {
+    const refs = [];
+    const protectedText = String(text || '').replace(/\[file\]([\s\S]*?)\[\/file\]/g, (_match, payload) => {
+        const index = refs.length;
+        refs.push(renderFileReferenceTag(payload));
+        return `@@NEXORA_FILE_REF_${index}@@`;
+    });
+
+    return {
+        text: protectedText,
+        refs
+    };
+}
+
 function restoreKnowledgeReferencesInHtml(html, refs = []) {
     let output = String(html || '');
 
     refs.forEach((refHtml, index) => {
         output = output.split(`@@NEXORA_KB_REF_${index}@@`).join(refHtml);
+    });
+
+    return output;
+}
+
+function restoreFileReferencesInHtml(html, refs = []) {
+    let output = String(html || '');
+
+    refs.forEach((refHtml, index) => {
+        output = output.split(`@@NEXORA_FILE_REF_${index}@@`).join(refHtml);
     });
 
     return output;
@@ -3203,10 +3335,12 @@ function renderMarkdownWithNewTabLinks(text, options = {}) {
         ? wrapBareLatexFragmentsOutsideMath(normalizedText)
         : normalizedText;
     const protectedKnowledgeReferences = protectKnowledgeReferencesInMarkdown(withBareLatexWrapped);
-    const shielded = protectMathSegmentsForMarkdown(protectedKnowledgeReferences.text);
+    const protectedFileReferences = protectFileReferencesInMarkdown(protectedKnowledgeReferences.text);
+    const shielded = protectMathSegmentsForMarkdown(protectedFileReferences.text);
     const html = marked.parse(String(shielded.text || ''), { gfm: true, breaks: opts.breaks !== false });
     const restoredHtml = restoreMathSegmentsFromHtml(html, shielded.map);
-    const restoredKnowledgeHtml = restoreKnowledgeReferencesInHtml(restoredHtml, protectedKnowledgeReferences.refs);
+    const restoredFileHtml = restoreFileReferencesInHtml(restoredHtml, protectedFileReferences.refs);
+    const restoredKnowledgeHtml = restoreKnowledgeReferencesInHtml(restoredFileHtml, protectedKnowledgeReferences.refs);
     captureLatexRenderDebug('chat_markdown', raw, withBareLatexWrapped, restoredKnowledgeHtml);
     return rewriteHtmlFragmentLinksToNewTab(restoredKnowledgeHtml);
 }
@@ -4847,18 +4981,27 @@ function handleBackdropStackingChange(backdrop) {
     syncModalBackdropStacking();
 }
 
+function registerModalBackdropStacking(backdrop) {
+    // 动态创建的弹窗必须进入统一弹窗栈，避免被已打开的主设置窗体压住。
+
+    if (!backdrop || backdrop.dataset.modalStackBound === '1') return;
+
+    backdrop.dataset.modalStackBound = '1';
+
+    const observer = new MutationObserver(() => {
+        handleBackdropStackingChange(backdrop);
+    });
+    observer.observe(backdrop, { attributes: true, attributeFilter: ['class'] });
+
+    if (backdrop.classList.contains('active')) {
+        handleBackdropStackingChange(backdrop);
+    }
+}
+
 function initModalBackdropStacking() {
     const allBackdrops = Array.from(document.querySelectorAll('.modal-backdrop'));
     allBackdrops.forEach((backdrop) => {
-        if (!backdrop || backdrop.dataset.modalStackBound === '1') return;
-        backdrop.dataset.modalStackBound = '1';
-        const observer = new MutationObserver(() => {
-            handleBackdropStackingChange(backdrop);
-        });
-        observer.observe(backdrop, { attributes: true, attributeFilter: ['class'] });
-        if (backdrop.classList.contains('active')) {
-            handleBackdropStackingChange(backdrop);
-        }
+        registerModalBackdropStacking(backdrop);
     });
     syncModalBackdropStacking();
 }
@@ -6588,6 +6731,221 @@ async function loadCloudFilePreview(fileRef, previewEl) {
         previewEl.textContent = '读取失败';
     }
 }
+
+const fileReferenceMetaCache = new Map();
+let fileReferenceHydratorInstalled = false;
+let fileReferenceHydratorObserver = null;
+
+function isTextFileReference(fileRef) {
+    const ext = readFileReferenceExtension(fileRef);
+    return /^(txt|md|markdown|py|js|ts|tsx|jsx|java|go|rs|cs|php|rb|swift|kt|kts|scala|sh|bash|zsh|bat|ps1|json|yaml|yml|toml|ini|cfg|xml|html|css|sql|csv|log)$/i.test(ext);
+}
+
+function summarizeFileReferenceText(content, limit = 96) {
+    const text = String(content || '').replace(/\s+/g, ' ').trim();
+
+    if (!text) {
+        return '';
+    }
+
+    if (text.length <= limit) {
+        return text;
+    }
+
+    return `${text.slice(0, Math.max(0, limit - 1)).trim()}...`;
+}
+
+function chooseCloudFileReferenceEntry(fileRef, files) {
+    const ref = normalizeFileReferencePath(fileRef);
+    const normalizedRef = ref.toLowerCase();
+    const arr = Array.isArray(files) ? files : [];
+
+    for (const item of arr) {
+        const alias = String(item && item.alias ? item.alias : '').trim();
+        const sandboxPath = normalizeFileReferencePath(item && item.sandbox_path ? item.sandbox_path : '');
+        const originalName = String(item && item.original_name ? item.original_name : '').trim();
+
+        if (
+            alias.toLowerCase() === normalizedRef
+            || sandboxPath.toLowerCase() === normalizedRef
+            || originalName.toLowerCase() === normalizedRef
+        ) {
+            return item;
+        }
+    }
+
+    return null;
+}
+
+async function resolveFileReferenceMeta(fileRef) {
+    const ref = normalizeFileReferencePath(fileRef);
+
+    if (!ref) {
+        throw new Error('file_ref is empty');
+    }
+
+    if (fileReferenceMetaCache.has(ref)) {
+        return fileReferenceMetaCache.get(ref);
+    }
+
+    const promise = (async () => {
+        const listUrl = `/api/files/list?q=${encodeURIComponent(ref)}&limit=20`;
+        const listRes = await fetch(listUrl, { cache: 'no-store' });
+        const listData = await listRes.json();
+
+        if (!listData || !listData.success) {
+            throw new Error((listData && listData.message) ? listData.message : '文件信息读取失败');
+        }
+
+        const entry = chooseCloudFileReferenceEntry(ref, listData.files || []);
+
+        if (!entry) {
+            throw new Error('文件不存在');
+        }
+
+        const sandboxPath = normalizeFileReferencePath(entry.sandbox_path || ref);
+        const alias = String(entry.alias || '').trim();
+        const originalName = String(entry.original_name || '').trim();
+        const displayName = alias || originalName || clipFileReferenceLabel(sandboxPath);
+        const sizeBytes = Number(entry.size || 0);
+        const ext = readFileReferenceExtension(displayName || sandboxPath);
+        let summary = '';
+
+        if (isTextFileReference(displayName || sandboxPath)) {
+            const readRes = await fetch(`/api/files/read?file_ref=${encodeURIComponent(sandboxPath || ref)}`, { cache: 'no-store' });
+            const readData = await readRes.json();
+
+            if (readData && readData.success) {
+                summary = summarizeFileReferenceText(readData.content || '');
+            }
+        }
+
+        return {
+            fileRef: sandboxPath || ref,
+            displayName,
+            sizeText: formatFileSize(sizeBytes),
+            typeText: ext ? ext.toUpperCase() : 'FILE',
+            summary
+        };
+    })();
+
+    fileReferenceMetaCache.set(ref, promise);
+    return promise;
+}
+
+function applyFileReferenceMeta(node, meta) {
+    if (!node || !meta) return;
+
+    const fileRef = normalizeFileReferencePath(meta.fileRef || node.dataset.fileRef || '');
+    const nameEl = node.querySelector('.file-reference-name');
+    const metaEl = node.querySelector('.file-reference-meta');
+    const summaryEl = node.querySelector('.file-reference-summary');
+    const downloadEl = node.querySelector('.file-reference-download');
+
+    node.dataset.fileRef = fileRef;
+    node.title = [
+        `文件：${fileRef}`,
+        `大小：${meta.sizeText || '未知'}`,
+        meta.summary ? `摘要：${meta.summary}` : ''
+    ].filter(Boolean).join('\n');
+
+    if (nameEl) {
+        nameEl.textContent = meta.displayName || clipFileReferenceLabel(fileRef);
+    }
+
+    if (metaEl) {
+        metaEl.textContent = [meta.sizeText, meta.typeText].filter(Boolean).join(' · ');
+    }
+
+    if (downloadEl) {
+        downloadEl.dataset.fileRef = fileRef;
+    }
+
+    if (summaryEl) {
+        summaryEl.textContent = meta.summary || '';
+        summaryEl.hidden = !meta.summary;
+    }
+
+    node.dataset.hydrated = '1';
+}
+
+function applyFileReferenceError(node, error) {
+    if (!node) return;
+
+    const metaEl = node.querySelector('.file-reference-meta');
+
+    if (metaEl) {
+        metaEl.textContent = error && error.message ? error.message : '文件信息读取失败';
+    }
+
+    node.dataset.hydrated = 'error';
+}
+
+function hydrateFileReferences(root = document) {
+    const scope = root && typeof root.querySelectorAll === 'function' ? root : document;
+    const nodes = Array.from(scope.querySelectorAll('.file-reference[data-file-ref]'));
+
+    nodes.forEach((node) => {
+        if (!node || node.dataset.hydrated === '1' || node.dataset.hydrated === 'loading') {
+            return;
+        }
+
+        const fileRef = normalizeFileReferencePath(node.dataset.fileRef || '');
+
+        if (!fileRef) {
+            applyFileReferenceError(node, new Error('文件路径为空'));
+            return;
+        }
+
+        node.dataset.hydrated = 'loading';
+        resolveFileReferenceMeta(fileRef)
+            .then((meta) => applyFileReferenceMeta(node, meta))
+            .catch((error) => applyFileReferenceError(node, error));
+    });
+}
+
+function installFileReferenceHydrator() {
+    if (fileReferenceHydratorInstalled) {
+        return;
+    }
+
+    const start = () => {
+        if (!document.body || fileReferenceHydratorInstalled) {
+            return;
+        }
+
+        fileReferenceHydratorInstalled = true;
+        hydrateFileReferences(document);
+        fileReferenceHydratorObserver = new MutationObserver((mutations) => {
+            mutations.forEach((mutation) => {
+                mutation.addedNodes.forEach((node) => {
+                    if (!(node instanceof Element)) {
+                        return;
+                    }
+
+                    if (node.matches && node.matches('.file-reference[data-file-ref]')) {
+                        hydrateFileReferences(node.parentElement || document);
+                        return;
+                    }
+
+                    hydrateFileReferences(node);
+                });
+            });
+        });
+        fileReferenceHydratorObserver.observe(document.body, {
+            childList: true,
+            subtree: true
+        });
+    };
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', start, { once: true });
+    } else {
+        start();
+    }
+}
+
+installFileReferenceHydrator();
 
 function attachCloudFileAsAttachment(fileRef, sandboxPath, aliasName = '', sizeBytes = 0) {
     const ref = String(fileRef || '').trim();
@@ -8566,6 +8924,20 @@ window.__nexoraJumpToNoteAnchor = async function(payload = {}) {
 document.addEventListener('click', async (event) => {
     const target = event.target;
     if (!(target instanceof Element)) return;
+
+    const fileDownload = target.closest('.file-reference-download');
+    if (fileDownload) {
+        event.preventDefault();
+        event.stopPropagation();
+
+        const fileRef = normalizeFileReferencePath(fileDownload.getAttribute('data-file-ref') || '');
+
+        if (fileRef) {
+            downloadCloudFile(fileRef);
+        }
+
+        return;
+    }
 
     const ref = target.closest('.kb-reference');
     if (!ref) return;
@@ -12402,6 +12774,8 @@ function initUI() {
             await saveAdminPublicApiGlobalSettings();
         });
     }
+
+    initAdminUserTokenStatsControls();
 
     const publicApiModal = document.getElementById('adminPublicApiKeyModal');
     if (publicApiModal) {
@@ -16743,9 +17117,26 @@ function loadMessageDraftFromStorage() {
     }
 }
 
+function setToolsModeMenuClipState(open) {
+    const dropdown = els.toolsModeDropdown;
+    if (!dropdown) return;
+
+    const container = dropdown.closest('.input-container');
+    const toolsInner = dropdown.closest('.input-options-tools-inner');
+
+    if (container) {
+        container.classList.toggle('tools-mode-menu-open', !!open);
+    }
+
+    if (toolsInner) {
+        toolsInner.classList.toggle('tools-mode-menu-open', !!open);
+    }
+}
+
 function closeToolsModeDropdown() {
     if (!els.toolsModeDropdown) return;
     els.toolsModeDropdown.classList.remove('open');
+    setToolsModeMenuClipState(false);
     if (els.toolsModeTrigger) els.toolsModeTrigger.setAttribute('aria-expanded', 'false');
     if (els.toolsModeMenu) {
         els.toolsModeMenu.style.position = '';
@@ -16890,6 +17281,7 @@ function bindToolsModeDropdown() {
         closeToolsModeDropdown();
         if (willOpen) {
             els.toolsModeDropdown.classList.add('open');
+            setToolsModeMenuClipState(true);
             els.toolsModeTrigger.setAttribute('aria-expanded', 'true');
             requestAnimationFrame(() => positionToolsModeMenuForMobile());
         }
@@ -24128,6 +24520,7 @@ async function loadKnowledge(cid) {
         const shortData = await resShort.json();
         const metaData = await resMeta.json();
         knowledgeMetaCache = (metaData && metaData.basis_knowledge) ? metaData.basis_knowledge : {};
+        knowledgeVectorizationEnabled = !!(metaData && metaData.vectorization_enabled);
 
         if (basisData.success) {
             basisKnowledgeListCache = Array.isArray(basisData.knowledge) ? [...basisData.knowledge] : [];
@@ -24270,10 +24663,8 @@ function renderKnowledgeList(container, items, type) {
             div.appendChild(progress);
 
             const meta = knowledgeMetaCache[rawTitle] || {};
-            const updatedAt = Number(meta.updated_at || 0);
-            const vectorUpdatedAt = Number(meta.vector_updated_at || 0);
             const vectorExists = (typeof meta.vector_exists === 'boolean') ? meta.vector_exists : true;
-            const needVectorRefresh = (updatedAt > 0 && vectorUpdatedAt < updatedAt) || !vectorExists;
+            const needVectorRefresh = knowledgeVectorizationEnabled && meta.needs_vector_refresh === true;
             if (needVectorRefresh) {
                 div.classList.add('needs-vector');
                 const vectorBtn = document.createElement('button');
@@ -24489,6 +24880,7 @@ let easyMDE = null;
 let originalHeaderState = null;
 let currentViewingKnowledge = null;
 let knowledgeMetaCache = {};
+let knowledgeVectorizationEnabled = false;
 let bulkVectorizeRunning = false;
 let pendingHighlightData = null;
 let knowledgeEditorScrollState = {
@@ -25756,6 +26148,13 @@ async function viewKnowledge(title, options = {}) {
         <button class="btn-icon knowledge-action" id="btnSaveKnowledge" onclick="saveKnowledge('${title.replace(/'/g, "\\'")}')" title="保存">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
         </button>
+        <button class="btn-icon knowledge-action" id="exportKnowledgeBtn" onclick="exportKnowledgeToWord('${title.replace(/'/g, "\\'")}')" title="导出 Word">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="17 8 12 3 7 8"></polyline>
+                <line x1="12" y1="3" x2="12" y2="15"></line>
+            </svg>
+        </button>
         <button class="btn-icon knowledge-action knowledge-action-danger" onclick="confirmDeleteKnowledge('${title.replace(/'/g, "\\'")}', 'basis')" title="删除">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
         </button>
@@ -25872,6 +26271,82 @@ async function viewKnowledge(title, options = {}) {
         }
     }, 150);
     _syncTurnIndicatorVisibility();
+}
+
+function parseKnowledgeWordFilename(disposition) {
+    const header = String(disposition || '').trim();
+    if (!header) return '';
+
+    const utf8Match = header.match(/filename\*=UTF-8''([^;]+)/i);
+    if (utf8Match && utf8Match[1]) {
+        try {
+            return decodeURIComponent(utf8Match[1].trim().replace(/^"|"$/g, ''));
+        } catch (_) {
+            return utf8Match[1].trim().replace(/^"|"$/g, '');
+        }
+    }
+
+    const filenameMatch = header.match(/filename="?([^";]+)"?/i);
+    return filenameMatch && filenameMatch[1] ? filenameMatch[1].trim() : '';
+}
+
+function buildKnowledgeWordFilename(title) {
+    const safeTitle = String(title || '知识库导出').trim().replace(/[\\/:*?"<>|]+/g, '_').slice(0, 80) || '知识库导出';
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    return `${safeTitle}_${ts}.docx`;
+}
+
+function downloadKnowledgeWordBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+}
+
+async function exportKnowledgeToWord(title) {
+    const resolvedTitle = String(title || currentViewingKnowledge || '').trim();
+    if (!resolvedTitle) {
+        showToast('未找到知识标题');
+        return;
+    }
+
+    try {
+        showToast('正在导出 Word');
+        const res = await fetch(`/api/knowledge/export/word?title=${encodeURIComponent(resolvedTitle)}`);
+        if (!res.ok) {
+            let message = '导出失败';
+            const contentType = String(res.headers.get('Content-Type') || '').toLowerCase();
+
+            if (contentType.includes('application/json')) {
+                const data = await res.json();
+                message = String((data && (data.message || data.error)) || message);
+            } else {
+                const text = await res.text();
+                if (text.trim()) {
+                    message = text.trim().slice(0, 160);
+                }
+            }
+
+            showToast(message);
+            return;
+        }
+
+        const blob = await res.blob();
+        if (!blob || blob.size <= 0) {
+            showToast('导出文件为空');
+            return;
+        }
+
+        const filename = parseKnowledgeWordFilename(res.headers.get('Content-Disposition')) || buildKnowledgeWordFilename(resolvedTitle);
+        downloadKnowledgeWordBlob(blob, filename);
+        showToast('Word 已导出');
+    } catch (e) {
+        showToast('导出失败: ' + String((e && e.message) || e || '未知错误'));
+    }
 }
 
 function highlightTextInPreview(text, meta = {}) {
@@ -33457,7 +33932,7 @@ function ensureAdminPublicApiDeleteModal() {
             </div>
             <div class="modal-body" style="padding: 16px 20px;">
                 <p id="adminPublicApiDeleteModalDesc" style="margin: 0 0 12px;">确认删除当前 API Key 吗？此操作不可撤销。</p>
-                <div class="modal-footer" style="margin-top: 14px; justify-content: flex-end; gap: 8px;">
+                <div class="modal-footer admin-public-api-delete-footer">
                     <button id="adminPublicApiDeleteModalCancelBtn" class="btn-cancel" type="button">取消</button>
                     <button id="adminPublicApiDeleteModalConfirmBtn" class="btn-danger-solid" type="button">删除</button>
                 </div>
@@ -33465,6 +33940,7 @@ function ensureAdminPublicApiDeleteModal() {
         </div>
     `;
     document.body.appendChild(modal);
+    registerModalBackdropStacking(modal);
     bindBackdropSafeClose(modal, closeAdminPublicApiDeleteModal);
     modal.querySelector('#adminPublicApiDeleteModalCloseBtn')?.addEventListener('click', closeAdminPublicApiDeleteModal);
     modal.querySelector('#adminPublicApiDeleteModalCancelBtn')?.addEventListener('click', closeAdminPublicApiDeleteModal);
@@ -33489,6 +33965,7 @@ function openAdminPublicApiDeleteModal(selected) {
         desc.textContent = `确认删除 “${keyName}” 吗？此操作不可撤销。`;
     }
     modal.classList.add('active');
+    handleBackdropStackingChange(modal);
 }
 
 async function confirmAdminPublicApiDeleteModal() {
@@ -34658,6 +35135,360 @@ async function loadAdminChromaStats() {
     }
 }
 
+function initAdminUserTokenStatsControls() {
+    const queryBtn = document.getElementById('adminUserTokenStatsQueryBtn');
+    const usernameInput = document.getElementById('adminUserTokenStatsUsernameInput');
+    const rangeSelect = document.getElementById('adminUserTokenStatsRangeSelect');
+    const selectorEl = document.getElementById('adminUserTokenStatsUserSelector');
+    const menuEl = document.getElementById('adminUserTokenStatsUserMenu');
+
+    if (queryBtn && queryBtn.dataset.bound !== '1') {
+        queryBtn.dataset.bound = '1';
+        queryBtn.addEventListener('click', () => {
+            hideAdminUserTokenUserMenu();
+            void queryAdminUserTokenStats();
+        });
+    }
+
+    if (usernameInput && usernameInput.dataset.bound !== '1') {
+        usernameInput.dataset.bound = '1';
+        usernameInput.addEventListener('focus', () => {
+            showAdminUserTokenUserMenu();
+        });
+        usernameInput.addEventListener('input', () => {
+            showAdminUserTokenUserMenu();
+        });
+        usernameInput.addEventListener('keydown', (event) => {
+            const hasMenuRows = adminUserTokenSelectorState.visible && adminUserTokenSelectorState.filteredUsers.length > 0;
+
+            if (hasMenuRows && event.key === 'ArrowDown') {
+                event.preventDefault();
+                adminUserTokenSelectorState.activeIndex = (adminUserTokenSelectorState.activeIndex + 1) % adminUserTokenSelectorState.filteredUsers.length;
+                renderAdminUserTokenUserMenu();
+                return;
+            }
+
+            if (hasMenuRows && event.key === 'ArrowUp') {
+                event.preventDefault();
+                adminUserTokenSelectorState.activeIndex = (adminUserTokenSelectorState.activeIndex - 1 + adminUserTokenSelectorState.filteredUsers.length) % adminUserTokenSelectorState.filteredUsers.length;
+                renderAdminUserTokenUserMenu();
+                return;
+            }
+
+            if (adminUserTokenSelectorState.visible && event.key === 'Escape') {
+                event.preventDefault();
+                hideAdminUserTokenUserMenu();
+                return;
+            }
+
+            if (hasMenuRows && event.key === 'Enter') {
+                const selected = adminUserTokenSelectorState.filteredUsers[adminUserTokenSelectorState.activeIndex];
+
+                if (selected) {
+                    event.preventDefault();
+                    selectAdminUserTokenUser(selected);
+                    return;
+                }
+            }
+
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                hideAdminUserTokenUserMenu();
+                void queryAdminUserTokenStats();
+            }
+        });
+    }
+
+    if (menuEl && menuEl.dataset.bound !== '1') {
+        menuEl.dataset.bound = '1';
+        menuEl.addEventListener('mousedown', (event) => {
+            const target = event.target;
+
+            if (!(target instanceof Element)) return;
+
+            const item = target.closest('[data-admin-user-token-index]');
+
+            if (!item) return;
+
+            event.preventDefault();
+            const index = Number(item.getAttribute('data-admin-user-token-index') || 0);
+            const user = adminUserTokenSelectorState.filteredUsers[index];
+
+            if (user) {
+                selectAdminUserTokenUser(user);
+            }
+        });
+    }
+
+    if (selectorEl && selectorEl.dataset.documentBound !== '1') {
+        selectorEl.dataset.documentBound = '1';
+        document.addEventListener('mousedown', (event) => {
+            const target = event.target;
+
+            if (!(target instanceof Node)) return;
+
+            if (!selectorEl.contains(target)) {
+                hideAdminUserTokenUserMenu();
+            }
+        });
+    }
+
+    if (rangeSelect && rangeSelect.dataset.bound !== '1') {
+        rangeSelect.dataset.bound = '1';
+        rangeSelect.addEventListener('change', () => {
+            const username = String(usernameInput?.value || '').trim();
+
+            if (username) {
+                void queryAdminUserTokenStats();
+            }
+        });
+    }
+}
+
+function getAdminUserTokenUserId(user) {
+    if (!user || typeof user !== 'object') return '';
+
+    return String(user.user_id || user.username || '').trim();
+}
+
+function getAdminUserTokenDisplayName(user) {
+    if (!user || typeof user !== 'object') return '';
+
+    return String(user.username || user.display_name || user.nickname || getAdminUserTokenUserId(user)).trim();
+}
+
+function getAdminUserTokenAvatarUrl(user) {
+    const userId = getAdminUserTokenUserId(user);
+    const displayName = getAdminUserTokenDisplayName(user);
+
+    return String(user?.avatar_url || '').trim() || getDefaultAvatarDataUrl(displayName || userId || 'U');
+}
+
+function getAdminUserTokenSearchText(user) {
+    return [
+        getAdminUserTokenUserId(user),
+        getAdminUserTokenDisplayName(user),
+        String(user?.role || '').trim(),
+    ].join(' ').toLowerCase();
+}
+
+function updateAdminUserTokenUserSelector(users) {
+    const seen = new Set();
+    const nextUsers = [];
+
+    if (Array.isArray(users)) {
+        users.forEach((user) => {
+            const userId = getAdminUserTokenUserId(user);
+
+            if (!userId || seen.has(userId)) return;
+
+            seen.add(userId);
+            nextUsers.push(user);
+        });
+    }
+
+    adminUserTokenSelectorState.users = nextUsers;
+
+    if (adminUserTokenSelectorState.visible) {
+        showAdminUserTokenUserMenu();
+    }
+}
+
+function getAdminUserTokenFilteredUsers() {
+    const inputEl = document.getElementById('adminUserTokenStatsUsernameInput');
+    const query = String(inputEl?.value || '').trim().toLowerCase();
+    const users = adminUserTokenSelectorState.users;
+
+    if (!query) return users.slice(0, 8);
+
+    return users.filter((user) => getAdminUserTokenSearchText(user).includes(query)).slice(0, 8);
+}
+
+function showAdminUserTokenUserMenu() {
+    adminUserTokenSelectorState.filteredUsers = getAdminUserTokenFilteredUsers();
+    adminUserTokenSelectorState.activeIndex = 0;
+    adminUserTokenSelectorState.visible = true;
+    renderAdminUserTokenUserMenu();
+}
+
+function hideAdminUserTokenUserMenu() {
+    adminUserTokenSelectorState.visible = false;
+    renderAdminUserTokenUserMenu();
+}
+
+function selectAdminUserTokenUser(user) {
+    const inputEl = document.getElementById('adminUserTokenStatsUsernameInput');
+    const userId = getAdminUserTokenUserId(user);
+
+    if (!inputEl || !userId) return;
+
+    inputEl.value = userId;
+    hideAdminUserTokenUserMenu();
+    inputEl.focus();
+}
+
+function renderAdminUserTokenUserMenu() {
+    const inputEl = document.getElementById('adminUserTokenStatsUsernameInput');
+    const menuEl = document.getElementById('adminUserTokenStatsUserMenu');
+
+    if (!inputEl || !menuEl) return;
+
+    const rows = adminUserTokenSelectorState.filteredUsers;
+
+    if (!adminUserTokenSelectorState.visible) {
+        inputEl.setAttribute('aria-expanded', 'false');
+        menuEl.hidden = true;
+        menuEl.style.display = 'none';
+        menuEl.innerHTML = '';
+        return;
+    }
+
+    inputEl.setAttribute('aria-expanded', 'true');
+    menuEl.hidden = false;
+    menuEl.style.display = 'grid';
+
+    if (!rows.length) {
+        menuEl.innerHTML = '<div class="admin-user-token-empty">没有匹配的用户</div>';
+        return;
+    }
+
+    menuEl.innerHTML = rows.map((user, index) => {
+        const userId = getAdminUserTokenUserId(user);
+        const displayName = getAdminUserTokenDisplayName(user) || userId || 'User';
+        const avatarUrl = getAdminUserTokenAvatarUrl(user);
+        const role = String(user?.role || 'member').trim();
+        const active = index === adminUserTokenSelectorState.activeIndex ? ' is-active' : '';
+
+        return `
+            <button type="button" class="learning-feed-mention-item admin-user-token-item${active}" role="option" aria-selected="${active ? 'true' : 'false'}" data-admin-user-token-index="${index}">
+                <img class="learning-feed-mention-avatar learning-feed-mention-avatar-image admin-user-token-avatar" src="${escapeHtml(avatarUrl)}" alt="${escapeHtml(displayName)}">
+                <span class="learning-feed-mention-meta admin-user-token-meta">
+                    <span class="learning-feed-mention-name">${escapeHtml(displayName)}</span>
+                    <span class="learning-feed-mention-handle">@${escapeHtml(userId)} · ${escapeHtml(role)}</span>
+                </span>
+            </button>
+        `;
+    }).join('');
+}
+
+function resetAdminUserTokenStatsResult(message = '暂无查询结果') {
+    const meta = document.getElementById('adminUserTokenStatsMeta');
+    const requestsEl = document.getElementById('adminUserTokenRequests');
+    const inputEl = document.getElementById('adminUserTokenInput');
+    const outputEl = document.getElementById('adminUserTokenOutput');
+    const totalEl = document.getElementById('adminUserTokenTotal');
+    const topEl = document.getElementById('adminUserTokenStatsTop');
+    const recentEl = document.getElementById('adminUserTokenRecentRows');
+
+    if (meta) meta.textContent = message;
+    if (requestsEl) requestsEl.textContent = '-';
+    if (inputEl) inputEl.textContent = '-';
+    if (outputEl) outputEl.textContent = '-';
+    if (totalEl) totalEl.textContent = '-';
+    if (topEl) topEl.innerHTML = '';
+    if (recentEl) recentEl.innerHTML = `<tr><td colspan="4">${escapeHtml(message)}</td></tr>`;
+}
+
+function renderAdminUserTokenStats(data) {
+    const meta = document.getElementById('adminUserTokenStatsMeta');
+    const requestsEl = document.getElementById('adminUserTokenRequests');
+    const inputEl = document.getElementById('adminUserTokenInput');
+    const outputEl = document.getElementById('adminUserTokenOutput');
+    const totalEl = document.getElementById('adminUserTokenTotal');
+    const topEl = document.getElementById('adminUserTokenStatsTop');
+    const recentEl = document.getElementById('adminUserTokenRecentRows');
+    const summary = data?.summary || {};
+    const displayName = String(data?.display_name || data?.username || '').trim();
+    const range = String(data?.range || '').trim();
+
+    if (meta) {
+        meta.textContent = `${displayName || '-'} · ${range || '30d'} · 命中 ${Number(data?.matched_logs || 0).toLocaleString()} / ${Number(data?.total_logs || 0).toLocaleString()}`;
+    }
+
+    if (requestsEl) requestsEl.textContent = Number(summary.papi_total_tokens || 0).toLocaleString();
+    if (inputEl) inputEl.textContent = Number(summary.input_tokens || 0).toLocaleString();
+    if (outputEl) outputEl.textContent = Number(summary.output_tokens || 0).toLocaleString();
+    if (totalEl) totalEl.textContent = Number(summary.total_tokens || 0).toLocaleString();
+
+    if (topEl) {
+        const providers = Array.isArray(data?.top_providers) ? data.top_providers.slice(0, 5) : [];
+        const models = Array.isArray(data?.top_models) ? data.top_models.slice(0, 5) : [];
+
+        topEl.innerHTML = `
+            <div class="trend-block">
+                <div class="trend-title">Top Providers</div>
+                ${(providers.length ? providers : [{name:'-', tokens:0, requests:0}]).map((row) => `
+                    <div class="trend-item"><span>${escapeHtml(String(row.name || '-'))}</span><span class="mono">${Number(row.tokens || 0).toLocaleString()}</span></div>
+                `).join('')}
+            </div>
+            <div class="trend-block">
+                <div class="trend-title">Top Models</div>
+                ${(models.length ? models : [{name:'-', tokens:0, requests:0}]).map((row) => `
+                    <div class="trend-item"><span>${escapeHtml(String(row.name || '-'))}</span><span class="mono">${Number(row.tokens || 0).toLocaleString()}</span></div>
+                `).join('')}
+            </div>
+        `;
+    }
+
+    if (recentEl) {
+        const rows = Array.isArray(data?.recent) ? data.recent : [];
+
+        if (!rows.length) {
+            recentEl.innerHTML = '<tr><td colspan="4">该范围内暂无记录</td></tr>';
+            return;
+        }
+
+        recentEl.innerHTML = rows.map((row) => {
+            const model = `${String(row.provider || 'unknown')} / ${String(row.model || 'unknown')}`;
+            const tokenText = `${Number(row.total_tokens || 0).toLocaleString()} (${Number(row.input_tokens || 0).toLocaleString()} / ${Number(row.output_tokens || 0).toLocaleString()})`;
+
+            return `
+                <tr>
+                    <td class="mono">${escapeHtml(String(row.timestamp || '-'))}</td>
+                    <td>${escapeHtml(String(row.source || '-'))}</td>
+                    <td>${escapeHtml(model)}</td>
+                    <td class="mono">${escapeHtml(tokenText)}</td>
+                </tr>
+            `;
+        }).join('');
+    }
+}
+
+async function queryAdminUserTokenStats() {
+    const usernameInput = document.getElementById('adminUserTokenStatsUsernameInput');
+    const rangeSelect = document.getElementById('adminUserTokenStatsRangeSelect');
+    const queryBtn = document.getElementById('adminUserTokenStatsQueryBtn');
+    const username = String(usernameInput?.value || '').trim();
+    const range = String(rangeSelect?.value || '30d').trim() || '30d';
+
+    if (!username) {
+        resetAdminUserTokenStatsResult('请输入用户 ID');
+        showToast('请输入用户 ID');
+        return;
+    }
+
+    if (queryBtn) queryBtn.disabled = true;
+    resetAdminUserTokenStatsResult('查询中...');
+
+    try {
+        const params = new URLSearchParams({ username, range });
+        const res = await fetch(`/api/admin/tokens/stats/user?${params.toString()}`);
+        const data = await res.json();
+
+        if (!data.success) {
+            throw new Error(data.message || '查询失败');
+        }
+
+        renderAdminUserTokenStats(data);
+    } catch (err) {
+        const message = err && err.message ? err.message : '查询失败';
+        resetAdminUserTokenStatsResult(message);
+        showToast(message);
+    } finally {
+        if (queryBtn) queryBtn.disabled = false;
+    }
+}
+
 async function loadAdminStats() {
     try {
         const res = await fetch('/api/admin/users');
@@ -34665,6 +35496,7 @@ async function loadAdminStats() {
         if (data.success) {
             const totalUsers = data.users.length;
             const adminCount = data.users.filter(u => u.role === 'admin').length;
+            updateAdminUserTokenUserSelector(data.users);
             
             document.getElementById('statTotalUsers').textContent = totalUsers;
             document.getElementById('statAdminCount').textContent = adminCount;
@@ -35110,6 +35942,13 @@ async function updateVectorInSettings() {
 
         const metaRes = await fetch('/api/knowledge/list');
         const metaData = await metaRes.json();
+        knowledgeVectorizationEnabled = !!(metaData && metaData.vectorization_enabled);
+        if (!knowledgeVectorizationEnabled) {
+            showToast('RAG已关闭，无法更新向量');
+            setVectorStatus('RAG已关闭');
+            return;
+        }
+
         const basisMeta = metaData && metaData.basis_knowledge ? metaData.basis_knowledge : {};
         const meta = basisMeta[liveTitle] || {};
         const updatedAt = Number(meta.updated_at || 0);
@@ -35186,6 +36025,7 @@ async function deleteVectorInSettings() {
             if (knowledgeMetaCache[liveTitle]) {
                 knowledgeMetaCache[liveTitle].vector_exists = false;
                 knowledgeMetaCache[liveTitle].vector_updated_at = 0;
+                knowledgeMetaCache[liveTitle].needs_vector_refresh = knowledgeVectorizationEnabled;
             }
             loadVectorChunks(liveTitle);
             loadKnowledge(currentConversationId);
@@ -35384,6 +36224,13 @@ async function bulkVectorizeAllBasis() {
     try {
         const metaRes = await fetch('/api/knowledge/list');
         const metaData = await metaRes.json();
+        knowledgeVectorizationEnabled = !!(metaData && metaData.vectorization_enabled);
+        if (!knowledgeVectorizationEnabled) {
+            showToast('RAG已关闭，无需重新向量化');
+            bulkVectorizeRunning = false;
+            return;
+        }
+
         const basisMeta = metaData && metaData.basis_knowledge ? metaData.basis_knowledge : {};
         const listEls = els.panelBasisList ? Array.from(els.panelBasisList.querySelectorAll('.knowledge-item')) : [];
         titles = listEls.length > 0 ? listEls.map(el => el.dataset.title).filter(Boolean) : Object.keys(basisMeta);
@@ -35449,6 +36296,7 @@ async function vectorizeKnowledgeTitle(title, options = {}) {
             const updatedAt = Number(knowledgeMetaCache[title].updated_at || 0);
             knowledgeMetaCache[title].vector_updated_at = Math.max(updatedAt, Date.now());
             knowledgeMetaCache[title].vector_exists = true;
+            knowledgeMetaCache[title].needs_vector_refresh = false;
         }
         const list = els.panelBasisList;
         if (list) {

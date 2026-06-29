@@ -231,6 +231,42 @@ def build_tool_skills_prompt(skills: List[Dict[str, Any]]) -> str:
     return "\n\n".join(blocks).strip()
 
 
+def build_longdoc_skill_catalog_prompt(skills: List[Dict[str, Any]]) -> str:
+    rows: List[str] = []
+
+    for item in (skills or []):
+
+        if not isinstance(item, dict):
+            continue
+
+        sid = str(item.get("id", "") or "").strip()
+        title = str(item.get("title", "") or "").strip()
+        description = str(item.get("description", "") or "").strip()
+        aliases_raw = item.get("aliases", [])
+        aliases = []
+
+        if isinstance(aliases_raw, list):
+            aliases = [str(x).strip() for x in aliases_raw if str(x).strip()]
+
+        if not sid or not title or not description:
+            continue
+
+        alias_sep = " 别名：" if description.endswith(("。", "！", "？", ".", "!", "?")) else "；别名："
+        alias_text = f"{alias_sep}{', '.join(aliases)}" if aliases else ""
+        rows.append(f"- {sid}｜{title}：{description}{alias_text}")
+
+    if not rows:
+        return ""
+
+    return (
+        "[可按需读取的 Longdoc Skill]\n"
+        "以下 Skill 是长文档，不会默认注入正文。用户问题涉及对应产品、流程、配置、操作指南或排障时，"
+        "先调用 skill(name=\"文档ID或别名\") 读取正文，再基于工具结果回答；"
+        "如果当前工具模式尚未开放 skill，先按当前工具选择协议启用或选择 skill。\n"
+        + "\n".join(rows)
+    ).strip()
+
+
 RUNTIME_HINT_NATIVE_TAG = "[运行时能力提示]"
 RUNTIME_HINT_TOOL_TAG = "[工具选择协议]"
 
@@ -282,14 +318,21 @@ learning_mode_tool_nudge_prompt = (
     "再基于工具结果继续回答用户。"
 )
 
-cloud_file_sandbox_paths_prompt_template = """[系统注入] 已上传文件到用户沙箱，请优先使用 cloud_file_list/cloud_file_create/cloud_file_read/cloud_file_find/cloud_file_write/cloud_file_remove 工具操作以下路径：
+cloud_file_sandbox_paths_prompt_template = """[系统注入] 已上传文件到用户沙箱，请优先使用 cloud_file_list/cloud_file_create/cloud_file_read/cloud_file_find/cloud_file_write/cloud_doc_write/cloud_file_remove 工具操作以下路径。
+如果需要在回答中手动引用某个云端文件，只输出 [file]文件路径[/file]，不要手写文件大小、下载链接或摘要，这些信息由系统自动补全：
 {{paths}}
 """
+
+cloud_file_reference_tool_hint = (
+    "当回答需要手动引用用户云端文件时，只输出 [file]文件路径[/file]，"
+    "不要手写文件大小、下载链接或摘要，这些信息由系统自动补全。"
+)
 
 cloud_file_read_tool_description = (
     "读取用户云端文件区文件的模型可读文本内容。上传文件已由系统完成文本提取并存为 UTF-8 文本，"
     "本工具返回转换后的正文，不返回原始二进制内容。三种读取方式三选一：不传范围参数读全文；"
     "传 from_line/to_line 按行读取；传 offset/length 按字符切片读取。单次最多返回500行且10000字符。"
+    + cloud_file_reference_tool_hint
 )
 
 cloud_file_read_truncate_notice_template = (

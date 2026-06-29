@@ -447,8 +447,8 @@ body.learning-workspace-active .sidebar-footer {
   border-bottom: 1px solid var(--border-light);
   user-select: none;
 }
-.header-left, .header-right { display: flex; align-items: center; gap: 10px; width: 200px; }
-.header-right { justify-content: flex-end; }
+.header-left { display: flex; align-items: center; gap: 10px; }
+.header-right { display: flex; align-items: center; gap: 10px; width: 200px; justify-content: flex-end; }
 .header-center {
   flex: 1;
   text-align: center;
@@ -919,6 +919,97 @@ body.learning-workspace-active #learningMainPanel.learning-main-panel {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+.file-reference {
+    display: inline-flex;
+    flex-direction: column;
+    max-width: min(360px, 100%);
+    margin: 3px 4px;
+    vertical-align: middle;
+}
+
+.file-reference-main {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 38px;
+    max-width: 100%;
+    padding: 4px 5px 4px 8px;
+    border: 1px solid var(--border-input);
+    border-radius: 8px;
+    background: #ffffff;
+    color: var(--text-main);
+}
+
+.file-reference-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    flex: 0 0 30px;
+    border-radius: 8px;
+    background: #eef3f8;
+    color: var(--text-secondary);
+}
+
+.file-reference-text {
+    display: grid;
+    min-width: 0;
+    gap: 2px;
+}
+
+.file-reference-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.25;
+}
+
+.file-reference-meta {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.25;
+}
+
+.file-reference-download {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    flex: 0 0 30px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.file-reference-download:hover {
+    background: #eef3f8;
+    color: var(--text-main);
+}
+
+.file-reference-summary {
+    margin-top: 6px;
+    padding-left: 10px;
+    border-left: 3px solid var(--border-input);
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.55;
+}
+
+.file-reference-summary[hidden] {
+    display: none;
 }
 
 /* --- LaTeX spacing --- */
@@ -4892,6 +4983,11 @@ body.learning-workspace-active .input-dock {
     overflow: hidden;
     min-width: 0;
     min-height: 0;
+}
+
+.input-container.tools-mode-menu-open,
+.input-options-tools-inner.tools-mode-menu-open {
+    overflow: visible;
 }
 
 /* 输入容器向下收起：保留右上角按钮，其余内容向下滑出并被容器裁剪 */
@@ -10646,12 +10742,27 @@ body.is-admin .menu-item.admin-only {
     overflow: auto;
 }
 
+#settingsModal #settings-admin-stats-tab.admin-tab-content.active {
+    gap: 16px;
+    padding: 2px 6px 16px 2px;
+    background: #f8fafc;
+}
+
+#settingsModal #settings-admin-stats-tab .admin-stats-grid {
+    padding: 12px;
+    border: 1px solid #d7dee8;
+    border-radius: 10px;
+    background: #ffffff;
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.05);
+}
+
 .admin-token-trend-card {
-    margin-top: 12px;
-    border: 1px solid #e5e7eb;
+    margin-top: 0;
+    border: 1px solid #d7dee8;
     border-radius: 10px;
     background: #fff;
-    padding: 12px;
+    padding: 14px;
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.05);
 }
 
 .admin-token-trend-head {
@@ -10659,14 +10770,29 @@ body.is-admin .menu-item.admin-only {
     align-items: center;
     justify-content: space-between;
     gap: 10px;
-    margin-bottom: 8px;
+    margin-bottom: 12px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #e5e7eb;
 }
 
 .admin-token-trend-head h4 {
+    position: relative;
     margin: 0;
-    font-size: 13px;
+    padding-left: 10px;
+    font-size: 14px;
     font-weight: 700;
     color: #0f172a;
+}
+
+.admin-token-trend-head h4::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 3px;
+    bottom: 3px;
+    width: 3px;
+    border-radius: 999px;
+    background: #334155;
 }
 
 .admin-token-trend-meta {
@@ -10691,10 +10817,11 @@ body.is-admin .menu-item.admin-only {
 }
 
 .admin-token-trend-top .trend-block {
-    border: 1px solid #edf2f7;
+    border: 1px solid #dbe3ee;
     border-radius: 8px;
-    padding: 8px;
+    padding: 10px;
     min-height: 64px;
+    background: #fbfdff;
 }
 
 .admin-token-trend-top .trend-title {
@@ -10710,6 +10837,117 @@ body.is-admin .menu-item.admin-only {
     justify-content: space-between;
     gap: 8px;
     line-height: 1.5;
+}
+
+.admin-user-token-query {
+    display: grid;
+    grid-template-columns: minmax(180px, 1fr) 120px auto;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 10px;
+}
+
+.admin-user-token-selector {
+    position: relative;
+    min-width: 0;
+}
+
+.admin-user-token-selector .input-modern {
+    width: 100%;
+}
+
+.admin-user-token-menu {
+    top: calc(100% + 6px);
+    bottom: auto;
+    width: 100%;
+    max-width: none;
+    z-index: 12020;
+}
+
+.admin-user-token-item {
+    min-height: 46px;
+}
+
+.admin-user-token-avatar {
+    width: 30px;
+    height: 30px;
+    flex-basis: 30px;
+}
+
+.admin-user-token-meta {
+    overflow: hidden;
+}
+
+.admin-user-token-meta .learning-feed-mention-name,
+.admin-user-token-meta .learning-feed-mention-handle {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.admin-user-token-empty {
+    padding: 10px 12px;
+    color: #94a3b8;
+    font-size: 12px;
+}
+
+.admin-user-token-query .btn-primary-outline {
+    min-height: 38px;
+    white-space: nowrap;
+}
+
+.admin-user-token-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.admin-user-token-summary-grid .stat-card {
+    padding: 10px 12px;
+}
+
+.admin-user-token-recent-wrap {
+    margin-top: 10px;
+    border: 1px solid #dbe3ee;
+    border-radius: 8px;
+    overflow: auto;
+    max-height: 240px;
+    background: #ffffff;
+}
+
+.admin-user-token-recent-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+
+.admin-user-token-recent-table th,
+.admin-user-token-recent-table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid #eef2f7;
+    text-align: left;
+    vertical-align: top;
+}
+
+.admin-user-token-recent-table th {
+    background: #f8fafc;
+    color: #64748b;
+    font-weight: 700;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+
+.admin-user-token-recent-table td {
+    color: #334155;
+}
+
+@media (max-width: 900px) {
+    .admin-user-token-query,
+    .admin-user-token-summary-grid {
+        grid-template-columns: 1fr;
+    }
 }
 
 /* Final override: keep users panel visible and scroll inside columns */
@@ -11671,6 +11909,31 @@ body.is-admin .menu-item.admin-only {
 #adminPublicApiKeyModal,
 #adminPublicApiDeleteModal {
     z-index: 9200 !important;
+}
+
+#adminPublicApiDeleteModal .admin-public-api-delete-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 16px;
+    padding: 0;
+    background: transparent;
+    border-top: 0;
+    border-radius: 0;
+}
+
+#adminPublicApiDeleteModal .admin-public-api-delete-footer .btn-cancel,
+#adminPublicApiDeleteModal .admin-public-api-delete-footer .btn-danger-solid {
+    min-width: 78px;
+    height: 40px;
+    padding: 0 18px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 
 #confirmBackdrop,

@@ -24,6 +24,9 @@ from .core import (
     _papi_stream_openai_chat,
     _papi_stream_openai_responses,
     _papi_create_openai_responses_payload,
+    _papi_log_chat_message_flow,
+    _papi_log_debug_summary,
+    _papi_log_final_request_summary,
     _papi_log,
 )
 from .token_logger import (
@@ -38,6 +41,7 @@ from api.database import User
 from api.conversation_manager import ConversationManager
 from api.server_quota import get_generation_quota_gate
 from provider_factory import create_provider_adapter
+from runlog import log_event
 
 
 def _resolve_server_module():
@@ -473,6 +477,88 @@ def papi_query_vectors(username):
         return jsonify({'success': False, 'message': str(e)})
 
 
+_PAPI_COMMON_PAYLOAD_FIELDS = ('tools', 'tool_choice', 'response_format')
+_PAPI_STREAM_ONLY_FIELDS = ('stream_options',)
+_PAPI_RESPONSES_ONLY_FIELDS = (
+    'parallel_tool_calls',
+    'metadata',
+    'text',
+    'reasoning',
+    'store',
+    'include',
+    'truncation',
+    'max_output_tokens',
+)
+
+
+def _papi_is_false_think_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return not value
+
+    if isinstance(value, str):
+        return value.strip().lower() in {"false", "0", "off", "no", "n", "none"}
+
+    if isinstance(value, (int, float)):
+        return float(value) == 0.0
+
+    return value is None
+
+
+def _papi_apply_ollama_think_control(
+    request_kwargs: Dict[str, Any],
+    *,
+    data: Dict[str, Any],
+    adapter_api_type: str,
+    model_name: str,
+    provider_name: str,
+) -> Dict[str, Any]:
+    if adapter_api_type != "ollama":
+        return request_kwargs
+
+    extra_body = request_kwargs.get("extra_body", {})
+    if not isinstance(extra_body, dict):
+        extra_body = {}
+
+    if "think" in extra_body:
+        think_value = extra_body.get("think")
+
+        if think_value is None:
+            think_value = False
+            extra_body["think"] = think_value
+    else:
+        think_value = data.get("think") if data.get("think") is not None else False
+        extra_body["think"] = think_value
+
+    mapped_effort = None
+    if isinstance(think_value, str):
+        normalized = think_value.strip().lower()
+
+        if normalized in {"low", "medium", "high"}:
+            mapped_effort = normalized
+        elif normalized in {"true", "1", "on", "yes", "y"}:
+            mapped_effort = "medium"
+    elif isinstance(think_value, bool):
+
+        if think_value:
+            mapped_effort = "medium"
+    elif isinstance(think_value, (int, float)):
+
+        if float(think_value) != 0.0:
+            mapped_effort = "medium"
+
+    if mapped_effort:
+        request_kwargs["reasoning_effort"] = mapped_effort
+    elif _papi_is_false_think_value(think_value):
+        request_kwargs.pop("reasoning_effort", None)
+
+    request_kwargs["extra_body"] = extra_body
+    _papi_log(
+        f"[PAPI_THINK_MAP] model={model_name} provider={provider_name} "
+        f"api_type=ollama think={think_value!r} reasoning_effort={request_kwargs.get('reasoning_effort', None)}"
+    )
+    return request_kwargs
+
+
 def _papi_handle_completion_request(data=None, username=None, request_path=''):
     """PAPI 主处理逻辑，可供普通 completions 与学习对话入口复用。"""
     data = data if isinstance(data, dict) else {}
@@ -612,6 +698,10 @@ def _papi_handle_completion_request(data=None, username=None, request_path=''):
         if value is not None:
             request_kwargs[key] = value
 
+    extra_body_value = data.get('extra_body')
+    if isinstance(extra_body_value, dict):
+        request_kwargs['extra_body'] = dict(extra_body_value)
+
     # Ollama/OpenAI 兼容：think 不能作为顶层 kwargs 传给 SDK，
     # 否则会触发 Completions.create() unexpected keyword argument 'think'。
     think_value = data.get('think')
@@ -622,8 +712,8 @@ def _papi_handle_completion_request(data=None, username=None, request_path=''):
         extra_body['think'] = think_value
         request_kwargs['extra_body'] = extra_body
 
-    # 透传 tools / tool_choice / response_format / stream_options
-    for _k in ('tools', 'tool_choice', 'response_format', 'stream_options'):
+    # 透传白名单参数：工具、结构化输出与流式专用参数分开处理。
+    for _k in _PAPI_COMMON_PAYLOAD_FIELDS + _PAPI_STREAM_ONLY_FIELDS:
         val = data.get(_k)
         if val is not None:
             if _k == 'tools':
@@ -641,6 +731,12 @@ def _papi_handle_completion_request(data=None, username=None, request_path=''):
             if _k == 'tool_choice':
                 request_kwargs[_k] = _papi_normalize_tool_choice(val, use_responses_api=use_responses_compat)
                 continue
+            if _k == 'stream_options':
+
+                if want_stream:
+                    request_kwargs[_k] = val
+
+                continue
             if _k == 'tools':
                 if not isinstance(val, list):
                     continue
@@ -655,6 +751,27 @@ def _papi_handle_completion_request(data=None, username=None, request_path=''):
                 continue
             request_kwargs[_k] = val
 
+    if use_responses_compat and responses_instructions:
+        request_kwargs['instructions'] = responses_instructions
+
+    if use_responses_compat:
+        for _k in _PAPI_RESPONSES_ONLY_FIELDS:
+            val = data.get(_k)
+            if val is not None:
+                request_kwargs[_k] = val
+
+    api_key = str(provider_info.get('api_key') or '').strip()
+    base_url = provider_info.get('base_url') or provider_info.get('api_base')
+    adapter = create_provider_adapter(provider_name, provider_info)
+    adapter_api_type = str(getattr(adapter, 'api_type', '') or '').strip().lower()
+    request_kwargs = _papi_apply_ollama_think_control(
+        request_kwargs,
+        data=data,
+        adapter_api_type=adapter_api_type,
+        model_name=model_name,
+        provider_name=provider_name,
+    )
+
     _tools_payload = request_kwargs.get('tools') if isinstance(request_kwargs.get('tools'), list) else []
     _tool_names: List[str] = []
     for _tool in _tools_payload:
@@ -666,9 +783,18 @@ def _papi_handle_completion_request(data=None, username=None, request_path=''):
             _name = str(_tool.get('name') or '').strip()
         if _name:
             _tool_names.append(_name)
+    try:
+        _tool_choice_preview = json.dumps(
+            request_kwargs.get('tool_choice', None),
+            ensure_ascii=False,
+            default=str,
+        )[:500]
+    except Exception:
+        _tool_choice_preview = str(request_kwargs.get('tool_choice', None))[:500]
     _papi_log(
         f"[PAPI_TOOLS] model={model_name} use_responses_compat={'yes' if use_responses_compat else 'no'} "
-        f"tool_count={len(_tools_payload)} tool_names={_tool_names}"
+        f"tool_count={len(_tools_payload)} tool_names={_tool_names} "
+        f"tool_choice={_tool_choice_preview}"
     )
     _think_log_value = None
     try:
@@ -682,50 +808,6 @@ def _papi_handle_completion_request(data=None, username=None, request_path=''):
         f"reasoning={'yes' if ('reasoning' in request_kwargs) else 'no'}"
     )
 
-    if use_responses_compat and responses_instructions:
-        request_kwargs['instructions'] = responses_instructions
-
-    if use_responses_compat:
-        for _k in ('parallel_tool_calls', 'metadata', 'text', 'reasoning', 'store', 'include', 'truncation', 'max_output_tokens'):
-            val = data.get(_k)
-            if val is not None:
-                request_kwargs[_k] = val
-
-    api_key = str(provider_info.get('api_key') or '').strip()
-    base_url = provider_info.get('base_url') or provider_info.get('api_base')
-    adapter = create_provider_adapter(provider_name, provider_info)
-    adapter_api_type = str(getattr(adapter, 'api_type', '') or '').strip().lower()
-    if adapter_api_type == "ollama":
-        _think_src = None
-        _eb = request_kwargs.get("extra_body", {})
-        if isinstance(_eb, dict):
-            _think_src = _eb.get("think", None)
-        if _think_src is not None:
-            _mapped_effort = None
-            if isinstance(_think_src, str):
-                _s = _think_src.strip().lower()
-                if _s in {"low", "medium", "high"}:
-                    _mapped_effort = _s
-                elif _s in {"false", "0", "off", "no", "n", "none"}:
-                    request_kwargs.pop("reasoning_effort", None)
-                elif _s in {"true", "1", "on", "yes", "y"}:
-                    _mapped_effort = "medium"
-            elif isinstance(_think_src, bool):
-                if _think_src:
-                    _mapped_effort = "medium"
-                else:
-                    request_kwargs.pop("reasoning_effort", None)
-            elif isinstance(_think_src, (int, float)):
-                if float(_think_src) != 0.0:
-                    _mapped_effort = "medium"
-                else:
-                    request_kwargs.pop("reasoning_effort", None)
-            if _mapped_effort:
-                request_kwargs["reasoning_effort"] = _mapped_effort
-            _papi_log(
-                f"[PAPI_THINK_MAP] model={model_name} provider={provider_name} "
-                f"api_type=ollama think={_think_src!r} reasoning_effort={request_kwargs.get('reasoning_effort', None)}"
-            )
     limit_extra_body = request_kwargs.get('extra_body', {})
     limit_extra_preview = ''
     if isinstance(limit_extra_body, dict) and limit_extra_body:
@@ -899,6 +981,23 @@ def _papi_handle_completion_request(data=None, username=None, request_path=''):
                 use_responses_upstream=use_responses_upstream,
             )
         else:
+            _papi_log_chat_message_flow(
+                '[PAPI_CHAT_REQ_FLOW]',
+                model_name=model_name,
+                stream=False,
+                messages=messages,
+            )
+            _direct_request_params = {'model': model_name, 'stream': False}
+            _direct_request_params.update(dict(request_kwargs or {}))
+            _direct_request_params['messages'] = messages
+            _papi_log_final_request_summary(
+                model_name=model_name,
+                provider_name=provider_name,
+                adapter_api_type=adapter_api_type,
+                request_params=_direct_request_params,
+                use_responses_api=False,
+                route_mode='chat_non_stream',
+            )
             response = adapter.create_chat_completion(
                 client=client,
                 model=model_name,
@@ -912,6 +1011,42 @@ def _papi_handle_completion_request(data=None, username=None, request_path=''):
                 provider_name=provider_name,
                 request_username=request_username or (username or ''),
                 quota_status=quota_status,
+            )
+            payload_choice = payload.get('choices', [{}])[0] if isinstance(payload.get('choices'), list) and payload.get('choices') else {}
+            payload_message = payload_choice.get('message', {}) if isinstance(payload_choice, dict) else {}
+            payload_tool_calls = payload_message.get('tool_calls', []) if isinstance(payload_message, dict) else []
+            payload_reasoning = ''
+            if isinstance(payload_message, dict):
+                payload_reasoning = str(payload_message.get('reasoning_content') or '')
+            if (
+                str(payload_choice.get('finish_reason') or '').strip() == 'stop'
+                and not payload_tool_calls
+                and len(str(payload.get('content') or '')) <= 0
+                and payload_reasoning
+            ):
+                reasoning_summary = {
+                    'model': model_name,
+                    'provider': provider_name,
+                    'api_type': adapter_api_type or 'unknown',
+                    'stream': False,
+                    'finish_reason': 'stop',
+                    'reasoning_chars': len(payload_reasoning),
+                    'extra_body': request_kwargs.get('extra_body', {}),
+                    'reasoning_present': 'reasoning' in request_kwargs,
+                    'tool_choice': request_kwargs.get('tool_choice', None),
+                }
+                _papi_log_debug_summary('[PAPI_CHAT_REASONING_ONLY_STOP]', reasoning_summary)
+                log_event(
+                    'papi_reasoning_only_stop',
+                    'PAPI chat completion stopped with reasoning only',
+                    payload=reasoning_summary,
+                    source='papi',
+                )
+            _papi_log(
+                f"[PAPI_CHAT_RESP] model={model_name} provider={provider_name} stream=no "
+                f"finish_reason={str(payload_choice.get('finish_reason') or '').strip() if isinstance(payload_choice, dict) else ''} "
+                f"tool_count={len(payload_tool_calls) if isinstance(payload_tool_calls, list) else 0} "
+                f"content_len={len(str(payload.get('content') or ''))}"
             )
         usage_payload = extract_usage_from_payload(payload)
         response_id = str(payload.get('id') or '').strip()

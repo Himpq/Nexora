@@ -907,6 +907,19 @@ class ProviderInterface(ABC):
                 return base_s
             return base_s + frag_s
 
+        def _merge_stream_fragment_delta(base: str, frag: str):
+            """Return merged text plus the actual new fragment to emit downstream."""
+            base_s = str(base or "")
+            merged = _merge_stream_fragment(base_s, frag)
+
+            if merged == base_s:
+                return merged, ""
+
+            if merged.startswith(base_s):
+                return merged, merged[len(base_s):]
+
+            return merged, str(frag or "")
+
         def _apply_tool_call_delta(tc_obj: Any, idx_default: int = 0) -> Optional[Dict[str, Any]]:
             try:
                 idx = int(_obj_get_raw(tc_obj, "index", idx_default) or idx_default)
@@ -933,21 +946,24 @@ class ProviderInterface(ABC):
 
             old_name = str(fc.get("name", "") or "")
             old_args = str(fc.get("arguments", "") or "")
-            if name_delta:
-                fc["name"] = _merge_stream_fragment(old_name, str(name_delta))
-            if args_delta:
-                fc["arguments"] = _merge_stream_fragment(old_args, str(args_delta))
+            emitted_name_delta = ""
+            emitted_args_delta = ""
 
-            name_changed = str(fc.get("name", "") or "") != old_name
-            args_changed = str(fc.get("arguments", "") or "") != old_args
-            if (not (name_delta or args_delta)) or (not (name_changed or args_changed)):
+            if name_delta:
+                fc["name"], emitted_name_delta = _merge_stream_fragment_delta(old_name, str(name_delta))
+
+            if args_delta:
+                fc["arguments"], emitted_args_delta = _merge_stream_fragment_delta(old_args, str(args_delta))
+
+            if not (emitted_name_delta or emitted_args_delta):
                 return None
+
             return {
                 "type": "function_call_delta",
                 "name": fc.get("name", "") or name_delta,
                 "call_id": fc.get("call_id", ""),
-                "arguments_delta": args_delta,
-                "name_delta": name_delta,
+                "arguments_delta": emitted_args_delta,
+                "name_delta": emitted_name_delta,
                 "index": idx,
             }
 

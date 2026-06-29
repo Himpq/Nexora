@@ -659,10 +659,14 @@ span.nav-mega-link:hover {
     line-height: 1.04;
 }
 
-.leader-name span,
+.leader-name span {
+    min-width: 0;
+    word-break: break-all;
+}
+
 .model-name span,
 .row-name span,
-.failure-name {
+.failure-name span {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;

@@ -6,3 +6,4 @@ requests>=2.31.0
 lxml>=4.9.4
 trafilatura>=2.0.0
 crawlee[crawlers]>=0.4.0
+browserforge

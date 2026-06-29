@@ -28,6 +28,8 @@ _LOG_PATH: Optional[Path] = None
 _MODEL_LOG_PATH: Optional[Path] = None
 _STRUCTURED_LOG_PATH: Optional[Path] = None
 _LLM_COMPRESS_LOG_PATH: Optional[Path] = None
+_LOG_FILE_PATTERNS = ("server_*.log", "models_*.log", "events_*.jsonl", "LLM_Compress_*.log")
+_MIN_LOG_RETENTION_COUNT = 4
 
 
 def init_run_logger(cfg: Mapping[str, Any]) -> str:
@@ -46,6 +48,11 @@ def init_run_logger(cfg: Mapping[str, Any]) -> str:
         _MODEL_LOG_PATH.write_text("", encoding="utf-8")
         _STRUCTURED_LOG_PATH.write_text("", encoding="utf-8")
         _LLM_COMPRESS_LOG_PATH.write_text("", encoding="utf-8")
+        _prune_old_log_files(
+            logs_dir,
+            _resolve_log_retention_count(cfg),
+            protected_paths=(_LOG_PATH, _MODEL_LOG_PATH, _STRUCTURED_LOG_PATH, _LLM_COMPRESS_LOG_PATH),
+        )
     log_event(
         "server_start",
         "NexoraLearning server started",
@@ -53,6 +60,48 @@ def init_run_logger(cfg: Mapping[str, Any]) -> str:
         content="",
     )
     return str(_LOG_PATH)
+
+
+def _resolve_log_retention_count(cfg: Mapping[str, Any]) -> int:
+    """读取日志保留文件数，配置错误时直接阻止启动。"""
+    raw_count = (cfg or {}).get("log_retention_count", 5)
+
+    try:
+        count = int(raw_count)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("log_retention_count 必须是整数") from exc
+
+    if count < _MIN_LOG_RETENTION_COUNT:
+        raise ValueError(f"log_retention_count 必须大于等于 {_MIN_LOG_RETENTION_COUNT}")
+
+    return count
+
+
+def _prune_old_log_files(
+    logs_dir: Path,
+    retention_count: int,
+    *,
+    protected_paths: tuple[Path, ...],
+) -> None:
+    """只保留最近的运行日志文件，当前启动创建的日志始终受保护。"""
+    protected = {item.resolve() for item in protected_paths}
+    candidates: List[Path] = []
+
+    for pattern in _LOG_FILE_PATTERNS:
+        candidates.extend(path for path in logs_dir.glob(pattern) if path.is_file())
+
+    unique_candidates = {path.resolve(): path for path in candidates}
+    ordered = sorted(
+        unique_candidates.values(),
+        key=lambda path: (path.stat().st_mtime_ns, path.name),
+        reverse=True,
+    )
+
+    for path in ordered[retention_count:]:
+        if path.resolve() in protected:
+            continue
+
+        path.unlink()
 
 
 def log_event(event_type: str, title: str, *, payload: Optional[Mapping[str, Any]] = None, content: str = "") -> None:

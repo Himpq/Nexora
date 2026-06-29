@@ -3,6 +3,8 @@
     "select_tools": "runtime_tool_select",
     "EnableTools": "runtime_tool_enable",
     "enable_tools": "runtime_tool_enable",
+    "skill_read": "skill",
+    "readSkill": "skill",
     "vectorSearch": "knowledge_search_vector",
     "vector_search": "knowledge_search_vector",
     "arxivSearch": "arxiv_search",
@@ -69,6 +71,8 @@
     "file_create": "cloud_file_create",
     "file_read": "cloud_file_read",
     "file_write": "cloud_file_write",
+    "doc_write": "cloud_doc_write",
+    "word_write": "cloud_doc_write",
     "file_patch": "cloud_file_patch",
     "file_find": "cloud_file_find",
     "file_list": "cloud_file_list",
@@ -628,6 +632,23 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "skill",
+            "description": "读取按需加载的 Longdoc Skill 长文档正文。仅用于已在系统提示中列出的 longdoc 文档，不读取普通 tool skill。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Longdoc Skill 的 id、标题或别名，例如 nexora。"
+                    }
+                },
+                "required": ["name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "runtime_tool_select",
             "description": "可选：在 Auto 模式下按工具名请求当前轮更具体的工具子集。调用后立即生效，仅影响当前回复。",
             "parameters": {
@@ -881,7 +902,7 @@ TOOLS = [
                     },
                     "context": {
                         "type": "string",
-                        "description": "基础知识正文，使用 Markdown。支持模板：{{file:path}}、{{file:path,lines,1,200}}、{{basis:title,chars,start,end}}。"
+                        "description": "基础知识正文，使用 Markdown。参数必须直接传入最终文本；需要外部内容时先调用对应读取工具取得正文。"
                     },
                     "url": {
                         "type": "string",
@@ -950,7 +971,7 @@ TOOLS = [
                     },
                     "context": {
                         "type": "string",
-                        "description": "新的知识内容（Markdown格式，如果需要更新内容，否则不填）。支持参数模板 {{file:...}} / {{basis:...}}。"
+                        "description": "新的知识内容（Markdown格式，如果需要更新内容，否则不填）。参数必须直接传入最终文本；需要外部内容时先调用对应读取工具取得正文。"
                     },
                     "url": {
                         "type": "string",
@@ -974,7 +995,7 @@ TOOLS = [
                     },
                     "replacement": {
                         "type": "string",
-                        "description": "单次区间替换的新文本。支持参数模板 {{file:...}} / {{basis:...}}。"
+                        "description": "单次区间替换的新文本，必须直接传入最终文本。"
                     },
                     "replacements": {
                         "type": "array",
@@ -997,7 +1018,7 @@ TOOLS = [
                     },
                     "patch": {
                         "type": "string",
-                        "description": "统一 diff 内容。提供 patch 时不能同时提供 context、区间替换或 edits。支持参数模板 {{file:...}} / {{basis:...}}。"
+                        "description": "统一 diff 内容。提供 patch 时不能同时提供 context、区间替换或 edits，必须直接传入最终 patch 文本。"
                     },
                     "edits": {
                         "type": "array",
@@ -1016,11 +1037,11 @@ TOOLS = [
                                 },
                                 "replacement": {
                                     "type": "string",
-                                    "description": "replace 动作的新文本。支持参数模板 {{file:...}} / {{basis:...}}。"
+                                    "description": "replace 动作的新文本，必须直接传入最终文本。"
                                 },
                                 "content": {
                                     "type": "string",
-                                    "description": "insert_before/insert_after 动作插入的新文本。支持参数模板 {{file:...}} / {{basis:...}}。"
+                                    "description": "insert_before/insert_after 动作插入的新文本，必须直接传入最终文本。"
                                 },
                                 "occurrence": {
                                     "type": "integer",
@@ -1449,7 +1470,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "cloud_file_create",
-            "description": "在用户云端文件区创建新文本文件。文件已存在时默认失败，可通过 overwrite=true 覆盖。",
+            "description": "在用户云端文件区创建新文本文件。文件已存在时默认失败，可通过 overwrite=true 覆盖。" + prompts.cloud_file_reference_tool_hint,
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1483,7 +1504,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "cloud_file_write",
-            "description": "写入用户云端文件区中的文本文件。三种写入方式三选一：content 整文件覆盖；from_line/to_line+replacement 按行替换；old_text/new_text 按文本或正则替换。",
+            "description": "写入用户云端文件区中的文本文件。三种写入方式三选一：content 整文件覆盖；from_line/to_line+replacement 按行替换；old_text/new_text 按文本或正则替换。" + prompts.cloud_file_reference_tool_hint,
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1498,6 +1519,36 @@ TOOLS = [
                     "max_replace": {"type": "integer", "description": "最大替换次数，默认全部替换"}
                 },
                 "required": ["file_path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cloud_doc_write",
+            "description": "根据 Markdown 正文生成真正的 Word .docx 文件并写入用户云端文件区。创建或更新 Word 文件必须使用本工具，不要使用 cloud_file_write 写 .docx。" + prompts.cloud_file_reference_tool_hint,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "Word 文件路径，格式如 {username}/files/{filename}.docx 或仅 filename.docx；不带后缀时自动补 .docx"},
+                    "markdown": {"type": "string", "description": "用于生成 Word 正文的 Markdown 内容，支持标题、段落、列表、引用、表格、代码块、链接、加粗、斜体和行内代码。"},
+                    "title": {"type": "string", "description": "可选 Word 文档标题，会写入文档开头。"},
+                    "overwrite": {"type": "boolean", "description": "文件已存在时是否覆盖，默认 false。"},
+                    "doc_options": {
+                        "type": "object",
+                        "description": "可选 Word 样式参数。",
+                        "properties": {
+                            "font_name": {"type": "string", "description": "正文中文字体，默认 Microsoft YaHei。"},
+                            "font_size": {"type": "number", "description": "正文字号，默认 10.5。"},
+                            "line_spacing": {"type": "number", "description": "正文行距，默认 1.15。"},
+                            "top_margin": {"type": "number", "description": "上页边距，单位英寸，默认 1.0。"},
+                            "bottom_margin": {"type": "number", "description": "下页边距，单位英寸，默认 1.0。"},
+                            "left_margin": {"type": "number", "description": "左页边距，单位英寸，默认 1.25。"},
+                            "right_margin": {"type": "number", "description": "右页边距，单位英寸，默认 1.25。"}
+                        }
+                    }
+                },
+                "required": ["file_path", "markdown"]
             }
         }
     },
@@ -1541,7 +1592,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "cloud_file_find",
-            "description": "在用户云端文件区的文本文件内查找关键词或正则，返回行号、列号和命中文本。",
+            "description": "在用户云端文件区的文本文件内查找关键词或正则，返回行号、列号和命中文本。" + prompts.cloud_file_reference_tool_hint,
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1559,7 +1610,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "cloud_file_list",
-            "description": "分页列出用户云端文件区中的文件，按更新时间倒序返回。可用 query 筛选 alias、original_name 或 path。",
+            "description": "分页列出用户云端文件区中的文件，按更新时间倒序返回。可用 query 筛选 alias、original_name 或 path。" + prompts.cloud_file_reference_tool_hint,
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1596,7 +1647,7 @@ TOOLS = [
                 "properties": {
                     "recipient": {"type": "string", "description": "收件人邮箱地址。"},
                     "subject": {"type": "string", "description": "邮件主题。"},
-                    "content": {"type": "string", "description": "邮件正文。支持模板：{{file:path}}、{{file:path,lines,1,200}}、{{basis:title,chars,start,end}}。"},
+                    "content": {"type": "string", "description": "邮件正文。参数必须直接传入最终文本；需要外部内容时先调用对应读取工具取得正文。"},
                     "knowledge_title": {"type": "string", "description": "可选。content 为空时，从该标题的基础知识读取正文。"},
                     "is_html": {"type": "boolean", "description": "是否按 HTML 邮件发送，默认 false。"}
                 },

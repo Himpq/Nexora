@@ -398,14 +398,14 @@ class ChatContextManager:
 
         final_user_content = current_user_content if current_user_content is not None else user_msg
         final_user_sig = model._content_signature_for_dedupe(
-            self._strip_system_injection_from_content(final_user_content)
+            self._normalize_current_turn_dedupe_content(final_user_content)
         )
         last_message = context.last()
         last_is_same_user = bool(
             last_message
             and last_message.role == "user"
             and model._content_signature_for_dedupe(
-                self._strip_system_injection_from_content(last_message.content)
+                self._normalize_current_turn_dedupe_content(last_message.content)
             ) == final_user_sig
         )
 
@@ -552,6 +552,60 @@ class ChatContextManager:
             return item_copy
 
         return content
+
+    def _normalize_current_turn_dedupe_content(self, content: Any) -> Any:
+        """统一当前用户消息与已持久化历史消息的去重口径。"""
+        stripped = self._strip_system_injection_from_content(content)
+        return self._strip_history_time_prefix_from_content(stripped)
+
+    def _strip_history_time_prefix_from_content(self, content: Any) -> Any:
+        if isinstance(content, str):
+            return self._strip_history_time_prefix_text(content)
+
+        if isinstance(content, list):
+            stripped_items: List[Any] = []
+
+            for item in content:
+                if not isinstance(item, dict):
+                    stripped_items.append(item)
+                    continue
+
+                item_copy = dict(item)
+                item_type = str(item_copy.get("type", "") or "").strip().lower()
+
+                if item_type in {"text", "input_text", "output_text"} and isinstance(item_copy.get("text"), str):
+                    item_copy["text"] = self._strip_history_time_prefix_text(item_copy.get("text", ""))
+
+                stripped_items.append(item_copy)
+
+            return stripped_items
+
+        if isinstance(content, dict):
+            item_copy = dict(content)
+
+            if isinstance(item_copy.get("text"), str):
+                item_copy["text"] = self._strip_history_time_prefix_text(item_copy.get("text", ""))
+
+            if isinstance(item_copy.get("content"), str):
+                item_copy["content"] = self._strip_history_time_prefix_text(item_copy.get("content", ""))
+
+            return item_copy
+
+        return content
+
+    def _strip_history_time_prefix_text(self, text: str) -> str:
+        value = str(text or "")
+        stripped = value.lstrip()
+
+        if not stripped.startswith(("[TIME]", "[{TIME:", "[历史消息时间:")):
+            return value
+
+        lines = stripped.splitlines()
+
+        if len(lines) <= 1:
+            return ""
+
+        return "\n".join(lines[1:]).lstrip()
 
     def _strip_system_injection_text(self, text: str) -> str:
         marker = "\n\n[系统注入]"

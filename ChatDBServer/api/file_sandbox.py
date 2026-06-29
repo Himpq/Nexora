@@ -388,6 +388,93 @@ class UserFileSandbox:
                 },
             }
 
+    def write_docx_file(
+        self,
+        file_ref: str,
+        docx_bytes: bytes,
+        markdown: str,
+        title: str = "",
+        overwrite: bool = False,
+        render_stats: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """保存后端生成的 Word 二进制文件，并登记到用户云文件沙箱。"""
+        alias = self._resolve_alias(file_ref)
+        alias = self._sanitize_alias(alias)
+
+        if not alias:
+            raise ValueError("invalid file_path")
+
+        root, ext = os.path.splitext(alias)
+
+        if not ext:
+            alias = f"{alias}.docx"
+            ext = ".docx"
+
+        if ext.lower() != ".docx":
+            raise ValueError("cloud_doc_write 只支持 .docx 文件路径")
+
+        if not isinstance(docx_bytes, (bytes, bytearray)) or not docx_bytes:
+            raise ValueError("docx_bytes is empty")
+
+        stats = render_stats if isinstance(render_stats, dict) else {}
+        now = int(time.time())
+        random_name = f"{uuid.uuid4().hex}.docx"
+        stored_path = os.path.join(self.temp_dir, random_name)
+
+        with self._lock:
+            index = self._load_index()
+            files = index.get("files", {})
+            existing = files.get(alias)
+            old_abs_path = self._get_abs_path(existing) if existing else ""
+
+            if existing and not bool(overwrite):
+                raise FileExistsError(f"file already exists: {self.username}/files/{alias}")
+
+            with open(stored_path, "wb") as f:
+                f.write(bytes(docx_bytes))
+
+            if old_abs_path and os.path.normcase(old_abs_path) != os.path.normcase(stored_path):
+                os.remove(old_abs_path)
+
+            entry = existing if existing else {}
+            created_at = int(entry.get("created_at") or now)
+            entry.update({
+                "alias": alias,
+                "original_name": alias,
+                "stored_name": random_name,
+                "stored_path": os.path.relpath(stored_path, self.base_dir).replace("\\", "/"),
+                "sandbox_path": f"{self.username}/files/{alias}",
+                "encoding": "binary",
+                "source_ext": ".docx",
+                "parser_mode": "docx-generated",
+                "title": str(title or "").strip(),
+                "markdown_chars": len(str(markdown or "")),
+                "block_count": int(stats.get("block_count") or 0),
+                "created_at": created_at,
+                "updated_at": now,
+                "size": os.path.getsize(stored_path),
+            })
+            files[alias] = entry
+            index["files"] = files
+            self._save_index(index)
+
+            return {
+                "success": True,
+                "created": not bool(existing),
+                "overwritten": bool(existing),
+                "mode": "docx_generate",
+                "markdown_chars": len(str(markdown or "")),
+                "block_count": int(stats.get("block_count") or 0),
+                "file": {
+                    "alias": entry.get("alias"),
+                    "sandbox_path": entry.get("sandbox_path"),
+                    "original_name": entry.get("original_name"),
+                    "size": entry.get("size"),
+                    "created_at": entry.get("created_at"),
+                    "updated_at": entry.get("updated_at"),
+                },
+            }
+
     def list_files(
         self,
         query: Optional[str] = None,
@@ -450,6 +537,16 @@ class UserFileSandbox:
             raise FileNotFoundError(f"stored file missing: {abs_path}")
         return abs_path
 
+    def _is_generated_docx_entry(self, entry: Dict[str, Any]) -> bool:
+        alias_ext = os.path.splitext(str(entry.get("alias") or ""))[1].lower()
+        return alias_ext == ".docx" and str(entry.get("parser_mode") or "") == "docx-generated"
+
+    def _reject_docx_text_mutation(self, entry: Dict[str, Any], tool_name: str) -> None:
+        alias_ext = os.path.splitext(str(entry.get("alias") or ""))[1].lower()
+
+        if alias_ext == ".docx":
+            raise ValueError(f"{tool_name} 不支持写入 .docx，请使用 cloud_doc_write 重新生成 Word 文件。")
+
     def read_file(
         self,
         file_ref: str,
@@ -460,8 +557,13 @@ class UserFileSandbox:
     ) -> Dict[str, Any]:
         entry = self._get_entry(file_ref)
         abs_path = self._get_abs_path(entry)
-        with open(abs_path, "r", encoding="utf-8") as f:
-            content = f.read()
+
+        if self._is_generated_docx_entry(entry):
+            with open(abs_path, "rb") as f:
+                content = self._extract_text_from_docx(f.read())
+        else:
+            with open(abs_path, "r", encoding="utf-8") as f:
+                content = f.read()
 
         def _line_col_at(text: str, pos: int) -> Tuple[int, int]:
             p = max(0, min(int(pos), len(text)))
@@ -576,6 +678,7 @@ class UserFileSandbox:
         max_replace: Optional[int] = None,
     ) -> Dict[str, Any]:
         entry = self._get_entry(file_ref)
+        self._reject_docx_text_mutation(entry, "cloud_file_write")
         alias = str(entry.get("alias"))
         with self._lock:
             index = self._load_index()
@@ -583,6 +686,7 @@ class UserFileSandbox:
             entry = files.get(alias)
             if not entry:
                 raise FileNotFoundError(f"file not found: {file_ref}")
+            self._reject_docx_text_mutation(entry, "cloud_file_write")
             abs_path = self._get_abs_path(entry)
             with open(abs_path, "r", encoding="utf-8") as f:
                 current = f.read()
@@ -661,6 +765,7 @@ class UserFileSandbox:
     ) -> Dict[str, Any]:
         """对云端文本文件应用统一 diff 或结构化 edits。"""
         entry = self._get_entry(file_ref)
+        self._reject_docx_text_mutation(entry, "cloud_file_patch")
         alias = str(entry.get("alias"))
 
         with self._lock:
@@ -671,12 +776,21 @@ class UserFileSandbox:
             if not entry:
                 raise FileNotFoundError(f"file not found: {file_ref}")
 
+            self._reject_docx_text_mutation(entry, "cloud_file_patch")
             abs_path = self._get_abs_path(entry)
 
-            with open(abs_path, "r", encoding="utf-8") as f:
-                current = f.read()
+            try:
+                with open(abs_path, "rb") as f:
+                    old_raw = f.read()
 
-            old_raw = current.encode("utf-8")
+                current = old_raw.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                return {
+                    "success": False,
+                    "message": f"文件无法按 utf-8 解码: {exc}",
+                    "path": entry.get("sandbox_path") or file_ref,
+                }
+
             old_sha256 = hashlib.sha256(old_raw).hexdigest()
             expected = str(expected_sha256 or "").strip().lower()
 
@@ -709,8 +823,8 @@ class UserFileSandbox:
             changed = updated != current
 
             if changed and not bool(dry_run):
-                with open(abs_path, "w", encoding="utf-8") as f:
-                    f.write(updated)
+                with open(abs_path, "wb") as f:
+                    f.write(new_raw)
 
                 now = int(time.time())
                 entry["updated_at"] = now
@@ -750,8 +864,13 @@ class UserFileSandbox:
             raise ValueError("keyword is required")
         entry = self._get_entry(file_ref)
         abs_path = self._get_abs_path(entry)
-        with open(abs_path, "r", encoding="utf-8") as f:
-            text = f.read()
+
+        if self._is_generated_docx_entry(entry):
+            with open(abs_path, "rb") as f:
+                text = self._extract_text_from_docx(f.read())
+        else:
+            with open(abs_path, "r", encoding="utf-8") as f:
+                text = f.read()
 
         lines = text.splitlines()
         results = []

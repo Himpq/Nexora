@@ -33,7 +33,7 @@ from longterm.longterm_api import normalize_longterm_request
 from chroma_client import ChromaStore
 from file_sandbox import UserFileSandbox
 from provider_factory import create_provider_adapter
-from client_tool_bridge import add_request_listener, pull_pending_request, submit_request_result, enqueue_request, wait_for_result, pull_local_tool_request
+from client_tool_bridge import add_request_listener, pull_pending_request, submit_request_result
 from agent_tunnel import add_agent_status_listener, register_agent, unregister_agent, update_agent_tools, update_agent_prompt, update_ping, is_agent_online, handle_agent_result
 from stream_runtime import start_session as start_stream_session, iter_session_chunks as iter_stream_session_chunks, get_session_meta as get_stream_session_meta, request_cancel as request_stream_cancel, list_sessions as list_stream_sessions, is_stream_cancelled_error, StreamCancelled, get_accumulated_content as get_stream_accumulated_content
 from tools import canonicalize_tool_name
@@ -41,10 +41,13 @@ from map.baidu import load_map_scene_for_map_id
 from secure import normalize_text, resolve_configured_path, safe_filename, safe_join_path
 from timeline import list_entries as list_timeline_entries, record_notes_snapshot_change
 from datastorage import safe_read_json, safe_write_json, get_path_lock
+from knowledge_word_exporter import KnowledgeWordExporter
+from runlog import init_run_logger
 import conversation_asset_store
 import prompts
 from learning_runtime import build_learning_context_payload, build_learning_memory_blocks
 from learning_runtime import get_learning_runtime_local_config
+from longdoc_skills import load_longdoc_skill_catalog
 from system_settings_runtime import SystemSettingsRuntimeSyncer
 from server_quota import (
     get_server_quota_status,
@@ -54,6 +57,7 @@ from server_quota import (
     get_generation_quota_gate,
     is_stopped,
 )
+from papi.token_logger import iter_papi_token_log_entries
 from flask_sock import Sock
 
 
@@ -283,6 +287,7 @@ DEFAULT_MAIN_CONFIG = {
     "websearch_model": "doubao-seed-1-6-flash-250828",
     "continuous_summary": False,
     "log_status": "silent",
+    "log_retention_count": 5,
     "recent_dialogue_memory_count": 3,
     "recent_dialogue_item_max_chars": 12000,
     "user_knowledge_prompt_max_items": 24,
@@ -4775,10 +4780,32 @@ def _fetch_volc_foundation_models_context_map(provider_cfg, timeout=8.0):
             out[mid] = ctx
     return out
 
-def get_chroma_store():
-    """Get Chroma store if enabled."""
+def _get_rag_database_config():
+    """Read RAG database configuration."""
     config = get_config_all()
     rag = config.get('rag_database', {})
+    if not isinstance(rag, dict):
+        return {}
+    return rag
+
+
+def _is_rag_database_enabled():
+    """Return whether the RAG database switch is enabled."""
+    rag = _get_rag_database_config()
+    return bool(rag.get('rag_database_enabled', False))
+
+
+def _knowledge_meta_timestamp(value):
+    """Normalize knowledge timestamp metadata for vector status checks."""
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def get_chroma_store():
+    """Get Chroma store if enabled."""
+    rag = _get_rag_database_config()
     if not rag.get('rag_database_enabled', False):
         return None, 'disabled'
     try:
@@ -8303,6 +8330,206 @@ def admin_token_stats():
         return jsonify({'success': False, 'message': str(e)})
 
 
+def _admin_token_stats_range_start(range_name: str) -> Optional[datetime]:
+    clean_range = str(range_name or '30d').strip().lower()
+    now = datetime.now()
+
+    if clean_range in {'today', '1d'}:
+        return datetime.combine(now.date(), datetime.min.time())
+
+    if clean_range == '7d':
+        return now - timedelta(days=7)
+
+    if clean_range == '30d':
+        return now - timedelta(days=30)
+
+    if clean_range in {'all', '全部'}:
+        return None
+
+    return now - timedelta(days=30)
+
+
+def _admin_normalize_token_log_for_user(log: Dict[str, Any], source: str) -> Dict[str, Any]:
+    src = log if isinstance(log, dict) else {}
+    input_tokens = _safe_int_status(src.get('input_tokens', 0), 0)
+    output_tokens = _safe_int_status(src.get('output_tokens', 0), 0)
+    total_tokens = src.get('total_tokens')
+
+    if total_tokens is None:
+        total_tokens = input_tokens + output_tokens
+
+    total_tokens = _safe_int_status(total_tokens, input_tokens + output_tokens)
+
+    if total_tokens <= 0 and (input_tokens > 0 or output_tokens > 0):
+        total_tokens = input_tokens + output_tokens
+
+    timestamp = str(src.get('timestamp') or '').strip()
+
+    return {
+        'timestamp': timestamp,
+        'timestamp_dt': _status_parse_timestamp(timestamp),
+        'source': str(source or src.get('source') or 'chat').strip() or 'chat',
+        'action': str(src.get('action') or 'chat').strip() or 'chat',
+        'provider': str(src.get('provider') or 'unknown').strip() or 'unknown',
+        'model': str(src.get('model') or 'unknown').strip() or 'unknown',
+        'conversation_id': str(src.get('conversation_id') or '').strip(),
+        'request_path': str(src.get('request_path') or '').strip(),
+        'status': str(src.get('status') or 'success').strip() or 'success',
+        'username': str(src.get('username') or '').strip(),
+        'api_key_id': str(src.get('api_key_id') or '').strip(),
+        'api_key_name': str(src.get('api_key_name') or '').strip(),
+        'api_key_preview': str(src.get('api_key_preview') or '').strip(),
+        'input_tokens': input_tokens,
+        'output_tokens': output_tokens,
+        'total_tokens': total_tokens,
+        'duration_ms': _safe_int_status(src.get('duration_ms', 0), 0),
+    }
+
+
+def _admin_collect_user_token_logs(username: str) -> List[Dict[str, Any]]:
+    target_username = str(username or '').strip()
+    user_path = _status_resolve_user_path(target_username)
+    logs: List[Dict[str, Any]] = []
+
+    for item in _read_json_list_safe(safe_join_path(user_path, 'token_usage.json')):
+        if isinstance(item, dict):
+            logs.append(_admin_normalize_token_log_for_user(item, 'chat'))
+
+    for item in iter_papi_token_log_entries():
+        if not isinstance(item, dict):
+            continue
+
+        if str(item.get('username') or '').strip() != target_username:
+            continue
+
+        logs.append(_admin_normalize_token_log_for_user(item, 'papi'))
+
+    return logs
+
+
+def _admin_build_user_token_stats(username: str, range_name: str) -> Dict[str, Any]:
+    range_start = _admin_token_stats_range_start(range_name)
+    all_logs = _admin_collect_user_token_logs(username)
+    filtered_logs: List[Dict[str, Any]] = []
+
+    for log in all_logs:
+        ts_dt = log.get('timestamp_dt')
+
+        if range_start is not None and (not isinstance(ts_dt, datetime) or ts_dt < range_start):
+            continue
+
+        filtered_logs.append(log)
+
+    provider_totals: Dict[str, Dict[str, int]] = {}
+    model_totals: Dict[str, Dict[str, int]] = {}
+    source_totals: Dict[str, Dict[str, int]] = {}
+    total_input = 0
+    total_output = 0
+    total_tokens = 0
+    papi_input_tokens = 0
+    papi_output_tokens = 0
+    papi_total_tokens = 0
+    papi_requests = 0
+
+    for log in filtered_logs:
+        input_tokens = _safe_int_status(log.get('input_tokens', 0), 0)
+        output_tokens = _safe_int_status(log.get('output_tokens', 0), 0)
+        tokens = _safe_int_status(log.get('total_tokens', 0), input_tokens + output_tokens)
+        provider = str(log.get('provider') or 'unknown').strip() or 'unknown'
+        model = str(log.get('model') or 'unknown').strip() or 'unknown'
+        source = str(log.get('source') or 'chat').strip() or 'chat'
+
+        total_input += input_tokens
+        total_output += output_tokens
+        total_tokens += tokens
+
+        if source == 'papi':
+            papi_input_tokens += input_tokens
+            papi_output_tokens += output_tokens
+            papi_total_tokens += tokens
+            papi_requests += 1
+
+        for bucket, key in (
+            (provider_totals, provider),
+            (model_totals, model),
+            (source_totals, source),
+        ):
+            row = bucket.setdefault(key, {'tokens': 0, 'requests': 0})
+            row['tokens'] += tokens
+            row['requests'] += 1
+
+    recent = sorted(
+        filtered_logs,
+        key=lambda item: item.get('timestamp_dt') if isinstance(item.get('timestamp_dt'), datetime) else datetime.min,
+        reverse=True
+    )[:20]
+
+    def _top_rows(bucket: Dict[str, Dict[str, int]], limit: int) -> List[Dict[str, Any]]:
+        rows = [
+            {'name': key, 'tokens': value.get('tokens', 0), 'requests': value.get('requests', 0)}
+            for key, value in bucket.items()
+        ]
+        return sorted(rows, key=lambda item: item['tokens'], reverse=True)[:limit]
+
+    return {
+        'username': username,
+        'range': str(range_name or '30d').strip().lower() or '30d',
+        'total_logs': len(all_logs),
+        'matched_logs': len(filtered_logs),
+        'summary': {
+            'requests': len(filtered_logs),
+            'input_tokens': total_input,
+            'output_tokens': total_output,
+            'total_tokens': total_tokens,
+            'papi_requests': papi_requests,
+            'papi_input_tokens': papi_input_tokens,
+            'papi_output_tokens': papi_output_tokens,
+            'papi_total_tokens': papi_total_tokens,
+        },
+        'top_providers': _top_rows(provider_totals, 8),
+        'top_models': _top_rows(model_totals, 10),
+        'sources': _top_rows(source_totals, 6),
+        'recent': [
+            {
+                'timestamp': str(item.get('timestamp') or ''),
+                'source': str(item.get('source') or ''),
+                'provider': str(item.get('provider') or ''),
+                'model': str(item.get('model') or ''),
+                'action': str(item.get('action') or ''),
+                'input_tokens': _safe_int_status(item.get('input_tokens', 0), 0),
+                'output_tokens': _safe_int_status(item.get('output_tokens', 0), 0),
+                'total_tokens': _safe_int_status(item.get('total_tokens', 0), 0),
+                'duration_ms': _safe_int_status(item.get('duration_ms', 0), 0),
+            }
+            for item in recent
+        ],
+    }
+
+
+@app.route('/api/admin/tokens/stats/user', methods=['GET'])
+@require_admin
+def admin_user_token_stats():
+    """按单个用户查询 Token 使用统计。"""
+    username = str(request.args.get('username') or '').strip()
+    range_name = str(request.args.get('range') or '30d').strip().lower()
+
+    if not username:
+        return jsonify({'success': False, 'message': 'username is required'}), 400
+
+    users = load_users()
+
+    if username not in users:
+        return jsonify({'success': False, 'message': '用户不存在'}), 404
+
+    try:
+        payload = _admin_build_user_token_stats(username, range_name)
+        payload['success'] = True
+        payload['display_name'] = str((users.get(username) or {}).get('display_name') or username)
+        return jsonify(payload)
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
 @app.route('/api/admin/quota', methods=['GET', 'PUT'])
 @require_admin
 def admin_server_quota():
@@ -11212,12 +11439,14 @@ def chat_stream():
     skill_mode = 'force'
     skill_runtime: Dict[str, Any] = {}
     active_tool_skills = []
+    longdoc_skills = []
     try:
         skill_runtime = _build_user_skill_runtime(username)
         active_tool_skills = skill_runtime.get('active_skills', [])
     except Exception:
         skill_mode = 'force'
         active_tool_skills = []
+    longdoc_skills = load_longdoc_skill_catalog(SKILLS_DIR)
     if isinstance(raw_active_tool_skills, list):
         active_tool_skills = raw_active_tool_skills
         if raw_skill_mode is not None:
@@ -11264,6 +11493,7 @@ def chat_stream():
         "skill_runtime",
         skill_mode=str(skill_mode or ""),
         active_skill_count=len(active_tool_skills) if isinstance(active_tool_skills, list) else 0,
+        longdoc_skill_count=len(longdoc_skills) if isinstance(longdoc_skills, list) else 0,
     )
     
     # --- 模型权限校验 ---
@@ -11382,7 +11612,7 @@ def chat_stream():
     )
 
     def _resolve_local_agent_info_for_chat():
-        """解析当前用户的 NexoraCode 本地工具，优先使用 WSS 在线工具表。"""
+        """解析当前用户的 NexoraCode 本地工具，只使用 WSS 在线工具表。"""
         from agent_tunnel import is_agent_online, get_agent_tools
 
         if is_agent_online(username):
@@ -11390,19 +11620,6 @@ def chat_stream():
 
             if online_tools:
                 return {"username": username, "tools": online_tools, "source": "wss"}
-
-        token_agent_info = _LOCAL_AGENTS.get(local_agent_cookie_token) if local_agent_cookie_token else None
-
-        if token_agent_info and token_agent_info.get("username") == username:
-            return dict(token_agent_info, source="cookie")
-
-        for info in _LOCAL_AGENTS.values():
-
-            if not isinstance(info, dict):
-                continue
-
-            if info.get("username") == username:
-                return dict(info, source="username")
 
         return None
 
@@ -11510,6 +11727,7 @@ def chat_stream():
             if not isinstance(raw_conversation_mode_payload, dict):
                 raw_conversation_mode_payload = {}
             worker_active_tool_skills = list(active_tool_skills) if isinstance(active_tool_skills, list) else []
+            worker_longdoc_skills = list(longdoc_skills) if isinstance(longdoc_skills, list) else []
             _chat_latency_mark(
                 "worker_request_normalized",
                 conversation_mode=raw_conversation_mode,
@@ -11713,6 +11931,7 @@ def chat_stream():
                 regenerate_index=regenerate_index,
                 skill_mode=skill_mode,
                 active_tool_skills=worker_active_tool_skills,
+                longdoc_skills=worker_longdoc_skills,
                 conversation_mode=raw_conversation_mode,
                 conversation_mode_payload=raw_conversation_mode_payload,
                 skip_user_message=bool(skip_user_message or user_message_persisted)
@@ -11968,9 +12187,8 @@ def submit_client_tool_result_api():
 def _inject_local_agent_tools(model, agent_info: dict, cancel_checker=None):
     """将本地 Agent 工具注入到 model 实例（工具定义 + 执行处理器）
 
-    执行路径：服务器 enqueue_request → NexoraCode 长轮询 pull → 本地执行 →
-    POST /api/client-tools/submit → wait_for_result 返回结果给模型。
-    避免服务器直连 localhost（服务器端 localhost != 用户本机）。
+    执行路径：Nexora WSS → NexoraCode 本地执行 → WSS 返回结果给模型。
+    本地工具只允许走 WSS，避免 HTTP 长轮询在每次工具调用时制造额外请求。
     """
     username = agent_info.get("username", "")
 
@@ -11996,6 +12214,15 @@ def _inject_local_agent_tools(model, agent_info: dict, cancel_checker=None):
         if not tool_name:
             continue
 
+        builtin_handlers = getattr(getattr(model, 'tool_executor', None), 'handlers', {})
+
+        if isinstance(builtin_handlers, dict) and tool_name in builtin_handlers:
+            print(
+                f"[NexoraCode ChatInject] skip builtin tool collision "
+                f"name={tool_name} raw_name={raw_tool_name}"
+            )
+            continue
+
         # 按 provider 要求选择正确格式，与 _parse_tools 保持一致
         if use_responses_api:
             formatted = {
@@ -12018,7 +12245,14 @@ def _inject_local_agent_tools(model, agent_info: dict, cancel_checker=None):
         model.register_external_function_tool(formatted)
 
         def _format_local_tool_failure_markdown(tool_name: str, result: dict, title: str) -> str:
-            error_text = str(result.get("error") or result.get("message") or "未知错误").strip()
+            detail_payload = result.get("result") if isinstance(result.get("result"), dict) else result
+            error_text = str(
+                result.get("error")
+                or detail_payload.get("error")
+                or result.get("message")
+                or detail_payload.get("message")
+                or "未知错误"
+            ).strip()
             lines = [
                 f"### {title}",
                 "",
@@ -12037,7 +12271,7 @@ def _inject_local_agent_tools(model, agent_info: dict, cancel_checker=None):
             details = []
 
             for key in detail_keys:
-                value = result.get(key)
+                value = detail_payload.get(key)
 
                 if value is None or value == "":
                     continue
@@ -12059,14 +12293,13 @@ def _inject_local_agent_tools(model, agent_info: dict, cancel_checker=None):
 
             return "\n".join(lines)
 
-        # 注入执行处理器：WSS 在线时走 agent_tunnel_socket，不在线时走长轮询通道。
+        # 注入执行处理器：本地工具只走 agent_tunnel_socket 的 WSS 通道。
         def _make_handler(name: str, uname: str):
             def _handler(args: dict) -> str:
                 from agent_tunnel import is_agent_online, call_local_tool_sync
 
                 _raise_if_cancelled()
                 
-                # WebSocket 优先
                 if is_agent_online(uname):
                     try:
                         result = call_local_tool_sync(
@@ -12088,30 +12321,14 @@ def _inject_local_agent_tools(model, agent_info: dict, cancel_checker=None):
                             raise
                         return f"本地工具 WSS 通信异常: {e}"
 
-                # 本地 Agent 未保持 WSS 在线时使用长轮询通道。
-                _raise_if_cancelled()
-                conv_id = str(getattr(model, 'conversation_id', '') or '')
-                req_obj = enqueue_request(
-                    username=uname,
-                    conversation_id=conv_id,
-                    request_type="local_tool",
-                    payload={"tool": name, "params": args},
-                    timeout_ms=120000,
+                return _format_local_tool_failure_markdown(
+                    name,
+                    {
+                        "success": False,
+                        "error": "NexoraCode WSS 未在线，已拒绝执行本地工具。请保持 NexoraCode WSS 连接后重试。",
+                    },
+                    "本地工具 WSS 未在线",
                 )
-                result = wait_for_result(
-                    username=uname,
-                    conversation_id=conv_id,
-                    request_id=req_obj["request_id"],
-                    timeout_ms=120000,
-                    cancel_checker=cancel_checker,
-                )
-                _raise_if_cancelled()
-                if str(result.get("error") or "") == "stream_cancelled":
-                    raise StreamCancelled("user_abort")
-                if not result.get("success"):
-                    return _format_local_tool_failure_markdown(name, result, "本地工具执行失败")
-                r = result.get("result", result)
-                return r if isinstance(r, str) else json.dumps(r, ensure_ascii=False)
             return _handler
 
         model.tool_executor.handlers[tool_name] = _make_handler(tool_name, username)
@@ -12120,18 +12337,13 @@ def _inject_local_agent_tools(model, agent_info: dict, cancel_checker=None):
 def _resolve_agent_info_for_user(username: str):
     from agent_tunnel import is_agent_online, get_agent_tools
 
-    agent_info = None
     if is_agent_online(username):
         tools = get_agent_tools(username)
-        if tools:
-            agent_info = {"username": username, "tools": tools}
 
-    if not agent_info:
-        agent_token = request.cookies.get("nexoracode_agent", "").strip()
-        agent_info = _LOCAL_AGENTS.get(agent_token) if agent_token else None
-        if agent_info and agent_info.get("username") != username:
-            agent_info = None
-    return agent_info
+        if tools:
+            return {"username": username, "tools": tools, "source": "wss"}
+
+    return None
 
 
 def _flatten_model_function_tools(model) -> List[Dict[str, Any]]:
@@ -12310,24 +12522,11 @@ def local_agent_unregister():
 
 @app.route('/api/local_agent/pull', methods=['POST'])
 def local_agent_pull():
-    """NexoraCode 长轮询：取出属于当前用户的下一个 local_tool 执行请求"""
-    data = request.get_json(silent=True) or {}
-    wait_ms = int(data.get("wait_ms", 10000))
-    agent_token = str(
-        request.headers.get('X-NexoraCode-Agent')
-        or data.get('agent_token')
-        or request.cookies.get('nexoracode_agent')
-        or ''
-    ).strip()
-    agent_info = _LOCAL_AGENTS.get(agent_token) if agent_token else None
-    if not agent_info:
-        return jsonify({"success": False, "message": "invalid agent token"}), 401
-    username = str(agent_info.get("username") or "").strip()
-    if not username:
-        return jsonify({"success": False, "message": "invalid agent user"}), 401
-
-    req = pull_local_tool_request(username=username, wait_ms=wait_ms)
-    return jsonify({"success": True, "request": req})
+    """旧版 NexoraCode 本地工具长轮询入口已停用，本地工具统一走 WSS。"""
+    return jsonify({
+        "success": False,
+        "message": "NexoraCode local tool long polling is disabled. Use WSS agent tunnel.",
+    }), 410
 
 
 @app.route('/api/tokens/stats', methods=['GET'])
@@ -12649,31 +12848,50 @@ def list_knowledge():
                     basis_knowledge[t] = {}
 
         # 增强：检测向量是否真实存在，防止外部删库后前端状态失真
+        vectorization_enabled = _is_rag_database_enabled()
         vector_titles = None
-        store, _ = get_chroma_store()
+        store = None
+        if vectorization_enabled:
+            store, _ = get_chroma_store()
+
         if store and getattr(store, 'mode', '') == 'service':
             try:
                 vector_titles = set(store.list_titles(username, library='knowledge'))
             except Exception:
                 vector_titles = None
 
-        if vector_titles is not None:
-            for title, meta in basis_knowledge.items():
-                meta['vector_exists'] = title in vector_titles
+        for title, meta in list(basis_knowledge.items()):
+            if isinstance(meta, dict):
                 meta['pin'] = bool(meta.get('pin', False))
                 meta['model_readonly'] = bool(meta.get('model_readonly', False))
-        else:
-            for _, meta in basis_knowledge.items():
-                if isinstance(meta, dict):
-                    meta['pin'] = bool(meta.get('pin', False))
-                    meta['model_readonly'] = bool(meta.get('model_readonly', False))
+
+                if vectorization_enabled and vector_titles is not None:
+                    meta['vector_exists'] = title in vector_titles
+
+                vector_exists = meta.get('vector_exists')
+                if not isinstance(vector_exists, bool):
+                    vector_exists = True
+
+                updated_at = _knowledge_meta_timestamp(meta.get('updated_at'))
+                vector_updated_at = _knowledge_meta_timestamp(meta.get('vector_updated_at'))
+                meta['needs_vector_refresh'] = bool(
+                    vectorization_enabled
+                    and ((updated_at > 0 and vector_updated_at < updated_at) or not vector_exists)
+                )
+            else:
+                basis_knowledge[title] = {
+                    'pin': False,
+                    'model_readonly': False,
+                    'needs_vector_refresh': False
+                }
         
         return jsonify({
             'success': True,
             'short_memory': short_memory,
             'short_memory_disabled': bool(SHORT_MEMORY_DISABLED),
             'user_profile_memory': user_profile_memory,
-            'basis_knowledge': basis_knowledge
+            'basis_knowledge': basis_knowledge,
+            'vectorization_enabled': vectorization_enabled
         })
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
@@ -12708,6 +12926,43 @@ def get_all_basis():
         return jsonify({'success': True, 'knowledge': result})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
+
+
+@app.route('/api/knowledge/export/word', methods=['GET'])
+@require_login
+def export_knowledge_word():
+    """导出当前用户基础知识库为 Word 文档。"""
+    username = session['username']
+    user = User(username)
+    title = str(request.args.get('title') or '').strip()
+
+    try:
+        items = KnowledgeWordExporter.collect_items(user, title=title)
+
+        if not items:
+            return jsonify({'success': False, 'message': '知识库为空'}), 404
+
+        output = KnowledgeWordExporter().build(username, items)
+        export_name = title or '知识库导出'
+        time_suffix = datetime.now().strftime('%Y%m%d_%H%M%S')
+        download_name = safe_filename(
+            f'{export_name}_{time_suffix}.docx',
+            default='knowledge_export.docx',
+            max_len=180
+        )
+
+        return send_file(
+            output,
+            as_attachment=True,
+            download_name=download_name,
+            mimetype=KnowledgeWordExporter.mimetype
+        )
+    except KeyError as e:
+        message = str(e).strip("'")
+        return jsonify({'success': False, 'message': message}), 404
+    except Exception as e:
+        print(f"[KnowledgeExport] word export failed username={username} title={title}: {_format_exception_details(e)}")
+        return jsonify({'success': False, 'message': str(e)}), 500
 
 
 @app.route('/api/knowledge/basis/update', methods=['POST'])
@@ -14298,9 +14553,11 @@ if __name__ == '__main__':
     config = ensure_main_config_defaults()
     port = int(config.get('port', 5000) or 5000)
     debug = bool(config.get('debug', False))
+    log_file = init_run_logger({'data_dir': DATA_DIR}, service_name='ChatDB')
     
     print("[ChatDB] Web Server Starting...")
     print(f"[ChatDB] URL: http://localhost:{port}")
+    print(f"[ChatDB] Log: {log_file}")
     print("[ChatDB] Press Ctrl+C to stop")
 
     if (not debug) or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':

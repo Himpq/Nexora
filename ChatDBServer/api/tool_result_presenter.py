@@ -16,10 +16,12 @@ class ToolResultPresenter:
             "temp_context_search": self._render_tmp_search,
             "temp_context_list": self._render_tmp_list,
             "temp_context_clear": self._render_tmp_clear,
+            "skill": self._render_skill,
             "cloud_file_read": self._render_file_read,
             "local_file_read": self._render_file_read,
             "cloud_file_create": self._render_file_create,
             "cloud_file_write": self._render_file_write,
+            "cloud_doc_write": self._render_doc_write,
             "cloud_file_patch": self._render_file_patch,
             "cloud_file_find": self._render_file_find,
             "cloud_file_list": self._render_file_list,
@@ -266,6 +268,87 @@ class ToolResultPresenter:
 
         return "\n".join(lines).strip()
 
+    def _render_skill(self, args: Dict[str, Any], result: Any) -> str:
+        payload = self._load_payload(result)
+
+        if not isinstance(payload, dict):
+            return str(result or "")
+
+        success = payload.get("success", True) is not False
+        title = str(payload.get("title") or args.get("name") or payload.get("id") or "").strip()
+        skill_id = str(payload.get("id") or "").strip()
+        lines = [
+            self._status_title(success, "## Longdoc Skill", "## Longdoc Skill Read Failed"),
+            "",
+        ]
+
+        if title:
+            lines.append(f"- Title: {title}")
+
+        if skill_id:
+            lines.append(f"- ID: `{skill_id}`")
+
+        if payload.get("type"):
+            lines.append(f"- Type: `{payload.get('type')}`")
+
+        description = str(payload.get("description") or "").strip()
+
+        if description:
+            lines.append(f"- Description: {description}")
+
+        aliases = payload.get("aliases") if isinstance(payload.get("aliases"), list) else []
+
+        if aliases:
+            lines.append(f"- Aliases: {', '.join([str(x) for x in aliases if str(x).strip()])}")
+
+        if not success:
+            reason = str(payload.get("message") or payload.get("error") or "unknown error").strip()
+            lines.extend(["", f"- Reason: {reason}"])
+            available = payload.get("available_skills") if isinstance(payload.get("available_skills"), list) else []
+
+            if available:
+                lines.extend([
+                    "",
+                    "### Available Longdoc Skills",
+                    "",
+                    "| ID | Title | Description | Aliases |",
+                    "| --- | --- | --- | --- |",
+                ])
+
+                for item in available[:50]:
+
+                    if not isinstance(item, dict):
+                        continue
+
+                    alias_text = ", ".join([str(x) for x in (item.get("aliases") or []) if str(x).strip()])
+                    lines.append(
+                        "| "
+                        f"{self._escape_table_cell(item.get('id'))} | "
+                        f"{self._escape_table_cell(item.get('title'))} | "
+                        f"{self._escape_table_cell(item.get('description'))} | "
+                        f"{self._escape_table_cell(alias_text)} |"
+                    )
+
+            return "\n".join(lines).strip()
+
+        variables = payload.get("template_variables") if isinstance(payload.get("template_variables"), dict) else {}
+
+        if variables:
+            lines.extend(["", "### Template Variables", ""])
+
+            for key in sorted(variables.keys()):
+                value = str(variables.get(key) or "").strip()
+
+                if value:
+                    lines.append(f"- `{key}`: {value}")
+
+        content = str(payload.get("content") or "").strip()
+
+        if content:
+            lines.extend(["", "### Content", "", content])
+
+        return "\n".join(lines).strip()
+
     def _extract_file_label(self, args: Dict[str, Any], payload: Any) -> str:
         if isinstance(payload, dict):
             file_obj = payload.get("file")
@@ -290,6 +373,37 @@ class ToolResultPresenter:
                 return value
 
         return "(unknown)"
+
+    def _extract_cloud_file_reference_path(self, args: Dict[str, Any], payload: Any) -> str:
+        _ = args
+
+        if isinstance(payload, dict):
+            file_obj = payload.get("file")
+
+            if isinstance(file_obj, dict):
+                value = str(file_obj.get("sandbox_path") or "").strip()
+
+                if value:
+                    return value
+
+            value = str(payload.get("sandbox_path") or "").strip()
+
+            if value:
+                return value
+
+        return ""
+
+    def _append_cloud_file_reference_instruction(self, lines: list, args: Dict[str, Any], payload: Any) -> None:
+        file_ref = self._extract_cloud_file_reference_path(args, payload)
+
+        if not file_ref:
+            return
+
+        lines.extend([
+            "",
+            "### Reply Instruction",
+            f"Final reply must reference this file as: [file]{file_ref}[/file]",
+        ])
 
     def _render_tmp_read(self, args: Dict[str, Any], result: Any) -> str:
         payload = self._load_payload(result)
@@ -542,6 +656,10 @@ class ToolResultPresenter:
 
         if not success:
             lines.extend(["", f"Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
+
+        else:
+            self._append_cloud_file_reference_instruction(lines, args, payload)
+
         return "\n".join(lines).strip()
 
     def _render_file_write(self, args: Dict[str, Any], result: Any) -> str:
@@ -585,6 +703,56 @@ class ToolResultPresenter:
 
         if not success:
             lines.extend(["", f"Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
+
+        elif str(payload.get("mode") or "").strip().lower() == "overwrite":
+            self._append_cloud_file_reference_instruction(lines, args, payload)
+
+        return "\n".join(lines).strip()
+
+    def _render_doc_write(self, args: Dict[str, Any], result: Any) -> str:
+        payload = self._load_payload_unwrapped(result)
+
+        if isinstance(payload, dict) and payload.get("tmp_cached"):
+            return self._render_cached_payload("cloud_doc_write", payload)
+
+        if not isinstance(payload, dict):
+            return str(result or "")
+
+        success = payload.get("success", True) is not False and not payload.get("error")
+        file_label = self._extract_file_label(args, payload)
+        title = self._status_title(success, "## Word Document Written", "## Word Document Write Failed")
+        lines = [
+            title,
+            "",
+            f"- File: `{file_label}`",
+        ]
+
+        if payload.get("mode"):
+            lines.append(f"- Mode: `{payload.get('mode')}`")
+
+        if payload.get("created") is not None:
+            lines.append(f"- Created: {self._as_bool_text(payload.get('created'))}")
+
+        if payload.get("overwritten") is not None:
+            lines.append(f"- Overwritten: {self._as_bool_text(payload.get('overwritten'))}")
+
+        if payload.get("markdown_chars") is not None:
+            lines.append(f"- Markdown Chars: {payload.get('markdown_chars')}")
+
+        if payload.get("block_count") is not None:
+            lines.append(f"- Blocks: {payload.get('block_count')}")
+
+        file_obj = payload.get("file") if isinstance(payload.get("file"), dict) else {}
+
+        if file_obj.get("size") is not None:
+            lines.append(f"- Size: {file_obj.get('size')} bytes")
+
+        if not success:
+            lines.extend(["", f"Reason: {payload.get('message') or payload.get('error') or 'unknown error'}"])
+
+        else:
+            self._append_cloud_file_reference_instruction(lines, args, payload)
+
         return "\n".join(lines).strip()
 
     def _render_file_find(self, args: Dict[str, Any], result: Any) -> str:

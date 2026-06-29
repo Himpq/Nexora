@@ -13,12 +13,14 @@ import ssl
 
 from chroma_client import ChromaStore
 from file_sandbox import UserFileSandbox
+from document_generation import DocumentGenerationService
 from client_tool_bridge import request_client_js_execution
 from conversation_asset_store import persist_conversation_image_bytes
 from papi.token_logger import build_image_generation_log_context, record_papi_image_generation
 from provider_factory import create_provider_adapter
 from tools import canonicalize_tool_name
 from learning_runtime import LearningRuntimeExecutor, get_learning_tools
+from longdoc_skills import read_longdoc_skill
 from map.baidu import BaiduMapToolService
 from map.tianditu import create_map_tool_service
 
@@ -31,12 +33,10 @@ class ToolExecutor:
 
     def __init__(self, model):
         self.model = model
-        self._template_pattern = re.compile(r"\{\{\s*(file|basis)\s*:(.*?)\}\}", re.IGNORECASE | re.DOTALL)
-        self._template_max_chunk_chars = 20000
-        self._template_total_budget_chars = 80000
         self.handlers: Dict[str, Callable[[Dict[str, Any]], str]] = {
             "runtime_tool_select": self._runtime_tool_select,
             "runtime_tool_enable": self._runtime_tool_enable,
+            "skill": self._skill,
             "question": self._question,
             "knowledge_list": self._get_knowledge_list,
             "memory_short_add": self._add_short,
@@ -80,6 +80,7 @@ class ToolExecutor:
             "cloud_file_create": self._file_create,
             "cloud_file_read": self._file_read,
             "cloud_file_write": self._file_write,
+            "cloud_doc_write": self._doc_write,
             "cloud_file_patch": self._file_patch,
             "cloud_file_find": self._file_find,
             "cloud_file_list": self._file_list,
@@ -247,127 +248,6 @@ class ToolExecutor:
             return names
         return names
 
-    def _clip_template_chunk(self, text: str, hint: str = "片段") -> str:
-        s = str(text or "")
-        if len(s) <= self._template_max_chunk_chars:
-            return s
-        keep = self._template_max_chunk_chars
-        return s[:keep] + f"\n\n...[{hint}过长已截断，共{len(s)}字符，当前保留{keep}字符]..."
-
-    def _expand_file_template(self, spec: str) -> str:
-        parts = [p.strip() for p in str(spec or "").split(",")]
-        parts = [p for p in parts if p != ""]
-        if not parts:
-            raise ValueError("file 模板缺少路径")
-
-        file_ref = parts[0]
-        mode = ""
-        start = None
-        end = None
-        if len(parts) >= 2:
-            token = parts[1].lower()
-            if token in {"lines", "line"}:
-                mode = "lines"
-                start = self._safe_int(parts[2], 1) if len(parts) >= 3 else 1
-                end = self._safe_int(parts[3], None) if len(parts) >= 4 else None
-            elif token in {"chars", "char"}:
-                mode = "chars"
-                start = self._safe_int(parts[2], 0) if len(parts) >= 3 else 0
-                end = self._safe_int(parts[3], None) if len(parts) >= 4 else None
-            elif len(parts) >= 3:
-                # 兼容简写：{{file:path,0,500}} -> line range
-                mode = "lines"
-                start = self._safe_int(parts[1], 1)
-                end = self._safe_int(parts[2], None)
-
-        if mode == "lines":
-            payload = self._file_sandbox.read_file(file_ref=file_ref, from_line=start, to_line=end)
-        elif mode == "chars":
-            payload = self._file_sandbox.read_file(file_ref=file_ref, from_pos=start, to_pos=end)
-        else:
-            payload = self._file_sandbox.read_file(file_ref=file_ref)
-
-        if not isinstance(payload, dict) or not payload.get("success", False):
-            raise ValueError(f"读取文件失败: {file_ref}")
-        return self._clip_template_chunk(payload.get("content", ""), hint=f"file:{file_ref}")
-
-    def _expand_basis_template(self, spec: str) -> str:
-        parts = [p.strip() for p in str(spec or "").split(",")]
-        parts = [p for p in parts if p != ""]
-        if not parts:
-            raise ValueError("basis 模板缺少标题")
-        title = parts[0]
-
-        mode = ""
-        start = None
-        end = None
-        if len(parts) >= 2:
-            token = parts[1].lower()
-            if token in {"chars", "char"}:
-                mode = "chars"
-                start = self._safe_int(parts[2], 0) if len(parts) >= 3 else 0
-                end = self._safe_int(parts[3], None) if len(parts) >= 4 else None
-            elif len(parts) >= 3:
-                # 兼容简写：{{basis:title,0,3000}} -> char range
-                mode = "chars"
-                start = self._safe_int(parts[1], 0)
-                end = self._safe_int(parts[2], None)
-
-        if mode == "chars":
-            raw = self.model.user.getBasisContent(title=title, from_pos=start, to_pos=end)
-            try:
-                payload = json.loads(raw) if isinstance(raw, str) else raw
-            except Exception:
-                payload = None
-            if isinstance(payload, dict) and payload.get("success", False):
-                content = payload.get("content", "")
-            elif isinstance(raw, str):
-                content = raw
-            else:
-                content = ""
-        else:
-            content = self.model.user.getBasisContent(title=title)
-
-        return self._clip_template_chunk(content, hint=f"basis:{title}")
-
-    def _expand_template_text(self, text: str, budget: Dict[str, int]) -> str:
-        src = str(text or "")
-        if "{{" not in src or "}}" not in src:
-            return src
-
-        def repl(match):
-            kind = str(match.group(1) or "").strip().lower()
-            spec = str(match.group(2) or "").strip()
-            if kind == "file":
-                expanded = self._expand_file_template(spec)
-            elif kind == "basis":
-                expanded = self._expand_basis_template(spec)
-            else:
-                raise ValueError(f"不支持的模板类型: {kind}")
-
-            budget["chars"] = int(budget.get("chars", 0)) + len(expanded)
-            if budget["chars"] > self._template_total_budget_chars:
-                raise ValueError(
-                    f"模板展开总量超限（>{self._template_total_budget_chars}字符），请缩小范围"
-                )
-            return expanded
-
-        return self._template_pattern.sub(repl, src)
-
-    def _resolve_templates_in_value(self, value: Any, budget: Dict[str, int]):
-        if isinstance(value, str):
-            return self._expand_template_text(value, budget)
-        if isinstance(value, dict):
-            out = {}
-            for k, v in value.items():
-                out[k] = self._resolve_templates_in_value(v, budget)
-            return out
-        if isinstance(value, list):
-            return [self._resolve_templates_in_value(v, budget) for v in value]
-        if isinstance(value, tuple):
-            return [self._resolve_templates_in_value(v, budget) for v in value]
-        return value
-
     def _resolve_public_base_url(self) -> str:
         def _is_local_host(hostname: str) -> bool:
             h = str(hostname or "").strip().lower()
@@ -433,13 +313,8 @@ class ToolExecutor:
         handler = self.handlers.get(canonical_name)
         if not handler:
             return f"错误：未知函数 {function_name}"
-        try:
-            safe_args = args if isinstance(args, dict) else {}
-            budget = {"chars": 0}
-            resolved_args = self._resolve_templates_in_value(safe_args, budget)
-        except Exception as e:
-            return f"错误：参数模板解析失败: {str(e)}"
-        return handler(resolved_args)
+        safe_args = args if isinstance(args, dict) else {}
+        return handler(safe_args)
 
     def _question(self, args: Dict[str, Any]) -> str:
         """创建一个需要前端等待用户回答的结构化问题。"""
@@ -749,6 +624,77 @@ class ToolExecutor:
             result["requested_tool_names"] = requested_names
             result["note"] = "runtime_tool_enable 在 Auto(OFF) 中会切换到 Force（忽略精确工具列表）"
         return json.dumps(result, ensure_ascii=False)
+
+    def _resolve_longdoc_public_base_url(self) -> str:
+        cfg = self.model.config if isinstance(getattr(self.model, "config", None), dict) else {}
+        api_cfg = cfg.get("api", {}) if isinstance(cfg.get("api"), dict) else {}
+        public_base_url = str(
+            cfg.get("public_base_url", "")
+            or api_cfg.get("public_base_url", "")
+            or os.environ.get("NEXORA_PUBLIC_BASE_URL", "")
+            or ""
+        ).strip().rstrip("/")
+
+        if public_base_url and not public_base_url.startswith(("http://", "https://")):
+            public_base_url = f"https://{public_base_url}"
+
+        return public_base_url or "https://example.com"
+
+    def _longdoc_skill_template_variables(self) -> Dict[str, str]:
+        public_base_url = self._resolve_longdoc_public_base_url()
+        values: Dict[str, str] = {
+            "public_base_url": public_base_url,
+            "site_base_url": public_base_url,
+        }
+
+        values.update({
+            "papi_base_url": f"{public_base_url}/api/papi",
+            "papi_v1_base_url": f"{public_base_url}/api/papi/v1",
+            "papi_models_url": f"{public_base_url}/api/papi/v1/models",
+            "papi_chat_completions_url": f"{public_base_url}/api/papi/v1/chat/completions",
+            "papi_responses_url": f"{public_base_url}/api/papi/v1/responses",
+            "papi_images_generations_url": f"{public_base_url}/api/papi/v1/images/generations",
+            "public_knowledge_base_url": f"{public_base_url}/public/knowledge",
+        })
+
+        return values
+
+    def _skill(self, args: Dict[str, Any]) -> str:
+        skills = list(getattr(self.model, "_longdoc_skill_catalog", []) or [])
+        name = args.get("name") if isinstance(args, dict) else ""
+        result = read_longdoc_skill(
+            skills,
+            name,
+            variables=self._longdoc_skill_template_variables()
+        )
+
+        try:
+            payload = json.loads(result) if isinstance(result, str) else result
+            success = bool(isinstance(payload, dict) and payload.get("success") is True)
+            content_chars = len(str(payload.get("content") or "")) if isinstance(payload, dict) else 0
+            skill_ids = [
+                str(item.get("id") or "").strip()
+                for item in skills[:20]
+                if isinstance(item, dict) and str(item.get("id") or "").strip()
+            ]
+            print(
+                "[LONGDOC_SKILL] "
+                f"query={str(name or '').strip()} "
+                f"catalog_count={len(skills)} "
+                f"catalog_ids={','.join(skill_ids)} "
+                f"success={success} "
+                f"content_chars={content_chars} "
+                f"result_chars={len(str(result or ''))}"
+            )
+        except Exception as exc:
+            print(
+                "[LONGDOC_SKILL] "
+                f"query={str(name or '').strip()} "
+                f"catalog_count={len(skills)} "
+                f"log_error={exc}"
+            )
+
+        return result
 
     def _add_short(self, args: Dict[str, Any]) -> str:
         self.model.user.addShort(args.get("title", ""))
@@ -1642,6 +1588,45 @@ class ToolExecutor:
                 new_text=args.get("new_text"),
                 regex=bool(args.get("regex", False)),
                 max_replace=args.get("max_replace"),
+            )
+            return json.dumps(payload, ensure_ascii=False)
+        except Exception as e:
+            return json.dumps({"success": False, "message": str(e)}, ensure_ascii=False)
+
+    def _doc_write(self, args: Dict[str, Any]) -> str:
+        file_ref = args.get("file_path") or args.get("path") or args.get("file")
+
+        if not file_ref:
+            return json.dumps({"success": False, "message": "file_path is required"}, ensure_ascii=False)
+
+        markdown = args.get("markdown")
+
+        if not isinstance(markdown, str) or not markdown.strip():
+            return json.dumps({"success": False, "message": "markdown is required"}, ensure_ascii=False)
+
+        doc_options = args.get("doc_options")
+
+        if doc_options is None:
+            doc_options = {}
+
+        if not isinstance(doc_options, dict):
+            return json.dumps({"success": False, "message": "doc_options must be an object"}, ensure_ascii=False)
+
+        try:
+            generation_result = DocumentGenerationService().create_docx(
+                markdown=markdown,
+                title=str(args.get("title") or "").strip(),
+                doc_options=doc_options,
+            )
+            payload = self._file_sandbox.write_docx_file(
+                file_ref=str(file_ref),
+                docx_bytes=generation_result.docx_bytes,
+                markdown=markdown,
+                title=generation_result.title,
+                overwrite=self._safe_bool(args.get("overwrite"), False),
+                render_stats={
+                    "block_count": generation_result.block_count,
+                },
             )
             return json.dumps(payload, ensure_ascii=False)
         except Exception as e:

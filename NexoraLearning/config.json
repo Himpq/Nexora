@@ -1,4 +1,5 @@
 {
+  "log_retention_count": 5,
   "models": {
     "default_nexora_model": "",
     "rough_reading": {

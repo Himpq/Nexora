@@ -175,10 +175,7 @@ def apply_unified_diff(original: str, patch_text: str) -> Tuple[str, Dict[str, A
     }, ""
 
 
-def _find_target_occurrence(content: str, target: str, occurrence: Any) -> Tuple[int, str]:
-    if not target:
-        return -1, "target 不能为空。"
-
+def _collect_text_positions(content: str, target: str) -> List[int]:
     positions: List[int] = []
     start = 0
 
@@ -191,12 +188,16 @@ def _find_target_occurrence(content: str, target: str, occurrence: Any) -> Tuple
         positions.append(index)
         start = index + len(target)
 
+    return positions
+
+
+def _select_occurrence_position(positions: List[int], occurrence: Any, target_name: str) -> Tuple[int, str]:
     if not positions:
-        return -1, "target 在内容中不存在。"
+        return -1, f"{target_name} 在内容中不存在。"
 
     if occurrence is None:
         if len(positions) != 1:
-            return -1, f"target 出现 {len(positions)} 次，请传入 occurrence 指定第几处。"
+            return -1, f"{target_name} 出现 {len(positions)} 次，请传入 occurrence 指定第几处。"
 
         return positions[0], ""
 
@@ -209,9 +210,111 @@ def _find_target_occurrence(content: str, target: str, occurrence: Any) -> Tuple
         return -1, "occurrence 必须是正整数。"
 
     if occurrence_index > len(positions):
-        return -1, f"target 只出现 {len(positions)} 次，无法选择第 {occurrence_index} 处。"
+        return -1, f"{target_name} 只出现 {len(positions)} 次，无法选择第 {occurrence_index} 处。"
 
     return positions[occurrence_index - 1], ""
+
+
+def _normalize_newlines_with_offsets(content: str) -> Tuple[str, List[int], List[int]]:
+    normalized_chars: List[str] = []
+    start_offsets: List[int] = []
+    end_offsets: List[int] = []
+    index = 0
+
+    while index < len(content):
+        char = content[index]
+
+        if char == "\r":
+            if index + 1 < len(content) and content[index + 1] == "\n":
+                normalized_chars.append("\n")
+                start_offsets.append(index)
+                end_offsets.append(index + 2)
+                index += 2
+                continue
+
+            normalized_chars.append("\n")
+            start_offsets.append(index)
+            end_offsets.append(index + 1)
+            index += 1
+            continue
+
+        normalized_chars.append(char)
+        start_offsets.append(index)
+        end_offsets.append(index + 1)
+        index += 1
+
+    return "".join(normalized_chars), start_offsets, end_offsets
+
+
+def _normalize_text_line_separator(content: str, line_separator: str) -> str:
+    return re.sub(r"\r\n|\r|\n", line_separator, content)
+
+
+def _find_target_occurrence(content: str, target: str, occurrence: Any) -> Tuple[int, int, Dict[str, Any], str]:
+    if not target:
+        return -1, -1, {}, "target 不能为空。"
+
+    positions = _collect_text_positions(content, target)
+
+    if positions:
+        target_index, target_error = _select_occurrence_position(positions, occurrence, "target")
+
+        if target_error:
+            return -1, -1, {}, target_error
+
+        return target_index, target_index + len(target), {"match_strategy": "exact"}, ""
+
+    normalized_content, start_offsets, end_offsets = _normalize_newlines_with_offsets(content)
+    normalized_target, _target_start_offsets, _target_end_offsets = _normalize_newlines_with_offsets(target)
+    normalized_positions = _collect_text_positions(normalized_content, normalized_target)
+
+    if normalized_positions:
+        normalized_index, target_error = _select_occurrence_position(
+            normalized_positions,
+            occurrence,
+            "换行归一化后的 target",
+        )
+
+        if target_error:
+            return -1, -1, {}, target_error
+
+        normalized_end_index = normalized_index + len(normalized_target) - 1
+        target_start = start_offsets[normalized_index]
+        target_end = end_offsets[normalized_end_index]
+
+        return target_start, target_end, {
+            "match_strategy": "newline_normalized",
+            "message": "target 未精确匹配，已将 CRLF/CR/LF 按换行归一化后唯一命中。",
+        }, ""
+
+    return -1, -1, {}, "target 在内容中不存在。"
+
+
+def _validate_structured_edit(edit: Dict[str, Any], edit_index: int) -> str:
+    action = str(edit.get("action") or "").strip()
+
+    if action not in {"replace", "insert_before", "insert_after", "delete"}:
+        return f"第 {edit_index} 个 edit 的 action 不支持: {action}"
+
+    if action == "replace":
+        if "replacement" not in edit:
+            return f"第 {edit_index} 个 edit 使用 replace 时必须提供 replacement。"
+
+        return ""
+
+    if action in {"insert_before", "insert_after"}:
+        if "content" not in edit:
+            if "replacement" in edit:
+                return f"第 {edit_index} 个 edit 使用 {action} 时必须提供 content，不能使用 replacement。"
+
+            return f"第 {edit_index} 个 edit 使用 {action} 时必须提供 content。"
+
+        return ""
+
+    if "replacement" in edit or "content" in edit:
+        return f"第 {edit_index} 个 edit 使用 delete 时不能提供 replacement 或 content。"
+
+    return ""
 
 
 def apply_structured_edits(original: str, edits: Any) -> Tuple[str, Dict[str, Any], str]:
@@ -221,41 +324,64 @@ def apply_structured_edits(original: str, edits: Any) -> Tuple[str, Dict[str, An
     source = str(original or "")
     content = source
     applied_count = 0
+    match_messages: List[str] = []
 
     for edit_index, edit in enumerate(edits, start=1):
         if not isinstance(edit, dict):
             return source, {}, f"第 {edit_index} 个 edit 必须是对象。"
 
+        validation_error = _validate_structured_edit(edit, edit_index)
+
+        if validation_error:
+            return source, {}, validation_error
+
         action = str(edit.get("action") or "").strip()
         target = str(edit.get("target") or "")
         occurrence = edit.get("occurrence")
-        target_index, target_error = _find_target_occurrence(content, target, occurrence)
+        target_start, target_end, match_meta, target_error = _find_target_occurrence(content, target, occurrence)
 
         if target_error:
-            return source, {}, f"第 {edit_index} 个 edit 失败: {target_error}"
+            return source, {}, (
+                f"第 {edit_index} 个 edit 失败: {target_error} "
+                "注意：edits 会按顺序串行执行，后一条 target 会在前面 edit 修改后的内容中匹配。"
+            )
 
-        before = content[:target_index]
-        after = content[target_index + len(target):]
+        before = content[:target_start]
+        matched_target = content[target_start:target_end]
+        after = content[target_end:]
+        line_separator = _detect_line_separator(content)
 
         if action == "replace":
-            content = before + str(edit.get("replacement") or "") + after
+            replacement = _normalize_text_line_separator(str(edit.get("replacement") or ""), line_separator)
+            content = before + replacement + after
         elif action == "insert_before":
-            content = before + str(edit.get("content") or "") + target + after
+            insert_content = _normalize_text_line_separator(str(edit.get("content") or ""), line_separator)
+            content = before + insert_content + matched_target + after
         elif action == "insert_after":
-            content = before + target + str(edit.get("content") or "") + after
+            insert_content = _normalize_text_line_separator(str(edit.get("content") or ""), line_separator)
+            content = before + matched_target + insert_content + after
         elif action == "delete":
             content = before + after
-        else:
-            return source, {}, f"第 {edit_index} 个 edit 的 action 不支持: {action}"
 
         applied_count += 1
 
-    return content, {
+        if match_meta.get("match_strategy") != "exact":
+            message = str(match_meta.get("message") or "").strip()
+
+            if message:
+                match_messages.append(message)
+
+    stats = {
         "mode": "structured_edits",
         "edit_count": applied_count,
         "added_lines": max(0, len(content.splitlines()) - len(source.splitlines())),
         "removed_lines": max(0, len(source.splitlines()) - len(content.splitlines())),
-    }, ""
+    }
+
+    if match_messages:
+        stats["match_notes"] = match_messages
+
+    return content, stats, ""
 
 
 def apply_text_patch(original: str, patch_text: str = "", edits: Any = None) -> Tuple[str, Dict[str, Any], str]:

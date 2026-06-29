@@ -19,7 +19,7 @@
     <script src="https://uicdn.toast.com/editor/latest/toastui-editor-all.min.js"></script>
 
     <!-- App Styles -->
-    <link rel="stylesheet" href="/static/css/style.css?v=20260628_admin_controls_04">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260628_tools_mode_menu_01">
     <link rel="stylesheet" href="/static/css/execution_flow.css?v=20260624_stream_breaks_01">
     <link rel="stylesheet" href="/static/css/nexora_map_renderer.css?v=20260626_tianditu_tile_fix_01">
     <link rel="stylesheet" href="/static/css/admin_map_settings.css?v=20260628_admin_controls_04">
@@ -639,7 +639,7 @@
     
     <!-- Scripts -->
     <script src="/static/js/learning_workspace_layout.js?v=20260614_01"></script>
-    <script src="/static/js/chat.js?v=20260628_admin_controls_04"></script>
+    <script src="/static/js/chat.js?v=20260628_tools_mode_menu_01"></script>
     <script>
         window.NEXORA_MAP_RENDERER_CONFIG = {{ map_renderer_config | tojson }};
     </script>
@@ -1444,6 +1444,59 @@
                                 </div>
                                 <div id="adminTokenTrendChart" class="admin-token-trend-chart"></div>
                                 <div id="adminTokenTrendTop" class="admin-token-trend-top"></div>
+                            </div>
+                            <div class="admin-token-trend-card admin-user-token-card">
+                                <div class="admin-token-trend-head">
+                                    <h4>单用户 Token 查询</h4>
+                                    <span id="adminUserTokenStatsMeta" class="admin-token-trend-meta">请选择用户</span>
+                                </div>
+                                <div class="admin-user-token-query">
+                                    <div class="admin-user-token-selector" id="adminUserTokenStatsUserSelector">
+                                        <input id="adminUserTokenStatsUsernameInput" class="input-modern" placeholder="输入用户 ID" autocomplete="off" aria-haspopup="listbox" aria-expanded="false">
+                                        <div id="adminUserTokenStatsUserMenu" class="learning-feed-mention-menu admin-user-token-menu" role="listbox" hidden></div>
+                                    </div>
+                                    <select id="adminUserTokenStatsRangeSelect" class="input-modern">
+                                        <option value="today">今日</option>
+                                        <option value="7d">7 天</option>
+                                        <option value="30d" selected>30 天</option>
+                                        <option value="all">全部</option>
+                                    </select>
+                                    <button id="adminUserTokenStatsQueryBtn" class="btn-primary-outline" type="button">查询</button>
+                                </div>
+                                <div class="admin-user-token-summary-grid">
+                                    <div class="stat-card">
+                                        <span class="label">PAPI 调用 Token</span>
+                                        <span id="adminUserTokenRequests" class="value mono">-</span>
+                                    </div>
+                                    <div class="stat-card">
+                                        <span class="label">输入 Token</span>
+                                        <span id="adminUserTokenInput" class="value mono">-</span>
+                                    </div>
+                                    <div class="stat-card">
+                                        <span class="label">输出 Token</span>
+                                        <span id="adminUserTokenOutput" class="value mono">-</span>
+                                    </div>
+                                    <div class="stat-card">
+                                        <span class="label">总 Token</span>
+                                        <span id="adminUserTokenTotal" class="value mono">-</span>
+                                    </div>
+                                </div>
+                                <div id="adminUserTokenStatsTop" class="admin-token-trend-top"></div>
+                                <div class="admin-user-token-recent-wrap">
+                                    <table class="admin-user-token-recent-table">
+                                        <thead>
+                                            <tr>
+                                                <th>时间</th>
+                                                <th>来源</th>
+                                                <th>模型</th>
+                                                <th>Token</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="adminUserTokenRecentRows">
+                                            <tr><td colspan="4">暂无查询结果</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
                             </div>
                             <div class="admin-token-trend-card" style="margin-top: 12px;">
                                 <div class="admin-token-trend-head">

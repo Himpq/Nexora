@@ -147,6 +147,7 @@ CONTEXT_COMPRESSION_HISTORY_MAX_CHARS_MAX = 4000000
 STREAM_VISIBLE_FILE_TOOL_ACTIONS = {
     "cloud_file_create": "write",
     "cloud_file_write": "write",
+    "cloud_doc_write": "write",
     "cloud_file_patch": "patch",
     "cloud_file_read": "read",
     "cloud_file_find": "find",
@@ -381,6 +382,7 @@ class Model:
         self._runtime_hints_injected_in_request = False
         self._runtime_tool_mode = "force"
         self._runtime_bootstrap_tool_name = "runtime_tool_select"
+        self._longdoc_skill_catalog: List[Dict[str, Any]] = []
         self._temp_context_store = None
         self._temp_context_scope_id = ""
         self._temp_context_settings = {}
@@ -659,6 +661,46 @@ class Model:
                 "version": str(item.get("version", "") or "").strip(),
                 "author": str(item.get("author", "") or "").strip(),
             })
+        return out
+
+    def _normalize_longdoc_skills(self, items: Any) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+
+        if not isinstance(items, list):
+            return out
+
+        for item in items:
+
+            if not isinstance(item, dict):
+                continue
+
+            sid = str(item.get("id") or "").strip()
+            title = str(item.get("title") or "").strip()
+            description = str(item.get("description") or "").strip()
+            content = str(item.get("main_content") or "").strip()
+
+            if not sid or not title or not description or not content:
+                continue
+
+            aliases_raw = item.get("aliases", [])
+            aliases: List[str] = []
+
+            if isinstance(aliases_raw, list):
+                aliases = [str(x).strip() for x in aliases_raw if str(x).strip()]
+
+            out.append({
+                "id": sid,
+                "type": "longdoc",
+                "title": title,
+                "description": description,
+                "aliases": aliases,
+                "author": str(item.get("author", "") or "").strip(),
+                "release_date": str(item.get("release_date", "") or "").strip(),
+                "version": str(item.get("version", "") or "").strip(),
+                "update_date": str(item.get("update_date", "") or "").strip(),
+                "main_content": content,
+            })
+
         return out
 
     def _normalize_required_tool_names(self, raw_tools: Any) -> List[str]:
@@ -2329,6 +2371,12 @@ class Model:
         if not name:
             raise ValueError("external tool name is required")
 
+        builtin_handlers = getattr(getattr(self, "tool_executor", None), "handlers", {})
+        registered_external_names = set(getattr(self, "_external_tool_names", set()) or set())
+
+        if isinstance(builtin_handlers, dict) and name in builtin_handlers and name not in registered_external_names:
+            raise ValueError(f"external tool name collides with builtin tool: {name}")
+
         self._external_tool_definitions = [
             item
             for item in (self._external_tool_definitions or [])
@@ -3285,9 +3333,11 @@ class Model:
             "temp_context_search",
             "temp_context_list",
             "temp_context_clear",
+            "skill",
             "cloud_file_read",
             "cloud_file_create",
             "cloud_file_write",
+            "cloud_doc_write",
             "cloud_file_patch",
             "cloud_file_find",
             "cloud_file_list",
@@ -3484,6 +3534,7 @@ class Model:
             "cloud_file_create",
             "cloud_file_read",
             "cloud_file_write",
+            "cloud_doc_write",
             "cloud_file_patch",
             "cloud_file_find",
             "cloud_file_list",
@@ -3510,6 +3561,7 @@ class Model:
             "temp_context_search",
             "temp_context_list",
             "temp_context_clear",
+            "skill",
             "listLectures",
             "createLecture",
             "getLecture",
@@ -3591,7 +3643,23 @@ class Model:
                     rendered = presenter.render(candidate_name, safe_args, result)
 
                     if isinstance(rendered, str) and rendered.strip():
+                        if name == "skill" or raw_name == "skill":
+                            print(
+                                "[LONGDOC_SKILL_RENDER] "
+                                f"tool_name={candidate_name} "
+                                f"query={str(safe_args.get('name') or '').strip()} "
+                                f"raw_chars={len(text)} "
+                                f"rendered_chars={len(rendered)}"
+                            )
                         return rendered
+
+                if name == "skill" or raw_name == "skill":
+                    print(
+                        "[LONGDOC_SKILL_RENDER] "
+                        f"query={str(safe_args.get('name') or '').strip()} "
+                        f"raw_chars={len(text)} "
+                        "rendered_chars=0"
+                    )
 
             return text
 
@@ -4031,6 +4099,7 @@ class Model:
         force_context_compression: bool = False,
         skill_mode: str = "off",
         active_tool_skills: Optional[List[Dict[str, Any]]] = None,
+        longdoc_skills: Optional[List[Dict[str, Any]]] = None,
         disable_thinking_after_tool_call: bool = True,
         conversation_mode: str = "chat",
         conversation_mode_payload: Optional[Dict[str, Any]] = None,
@@ -4603,6 +4672,7 @@ class Model:
                 tool_call_index = 0
                 tool_result_index = 0
                 system_index = 0
+                tool_call_name_by_id: Dict[str, str] = {}
 
                 def _append_block(
                     kind: str,
@@ -4648,14 +4718,20 @@ class Model:
 
                     if role == "tool":
                         tool_result_index += 1
+                        tool_call_id = str(msg_item.get("tool_call_id", "") or "").strip()
+                        tool_name = str(msg_item.get("name", "") or "").strip()
+
+                        if not tool_name and tool_call_id:
+                            tool_name = str(tool_call_name_by_id.get(tool_call_id, "") or "").strip()
+
                         _append_block(
                             "tool_result",
                             f"ToolResult{tool_result_index}",
                             role,
                             content_text,
                             {
-                                "tool_call_id": str(msg_item.get("tool_call_id", "") or "").strip(),
-                                "name": str(msg_item.get("name", "") or "").strip(),
+                                "tool_call_id": tool_call_id,
+                                "name": tool_name,
                             },
                         )
                         continue
@@ -4665,6 +4741,20 @@ class Model:
                         _append_block("context", f"Ctx{ctx_index}", role, content_text)
 
                     if tool_calls:
+                        for raw_tool_call in tool_calls:
+                            if not isinstance(raw_tool_call, dict):
+                                continue
+
+                            tool_call_id = str(raw_tool_call.get("id", "") or "").strip()
+                            function_obj = raw_tool_call.get("function", {})
+                            function_name = ""
+
+                            if isinstance(function_obj, dict):
+                                function_name = str(function_obj.get("name", "") or "").strip()
+
+                            if tool_call_id and function_name:
+                                tool_call_name_by_id[tool_call_id] = function_name
+
                         tool_call_index += 1
                         _append_block(
                             "tool_call",
@@ -4857,6 +4947,8 @@ class Model:
             normalized_tool_mode = self._normalize_tool_mode(tool_mode, enable_tools)
             normalized_skill_mode = self._normalize_skill_injection_mode(skill_mode)
             normalized_active_tool_skills = self._normalize_active_tool_skills(active_tool_skills)
+            normalized_longdoc_skills = self._normalize_longdoc_skills(longdoc_skills)
+            self._longdoc_skill_catalog = normalized_longdoc_skills
             if normalized_conversation_mode == "longterm":
                 normalized_tool_mode = "force"
             effective_enable_tools = normalized_tool_mode != "off"
@@ -5081,6 +5173,12 @@ class Model:
                 ).strip()
                 if tool_skill_prompt_block:
                     request_system_prompt = f"{request_system_prompt}\n\n{tool_skill_prompt_block}".strip()
+            if effective_enable_tools and normalized_longdoc_skills:
+                longdoc_skill_prompt_block = str(
+                    prompts.build_longdoc_skill_catalog_prompt(normalized_longdoc_skills) or ""
+                ).strip()
+                if longdoc_skill_prompt_block:
+                    request_system_prompt = f"{request_system_prompt}\n\n{longdoc_skill_prompt_block}".strip()
             self.system_prompt = request_system_prompt
             full_context_messages = self._build_initial_messages(
                 user_msg=msg,
@@ -6988,6 +7086,8 @@ class Model:
                                 "call_id": call_id,
                                 "round": int(round_num) + 1
                             }
+                            if "index" in func_call:
+                                step_result["index"] = func_call.get("index")
                             process_steps.append(step_result)
                             if func_name == "question":
                                 question_payload = None

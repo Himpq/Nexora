@@ -4,9 +4,12 @@ import time
 import traceback
 import importlib
 import sys
+import hashlib
 from typing import Any, Callable, Dict, List, Tuple, Optional, Generator
 from flask import request, jsonify, Response, stream_with_context, current_app
 from functools import wraps
+
+from runlog import append_log_text, log_event
 
 
 def _resolve_server_module():
@@ -1094,6 +1097,375 @@ def _papi_extract_response_id(response_obj: Any) -> str:
     return f'chatcmpl-{uuid.uuid4().hex}'
 
 
+def _papi_merge_stream_text_delta(current: Any, incoming: Any) -> Tuple[str, str]:
+    """返回合并后的完整文本，以及本次真正需要下发的增量片段。"""
+    current_text = str(current or '')
+    incoming_text = str(incoming or '')
+
+    if not incoming_text:
+        return current_text, ''
+
+    if not current_text:
+        return incoming_text, incoming_text
+
+    if incoming_text == current_text:
+        return current_text, ''
+
+    if incoming_text.startswith(current_text):
+        return incoming_text, incoming_text[len(current_text):]
+
+    if current_text.startswith(incoming_text):
+        return current_text, ''
+
+    if current_text.endswith(incoming_text):
+        return current_text, ''
+
+    if len(incoming_text) >= 16 and incoming_text in current_text:
+        return current_text, ''
+
+    return current_text + incoming_text, incoming_text
+
+
+def _papi_debug_text(value: Any) -> str:
+    if value is None:
+        return ''
+
+    if isinstance(value, str):
+        return value
+
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        return str(value)
+
+
+def _papi_debug_hash(value: Any) -> str:
+    text = _papi_debug_text(value)
+    return hashlib.sha256(text.encode('utf-8', errors='replace')).hexdigest()[:12]
+
+
+def _papi_debug_len(value: Any) -> int:
+    return len(_papi_debug_text(value))
+
+
+def _papi_debug_preview(value: Any, limit: int = 180) -> str:
+    text = _papi_debug_text(value).replace('\r', '\\r').replace('\n', '\\n')
+    limit = max(40, int(limit or 180))
+    if len(text) <= limit:
+        return text
+
+    return text[:limit] + '...'
+
+
+def _papi_build_chat_message_flow_summary(messages: Any) -> Dict[str, Any]:
+    rows = messages if isinstance(messages, list) else []
+    role_counts: Dict[str, int] = {}
+    flow: List[str] = []
+    assistant_calls: List[str] = []
+    tool_outputs: List[str] = []
+    assistant_call_groups: Dict[str, Dict[str, Any]] = {}
+    tool_output_groups: Dict[str, Dict[str, Any]] = {}
+
+    for index, item in enumerate(rows):
+        if not isinstance(item, dict):
+            continue
+
+        role = str(item.get('role') or '').strip().lower() or '-'
+        role_counts[role] = int(role_counts.get(role, 0) or 0) + 1
+        content_len = _papi_debug_len(item.get('content'))
+        tool_calls = item.get('tool_calls') if isinstance(item.get('tool_calls'), list) else []
+        tool_call_id = str(item.get('tool_call_id') or '').strip()
+        flow.append(f"{index}:{role}:c{content_len}:tc{len(tool_calls)}:tid={tool_call_id or '-'}")
+
+        if tool_call_id:
+            output_hash = _papi_debug_hash(item.get('content'))
+            tool_outputs.append(f"{tool_call_id}:len={content_len}:hash={output_hash}")
+            output_group = tool_output_groups.setdefault(output_hash, {
+                'hash': output_hash,
+                'count': 0,
+                'len': content_len,
+                'sample_ids': [],
+                'preview': _papi_debug_preview(item.get('content')),
+            })
+            output_group['count'] = int(output_group.get('count', 0) or 0) + 1
+            if len(output_group.get('sample_ids') or []) < 4:
+                output_group['sample_ids'].append(tool_call_id)
+
+        for tool_call in tool_calls:
+            if not isinstance(tool_call, dict):
+                continue
+
+            function_obj = tool_call.get('function') if isinstance(tool_call.get('function'), dict) else {}
+            call_id = str(tool_call.get('id') or '').strip()
+            name = str(function_obj.get('name') or '').strip()
+            arguments = function_obj.get('arguments')
+            arguments_hash = _papi_debug_hash(arguments)
+            assistant_calls.append(
+                f"{call_id or '-'}:{name or '-'}:len={_papi_debug_len(arguments)}:hash={arguments_hash}"
+            )
+            group_key = f"{name or '-'}:{arguments_hash}"
+            call_group = assistant_call_groups.setdefault(group_key, {
+                'name': name or '-',
+                'hash': arguments_hash,
+                'count': 0,
+                'len': _papi_debug_len(arguments),
+                'sample_ids': [],
+                'preview': _papi_debug_preview(arguments),
+            })
+            call_group['count'] = int(call_group.get('count', 0) or 0) + 1
+            if len(call_group.get('sample_ids') or []) < 4:
+                call_group['sample_ids'].append(call_id or '-')
+
+    assistant_call_repeats = [
+        item for item in assistant_call_groups.values()
+        if int(item.get('count', 0) or 0) >= 2
+    ]
+    assistant_call_repeats.sort(key=lambda item: int(item.get('count', 0) or 0), reverse=True)
+    tool_output_repeats = [
+        item for item in tool_output_groups.values()
+        if int(item.get('count', 0) or 0) >= 2
+    ]
+    tool_output_repeats.sort(key=lambda item: int(item.get('count', 0) or 0), reverse=True)
+
+    return {
+        'count': len(rows),
+        'roles': role_counts,
+        'flow': flow[-24:],
+        'assistant_calls': assistant_calls[-24:],
+        'tool_outputs': tool_outputs[-24:],
+        'assistant_call_repeats': assistant_call_repeats[:12],
+        'tool_output_repeats': tool_output_repeats[:12],
+    }
+
+
+def _papi_build_responses_input_flow_summary(input_items: Any) -> Dict[str, Any]:
+    rows = input_items if isinstance(input_items, list) else []
+    type_counts: Dict[str, int] = {}
+    flow: List[str] = []
+    function_calls: List[str] = []
+    function_outputs: List[str] = []
+
+    for index, item in enumerate(rows):
+        if not isinstance(item, dict):
+            continue
+
+        item_type = str(item.get('type') or '').strip().lower() or '-'
+        type_counts[item_type] = int(type_counts.get(item_type, 0) or 0) + 1
+        call_id = str(item.get('call_id') or '').strip()
+        name = str(item.get('name') or '').strip()
+        output_value = item.get('output')
+        arguments = item.get('arguments')
+        content_value = item.get('content')
+        flow.append(f"{index}:{item_type}:cid={call_id or '-'}:name={name or '-'}:c{_papi_debug_len(content_value)}")
+
+        if item_type == 'function_call' or (call_id and name and 'output' not in item):
+            function_calls.append(
+                f"{call_id or '-'}:{name or '-'}:len={_papi_debug_len(arguments)}:hash={_papi_debug_hash(arguments)}"
+            )
+
+        if item_type == 'function_call_output' or (call_id and 'output' in item):
+            function_outputs.append(
+                f"{call_id or '-'}:len={_papi_debug_len(output_value)}:hash={_papi_debug_hash(output_value)}"
+            )
+
+    return {
+        'count': len(rows),
+        'types': type_counts,
+        'flow': flow[-24:],
+        'function_calls': function_calls[-24:],
+        'function_outputs': function_outputs[-24:],
+    }
+
+
+def _papi_log_debug_summary(label: str, payload: Dict[str, Any]) -> None:
+    try:
+        text = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        text = str(payload)
+
+    _papi_log(f"{label} {text[:4000]}")
+
+
+def _papi_log_chat_message_flow(
+    label: str,
+    *,
+    model_name: str,
+    stream: bool,
+    messages: Any,
+) -> None:
+    summary = _papi_build_chat_message_flow_summary(messages)
+    _papi_log_debug_summary(
+        label,
+        {
+            'model': model_name,
+            'stream': bool(stream),
+            'summary': summary,
+        },
+    )
+
+    assistant_repeats = summary.get('assistant_call_repeats') if isinstance(summary, dict) else []
+    tool_repeats = summary.get('tool_output_repeats') if isinstance(summary, dict) else []
+    if not assistant_repeats and not tool_repeats:
+        return
+
+    _papi_log_debug_summary(
+        '[PAPI_CHAT_REPEAT_ALERT]',
+        {
+            'model': model_name,
+            'stream': bool(stream),
+            'message_count': summary.get('count'),
+            'roles': summary.get('roles'),
+            'top_assistant_call_repeats': list(assistant_repeats or [])[:5],
+            'top_tool_output_repeats': list(tool_repeats or [])[:5],
+            'recent_flow': list(summary.get('flow') or [])[-8:],
+            'recent_assistant_calls': list(summary.get('assistant_calls') or [])[-8:],
+            'recent_tool_outputs': list(summary.get('tool_outputs') or [])[-8:],
+        },
+    )
+
+
+def _papi_request_value_preview(value: Any, limit: int = 500) -> Any:
+    if value is None:
+        return None
+
+    if isinstance(value, (str, int, float, bool)):
+        text = str(value)
+        return value if len(text) <= limit else text[:limit] + '...'
+
+    try:
+        text = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        text = str(value)
+
+    if len(text) <= limit:
+        return value
+
+    return text[:limit] + '...'
+
+
+def _papi_extract_tool_names_from_params(params: Dict[str, Any]) -> List[str]:
+    names: List[str] = []
+    tools = params.get('tools') if isinstance(params.get('tools'), list) else []
+
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+
+        if isinstance(tool.get('function'), dict):
+            name = str((tool.get('function') or {}).get('name') or '').strip()
+        else:
+            name = str(tool.get('name') or '').strip()
+
+        if name:
+            names.append(name)
+
+    return names
+
+
+def _papi_build_final_request_summary(
+    *,
+    model_name: str,
+    provider_name: str,
+    adapter_api_type: str,
+    request_params: Dict[str, Any],
+    use_responses_api: bool,
+    route_mode: str,
+) -> Dict[str, Any]:
+    params = request_params if isinstance(request_params, dict) else {}
+    tools = params.get('tools') if isinstance(params.get('tools'), list) else []
+    messages_summary = {}
+    input_summary = {}
+
+    if isinstance(params.get('messages'), list):
+        messages_summary = _papi_build_chat_message_flow_summary(params.get('messages'))
+
+    if isinstance(params.get('input'), list):
+        input_summary = _papi_build_responses_input_flow_summary(params.get('input'))
+
+    return {
+        'model': model_name,
+        'provider': provider_name,
+        'api_type': adapter_api_type or 'unknown',
+        'route_mode': route_mode,
+        'protocol': 'responses' if use_responses_api else 'chat.completions',
+        'stream': bool(params.get('stream')),
+        'max_tokens': params.get('max_tokens', None),
+        'max_output_tokens': params.get('max_output_tokens', None),
+        'temperature': params.get('temperature', None),
+        'top_p': params.get('top_p', None),
+        'tool_count': len(tools),
+        'tool_names': _papi_extract_tool_names_from_params(params),
+        'tool_choice': _papi_request_value_preview(params.get('tool_choice')),
+        'response_format': _papi_request_value_preview(params.get('response_format')),
+        'extra_body': _papi_request_value_preview(params.get('extra_body')),
+        'stream_options': _papi_request_value_preview(params.get('stream_options')),
+        'reasoning_present': 'reasoning' in params,
+        'reasoning': _papi_request_value_preview(params.get('reasoning')),
+        'parallel_tool_calls': params.get('parallel_tool_calls', None),
+        'previous_response_id': 'yes' if params.get('previous_response_id') else 'no',
+        'message_summary': messages_summary,
+        'input_summary': input_summary,
+    }
+
+
+def _papi_log_final_request_summary(
+    *,
+    model_name: str,
+    provider_name: str,
+    adapter_api_type: str,
+    request_params: Dict[str, Any],
+    use_responses_api: bool,
+    route_mode: str,
+) -> None:
+    summary = _papi_build_final_request_summary(
+        model_name=model_name,
+        provider_name=provider_name,
+        adapter_api_type=adapter_api_type,
+        request_params=request_params,
+        use_responses_api=use_responses_api,
+        route_mode=route_mode,
+    )
+    _papi_log_debug_summary('[PAPI_FINAL_REQ]', summary)
+    log_event(
+        'papi_final_request',
+        'PAPI final upstream request summary',
+        payload=summary,
+        source='papi',
+    )
+
+
+def _papi_log_reasoning_only_stop(
+    *,
+    model_name: str,
+    provider_name: str,
+    adapter_api_type: str,
+    request_params: Dict[str, Any],
+    finish_reason: str,
+    reasoning_chars: int,
+    event_counts: Dict[str, int],
+) -> None:
+    summary = _papi_build_final_request_summary(
+        model_name=model_name,
+        provider_name=provider_name,
+        adapter_api_type=adapter_api_type,
+        request_params=request_params,
+        use_responses_api=False,
+        route_mode='reasoning_only_stop',
+    )
+    summary.update({
+        'finish_reason': finish_reason,
+        'reasoning_chars': int(max(0, reasoning_chars)),
+        'event_counts': dict(event_counts or {}),
+    })
+    _papi_log_debug_summary('[PAPI_CHAT_REASONING_ONLY_STOP]', summary)
+    log_event(
+        'papi_reasoning_only_stop',
+        'PAPI chat stream stopped with reasoning only',
+        payload=summary,
+        source='papi',
+    )
+
+
 def _papi_build_openai_payload(
     *,
     response_obj: Any,
@@ -1169,6 +1541,20 @@ def _papi_stream_openai_chat(
         previous_response_id=None,
         current_function_outputs=None,
     )
+    _papi_log_final_request_summary(
+        model_name=model_name,
+        provider_name=str(getattr(adapter, 'provider_name', '') or ''),
+        adapter_api_type=str(getattr(adapter, 'api_type', '') or '').strip().lower(),
+        request_params=request_params,
+        use_responses_api=False,
+        route_mode='chat_stream',
+    )
+    _papi_log_chat_message_flow(
+        '[PAPI_CHAT_REQ_FLOW]',
+        model_name=model_name,
+        stream=True,
+        messages=request_params.get('messages'),
+    )
     stream_options = request_params.get('stream_options')
     include_usage = bool(isinstance(stream_options, dict) and stream_options.get('include_usage'))
     iterator = adapter.create_stream_iterator(
@@ -1185,21 +1571,41 @@ def _papi_stream_openai_chat(
     def _event_stream():
         role_emitted = False
         usage_payload = None
-        saw_tool_calls = False
+        emitted_tool_calls = False
         finish_reason = 'stop'
+        streamed_tool_names: Dict[str, str] = {}
+        streamed_tool_arguments: Dict[str, str] = {}
+        event_counts: Dict[str, int] = {}
+        content_delta_count = 0
+        content_chars = 0
+        reasoning_delta_count = 0
+        reasoning_chars = 0
+        function_delta_events = 0
+        function_snapshot_events = 0
+
+        def _tool_call_stream_key(call_id: str, call_index: int) -> str:
+            call_id_text = str(call_id or '').strip()
+            if call_id_text:
+                return f'id:{call_id_text}'
+
+            return f'index:{int(call_index or 0)}'
 
         for ev in event_iter:
             if not isinstance(ev, dict):
                 continue
 
             ev_type = str(ev.get('type') or '').strip()
+            event_counts[ev_type or '-'] = int(event_counts.get(ev_type or '-', 0) or 0) + 1
             if ev_type == 'content_delta':
+                delta_text = str(ev.get('delta') or '')
+                content_delta_count += 1
+                content_chars += len(delta_text)
                 delta_payload: Dict[str, Any] = {}
                 if not role_emitted:
                     delta_payload['role'] = 'assistant'
                     role_emitted = True
 
-                delta_payload['content'] = str(ev.get('delta') or '')
+                delta_payload['content'] = delta_text
                 chunk = {
                     'id': completion_id,
                     'object': 'chat.completion.chunk',
@@ -1209,12 +1615,15 @@ def _papi_stream_openai_chat(
                 }
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
             elif ev_type == 'reasoning_delta':
+                delta_text = str(ev.get('delta') or '')
+                reasoning_delta_count += 1
+                reasoning_chars += len(delta_text)
                 delta_payload: Dict[str, Any] = {}
                 if not role_emitted:
                     delta_payload['role'] = 'assistant'
                     role_emitted = True
 
-                delta_payload['reasoning_content'] = str(ev.get('delta') or '')
+                delta_payload['reasoning_content'] = delta_text
                 chunk = {
                     'id': completion_id,
                     'object': 'chat.completion.chunk',
@@ -1224,23 +1633,36 @@ def _papi_stream_openai_chat(
                 }
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
             elif ev_type == 'function_call_delta':
-                saw_tool_calls = True
+                function_delta_events += 1
+                call_index = int(ev.get('index', 0) or 0)
+                call_id = str(ev.get('call_id') or ('tool_call_' + str(call_index)))
+                call_key = _tool_call_stream_key(call_id, call_index)
                 delta_tool_call = {
-                    'index': int(ev.get('index', 0) or 0),
-                    'id': str(ev.get('call_id') or ('tool_call_' + str(int(ev.get('index', 0) or 0)))),
+                    'index': call_index,
+                    'id': call_id,
                     'type': 'function',
                     'function': {},
                 }
                 name_delta = str(ev.get('name_delta') or '')
                 arguments_delta = str(ev.get('arguments_delta') or '')
+
+                if not name_delta and not streamed_tool_names.get(call_key):
+                    name_delta = str(ev.get('name') or '')
+
+                if not name_delta and not arguments_delta:
+                    continue
+
                 if name_delta:
+                    streamed_tool_names[call_key] = str(streamed_tool_names.get(call_key, '') or '') + name_delta
                     delta_tool_call['function']['name'] = name_delta
                 if arguments_delta:
+                    streamed_tool_arguments[call_key] = str(streamed_tool_arguments.get(call_key, '') or '') + arguments_delta
                     delta_tool_call['function']['arguments'] = arguments_delta
                 delta_payload = {'tool_calls': [delta_tool_call]}
                 if not role_emitted:
                     delta_payload['role'] = 'assistant'
                     role_emitted = True
+                emitted_tool_calls = True
                 chunk = {
                     'id': completion_id,
                     'object': 'chat.completion.chunk',
@@ -1251,27 +1673,62 @@ def _papi_stream_openai_chat(
                 yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
             elif ev_type == 'function_call':
                 # 兼容部分 provider 只在收尾阶段给完整 function_call，而不提供 delta 过程。
-                saw_tool_calls = True
+                function_snapshot_events += 1
                 call_index = int(ev.get('index', 0) or 0)
                 call_id = str(ev.get('call_id') or ('tool_call_' + str(call_index)))
                 fc_name = str(ev.get('name') or '')
                 fc_args = str(ev.get('arguments') or '')
+                call_key = _tool_call_stream_key(call_id, call_index)
+                function_delta: Dict[str, Any] = {}
+
+                current_name = str(streamed_tool_names.get(call_key, '') or '')
+                current_args = str(streamed_tool_arguments.get(call_key, '') or '')
+
+                if fc_name and not current_name:
+                    streamed_tool_names[call_key] = fc_name
+                    function_delta['name'] = fc_name
+                elif fc_name and current_name != fc_name:
+                    _papi_log(
+                        f"[PAPI_CHAT_TOOL_SNAPSHOT_MISMATCH] model={model_name} "
+                        f"call_id={call_id} field=name streamed_len={len(current_name)} final_len={len(fc_name)}",
+                        level='error',
+                    )
+
+                if fc_args and not current_args:
+                    streamed_tool_arguments[call_key] = fc_args
+                    function_delta['arguments'] = fc_args
+                elif fc_args and current_args != fc_args:
+                    if fc_args.startswith(current_args):
+                        emit_arguments_delta = fc_args[len(current_args):]
+                        streamed_tool_arguments[call_key] = fc_args
+                        if emit_arguments_delta:
+                            function_delta['arguments'] = emit_arguments_delta
+                    else:
+                        _papi_log(
+                            f"[PAPI_CHAT_TOOL_SNAPSHOT_MISMATCH] model={model_name} "
+                            f"call_id={call_id} field=arguments "
+                            f"streamed_len={len(current_args)} final_len={len(fc_args)} "
+                            f"streamed_hash={_papi_debug_hash(current_args)} final_hash={_papi_debug_hash(fc_args)}",
+                            level='error',
+                        )
+
+                if not function_delta:
+                    continue
+
                 delta_payload = {
                     'tool_calls': [
                         {
                             'index': call_index,
                             'id': call_id,
                             'type': 'function',
-                            'function': {
-                                'name': fc_name,
-                                'arguments': fc_args,
-                            },
+                            'function': function_delta,
                         }
                     ]
                 }
                 if not role_emitted:
                     delta_payload['role'] = 'assistant'
                     role_emitted = True
+                emitted_tool_calls = True
                 chunk = {
                     'id': completion_id,
                     'object': 'chat.completion.chunk',
@@ -1292,8 +1749,67 @@ def _papi_stream_openai_chat(
                     finish_reason = reason
 
         final_finish_reason = finish_reason or 'stop'
-        if saw_tool_calls and final_finish_reason == 'stop':
+        if emitted_tool_calls and final_finish_reason == 'stop':
             final_finish_reason = 'tool_calls'
+        if final_finish_reason == 'tool_calls' and not emitted_tool_calls:
+            _papi_log(
+                f"[PAPI_CHAT_TOOL_EMPTY] model={model_name} finish_reason=tool_calls but no tool payload was emitted",
+                level='error',
+            )
+            final_finish_reason = 'stop'
+
+        _papi_log_debug_summary(
+            '[PAPI_CHAT_STREAM_DONE]',
+            {
+                'model': model_name,
+                'upstream_finish_reason': finish_reason,
+                'final_finish_reason': final_finish_reason,
+                'emitted_tool_calls': emitted_tool_calls,
+                'tool_count': len(set(list(streamed_tool_names.keys()) + list(streamed_tool_arguments.keys()))),
+                'content_delta_count': content_delta_count,
+                'content_chars': content_chars,
+                'reasoning_delta_count': reasoning_delta_count,
+                'reasoning_chars': reasoning_chars,
+                'function_delta_events': function_delta_events,
+                'function_snapshot_events': function_snapshot_events,
+                'event_counts': event_counts,
+            },
+        )
+        if final_finish_reason == 'stop' and not emitted_tool_calls and content_chars <= 0 and reasoning_chars <= 0:
+            _papi_log(
+                f"[PAPI_CHAT_EMPTY_STOP] model={model_name} upstream_finish_reason={finish_reason} "
+                f"events={event_counts}",
+                level='error',
+            )
+        if final_finish_reason == 'stop' and not emitted_tool_calls and content_chars <= 0 and reasoning_chars > 0:
+            _papi_log_reasoning_only_stop(
+                model_name=model_name,
+                provider_name=str(getattr(adapter, 'provider_name', '') or ''),
+                adapter_api_type=str(getattr(adapter, 'api_type', '') or '').strip().lower(),
+                request_params=request_params,
+                finish_reason=finish_reason,
+                reasoning_chars=reasoning_chars,
+                event_counts=event_counts,
+            )
+
+        if emitted_tool_calls:
+            _papi_log_debug_summary(
+                '[PAPI_CHAT_TOOL_OUT]',
+                {
+                    'model': model_name,
+                    'finish_reason': final_finish_reason,
+                    'tool_count': len(streamed_tool_arguments),
+                    'tools': [
+                        {
+                            'key': key,
+                            'name': streamed_tool_names.get(key, ''),
+                            'arguments_len': _papi_debug_len(streamed_tool_arguments.get(key, '')),
+                            'arguments_hash': _papi_debug_hash(streamed_tool_arguments.get(key, '')),
+                        }
+                        for key in sorted(streamed_tool_arguments.keys())
+                    ],
+                },
+            )
 
         final_chunk = {
             'id': completion_id,
@@ -1725,6 +2241,7 @@ def _papi_log(message: str, level: str = 'warning') -> None:
         print(text, flush=True)
     except Exception:
         pass
+    append_log_text(text, source='papi')
 
 
 def _papi_stream_openai_responses(
@@ -1808,6 +2325,14 @@ def _papi_stream_openai_responses(
         allow_synthetic_fallback=allow_synthetic_fallback,
     )
     request_params = _build_request_params(messages, previous_response_id, input_items)
+    _papi_log_final_request_summary(
+        model_name=model_name,
+        provider_name=str(getattr(adapter, 'provider_name', '') or ''),
+        adapter_api_type=str(getattr(adapter, 'api_type', '') or '').strip().lower(),
+        request_params=request_params,
+        use_responses_api=use_responses_upstream,
+        route_mode='responses_stream' if use_responses_upstream else 'responses_chat_bridge_stream',
+    )
     try:
         _input_items_count = len(request_params.get('input') or []) if isinstance(request_params.get('input'), list) else 0
     except Exception:
@@ -1816,6 +2341,25 @@ def _papi_stream_openai_responses(
         f"[PAPI_RESP_REQ] model={model_name} prev={'yes' if request_params.get('previous_response_id') else 'no'} "
         f"input_items={_input_items_count} stream=true"
     )
+    if use_responses_upstream:
+        _papi_log_debug_summary(
+            '[PAPI_RESP_REQ_FLOW]',
+            {
+                'model': model_name,
+                'stream': True,
+                'previous_response_id': 'yes' if request_params.get('previous_response_id') else 'no',
+                'summary': _papi_build_responses_input_flow_summary(request_params.get('input')),
+            },
+        )
+    else:
+        _papi_log_debug_summary(
+            '[PAPI_RESP_CHAT_BRIDGE_REQ_FLOW]',
+            {
+                'model': model_name,
+                'stream': True,
+                'summary': _papi_build_chat_message_flow_summary(request_params.get('messages')),
+            },
+        )
 
     def _event_stream():
         text_parts: List[str] = []
@@ -1884,6 +2428,14 @@ def _papi_stream_openai_responses(
             if fallback_messages:
                 _papi_log(f"[PAPI_RESP_REQ] retry without previous_response_id via synthetic message fallback: {create_error}")
                 active_request_params = _build_request_params(fallback_messages, None, None)
+                _papi_log_final_request_summary(
+                    model_name=model_name,
+                    provider_name=str(getattr(adapter, 'provider_name', '') or ''),
+                    adapter_api_type=str(getattr(adapter, 'api_type', '') or '').strip().lower(),
+                    request_params=active_request_params,
+                    use_responses_api=use_responses_upstream,
+                    route_mode='responses_stream_retry' if use_responses_upstream else 'responses_chat_bridge_stream_retry',
+                )
                 try:
                     iterator = adapter.create_stream_iterator(
                         client=client,
@@ -1980,7 +2532,7 @@ def _papi_stream_openai_responses(
                     if full_name:
                         entry['name'] = full_name
                     elif name_delta:
-                        entry['name'] += name_delta
+                        entry['name'], _ = _papi_merge_stream_text_delta(entry.get('name'), name_delta)
                     if (not entry.get('emitted')) and str(entry.get('name') or '').strip():
                         yield _emit({
                             'type': 'response.output_item.added',
@@ -1997,14 +2549,17 @@ def _papi_stream_openai_responses(
                         })
                         entry['emitted'] = True
                     if ev.get('arguments_delta'):
-                        entry['arguments'] += str(ev.get('arguments_delta') or '')
-                        if entry.get('emitted'):
+                        entry['arguments'], emit_arguments_delta = _papi_merge_stream_text_delta(
+                            entry.get('arguments'),
+                            ev.get('arguments_delta'),
+                        )
+                        if entry.get('emitted') and emit_arguments_delta:
                             yield _emit({
                                 'type': 'response.function_call_arguments.delta',
                                 'response_id': response_id_box[0],
                                 'item_id': call_id,
                                 'output_index': int(entry['output_index']),
-                                'delta': str(ev.get('arguments_delta') or ''),
+                                'delta': emit_arguments_delta,
                             })
 
                     continue
@@ -2022,8 +2577,12 @@ def _papi_stream_openai_responses(
                     full_arguments = str(ev.get('arguments') or '')
                     if full_name:
                         entry['name'] = full_name
+                    emit_arguments_delta = ''
                     if full_arguments:
-                        entry['arguments'] = full_arguments
+                        entry['arguments'], emit_arguments_delta = _papi_merge_stream_text_delta(
+                            entry.get('arguments'),
+                            full_arguments,
+                        )
                     if (not entry.get('emitted')) and str(entry.get('name') or '').strip():
                         yield _emit({
                             'type': 'response.output_item.added',
@@ -2039,13 +2598,13 @@ def _papi_stream_openai_responses(
                             },
                         })
                         entry['emitted'] = True
-                    if entry.get('emitted') and full_arguments:
+                    if entry.get('emitted') and emit_arguments_delta:
                         yield _emit({
                             'type': 'response.function_call_arguments.delta',
                             'response_id': response_id_box[0],
                             'item_id': call_id,
                             'output_index': int(entry['output_index']),
-                            'delta': full_arguments,
+                            'delta': emit_arguments_delta,
                         })
 
                     continue
@@ -2080,6 +2639,24 @@ def _papi_stream_openai_responses(
 
         final_text = ''.join(text_parts)
         reasoning_text = ''.join(reasoning_parts)
+        if function_calls:
+            _papi_log_debug_summary(
+                '[PAPI_RESP_TOOL_OUT]',
+                {
+                    'model': model_name,
+                    'tool_count': len(function_calls),
+                    'tools': [
+                        {
+                            'call_id': call_id,
+                            'name': str(fc.get('name') or ''),
+                            'arguments_len': _papi_debug_len(fc.get('arguments')),
+                            'arguments_hash': _papi_debug_hash(fc.get('arguments')),
+                        }
+                        for call_id, fc in function_calls.items()
+                    ],
+                },
+            )
+
         yield _emit({
             'type': 'response.output_text.done',
             'response_id': response_id_box[0],
@@ -2242,6 +2819,14 @@ def _papi_create_openai_responses_payload(
         allow_synthetic_fallback=allow_synthetic_fallback,
     )
     request_params = _build_request_params(messages, previous_response_id, input_items)
+    _papi_log_final_request_summary(
+        model_name=model_name,
+        provider_name=provider_name,
+        adapter_api_type=str(getattr(adapter, 'api_type', '') or '').strip().lower(),
+        request_params=request_params,
+        use_responses_api=use_responses_upstream,
+        route_mode='responses_non_stream' if use_responses_upstream else 'responses_chat_bridge_non_stream',
+    )
     try:
         _input_items_count = len(request_params.get('input') or []) if isinstance(request_params.get('input'), list) else 0
     except Exception:
@@ -2250,6 +2835,25 @@ def _papi_create_openai_responses_payload(
         f"[PAPI_RESP_REQ] model={model_name} prev={'yes' if request_params.get('previous_response_id') else 'no'} "
         f"input_items={_input_items_count} stream=false"
     )
+    if use_responses_upstream:
+        _papi_log_debug_summary(
+            '[PAPI_RESP_REQ_FLOW]',
+            {
+                'model': model_name,
+                'stream': False,
+                'previous_response_id': 'yes' if request_params.get('previous_response_id') else 'no',
+                'summary': _papi_build_responses_input_flow_summary(request_params.get('input')),
+            },
+        )
+    else:
+        _papi_log_debug_summary(
+            '[PAPI_RESP_CHAT_BRIDGE_REQ_FLOW]',
+            {
+                'model': model_name,
+                'stream': False,
+                'summary': _papi_build_chat_message_flow_summary(request_params.get('messages')),
+            },
+        )
     try:
         if use_responses_upstream:
             response = client.responses.create(**request_params)
@@ -2265,6 +2869,14 @@ def _papi_create_openai_responses_payload(
         if fallback_messages:
             _papi_log(f"[PAPI_RESP_REQ] retry non-stream without previous_response_id via synthetic message fallback: {create_error}")
             request_params = _build_request_params(fallback_messages, None, None)
+            _papi_log_final_request_summary(
+                model_name=model_name,
+                provider_name=provider_name,
+                adapter_api_type=str(getattr(adapter, 'api_type', '') or '').strip().lower(),
+                request_params=request_params,
+                use_responses_api=use_responses_upstream,
+                route_mode='responses_non_stream_retry' if use_responses_upstream else 'responses_chat_bridge_non_stream_retry',
+            )
             if use_responses_upstream:
                 response = client.responses.create(**request_params)
             else:

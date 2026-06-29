@@ -27,6 +27,33 @@ USER_PROFILE_MAX_CHARS = 400
 USER_PROFILE_DEFAULT_TEMPLATE = "用户权限:{user_permission}，还没有写入其他信息。"
 
 
+def _detect_text_encoding_from_raw(raw_content):
+    if raw_content.startswith(b"\xef\xbb\xbf"):
+        return "utf-8-sig"
+
+    return "utf-8"
+
+
+def _read_utf8_text_with_raw(path):
+    with open(path, "rb") as f:
+        raw_content = f.read()
+
+    encoding = _detect_text_encoding_from_raw(raw_content)
+    return raw_content.decode(encoding), raw_content, encoding
+
+
+def _write_text_with_encoding(path, content, encoding):
+    temp_path = f"{path}.tmp"
+    raw_content = str(content or "").encode(encoding)
+
+    with open(temp_path, "wb") as f:
+        f.write(raw_content)
+        f.flush()
+        os.fsync(f.fileno())
+
+    os.replace(temp_path, path)
+
+
 class User:
     def __init__(self, username):
         self.path = f"./data/users/{username}/"
@@ -856,7 +883,11 @@ class User:
             # 获取旧的记录
             old_record = db["data_basis"][title]
             src = old_record["src"]
-            original_content = safe_read_text(src)
+
+            try:
+                original_content, original_raw_content, original_encoding = _read_utf8_text_with_raw(src)
+            except UnicodeDecodeError as e:
+                return False, f"知识内容无法按 utf-8 解码: {e}"
 
         has_range_replace = (
             from_pos is not None
@@ -888,7 +919,7 @@ class User:
             return False, "dry_run cannot update title, url, public or collaborative settings"
 
         expected = str(expected_sha256 or "").strip().lower()
-        old_sha256 = hashlib.sha256(str(original_content or "").encode("utf-8")).hexdigest()
+        old_sha256 = hashlib.sha256(original_raw_content).hexdigest()
 
         if expected and expected != old_sha256:
             return False, {
@@ -905,19 +936,20 @@ class User:
         # 更新内容（整段覆盖）
         if context is not None:
             try:
-                original = safe_read_text(src)
+                original = original_content
                 new_content = str(context)
+
                 if new_content == original:
                     content_updated = False
                 else:
-                    safe_write_text(src, new_content)
+                    _write_text_with_encoding(src, new_content, original_encoding)
                     content_updated = True
             except Exception as e:
                 return False, f"Failed to update content: {str(e)}"
         # 更新内容（统一 diff 或结构化 edits）
         elif has_patch_update:
             try:
-                original = safe_read_text(src)
+                original = original_content
                 current, stats, patch_error = apply_text_patch(
                     original,
                     patch_text=str(patch or ""),
@@ -928,11 +960,11 @@ class User:
                     return False, patch_error
 
                 diff_text = build_preview_diff(title, original, current)
-                new_sha256 = hashlib.sha256(str(current or "").encode("utf-8")).hexdigest()
+                new_sha256 = hashlib.sha256(str(current or "").encode(original_encoding)).hexdigest()
                 content_updated = current != original
 
                 if content_updated and not is_dry_run:
-                    safe_write_text(src, current)
+                    _write_text_with_encoding(src, current, original_encoding)
 
                 content_payload = {
                     "success": True,
@@ -954,7 +986,7 @@ class User:
         # 更新内容（区间替换）
         elif has_range_replace:
             try:
-                original = safe_read_text(src)
+                original = original_content
                 current, stats, range_error = apply_range_replacements(
                     original,
                     from_pos=from_pos,
@@ -967,11 +999,11 @@ class User:
                     return False, range_error
 
                 diff_text = build_preview_diff(title, original, current)
-                new_sha256 = hashlib.sha256(str(current or "").encode("utf-8")).hexdigest()
+                new_sha256 = hashlib.sha256(str(current or "").encode(original_encoding)).hexdigest()
                 content_updated = current != original
 
                 if content_updated and not is_dry_run:
-                    safe_write_text(src, current)
+                    _write_text_with_encoding(src, current, original_encoding)
 
                 content_payload = {
                     "success": True,

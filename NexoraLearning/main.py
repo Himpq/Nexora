@@ -25,6 +25,7 @@ DEFAULT_CONFIG = {
     "debug": False,
     "data_dir": "data",
     "max_upload_mb": 50,
+    "log_retention_count": 5,
     "runtime_api": {
         "enabled": True,
         "api_key": "",
