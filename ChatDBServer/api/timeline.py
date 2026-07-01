@@ -1,4 +1,3 @@
-import difflib
 import json
 import os
 import time
@@ -58,6 +57,96 @@ def _clip_one_line(text: Any, limit: int = 120) -> str:
     return src[:lim].rstrip() + "..."
 
 
+def _first_difference_index(before_text: str, after_text: str) -> int:
+    scan_limit = min(len(before_text), len(after_text))
+
+    for idx in range(scan_limit):
+        if before_text[idx] != after_text[idx]:
+            return idx
+
+    if len(before_text) != len(after_text):
+        return scan_limit
+
+    return -1
+
+
+def _line_at_index(text: str, index: int) -> Dict[str, Any]:
+    if not text:
+        return {"number": 1, "start": 0, "text": ""}
+
+    safe_index = max(0, min(int(index or 0), len(text) - 1))
+    line_start = text.rfind("\n", 0, safe_index + 1) + 1
+    line_end = text.find("\n", safe_index)
+
+    if line_end < 0:
+        line_end = len(text)
+
+    return {
+        "number": text.count("\n", 0, line_start) + 1,
+        "start": line_start,
+        "text": text[line_start:line_end].rstrip("\r")
+    }
+
+
+def _line_preview(text: Any, column: int = 0, limit: int = 80) -> str:
+    raw = str(text or "").replace("\t", "    ")
+
+    if not raw:
+        return "空行"
+
+    if not raw.strip():
+        return "空白行"
+
+    lim = max(24, min(int(limit or 80), 160))
+
+    if len(raw) <= lim:
+        return _clip_one_line(raw, lim)
+
+    safe_column = max(0, min(int(column or 0), len(raw) - 1))
+    left_room = max(8, int(lim * 0.35))
+    start = max(0, safe_column - left_room)
+    end = min(len(raw), start + lim)
+
+    if end - start < lim:
+        start = max(0, end - lim)
+
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(raw) else ""
+    return prefix + _clip_one_line(raw[start:end], lim) + suffix
+
+
+def _line_column(line: Dict[str, Any], absolute_index: int) -> int:
+    return max(0, int(absolute_index or 0) - int(line.get("start") or 0))
+
+
+def _build_update_difference(before_text: str, after_text: str, *, limit: int = 120) -> str:
+    diff_index = _first_difference_index(before_text, after_text)
+
+    if diff_index < 0:
+        return ""
+
+    before_line = _line_at_index(before_text, diff_index)
+    after_line = _line_at_index(after_text, diff_index)
+    preview_limit = max(24, min(42, int((limit - 30) / 2)))
+    before_preview = _line_preview(
+        before_line.get("text"),
+        _line_column(before_line, diff_index),
+        preview_limit,
+    )
+    after_preview = _line_preview(
+        after_line.get("text"),
+        _line_column(after_line, diff_index),
+        preview_limit,
+    )
+    line_number = int(after_line.get("number") or before_line.get("number") or 1)
+
+    if before_preview == after_preview:
+        return f"±第 {line_number} 行 空白或格式变更"
+
+    summary = f"第 {line_number} 行 {before_preview} -> {after_preview}"
+    return "±" + _clip_one_line(summary, limit)
+
+
 def _timeline_action_prefix(action: Any) -> str:
     key = str(action or "update").strip().lower()
     if key == "add":
@@ -73,32 +162,25 @@ def _timeline_subject_label(value: Any, *, fallback: str = "记录", limit: int 
 
 
 def _build_difference(before: Any = "", after: Any = "", *, limit: int = 120) -> str:
-    old_text = _clip_one_line(before, limit)
-    new_text = _clip_one_line(after, limit)
-    if not old_text and not new_text:
+    before_text = str(before or "")
+    after_text = str(after or "")
+
+    if before_text == after_text:
         return ""
+
+    old_text = _clip_one_line(before_text, limit)
+    new_text = _clip_one_line(after_text, limit)
+
+    if not old_text and not new_text:
+        return "±空白或格式变更"
+
     if not old_text:
         return f"+{new_text}"
+
     if not new_text:
         return f"-{old_text}"
-    if old_text == new_text:
-        return f"±{new_text}"
 
-    matcher = difflib.SequenceMatcher(None, old_text, new_text)
-    best = ""
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        if tag == "equal":
-            continue
-        if tag in {"replace", "insert"}:
-            best = new_text[max(0, j1 - 16):min(len(new_text), j2 + 64)]
-            break
-        if tag == "delete":
-            best = old_text[max(0, i1 - 16):min(len(old_text), i2 + 64)]
-            break
-    if not best:
-        best = new_text or old_text
-    prefix = "+" if new_text else "-"
-    return f"{prefix}{_clip_one_line(best, limit)}"
+    return _build_update_difference(before_text, after_text, limit=limit)
 
 
 def build_update_by_label(actor_type: Any, actor_name: Any = "", conversation_title: Any = "") -> str:

@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from datetime import datetime
 
 from conversation_repair import recover_conversation_bytes
+from history_sanitizer import sanitize_assistant_visible_content
 from longterm.longterm_api import conversation_longterm_root_state, normalize_longterm_state
 from datastorage import get_path_lock, safe_write_json
 
@@ -117,6 +118,50 @@ class ConversationManager:
                 changed = True
 
         return changed
+
+    def _assistant_process_steps_have_visible_output(self, metadata):
+        if not isinstance(metadata, dict):
+            return False
+
+        process_steps = metadata.get("process_steps", [])
+
+        if not isinstance(process_steps, list):
+            return False
+
+        return any(
+            isinstance(step, dict)
+            and str(step.get("type") or "").strip() not in {"", "reasoning_content"}
+            for step in process_steps
+        )
+
+    def _assistant_variant_has_visible_output(self, content, metadata):
+        visible_content = sanitize_assistant_visible_content(content)
+
+        return bool(str(visible_content or "").strip()) or self._assistant_process_steps_have_visible_output(metadata)
+
+    def _sanitize_assistant_versions(self, versions):
+        if not isinstance(versions, list):
+            return []
+
+        cleaned_versions = []
+
+        for version in versions:
+            if not isinstance(version, dict):
+                continue
+
+            next_version = dict(version)
+            next_metadata = next_version.get("metadata", {})
+
+            if not isinstance(next_metadata, dict):
+                next_metadata = {}
+
+            next_version["metadata"] = next_metadata
+            next_version["content"] = sanitize_assistant_visible_content(next_version.get("content", ""))
+
+            if self._assistant_variant_has_visible_output(next_version.get("content", ""), next_metadata):
+                cleaned_versions.append(next_version)
+
+        return cleaned_versions
 
     def ensure_conversation_compatibility(self, conversation_id):
         """
@@ -474,6 +519,10 @@ class ConversationManager:
             index: 如果提供且有效，则覆盖该索引处的消息（用于重新生成覆盖旧回答）
         """
         saved_index = None
+        normalized_role = str(role or "").strip()
+
+        if normalized_role == "assistant":
+            content = sanitize_assistant_visible_content(content)
 
         with self._conversation_update_session(conversation_id) as (conversation_path, conversation_data):
             messages = conversation_data.get("messages", [])
@@ -506,16 +555,14 @@ class ConversationManager:
                     )
 
                 old_metadata = old_msg.get("metadata", {}) if isinstance(old_msg.get("metadata", {}), dict) else {}
-                old_versions = old_metadata.get("versions", [])
-                if not isinstance(old_versions, list):
-                    old_versions = []
+                old_versions = self._sanitize_assistant_versions(old_metadata.get("versions", []))
 
                 if "metadata" not in message:
                     message["metadata"] = {}
                 message["metadata"]["versions"] = list(old_versions)
 
                 if role == "assistant" and str(old_msg.get("role", "")).strip() == "assistant":
-                    prev_content = old_msg.get("content", "")
+                    prev_content = sanitize_assistant_visible_content(old_msg.get("content", ""))
                     prev_ts = old_msg.get("timestamp", "")
                     prev_meta_without_versions = {
                         k: v for k, v in old_metadata.items() if k != "versions"
@@ -529,10 +576,7 @@ class ConversationManager:
                         prev_variant["exchange_summary"] = old_msg["exchange_summary"]
 
                     has_meaningful_content = bool(str(prev_content or "").strip())
-                    has_meaningful_steps = bool(
-                        isinstance(prev_meta_without_versions.get("process_steps"), list)
-                        and len(prev_meta_without_versions.get("process_steps")) > 0
-                    )
+                    has_meaningful_steps = self._assistant_process_steps_have_visible_output(prev_meta_without_versions)
                     if has_meaningful_content or has_meaningful_steps:
                         existed = False
                         for v in message["metadata"]["versions"]:
@@ -704,10 +748,11 @@ class ConversationManager:
                 msg["metadata"] = {}
             if "versions" not in msg["metadata"]:
                 msg["metadata"]["versions"] = []
+            msg["metadata"]["versions"] = self._sanitize_assistant_versions(msg["metadata"]["versions"])
                 
             # 保存当前内容到版本列表 (不含 versions 自身以防无限嵌套)
             version_data = {
-                "content": msg.get("content", ""),
+                "content": sanitize_assistant_visible_content(msg.get("content", "")),
                 "timestamp": msg.get("timestamp", ""),
                 "metadata": {k: v for k, v in msg.get("metadata", {}).items() if k != "versions"}
             }
@@ -715,10 +760,7 @@ class ConversationManager:
                 version_data["exchange_summary"] = msg["exchange_summary"]
 
             has_meaningful_content = bool(str(version_data.get("content", "")).strip())
-            has_meaningful_steps = bool(
-                isinstance(version_data.get("metadata", {}).get("process_steps"), list)
-                and len(version_data.get("metadata", {}).get("process_steps")) > 0
-            )
+            has_meaningful_steps = self._assistant_process_steps_have_visible_output(version_data.get("metadata", {}))
             if has_meaningful_content or has_meaningful_steps:
                 existed = False
                 for v in msg["metadata"]["versions"]:
@@ -761,7 +803,7 @@ class ConversationManager:
                 
                 # 简单做法：把当前所有可能的状态（当前+历史）看做一个池子
                 all_variants = versions + [{
-                    "content": msg.get("content", ""),
+                    "content": sanitize_assistant_visible_content(msg.get("content", "")),
                     "timestamp": msg.get("timestamp", ""),
                     "metadata": {k: v for k, v in msg.get("metadata", {}).items() if k != "versions"},
                     "exchange_summary": msg.get("exchange_summary")
@@ -770,7 +812,7 @@ class ConversationManager:
                 target = all_variants[version_index]
                 
                 # 更新消息
-                msg["content"] = target["content"]
+                msg["content"] = sanitize_assistant_visible_content(target["content"])
                 msg["timestamp"] = target["timestamp"]
                 if target.get("exchange_summary"):
                     msg["exchange_summary"] = target["exchange_summary"]
@@ -779,7 +821,9 @@ class ConversationManager:
                 
                 # 更新元数据（保留 versions 列表）
                 msg["metadata"] = target.get("metadata", {})
-                msg["metadata"]["versions"] = [v for i, v in enumerate(all_variants) if i != version_index]
+                msg["metadata"]["versions"] = self._sanitize_assistant_versions([
+                    v for i, v in enumerate(all_variants) if i != version_index
+                ])
                 model_name = str(msg.get("metadata", {}).get("model_name", "") or "").strip()
                 if model_name:
                     msg["model_name"] = model_name

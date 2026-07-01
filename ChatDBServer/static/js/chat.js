@@ -1041,23 +1041,66 @@ function buildReasoningAppendText(existingRaw, nextText, separateSegment = false
     return `\n\n${next}`;
 }
 
+function hasReasoningThinkingBlockContent(thinkingBlock) {
+    if (!thinkingBlock) return false;
+
+    const contentEl = thinkingBlock.querySelector('.thinking-content');
+    const raw = readReasoningContentRaw(contentEl);
+
+    return !!String(raw || (contentEl && contentEl.textContent) || '').trim();
+}
+
+function insertReasoningThinkingBlock(messageDiv, container, thinkingBlock) {
+    if (!thinkingBlock) return;
+
+    const target = container || (messageDiv && messageDiv.querySelector('.message-content')) || messageDiv;
+
+    if (!target) return;
+
+    const timelineSelector = [
+        '.thinking-block',
+        '.content-body',
+        '.tool-usage',
+        '.add-basis-view',
+        '.question-tool-card',
+        '.puzzle-tool-card'
+    ].join(',');
+    const hasTimelineNode = Array.from(target.children || []).some((child) => {
+        return child && child.matches && child.matches(timelineSelector);
+    });
+
+    if (hasTimelineNode) {
+        target.appendChild(thinkingBlock);
+    } else {
+        target.prepend(thinkingBlock);
+    }
+}
+
 function resolveReasoningThinkingBlockForAppend(messageDiv, container) {
     if (!messageDiv) return null;
 
-    let thinkingBlock = messageDiv.__activeReasoningThinkingBlock;
+    const canReuseActiveSegment = !!messageDiv.__reasoningSegmentOpen;
+    let thinkingBlock = canReuseActiveSegment ? messageDiv.__activeReasoningThinkingBlock : null;
 
     if (thinkingBlock && (!thinkingBlock.isConnected || !thinkingBlock.classList.contains('reasoning-thinking-block'))) {
         thinkingBlock = null;
     }
 
-    if (!thinkingBlock) {
-        thinkingBlock = getPrimaryReasoningThinkingBlock(messageDiv);
+    if (!thinkingBlock && canReuseActiveSegment) {
+        thinkingBlock = getLatestReasoningThinkingBlock(messageDiv);
+    }
+
+    if (!thinkingBlock && !canReuseActiveSegment) {
+        const latestBlock = getLatestReasoningThinkingBlock(messageDiv);
+
+        if (latestBlock && !hasReasoningThinkingBlockContent(latestBlock)) {
+            thinkingBlock = latestBlock;
+        }
     }
 
     if (!thinkingBlock) {
         thinkingBlock = createThinkingBlock(false);
-        const target = container || messageDiv.querySelector('.message-content') || messageDiv;
-        target.prepend(thinkingBlock);
+        insertReasoningThinkingBlock(messageDiv, container, thinkingBlock);
     }
 
     messageDiv.__activeReasoningThinkingBlock = thinkingBlock;
@@ -1086,6 +1129,8 @@ let lastAgentOnline = false;
 
 let shouldAutoScroll = true; // Auto-scroll control
 let _isJumping = false; // Temporarily block scroll listener during jump
+const MESSAGES_AUTO_SCROLL_NEAR_BOTTOM_PX = 50;
+const MESSAGES_AUTO_SCROLL_BREAK_UP_PX = 0;
 let uploadedFileIds = []; // Uploaded files {id, name}
 let isUploadingFiles = false;
 let currentUploadXhr = null;
@@ -1163,6 +1208,7 @@ const NEXORA_LEARNING_JS_URL = '/static/js/learning_mode.js?v=20260609_05';
 const AGENT_STATUS_POLL_VISIBLE_MS = 5000;
 const BROWSER_SYNC_RECONNECT_MS = 3000;
 const BROWSER_SYNC_PING_MS = 20000;
+const BROWSER_MODEL_CONFIG_SYNC_MS = 25000;
 const MODAL_STACK_BASE_Z = 12000;
 const MODAL_STACK_STEP_Z = 20;
 let modalStackCounter = 0;
@@ -1171,7 +1217,14 @@ let mailDeferredEventState = null;
 let browserSyncSocket = null;
 let browserSyncReconnectTimer = null;
 let browserSyncPingTimer = null;
+let browserModelConfigSyncTimer = null;
+let browserOllamaStatusProviders = [];
 let browserSyncManuallyClosed = false;
+let chatModelConfigSyncState = {
+    version: '',
+    inFlight: false,
+    pending: false
+};
 let mailNotifyState = {
     lastOpenTs: 0,
     newCount: 0,
@@ -1282,7 +1335,11 @@ const imageViewerState = {
     ty: 0,
     dragging: false,
     dragStartX: 0,
-    dragStartY: 0
+    dragStartY: 0,
+    pointerId: null,
+    renderRaf: 0,
+    scaleLabelDirty: true,
+    lastScaleLabel: ''
 };
 let fileDragDepth = 0;
 let fileDropHighlightTarget = null;
@@ -6136,6 +6193,170 @@ function syncBrowserCurrentConversation() {
     }));
 }
 
+function getBrowserModelConfigVersion(payload) {
+    const source = payload && typeof payload === 'object' ? payload : {};
+    return String(source.models_config_version || source.version || '').trim();
+}
+
+function updateBrowserModelConfigVersion(payload) {
+    const version = getBrowserModelConfigVersion(payload);
+
+    if (version) {
+        chatModelConfigSyncState.version = version;
+    }
+}
+
+function requestBrowserModelConfigSync() {
+    if (!browserSyncSocket || browserSyncSocket.readyState !== WebSocket.OPEN) return;
+
+    browserSyncSocket.send(JSON.stringify({
+        type: 'sync_model_config',
+        version: chatModelConfigSyncState.version || '',
+        ts: Date.now()
+    }));
+}
+
+function startBrowserModelConfigSyncTimer() {
+    if (browserModelConfigSyncTimer) {
+        clearInterval(browserModelConfigSyncTimer);
+        browserModelConfigSyncTimer = null;
+    }
+
+    requestBrowserModelConfigSync();
+    browserModelConfigSyncTimer = setInterval(requestBrowserModelConfigSync, BROWSER_MODEL_CONFIG_SYNC_MS);
+}
+
+function normalizeBrowserOllamaProviderKeys(providerKeys = []) {
+    const rawItems = Array.isArray(providerKeys) ? providerKeys : [providerKeys];
+    const seen = new Set();
+    const keys = [];
+
+    rawItems.forEach((item) => {
+        const key = String(item || '').trim();
+
+        if (!key || seen.has(key)) return;
+
+        seen.add(key);
+        keys.push(key);
+    });
+
+    return keys;
+}
+
+function getBrowserOllamaProviderKeys() {
+    return Object.keys(providerCatalogByKey || {}).filter((providerKey) => {
+        return getChatProviderApiType(providerKey) === 'ollama';
+    });
+}
+
+function sendBrowserOllamaStatusMessage(messageType, providerKeys = [], options = {}) {
+    if (!browserSyncSocket || browserSyncSocket.readyState !== WebSocket.OPEN) return;
+
+    const providers = normalizeBrowserOllamaProviderKeys(providerKeys);
+
+    if (!providers.length && messageType !== 'subscribe_ollama_status') return;
+
+    browserSyncSocket.send(JSON.stringify({
+        type: messageType,
+        providers,
+        force: !!(options && options.force),
+        ts: Date.now()
+    }));
+}
+
+function subscribeBrowserOllamaStatus(providerKeys = [], options = {}) {
+    browserOllamaStatusProviders = normalizeBrowserOllamaProviderKeys(providerKeys);
+    sendBrowserOllamaStatusMessage('subscribe_ollama_status', browserOllamaStatusProviders, options);
+}
+
+function syncBrowserOllamaStatus(options = {}) {
+    const providers = normalizeBrowserOllamaProviderKeys(
+        (options && options.providers) || browserOllamaStatusProviders || getBrowserOllamaProviderKeys()
+    );
+
+    sendBrowserOllamaStatusMessage('sync_ollama_status', providers, options);
+}
+
+function buildBrowserOllamaProviderStatusEntry(payload = {}) {
+    const data = payload && typeof payload === 'object' ? payload : {};
+    const byModelId = {};
+    const rows = Array.isArray(data.models) ? data.models : [];
+
+    rows.forEach((row) => {
+        const modelKey = String((row && (row.id || row.model || row.name)) || '').trim().toLowerCase();
+
+        if (!modelKey) return;
+
+        byModelId[modelKey] = {
+            ...row,
+            installed: row && row.installed !== undefined ? !!row.installed : true,
+            running: !!(row && row.running),
+            status: String((row && row.status) || '').trim().toLowerCase() || (row && row.running ? 'running' : 'offline'),
+            status_label: String((row && row.status_label) || (row && row.running ? '在线' : '不在线')),
+            status_level: String((row && row.status_level) || (row && row.running ? 'success' : 'warning'))
+        };
+    });
+
+    return {
+        byModelId,
+        raw: data,
+        error: data && data.success === false ? (data.message || data.error || '加载失败') : '',
+        loaded: !(data && data.success === false),
+        loadedAt: Date.now(),
+        revision: Number(data.revision || 0)
+    };
+}
+
+function applyBrowserOllamaStatusPayload(payload = {}) {
+    const data = payload && typeof payload === 'object' ? payload : {};
+    const providerKey = String(data.provider || data.provider_key || '').trim();
+
+    if (!providerKey) return;
+
+    const statusEntry = buildBrowserOllamaProviderStatusEntry(data);
+    ollamaChatProviderStatusCache.set(providerKey, statusEntry);
+
+    if (typeof adminOllamaModelStatusCache !== 'undefined') {
+        adminOllamaModelStatusCache[providerKey] = statusEntry;
+    }
+}
+
+function handleBrowserOllamaStatusEvent(payload = {}) {
+    const data = payload && typeof payload === 'object' ? payload : {};
+    const statuses = Array.isArray(data.statuses) ? data.statuses : [data];
+
+    statuses.forEach((item) => applyBrowserOllamaStatusPayload(item));
+    refreshChatOllamaStatusIndicators();
+
+    if (typeof renderAdminModelConfig === 'function') {
+        renderAdminModelConfig();
+    }
+}
+
+async function syncChatModelsFromBrowserEvent(payload = {}) {
+    if (chatModelConfigSyncState.inFlight) {
+        chatModelConfigSyncState.pending = true;
+        return;
+    }
+
+    chatModelConfigSyncState.inFlight = true;
+
+    try {
+        const loaded = await loadModels({ forceOllamaStatus: true });
+
+        if (loaded !== false) {
+            updateBrowserModelConfigVersion(payload);
+        }
+    } finally {
+        chatModelConfigSyncState.inFlight = false;
+
+        if (chatModelConfigSyncState.pending) {
+            chatModelConfigSyncState.pending = false;
+            void syncChatModelsFromBrowserEvent({ force: true });
+        }
+    }
+}
+
 function createMailEventState(payload = null) {
     const state = {
         pending: false,
@@ -6280,8 +6501,35 @@ function handleBrowserSyncMessage(payload) {
         return;
     }
 
+    if (msgType === 'model_config_state') {
+        updateBrowserModelConfigVersion(payload);
+        return;
+    }
+
+    if (msgType === 'model_config_changed') {
+        void syncChatModelsFromBrowserEvent(payload);
+        return;
+    }
+
+    if (msgType === 'model_config_sync_error') {
+        console.warn('Model config sync failed', payload && payload.message ? payload.message : payload);
+        return;
+    }
+
+    if (msgType === 'ollama_status_state' || msgType === 'ollama_status_changed') {
+        handleBrowserOllamaStatusEvent(payload);
+        return;
+    }
+
     if (msgType === 'client_tool_request') {
         enqueueClientToolWssRequest(payload.request, payload.conversation_id);
+        return;
+    }
+
+    if (msgType === 'notification_created' || msgType === 'notification_read' || msgType === 'notification_removed') {
+        window.dispatchEvent(new CustomEvent('nexora:notification:wss', {
+            detail: payload
+        }));
     }
 }
 
@@ -6294,6 +6542,11 @@ function clearBrowserSyncTimers() {
     if (browserSyncPingTimer) {
         clearInterval(browserSyncPingTimer);
         browserSyncPingTimer = null;
+    }
+
+    if (browserModelConfigSyncTimer) {
+        clearInterval(browserModelConfigSyncTimer);
+        browserModelConfigSyncTimer = null;
     }
 }
 
@@ -6338,6 +6591,8 @@ function startAgentStatusPolling() {
     browserSyncSocket.addEventListener('open', () => {
         syncBrowserCurrentConversation();
         startBrowserSyncPing();
+        startBrowserModelConfigSyncTimer();
+        subscribeBrowserOllamaStatus(browserOllamaStatusProviders.length ? browserOllamaStatusProviders : getBrowserOllamaProviderKeys());
     });
 
     browserSyncSocket.addEventListener('message', (event) => {
@@ -7145,6 +7400,7 @@ const els = {
     sidebarBrandNexoraTab: document.getElementById('sidebarBrandNexoraTab'),
     sidebarBrandLearningTab: document.getElementById('sidebarBrandLearningTab'),
     newChatBtn: document.getElementById('newChatBtn'),
+    workspacesBtn: document.getElementById('workspacesBtn'),
     conversationTitle: document.getElementById('conversationTitle'),
     knowledgePanel: document.getElementById('knowledgePanel'),
     filePanel: document.getElementById('filePanel'),
@@ -7162,6 +7418,8 @@ const els = {
     btnToggleFilePanel: document.getElementById('btnToggleFilePanel'),
     refreshKnowledgeBtn: document.getElementById('refreshKnowledgeBtn'),
     refreshCloudFilesBtn: document.getElementById('refreshCloudFilesBtn'),
+    createBlankBasisBtn: document.getElementById('createBlankBasisBtn'),
+    bulkVectorizeBtn: document.getElementById('bulkVectorizeBtn'),
     panelBasisList: document.getElementById('panelBasisKnowledgeList'),
     panelShortList: document.getElementById('panelShortMemoryList'),
     panelBasisCount: document.getElementById('panelBasisCount'),
@@ -7232,6 +7490,8 @@ const els = {
     pinContextMenu: document.getElementById('pinContextMenu'),
     pinContextMenuAction: document.getElementById('pinContextMenuAction'),
     pinContextMenuRename: document.getElementById('pinContextMenuRename'),
+    pinContextMenuWorkspaceWrap: document.getElementById('pinContextMenuWorkspaceWrap'),
+    pinContextMenuWorkspaceList: document.getElementById('pinContextMenuWorkspaceList'),
     conversationRenameModal: document.getElementById('conversationRenameModal'),
     conversationRenameInput: document.getElementById('conversationRenameInput'),
     closeConversationRenameModalBtn: document.getElementById('closeConversationRenameModalBtn'),
@@ -7635,9 +7895,15 @@ function applyLearningSidebarMode(mode) {
     if (els.newChatBtn) {
         els.newChatBtn.style.display = '';
         els.newChatBtn.innerHTML = visible
-            ? '<span class="icon">+</span> New Learning'
-            : '<span class="icon">+</span> New Chat';
+            ? '<i class="fa-solid fa-plus" aria-hidden="true"></i><span>New Learning</span>'
+            : '<i class="fa-solid fa-plus" aria-hidden="true"></i><span>New Chat</span>';
     }
+
+    if (els.workspacesBtn) {
+        els.workspacesBtn.hidden = visible;
+        els.workspacesBtn.style.display = visible ? 'none' : '';
+    }
+
     if (els.learningSidebarPanel) {
         els.learningSidebarPanel.style.display = visible ? '' : 'none';
         if (visible) {
@@ -7934,6 +8200,8 @@ async function syncLearningHeaderMode() {
             || learningReaderOpened
         )
     );
+    const showChatMain = !showLearningMain && !viewerOpen;
+
     if (!showLearningMain) {
         setLearningEmbedLayoutMode('default');
         if (els.inputDock) {
@@ -7950,7 +8218,7 @@ async function syncLearningHeaderMode() {
                 learningWelcomeMounted = false;
             }
         }
-        els.messagesContainer.style.display = showLearningMain ? 'none' : '';
+        els.messagesContainer.style.display = showChatMain ? '' : 'none';
     }
     if (els.learningMainPanel) {
         els.learningMainPanel.style.display = showLearningMain ? '' : 'none';
@@ -7958,7 +8226,7 @@ async function syncLearningHeaderMode() {
             await renderLearningMainPanel();
         }
     }
-    if (!showLearningMain && !viewerOpen && !hasConversation && !showLearning) {
+    if (showChatMain && !hasConversation && !showLearning) {
         await renderWelcomeScreen();
     }
     if (els.conversationTitle) {
@@ -9774,10 +10042,10 @@ function renderTimelineList() {
         const diffText = String(entry.difference || '').trim() || '无变更';
         const diff = document.createElement('div');
         diff.className = 'timeline-diff';
-        const diffSign = diffText.startsWith('+') ? '+' : (diffText.startsWith('-') ? '-' : '');
+        const diffSign = diffText.startsWith('+') ? '+' : (diffText.startsWith('-') ? '-' : (diffText.startsWith('±') ? '±' : ''));
 
         if (diffSign) {
-            diff.classList.add(diffSign === '+' ? 'positive' : 'negative');
+            diff.classList.add(diffSign === '+' ? 'positive' : (diffSign === '-' ? 'negative' : 'modified'));
 
             const body = document.createElement('span');
             body.className = 'timeline-diff-body';
@@ -9785,7 +10053,7 @@ function renderTimelineList() {
 
             const sign = document.createElement('span');
             sign.className = 'timeline-diff-sign';
-            sign.textContent = diffSign === '+' ? '新增' : '删除';
+            sign.textContent = diffSign === '+' ? '新增' : (diffSign === '-' ? '删除' : '修改');
 
             diff.appendChild(sign);
             diff.appendChild(body);
@@ -10149,22 +10417,39 @@ function showNotesContextMenu(x, y, selectionText, sourceMeta) {
     notesState.pendingSelectionSource = sourceMeta && typeof sourceMeta === 'object' ? sourceMeta : null;
 }
 
+function clearPinContextMenuFocus(menu) {
+    const active = document.activeElement;
+
+    if (!menu || !active || typeof active.blur !== 'function') {
+        return;
+    }
+
+    if (menu.contains(active)) {
+        active.blur();
+    }
+}
+
 function hidePinContextMenu() {
     const menu = els.pinContextMenu || document.getElementById('pinContextMenu');
     if (!menu) return;
+    clearPinContextMenuFocus(menu);
     menu.classList.remove('active');
+    menu.classList.remove('submenu-left');
     menu.setAttribute('aria-hidden', 'true');
     pinContextMenuState = null;
     pinContextMenuBusy = false;
     const actionBtn = els.pinContextMenuAction || document.getElementById('pinContextMenuAction');
     const renameBtn = els.pinContextMenuRename || document.getElementById('pinContextMenuRename');
+    const workspaceList = els.pinContextMenuWorkspaceList || document.getElementById('pinContextMenuWorkspaceList');
     if (actionBtn) actionBtn.disabled = false;
     if (renameBtn) renameBtn.disabled = false;
+    if (workspaceList) workspaceList.innerHTML = '';
 }
 
 function updatePinContextMenuAction(state) {
     const actionBtn = els.pinContextMenuAction || document.getElementById('pinContextMenuAction');
     const renameBtn = els.pinContextMenuRename || document.getElementById('pinContextMenuRename');
+    const workspaceWrap = els.pinContextMenuWorkspaceWrap || document.getElementById('pinContextMenuWorkspaceWrap');
     if (!actionBtn) return;
     const targetType = String((state && state.targetType) || '').trim();
     const pinned = !!(state && state.pinned);
@@ -10176,6 +10461,10 @@ function updatePinContextMenuAction(state) {
     if (icon) icon.className = 'fa-solid fa-thumbtack';
     if (renameBtn) {
         renameBtn.style.display = targetType === 'conversation' ? '' : 'none';
+    }
+    if (workspaceWrap) {
+        const supportsWorkspaceMark = targetType === 'conversation' || targetType === 'knowledge_basis';
+        workspaceWrap.style.display = supportsWorkspaceMark ? '' : 'none';
     }
 }
 
@@ -10288,6 +10577,7 @@ function showPinContextMenu(x, y, payload) {
     const state = (payload && typeof payload === 'object') ? payload : null;
     if (!state || !state.targetType) return;
     hideNotesContextMenu();
+    clearPinContextMenuFocus(menu);
     pinContextMenuState = { ...state };
     updatePinContextMenuAction(pinContextMenuState);
     menu.classList.add('active');
@@ -10298,13 +10588,15 @@ function showPinContextMenu(x, y, payload) {
     const top = Math.min(Math.max(8, Number(y || 0)), Math.max(8, window.innerHeight - menuHeight - 12));
     menu.style.left = `${left}px`;
     menu.style.top = `${top}px`;
+    positionPinContextSubmenu(menu, left);
+    void loadPinContextWorkspaceItems(pinContextMenuState);
 }
 
 async function setConversationPinned(conversationId, pin) {
     const cid = String(conversationId || '').trim();
     if (!cid) return false;
     const res = await fetch(`/api/conversations/${encodeURIComponent(cid)}/pin`, {
-        method: 'POST',
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pin: !!pin })
     });
@@ -10316,7 +10608,7 @@ async function setBasisKnowledgePinned(title, pin) {
     const safeTitle = String(title || '').trim();
     if (!safeTitle) return false;
     const res = await fetch(`/api/knowledge/basis/${encodeURIComponent(safeTitle)}/pin`, {
-        method: 'POST',
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pin: !!pin })
     });
@@ -10609,10 +10901,8 @@ async function restoreTrashItem(trashId) {
     if (!id) return;
     if (trashViewState.loading) return;
     try {
-        const res = await fetch('/api/trash/restore', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id })
+        const res = await fetch(`/api/trash/${encodeURIComponent(id)}/restore`, {
+            method: 'POST'
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || !data || !data.success) {
@@ -10633,9 +10923,8 @@ async function clearTrashItemsWithConfirm() {
     if (!ok) return;
     if (trashViewState.loading) return;
     try {
-        const res = await fetch('/api/trash/clear', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' }
+        const res = await fetch('/api/trash', {
+            method: 'DELETE'
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || !data || !data.success) {
@@ -10785,6 +11074,7 @@ function bindPinContextMenu() {
     const menu = els.pinContextMenu || document.getElementById('pinContextMenu');
     const actionBtn = els.pinContextMenuAction || document.getElementById('pinContextMenuAction');
     const renameBtn = els.pinContextMenuRename || document.getElementById('pinContextMenuRename');
+    const workspaceList = els.pinContextMenuWorkspaceList || document.getElementById('pinContextMenuWorkspaceList');
     if (!menu || !actionBtn) return;
     if (menu.dataset.bindDone === '1') return;
     menu.dataset.bindDone = '1';
@@ -10808,6 +11098,71 @@ function bindPinContextMenu() {
             openConversationRenameModal(cid, title);
         });
     }
+    if (workspaceList) {
+        workspaceList.addEventListener('click', async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const target = e.target;
+
+            if (!(target instanceof Element)) {
+                return;
+            }
+
+            const item = target.closest('.pin-context-workspace-item[data-workspace-id]');
+
+            if (!item) {
+                return;
+            }
+
+            const state = { ...(pinContextMenuState || {}) };
+            const workspaceId = String(item.getAttribute('data-workspace-id') || '').trim();
+            const conversationId = String(state.conversationId || '').trim();
+            const knowledgeTitle = String(state.title || '').trim();
+            const targetType = String(state.targetType || '').trim();
+            const alreadyMarked = String(item.getAttribute('data-marked') || '') === '1';
+            hidePinContextMenu();
+
+            if (alreadyMarked) {
+                showToast(targetType === 'knowledge_basis' ? '该知识已在工作区' : '该对话已在工作区');
+                return;
+            }
+
+            if (targetType === 'conversation' && workspaceId && conversationId) {
+                try {
+                    await addConversationToWorkspace(workspaceId, conversationId, {
+                        refreshList: false,
+                        syncSelectedWorkspace: false,
+                    });
+                    showToast('已归入工作区');
+                } catch (error) {
+                    console.error('pin context addConversationToWorkspace failed', error);
+                    showToast(String((error && error.message) || '归入工作区失败'));
+                }
+                return;
+            }
+
+            if (targetType === 'knowledge_basis' && workspaceId && knowledgeTitle) {
+                try {
+                    await addKnowledgeToWorkspace(workspaceId, knowledgeTitle, {
+                        refreshList: false,
+                        syncSelectedWorkspace: false,
+                    });
+                    showToast('知识已归入工作区');
+                } catch (error) {
+                    console.error('pin context addKnowledgeToWorkspace failed', error);
+                    showToast(String((error && error.message) || '知识归入工作区失败'));
+                }
+                return;
+            }
+
+            if (!workspaceId) {
+                showToast('无法归入工作区');
+                return;
+            }
+
+            showToast('无法归入工作区');
+        });
+    }
 
     document.addEventListener('click', (e) => {
         if (!menu.classList.contains('active')) return;
@@ -10815,8 +11170,10 @@ function bindPinContextMenu() {
         hidePinContextMenu();
     }, true);
 
-    document.addEventListener('scroll', () => {
-        if (menu.classList.contains('active')) hidePinContextMenu();
+    document.addEventListener('scroll', (e) => {
+        if (!menu.classList.contains('active')) return;
+        if (menu.contains(e.target)) return;
+        hidePinContextMenu();
     }, true);
 
     document.addEventListener('keydown', (e) => {
@@ -11779,28 +12136,94 @@ function clampImageViewerScale(v) {
     return Math.min(imageViewerState.maxScale, Math.max(imageViewerState.minScale, n));
 }
 
-function applyImageViewerTransform() {
-    if (!els.imageViewerImage) return;
-    els.imageViewerImage.style.transform = `translate(${imageViewerState.tx}px, ${imageViewerState.ty}px) scale(${imageViewerState.scale})`;
+function releaseImageViewerPointerCapture(pointerId = imageViewerState.pointerId) {
+    if (!els.imageViewerViewport || pointerId === null || pointerId === undefined) {
+        return;
+    }
+
+    try {
+        els.imageViewerViewport.releasePointerCapture(pointerId);
+    } catch (_) {}
+}
+
+function updateImageViewerScaleLabel() {
     if (els.imageViewerScaleLabel) {
-        els.imageViewerScaleLabel.textContent = `${Math.round(imageViewerState.scale * 100)}%`;
+        const nextLabel = `${Math.round(imageViewerState.scale * 100)}%`;
+
+        if (imageViewerState.lastScaleLabel !== nextLabel) {
+            imageViewerState.lastScaleLabel = nextLabel;
+            els.imageViewerScaleLabel.textContent = nextLabel;
+        }
     }
 }
 
-function resetImageViewerTransform() {
+function flushImageViewerTransform() {
+    imageViewerState.renderRaf = 0;
+
+    if (els.imageViewerImage) {
+        els.imageViewerImage.style.transform = `translate3d(${imageViewerState.tx}px, ${imageViewerState.ty}px, 0) scale(${imageViewerState.scale})`;
+    }
+
+    if (imageViewerState.scaleLabelDirty) {
+        imageViewerState.scaleLabelDirty = false;
+        updateImageViewerScaleLabel();
+    }
+}
+
+function scheduleImageViewerTransform(updateScaleLabel = false) {
+    if (updateScaleLabel) {
+        imageViewerState.scaleLabelDirty = true;
+    }
+
+    if (imageViewerState.renderRaf) {
+        return;
+    }
+
+    imageViewerState.renderRaf = requestAnimationFrame(flushImageViewerTransform);
+}
+
+function applyImageViewerTransform(updateScaleLabel = false) {
+    scheduleImageViewerTransform(updateScaleLabel);
+}
+
+function cancelImageViewerTransformFrame() {
+    if (!imageViewerState.renderRaf) {
+        return;
+    }
+
+    cancelAnimationFrame(imageViewerState.renderRaf);
+    imageViewerState.renderRaf = 0;
+}
+
+function resetImageViewerTransform(options = {}) {
+    const immediate = !!(options && options.immediate);
+    releaseImageViewerPointerCapture();
     imageViewerState.scale = 1;
     imageViewerState.tx = 0;
     imageViewerState.ty = 0;
     imageViewerState.dragging = false;
+    imageViewerState.pointerId = null;
     if (els.imageViewerViewport) {
         els.imageViewerViewport.classList.remove('dragging');
     }
-    applyImageViewerTransform();
+
+    imageViewerState.scaleLabelDirty = true;
+
+    if (immediate) {
+        cancelImageViewerTransformFrame();
+        flushImageViewerTransform();
+        return;
+    }
+
+    applyImageViewerTransform(true);
 }
 
 function closeImageViewer() {
+    cancelImageViewerTransformFrame();
+    releaseImageViewerPointerCapture();
     imageViewerState.active = false;
     imageViewerState.dragging = false;
+    imageViewerState.pointerId = null;
     if (els.imageViewerBackdrop) {
         els.imageViewerBackdrop.classList.remove('active');
         els.imageViewerBackdrop.setAttribute('aria-hidden', 'true');
@@ -11811,24 +12234,33 @@ function closeImageViewer() {
         els.imageViewerImage.removeAttribute('alt');
         els.imageViewerImage.style.transform = '';
     }
+    imageViewerState.lastScaleLabel = '';
 }
 
 function openImageViewer(url, alt = 'image') {
     const safeUrl = String(url || '').trim();
     if (!safeUrl || !els.imageViewerBackdrop || !els.imageViewerImage) return;
-    els.imageViewerImage.src = safeUrl;
+    cancelImageViewerTransformFrame();
+    resetImageViewerTransform({ immediate: true });
+    els.imageViewerImage.decoding = 'async';
+    if (els.imageViewerImage.getAttribute('src') !== safeUrl) {
+        els.imageViewerImage.src = safeUrl;
+    }
     els.imageViewerImage.alt = String(alt || 'image');
     imageViewerState.active = true;
     els.imageViewerBackdrop.classList.add('active');
     els.imageViewerBackdrop.setAttribute('aria-hidden', 'false');
-    resetImageViewerTransform();
 }
 
 function zoomImageViewer(factor) {
     if (!imageViewerState.active) return;
     const next = clampImageViewerScale(imageViewerState.scale * Number(factor || 1));
+    if (Math.abs(next - imageViewerState.scale) < 0.001) {
+        return;
+    }
+
     imageViewerState.scale = next;
-    applyImageViewerTransform();
+    applyImageViewerTransform(true);
 }
 
 function bindImageViewerEvents() {
@@ -11859,26 +12291,41 @@ function bindImageViewerEvents() {
             else zoomImageViewer(1 / 1.08);
         }, { passive: false });
 
-        els.imageViewerViewport.addEventListener('mousedown', (e) => {
+        els.imageViewerViewport.addEventListener('pointerdown', (e) => {
             if (!imageViewerState.active) return;
+            if (e.button !== undefined && e.button !== 0) return;
+            e.preventDefault();
             imageViewerState.dragging = true;
+            imageViewerState.pointerId = e.pointerId;
             imageViewerState.dragStartX = e.clientX - imageViewerState.tx;
             imageViewerState.dragStartY = e.clientY - imageViewerState.ty;
             els.imageViewerViewport.classList.add('dragging');
+            try {
+                els.imageViewerViewport.setPointerCapture(e.pointerId);
+            } catch (_) {}
         });
 
-        window.addEventListener('mousemove', (e) => {
+        els.imageViewerViewport.addEventListener('pointermove', (e) => {
             if (!imageViewerState.active || !imageViewerState.dragging) return;
+            if (imageViewerState.pointerId !== null && e.pointerId !== imageViewerState.pointerId) return;
+            e.preventDefault();
             imageViewerState.tx = e.clientX - imageViewerState.dragStartX;
             imageViewerState.ty = e.clientY - imageViewerState.dragStartY;
             applyImageViewerTransform();
         });
 
-        window.addEventListener('mouseup', () => {
+        const finishImageViewerDrag = (e) => {
             if (!imageViewerState.dragging) return;
+            if (imageViewerState.pointerId !== null && e.pointerId !== imageViewerState.pointerId) return;
+            const pointerId = imageViewerState.pointerId;
             imageViewerState.dragging = false;
+            imageViewerState.pointerId = null;
             if (els.imageViewerViewport) els.imageViewerViewport.classList.remove('dragging');
-        });
+            releaseImageViewerPointerCapture(pointerId);
+        };
+
+        window.addEventListener('pointerup', finishImageViewerDrag);
+        window.addEventListener('pointercancel', finishImageViewerDrag);
     }
 
     document.addEventListener('keydown', (e) => {
@@ -12034,6 +12481,7 @@ function initUI() {
     document.addEventListener('visibilitychange', () => {
         if (!document.hidden) {
             flushDeferredMailEvents();
+            syncBrowserOllamaStatus();
         }
     });
     window.addEventListener('resize', () => {
@@ -12071,6 +12519,8 @@ function initUI() {
     if (els.sidebarBrandLearningTab) {
         els.sidebarBrandLearningTab.addEventListener('click', () => {
             if (!learningModeEnabled) return;
+
+            closeKnowledgeViewBeforeLearningSwitch();
             learningHeaderMode = 'learning';
             applyLearningSidebarMode('learning');
             void syncLearningHeaderMode();
@@ -12286,33 +12736,42 @@ function initUI() {
         });
     }
 
+    if (els.createBlankBasisBtn) {
+        els.createBlankBasisBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            void createBlankBasisKnowledge();
+        });
+    }
+
     // Auto-scroll logic
     if (els.messagesContainer) {
-        // [Optimization] Immediate manual override listeners
-        // This ensures that any user interaction immediately disables auto-scroll
-        // providing a "crisp" detachment feeling like standard native apps.
-        const breakAutoScroll = () => {
-            shouldAutoScroll = false;
-            __messagesBottomPinUntilTs = 0;
-            if (__messagesBottomPinRaf) {
-                cancelAnimationFrame(__messagesBottomPinRaf);
-                __messagesBottomPinRaf = null;
-            }
-            if (__messagesBottomResizeObs) {
-                try { __messagesBottomResizeObs.disconnect(); } catch (_) {}
-            }
-            const restoreBehavior = __messagesBottomPinPendingRestoreBehavior !== null
-                ? __messagesBottomPinPendingRestoreBehavior
-                : __messagesBottomPinPrevInlineBehavior;
-            if (restoreBehavior !== null && els.messagesContainer) {
-                els.messagesContainer.style.scrollBehavior = String(restoreBehavior || '');
-            }
-            __messagesBottomPinPrevInlineBehavior = null;
-            __messagesBottomPinPendingRestoreBehavior = null;
-        };
-        
         els.messagesContainer.addEventListener('wheel', (e) => {
-            if (e.deltaY < 0) breakAutoScroll(); // Only on scroll up
+            if (e.deltaY < 0) {
+                markMessagesUserScrollIntent();
+                breakMessagesAutoScroll();
+            }
+        }, { passive: true });
+
+        document.addEventListener('wheel', (e) => {
+            if (e.deltaY < 0 && shouldAutoScroll) {
+                markMessagesUserScrollIntent();
+                breakMessagesAutoScroll();
+            }
+        }, { passive: true, capture: true });
+
+        document.addEventListener('keydown', (e) => {
+            if (!shouldAutoScroll) return;
+            if (isEditableScrollIntentTarget(e.target)) return;
+
+            const key = String(e.key || '');
+            if (key === 'ArrowUp' || key === 'PageUp' || key === 'Home') {
+                markMessagesUserScrollIntent();
+                breakMessagesAutoScroll();
+            }
+        }, true);
+
+        els.messagesContainer.addEventListener('pointerdown', () => {
+            markMessagesUserScrollIntent();
         }, { passive: true });
 
         els.messagesContainer.addEventListener('touchstart', (e) => {
@@ -12326,7 +12785,8 @@ function initUI() {
         }, { passive: true });
 
         els.messagesContainer.addEventListener('touchmove', (e) => {
-            breakAutoScroll();
+            markMessagesUserScrollIntent();
+            breakMessagesAutoScroll();
             if (!isChatMobileLayout()) return;
             const touch = (e.touches && e.touches[0]) ? e.touches[0] : null;
             keepSelectionStableOnMobileScroll(touch);
@@ -12337,20 +12797,38 @@ function initUI() {
         els.messagesContainer.addEventListener('touchcancel', stopMobileSelectionScrollGuard, { passive: true });
 
         els.messagesContainer.addEventListener('scroll', () => {
+            const currentScrollTop = Number(els.messagesContainer.scrollTop || 0);
+            const userScrolledUp = currentScrollTop < (__messagesLastObservedScrollTop - MESSAGES_AUTO_SCROLL_BREAK_UP_PX);
+            const hasUserScrollIntent = Date.now() <= __messagesUserScrollIntentUntilTs;
+
             if (Date.now() <= __messagesBottomPinUntilTs) {
+                if (hasUserScrollIntent && userScrolledUp) {
+                    breakMessagesAutoScroll();
+                    __messagesLastObservedScrollTop = currentScrollTop;
+                    scheduleTurnIndicatorActiveUpdate({ animate: false, forceScroll: false });
+                    return;
+                }
+
                 shouldAutoScroll = true;
+                __messagesLastObservedScrollTop = currentScrollTop;
                 return;
             }
+
             if (_isJumping) return; // Skip during jump
-            const { scrollTop, scrollHeight, clientHeight } = els.messagesContainer;
-            const distance = scrollHeight - scrollTop - clientHeight;
+
+            if (hasUserScrollIntent && userScrolledUp) {
+                shouldAutoScroll = false;
+                __messagesLastObservedScrollTop = currentScrollTop;
+                scheduleTurnIndicatorActiveUpdate({ animate: false, forceScroll: false });
+                return;
+            }
             
-            // Re-enable auto-scroll if user scrolls to bottom (within 50px)
-            if (distance <= 50) {
+            if (isMessagesNearBottom(els.messagesContainer)) {
                 shouldAutoScroll = true;
             } else {
                 shouldAutoScroll = false;
             }
+            __messagesLastObservedScrollTop = currentScrollTop;
 
             // Turn indicator 跟随滚动只更新激活态，不再每次强制滚动面板内部，避免额外重排。
             scheduleTurnIndicatorActiveUpdate({ animate: false, forceScroll: false });
@@ -12405,6 +12883,12 @@ function initUI() {
         });
     }
 
+    if (els.workspacesBtn) {
+        els.workspacesBtn.addEventListener('click', () => {
+            window.openWorkspacesFrameView();
+        });
+    }
+
     window.addEventListener('popstate', () => {
         const params = new URLSearchParams(window.location.search || '');
         const cid = String(params.get('cid') || params.get('id') || '').trim();
@@ -12454,8 +12938,10 @@ function initUI() {
         if (mobileHeaderMenu && !mobileHeaderMenu.contains(e.target)) {
             closeMobileHeaderMenu();
         }
-        if (els.knowledgePanel && els.knowledgePanel.classList.contains('visible')) {
-            const target = e.target;
+        const target = e.target;
+        const clickInModal = !!(target && target.closest && target.closest('.modal-backdrop'));
+
+        if (!clickInModal && els.knowledgePanel && els.knowledgePanel.classList.contains('visible')) {
             const clickInPanel = !!(target && els.knowledgePanel.contains(target));
             const clickOnToggle = !!(
                 target &&
@@ -12471,8 +12957,7 @@ function initUI() {
 
         // Mobile: tap blank area to close sidebar / knowledge panel
         if (isChatMobileLayout()) {
-            const target = e.target;
-            if (target && target.closest && target.closest('.modal-backdrop')) {
+            if (clickInModal) {
                 return;
             }
             const mobileToggleBtn = document.getElementById('toggleSidebarMobile');
@@ -12495,7 +12980,10 @@ function initUI() {
                 }
             }
         } else {
-            const target = e.target;
+            if (clickInModal) {
+                return;
+            }
+
             if (!(target instanceof Element)) {
                 return;
             }
@@ -13391,6 +13879,20 @@ function resetTokenBudgetBreakdown() {
     tokenBudgetState.toolInputTokens = 0;
     tokenBudgetState.systemPromptTokens = 0;
     tokenBudgetState.tokenBreakdownExact = false;
+}
+
+function resetComposerConversationContextUsage() {
+    // Workspace 详情复用主输入框，但它不是已加载 Conversation，必须清空旧对话的 CTX 使用量。
+    tokenMiniState.conversationId = null;
+    tokenMiniState.streaming = false;
+    tokenMiniState.baseInput = 0;
+    tokenMiniState.baseOutput = 0;
+    tokenBudgetState.roundInput = 0;
+    resetTokenMiniStreamPart();
+    resetTokenBudgetBreakdown();
+    applyTokenMiniDisplay(0, 0);
+    renderTokenBudgetUi();
+    hideTokenBudgetTooltip();
 }
 
 function estimateTokenBudgetUsedFromConversationMessages(messages) {
@@ -14524,7 +15026,8 @@ async function createNewConversation(silent = false, targetMode = null, options 
         }
         syncNotesForConversation(null);
         applyLearningSidebarMode(resolvedMode === 'learning' ? 'learning' : 'nexora');
-        void renderWelcomeScreen();
+        clearWorkspaceHierarchySlot();
+        await renderWelcomeScreen();
         els.conversationTitle.textContent = resolvedMode === 'learning' ? 'New Learning' : 'New Chat';
         void syncLearningHeaderMode();
         tokenMiniState.baseInput = 0;
@@ -14546,12 +15049,24 @@ async function loadConversation(id, options = {}) {
     const targetConversationId = String(id || '').trim();
     if (!targetConversationId) return;
 
+    if (typeof resetWorkspaceReadonlyConversationState === 'function') {
+        resetWorkspaceReadonlyConversationState();
+    }
+
     closeLearningReaderFromHost('host_conversation_navigation', 'nexora');
 
     const viewer = document.getElementById('knowledgeViewer');
     // 如果当前在知识/邮件等 viewer 页面，先统一恢复聊天 Header 与布局
     if (viewer && viewer.style.display !== 'none') {
         closeKnowledgeView();
+    }
+
+    const workspaceHeaderContext = normalizeWorkspaceConversationHeaderContext(opts.workspaceContext);
+
+    if (workspaceHeaderContext) {
+        renderWorkspaceConversationHierarchy(workspaceHeaderContext);
+    } else {
+        clearWorkspaceHierarchySlot();
     }
 
     const deferStreamAttach = !!opts.deferStreamAttach;
@@ -17368,12 +17883,21 @@ async function sendMessage(options = {}) {
     const overrideDisplayContent = String(options && options.displayContentOverride ? options.displayContentOverride : '').trim();
     const overrideText = String(options && options.textOverride ? options.textOverride : '').trim();
     const rawText = isAutoContinue ? '' : (overrideText || els.messageInput.value.trim());
+    const workspaceComposeWorkspaceId = (!isAutoContinue && !useExistingUserMessage)
+        ? getActiveWorkspaceDetailComposeWorkspaceId()
+        : '';
+    const workspaceConversationContext = getActiveWorkspaceConversationContext();
+    const workspaceConversationWorkspaceId = workspaceConversationContext
+        ? String(workspaceConversationContext.workspaceId || '').trim()
+        : '';
+    const workspaceRequestWorkspaceId = workspaceComposeWorkspaceId || workspaceConversationWorkspaceId;
     syncGenerationStateForCurrentConversation();
     const latencyProbe = createNexoraLatencyProbe('sendMessage', {
         agent_online: !!lastAgentOnline,
         current_conversation_id: String(currentConversationId || ''),
         auto_continue: isAutoContinue,
-        conversation_mode: String(currentConversationMode || '')
+        conversation_mode: String(currentConversationMode || ''),
+        workspace_id: workspaceRequestWorkspaceId
     });
     latencyProbe.mark('start', {
         text_chars: String(rawText || '').length,
@@ -17434,7 +17958,13 @@ async function sendMessage(options = {}) {
     
 // 说明
     syncGenerationStateForCurrentConversation();
-    if (isConversationStreamRunning(currentConversationId)) {
+    if (workspaceRequestWorkspaceId && isGenerating) {
+        showToast('当前仍有回复生成中，请稍候');
+        latencyProbe.flush('workspace_send_blocked_by_generation', { force: true });
+        return;
+    }
+
+    if (!workspaceRequestWorkspaceId && isConversationStreamRunning(currentConversationId)) {
         stopGeneration();
         return;
     }
@@ -17467,6 +17997,21 @@ async function sendMessage(options = {}) {
     });
     if (!compressionDecision.ok) return;
     const forceContextCompression = !!compressionDecision.forceCompression;
+
+    if (workspaceComposeWorkspaceId) {
+        try {
+            await resetWorkspaceDetailComposerSelection(workspaceComposeWorkspaceId);
+            latencyProbe.mark('workspace_reset_conversation_selection', {
+                workspace_id: workspaceComposeWorkspaceId
+            });
+        } catch (error) {
+            console.error('resetWorkspaceDetailComposerSelection failed', error);
+            showToast(String((error && error.message) || 'Workspace 对话创建失败'));
+            latencyProbe.flush('workspace_reset_selection_failed', { force: true });
+            return;
+        }
+    }
+
     const hadConversationBeforeEnsure = !!String(currentConversationId || '').trim();
     const ensuredConversationId = await ensureConversationExistsForStreaming(text, nextConversationMode);
     latencyProbe.mark('ensure_conversation', {
@@ -17482,6 +18027,21 @@ async function sendMessage(options = {}) {
             latencyProbe.mark('sync_learning_header_mode');
         }
     }
+
+    if (workspaceComposeWorkspaceId && ensuredConversationId) {
+        const registered = await registerWorkspaceDetailConversation(workspaceComposeWorkspaceId, ensuredConversationId);
+        latencyProbe.mark('workspace_register_conversation', {
+            workspace_id: workspaceComposeWorkspaceId,
+            conversation_id: String(ensuredConversationId || ''),
+            ok: registered
+        });
+
+        if (!registered) {
+            latencyProbe.flush('workspace_register_failed', { force: true });
+            return;
+        }
+    }
+
     let streamConversationId = String(currentConversationId || '').trim();
     const isStreamVisible = () => isCurrentConversation(streamConversationId);
     // UI Updates
@@ -17583,6 +18143,7 @@ async function sendMessage(options = {}) {
         message: finalMessage,
         model_name: model,
         conversation_id: currentConversationId,
+        workspace_id: workspaceRequestWorkspaceId,
         conversation_mode: nextConversationMode,
         conversation_mode_payload: nextConversationMode === 'longterm' ? {
             task: longtermTaskText || currentConversationLongtermState.task || rawText,
@@ -18971,13 +19532,8 @@ async function sendMessage(options = {}) {
             }
              // Auto-scroll
              if (shouldAutoScroll && isStreamVisible()) {
-                // Check if we are already near bottom before forcing script scroll
-                // This prevents fighting if the user is actively trying to scroll up but hasn't passed threshold yet
-                // However, if we just added content, we ARE effectively scrolled up.
-                // So we really just want to apply scroll if the flag says so.
-                requestAnimationFrame(() => {
-                    els.messagesContainer.scrollTop = els.messagesContainer.scrollHeight;
-                });
+                // 流式内容和 Markdown/LaTeX 二次渲染会继续改变高度，这里用可中断短 pin 保持贴底。
+                pinMessagesToBottomFor(700);
              }
 
              if (done) {
@@ -21440,7 +21996,7 @@ function appendMessage(msg, index) {
 
     // Scroll
     if (shouldAutoScroll && !isBatchRenderingMessages) {
-        els.messagesContainer.scrollTop = els.messagesContainer.scrollHeight;
+        scrollMessagesToBottomNow();
     }
     notifyLearningSidebarBridge();
     return div; // Return main message div
@@ -21458,48 +22014,148 @@ let __messagesBottomPinUntilTs = 0;
 let __messagesBottomPinPrevInlineBehavior = null;
 let __messagesBottomPinPendingRestoreBehavior = null;
 let __messagesBottomResizeObs = null;
+let __messagesBottomMutationObs = null;
+let __messagesUserScrollIntentUntilTs = 0;
+let __messagesLastObservedScrollTop = 0;
+
+function readMessagesBottomDistance(container = els.messagesContainer) {
+    if (!container) return 0;
+
+    return Number(container.scrollHeight || 0)
+        - Number(container.scrollTop || 0)
+        - Number(container.clientHeight || 0);
+}
+
+function isMessagesNearBottom(container = els.messagesContainer, tolerancePx = MESSAGES_AUTO_SCROLL_NEAR_BOTTOM_PX) {
+    return readMessagesBottomDistance(container) <= tolerancePx;
+}
+
+function isEditableScrollIntentTarget(target) {
+    if (!(target instanceof Element)) return false;
+
+    return !!target.closest('input, textarea, select, [contenteditable="true"], .CodeMirror, .toastui-editor');
+}
+
+function restoreMessagesBottomPinBehavior() {
+    const container = els.messagesContainer;
+    const restoreBehavior = __messagesBottomPinPendingRestoreBehavior !== null
+        ? __messagesBottomPinPendingRestoreBehavior
+        : __messagesBottomPinPrevInlineBehavior;
+
+    if (restoreBehavior !== null && container) {
+        container.style.scrollBehavior = String(restoreBehavior || '');
+    }
+
+    __messagesBottomPinPrevInlineBehavior = null;
+    __messagesBottomPinPendingRestoreBehavior = null;
+}
+
+function stopMessagesBottomPin() {
+    __messagesBottomPinUntilTs = 0;
+
+    if (__messagesBottomPinRaf) {
+        cancelAnimationFrame(__messagesBottomPinRaf);
+        __messagesBottomPinRaf = null;
+    }
+
+    if (__messagesBottomResizeObs) {
+        try { __messagesBottomResizeObs.disconnect(); } catch (_) {}
+    }
+
+    if (__messagesBottomMutationObs) {
+        try { __messagesBottomMutationObs.disconnect(); } catch (_) {}
+    }
+
+    restoreMessagesBottomPinBehavior();
+}
+
+function breakMessagesAutoScroll() {
+    shouldAutoScroll = false;
+    stopMessagesBottomPin();
+}
+
+function markMessagesUserScrollIntent(durationMs = 1200) {
+    __messagesUserScrollIntentUntilTs = Date.now() + Math.max(120, Number(durationMs) || 1200);
+}
+
+function scrollMessagesToBottomNow() {
+    const container = els.messagesContainer;
+    if (!container) return;
+
+    container.scrollTop = container.scrollHeight;
+    __messagesLastObservedScrollTop = Number(container.scrollTop || 0);
+}
+
+function queueMessagesBottomPinScroll() {
+    if (__messagesBottomPinRaf) return;
+
+    __messagesBottomPinRaf = requestAnimationFrame(() => {
+        __messagesBottomPinRaf = null;
+
+        if (!shouldAutoScroll || Date.now() > __messagesBottomPinUntilTs) {
+            stopMessagesBottomPin();
+            return;
+        }
+
+        scrollMessagesToBottomNow();
+    });
+}
 
 function pinMessagesToBottomFor(durationMs = 900) {
     const container = els.messagesContainer;
     if (!container) return;
+
     shouldAutoScroll = true;
     const now = Date.now();
     const dur = Math.max(120, Math.min(5000, Number(durationMs) || 900));
     __messagesBottomPinUntilTs = Math.max(__messagesBottomPinUntilTs, now + dur);
+
     if (__messagesBottomPinPrevInlineBehavior === null) {
         __messagesBottomPinPrevInlineBehavior = String(container.style.scrollBehavior || '');
     }
+
     container.style.scrollBehavior = 'auto';
+    scrollMessagesToBottomNow();
 
-    // Scroll to bottom immediately (single read + write, not a loop).
-    container.scrollTop = container.scrollHeight;
-
-    // Use a ResizeObserver instead of a rAF loop.  The observer fires only
-    // when content size actually changes (e.g. KaTeX expansion), so it
-    // avoids the per-frame scrollHeight-read reflow that the old rAF tick
-    // caused on complex DOMs.
+    // 监听内容变化，而不是只监听容器尺寸。Markdown/LaTeX/工具卡片会在 chunk 后继续撑高内容。
     if (!__messagesBottomResizeObs) {
         __messagesBottomResizeObs = new ResizeObserver(() => {
             if (!shouldAutoScroll || Date.now() > __messagesBottomPinUntilTs) {
-                // Pin expired — restore scrollBehavior and disconnect.
-                const c = els.messagesContainer;
-                if (c) {
-                    const restore = __messagesBottomPinPendingRestoreBehavior !== null
-                        ? __messagesBottomPinPendingRestoreBehavior
-                        : __messagesBottomPinPrevInlineBehavior;
-                    if (restore !== null) c.style.scrollBehavior = String(restore || '');
-                }
-                __messagesBottomPinPrevInlineBehavior = null;
-                __messagesBottomPinPendingRestoreBehavior = null;
-                __messagesBottomPinUntilTs = 0;
-                try { __messagesBottomResizeObs.disconnect(); } catch (_) {}
+                stopMessagesBottomPin();
                 return;
             }
-            const c = els.messagesContainer;
-            if (c) c.scrollTop = c.scrollHeight;
+
+            queueMessagesBottomPinScroll();
         });
     }
+
+    if (!__messagesBottomMutationObs) {
+        __messagesBottomMutationObs = new MutationObserver(() => {
+            if (!shouldAutoScroll || Date.now() > __messagesBottomPinUntilTs) {
+                stopMessagesBottomPin();
+                return;
+            }
+
+            queueMessagesBottomPinScroll();
+        });
+    }
+
+    try { __messagesBottomResizeObs.disconnect(); } catch (_) {}
     try { __messagesBottomResizeObs.observe(container); } catch (_) {}
+    if (container.lastElementChild) {
+        try { __messagesBottomResizeObs.observe(container.lastElementChild); } catch (_) {}
+    }
+
+    try { __messagesBottomMutationObs.disconnect(); } catch (_) {}
+    try {
+        __messagesBottomMutationObs.observe(container, {
+            childList: true,
+            subtree: true,
+            characterData: true
+        });
+    } catch (_) {}
+
+    queueMessagesBottomPinScroll();
 }
 
 function variantSignature(v) {
@@ -21818,13 +22474,13 @@ function renderMessages(messages, noScroll, options = {}) {
     let shouldPinBottom = false;
     if (noScroll) {
         if (wasNearBottom || shouldAutoScroll) {
-            els.messagesContainer.scrollTop = els.messagesContainer.scrollHeight;
+            scrollMessagesToBottomNow();
             shouldPinBottom = true;
         } else {
             els.messagesContainer.scrollTop = oldScrollTop;
         }
     } else if (shouldAutoScroll || wasNearBottom) {
-        els.messagesContainer.scrollTop = els.messagesContainer.scrollHeight;
+        scrollMessagesToBottomNow();
         shouldPinBottom = true;
     }
     console.log(`[renderMessages] scrollToBottom = ${(performance.now()-_tStep).toFixed(1)}ms`);
@@ -22473,13 +23129,8 @@ window.confirmDelete = function(index) {
         }
 
         try {
-            const res = await fetch('/api/delete_message', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    conversation_id: cid,
-                    index: requestIndex
-                })
+            const res = await fetch(`/api/conversations/${encodeURIComponent(String(cid))}/messages/${requestIndex}`, {
+                method: 'DELETE'
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok || !data.success) {
@@ -22526,28 +23177,8 @@ async function resolveRegenerateModelName(index, messageDiv = null) {
         return '';
     }
 
-    let message = messageDiv && messageDiv.__messageData ? messageDiv.__messageData : null;
-    let modelName = resolveAssistantMessageModelName(message);
-
-    if (!modelName && currentConversationId) {
-        const snapshot = await fetchConversationMessagesSnapshot(currentConversationId);
-        const rows = snapshot && Array.isArray(snapshot.messages) ? snapshot.messages : [];
-        message = rows[idx] || null;
-        modelName = resolveAssistantMessageModelName(message);
-
-        if (messageDiv && message) {
-            messageDiv.__messageData = message;
-        }
-    }
-
-    if (!modelName) {
-        console.warn('[Regenerate] assistant message has no model_name', {
-            conversation_id: String(currentConversationId || ''),
-            message_index: idx
-        });
-        showToast('该历史回复没有记录模型，无法安全重答');
-        return '';
-    }
+    const message = messageDiv && messageDiv.__messageData ? messageDiv.__messageData : null;
+    const historyModelName = resolveAssistantMessageModelName(message);
 
     try {
         await loadModels();
@@ -22556,11 +23187,31 @@ async function resolveRegenerateModelName(index, messageDiv = null) {
         return '';
     }
 
+    const modelName = String(selectedModelId || '').trim();
+    if (!modelName) {
+        console.warn('[Regenerate] selected model is empty', {
+            conversation_id: String(currentConversationId || ''),
+            message_index: idx,
+            history_model_name: historyModelName
+        });
+        showToast('请先选择用于重答的模型');
+        return '';
+    }
+
     const exists = Array.isArray(modelCatalog)
         && modelCatalog.some((item) => String(item && item.id || '').trim() === modelName);
     if (!exists) {
-        showToast(`历史回复模型不可用：${modelName}`);
+        showToast(`当前选择模型不可用：${modelName}`);
         return '';
+    }
+
+    if (historyModelName && historyModelName !== modelName) {
+        console.info('[Regenerate] use selected model instead of history model', {
+            conversation_id: String(currentConversationId || ''),
+            message_index: idx,
+            selected_model_name: modelName,
+            history_model_name: historyModelName
+        });
     }
 
     return modelName;
@@ -22954,7 +23605,7 @@ async function startRegenerate(index) {
                         renderStreamingContentSegment(regenMessageDiv, currentContentSpan, currentSegmentContent, 'regen-live-segment');
 
                         if (shouldAutoScroll) {
-                            els.messagesContainer.scrollTop = els.messagesContainer.scrollHeight;
+                            pinMessagesToBottomFor(700);
                         }
                     } else if (data.type === 'done') {
                         const doneContent = String(data.content || '');
@@ -23275,7 +23926,7 @@ function updateMessageDivContent(index, fullText, preferredMessageDiv = null) {
     bindSourceMarkdown(body, bodyText);
     highlightCode(body);
     
-    if (shouldAutoScroll) els.messagesContainer.scrollTop = els.messagesContainer.scrollHeight;
+    if (shouldAutoScroll) pinMessagesToBottomFor(700);
     scheduleLearningSidebarBridgeNotify();
 }
 
@@ -23283,22 +23934,12 @@ function updateMessageDivThinking(index, delta, preferredMessageDiv = null) {
     const messageDiv = resolveAssistantStreamMessageDiv(index, preferredMessageDiv);
     if (!messageDiv) return;
     
-    const content = messageDiv.querySelector('.message-content');
-    let thinkingBlock = messageDiv.__activeReasoningThinkingBlock;
-    if (thinkingBlock && (!thinkingBlock.isConnected || !thinkingBlock.classList.contains('reasoning-thinking-block'))) {
-        thinkingBlock = null;
-    }
-    if (!thinkingBlock) {
-        thinkingBlock = getPrimaryReasoningThinkingBlock(messageDiv);
-    }
-    if (!thinkingBlock) {
-        thinkingBlock = createThinkingBlock(false);
-        content.prepend(thinkingBlock); 
-        messageDiv.__activeReasoningThinkingBlock = thinkingBlock;
-    }
+    const content = messageDiv.querySelector('.message-content') || messageDiv;
     const wasReasoningSegmentOpen = !!messageDiv.__reasoningSegmentOpen;
-    messageDiv.__activeReasoningThinkingBlock = thinkingBlock;
-    messageDiv.__reasoningSegmentOpen = true;
+    const thinkingBlock = resolveReasoningThinkingBlockForAppend(messageDiv, content);
+
+    if (!thinkingBlock) return;
+
     markReasoningThinkingBlockLive(thinkingBlock);
     
     const textTarget = thinkingBlock.querySelector('.thinking-content');
@@ -23318,6 +23959,9 @@ function updateMessageDivThinking(index, delta, preferredMessageDiv = null) {
     bindSourceMarkdown(textTarget, raw);
     highlightCode(textTarget);
     updateThinkingBlockSummary(thinkingBlock, raw);
+    if (shouldAutoScroll) {
+        pinMessagesToBottomFor(700);
+    }
     scheduleLearningSidebarBridgeNotify();
 }
 
@@ -23359,6 +24003,10 @@ function finalizeMessageRenderForIndex(index, preferredMessageDiv = null) {
         highlightCode(contentDiv);
         finishReasoningThinkingBlock(block, sourceText);
     });
+
+    if (shouldAutoScroll) {
+        pinMessagesToBottomFor(900);
+    }
 }
 
 function collapseReasoningBlocksForMessage(messageDiv) {
@@ -24260,7 +24908,7 @@ async function resumeActiveStreamAfterReload(options = {}) {
                 highlightCode(contentDiv);
             }
             if (freshContentSpans.size > 0 && shouldAutoScroll) {
-                els.messagesContainer.scrollTop = els.messagesContainer.scrollHeight;
+                pinMessagesToBottomFor(700);
                 syncStreamingModelBadgeEstimate(assistantDiv, {
                     modelName: getStreamingModelBadgeName(),
                     searchFlag: 'unknown',
@@ -24281,6 +24929,9 @@ async function resumeActiveStreamAfterReload(options = {}) {
                 }
             }
             if (dirtiedThinkingBlocks.size > 0) {
+                if (shouldAutoScroll) {
+                    pinMessagesToBottomFor(700);
+                }
                 syncStreamingModelBadgeEstimate(assistantDiv, {
                     modelName: getStreamingModelBadgeName(),
                     searchFlag: 'unknown',
@@ -24479,6 +25130,148 @@ function confirmModalAsync(title, message, type = 'danger') {
     });
 }
 
+let blankKnowledgeTitleModalResolver = null;
+
+function ensureBlankKnowledgeTitleModal() {
+    let modal = document.getElementById('blankKnowledgeTitleModal');
+
+    if (modal) {
+        return modal;
+    }
+
+    modal = document.createElement('div');
+    modal.id = 'blankKnowledgeTitleModal';
+    modal.className = 'modal-backdrop workspace-create-modal-backdrop';
+    modal.setAttribute('aria-hidden', 'true');
+    modal.innerHTML = `
+        <div class="modal workspace-create-modal" role="dialog" aria-modal="true" aria-labelledby="blankKnowledgeTitleModalTitle">
+            <div class="modal-head">
+                <h3 id="blankKnowledgeTitleModalTitle">新建知识库</h3>
+                <button id="blankKnowledgeTitleModalCloseBtn" class="btn-modal-close" type="button" title="关闭">
+                    <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+                </button>
+            </div>
+            <div class="modal-body workspace-create-modal-body">
+                <label class="workspace-create-field" for="blankKnowledgeTitleInput">
+                    <span>标题</span>
+                    <input id="blankKnowledgeTitleInput" class="input-modern" type="text" maxlength="120" placeholder="例如：讨论记录">
+                </label>
+            </div>
+            <div class="modal-footer workspace-create-modal-footer">
+                <button id="blankKnowledgeTitleModalCancelBtn" class="btn-cancel" type="button">取消</button>
+                <button id="blankKnowledgeTitleModalConfirmBtn" class="btn-confirm" type="button">创建</button>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+    registerModalBackdropStacking(modal);
+    bindBackdropSafeClose(modal, closeBlankKnowledgeTitleModal);
+
+    modal.querySelector('#blankKnowledgeTitleModalCloseBtn')?.addEventListener('click', closeBlankKnowledgeTitleModal);
+    modal.querySelector('#blankKnowledgeTitleModalCancelBtn')?.addEventListener('click', closeBlankKnowledgeTitleModal);
+    modal.querySelector('#blankKnowledgeTitleModalConfirmBtn')?.addEventListener('click', submitBlankKnowledgeTitleModal);
+    modal.querySelector('#blankKnowledgeTitleInput')?.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            submitBlankKnowledgeTitleModal();
+            return;
+        }
+
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            closeBlankKnowledgeTitleModal();
+        }
+    });
+
+    return modal;
+}
+
+function closeBlankKnowledgeTitleModal() {
+    const modal = document.getElementById('blankKnowledgeTitleModal');
+
+    if (!modal) {
+        return;
+    }
+
+    modal.classList.remove('active');
+    modal.setAttribute('aria-hidden', 'true');
+    handleBackdropStackingChange(modal);
+
+    if (blankKnowledgeTitleModalResolver) {
+        blankKnowledgeTitleModalResolver(null);
+        blankKnowledgeTitleModalResolver = null;
+    }
+}
+
+function submitBlankKnowledgeTitleModal() {
+    const modal = ensureBlankKnowledgeTitleModal();
+    const input = modal.querySelector('#blankKnowledgeTitleInput');
+    const title = String((input && input.value) || '').trim();
+
+    if (!title) {
+        showToast('请输入知识库标题');
+
+        if (input) {
+            input.focus();
+        }
+
+        return;
+    }
+
+    modal.classList.remove('active');
+    modal.setAttribute('aria-hidden', 'true');
+    handleBackdropStackingChange(modal);
+
+    if (blankKnowledgeTitleModalResolver) {
+        blankKnowledgeTitleModalResolver(title);
+        blankKnowledgeTitleModalResolver = null;
+    }
+}
+
+function openBlankKnowledgeTitleModal(options = {}) {
+    const opts = (options && typeof options === 'object') ? options : {};
+    const modal = ensureBlankKnowledgeTitleModal();
+    const input = modal.querySelector('#blankKnowledgeTitleInput');
+    const confirmBtn = modal.querySelector('#blankKnowledgeTitleModalConfirmBtn');
+    const titleEl = modal.querySelector('#blankKnowledgeTitleModalTitle');
+
+    if (blankKnowledgeTitleModalResolver) {
+        blankKnowledgeTitleModalResolver(null);
+        blankKnowledgeTitleModalResolver = null;
+    }
+
+    if (titleEl) {
+        titleEl.textContent = String(opts.modalTitle || '新建知识库');
+    }
+
+    if (input) {
+        input.value = String(opts.defaultTitle || '').trim();
+    }
+
+    if (confirmBtn) {
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = '创建';
+    }
+
+    modal.classList.add('active');
+    modal.setAttribute('aria-hidden', 'false');
+    handleBackdropStackingChange(modal);
+
+    setTimeout(() => {
+        if (input) {
+            input.focus();
+            input.select();
+        }
+    }, 0);
+
+    return new Promise((resolve) => {
+        blankKnowledgeTitleModalResolver = resolve;
+    });
+}
+
+window.openBlankKnowledgeTitleModal = openBlankKnowledgeTitleModal;
+
 window.switchVersion = async function(msgIndex, verIndex) {
     if (verIndex === null || verIndex === undefined || Number.isNaN(Number(verIndex))) return;
     try {
@@ -24507,35 +25300,101 @@ window.switchVersion = async function(msgIndex, verIndex) {
 
 
 // --- Knowledge ---
+function syncBulkVectorizeButtonVisibility() {
+    const btn = els.bulkVectorizeBtn || document.getElementById('bulkVectorizeBtn');
+
+    if (!btn) {
+        return;
+    }
+
+    const visible = knowledgeVectorizationEnabled === true;
+    btn.hidden = !visible;
+    btn.disabled = !visible || bulkVectorizeRunning;
+}
+
 async function loadKnowledge(cid) {
     // Knowledge is likely user-global, not per conversation, but we reload on chat interactions
     try {
-        const [resBasis, resShort, resMeta] = await Promise.all([
-            fetch('/api/knowledge/basis'),
-            fetch('/api/knowledge/short'),
-            fetch('/api/knowledge/list')
-        ]);
-        
-        const basisData = await resBasis.json();
-        const shortData = await resShort.json();
-        const metaData = await resMeta.json();
-        knowledgeMetaCache = (metaData && metaData.basis_knowledge) ? metaData.basis_knowledge : {};
-        knowledgeVectorizationEnabled = !!(metaData && metaData.vectorization_enabled);
+        const res = await fetch('/api/knowledge/sidebar');
+        const data = await res.json();
 
-        if (basisData.success) {
-            basisKnowledgeListCache = Array.isArray(basisData.knowledge) ? [...basisData.knowledge] : [];
-            renderKnowledgeList(els.panelBasisList, basisKnowledgeListCache, 'basis');
-            if(els.panelBasisCount) els.panelBasisCount.textContent = basisKnowledgeListCache.length;
-        } else {
-            basisKnowledgeListCache = [];
+        if (!res.ok || !data.success) {
+            throw new Error((data && (data.message || data.error)) || `HTTP ${res.status}`);
         }
-        if (shortData.success) {
-            renderKnowledgeList(els.panelShortList, shortData.memories || [], 'short');
-            if(els.panelShortCount) els.panelShortCount.textContent = (shortData.memories || []).length;
-        }
+
+        knowledgeMetaCache = (data && data.basis_knowledge) ? data.basis_knowledge : {};
+        knowledgeVectorizationEnabled = !!(data && data.vectorization_enabled);
+        syncBulkVectorizeButtonVisibility();
+
+        basisKnowledgeListCache = Array.isArray(data.knowledge) ? [...data.knowledge] : [];
+        renderKnowledgeList(els.panelBasisList, basisKnowledgeListCache, 'basis');
+        if(els.panelBasisCount) els.panelBasisCount.textContent = basisKnowledgeListCache.length;
+
+        const memories = Array.isArray(data.memories) ? data.memories : [];
+        renderKnowledgeList(els.panelShortList, memories, 'short');
+        if(els.panelShortCount) els.panelShortCount.textContent = memories.length;
+
         bindShortTermSectionToggle();
 
-    } catch(e) { console.error("Error loading knowledge", e); }
+    } catch(e) {
+        knowledgeVectorizationEnabled = false;
+        syncBulkVectorizeButtonVisibility();
+        console.error("Error loading knowledge", e);
+    }
+}
+
+async function createBlankBasisKnowledge() {
+    if (!els.createBlankBasisBtn) {
+        return;
+    }
+
+    if (els.createBlankBasisBtn.disabled) {
+        return;
+    }
+
+    const titlePrefix = await openBlankKnowledgeTitleModal({
+        modalTitle: '新建知识库',
+    });
+
+    if (!titlePrefix) {
+        return;
+    }
+
+    els.createBlankBasisBtn.disabled = true;
+
+    try {
+        const res = await fetch('/api/knowledge/basis/blank', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                title_prefix: titlePrefix,
+            }),
+        });
+        const data = await res.json();
+
+        if (!res.ok || !data.success) {
+            throw new Error((data && data.message) || '空白知识库创建失败');
+        }
+
+        const title = String(data.title || '').trim();
+
+        if (!title) {
+            throw new Error('空白知识库标题为空');
+        }
+
+        await loadKnowledge(currentConversationId);
+        showToast('空白知识库已创建');
+        await viewKnowledge(title, {
+            forceEditMode: true,
+        });
+    } catch (error) {
+        console.error('createBlankBasisKnowledge failed', error);
+        showToast(String((error && error.message) || '空白知识库创建失败'));
+    } finally {
+        els.createBlankBasisBtn.disabled = false;
+    }
 }
 
 function bindShortTermSectionToggle() {
@@ -24879,6 +25738,7 @@ async function deleteKnowledge(title, type = 'basis') {
 let easyMDE = null;
 let originalHeaderState = null;
 let currentViewingKnowledge = null;
+let knowledgeWorkspaceReturnContext = null;
 let knowledgeMetaCache = {};
 let knowledgeVectorizationEnabled = false;
 let bulkVectorizeRunning = false;
@@ -24895,6 +25755,70 @@ const KNOWLEDGE_IMAGE_FAILED_ALT = '上传失败';
 const knowledgeImageUploadRuntime = {
     pending: new Map()
 };
+
+function getActiveWorkspaceKnowledgeContext() {
+    if (!knowledgeWorkspaceReturnContext || typeof knowledgeWorkspaceReturnContext !== 'object') {
+        return null;
+    }
+
+    const workspaceId = String(knowledgeWorkspaceReturnContext.workspaceId || '').trim();
+    const user = String(knowledgeWorkspaceReturnContext.user || '').trim();
+
+    if (!workspaceId || !user) {
+        return null;
+    }
+
+    return {
+        workspaceId,
+        workspaceTitle: String(knowledgeWorkspaceReturnContext.workspaceTitle || '').trim(),
+        user,
+    };
+}
+
+function getWorkspaceKnowledgeRequestFields() {
+    const context = getActiveWorkspaceKnowledgeContext();
+
+    if (!context) {
+        return {};
+    }
+
+    return {
+        workspace_id: context.workspaceId,
+        workspace: context.workspaceId,
+        workspaces: context.workspaceId,
+        user: context.user,
+    };
+}
+
+function appendWorkspaceKnowledgeQuery(url, title = '') {
+    const fields = getWorkspaceKnowledgeRequestFields();
+    const keys = Object.keys(fields);
+
+    if (!keys.length) {
+        return url;
+    }
+
+    const params = new URLSearchParams();
+    keys.forEach((key) => {
+        params.set(key, fields[key]);
+    });
+
+    if (title) {
+        params.set('title', title);
+    }
+
+    return `${url}?${params.toString()}`;
+}
+
+function getActiveKnowledgeShareUsername() {
+    const context = getActiveWorkspaceKnowledgeContext();
+
+    if (context && context.user) {
+        return context.user;
+    }
+
+    return String(currentUsername || '').trim();
+}
 
 function escapeRegexPattern(value) {
     return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -26041,6 +26965,8 @@ function restoreViewerState(state) {
     const headerTitle = document.getElementById('conversationTitle');
     const headerLeft = document.querySelector('.header-left');
     const headerRight = document.querySelector('.header-right');
+
+    restoreWorkspaceDetailInputContainer();
     
     viewer.style.display = state.viewerDisplay;
     viewer.innerHTML = state.viewerHTML;
@@ -26056,7 +26982,25 @@ function restoreViewerState(state) {
 
 async function viewKnowledge(title, options = {}) {
     currentViewingKnowledge = title;
-    const { forceEditMode = false, highlightData = null, fromSearch = false } = options;
+    const {
+        forceEditMode = false,
+        highlightData = null,
+        fromSearch = false,
+        workspaceContext = null,
+    } = options;
+    const normalizedWorkspaceContext = workspaceContext
+        ? normalizeWorkspaceConversationHeaderContext(workspaceContext)
+        : null;
+    const workspaceKnowledgeUser = workspaceContext && typeof workspaceContext === 'object'
+        ? String(workspaceContext.user || workspaceContext.addedBy || workspaceContext.added_by || '').trim()
+        : '';
+
+    knowledgeWorkspaceReturnContext = normalizedWorkspaceContext && normalizedWorkspaceContext.workspaceId
+        ? {
+            ...normalizedWorkspaceContext,
+            user: workspaceKnowledgeUser,
+        }
+        : null;
     pendingHighlightData = highlightData;
     knowledgeEditorScrollState.activeTitle = String(title || '').trim();
     if (!fromSearch && !highlightData) {
@@ -26074,6 +27018,9 @@ async function viewKnowledge(title, options = {}) {
     const headerRight = document.querySelector('.header-right');
 
     if(!viewer || !msgs) return;
+
+    restoreWorkspaceDetailInputContainer();
+
     logKnowledgeEditorDebug('viewKnowledge:start', {
         title,
         forceEditMode,
@@ -26110,9 +27057,19 @@ async function viewKnowledge(title, options = {}) {
     // 2. Fetch Content
     let content = '';
     try {
-        const res = await fetch(`/api/knowledge/basis/${encodeURIComponent(title)}`);
+        const contentUrl = appendWorkspaceKnowledgeQuery(
+            `/api/knowledge/basis/${encodeURIComponent(title)}`,
+            title,
+        );
+        const res = await fetch(contentUrl);
         const data = await res.json();
-        if(data.success) content = data.knowledge.content;
+        if(data.success) {
+            content = data.knowledge.content;
+
+            if (data.knowledge && data.knowledge.metadata && typeof data.knowledge.metadata === 'object') {
+                knowledgeMetaCache[title] = data.knowledge.metadata;
+            }
+        }
     } catch(e) { console.error(e); }
 
     // 3. UI Switch
@@ -26136,10 +27093,13 @@ async function viewKnowledge(title, options = {}) {
 
     // 4. Update Header
     headerTitle.textContent = title;
+    const backHandler = knowledgeWorkspaceReturnContext
+        ? 'closeWorkspaceKnowledgeView()'
+        : 'closeKnowledgeView()';
     
     // Left: Back + Knowledge actions (设置/保存/删除)
     headerLeft.innerHTML = `
-        <button class="btn-icon" onclick="closeKnowledgeView()" title="Back">
+        <button class="btn-icon" onclick="${backHandler}" title="Back">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
         </button>
         <button class="btn-icon knowledge-action" onclick="openKnowledgeSettingsModal()" title="设置">
@@ -26452,7 +27412,19 @@ function highlightTextInPreview(text, meta = {}) {
     });
 }
 
-function closeKnowledgeView() {
+function closeWorkspaceKnowledgeView() {
+    closeKnowledgeView({
+        restoreWorkspaceContext: true,
+    });
+}
+
+function closeKnowledgeView(options = {}) {
+    const closeOptions = (options && typeof options === 'object') ? options : {};
+    const useNavigationStack = closeOptions.useNavigationStack !== false;
+    const syncLearningHeader = closeOptions.syncLearningHeader !== false;
+    const workspaceReturnContext = closeOptions.restoreWorkspaceContext === true
+        ? knowledgeWorkspaceReturnContext
+        : null;
     const viewer = document.getElementById('knowledgeViewer');
     const msgs = document.getElementById('messagesContainer');
     const inputWrapper = document.getElementById('inputWrapper');
@@ -26462,6 +27434,7 @@ function closeKnowledgeView() {
     const wasMailView = !!(viewer && viewer.querySelector('.mail-workspace'));
     const closingTitle = String(currentViewingKnowledge || '').trim();
 
+    restoreWorkspaceDetailInputContainer();
     exitLearningFeedComposeMode({ clear: false });
     exitKnowledgeEditorSpecialModes();
     storeKnowledgeEditorScrollPosition();
@@ -26471,9 +27444,10 @@ function closeKnowledgeView() {
     knowledgeEditorScrollState.activeTitle = '';
 
     currentViewingKnowledge = null;
+    knowledgeWorkspaceReturnContext = null;
     
     // 检查导航栈
-    if (navigationStack.length > 1) {
+    if (useNavigationStack && navigationStack.length > 1) {
         // 弹出当前项（知识详情），查看前一个项
         navigationStack.pop(); // 移除知识点
         const prevItem = navigationStack[navigationStack.length - 1];
@@ -26520,6 +27494,12 @@ function closeKnowledgeView() {
             navigationStack.pop(); // 移除搜索项
         }
     }
+
+    if (workspaceReturnContext && workspaceReturnContext.workspaceId) {
+        navigationStack = [];
+        void selectWorkspaceProject(workspaceReturnContext.workspaceId);
+        return;
+    }
     
     // 返回到聊天界面
     viewer.style.display = 'none';
@@ -26541,8 +27521,24 @@ function closeKnowledgeView() {
     }
     if (wasMailView) clearMailViewUrl();
     originalHeaderState = null;
-    void syncLearningHeaderMode();
+
+    if (syncLearningHeader) {
+        void syncLearningHeaderMode();
+    }
+
     _syncTurnIndicatorVisibility();
+}
+
+function closeKnowledgeViewBeforeLearningSwitch() {
+    if (!isKnowledgeViewerOpen()) {
+        return;
+    }
+
+    // Learning 主面板和 knowledgeViewer 同属 main-content 一级视图，进入 Learning 前必须先结束文档视图。
+    closeKnowledgeView({
+        useNavigationStack: false,
+        syncLearningHeader: false
+    });
 }
 
 window.openMailPlaceholderView = function() {
@@ -26557,6 +27553,8 @@ window.openMailPlaceholderView = function() {
     const headerRight = document.querySelector('.header-right');
 
     if (!viewer || !msgs || !headerTitle || !headerLeft || !headerRight) return;
+
+    restoreWorkspaceDetailInputContainer();
 
     if (!originalHeaderState) {
         originalHeaderState = {
@@ -26764,6 +27762,8 @@ window.openWorkflowPlaceholderView = function() {
     const headerRight = document.querySelector('.header-right');
 
     if (!viewer || !msgs || !headerTitle || !headerLeft || !headerRight) return;
+
+    restoreWorkspaceDetailInputContainer();
 
     if (!originalHeaderState) {
         originalHeaderState = {
@@ -28005,6 +29005,8 @@ async function searchKnowledgeVectors(query) {
     const headerTitle = document.getElementById('conversationTitle');
     const headerLeft = document.querySelector('.header-left');
     const headerRight = document.querySelector('.header-right');
+
+    restoreWorkspaceDetailInputContainer();
     
     // 关闭任何可能打开的知识库详情视图
     if (currentViewingKnowledge) {
@@ -28159,6 +29161,7 @@ function closeKnowledgeSearchResultView() {
     const headerLeft = document.querySelector('.header-left');
     const headerRight = document.querySelector('.header-right');
 
+    restoreWorkspaceDetailInputContainer();
     viewer.style.display = 'none';
     viewer.innerHTML = '<textarea id="knowledgeEditor"></textarea>';
     msgs.style.display = 'flex';
@@ -29107,6 +30110,11 @@ function getKnowledgeEditorScrollerEl() {
         || document.querySelector('#knowledgeViewer .CodeMirror-scroll');
 }
 
+function getToastProseMirrorEl() {
+    return document.querySelector('#knowledgeViewer .toastui-editor .ProseMirror')
+        || document.querySelector('#knowledgeViewer .ProseMirror');
+}
+
 function bindKnowledgeEditorScrollTracking() {
     const title = String(currentViewingKnowledge || knowledgeEditorScrollState.activeTitle || '').trim();
     if (!title) return;
@@ -29178,7 +30186,7 @@ function bindKnowledgeEditorScrollTracking() {
         }
     }
 
-    const proseMirror = getToastProseMirrorEl ? getToastProseMirrorEl() : null;
+    const proseMirror = getToastProseMirrorEl();
     if (proseMirror && proseMirror.dataset.nexoraPmBoundTitle !== title) {
         proseMirror.dataset.nexoraPmBoundTitle = title;
         proseMirror.addEventListener('scroll', () => {
@@ -29443,10 +30451,13 @@ async function saveKnowledge(title) {
     const content = easyMDE.value();
     
     try {
-        const res = await fetch('/api/knowledge/basis/update', {
-            method: 'POST',
+        const res = await fetch(`/api/knowledge/basis/${encodeURIComponent(title)}/content`, {
+            method: 'PUT',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ title, content })
+            body: JSON.stringify({
+                content,
+                ...getWorkspaceKnowledgeRequestFields(),
+            })
         });
         const data = await res.json();
         if(data.success) {
@@ -29459,8 +30470,10 @@ async function saveKnowledge(title) {
             if (Number(meta.vector_updated_at || 0) >= meta.updated_at) {
             }
             knowledgeMetaCache[title] = meta;
-            // 保存后立即刷新知识列表与元数据，让“需重新向量化”状态及时可见
-            await loadKnowledge(currentConversationId);
+            // 保存后立即刷新知识列表与元数据，让“需重新向量化”状态及时可见。
+            if (!getActiveWorkspaceKnowledgeContext()) {
+                await loadKnowledge(currentConversationId);
+            }
         } else {
             showToast('保存失败: ' + data.message);
         }
@@ -29474,12 +30487,13 @@ let knowledgeSettingsVectorLoadedTitle = '';
 
 function buildKnowledgeShareUrl(shareId) {
     const safeShareId = String(shareId || '').trim();
+    const shareUsername = getActiveKnowledgeShareUsername();
 
-    if (!safeShareId || !currentUsername) {
+    if (!safeShareId || !shareUsername) {
         return '';
     }
 
-    return `${window.location.origin}/public/knowledge/${currentUsername}/${safeShareId}`;
+    return `${window.location.origin}/public/knowledge/${shareUsername}/${safeShareId}`;
 }
 
 function applyKnowledgeSettingsMetadata(title, metadata = {}) {
@@ -29541,7 +30555,8 @@ async function refreshKnowledgeSettingsMetadata(title) {
             await checkUserRole();
         }
 
-        const resMeta = await fetch('/api/knowledge/list');
+        const listUrl = appendWorkspaceKnowledgeQuery('/api/knowledge/list', safeTitle);
+        const resMeta = await fetch(listUrl);
         const metaData = await resMeta.json();
         const metadata = metaData && metaData.basis_knowledge ? metaData.basis_knowledge[safeTitle] : null;
 
@@ -29627,6 +30642,7 @@ function setShareLinkDisplay(shareUrl, isPublic) {
 
 async function applyKnowledgeSettings() {
     const oldTitle = currentViewingKnowledge;
+    const workspaceContext = getActiveWorkspaceKnowledgeContext();
     const newTitle = document.getElementById('settingTargetTitle').value.trim();
     const isPublic = document.getElementById('settingPublic').checked;
     const isCollaborative = document.getElementById('settingCollaborative').checked;
@@ -29643,7 +30659,8 @@ async function applyKnowledgeSettings() {
                 new_title: newTitle,
                 public: isPublic,
                 collaborative: isCollaborative,
-                model_readonly: isModelReadonly
+                model_readonly: isModelReadonly,
+                ...getWorkspaceKnowledgeRequestFields(),
             })
         });
         const data = await res.json();
@@ -29653,8 +30670,9 @@ async function applyKnowledgeSettings() {
             // If title changed, we must reload the view
             if (newTitle !== oldTitle) {
                 closeKnowledgeSettingsModal();
-                closeKnowledgeView();
-                viewKnowledge(newTitle);
+                await viewKnowledge(newTitle, {
+                    workspaceContext,
+                });
             } else {
                 const shareUrl = data.share_url || '';
                 setShareLinkDisplay(shareUrl, isPublic);
@@ -29662,7 +30680,9 @@ async function applyKnowledgeSettings() {
                     knowledgeMetaCache[oldTitle].model_readonly = isModelReadonly;
                 }
             }
-            loadKnowledge(); 
+            if (!workspaceContext) {
+                loadKnowledge();
+            }
         } else {
             showToast('更新失败: ' + data.message);
         }
@@ -29942,38 +30962,75 @@ function getChatModelOllamaCircleClass(model, providerKey) {
     const modelId = String(model && model.id ? model.id : '').trim();
     const modelStatus = String(model && model.status ? model.status : '').trim().toLowerCase();
     const providerEntry = getChatOllamaStatusEntry(providerKey);
+
     if (!providerEntry) {
         return 'status-loading';
     }
+
     if (providerEntry.error) {
         return 'status-danger';
     }
+
     const statusEntry = getChatOllamaModelStatus(providerKey, modelId);
+
     if (!statusEntry) {
         return providerEntry.loaded ? 'status-danger' : 'status-loading';
     }
+
     const status = String(statusEntry.status || modelStatus || '').trim().toLowerCase();
+
     if (statusEntry.running || status === 'running' || status === 'online' || status === 'ok') return 'status-success';
+
     if (statusEntry.installed === false || status === 'missing' || status === 'uninstalled') return 'status-danger';
+
     return 'status-warn';
+}
+
+function getModelSourceLabel(model) {
+    const currentModel = model && typeof model === 'object' ? model : null;
+
+    if (!currentModel) {
+        return '';
+    }
+
+    return String(currentModel.name || currentModel.id || '').trim();
+}
+
+// 模型配置可能带 provider/model 前缀，展示层只显示最后一级模型名。
+function getModelDisplayLabel(modelName) {
+    const rawName = String(modelName || '').trim();
+    const slashIndex = rawName.lastIndexOf('/');
+
+    if (slashIndex < 0) {
+        return rawName;
+    }
+
+    return rawName.slice(slashIndex + 1).trim();
 }
 
 function renderCurrentModelDisplayHtml(model) {
     const currentModel = model && typeof model === 'object' ? model : null;
-    const label = String(currentModel && currentModel.name ? currentModel.name : currentModel && currentModel.id ? currentModel.id : '').trim();
-    if (!label) return '';
+    const rawLabel = getModelSourceLabel(currentModel);
+
+    if (!rawLabel) {
+        return '';
+    }
+
+    const label = getModelDisplayLabel(rawLabel);
 
     const providerKey = String(currentModel && currentModel.provider ? currentModel.provider : '').trim();
     const providerApiType = getChatProviderApiType(providerKey);
+
     if (providerApiType !== 'ollama') {
-        return `<span class="current-model-content"><span class="current-model-label">${escapeHtml(label)}</span></span>`;
+        return `<span class="current-model-content"><span class="current-model-label" title="${escapeHtml(rawLabel)}">${escapeHtml(label)}</span></span>`;
     }
 
     const circleClass = getChatModelOllamaCircleClass(currentModel, providerKey);
     const statusText = circleClass === 'status-success' ? '在线' : (circleClass === 'status-danger' ? '未安装' : (circleClass === 'status-loading' ? '加载中' : '不在线'));
+
     return `
         <span class="current-model-content">
-            <span class="current-model-label">${escapeHtml(label)}</span>
+            <span class="current-model-label" title="${escapeHtml(rawLabel)}">${escapeHtml(label)}</span>
             <span class="current-model-ollama-dot ${circleClass}" title="${escapeHtml(statusText)}" aria-label="${escapeHtml(statusText)}"></span>
         </span>
     `;
@@ -30034,20 +31091,36 @@ function setKnowledgeSettingsActiveTab(target) {
     }
 }
 
-async function refreshChatOllamaProviderStatuses(providerKeys = []) {
+async function refreshChatOllamaProviderStatuses(providerKeys = [], options = {}) {
     const keys = Array.from(new Set((providerKeys || []).map((item) => String(item || '').trim()).filter(Boolean)));
 
     if (!keys.length) return;
 
-    await Promise.all(keys.map((providerKey) => loadChatOllamaProviderStatus(providerKey)));
+    if (options && options.force) {
+        keys.forEach((providerKey) => {
+            ollamaChatProviderStatusCache.delete(providerKey);
+            ollamaChatProviderStatusPending.delete(providerKey);
+        });
+    }
+
+    subscribeBrowserOllamaStatus(keys, {
+        force: !!(options && options.force)
+    });
+    syncBrowserOllamaStatus({
+        providers: keys,
+        force: !!(options && options.force)
+    });
     refreshChatOllamaStatusIndicators();
 }
 
-async function loadModels() {
+async function loadModels(options = {}) {
+    const loadOptions = options && typeof options === 'object' ? options : {};
+
     try {
         const res = await fetch('/api/config');
         const data = await res.json();
         if(data.models) {
+            updateBrowserModelConfigVersion(data);
             providerCatalogByKey = (data.providers && typeof data.providers === 'object') ? data.providers : {};
             modelCatalog = Array.isArray(data.models) ? data.models : [];
             modelMetaById.clear();
@@ -30070,10 +31143,21 @@ async function loadModels() {
             updateTokenBudgetContextFromSelectedModel();
 
             if (ollamaProviderKeys.length) {
-                void refreshChatOllamaProviderStatuses(ollamaProviderKeys);
+                void refreshChatOllamaProviderStatuses(ollamaProviderKeys, {
+                    force: !!loadOptions.forceOllamaStatus
+                });
+            } else {
+                subscribeBrowserOllamaStatus([]);
             }
+
+            return true;
         }
-    } catch(e) { console.error("Error loading models", e); }
+
+        return false;
+    } catch(e) {
+        console.error("Error loading models", e);
+        return false;
+    }
 }
 
 function renderCustomModelSelect(models, defaultModel) {
@@ -30138,6 +31222,8 @@ function renderCustomModelSelect(models, defaultModel) {
         chips.className = 'model-chip-wrap';
 
         groups.get(providerKey).forEach((m) => {
+            const rawName = getModelSourceLabel(m);
+            const displayName = getModelDisplayLabel(rawName);
             const statusKey = normalizeStatus(m.status);
             const chip = document.createElement('button');
             chip.type = 'button';
@@ -30146,7 +31232,8 @@ function renderCustomModelSelect(models, defaultModel) {
 
             const nameSpan = document.createElement('span');
             nameSpan.className = 'model-chip-name';
-            nameSpan.textContent = m.name;
+            nameSpan.textContent = displayName;
+            nameSpan.title = rawName;
 
             const statusSpan = document.createElement('span');
             statusSpan.className = `model-chip-status model-status-${statusKey}`;
@@ -32789,10 +33876,10 @@ window.adminResetMailPassword = async function(encodedUser) {
         return;
     }
     try {
-        const res = await fetch('/api/admin/nexora-mail/users/password', {
-            method: 'POST',
+        const res = await fetch(`/api/admin/nexora-mail/groups/${encodeURIComponent(adminMailGroup)}/users/${encodeURIComponent(username)}/password`, {
+            method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ group: adminMailGroup, mail_username: username, password })
+            body: JSON.stringify({ password })
         });
         const data = await res.json();
         if (!data.success) {
@@ -32815,11 +33902,10 @@ window.adminBindMailForUser = async function(encodedUserId) {
         return;
     }
     try {
-        const res = await fetch('/api/admin/nexora-mail/bind', {
-            method: 'POST',
+        const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/local-mail`, {
+            method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                user_id: userId,
                 mail_username: mailUsername
             })
         });
@@ -32847,11 +33933,10 @@ window.adminBindNexoraUserForMail = async function(encodedMailUser) {
         return;
     }
     try {
-        const res = await fetch('/api/admin/nexora-mail/bind', {
-            method: 'POST',
+        const res = await fetch(`/api/admin/users/${encodeURIComponent(nexoraUserId)}/local-mail`, {
+            method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                user_id: nexoraUserId,
                 group: adminMailGroup,
                 mail_username: mailUsername
             })
@@ -32875,10 +33960,8 @@ window.adminDeleteMailUser = async function(encodedUser) {
     const ok = await confirmModalAsync('删除邮箱用户', `确认删除邮箱用户「${username}」吗？`, 'danger');
     if (!ok) return;
     try {
-        const res = await fetch('/api/admin/nexora-mail/users/delete', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ group: adminMailGroup, mail_username: username })
+        const res = await fetch(`/api/admin/nexora-mail/groups/${encodeURIComponent(adminMailGroup)}/users/${encodeURIComponent(username)}`, {
+            method: 'DELETE'
         });
         const data = await res.json();
         if (!data.success) {
@@ -32902,6 +33985,31 @@ function getDefaultAvatarDataUrl(name) {
 // --- 模型权限管理 ---
 let currentTargetPermUser = null;
 
+async function readAdminJsonResponse(res, fallbackMessage) {
+    const rawText = await res.text();
+    let data = {};
+
+    try {
+        data = rawText ? JSON.parse(rawText) : {};
+    } catch (err) {
+        const plainText = rawText
+            .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+            .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+            .replace(/<[^>]*>/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 120);
+        const statusText = `${res.status || ''} ${res.statusText || ''}`.trim();
+        throw new Error(`${fallbackMessage || '请求失败'}${statusText ? ` (${statusText})` : ''}${plainText ? `：${plainText}` : ''}`);
+    }
+
+    if (!res.ok) {
+        throw new Error(data.message || data.error || `${fallbackMessage || '请求失败'} (${res.status})`);
+    }
+
+    return data;
+}
+
 window.openUserModelPerm = async function(username) {
     currentTargetPermUser = username;
     const modal = document.getElementById('modelPermModal');
@@ -32917,19 +34025,21 @@ window.openUserModelPerm = async function(username) {
     }
     
     try {
-        const res = await fetch(`/api/admin/user/models?username=${encodeURIComponent(username)}`);
-        const data = await res.json();
+        const res = await fetch(`/api/admin/user/models?username=${encodeURIComponent(username)}`, {
+            headers: { 'Accept': 'application/json' }
+        });
+        const data = await readAdminJsonResponse(res, '模型权限加载失败');
         
         if (data.success && listContainer) {
             listContainer.innerHTML = data.models.map(m => `
                 <div class="perm-item">
                     <label>
-                        <input type="checkbox" class="model-perm-checkbox" data-id="${m.id}" ${!m.is_blocked ? 'checked' : ''}>
+                        <input type="checkbox" class="model-perm-checkbox" data-id="${escapeHtml(m.id || '')}" ${!m.is_blocked ? 'checked' : ''}>
                         <div class="model-info">
-                            <div class="model-name">${m.name}</div>
+                            <div class="model-name">${escapeHtml(m.name || m.id || '')}</div>
                             <div class="model-meta">
-                                <span class="model-id">${m.id}</span>
-                                ${m.provider ? `<span class="provider-badge">${m.provider}</span>` : ''}
+                                <span class="model-id">${escapeHtml(m.id || '')}</span>
+                                ${m.provider ? `<span class="provider-badge">${escapeHtml(m.provider)}</span>` : ''}
                             </div>
                         </div>
                         <span class="status-badge ${!m.is_blocked ? 'status-allowed' : 'status-blocked'}">
@@ -32939,10 +34049,10 @@ window.openUserModelPerm = async function(username) {
                 </div>
             `).join('');
         } else if (listContainer) {
-            listContainer.innerHTML = `<div style="padding: 20px; color: #ef4444; text-align: center; font-size: 13px;">${data.message || '获取失败'}</div>`;
+            listContainer.innerHTML = `<div style="padding: 20px; color: #ef4444; text-align: center; font-size: 13px;">${escapeHtml(data.message || data.error || '获取失败')}</div>`;
         }
     } catch (err) {
-        if (listContainer) listContainer.innerHTML = `<div style="padding: 20px; color: #ef4444; text-align: center; font-size: 13px;">加载错误: ${err.message}</div>`;
+        if (listContainer) listContainer.innerHTML = `<div style="padding: 20px; color: #ef4444; text-align: center; font-size: 13px;">加载错误: ${escapeHtml(err.message)}</div>`;
     }
 };
 
@@ -32966,7 +34076,7 @@ window.saveUserModelPermissions = async function() {
                 blocked_models: blocked_models
             })
         });
-        const data = await res.json();
+        const data = await readAdminJsonResponse(res, '模型权限保存失败');
         if (data.success) {
 // 说明
             closeModelPermModal();
@@ -32975,10 +34085,10 @@ window.saveUserModelPermissions = async function() {
                 setTimeout(() => location.reload(), 800);
             }
         } else {
-            showToast('更新失败: ' + data.message);
+            showToast('更新失败: ' + (data.message || data.error || '未知错误'));
         }
     } catch (err) {
-        showToast('保存时发生错误');
+        showToast('保存时发生错误: ' + err.message);
     }
 };
 
@@ -33005,6 +34115,12 @@ let adminConfigState = { mode: '', originalKey: '' };
 let adminOllamaModelStatusCache = {};
 let adminOllamaStatusPending = new Map();
 let adminOllamaStatusModalState = { provider: '', model: '', status: null, loading: false };
+
+function encodeAdminInlineArg(value) {
+    return encodeURIComponent(String(value || '')).replace(/[!'()*]/g, (char) => {
+        return `%${char.charCodeAt(0).toString(16).toUpperCase()}`;
+    });
+}
 
 function maskSecret(secret) {
     const s = String(secret || '');
@@ -33313,7 +34429,7 @@ function renderAdminOllamaStatusButton(providerKey, modelId, providerInfo) {
     const statusClass = getAdminOllamaStatusButtonClass(status);
     const title = `${key} / ${modelKey} · ${statusLabel}`;
     return `
-        <button class="model-icon-btn model-status-btn ${statusClass}" title="${escapeHtml(title)}" onclick="event.stopPropagation(); openAdminOllamaModelStatusByEncoded('${encodeURIComponent(key)}', '${encodeURIComponent(modelKey)}')">
+        <button class="model-icon-btn model-status-btn ${statusClass}" title="${escapeHtml(title)}" onclick="event.stopPropagation(); openAdminOllamaModelStatusByEncoded('${encodeAdminInlineArg(key)}', '${encodeAdminInlineArg(modelKey)}')">
             <i class="fa-solid fa-circle"></i>
         </button>
     `;
@@ -33373,7 +34489,10 @@ async function loadAdminOllamaStatusForProvider(providerKey) {
 async function refreshAdminOllamaStatusCache(providerKeys = []) {
     const keys = Array.from(new Set((providerKeys || []).map((item) => normalizeAdminProviderKey(item)).filter(Boolean)));
     if (!keys.length) return;
-    await Promise.all(keys.map((providerKey) => loadAdminOllamaStatusForProvider(providerKey)));
+    subscribeBrowserOllamaStatus(keys);
+    syncBrowserOllamaStatus({
+        providers: keys
+    });
     const listEl = document.getElementById('adminModelConfigList');
     if (listEl) {
         renderAdminModelConfig();
@@ -33976,10 +35095,8 @@ async function confirmAdminPublicApiDeleteModal() {
         return;
     }
     try {
-        const res = await fetch('/api/admin/auth/public-api/delete', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ key_id: String(selected.id) })
+        const res = await fetch(`/api/admin/auth/public-api/keys/${encodeURIComponent(String(selected.id))}`, {
+            method: 'DELETE'
         });
         const data = await res.json();
         if (!data.success) {
@@ -34332,8 +35449,12 @@ async function saveAdminGenImageApiDetail() {
     }
 
     try {
-        const res = await fetch('/api/admin/gen-image/apis/upsert', {
-            method: 'POST',
+        const originalApiId = String(adminGenImageApiEditorState.originalApiId || '').trim();
+        const endpoint = originalApiId
+            ? `/api/admin/gen-image/apis/${encodeURIComponent(originalApiId)}`
+            : '/api/admin/gen-image/apis';
+        const res = await fetch(endpoint, {
+            method: originalApiId ? 'PUT' : 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
         });
@@ -34372,10 +35493,8 @@ window.adminEnableGenImageApi = async function(encodedApiId) {
     if (!apiId) return;
 
     try {
-        const res = await fetch('/api/admin/gen-image/apis/enable', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ api_id: apiId }),
+        const res = await fetch(`/api/admin/gen-image/apis/${encodeURIComponent(apiId)}/enabled`, {
+            method: 'PUT',
         });
         const data = await res.json();
 
@@ -34395,10 +35514,8 @@ window.adminEnableGenImageApi = async function(encodedApiId) {
 
 window.adminDisableGenImageApi = async function() {
     try {
-        const res = await fetch('/api/admin/gen-image/apis/disable', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({}),
+        const res = await fetch('/api/admin/gen-image/enabled-api', {
+            method: 'DELETE',
         });
         const data = await res.json();
 
@@ -34425,10 +35542,8 @@ window.adminDeleteGenImageApi = async function(encodedApiId) {
     if (!ok) return;
 
     try {
-        const res = await fetch('/api/admin/gen-image/apis/delete', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ api_id: apiId }),
+        const res = await fetch(`/api/admin/gen-image/apis/${encodeURIComponent(apiId)}`, {
+            method: 'DELETE',
         });
         const data = await res.json();
 
@@ -34578,7 +35693,7 @@ function renderAdminModelConfig(options = {}) {
         const iconProvider = resolveAdminProviderIconProvider(key, info);
         const providerActionSelect = providerQuotaActionOptionsHtml(key, (info && info.on_exhausted) || adminQuotaDefaultOverageAction);
         return `
-        <div class="admin-user-item model-provider-item ${key === adminSelectedProvider ? 'active' : ''}" data-role="model-provider-item" data-provider-key="${escapeHtml(key)}" onclick="adminSelectProviderByEncoded('${encodeURIComponent(key)}')">
+        <div class="admin-user-item model-provider-item ${key === adminSelectedProvider ? 'active' : ''}" data-role="model-provider-item" data-provider-key="${escapeHtml(key)}" onclick="adminSelectProviderByEncoded('${encodeAdminInlineArg(key)}')">
             ${renderProviderIconHtml(iconProvider, { className: 'model-provider-avatar', label: key })}
             <div>
                 <div class="admin-user-name">${escapeHtml(key)}</div>
@@ -34591,8 +35706,8 @@ function renderAdminModelConfig(options = {}) {
                 </div>
             </div>
             <div class="model-admin-item-actions model-provider-item-actions">
-                <button class="model-icon-btn" title="编辑供应商" onclick="event.stopPropagation(); adminEditProviderByEncoded('${encodeURIComponent(key)}')"><i class="fa-solid fa-pen"></i></button>
-                <button class="model-icon-btn model-icon-btn-danger" title="删除供应商" onclick="event.stopPropagation(); adminDeleteProviderByEncoded('${encodeURIComponent(key)}')"><i class="fa-solid fa-trash"></i></button>
+                <button class="model-icon-btn" title="编辑供应商" onclick="event.stopPropagation(); adminEditProviderByEncoded('${encodeAdminInlineArg(key)}')"><i class="fa-solid fa-pen"></i></button>
+                <button class="model-icon-btn model-icon-btn-danger" title="删除供应商" onclick="event.stopPropagation(); adminDeleteProviderByEncoded('${encodeAdminInlineArg(key)}')"><i class="fa-solid fa-trash"></i></button>
             </div>
         </div>
     `;
@@ -34660,8 +35775,8 @@ function renderAdminModelConfig(options = {}) {
                         <div class="model-admin-item-name">${escapeHtml(id)} (${escapeHtml((info && info.name) || id)})</div>
                     </div>
                     <div class="model-admin-item-actions">
-                        <button class="model-icon-btn" title="修改模型" onclick="adminEditModelByEncoded('${encodeURIComponent(id)}')"><i class="fa-solid fa-pen"></i></button>
-                        <button class="model-icon-btn model-icon-btn-danger" title="Delete Model" onclick="adminDeleteModelByEncoded('${encodeURIComponent(id)}')"><i class="fa-solid fa-trash"></i></button>
+                        <button class="model-icon-btn" title="修改模型" onclick="adminEditModelByEncoded('${encodeAdminInlineArg(id)}')"><i class="fa-solid fa-pen"></i></button>
+                        <button class="model-icon-btn model-icon-btn-danger" title="Delete Model" onclick="adminDeleteModelByEncoded('${encodeAdminInlineArg(id)}')"><i class="fa-solid fa-trash"></i></button>
                     </div>
                 </div>
                 ${contextWindowHtml}
@@ -34806,11 +35921,15 @@ async function saveAdminConfigModal() {
                 showToast('供应商名称是必填项');
                 return;
             }
-            const res = await fetch('/api/admin/models/provider/upsert', {
-                method: 'POST',
+            const originalProvider = (adminConfigState.originalKey || '').trim();
+            const providerEndpoint = originalProvider
+                ? `/api/admin/models/providers/${encodeURIComponent(originalProvider)}`
+                : '/api/admin/models/providers';
+            const res = await fetch(providerEndpoint, {
+                method: originalProvider ? 'PUT' : 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    original_provider: (adminConfigState.originalKey || '').trim(),
+                    original_provider: originalProvider,
                     provider,
                     api_key: apiKey,
                     base_url: baseUrl,
@@ -34839,11 +35958,13 @@ async function saveAdminConfigModal() {
                 showToast('模型ID和供应商是必填项');
                 return;
             }
-            const res = await fetch('/api/admin/models/model/upsert', {
+            const originalModelId = (adminConfigState.originalKey || '').trim();
+            const modelEndpoint = originalModelId ? '/api/admin/models/model/upsert' : '/api/admin/models';
+            const res = await fetch(modelEndpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    original_model_id: (adminConfigState.originalKey || '').trim(),
+                    original_model_id: originalModelId,
                     model_id: modelId,
                     name: modelName || modelId,
                     provider,
@@ -34851,7 +35972,7 @@ async function saveAdminConfigModal() {
                     status: status || 'normal'
                 })
             });
-            const data = await res.json();
+            const data = await readAdminJsonResponse(res, '模型保存失败');
             if (!data.success) {
                 showToast('保存失败: ' + (data.message || '未知错误'));
                 return;
@@ -35064,10 +36185,10 @@ window.adminDeleteModelByEncoded = function(encoded) {
 
 window.adminDeleteProvider = function(provider) {
     showAdminTextConfirmModal(async (confirmText) => {
-        const res = await fetch('/api/admin/models/provider/delete', {
-            method: 'POST',
+        const res = await fetch(`/api/admin/models/providers/${encodeURIComponent(provider)}`, {
+            method: 'DELETE',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ provider, confirm_text: confirmText })
+            body: JSON.stringify({ confirm_text: confirmText })
         });
         const data = await res.json();
         if (!data.success) {
@@ -35084,9 +36205,12 @@ window.adminDeleteModel = function(modelId) {
         const res = await fetch('/api/admin/models/model/delete', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model_id: modelId, confirm_text: confirmText })
+            body: JSON.stringify({
+                model_id: modelId,
+                confirm_text: confirmText
+            })
         });
-        const data = await res.json();
+        const data = await readAdminJsonResponse(res, '模型删除失败');
         if (!data.success) {
             showToast('删除失败: ' + (data.message || '未知错误'));
             return;
@@ -35763,7 +36887,7 @@ async function submitAddUser() {
     }
     
     try {
-        const res = await fetch('/api/admin/user/add', {
+        const res = await fetch('/api/admin/users', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ username, password, role })
@@ -35796,10 +36920,8 @@ async function deleteAdminUser(username) {
     if (!ok) return;
     
     try {
-        const res = await fetch('/api/admin/user/delete', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ target_user_id: username })
+        const res = await fetch(`/api/admin/users/${encodeURIComponent(username)}`, {
+            method: 'DELETE'
         });
         const data = await res.json();
         if (data.success) {
@@ -35834,10 +36956,10 @@ async function changeUserRole(username, newRole) {
     }
 
     try {
-        const res = await fetch('/api/admin/user/role', {
-            method: 'POST',
+        const res = await fetch(`/api/admin/users/${encodeURIComponent(username)}/role`, {
+            method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ user_id: username, role: newRole })
+            body: JSON.stringify({ role: newRole })
         });
         const data = await res.json();
         if (data.success) {
@@ -35864,10 +36986,10 @@ window.saveAdminUserProfile = async function(encodedUserId) {
         return;
     }
     try {
-        const profileRes = await fetch('/api/admin/user/profile', {
-            method: 'POST',
+        const profileRes = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/profile`, {
+            method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ user_id: userId, display_name: displayName })
+            body: JSON.stringify({ display_name: displayName })
         });
         const profileData = await profileRes.json();
         if (!profileData.success) {
@@ -35875,10 +36997,10 @@ window.saveAdminUserProfile = async function(encodedUserId) {
             return;
         }
         if (userId !== currentUsername) {
-            const roleRes = await fetch('/api/admin/user/role', {
-                method: 'POST',
+            const roleRes = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/role`, {
+                method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ user_id: userId, role })
+                body: JSON.stringify({ role })
             });
             const roleData = await roleRes.json();
             if (!roleData.success) {
@@ -35903,10 +37025,10 @@ window.adminResetPassword = async function(encodedUserId) {
         return;
     }
     try {
-        const res = await fetch('/api/admin/user/password', {
-            method: 'POST',
+        const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/password`, {
+            method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ target_user_id: userId, password: pwd })
+            body: JSON.stringify({ password: pwd })
         });
         const data = await res.json();
         if (!data.success) {
@@ -35944,8 +37066,8 @@ async function updateVectorInSettings() {
         const metaData = await metaRes.json();
         knowledgeVectorizationEnabled = !!(metaData && metaData.vectorization_enabled);
         if (!knowledgeVectorizationEnabled) {
-            showToast('RAG已关闭，无法更新向量');
-            setVectorStatus('RAG已关闭');
+            showToast('知识向量化未启用或未配置，无法更新向量');
+            setVectorStatus('向量化不可用');
             return;
         }
 
@@ -36013,10 +37135,8 @@ async function deleteVectorInSettings() {
     try {
         const titleInput = document.getElementById('settingTargetTitle');
         const liveTitle = titleInput && titleInput.value.trim() ? titleInput.value.trim() : currentViewingKnowledge;
-        const res = await fetch('/api/knowledge/vector/delete', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ title: liveTitle })
+        const res = await fetch(`/api/knowledge/vector/titles/${encodeURIComponent(liveTitle)}`, {
+            method: 'DELETE'
         });
         const data = await res.json();
         if (data.success) {
@@ -36123,19 +37243,39 @@ async function loadVectorChunks(title) {
             setVectorStatus('暂无数据');
             return;
         }
-        list.innerHTML = chunks.map(c => {
-            const idx = c.chunk_id != null ? c.chunk_id : '-';
-            const preview = (c.text || '').slice(0, 80);
-            const id = c.id || '';
-            const safeId = String(id).replace(/"/g, '&quot;');
-            return `<div style="padding:6px 0; border-bottom:1px dashed #e2e8f0; display:flex; gap:8px; align-items:flex-start; justify-content: space-between;">
-                <div style="flex:1;">
-                    <div style="font-weight:600;">Chunk ${idx}</div>
-                    <div style="color:#64748b; font-size:12px; word-break: break-word;">${preview}</div>
-                </div>
-                <button class="btn-primary" onclick="deleteVectorChunk('${safeId}', '${title.replace("'", "\'")}')" style="background:#ef4444; padding: 4px 8px; font-size: 11px;">删除</button>
-            </div>`;
-        }).join('');
+        list.innerHTML = '';
+        chunks.forEach((chunk) => {
+            const row = document.createElement('div');
+            row.style.cssText = 'padding:6px 0; border-bottom:1px dashed #e2e8f0; display:flex; gap:8px; align-items:flex-start; justify-content: space-between;';
+
+            const body = document.createElement('div');
+            body.style.cssText = 'flex:1;';
+
+            const indexEl = document.createElement('div');
+            indexEl.style.cssText = 'font-weight:600;';
+            indexEl.textContent = `Chunk ${chunk.chunk_id != null ? chunk.chunk_id : '-'}`;
+
+            const previewEl = document.createElement('div');
+            previewEl.style.cssText = 'color:#64748b; font-size:12px; word-break: break-word;';
+            previewEl.textContent = String(chunk.text == null ? '' : chunk.text).slice(0, 80);
+
+            const deleteBtn = document.createElement('button');
+            deleteBtn.type = 'button';
+            deleteBtn.className = 'btn-primary';
+            deleteBtn.style.cssText = 'background:#ef4444; padding: 4px 8px; font-size: 11px;';
+            deleteBtn.textContent = '删除';
+
+            // 使用事件绑定避免标题或向量 ID 中的引号破坏内联 JS。
+            deleteBtn.addEventListener('click', () => {
+                deleteVectorChunk(String(chunk.id == null ? '' : chunk.id), title);
+            });
+
+            body.appendChild(indexEl);
+            body.appendChild(previewEl);
+            row.appendChild(body);
+            row.appendChild(deleteBtn);
+            list.appendChild(row);
+        });
         setVectorStatus(`已加载 ${chunks.length} 块`);
     } catch (e) {
         list.innerHTML = `<div style="color:#ef4444;">加载失败: ${e.message}</div>`;
@@ -36174,7 +37314,7 @@ function escapeCssSelector(value) {
 }
 
 async function createKnowledgeVectorizeTask(title, library = 'knowledge') {
-    const res = await fetch('/api/knowledge/vectorize/task', {
+    const res = await fetch('/api/knowledge/vector/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title, library })
@@ -36186,12 +37326,12 @@ async function createKnowledgeVectorizeTask(title, library = 'knowledge') {
     return String(data.task_id);
 }
 
-async function pollServerTask(taskId, onProgress) {
+async function pollKnowledgeVectorTask(taskId, onProgress) {
     const safeTaskId = String(taskId || '').trim();
     if (!safeTaskId) throw new Error('任务ID为空');
     const maxRounds = 1200;
     for (let i = 0; i < maxRounds; i++) {
-        const res = await fetch(`/api/upload/task/${encodeURIComponent(safeTaskId)}`, {
+        const res = await fetch(`/api/knowledge/vector/tasks/${encodeURIComponent(safeTaskId)}`, {
             method: 'GET',
             cache: 'no-store'
         });
@@ -36219,15 +37359,18 @@ async function bulkVectorizeAllBasis() {
         return;
     }
     bulkVectorizeRunning = true;
+    syncBulkVectorizeButtonVisibility();
     showToast('开始批量向量化');
     let titles = [];
     try {
         const metaRes = await fetch('/api/knowledge/list');
         const metaData = await metaRes.json();
         knowledgeVectorizationEnabled = !!(metaData && metaData.vectorization_enabled);
+        syncBulkVectorizeButtonVisibility();
         if (!knowledgeVectorizationEnabled) {
-            showToast('RAG已关闭，无需重新向量化');
+            showToast('知识向量化未启用或未配置');
             bulkVectorizeRunning = false;
+            syncBulkVectorizeButtonVisibility();
             return;
         }
 
@@ -36237,6 +37380,7 @@ async function bulkVectorizeAllBasis() {
         if (titles.length === 0) {
             showToast('没有可向量化的知识点');
             bulkVectorizeRunning = false;
+            syncBulkVectorizeButtonVisibility();
             return;
         }
         for (const title of titles) {
@@ -36262,6 +37406,7 @@ async function bulkVectorizeAllBasis() {
         showToast('批量向量化失败: ' + e.message);
     } finally {
         bulkVectorizeRunning = false;
+        syncBulkVectorizeButtonVisibility();
         loadKnowledge(currentConversationId);
     }
 }
@@ -36278,7 +37423,7 @@ async function vectorizeKnowledgeTitle(title, options = {}) {
         setKnowledgeItemProgress(title, 1, true, 'vectorizing');
 
         const taskId = await createKnowledgeVectorizeTask(title, 'knowledge');
-        const task = await pollServerTask(taskId, ({ status, progress, task }) => {
+        const task = await pollKnowledgeVectorTask(taskId, ({ status, progress, task }) => {
             if (status === 'completed') return;
             // 后端进度为 12-96，前端知识条映射到 1-99
             let pct = 1;
@@ -36399,10 +37544,8 @@ async function deleteVectorChunk(vectorId, title) {
     if (!ok) return;
     setVectorStatus('删除中...');
     try {
-        const res = await fetch('/api/knowledge/vector/delete', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ vector_id: vectorId })
+        const res = await fetch(`/api/knowledge/vector/chunks/${encodeURIComponent(vectorId)}`, {
+            method: 'DELETE'
         });
         const data = await res.json();
         if (!data.success) {
@@ -37131,8 +38274,8 @@ async function saveUserProfile() {
         return;
     }
     try {
-        const res = await fetch('/api/user/profile/update', {
-            method: 'POST',
+        const res = await fetch('/api/user/profile', {
+            method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 display_name: displayName,

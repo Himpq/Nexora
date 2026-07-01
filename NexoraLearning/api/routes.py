@@ -603,6 +603,68 @@ def _resolve_runtime_user_id() -> str:
     return ""
 
 
+def _feed_user_keys_from_values(*values: Any) -> set:
+    """收集同一用户可能出现的 id / username 标识。"""
+    keys = set()
+
+    for value in values:
+        if isinstance(value, MappingABC):
+            candidates = (
+                value.get("id"),
+                value.get("user_id"),
+                value.get("username"),
+            )
+        else:
+            candidates = (value,)
+
+        for candidate in candidates:
+            key = str(candidate or "").strip()
+
+            if key:
+                keys.add(key)
+
+    return keys
+
+
+def _resolve_feed_user_key_set(user_id: str) -> set:
+    """把当前用户解析成可用于动态作者权限判断的标识集合。"""
+    keys = _feed_user_keys_from_values(user_id)
+
+    if not keys:
+        return keys
+
+    session_result = _fetch_session_user_from_nexora()
+
+    if session_result.get("success"):
+        session_user = session_result.get("user") if isinstance(session_result.get("user"), dict) else {}
+        session_keys = _feed_user_keys_from_values(session_user)
+
+        if keys.intersection(session_keys):
+            keys.update(session_keys)
+
+    if _proxy is None:
+        return keys
+
+    for key in list(keys):
+        result = _proxy.get_user_info(username=key or None)
+
+        if isinstance(result, dict) and result.get("success"):
+            user = result.get("user") if isinstance(result.get("user"), dict) else {}
+            keys.update(_feed_user_keys_from_values(user))
+
+    return keys
+
+
+def _feed_user_keys_match(current_user_keys: set, *author_values: Any) -> bool:
+    """判断当前用户是否和动态/评论作者为同一人。"""
+    if not current_user_keys:
+        return False
+
+    author_keys = _feed_user_keys_from_values(*author_values)
+
+    return bool(current_user_keys.intersection(author_keys))
+
+
 def _escape_card_html(value: Any) -> str:
     text = str(value or "")
     return (
@@ -10062,7 +10124,7 @@ def frontend_learning_feeds():
         and _can_view_feed_channel(channel_map.get(selected_channel_id, {"id": "public_all", "type": "public"}), username, current_is_admin)
     ][:limit]
     author_cache: Dict[str, Dict[str, Any]] = {}
-    current_user_id = username
+    current_user_keys = _resolve_feed_user_key_set(username)
 
     def _resolve_author_view(user_id: str) -> Dict[str, Any]:
         key = str(user_id or "").strip()
@@ -10121,7 +10183,8 @@ def frontend_learning_feeds():
         row["author"] = _build_author_payload(author_view, author_id)
         row["author_is_admin"] = bool(author_view.get("author_is_admin"))
         row["can_delete"] = bool(
-            current_is_admin or (current_user_id and current_user_id == str(row["author"].get("user_id") or "").strip())
+            current_is_admin
+            or _feed_user_keys_match(current_user_keys, author, author_view, row.get("username"), row.get("user_id"))
         )
         comments = row.get("comments")
         if isinstance(comments, list):
@@ -10141,9 +10204,12 @@ def frontend_learning_feeds():
                         "liked_user_ids": comment.get("liked_user_ids") if isinstance(comment.get("liked_user_ids"), list) else [],
                         "can_delete": bool(
                             current_is_admin
-                            or (
-                                current_user_id
-                                and current_user_id == str(comment_author_view.get("user_id") or comment_author_id or "").strip()
+                            or _feed_user_keys_match(
+                                current_user_keys,
+                                comment_author,
+                                comment_author_view,
+                                comment_author_id,
+                                comment.get("username"),
                             )
                         ),
                     }
@@ -10307,7 +10373,11 @@ def frontend_learning_feed_delete(feed_id: str):
         return jsonify({"success": False, "error": "feed not found."}), 404
     author = target.get("author") if isinstance(target.get("author"), dict) else {}
     author_id = str(author.get("user_id") or target.get("username") or "").strip()
-    if not (_is_runtime_admin() or (author_id and author_id == username)):
+    current_user_keys = _resolve_feed_user_key_set(username)
+    if not (
+        _is_runtime_admin()
+        or _feed_user_keys_match(current_user_keys, author, author_id, target.get("username"), target.get("user_id"))
+    ):
         return jsonify({"success": False, "error": "forbidden"}), 403
     removed = delete_learning_feed_item(_cfg, feed_id)
     if not removed:
@@ -10331,7 +10401,16 @@ def frontend_learning_feed_comment_delete(feed_id: str, comment_id: str):
         return jsonify({"success": False, "error": "comment not found."}), 404
     comment_author = target_comment.get("author") if isinstance(target_comment.get("author"), dict) else {}
     comment_author_id = str(comment_author.get("user_id") or target_comment.get("username") or "").strip()
-    if not (_is_runtime_admin() or (comment_author_id and comment_author_id == username)):
+    current_user_keys = _resolve_feed_user_key_set(username)
+    if not (
+        _is_runtime_admin()
+        or _feed_user_keys_match(
+            current_user_keys,
+            comment_author,
+            comment_author_id,
+            target_comment.get("username"),
+        )
+    ):
         return jsonify({"success": False, "error": "forbidden"}), 403
     updated = delete_learning_feed_comment(_cfg, feed_id, comment_id)
     if not isinstance(updated, dict):

@@ -23,6 +23,8 @@ class ToolResultPresenter:
             "cloud_file_write": self._render_file_write,
             "cloud_doc_write": self._render_doc_write,
             "cloud_file_patch": self._render_file_patch,
+            "cloud_file_apply_diff": self._render_file_patch,
+            "cloud_file_edit": self._render_file_patch,
             "cloud_file_find": self._render_file_find,
             "cloud_file_list": self._render_file_list,
             "cloud_file_remove": self._render_file_remove,
@@ -62,6 +64,11 @@ class ToolResultPresenter:
             "knowledge_list": self._render_knowledge_list,
             "memory_profile_read": self._render_user_profile_memory,
             "memory_short_update": self._render_user_profile_update,
+            "workspace_mem_write": self._render_workspace_memory_update,
+            "workspace_mem_patch": self._render_workspace_memory_update,
+            "workspace_mem_apply_diff": self._render_workspace_memory_update,
+            "workspace_mem_edit": self._render_workspace_memory_update,
+            "workspace_mem_add": self._render_workspace_memory_update,
             "knowledge_basis_create": self._render_knowledge_mutation,
             "knowledge_basis_delete": self._render_knowledge_mutation,
             "knowledge_basis_update": self._render_knowledge_mutation,
@@ -1058,7 +1065,7 @@ class ToolResultPresenter:
         payload = self._load_payload_unwrapped(result)
 
         if isinstance(payload, dict) and payload.get("tmp_cached"):
-            return self._render_cached_payload("local_file_patch", payload)
+            return self._render_cached_payload(str(args.get("_tool_name") or "cloud_file_patch"), payload)
 
         if not isinstance(payload, dict):
             return str(result or "")
@@ -2331,6 +2338,131 @@ class ToolResultPresenter:
             "",
             self._markdown_body(payload.get("profile", "") or "(empty)", limit=4000),
         ])
+        return "\n".join(lines).strip()
+
+    def _render_workspace_memory_update(self, args: Dict[str, Any], result: Any) -> str:
+        """Render Workspace memory mutation results into Markdown for model-visible tool output."""
+        payload = self._load_payload(result)
+        tool_name = str(args.get("_tool_name") or "").strip()
+
+        if isinstance(payload, dict) and payload.get("tmp_cached"):
+            return self._render_cached_payload(tool_name or "workspace_mem", payload)
+
+        title_map = {
+            "workspace_mem_write": ("## Workspace Memory Written", "## Workspace Memory Write Failed"),
+            "workspace_mem_patch": ("## Workspace Memory Patched", "## Workspace Memory Patch Failed"),
+            "workspace_mem_apply_diff": ("## Workspace Memory Diff Applied", "## Workspace Memory Diff Failed"),
+            "workspace_mem_edit": ("## Workspace Memory Edited", "## Workspace Memory Edit Failed"),
+            "workspace_mem_add": ("## Workspace Memory Appended", "## Workspace Memory Append Failed"),
+        }
+        success_title, failed_title = title_map.get(tool_name, ("## Workspace Memory Updated", "## Workspace Memory Update Failed"))
+
+        if not isinstance(payload, dict):
+            return "\n".join([
+                "## Workspace Memory Result Parse Failed",
+                "",
+                f"- Tool: `{tool_name or 'workspace_mem'}`",
+                "",
+                "### Raw Result",
+                "",
+                self._fenced_text(result, language="text", limit=4000),
+            ]).strip()
+
+        success = payload.get("success", True) is not False and not payload.get("error")
+        stats = payload.get("stats") if isinstance(payload.get("stats"), dict) else {}
+        mode = str(stats.get("mode") or "").strip()
+        title = "## Workspace Memory Preview" if payload.get("dry_run") else success_title
+        lines = [
+            self._status_title(success, title, failed_title),
+            "",
+            f"- Workspace: `{payload.get('workspace_id') or args.get('workspace_id') or ''}`",
+        ]
+
+        if mode:
+            lines.append(f"- Mode: `{mode}`")
+
+        if payload.get("changed") is not None:
+            lines.append(f"- Changed: {self._as_bool_text(payload.get('changed'))}")
+
+        if payload.get("dry_run") is not None:
+            lines.append(f"- Dry Run: {self._as_bool_text(payload.get('dry_run'))}")
+
+        if payload.get("chars") is not None:
+            lines.append(f"- Chars: {payload.get('chars')} / {payload.get('limit', '')}")
+
+        if payload.get("old_sha256") or payload.get("new_sha256") or payload.get("sha256"):
+            old_sha = payload.get("old_sha256")
+            new_sha = payload.get("new_sha256") or payload.get("sha256")
+            lines.append(f"- SHA256: `{self._short_hash(old_sha)}` -> `{self._short_hash(new_sha)}`")
+
+        if payload.get("expected_sha256"):
+            lines.append(f"- Expected SHA256: `{self._short_hash(payload.get('expected_sha256'))}`")
+
+        if stats.get("edit_count") is not None:
+            lines.append(f"- Edits: {stats.get('edit_count')}")
+
+        if stats.get("hunk_count") is not None:
+            lines.append(f"- Hunks: {stats.get('hunk_count')}")
+
+        if stats.get("added_lines") is not None or stats.get("removed_lines") is not None:
+            lines.append(f"- Lines: +{stats.get('added_lines', 0)} / -{stats.get('removed_lines', 0)}")
+
+        if not success:
+            lines.extend(["", f"- Reason: {payload.get('error') or payload.get('message') or 'unknown error'}"])
+            content = str(payload.get("content") or "").strip()
+
+            if content:
+                lines.extend([
+                    "",
+                    "### Current Workspace Memory",
+                    "",
+                    self._fenced_text(content, language="markdown", limit=12000),
+                ])
+
+            return "\n".join(lines).strip()
+
+        patch_text = str(args.get("patch") or "").strip()
+
+        if patch_text:
+            lines.extend([
+                "",
+                "### Requested Patch",
+                "",
+                self._fenced_text(patch_text, language="diff", limit=8000),
+            ])
+        else:
+            edits_text = self._format_structured_edits(args.get("edits"))
+
+            if edits_text:
+                lines.extend(["", "### Requested Structured Edits", "", edits_text])
+
+        preview_diff = str(payload.get("preview_diff") or "").strip()
+
+        if preview_diff:
+            lines.extend([
+                "",
+                "### Preview Diff",
+                "",
+                self._fenced_text(preview_diff, language="diff", limit=8000),
+            ])
+
+        content = str(payload.get("content") or "").strip()
+
+        if content:
+            lines.extend([
+                "",
+                "### Current Workspace Memory",
+                "",
+                self._fenced_text(content, language="markdown", limit=12000),
+            ])
+        else:
+            lines.extend([
+                "",
+                "### Current Workspace Memory",
+                "",
+                self._fenced_text("(empty)", language="markdown", limit=12000),
+            ])
+
         return "\n".join(lines).strip()
 
     def _render_knowledge_mutation(self, args: Dict[str, Any], result: Any) -> str:

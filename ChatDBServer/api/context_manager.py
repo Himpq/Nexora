@@ -7,10 +7,14 @@ Model 只负责主流程编排和 Provider 调用细节。
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from enum import Enum
 from typing import Any, Callable, Dict, Generator, List, Mapping, Optional, Tuple
 
+from history_sanitizer import (
+    sanitize_assistant_visible_content,
+    strip_history_time_prefix_from_content,
+    strip_history_time_prefix_text,
+)
 import prompts
 
 
@@ -471,7 +475,14 @@ class ChatContextManager:
 
         model = self.model
         normalized = model._compact_context_content(normalized, context_compact_mode)
-        normalized = self._prefix_history_time_to_content(normalized, item)
+        normalized = self._strip_history_time_prefix_from_content(normalized)
+
+        if role == "assistant" and isinstance(normalized, str):
+            normalized = sanitize_assistant_visible_content(normalized)
+
+            if not str(normalized or "").strip():
+                return
+
         context.add(role, normalized)
 
     def _normalize_history_message_content(
@@ -559,67 +570,40 @@ class ChatContextManager:
         return self._strip_history_time_prefix_from_content(stripped)
 
     def _strip_history_time_prefix_from_content(self, content: Any) -> Any:
-        if isinstance(content, str):
-            return self._strip_history_time_prefix_text(content)
-
-        if isinstance(content, list):
-            stripped_items: List[Any] = []
-
-            for item in content:
-                if not isinstance(item, dict):
-                    stripped_items.append(item)
-                    continue
-
-                item_copy = dict(item)
-                item_type = str(item_copy.get("type", "") or "").strip().lower()
-
-                if item_type in {"text", "input_text", "output_text"} and isinstance(item_copy.get("text"), str):
-                    item_copy["text"] = self._strip_history_time_prefix_text(item_copy.get("text", ""))
-
-                stripped_items.append(item_copy)
-
-            return stripped_items
-
-        if isinstance(content, dict):
-            item_copy = dict(content)
-
-            if isinstance(item_copy.get("text"), str):
-                item_copy["text"] = self._strip_history_time_prefix_text(item_copy.get("text", ""))
-
-            if isinstance(item_copy.get("content"), str):
-                item_copy["content"] = self._strip_history_time_prefix_text(item_copy.get("content", ""))
-
-            return item_copy
-
-        return content
+        return strip_history_time_prefix_from_content(content)
 
     def _strip_history_time_prefix_text(self, text: str) -> str:
-        value = str(text or "")
-        stripped = value.lstrip()
-
-        if not stripped.startswith(("[TIME]", "[{TIME:", "[历史消息时间:")):
-            return value
-
-        lines = stripped.splitlines()
-
-        if len(lines) <= 1:
-            return ""
-
-        return "\n".join(lines[1:]).lstrip()
+        return strip_history_time_prefix_text(text)
 
     def _strip_system_injection_text(self, text: str) -> str:
-        marker = "\n\n[系统注入]"
         value = str(text or "")
+        injection_markers = (
+            "[系统注入]",
+            "## Skill Instructions",
+            "## Learning Context",
+            "## Workspace Mode",
+            "## Workspace Memory Context",
+            "## Workspace Custom Instructions",
+            "## Workspace Knowledge Index",
+            "## Current Turn Memory Check",
+            "## Sandbox Files",
+            "[可按需读取的 Longdoc Skill]",
+        )
 
-        if value.startswith("[系统注入]"):
-            return ""
+        for marker in injection_markers:
+            if value.startswith(marker):
+                return ""
 
-        idx = value.find(marker)
+        marker_positions = [
+            value.find(f"\n\n{marker}")
+            for marker in injection_markers
+            if value.find(f"\n\n{marker}") >= 0
+        ]
 
-        if idx < 0:
+        if not marker_positions:
             return value
 
-        return value[:idx].rstrip()
+        return value[:min(marker_positions)].rstrip()
 
     def _build_assistant_history_messages(
         self,
@@ -654,6 +638,10 @@ class ChatContextManager:
                 group.get("content", ""),
                 context_compact_mode,
             )
+
+            if isinstance(compacted_intro, str):
+                compacted_intro = sanitize_assistant_visible_content(compacted_intro)
+
             protocol_messages = self._build_tool_protocol_messages(
                 calls=calls,
                 results=results,
@@ -667,7 +655,15 @@ class ChatContextManager:
 
         if normalized_final is not None:
             normalized_final = model._compact_context_content(normalized_final, context_compact_mode)
-            normalized_final = self._prefix_history_time_to_content(normalized_final, item)
+            normalized_final = self._strip_history_time_prefix_from_content(normalized_final)
+
+            if isinstance(normalized_final, str):
+                normalized_final = sanitize_assistant_visible_content(normalized_final)
+
+                if not str(normalized_final or "").strip():
+                    normalized_final = None
+
+        if normalized_final is not None:
             messages.append({"role": "assistant", "content": normalized_final})
 
         return messages
@@ -940,7 +936,9 @@ class ChatContextManager:
             return history_messages
 
         try:
-            summary_text = str(compression_marker.get("summary", "") or "").strip()
+            summary_text = self._strip_history_time_prefix_text(
+                str(compression_marker.get("summary", "") or "").strip()
+            )
             cut_index = int(compression_marker.get("history_cut_index", -1) or -1)
         except Exception:
             summary_text = ""
@@ -976,80 +974,6 @@ class ChatContextManager:
             return None
 
         return normalized
-
-    def _format_history_time_prefix(self, item: Dict[str, Any]) -> str:
-        if not isinstance(item, dict):
-            return ""
-
-        timestamp = str(item.get("timestamp", "") or "").strip()
-
-        if not timestamp:
-            return ""
-
-        try:
-            dt = datetime.fromisoformat(timestamp)
-            text = dt.strftime("%Y-%m-%d %H:%M:%S")
-        except Exception:
-            return ""
-
-        text = text.strip()
-
-        if not text:
-            return ""
-
-        return f"[TIME] {text}"
-
-    def _prefix_history_time_to_content(self, content: Any, item: Dict[str, Any]) -> Any:
-        prefix = self._format_history_time_prefix(item)
-
-        if not prefix:
-            return content
-
-        if isinstance(content, str):
-            text = content.strip()
-
-            if not text:
-                return content
-
-            if text.startswith("[TIME]") or text.startswith("[{TIME:") or text.startswith("[历史消息时间:"):
-                return content
-
-            return f"{prefix}\n{text}"
-
-        if isinstance(content, list):
-            out: List[Any] = []
-            applied = False
-
-            for part in content:
-                if not isinstance(part, dict):
-                    out.append(part)
-                    continue
-
-                copied = dict(part)
-                item_type = str(copied.get("type", "") or "").strip().lower()
-
-                if (
-                    not applied
-                    and item_type in {"text", "input_text", "output_text"}
-                    and isinstance(copied.get("text"), str)
-                    and str(copied.get("text") or "").strip()
-                ):
-                    text = str(copied.get("text") or "").strip()
-
-                    if not (
-                        text.startswith("[TIME]")
-                        or text.startswith("[{TIME:")
-                        or text.startswith("[历史消息时间:")
-                    ):
-                        copied["text"] = f"{prefix}\n{text}"
-
-                    applied = True
-
-                out.append(copied)
-
-            return out
-
-        return content
 
     def content_to_text_for_context_compression(self, content: Any) -> str:
         """将多模态消息内容转换为可压缩的纯文本表达。"""
@@ -1149,7 +1073,11 @@ class ChatContextManager:
                 continue
 
             compacted = model._compact_context_content(item.get("content", ""), compact_mode)
-            compacted = self._prefix_history_time_to_content(compacted, item)
+            compacted = self._strip_history_time_prefix_from_content(compacted)
+
+            if role == "ASSISTANT" and isinstance(compacted, str):
+                compacted = sanitize_assistant_visible_content(compacted)
+
             text = self.content_to_text_for_context_compression(compacted).strip()
 
             if not text:

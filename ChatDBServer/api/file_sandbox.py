@@ -762,10 +762,12 @@ class UserFileSandbox:
         edits: Optional[List[Dict[str, Any]]] = None,
         dry_run: bool = False,
         expected_sha256: Optional[str] = None,
+        tool_name: str = "cloud_file_patch",
     ) -> Dict[str, Any]:
         """对云端文本文件应用统一 diff 或结构化 edits。"""
+        safe_tool_name = str(tool_name or "cloud_file_patch").strip() or "cloud_file_patch"
         entry = self._get_entry(file_ref)
-        self._reject_docx_text_mutation(entry, "cloud_file_patch")
+        self._reject_docx_text_mutation(entry, safe_tool_name)
         alias = str(entry.get("alias"))
 
         with self._lock:
@@ -776,7 +778,7 @@ class UserFileSandbox:
             if not entry:
                 raise FileNotFoundError(f"file not found: {file_ref}")
 
-            self._reject_docx_text_mutation(entry, "cloud_file_patch")
+            self._reject_docx_text_mutation(entry, safe_tool_name)
             abs_path = self._get_abs_path(entry)
 
             try:

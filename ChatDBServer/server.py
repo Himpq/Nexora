@@ -167,6 +167,13 @@ _PROVIDER_MODELS_CACHE: Dict[str, Dict[str, Any]] = {}
 _PROVIDER_MODELS_BG_LOCK = threading.Lock()
 _PROVIDER_MODELS_BG_REFRESHING: Dict[str, bool] = {}
 _PROVIDER_MODELS_BG_LAST_TS: Dict[str, float] = {}
+_BROWSER_OLLAMA_STATUS_LOCK = threading.Lock()
+_BROWSER_OLLAMA_STATUS_CACHE: Dict[str, Dict[str, Any]] = {}
+_BROWSER_OLLAMA_STATUS_IN_FLIGHT: Set[str] = set()
+_BROWSER_OLLAMA_STATUS_LOOP_STARTED = False
+_BROWSER_OLLAMA_STATUS_POLL_SEC = 10.0
+_BROWSER_OLLAMA_STATUS_IDLE_SLEEP_SEC = 5.0
+_MODELS_CONFIG_SYNC_LAST_ERROR = ''
 _CLIENT_CACHE: Dict[str, Any] = {}
 _SYSTEM_SETTINGS_RUNTIME_SYNCER = SystemSettingsRuntimeSyncer()
 
@@ -2533,6 +2540,94 @@ def _send_browser_event_to_user(username: str, event_type: str, payload: Dict[st
         _drop_browser_ws_client(user, client_id)
 
 
+def _send_browser_event_to_all(event_type: str, payload: Dict[str, Any]) -> None:
+    with _BROWSER_WS_LOCK:
+        clients_snapshot = {
+            user: dict(user_clients or {})
+            for user, user_clients in _BROWSER_WS_CLIENTS.items()
+        }
+
+    dead_clients: List[Tuple[str, str]] = []
+
+    for user, user_clients in clients_snapshot.items():
+
+        for client_id, client in user_clients.items():
+
+            if not _send_browser_ws_client(client, event_type, payload):
+                dead_clients.append((user, client_id))
+
+    for user, client_id in dead_clients:
+        _drop_browser_ws_client(user, client_id)
+
+
+def _invalidate_provider_models_cache_for_providers(provider_names: List[str]) -> None:
+    normalized = set()
+
+    for provider_name in provider_names or []:
+        provider_key = str(provider_name or '').strip().lower()
+
+        if provider_key:
+            normalized.add(provider_key)
+
+    if not normalized:
+        return
+
+    with _PROVIDER_MODELS_CACHE_LOCK:
+
+        for cache_key in list(_PROVIDER_MODELS_CACHE.keys()):
+            provider_key = str(cache_key or '').split('::', 1)[0].strip().lower()
+
+            if provider_key in normalized:
+                _PROVIDER_MODELS_CACHE.pop(cache_key, None)
+
+
+def _warm_ollama_provider_model_cache(provider_names: List[str]) -> None:
+    for provider_name in provider_names or []:
+        provider = str(provider_name or '').strip()
+
+        if not provider:
+            continue
+
+        cache_key = _provider_models_cache_key(provider, '')
+
+        def _refresh(provider_key=provider, provider_cache_key=cache_key):
+            ok, _, payload = _fetch_provider_models_live(provider_key, '', timeout=8.0)
+
+            if ok:
+                _provider_models_cache_set(provider_cache_key, payload)
+
+        _launch_provider_models_refresh_bg(
+            cache_key,
+            _refresh,
+            min_interval_sec=20.0
+        )
+
+
+def notify_models_config_changed(
+    source: str = 'models_config_save',
+    models_cfg: Optional[Dict[str, Any]] = None,
+) -> None:
+    global _MODELS_CONFIG_SYNC_LAST_ERROR
+
+    try:
+        sync_state = build_models_config_sync_state(models_cfg)
+        ollama_providers = sync_state.get('ollama_providers', [])
+
+        if isinstance(ollama_providers, list):
+            _invalidate_provider_models_cache_for_providers(ollama_providers)
+            _warm_ollama_provider_model_cache(ollama_providers)
+
+        payload = {
+            **sync_state,
+            'source': str(source or 'models_config_save').strip() or 'models_config_save',
+        }
+        _send_browser_event_to_all('model_config_changed', payload)
+        _MODELS_CONFIG_SYNC_LAST_ERROR = ''
+    except Exception as e:
+        _MODELS_CONFIG_SYNC_LAST_ERROR = str(e)
+        print(f"[Model Sync] notify failed: {e}")
+
+
 def _send_browser_event_to_conversation(username: str, conversation_id: str, event_type: str, payload: Dict[str, Any]) -> None:
     user = str(username or '').strip()
     target_conversation_id = str(conversation_id or '').strip()
@@ -3666,7 +3761,7 @@ def load_models_config():
     return {"models": models, "providers": providers}
 
 
-def save_models_config(models_cfg):
+def save_models_config(models_cfg, sync_source: str = 'models_config_save'):
     """保存 models.json"""
     global _config_cache
     payload = {
@@ -3676,6 +3771,79 @@ def save_models_config(models_cfg):
     with open(MODELS_PATH, 'w', encoding='utf-8') as f:
         json.dump(payload, f, indent=4, ensure_ascii=False)
     _config_cache = None
+    notify_models_config_changed(sync_source)
+
+
+def _models_config_sync_file_payload() -> Tuple[bytes, Dict[str, Any], int, int]:
+    if not os.path.exists(MODELS_PATH):
+        return b'', {"models": {}, "providers": {}}, 0, 0
+
+    stat = os.stat(MODELS_PATH)
+
+    with open(MODELS_PATH, 'rb') as f:
+        raw = f.read()
+
+    data = json.loads(raw.decode('utf-8-sig')) if raw else {}
+
+    if not isinstance(data, dict):
+        data = {"models": {}, "providers": {}}
+
+    return raw, data, int(stat.st_mtime), int(stat.st_mtime_ns)
+
+
+def _extract_ollama_provider_names(models_cfg: Dict[str, Any]) -> List[str]:
+    cfg = models_cfg if isinstance(models_cfg, dict) else {}
+    providers = cfg.get('providers', {}) if isinstance(cfg.get('providers'), dict) else {}
+    names: List[str] = []
+
+    for provider_name, provider_cfg in providers.items():
+
+        if not isinstance(provider_cfg, dict):
+            continue
+
+        api_type = str(provider_cfg.get('api_type', '') or '').strip().lower()
+
+        if api_type == 'ollama':
+            names.append(str(provider_name or '').strip())
+
+    return sorted([name for name in names if name], key=lambda item: item.lower())
+
+
+def build_models_config_sync_state(models_cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    if isinstance(models_cfg, dict):
+        cfg = models_cfg
+        raw = json.dumps(
+            {
+                "models": cfg.get("models", {}),
+                "providers": cfg.get("providers", {}),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(',', ':')
+        ).encode('utf-8')
+        updated_at = 0
+        mtime_ns = 0
+
+        if os.path.exists(MODELS_PATH):
+            stat = os.stat(MODELS_PATH)
+            updated_at = int(stat.st_mtime)
+            mtime_ns = int(stat.st_mtime_ns)
+    else:
+        raw, cfg, updated_at, mtime_ns = _models_config_sync_file_payload()
+
+    models = cfg.get('models', {}) if isinstance(cfg.get('models'), dict) else {}
+    providers = cfg.get('providers', {}) if isinstance(cfg.get('providers'), dict) else {}
+    fingerprint = hashlib.sha256(raw).hexdigest() if raw else ''
+    version = f'{mtime_ns}:{fingerprint[:16]}' if fingerprint else str(mtime_ns or 0)
+
+    return {
+        'version': version,
+        'fingerprint': fingerprint,
+        'updated_at': updated_at,
+        'model_count': len(models),
+        'provider_count': len(providers),
+        'ollama_providers': _extract_ollama_provider_names(cfg),
+    }
 
 
 def _normalize_model_status_text(raw_status: Any) -> str:
@@ -4795,6 +4963,62 @@ def _is_rag_database_enabled():
     return bool(rag.get('rag_database_enabled', False))
 
 
+def _is_knowledge_vectorization_enabled():
+    """Return whether knowledge vectorization can run with the current RAG configuration."""
+    rag = _get_rag_database_config()
+
+    if not rag.get('rag_database_enabled', False):
+        return False
+
+    mode = str(rag.get('mode') or '').strip().lower()
+
+    if mode != 'service':
+        return False
+
+    service_url = str(rag.get('service_url') or '').strip()
+    host = str(rag.get('host') or '').strip()
+    port = str(rag.get('port') or '').strip()
+
+    return bool(service_url or (host and port))
+
+
+def _knowledge_vector_status_payload():
+    """Build a public, non-secret knowledge vectorization status payload."""
+    rag = _get_rag_database_config()
+    enabled = _is_knowledge_vectorization_enabled()
+    mode = str(rag.get('mode') or '').strip().lower()
+    service_url = str(rag.get('service_url') or '').strip()
+    host = str(rag.get('host') or '').strip()
+    port = str(rag.get('port') or '').strip()
+    reason = ''
+
+    if not rag.get('rag_database_enabled', False):
+        reason = 'disabled'
+    elif mode != 'service':
+        reason = 'service_mode_required'
+    elif not (service_url or (host and port)):
+        reason = 'service_endpoint_missing'
+
+    return {
+        'enabled': enabled,
+        'vectorization_enabled': enabled,
+        'reason': reason,
+        'mode': mode,
+        'service_configured': bool(service_url or (host and port)),
+        'chunk_size': int(rag.get('chunk_size') or 800),
+        'chunk_overlap': int(rag.get('chunk_overlap') or 120)
+    }
+
+
+def _knowledge_vector_unavailable_response(message='知识向量化未启用或未配置', status_code=400):
+    payload = {
+        'success': False,
+        'message': message,
+        'vector_status': _knowledge_vector_status_payload()
+    }
+    return jsonify(payload), int(status_code or 400)
+
+
 def _knowledge_meta_timestamp(value):
     """Normalize knowledge timestamp metadata for vector status checks."""
     try:
@@ -5839,12 +6063,13 @@ def search_users():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
+@app.route('/api/user/profile', methods=['PUT'])
 @app.route('/api/user/profile/update', methods=['POST'])
 @require_login
 def update_user_profile():
     """更新当前用户资料（显示名、头像）"""
     user_id = session.get('username')
-    data = request.get_json() or {}
+    data = request.get_json(silent=True) or {}
     new_name = (data.get('display_name') or '').strip()
     avatar_base64 = data.get('avatar_base64')
 
@@ -7915,13 +8140,13 @@ def admin_get_users():
                             if t is None:
                                 t = log.get('input_tokens', 0) + log.get('output_tokens', 0)
                             total_tokens += int(t or 0)
-                except:
-                    pass
+                except Exception as e:
+                    app.logger.warning('admin user token usage load failed for %s: %s', user_id, e)
             
             user_list.append({
                 'user_id': user_id,
                 'username': info.get('display_name', user_id),
-                'password': info.get('password'), # 管理员可见密码，符合用户要求
+                'has_password': bool(info.get('password')),
                 'role': info.get('role', 'member'),
                 'last_ip': info.get('last_ip', '未知'),
                 'last_login': info.get('last_login'),
@@ -7936,6 +8161,7 @@ def admin_get_users():
         return jsonify({'success': False, 'message': str(e)})
 
 
+@app.route('/api/admin/users', methods=['POST'])
 @app.route('/api/admin/user/add', methods=['POST'])
 @require_admin
 def admin_add_user():
@@ -8001,12 +8227,13 @@ def admin_add_user():
         return jsonify({'success': False, 'message': str(e)})
 
 
+@app.route('/api/admin/users/<path:target_username>', methods=['DELETE'])
 @app.route('/api/admin/user/delete', methods=['POST'])
 @require_admin
-def admin_delete_user():
+def admin_delete_user(target_username=None):
     """删除用户"""
-    data = request.get_json()
-    username = data.get('target_user_id') or data.get('target_username')
+    data = request.get_json(silent=True) or {}
+    username = target_username or data.get('target_user_id') or data.get('target_username')
     
     if username == session['username']:
         return jsonify({'success': False, 'message': '不能删除自己'})
@@ -8027,12 +8254,13 @@ def admin_delete_user():
         return jsonify({'success': False, 'message': str(e)})
 
 
+@app.route('/api/admin/users/<path:target_username>/role', methods=['PATCH'])
 @app.route('/api/admin/user/role', methods=['POST'])
 @require_admin
-def admin_set_role():
+def admin_set_role(target_username=None):
     """修改用户权限"""
-    data = request.get_json()
-    username = data.get('user_id') or data.get('username') or data.get('target_username')
+    data = request.get_json(silent=True) or {}
+    username = target_username or data.get('user_id') or data.get('username') or data.get('target_username')
     new_role = data.get('role') # 'admin' or 'member'
     
     if not username or not new_role:
@@ -8055,12 +8283,13 @@ def admin_set_role():
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 
+@app.route('/api/admin/users/<path:target_username>/password', methods=['PATCH'])
 @app.route('/api/admin/user/password', methods=['POST'])
 @require_admin
-def admin_set_password():
+def admin_set_password(target_username=None):
     """修改用户密码"""
-    data = request.get_json()
-    username = data.get('target_user_id') or data.get('target_username')
+    data = request.get_json(silent=True) or {}
+    username = target_username or data.get('target_user_id') or data.get('target_username')
     new_password = data.get('password')
     
     if not username or not new_password:
@@ -8182,12 +8411,13 @@ def admin_nexora_mail_create_user():
     })
 
 
+@app.route('/api/admin/users/<user_id>/local-mail', methods=['PUT'])
 @app.route('/api/admin/nexora-mail/bind', methods=['POST'])
 @require_admin
-def admin_nexora_mail_bind():
+def admin_nexora_mail_bind(user_id=None):
     """将 Nexora 用户绑定到指定本地邮箱账号"""
-    payload = request.get_json() or {}
-    user_id = (payload.get('user_id') or payload.get('target_user_id') or '').strip()
+    payload = request.get_json(silent=True) or {}
+    user_id = (user_id or payload.get('user_id') or payload.get('target_user_id') or '').strip()
     group = (payload.get('group') or _get_nexora_mail_config().get('default_group') or 'default').strip() or 'default'
     mail_username = (payload.get('mail_username') or payload.get('username') or '').strip()
     domain = str(payload.get('domain') or '').strip()
@@ -8221,12 +8451,14 @@ def admin_nexora_mail_bind():
     })
 
 
+@app.route('/api/admin/users/<user_id>/local-mail', methods=['DELETE'])
 @app.route('/api/admin/nexora-mail/unbind', methods=['POST'])
 @require_admin
-def admin_nexora_mail_unbind():
+def admin_nexora_mail_unbind(user_id=None):
     """解绑 Nexora 用户的本地邮箱"""
-    payload = request.get_json() or {}
-    user_id = (payload.get('user_id') or payload.get('target_user_id') or '').strip()
+    payload = request.get_json(silent=True) or {}
+    user_id = (user_id or payload.get('user_id') or payload.get('target_user_id') or '').strip()
+
     if not user_id:
         return jsonify({'success': False, 'message': 'user_id 不能为空'}), 400
 
@@ -8245,15 +8477,17 @@ def admin_nexora_mail_unbind():
     return jsonify({'success': True, 'user_id': user_id, 'local_mail': users[user_id]['local_mail']})
 
 
+@app.route('/api/admin/nexora-mail/groups/<group>/users/<path:mail_username>/password', methods=['PATCH'])
 @app.route('/api/admin/nexora-mail/users/password', methods=['POST'])
 @require_admin
-def admin_nexora_mail_set_password():
+def admin_nexora_mail_set_password(group=None, mail_username=None):
     """重置 NexoraMail 用户密码"""
-    payload = request.get_json() or {}
+    payload = request.get_json(silent=True) or {}
     cfg = _get_nexora_mail_config()
-    group = (payload.get('group') or cfg.get('default_group') or 'default').strip() or 'default'
-    mail_username = (payload.get('mail_username') or payload.get('username') or '').strip()
+    group = (group or payload.get('group') or cfg.get('default_group') or 'default').strip() or 'default'
+    mail_username = (mail_username or payload.get('mail_username') or payload.get('username') or '').strip()
     password = str(payload.get('password') or '')
+
     if not mail_username or not password:
         return jsonify({'success': False, 'message': 'mail_username 和 password 不能为空'}), 400
 
@@ -8267,14 +8501,16 @@ def admin_nexora_mail_set_password():
     return jsonify({'success': True, 'group': group, 'mail_username': mail_username})
 
 
+@app.route('/api/admin/nexora-mail/groups/<group>/users/<path:mail_username>', methods=['DELETE'])
 @app.route('/api/admin/nexora-mail/users/delete', methods=['POST'])
 @require_admin
-def admin_nexora_mail_delete_user():
+def admin_nexora_mail_delete_user(group=None, mail_username=None):
     """删除 NexoraMail 用户"""
-    payload = request.get_json() or {}
+    payload = request.get_json(silent=True) or {}
     cfg = _get_nexora_mail_config()
-    group = (payload.get('group') or cfg.get('default_group') or 'default').strip() or 'default'
-    mail_username = (payload.get('mail_username') or payload.get('username') or '').strip()
+    group = (group or payload.get('group') or cfg.get('default_group') or 'default').strip() or 'default'
+    mail_username = (mail_username or payload.get('mail_username') or payload.get('username') or '').strip()
+
     if not mail_username:
         return jsonify({'success': False, 'message': 'mail_username 不能为空'}), 400
 
@@ -8323,8 +8559,8 @@ def admin_token_stats():
                             if t is None:
                                 t = log.get('input_tokens', 0) + log.get('output_tokens', 0)
                             total_tokens += int(t or 0)
-                except:
-                    pass
+                except Exception as e:
+                    app.logger.warning('admin token stats load failed for %s: %s', username, e)
         return jsonify({'success': True, 'total': total_tokens})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
@@ -8863,34 +9099,67 @@ def upload_file():
         return jsonify({'success': False, 'message': f'上传失败: {str(e)}'}), 500
 
 
-@app.route('/api/upload/task/<task_id>', methods=['GET'])
-@require_login
-def get_upload_task(task_id):
+def _serialize_upload_task(task):
+    """统一上传/向量化异步任务的 API 返回结构。"""
+    return {
+        'task_id': task.get('task_id'),
+        'task_type': task.get('task_type') or '',
+        'filename': task.get('filename'),
+        'status': task.get('status'),
+        'stage': task.get('stage'),
+        'progress': int(task.get('progress', 0) or 0),
+        'message': task.get('message') or '',
+        'error': task.get('error') or '',
+        'result': task.get('result'),
+        'created_at': task.get('created_at'),
+        'updated_at': task.get('updated_at')
+    }
+
+
+def _get_owned_upload_task_or_response(task_id, expected_task_type=''):
     username = session['username']
     task = _upload_task_get(task_id)
     if not task:
-        return jsonify({'success': False, 'message': '任务不存在'}), 404
-    if str(task.get('username') or '') != str(username):
-        return jsonify({'success': False, 'message': '无权限访问该任务'}), 403
+        return None, (jsonify({'success': False, 'message': '任务不存在'}), 404)
 
+    if str(task.get('username') or '') != str(username):
+        return None, (jsonify({'success': False, 'message': '无权限访问该任务'}), 403)
+
+    expected = str(expected_task_type or '').strip()
+    if expected and str(task.get('task_type') or '') != expected:
+        return None, (jsonify({'success': False, 'message': '任务类型不匹配'}), 404)
+
+    return task, None
+
+
+def _jsonify_upload_task(task):
     return jsonify({
         'success': True,
-        'task': {
-            'task_id': task.get('task_id'),
-            'task_type': task.get('task_type') or '',
-            'filename': task.get('filename'),
-            'status': task.get('status'),
-            'stage': task.get('stage'),
-            'progress': int(task.get('progress', 0) or 0),
-            'message': task.get('message') or '',
-            'error': task.get('error') or '',
-            'result': task.get('result'),
-            'created_at': task.get('created_at'),
-            'updated_at': task.get('updated_at')
-        }
+        'task': _serialize_upload_task(task)
     })
 
 
+@app.route('/api/upload/task/<task_id>', methods=['GET'])
+@require_login
+def get_upload_task(task_id):
+    task, error_response = _get_owned_upload_task_or_response(task_id)
+    if error_response:
+        return error_response
+
+    return _jsonify_upload_task(task)
+
+
+@app.route('/api/knowledge/vector/tasks/<task_id>', methods=['GET'])
+@require_login
+def get_knowledge_vector_task(task_id):
+    task, error_response = _get_owned_upload_task_or_response(task_id, 'knowledge_vectorize')
+    if error_response:
+        return error_response
+
+    return _jsonify_upload_task(task)
+
+
+@app.route('/api/knowledge/vector/tasks', methods=['POST'])
 @app.route('/api/knowledge/vectorize/task', methods=['POST'])
 @require_login
 def create_knowledge_vectorize_task():
@@ -8901,6 +9170,9 @@ def create_knowledge_vectorize_task():
     library = _normalize_vector_library(data.get('library'), default='knowledge')
     if not title:
         return jsonify({'success': False, 'message': '缺少 title'}), 400
+
+    if not _is_knowledge_vectorization_enabled():
+        return jsonify({'success': False, 'message': '知识向量化未启用或未配置'}), 400
 
     task_id = _upload_task_create(
         username,
@@ -8928,12 +9200,24 @@ def create_knowledge_vectorize_task():
 @app.route('/api/upload/task/<task_id>/cancel', methods=['POST'])
 @require_login
 def cancel_upload_task(task_id):
-    username = session['username']
-    task = _upload_task_get(task_id)
-    if not task:
-        return jsonify({'success': False, 'message': '任务不存在'}), 404
-    if str(task.get('username') or '') != str(username):
-        return jsonify({'success': False, 'message': '无权限访问该任务'}), 403
+    task, error_response = _get_owned_upload_task_or_response(task_id)
+    if error_response:
+        return error_response
+
+    status = str(task.get('status') or '')
+    if status in {'completed', 'failed', 'cancelled'}:
+        return jsonify({'success': True, 'already_done': True, 'status': status})
+
+    _upload_task_mark_cancel(task_id)
+    return jsonify({'success': True, 'cancel_requested': True})
+
+
+@app.route('/api/knowledge/vector/tasks/<task_id>/cancel', methods=['POST'])
+@require_login
+def cancel_knowledge_vector_task(task_id):
+    task, error_response = _get_owned_upload_task_or_response(task_id, 'knowledge_vectorize')
+    if error_response:
+        return error_response
 
     status = str(task.get('status') or '')
     if status in {'completed', 'failed', 'cancelled'}:
@@ -9127,6 +9411,7 @@ def create_conversation_api():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
+@app.route('/api/conversations/<conv_id>/pin', methods=['PUT'])
 @app.route('/api/conversations/<conv_id>/pin', methods=['POST'])
 @require_login
 def set_conversation_pin(conv_id):
@@ -9271,15 +9556,19 @@ def list_trash_items():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
+@app.route('/api/trash/<trash_id>/restore', methods=['POST'])
 @app.route('/api/trash/restore', methods=['POST'])
 @require_login
-def restore_trash_item():
+def restore_trash_item(trash_id=None):
     username = session['username']
     data = request.get_json(silent=True) or {}
-    trash_id = str(data.get('id') or '').strip()
+    trash_id = str(trash_id or data.get('id') or '').strip()
+
     if not trash_id:
         return jsonify({'success': False, 'message': '缺少回收站条目ID'}), 400
+
     entry = _trash_read_entry(username, trash_id)
+
     if not isinstance(entry, dict):
         return jsonify({'success': False, 'message': '回收站条目不存在'}), 404
 
@@ -9308,6 +9597,7 @@ def restore_trash_item():
     })
 
 
+@app.route('/api/trash', methods=['DELETE'])
 @app.route('/api/trash/clear', methods=['POST'])
 @require_login
 def clear_trash_items():
@@ -9319,34 +9609,32 @@ def clear_trash_items():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
-@app.route('/api/delete_message', methods=['POST'])
-@require_login
-def delete_message():
-    data = request.json
-    if not data:
-        return jsonify({"success": False, "message": "No data provided"}), 400
-        
+def _delete_conversation_message_response(conv_id, index):
     username = session['username']
-    conv_id = data.get('conversation_id')
-    index = data.get('index')
-    
+
     if conv_id is None:
         return jsonify({"success": False, "message": "Missing conversation_id"}), 400
+
     if index is None:
         return jsonify({"success": False, "message": "Missing index"}), 400
+
     try:
         index = int(index)
     except Exception:
         return jsonify({"success": False, "message": "Invalid index"}), 400
-        
+
     manager = ConversationManager(username)
+
     try:
         conversation = manager.get_conversation(conv_id)
     except Exception:
         conversation = None
+
     if not isinstance(conversation, dict):
         return jsonify({"success": False, "message": "Conversation not found"}), 404
+
     messages = conversation.get('messages', []) if isinstance(conversation.get('messages', []), list) else []
+
     if index < 0 or index >= len(messages):
         return jsonify({
             "success": False,
@@ -9363,6 +9651,23 @@ def delete_message():
             print(f"[ASSET] cleanup after delete_message failed: {e}")
         return jsonify({"success": True})
     return jsonify({"success": False, "message": "删除失败，请稍后重试"}), 500
+
+
+@app.route('/api/delete_message', methods=['POST'])
+@require_login
+def delete_message():
+    data = request.get_json(silent=True) or {}
+
+    if not data:
+        return jsonify({"success": False, "message": "No data provided"}), 400
+
+    return _delete_conversation_message_response(data.get('conversation_id'), data.get('index'))
+
+
+@app.route('/api/conversations/<conv_id>/messages/<int:msg_index>', methods=['DELETE'])
+@require_login
+def delete_conversation_message(conv_id, msg_index):
+    return _delete_conversation_message_response(conv_id, msg_index)
 
 
 @app.route('/api/conversations/<conv_id>/messages/<int:msg_index>/content', methods=['PUT'])
@@ -9631,21 +9936,28 @@ def get_config():
         if default_model in blacklist:
             default_model = models_info[0]['id'] if models_info else None
 
+        models_sync_state = build_models_config_sync_state()
+
         return jsonify({
             'success': True,
             'models': models_info,
             'providers': providers_info,
-            'default_model': default_model
+            'default_model': default_model,
+            'models_config_version': models_sync_state.get('version', ''),
+            'models_config_fingerprint': models_sync_state.get('fingerprint', ''),
+            'models_config_updated_at': models_sync_state.get('updated_at', 0),
         })
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 
 
+@app.route('/api/admin/users/<target_username>/models', methods=['GET'])
 @app.route('/api/admin/user/models', methods=['GET'])
 @require_admin
-def admin_get_user_models():
+def admin_get_user_models(target_username=None):
     """获取用户可用模型列表（管理员）"""
-    target_username = normalize_text(request.args.get('username', ''), default='')
+    target_username = normalize_text(target_username or request.args.get('username', ''), default='')
+
     if not target_username:
         return jsonify({"success": False, "message": "Missing username"}), 400
 
@@ -9676,12 +9988,13 @@ def admin_get_user_models():
         return jsonify({"success": False, "message": str(e)})
 
 
+@app.route('/api/admin/users/<target_username>/models', methods=['PUT'])
 @app.route('/api/admin/user/models/update', methods=['POST'])
 @require_admin
-def admin_update_user_models():
+def admin_update_user_models(target_username=None):
     """更新用户的模型黑名单"""
-    data = request.get_json()
-    target_username = data.get('username')
+    data = request.get_json(silent=True) or {}
+    target_username = target_username or data.get('username')
     blocked_models = data.get('blocked_models', []) # 传递 ID 列表
     
     if not target_username:
@@ -9833,12 +10146,14 @@ def admin_get_gen_image_apis():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
+@app.route('/api/admin/gen-image/apis', methods=['POST'])
+@app.route('/api/admin/gen-image/apis/<path:api_id>', methods=['PUT'])
 @app.route('/api/admin/gen-image/apis/upsert', methods=['POST'])
 @require_admin
-def admin_upsert_gen_image_api():
+def admin_upsert_gen_image_api(api_id=None):
     """新增或更新生图接口配置"""
     data = request.get_json(silent=True) or {}
-    api_id = _normalize_gen_image_api_id(data.get('api_id') or data.get('id'))
+    api_id = _normalize_gen_image_api_id(data.get('api_id') or data.get('id') or api_id)
     original_api_id = _normalize_gen_image_api_id(data.get('original_api_id') or api_id)
 
     if not api_id:
@@ -9905,12 +10220,13 @@ def admin_upsert_gen_image_api():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
+@app.route('/api/admin/gen-image/apis/<path:api_id>/enabled', methods=['PUT'])
 @app.route('/api/admin/gen-image/apis/enable', methods=['POST'])
 @require_admin
-def admin_enable_gen_image_api():
+def admin_enable_gen_image_api(api_id=None):
     """启用指定生图接口，保证同一时间仅一个接口可用"""
     data = request.get_json(silent=True) or {}
-    api_id = _normalize_gen_image_api_id(data.get('api_id') or data.get('id'))
+    api_id = _normalize_gen_image_api_id(api_id or data.get('api_id') or data.get('id'))
 
     if not api_id:
         return jsonify({'success': False, 'message': '接口标识不能为空'}), 400
@@ -9940,6 +10256,7 @@ def admin_enable_gen_image_api():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
+@app.route('/api/admin/gen-image/enabled-api', methods=['DELETE'])
 @app.route('/api/admin/gen-image/apis/disable', methods=['POST'])
 @require_admin
 def admin_disable_gen_image_api():
@@ -9960,12 +10277,13 @@ def admin_disable_gen_image_api():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
+@app.route('/api/admin/gen-image/apis/<path:api_id>', methods=['DELETE'])
 @app.route('/api/admin/gen-image/apis/delete', methods=['POST'])
 @require_admin
-def admin_delete_gen_image_api():
+def admin_delete_gen_image_api(api_id=None):
     """删除生图接口"""
     data = request.get_json(silent=True) or {}
-    api_id = _normalize_gen_image_api_id(data.get('api_id') or data.get('id'))
+    api_id = _normalize_gen_image_api_id(api_id or data.get('api_id') or data.get('id'))
 
     if not api_id:
         return jsonify({'success': False, 'message': '接口标识不能为空'}), 400
@@ -10109,24 +10427,29 @@ def admin_regenerate_public_api_key():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
+@app.route('/api/admin/auth/public-api/keys/<path:key_id>', methods=['DELETE'])
 @app.route('/api/admin/auth/public-api/revoke', methods=['POST'])
 @app.route('/api/admin/auth/public-api/delete', methods=['POST'])
 @require_admin
-def admin_revoke_public_api_key():
+def admin_revoke_public_api_key(key_id=None):
     try:
         data = request.get_json(silent=True) or {}
         cfg = ensure_main_config_defaults()
         api_cfg = cfg.setdefault('api', {})
-        key_id = str(data.get('key_id') or '').strip()
-        target_id = key_id
+        target_id = str(key_id or data.get('key_id') or '').strip()
+
         if not target_id:
             primary = _select_primary_papi_key(_list_papi_key_records(include_revoked=False))
             target_id = str((primary or {}).get('id') or '').strip()
+
         if not target_id:
             return jsonify({'success': False, 'message': 'No active PAPI key to delete.'}), 400
+
         _delete_public_api_key(key_id=target_id)
+
         if not _list_papi_key_records(include_revoked=False):
             api_cfg['public_api_enabled'] = False
+
         save_main_config(cfg)
         state = _build_public_api_auth_state(api_cfg, include_plain_key=False)
         return jsonify({'success': True, 'message': 'Public API key deleted.', 'auth': state})
@@ -10147,6 +10470,361 @@ def _get_admin_provider_runtime(provider_name: str):
         return {}, None, f'provider 不存在: {provider}'
     adapter = create_provider_adapter(provider, provider_cfg)
     return provider_cfg, adapter, ''
+
+
+def _normalize_browser_ollama_provider_key(provider_name: Any) -> str:
+    return str(provider_name or '').strip().lower()
+
+
+def _resolve_browser_ollama_provider_name(provider_name: Any) -> Tuple[str, str]:
+    requested = str(provider_name or '').strip()
+    provider_key = _normalize_browser_ollama_provider_key(requested)
+
+    if not provider_key:
+        return '', 'provider 不能为空'
+
+    config = get_config_all()
+    providers = config.get('providers', {}) if isinstance(config, dict) else {}
+
+    for name, provider_cfg in providers.items():
+        current_key = _normalize_browser_ollama_provider_key(name)
+
+        if current_key != provider_key:
+            continue
+
+        if not isinstance(provider_cfg, dict):
+            return '', f'provider 配置格式错误: {name}'
+
+        api_type = str(provider_cfg.get('api_type', '') or '').strip().lower()
+
+        if api_type != 'ollama':
+            return '', f'provider {name} 不是 ollama'
+
+        return str(name or '').strip(), ''
+
+    return '', f'provider 不存在: {requested}'
+
+
+def _normalize_browser_ollama_provider_names(provider_names: Any) -> List[str]:
+    raw_items = provider_names if isinstance(provider_names, list) else [provider_names]
+    resolved: List[str] = []
+    seen: Set[str] = set()
+
+    for item in raw_items:
+        provider_name, err = _resolve_browser_ollama_provider_name(item)
+
+        if err or not provider_name:
+            continue
+
+        provider_key = _normalize_browser_ollama_provider_key(provider_name)
+
+        if provider_key in seen:
+            continue
+
+        seen.add(provider_key)
+        resolved.append(provider_name)
+
+    return resolved
+
+
+def _build_browser_ollama_status_fingerprint(payload: Dict[str, Any]) -> str:
+    source = payload if isinstance(payload, dict) else {}
+    rows = source.get('models', []) if isinstance(source.get('models'), list) else []
+    normalized_rows = []
+
+    for row in rows:
+        item = row if isinstance(row, dict) else {}
+        model_id = str(item.get('id') or item.get('model') or item.get('name') or '').strip().lower()
+
+        if not model_id:
+            continue
+
+        normalized_rows.append({
+            'id': model_id,
+            'installed': bool(item.get('installed', False)),
+            'keep_alive': str(item.get('keep_alive') or '').strip(),
+            'running': bool(item.get('running', False)),
+            'status': str(item.get('status') or '').strip().lower(),
+            'status_label': str(item.get('status_label') or '').strip(),
+            'status_level': str(item.get('status_level') or '').strip().lower(),
+        })
+
+    normalized_rows.sort(key=lambda item: item.get('id', ''))
+    fingerprint_payload = {
+        'success': bool(source.get('success', False)),
+        'message': str(source.get('message') or source.get('error') or '').strip(),
+        'models': normalized_rows,
+    }
+    raw = json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+
+def _fetch_browser_ollama_status_live(provider_name: str, timeout: float = 8.0) -> Dict[str, Any]:
+    provider_cfg, adapter, err = _get_admin_provider_runtime(provider_name)
+
+    if err:
+        return {
+            'success': False,
+            'provider': provider_name,
+            'api_type': 'ollama',
+            'models': [],
+            'message': err,
+        }
+
+    api_type = str(getattr(adapter, 'api_type', '') or '').strip().lower()
+
+    if api_type != 'ollama':
+        return {
+            'success': False,
+            'provider': provider_name,
+            'api_type': api_type,
+            'models': [],
+            'message': f'provider {provider_name} 不是 ollama',
+        }
+
+    if not hasattr(adapter, 'list_running_models'):
+        return {
+            'success': False,
+            'provider': provider_name,
+            'api_type': api_type,
+            'models': [],
+            'message': 'ollama status helper not supported',
+        }
+
+    result = adapter.list_running_models(timeout=timeout)
+    result = result if isinstance(result, dict) else {}
+    return {
+        'success': bool(result.get('ok', False)),
+        **result,
+        'provider': provider_name,
+        'api_type': api_type,
+    }
+
+
+def _get_browser_ollama_cached_status(provider_name: str) -> Optional[Dict[str, Any]]:
+    provider_key = _normalize_browser_ollama_provider_key(provider_name)
+
+    if not provider_key:
+        return None
+
+    with _BROWSER_OLLAMA_STATUS_LOCK:
+        cache_entry = _BROWSER_OLLAMA_STATUS_CACHE.get(provider_key)
+
+        if not isinstance(cache_entry, dict):
+            return None
+
+        payload = cache_entry.get('payload') if isinstance(cache_entry.get('payload'), dict) else {}
+
+        if not payload:
+            return None
+
+        return deepcopy(payload)
+
+
+def _send_browser_ollama_status_to_client(client: Dict[str, Any], provider_names: List[str]) -> None:
+    statuses = []
+
+    for provider_name in provider_names or []:
+        payload = _get_browser_ollama_cached_status(provider_name)
+
+        if payload:
+            statuses.append(payload)
+
+    if statuses:
+        _send_browser_ws_client(client, 'ollama_status_state', {'statuses': statuses})
+
+
+def _send_browser_ollama_status_changed(provider_name: str, payload: Dict[str, Any]) -> None:
+    provider_key = _normalize_browser_ollama_provider_key(provider_name)
+
+    if not provider_key:
+        return
+
+    with _BROWSER_WS_LOCK:
+        clients_snapshot = {
+            user: dict(user_clients or {})
+            for user, user_clients in _BROWSER_WS_CLIENTS.items()
+        }
+
+    dead_clients: List[Tuple[str, str]] = []
+
+    for user, user_clients in clients_snapshot.items():
+
+        for client_id, client in user_clients.items():
+            subscribed = client.get('ollama_providers')
+            subscribed_keys = subscribed if isinstance(subscribed, set) else set()
+
+            if provider_key not in subscribed_keys:
+                continue
+
+            if not _send_browser_ws_client(client, 'ollama_status_changed', payload):
+                dead_clients.append((user, client_id))
+
+    for user, client_id in dead_clients:
+        _drop_browser_ws_client(user, client_id)
+
+
+def _refresh_browser_ollama_status_provider(provider_name: str, source: str = 'poll', force: bool = False) -> None:
+    resolved_name, err = _resolve_browser_ollama_provider_name(provider_name)
+
+    if err or not resolved_name:
+        return
+
+    provider_key = _normalize_browser_ollama_provider_key(resolved_name)
+    now = time.time()
+
+    with _BROWSER_OLLAMA_STATUS_LOCK:
+        cache_entry = _BROWSER_OLLAMA_STATUS_CACHE.get(provider_key)
+        last_updated = float(cache_entry.get('updated_at', 0.0)) if isinstance(cache_entry, dict) else 0.0
+
+        if provider_key in _BROWSER_OLLAMA_STATUS_IN_FLIGHT:
+            return
+
+        if not force and cache_entry and (now - last_updated) < _BROWSER_OLLAMA_STATUS_POLL_SEC:
+            return
+
+        _BROWSER_OLLAMA_STATUS_IN_FLIGHT.add(provider_key)
+
+    changed = False
+    payload: Dict[str, Any] = {}
+
+    try:
+        payload = _fetch_browser_ollama_status_live(resolved_name, timeout=8.0)
+        fingerprint = _build_browser_ollama_status_fingerprint(payload)
+        updated_at = int(time.time())
+
+        with _BROWSER_OLLAMA_STATUS_LOCK:
+            previous = _BROWSER_OLLAMA_STATUS_CACHE.get(provider_key)
+            previous_fingerprint = str(previous.get('fingerprint') or '') if isinstance(previous, dict) else ''
+            previous_revision = int(previous.get('revision') or 0) if isinstance(previous, dict) else 0
+            changed = fingerprint != previous_fingerprint
+            revision = previous_revision + 1 if changed else previous_revision
+            payload = {
+                **payload,
+                'provider': resolved_name,
+                'provider_key': provider_key,
+                'revision': revision,
+                'source': str(source or 'poll').strip() or 'poll',
+                'updated_at': updated_at,
+            }
+            _BROWSER_OLLAMA_STATUS_CACHE[provider_key] = {
+                'fingerprint': fingerprint,
+                'payload': deepcopy(payload),
+                'provider': resolved_name,
+                'revision': revision,
+                'updated_at': time.time(),
+            }
+    except Exception as e:
+        updated_at = int(time.time())
+        payload = {
+            'success': False,
+            'provider': resolved_name,
+            'provider_key': provider_key,
+            'api_type': 'ollama',
+            'models': [],
+            'message': str(e),
+            'revision': 0,
+            'source': str(source or 'poll').strip() or 'poll',
+            'updated_at': updated_at,
+        }
+        fingerprint = _build_browser_ollama_status_fingerprint(payload)
+
+        with _BROWSER_OLLAMA_STATUS_LOCK:
+            previous = _BROWSER_OLLAMA_STATUS_CACHE.get(provider_key)
+            previous_fingerprint = str(previous.get('fingerprint') or '') if isinstance(previous, dict) else ''
+            previous_revision = int(previous.get('revision') or 0) if isinstance(previous, dict) else 0
+            changed = fingerprint != previous_fingerprint
+            revision = previous_revision + 1 if changed else previous_revision
+            payload['revision'] = revision
+            _BROWSER_OLLAMA_STATUS_CACHE[provider_key] = {
+                'fingerprint': fingerprint,
+                'payload': deepcopy(payload),
+                'provider': resolved_name,
+                'revision': revision,
+                'updated_at': time.time(),
+            }
+    finally:
+        with _BROWSER_OLLAMA_STATUS_LOCK:
+            _BROWSER_OLLAMA_STATUS_IN_FLIGHT.discard(provider_key)
+
+    if changed:
+        _send_browser_ollama_status_changed(resolved_name, payload)
+
+
+def _request_browser_ollama_status_refresh(provider_names: List[str], source: str = 'poll', force: bool = False) -> None:
+    providers = _normalize_browser_ollama_provider_names(provider_names)
+
+    for provider_name in providers:
+        thread = threading.Thread(
+            target=_refresh_browser_ollama_status_provider,
+            args=(provider_name, source, force),
+            daemon=True,
+            name=f'ollama-status-{_normalize_browser_ollama_provider_key(provider_name)}'
+        )
+        thread.start()
+
+
+def _get_active_browser_ollama_status_providers() -> List[str]:
+    provider_keys: Set[str] = set()
+
+    with _BROWSER_WS_LOCK:
+
+        for user_clients in _BROWSER_WS_CLIENTS.values():
+
+            for client in (user_clients or {}).values():
+                subscribed = client.get('ollama_providers')
+
+                if isinstance(subscribed, set):
+                    provider_keys.update(subscribed)
+
+    config = get_config_all()
+    providers = config.get('providers', {}) if isinstance(config, dict) else {}
+    resolved: List[str] = []
+
+    for provider_name, provider_cfg in providers.items():
+        provider_key = _normalize_browser_ollama_provider_key(provider_name)
+
+        if provider_key not in provider_keys:
+            continue
+
+        if not isinstance(provider_cfg, dict):
+            continue
+
+        api_type = str(provider_cfg.get('api_type', '') or '').strip().lower()
+
+        if api_type == 'ollama':
+            resolved.append(str(provider_name or '').strip())
+
+    return resolved
+
+
+def _browser_ollama_status_poll_loop() -> None:
+    while True:
+        providers = _get_active_browser_ollama_status_providers()
+
+        if providers:
+            _request_browser_ollama_status_refresh(providers, source='poll', force=False)
+            time.sleep(_BROWSER_OLLAMA_STATUS_POLL_SEC)
+        else:
+            time.sleep(_BROWSER_OLLAMA_STATUS_IDLE_SLEEP_SEC)
+
+
+def _ensure_browser_ollama_status_loop_started() -> None:
+    global _BROWSER_OLLAMA_STATUS_LOOP_STARTED
+
+    with _BROWSER_OLLAMA_STATUS_LOCK:
+
+        if _BROWSER_OLLAMA_STATUS_LOOP_STARTED:
+            return
+
+        _BROWSER_OLLAMA_STATUS_LOOP_STARTED = True
+
+    worker = threading.Thread(
+        target=_browser_ollama_status_poll_loop,
+        daemon=True,
+        name='browser-ollama-status-poll'
+    )
+    worker.start()
 
 
 @app.route('/api/provider/ollama/list', methods=['GET'])
@@ -10248,6 +10926,10 @@ def admin_ollama_model_toggle():
         keep_alive=keep_alive,
         timeout=timeout,
     )
+    if bool(result.get('ok', False)):
+        _request_browser_ollama_status_refresh([provider_name], source='ollama_status_toggle', force=True)
+        notify_models_config_changed('ollama_status_toggle')
+
     status_code = 200 if bool(result.get('ok', False)) else 502
     return jsonify({'success': bool(result.get('ok', False)), **result}), status_code
 
@@ -10932,12 +11614,13 @@ def admin_token_timeseries():
     })
 
 
+@app.route('/api/admin/users/<user_id>/profile', methods=['PATCH'])
 @app.route('/api/admin/user/profile', methods=['POST'])
 @require_admin
-def admin_update_user_profile():
+def admin_update_user_profile(user_id=None):
     """管理员更新用户资料（显示名）"""
-    data = request.get_json() or {}
-    user_id = data.get('user_id') or data.get('target_user_id') or data.get('target_username')
+    data = request.get_json(silent=True) or {}
+    user_id = user_id or data.get('user_id') or data.get('target_user_id') or data.get('target_username')
     display_name = (data.get('display_name') or '').strip()
     if not user_id:
         return jsonify({'success': False, 'message': '缺少用户ID'}), 400
@@ -10956,13 +11639,15 @@ def admin_update_user_profile():
         return jsonify({'success': False, 'message': str(e)})
 
 
+@app.route('/api/admin/models/providers', methods=['POST'])
+@app.route('/api/admin/models/providers/<path:target_provider>', methods=['PUT'])
 @app.route('/api/admin/models/provider/upsert', methods=['POST'])
 @require_admin
-def admin_upsert_provider():
+def admin_upsert_provider(target_provider=None):
     """新增或更新 Provider"""
-    data = request.get_json() or {}
+    data = request.get_json(silent=True) or {}
     provider = (data.get('provider') or '').strip()
-    original_provider = (data.get('original_provider') or provider).strip()
+    original_provider = (target_provider or data.get('original_provider') or provider).strip()
     api_key = data.get('api_key')
     base_url = data.get('base_url')
     api_type = _normalize_provider_api_type(data.get('api_type'))
@@ -11014,18 +11699,19 @@ def admin_upsert_provider():
             provider_record.pop('settings', None)
 
         providers[provider] = provider_record
-        save_models_config(cfg)
+        save_models_config(cfg, sync_source='admin_provider_upsert')
         return jsonify({'success': True, 'message': f'Provider {provider} 已保存'})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 
 
+@app.route('/api/admin/models/providers/<path:target_provider>', methods=['DELETE'])
 @app.route('/api/admin/models/provider/delete', methods=['POST'])
 @require_admin
-def admin_delete_provider():
+def admin_delete_provider(target_provider=None):
     """删除 Provider，需要输入确认文本"""
-    data = request.get_json() or {}
-    provider = (data.get('provider') or '').strip()
+    data = request.get_json(silent=True) or {}
+    provider = (target_provider or data.get('provider') or '').strip()
     confirm_text = data.get('confirm_text')
 
     if not provider:
@@ -11049,19 +11735,21 @@ def admin_delete_provider():
             }), 400
 
         del providers[provider]
-        save_models_config(cfg)
+        save_models_config(cfg, sync_source='admin_provider_delete')
         return jsonify({'success': True, 'message': f'Provider {provider} 已删除'})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 
 
+@app.route('/api/admin/models', methods=['POST'])
+@app.route('/api/admin/models/<path:target_model_id>', methods=['PUT'])
 @app.route('/api/admin/models/model/upsert', methods=['POST'])
 @require_admin
-def admin_upsert_model():
+def admin_upsert_model(target_model_id=None):
     """新增或更新模型"""
-    data = request.get_json() or {}
+    data = request.get_json(silent=True) or {}
     model_id = (data.get('model_id') or '').strip()
-    original_model_id = (data.get('original_model_id') or '').strip()
+    original_model_id = (target_model_id or data.get('original_model_id') or '').strip()
     name = (data.get('name') or '').strip()
     provider = (data.get('provider') or '').strip()
     status = _normalize_model_status_text(data.get('status') or 'normal')
@@ -11111,7 +11799,7 @@ def admin_upsert_model():
                     model_record.pop(key, None)
 
         models[model_id] = model_record
-        save_models_config(cfg)
+        save_models_config(cfg, sync_source='admin_model_upsert')
         if is_rename:
             return jsonify({'success': True, 'message': f'模型 {original_model_id} 已重命名为 {model_id}'})
         return jsonify({'success': True, 'message': f'模型 {model_id} 已保存'})
@@ -11119,12 +11807,13 @@ def admin_upsert_model():
         return jsonify({'success': False, 'message': str(e)})
 
 
+@app.route('/api/admin/models/<path:target_model_id>', methods=['DELETE'])
 @app.route('/api/admin/models/model/delete', methods=['POST'])
 @require_admin
-def admin_delete_model():
+def admin_delete_model(target_model_id=None):
     """删除模型，需要输入确认文本"""
-    data = request.get_json() or {}
-    model_id = (data.get('model_id') or '').strip()
+    data = request.get_json(silent=True) or {}
+    model_id = (target_model_id or data.get('model_id') or '').strip()
     confirm_text = data.get('confirm_text')
 
     if not model_id:
@@ -11138,7 +11827,7 @@ def admin_delete_model():
         if model_id not in models:
             return jsonify({'success': False, 'message': '模型不存在'}), 404
         del models[model_id]
-        save_models_config(cfg)
+        save_models_config(cfg, sync_source='admin_model_delete')
         return jsonify({'success': True, 'message': f'模型 {model_id} 已删除'})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
@@ -11212,6 +11901,333 @@ def _iter_sse_from_runtime_stream(stream_id: str, username: str, from_seq: int =
     }
     yield f"data: {json.dumps(final_session_info, ensure_ascii=False, default=str)}\n\n"
     yield "data: [DONE]\n\n"
+
+
+def _workspace_chat_error_response(error: Exception):
+    if isinstance(error, PermissionError):
+        return jsonify({'success': False, 'message': str(error) or 'workspace access denied'}), 403
+
+    if isinstance(error, FileNotFoundError):
+        return jsonify({'success': False, 'message': str(error) or 'workspace not found'}), 404
+
+    if isinstance(error, ValueError):
+        return jsonify({'success': False, 'message': str(error) or 'workspace request invalid'}), 400
+
+    return jsonify({'success': False, 'message': str(error) or 'workspace request failed'}), 500
+
+
+def _resolve_workspace_chat_context(username: str, data: Dict[str, Any], conversation_id: Any) -> Dict[str, Any]:
+    workspace_id = _get_workspace_request_value(data, 'workspace_id', 'workspace', 'workspaces')
+
+    if not workspace_id:
+        return {}
+
+    from api.workspace.storage import find_store_for_visible_workspace, validate_workspace_id
+
+    wid = validate_workspace_id(workspace_id)
+    cid = str(conversation_id or '').strip()
+
+    if not cid:
+        raise ValueError("Workspace 对话必须指定 conversation_id")
+
+    store = find_store_for_visible_workspace(username, wid)
+    workspace = store.get_workspace(wid, username)
+    marker = store.get_visible_conversation_marker(wid, cid, username)
+    marker_owner = str(marker.get("added_by") or "").strip()
+
+    if marker_owner != str(username or "").strip():
+        raise PermissionError("共享只读 Workspace 对话不允许继续生成或写入记忆")
+
+    return {
+        "workspace_id": wid,
+        "workspace_title": str(workspace.get("title") or "Workspace").strip() or "Workspace",
+        "owner_username": str(workspace.get("owner_username") or "").strip(),
+        "workspace_memory": workspace.get("workspace_memory") if isinstance(workspace.get("workspace_memory"), dict) else {},
+        "workspace_prompt": workspace.get("workspace_prompt") if isinstance(workspace.get("workspace_prompt"), dict) else {},
+        "knowledge_documents": workspace.get("knowledge_documents") if isinstance(workspace.get("knowledge_documents"), list) else [],
+    }
+
+
+def _merge_workspace_chat_payload(payload: Dict[str, Any], workspace_context: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(payload if isinstance(payload, dict) else {})
+
+    if workspace_context:
+        merged["workspace_context"] = {
+            "workspace_id": str(workspace_context.get("workspace_id") or "").strip(),
+            "workspace_title": str(workspace_context.get("workspace_title") or "").strip(),
+            "owner_username": str(workspace_context.get("owner_username") or "").strip(),
+            "workspace_memory": workspace_context.get("workspace_memory") if isinstance(workspace_context.get("workspace_memory"), dict) else {},
+            "workspace_prompt": workspace_context.get("workspace_prompt") if isinstance(workspace_context.get("workspace_prompt"), dict) else {},
+            "knowledge_documents": workspace_context.get("knowledge_documents") if isinstance(workspace_context.get("knowledge_documents"), list) else [],
+        }
+
+    return merged
+
+
+def _format_workspace_memory_tool(model, name: str, description: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+    use_responses_api = (
+        hasattr(model, '_provider_use_responses_api')
+        and model._provider_use_responses_api(getattr(model, 'provider', ''))
+    )
+
+    if use_responses_api:
+        return {
+            "type": "function",
+            "name": name,
+            "description": description,
+            "parameters": parameters,
+        }
+
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": parameters,
+        },
+    }
+
+
+def _workspace_memory_tool_definitions(model) -> List[Dict[str, Any]]:
+    write_parameters = {
+        "type": "object",
+        "properties": {
+            "content": {
+                "type": "string",
+                "description": "完整的 Workspace Markdown 记忆内容，最多 5000 字符。",
+            },
+            "expected_sha256": {
+                "type": "string",
+                "description": "可选，当前 Workspace 记忆内容 SHA256；不一致时拒绝修改。",
+            },
+            "dry_run": {
+                "type": "boolean",
+                "description": "为 true 时只预览差异，不写入。",
+            },
+        },
+        "required": ["content"],
+    }
+    diff_parameters = {
+        "type": "object",
+        "properties": {
+            "patch": {
+                "type": "string",
+                "description": "统一 diff patch，必须直接传入最终 patch 文本。",
+            },
+            "expected_sha256": {
+                "type": "string",
+                "description": "可选，当前 Workspace 记忆内容 SHA256；不一致时拒绝修改。",
+            },
+            "dry_run": {
+                "type": "boolean",
+                "description": "为 true 时只预览差异，不写入。",
+            },
+        },
+        "required": ["patch"],
+    }
+    edit_parameters = {
+        "type": "object",
+        "properties": {
+            "edits": {
+                "type": "array",
+                "description": "结构化文本 edits。action 支持 replace、insert_before、insert_after、delete。",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string"},
+                        "target": {"type": "string"},
+                        "replacement": {"type": "string"},
+                        "content": {"type": "string"},
+                        "occurrence": {"type": "integer"},
+                    },
+                    "required": ["action", "target"],
+                },
+            },
+            "expected_sha256": {
+                "type": "string",
+                "description": "可选，当前 Workspace 记忆内容 SHA256；不一致时拒绝修改。",
+            },
+            "dry_run": {
+                "type": "boolean",
+                "description": "为 true 时只预览差异，不写入。",
+            },
+        },
+        "required": ["edits"],
+    }
+    add_parameters = {
+        "type": "object",
+        "properties": {
+            "content": {
+                "type": "string",
+                "description": "要追加到 Workspace 记忆末尾的 Markdown 片段，追加后总长度最多 5000 字符。",
+            },
+            "expected_sha256": {
+                "type": "string",
+                "description": "可选，当前 Workspace 记忆内容 SHA256；不一致时拒绝修改。",
+            },
+            "dry_run": {
+                "type": "boolean",
+                "description": "为 true 时只预览差异，不写入。",
+            },
+        },
+        "required": ["content"],
+    }
+
+    return [
+        _format_workspace_memory_tool(
+            model,
+            "workspace_mem_write",
+            "覆盖当前 Workspace 的自动记忆。仅当需要整体重写记忆时使用；content 必须是完整 Markdown 记忆。",
+            write_parameters,
+        ),
+        _format_workspace_memory_tool(
+            model,
+            "workspace_mem_edit",
+            "使用结构化 edits 精确修改当前 Workspace 的自动记忆。适合修正、合并或删除已有记忆条目。",
+            edit_parameters,
+        ),
+        _format_workspace_memory_tool(
+            model,
+            "workspace_mem_apply_diff",
+            "使用统一 diff patch 修改当前 Workspace 的自动记忆。仅在已有可靠行上下文时使用。",
+            diff_parameters,
+        ),
+        _format_workspace_memory_tool(
+            model,
+            "workspace_mem_add",
+            "向当前 Workspace 的自动记忆末尾追加 Markdown 片段。适合记录新的稳定项目事实、约束、偏好或待办。",
+            add_parameters,
+        ),
+    ]
+
+
+def _inject_workspace_memory_tools(model, username: str, workspace_context: Dict[str, Any]):
+    if not workspace_context:
+        return
+
+    workspace_id = str(workspace_context.get("workspace_id") or "").strip()
+
+    if not workspace_id:
+        return
+
+    from api.workspace.storage import find_store_for_visible_workspace
+
+    def _tool_result(payload: Dict[str, Any]) -> str:
+        return json.dumps(payload if isinstance(payload, dict) else {}, ensure_ascii=False)
+
+    def _workspace_store():
+        return find_store_for_visible_workspace(username, workspace_id)
+
+    def _make_write_handler():
+        def _handler(args: dict) -> str:
+            try:
+                payload = _workspace_store().write_workspace_memory(
+                    workspace_id,
+                    username,
+                    str((args or {}).get("content") or ""),
+                    expected_sha256=(args or {}).get("expected_sha256"),
+                    dry_run=_as_bool((args or {}).get("dry_run", False), False),
+                )
+                return _tool_result(payload)
+            except Exception as error:
+                return _tool_result({"success": False, "message": str(error)})
+
+        return _handler
+
+    def _make_patch_handler():
+        def _handler(args: dict) -> str:
+            try:
+                safe_args = args if isinstance(args, dict) else {}
+                payload = _workspace_store().patch_workspace_memory(
+                    workspace_id,
+                    username,
+                    patch=safe_args.get("patch"),
+                    edits=safe_args.get("edits") if isinstance(safe_args.get("edits"), list) else None,
+                    expected_sha256=safe_args.get("expected_sha256"),
+                    dry_run=_as_bool(safe_args.get("dry_run", False), False),
+                )
+                return _tool_result(payload)
+            except Exception as error:
+                return _tool_result({"success": False, "message": str(error)})
+
+        return _handler
+
+    def _make_apply_diff_handler():
+        def _handler(args: dict) -> str:
+            try:
+                safe_args = args if isinstance(args, dict) else {}
+                patch_text = str(safe_args.get("patch") or "").strip()
+
+                if not patch_text:
+                    return _tool_result({"success": False, "message": "patch is required"})
+
+                if isinstance(safe_args.get("edits"), list):
+                    return _tool_result({"success": False, "message": "workspace_mem_apply_diff 只接受 patch，不接受 edits"})
+
+                payload = _workspace_store().patch_workspace_memory(
+                    workspace_id,
+                    username,
+                    patch=safe_args.get("patch"),
+                    edits=None,
+                    expected_sha256=safe_args.get("expected_sha256"),
+                    dry_run=_as_bool(safe_args.get("dry_run", False), False),
+                )
+                return _tool_result(payload)
+            except Exception as error:
+                return _tool_result({"success": False, "message": str(error)})
+
+        return _handler
+
+    def _make_edit_handler():
+        def _handler(args: dict) -> str:
+            try:
+                safe_args = args if isinstance(args, dict) else {}
+                edits = safe_args.get("edits")
+
+                if not isinstance(edits, list) or not edits:
+                    return _tool_result({"success": False, "message": "edits must be a non-empty array"})
+
+                if str(safe_args.get("patch") or "").strip():
+                    return _tool_result({"success": False, "message": "workspace_mem_edit 只接受 edits，不接受 patch"})
+
+                payload = _workspace_store().patch_workspace_memory(
+                    workspace_id,
+                    username,
+                    patch="",
+                    edits=edits,
+                    expected_sha256=safe_args.get("expected_sha256"),
+                    dry_run=_as_bool(safe_args.get("dry_run", False), False),
+                )
+                return _tool_result(payload)
+            except Exception as error:
+                return _tool_result({"success": False, "message": str(error)})
+
+        return _handler
+
+    def _make_add_handler():
+        def _handler(args: dict) -> str:
+            try:
+                payload = _workspace_store().add_workspace_memory(
+                    workspace_id,
+                    username,
+                    str((args or {}).get("content") or ""),
+                    expected_sha256=(args or {}).get("expected_sha256"),
+                    dry_run=_as_bool((args or {}).get("dry_run", False), False),
+                )
+                return _tool_result(payload)
+            except Exception as error:
+                return _tool_result({"success": False, "message": str(error)})
+
+        return _handler
+
+    for tool in _workspace_memory_tool_definitions(model):
+        model.register_external_function_tool(tool)
+
+    model.tool_executor.handlers["workspace_mem_write"] = _make_write_handler()
+    model.tool_executor.handlers["workspace_mem_patch"] = _make_patch_handler()
+    model.tool_executor.handlers["workspace_mem_apply_diff"] = _make_apply_diff_handler()
+    model.tool_executor.handlers["workspace_mem_edit"] = _make_edit_handler()
+    model.tool_executor.handlers["workspace_mem_add"] = _make_add_handler()
 
 
 @app.route('/api/chat/stream', methods=['POST'])
@@ -11386,6 +12402,20 @@ def chat_stream():
     )
 
     conversation_id_from_request = bool(str(conversation_id or '').strip())
+    try:
+        workspace_chat_context = _resolve_workspace_chat_context(username, data, conversation_id)
+    except Exception as workspace_error:
+        return _workspace_chat_error_response(workspace_error)
+
+    if workspace_chat_context:
+        _chat_latency_mark(
+            "workspace_context_resolved",
+            workspace_id=str(workspace_chat_context.get("workspace_id") or ""),
+            workspace_memory_chars=len(str((workspace_chat_context.get("workspace_memory") or {}).get("content") or "")),
+            workspace_prompt_chars=len(str((workspace_chat_context.get("workspace_prompt") or {}).get("content") or "")),
+            workspace_knowledge_count=len(workspace_chat_context.get("knowledge_documents") or []),
+        )
+
     skip_user_message = bool(data.get('skip_user_message', False))
     user_message_persisted = False
 
@@ -11726,6 +12756,11 @@ def chat_stream():
             raw_conversation_mode_payload = request_meta.get('conversation_mode_payload')
             if not isinstance(raw_conversation_mode_payload, dict):
                 raw_conversation_mode_payload = {}
+            if workspace_chat_context:
+                raw_conversation_mode_payload = _merge_workspace_chat_payload(
+                    raw_conversation_mode_payload,
+                    workspace_chat_context
+                )
             worker_active_tool_skills = list(active_tool_skills) if isinstance(active_tool_skills, list) else []
             worker_longdoc_skills = list(longdoc_skills) if isinstance(longdoc_skills, list) else []
             _chat_latency_mark(
@@ -11861,6 +12896,14 @@ def chat_stream():
                 _chat_latency_mark("agent_tools_injected", **_agent_info_latency_summary(current_agent_info))
             else:
                 _chat_latency_mark("agent_tools_injected", agent_source="none", agent_tool_count=0, agent_schema_bytes=0)
+
+            if workspace_chat_context:
+                _inject_workspace_memory_tools(model, username, workspace_chat_context)
+                _chat_latency_mark(
+                    "workspace_memory_tools_injected",
+                    workspace_id=str(workspace_chat_context.get("workspace_id") or ""),
+                    tool_count=3,
+                )
 
             model._stream_cancel_checker = is_cancel_requested
             model._stream_direct_push_chunk = lambda chunk: _push_model_stream_chunk(chunk, source="direct")
@@ -12667,6 +13710,62 @@ def knowledge():
     return render_template('knowledge.html', username=session['username'])
 
 
+def _get_workspace_request_value(data: Optional[Dict[str, Any]], *names: str) -> str:
+    for name in names:
+        value = request.args.get(name)
+
+        if value is not None:
+            return str(value or '').strip()
+
+    if isinstance(data, dict):
+        for name in names:
+            if name in data:
+                return str(data.get(name) or '').strip()
+
+    return ''
+
+
+def _resolve_workspace_basis_target(title: str, data: Optional[Dict[str, Any]] = None) -> Tuple[str, Any, Dict[str, Any], str]:
+    login_username = str(session.get('username') or '').strip()
+    safe_title = str(title or '').strip()
+    workspace_id = _get_workspace_request_value(data, 'workspace_id', 'workspace', 'workspaces')
+
+    if not workspace_id:
+        return login_username, None, {}, ''
+
+    requested_user = _get_workspace_request_value(data, 'user', 'owner_username', 'added_by')
+
+    from api.workspace.storage import (
+        find_store_for_visible_workspace,
+        validate_username,
+        validate_workspace_id,
+    )
+
+    viewer = validate_username(login_username)
+    wid = validate_workspace_id(workspace_id)
+    requested_user = validate_username(requested_user) if requested_user else ''
+    store = find_store_for_visible_workspace(viewer, wid)
+    document = store.get_visible_knowledge_document(
+        wid,
+        safe_title,
+        viewer,
+        'basis',
+        requested_user,
+    )
+    resource_username = validate_username(str(document.get('added_by') or ''))
+
+    return resource_username, store, document, wid
+
+
+def _current_user_timeline_actor() -> Dict[str, str]:
+    actor_name = str(session['username']).strip()
+
+    return {
+        'actor_type': 'user',
+        'actor_name': actor_name,
+    }
+
+
 @app.route('/api/knowledge/image/allocate', methods=['POST'])
 @require_login
 def allocate_knowledge_image():
@@ -12813,85 +13912,150 @@ def serve_knowledge_image(username, image_id):
     return resp
 
 
+def _build_knowledge_list_payload(username, requested_title='', workspace_scoped=False):
+    if workspace_scoped:
+        username, _, _, _ = _resolve_workspace_basis_target(requested_title)
+
+    user = User(username)
+
+    # 获取短期记忆和基础知识
+    if SHORT_MEMORY_DISABLED or workspace_scoped:
+        short_memory = {}
+    else:
+        short_memory = user.getKnowledgeList(0)  # 短期记忆
+
+    permission_hint = get_user_permission_hint_by_username(username)
+    user_profile_memory = '' if workspace_scoped else user.get_user_profile_memory(
+        user_permission=permission_hint,
+        max_chars=400
+    )
+    basis_knowledge_raw = user.getKnowledgeList(1)  # 基础知识
+
+    # 兼容旧数据：统一为 {title: meta_dict}
+    basis_knowledge = {}
+
+    if isinstance(basis_knowledge_raw, dict):
+        for title, meta in basis_knowledge_raw.items():
+            if isinstance(meta, dict):
+                basis_knowledge[str(title)] = dict(meta)
+            else:
+                basis_knowledge[str(title)] = {}
+
+    elif isinstance(basis_knowledge_raw, list):
+        for title in basis_knowledge_raw:
+            t = str(title or '').strip()
+
+            if t:
+                basis_knowledge[t] = {}
+
+    if workspace_scoped:
+        basis_knowledge = {
+            requested_title: basis_knowledge.get(requested_title, {})
+        }
+
+    # 增强：检测向量是否真实存在，防止外部删库后前端状态失真
+    vectorization_enabled = _is_knowledge_vectorization_enabled()
+    vector_titles = None
+    store = None
+
+    if vectorization_enabled:
+        store, _ = get_chroma_store()
+
+    if store and getattr(store, 'mode', '') == 'service':
+        try:
+            vector_titles = set(store.list_titles(username, library='knowledge'))
+        except Exception as e:
+            app.logger.warning('list knowledge vector title check failed: %s', e)
+            vector_titles = None
+
+    for title, meta in list(basis_knowledge.items()):
+        if isinstance(meta, dict):
+            meta['pin'] = bool(meta.get('pin', False))
+            meta['model_readonly'] = bool(meta.get('model_readonly', False))
+
+            if vectorization_enabled and vector_titles is not None:
+                meta['vector_exists'] = title in vector_titles
+
+            vector_exists = meta.get('vector_exists')
+
+            if not isinstance(vector_exists, bool):
+                vector_exists = True
+
+            updated_at = _knowledge_meta_timestamp(meta.get('updated_at'))
+            vector_updated_at = _knowledge_meta_timestamp(meta.get('vector_updated_at'))
+            meta['needs_vector_refresh'] = bool(
+                vectorization_enabled
+                and ((updated_at > 0 and vector_updated_at < updated_at) or not vector_exists)
+            )
+        else:
+            basis_knowledge[title] = {
+                'pin': False,
+                'model_readonly': False,
+                'needs_vector_refresh': False
+            }
+
+    return {
+        'short_memory': short_memory,
+        'short_memory_disabled': bool(SHORT_MEMORY_DISABLED),
+        'user_profile_memory': user_profile_memory,
+        'basis_knowledge': basis_knowledge,
+        'vectorization_enabled': vectorization_enabled
+    }
+
+
 @app.route('/api/knowledge/list', methods=['GET'])
 @require_login
 def list_knowledge():
     """获取知识库列表"""
     username = session['username']
-    user = User(username)
-    
+    requested_title = str(request.args.get('title') or '').strip()
+    workspace_scoped = bool(
+        requested_title
+        and str(request.args.get('workspace_id') or request.args.get('workspace') or request.args.get('workspaces') or '').strip()
+    )
+
     try:
-        # 获取短期记忆和基础知识
-        if SHORT_MEMORY_DISABLED:
-            short_memory = {}
-        else:
-            short_memory = user.getKnowledgeList(0)  # 短期记忆
-        permission_hint = get_user_permission_hint_by_username(username)
-        user_profile_memory = user.get_user_profile_memory(
-            user_permission=permission_hint,
-            max_chars=400
-        )
-        basis_knowledge_raw = user.getKnowledgeList(1)  # 基础知识
+        payload = _build_knowledge_list_payload(username, requested_title, workspace_scoped)
 
-        # 兼容旧数据：统一为 {title: meta_dict}
-        basis_knowledge = {}
-        if isinstance(basis_knowledge_raw, dict):
-            for title, meta in basis_knowledge_raw.items():
-                if isinstance(meta, dict):
-                    basis_knowledge[str(title)] = dict(meta)
-                else:
-                    basis_knowledge[str(title)] = {}
-        elif isinstance(basis_knowledge_raw, list):
-            for title in basis_knowledge_raw:
-                t = str(title or '').strip()
-                if t:
-                    basis_knowledge[t] = {}
-
-        # 增强：检测向量是否真实存在，防止外部删库后前端状态失真
-        vectorization_enabled = _is_rag_database_enabled()
-        vector_titles = None
-        store = None
-        if vectorization_enabled:
-            store, _ = get_chroma_store()
-
-        if store and getattr(store, 'mode', '') == 'service':
-            try:
-                vector_titles = set(store.list_titles(username, library='knowledge'))
-            except Exception:
-                vector_titles = None
-
-        for title, meta in list(basis_knowledge.items()):
-            if isinstance(meta, dict):
-                meta['pin'] = bool(meta.get('pin', False))
-                meta['model_readonly'] = bool(meta.get('model_readonly', False))
-
-                if vectorization_enabled and vector_titles is not None:
-                    meta['vector_exists'] = title in vector_titles
-
-                vector_exists = meta.get('vector_exists')
-                if not isinstance(vector_exists, bool):
-                    vector_exists = True
-
-                updated_at = _knowledge_meta_timestamp(meta.get('updated_at'))
-                vector_updated_at = _knowledge_meta_timestamp(meta.get('vector_updated_at'))
-                meta['needs_vector_refresh'] = bool(
-                    vectorization_enabled
-                    and ((updated_at > 0 and vector_updated_at < updated_at) or not vector_exists)
-                )
-            else:
-                basis_knowledge[title] = {
-                    'pin': False,
-                    'model_readonly': False,
-                    'needs_vector_refresh': False
-                }
-        
         return jsonify({
             'success': True,
-            'short_memory': short_memory,
-            'short_memory_disabled': bool(SHORT_MEMORY_DISABLED),
-            'user_profile_memory': user_profile_memory,
-            'basis_knowledge': basis_knowledge,
-            'vectorization_enabled': vectorization_enabled
+            **payload
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+
+@app.route('/api/knowledge/sidebar', methods=['GET'])
+@require_login
+def get_knowledge_sidebar():
+    """获取聊天侧栏需要的知识库数据，不返回基础知识正文。"""
+    username = session['username']
+
+    try:
+        payload = _build_knowledge_list_payload(username)
+        basis_items = []
+
+        for title, meta in payload.get('basis_knowledge', {}).items():
+            item_meta = meta if isinstance(meta, dict) else {}
+            basis_items.append({
+                'title': title,
+                'pin': bool(item_meta.get('pin', False)),
+                'model_readonly': bool(item_meta.get('model_readonly', False))
+            })
+
+        profile = str(payload.get('user_profile_memory') or '')
+
+        return jsonify({
+            'success': True,
+            'knowledge': basis_items,
+            'memories': [{
+                'id': 'profile',
+                'title': '用户画像短期记忆',
+                'content': profile
+            }],
+            'basis_knowledge': payload.get('basis_knowledge', {}),
+            'short_memory_disabled': payload.get('short_memory_disabled', False),
+            'vectorization_enabled': payload.get('vectorization_enabled', False)
         })
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
@@ -12965,22 +14129,31 @@ def export_knowledge_word():
         return jsonify({'success': False, 'message': str(e)}), 500
 
 
+@app.route('/api/knowledge/basis/<path:title>/content', methods=['PUT'])
 @app.route('/api/knowledge/basis/update', methods=['POST'])
 @require_login
-def update_basis_content():
+def update_basis_content(title=None):
     """更新基础知识内容"""
     username = session['username']
-    user = User(username)
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     
-    title = data.get('title')
+    title = title or data.get('title')
     content = data.get('content')
     
     if not title:
-        return jsonify({'success': False, 'message': '标题不能为空'})
-        
+        return jsonify({'success': False, 'message': '标题不能为空'}), 400
+
+    if content is None:
+        return jsonify({'success': False, 'message': '内容不能为空'}), 400
+          
     try:
-        success, msg = user.updateBasisContent(title, content)
+        username, _, _, _ = _resolve_workspace_basis_target(title, data)
+        user = User(username)
+        success, msg = user.updateBasisContent(
+            title,
+            content,
+            timeline_actor=_current_user_timeline_actor(),
+        )
         return jsonify({'success': success, 'message': msg})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
@@ -12991,15 +14164,21 @@ def update_basis_content():
 def get_basis_content(title):
     """获取单个基础知识内容"""
     username = session['username']
-    user = User(username)
-    
+     
     try:
+        username, _, document, workspace_id = _resolve_workspace_basis_target(title)
+        user = User(username)
         content = user.getBasisContent(title)
+        metadata = user.getBasisMetadata(title)
         return jsonify({
             'success': True, 
             'knowledge': {
                 'title': title,
-                'content': content
+                'content': content,
+                'metadata': metadata if isinstance(metadata, dict) else {},
+                'owner_username': username,
+                'added_by': document.get('added_by') if document else username,
+                'workspace_id': workspace_id,
             }
         })
     except Exception as e:
@@ -13024,6 +14203,26 @@ def add_basis():
     try:
         user.addBasis(title, content, url)
         return jsonify({'success': True, 'message': '添加成功'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+
+@app.route('/api/knowledge/basis/blank', methods=['POST'])
+@require_login
+def create_blank_basis():
+    """创建空白基础知识库"""
+    username = session['username']
+    user = User(username)
+    data = request.get_json(silent=True) or {}
+    title_prefix = str(data.get('title_prefix') or data.get('title') or '未命名知识库').strip()
+
+    try:
+        title = user.addBlankBasis(title_prefix or '未命名知识库', timeline_actor=username)
+        return jsonify({
+            'success': True,
+            'message': '创建成功',
+            'title': title
+        })
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 
@@ -13084,6 +14283,7 @@ def delete_basis(title):
         return jsonify({'success': False, 'message': str(e)})
 
 
+@app.route('/api/knowledge/basis/<path:title>/pin', methods=['PUT'])
 @app.route('/api/knowledge/basis/<path:title>/pin', methods=['POST'])
 @require_login
 def set_basis_pin(title):
@@ -13105,32 +14305,58 @@ def set_basis_pin(title):
 def update_knowledge_settings():
     """更新知识点设置（标题、公开、协作）"""
     username = session['username']
-    data = request.get_json()
+    data = request.get_json() or {}
     title = data.get('title')
     new_title = data.get('new_title')
     is_public = data.get('public')
     is_collaborative = data.get('collaborative')
     model_readonly = data.get('model_readonly')
-    
+     
+    try:
+        username, workspace_store, document, workspace_id = _resolve_workspace_basis_target(title, data)
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
     user = User(username)
-    success, msg = user.updateBasisSettings(title, new_title, is_public, is_collaborative, model_readonly)
-    
+    success, msg = user.updateBasisSettings(
+        title,
+        new_title,
+        is_public,
+        is_collaborative,
+        model_readonly,
+        timeline_actor=_current_user_timeline_actor(),
+    )
+     
     if success:
+        if workspace_store and workspace_id and new_title and new_title != title:
+            try:
+                workspace_store.update_knowledge_document_title(
+                    workspace_id,
+                    title,
+                    new_title,
+                    session['username'],
+                    username,
+                    document.get('knowledge_type') or 'basis',
+                )
+            except Exception as e:
+                return jsonify({'success': False, 'message': str(e)})
+
         # 如果获取了新标题或状态，返回新的 share_url
         meta = user.getBasisMetadata(new_title or title)
         share_id = meta.get('share_id', '')
         base_url = get_public_base_url()
         share_url = f"{base_url}/public/knowledge/{username}/{share_id}"
-        return jsonify({'success': True, 'message': msg, 'share_url': share_url})
+        return jsonify({'success': True, 'message': msg, 'share_url': share_url, 'owner_username': username})
     return jsonify({'success': False, 'message': msg})
 
+@app.route('/api/knowledge/basis/<path:title>/public', methods=['PUT'])
 @app.route('/api/knowledge/basis/<path:title>/share', methods=['POST'])
 @require_login
 def share_basis(title):
     """切换知识点公开状态"""
     username = session['username']
     user = User(username)
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     is_public = data.get('public', False)
     
     success, msg = user.setBasisPublic(title, is_public)
@@ -13629,18 +14855,40 @@ def get_knowledge_graph():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
-@app.route('/api/knowledge/graph/positions', methods=['POST'])
+def _normalize_category_position_payload(data):
+    if not isinstance(data, dict):
+        return {}
+
+    category = str(data.get('category') or '').strip()
+    position = data.get('position')
+
+    if category and isinstance(position, dict):
+        return {category: position}
+
+    return {
+        str(cat_name): pos
+        for cat_name, pos in data.items()
+        if str(cat_name or '').strip() and isinstance(pos, dict)
+    }
+
+
+@app.route('/api/knowledge/graph/positions', methods=['POST', 'PUT'])
 @require_login
 def save_knowledge_graph_positions():
     """保存知识图谱节点/分类位置"""
     username = session['username']
     user = User(username)
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
+    positions = _normalize_category_position_payload(data)
+
+    if not positions:
+        return jsonify({'success': False, 'error': '参数不完整'}), 400
     
     try:
         graph = user.get_knowledge_graph()
+
         # 更新全部分类位置
-        for cat_name, pos in data.items():
+        for cat_name, pos in positions.items():
             if cat_name in graph['categories']:
                 graph['categories'][cat_name]['position'] = pos
         
@@ -13764,30 +15012,7 @@ def delete_connection(connection_id):
         return jsonify({'success': False, 'error': str(e)})
 
 
-@app.route('/api/knowledge/graph/positions', methods=['PUT'])
-@require_login
-def update_positions():
-    """更新分类位置"""
-    username = session['username']
-    user = User(username)
-    data = request.get_json()
-    
-    category = data.get('category')
-    position = data.get('position')
-    
-    if not category or not position:
-        return jsonify({'success': False, 'error': '参数不完整'})
-    
-    try:
-        graph = user.get_knowledge_graph()
-        if category in graph['categories']:
-            graph['categories'][category]['position'] = position
-        user.save_knowledge_graph(graph)
-        return jsonify({'success': True})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
-
-
+@app.route('/api/knowledge/graph/nodes/positions', methods=['PUT'])
 @app.route('/api/knowledge/nodes/positions', methods=['PUT'])
 @require_login
 def update_knowledge_position():
@@ -14072,6 +15297,9 @@ def vectorize_knowledge():
     user = User(username)
     data = request.get_json() or {}
 
+    if not _is_knowledge_vectorization_enabled():
+        return _knowledge_vector_unavailable_response()
+
     title = data.get('title')
     text = data.get('text')
     metadata = data.get('metadata') or {}
@@ -14111,16 +15339,29 @@ def vectorize_knowledge():
     except Exception as e:
         return jsonify({'success': False, 'message': f'向量化失败: {str(e)}'})
 
+
+@app.route('/api/knowledge/vector/status', methods=['GET'])
+@require_login
+def get_knowledge_vector_status():
+    """获取知识库向量化能力状态。"""
+    payload = _knowledge_vector_status_payload()
+    payload['success'] = True
+    return jsonify(payload)
+
+
 @app.route('/api/knowledge/vector/config', methods=['GET'])
 @require_login
 def get_vector_config():
     """获取向量配置"""
-    config = get_config_all()
-    rag = config.get('rag_database', {})
+    status = _knowledge_vector_status_payload()
     return jsonify({
         'success': True,
-        'chunk_size': int(rag.get('chunk_size') or 800),
-        'chunk_overlap': int(rag.get('chunk_overlap') or 120)
+        'enabled': bool(status.get('enabled')),
+        'vectorization_enabled': bool(status.get('vectorization_enabled')),
+        'reason': status.get('reason') or '',
+        'mode': status.get('mode') or '',
+        'chunk_size': int(status.get('chunk_size') or 800),
+        'chunk_overlap': int(status.get('chunk_overlap') or 120)
     })
 
 
@@ -14137,14 +15378,17 @@ def vectorize_knowledge_chunk():
     chunk_total = data.get('chunk_total')
     library = _normalize_vector_library(data.get('library'), default='knowledge')
 
+    if not _is_knowledge_vectorization_enabled():
+        return _knowledge_vector_unavailable_response()
+
     if not title or text is None:
-        return jsonify({'success': False, 'message': '缺少标题或文本'})
+        return jsonify({'success': False, 'message': '缺少标题或文本'}), 400
 
     store, store_err = get_chroma_store()
     if not store:
-        return jsonify({'success': False, 'message': f'ChromaDB错误: {store_err}'})
+        return jsonify({'success': False, 'message': f'NexoraDB不可用: {store_err}'}), 503
     if getattr(store, 'mode', '') != 'service':
-        return jsonify({'success': False, 'message': 'NexoraDB service mode required'})
+        return _knowledge_vector_unavailable_response('NexoraDB service mode required')
 
     try:
         chunk_meta = dict(metadata)
@@ -14178,83 +15422,18 @@ def query_knowledge_vectors():
     library = _normalize_vector_library(data.get('library'), default='knowledge')
     
     if not query_text:
-        return jsonify({'success': False, 'message': '缺少查询文本'})
+        return jsonify({'success': False, 'message': '缺少查询文本'}), 400
 
-    def _keyword_fallback_payload(reason):
-        try:
-            user = User(username)
-            basis = user.getKnowledgeList(1) or {}
-            q = str(query_text).strip().lower()
-            if not q:
-                return {
-                    'success': True,
-                    'fallback': True,
-                    'fallback_reason': reason,
-                    'result': {
-                        'documents': [[]],
-                        'metadatas': [[]],
-                        'distances': [[]]
-                    }
-                }
-
-            scored = []
-            for title in basis.keys():
-                title_text = str(title or '')
-                title_lower = title_text.lower()
-                title_hits = title_lower.count(q)
-                content = ''
-                try:
-                    content = user.getBasisContent(title) or ''
-                except Exception:
-                    content = ''
-                content_lower = content.lower()
-                content_hits = content_lower.count(q)
-
-                if title_hits <= 0 and content_hits <= 0:
-                    continue
-
-                score = title_hits * 3 + content_hits
-                snippet = content[:500] if content else title_text
-                scored.append({
-                    'title': title_text,
-                    'doc': snippet,
-                    'score': score
-                })
-
-            scored.sort(key=lambda x: x['score'], reverse=True)
-            scored = scored[:max(1, top_k)]
-
-            documents = [item['doc'] for item in scored]
-            metadatas = [{
-                'title': item['title'],
-                'source': 'keyword_fallback'
-            } for item in scored]
-            # Keep distance contract: smaller means better.
-            distances = [round(1.0 / (1.0 + float(item['score'])), 6) for item in scored]
-
-            return {
-                'success': True,
-                'fallback': True,
-                'fallback_reason': reason,
-                'result': {
-                    'documents': [documents],
-                    'metadatas': [metadatas],
-                    'distances': [distances]
-                }
-            }
-        except Exception as fallback_err:
-            return {
-                'success': False,
-                'message': f'关键词回退失败: {str(fallback_err)}'
-            }
+    if not _is_knowledge_vectorization_enabled():
+        return _knowledge_vector_unavailable_response('知识向量查询未启用或未配置')
 
     store, store_err = get_chroma_store()
     if not store:
-        return jsonify(_keyword_fallback_payload(f'NexoraDB unavailable: {store_err}'))
+        return jsonify({'success': False, 'message': f'NexoraDB不可用: {store_err}'}), 503
 
     try:
         if getattr(store, 'mode', '') != 'service':
-            return jsonify(_keyword_fallback_payload('NexoraDB service mode not available'))
+            return _knowledge_vector_unavailable_response('NexoraDB service mode not available')
         result = store.query_text(
             username,
             query_text,
@@ -14263,7 +15442,7 @@ def query_knowledge_vectors():
         )
         return jsonify({'success': True, 'result': result})
     except Exception as e:
-        return jsonify(_keyword_fallback_payload(f'NexoraDB query failed: {str(e)}'))
+        return jsonify({'success': False, 'message': f'NexoraDB查询失败: {str(e)}'}), 500
 
 
 @app.route('/api/files/vector/query', methods=['POST'])
@@ -14318,21 +15497,27 @@ def query_temp_file_vectors():
         return jsonify({'success': False, 'message': str(e)})
 
 
+@app.route('/api/knowledge/vector/titles/<path:title>', methods=['DELETE'])
+@app.route('/api/knowledge/vector/chunks/<path:vector_id>', methods=['DELETE'])
 @app.route('/api/knowledge/vector/delete', methods=['POST'])
 @require_login
-def delete_knowledge_vectors():
+def delete_knowledge_vectors(title=None, vector_id=None):
     """删除知识点的向量数据"""
     username = session['username']
-    data = request.get_json() or {}
-    title = data.get('title')
-    vector_id = data.get('vector_id')
-    library = _normalize_vector_library(data.get('library'), default='knowledge')
+    data = request.get_json(silent=True) or {}
+    title = title or data.get('title')
+    vector_id = vector_id or data.get('vector_id')
+    library = _normalize_vector_library(data.get('library') or request.args.get('library'), default='knowledge')
+
     if not title and not vector_id:
-        return jsonify({'success': False, 'message': '缺少标题或向量ID'})
+        return jsonify({'success': False, 'message': '缺少标题或向量ID'}), 400
+
+    if not _is_knowledge_vectorization_enabled():
+        return _knowledge_vector_unavailable_response()
 
     store, store_err = get_chroma_store()
     if not store:
-        return jsonify({'success': False, 'message': f'ChromaDB错误: {store_err}'})
+        return jsonify({'success': False, 'message': f'NexoraDB不可用: {store_err}'}), 503
     try:
         if vector_id:
             store.delete_by_id(username, vector_id)
@@ -14352,11 +15537,14 @@ def get_vector_chunks():
     title = data.get('title')
     library = _normalize_vector_library(data.get('library'), default='knowledge')
     if not title:
-        return jsonify_safe({'success': False, 'message': 'missing title'})
+        return jsonify_safe({'success': False, 'message': 'missing title'}), 400
+
+    if not _is_knowledge_vectorization_enabled():
+        return _knowledge_vector_unavailable_response()
 
     store, store_err = get_chroma_store()
     if not store:
-        return jsonify_safe({'success': False, 'message': f'ChromaDB unavailable: {store_err}'})
+        return jsonify_safe({'success': False, 'message': f'NexoraDB unavailable: {store_err}'}), 503
     try:
         chunks = store.get_chunks(username, title, library=library)
         return jsonify_safe({'success': True, 'library': library, 'chunks': chunks})
@@ -14427,6 +15615,11 @@ def browser_sync_socket(ws):
         'client_id': client_id,
         'username': username,
     })
+    try:
+        _send_browser_ws_client(client, 'model_config_state', build_models_config_sync_state())
+    except Exception as e:
+        print(f"[Browser WSS] model sync state failed username={username} client={client_id}: {e}")
+
     _send_browser_ws_client(client, 'agent_status', {
         'online': is_agent_online(username),
         'source': 'browser_connect',
@@ -14456,6 +15649,55 @@ def browser_sync_socket(ws):
 
                     if current_client is not None:
                         current_client['conversation_id'] = conversation_id
+            elif msg_type == 'sync_model_config':
+                try:
+                    sync_state = build_models_config_sync_state()
+                    client_version = str(data.get('version') or '').strip()
+                    server_version = str(sync_state.get('version') or '').strip()
+
+                    if client_version != server_version:
+                        _send_browser_ws_client(client, 'model_config_changed', {
+                            **sync_state,
+                            'source': 'browser_sync_poll',
+                        })
+                except Exception as e:
+                    print(f"[Browser WSS] model sync failed username={username} client={client_id}: {e}")
+                    _send_browser_ws_client(client, 'model_config_sync_error', {
+                        'message': str(e),
+                    })
+            elif msg_type == 'subscribe_ollama_status':
+                provider_names = _normalize_browser_ollama_provider_names(data.get('providers', []))
+                provider_keys = {
+                    _normalize_browser_ollama_provider_key(provider_name)
+                    for provider_name in provider_names
+                    if _normalize_browser_ollama_provider_key(provider_name)
+                }
+
+                with _BROWSER_WS_LOCK:
+                    current_client = (_BROWSER_WS_CLIENTS.get(username) or {}).get(client_id)
+
+                    if current_client is not None:
+                        current_client['ollama_providers'] = provider_keys
+
+                if provider_names:
+                    _ensure_browser_ollama_status_loop_started()
+                    _send_browser_ollama_status_to_client(client, provider_names)
+                    _request_browser_ollama_status_refresh(
+                        provider_names,
+                        source='browser_subscribe',
+                        force=bool(data.get('force', False))
+                    )
+            elif msg_type == 'sync_ollama_status':
+                provider_names = _normalize_browser_ollama_provider_names(data.get('providers', []))
+
+                if provider_names:
+                    _ensure_browser_ollama_status_loop_started()
+                    _send_browser_ollama_status_to_client(client, provider_names)
+                    _request_browser_ollama_status_refresh(
+                        provider_names,
+                        source='browser_sync',
+                        force=bool(data.get('force', False))
+                    )
 
     except Exception as e:
         print(f"[Browser WSS] disconnected username={username} client={client_id}: {e}")
@@ -14542,6 +15784,11 @@ def agent_tunnel_socket(ws):
 
 from api.papi.routes import papi_bp
 app.register_blueprint(papi_bp)
+from api.workspace.routes import workspace_bp
+app.register_blueprint(workspace_bp)
+from api.notification import configure_notification_realtime, notification_bp
+configure_notification_realtime(_send_browser_event_to_user)
+app.register_blueprint(notification_bp)
 
 if __name__ == '__main__':
     # 确保必要的目录存在

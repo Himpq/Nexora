@@ -695,8 +695,6 @@ class ProviderInterface(ABC):
         function_calls: List[Dict[str, Any]] = []
         debug_unknown_stream = self._as_bool(self.provider_config.get("debug_unknown_stream", False), default=False)
         unknown_delta_key_logged: set = set()
-        thinking_mode = False
-        think_buffer = ""
         explicit_reasoning_accumulator = ""
         first_chunk_processed = False
 
@@ -803,86 +801,6 @@ class ProviderInterface(ABC):
                 piece = _extract_text_piece(content_val)
                 if piece:
                     content_parts.append(piece)
-            return {
-                "content": "".join(content_parts),
-                "reasoning": "".join(reasoning_parts),
-            }
-
-        def _split_think_markup(text: str, is_final: bool = False) -> Dict[str, str]:
-            nonlocal thinking_mode, think_buffer
-            raw = think_buffer + str(text or "")
-            if not raw and not is_final:
-                return {"content": "", "reasoning": ""}
-            
-            content_parts: List[str] = []
-            reasoning_parts: List[str] = []
-            
-            while raw:
-                if thinking_mode:
-                    end_idx = raw.find("</think>")
-                    if end_idx < 0:
-                        # Might be a partial </think> at the end
-                        potential_match = False
-                        for i in range(1, 9):
-                            if raw.endswith("</think>"[:i]):
-                                potential_match = True
-                                reasoning_parts.append(raw[:-i])
-                                think_buffer = raw[-i:]
-                                raw = ""
-                                break
-                        if not potential_match:
-                            reasoning_parts.append(raw)
-                            think_buffer = ""
-                            raw = ""
-                        
-                        if is_final and think_buffer:
-                            reasoning_parts.append(think_buffer)
-                            think_buffer = ""
-                    else:
-                        reasoning_parts.append(raw[:end_idx])
-                        raw = raw[end_idx + len("</think>"):]
-                        thinking_mode = False
-                else:
-                    start_idx = raw.find("<think>")
-                    end_fallback_idx = raw.find("</think>")
-                    
-                    if start_idx < 0:
-                        if end_fallback_idx >= 0:
-                            # Unexpected </think> when not in thinking mode
-                            reasoning_parts.append(raw[:end_fallback_idx])
-                            raw = raw[end_fallback_idx + len("</think>"):]
-                            continue
-                            
-                        # Might be a partial <think> or </think> at the end
-                        potential_match = False
-                        for tag in ("<think>", "</think>"):
-                            for i in range(1, len(tag)):
-                                if raw.endswith(tag[:i]):
-                                    potential_match = True
-                                    content_parts.append(raw[:-i])
-                                    think_buffer = raw[-i:]
-                                    raw = ""
-                                    break
-                            if potential_match:
-                                break
-                                
-                        if not potential_match:
-                            content_parts.append(raw)
-                            think_buffer = ""
-                            raw = ""
-                            
-                        if is_final and think_buffer:
-                            content_parts.append(think_buffer)
-                            think_buffer = ""
-                    else:
-                        if end_fallback_idx >= 0 and end_fallback_idx < start_idx:
-                            reasoning_parts.append(raw[:end_fallback_idx])
-                            raw = raw[end_fallback_idx + len("</think>"):]
-                            continue
-                        content_parts.append(raw[:start_idx])
-                        raw = raw[start_idx + len("<think>"):]
-                        thinking_mode = True
-
             return {
                 "content": "".join(content_parts),
                 "reasoning": "".join(reasoning_parts),
@@ -1018,11 +936,12 @@ class ProviderInterface(ABC):
                 if msg_obj is not None:
                     msg_split = _split_delta_content(_obj_get_raw(msg_obj, "content", None))
                     msg_reasoning_raw = _merge_stream_fragment(
-                        _split_think_markup(msg_split.get("reasoning", "")).get("reasoning", ""),
+                        msg_split.get("reasoning", ""),
                         _extract_reasoning_fields(msg_obj),
                     )
                     msg_reasoning = _normalize_explicit_reasoning_delta(msg_reasoning_raw)
-                    msg_content = _split_think_markup(msg_split.get("content", "")).get("content", "")
+                    msg_content = msg_split.get("content", "")
+
                     if msg_content:
                         yield {"type": "content_delta", "delta": str(msg_content)}
                     if msg_reasoning:
@@ -1042,10 +961,9 @@ class ProviderInterface(ABC):
                 continue
 
             split_payload = _split_delta_content(_obj_get_raw(delta, "content", None))
-            think_split = _split_think_markup(split_payload.get("content", ""))
-            content_piece = think_split.get("content", "")
+            content_piece = split_payload.get("content", "")
             reasoning_piece_raw = _merge_stream_fragment(
-                _merge_stream_fragment(split_payload.get("reasoning", ""), think_split.get("reasoning", "")),
+                split_payload.get("reasoning", ""),
                 _extract_reasoning_fields(delta),
             )
             reasoning_piece = _normalize_explicit_reasoning_delta(reasoning_piece_raw)
@@ -1090,13 +1008,6 @@ class ProviderInterface(ABC):
 
             if finish_reason:
                 yield {"type": "finish_reason", "finish_reason": finish_reason}
-
-        # Flush any remaining buffered think tag
-        final_think_split = _split_think_markup("", is_final=True)
-        if final_think_split.get("content", ""):
-            yield {"type": "content_delta", "delta": str(final_think_split["content"])}
-        if final_think_split.get("reasoning", ""):
-            yield {"type": "reasoning_delta", "delta": str(final_think_split["reasoning"])}
 
         for i, fc in enumerate(function_calls):
             name = str(fc.get("name", "") or "").strip()

@@ -27,20 +27,9 @@ default_verbose = """
 default_base = """
 你是 Nexora 的 AI 助手。
 当前模型：{{model_name}}（provider={{provider_name}}），当前用户：{{user}}，权限：{{permission}}。
-
-工作原则：
-1. 先给结论，再给必要细节；默认简洁，用户要求详细时再展开。
-2. 不编造事实、不编造 URL；不确定就明确说明并继续检索。
-3. 需要外部信息时，按当前会话可用能力检索（本地知识/搜索/联网）。
-4. 工具调用应直接、果断；不要为了“规划可能的后续工具”而拖延当前步骤。
-5. 对可确认的用户偏好、长期有用信息可写入记忆（短期/长期）。
-6. 默认使用中文回答，除非用户明确要求其他语言。
-
-补充：
-- 短期记忆记录近期事项、偏好、情绪；长期记忆/知识库记录稳定知识。
-""" + KB_CITATION_RULES + """
-- 系统可能自动注入时间；除非用户明确问时间，否则忽略该注入。
-- 回答风格：准确、直接、可执行。使用 Markdown。
+默认使用中文和 Markdown 回答，除非用户明确要求其他语言。
+先给结论，再补充必要细节；不编造事实、来源、URL 或工具结果。
+需要核验或执行时，使用当前会话已开放的能力直接处理。
 
 """
 
@@ -63,7 +52,6 @@ system_tools_enabled_auto_select = """
 - 用户已启用工具调用，模式为 Auto(Select)。
 - 若你已明确知道要调用的工具，可直接调用。
 - 如需查看当前轮更完整的工具目录，再调用 runtime_tool_select。
-- 对真实网页交互：先用 browser_page_open(extract_mode="interactive") 建立页面并记录返回的 page_id；后续 browser_page_read / browser_page_eval / browser_page_input / browser_page_click / browser_page_scroll 都必须传同一个 page_id。用户手动操作打开的页面后，继续用这个 page_id 读取或操作页面。
 """
 
 system_tools_enabled_auto_off = """
@@ -78,32 +66,27 @@ system_tools_enabled_force = """
 当前会话能力：
 - 用户已启用工具调用，模式为 Force。
 - 直接使用当前可用工具完成任务，避免重复或无意义调用。
-- 对真实网页交互：先用 browser_page_open(extract_mode="interactive") 建立页面并记录返回的 page_id；后续 browser_page_read / browser_page_eval / browser_page_input / browser_page_click / browser_page_scroll 都必须传同一个 page_id。用户手动操作打开的页面后，继续用这个 page_id 读取或操作页面。
 """
 
 
 SYSTEM_PROMPT_SEP = "\n\n"
+knowledge_citation_tool_hint = "\n\n" + KB_CITATION_RULES
+SKILL_INSTRUCTIONS_HEADER = "## Skill Instructions\n以下是当前启用的 Skill 指令；优先级低于基础系统规则，高于普通对话上下文。"
+GLOBAL_SKILL_INSTRUCTIONS_HEADER = "### Global Instructions\n以下 Skill 不绑定具体工具，作为全局行为指令生效。"
+TOOL_SKILL_INSTRUCTIONS_HEADER = "### Tool Skill Instructions\n以下 Skill 只在相关工具或工具流程中生效。"
+GLOBAL_SKILL_BLOCK_TEMPLATE = """<GLOBAL-INSTRUCTION>
+[{{title}}]
+{{content}}
+<END>"""
 TOOL_SKILL_BLOCK_TEMPLATE = """<TOOL-SKILL>
 [{{title}} 生效于 {{tools}}的工具]
 {{content}}
 <END>"""
 
-USER_PROFILE_MEMORY_TEMPLATE = """[短期记忆-用户画像]
-当你觉得需要更新用户画像的时候调用 memory_short_update 进行更新。
-以下信息用于理解用户偏好与背景，回答时可参考但不要逐字复述：
-<USER_PROFILE>
-{{profile_text}}
-</USER_PROFILE>
+USER_PROFILE_MEMORY_TEMPLATE = """## 用户画像上下文
+以下材料用于理解用户偏好与背景，回答时可参考但不要逐字复述。
 
-[近期浓缩对话]
-<RECENT_DIALOGUE>
-{{recent_dialogue}}
-</RECENT_DIALOGUE>
-
-[用户知识库列表]
-<USER_KNOWLEDGE>
-{{user_knowledge}}
-</USER_KNOWLEDGE>
+{{profile_blocks}}
 """
 
 def _current_time_text() -> str:
@@ -117,6 +100,29 @@ def render_prompt_template(template: Any, **values: Any) -> str:
     for key, value in replacements.items():
         text = text.replace(f"{{{{{key}}}}}", str(value))
     return text
+
+
+def _render_xml_text_block(tag: str, content: Any, attrs: Dict[str, Any] = None) -> str:
+    """仅在正文有内容时渲染 XML 风格上下文块，避免 debug 中出现空标签。"""
+    tag_text = str(tag or "").strip()
+    content_text = str(content or "").strip()
+
+    if not tag_text or not content_text:
+        return ""
+
+    attr_parts: List[str] = []
+
+    if isinstance(attrs, dict):
+
+        for key, value in attrs.items():
+            key_text = str(key or "").strip()
+            value_text = str(value or "").strip()
+
+            if key_text and value_text:
+                attr_parts.append(f'{key_text}="{value_text}"')
+
+    attr_text = f" {' '.join(attr_parts)}" if attr_parts else ""
+    return f"<{tag_text}{attr_text}>\n{content_text}\n</{tag_text}>"
 
 longterm_system_prompt = """
 现在是长程任务模式，你必须严格遵守：
@@ -199,13 +205,27 @@ def build_main_system_prompt(
     return render_prompt_template(SYSTEM_PROMPT_SEP.join([p for p in parts if p]).strip())
 
 
+def _normalize_skill_tool_list(tools) -> List[str]:
+    if isinstance(tools, (list, tuple, set)):
+        return [str(x).strip() for x in tools if str(x).strip()]
+
+    raw = str(tools or "")
+    return [seg.strip() for seg in raw.replace("，", ",").split(",") if seg.strip()]
+
+
+def build_global_skill_block(title: Any, content: Any) -> str:
+    title_text = str(title or "").strip() or "Unnamed Skill"
+    content_text = str(content or "").strip()
+    if not content_text:
+        return ""
+    out = GLOBAL_SKILL_BLOCK_TEMPLATE.replace("{{title}}", title_text)
+    out = out.replace("{{content}}", content_text)
+    return out.strip()
+
+
 def build_tool_skill_block(title: Any, tools, content: Any) -> str:
     title_text = str(title or "").strip() or "Unnamed Skill"
-    if isinstance(tools, (list, tuple, set)):
-        tool_list = [str(x).strip() for x in tools if str(x).strip()]
-    else:
-        raw = str(tools or "")
-        tool_list = [seg.strip() for seg in raw.replace("，", ",").split(",") if seg.strip()]
+    tool_list = _normalize_skill_tool_list(tools)
     tools_text = ", ".join(tool_list) if tool_list else "any"
     content_text = str(content or "").strip()
     if not content_text:
@@ -216,19 +236,60 @@ def build_tool_skill_block(title: Any, tools, content: Any) -> str:
     return out.strip()
 
 
-def build_tool_skills_prompt(skills: List[Dict[str, Any]]) -> str:
-    blocks: List[str] = []
+def _build_skill_instruction_blocks(skills: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+    global_blocks: List[str] = []
+    tool_blocks: List[str] = []
+
     for item in (skills or []):
         if not isinstance(item, dict):
             continue
-        block = build_tool_skill_block(
+
+        required_tools = _normalize_skill_tool_list(item.get("required_tools", []))
+        if required_tools:
+            block = build_tool_skill_block(
+                item.get("title", ""),
+                required_tools,
+                item.get("main_content", "")
+            )
+            if block:
+                tool_blocks.append(block)
+            continue
+
+        block = build_global_skill_block(
             item.get("title", ""),
-            item.get("required_tools", []),
             item.get("main_content", "")
         )
         if block:
-            blocks.append(block)
-    return "\n\n".join(blocks).strip()
+            global_blocks.append(block)
+
+    return {
+        "global": global_blocks,
+        "tool": tool_blocks,
+    }
+
+
+def build_skill_instructions_prompt(skills: List[Dict[str, Any]]) -> str:
+    """将启用的 Skill 分成全局指令和工具指令两个段落，作为独立 system message 注入。"""
+    blocks = _build_skill_instruction_blocks(skills)
+    global_blocks = blocks.get("global", [])
+    tool_blocks = blocks.get("tool", [])
+    sections: List[str] = []
+
+    if global_blocks:
+        sections.append(f"{GLOBAL_SKILL_INSTRUCTIONS_HEADER}\n" + "\n\n".join(global_blocks))
+
+    if tool_blocks:
+        sections.append(f"{TOOL_SKILL_INSTRUCTIONS_HEADER}\n" + "\n\n".join(tool_blocks))
+
+    if not sections:
+        return ""
+
+    return f"{SKILL_INSTRUCTIONS_HEADER}\n\n" + "\n\n".join(sections)
+
+
+def build_tool_skills_prompt(skills: List[Dict[str, Any]]) -> str:
+    blocks = _build_skill_instruction_blocks(skills)
+    return "\n\n".join(blocks.get("tool", [])).strip()
 
 
 def build_longdoc_skill_catalog_prompt(skills: List[Dict[str, Any]]) -> str:
@@ -306,11 +367,49 @@ learning_mode_default_prompt = """
 如果用户问题与学习直接无关，也可以正常回答，但应优先尝试连接到学习场景。
 """
 
-learning_context_injection_header = "[系统注入] 当前对话处于 NexoraLearning 学习模式。以下是学习上下文，请优先参考："
+learning_context_injection_header = "## Learning Context\n当前对话处于 NexoraLearning 学习模式。以下学习上下文是本轮回答的参考材料，请优先参考。"
 
 learning_context_block_template = """<LEARNING_CONTEXT_BLOCK type="{{block_type}}" title="{{block_title}}">
 {{block_content}}
 </LEARNING_CONTEXT_BLOCK>"""
+
+workspace_mode_prompt_template = """## Workspace Mode
+- 当前对话归属于 Workspace：{{workspace_title}}（id={{workspace_id}}）。
+- 把 Workspace 视为一个持续工作的项目空间，回答时结合当前 Workspace 的聊天、知识库、文件、Workspace 记忆和 Workspace 自定义提示词。
+- Workspace 记忆是内部上下文，回答时可参考，不要无意义复述完整记忆内容。
+- 请每次对话开始时必须考虑调用 workspace_mem 工具更新记忆。"""
+
+workspace_memory_injection_header = "## Workspace Memory Context\n以下是当前 Workspace 自动记忆，请作为项目事实参考。"
+
+workspace_memory_block_template = """<WORKSPACE_MEMORY workspace_id="{{workspace_id}}" title="{{workspace_title}}">
+{{memory_content}}
+</WORKSPACE_MEMORY>"""
+
+workspace_prompt_injection_header = "## Workspace Custom Instructions\n以下是当前 Workspace 自定义提示词；在不违背上层系统与工具规则的前提下优先遵循。"
+
+workspace_prompt_block_template = """<WORKSPACE_PROMPT workspace_id="{{workspace_id}}" title="{{workspace_title}}">
+{{prompt_content}}
+</WORKSPACE_PROMPT>"""
+
+workspace_knowledge_injection_header = (
+    "## Workspace Knowledge Index\n"
+    "以下是当前 Workspace 绑定的知识库索引，仅作为资料目录。"
+    "当回答结论依赖知识正文时，先调用 knowledge_basis_read 或知识库搜索工具读取内容。"
+)
+
+workspace_knowledge_block_template = """<WORKSPACE_KNOWLEDGE_INDEX workspace_id="{{workspace_id}}" title="{{workspace_title}}">
+{{knowledge_rows}}
+</WORKSPACE_KNOWLEDGE_INDEX>"""
+
+memory_update_workspace_rule_template = """- Workspace 记忆：当前对话归属于 Workspace：{{workspace_title}}（id={{workspace_id}}）。项目级稳定事实、约束、决策、术语、待办和反复问题写入 workspace_mem_add；修正、合并或删除已有条目使用 workspace_mem_edit；只有需要整体重排时才使用 workspace_mem_write；只有已有可靠行上下文时才使用 workspace_mem_apply_diff。不要把用户个人画像写入 Workspace 记忆。"""
+
+memory_update_check_prompt_template = """## Current Turn Memory Check
+在最终回答前，主动判断当前用户消息和本轮工具结果是否产生需要沉淀的信息；如果需要，先调用对应记忆工具，工具成功后再继续回答。
+- 用户画像短期记忆：当用户明确表达新的个人偏好、背景、目标、当前事项、沟通风格或反复要求时，使用 memory_short_update 更新完整画像。保持约 400 字内，合并旧画像，不要只写新增片段；不要记录项目事实、代码日志、未经确认推测或一次性问题。
+- memory_short_add 仅用于兼容旧式短期条目；默认不要用它代替用户画像更新，除非用户明确要求追加一条旧式短期记忆。
+{{workspace_memory_rule}}
+- 工具未开放时：如果当前只开放 runtime_tool_select 或 runtime_tool_enable，先选择或启用需要的记忆工具；不要因为工具尚未开放而跳过应写的记忆。
+- 无需写入时：不调用记忆工具，直接回答。记忆写入是内部动作，不要向用户复述完整记忆。"""
 
 learning_mode_tool_nudge_prompt = (
     "当前为 NexoraLearning 学习模式。不要只输出思考。"
@@ -318,9 +417,13 @@ learning_mode_tool_nudge_prompt = (
     "再基于工具结果继续回答用户。"
 )
 
-cloud_file_sandbox_paths_prompt_template = """[系统注入] 已上传文件到用户沙箱，请优先使用 cloud_file_list/cloud_file_create/cloud_file_read/cloud_file_find/cloud_file_write/cloud_doc_write/cloud_file_remove 工具操作以下路径。
-如果需要在回答中手动引用某个云端文件，只输出 [file]文件路径[/file]，不要手写文件大小、下载链接或摘要，这些信息由系统自动补全：
+cloud_file_sandbox_paths_prompt_template = """## Sandbox Files
+已上传文件到用户沙箱，请优先使用 cloud_file_list/cloud_file_create/cloud_file_read/cloud_file_find/cloud_file_write/cloud_doc_write/cloud_file_remove 工具操作以下路径。
+如果需要在回答中手动引用某个云端文件，只输出 [file]文件路径[/file]，不要手写文件大小、下载链接或摘要，这些信息由系统自动补全。
+
+<SANDBOX_FILES>
 {{paths}}
+</SANDBOX_FILES>
 """
 
 cloud_file_reference_tool_hint = (
@@ -355,36 +458,24 @@ conversation_title_prompt_template = """根据以下对话内容，生成一个�
 
 你只用快速输出标题："""
 
-context_compression_prompt_template = """[上下文压缩任务]
+context_compression_prompt_template = """## Context Compression Task
 你需要把给定历史对话压缩为后续回复仍可直接复用的稳定上下文记忆。
-这是一个两段式任务：
+
+任务步骤：
 1. 先更新用户短期记忆。
 2. 再输出压缩后的上下文摘要。
 
 注意：最终输出只能是压缩后的上下文摘要，不要输出短期记忆更新过程、工具执行结果或解释过程。
-<HISTORY> 是上下文摘要的主体；<PROFILE_TEXT> 和 <RECENT_DIALOGUE> 只能作为辅助参考，不能替代 <HISTORY>。
+<CONVERSATION_HISTORY> 是上下文摘要的主体；用户画像和近期摘要只能作为辅助参考，不能替代 <CONVERSATION_HISTORY>。
 
 输入信息：
-<PROFILE_TEXT>
-{{profile_text}}
-</PROFILE_TEXT>
+{{auxiliary_context_blocks}}
 
-<RECENT_DIALOGUE>
-{{recent_dialogue}}
-</RECENT_DIALOGUE>
-
-<HISTORY>
+<CONVERSATION_HISTORY>
 {{history_text}}
-</HISTORY>
+</CONVERSATION_HISTORY>
 
-可用短期记忆工具说明：
-<UPDATE_SHORT>
-{{update_short}}
-</UPDATE_SHORT>
-
-<ADD_SHORT>
-{{add_short}}
-</ADD_SHORT>
+{{tool_instruction_blocks}}
 
 短期记忆要求：
 1. 保留用户长期稳定信息，如兴趣、偏好、背景等。
@@ -408,7 +499,7 @@ context_compression_prompt_template = """[上下文压缩任务]
 注意力集中
 近期细节
 回答方式
-6. 最大长度约 {{max_chars}} 字；如果 <HISTORY> 信息量足够，不要为了简短而丢弃可复用细节。
+6. 最大长度约 {{max_chars}} 字；如果 <CONVERSATION_HISTORY> 信息量足够，不要为了简短而丢弃可复用细节。
 7. 对于关键信息直接照搬，有必要保留的上下文直接执行输出进行保留。
 """
 
@@ -514,6 +605,171 @@ def build_learning_context_injection_prompt(context_blocks: List[Dict[str, Any]]
     return f"{learning_context_injection_header}\n" + "\n\n".join(rendered_blocks) + "\n"
 
 
+def _workspace_context_text(context: Any, key: str) -> str:
+    if not isinstance(context, dict):
+        return ""
+
+    return str(context.get(key) or "").strip()
+
+
+def _workspace_text_block_content(context: Any, key: str) -> str:
+    if not isinstance(context, dict):
+        return ""
+
+    block = context.get(key)
+
+    if not isinstance(block, dict):
+        return ""
+
+    if block.get("enabled") is False:
+        return ""
+
+    return str(block.get("content") or "").strip()
+
+
+def _workspace_knowledge_documents(context: Any) -> List[Dict[str, Any]]:
+    if not isinstance(context, dict):
+        return []
+
+    raw_documents = context.get("knowledge_documents", [])
+
+    if not isinstance(raw_documents, list):
+        return []
+
+    return [item for item in raw_documents if isinstance(item, dict)]
+
+
+def _workspace_knowledge_field(value: Any, limit: int = 160) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) > limit:
+        text = text[:limit].rstrip() + "..."
+    return text
+
+
+def build_workspace_mode_prompt(workspace_context: Dict[str, Any]) -> str:
+    """构建稳定的 Workspace 模式规则，不混入可变的 Workspace Prompt。"""
+    workspace_id = _workspace_context_text(workspace_context, "workspace_id")
+    workspace_title = _workspace_context_text(workspace_context, "workspace_title") or "Workspace"
+
+    if not workspace_id:
+        return ""
+
+    out = workspace_mode_prompt_template.replace("{{workspace_id}}", workspace_id)
+    out = out.replace("{{workspace_title}}", workspace_title)
+
+    return out.strip()
+
+
+def build_workspace_memory_injection_prompt(workspace_context: Dict[str, Any]) -> str:
+    """构建当前轮 Workspace 自动记忆注入，供模型参考项目事实。"""
+    workspace_id = _workspace_context_text(workspace_context, "workspace_id")
+    workspace_title = _workspace_context_text(workspace_context, "workspace_title") or "Workspace"
+    memory_content = _workspace_text_block_content(workspace_context, "workspace_memory")
+
+    if not workspace_id or not memory_content:
+        return ""
+
+    block = workspace_memory_block_template.replace("{{workspace_id}}", workspace_id)
+    block = block.replace("{{workspace_title}}", workspace_title)
+    block = block.replace("{{memory_content}}", memory_content)
+
+    return f"{workspace_memory_injection_header}\n{block}\n"
+
+
+def build_workspace_prompt_injection_prompt(workspace_context: Dict[str, Any]) -> str:
+    """构建当前轮 Workspace 自定义提示词注入，放在记忆之后强化项目约束。"""
+    workspace_id = _workspace_context_text(workspace_context, "workspace_id")
+    workspace_title = _workspace_context_text(workspace_context, "workspace_title") or "Workspace"
+    prompt_content = _workspace_text_block_content(workspace_context, "workspace_prompt")
+
+    if not workspace_id or not prompt_content:
+        return ""
+
+    block = workspace_prompt_block_template.replace("{{workspace_id}}", workspace_id)
+    block = block.replace("{{workspace_title}}", workspace_title)
+    block = block.replace("{{prompt_content}}", prompt_content)
+
+    return f"{workspace_prompt_injection_header}\n{block}\n"
+
+
+def build_workspace_knowledge_injection_prompt(
+    workspace_context: Dict[str, Any],
+    max_items: int = 80
+) -> str:
+    """构建当前 Workspace 绑定知识库索引，不注入知识正文。"""
+    workspace_id = _workspace_context_text(workspace_context, "workspace_id")
+    workspace_title = _workspace_context_text(workspace_context, "workspace_title") or "Workspace"
+    documents = _workspace_knowledge_documents(workspace_context)
+
+    if not workspace_id or not documents:
+        return ""
+
+    limit = max(1, min(200, int(max_items or 80)))
+    rows: List[str] = []
+
+    for item in documents[:limit]:
+        title = _workspace_knowledge_field(item.get("title") or item.get("name"), 160)
+
+        if not title:
+            continue
+
+        meta_parts: List[str] = []
+        knowledge_type = _workspace_knowledge_field(item.get("knowledge_type") or item.get("type") or "basis", 32)
+        basis_id = _workspace_knowledge_field(item.get("basis_id"), 80)
+        added_by = _workspace_knowledge_field(item.get("added_by"), 80)
+        visibility = _workspace_knowledge_field(item.get("visibility"), 32)
+        updated_at = _workspace_knowledge_field(item.get("updated_at"), 64)
+
+        if basis_id:
+            meta_parts.append(f"basis_id={basis_id}")
+
+        if knowledge_type:
+            meta_parts.append(f"type={knowledge_type}")
+
+        if added_by:
+            meta_parts.append(f"added_by={added_by}")
+
+        if visibility:
+            meta_parts.append(f"visibility={visibility}")
+
+        if item.get("pin") is True:
+            meta_parts.append("pinned=true")
+
+        if updated_at:
+            meta_parts.append(f"updated_at={updated_at}")
+
+        meta_text = f" ({'; '.join(meta_parts)})" if meta_parts else ""
+        rows.append(f"- {title}{meta_text}")
+
+    remaining = max(0, len(documents) - limit)
+
+    if remaining > 0:
+        rows.append(f"- ... 还有 {remaining} 条 Workspace 知识索引未列出。")
+
+    if not rows:
+        return ""
+
+    block = workspace_knowledge_block_template.replace("{{workspace_id}}", workspace_id)
+    block = block.replace("{{workspace_title}}", workspace_title)
+    block = block.replace("{{knowledge_rows}}", "\n".join(rows))
+
+    return f"{workspace_knowledge_injection_header}\n{block}\n"
+
+
+def build_memory_update_check_prompt(workspace_context: Dict[str, Any] = None) -> str:
+    """构建当前轮记忆更新检查，靠近用户消息以提高工具调用主动性。"""
+    workspace_id = _workspace_context_text(workspace_context, "workspace_id")
+    workspace_title = _workspace_context_text(workspace_context, "workspace_title") or "Workspace"
+    workspace_rule = ""
+
+    if workspace_id:
+        workspace_rule = memory_update_workspace_rule_template.replace("{{workspace_id}}", workspace_id)
+        workspace_rule = workspace_rule.replace("{{workspace_title}}", workspace_title)
+
+    out = memory_update_check_prompt_template.replace("{{workspace_memory_rule}}", workspace_rule)
+    return out.strip()
+
+
 def build_cloud_file_sandbox_paths_prompt(sandbox_paths: Iterable[str]) -> str:
     paths = [str(path or "").strip() for path in (sandbox_paths or []) if str(path or "").strip()]
 
@@ -563,12 +819,19 @@ def build_user_profile_memory_prompt(
     user_knowledge: str = ""
 ) -> str:
     template = str(USER_PROFILE_MEMORY_TEMPLATE or "")
-    if not any([str(profile_text or "").strip(), str(recent_dialogue or "").strip(), str(user_knowledge or "").strip()]):
+    blocks = [
+        _render_xml_text_block("USER_PROFILE_MEMORY", profile_text),
+        _render_xml_text_block("RECENT_DIALOGUE_SUMMARY", recent_dialogue),
+        _render_xml_text_block("USER_KNOWLEDGE_INDEX", user_knowledge),
+    ]
+    profile_blocks = "\n\n".join([block for block in blocks if block]).strip()
+
+    if not profile_blocks:
         return ""
-    out = template.replace("{{profile_text}}", str(profile_text or "").strip())
-    out = out.replace("{{recent_dialogue}}", str(recent_dialogue or "").strip())
-    out = out.replace("{{user_knowledge}}", str(user_knowledge or "").strip())
+
+    out = template.replace("{{profile_blocks}}", profile_blocks)
     return out.strip()
+
 
 def build_context_compression_prompt(
     history_text: str,
@@ -580,11 +843,23 @@ def build_context_compression_prompt(
     max_chars: int = 6000
 ) -> str:
     limit = max(600, min(120000, int(max_chars or 6000)))
+    auxiliary_blocks = [
+        _render_xml_text_block("USER_PROFILE_MEMORY", profile_text),
+        _render_xml_text_block("RECENT_DIALOGUE_SUMMARY", recent_dialogue),
+    ]
+    auxiliary_context = "\n\n".join([block for block in auxiliary_blocks if block]).strip()
+    tool_blocks = [
+        _render_xml_text_block("SHORT_MEMORY_UPDATE_TOOL", update_short),
+        _render_xml_text_block("SHORT_MEMORY_ADD_TOOL", add_short),
+    ]
+    tool_instruction_text = "\n\n".join([block for block in tool_blocks if block]).strip()
+
+    if tool_instruction_text:
+        tool_instruction_text = f"可用短期记忆工具说明：\n{tool_instruction_text}"
+
     out = context_compression_prompt_template.replace("{{history_text}}", str(history_text or "").strip())
-    out = out.replace("{{profile_text}}", str(profile_text or "").strip())
-    out = out.replace("{{recent_dialogue}}", str(recent_dialogue or "").strip())
-    out = out.replace("{{update_short}}", str(update_short or "").strip())
-    out = out.replace("{{add_short}}", str(add_short or "").strip())
+    out = out.replace("{{auxiliary_context_blocks}}", auxiliary_context)
+    out = out.replace("{{tool_instruction_blocks}}", tool_instruction_text)
     out = out.replace("{{max_chars}}", str(limit))
     return out
 

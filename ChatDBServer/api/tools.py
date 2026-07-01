@@ -73,7 +73,9 @@
     "file_write": "cloud_file_write",
     "doc_write": "cloud_doc_write",
     "word_write": "cloud_doc_write",
-    "file_patch": "cloud_file_patch",
+    "file_patch": "cloud_file_edit",
+    "file_apply_diff": "cloud_file_apply_diff",
+    "file_edit": "cloud_file_edit",
     "file_find": "cloud_file_find",
     "file_list": "cloud_file_list",
     "file_remove": "cloud_file_remove",
@@ -105,6 +107,65 @@ def canonicalize_tool_name(name):
             return ""
 
     return raw
+
+
+MAP_TOOL_NAMES = {
+    "map_render",
+    "map_calc_distance",
+    "map_calc_route",
+    "map_geocode",
+    "map_poi_search",
+}
+
+
+def _function_tool_name(tool):
+    if not isinstance(tool, dict):
+        return ""
+
+    if str(tool.get("type") or "").strip() != "function":
+        return ""
+
+    function_def = tool.get("function")
+
+    if isinstance(function_def, dict):
+        return canonicalize_tool_name(function_def.get("name"))
+
+    return canonicalize_tool_name(tool.get("name"))
+
+
+def is_map_service_configured(config):
+    map_cfg = config.get("map_service") if isinstance(config, dict) and isinstance(config.get("map_service"), dict) else {}
+    provider = str(map_cfg.get("provider") or "").strip().lower()
+
+    if provider == "baidu":
+        baidu_cfg = map_cfg.get("baidu") if isinstance(map_cfg.get("baidu"), dict) else {}
+        auth_mode = str(baidu_cfg.get("auth_mode") or "ak").strip().lower()
+        browser_ready = bool(str(baidu_cfg.get("browser_ak") or "").strip())
+        server_ready = bool(str(baidu_cfg.get("server_ak") or "").strip())
+        sn_ready = auth_mode != "sn" or bool(str(baidu_cfg.get("server_sk") or "").strip())
+
+        return auth_mode in {"ak", "sn"} and browser_ready and server_ready and sn_ready
+
+    if provider == "tianditu":
+        tianditu_cfg = map_cfg.get("tianditu") if isinstance(map_cfg.get("tianditu"), dict) else {}
+        shared_tk = str(tianditu_cfg.get("tk") or "").strip()
+        browser_ready = bool(str(tianditu_cfg.get("browser_tk") or "").strip() or shared_tk)
+        server_ready = bool(str(tianditu_cfg.get("server_tk") or "").strip() or shared_tk)
+
+        return browser_ready and server_ready
+
+    return False
+
+
+def get_tools_for_config(config):
+    if is_map_service_configured(config):
+        return list(TOOLS)
+
+    return [
+        tool
+        for tool in TOOLS
+        if _function_tool_name(tool) not in MAP_TOOL_NAMES
+    ]
 
 
 import prompts
@@ -712,7 +773,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "knowledge_search_vector",
-            "description": "在向量库中做语义检索，仅能检索知识库的内容。",
+            "description": "在向量库中做语义检索，仅能检索知识库的内容。" + prompts.knowledge_citation_tool_hint,
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -851,7 +912,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "memory_short_update",
-            "description": "覆盖更新当前用户短期记忆画像（无文本长度限制）",
+            "description": "覆盖更新当前用户画像短期记忆（约400字，会归一化并截断）。适合合并、修正或重写用户偏好、背景、目标和沟通风格。",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -872,7 +933,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "memory_short_add",
-            "description": "向用户短期记忆追加一条记录，适合补充近期偏好、事项或临时关注点。",
+            "description": "旧版短期条目追加工具，仅在用户明确要求追加一条旧式短期记忆时使用；用户画像更新请使用 memory_short_update。",
 
             "parameters": {
                 "type": "object",
@@ -956,7 +1017,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "knowledge_basis_update",
-            "description": "更新基础知识。支持重命名、整段覆盖、URL更新、公开/协作设置、按字符索引区间替换，以及统一 diff/结构化 edits 精确 patch。内容更新方式 context、区间替换、patch/edits 三选一。",
+            "description": "更新基础知识。支持重命名、整段覆盖、URL更新、公开/协作设置、按字符索引区间替换，以及统一 diff/结构化 edits patch。结构化 edits 支持精确 target、Markdown 标题/HTML 注释锚点 target、换行归一化 target、忽略首尾空白/连续空白/换行/全半角差异的 Markdown 噪声归一化 target。内容更新方式 context、区间替换、patch/edits 三选一。",
 
             "parameters": {
                 "type": "object",
@@ -1022,7 +1083,7 @@ TOOLS = [
                     },
                     "edits": {
                         "type": "array",
-                        "description": "结构化精确编辑列表。提供 edits 时不能同时提供 context、区间替换或 patch。",
+                        "description": "结构化编辑列表。提供 edits 时不能同时提供 context、区间替换或 patch。优先使用短而稳定的 Markdown 标题或 HTML 注释锚点作为 target；target 多次出现时必须传 occurrence。",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -1033,7 +1094,7 @@ TOOLS = [
                                 },
                                 "target": {
                                     "type": "string",
-                                    "description": "必须精确匹配的目标文本。"
+                                    "description": "目标文本。支持精确匹配、Markdown 标题/HTML 注释锚点匹配、换行归一化匹配和 Markdown 噪声归一化匹配。"
                                 },
                                 "replacement": {
                                     "type": "string",
@@ -1069,7 +1130,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "knowledge_basis_read",
-            "description": "读取基础知识内容。三种读取方式三选一：不传范围参数读全文；传 offset+length 按字符切片；传 keyword 按关键词或 regex 返回命中邻域。",
+            "description": "读取基础知识内容。三种读取方式三选一：不传范围参数读全文；传 offset+length 按字符切片；传 keyword 按关键词或 regex 返回命中邻域。" + prompts.knowledge_citation_tool_hint,
 
             "parameters": {
                 "type": "object",
@@ -1358,7 +1419,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "knowledge_search_keyword",
-            "description": "在知识库（短期记忆和基础知识）中搜索关键词，返回包含关键词的标题和内容片段。用于快速查找知识库中的相关信息。",
+            "description": "在知识库（短期记忆和基础知识）中搜索关键词，返回包含关键词的标题和内容片段。用于快速查找知识库中的相关信息。" + prompts.knowledge_citation_tool_hint,
 
             "parameters": {
                 "type": "object",
@@ -1555,16 +1616,32 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "cloud_file_patch",
-            "description": "对用户云端文件区中的单个文本文件执行精确 patch。必须且只能提供 patch 或 edits 其中一种；patch 使用统一 diff 格式，edits 使用结构化精确编辑。dry_run=true 时只返回预览 diff，不写入。",
+            "name": "cloud_file_apply_diff",
+            "description": "对用户云端文件区中的单个文本文件应用统一 diff。只接受 patch 文本；需要按 target 编辑时改用 cloud_file_edit。dry_run=true 时只返回预览 diff，不写入。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "file_path": {"type": "string", "description": "文件路径，格式如 {username}/files/{filename} 或仅 filename。"},
-                    "patch": {"type": "string", "description": "统一 diff 内容。提供 patch 时不能同时提供 edits。"},
+                    "patch": {"type": "string", "description": "统一 diff 内容，必须直接传入最终 patch 文本。"},
+                    "dry_run": {"type": "boolean", "description": "是否只预览不写入，默认 false。"},
+                    "expected_sha256": {"type": "string", "description": "可选的文件当前内容 SHA256；不一致时拒绝修改。"}
+                },
+                "required": ["file_path", "patch"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cloud_file_edit",
+            "description": "对用户云端文件区中的单个文本文件执行结构化编辑。只接受 edits 数组；需要使用统一 diff 时改用 cloud_file_apply_diff。支持精确 target、Markdown 标题/HTML 注释锚点 target、换行归一化 target、忽略首尾空白/连续空白/换行/全半角差异的 Markdown 噪声归一化 target。dry_run=true 时只返回预览 diff，不写入。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {"type": "string", "description": "文件路径，格式如 {username}/files/{filename} 或仅 filename。"},
                     "edits": {
                         "type": "array",
-                        "description": "结构化精确编辑列表。提供 edits 时不能同时提供 patch。",
+                        "description": "结构化编辑列表。优先使用短而稳定的 Markdown 标题或 HTML 注释锚点作为 target；target 多次出现时必须传 occurrence。",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -1573,7 +1650,7 @@ TOOLS = [
                                     "enum": ["replace", "insert_before", "insert_after", "delete"],
                                     "description": "编辑动作。"
                                 },
-                                "target": {"type": "string", "description": "必须精确匹配的目标文本。"},
+                                "target": {"type": "string", "description": "目标文本。支持精确匹配、Markdown 标题/HTML 注释锚点匹配、换行归一化匹配和 Markdown 噪声归一化匹配。"},
                                 "replacement": {"type": "string", "description": "replace 动作的新文本。"},
                                 "content": {"type": "string", "description": "insert_before/insert_after 动作插入的新文本。"},
                                 "occurrence": {"type": "integer", "description": "target 多次出现时指定第几处，从 1 开始。"}
@@ -1584,7 +1661,7 @@ TOOLS = [
                     "dry_run": {"type": "boolean", "description": "是否只预览不写入，默认 false。"},
                     "expected_sha256": {"type": "string", "description": "可选的文件当前内容 SHA256；不一致时拒绝修改。"}
                 },
-                "required": ["file_path"]
+                "required": ["file_path", "edits"]
             }
         }
     },

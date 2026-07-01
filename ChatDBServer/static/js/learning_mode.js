@@ -10,6 +10,9 @@
     let currentRuntimeUsername = '';
     let activePuzzleFullscreen = null;
     const puzzleSubmissionRegistryKey = 'nexora_learning_puzzle_registry_v1';
+    const SIDEBAR_CHAT_NEAR_BOTTOM_PX = 45;
+    const SIDEBAR_CHAT_BREAK_UP_PX = 0;
+    const sidebarChatScrollState = new WeakMap();
 
     // ---- Chat bridge (registered by chat.js) ----
     let chatBridge = null;
@@ -945,6 +948,163 @@
         return block;
     }
 
+    function getSidebarChatScrollState(log) {
+        let state = sidebarChatScrollState.get(log);
+
+        if (!state) {
+            state = {
+                pinUntil: 0,
+                raf: null,
+                resizeObserver: null,
+                mutationObserver: null,
+                userIntentUntil: 0,
+                lastScrollTop: 0,
+                prevInlineBehavior: null
+            };
+            sidebarChatScrollState.set(log, state);
+        }
+
+        return state;
+    }
+
+    function readSidebarChatBottomDistance(log) {
+        if (!log) return 0;
+
+        return Number(log.scrollHeight || 0)
+            - Number(log.scrollTop || 0)
+            - Number(log.clientHeight || 0);
+    }
+
+    function isSidebarChatNearBottom(log, tolerancePx = SIDEBAR_CHAT_NEAR_BOTTOM_PX) {
+        return readSidebarChatBottomDistance(log) <= tolerancePx;
+    }
+
+    function restoreSidebarChatPinBehavior(log, state) {
+        if (state.prevInlineBehavior !== null && log) {
+            log.style.scrollBehavior = String(state.prevInlineBehavior || '');
+        }
+
+        state.prevInlineBehavior = null;
+    }
+
+    function stopSidebarChatBottomPin(log) {
+        if (!log) return;
+
+        const state = getSidebarChatScrollState(log);
+        state.pinUntil = 0;
+
+        if (state.raf) {
+            cancelAnimationFrame(state.raf);
+            state.raf = null;
+        }
+
+        if (state.resizeObserver) {
+            try { state.resizeObserver.disconnect(); } catch (_) {}
+        }
+
+        if (state.mutationObserver) {
+            try { state.mutationObserver.disconnect(); } catch (_) {}
+        }
+
+        restoreSidebarChatPinBehavior(log, state);
+    }
+
+    function breakSidebarChatAutoScroll(log) {
+        if (!log) return;
+
+        log.dataset.atBottom = 'false';
+        stopSidebarChatBottomPin(log);
+    }
+
+    function markSidebarChatUserScrollIntent(log, durationMs = 1200) {
+        if (!log) return;
+
+        const state = getSidebarChatScrollState(log);
+        state.userIntentUntil = Date.now() + Math.max(120, Number(durationMs) || 1200);
+    }
+
+    function scrollSidebarChatToBottomNow(log) {
+        if (!log) return;
+
+        const state = getSidebarChatScrollState(log);
+        log.scrollTop = log.scrollHeight;
+        state.lastScrollTop = Number(log.scrollTop || 0);
+        log.dataset.atBottom = 'true';
+    }
+
+    function queueSidebarChatBottomPinScroll(log) {
+        if (!log) return;
+
+        const state = getSidebarChatScrollState(log);
+        if (state.raf) return;
+
+        state.raf = requestAnimationFrame(() => {
+            state.raf = null;
+
+            if (Date.now() > state.pinUntil || log.dataset.atBottom === 'false') {
+                stopSidebarChatBottomPin(log);
+                return;
+            }
+
+            scrollSidebarChatToBottomNow(log);
+        });
+    }
+
+    function pinSidebarChatToBottomFor(log, durationMs = 900) {
+        if (!log) return;
+
+        const state = getSidebarChatScrollState(log);
+        const dur = Math.max(120, Math.min(5000, Number(durationMs) || 900));
+        state.pinUntil = Math.max(state.pinUntil, Date.now() + dur);
+        log.dataset.atBottom = 'true';
+
+        if (state.prevInlineBehavior === null) {
+            state.prevInlineBehavior = String(log.style.scrollBehavior || '');
+        }
+
+        log.style.scrollBehavior = 'auto';
+        scrollSidebarChatToBottomNow(log);
+
+        if (!state.resizeObserver) {
+            state.resizeObserver = new ResizeObserver(() => {
+                if (Date.now() > state.pinUntil || log.dataset.atBottom === 'false') {
+                    stopSidebarChatBottomPin(log);
+                    return;
+                }
+
+                queueSidebarChatBottomPinScroll(log);
+            });
+        }
+
+        if (!state.mutationObserver) {
+            state.mutationObserver = new MutationObserver(() => {
+                if (Date.now() > state.pinUntil || log.dataset.atBottom === 'false') {
+                    stopSidebarChatBottomPin(log);
+                    return;
+                }
+
+                queueSidebarChatBottomPinScroll(log);
+            });
+        }
+
+        try { state.resizeObserver.disconnect(); } catch (_) {}
+        try { state.resizeObserver.observe(log); } catch (_) {}
+        if (log.lastElementChild) {
+            try { state.resizeObserver.observe(log.lastElementChild); } catch (_) {}
+        }
+
+        try { state.mutationObserver.disconnect(); } catch (_) {}
+        try {
+            state.mutationObserver.observe(log, {
+                childList: true,
+                subtree: true,
+                characterData: true
+            });
+        } catch (_) {}
+
+        queueSidebarChatBottomPinScroll(log);
+    }
+
     function renderSidebarChat(container) {
         const bridge = window.NexoraLearningSidebarBridge;
         if (!bridge) {
@@ -1043,14 +1203,48 @@
         if (!log.dataset.autoScrollBound) {
             log.dataset.autoScrollBound = 'true';
             log.dataset.atBottom = 'true';
+            const scrollState = getSidebarChatScrollState(log);
+            scrollState.lastScrollTop = Number(log.scrollTop || 0);
+            log.addEventListener('wheel', (event) => {
+                if (event.deltaY < 0) {
+                    markSidebarChatUserScrollIntent(log);
+                    breakSidebarChatAutoScroll(log);
+                }
+            }, { passive: true });
+            log.addEventListener('pointerdown', () => {
+                markSidebarChatUserScrollIntent(log);
+            }, { passive: true });
             log.addEventListener('scroll', () => {
-                // 实时采集：用户在底部附近时（阈值 20px）重新激活自动跟底
-                const maxScroll = log.scrollHeight - log.clientHeight;
-                log.dataset.atBottom = maxScroll <= 0 || log.scrollTop >= maxScroll - 20 ? 'true' : 'false';
+                const state = getSidebarChatScrollState(log);
+                const currentScrollTop = Number(log.scrollTop || 0);
+                const userScrolledUp = currentScrollTop < (state.lastScrollTop - SIDEBAR_CHAT_BREAK_UP_PX);
+                const hasUserScrollIntent = Date.now() <= state.userIntentUntil;
+
+                if (Date.now() <= state.pinUntil) {
+                    if (hasUserScrollIntent && userScrolledUp) {
+                        breakSidebarChatAutoScroll(log);
+                        state.lastScrollTop = currentScrollTop;
+                        return;
+                    }
+
+                    log.dataset.atBottom = 'true';
+                    state.lastScrollTop = currentScrollTop;
+                    return;
+                }
+
+                if (hasUserScrollIntent && userScrolledUp) {
+                    log.dataset.atBottom = 'false';
+                    state.lastScrollTop = currentScrollTop;
+                    return;
+                }
+
+                log.dataset.atBottom = isSidebarChatNearBottom(log, 20) ? 'true' : 'false';
+                state.lastScrollTop = currentScrollTop;
             }, { passive: true });
         }
 
         // replaceChildren 之前测量旧滚动位置
+        const oldScrollTop = log.scrollTop;
         const oldMaxScroll = log.scrollHeight - log.clientHeight;
         const wasAtBottom = log.dataset.atBottom !== 'false' &&
             (oldMaxScroll <= 0 || log.scrollTop >= oldMaxScroll - 45);
@@ -1087,7 +1281,10 @@
             });
 
             if (wasAtBottom) {
-                log.scrollTop = log.scrollHeight;
+                pinSidebarChatToBottomFor(log, generating ? 900 : 420);
+            } else {
+                log.scrollTop = oldScrollTop;
+                getSidebarChatScrollState(log).lastScrollTop = Number(log.scrollTop || 0);
             }
         }
 

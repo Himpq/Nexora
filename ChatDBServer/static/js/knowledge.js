@@ -67,8 +67,8 @@ async function toggleShare() {
     }
     const title = editingKnowledge;
     try {
-        const response = await fetch(`/api/knowledge/basis/${encodeURIComponent(title)}/share`, {
-            method: 'POST',
+        const response = await fetch(`/api/knowledge/basis/${encodeURIComponent(title)}/public`, {
+            method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ public: true })
         });

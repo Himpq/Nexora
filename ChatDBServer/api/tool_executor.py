@@ -82,6 +82,8 @@ class ToolExecutor:
             "cloud_file_write": self._file_write,
             "cloud_doc_write": self._doc_write,
             "cloud_file_patch": self._file_patch,
+            "cloud_file_apply_diff": self._file_apply_diff,
+            "cloud_file_edit": self._file_edit,
             "cloud_file_find": self._file_find,
             "cloud_file_list": self._file_list,
             "cloud_file_remove": self._file_remove,
@@ -1646,6 +1648,62 @@ class ToolExecutor:
                 edits=args.get("edits") if isinstance(args.get("edits"), list) else None,
                 dry_run=dry_run,
                 expected_sha256=args.get("expected_sha256"),
+            )
+            return json.dumps(payload, ensure_ascii=False)
+        except Exception as e:
+            return json.dumps({"success": False, "message": str(e)}, ensure_ascii=False)
+
+    def _file_apply_diff(self, args: Dict[str, Any]) -> str:
+        file_ref = args.get("file_path") or args.get("path") or args.get("file")
+        patch_text = str(args.get("patch") or "").strip()
+
+        if not file_ref:
+            return json.dumps({"success": False, "message": "file_path is required"}, ensure_ascii=False)
+
+        if not patch_text:
+            return json.dumps({"success": False, "message": "patch is required"}, ensure_ascii=False)
+
+        if isinstance(args.get("edits"), list):
+            return json.dumps({"success": False, "message": "cloud_file_apply_diff 只接受 patch，不接受 edits"}, ensure_ascii=False)
+
+        dry_run = self._safe_bool(args.get("dry_run"), False)
+
+        try:
+            payload = self._file_sandbox.patch_file(
+                file_ref=str(file_ref),
+                patch=args.get("patch"),
+                edits=None,
+                dry_run=dry_run,
+                expected_sha256=args.get("expected_sha256"),
+                tool_name="cloud_file_apply_diff",
+            )
+            return json.dumps(payload, ensure_ascii=False)
+        except Exception as e:
+            return json.dumps({"success": False, "message": str(e)}, ensure_ascii=False)
+
+    def _file_edit(self, args: Dict[str, Any]) -> str:
+        file_ref = args.get("file_path") or args.get("path") or args.get("file")
+        edits = args.get("edits")
+
+        if not file_ref:
+            return json.dumps({"success": False, "message": "file_path is required"}, ensure_ascii=False)
+
+        if not isinstance(edits, list) or not edits:
+            return json.dumps({"success": False, "message": "edits must be a non-empty array"}, ensure_ascii=False)
+
+        if str(args.get("patch") or "").strip():
+            return json.dumps({"success": False, "message": "cloud_file_edit 只接受 edits，不接受 patch"}, ensure_ascii=False)
+
+        dry_run = self._safe_bool(args.get("dry_run"), False)
+
+        try:
+            payload = self._file_sandbox.patch_file(
+                file_ref=str(file_ref),
+                patch="",
+                edits=edits,
+                dry_run=dry_run,
+                expected_sha256=args.get("expected_sha256"),
+                tool_name="cloud_file_edit",
             )
             return json.dumps(payload, ensure_ascii=False)
         except Exception as e:

@@ -103,15 +103,41 @@ class OllamaProvider(OpenAIProvider):
         key = str(model_name or "").strip().lower()
         ps_map = status_maps.get("ps_map", {}) if isinstance(status_maps, dict) else {}
         ps_info = ps_map.get(key, {}) if isinstance(ps_map, dict) else {}
+        tags_map = status_maps.get("tags_map", {}) if isinstance(status_maps, dict) else {}
+        tag_info = tags_map.get(key, {}) if isinstance(tags_map, dict) else {}
 
         running = bool(ps_info)
-        if not running:
+        installed = bool(tag_info) or running
+        display_name = (
+            self._extract_ollama_model_name(tag_info)
+            or self._extract_ollama_model_name(ps_info)
+            or str(model_name or "").strip()
+        )
+
+        if not installed:
             return {
                 "ok": False,
                 "provider": self.provider_name,
                 "api_type": self.api_type,
-                "model": model_name,
-                "installed": True,
+                "model": display_name,
+                "installed": False,
+                "running": False,
+                "status": "missing",
+                "status_label": "未安装",
+                "status_level": "danger",
+                "keep_alive": self._default_keep_alive(),
+                "message": "模型未安装或未出现在 Ollama tags 列表中",
+                "ps": None,
+                "tag": None,
+            }
+
+        if not running:
+            return {
+                "ok": True,
+                "provider": self.provider_name,
+                "api_type": self.api_type,
+                "model": display_name,
+                "installed": installed,
                 "running": False,
                 "status": "offline",
                 "status_label": "不在线",
@@ -119,6 +145,7 @@ class OllamaProvider(OpenAIProvider):
                 "keep_alive": self._default_keep_alive(),
                 "message": "模型当前未加载",
                 "ps": None,
+                "tag": tag_info if isinstance(tag_info, dict) else None,
             }
 
         keep_alive = self._default_keep_alive()
@@ -134,8 +161,8 @@ class OllamaProvider(OpenAIProvider):
             "ok": True,
             "provider": self.provider_name,
             "api_type": self.api_type,
-            "model": model_name,
-            "installed": True,
+            "model": display_name,
+            "installed": installed,
             "running": running,
             "status": status,
             "status_label": status_label,
@@ -143,6 +170,7 @@ class OllamaProvider(OpenAIProvider):
             "keep_alive": keep_alive,
             "message": message,
             "ps": ps_info if isinstance(ps_info, dict) else None,
+            "tag": tag_info if isinstance(tag_info, dict) else None,
         }
 
     def list_running_models(
@@ -152,31 +180,62 @@ class OllamaProvider(OpenAIProvider):
     ) -> Dict[str, Any]:
         status_maps = self._build_ollama_status_maps(timeout=timeout)
         formatted = []
-        for item in status_maps.get("ps_models", []) if isinstance(status_maps, dict) else []:
-            model_name = self._extract_ollama_model_name(item)
+        ordered_names = status_maps.get("ordered_names", []) if isinstance(status_maps, dict) else []
+        if not isinstance(ordered_names, list):
+            ordered_names = []
+
+        for model_key in ordered_names:
+            model_name = str(model_key or "").strip()
+
             if not model_name:
                 continue
+
+            status = self._format_ollama_model_status(model_name, status_maps)
+
+            if not status.get("installed", False) and not status.get("running", False):
+                continue
+
+            ps_info = status.get("ps") if isinstance(status.get("ps"), dict) else {}
+            display_name = str(status.get("model") or model_name).strip()
             formatted.append({
-                "id": model_name,
-                "name": model_name,
-                "status": "running",
-                "status_label": "在线",
-                "status_level": "success",
-                "running": True,
-                "installed": True,
-                "keep_alive": self._normalize_keep_alive(item.get("keep_alive", self._default_keep_alive()), default=self._default_keep_alive()),
-                "expires_at": item.get("expires_at"),
+                "id": display_name,
+                "name": display_name,
+                "status": status.get("status", "offline"),
+                "status_label": status.get("status_label", "不在线"),
+                "status_level": status.get("status_level", "warning"),
+                "running": bool(status.get("running", False)),
+                "installed": bool(status.get("installed", False)),
+                "keep_alive": status.get("keep_alive", self._default_keep_alive()),
+                "expires_at": ps_info.get("expires_at"),
                 "features": ["Chat", "Tool"],
-                "raw": item,
+                "raw": {
+                    "ps": status.get("ps"),
+                    "tag": status.get("tag"),
+                },
             })
+
+        if not formatted and (status_maps.get("tags_error") or status_maps.get("ps_error")):
+            return {
+                "ok": False,
+                "provider": self.provider_name,
+                "api_type": self.api_type,
+                "source": "ollama_tags_ps_api",
+                "count": 0,
+                "models": [],
+                "tags_error": status_maps.get("tags_error", ""),
+                "ps_error": status_maps.get("ps_error", ""),
+                "error": status_maps.get("tags_error") or status_maps.get("ps_error") or "ollama_status_failed",
+            }
+
         return {
             "ok": True,
             "provider": self.provider_name,
             "api_type": self.api_type,
-            "source": "ollama_ps_api",
+            "source": "ollama_tags_ps_api",
             "count": len(formatted),
             "models": formatted,
             "ps_error": status_maps.get("ps_error", ""),
+            "tags_error": status_maps.get("tags_error", ""),
         }
 
     def inspect_model_status(self, model_name: str, *, timeout: float = 8.0) -> Dict[str, Any]:

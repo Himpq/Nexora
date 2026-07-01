@@ -13,12 +13,16 @@ from typing import List, Dict, Any, Optional, Generator, Set, Tuple
 from urllib import request as urllib_request, error as urllib_error, parse as urllib_parse
 from email.header import Header
 from email.utils import parsedate_to_datetime
-from tools import TOOLS, canonicalize_tool_name
+from tools import TOOLS, canonicalize_tool_name, get_tools_for_config
 from tool_executor import ToolExecutor
 from tool_result_presenter import ToolResultPresenter
 from database import User, BASIS
 from conversation_manager import ConversationManager
 from context_manager import ChatContextManager
+from history_sanitizer import (
+    sanitize_assistant_visible_content,
+    strip_streamed_history_time_marker_echo,
+)
 from provider_factory import create_provider_adapter
 from temp_context_store import TempContextStore
 from server_quota import get_generation_quota_gate
@@ -149,6 +153,8 @@ STREAM_VISIBLE_FILE_TOOL_ACTIONS = {
     "cloud_file_write": "write",
     "cloud_doc_write": "write",
     "cloud_file_patch": "patch",
+    "cloud_file_apply_diff": "patch",
+    "cloud_file_edit": "patch",
     "cloud_file_read": "read",
     "cloud_file_find": "find",
     "cloud_file_list": "list",
@@ -366,7 +372,7 @@ class Model:
             pass
 
         # 工具定义
-        self.tools = self._parse_tools(TOOLS)
+        self.tools = self._parse_tools(get_tools_for_config(self.config))
         self.tool_executor = ToolExecutor(self)
         self.tool_result_presenter = ToolResultPresenter()
         self._external_tool_definitions: List[Dict[str, Any]] = []
@@ -3339,6 +3345,8 @@ class Model:
             "cloud_file_write",
             "cloud_doc_write",
             "cloud_file_patch",
+            "cloud_file_apply_diff",
+            "cloud_file_edit",
             "cloud_file_find",
             "cloud_file_list",
             "cloud_file_remove",
@@ -3379,6 +3387,7 @@ class Model:
             "knowledge_list",
             "memory_profile_read",
             "memory_short_update",
+            "memory_short_add",
             "knowledge_basis_create",
             "knowledge_basis_delete",
             "knowledge_basis_update",
@@ -3418,6 +3427,11 @@ class Model:
             "append_learning_memory",
             "update_learning_memory",
             "write_learning_memory",
+            "workspace_mem_write",
+            "workspace_mem_patch",
+            "workspace_mem_apply_diff",
+            "workspace_mem_edit",
+            "workspace_mem_add",
         }
         if func_name in no_cache_tools:
             return None
@@ -3508,6 +3522,7 @@ class Model:
             "knowledge_list",
             "memory_profile_read",
             "memory_short_update",
+            "memory_short_add",
             "knowledge_basis_create",
             "knowledge_basis_delete",
             "knowledge_basis_update",
@@ -3536,9 +3551,16 @@ class Model:
             "cloud_file_write",
             "cloud_doc_write",
             "cloud_file_patch",
+            "cloud_file_apply_diff",
+            "cloud_file_edit",
             "cloud_file_find",
             "cloud_file_list",
             "cloud_file_remove",
+            "workspace_mem_write",
+            "workspace_mem_patch",
+            "workspace_mem_apply_diff",
+            "workspace_mem_edit",
+            "workspace_mem_add",
             "local_file_read",
             "local_file_write",
             "local_file_probe",
@@ -4479,7 +4501,7 @@ class Model:
                         learning_lecture_id = str(meta_obj.get("lecture_id") or "").strip()
             self._runtime_conversation_mode = normalized_conversation_mode
             self._runtime_conversation_mode_payload = dict(normalized_conversation_mode_payload)
-            self.tools = self._parse_tools(TOOLS)
+            self.tools = self._parse_tools(get_tools_for_config(self.config))
             restored_external_tools = self._restore_external_function_tools()
 
             if restored_external_tools:
@@ -5110,6 +5132,33 @@ class Model:
                     if learning_hint:
                         current_turn_system_injections.append(learning_hint)
 
+            workspace_context = normalized_conversation_mode_payload.get("workspace_context")
+            workspace_mode_hint = prompts.build_workspace_mode_prompt(workspace_context)
+
+            if workspace_mode_hint:
+                current_turn_system_injections.append(workspace_mode_hint)
+
+            workspace_memory_hint = prompts.build_workspace_memory_injection_prompt(workspace_context)
+
+            if workspace_memory_hint:
+                current_turn_system_injections.append(workspace_memory_hint)
+
+            workspace_prompt_hint = prompts.build_workspace_prompt_injection_prompt(workspace_context)
+
+            if workspace_prompt_hint:
+                current_turn_system_injections.append(workspace_prompt_hint)
+
+            workspace_knowledge_hint = prompts.build_workspace_knowledge_injection_prompt(workspace_context)
+
+            if workspace_knowledge_hint:
+                current_turn_system_injections.append(workspace_knowledge_hint)
+
+            if effective_enable_tools:
+                memory_update_hint = prompts.build_memory_update_check_prompt(workspace_context)
+
+                if memory_update_hint:
+                    current_turn_system_injections.append(memory_update_hint)
+
             sandbox_path_list = self._build_sandbox_path_list_for_prompt(
                 sandbox_paths,
                 user_attachments,
@@ -5167,18 +5216,23 @@ class Model:
                 normalized_skill_mode,
                 normalized_active_tool_skills
             )
+            skill_system_blocks: List[str] = []
             if selected_tool_skills:
                 tool_skill_prompt_block = str(
-                    prompts.build_tool_skills_prompt(selected_tool_skills) or ""
+                    prompts.build_skill_instructions_prompt(selected_tool_skills) or ""
                 ).strip()
                 if tool_skill_prompt_block:
-                    request_system_prompt = f"{request_system_prompt}\n\n{tool_skill_prompt_block}".strip()
+                    skill_system_blocks.append(tool_skill_prompt_block)
             if effective_enable_tools and normalized_longdoc_skills:
                 longdoc_skill_prompt_block = str(
                     prompts.build_longdoc_skill_catalog_prompt(normalized_longdoc_skills) or ""
                 ).strip()
                 if longdoc_skill_prompt_block:
-                    request_system_prompt = f"{request_system_prompt}\n\n{longdoc_skill_prompt_block}".strip()
+                    skill_system_blocks.append(longdoc_skill_prompt_block)
+            if skill_system_blocks:
+                current_turn_system_injections = [
+                    "\n\n".join(skill_system_blocks).strip()
+                ] + current_turn_system_injections
             self.system_prompt = request_system_prompt
             full_context_messages = self._build_initial_messages(
                 user_msg=msg,
@@ -6423,49 +6477,7 @@ class Model:
                     round_response_id_emitted = False
 
                     def _strip_history_time_marker_echo(text):
-                        value = str(text or "")
-                        if not value:
-                            return "", False, False
-
-                        time_match = re.match(
-                            r'^\[TIME\]\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s*(?:\r?\n)?',
-                            value
-                        )
-                        if time_match:
-                            return value[time_match.end():], True, False
-
-                        old_match = re.match(
-                            r'^\[\{TIME:\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\}?\]?\s*(?:\r?\n)?',
-                            value
-                        )
-                        if old_match:
-                            return value[old_match.end():], True, False
-
-                        new_match = re.match(
-                            r'^\[历史消息时间:\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\]\s*(?:\([^)\n]*不要在回答中复述[^)\n]*\)\s*)?(?:\r?\n)?',
-                            value
-                        )
-                        if new_match:
-                            return value[new_match.end():], True, False
-
-                        wait_prefixes = (
-                            "[TIME]",
-                            "[{TIME:",
-                            "[历史消息时间:",
-                        )
-                        if any(prefix.startswith(value) for prefix in wait_prefixes):
-                            return "", False, True
-
-                        if value.startswith("[{TIME:") and "\n" not in value and len(value) < 64:
-                            return "", False, True
-
-                        if value.startswith("[TIME]") and "\n" not in value and len(value) < 64:
-                            return "", False, True
-
-                        if value.startswith("[历史消息时间:") and "\n" not in value and len(value) < 96:
-                            return "", False, True
-
-                        return value, False, False
+                        return strip_streamed_history_time_marker_echo(text)
 
                     def _append_round_delta(delta_text):
                         nonlocal raw_round_content, round_content, emitted_round_content_len, accumulated_content
@@ -6962,10 +6974,11 @@ class Model:
                             "content": round_reasoning,
                             "round": int(round_num) + 1
                         })
-                    if round_content:
+                    round_step_content = sanitize_assistant_visible_content(round_content)
+                    if round_step_content:
                         process_steps.append({
                             "type": "content",
-                            "content": round_content,
+                            "content": round_step_content,
                             "round": int(round_num) + 1
                         })
                     
@@ -7380,8 +7393,9 @@ class Model:
                     and str(step.get("type") or "").strip() not in {"", "reasoning_content"}
                     for step in (process_steps or [])
                 )
+                assistant_visible_content = sanitize_assistant_visible_content(accumulated_content)
                 has_persistable_assistant_output = bool(
-                    accumulated_content
+                    assistant_visible_content
                     or accumulated_reasoning
                     or terminal_error_content
                     or has_persistable_step
@@ -7397,7 +7411,7 @@ class Model:
 
                 if has_persistable_assistant_output:
                     print(f"[DEBUG] 保存助手消息，Steps: {len(process_steps)}")
-                    saved_assistant_content = accumulated_content
+                    saved_assistant_content = assistant_visible_content
                     if (not str(saved_assistant_content or "").strip()) and str(terminal_error_content or "").strip():
                         saved_assistant_content = str(terminal_error_content or "").strip()
                     longterm_hook_payload = {}
@@ -7480,7 +7494,7 @@ class Model:
                         metadata["longterm_hook"] = longterm_hook_payload
                     
                     # 自动生成对话标题（根据配置决定是否每轮都总结）
-                    if accumulated_content:
+                    if str(saved_assistant_content or "").strip():
                         try:
                             # 仅在第一轮或开启 continuous_summary 时生成标题
                             should_generate = True
@@ -7764,6 +7778,7 @@ class Model:
                 if target_index is None and is_regenerate:
                     target_index = regenerate_index
 
+                regenerate_overwrite = bool(is_regenerate and target_index is not None)
                 existing_content = ""
                 existing_metadata = {}
 
@@ -7775,34 +7790,43 @@ class Model:
                         target_message = messages[int(target_index)] if isinstance(messages, list) else {}
 
                         if isinstance(target_message, dict) and str(target_message.get("role") or "").strip() == "assistant":
-                            existing_content = str(target_message.get("content") or "")
-                            raw_metadata = target_message.get("metadata", {})
+                            if not regenerate_overwrite:
+                                existing_content = str(target_message.get("content") or "")
+                                raw_metadata = target_message.get("metadata", {})
 
-                            if isinstance(raw_metadata, dict):
-                                existing_metadata = {
-                                    key: value
-                                    for key, value in raw_metadata.items()
-                                    if key != "versions"
-                                }
+                                if isinstance(raw_metadata, dict):
+                                    existing_metadata = {
+                                        key: value
+                                        for key, value in raw_metadata.items()
+                                        if key != "versions"
+                                    }
                     except Exception as read_error:
                         print(f"[ERROR_PERSIST] read current assistant failed: {read_error}")
 
-                base_content = str(existing_content or accumulated_content or "").strip()
+                # 重答异常必须保存本次分支结果，不能把被覆盖消息里的旧错误串入新版本。
+                if regenerate_overwrite:
+                    base_content = str(accumulated_content or "").strip()
+                else:
+                    base_content = str(existing_content or accumulated_content or "").strip()
+
                 clean_error_msg = str(error_msg or "").strip()
                 if base_content and clean_error_msg and clean_error_msg not in base_content:
                     content_to_save = f"{base_content}\n\n{clean_error_msg}"
                 else:
                     content_to_save = base_content or clean_error_msg
 
-                merged_steps = existing_metadata.get("process_steps", [])
-
-                if not isinstance(merged_steps, list):
-                    merged_steps = []
-
-                if not merged_steps and isinstance(process_steps, list):
-                    merged_steps = list(process_steps)
+                if regenerate_overwrite:
+                    merged_steps = list(process_steps) if isinstance(process_steps, list) else []
                 else:
-                    merged_steps = list(merged_steps)
+                    merged_steps = existing_metadata.get("process_steps", [])
+
+                    if not isinstance(merged_steps, list):
+                        merged_steps = []
+
+                    if not merged_steps and isinstance(process_steps, list):
+                        merged_steps = list(process_steps)
+                    else:
+                        merged_steps = list(merged_steps)
 
                 error_step = {
                     "type": "error",
@@ -7826,7 +7850,7 @@ class Model:
                 except Exception:
                     current_conversation_mode = "chat"
 
-                metadata = dict(existing_metadata)
+                metadata = {} if regenerate_overwrite else dict(existing_metadata)
                 metadata.update({
                     "model_name": self.model_name,
                     "process_steps": merged_steps,

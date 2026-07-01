@@ -387,51 +387,100 @@ class User:
             safe_write_json(self.path + "database.json", db)
         return True
     
-    def addBasis(self, title, context, url, timeline_actor=None):
+    def _next_basis_file_id(self, data_basis):
+        max_id = 0
+
+        for item in data_basis.values():
+            src = item["src"]
+
+            try:
+                basename = os.path.basename(src)
+
+                if basename.endswith('.txt'):
+                    curr_id = int(basename[:-4])
+
+                    if curr_id > max_id:
+                        max_id = curr_id
+            except (ValueError, IndexError):
+                pass
+
+        return max_id + 1
+
+    def _create_basis_entry_locked(self, db, title, context, url):
+        data_basis = db.setdefault("data_basis", {})
+        ID = self._next_basis_file_id(data_basis)
+        now = time.time()
+        share_id = hashlib.md5(f"{title}{now}".encode()).hexdigest()[:8]
+        txt_path = f"./data/users/{self.user}/database/{ID}.txt"
+        basis_id = self._build_basis_id(title, {
+            "src": txt_path,
+            "created_at": now,
+            "share_id": share_id,
+        })
+
+        data_basis[title] = {
+            "src": txt_path,
+            "url": url,
+            "public": False,  # 默认不公开
+            "collaborative": False, # 默认不开启协同编辑
+            "model_readonly": False, # 默认允许模型按用户要求维护；可在设置中开启模型只读
+            "pin": False,
+            "share_id": share_id,
+            "basis_id": basis_id,
+            "created_at": now,
+            "updated_at": now,
+            "vector_updated_at": 0
+        }
+
+        os.makedirs(os.path.dirname(txt_path), exist_ok=True)
+        safe_write_text(txt_path, context)
+        safe_write_json(self.path + "database.json", db)
+
+        return basis_id
+
+    def _build_unique_basis_title_locked(self, db, title_prefix):
+        prefix = str(title_prefix or "").strip() or "未命名知识库"
+        data_basis = db.setdefault("data_basis", {})
+
+        if prefix not in data_basis:
+            return prefix
+
+        index = 2
+
+        while True:
+            title = f"{prefix} {index}"
+
+            if title not in data_basis:
+                return title
+
+            index += 1
+
+    def addBlankBasis(self, title_prefix="未命名知识库", timeline_actor=None):
+        """创建空白基础知识库，并返回最终标题。"""
         lock = get_user_lock(self.user)
+
         with lock:
             db = safe_read_json(self.path + "database.json", default={})
+            title = self._build_unique_basis_title_locked(db, title_prefix)
+            basis_id = self._create_basis_entry_locked(db, title, "", "")
 
-            # 找到已存在的最大ID（根据文件名 xxx.txt）
-            max_id = 0
-            data_basis = db.get("data_basis", {})
-            if data_basis:
-                for item in data_basis.values():
-                    src = item["src"]
-                    try:
-                        basename = os.path.basename(src)
-                        if basename.endswith('.txt'):
-                            curr_id = int(basename[:-4])
-                            if curr_id > max_id:
-                                max_id = curr_id
-                    except (ValueError, IndexError):
-                        pass
+        self._record_knowledge_timeline(
+            title=title,
+            after_text="",
+            action="add",
+            timeline_actor=timeline_actor,
+            extra={"url": "", "basis_id": basis_id}
+        )
 
-            ID = max_id + 1
-            share_id = hashlib.md5(f"{title}{time.time()}".encode()).hexdigest()[:8]
-            basis_id = self._build_basis_id(title, {
-                "src": f"./data/users/{self.user}/database/{ID}.txt",
-                "created_at": time.time(),
-                "share_id": share_id,
-            })
-            db.setdefault("data_basis", {})[title] = {
-                "src": f"./data/users/{self.user}/database/{ID}.txt",
-                "url": url,
-                "public": False,  # 默认不公开
-                "collaborative": False, # 默认不开启协同编辑
-                "model_readonly": False, # 默认允许模型按用户要求维护；可在设置中开启模型只读
-                "pin": False,
-                "share_id": share_id,
-                "basis_id": basis_id,
-                "created_at": time.time(),
-                "updated_at": time.time(),
-                "vector_updated_at": 0
-            }
-            txt_path = f"./data/users/{self.user}/database/{ID}.txt"
-            os.makedirs(os.path.dirname(txt_path), exist_ok=True)
-            safe_write_text(txt_path, context)
+        return title
 
-            safe_write_json(self.path + "database.json", db)
+    def addBasis(self, title, context, url, timeline_actor=None):
+        lock = get_user_lock(self.user)
+
+        with lock:
+            db = safe_read_json(self.path + "database.json", default={})
+            basis_id = self._create_basis_entry_locked(db, title, context, url)
+
         # 自动扫描连接
         self.auto_link_knowledge(title)
         self._record_knowledge_timeline(

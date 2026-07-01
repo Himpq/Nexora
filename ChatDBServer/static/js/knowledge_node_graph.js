@@ -479,9 +479,9 @@ class NodeGraph {
     async savePosition(name, pos) {
         try {
             await fetch('/api/knowledge/graph/positions', {
-                method: 'POST',
+                method: 'PUT',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ [name]: pos })
+                body: JSON.stringify({ category: name, position: pos })
             });
         } catch(e) {}
     }
