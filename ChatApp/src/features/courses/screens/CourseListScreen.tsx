@@ -1,16 +1,23 @@
 import type { BottomTabScreenProps } from "@react-navigation/bottom-tabs";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import type { CompositeScreenProps } from "@react-navigation/native";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { type CompositeScreenProps, useFocusEffect } from "@react-navigation/native";
+import { useCallback, useMemo, useState } from "react";
 import { StyleSheet, View } from "react-native";
+import { Feather } from "@expo/vector-icons";
 
 import { useSession } from "../../../app/providers/SessionProvider";
 import {
+  AppBadge,
   AppButton,
   AppCard,
   AppText,
   colors,
+  CoverImage,
+  FadeIn,
+  radius,
   Screen,
+  ScreenHeader,
+  Skeleton,
   spacing,
   StateView,
 } from "../../../design";
@@ -19,8 +26,10 @@ import {
   getMaterials,
   selectLearning,
 } from "../../../services/frontendService";
+import { getLectureCoverUri } from "../../../services/imageService";
 import type { LectureRow } from "../../../services/types";
 import type { MainTabParamList, RootStackParamList } from "../../../navigation/types";
+import { normalizeError } from "../../../utils/errors";
 
 type CourseListScreenProps = CompositeScreenProps<
   BottomTabScreenProps<MainTabParamList, "Courses">,
@@ -34,10 +43,6 @@ type CourseCardProps = {
   onToggle: () => void;
   onOpen: () => void;
 };
-
-function normalizeError(err: unknown) {
-  return err instanceof Error ? err : new Error(String(err || "Unknown error"));
-}
 
 function getLectureTitle(row: LectureRow) {
   return String(row.lecture?.title || "").trim() || "未命名课程";
@@ -54,54 +59,57 @@ function CourseCard({ row, selected, updating, onToggle, onOpen }: CourseCardPro
       ? row.books.length
       : 0;
   const meta = [category, status].filter(Boolean).join(" · ");
+  const coverUri = getLectureCoverUri(lecture);
 
   return (
-    <AppCard style={[styles.card, selected && styles.selectedCard]}>
-      <View style={styles.cardHeader}>
-        <View style={styles.titleBlock}>
-          <AppText variant="heading">{getLectureTitle(row)}</AppText>
-          {meta ? (
-            <AppText variant="caption" tone="secondary">
-              {meta}
+    <AppCard style={styles.card} active={selected} onPress={onOpen}>
+      <View style={styles.cardRow}>
+        {coverUri ? (
+          <CoverImage
+            uri={coverUri}
+            fallbackIcon="book-open"
+            style={styles.cardCover}
+            resizeMode="contain"
+            accessibilityLabel={getLectureTitle(row)}
+          />
+        ) : (
+          <View style={styles.cardCoverFallback}>
+            <Feather name="book-open" size={22} color={colors.textTertiary} />
+          </View>
+        )}
+        <View style={styles.cardBody}>
+          <View style={styles.cardHeader}>
+            <View style={styles.titleBlock}>
+              <AppText variant="heading" numberOfLines={1}>
+                {getLectureTitle(row)}
+              </AppText>
+              {meta ? (
+                <AppText variant="caption" tone="tertiary" numberOfLines={1}>
+                  {meta}
+                </AppText>
+              ) : null}
+            </View>
+            <AppBadge label={selected ? "已加入" : "未加入"} tone={selected ? "solid" : "muted"} />
+          </View>
+
+          {description ? (
+            <AppText variant="caption" tone="secondary" numberOfLines={2}>
+              {description}
             </AppText>
           ) : null}
-        </View>
-        <View style={[styles.badge, selected ? styles.selectedBadge : styles.mutedBadge]}>
-          <AppText
-            variant="caption"
-            style={selected ? styles.selectedBadgeText : styles.mutedBadgeText}
-          >
-            {selected ? "已加入" : "未加入"}
-          </AppText>
-        </View>
-      </View>
 
-      {description ? (
-        <AppText tone="secondary" numberOfLines={3} style={styles.description}>
-          {description}
-        </AppText>
-      ) : null}
-
-      <View style={styles.footer}>
-        <AppText variant="caption" tone="secondary">
-          教材 {booksCount} 本
-        </AppText>
-        <View style={styles.actions}>
-          {selected ? (
+          <View style={styles.cardFooter}>
+            <AppText variant="caption" tone="tertiary">
+              教材 {booksCount} 本
+            </AppText>
             <AppButton
-              title="查看教材"
+              title={selected ? "退出学习" : "加入学习"}
+              variant={selected ? "ghost" : "primary"}
+              size="sm"
               loading={updating}
-              onPress={onOpen}
-              style={styles.selectButton}
+              onPress={onToggle}
             />
-          ) : null}
-          <AppButton
-            title={selected ? "退出学习" : "加入学习"}
-            variant={selected ? "secondary" : "primary"}
-            loading={updating}
-            onPress={onToggle}
-            style={styles.selectButton}
-          />
+          </View>
         </View>
       </View>
     </AppCard>
@@ -159,9 +167,13 @@ export function CourseListScreen({ navigation }: CourseListScreenProps) {
     }
   }, []);
 
-  useEffect(() => {
-    void loadCourses();
-  }, [loadCourses]);
+  // Reload on focus so progress stays in sync after returning from the
+  // reader (materials carries per-user progress).
+  useFocusEffect(
+    useCallback(() => {
+      void loadCourses();
+    }, [loadCourses]),
+  );
 
   const handleToggle = useCallback(
     async (row: LectureRow) => {
@@ -203,18 +215,25 @@ export function CourseListScreen({ navigation }: CourseListScreenProps) {
     [navigation],
   );
 
-  if (loading) {
+  if (loading && rows.length === 0) {
     return (
-      <Screen>
-        <StateView title="正在加载课程" message="正在读取课程库和学习状态..." loading />
+      <Screen scroll tabBarSpace>
+        <Skeleton width="45%" height={28} style={styles.skeletonHeader} />
+        <Skeleton width="70%" height={14} style={styles.skeletonSub} />
+        <View style={styles.skeletonList}>
+          <Skeleton height={120} borderRadius={radius.lg} />
+          <Skeleton height={120} borderRadius={radius.lg} />
+          <Skeleton height={120} borderRadius={radius.lg} />
+        </View>
       </Screen>
     );
   }
 
   if (error) {
     return (
-      <Screen>
+      <Screen tabBarSpace>
         <StateView
+          icon="alert-triangle"
           title="课程加载失败"
           message={error.message}
           actionLabel="重试"
@@ -226,8 +245,9 @@ export function CourseListScreen({ navigation }: CourseListScreenProps) {
 
   if (rows.length === 0) {
     return (
-      <Screen>
+      <Screen tabBarSpace>
         <StateView
+          icon="book"
           title="暂无课程"
           message="当前课程库还没有可加入的课程。"
           actionLabel="刷新"
@@ -238,57 +258,44 @@ export function CourseListScreen({ navigation }: CourseListScreenProps) {
   }
 
   return (
-    <Screen scroll>
-      <View style={styles.header}>
-        <View style={styles.titleBlock}>
-          <AppText variant="title">课程库</AppText>
-          <AppText tone="secondary">
-            共 {rows.length} 门课程，已加入 {selectedLectureIdSet.size} 门。
-          </AppText>
-        </View>
-        <AppButton title="刷新" variant="ghost" onPress={() => void loadCourses()} />
-      </View>
+    <Screen scroll tabBarSpace onRefresh={() => void loadCourses()} refreshing={loading}>
+      <ScreenHeader
+        title="课程库"
+        subtitle={`共 ${rows.length} 门课程，已加入 ${selectedLectureIdSet.size} 门`}
+      />
 
       {operationError ? (
-        <AppCard style={styles.bannerCard}>
-          <AppText tone="danger" style={styles.bannerText}>
-            {operationError.message}
-          </AppText>
-          <AppButton
-            title="关闭"
-            variant="ghost"
-            onPress={() => setOperationError(null)}
-            style={styles.bannerButton}
-          />
+        <AppCard variant="muted" style={styles.errorBanner}>
+          <View style={styles.errorContent}>
+            <AppText tone="danger" variant="caption" numberOfLines={2}>
+              ⚠ {operationError.message}
+            </AppText>
+            <AppButton title="关闭" variant="ghost" size="sm" onPress={() => setOperationError(null)} />
+          </View>
         </AppCard>
       ) : null}
 
       {learningStateError ? (
-        <AppCard style={styles.bannerCard}>
-          <AppText tone="secondary" style={styles.bannerText}>
+        <AppCard variant="muted" style={styles.warningBanner}>
+          <AppText variant="caption" tone="muted">
             学习状态加载失败，已按未加入状态显示。{learningStateError.message}
           </AppText>
-          <AppButton
-            title="关闭"
-            variant="ghost"
-            onPress={() => setLearningStateError(null)}
-            style={styles.bannerButton}
-          />
         </AppCard>
       ) : null}
 
-      {rows.map((row) => {
+      {rows.map((row, i) => {
         const lectureId = String(row.lecture?.id || "").trim();
         const selected = selectedLectureIdSet.has(lectureId);
         return (
-          <CourseCard
-            key={lectureId || getLectureTitle(row)}
-            row={row}
-            selected={selected}
-            updating={updatingLectureId === lectureId}
-            onToggle={() => void handleToggle(row)}
-            onOpen={() => openCourseDetail(row)}
-          />
+          <FadeIn key={lectureId || getLectureTitle(row)} index={i}>
+            <CourseCard
+              row={row}
+              selected={selected}
+              updating={updatingLectureId === lectureId}
+              onToggle={() => void handleToggle(row)}
+              onOpen={() => openCourseDetail(row)}
+            />
+          </FadeIn>
         );
       })}
     </Screen>
@@ -296,71 +303,68 @@ export function CourseListScreen({ navigation }: CourseListScreenProps) {
 }
 
 const styles = StyleSheet.create({
-  header: {
-    gap: spacing.md,
-  },
   titleBlock: {
     flex: 1,
-    gap: spacing.xs,
+    gap: 2,
   },
   card: {
+    padding: spacing.md,
+  },
+  cardRow: {
+    flexDirection: "row",
     gap: spacing.md,
   },
-  selectedCard: {
-    borderColor: colors.primary,
+  cardCover: {
+    width: 88,
+    height: 64,
+    borderRadius: radius.md,
+  },
+  cardCoverFallback: {
+    width: 88,
+    height: 64,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceMuted,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cardBody: {
+    flex: 1,
+    gap: spacing.xs,
+    justifyContent: "center",
   },
   cardHeader: {
     alignItems: "flex-start",
     flexDirection: "row",
-    gap: spacing.md,
+    gap: spacing.sm,
   },
-  badge: {
-    borderRadius: 999,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs,
-  },
-  selectedBadge: {
-    backgroundColor: colors.primaryMuted,
-  },
-  mutedBadge: {
-    backgroundColor: colors.surfaceMuted,
-  },
-  selectedBadgeText: {
-    color: colors.primary,
-    fontWeight: "700",
-  },
-  mutedBadgeText: {
-    color: colors.textMuted,
-    fontWeight: "700",
-  },
-  description: {
-    flexShrink: 1,
-  },
-  footer: {
-    alignItems: "stretch",
-    gap: spacing.md,
-  },
-  actions: {
-    alignItems: "center",
+  cardFooter: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    justifyContent: "flex-end",
-    gap: spacing.md,
-  },
-  selectButton: {
-    minWidth: 112,
-  },
-  bannerCard: {
     alignItems: "center",
-    borderColor: colors.danger,
+    justifyContent: "space-between",
+    gap: spacing.sm,
+    marginTop: 2,
+  },
+  skeletonHeader: {
+    marginBottom: spacing.sm,
+  },
+  skeletonSub: {
+    marginBottom: spacing.lg,
+  },
+  skeletonList: {
+    gap: spacing.lg,
+  },
+  errorBanner: {
+    borderLeftWidth: 4,
+    borderLeftColor: colors.danger,
+  },
+  errorContent: {
     flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     gap: spacing.md,
   },
-  bannerText: {
-    flex: 1,
-  },
-  bannerButton: {
-    minHeight: 36,
-    paddingHorizontal: spacing.sm,
+  warningBanner: {
+    borderLeftWidth: 4,
+    borderLeftColor: colors.warning,
   },
 });

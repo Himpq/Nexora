@@ -43,7 +43,13 @@ export type Lecture = {
   description?: string;
   category?: string;
   status?: string;
+  progress?: number;
+  current_chapter?: string;
+  next_chapter?: string;
   study_hours?: number;
+  cover_path?: string;
+  cover?: string;
+  teacher?: string | string[];
   [key: string]: unknown;
 };
 
@@ -54,7 +60,17 @@ export type Book = {
   source_type?: string;
   status?: string;
   text_status?: string;
+  refinement_status?: string;
+  coarse_status?: string;
+  intensive_status?: string;
+  section_status?: string;
   vector_status?: string;
+  vector_provider?: string;
+  chunks_count?: number;
+  vector_count?: number;
+  error?: string;
+  cover_path?: string;
+  cover?: string;
   [key: string]: unknown;
 };
 
@@ -97,5 +113,54 @@ export type ModelOption = {
   id?: string;
   name?: string;
   model?: string;
+  [key: string]: unknown;
+};
+
+export type LearningRuntimeContext = {
+  learning?: boolean;
+  lecture_id?: string;
+  system_prompt?: string;
+  context_blocks?: Array<{
+    type?: string;
+    title?: string;
+    content?: string;
+    [key: string]: unknown;
+  }>;
+  active_tool_skills?: Array<{
+    id?: string;
+    title?: string;
+    required_tools?: string[];
+    mode?: string;
+    author?: string;
+    version?: string;
+    main_content?: string;
+    [key: string]: unknown;
+  }>;
+  cards?: Array<Record<string, unknown>>;
+  meta?: {
+    source?: string;
+    selected_lecture_count?: number;
+    total_books?: number;
+    lecture_id?: string;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+};
+
+export type LearningChatMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+};
+
+export type LearningChatResponse = {
+  success: boolean;
+  content?: string;
+  api_mode?: string;
+  endpoint?: string;
+  conversation_id?: string;
+  username?: string;
+  model?: string;
+  raw?: unknown;
+  resolved_prompts?: unknown;
   [key: string]: unknown;
 };

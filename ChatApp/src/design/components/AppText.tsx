@@ -4,8 +4,8 @@ import { StyleSheet, Text, TextProps } from "react-native";
 import { colors, typography } from "../tokens";
 
 type AppTextProps = TextProps & {
-  variant?: "title" | "heading" | "body" | "caption";
-  tone?: "primary" | "secondary" | "muted" | "danger";
+  variant?: "display" | "displayLg" | "title" | "heading" | "body" | "bodyStrong" | "caption" | "label" | "overline";
+  tone?: "primary" | "secondary" | "tertiary" | "muted" | "inverse" | "inverseMuted" | "danger" | "success";
 };
 
 export function AppText({
@@ -14,43 +14,28 @@ export function AppText({
   style,
   ...props
 }: AppTextProps) {
-  return <Text {...props} style={[styles.base, styles[variant], toneStyles[tone], style]} />;
+  return <Text {...props} style={[styles[variant], toneStyles[tone], style]} />;
 }
 
 const styles = StyleSheet.create({
-  base: {
-    color: colors.text,
-    letterSpacing: 0,
-  },
-  title: {
-    fontSize: typography.title,
-    fontWeight: "700",
-  },
-  heading: {
-    fontSize: typography.heading,
-    fontWeight: "700",
-  },
-  body: {
-    fontSize: typography.body,
-    lineHeight: 22,
-  },
-  caption: {
-    fontSize: typography.caption,
-    lineHeight: 17,
-  },
+  display: typography.display,
+  displayLg: typography.displayLg,
+  title: typography.title,
+  heading: typography.heading,
+  body: typography.body,
+  bodyStrong: typography.bodyStrong,
+  caption: typography.caption,
+  label: typography.label,
+  overline: { ...typography.overline, textTransform: "uppercase" },
 });
 
 const toneStyles = StyleSheet.create({
-  primary: {
-    color: colors.text,
-  },
-  secondary: {
-    color: colors.textSecondary,
-  },
-  muted: {
-    color: colors.textMuted,
-  },
-  danger: {
-    color: colors.danger,
-  },
+  primary: { color: colors.text },
+  secondary: { color: colors.textSecondary },
+  tertiary: { color: colors.textTertiary },
+  muted: { color: colors.textMuted },
+  inverse: { color: colors.textInverse },
+  inverseMuted: { color: colors.textInverseMuted },
+  danger: { color: colors.danger },
+  success: { color: colors.success },
 });
