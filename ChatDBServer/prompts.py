@@ -405,7 +405,7 @@ memory_update_workspace_rule_template = """- Workspace 记忆：当前对话归�
 
 memory_update_check_prompt_template = """## Current Turn Memory Check
 在最终回答前，主动判断当前用户消息和本轮工具结果是否产生需要沉淀的信息；如果需要，先调用对应记忆工具，工具成功后再继续回答。
-- 用户画像短期记忆：当用户明确表达新的个人偏好、背景、目标、当前事项、沟通风格或反复要求时，使用 memory_short_update 更新完整画像。保持约 400 字内，合并旧画像，不要只写新增片段；不要记录项目事实、代码日志、未经确认推测或一次性问题。
+- 用户画像短期记忆：当用户明确表达新的个人偏好、背景、目标、当前事项、沟通风格或反复要求时，使用 memory_short_update 更新完整画像。保持信息完整、结构紧凑，合并旧画像，不要只写新增片段；不要记录项目事实、代码日志、未经确认推测或一次性问题。
 - memory_short_add 仅用于兼容旧式短期条目；默认不要用它代替用户画像更新，除非用户明确要求追加一条旧式短期记忆。
 {{workspace_memory_rule}}
 - 工具未开放时：如果当前只开放 runtime_tool_select 或 runtime_tool_enable，先选择或启用需要的记忆工具；不要因为工具尚未开放而跳过应写的记忆。

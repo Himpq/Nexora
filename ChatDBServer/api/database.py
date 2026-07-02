@@ -23,7 +23,7 @@ from text_patch import (
 
 SHORT_TIME = 0
 BASIS = 1
-USER_PROFILE_MAX_CHARS = 400
+USER_PROFILE_MAX_CHARS = 0
 USER_PROFILE_DEFAULT_TEMPLATE = "用户权限:{user_permission}，还没有写入其他信息。"
 
 
@@ -70,17 +70,18 @@ class User:
 
     def _normalize_user_profile_text(self, text, user_permission="", max_chars=USER_PROFILE_MAX_CHARS):
         try:
-            max_len = int(max_chars or USER_PROFILE_MAX_CHARS)
+            max_len = int(max_chars or 0)
         except Exception:
-            max_len = USER_PROFILE_MAX_CHARS
-        max_len = max(60, min(max_len, 2000))
+            max_len = 0
 
         normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
         normalized = re.sub(r"\s+", " ", normalized).strip()
         if not normalized:
             normalized = self._default_user_profile_text(user_permission=user_permission)
-        if len(normalized) > max_len:
+
+        if max_len > 0 and len(normalized) > max_len:
             normalized = normalized[:max_len].rstrip()
+
         return normalized
 
     def get_user_profile_memory(self, user_permission="", max_chars=USER_PROFILE_MAX_CHARS):

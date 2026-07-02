@@ -522,7 +522,7 @@ class ToolExecutor:
             "success": True,
             "profile": str(profile or ""),
             "length": len(str(profile or "")),
-            "max_length": 400
+            "max_length": 0
         }
         return json.dumps(payload, ensure_ascii=False)
 
@@ -540,7 +540,7 @@ class ToolExecutor:
             "success": True,
             "profile": str(profile or ""),
             "length": len(str(profile or "")),
-            "max_length": 400,
+            "max_length": 0,
             "reset": reset
         }
         return json.dumps(payload, ensure_ascii=False)

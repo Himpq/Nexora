@@ -859,7 +859,7 @@ def _papi_handle_completion_request(data=None, username=None, request_path=''):
             bridge_reason_parts.append('colon_model_id')
 
         # OpenAI-compatible/Ollama adapters should default to chat bridge here.
-        if adapter_api_type in {'openai', 'openai_compatible', 'ollama'}:
+        if adapter_api_type in {'openai', 'openai_compatible', 'ollama', 'vllm'}:
             bridge_reason_parts.append(f'api_type={adapter_api_type}')
 
         if _as_bool(data.get('force_chat_bridge', False), False):
@@ -889,7 +889,7 @@ def _papi_handle_completion_request(data=None, username=None, request_path=''):
             )
 
     client_cache = _get_client_cache()
-    cache_key = f"{adapter.client_cache_key(api_key, scope='papi')}|timeout={timeout_seconds}"
+    cache_key = f"{adapter.client_cache_key(api_key, scope='papi', base_url=base_url)}|timeout={timeout_seconds}"
     if cache_key in client_cache:
         client = client_cache[cache_key]
     else:

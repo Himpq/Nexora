@@ -900,7 +900,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "memory_profile_read",
-            "description": "读取当前用户短期记忆中的用户画像（约400字）。",
+            "description": "读取当前用户短期记忆中的用户画像。",
             "parameters": {
                 "type": "object",
                 "properties": {},
@@ -912,7 +912,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "memory_short_update",
-            "description": "覆盖更新当前用户画像短期记忆（约400字，会归一化并截断）。适合合并、修正或重写用户偏好、背景、目标和沟通风格。",
+            "description": "覆盖更新当前用户画像短期记忆（会归一化保存）。适合合并、修正或重写用户偏好、背景、目标和沟通风格。",
             "parameters": {
                 "type": "object",
                 "properties": {

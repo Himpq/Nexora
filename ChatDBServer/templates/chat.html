@@ -19,7 +19,7 @@
     <script src="https://uicdn.toast.com/editor/latest/toastui-editor-all.min.js"></script>
 
     <!-- App Styles -->
-    <link rel="stylesheet" href="/static/css/style.css?v=20260630_workspace_header_02">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260702_file_center_no_select_01">
     <link rel="stylesheet" href="/static/css/notification.css?v=20260630_chat_notification_07">
     <link rel="stylesheet" href="/static/css/message_avatar.css?v=20260630_user_avatar_slot_01">
     <link rel="stylesheet" href="/static/css/workspace_projects.css?v=20260630_workspace_multi_user_01">
@@ -59,6 +59,10 @@
                     <button id="workspacesBtn" class="toolbar-item" type="button">
                         <i class="fa-regular fa-window-maximize" aria-hidden="true"></i>
                         <span>Workspaces</span>
+                    </button>
+                    <button id="fileCenterBtn" class="toolbar-item" type="button">
+                        <i class="fa-regular fa-folder-open" aria-hidden="true"></i>
+                        <span>Files</span>
                     </button>
                 </div>
             </div>
@@ -137,7 +141,6 @@
                             <line x1="8" y1="9" x2="14" y2="9"></line>
                             <line x1="8" y1="13" x2="14" y2="13"></line>
                         </svg>
-                        <span class="notes-toggle-badge" id="notesCountBadge">0</span>
                     </button>
                    <button class="btn-icon chat-notification-toggle" id="toggleNotificationPanel" title="通知" aria-haspopup="dialog" aria-expanded="false">
                         <i class="fa-regular fa-bell" aria-hidden="true"></i>
@@ -164,7 +167,7 @@
                         </div>
                    </div>
                    {% if nexora_mail_enabled %}
-                   <button class="btn-icon" id="toggleMailView" title="邮件" onclick="openMailPlaceholderView()">
+                   <button class="btn-icon" id="toggleMailView" title="邮件" onclick="openMailPlaceholderView()" hidden aria-hidden="true">
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"></path>
                             <polyline points="22,6 12,13 2,6"></polyline>
@@ -699,7 +702,7 @@
     
     <!-- Scripts -->
     <script src="/static/js/learning_workspace_layout.js?v=20260614_01"></script>
-    <script src="/static/js/chat.js?v=20260630_workspace_multi_user_01"></script>
+    <script src="/static/js/chat.js?v=20260702_file_center_return_selection_01"></script>
     <script src="/static/js/workspace.js?v=20260630_workspace_multi_user_01"></script>
     <script src="/static/js/notification.js?v=20260630_chat_notification_10"></script>
     <script src="/static/js/message_avatar.js?v=20260630_user_avatar_slot_01"></script>
@@ -836,7 +839,7 @@
                     </div>
                     <div class="form-group" style="margin-bottom: 10px;">
                         <label>api_type</label>
-                        <input id="adminProviderApiTypeInput" class="input-modern" placeholder="openai / openai_compatible / dashscope / volcengine / ollama" value="openai">
+                        <input id="adminProviderApiTypeInput" class="input-modern" placeholder="openai / openai_compatible / dashscope / volcengine / ollama / vllm" value="openai">
                         <div style="margin-top: 6px; font-size: 11px; color: #64748b; line-height: 1.45;">这是 provider_factory 的分流键；默认值为 openai。</div>
                     </div>
                     <div class="form-group" style="margin-bottom: 10px;">

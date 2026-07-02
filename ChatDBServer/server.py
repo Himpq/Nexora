@@ -11008,7 +11008,7 @@ def _fetch_provider_models_live(provider_name: str, capability: str, timeout: fl
     api_key = str(provider_cfg.get('api_key', '') or '').strip()
     base_url = str(provider_cfg.get('base_url', '') or '').strip()
     api_type = str(getattr(adapter, 'api_type', '') or '').strip().lower()
-    if api_type != 'ollama' and not api_key:
+    if api_type not in {'ollama', 'vllm'} and not api_key:
         return False, 400, {
             'success': False,
             'message': f'provider {provider_name} 未配置 api_key',
@@ -13927,7 +13927,7 @@ def _build_knowledge_list_payload(username, requested_title='', workspace_scoped
     permission_hint = get_user_permission_hint_by_username(username)
     user_profile_memory = '' if workspace_scoped else user.get_user_profile_memory(
         user_permission=permission_hint,
-        max_chars=400
+        max_chars=0
     )
     basis_knowledge_raw = user.getKnowledgeList(1)  # 基础知识
 
@@ -14606,7 +14606,7 @@ def get_all_short():
         permission_hint = get_user_permission_hint_by_username(username)
         profile = user.get_user_profile_memory(
             user_permission=permission_hint,
-            max_chars=400
+            max_chars=0
         )
         return jsonify({
             'success': True,
@@ -14631,7 +14631,7 @@ def get_short_content(title):
         permission_hint = get_user_permission_hint_by_username(username)
         profile = user.get_user_profile_memory(
             user_permission=permission_hint,
-            max_chars=400
+            max_chars=0
         )
         return jsonify({
             'success': True,
@@ -14663,14 +14663,14 @@ def add_short():
         profile = user.set_user_profile_memory(
             profile_text=profile_text,
             user_permission=permission_hint,
-            max_chars=400
+            max_chars=0
         )
         return jsonify({
             'success': True,
             'message': '短期记忆画像已更新',
             'profile': profile,
             'length': len(str(profile or '')),
-            'max_length': 400
+            'max_length': 0
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
@@ -14695,14 +14695,14 @@ def update_short(title):
         profile = user.set_user_profile_memory(
             profile_text=profile_text,
             user_permission=permission_hint,
-            max_chars=400
+            max_chars=0
         )
         return jsonify({
             'success': True,
             'message': '短期记忆画像已更新',
             'profile': profile,
             'length': len(str(profile or '')),
-            'max_length': 400
+            'max_length': 0
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
@@ -14720,7 +14720,7 @@ def delete_short(title):
         profile = user.set_user_profile_memory(
             profile_text='',
             user_permission=permission_hint,
-            max_chars=400
+            max_chars=0
         )
         return jsonify({
             'success': True,
@@ -14742,7 +14742,7 @@ def clear_short_memory():
         profile = user.set_user_profile_memory(
             profile_text='',
             user_permission=permission_hint,
-            max_chars=400
+            max_chars=0
         )
         return jsonify({
             'success': True,
@@ -14762,13 +14762,13 @@ def get_user_profile_memory_api():
         permission_hint = get_user_permission_hint_by_username(username)
         profile = user.get_user_profile_memory(
             user_permission=permission_hint,
-            max_chars=400
+            max_chars=0
         )
         return jsonify({
             'success': True,
             'profile': profile,
             'length': len(str(profile or '')),
-            'max_length': 400
+            'max_length': 0
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
@@ -14788,13 +14788,13 @@ def update_user_profile_memory_api():
         profile = user.set_user_profile_memory(
             profile_text=profile_text,
             user_permission=permission_hint,
-            max_chars=400
+            max_chars=0
         )
         return jsonify({
             'success': True,
             'profile': profile,
             'length': len(str(profile or '')),
-            'max_length': 400,
+            'max_length': 0,
             'reset': reset
         })
     except Exception as e:

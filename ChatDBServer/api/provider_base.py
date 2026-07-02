@@ -434,8 +434,10 @@ class ProviderInterface(ABC):
         """
         raise NotImplementedError
 
-    def client_cache_key(self, api_key: str, scope: str = "primary") -> str:
-        return f"{scope}_{self.provider_name}_{self.api_type}_{str(api_key or '')}"
+    def client_cache_key(self, api_key: str, scope: str = "primary", base_url: str = "") -> str:
+        base_url_key = str(base_url or "").strip().rstrip("/")
+        api_key_key = str(api_key or "").strip()
+        return f"{scope}_{self.provider_name}_{self.api_type}_{base_url_key}_{api_key_key}"
 
     def use_responses_api(self, request_options: Optional[Dict[str, Any]] = None) -> bool:
         """Whether this provider should use Responses API for current request."""

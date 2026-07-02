@@ -54,6 +54,7 @@ MODEL_ADAPTERS_PATH = os.path.join(DATA_DIR, 'model_adapters.json')
 MODEL_PERMISSIONS_PATH = os.path.join(DATA_DIR, 'model_permissions.json')
 MODELS_CONTEXT_WINDOW_CACHE_LEGACY_PATH = os.path.join(BASE_DIR, 'models_context_window.json')
 MODELS_CONTEXT_WINDOW_CACHE_PATH = os.path.join(DATA_DIR, 'res', 'models_context_window.json')
+MAIL_TOOL_NAMES = {"send_email", "get_email", "get_email_list"}
 
 DEFAULT_MODEL_ADAPTER_CONFIG = {
     "version": 1,
@@ -325,7 +326,7 @@ class Model:
 
         # 初始化客户端 (使用全局缓存实现连接复用)
         global _CLIENT_CACHE
-        cache_key = self.provider_adapter.client_cache_key(api_key, scope="primary")
+        cache_key = self.provider_adapter.client_cache_key(api_key, scope="primary", base_url=base_url)
         
         if cache_key in _CLIENT_CACHE:
             self.client = _CLIENT_CACHE[cache_key]
@@ -1119,7 +1120,7 @@ class Model:
             raise ValueError(f"provider {provider_name} 未配置 api_key")
 
         global _CLIENT_CACHE
-        cache_key = adapter.client_cache_key(api_key, scope="search")
+        cache_key = adapter.client_cache_key(api_key, scope="search", base_url=base_url)
         if cache_key in _CLIENT_CACHE:
             return _CLIENT_CACHE[cache_key]
 
@@ -1831,6 +1832,20 @@ class Model:
             "local_mail": local_mail,
         }, None
 
+    def _can_inject_mail_tools(self) -> Tuple[bool, str]:
+        """判断当前会话是否应向模型注入 NexoraMail 工具定义。"""
+        cfg = self._get_nexora_mail_config()
+
+        if not cfg.get("enabled"):
+            return False, "NexoraMail 未启用"
+
+        _, bind_err = self._resolve_local_mail_binding()
+
+        if bind_err:
+            return False, bind_err
+
+        return True, ""
+
     def _get_nexora_mail_primary_domain(self, group_name: str) -> Optional[str]:
         ok, _, data = self._nexora_mail_call("/api/groups", method="GET")
         if not ok or not isinstance(data, dict):
@@ -2260,8 +2275,7 @@ class Model:
         learning_mode = str(getattr(self, "_runtime_conversation_mode", "") or "").strip().lower() == "learning"
         rag_cfg = CONFIG.get("rag_database", {}) if isinstance(CONFIG, dict) else {}
         rag_enabled = bool(rag_cfg.get("rag_database_enabled", False))
-        mail_cfg = CONFIG.get("nexora_mail", {}) if isinstance(CONFIG, dict) else {}
-        mail_enabled = bool(mail_cfg.get("nexora_mail_enabled", False))
+        mail_tools_enabled, _ = self._can_inject_mail_tools()
         nexora_search_cfg = CONFIG.get("nexora_search", {}) if isinstance(CONFIG, dict) else {}
         nexora_search_enabled = bool(nexora_search_cfg.get("nexora_search_enabled", False))
         gen_image_cfg = CONFIG.get("gen_image", {}) if isinstance(CONFIG, dict) else {}
@@ -2300,14 +2314,16 @@ class Model:
             if tool["type"] == "function":
                 func_def = tool["function"]
                 func_name = str(func_def.get("name") or "").strip()
-                if canonicalize_tool_name(func_name) in disabled_injected_tool_names:
+                canonical_func_name = canonicalize_tool_name(func_name)
+
+                if canonical_func_name in disabled_injected_tool_names:
                     continue
 
                 if learning_mode and func_name not in LEARNING_ALLOWED_BASE_TOOL_NAMES:
                     continue
                 if func_def.get("name") in ["knowledge_search_vector", "cloud_file_search_semantic"] and not rag_enabled:
                     continue
-                if func_def.get("name") in ["send_email", "get_email", "get_email_list"] and not mail_enabled:
+                if canonical_func_name in MAIL_TOOL_NAMES and not mail_tools_enabled:
                     continue
                 if func_def.get("name") in ["server_web_search", "server_render_page"] and not nexora_search_enabled:
                     continue
@@ -4973,7 +4989,17 @@ class Model:
             self._longdoc_skill_catalog = normalized_longdoc_skills
             if normalized_conversation_mode == "longterm":
                 normalized_tool_mode = "force"
+
             effective_enable_tools = normalized_tool_mode != "off"
+
+            if effective_enable_tools and self.provider_adapter.should_disable_function_tools(self.model_name):
+                print(
+                    f"[TOOLS-DISABLED] provider={self.provider} model={self.model_name} "
+                    f"reason=provider_function_tools_disabled"
+                )
+                effective_enable_tools = False
+                normalized_tool_mode = "off"
+
             self._init_runtime_tool_selection(
                 enable_tools=effective_enable_tools,
                 tool_mode=normalized_tool_mode
@@ -6454,6 +6480,35 @@ class Model:
                              chunks = safe_iter(response_iterator)
                              is_retry_mode = True
                         else:
+                             try:
+                                 error_type = type(e).__name__
+                                 status_code = getattr(e, "status_code", "")
+                                 error_body = getattr(e, "body", None)
+                                 request_tools = request_params.get("tools", [])
+                                 request_messages = request_params.get("messages", request_params.get("input", []))
+                                 tool_names = []
+
+                                 if isinstance(request_tools, list):
+
+                                     for tool_item in request_tools[:20]:
+                                         spec = self._extract_function_tool_spec(tool_item if isinstance(tool_item, dict) else {})
+
+                                         if spec and spec.get("name"):
+                                             tool_names.append(spec["name"])
+
+                                 print(
+                                     f"[STREAM_OPEN_ERROR] provider={self.provider} model={self.model_name} "
+                                     f"type={error_type} status={status_code} "
+                                     f"tools_count={len(request_tools) if isinstance(request_tools, list) else 0} "
+                                     f"tool_names={tool_names} "
+                                     f"messages_count={len(request_messages) if isinstance(request_messages, list) else 0} "
+                                     f"stream_options={request_params.get('stream_options', {})} "
+                                     f"extra_body_keys={list((request_params.get('extra_body') or {}).keys()) if isinstance(request_params.get('extra_body'), dict) else []} "
+                                     f"body={str(error_body or '')[:500]} error={str(e)[:500]}"
+                                 )
+                             except Exception as log_error:
+                                 print(f"[STREAM_OPEN_ERROR] failed_to_log={log_error}")
+
                              raise e
 
                     # Process Stream
@@ -8343,7 +8398,7 @@ class Model:
 
             # 使用统一的缓存逻辑
             global _CLIENT_CACHE
-            cache_key = adapter.client_cache_key(api_key, scope="title")
+            cache_key = adapter.client_cache_key(api_key, scope="title", base_url=base_url)
 
             if cache_key in _CLIENT_CACHE:
                 client = _CLIENT_CACHE[cache_key]

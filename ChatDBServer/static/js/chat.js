@@ -1195,6 +1195,8 @@ let mailViewState = {
     inboxRequestId: 0,
     detailRequestId: 0
 };
+let mailEntryAvailable = false;
+let mailEntryVisibilityPromise = null;
 const MAIL_SIDEBAR_COLLAPSED_KEY = 'nexora_mail_sidebar_collapsed';
 const MAIL_SELECTED_ID_KEY = 'nexora_mail_selected_id';
 const MAIL_LIST_SCROLL_KEY = 'nexora_mail_list_scroll';
@@ -1344,8 +1346,10 @@ const imageViewerState = {
 let fileDragDepth = 0;
 let fileDropHighlightTarget = null;
 const NOTES_DEFAULT_NOTEBOOK_ID = 'nb_default';
-const NOTES_LEGACY_STORE_KEY = 'nexora_notes_store_v2';
-const NOTES_LEGACY_PREFIX = 'nexora_notes_conv_';
+const NOTES_SYNC_STORE_KEY = 'nc_sync_notes_data_payload';
+const NOTES_SYNC_TS_KEY = 'nc_sync_notes_ts';
+const NOTES_HTML_SNAPSHOT_KEY = 'nc_notes_html_snapshot';
+const NOTES_HTML_TS_KEY = 'nc_notes_html_ts';
 const NOTES_MOBILE_PANEL_POS_KEY = 'nexora_notes_mobile_panel_pos_v1';
 const NOTES_PANEL_LAYOUT_KEY = 'nexora_notes_panel_layout_v2';
 const NOTES_CLOUD_SYNC_DEBOUNCE_MS = 240;
@@ -6082,9 +6086,76 @@ function saveMailLastOpenTs(ts) {
     }
 }
 
+function getMailToggleButton() {
+    return document.getElementById('toggleMailView');
+}
+
+function setMailEntryVisible(visible) {
+    const shouldShow = !!visible;
+    mailEntryAvailable = shouldShow;
+
+    const btn = getMailToggleButton();
+    if (!btn) return;
+
+    btn.hidden = !shouldShow;
+    btn.setAttribute('aria-hidden', shouldShow ? 'false' : 'true');
+
+    if (!shouldShow) {
+        mailNotifyState.newCount = 0;
+        const badge = btn.querySelector('.mail-notify-badge');
+        if (badge) badge.classList.remove('visible');
+        stopMailRealtimeSync();
+        return;
+    }
+
+    renderMailNotifyBadge();
+}
+
+async function refreshMailEntryVisibility(options = {}) {
+    const force = !!(options && options.force);
+    const btn = getMailToggleButton();
+    if (!btn) {
+        mailEntryAvailable = false;
+        return false;
+    }
+
+    if (mailEntryVisibilityPromise && !force) {
+        return mailEntryVisibilityPromise;
+    }
+
+    mailEntryVisibilityPromise = (async () => {
+        try {
+            const res = await fetch('/api/mail/me/status', {
+                method: 'GET',
+                credentials: 'include',
+                cache: 'no-store'
+            });
+            const data = await res.json().catch(() => ({}));
+            mailViewState.status = data;
+
+            const visible = !!(res.ok && data && data.success && data.enabled && data.linked);
+            setMailEntryVisible(visible);
+            return visible;
+        } catch (_) {
+            mailViewState.status = {
+                success: false,
+                enabled: false,
+                linked: false,
+                message: '无法获取邮件状态'
+            };
+            setMailEntryVisible(false);
+            return false;
+        } finally {
+            mailEntryVisibilityPromise = null;
+        }
+    })();
+
+    return mailEntryVisibilityPromise;
+}
+
 function ensureMailNotifyBadge() {
-    const btn = document.getElementById('toggleMailView');
-    if (!btn) return null;
+    const btn = getMailToggleButton();
+    if (!btn || btn.hidden || !mailEntryAvailable) return null;
     btn.classList.add('mail-toggle-with-notify');
     let badge = btn.querySelector('.mail-notify-badge');
     if (!badge) {
@@ -6154,6 +6225,8 @@ function updateMailNotifyFromMails(mails, options = {}) {
 }
 
 async function refreshMailNotifyBadgeFromServer() {
+    if (!mailEntryAvailable) return;
+
     try {
         const res = await fetch('/api/mail/me/inbox?cache_mode=refresh&limit=20');
         const data = await res.json();
@@ -6634,7 +6707,7 @@ function stopMailRealtimeSync() {
 }
 
 function startMailRealtimeSync() {
-    if (!document.getElementById('toggleMailView')) return;
+    if (!getMailToggleButton() || !mailEntryAvailable) return;
     stopMailRealtimeSync();
     void handleBrowserMailChangedEvent({ action: 'initial_sync' });
 }
@@ -6919,6 +6992,112 @@ function toggleMobileSidebar() {
     else openMobileSidebar();
 }
 
+let fileCenterState = {
+    files: [],
+    query: '',
+    selectedFileRef: '',
+    sortBy: 'created_desc',
+    searchTimer: 0,
+    view: 'home',
+    detailFileRef: '',
+    detailRequestSeq: 0,
+    contextFileRef: ''
+};
+
+function getCloudFileAlias(file) {
+    const src = (file && typeof file === 'object') ? file : {};
+    return String(src.alias || '').trim();
+}
+
+function getCloudFileSandboxPath(file) {
+    const src = (file && typeof file === 'object') ? file : {};
+    return String(src.sandbox_path || src.path || '').trim();
+}
+
+function getCloudFileOriginalName(file) {
+    const src = (file && typeof file === 'object') ? file : {};
+    return String(src.original_name || src.filename || src.name || '').trim();
+}
+
+function getCloudFileSize(file) {
+    const src = (file && typeof file === 'object') ? file : {};
+    const size = Number(src.size || src.file_size || 0);
+
+    return Number.isFinite(size) ? Math.max(0, Math.floor(size)) : 0;
+}
+
+function getCloudFileUpdatedAt(file) {
+    const src = (file && typeof file === 'object') ? file : {};
+    const updatedAt = Number(src.updated_at || src.modified_at || src.created_at || 0);
+
+    return Number.isFinite(updatedAt) ? updatedAt : 0;
+}
+
+function getCloudFileCreatedAt(file) {
+    const src = (file && typeof file === 'object') ? file : {};
+    const createdAt = Number(src.created_at || 0);
+
+    return Number.isFinite(createdAt) ? createdAt : 0;
+}
+
+function getCloudFileRef(file) {
+    return getCloudFileAlias(file) || getCloudFileSandboxPath(file);
+}
+
+function getCloudFileBasename(value) {
+    const raw = String(value || '').trim();
+
+    if (!raw) return '';
+
+    const parts = raw.replace(/\\/g, '/').split('/').filter(Boolean);
+    return String(parts[parts.length - 1] || raw).trim();
+}
+
+function getCloudFileExtension(file) {
+    const name = getCloudFileDisplayName(file).toLowerCase();
+    const match = name.match(/\.([a-z0-9]+)$/);
+
+    return match ? match[1] : '';
+}
+
+function getCloudFileDisplayName(file) {
+    return getCloudFileAlias(file)
+        || getCloudFileOriginalName(file)
+        || getCloudFileBasename(getCloudFileSandboxPath(file))
+        || '文件';
+}
+
+function getCloudFileIconClass(file) {
+    return getUploadPreviewIconClass({
+        type: 'sandbox_file',
+        name: getCloudFileDisplayName(file)
+    });
+}
+
+function getCloudFileToneClass(file) {
+    const ext = getCloudFileExtension(file);
+
+    if (['pdf'].includes(ext)) return 'tone-pdf';
+    if (['doc', 'docx'].includes(ext)) return 'tone-doc';
+    if (['xls', 'xlsx', 'csv'].includes(ext)) return 'tone-sheet';
+    if (['ppt', 'pptx'].includes(ext)) return 'tone-slide';
+    if (['js', 'jsx', 'ts', 'tsx', 'py', 'java', 'go', 'rs', 'cs', 'php', 'rb', 'swift', 'kt', 'kts', 'scala', 'sh', 'bash', 'zsh', 'bat', 'ps1', 'c', 'h', 'hpp', 'cpp', 'cc', 'cxx'].includes(ext)) return 'tone-code';
+    if (['json', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'xml', 'html', 'css', 'sql'].includes(ext)) return 'tone-config';
+    if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return 'tone-archive';
+    if (['md', 'txt', 'log'].includes(ext)) return 'tone-text';
+
+    return 'tone-file';
+}
+
+function findFileCenterItem(fileRef) {
+    const ref = String(fileRef || '').trim();
+
+    if (!ref) return null;
+
+    const items = Array.isArray(fileCenterState.files) ? fileCenterState.files : [];
+    return items.find((item) => getCloudFileRef(item) === ref) || null;
+}
+
 function formatFileSize(bytes) {
     const n = Number(bytes || 0);
     if (!Number.isFinite(n) || n <= 0) return '0 B';
@@ -6951,9 +7130,9 @@ function downloadCloudFile(fileRef) {
 
 async function removeCloudFile(fileRef) {
     const ref = String(fileRef || '').trim();
-    if (!ref) return;
+    if (!ref) return false;
     const ok = await confirmModalAsync('删除文件', `确定删除文件「${ref}」吗？`, 'danger');
-    if (!ok) return;
+    if (!ok) return false;
     try {
         const res = await fetch(`/api/files/remove?file_ref=${encodeURIComponent(ref)}`, {
             method: 'DELETE'
@@ -6961,12 +7140,14 @@ async function removeCloudFile(fileRef) {
         const data = await res.json();
         if (!data || !data.success) {
             showToast((data && data.message) ? data.message : '删除失败');
-            return;
+            return false;
         }
         showToast('文件已删除');
         await loadCloudFiles();
+        return true;
     } catch (e) {
         showToast('删除失败');
+        return false;
     }
 }
 
@@ -7244,13 +7425,14 @@ function renderCloudFileList(files) {
     }
 
     els.cloudFileList.innerHTML = arr.map((f) => {
-        const aliasRaw = String((f && f.alias) ? f.alias : '-');
-        const sandboxPathRaw = String((f && f.sandbox_path) ? f.sandbox_path : '');
-        const alias = escapeHtml(aliasRaw);
-        const sizeText = escapeHtml(formatFileSize(f && f.size ? f.size : 0));
-        const updatedText = escapeHtml(formatFileUpdatedAt(f && f.updated_at ? f.updated_at : 0));
+        const fileRefRaw = getCloudFileRef(f);
+        const sandboxPathRaw = getCloudFileSandboxPath(f);
+        const displayNameRaw = getCloudFileDisplayName(f);
+        const alias = escapeHtml(displayNameRaw);
+        const sizeText = escapeHtml(formatFileSize(getCloudFileSize(f)));
+        const updatedText = escapeHtml(formatFileUpdatedAt(getCloudFileUpdatedAt(f)));
         return `
-            <div class="cloud-file-item" data-file-ref="${escapeHtml(aliasRaw)}" data-file-path="${escapeHtml(sandboxPathRaw)}" data-file-size="${Number(f && f.size ? f.size : 0)}" title="点击展开预览">
+            <div class="cloud-file-item" data-file-ref="${escapeHtml(fileRefRaw)}" data-file-path="${escapeHtml(sandboxPathRaw)}" data-file-name="${escapeHtml(displayNameRaw)}" data-file-size="${getCloudFileSize(f)}" title="点击展开预览">
                 <div class="cloud-file-main">
                     <div class="cloud-file-head">
                         <div class="cloud-file-name">${alias}</div>
@@ -7281,6 +7463,7 @@ function renderCloudFileList(files) {
     els.cloudFileList.querySelectorAll('.cloud-file-item').forEach((el) => {
         const fileRef = (el.dataset.fileRef || '').trim();
         const filePath = (el.dataset.filePath || '').trim();
+        const fileName = (el.dataset.fileName || '').trim();
         const fileSize = Number(el.dataset.fileSize || 0);
         const previewEl = el.querySelector('.cloud-file-preview');
         const previewWrap = el.querySelector('.cloud-file-preview-wrap');
@@ -7319,7 +7502,7 @@ function renderCloudFileList(files) {
             btnAttach.addEventListener('click', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                const attached = attachCloudFileAsAttachment(fileRef, filePath, fileRef, fileSize);
+                const attached = attachCloudFileAsAttachment(fileRef, filePath, fileName || fileRef, fileSize);
                 if (attached) {
                     btnAttach.classList.add('attached');
                     btnAttach.innerHTML = '<i class="fa-solid fa-check"></i>';
@@ -7368,6 +7551,785 @@ async function loadCloudFiles() {
     }
 }
 
+async function handleFileCenterFileAction(action, fileRef) {
+    const file = findFileCenterItem(fileRef);
+
+    if (!file) return;
+
+    const ref = getCloudFileRef(file);
+    const sandboxPath = getCloudFileSandboxPath(file);
+    const displayName = getCloudFileDisplayName(file);
+    const size = getCloudFileSize(file);
+
+    if (action === 'attach') {
+        attachCloudFileAsAttachment(ref, sandboxPath, displayName, size);
+        return;
+    }
+
+    if (action === 'download') {
+        downloadCloudFile(ref);
+        return;
+    }
+
+    if (action === 'delete') {
+        const removed = await removeCloudFile(ref);
+
+        if (removed) {
+            await loadFileCenterFiles({ keepSelection: false });
+        }
+    }
+}
+
+function clearFileCenterSearchTimer() {
+    if (!fileCenterState.searchTimer) return;
+
+    window.clearTimeout(fileCenterState.searchTimer);
+    fileCenterState.searchTimer = 0;
+}
+
+function queueFileCenterSearch() {
+    clearFileCenterSearchTimer();
+    fileCenterState.searchTimer = window.setTimeout(() => {
+        fileCenterState.searchTimer = 0;
+        void loadFileCenterFiles({ keepSelection: false });
+    }, 260);
+}
+
+function getFileCenterMetaParts(file) {
+    const createdText = formatFileUpdatedAt(getCloudFileCreatedAt(file));
+    const updatedText = formatFileUpdatedAt(getCloudFileUpdatedAt(file));
+    const parts = [
+        `大小：${formatFileSize(getCloudFileSize(file))}`
+    ];
+
+    if (createdText && createdText !== '-') {
+        parts.unshift(`上传：${createdText}`);
+    }
+
+    if (updatedText && updatedText !== '-') {
+        parts.push(`更新：${updatedText}`);
+    }
+
+    return parts;
+}
+
+function sortFileCenterItems(items) {
+    const arr = Array.isArray(items) ? [...items] : [];
+
+    if (fileCenterState.sortBy === 'name_asc') {
+        arr.sort((a, b) => {
+            const nameCompare = getCloudFileDisplayName(a).localeCompare(getCloudFileDisplayName(b), undefined, {
+                numeric: true,
+                sensitivity: 'base'
+            });
+
+            if (nameCompare !== 0) return nameCompare;
+
+            return getCloudFileCreatedAt(b) - getCloudFileCreatedAt(a);
+        });
+        return arr;
+    }
+
+    arr.sort((a, b) => {
+        const createdCompare = getCloudFileCreatedAt(b) - getCloudFileCreatedAt(a);
+
+        if (createdCompare !== 0) return createdCompare;
+
+        return getCloudFileDisplayName(a).localeCompare(getCloudFileDisplayName(b), undefined, {
+            numeric: true,
+            sensitivity: 'base'
+        });
+    });
+    return arr;
+}
+
+function getFileCenterSortLabel(sortBy = fileCenterState.sortBy) {
+    return sortBy === 'name_asc' ? '文件名称' : '上传时间';
+}
+
+function closeFileCenterSortDropdown() {
+    const dropdown = document.getElementById('fileCenterSortDropdown');
+    const trigger = document.getElementById('fileCenterSortTrigger');
+
+    if (!dropdown) return;
+
+    dropdown.classList.remove('open');
+
+    if (trigger) {
+        trigger.setAttribute('aria-expanded', 'false');
+    }
+}
+
+function setFileCenterSort(sortBy) {
+    const nextSort = String(sortBy || '').trim();
+
+    if (nextSort !== 'created_desc' && nextSort !== 'name_asc') return;
+
+    fileCenterState.sortBy = nextSort;
+
+    const label = document.getElementById('fileCenterSortLabel');
+
+    if (label) {
+        label.textContent = getFileCenterSortLabel(nextSort);
+    }
+
+    document.querySelectorAll('[data-file-center-sort]').forEach((button) => {
+        const active = String(button.getAttribute('data-file-center-sort') || '').trim() === nextSort;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+
+    renderFileCenterList(fileCenterState.files);
+}
+
+function installFileCenterSortDropdownCloseHandlers() {
+    if (window.__fileCenterSortDropdownCloseBound === true) return;
+
+    window.__fileCenterSortDropdownCloseBound = true;
+    document.addEventListener('click', (event) => {
+        const dropdown = document.getElementById('fileCenterSortDropdown');
+
+        if (!dropdown || !dropdown.classList.contains('open')) return;
+        if (event.target instanceof Element && dropdown.contains(event.target)) return;
+
+        closeFileCenterSortDropdown();
+    });
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+            closeFileCenterSortDropdown();
+        }
+    });
+    document.addEventListener('scroll', () => {
+        closeFileCenterSortDropdown();
+    }, true);
+    window.addEventListener('resize', closeFileCenterSortDropdown);
+}
+
+function syncFileCenterActiveCard() {
+    const list = document.getElementById('fileCenterList');
+
+    if (!list) return;
+
+    const selectedRef = String(fileCenterState.selectedFileRef || '').trim();
+    list.querySelectorAll('.file-center-card[data-file-ref]').forEach((row) => {
+        const active = String(row.getAttribute('data-file-ref') || '').trim() === selectedRef;
+        row.classList.toggle('active', active);
+        row.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+}
+
+function clearFileCenterSelection() {
+    if (!String(fileCenterState.selectedFileRef || '').trim()) return;
+
+    fileCenterState.selectedFileRef = '';
+    syncFileCenterActiveCard();
+}
+
+function installFileCenterSelectionClearHandler() {
+    if (window.__fileCenterSelectionClearBound === true) return;
+
+    window.__fileCenterSelectionClearBound = true;
+    document.addEventListener('click', (event) => {
+        if (!fileCenterState || fileCenterState.view !== 'home') return;
+        if (!String(fileCenterState.selectedFileRef || '').trim()) return;
+
+        const target = event.target;
+
+        if (target instanceof Element) {
+            if (target.closest('.file-center-card[data-file-ref]')) return;
+            if (target.closest('#fileCenterContextMenu')) return;
+        }
+
+        clearFileCenterSelection();
+    });
+}
+
+function selectFileCenterFile(fileRef) {
+    const ref = String(fileRef || '').trim();
+
+    if (!ref) return;
+
+    fileCenterState.selectedFileRef = ref;
+    syncFileCenterActiveCard();
+}
+
+function ensureFileCenterContextMenu() {
+    let menu = document.getElementById('fileCenterContextMenu');
+
+    if (menu) {
+        return menu;
+    }
+
+    menu = document.createElement('div');
+    menu.id = 'fileCenterContextMenu';
+    menu.className = 'pin-context-menu file-center-context-menu';
+    menu.setAttribute('aria-hidden', 'true');
+    menu.innerHTML = `
+        <button type="button" data-file-center-menu-action="open">
+            <i class="fa-regular fa-folder-open" aria-hidden="true"></i>
+            <span>打开</span>
+        </button>
+        <button type="button" data-file-center-menu-action="attach">
+            <i class="fa-solid fa-circle-plus" aria-hidden="true"></i>
+            <span>加入上下文</span>
+        </button>
+        <button type="button" data-file-center-menu-action="download">
+            <i class="fa-solid fa-download" aria-hidden="true"></i>
+            <span>下载</span>
+        </button>
+        <button class="danger" type="button" data-file-center-menu-action="delete">
+            <i class="fa-regular fa-trash-can" aria-hidden="true"></i>
+            <span>删除</span>
+        </button>
+    `;
+    document.body.appendChild(menu);
+
+    menu.querySelectorAll('[data-file-center-menu-action]').forEach((button) => {
+        button.addEventListener('click', async (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+
+            const action = String(button.getAttribute('data-file-center-menu-action') || '').trim();
+            const fileRef = String(fileCenterState.contextFileRef || '').trim();
+            hideFileCenterContextMenu();
+
+            if (!action || !fileRef) return;
+
+            if (action === 'open') {
+                openFileCenterFileDetail(fileRef);
+                return;
+            }
+
+            await handleFileCenterFileAction(action, fileRef);
+        });
+    });
+
+    document.addEventListener('click', (event) => {
+        if (!menu.classList.contains('active')) return;
+        if (event.target instanceof Element && menu.contains(event.target)) return;
+
+        hideFileCenterContextMenu();
+    });
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+            hideFileCenterContextMenu();
+        }
+    });
+    document.addEventListener('scroll', () => {
+        hideFileCenterContextMenu();
+    }, true);
+    window.addEventListener('resize', hideFileCenterContextMenu);
+
+    return menu;
+}
+
+function closeFileCenterOrReturn(event) {
+    if (event && typeof event.preventDefault === 'function') {
+        event.preventDefault();
+    }
+
+    if (event && typeof event.stopPropagation === 'function') {
+        event.stopPropagation();
+    }
+
+    if (fileCenterState && fileCenterState.view === 'detail') {
+        const detailRef = String(fileCenterState.detailFileRef || '').trim();
+
+        if (detailRef) {
+            fileCenterState.selectedFileRef = detailRef;
+        }
+
+        renderFileCenterHomeView();
+        return;
+    }
+
+    closeKnowledgeView();
+}
+
+window.closeFileCenterOrReturn = closeFileCenterOrReturn;
+
+function hideFileCenterContextMenu() {
+    const menu = document.getElementById('fileCenterContextMenu');
+
+    if (!menu) return;
+
+    menu.classList.remove('active');
+    menu.setAttribute('aria-hidden', 'true');
+    fileCenterState.contextFileRef = '';
+}
+
+function showFileCenterContextMenu(x, y, fileRef) {
+    const ref = String(fileRef || '').trim();
+
+    if (!findFileCenterItem(ref)) return;
+
+    if (typeof hidePinContextMenu === 'function') {
+        hidePinContextMenu();
+    }
+
+    if (typeof hideNotesContextMenu === 'function') {
+        hideNotesContextMenu();
+    }
+
+    const menu = ensureFileCenterContextMenu();
+    fileCenterState.contextFileRef = ref;
+    selectFileCenterFile(ref);
+
+    menu.classList.add('active');
+    menu.setAttribute('aria-hidden', 'false');
+
+    const menuWidth = menu.offsetWidth || 164;
+    const menuHeight = menu.offsetHeight || 152;
+    const left = Math.min(Math.max(8, Number(x || 0)), Math.max(8, window.innerWidth - menuWidth - 12));
+    const top = Math.min(Math.max(8, Number(y || 0)), Math.max(8, window.innerHeight - menuHeight - 12));
+
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+}
+
+function getFileCenterShell() {
+    return document.getElementById('fileCenterShell');
+}
+
+function renderFileCenterDetailContentLoading() {
+    const content = document.getElementById('fileCenterDetailContent');
+
+    if (!content) return;
+
+    content.innerHTML = '<div class="file-center-detail-empty">加载中...</div>';
+}
+
+async function loadFileCenterDetailContent(fileRef) {
+    const ref = String(fileRef || '').trim();
+    const content = document.getElementById('fileCenterDetailContent');
+
+    if (!ref || !content) return;
+
+    const requestSeq = fileCenterState.detailRequestSeq + 1;
+    fileCenterState.detailRequestSeq = requestSeq;
+    renderFileCenterDetailContentLoading();
+
+    try {
+        const res = await fetch(`/api/files/read?file_ref=${encodeURIComponent(ref)}`, { cache: 'no-store' });
+        const data = await res.json();
+
+        if (requestSeq !== fileCenterState.detailRequestSeq) return;
+
+        if (!data || !data.success) {
+            const message = String((data && data.message) || '文件内容读取失败');
+            content.innerHTML = `<div class="file-center-detail-empty">${escapeHtml(message)}</div>`;
+            return;
+        }
+
+        const text = String(data.content || '');
+
+        if (!text) {
+            content.innerHTML = '<div class="file-center-detail-empty">文件内容为空</div>';
+            return;
+        }
+
+        content.innerHTML = `<pre class="file-center-detail-pre">${escapeHtml(text)}</pre>`;
+    } catch (error) {
+        console.error('loadFileCenterDetailContent failed', error);
+
+        if (requestSeq !== fileCenterState.detailRequestSeq) return;
+
+        content.innerHTML = '<div class="file-center-detail-empty">文件内容读取失败</div>';
+    }
+}
+
+function renderFileCenterHomeView(options = {}) {
+    const shell = getFileCenterShell();
+
+    if (!shell) return;
+
+    fileCenterState.view = 'home';
+    fileCenterState.detailFileRef = '';
+    fileCenterState.detailRequestSeq += 1;
+    hideFileCenterContextMenu();
+    closeFileCenterSortDropdown();
+
+    shell.innerHTML = `
+        <div class="file-center-head">
+            <div>
+                <h1>Files</h1>
+                <div class="file-center-count-line">
+                    <span id="fileCenterCount">0</span>
+                    <span>个文件</span>
+                </div>
+            </div>
+            <div class="file-center-actions">
+                <label class="file-center-search">
+                    <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
+                    <input id="fileCenterSearchInput" type="search" placeholder="搜索文件" aria-label="搜索文件" value="${escapeHtml(fileCenterState.query)}">
+                </label>
+                <div class="tool-mode-dropdown file-center-sort-dropdown" id="fileCenterSortDropdown">
+                    <button class="tool-mode-trigger file-center-sort-trigger" id="fileCenterSortTrigger" type="button" aria-haspopup="listbox" aria-expanded="false" title="排序方式">
+                        <i class="fa-solid fa-arrow-down-wide-short" aria-hidden="true"></i>
+                        <span id="fileCenterSortLabel">${escapeHtml(getFileCenterSortLabel())}</span>
+                        <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+                    </button>
+                    <div class="tool-mode-menu file-center-sort-menu" id="fileCenterSortMenu" role="listbox" aria-label="排序方式">
+                        <button class="tool-mode-item${fileCenterState.sortBy === 'created_desc' ? ' active' : ''}" type="button" role="option" aria-selected="${fileCenterState.sortBy === 'created_desc' ? 'true' : 'false'}" data-file-center-sort="created_desc">上传时间</button>
+                        <button class="tool-mode-item${fileCenterState.sortBy === 'name_asc' ? ' active' : ''}" type="button" role="option" aria-selected="${fileCenterState.sortBy === 'name_asc' ? 'true' : 'false'}" data-file-center-sort="name_asc">文件名称</button>
+                    </div>
+                </div>
+                <button class="file-center-tool-btn" id="fileCenterRefreshBtn" type="button" title="刷新" aria-label="刷新">
+                    <i class="fa-solid fa-rotate-right" aria-hidden="true"></i>
+                </button>
+                <button class="file-center-upload-btn" id="fileCenterUploadBtn" type="button">
+                    <i class="fa-solid fa-upload" aria-hidden="true"></i>
+                    <span>上传</span>
+                </button>
+                <input id="fileCenterUploadInput" type="file" accept=".txt,.md,.py,.c,.h,.hpp,.cpp,.cc,.cxx,.js,.ts,.tsx,.jsx,.java,.go,.rs,.cs,.php,.rb,.swift,.kt,.kts,.scala,.sh,.bash,.zsh,.bat,.ps1,.json,.yaml,.yml,.toml,.ini,.cfg,.xml,.html,.css,.sql,.csv,.log,.docx,.pdf,.pptx" multiple hidden>
+            </div>
+        </div>
+
+        <div class="file-center-layout">
+            <div class="file-center-list" id="fileCenterList" role="listbox" aria-label="文件列表"></div>
+        </div>
+    `;
+
+    bindFileCenterView();
+
+    if (options && options.loading === true) {
+        const list = document.getElementById('fileCenterList');
+
+        if (list) {
+            list.innerHTML = '<div class="file-center-empty">加载中...</div>';
+        }
+
+        return;
+    }
+
+    renderFileCenterList(fileCenterState.files);
+}
+
+function openFileCenterFileDetail(fileRef) {
+    const ref = String(fileRef || '').trim();
+    const file = findFileCenterItem(ref);
+    const shell = getFileCenterShell();
+
+    if (!file || !shell) return;
+
+    const displayName = getCloudFileDisplayName(file);
+    const meta = getFileCenterMetaParts(file).join(' · ');
+
+    fileCenterState.view = 'detail';
+    fileCenterState.detailFileRef = ref;
+    fileCenterState.selectedFileRef = ref;
+    hideFileCenterContextMenu();
+    closeFileCenterSortDropdown();
+
+    shell.innerHTML = `
+        <div class="file-center-detail">
+            <div class="file-center-detail-head">
+                <span class="file-center-file-icon ${escapeHtml(getCloudFileToneClass(file))}" aria-hidden="true">
+                    <i class="${escapeHtml(getCloudFileIconClass(file))}"></i>
+                </span>
+                <div class="file-center-detail-title">
+                    <h1 title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</h1>
+                    <div class="file-center-detail-meta">${escapeHtml(meta)}</div>
+                </div>
+            </div>
+            <div class="file-center-detail-content" id="fileCenterDetailContent"></div>
+        </div>
+    `;
+
+    void loadFileCenterDetailContent(ref);
+}
+
+function renderFileCenterList(files) {
+    const list = document.getElementById('fileCenterList');
+    const count = document.getElementById('fileCenterCount');
+
+    if (!list) return;
+
+    const items = sortFileCenterItems(files);
+
+    if (count) {
+        count.textContent = String(items.length);
+    }
+
+    if (!items.length) {
+        fileCenterState.selectedFileRef = '';
+        list.innerHTML = '<div class="file-center-empty">暂无文件</div>';
+        return;
+    }
+
+    const currentRef = String(fileCenterState.selectedFileRef || '').trim();
+    const currentExists = currentRef && items.some((item) => getCloudFileRef(item) === currentRef);
+    const activeRef = currentExists ? currentRef : '';
+    fileCenterState.selectedFileRef = activeRef;
+
+    list.innerHTML = `
+        ${items.map((file) => {
+            const fileRef = getCloudFileRef(file);
+            const displayName = getCloudFileDisplayName(file);
+            const originalName = getCloudFileOriginalName(file);
+            const updatedText = formatFileUpdatedAt(getCloudFileUpdatedAt(file));
+            const titleLines = [
+                displayName,
+                originalName && originalName !== displayName ? originalName : '',
+                `大小：${formatFileSize(getCloudFileSize(file))}`,
+                updatedText && updatedText !== '-' ? `更新：${updatedText}` : ''
+            ].filter(Boolean);
+            const title = titleLines.join('\n');
+            const activeClass = fileRef === activeRef ? ' active' : '';
+
+            return `
+                <div class="file-center-card${activeClass}" role="option" tabindex="0" aria-selected="${fileRef === activeRef ? 'true' : 'false'}" data-file-ref="${escapeHtml(fileRef)}" title="${escapeHtml(title)}">
+                    <div class="file-center-card-icon-wrap">
+                        <span class="file-center-file-icon ${escapeHtml(getCloudFileToneClass(file))}">
+                            <i class="${escapeHtml(getCloudFileIconClass(file))}" aria-hidden="true"></i>
+                        </span>
+                    </div>
+                    <div class="file-center-card-name">${escapeHtml(displayName)}</div>
+                </div>
+            `;
+        }).join('')}
+    `;
+
+    list.querySelectorAll('.file-center-card[data-file-ref]').forEach((row) => {
+        const readRef = () => String(row.getAttribute('data-file-ref') || '').trim();
+
+        row.addEventListener('click', () => {
+            selectFileCenterFile(readRef());
+        });
+        row.addEventListener('dblclick', () => {
+            openFileCenterFileDetail(readRef());
+        });
+        row.addEventListener('contextmenu', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            showFileCenterContextMenu(event.clientX, event.clientY, readRef());
+        });
+        row.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                openFileCenterFileDetail(readRef());
+                return;
+            }
+
+            if (event.key === ' ' || event.key === 'Spacebar') {
+                event.preventDefault();
+                selectFileCenterFile(readRef());
+                return;
+            }
+
+            if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+                const rect = row.getBoundingClientRect();
+
+                event.preventDefault();
+                showFileCenterContextMenu(rect.left + 16, rect.top + 16, readRef());
+            }
+        });
+    });
+}
+
+async function loadFileCenterFiles(options = {}) {
+    const list = document.getElementById('fileCenterList');
+    const count = document.getElementById('fileCenterCount');
+    const searchInput = document.getElementById('fileCenterSearchInput');
+    const keepSelection = options && options.keepSelection === true;
+
+    if (!list) return;
+
+    const query = String(searchInput ? searchInput.value : fileCenterState.query || '').trim();
+    fileCenterState.query = query;
+
+    if (!keepSelection) {
+        fileCenterState.selectedFileRef = '';
+    }
+
+    list.innerHTML = '<div class="file-center-empty">加载中...</div>';
+
+    if (count) {
+        count.textContent = '0';
+    }
+
+    try {
+        const url = `/api/files/list${query ? `?q=${encodeURIComponent(query)}` : ''}`;
+        const res = await fetch(url, { cache: 'no-store' });
+        const data = await res.json();
+
+        if (!data || !data.success) {
+            const message = String((data && data.message) || '文件列表读取失败');
+            list.innerHTML = `<div class="file-center-empty">${escapeHtml(message)}</div>`;
+            return;
+        }
+
+        fileCenterState.files = Array.isArray(data.files) ? data.files : [];
+        renderFileCenterList(fileCenterState.files);
+    } catch (error) {
+        list.innerHTML = '<div class="file-center-empty">文件列表读取失败</div>';
+    }
+}
+
+async function handleFileCenterUploadChange(input) {
+    const files = Array.from((input && input.files) ? input.files : []);
+
+    if (!files.length) return;
+
+    await handleFileUploadFiles(files, {
+        source: 'file-center',
+        attachToInput: false,
+        uploadImagesAsFiles: true,
+        clearInput: () => {
+            input.value = '';
+        }
+    });
+    input.value = '';
+    await loadFileCenterFiles({ keepSelection: true });
+}
+
+function bindFileCenterView() {
+    installFileCenterSortDropdownCloseHandlers();
+    installFileCenterSelectionClearHandler();
+
+    const searchInput = document.getElementById('fileCenterSearchInput');
+    const sortDropdown = document.getElementById('fileCenterSortDropdown');
+    const sortTrigger = document.getElementById('fileCenterSortTrigger');
+    const sortMenu = document.getElementById('fileCenterSortMenu');
+    const refreshBtn = document.getElementById('fileCenterRefreshBtn');
+    const uploadBtn = document.getElementById('fileCenterUploadBtn');
+    const uploadInput = document.getElementById('fileCenterUploadInput');
+
+    if (searchInput) {
+        searchInput.addEventListener('input', () => {
+            queueFileCenterSearch();
+        });
+        searchInput.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter') return;
+
+            event.preventDefault();
+            clearFileCenterSearchTimer();
+            void loadFileCenterFiles({ keepSelection: false });
+        });
+    }
+
+    if (sortDropdown && sortTrigger && sortMenu) {
+        sortTrigger.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            clearFileCenterSelection();
+
+            const willOpen = !sortDropdown.classList.contains('open');
+            hideFileCenterContextMenu();
+            closeFileCenterSortDropdown();
+            sortDropdown.classList.toggle('open', willOpen);
+            sortTrigger.setAttribute('aria-expanded', willOpen ? 'true' : 'false');
+        });
+
+        sortMenu.querySelectorAll('[data-file-center-sort]').forEach((button) => {
+            button.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setFileCenterSort(String(button.getAttribute('data-file-center-sort') || '').trim());
+                closeFileCenterSortDropdown();
+            });
+        });
+    }
+
+    if (refreshBtn) {
+        refreshBtn.addEventListener('click', () => {
+            clearFileCenterSearchTimer();
+            void loadFileCenterFiles({ keepSelection: true });
+        });
+    }
+
+    if (uploadBtn && uploadInput) {
+        uploadBtn.addEventListener('click', () => {
+            uploadInput.click();
+        });
+        uploadInput.addEventListener('change', () => {
+            void handleFileCenterUploadChange(uploadInput);
+        });
+    }
+}
+
+// 文件中心是主内容区入口，保留右侧 Cloud Files 抽屉作为聊天中的快捷工具。
+window.openFilesFrameView = function() {
+    closeKnowledgePanel();
+    closeCloudFilePanel();
+    exitLearningFeedComposeMode({ clear: false });
+    clearCurrentConversationSelectionForWorkspaceNavigation();
+    captureWorkspaceDetailInputHome();
+    restoreWorkspaceDetailInputContainer();
+
+    const viewer = document.getElementById('knowledgeViewer');
+    const msgs = document.getElementById('messagesContainer');
+    const inputWrapper = document.getElementById('inputWrapper');
+    const headerTitle = document.getElementById('conversationTitle');
+    const headerLeft = document.querySelector('.header-left');
+    const headerRight = document.querySelector('.header-right');
+
+    if (!viewer || !msgs || !headerTitle || !headerLeft || !headerRight) return;
+
+    if (!originalHeaderState) {
+        originalHeaderState = {
+            title: headerTitle.textContent,
+            leftHTML: headerLeft.innerHTML,
+            rightHTML: headerRight.innerHTML
+        };
+    }
+
+    currentViewingKnowledge = null;
+    pendingHighlightData = null;
+    navigationStack = [];
+
+    msgs.style.display = 'none';
+
+    if (els.learningMainPanel) {
+        els.learningMainPanel.style.display = 'none';
+    }
+
+    const inputDock = document.querySelector('.input-dock');
+
+    if (inputDock) {
+        inputDock.style.display = 'none';
+    }
+
+    if (inputWrapper) {
+        inputWrapper.style.display = 'none';
+    }
+
+    viewer.style.display = 'flex';
+    viewer.style.flexDirection = 'column';
+
+    headerTitle.textContent = 'Files';
+    headerLeft.innerHTML = `
+        <button class="btn-icon" onclick="closeFileCenterOrReturn(event)" title="Back">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
+        </button>
+    `;
+    applyDesktopHeaderTools(headerRight);
+
+    clearFileCenterSearchTimer();
+    hideFileCenterContextMenu();
+    fileCenterState = {
+        files: [],
+        query: '',
+        selectedFileRef: '',
+        sortBy: 'created_desc',
+        searchTimer: 0,
+        view: 'home',
+        detailFileRef: '',
+        detailRequestSeq: 0,
+        contextFileRef: ''
+    };
+
+    viewer.innerHTML = `
+        <section class="file-center-view" aria-label="Files">
+            <div class="file-center-shell" id="fileCenterShell"></div>
+        </section>
+    `;
+
+    renderFileCenterHomeView({ loading: true });
+    void loadFileCenterFiles();
+    _syncTurnIndicatorVisibility();
+};
+
 // DOM Elements
 const els = {
     sidebar: document.getElementById('sidebar'),
@@ -7401,6 +8363,7 @@ const els = {
     sidebarBrandLearningTab: document.getElementById('sidebarBrandLearningTab'),
     newChatBtn: document.getElementById('newChatBtn'),
     workspacesBtn: document.getElementById('workspacesBtn'),
+    fileCenterBtn: document.getElementById('fileCenterBtn'),
     conversationTitle: document.getElementById('conversationTitle'),
     knowledgePanel: document.getElementById('knowledgePanel'),
     filePanel: document.getElementById('filePanel'),
@@ -7456,7 +8419,6 @@ const els = {
     downloadNotebookBtn: document.getElementById('downloadNotebookBtn'),
     notesResizeHandle: document.getElementById('notesResizeHandle'),
     notesList: document.getElementById('notesList'),
-    notesCountBadge: document.getElementById('notesCountBadge'),
     timelineMenuBtn: document.getElementById('timelineMenuBtn'),
     mobileTimelineMenuItem: document.getElementById('mobileTimelineMenuItem'),
     timelinePanel: document.getElementById('timelinePanel'),
@@ -7902,6 +8864,11 @@ function applyLearningSidebarMode(mode) {
     if (els.workspacesBtn) {
         els.workspacesBtn.hidden = visible;
         els.workspacesBtn.style.display = visible ? 'none' : '';
+    }
+
+    if (els.fileCenterBtn) {
+        els.fileCenterBtn.hidden = visible;
+        els.fileCenterBtn.style.display = visible ? 'none' : '';
     }
 
     if (els.learningSidebarPanel) {
@@ -8447,15 +9414,65 @@ function createDefaultNotesStore() {
     };
 }
 
+function normalizeNotesStorageUserId(userId) {
+    return String(userId || '').trim();
+}
+
+function getNotesStorageUserId() {
+    return normalizeNotesStorageUserId(currentUsername);
+}
+
+function getNotesScopedStorageKey(baseKey, userId = getNotesStorageUserId()) {
+    const uid = normalizeNotesStorageUserId(userId);
+    if (!uid) return '';
+    return `${baseKey}:${encodeURIComponent(uid)}`;
+}
+
+function clearUnscopedNotesTransientCache() {
+    try {
+        localStorage.removeItem(NOTES_SYNC_STORE_KEY);
+        localStorage.removeItem(NOTES_SYNC_TS_KEY);
+        localStorage.removeItem(NOTES_HTML_SNAPSHOT_KEY);
+        localStorage.removeItem(NOTES_HTML_TS_KEY);
+    } catch (_) {
+        // ignore storage cleanup errors
+    }
+}
+
+async function ensureNotesStorageUserId() {
+    const existing = getNotesStorageUserId();
+    if (existing) return existing;
+
+    try {
+        const res = await fetch('/api/user/info', {
+            method: 'GET',
+            credentials: 'include',
+            cache: 'no-store'
+        });
+        const data = await res.json().catch(() => ({}));
+        const user = data && data.success && data.user ? data.user : null;
+        const userId = normalizeNotesStorageUserId(user && user.id);
+        if (!userId) return '';
+
+        currentUsername = userId;
+        currentUserRole = user.role || currentUserRole || 'member';
+        currentUserAvatarUrl = user.avatar_url || currentUserAvatarUrl || '';
+        updateSidebarUserProfile(user.username || user.id, currentUserAvatarUrl);
+        return userId;
+    } catch (_) {
+        return '';
+    }
+}
+
 function getNotesStoreUpdatedAt(store) {
     const src = (store && typeof store === 'object') ? store : {};
-    const value = Number(src.updatedAt || 0);
+    const value = Number(src.updatedAt || src.storeUpdatedAt || 0);
     return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
 }
 
 function notesStoreHasUserData(store) {
     const src = (store && typeof store === 'object') ? store : {};
-    const notes = Array.isArray(src.notes) ? src.notes : [];
+    const notes = Array.isArray(src.notes) ? src.notes : (Array.isArray(src.items) ? src.items : []);
     if (notes.length > 0) return true;
     const notebooks = Array.isArray(src.notebooks) ? src.notebooks : [];
     return notebooks.some((item) => {
@@ -8546,11 +9563,14 @@ function normalizeNoteItem(raw) {
     };
 }
 
-function loadNotesStore() {
-    // 云端为主；这里仅作为兼容旧版本的本地迁移来源。
+function loadNotesStore(userId = getNotesStorageUserId()) {
+    // 笔记本地缓存必须绑定账号；旧无账号缓存不再作为数据源，避免跨账号串笔记。
     const fallback = createDefaultNotesStore();
+    const scopedStoreKey = getNotesScopedStorageKey(NOTES_SYNC_STORE_KEY, userId);
+    if (!scopedStoreKey) return fallback;
+
     try {
-        const syncedRaw = localStorage.getItem('nc_sync_notes_data_payload');
+        const syncedRaw = localStorage.getItem(scopedStoreKey);
         if (syncedRaw) {
             const syncedParsed = JSON.parse(syncedRaw);
             if (syncedParsed && typeof syncedParsed === 'object') return syncedParsed;
@@ -8558,42 +9578,7 @@ function loadNotesStore() {
     } catch (_) {
         // ignore
     }
-    try {
-        const raw = localStorage.getItem(NOTES_LEGACY_STORE_KEY);
-        if (raw) {
-            const parsed = JSON.parse(raw);
-            if (parsed && typeof parsed === 'object') return parsed;
-        }
-    } catch (_) {
-        // ignore
-    }
 
-    // 兼容最早按会话散列存储的老格式
-    try {
-        const merged = [];
-        for (let i = 0; i < localStorage.length; i += 1) {
-            const k = String(localStorage.key(i) || '');
-            if (!k.startsWith(NOTES_LEGACY_PREFIX)) continue;
-            const raw = localStorage.getItem(k);
-            if (!raw) continue;
-            const arr = JSON.parse(raw);
-            if (!Array.isArray(arr)) continue;
-            arr.forEach((n) => {
-                const normalized = normalizeNoteItem({
-                    ...n,
-                    notebookId: NOTES_DEFAULT_NOTEBOOK_ID
-                });
-                if (normalized) merged.push(normalized);
-            });
-        }
-        if (merged.length) {
-            fallback.notes = merged
-                .sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0))
-                .slice(0, 6000);
-        }
-    } catch (_) {
-        // ignore
-    }
     return fallback;
 }
 
@@ -8700,10 +9685,24 @@ function saveNotesToStorage(options = {}) {
     notesMutationSeq += 1;
     notesState.storeUpdatedAt = nowTs;
     notesCloudSyncPendingStore = buildNotesStorePayload();
+
+    const notesUserId = getNotesStorageUserId();
     try {
-        localStorage.setItem('nc_sync_notes_data_payload', JSON.stringify(notesCloudSyncPendingStore));
-        localStorage.setItem('nc_sync_notes_ts', String(nowTs));
-          if (typeof notesSyncChannel !== 'undefined') notesSyncChannel.postMessage({ type: 'SYNC', payload: notesCloudSyncPendingStore });
+        if (notesUserId) {
+            localStorage.setItem(
+                getNotesScopedStorageKey(NOTES_SYNC_STORE_KEY, notesUserId),
+                JSON.stringify(notesCloudSyncPendingStore)
+            );
+            localStorage.setItem(getNotesScopedStorageKey(NOTES_SYNC_TS_KEY, notesUserId), String(nowTs));
+            clearUnscopedNotesTransientCache();
+        }
+        if (notesUserId && notesSyncChannel) {
+            notesSyncChannel.postMessage({
+                type: 'SYNC',
+                userId: notesUserId,
+                payload: notesCloudSyncPendingStore
+            });
+        }
     } catch (_) {}
     if (notesCloudSyncTimer) {
         clearTimeout(notesCloudSyncTimer);
@@ -8719,21 +9718,29 @@ function saveNotesToStorage(options = {}) {
     }, NOTES_CLOUD_SYNC_DEBOUNCE_MS);
 }
 
-const notesSyncChannel = new BroadcastChannel('nc_notes_sync');
-  notesSyncChannel.onmessage = (e) => {
-      if (e.data && e.data.type === 'SYNC') {
-          if (e.data.payload && typeof e.data.payload === 'object') {
-              applyNotesStoreToState(e.data.payload);
-              notesMutationSeq += 1;
-              renderNotesList();
-          }
-      }
-  };
+const notesSyncChannel = typeof BroadcastChannel !== 'undefined'
+    ? new BroadcastChannel('nc_notes_sync')
+    : null;
 
-  window.addEventListener('storage', (e) => {
-    if (e.key === 'nc_sync_notes_ts') {
+if (notesSyncChannel) {
+    notesSyncChannel.onmessage = (e) => {
+        const data = e && e.data ? e.data : {};
+        if (data.type !== 'SYNC') return;
+        if (normalizeNotesStorageUserId(data.userId) !== getNotesStorageUserId()) return;
+        if (data.payload && typeof data.payload === 'object') {
+            applyNotesStoreToState(data.payload);
+            notesMutationSeq += 1;
+            renderNotesList();
+        }
+    };
+}
+
+window.addEventListener('storage', (e) => {
+    const notesUserId = getNotesStorageUserId();
+    const scopedTsKey = getNotesScopedStorageKey(NOTES_SYNC_TS_KEY, notesUserId);
+    if (scopedTsKey && e.key === scopedTsKey) {
         try {
-            const raw = localStorage.getItem('nc_sync_notes_data_payload');
+            const raw = localStorage.getItem(getNotesScopedStorageKey(NOTES_SYNC_STORE_KEY, notesUserId));
             if (raw) {
                 const parsed = JSON.parse(raw);
                 if (parsed && typeof parsed === 'object') {
@@ -8747,7 +9754,10 @@ const notesSyncChannel = new BroadcastChannel('nc_notes_sync');
 });
 
 async function hydrateNotesState() {
-    const localStore = loadNotesStore();
+    const notesUserId = await ensureNotesStorageUserId();
+    clearUnscopedNotesTransientCache();
+
+    const localStore = loadNotesStore(notesUserId);
     applyNotesStoreToState(localStore);
     const requestSeq = notesMutationSeq;
     const cloudStore = await fetchNotesStoreFromCloud();
@@ -9323,17 +10333,28 @@ function reorderNotesWithinActiveNotebook(draggedId, targetId, insertBefore = tr
 
 function renderNotesBadge() {
     const btn = document.getElementById('toggleNotesPanel') || els.toggleNotesPanel;
-    const badge = document.getElementById('notesCountBadge') || els.notesCountBadge;
-    if (!btn || !badge) return;
-    const count = getNotesForActiveNotebook().length;
-    if (count > 0) {
-        badge.textContent = count > 99 ? '99+' : String(count);
-        badge.classList.add('visible');
-        btn.classList.add('has-notes');
-    } else {
-        badge.textContent = '0';
-        badge.classList.remove('visible');
+    if (btn) {
         btn.classList.remove('has-notes');
+    }
+}
+
+function cacheNotesPanelSnapshot(panel) {
+    const notesUserId = getNotesStorageUserId();
+    if (!panel || !notesUserId) return;
+
+    const snapshot = String(panel.outerHTML);
+    localStorage.setItem(getNotesScopedStorageKey(NOTES_HTML_SNAPSHOT_KEY, notesUserId), snapshot);
+    localStorage.setItem(getNotesScopedStorageKey(NOTES_HTML_TS_KEY, notesUserId), String(Date.now()));
+    clearUnscopedNotesTransientCache();
+
+    if (window.parent && window.parent !== window) {
+        try {
+            window.parent.postMessage({
+                type: 'NC_SYNC_NOTES_HTML',
+                userId: notesUserId,
+                snapshot
+            }, '*');
+        } catch (_) {}
     }
 }
 
@@ -9377,13 +10398,7 @@ function renderNotesList() {
         setTimeout(() => {
             try {
                 const panel = document.getElementById('notesPanel');
-                if (panel) {
-                    localStorage.setItem('nc_notes_html_snapshot', String(panel.outerHTML));
-                    localStorage.setItem('nc_notes_html_ts', String(Date.now()));
-                    if (window.parent && window.parent !== window) {
-                        try { window.parent.postMessage({ type: 'NC_SYNC_NOTES_HTML', snapshot: String(panel.outerHTML) }, '*'); } catch(_) {}
-                    }
-                }
+                cacheNotesPanelSnapshot(panel);
             } catch (_) {}
         }, 50);
         return;
@@ -9553,13 +10568,7 @@ function renderNotesList() {
     setTimeout(() => {
         try {
             const panel = document.getElementById('notesPanel');
-            if (panel) {
-                localStorage.setItem('nc_notes_html_snapshot', String(panel.outerHTML));
-                localStorage.setItem('nc_notes_html_ts', String(Date.now()));
-                if (window.parent && window.parent !== window) {
-                    try { window.parent.postMessage({ type: 'NC_SYNC_NOTES_HTML', snapshot: String(panel.outerHTML) }, '*'); } catch(_) {}
-                }
-            }
+            cacheNotesPanelSnapshot(panel);
         } catch (_) {}
     }, 50);
 }
@@ -9568,7 +10577,8 @@ window.__nexoraGetNotesSnapshotHtml = function() {
     try {
         let payload = null;
         try {
-            const raw = localStorage.getItem('nc_sync_notes_data_payload');
+            const scopedStoreKey = getNotesScopedStorageKey(NOTES_SYNC_STORE_KEY);
+            const raw = scopedStoreKey ? localStorage.getItem(scopedStoreKey) : '';
             if (raw) {
                 const parsed = JSON.parse(raw);
                 if (parsed && typeof parsed === 'object') {
@@ -12375,7 +13385,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Check URL param for conversation ID
     const urlParams = new URLSearchParams(window.location.search);
     let cid = urlParams.get('cid');
-    const shouldRestoreMailView = isMailViewUrl() && !!document.getElementById('toggleMailView');
+    const mailEntryCanOpen = await refreshMailEntryVisibility();
+    const shouldRestoreMailView = isMailViewUrl() && mailEntryCanOpen;
+    if (isMailViewUrl() && !mailEntryCanOpen) {
+        clearMailViewUrl();
+    }
 
     // Check if there is an active stream resume state that needs a specific conversation
     const resumeState = loadActiveStreamResumeState();
@@ -12448,9 +13462,10 @@ function initUI() {
     mailNotifyState.initialized = mailNotifyState.lastOpenTs > 0;
     mailNotifyState.newCount = 0;
     renderMailNotifyBadge();
+    void refreshMailEntryVisibility();
     
-    setTimeout(() => {
-        if (document.getElementById('toggleMailView')) {
+    setTimeout(async () => {
+        if (await refreshMailEntryVisibility()) {
             startMailRealtimeSync();
         }
         startClientToolPolling();
@@ -12886,6 +13901,12 @@ function initUI() {
     if (els.workspacesBtn) {
         els.workspacesBtn.addEventListener('click', () => {
             window.openWorkspacesFrameView();
+        });
+    }
+
+    if (els.fileCenterBtn) {
+        els.fileCenterBtn.addEventListener('click', () => {
+            window.openFilesFrameView();
         });
     }
 
@@ -26929,8 +27950,12 @@ function rebindHeaderActionButtons() {
     }
     const toggleMail = els.toggleMailView;
     if (toggleMail) {
-        toggleMail.onclick = () => openMailPlaceholderView();
-        renderMailNotifyBadge();
+        toggleMail.onclick = async () => {
+            if (await refreshMailEntryVisibility({ force: true })) {
+                await openMailPlaceholderView();
+            }
+        };
+        void refreshMailEntryVisibility();
     }
     bindMobileHeaderMenu();
 }
@@ -27434,6 +28459,14 @@ function closeKnowledgeView(options = {}) {
     const wasMailView = !!(viewer && viewer.querySelector('.mail-workspace'));
     const closingTitle = String(currentViewingKnowledge || '').trim();
 
+    if (typeof hideFileCenterContextMenu === 'function') {
+        hideFileCenterContextMenu();
+    }
+
+    if (typeof closeFileCenterSortDropdown === 'function') {
+        closeFileCenterSortDropdown();
+    }
+
     restoreWorkspaceDetailInputContainer();
     exitLearningFeedComposeMode({ clear: false });
     exitKnowledgeEditorSpecialModes();
@@ -27541,7 +28574,12 @@ function closeKnowledgeViewBeforeLearningSwitch() {
     });
 }
 
-window.openMailPlaceholderView = function() {
+window.openMailPlaceholderView = async function() {
+    if (!(await refreshMailEntryVisibility())) {
+        clearMailViewUrl();
+        return;
+    }
+
     closeKnowledgePanel();
     closeCloudFilePanel();
     exitLearningFeedComposeMode({ clear: false });
@@ -29197,7 +30235,14 @@ function closeKnowledgeSearchResultView() {
         const toggleFile = document.getElementById('toggleFilePanel');
         if(toggleFile) toggleFile.onclick = () => toggleCloudFilePanel();
         const toggleMail = document.getElementById('toggleMailView');
-        if(toggleMail) toggleMail.onclick = () => openMailPlaceholderView();
+        if(toggleMail) {
+            toggleMail.onclick = async () => {
+                if (await refreshMailEntryVisibility({ force: true })) {
+                    await openMailPlaceholderView();
+                }
+            };
+            void refreshMailEntryVisibility();
+        }
     }
     originalHeaderState = null;
     _syncTurnIndicatorVisibility();
@@ -32019,6 +33064,12 @@ function uploadSingleFileWithProgress(file, index, total) {
     });
 }
 
+function showUploadVectorMessage(data) {
+    if (data && data.vectorized === false && data.vector_message) {
+        showToast(`文件已上传，临时向量化失败: ${data.vector_message}`);
+    }
+}
+
 function appendUploadedFileEntry(data, fallbackFileName) {
     if (!data || !data.success) return;
     const parsedSize = Number(
@@ -32044,9 +33095,7 @@ function appendUploadedFileEntry(data, fallbackFileName) {
             stored_path: data.stored_path,
             size: normalizedSize
         });
-        if (data.vectorized === false && data.vector_message) {
-            showToast(`文件已上传，临时向量化失败: ${data.vector_message}`);
-        }
+        showUploadVectorMessage(data);
     } else {
         uploadedFileIds.push({
             type: 'file',
@@ -32096,6 +33145,8 @@ async function handleFileUploadFiles(fileList, options = {}) {
         .map((f, idx) => normalizeUploadFile(f, idx))
         .filter(Boolean);
     const clearInput = options && options.clearInput;
+    const attachToInput = !(options && options.attachToInput === false);
+    const uploadImagesAsFiles = !!(options && options.uploadImagesAsFiles === true);
     if (!files.length) return;
 
     if (isUploadingFiles) {
@@ -32114,13 +33165,17 @@ async function handleFileUploadFiles(fileList, options = {}) {
             if (uploadCancelledByUser) break;
             const file = files[i];
             try {
-                if (isImageLikeFile(file)) {
+                if (isImageLikeFile(file) && !uploadImagesAsFiles) {
                     await appendUploadedImageEntry(file, i, files.length);
                     await new Promise((resolve) => setTimeout(resolve, 160));
                 } else {
                     const data = await uploadSingleFileWithProgress(file, i, files.length);
-                    appendUploadedFileEntry(data, file.name);
-                    updateFilePreview();
+                    if (attachToInput) {
+                        appendUploadedFileEntry(data, file.name);
+                        updateFilePreview();
+                    } else {
+                        showUploadVectorMessage(data);
+                    }
                     setFileUploadProgress({
                         visible: true,
                         stage: 'ready',

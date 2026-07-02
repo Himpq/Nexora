@@ -180,6 +180,15 @@ class ToolResultPresenter:
     def _status_title(self, success: bool, success_title: str, failed_title: str) -> str:
         return success_title if success else failed_title
 
+    def _length_line(self, payload: Dict[str, Any]) -> str:
+        length = payload.get("length", "")
+        max_length = payload.get("max_length", "")
+
+        if str(max_length or "").strip() in ("", "0"):
+            return f"- Length: {length}"
+
+        return f"- Length: {length} / {max_length}"
+
     def _short_hash(self, value: Any) -> str:
         text = str(value or "").strip()
         if len(text) <= 16:
@@ -2295,7 +2304,7 @@ class ToolResultPresenter:
         lines = [
             title,
             "",
-            f"- Length: {payload.get('length', '')} / {payload.get('max_length', '')}",
+            self._length_line(payload),
         ]
 
         if not success:
@@ -2325,7 +2334,7 @@ class ToolResultPresenter:
             title,
             "",
             f"- Reset: {self._as_bool_text(payload.get('reset', False))}",
-            f"- Length: {payload.get('length', '')} / {payload.get('max_length', '')}",
+            self._length_line(payload),
         ]
 
         if not success:
