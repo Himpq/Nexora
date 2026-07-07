@@ -1,4 +1,5 @@
 from typing import Any, Dict, List
+import mimetypes
 
 from flask import Blueprint, jsonify, request, send_file, session
 
@@ -493,8 +494,62 @@ def download_workspace_file(workspace_id):
             default="download.txt",
             max_len=180,
         )
+        inline = str(request.args.get("inline") or "").strip().lower() in {"1", "true", "yes", "on"}
+        mimetype = mimetypes.guess_type(download_name)[0] or "application/octet-stream"
 
-        return send_file(abs_path, as_attachment=True, download_name=download_name)
+        return send_file(abs_path, as_attachment=not inline, download_name=download_name, mimetype=mimetype)
+    except Exception as error:
+        return handle_workspace_error(error)
+
+
+@workspace_bp.route("/api/workspace/<workspace_id>/tasks", methods=["POST"])
+def create_workspace_task(workspace_id):
+    try:
+        username = current_username()
+        data = parse_json_body()
+        wid = validate_workspace_id(workspace_id)
+        store = find_store_for_visible_workspace(username, wid)
+        workspace = store.create_workspace_task(wid, username, data)
+
+        return jsonify({
+            "success": True,
+            "workspace": workspace,
+        })
+    except Exception as error:
+        return handle_workspace_error(error)
+
+
+@workspace_bp.route("/api/workspace/<workspace_id>/tasks/<task_id>", methods=["POST"])
+def update_workspace_task(workspace_id, task_id):
+    try:
+        username = current_username()
+        data = parse_json_body()
+        wid = validate_workspace_id(workspace_id)
+        safe_task_id = normalize_text(task_id or data.get("task_id"), 80)
+        store = find_store_for_visible_workspace(username, wid)
+        workspace = store.update_workspace_task(wid, safe_task_id, username, data)
+
+        return jsonify({
+            "success": True,
+            "workspace": workspace,
+        })
+    except Exception as error:
+        return handle_workspace_error(error)
+
+
+@workspace_bp.route("/api/workspace/<workspace_id>/tasks/<task_id>", methods=["DELETE"])
+def delete_workspace_task(workspace_id, task_id):
+    try:
+        username = current_username()
+        wid = validate_workspace_id(workspace_id)
+        safe_task_id = normalize_text(task_id, 80)
+        store = find_store_for_visible_workspace(username, wid)
+        workspace = store.delete_workspace_task(wid, safe_task_id, username)
+
+        return jsonify({
+            "success": True,
+            "workspace": workspace,
+        })
     except Exception as error:
         return handle_workspace_error(error)
 

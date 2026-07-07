@@ -31,6 +31,33 @@ DEFAULT_CONFIG = {
         "api_key": "",
         "request_timeout": 30
     },
+    "performance_profile": {
+        "enabled": True,
+        "log_all_requests": True,
+        "slow_request_ms": 800,
+        "profiled_methods": [
+            "GET",
+            "HEAD"
+        ],
+        "exclude_exact_paths": [
+            "/health",
+            "/status",
+            "/NexoraLearning/status",
+            "/api/frontend/status"
+        ],
+        "exclude_path_prefixes": [
+            "/api/frontend/assets/"
+        ],
+        "exclude_path_keywords": [
+            "/completions",
+            "/responses",
+            "/chat/",
+            "/nexora/papi/",
+            "generate",
+            "stream",
+            "refinement"
+        ]
+    },
     "nexora": {
         "base_url": "http://127.0.0.1:5000",
         "api_key": "",
@@ -235,6 +262,9 @@ def create_app():
 
     app = Flask(__name__)
     CORS(app)
+
+    from core.performance import init_performance_profiler
+    init_performance_profiler(app, cfg)
 
     from api.routes import bp, init_routes
     init_routes(cfg)

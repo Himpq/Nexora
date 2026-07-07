@@ -2321,6 +2321,7 @@ body.learning-workspace-active #learningMainPanel.learning-main-panel {
 .mobile-header-menu-trigger {
     width: 32px;
     height: 32px;
+    position: relative;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -2349,6 +2350,7 @@ body.learning-workspace-active #learningMainPanel.learning-main-panel {
 .mobile-header-menu-item {
     border: none;
     background: transparent;
+    width: 100%;
     height: 34px;
     border-radius: 8px;
     padding: 0 10px;
@@ -2359,6 +2361,36 @@ body.learning-workspace-active #learningMainPanel.learning-main-panel {
     font-size: 12px;
     text-align: left;
     cursor: pointer;
+}
+
+.mobile-notification-badge {
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: 999px;
+    background: #dc2626;
+    color: #ffffff;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1;
+}
+
+.mobile-notification-badge[hidden] {
+    display: none;
+}
+
+.mobile-header-menu-trigger .mobile-notification-badge {
+    position: absolute;
+    top: -4px;
+    right: -5px;
+    border: 2px solid #ffffff;
+}
+
+.mobile-header-menu-item .mobile-notification-badge {
+    margin-left: auto;
 }
 
 .mobile-header-menu-item:hover {
@@ -6508,6 +6540,15 @@ textarea {
     font-size: 13px;
 }
 
+.file-center-breadcrumb {
+    margin-top: 4px;
+    color: #9ca3af;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+
 .file-center-actions {
     display: flex;
     align-items: center;
@@ -6616,6 +6657,11 @@ textarea {
     color: #111827;
 }
 
+.file-center-tool-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+}
+
 .file-center-upload-btn:hover {
     border-color: #0f172a;
     background: #0f172a;
@@ -6693,12 +6739,36 @@ textarea {
     box-shadow: none;
 }
 
+.file-center-folder-card .file-center-file-icon {
+    background: #fff7ed;
+    color: #c2410c;
+}
+
 .file-center-card-icon-wrap {
     width: 54px;
     height: 54px;
     display: flex;
     align-items: center;
     justify-content: center;
+}
+
+.file-center-thumb-wrap {
+    width: 54px;
+    height: 54px;
+    border: 1px solid #d9dee7;
+    border-radius: 9px;
+    background: #f8fafc;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+}
+
+.file-center-thumb {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
 }
 
 .file-center-card .file-center-file-icon,
@@ -6711,6 +6781,7 @@ textarea {
 
 .file-center-card-name {
     width: 100%;
+    height: 36px;
     min-width: 0;
     color: #111827;
     font-size: 13px;
@@ -6742,6 +6813,11 @@ textarea {
 .file-center-file-icon.tone-pdf {
     background: #fff1f2;
     color: #be123c;
+}
+
+.file-center-file-icon.tone-image {
+    background: #f0fdf4;
+    color: #16a34a;
 }
 
 .file-center-file-icon.tone-doc {
@@ -6863,6 +6939,25 @@ textarea {
     overflow-wrap: anywhere;
 }
 
+.file-center-detail-image-wrap {
+    min-height: 260px;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    background: #f8fafc;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px;
+}
+
+.file-center-detail-image {
+    max-width: 100%;
+    max-height: min(68vh, 720px);
+    border-radius: 6px;
+    object-fit: contain;
+    background: #ffffff;
+}
+
 .file-center-detail-empty {
     min-height: 240px;
     padding: 18px;
@@ -6871,6 +6966,248 @@ textarea {
     display: flex;
     align-items: center;
     justify-content: center;
+}
+
+.file-center-upload-dialog-backdrop {
+    z-index: 3600;
+}
+
+.file-center-upload-dialog {
+    width: min(880px, calc(100vw - 32px));
+    max-height: min(720px, calc(100vh - 32px));
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    background: #ffffff;
+    box-shadow: 0 24px 80px rgba(15, 23, 42, 0.24);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.file-center-upload-dialog-head {
+    padding: 18px 20px;
+    border-bottom: 1px solid #e5e7eb;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.file-center-upload-dialog-head h3 {
+    margin: 0;
+    color: #111827;
+    font-size: 18px;
+    font-weight: 650;
+    line-height: 1.3;
+}
+
+.file-center-upload-dialog-head p {
+    margin: 4px 0 0;
+    color: #6b7280;
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.file-center-upload-dialog-body {
+    min-height: 360px;
+    padding: 20px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 300px;
+    gap: 18px;
+    overflow: auto;
+}
+
+.file-center-upload-dropzone {
+    min-height: 320px;
+    border: 1px dashed #94a3b8;
+    border-radius: 8px;
+    background: #f8fafc;
+    color: #334155;
+    cursor: pointer;
+    outline: none;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 24px;
+    text-align: center;
+    transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+
+.file-center-upload-dropzone:hover,
+.file-center-upload-dropzone:focus-visible,
+.file-center-upload-dropzone.drag-over {
+    border-color: #111827;
+    background: #ffffff;
+    box-shadow: inset 0 0 0 1px #111827;
+}
+
+.file-center-upload-dropzone > i {
+    color: #111827;
+    font-size: 34px;
+}
+
+.file-center-upload-dropzone strong {
+    color: #111827;
+    font-size: 16px;
+    line-height: 1.3;
+}
+
+.file-center-upload-dropzone > span {
+    color: #64748b;
+    font-size: 12px;
+}
+
+.file-center-upload-selected {
+    width: 100%;
+    max-height: 150px;
+    margin-top: 8px;
+    color: #64748b;
+    font-size: 12px;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.file-center-upload-selected span {
+    min-width: 0;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    background: #ffffff;
+    color: #111827;
+    padding: 7px 9px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.file-center-upload-selected small {
+    color: #64748b;
+    white-space: nowrap;
+}
+
+.file-center-upload-actions {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.file-center-upload-action {
+    width: 100%;
+    height: 42px;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    background: #ffffff;
+    color: #111827;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 650;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+}
+
+.file-center-upload-action:hover {
+    border-color: #111827;
+    background: #f8fafc;
+}
+
+.file-center-upload-action.primary {
+    border-color: #111827;
+    background: #111827;
+    color: #ffffff;
+}
+
+.file-center-upload-action.primary:hover {
+    background: #0f172a;
+}
+
+.file-center-live-transfer-panel {
+    margin-top: 8px;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    background: #f8fafc;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.file-center-live-transfer-panel[hidden],
+.file-center-live-transfer-link-row[hidden] {
+    display: none;
+}
+
+.file-center-live-transfer-status,
+.file-center-live-transfer-code {
+    color: #334155;
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.file-center-live-transfer-code {
+    font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+    color: #111827;
+}
+
+.file-center-live-transfer-link-row {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 34px;
+    gap: 8px;
+}
+
+.file-center-live-transfer-link-row input {
+    min-width: 0;
+    height: 34px;
+    border: 1px solid #cbd5e1;
+    border-radius: 7px;
+    background: #ffffff;
+    color: #111827;
+    font-size: 12px;
+    padding: 0 9px;
+}
+
+.file-center-live-transfer-events {
+    max-height: 170px;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.file-center-live-transfer-event {
+    border: 1px solid #dbeafe;
+    border-radius: 7px;
+    background: #ffffff;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.file-center-live-transfer-event strong {
+    color: #15803d;
+    font-size: 12px;
+}
+
+.file-center-live-transfer-event span,
+.file-center-live-transfer-event small {
+    color: #64748b;
+    font-size: 11px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+
+.file-center-live-transfer-event code {
+    color: #111827;
+    font-size: 11px;
+    overflow-wrap: anywhere;
 }
 
 @media (max-width: 1180px) {
@@ -6990,6 +7327,14 @@ textarea {
     .file-center-detail-pre {
         padding: 14px;
         font-size: 12px;
+    }
+
+    .file-center-upload-dialog-body {
+        grid-template-columns: 1fr;
+    }
+
+    .file-center-upload-dropzone {
+        min-height: 220px;
     }
 }
 
@@ -9517,13 +9862,13 @@ body.is-admin .menu-item.admin-only {
     border-radius: 8px;
 }
 
-#settingsModal .admin-system-select {
+:is(#settingsModal, #adminConfigModal) .admin-system-select {
     position: relative;
     min-width: 0;
     max-width: 100%;
 }
 
-#settingsModal .admin-system-select-trigger {
+:is(#settingsModal, #adminConfigModal) .admin-system-select-trigger {
     appearance: none;
     width: 100%;
     min-height: 38px;
@@ -9542,38 +9887,38 @@ body.is-admin .menu-item.admin-only {
     transition: color 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
 }
 
-#settingsModal .admin-system-select-trigger:hover {
+:is(#settingsModal, #adminConfigModal) .admin-system-select-trigger:hover {
     color: #0f172a;
     border-color: #94a3b8;
     background: #f8fafc;
 }
 
-#settingsModal .admin-system-select.open .admin-system-select-trigger {
+:is(#settingsModal, #adminConfigModal) .admin-system-select.open .admin-system-select-trigger {
     color: #0f172a;
     border-color: #6366f1;
     background: #ffffff;
     box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.12);
 }
 
-#settingsModal .admin-system-select-label {
+:is(#settingsModal, #adminConfigModal) .admin-system-select-label {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-#settingsModal .admin-system-select-trigger i {
+:is(#settingsModal, #adminConfigModal) .admin-system-select-trigger i {
     color: #64748b;
     font-size: 11px;
     flex: 0 0 auto;
     transition: transform 0.16s ease;
 }
 
-#settingsModal .admin-system-select.open .admin-system-select-trigger i {
+:is(#settingsModal, #adminConfigModal) .admin-system-select.open .admin-system-select-trigger i {
     transform: rotate(180deg);
 }
 
-#settingsModal .admin-system-select-menu {
+:is(#settingsModal, #adminConfigModal) .admin-system-select-menu {
     position: fixed;
     top: 0;
     left: 0;
@@ -9594,14 +9939,14 @@ body.is-admin .menu-item.admin-only {
     box-sizing: border-box;
 }
 
-#settingsModal .admin-system-select.open .admin-system-select-menu,
-#settingsModal .admin-system-select-menu.is-open,
-#settingsModal > .admin-system-select-menu.is-open {
+:is(#settingsModal, #adminConfigModal) .admin-system-select.open .admin-system-select-menu,
+:is(#settingsModal, #adminConfigModal) .admin-system-select-menu.is-open,
+:is(#settingsModal, #adminConfigModal) > .admin-system-select-menu.is-open {
     display: grid !important;
     gap: 4px;
 }
 
-#settingsModal .admin-system-select-option {
+:is(#settingsModal, #adminConfigModal) .admin-system-select-option {
     width: 100%;
     min-height: 34px;
     border: none;
@@ -9621,29 +9966,29 @@ body.is-admin .menu-item.admin-only {
     transition: color 0.14s ease, background 0.14s ease;
 }
 
-#settingsModal .admin-system-select-option:hover {
+:is(#settingsModal, #adminConfigModal) .admin-system-select-option:hover {
     color: #0f172a;
     background: #f1f5f9;
 }
 
-#settingsModal .admin-system-select-option.active {
+:is(#settingsModal, #adminConfigModal) .admin-system-select-option.active {
     color: #3730a3;
     background: #eef2ff;
 }
 
-#settingsModal .admin-system-select-option.is-stale {
+:is(#settingsModal, #adminConfigModal) .admin-system-select-option.is-stale {
     color: #7c2d12;
     background: #fff7ed;
 }
 
-#settingsModal .admin-system-select-option-main {
+:is(#settingsModal, #adminConfigModal) .admin-system-select-option-main {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-#settingsModal .admin-system-select-option-meta {
+:is(#settingsModal, #adminConfigModal) .admin-system-select-option-meta {
     color: #94a3b8;
     font-size: 11px;
     font-weight: 600;
@@ -11089,8 +11434,29 @@ body.is-admin .menu-item.admin-only {
 }
 
 .avatar-crop-reset {
-    min-width: 64px;
+    width: 88px !important;
+    min-width: 88px;
+    height: 34px;
+    min-height: 34px !important;
+    border: 1px solid #94a3b8 !important;
+    border-radius: 8px;
+    background: #ffffff !important;
+    color: #0f172a !important;
+    padding: 0 14px !important;
+    font-weight: 650;
+    line-height: 1;
     white-space: nowrap;
+}
+
+.avatar-crop-reset:hover {
+    border-color: #64748b !important;
+    background: #f1f5f9 !important;
+    color: #0f172a !important;
+}
+
+.avatar-crop-reset:focus-visible {
+    outline: 2px solid #0f172a;
+    outline-offset: 2px;
 }
 
 .avatar-crop-preview-wrap {
@@ -12697,6 +13063,7 @@ body.is-admin .menu-item.admin-only {
     }
 
     #toggleNotesPanel,
+    #toggleNotificationPanel,
     #toggleWorkflowView {
         display: none !important;
     }

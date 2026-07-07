@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import re
 import threading
 import time
@@ -96,6 +97,37 @@ def list_projects(cfg: Mapping[str, Any], limit: int = 50) -> List[Dict[str, Any
     return rows
 
 
+def list_project_files(cfg: Mapping[str, Any], project_id: str) -> List[Dict[str, Any]]:
+    """List project files with project-relative paths for preview links."""
+    root = project_dir(cfg, project_id)
+
+    if not root.is_dir():
+        raise ValueError("project not found")
+
+    rows: List[Dict[str, Any]] = []
+
+    for path in sorted(root.rglob("*")):
+
+        if not path.is_file():
+            continue
+
+        relative_path = path.relative_to(root).as_posix()
+        stat = path.stat()
+        mime_type = mimetypes.guess_type(path.name)[0] or ""
+        suffix = path.suffix.lower()
+        rows.append({
+            "name": path.name,
+            "relative_path": relative_path,
+            "area": _file_area(relative_path),
+            "kind": _file_kind(suffix, mime_type),
+            "mime_type": mime_type,
+            "size": stat.st_size,
+            "updated_at": int(stat.st_mtime),
+        })
+
+    return rows
+
+
 def load_source_context(cfg: Mapping[str, Any], project_id: str) -> Dict[str, Any]:
     path = project_dir(cfg, project_id) / "source" / "context.json"
     if not path.exists():
@@ -180,3 +212,34 @@ def _append_log_to_project(project: Dict[str, Any], event_type: str, message: st
 def _safe_project_id(project_id: str) -> str:
     text = str(project_id or "").strip()
     return re.sub(r"[^a-zA-Z0-9_.-]", "", text)[:80]
+
+
+def _file_area(relative_path: str) -> str:
+    text = str(relative_path or "").strip()
+
+    if text.startswith("exports/"):
+        return "exports"
+
+    if text.startswith("source/"):
+        return "source"
+
+    return "project"
+
+
+def _file_kind(suffix: str, mime_type: str) -> str:
+    if suffix == ".json":
+        return "json"
+
+    if mime_type.startswith("image/"):
+        return "image"
+
+    if mime_type.startswith("audio/"):
+        return "audio"
+
+    if mime_type.startswith("video/"):
+        return "video"
+
+    if suffix in {".srt", ".txt", ".js", ".html", ".css", ".md"} or mime_type.startswith("text/"):
+        return "text"
+
+    return "file"

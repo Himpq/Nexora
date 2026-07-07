@@ -305,6 +305,8 @@ def _record_matches_category(record: Mapping[str, Any], category: str) -> bool:
         return _is_model_record(record)
     if wanted == "error":
         return _is_error_record(record)
+    if wanted == "performance":
+        return _is_performance_record(record)
     return True
 
 
@@ -337,6 +339,21 @@ def _is_error_record(record: Mapping[str, Any]) -> bool:
     if isinstance(payload, Mapping) and payload.get("ok") is False:
         return True
     return False
+
+
+def _is_performance_record(record: Mapping[str, Any]) -> bool:
+    event_type = str(record.get("event_type") or "").strip().lower()
+    source = str(record.get("source") or "").strip().lower()
+    payload = record.get("payload")
+    payload_source = ""
+
+    if isinstance(payload, Mapping):
+        payload_source = str(payload.get("source") or "").strip().lower()
+
+    if source == "performance" or payload_source == "performance":
+        return True
+
+    return event_type.startswith("request_performance")
 
 
 def _write_structured_record(record: Mapping[str, Any]) -> None:

@@ -23,6 +23,14 @@
         }
     }
 
+    function getRegisteredChatBridge() {
+        if (!chatBridge) {
+            throw new Error('NexoraLearningMode 尚未注册 Chat bridge');
+        }
+
+        return chatBridge;
+    }
+
     function escapeHtml(value) {
         return String(value || '')
             .replace(/&/g, '&amp;')
@@ -165,7 +173,7 @@
         const pid = String(data.puzzle_id || '').trim();
         const snap = data.state;
         if (!pid || !snap || typeof snap !== 'object') return true;
-        const convId = (typeof currentConversationId !== 'undefined') ? currentConversationId : null;
+        const convId = getRegisteredChatBridge().currentConversationId;
         if (convId) {
             savePuzzleStateToServer(convId, pid, snap, false);
         }
@@ -559,7 +567,7 @@
         const iframe = card.querySelector('.puzzle-card-iframe');
         if (iframe) syncPuzzleCardLockState(card);
         // 提交时立即保存到服务端（锁定状态）
-        const convId = (typeof currentConversationId !== 'undefined') ? currentConversationId : null;
+        const convId = getRegisteredChatBridge().currentConversationId;
         if (convId && puzzleId) {
             savePuzzleStateToServer(convId, puzzleId, {
                 locked: true,
@@ -698,25 +706,15 @@
         if (!target) return;
         const normalizedRole = String(role || '').trim().toLowerCase();
         const raw = String(text || '');
-        const canMarkdown = (
-            normalizedRole === 'assistant'
-            && typeof window.renderMarkdownWithNewTabLinks === 'function'
-        );
-        if (!canMarkdown) {
+        if (normalizedRole !== 'assistant') {
             target.textContent = raw;
             return;
         }
-        target.innerHTML = window.renderMarkdownWithNewTabLinks(raw);
-        try {
-            if (typeof window.bindSourceMarkdown === 'function') {
-                window.bindSourceMarkdown(target, raw);
-            }
-        } catch (_) {}
-        try {
-            if (typeof window.renderMathSafe === 'function') {
-                window.renderMathSafe(target, { force: true });
-            }
-        } catch (_) {}
+
+        const bridge = getRegisteredChatBridge();
+        target.innerHTML = bridge.renderMarkdownWithNewTabLinks(raw);
+        bridge.bindSourceMarkdown(target, raw);
+        bridge.renderMathSafe(target, { force: true });
     }
 
     function renderSidebarQuestionPart(target, part, bridge) {
@@ -1624,12 +1622,10 @@
             markPuzzleCardSubmitted(puzzleCard, rows, submission);
         }
         const displayText = summarizePuzzleSubmission(rows, submission);
-        if (chatBridge && typeof chatBridge.sendMessage === 'function') {
-            await chatBridge.sendMessage({
-                displayContentOverride: displayText,
-                puzzle_submission: { puzzle_id: puzzleId, ordered_steps: rows },
-            });
-        }
+        await getRegisteredChatBridge().sendMessage({
+            displayContentOverride: displayText,
+            puzzle_submission: { puzzle_id: puzzleId, ordered_steps: rows },
+        });
     }
 
     async function handlePuzzleIframeSubmit(detail) {

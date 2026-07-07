@@ -3,6 +3,7 @@ ddgs
 playwright>=1.40.0
 beautifulsoup4>=4.12.0
 requests>=2.31.0
+certifi>=2025.7.14
 lxml>=4.9.4
 trafilatura>=2.0.0
 crawlee[crawlers]>=0.4.0

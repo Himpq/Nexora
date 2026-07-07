@@ -11,7 +11,7 @@ from flask import Blueprint, jsonify, request, send_file
 from core.learning_ingest import normalize_learning_project_payload, normalize_run_stages
 from core.pipeline import VideoGenerationPipeline, run_project_generation
 from core.providers.manim import render_manim_poc
-from core.projects import create_project, get_project, list_projects, project_dir
+from core.projects import create_project, get_project, list_project_files, list_projects, project_dir
 
 bp = Blueprint("nexora_video_generator", __name__, url_prefix="/api")
 _CFG: Dict[str, Any] = {}
@@ -106,6 +106,26 @@ def api_get_project(project_id: str):
         "success": True,
         "project": project,
         "project_dir": str(project_dir(_CFG, project_id)),
+    })
+
+
+@bp.route("/projects/<project_id>/assets", methods=["GET"])
+def api_list_project_assets(project_id: str):
+    project = get_project(_CFG, project_id)
+
+    if not project:
+        return jsonify({"success": False, "message": "project not found"}), 404
+
+    try:
+        files = list_project_files(_CFG, project_id)
+    except ValueError as exc:
+        return _json_failure(str(exc), 404)
+
+    return jsonify({
+        "success": True,
+        "project": project,
+        "project_dir": str(project_dir(_CFG, project_id)),
+        "files": files,
     })
 
 

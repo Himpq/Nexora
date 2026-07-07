@@ -12,6 +12,7 @@ from datastorage import (
     safe_read_text,
     safe_write_text,
 )
+from usage_logs import append_usage_log_record, read_usage_log_records
 from text_patch import (
     apply_range_replacements,
     apply_text_patch,
@@ -1186,8 +1187,6 @@ class User:
             total_tokens = input_tokens + output_tokens
         total_tokens = int(total_tokens or 0)
 
-        logs = safe_read_json(log_file, default=[])
-
         # 添加新日志
         log_entry = {
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
@@ -1207,13 +1206,7 @@ class User:
             "output_tps": float(metadata.get("output_tps", 0.0) or 0.0)
         }
 
-        logs.insert(0, log_entry)  # 最新的在最前
-
-        # 限制日志数量（例如保留最近1000条）
-        if len(logs) > 1000:
-            logs = logs[:1000]
-
-        safe_write_json(log_file, logs)
+        append_usage_log_record(log_file, log_entry)
 
         # 同时更新全局 user.json 中的累计 token 消耗
         try:
@@ -1234,7 +1227,7 @@ class User:
     def get_token_logs(self):
         """获取Token使用日志"""
         log_file = self.path + "token_usage.json"
-        return safe_read_json(log_file, default=[])
+        return read_usage_log_records(log_file)
 
     def _preferences_file(self):
         return self.path + "preferences.json"

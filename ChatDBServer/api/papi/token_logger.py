@@ -103,17 +103,20 @@ def build_papi_log_context(
     key_state = auth.get("key") if isinstance(auth.get("key"), dict) else {}
     key_id = str(key_state.get("id") or "").strip()
     key_slug = _clean_slug(key_id)
+    api_key_created_by = str(key_state.get("created_by") or "").strip()
+    resolved_username = str(username or "").strip() or api_key_created_by
 
     return {
         "log_id": f"papi_log_{uuid.uuid4().hex}",
         "request_started_at": time.time(),
         "request_path": str(request_path or getattr(request_obj, "path", "") or "").strip(),
         "method": str(getattr(request_obj, "method", "") or "").strip().upper(),
-        "username": str(username or "").strip(),
+        "username": resolved_username,
         "api_key_id": key_id,
         "api_key_slug": key_slug,
         "api_key_name": str(key_state.get("name") or "").strip(),
         "api_key_preview": str(key_state.get("key_preview") or "").strip(),
+        "api_key_created_by": api_key_created_by,
         "required_permission": str(auth.get("required_permission") or "").strip(),
         "remote_addr": _request_remote_addr(request_obj),
         "user_agent": _request_header(request_obj, "User-Agent")[:240],
@@ -223,6 +226,7 @@ def record_papi_token_usage(
         "api_key_id": str(ctx.get("api_key_id") or "").strip(),
         "api_key_name": str(ctx.get("api_key_name") or "").strip(),
         "api_key_preview": str(ctx.get("api_key_preview") or "").strip(),
+        "api_key_created_by": str(ctx.get("api_key_created_by") or "").strip(),
         "username": str(ctx.get("username") or "").strip(),
         "request_path": str(request_path or ctx.get("request_path") or "").strip(),
         "method": str(ctx.get("method") or "").strip(),

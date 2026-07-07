@@ -1,0 +1,14 @@
+.file-center-upload-dialog-close {
+    flex: 0 0 auto;
+    color: #64748b;
+}
+
+.file-center-upload-dialog-close i {
+    font-size: 13px;
+    line-height: 1;
+    pointer-events: none;
+}
+
+.file-center-upload-dialog-close:hover {
+    color: #111827;
+}

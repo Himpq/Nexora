@@ -34,6 +34,7 @@ from .token_logger import (
     build_papi_token_log_context,
     extract_usage_from_payload,
     infer_papi_action,
+    iter_papi_token_log_entries,
     record_papi_image_generation,
     record_papi_token_usage,
 )
@@ -59,6 +60,32 @@ def _server_attr(name: str):
 
 def get_config_all():
     return _server_attr('get_config_all')()
+
+
+def _papi_safe_int(value, default=0):
+    try:
+        return max(0, int(float(value if value is not None else default)))
+    except Exception:
+        return max(0, int(default or 0))
+
+
+def _papi_normalize_stats_log(log, source):
+    src = log if isinstance(log, dict) else {}
+    input_tokens = _papi_safe_int(src.get('input_tokens', src.get('prompt_tokens', 0)))
+    output_tokens = _papi_safe_int(src.get('output_tokens', src.get('completion_tokens', 0)))
+    total_value = src.get('total_tokens')
+    total_tokens = _papi_safe_int(total_value, input_tokens + output_tokens) if total_value is not None else input_tokens + output_tokens
+
+    if total_tokens <= 0 and (input_tokens > 0 or output_tokens > 0):
+        total_tokens = input_tokens + output_tokens
+
+    item = dict(src)
+    item['source'] = str(source or src.get('source') or 'chat').strip() or 'chat'
+    item['username'] = str(src.get('username') or src.get('api_key_created_by') or '').strip()
+    item['input_tokens'] = input_tokens
+    item['output_tokens'] = output_tokens
+    item['total_tokens'] = total_tokens
+    return item
 
 
 def _is_model_disabled_entry(model_info):
@@ -245,13 +272,41 @@ def papi_get_knowledge(username, title):
 def papi_token_stats(username):
     """获取指定用户的 Token 消耗记录"""
     try:
-        user = User(username)
-        logs = user.get_token_logs()
-        total_tokens = sum(log.get('total_tokens', 0) for log in logs)
+        target_username = str(username or '').strip()
+        user = User(target_username)
+        logs = []
+
+        for item in user.get_token_logs():
+            if isinstance(item, dict):
+                logs.append(_papi_normalize_stats_log(item, 'chat'))
+
+        for item in iter_papi_token_log_entries():
+            if not isinstance(item, dict):
+                continue
+
+            log_username = str(item.get('username') or item.get('api_key_created_by') or '').strip()
+
+            if log_username != target_username:
+                continue
+
+            logs.append(_papi_normalize_stats_log(item, 'papi'))
+
+        logs.sort(
+            key=lambda row: (
+                _papi_safe_int(row.get('timestamp_ms', 0)),
+                str(row.get('timestamp') or ''),
+            ),
+            reverse=True,
+        )
+        total_tokens = sum(_papi_safe_int(log.get('total_tokens', 0)) for log in logs)
+        input_tokens = sum(_papi_safe_int(log.get('input_tokens', 0)) for log in logs)
+        output_tokens = sum(_papi_safe_int(log.get('output_tokens', 0)) for log in logs)
         return jsonify({
             'success': True,
-            'username': username,
+            'username': target_username,
             'total': total_tokens,
+            'input_tokens': input_tokens,
+            'output_tokens': output_tokens,
             'logs': logs
         })
     except Exception as e:
@@ -570,6 +625,7 @@ def _papi_handle_completion_request(data=None, username=None, request_path=''):
         username=request_username or str(username or '').strip(),
         request_path=request_path or str(request.path or '').strip().lower(),
     )
+    request_username = str(token_log_context.get('username') or request_username or '').strip()
     token_log_action = infer_papi_action(request_path or str(request.path or '').strip().lower())
     use_responses_compat = ('/responses' in request_path)
     previous_response_id = str(
@@ -1171,7 +1227,8 @@ def papi_learning_chat():
     username = str(data.get('username') or metadata.get('username') or '').strip()
     if not username:
         auth = request.environ.get('papi.auth') if isinstance(request.environ.get('papi.auth'), dict) else {}
-        username = str(auth.get('created_by') or auth.get('username') or '').strip()
+        key_state = auth.get('key') if isinstance(auth.get('key'), dict) else {}
+        username = str(key_state.get('created_by') or key_state.get('username') or '').strip()
     if not username:
         return jsonify({'success': False, 'message': 'username is required'}), 400
 

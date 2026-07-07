@@ -1,4 +1,18 @@
-// Workspace project UI and interactions. Loaded after chat.js so it can reuse shared chat globals.
+// Workspace project UI and interactions. Loaded after chat.js and talks to chat.js through NexoraChat.
+
+function getNexoraChatBridge() {
+    const bridge = window.NexoraChat;
+
+    if (!bridge || typeof bridge !== 'object') {
+        throw new Error('NexoraChat bridge 未初始化，Workspace 无法接管聊天视图');
+    }
+
+    return bridge;
+}
+
+function getNexoraChatElements() {
+    return getNexoraChatBridge().elements;
+}
 
 function workspaceHasMarkedConversation(workspace, conversationId) {
     const cid = String(conversationId || '').trim();
@@ -80,7 +94,8 @@ function isWorkspaceMarkedForPinTarget(workspace, state) {
 }
 
 function renderPinContextWorkspaceItems(workspaces, state = null) {
-    const list = els.pinContextMenuWorkspaceList || document.getElementById('pinContextMenuWorkspaceList');
+    const chatEls = getNexoraChatElements();
+    const list = chatEls.pinContextMenuWorkspaceList || document.getElementById('pinContextMenuWorkspaceList');
 
     if (!list) {
         return;
@@ -113,7 +128,8 @@ function renderPinContextWorkspaceItems(workspaces, state = null) {
 }
 
 async function loadPinContextWorkspaceItems(state) {
-    const list = els.pinContextMenuWorkspaceList || document.getElementById('pinContextMenuWorkspaceList');
+    const chatEls = getNexoraChatElements();
+    const list = chatEls.pinContextMenuWorkspaceList || document.getElementById('pinContextMenuWorkspaceList');
     const targetType = String((state && state.targetType) || '').trim();
     const supportsWorkspaceMark = targetType === 'conversation' || targetType === 'knowledge_basis';
 
@@ -133,8 +149,8 @@ async function loadPinContextWorkspaceItems(state) {
 
         renderPinContextWorkspaceItems(data.workspaces, state);
         positionPinContextSubmenu(
-            els.pinContextMenu || document.getElementById('pinContextMenu'),
-            parseFloat(String((els.pinContextMenu || document.getElementById('pinContextMenu'))?.style?.left || '0')) || 0,
+            chatEls.pinContextMenu || document.getElementById('pinContextMenu'),
+            parseFloat(String((chatEls.pinContextMenu || document.getElementById('pinContextMenu'))?.style?.left || '0')) || 0,
         );
     } catch (error) {
         console.error('loadPinContextWorkspaceItems failed', error);
@@ -143,7 +159,8 @@ async function loadPinContextWorkspaceItems(state) {
 }
 
 function positionPinContextSubmenu(menu, x) {
-    const workspaceList = els.pinContextMenuWorkspaceList || document.getElementById('pinContextMenuWorkspaceList');
+    const chatEls = getNexoraChatElements();
+    const workspaceList = chatEls.pinContextMenuWorkspaceList || document.getElementById('pinContextMenuWorkspaceList');
 
     if (!menu || !workspaceList) {
         return;
@@ -157,24 +174,17 @@ function positionPinContextSubmenu(menu, x) {
 
 // Workspaces 是顶层工作台入口，进入前需要断开当前对话选中态，避免侧栏继续高亮旧 Conversation。
 function clearCurrentConversationSelectionForWorkspaceNavigation() {
-    const activeConversationId = String(currentConversationId || '').trim();
+    const chatBridge = getNexoraChatBridge();
+    const activeConversationId = String(chatBridge.currentConversationId || '').trim();
     const urlParams = new URLSearchParams(window.location.search || '');
     const hasConversationUrl = urlParams.has('cid') || urlParams.has('id');
 
     resetWorkspaceReadonlyConversationState();
-
-    if (activeConversationId) {
-        detachCurrentVisibleStreamForNavigation('');
-    }
-
-    currentConversationId = null;
-    syncBrowserCurrentConversation();
-    syncGenerationStateForCurrentConversation();
-    syncNotesForConversation(null);
-    conversationListRenderSignature = '';
-    renderConversationList(conversationListCache);
+    chatBridge.clearConversationSelection({
+        detachStream: !!activeConversationId,
+        resetKnowledgeView: false,
+    });
     clearWorkspaceHierarchySlot();
-    resetComposerConversationContextUsage();
 
     if (activeConversationId || hasConversationUrl) {
         window.history.replaceState({}, '', '/chat');
@@ -186,8 +196,29 @@ let workspaceProjectsState = {
     filter: 'all',
     query: '',
     selectedWorkspace: null,
-    activeDetailTab: 'chat',
+    activeDetailTab: 'overview',
+    taskCalendarMonth: '',
+    taskCalendarMonthJumpOpen: false,
 };
+
+const WORKSPACE_TASK_STATUS_OPTIONS = [
+    { value: 'todo', label: '待办', icon: 'fa-regular fa-circle' },
+    { value: 'doing', label: '进行中', icon: 'fa-solid fa-spinner' },
+    { value: 'blocked', label: '阻塞', icon: 'fa-solid fa-triangle-exclamation' },
+    { value: 'done', label: '完成', icon: 'fa-regular fa-circle-check' },
+    { value: 'cancelled', label: '取消', icon: 'fa-regular fa-circle-xmark' },
+];
+const WORKSPACE_TASK_STATUS_VALUES = new Set(WORKSPACE_TASK_STATUS_OPTIONS.map((item) => item.value));
+const WORKSPACE_TASK_COLOR_OPTIONS = [
+    { value: 'blue', label: '蓝色' },
+    { value: 'green', label: '绿色' },
+    { value: 'amber', label: '琥珀' },
+    { value: 'rose', label: '玫瑰' },
+    { value: 'violet', label: '紫色' },
+    { value: 'cyan', label: '青色' },
+    { value: 'slate', label: '灰色' },
+];
+const WORKSPACE_TASK_COLOR_VALUES = new Set(WORKSPACE_TASK_COLOR_OPTIONS.map((item) => item.value));
 
 let workspaceResourceContextMenuState = null;
 
@@ -247,6 +278,39 @@ const workspaceDetailInputMountState = {
     mounted: false,
 };
 
+function renderWorkspaceDetailModelSelectorHtml() {
+    return `
+        <span class="workspace-detail-model-slot" id="workspaceDetailModelSelectSlot" aria-label="模型选择">
+            <div class="custom-select-container" id="modelSelectContainer">
+                <div class="select-selected" id="currentModelDisplay">Select Model</div>
+                <div class="select-items select-hide" id="modelOptions"></div>
+            </div>
+        </span>
+    `;
+}
+
+function bindWorkspaceDetailModelSelector() {
+    const chatBridge = getNexoraChatBridge();
+    const modelSelectContainer = document.getElementById('modelSelectContainer');
+    const currentModelDisplay = document.getElementById('currentModelDisplay');
+    const modelOptions = document.getElementById('modelOptions');
+
+    chatBridge.setElement('modelSelectContainer', modelSelectContainer);
+    chatBridge.setElement('currentModelDisplay', currentModelDisplay);
+    chatBridge.setElement('modelOptions', modelOptions);
+
+    if (!modelSelectContainer || !currentModelDisplay || !modelOptions) {
+        console.error('[WorkspaceDetailModel] 模型选择器挂载失败：缺少必要 DOM 节点');
+        return;
+    }
+
+    void chatBridge.loadModels();
+}
+
+function closeWorkspaceDetailModelSelector() {
+    getNexoraChatBridge().closeAllSelects();
+}
+
 // Workspace 详情页只移动原始输入框节点，保证 input-container 结构和既有事件绑定完全不变。
 function captureWorkspaceDetailInputHome() {
     const inputWrapper = document.getElementById('inputWrapper');
@@ -301,7 +365,7 @@ function mountWorkspaceDetailInputContainer() {
     workspaceDetailInputMountState.mounted = true;
 
     requestAnimationFrame(() => {
-        resizeMessageInput();
+        getNexoraChatBridge().resizeMessageInput();
     });
 }
 
@@ -324,7 +388,7 @@ async function resetWorkspaceDetailComposerSelection(workspaceId) {
     }
 
     // 这里只把输入面切到无选中 Conversation 状态；真实 Conversation 仍由 sendMessage 现有流程创建。
-    await createNewConversation(false, 'chat', {
+    await getNexoraChatBridge().createNewConversation(false, 'chat', {
         pushHistory: false,
     });
 }
@@ -446,11 +510,11 @@ function getWorkspaceProjectTitle(workspace) {
 function normalizeWorkspaceDetailTab(value) {
     const name = String(value || '').trim();
 
-    if (name === 'knowledge' || name === 'files' || name === 'memory') {
+    if (name === 'overview' || name === 'chat' || name === 'knowledge' || name === 'files' || name === 'tasks' || name === 'memory') {
         return name;
     }
 
-    return 'chat';
+    return 'overview';
 }
 
 function isWorkspaceResourcePinned(item) {
@@ -550,24 +614,7 @@ function renderWorkspaceConversationHierarchy(context) {
 }
 
 function ensureWorkspaceViewerBaseHeaderState(headerTitle, headerLeft, headerRight) {
-    if (originalHeaderState) {
-        return;
-    }
-
-    if (chatHeaderBaseState) {
-        originalHeaderState = {
-            title: chatHeaderBaseState.title,
-            leftHTML: chatHeaderBaseState.leftHTML,
-            rightHTML: chatHeaderBaseState.rightHTML,
-        };
-        return;
-    }
-
-    originalHeaderState = {
-        title: headerTitle ? headerTitle.textContent : 'Untitled Conversation',
-        leftHTML: headerLeft ? headerLeft.innerHTML : '',
-        rightHTML: headerRight ? headerRight.innerHTML : '',
-    };
+    getNexoraChatBridge().ensureExternalViewerBaseHeaderState(headerTitle, headerLeft, headerRight);
 }
 
 function getWorkspaceProjectConversations(workspace) {
@@ -1479,7 +1526,8 @@ async function deleteWorkspaceProject(workspaceId) {
 
     if (getWorkspaceProjectId(workspaceProjectsState.selectedWorkspace) === wid) {
         workspaceProjectsState.selectedWorkspace = null;
-        workspaceProjectsState.activeDetailTab = 'chat';
+        workspaceProjectsState.activeDetailTab = 'overview';
+        workspaceProjectsState.taskCalendarMonth = '';
     }
 
     renderWorkspaceProjectsList();
@@ -1532,7 +1580,8 @@ async function selectWorkspaceProject(workspaceId) {
         const previousWorkspaceId = getWorkspaceProjectId(workspaceProjectsState.selectedWorkspace);
 
         if (previousWorkspaceId && previousWorkspaceId !== id) {
-            workspaceProjectsState.activeDetailTab = 'chat';
+            workspaceProjectsState.activeDetailTab = 'overview';
+            workspaceProjectsState.taskCalendarMonth = '';
         }
 
         const res = await fetch(`/api/workspace/${encodeURIComponent(id)}`);
@@ -1729,6 +1778,8 @@ function syncWorkspaceProjectAfterDetailUpdate(workspace) {
             conversation_count: workspace.conversation_count,
             knowledge_document_count: workspace.knowledge_document_count,
             workspace_file_count: workspace.workspace_file_count,
+            workspace_task_count: workspace.workspace_task_count,
+            open_task_count: workspace.open_task_count,
             temp_file_count: workspace.temp_file_count,
         };
     });
@@ -1867,6 +1918,116 @@ async function updateWorkspaceFilePin(workspaceId, fileRef, pin, addedBy = '') {
         },
         'Workspace 文件置顶保存失败',
     );
+}
+
+function normalizeWorkspaceTaskPayload(payload) {
+    const source = (payload && typeof payload === 'object') ? payload : {};
+
+    return {
+        title: String(source.title || '').trim(),
+        status: normalizeWorkspaceTaskStatus(source.status),
+        color: normalizeWorkspaceTaskColor(source.color),
+        assignee: String(source.assignee || currentUsername || '').trim(),
+        start_date: normalizeWorkspaceTaskDateValue(source.start_date),
+        due_date: normalizeWorkspaceTaskDateValue(source.due_date),
+        source_type: String(source.source_type || 'manual').trim() || 'manual',
+        source_title: String(source.source_title || '').trim(),
+        source_ref: String(source.source_ref || '').trim(),
+        notes: String(source.notes || '').trim(),
+    };
+}
+
+async function createWorkspaceTask(workspaceId, payload) {
+    const wid = String(workspaceId || '').trim();
+    const body = normalizeWorkspaceTaskPayload(payload);
+
+    if (!wid) {
+        throw new Error('Workspace 不存在');
+    }
+
+    if (!body.title) {
+        throw new Error('任务标题不能为空');
+    }
+
+    const res = await fetch(`/api/workspace/${encodeURIComponent(wid)}/tasks`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+    });
+    const data = await res.json();
+
+    if (!res.ok || !data.success) {
+        throw new Error((data && data.message) || '任务创建失败');
+    }
+
+    const workspace = data.workspace || null;
+    syncWorkspaceProjectAfterDetailUpdate(workspace);
+    return workspace;
+}
+
+async function updateWorkspaceTask(workspaceId, taskId, payload) {
+    const wid = String(workspaceId || '').trim();
+    const tid = String(taskId || '').trim();
+    const body = normalizeWorkspaceTaskPayload(payload);
+
+    if (!wid || !tid) {
+        throw new Error('任务不存在');
+    }
+
+    if (!body.title) {
+        throw new Error('任务标题不能为空');
+    }
+
+    const res = await fetch(`/api/workspace/${encodeURIComponent(wid)}/tasks/${encodeURIComponent(tid)}`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+    });
+    const data = await res.json();
+
+    if (!res.ok || !data.success) {
+        throw new Error((data && data.message) || '任务保存失败');
+    }
+
+    const workspace = data.workspace || null;
+    syncWorkspaceProjectAfterDetailUpdate(workspace);
+    return workspace;
+}
+
+async function updateWorkspaceTaskStatus(workspaceId, task, status) {
+    const source = (task && typeof task === 'object') ? task : {};
+    const nextPayload = {
+        ...source,
+        status: normalizeWorkspaceTaskStatus(status),
+    };
+
+    return updateWorkspaceTask(workspaceId, source.task_id, nextPayload);
+}
+
+async function deleteWorkspaceTask(workspaceId, taskId) {
+    const wid = String(workspaceId || '').trim();
+    const tid = String(taskId || '').trim();
+
+    if (!wid || !tid) {
+        throw new Error('任务不存在');
+    }
+
+    const res = await fetch(`/api/workspace/${encodeURIComponent(wid)}/tasks/${encodeURIComponent(tid)}`, {
+        method: 'DELETE',
+    });
+    const data = await res.json();
+
+    if (!res.ok || !data.success) {
+        throw new Error((data && data.message) || '任务删除失败');
+    }
+
+    const workspace = data.workspace || null;
+    syncWorkspaceProjectAfterDetailUpdate(workspace);
+    return workspace;
 }
 
 async function updateWorkspaceProjectTitle(workspaceId, title) {
@@ -2226,7 +2387,7 @@ async function openWorkspaceDetailConversation(conversationId, addedBy = '') {
         return;
     }
 
-    await loadConversation(cid, {
+    await getNexoraChatBridge().loadConversation(cid, {
         workspaceContext: {
             workspaceId,
             workspaceTitle: getWorkspaceProjectTitle(workspace),
@@ -2322,28 +2483,22 @@ function prepareWorkspaceReadonlyConversationView(payload) {
         throw new Error('消息容器不存在');
     }
 
-    closeKnowledgePanel();
-    closeCloudFilePanel();
-    exitLearningFeedComposeMode({ clear: false });
+    const chatBridge = getNexoraChatBridge();
+    chatBridge.closePrimaryPanelsForExternalView();
     restoreWorkspaceDetailInputContainer();
-    resetComposerConversationContextUsage();
-    detachCurrentVisibleStreamForNavigation('');
-    currentConversationId = null;
-    syncBrowserCurrentConversation();
-    syncGenerationStateForCurrentConversation();
-    syncNotesForConversation(null);
-    conversationListRenderSignature = '';
-    renderConversationList(conversationListCache);
-    currentViewingKnowledge = null;
-    pendingHighlightData = null;
-    navigationStack = [];
+    chatBridge.clearConversationSelection({
+        detachStream: true,
+        resetKnowledgeView: true,
+    });
 
     if (viewer) {
         viewer.style.display = 'none';
     }
 
-    if (els.learningMainPanel) {
-        els.learningMainPanel.style.display = 'none';
+    const learningMainPanel = chatBridge.getElement('learningMainPanel');
+
+    if (learningMainPanel) {
+        learningMainPanel.style.display = 'none';
     }
 
     if (inputDock) {
@@ -2482,9 +2637,1543 @@ function renderWorkspaceMemoryPanel(workspace) {
 
     return `
         <div class="workspace-detail-memory-markdown">
-            ${renderMarkdownWithNewTabLinks(content, { breaks: false })}
+            ${getNexoraChatBridge().renderMarkdownWithNewTabLinks(content, { breaks: false })}
         </div>
     `;
+}
+
+function getWorkspaceProjectTasks(workspace) {
+    const tasks = workspace && Array.isArray(workspace.workspace_tasks)
+        ? workspace.workspace_tasks
+        : [];
+
+    return tasks.filter((item) => item && typeof item === 'object');
+}
+
+function normalizeWorkspaceTaskStatus(value) {
+    const status = String(value || 'todo').trim().toLowerCase();
+
+    if (WORKSPACE_TASK_STATUS_VALUES.has(status)) {
+        return status;
+    }
+
+    return 'todo';
+}
+
+function normalizeWorkspaceTaskColor(value) {
+    const color = String(value || 'blue').trim().toLowerCase();
+
+    if (WORKSPACE_TASK_COLOR_VALUES.has(color)) {
+        return color;
+    }
+
+    return 'blue';
+}
+
+function getWorkspaceTaskStatusOption(status) {
+    const safeStatus = normalizeWorkspaceTaskStatus(status);
+    return WORKSPACE_TASK_STATUS_OPTIONS.find((item) => item.value === safeStatus) || WORKSPACE_TASK_STATUS_OPTIONS[0];
+}
+
+function getWorkspaceTaskStatusLabel(status) {
+    return getWorkspaceTaskStatusOption(status).label;
+}
+
+function getWorkspaceTaskStatusIcon(status) {
+    return getWorkspaceTaskStatusOption(status).icon;
+}
+
+function isWorkspaceTaskOpen(task) {
+    const status = normalizeWorkspaceTaskStatus(task && task.status);
+    return status !== 'done' && status !== 'cancelled';
+}
+
+function normalizeWorkspaceTaskDateValue(value) {
+    return String(value || '').trim();
+}
+
+function isValidWorkspaceTaskDateValue(value) {
+    const text = normalizeWorkspaceTaskDateValue(value);
+    return !text || !!parseWorkspaceTaskDate(text);
+}
+
+function getWorkspaceTodayKey() {
+    const date = new Date();
+    return formatWorkspaceTaskDateKey(date);
+}
+
+function formatWorkspaceTaskDateKey(date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
+function parseWorkspaceTaskDate(value) {
+    const text = normalizeWorkspaceTaskDateValue(value);
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+        return null;
+    }
+
+    const year = Number(text.slice(0, 4));
+    const month = Number(text.slice(5, 7));
+    const day = Number(text.slice(8, 10));
+    const date = new Date(year, month - 1, day);
+
+    if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
+        return null;
+    }
+
+    return date;
+}
+
+function formatWorkspaceTaskDateLabel(value) {
+    const date = parseWorkspaceTaskDate(value);
+
+    if (!date) {
+        return normalizeWorkspaceTaskDateValue(value);
+    }
+
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${month}-${day}`;
+}
+
+function getWorkspaceTaskDateKey(task) {
+    const dueDate = normalizeWorkspaceTaskDateValue(task && task.due_date);
+
+    if (dueDate) {
+        return dueDate;
+    }
+
+    return normalizeWorkspaceTaskDateValue(task && task.start_date);
+}
+
+function formatWorkspaceTaskSchedule(task) {
+    const startDate = normalizeWorkspaceTaskDateValue(task && task.start_date);
+    const dueDate = normalizeWorkspaceTaskDateValue(task && task.due_date);
+
+    if (startDate && dueDate && startDate !== dueDate) {
+        return `${formatWorkspaceTaskDateLabel(startDate)} 至 ${formatWorkspaceTaskDateLabel(dueDate)}`;
+    }
+
+    if (dueDate) {
+        return `截止 ${formatWorkspaceTaskDateLabel(dueDate)}`;
+    }
+
+    if (startDate) {
+        return `开始 ${formatWorkspaceTaskDateLabel(startDate)}`;
+    }
+
+    return '未排期';
+}
+
+function normalizeWorkspaceTaskMonth(value) {
+    const text = String(value || '').trim();
+
+    if (/^\d{4}-\d{2}$/.test(text)) {
+        const month = Number(text.slice(5, 7));
+
+        if (month < 1 || month > 12) {
+            return '';
+        }
+
+        return text;
+    }
+
+    return '';
+}
+
+function normalizeWorkspaceTaskMonthInput(value) {
+    const text = String(value || '').trim();
+
+    if (!text) {
+        return '';
+    }
+
+    const compactMatch = text.match(/^(\d{4})(\d{2})$/);
+    const separatedMatch = text.match(/^(\d{4})\s*[-/.年]\s*(\d{1,2})\s*月?$/);
+    const match = compactMatch || separatedMatch;
+
+    if (!match) {
+        return normalizeWorkspaceTaskMonth(text);
+    }
+
+    return normalizeWorkspaceTaskMonth(`${match[1]}-${String(Number(match[2])).padStart(2, '0')}`);
+}
+
+function getWorkspaceDefaultTaskCalendarMonth(tasks) {
+    const today = getWorkspaceTodayKey();
+    const datedTasks = (Array.isArray(tasks) ? tasks : [])
+        .map((task) => getWorkspaceTaskDateKey(task))
+        .filter((dateKey) => /^\d{4}-\d{2}-\d{2}$/.test(dateKey))
+        .sort();
+    const nearestDate = datedTasks.find((dateKey) => dateKey >= today) || datedTasks[0] || today;
+
+    return nearestDate.slice(0, 7);
+}
+
+function getWorkspaceTaskCalendarMonth(tasks) {
+    const currentMonth = normalizeWorkspaceTaskMonth(workspaceProjectsState.taskCalendarMonth);
+
+    if (currentMonth) {
+        return currentMonth;
+    }
+
+    const month = getWorkspaceDefaultTaskCalendarMonth(tasks);
+    workspaceProjectsState.taskCalendarMonth = month;
+    return month;
+}
+
+function shiftWorkspaceTaskCalendarMonth(monthValue, offset) {
+    const month = normalizeWorkspaceTaskMonth(monthValue) || getWorkspaceDefaultTaskCalendarMonth([]);
+    const year = Number(month.slice(0, 4));
+    const monthIndex = Number(month.slice(5, 7)) - 1;
+    const date = new Date(year, monthIndex + Number(offset || 0), 1);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function getWorkspaceTaskTodayMonth() {
+    return getWorkspaceTodayKey().slice(0, 7);
+}
+
+function getWorkspaceTaskDateRangeMonth(startDate = '', dueDate = '') {
+    const start = normalizeWorkspaceTaskDateValue(startDate);
+    const due = normalizeWorkspaceTaskDateValue(dueDate);
+    const dateKey = start || due || getWorkspaceTodayKey();
+
+    return dateKey.slice(0, 7);
+}
+
+function formatWorkspaceTaskDateRangeLabel(startDate, dueDate) {
+    const start = normalizeWorkspaceTaskDateValue(startDate);
+    const due = normalizeWorkspaceTaskDateValue(dueDate);
+
+    if (start && due && start !== due) {
+        return `${formatWorkspaceTaskDateLabel(start)} 至 ${formatWorkspaceTaskDateLabel(due)}`;
+    }
+
+    if (start && due) {
+        return formatWorkspaceTaskDateLabel(start);
+    }
+
+    if (start) {
+        return `开始 ${formatWorkspaceTaskDateLabel(start)}`;
+    }
+
+    if (due) {
+        return `截止 ${formatWorkspaceTaskDateLabel(due)}`;
+    }
+
+    return '未排期';
+}
+
+function getWorkspaceTaskModalDateRange(modal) {
+    if (!modal) {
+        return {
+            startDate: '',
+            dueDate: '',
+        };
+    }
+
+    return {
+        startDate: normalizeWorkspaceTaskDateValue(modal.getAttribute('data-date-start')),
+        dueDate: normalizeWorkspaceTaskDateValue(modal.getAttribute('data-date-due')),
+    };
+}
+
+function setWorkspaceTaskModalDateRange(modal, startDate, dueDate, options = {}) {
+    if (!modal) {
+        return;
+    }
+
+    const opts = (options && typeof options === 'object') ? options : {};
+    const start = normalizeWorkspaceTaskDateValue(startDate);
+    const due = normalizeWorkspaceTaskDateValue(dueDate);
+
+    modal.setAttribute('data-date-start', start);
+    modal.setAttribute('data-date-due', due);
+
+    if (opts.month) {
+        modal.setAttribute('data-date-month', normalizeWorkspaceTaskMonth(opts.month) || getWorkspaceTaskDateRangeMonth(start, due));
+    } else if (!normalizeWorkspaceTaskMonth(modal.getAttribute('data-date-month'))) {
+        modal.setAttribute('data-date-month', getWorkspaceTaskDateRangeMonth(start, due));
+    }
+
+    if (opts.pickMode) {
+        modal.setAttribute('data-date-pick-mode', opts.pickMode === 'due' ? 'due' : 'start');
+    } else if (!modal.getAttribute('data-date-pick-mode')) {
+        modal.setAttribute('data-date-pick-mode', start ? 'due' : 'start');
+    }
+
+    syncWorkspaceTaskDateRangeView(modal);
+}
+
+function setWorkspaceTaskDateRangePickerOpen(modal, open) {
+    if (!modal) {
+        return;
+    }
+
+    modal.setAttribute('data-date-picker-open', open ? '1' : '0');
+    syncWorkspaceTaskDateRangeView(modal);
+}
+
+function positionWorkspaceTaskDateRangePicker(modal) {
+    const picker = modal ? modal.querySelector('#workspaceTaskDateRangePicker') : null;
+    const trigger = modal ? modal.querySelector('[data-workspace-task-date-range-trigger]') : null;
+
+    if (!picker || !trigger || picker.hidden) {
+        return;
+    }
+
+    const rect = trigger.getBoundingClientRect();
+    const viewportWidth = document.documentElement.clientWidth || window.innerWidth || 0;
+    const viewportHeight = document.documentElement.clientHeight || window.innerHeight || 0;
+    const margin = 12;
+    const gap = 8;
+    const availableWidth = Math.max(240, viewportWidth - margin * 2);
+    const minPickerWidth = Math.min(280, availableWidth);
+    const pickerWidth = Math.max(minPickerWidth, Math.min(rect.width, availableWidth));
+    const left = Math.max(margin, Math.min(rect.left, viewportWidth - pickerWidth - margin));
+
+    picker.style.width = `${pickerWidth}px`;
+    picker.style.left = `${left}px`;
+
+    const naturalHeight = picker.scrollHeight || picker.offsetHeight || 360;
+    const belowTop = rect.bottom + gap;
+    const belowHeight = viewportHeight - belowTop - margin;
+    const aboveHeight = rect.top - margin - gap;
+    let top = belowTop;
+    let maxHeight = belowHeight;
+
+    if (belowHeight < Math.min(naturalHeight, 320) && aboveHeight > belowHeight) {
+        maxHeight = aboveHeight;
+        top = rect.top - Math.min(naturalHeight, maxHeight) - gap;
+    }
+
+    const minPickerHeight = Math.min(220, Math.max(160, viewportHeight - margin * 2));
+    maxHeight = Math.max(minPickerHeight, Math.min(naturalHeight, maxHeight));
+    top = Math.max(margin, Math.min(top, viewportHeight - maxHeight - margin));
+
+    picker.style.top = `${top}px`;
+    picker.style.maxHeight = `${maxHeight}px`;
+}
+
+function renderWorkspaceTaskDateRangePicker(modal) {
+    const picker = modal ? modal.querySelector('#workspaceTaskDateRangePicker') : null;
+
+    if (!picker) {
+        return;
+    }
+
+    const open = modal.getAttribute('data-date-picker-open') === '1';
+    picker.hidden = !open;
+
+    if (!open) {
+        picker.innerHTML = '';
+        return;
+    }
+
+    const range = getWorkspaceTaskModalDateRange(modal);
+    const pickMode = modal.getAttribute('data-date-pick-mode') === 'due' ? 'due' : 'start';
+    const monthValue = normalizeWorkspaceTaskMonth(modal.getAttribute('data-date-month'))
+        || getWorkspaceTaskDateRangeMonth(range.startDate, range.dueDate);
+    const year = Number(monthValue.slice(0, 4));
+    const monthIndex = Number(monthValue.slice(5, 7)) - 1;
+    const monthStart = new Date(year, monthIndex, 1);
+    const firstDayOffset = (monthStart.getDay() + 6) % 7;
+    const gridStart = new Date(year, monthIndex, 1 - firstDayOffset);
+    const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
+    const todayKey = getWorkspaceTodayKey();
+    const monthLabel = `${year}年${String(monthIndex + 1).padStart(2, '0')}月`;
+    const days = [];
+
+    for (let index = 0; index < 42; index += 1) {
+        const day = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + index);
+        const dateKey = formatWorkspaceTaskDateKey(day);
+        const outsideMonth = day.getMonth() !== monthIndex;
+        const inRange = range.startDate && range.dueDate && dateKey > range.startDate && dateKey < range.dueDate;
+        const dayClass = [
+            'workspace-task-date-range-day',
+            outsideMonth ? 'is-muted' : '',
+            dateKey === todayKey ? 'is-today' : '',
+            dateKey === range.startDate ? 'is-start' : '',
+            dateKey === range.dueDate ? 'is-due' : '',
+            inRange ? 'is-in-range' : '',
+        ].filter(Boolean).join(' ');
+
+        days.push(`
+            <button class="${dayClass}" type="button" data-workspace-task-date-pick="${escapeHtml(dateKey)}" aria-label="${escapeHtml(dateKey)}">
+                <span>${escapeHtml(String(day.getDate()))}</span>
+            </button>
+        `);
+    }
+
+    picker.innerHTML = `
+        <div class="workspace-task-date-range-head">
+            <button class="workspace-task-date-range-nav" type="button" data-workspace-task-date-range-nav="-1" title="上个月" aria-label="上个月">
+                <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
+            </button>
+            <strong>${escapeHtml(monthLabel)}</strong>
+            <button class="workspace-task-date-range-nav" type="button" data-workspace-task-date-range-nav="1" title="下个月" aria-label="下个月">
+                <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
+            </button>
+        </div>
+        <div class="workspace-task-date-range-modes" role="group" aria-label="日期范围">
+            <button type="button" data-workspace-task-date-range-mode="start" class="${pickMode === 'start' ? 'active' : ''}" aria-pressed="${pickMode === 'start' ? 'true' : 'false'}">开始</button>
+            <button type="button" data-workspace-task-date-range-mode="due" class="${pickMode === 'due' ? 'active' : ''}" aria-pressed="${pickMode === 'due' ? 'true' : 'false'}">截止</button>
+        </div>
+        <div class="workspace-task-date-range-weekdays">
+            ${weekdays.map((day) => `<span>${escapeHtml(day)}</span>`).join('')}
+        </div>
+        <div class="workspace-task-date-range-grid">
+            ${days.join('')}
+        </div>
+        <div class="workspace-task-date-range-actions">
+            <button type="button" data-workspace-task-date-range-clear>清空</button>
+            <button type="button" data-workspace-task-date-range-close>完成</button>
+        </div>
+    `;
+    requestAnimationFrame(() => positionWorkspaceTaskDateRangePicker(modal));
+}
+
+function syncWorkspaceTaskDateRangeView(modal) {
+    if (!modal) {
+        return;
+    }
+
+    const range = getWorkspaceTaskModalDateRange(modal);
+    const startInput = modal.querySelector('#workspaceTaskStartInput');
+    const dueInput = modal.querySelector('#workspaceTaskDueInput');
+    const trigger = modal.querySelector('[data-workspace-task-date-range-trigger]');
+    const label = modal.querySelector('[data-workspace-task-date-range-label]');
+    const meta = modal.querySelector('[data-workspace-task-date-range-meta]');
+
+    if (startInput) {
+        startInput.value = range.startDate;
+    }
+
+    if (dueInput) {
+        dueInput.value = range.dueDate;
+    }
+
+    if (trigger) {
+        trigger.setAttribute('aria-expanded', modal.getAttribute('data-date-picker-open') === '1' ? 'true' : 'false');
+    }
+
+    if (label) {
+        label.textContent = formatWorkspaceTaskDateRangeLabel(range.startDate, range.dueDate);
+    }
+
+    if (meta) {
+        meta.textContent = [
+            range.startDate ? `开始 ${range.startDate}` : '开始 -',
+            range.dueDate ? `截止 ${range.dueDate}` : '截止 -',
+        ].join(' · ');
+    }
+
+    renderWorkspaceTaskDateRangePicker(modal);
+}
+
+function selectWorkspaceTaskDateRangeDay(modal, dateKey) {
+    if (!modal || !isValidWorkspaceTaskDateValue(dateKey)) {
+        return;
+    }
+
+    const range = getWorkspaceTaskModalDateRange(modal);
+    const pickMode = modal.getAttribute('data-date-pick-mode') === 'due' ? 'due' : 'start';
+    let startDate = range.startDate;
+    let dueDate = range.dueDate;
+    let nextPickMode = 'due';
+    let keepOpen = true;
+
+    if (pickMode === 'start') {
+        startDate = dateKey;
+
+        if (dueDate && dueDate < startDate) {
+            dueDate = '';
+        }
+    } else if (!startDate || dateKey < startDate) {
+        startDate = dateKey;
+        dueDate = '';
+    } else {
+        dueDate = dateKey;
+        nextPickMode = 'start';
+        keepOpen = false;
+    }
+
+    setWorkspaceTaskModalDateRange(modal, startDate, dueDate, {
+        month: dateKey.slice(0, 7),
+        pickMode: nextPickMode,
+    });
+    setWorkspaceTaskDateRangePickerOpen(modal, keepOpen);
+}
+
+function isWorkspaceTaskOnDate(task, dateKey) {
+    const startDate = normalizeWorkspaceTaskDateValue(task && task.start_date);
+    const dueDate = normalizeWorkspaceTaskDateValue(task && task.due_date);
+
+    if (startDate && dueDate) {
+        return dateKey >= startDate && dateKey <= dueDate;
+    }
+
+    if (dueDate) {
+        return dateKey === dueDate;
+    }
+
+    if (startDate) {
+        return dateKey === startDate;
+    }
+
+    return false;
+}
+
+function getWorkspaceTaskStatusShortLabel(status) {
+    const safeStatus = normalizeWorkspaceTaskStatus(status);
+
+    if (safeStatus === 'doing') {
+        return '进';
+    }
+
+    if (safeStatus === 'blocked') {
+        return '阻';
+    }
+
+    if (safeStatus === 'done') {
+        return '完';
+    }
+
+    if (safeStatus === 'cancelled') {
+        return '取';
+    }
+
+    return '待';
+}
+
+function isWorkspaceTaskCalendarTitleDate(task, dateKey) {
+    const startDate = normalizeWorkspaceTaskDateValue(task && task.start_date);
+    const dueDate = normalizeWorkspaceTaskDateValue(task && task.due_date);
+    const titleDate = startDate || dueDate;
+
+    return !!titleDate && dateKey === titleDate;
+}
+
+function isWorkspaceTaskCalendarEndDate(task, dateKey) {
+    const startDate = normalizeWorkspaceTaskDateValue(task && task.start_date);
+    const dueDate = normalizeWorkspaceTaskDateValue(task && task.due_date);
+
+    return !!startDate && !!dueDate && startDate !== dueDate && dateKey === dueDate;
+}
+
+function getWorkspaceTaskCalendarIdentity(task) {
+    const taskId = String((task && task.task_id) || '').trim();
+
+    if (taskId) {
+        return taskId;
+    }
+
+    return [
+        String((task && task.title) || '').trim(),
+        normalizeWorkspaceTaskDateValue(task && task.start_date),
+        normalizeWorkspaceTaskDateValue(task && task.due_date),
+    ].join('|');
+}
+
+function sortWorkspaceTasks(tasks) {
+    const statusRank = {
+        blocked: 0,
+        doing: 1,
+        todo: 2,
+        done: 3,
+        cancelled: 4,
+    };
+
+    return (Array.isArray(tasks) ? tasks : [])
+        .slice()
+        .sort((a, b) => {
+            const aStatus = normalizeWorkspaceTaskStatus(a && a.status);
+            const bStatus = normalizeWorkspaceTaskStatus(b && b.status);
+            const aDate = getWorkspaceTaskDateKey(a) || '9999-99-99';
+            const bDate = getWorkspaceTaskDateKey(b) || '9999-99-99';
+
+            if (statusRank[aStatus] !== statusRank[bStatus]) {
+                return statusRank[aStatus] - statusRank[bStatus];
+            }
+
+            if (aDate !== bDate) {
+                return aDate < bDate ? -1 : 1;
+            }
+
+            return String((b && b.updated_at) || '').localeCompare(String((a && a.updated_at) || ''));
+        });
+}
+
+function getWorkspaceOverviewIcon(type) {
+    const normalized = String(type || '').trim();
+
+    if (normalized === 'task') {
+        return 'fa-regular fa-circle-check';
+    }
+
+    if (normalized === 'conversation') {
+        return 'fa-regular fa-comments';
+    }
+
+    if (normalized === 'knowledge') {
+        return 'fa-solid fa-database';
+    }
+
+    if (normalized === 'file') {
+        return 'fa-regular fa-file-lines';
+    }
+
+    return 'fa-regular fa-folder';
+}
+
+function getWorkspaceOverviewPayload(workspace) {
+    const overview = workspace && workspace.overview && typeof workspace.overview === 'object'
+        ? workspace.overview
+        : {};
+    const resourceCounts = overview.resource_counts && typeof overview.resource_counts === 'object'
+        ? overview.resource_counts
+        : {};
+    const taskStatusCounts = overview.task_status_counts && typeof overview.task_status_counts === 'object'
+        ? overview.task_status_counts
+        : {};
+
+    return {
+        resourceCounts,
+        taskStatusCounts,
+        openTaskCount: Number(overview.open_task_count || 0),
+        overdueTaskCount: Number(overview.overdue_task_count || 0),
+        upcomingTasks: Array.isArray(overview.upcoming_tasks) ? overview.upcoming_tasks : [],
+        recentItems: Array.isArray(overview.recent_items) ? overview.recent_items : [],
+        activityItems: Array.isArray(overview.activity_items) ? overview.activity_items : [],
+        pinnedResources: Array.isArray(overview.pinned_resources) ? overview.pinned_resources : [],
+    };
+}
+
+function getWorkspaceActivityIcon(action, resourceType) {
+    const name = String(action || '').trim();
+    const type = String(resourceType || '').trim();
+
+    if (name.includes('shared')) {
+        return 'fa-solid fa-share-nodes';
+    }
+
+    if (name.includes('memory')) {
+        return 'fa-solid fa-brain';
+    }
+
+    if (name.includes('prompt')) {
+        return 'fa-solid fa-sliders';
+    }
+
+    if (name.includes('deleted') || name.includes('unshared')) {
+        return 'fa-regular fa-circle-xmark';
+    }
+
+    if (type === 'task') {
+        return 'fa-regular fa-circle-check';
+    }
+
+    return getWorkspaceOverviewIcon(type);
+}
+
+function getWorkspaceTaskStatusText(value) {
+    try {
+        return getWorkspaceTaskStatusLabel(normalizeWorkspaceTaskStatus(value));
+    } catch (_) {
+        return String(value || '').trim();
+    }
+}
+
+function getWorkspaceActivityText(item) {
+    const action = String((item && item.action) || '').trim();
+    const metadata = item && item.metadata && typeof item.metadata === 'object' ? item.metadata : {};
+    const targetUser = String(metadata.target_user || '').trim();
+    const status = String(metadata.status || '').trim();
+    const previousStatus = String(metadata.previous_status || '').trim();
+
+    if (action === 'workspace_created') return '创建了 Workspace';
+    if (action === 'workspace_renamed') return '重命名了 Workspace';
+    if (action === 'workspace_shared') return targetUser ? `分享给 ${targetUser}` : '分享了 Workspace';
+    if (action === 'workspace_unshared') return targetUser ? `移除 ${targetUser}` : '移除了共享用户';
+    if (action === 'workspace_prompt_updated') return '更新了 Workspace Prompt';
+    if (action === 'workspace_memory_updated') return '沉淀了 Workspace 记忆';
+    if (action === 'conversation_added') return '添加了对话';
+    if (action === 'conversation_shared') return '共享了对话';
+    if (action === 'conversation_private') return '取消共享对话';
+    if (action === 'knowledge_added') return '添加了知识库';
+    if (action === 'knowledge_shared') return '共享了知识库';
+    if (action === 'knowledge_private') return '取消共享知识库';
+    if (action === 'file_added') return '添加了文件';
+    if (action === 'file_shared') return '共享了文件';
+    if (action === 'file_private') return '取消共享文件';
+    if (action === 'task_created') return '创建了任务';
+    if (action === 'task_deleted') return '删除了任务';
+
+    if (action === 'task_status_updated') {
+        const nextText = getWorkspaceTaskStatusText(status);
+        const previousText = getWorkspaceTaskStatusText(previousStatus);
+
+        if (previousText && nextText && previousText !== nextText) {
+            return `任务状态由 ${previousText} 改为 ${nextText}`;
+        }
+
+        return nextText ? `任务状态改为 ${nextText}` : '更新了任务状态';
+    }
+
+    if (action === 'task_updated') return '更新了任务';
+
+    return String((item && item.subtitle) || '更新了 Workspace').trim();
+}
+
+function renderWorkspaceOverviewActivityRows(items, fallbackItems) {
+    const rows = Array.isArray(items) && items.length ? items : [];
+
+    if (!rows.length) {
+        return renderWorkspaceOverviewRows(fallbackItems, '暂无近期动态');
+    }
+
+    return rows.map((item) => {
+        const title = String((item && item.title) || 'Workspace 活动').trim();
+        const actor = String((item && item.actor) || '').trim();
+        const time = formatWorkspaceDate((item && item.time) || '');
+        const resourceType = String((item && item.resource_type) || (item && item.type) || '').trim();
+        const actionText = getWorkspaceActivityText(item);
+        const metaText = [actor ? `@${actor}` : '', time].filter(Boolean).join(' · ');
+
+        return `
+            <div class="workspace-overview-activity-row">
+                <span class="workspace-overview-row-icon workspace-overview-activity-icon">
+                    <i class="${escapeHtml(getWorkspaceActivityIcon(item && item.action, resourceType))}" aria-hidden="true"></i>
+                </span>
+                <span class="workspace-overview-row-main">
+                    <span class="workspace-overview-row-title">${escapeHtml(actionText)}</span>
+                    <span class="workspace-overview-row-meta">${escapeHtml(title)}</span>
+                    <span class="workspace-overview-row-meta">${escapeHtml(metaText)}</span>
+                </span>
+            </div>
+        `;
+    }).join('');
+}
+
+function renderWorkspaceOverviewRows(items, emptyText) {
+    const rows = Array.isArray(items) ? items : [];
+
+    if (!rows.length) {
+        return `<div class="workspace-overview-empty">${escapeHtml(emptyText)}</div>`;
+    }
+
+    return rows.map((item) => {
+        const title = String((item && item.title) || '未命名').trim();
+        const subtitle = String((item && item.subtitle) || '').trim();
+        const time = formatWorkspaceDate((item && item.time) || '');
+        const type = String((item && item.type) || '').trim();
+
+        return `
+            <div class="workspace-overview-row">
+                <span class="workspace-overview-row-icon">
+                    <i class="${escapeHtml(getWorkspaceOverviewIcon(type))}" aria-hidden="true"></i>
+                </span>
+                <span class="workspace-overview-row-main">
+                    <span class="workspace-overview-row-title">${escapeHtml(title)}</span>
+                    <span class="workspace-overview-row-meta">${escapeHtml([subtitle, time].filter(Boolean).join(' · '))}</span>
+                </span>
+            </div>
+        `;
+    }).join('');
+}
+
+function renderWorkspaceOverviewTaskRows(tasks) {
+    const rows = Array.isArray(tasks) ? tasks : [];
+
+    if (!rows.length) {
+        return '<div class="workspace-overview-empty">暂无待办事项</div>';
+    }
+
+    return rows.map((task) => {
+        const status = normalizeWorkspaceTaskStatus(task && task.status);
+        const assignee = String((task && task.assignee) || '').trim();
+        const schedule = formatWorkspaceTaskSchedule(task);
+        const title = String((task && task.title) || '未命名任务').trim();
+
+        return `
+            <div class="workspace-overview-task-row is-${escapeHtml(status)}">
+                <span class="workspace-overview-task-status">
+                    <i class="${escapeHtml(getWorkspaceTaskStatusIcon(status))}" aria-hidden="true"></i>
+                </span>
+                <span class="workspace-overview-task-main">
+                    <span class="workspace-overview-task-title">${escapeHtml(title)}</span>
+                    <span class="workspace-overview-task-meta">${escapeHtml([getWorkspaceTaskStatusLabel(status), assignee, schedule].filter(Boolean).join(' · '))}</span>
+                </span>
+            </div>
+        `;
+    }).join('');
+}
+
+function renderWorkspaceOverviewPanel(workspace) {
+    const overview = getWorkspaceOverviewPayload(workspace);
+    const conversations = getWorkspaceProjectConversations(workspace);
+    const knowledgeDocuments = getWorkspaceProjectKnowledgeDocuments(workspace);
+    const files = getWorkspaceProjectFiles(workspace);
+    const tasks = getWorkspaceProjectTasks(workspace);
+    const counts = overview.resourceCounts;
+    const openTaskCount = Number((workspace && workspace.open_task_count) || overview.openTaskCount || 0);
+    const stats = [
+        {
+            label: '聊天',
+            value: Number(counts.conversations || conversations.length || 0),
+            icon: 'fa-regular fa-comments',
+        },
+        {
+            label: '知识库',
+            value: Number(counts.knowledge_documents || knowledgeDocuments.length || 0),
+            icon: 'fa-solid fa-database',
+        },
+        {
+            label: '文件',
+            value: Number(counts.workspace_files || files.length || 0),
+            icon: 'fa-regular fa-file-lines',
+        },
+        {
+            label: '未完成任务',
+            value: openTaskCount,
+            icon: 'fa-regular fa-circle-check',
+        },
+    ];
+
+    return `
+        <div class="workspace-overview">
+            <div class="workspace-overview-stats">
+                ${stats.map((item) => `
+                    <div class="workspace-overview-stat">
+                        <span class="workspace-overview-stat-icon">
+                            <i class="${escapeHtml(item.icon)}" aria-hidden="true"></i>
+                        </span>
+                        <span class="workspace-overview-stat-main">
+                            <span class="workspace-overview-stat-value">${escapeHtml(String(item.value))}</span>
+                            <span class="workspace-overview-stat-label">${escapeHtml(item.label)}</span>
+                        </span>
+                    </div>
+                `).join('')}
+            </div>
+
+            <div class="workspace-overview-grid">
+                <section class="workspace-overview-section">
+                    <div class="workspace-overview-section-head">
+                        <h2>待办</h2>
+                        <span>${escapeHtml(String(overview.overdueTaskCount || 0))} 个逾期</span>
+                    </div>
+                    ${renderWorkspaceOverviewTaskRows(overview.upcomingTasks.length ? overview.upcomingTasks : sortWorkspaceTasks(tasks).filter(isWorkspaceTaskOpen).slice(0, 8))}
+                </section>
+
+                <section class="workspace-overview-section">
+                    <div class="workspace-overview-section-head">
+                        <h2>活动流</h2>
+                    </div>
+                    ${renderWorkspaceOverviewActivityRows(overview.activityItems, overview.recentItems)}
+                </section>
+
+            </div>
+        </div>
+    `;
+}
+
+function renderWorkspaceTaskCalendar(tasks) {
+    const monthValue = getWorkspaceTaskCalendarMonth(tasks);
+    const year = Number(monthValue.slice(0, 4));
+    const monthIndex = Number(monthValue.slice(5, 7)) - 1;
+    const monthStart = new Date(year, monthIndex, 1);
+    const firstDayOffset = (monthStart.getDay() + 6) % 7;
+    const gridStart = new Date(year, monthIndex, 1 - firstDayOffset);
+    const weekdays = ['一', '二', '三', '四', '五', '六', '日'];
+    const todayKey = getWorkspaceTodayKey();
+    const monthLabel = `${year}年${String(monthIndex + 1).padStart(2, '0')}月`;
+    const monthJumpOpen = workspaceProjectsState.taskCalendarMonthJumpOpen === true;
+    const days = [];
+    const namedRibbonTaskIds = new Set();
+
+    for (let index = 0; index < 42; index += 1) {
+        const day = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + index);
+        const dateKey = formatWorkspaceTaskDateKey(day);
+        const dayTasks = sortWorkspaceTasks(tasks.filter((task) => isWorkspaceTaskOnDate(task, dateKey)));
+        const visibleTasks = dayTasks.slice(0, 3);
+        const hiddenCount = Math.max(0, dayTasks.length - visibleTasks.length);
+        const outsideMonth = day.getMonth() !== monthIndex;
+        const dayClass = [
+            'workspace-task-calendar-day',
+            outsideMonth ? 'is-muted' : '',
+            dateKey === todayKey ? 'is-today' : '',
+            dayTasks.length ? 'has-tasks' : '',
+        ].filter(Boolean).join(' ');
+
+        days.push(`
+            <div class="${dayClass}" data-workspace-task-date="${escapeHtml(dateKey)}">
+                <div class="workspace-task-calendar-cell-head">
+                    <div class="workspace-task-calendar-date">${escapeHtml(String(day.getDate()))}</div>
+                    ${dayTasks.length ? `<span class="workspace-task-calendar-count">${escapeHtml(String(dayTasks.length))}项</span>` : ''}
+                </div>
+                <div class="workspace-task-calendar-items">
+                    ${visibleTasks.map((task) => {
+                        const status = normalizeWorkspaceTaskStatus(task && task.status);
+                        const color = normalizeWorkspaceTaskColor(task && task.color);
+                        const title = String((task && task.title) || '未命名任务').trim();
+                        const schedule = formatWorkspaceTaskSchedule(task);
+                        const titleDate = isWorkspaceTaskCalendarTitleDate(task, dateKey);
+                        const endDate = isWorkspaceTaskCalendarEndDate(task, dateKey);
+                        const taskIdentity = getWorkspaceTaskCalendarIdentity(task);
+                        const showFirstVisibleTitle = !titleDate && !endDate && taskIdentity && !namedRibbonTaskIds.has(taskIdentity);
+                        const showEndTitle = !titleDate && endDate;
+                        const showTitleRibbon = titleDate || showFirstVisibleTitle || showEndTitle;
+                        const itemClass = [
+                            'workspace-task-calendar-item',
+                            `task-color-${color}`,
+                            'is-ribbon-only',
+                            showTitleRibbon ? 'is-ribbon-title' : '',
+                        ].filter(Boolean).join(' ');
+                        const ariaLabel = [
+                            '编辑日程',
+                            title,
+                            getWorkspaceTaskStatusLabel(status),
+                            schedule,
+                        ].filter(Boolean).join('：');
+
+                        if (showTitleRibbon && taskIdentity && !endDate) {
+                            namedRibbonTaskIds.add(taskIdentity);
+                        }
+
+                        return `
+                            <button class="${escapeHtml(itemClass)}" type="button" data-workspace-task-id="${escapeHtml(String(task.task_id || ''))}" title="${escapeHtml(`${title} · ${getWorkspaceTaskStatusLabel(status)} · ${schedule}`)}" aria-label="${escapeHtml(ariaLabel)}">
+                                <span class="workspace-task-calendar-ribbon${showTitleRibbon ? ' has-title' : ''}"${showTitleRibbon ? '' : ' aria-hidden="true"'}>${showTitleRibbon ? escapeHtml(title) : ''}</span>
+                            </button>
+                        `;
+                    }).join('')}
+                    ${hiddenCount ? `<span class="workspace-task-calendar-more" title="还有 ${escapeHtml(String(hiddenCount))} 个日程">+${escapeHtml(String(hiddenCount))}</span>` : ''}
+                </div>
+            </div>
+        `);
+    }
+
+    return `
+        <div class="workspace-task-calendar">
+            <div class="workspace-task-calendar-head">
+                <button class="workspace-task-calendar-nav" type="button" data-workspace-task-calendar-nav="-1" title="上个月" aria-label="上个月">
+                    <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
+                </button>
+                <span class="workspace-task-calendar-title-tools">
+                    <button class="workspace-task-calendar-title-btn" type="button" data-workspace-task-calendar-jump-toggle aria-expanded="${monthJumpOpen ? 'true' : 'false'}" title="跳转月份" aria-label="跳转月份">
+                        <strong>${escapeHtml(monthLabel)}</strong>
+                    </button>
+                    <button class="workspace-task-calendar-today-btn" type="button" data-workspace-task-calendar-today title="定位到今天" aria-label="定位到今天">
+                        <i class="fa-solid fa-location-crosshairs" aria-hidden="true"></i>
+                    </button>
+                </span>
+                <button class="workspace-task-calendar-nav" type="button" data-workspace-task-calendar-nav="1" title="下个月" aria-label="下个月">
+                    <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
+                </button>
+            </div>
+            ${monthJumpOpen ? `
+                <form class="workspace-task-calendar-month-jump" data-workspace-task-calendar-jump-form>
+                    <input type="text" value="${escapeHtml(monthValue)}" placeholder="YYYY-MM" maxlength="7" inputmode="numeric" autocomplete="off" data-workspace-task-calendar-jump-input aria-label="跳转月份">
+                    <button type="submit" title="跳转" aria-label="跳转">
+                        <i class="fa-solid fa-check" aria-hidden="true"></i>
+                    </button>
+                    <button type="button" data-workspace-task-calendar-jump-close title="关闭" aria-label="关闭">
+                        <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+                    </button>
+                </form>
+            ` : ''}
+            <div class="workspace-task-calendar-weekdays">
+                ${weekdays.map((day) => `<span>${escapeHtml(day)}</span>`).join('')}
+            </div>
+            <div class="workspace-task-calendar-grid">
+                ${days.join('')}
+            </div>
+        </div>
+    `;
+}
+
+function renderWorkspaceTaskRows(tasks) {
+    const rows = sortWorkspaceTasks(tasks);
+    const today = getWorkspaceTodayKey();
+
+    if (!rows.length) {
+        return '<div class="workspace-detail-empty">暂无任务</div>';
+    }
+
+    return rows.map((task) => {
+        const taskId = String((task && task.task_id) || '').trim();
+        const title = String((task && task.title) || '未命名任务').trim();
+        const status = normalizeWorkspaceTaskStatus(task && task.status);
+        const assignee = String((task && task.assignee) || '').trim();
+        const dueDate = normalizeWorkspaceTaskDateValue(task && task.due_date);
+        const sourceTitle = String((task && task.source_title) || '').trim();
+        const overdue = isWorkspaceTaskOpen(task) && dueDate && dueDate < today;
+        const metaParts = [
+            assignee ? `负责人 ${assignee}` : '',
+            formatWorkspaceTaskSchedule(task),
+            sourceTitle ? `来源 ${sourceTitle}` : '',
+            overdue ? '逾期' : '',
+        ].filter(Boolean);
+        const nextStatus = status === 'done' ? 'todo' : 'done';
+        const nextStatusTitle = status === 'done' ? '重新设为待办' : '标记完成';
+        const nextStatusIcon = status === 'done' ? 'fa-solid fa-rotate-left' : 'fa-solid fa-check';
+
+        return `
+            <div class="workspace-task-row is-${escapeHtml(status)}${overdue ? ' is-overdue' : ''}" data-workspace-task-id="${escapeHtml(taskId)}">
+                <span class="workspace-task-row-icon">
+                    <i class="${escapeHtml(getWorkspaceTaskStatusIcon(status))}" aria-hidden="true"></i>
+                </span>
+                <span class="workspace-task-row-main">
+                    <strong>${escapeHtml(title)}</strong>
+                    <small>${escapeHtml(metaParts.join(' · '))}</small>
+                </span>
+                <span class="workspace-task-status-pill is-${escapeHtml(status)}">${escapeHtml(getWorkspaceTaskStatusLabel(status))}</span>
+                <span class="workspace-task-row-actions">
+                    <button class="workspace-task-icon-btn" type="button" data-workspace-task-next-status="${escapeHtml(nextStatus)}" title="${escapeHtml(nextStatusTitle)}" aria-label="${escapeHtml(nextStatusTitle)}">
+                        <i class="${escapeHtml(nextStatusIcon)}" aria-hidden="true"></i>
+                    </button>
+                    <button class="workspace-task-icon-btn" type="button" data-workspace-task-edit title="编辑任务" aria-label="编辑任务">
+                        <i class="fa-solid fa-pen" aria-hidden="true"></i>
+                    </button>
+                    <button class="workspace-task-icon-btn danger" type="button" data-workspace-task-delete title="删除任务" aria-label="删除任务">
+                        <i class="fa-solid fa-trash-can" aria-hidden="true"></i>
+                    </button>
+                </span>
+            </div>
+        `;
+    }).join('');
+}
+
+function renderWorkspaceTasksPanel(workspace, tasks) {
+    return `
+        <div class="workspace-tasks-panel">
+            <div class="workspace-tasks-toolbar">
+                <div>
+                    <h2>任务排期</h2>
+                    <span>${escapeHtml(String(tasks.length))} 个任务</span>
+                </div>
+                <button class="workspace-task-create-btn" type="button" data-workspace-task-create>
+                    <i class="fa-solid fa-plus" aria-hidden="true"></i>
+                    <span>新建任务</span>
+                </button>
+            </div>
+            ${renderWorkspaceTaskCalendar(tasks)}
+            <div class="workspace-task-list">
+                ${renderWorkspaceTaskRows(tasks)}
+            </div>
+        </div>
+    `;
+}
+
+function focusWorkspaceTaskCalendarMonthInput() {
+    requestAnimationFrame(() => {
+        const scrollState = captureWorkspaceDetailScrollState();
+        const input = document.querySelector('[data-workspace-task-calendar-jump-input]');
+
+        if (input instanceof HTMLInputElement) {
+            input.focus({ preventScroll: true });
+            input.select();
+            restoreWorkspaceDetailScrollState(scrollState);
+        }
+    });
+}
+
+// 切换日历月份会重绘详情内容，必须保存真正滚动的 Workspace 详情容器。
+function captureWorkspaceDetailScrollState() {
+    const selectors = [
+        '.workspace-detail-view',
+        '[data-workspace-detail-panel="tasks"] .workspace-detail-panel-list',
+    ];
+
+    return selectors.map((selector) => {
+        const element = document.querySelector(selector);
+
+        if (!(element instanceof HTMLElement)) {
+            return null;
+        }
+
+        return {
+            selector,
+            scrollTop: element.scrollTop,
+            scrollLeft: element.scrollLeft,
+        };
+    }).filter(Boolean);
+}
+
+function restoreWorkspaceDetailScrollState(scrollState) {
+    scrollState.forEach((item) => {
+        const element = document.querySelector(item.selector);
+
+        if (element instanceof HTMLElement) {
+            element.scrollTop = item.scrollTop;
+            element.scrollLeft = item.scrollLeft;
+        }
+    });
+}
+
+function renderWorkspaceProjectDetailViewKeepingScroll() {
+    const scrollState = captureWorkspaceDetailScrollState();
+    const pageScroll = {
+        x: window.scrollX,
+        y: window.scrollY,
+    };
+
+    renderWorkspaceProjectDetailView(workspaceProjectsState.selectedWorkspace);
+    restoreWorkspaceDetailScrollState(scrollState);
+
+    requestAnimationFrame(() => {
+        restoreWorkspaceDetailScrollState(scrollState);
+        window.scrollTo(pageScroll.x, pageScroll.y);
+        focusWorkspaceTaskCalendarMonthInput();
+    });
+}
+
+function getWorkspaceTaskById(taskId) {
+    const tid = String(taskId || '').trim();
+    const workspace = workspaceProjectsState.selectedWorkspace || {};
+    const tasks = getWorkspaceProjectTasks(workspace);
+
+    return tasks.find((task) => String((task && task.task_id) || '').trim() === tid) || null;
+}
+
+function closeWorkspaceTaskModal() {
+    const modal = document.getElementById('workspaceTaskModal');
+
+    if (!modal) {
+        return;
+    }
+
+    modal.classList.remove('active');
+    modal.setAttribute('aria-hidden', 'true');
+    handleBackdropStackingChange(modal);
+}
+
+function setWorkspaceTaskModalStatus(modal, status) {
+    if (!modal) {
+        return;
+    }
+
+    const safeStatus = normalizeWorkspaceTaskStatus(status);
+    modal.setAttribute('data-task-status', safeStatus);
+    modal.querySelectorAll('[data-workspace-task-status-option]').forEach((button) => {
+        const active = String(button.getAttribute('data-workspace-task-status-option') || '').trim() === safeStatus;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+}
+
+function setWorkspaceTaskModalColor(modal, color) {
+    if (!modal) {
+        return;
+    }
+
+    const safeColor = normalizeWorkspaceTaskColor(color);
+    modal.setAttribute('data-task-color', safeColor);
+    modal.querySelectorAll('[data-workspace-task-color-option]').forEach((button) => {
+        const active = String(button.getAttribute('data-workspace-task-color-option') || '').trim() === safeColor;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+}
+
+function ensureWorkspaceTaskModal() {
+    let modal = document.getElementById('workspaceTaskModal');
+
+    if (modal) {
+        return modal;
+    }
+
+    modal = document.createElement('div');
+    modal.id = 'workspaceTaskModal';
+    modal.className = 'modal-backdrop workspace-task-modal-backdrop';
+    modal.setAttribute('aria-hidden', 'true');
+    modal.innerHTML = `
+        <div class="modal workspace-task-modal" role="dialog" aria-modal="true" aria-labelledby="workspaceTaskModalTitle">
+            <div class="modal-head">
+                <h3 id="workspaceTaskModalTitle">任务</h3>
+                <button id="workspaceTaskModalCloseBtn" class="btn-modal-close" type="button" title="关闭">
+                    <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+                </button>
+            </div>
+            <div class="modal-body workspace-task-modal-body">
+                <label class="workspace-task-field" for="workspaceTaskTitleInput">
+                    <span>标题</span>
+                    <input id="workspaceTaskTitleInput" class="input-modern" type="text" maxlength="160" autocomplete="off">
+                </label>
+
+                <div class="workspace-task-field">
+                    <span>状态</span>
+                    <div class="workspace-task-status-options" role="group" aria-label="任务状态">
+                        ${WORKSPACE_TASK_STATUS_OPTIONS.map((item) => `
+                            <button type="button" data-workspace-task-status-option="${escapeHtml(item.value)}" aria-pressed="false">
+                                <i class="${escapeHtml(item.icon)}" aria-hidden="true"></i>
+                                <span>${escapeHtml(item.label)}</span>
+                            </button>
+                        `).join('')}
+                    </div>
+                </div>
+
+                <div class="workspace-task-field">
+                    <span>颜色</span>
+                    <div class="workspace-task-color-options" role="group" aria-label="任务颜色">
+                        ${WORKSPACE_TASK_COLOR_OPTIONS.map((item) => `
+                            <button type="button" class="workspace-task-color-option task-color-${escapeHtml(item.value)}" data-workspace-task-color-option="${escapeHtml(item.value)}" aria-label="${escapeHtml(item.label)}" title="${escapeHtml(item.label)}" aria-pressed="false">
+                                <span aria-hidden="true"></span>
+                            </button>
+                        `).join('')}
+                    </div>
+                </div>
+
+                <div class="workspace-task-field-grid">
+                    <label class="workspace-task-field" for="workspaceTaskAssigneeInput">
+                        <span>负责人</span>
+                        <input id="workspaceTaskAssigneeInput" class="input-modern" type="text" maxlength="128" autocomplete="off">
+                    </label>
+                </div>
+
+                <div class="workspace-task-field workspace-task-date-range-field" id="workspaceTaskDateRangeBlock">
+                    <span>时间范围</span>
+                    <input id="workspaceTaskStartInput" type="hidden">
+                    <input id="workspaceTaskDueInput" type="hidden">
+                    <button class="workspace-task-date-range-trigger" type="button" data-workspace-task-date-range-trigger aria-expanded="false" aria-controls="workspaceTaskDateRangePicker">
+                        <span class="workspace-task-date-range-trigger-copy">
+                            <span class="workspace-task-date-range-trigger-main" data-workspace-task-date-range-label>未排期</span>
+                            <span class="workspace-task-date-range-trigger-meta" data-workspace-task-date-range-meta>开始 - · 截止 -</span>
+                        </span>
+                        <i class="fa-regular fa-calendar-days" aria-hidden="true"></i>
+                    </button>
+                    <div id="workspaceTaskDateRangePicker" class="workspace-task-date-range-picker" hidden></div>
+                </div>
+
+                <label class="workspace-task-field" for="workspaceTaskNotesInput">
+                    <span>备注</span>
+                    <textarea id="workspaceTaskNotesInput" class="input-modern workspace-task-notes-input" maxlength="1000"></textarea>
+                </label>
+            </div>
+            <div class="modal-footer workspace-task-modal-footer">
+                <button id="workspaceTaskModalCancelBtn" class="btn-cancel" type="button">取消</button>
+                <button id="workspaceTaskModalConfirmBtn" class="btn-confirm" type="button">保存</button>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(modal);
+    registerModalBackdropStacking(modal);
+    bindBackdropSafeClose(modal, closeWorkspaceTaskModal);
+
+    modal.querySelector('#workspaceTaskModalCloseBtn')?.addEventListener('click', closeWorkspaceTaskModal);
+    modal.querySelector('#workspaceTaskModalCancelBtn')?.addEventListener('click', closeWorkspaceTaskModal);
+    modal.querySelector('#workspaceTaskModalConfirmBtn')?.addEventListener('click', () => {
+        void submitWorkspaceTaskModal();
+    });
+    modal.querySelector('#workspaceTaskTitleInput')?.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            void submitWorkspaceTaskModal();
+        }
+    });
+    modal.querySelectorAll('[data-workspace-task-status-option]').forEach((button) => {
+        button.addEventListener('click', () => {
+            setWorkspaceTaskModalStatus(modal, button.getAttribute('data-workspace-task-status-option'));
+        });
+    });
+    modal.querySelectorAll('[data-workspace-task-color-option]').forEach((button) => {
+        button.addEventListener('click', () => {
+            setWorkspaceTaskModalColor(modal, button.getAttribute('data-workspace-task-color-option'));
+        });
+    });
+    modal.querySelector('#workspaceTaskDateRangeBlock')?.addEventListener('click', (event) => {
+        const target = event.target;
+
+        if (!(target instanceof Element)) {
+            return;
+        }
+
+        if (target.closest('[data-workspace-task-date-range-trigger]')) {
+            event.preventDefault();
+            setWorkspaceTaskDateRangePickerOpen(
+                modal,
+                modal.getAttribute('data-date-picker-open') !== '1',
+            );
+            return;
+        }
+
+        const navBtn = target.closest('[data-workspace-task-date-range-nav]');
+
+        if (navBtn) {
+            event.preventDefault();
+            const currentMonth = normalizeWorkspaceTaskMonth(modal.getAttribute('data-date-month'))
+                || getWorkspaceTaskDateRangeMonth(
+                    modal.getAttribute('data-date-start'),
+                    modal.getAttribute('data-date-due'),
+                );
+            modal.setAttribute(
+                'data-date-month',
+                shiftWorkspaceTaskCalendarMonth(currentMonth, Number(navBtn.getAttribute('data-workspace-task-date-range-nav') || 0)),
+            );
+            syncWorkspaceTaskDateRangeView(modal);
+            return;
+        }
+
+        const modeBtn = target.closest('[data-workspace-task-date-range-mode]');
+
+        if (modeBtn) {
+            event.preventDefault();
+            modal.setAttribute(
+                'data-date-pick-mode',
+                modeBtn.getAttribute('data-workspace-task-date-range-mode') === 'due' ? 'due' : 'start',
+            );
+            syncWorkspaceTaskDateRangeView(modal);
+            return;
+        }
+
+        const dayBtn = target.closest('[data-workspace-task-date-pick]');
+
+        if (dayBtn) {
+            event.preventDefault();
+            selectWorkspaceTaskDateRangeDay(modal, dayBtn.getAttribute('data-workspace-task-date-pick'));
+            return;
+        }
+
+        if (target.closest('[data-workspace-task-date-range-clear]')) {
+            event.preventDefault();
+            setWorkspaceTaskModalDateRange(modal, '', '', {
+                month: getWorkspaceTaskDateRangeMonth('', ''),
+                pickMode: 'start',
+            });
+            setWorkspaceTaskDateRangePickerOpen(modal, false);
+            return;
+        }
+
+        if (target.closest('[data-workspace-task-date-range-close]')) {
+            event.preventDefault();
+            setWorkspaceTaskDateRangePickerOpen(modal, false);
+        }
+    });
+    window.addEventListener('resize', () => {
+        if (modal.getAttribute('data-date-picker-open') === '1') {
+            positionWorkspaceTaskDateRangePicker(modal);
+        }
+    });
+
+    return modal;
+}
+
+function openWorkspaceTaskModal(task = null, options = {}) {
+    const opts = (options && typeof options === 'object') ? options : {};
+    const workspace = workspaceProjectsState.selectedWorkspace || {};
+    const workspaceId = getWorkspaceProjectId(workspace);
+
+    if (!workspaceId) {
+        showToast('Workspace 不存在');
+        return;
+    }
+
+    const modal = ensureWorkspaceTaskModal();
+    const titleEl = modal.querySelector('#workspaceTaskModalTitle');
+    const titleInput = modal.querySelector('#workspaceTaskTitleInput');
+    const assigneeInput = modal.querySelector('#workspaceTaskAssigneeInput');
+    const startInput = modal.querySelector('#workspaceTaskStartInput');
+    const dueInput = modal.querySelector('#workspaceTaskDueInput');
+    const notesInput = modal.querySelector('#workspaceTaskNotesInput');
+    const source = task && typeof task === 'object' ? task : null;
+    const initialColor = source ? normalizeWorkspaceTaskColor(source.color) : normalizeWorkspaceTaskColor(opts.color);
+    const initialStartDate = source
+        ? normalizeWorkspaceTaskDateValue(source.start_date)
+        : normalizeWorkspaceTaskDateValue(opts.startDate || opts.date);
+    const initialDueDate = source
+        ? normalizeWorkspaceTaskDateValue(source.due_date)
+        : normalizeWorkspaceTaskDateValue(opts.dueDate || opts.date);
+
+    modal.setAttribute('data-workspace-id', workspaceId);
+    modal.setAttribute('data-task-id', source ? String(source.task_id || '') : '');
+
+    if (titleEl) {
+        titleEl.textContent = source ? '编辑任务' : '新建任务';
+    }
+
+    if (titleInput) {
+        titleInput.value = source ? String(source.title || '') : '';
+    }
+
+    if (assigneeInput) {
+        assigneeInput.value = source ? String(source.assignee || '') : String(currentUsername || '');
+    }
+
+    if (startInput) {
+        startInput.value = initialStartDate;
+    }
+
+    if (dueInput) {
+        dueInput.value = initialDueDate;
+    }
+
+    if (notesInput) {
+        notesInput.value = source ? String(source.notes || '') : '';
+    }
+
+    modal.setAttribute('data-date-picker-open', '0');
+    setWorkspaceTaskModalDateRange(
+        modal,
+        initialStartDate,
+        initialDueDate,
+        {
+            month: getWorkspaceTaskDateRangeMonth(
+                initialStartDate,
+                initialDueDate,
+            ),
+            pickMode: initialStartDate ? 'due' : 'start',
+        },
+    );
+    setWorkspaceTaskModalStatus(modal, source ? source.status : 'todo');
+    setWorkspaceTaskModalColor(modal, initialColor);
+    modal.classList.add('active');
+    modal.setAttribute('aria-hidden', 'false');
+    handleBackdropStackingChange(modal);
+    requestAnimationFrame(() => {
+        if (titleInput) {
+            titleInput.focus();
+        }
+    });
+}
+
+function getWorkspaceTaskModalPayload(modal) {
+    const title = String((modal.querySelector('#workspaceTaskTitleInput') || {}).value || '').trim();
+    const assignee = String((modal.querySelector('#workspaceTaskAssigneeInput') || {}).value || '').trim();
+    const startDate = normalizeWorkspaceTaskDateValue((modal.querySelector('#workspaceTaskStartInput') || {}).value);
+    const dueDate = normalizeWorkspaceTaskDateValue((modal.querySelector('#workspaceTaskDueInput') || {}).value);
+    const notes = String((modal.querySelector('#workspaceTaskNotesInput') || {}).value || '').trim();
+    const status = normalizeWorkspaceTaskStatus(modal.getAttribute('data-task-status'));
+    const color = normalizeWorkspaceTaskColor(modal.getAttribute('data-task-color'));
+
+    return {
+        title,
+        status,
+        color,
+        assignee,
+        start_date: startDate,
+        due_date: dueDate,
+        source_type: 'manual',
+        source_title: '',
+        source_ref: '',
+        notes,
+    };
+}
+
+async function submitWorkspaceTaskModal() {
+    const modal = ensureWorkspaceTaskModal();
+    const confirmBtn = modal.querySelector('#workspaceTaskModalConfirmBtn');
+    const workspaceId = String(modal.getAttribute('data-workspace-id') || '').trim();
+    const taskId = String(modal.getAttribute('data-task-id') || '').trim();
+    const payload = getWorkspaceTaskModalPayload(modal);
+
+    if (!payload.title) {
+        showToast('任务标题不能为空');
+        return;
+    }
+
+    if (!payload.assignee) {
+        showToast('负责人不能为空');
+        return;
+    }
+
+    if (!isValidWorkspaceTaskDateValue(payload.start_date)) {
+        showToast('开始日期必须使用 YYYY-MM-DD');
+        return;
+    }
+
+    if (!isValidWorkspaceTaskDateValue(payload.due_date)) {
+        showToast('截止日期必须使用 YYYY-MM-DD');
+        return;
+    }
+
+    if (payload.start_date && payload.due_date && payload.due_date < payload.start_date) {
+        showToast('截止日期不能早于开始日期');
+        return;
+    }
+
+    if (confirmBtn) {
+        confirmBtn.disabled = true;
+        confirmBtn.textContent = '保存中...';
+    }
+
+    try {
+        if (taskId) {
+            await updateWorkspaceTask(workspaceId, taskId, payload);
+            showToast('任务已保存');
+        } else {
+            await createWorkspaceTask(workspaceId, payload);
+            showToast('任务已创建');
+        }
+
+        workspaceProjectsState.activeDetailTab = 'tasks';
+        renderWorkspaceProjectDetailView(workspaceProjectsState.selectedWorkspace);
+        closeWorkspaceTaskModal();
+    } catch (error) {
+        console.error('submitWorkspaceTaskModal failed', error);
+        showToast(String((error && error.message) || '任务保存失败'));
+    } finally {
+        if (confirmBtn) {
+            confirmBtn.disabled = false;
+            confirmBtn.textContent = '保存';
+        }
+    }
+}
+
+async function confirmDeleteWorkspaceTaskById(taskId) {
+    const task = getWorkspaceTaskById(taskId);
+    const workspace = workspaceProjectsState.selectedWorkspace || {};
+    const workspaceId = getWorkspaceProjectId(workspace);
+
+    if (!task || !workspaceId) {
+        showToast('任务不存在');
+        return;
+    }
+
+    const confirmed = await confirmModalAsync(
+        '删除任务',
+        `确认删除任务「${String(task.title || '未命名任务').trim()}」吗？`,
+        'danger',
+    );
+
+    if (!confirmed) {
+        return;
+    }
+
+    try {
+        await deleteWorkspaceTask(workspaceId, task.task_id);
+        workspaceProjectsState.activeDetailTab = 'tasks';
+        renderWorkspaceProjectDetailView(workspaceProjectsState.selectedWorkspace);
+        showToast('任务已删除');
+    } catch (error) {
+        console.error('deleteWorkspaceTask failed', error);
+        showToast(String((error && error.message) || '任务删除失败'));
+    }
+}
+
+async function setWorkspaceTaskStatusFromButton(taskId, status) {
+    const task = getWorkspaceTaskById(taskId);
+    const workspace = workspaceProjectsState.selectedWorkspace || {};
+    const workspaceId = getWorkspaceProjectId(workspace);
+
+    if (!task || !workspaceId) {
+        showToast('任务不存在');
+        return;
+    }
+
+    try {
+        await updateWorkspaceTaskStatus(workspaceId, task, status);
+        workspaceProjectsState.activeDetailTab = 'tasks';
+        renderWorkspaceProjectDetailView(workspaceProjectsState.selectedWorkspace);
+        showToast('任务状态已更新');
+    } catch (error) {
+        console.error('updateWorkspaceTaskStatus failed', error);
+        showToast(String((error && error.message) || '任务状态保存失败'));
+    }
 }
 
 function getWorkspaceResourceText(item, defaultText) {
@@ -2531,7 +4220,7 @@ function getWorkspaceFileTitle(item) {
 }
 
 function getWorkspaceFileTypeText(item) {
-    const ext = String((item && item.source_ext) || '').trim().replace(/^\./, '');
+    const ext = String(getCloudFileExtension(item) || (item && item.source_ext) || '').trim().replace(/^\./, '');
 
     if (ext) {
         return ext.toUpperCase();
@@ -2545,16 +4234,19 @@ function getWorkspaceFileTypeText(item) {
 
 function renderWorkspaceProjectFileRows(workspace, items) {
     const sortedItems = sortWorkspacePinnedItems(items);
+    const workspaceId = getWorkspaceProjectId(workspace);
 
     if (!sortedItems.length) {
         return '<div class="workspace-detail-empty">暂无文件</div>';
     }
 
-    return sortedItems.map((item) => {
+    return `
+        <div class="file-center-list workspace-file-center-list">
+            ${sortedItems.map((item) => {
         const fileRef = getWorkspaceFileRef(item);
         const rawTitle = getWorkspaceFileTitle(item);
-        const title = escapeHtml(rawTitle);
-        const date = escapeHtml(formatWorkspaceDate((item && item.updated_at) || (item && item.added_at) || (item && item.created_at)));
+        const displayName = getCloudFileDisplayName(item);
+        const date = formatWorkspaceDate((item && item.updated_at) || (item && item.added_at) || (item && item.created_at));
         const visibility = normalizeWorkspaceVisibility(item && item.visibility);
         const addedBy = String((item && item.added_by) || '').trim();
         const canEditVisibility = isWorkspaceResourceOwnedByCurrentUser(workspace, item);
@@ -2562,23 +4254,25 @@ function renderWorkspaceProjectFileRows(workspace, items) {
         const pinHtml = pinned ? '<i class="fa-solid fa-thumbtack workspace-detail-pin-icon" aria-hidden="true"></i>' : '';
         const sizeText = formatFileSize((item && item.size) || 0);
         const typeText = getWorkspaceFileTypeText(item);
-        const metaParts = [
-            addedBy ? `@${addedBy}` : '未知用户',
+        const thumbnailUrl = isCloudFileImage(item)
+            ? `${workspaceFileRequestUrl(workspaceId, 'download', fileRef, addedBy)}&inline=1`
+            : '';
+        const titleLines = [
+            rawTitle,
+            addedBy ? `@${addedBy}` : '',
             sizeText,
             typeText,
+            date && date !== '-' ? `更新：${date}` : '',
         ].filter(Boolean);
 
         return `
-            <div class="workspace-detail-resource workspace-detail-file is-clickable${pinned ? ' is-pinned' : ''}" role="button" tabindex="0" data-file-ref="${escapeHtml(fileRef)}" data-file-added-by="${escapeHtml(addedBy)}" data-workspace-pinned="${pinned ? '1' : '0'}" aria-label="打开文件：${escapeHtml(rawTitle)}">
-                <span class="workspace-detail-resource-icon">
-                    <i class="fa-regular fa-file-lines" aria-hidden="true"></i>
-                </span>
-                <span class="workspace-detail-resource-main">
-                    <span class="workspace-detail-resource-title">${pinHtml}${title}</span>
-                    <span class="workspace-detail-resource-meta">${escapeHtml(metaParts.join(' · '))}</span>
-                </span>
-                <span class="workspace-detail-row-side">
-                    <span class="workspace-detail-row-date">${date}</span>
+            <div class="file-center-card workspace-detail-file is-clickable${pinned ? ' is-pinned' : ''}" role="button" tabindex="0" data-file-ref="${escapeHtml(fileRef)}" data-file-added-by="${escapeHtml(addedBy)}" data-workspace-pinned="${pinned ? '1' : '0'}" aria-label="打开文件：${escapeHtml(rawTitle)}" title="${escapeHtml(titleLines.join('\n'))}">
+                <div class="file-center-card-icon-wrap">
+                    ${renderCloudFileCardMedia(item, thumbnailUrl)}
+                </div>
+                <div class="file-center-card-name">${pinHtml}${escapeHtml(displayName)}</div>
+                <div class="workspace-file-card-meta">${escapeHtml([sizeText, typeText].filter(Boolean).join(' · '))}</div>
+                <div class="workspace-file-card-switch">
                     ${renderWorkspaceVisibilitySwitch({
                         resourceType: 'file',
                         fileRef,
@@ -2586,10 +4280,12 @@ function renderWorkspaceProjectFileRows(workspace, items) {
                         visibility,
                         disabled: !canEditVisibility,
                     })}
-                </span>
+                </div>
             </div>
         `;
-    }).join('');
+            }).join('')}
+        </div>
+    `;
 }
 
 function workspaceFileRequestUrl(workspaceId, action, fileRef, addedBy = '') {
@@ -2650,7 +4346,7 @@ function ensureWorkspaceFilePreviewModal() {
             </div>
             <div class="modal-body workspace-file-preview-modal-body">
                 <div class="workspace-file-preview-meta" id="workspaceFilePreviewMeta"></div>
-                <pre class="workspace-file-preview-content" id="workspaceFilePreviewContent"></pre>
+                <div class="file-center-detail-content workspace-file-preview-content" id="workspaceFilePreviewContent"></div>
             </div>
             <div class="modal-footer workspace-file-preview-modal-footer">
                 <button id="workspaceFilePreviewCancelBtn" class="btn-cancel" type="button">关闭</button>
@@ -2681,84 +4377,32 @@ function ensureWorkspaceFilePreviewModal() {
 
 async function openWorkspaceDetailFile(fileRef, addedBy = '') {
     const ref = String(fileRef || '').trim();
-    const owner = String(addedBy || '').trim();
-    const workspace = workspaceProjectsState.selectedWorkspace || {};
+    const workspace = workspaceProjectsState.selectedWorkspace;
     const workspaceId = getWorkspaceProjectId(workspace);
+    const fileItem = findWorkspaceFileItem(workspace, ref, addedBy);
+    const ownerUsername = String((fileItem && fileItem.added_by) || addedBy || '').trim();
 
-    if (!workspaceId || !ref) {
+    if (!ref) {
         showToast('文件不存在');
         return;
     }
 
-    const modal = ensureWorkspaceFilePreviewModal();
-    const titleEl = modal.querySelector('#workspaceFilePreviewModalTitle');
-    const metaEl = modal.querySelector('#workspaceFilePreviewMeta');
-    const contentEl = modal.querySelector('#workspaceFilePreviewContent');
-
-    modal.setAttribute('data-workspace-id', workspaceId);
-    modal.setAttribute('data-file-ref', ref);
-    modal.setAttribute('data-file-added-by', owner);
-
-    if (titleEl) {
-        titleEl.textContent = '文件预览';
+    if (!workspaceId || !fileItem) {
+        showToast('Workspace 文件标记不存在');
+        return;
     }
 
-    if (metaEl) {
-        metaEl.textContent = '读取中...';
-    }
+    const readUrl = workspaceFileRequestUrl(workspaceId, 'read', ref, ownerUsername);
+    const downloadUrl = workspaceFileRequestUrl(workspaceId, 'download', ref, ownerUsername);
 
-    if (contentEl) {
-        contentEl.textContent = '';
-    }
-
-    modal.classList.add('active');
-    modal.setAttribute('aria-hidden', 'false');
-    handleBackdropStackingChange(modal);
-
-    try {
-        const res = await fetch(workspaceFileRequestUrl(workspaceId, 'read', ref, owner), {
-            cache: 'no-store',
-        });
-        const data = await res.json();
-
-        if (!res.ok || !data.success) {
-            throw new Error((data && data.message) || '文件读取失败');
-        }
-
-        const marker = (data && data.marker) || {};
-        const file = (data && data.file) || {};
-        const displayName = String(marker.title || file.original_name || file.alias || ref).trim();
-        const sizeText = formatFileSize(file.size || marker.size || 0);
-        const typeText = getWorkspaceFileTypeText(marker);
-        const ownerText = String(data.owner_username || owner || '').trim();
-
-        if (titleEl) {
-            titleEl.textContent = displayName || '文件预览';
-        }
-
-        if (metaEl) {
-            metaEl.textContent = [
-                ownerText ? `@${ownerText}` : '',
-                sizeText,
-                typeText,
-                data.truncated ? '已截断' : '',
-            ].filter(Boolean).join(' · ');
-        }
-
-        if (contentEl) {
-            contentEl.textContent = String(data.content || '');
-        }
-    } catch (error) {
-        console.error('openWorkspaceDetailFile failed', error);
-
-        if (metaEl) {
-            metaEl.textContent = String((error && error.message) || '文件读取失败');
-        }
-
-        if (contentEl) {
-            contentEl.textContent = '';
-        }
-    }
+    getNexoraChatBridge().openFilesFrameView({
+        detailFileRef: ref,
+        detailFileItem: fileItem,
+        detailReadUrl: readUrl,
+        detailInlineUrl: `${downloadUrl}&inline=1`,
+        detailDownloadUrl: downloadUrl,
+        detailReturnTarget: 'workspace-files',
+    });
 }
 
 function closeWorkspaceFilePickerModal() {
@@ -3006,12 +4650,9 @@ async function uploadWorkspaceFilesToCurrentWorkspace(fileList, inputEl = null) 
             const file = files[i];
 
             try {
-                if (isImageLikeFile(file)) {
-                    showToast(`Workspace 文件暂不接收图片: ${file.name}`);
-                    continue;
-                }
-
-                const data = await uploadSingleFileWithProgress(file, i, files.length);
+                const data = await uploadSingleFileWithProgress(file, i, files.length, {
+                    targetPath: `workspaces/${workspaceId}`,
+                });
                 const sandboxPath = String((data && data.sandbox_path) || '').trim();
 
                 if (!sandboxPath || data.type !== 'sandbox_file') {
@@ -3064,7 +4705,9 @@ async function uploadWorkspaceFilesToCurrentWorkspace(fileList, inputEl = null) 
         currentUploadTaskId = null;
         updateSendButtonState();
 
-        if (els.filePanel && els.filePanel.classList.contains('visible')) {
+        const filePanel = getNexoraChatBridge().getElement('filePanel');
+
+        if (filePanel && filePanel.classList.contains('visible')) {
             loadCloudFiles();
         }
 
@@ -3135,6 +4778,7 @@ function renderWorkspaceProjectDetailView(workspace) {
     const conversations = getWorkspaceProjectConversations(workspace);
     const knowledgeDocuments = getWorkspaceProjectKnowledgeDocuments(workspace);
     const files = getWorkspaceProjectFiles(workspace);
+    const tasks = getWorkspaceProjectTasks(workspace);
     const canShareWorkspace = isWorkspaceOwnedByCurrentUser(workspace);
     const sharedUsers = getWorkspaceSharedUsers(workspace);
     const activeTab = normalizeWorkspaceDetailTab(workspaceProjectsState.activeDetailTab);
@@ -3174,6 +4818,9 @@ function renderWorkspaceProjectDetailView(workspace) {
         <div class="workspace-detail-input-slot" id="workspaceDetailInputSlot"></div>
 
         <div class="workspace-detail-tabs" role="tablist" aria-label="Workspace 内容">
+            <button class="workspace-detail-tab${activeTab === 'overview' ? ' active' : ''}" type="button" role="tab" aria-selected="${activeTab === 'overview' ? 'true' : 'false'}" data-workspace-detail-tab="overview">
+                <span>总览</span>
+            </button>
             <button class="workspace-detail-tab${activeTab === 'chat' ? ' active' : ''}" type="button" role="tab" aria-selected="${activeTab === 'chat' ? 'true' : 'false'}" data-workspace-detail-tab="chat">
                 <span>聊天</span>
             </button>
@@ -3182,6 +4829,9 @@ function renderWorkspaceProjectDetailView(workspace) {
             </button>
             <button class="workspace-detail-tab${activeTab === 'files' ? ' active' : ''}" type="button" role="tab" aria-selected="${activeTab === 'files' ? 'true' : 'false'}" data-workspace-detail-tab="files">
                 <span>文件</span>
+            </button>
+            <button class="workspace-detail-tab${activeTab === 'tasks' ? ' active' : ''}" type="button" role="tab" aria-selected="${activeTab === 'tasks' ? 'true' : 'false'}" data-workspace-detail-tab="tasks">
+                <span>任务</span>
             </button>
             <button class="workspace-detail-tab${activeTab === 'memory' ? ' active' : ''}" type="button" role="tab" aria-selected="${activeTab === 'memory' ? 'true' : 'false'}" data-workspace-detail-tab="memory">
                 <span>记忆</span>
@@ -3199,11 +4849,17 @@ function renderWorkspaceProjectDetailView(workspace) {
                     <i class="fa-solid fa-upload" aria-hidden="true"></i>
                     <span>上传</span>
                 </button>
-                <input type="file" data-workspace-upload-input multiple hidden>
+                <input type="file" data-workspace-upload-input accept=".txt,.md,.py,.c,.h,.hpp,.cpp,.cc,.cxx,.js,.ts,.tsx,.jsx,.java,.go,.rs,.cs,.php,.rb,.swift,.kt,.kts,.scala,.sh,.bash,.zsh,.bat,.ps1,.json,.yaml,.yml,.toml,.ini,.cfg,.xml,.html,.css,.sql,.csv,.log,.docx,.pdf,.pptx,.png,.jpg,.jpeg,.gif,.webp,.bmp" multiple hidden>
             </span>
         </div>
 
         <div class="workspace-detail-panels">
+            <section class="workspace-detail-panel${activeTab === 'overview' ? ' active' : ''}" data-workspace-detail-panel="overview"${activeTab === 'overview' ? '' : ' hidden'}>
+                <div class="workspace-detail-panel-list">
+                    ${renderWorkspaceOverviewPanel(workspace)}
+                </div>
+            </section>
+
             <section class="workspace-detail-panel${activeTab === 'chat' ? ' active' : ''}" data-workspace-detail-panel="chat"${activeTab === 'chat' ? '' : ' hidden'}>
                 <div class="workspace-detail-panel-list workspace-detail-conversations" id="workspaceProjectConversations" data-workspace-id="${escapeHtml(workspaceId)}">
                     ${renderWorkspaceProjectConversationRows(workspace)}
@@ -3222,6 +4878,12 @@ function renderWorkspaceProjectDetailView(workspace) {
                 </div>
             </section>
 
+            <section class="workspace-detail-panel${activeTab === 'tasks' ? ' active' : ''}" data-workspace-detail-panel="tasks"${activeTab === 'tasks' ? '' : ' hidden'}>
+                <div class="workspace-detail-panel-list">
+                    ${renderWorkspaceTasksPanel(workspace, tasks)}
+                </div>
+            </section>
+
             <section class="workspace-detail-panel${activeTab === 'memory' ? ' active' : ''}" data-workspace-detail-panel="memory"${activeTab === 'memory' ? '' : ' hidden'}>
                 <div class="workspace-detail-panel-list workspace-detail-memory">
                     ${renderWorkspaceMemoryPanel(workspace)}
@@ -3236,9 +4898,8 @@ function renderWorkspaceProjectDetailView(workspace) {
 
 function openWorkspaceProjectDetailView(workspace) {
     hideWorkspaceResourceContextMenu();
-    closeKnowledgePanel();
-    closeCloudFilePanel();
-    exitLearningFeedComposeMode({ clear: false });
+    const chatBridge = getNexoraChatBridge();
+    chatBridge.closePrimaryPanelsForExternalView();
     clearCurrentConversationSelectionForWorkspaceNavigation();
 
     const viewer = document.getElementById('knowledgeViewer');
@@ -3255,15 +4916,15 @@ function openWorkspaceProjectDetailView(workspace) {
     ensureWorkspaceViewerBaseHeaderState(headerTitle, headerLeft, headerRight);
     captureWorkspaceDetailInputHome();
     restoreWorkspaceDetailInputContainer();
-    resetComposerConversationContextUsage();
-    currentViewingKnowledge = null;
-    pendingHighlightData = null;
-    navigationStack = [];
+    chatBridge.resetComposerConversationContextUsage();
+    chatBridge.resetKnowledgeViewRuntimeState();
 
     msgs.style.display = 'none';
 
-    if (els.learningMainPanel) {
-        els.learningMainPanel.style.display = 'none';
+    const learningMainPanel = chatBridge.getElement('learningMainPanel');
+
+    if (learningMainPanel) {
+        learningMainPanel.style.display = 'none';
     }
 
     const inputDock = document.querySelector('.input-dock');
@@ -3280,11 +4941,14 @@ function openWorkspaceProjectDetailView(workspace) {
     viewer.style.flexDirection = 'column';
 
     headerTitle.textContent = 'Workspace';
+    closeWorkspaceDetailModelSelector();
     headerLeft.innerHTML = `
         <button class="btn-icon" onclick="openWorkspacesFrameView()" title="Back">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
         </button>
+        ${renderWorkspaceDetailModelSelectorHtml()}
     `;
+    bindWorkspaceDetailModelSelector();
     applyDesktopHeaderTools(headerRight);
 
     viewer.innerHTML = `
@@ -3296,6 +4960,18 @@ function openWorkspaceProjectDetailView(workspace) {
     renderWorkspaceProjectDetailView(workspace);
     _syncTurnIndicatorVisibility();
 }
+
+window.returnToWorkspaceFilesFromFileDetail = function() {
+    const workspace = workspaceProjectsState.selectedWorkspace;
+
+    if (!workspace) {
+        window.openWorkspacesFrameView();
+        return;
+    }
+
+    workspaceProjectsState.activeDetailTab = 'files';
+    openWorkspaceProjectDetailView(workspace);
+};
 
 function findWorkspaceConversationItem(workspace, conversationId) {
     const cid = String(conversationId || '').trim();
@@ -3646,6 +5322,7 @@ function bindWorkspaceProjectDetailView() {
     const conversationList = document.getElementById('workspaceProjectConversations');
     const knowledgeList = document.getElementById('workspaceProjectKnowledgeDocuments');
     const fileList = document.getElementById('workspaceProjectFiles');
+    const taskPanel = document.querySelector('[data-workspace-detail-panel="tasks"]');
     const shareBtn = document.querySelector('[data-workspace-share-btn]');
     const deleteBtn = document.querySelector('[data-workspace-delete-btn]');
     const createKnowledgeBtn = document.querySelector('[data-workspace-create-knowledge]');
@@ -3847,6 +5524,153 @@ function bindWorkspaceProjectDetailView() {
             pinned: String(item.getAttribute('data-workspace-pinned') || '') === '1',
         }),
     );
+
+    if (taskPanel) {
+        taskPanel.addEventListener('click', (event) => {
+            const target = event.target;
+
+            if (!(target instanceof Element)) {
+                return;
+            }
+
+            const createBtn = target.closest('[data-workspace-task-create]');
+
+            if (createBtn) {
+                event.preventDefault();
+                openWorkspaceTaskModal();
+                return;
+            }
+
+            const navBtn = target.closest('[data-workspace-task-calendar-nav]');
+
+            if (navBtn) {
+                event.preventDefault();
+                const offset = Number(navBtn.getAttribute('data-workspace-task-calendar-nav') || 0);
+                workspaceProjectsState.taskCalendarMonth = shiftWorkspaceTaskCalendarMonth(
+                    workspaceProjectsState.taskCalendarMonth,
+                    offset,
+                );
+                workspaceProjectsState.taskCalendarMonthJumpOpen = false;
+                renderWorkspaceProjectDetailViewKeepingScroll();
+                return;
+            }
+
+            const monthJumpToggle = target.closest('[data-workspace-task-calendar-jump-toggle]');
+
+            if (monthJumpToggle) {
+                event.preventDefault();
+                workspaceProjectsState.taskCalendarMonthJumpOpen = !workspaceProjectsState.taskCalendarMonthJumpOpen;
+                renderWorkspaceProjectDetailViewKeepingScroll();
+                return;
+            }
+
+            if (target.closest('[data-workspace-task-calendar-today]')) {
+                event.preventDefault();
+                workspaceProjectsState.taskCalendarMonth = getWorkspaceTaskTodayMonth();
+                workspaceProjectsState.taskCalendarMonthJumpOpen = false;
+                renderWorkspaceProjectDetailViewKeepingScroll();
+                return;
+            }
+
+            if (target.closest('[data-workspace-task-calendar-jump-close]')) {
+                event.preventDefault();
+                workspaceProjectsState.taskCalendarMonthJumpOpen = false;
+                renderWorkspaceProjectDetailViewKeepingScroll();
+                return;
+            }
+
+            const taskRow = target.closest('[data-workspace-task-id]');
+            const taskId = taskRow ? String(taskRow.getAttribute('data-workspace-task-id') || '').trim() : '';
+
+            if (!taskId) {
+                return;
+            }
+
+            const nextStatusBtn = target.closest('[data-workspace-task-next-status]');
+
+            if (nextStatusBtn) {
+                event.preventDefault();
+                void setWorkspaceTaskStatusFromButton(
+                    taskId,
+                    nextStatusBtn.getAttribute('data-workspace-task-next-status'),
+                );
+                return;
+            }
+
+            if (target.closest('[data-workspace-task-delete]')) {
+                event.preventDefault();
+                void confirmDeleteWorkspaceTaskById(taskId);
+                return;
+            }
+
+            if (target.closest('[data-workspace-task-edit]') || target.closest('.workspace-task-calendar-item')) {
+                event.preventDefault();
+                openWorkspaceTaskModal(getWorkspaceTaskById(taskId));
+            }
+        });
+
+        taskPanel.addEventListener('submit', (event) => {
+            const form = event.target;
+
+            if (!(form instanceof HTMLFormElement) || !form.matches('[data-workspace-task-calendar-jump-form]')) {
+                return;
+            }
+
+            event.preventDefault();
+
+            const input = form.querySelector('[data-workspace-task-calendar-jump-input]');
+            const month = normalizeWorkspaceTaskMonthInput(input instanceof HTMLInputElement ? input.value : '');
+
+            if (!month) {
+                showToast('请输入正确的月份，例如 2026-07');
+                focusWorkspaceTaskCalendarMonthInput();
+                return;
+            }
+
+            workspaceProjectsState.taskCalendarMonth = month;
+            workspaceProjectsState.taskCalendarMonthJumpOpen = false;
+            renderWorkspaceProjectDetailViewKeepingScroll();
+        });
+
+        taskPanel.addEventListener('keydown', (event) => {
+            const target = event.target;
+
+            if (!(target instanceof Element) || !target.closest('[data-workspace-task-calendar-jump-form]')) {
+                return;
+            }
+
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                workspaceProjectsState.taskCalendarMonthJumpOpen = false;
+                renderWorkspaceProjectDetailViewKeepingScroll();
+            }
+        });
+
+        taskPanel.addEventListener('dblclick', (event) => {
+            const target = event.target;
+
+            if (!(target instanceof Element)) {
+                return;
+            }
+
+            if (target.closest('[data-workspace-task-id]')) {
+                return;
+            }
+
+            const dayCell = target.closest('[data-workspace-task-date]');
+            const dateKey = dayCell ? String(dayCell.getAttribute('data-workspace-task-date') || '').trim() : '';
+
+            if (!dateKey || !isValidWorkspaceTaskDateValue(dateKey)) {
+                return;
+            }
+
+            event.preventDefault();
+            openWorkspaceTaskModal(null, {
+                startDate: dateKey,
+                dueDate: dateKey,
+            });
+        });
+    }
 }
 
 function bindWorkspaceProjectsView() {
@@ -3900,9 +5724,8 @@ function bindWorkspaceProjectsView() {
 }
 
 window.openWorkspacesFrameView = function() {
-    closeKnowledgePanel();
-    closeCloudFilePanel();
-    exitLearningFeedComposeMode({ clear: false });
+    const chatBridge = getNexoraChatBridge();
+    chatBridge.closePrimaryPanelsForExternalView();
     clearCurrentConversationSelectionForWorkspaceNavigation();
     captureWorkspaceDetailInputHome();
     restoreWorkspaceDetailInputContainer();
@@ -3916,22 +5739,15 @@ window.openWorkspacesFrameView = function() {
 
     if (!viewer || !msgs || !headerTitle || !headerLeft || !headerRight) return;
 
-    if (!originalHeaderState) {
-        originalHeaderState = {
-            title: headerTitle.textContent,
-            leftHTML: headerLeft.innerHTML,
-            rightHTML: headerRight.innerHTML
-        };
-    }
-
-    currentViewingKnowledge = null;
-    pendingHighlightData = null;
-    navigationStack = [];
+    ensureWorkspaceViewerBaseHeaderState(headerTitle, headerLeft, headerRight);
+    chatBridge.resetKnowledgeViewRuntimeState();
 
     msgs.style.display = 'none';
 
-    if (els.learningMainPanel) {
-        els.learningMainPanel.style.display = 'none';
+    const learningMainPanel = chatBridge.getElement('learningMainPanel');
+
+    if (learningMainPanel) {
+        learningMainPanel.style.display = 'none';
     }
 
     const inputDock = document.querySelector('.input-dock');
@@ -3948,6 +5764,7 @@ window.openWorkspacesFrameView = function() {
     viewer.style.flexDirection = 'column';
 
     headerTitle.textContent = 'Workspaces';
+    closeWorkspaceDetailModelSelector();
     headerLeft.innerHTML = `
         <button class="btn-icon" onclick="closeKnowledgeView()" title="Back">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
@@ -3992,7 +5809,8 @@ window.openWorkspacesFrameView = function() {
         filter: 'all',
         query: '',
         selectedWorkspace: null,
-        activeDetailTab: 'chat',
+        activeDetailTab: 'overview',
+        taskCalendarMonth: '',
     };
     bindWorkspaceProjectsView();
     void loadWorkspaceProjects();

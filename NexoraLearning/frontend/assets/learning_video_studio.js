@@ -333,7 +333,15 @@
         runProjectStage(ctx, projectId, stage);
       }
     });
-    refreshProjects(ctx);
+  }
+
+  function open(ctx) {
+    render(ctx);
+    bind(ctx);
+
+    if (!videoState.loaded && !videoState.loading) {
+      refreshProjects(ctx);
+    }
   }
 
   function updateFieldFromEvent(ctx, event, shouldRender) {
@@ -442,13 +450,28 @@
   }
 
   async function requestJson(url, options) {
+    const headers = new Headers(options && options.headers ? options.headers : {});
+    const runtimeUsername = String(
+      window.NEXORA_USERNAME
+      || window.nexoraUsername
+      || ""
+    ).trim();
+
+    if (runtimeUsername && !headers.has("X-Nexora-Username")) {
+      headers.set("X-Nexora-Username", runtimeUsername);
+    }
+
+    if (!headers.has("Accept")) {
+      headers.set("Accept", "application/json");
+    }
+
+    if (!headers.has("Content-Type")) {
+      headers.set("Content-Type", "application/json");
+    }
+
     const response = await fetch(url, {
       ...options,
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        ...(options && options.headers ? options.headers : {}),
-      },
+      headers,
     });
     const payload = await response.json().catch(() => ({}));
 
@@ -491,6 +514,7 @@
 
   window.NXLLearningVideoStudio = {
     bind,
+    open,
     render,
   };
 })();

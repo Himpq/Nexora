@@ -10123,6 +10123,11 @@ body.reader-theme-dark .chapter-loading-spinner {
   color: #92400e;
 }
 
+.log-entry-type-badge.type-performance {
+  background: #dcfce7;
+  color: #166534;
+}
+
 .log-entry-type-badge.type-error {
   background: #fee2e2;
   color: #991b1b;

@@ -7,12 +7,13 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 CONFIG_PATH = DATA_DIR / "config.json"
+FRONTEND_DIR = ROOT / "frontend"
 
 os.chdir(ROOT)
 
@@ -97,6 +98,16 @@ def create_app():
     @app.route("/health")
     def health():
         return jsonify({"status": "ok", "service": "NexoraVideoGenerator"})
+
+    @app.route("/")
+    @app.route("/workbench")
+    @app.route("/workbench/")
+    def workbench():
+        return send_from_directory(FRONTEND_DIR, "index.html")
+
+    @app.route("/assets/<path:filename>")
+    def frontend_asset(filename: str):
+        return send_from_directory(FRONTEND_DIR / "assets", filename)
 
     return app, cfg
 

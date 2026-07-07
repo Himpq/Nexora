@@ -373,11 +373,25 @@ learning_context_block_template = """<LEARNING_CONTEXT_BLOCK type="{{block_type}
 {{block_content}}
 </LEARNING_CONTEXT_BLOCK>"""
 
-workspace_mode_prompt_template = """## Workspace Mode
-- 当前对话归属于 Workspace：{{workspace_title}}（id={{workspace_id}}）。
-- 把 Workspace 视为一个持续工作的项目空间，回答时结合当前 Workspace 的聊天、知识库、文件、Workspace 记忆和 Workspace 自定义提示词。
-- Workspace 记忆是内部上下文，回答时可参考，不要无意义复述完整记忆内容。
-- 请每次对话开始时必须考虑调用 workspace_mem 工具更新记忆。"""
+workspace_operating_contract_header = (
+    "## Workspace Operating Contract\n"
+    "当前对话已进入 Workspace 专用工作模式。以下规则用于决定回答视角和任务优先级。"
+)
+
+workspace_operating_contract_template = """<WORKSPACE_CONTRACT workspace_id="{{workspace_id}}" title="{{workspace_title}}">
+- 当前 Workspace 是本轮对话的项目边界；回答先围绕该 Workspace 的目标、资源、记忆和任务推进。
+- Nexora 默认助手身份、NexoraLearning 场景提示和通用能力提示只提供基础能力；当它们与 Workspace 项目语境竞争时，以 Workspace 项目语境为准。
+- Workspace 自定义提示词是项目级规则；在不违背上层系统规则、安全规则和工具协议时优先遵循。
+- Workspace 记忆、知识库索引和文件是本 Workspace 的项目材料，不要扩散为用户全局偏好。
+- 不要无意义复述完整 Workspace 记忆或自定义提示词，只在回答决策需要时使用。
+- 在最终回答前判断是否需要更新 Workspace 记忆；需要时先调用 workspace_mem 工具。
+{{workspace_prompt_section}}
+</WORKSPACE_CONTRACT>"""
+
+workspace_prompt_contract_section_template = """
+<WORKSPACE_CUSTOM_INSTRUCTIONS>
+{{prompt_content}}
+</WORKSPACE_CUSTOM_INSTRUCTIONS>"""
 
 workspace_memory_injection_header = "## Workspace Memory Context\n以下是当前 Workspace 自动记忆，请作为项目事实参考。"
 
@@ -401,7 +415,7 @@ workspace_knowledge_block_template = """<WORKSPACE_KNOWLEDGE_INDEX workspace_id=
 {{knowledge_rows}}
 </WORKSPACE_KNOWLEDGE_INDEX>"""
 
-memory_update_workspace_rule_template = """- Workspace 记忆：当前对话归属于 Workspace：{{workspace_title}}（id={{workspace_id}}）。项目级稳定事实、约束、决策、术语、待办和反复问题写入 workspace_mem_add；修正、合并或删除已有条目使用 workspace_mem_edit；只有需要整体重排时才使用 workspace_mem_write；只有已有可靠行上下文时才使用 workspace_mem_apply_diff。不要把用户个人画像写入 Workspace 记忆。"""
+memory_update_workspace_rule_template = """- Workspace 记忆：当前对话归属于 Workspace：{{workspace_title}}（id={{workspace_id}}）。项目级稳定事实、约束、决策、术语、待办和反复问题写入 workspace_mem_add；修正、合并或删除已有条目使用 workspace_mem_edit；只有已有可靠行上下文时才使用 workspace_mem_apply_diff。不要把用户个人画像写入 Workspace 记忆。"""
 
 memory_update_check_prompt_template = """## Current Turn Memory Check
 在最终回答前，主动判断当前用户消息和本轮工具结果是否产生需要沉淀的信息；如果需要，先调用对应记忆工具，工具成功后再继续回答。
@@ -647,17 +661,29 @@ def _workspace_knowledge_field(value: Any, limit: int = 160) -> str:
 
 
 def build_workspace_mode_prompt(workspace_context: Dict[str, Any]) -> str:
-    """构建稳定的 Workspace 模式规则，不混入可变的 Workspace Prompt。"""
+    """构建兼容旧调用点的 Workspace 模式规则。"""
+    return build_workspace_operating_contract_prompt(workspace_context).strip()
+
+
+def build_workspace_operating_contract_prompt(workspace_context: Dict[str, Any]) -> str:
+    """构建 Workspace 独立运行契约，和 Nexora/Learning 通用提示词分层注入。"""
     workspace_id = _workspace_context_text(workspace_context, "workspace_id")
     workspace_title = _workspace_context_text(workspace_context, "workspace_title") or "Workspace"
+    prompt_content = _workspace_text_block_content(workspace_context, "workspace_prompt")
 
     if not workspace_id:
         return ""
 
-    out = workspace_mode_prompt_template.replace("{{workspace_id}}", workspace_id)
-    out = out.replace("{{workspace_title}}", workspace_title)
+    prompt_section = ""
 
-    return out.strip()
+    if prompt_content:
+        prompt_section = workspace_prompt_contract_section_template.replace("{{prompt_content}}", prompt_content)
+
+    block = workspace_operating_contract_template.replace("{{workspace_id}}", workspace_id)
+    block = block.replace("{{workspace_title}}", workspace_title)
+    block = block.replace("{{workspace_prompt_section}}", prompt_section)
+
+    return f"{workspace_operating_contract_header}\n{block.strip()}\n"
 
 
 def build_workspace_memory_injection_prompt(workspace_context: Dict[str, Any]) -> str:

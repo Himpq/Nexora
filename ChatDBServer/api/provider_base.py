@@ -36,6 +36,31 @@ def _iter_chunked_function_call_delta(event: Dict[str, Any]):
         yield chunk
 
 
+def _read_usage_token(usage_obj: Any, *keys: str) -> int:
+    for key in keys:
+        if not key:
+            continue
+
+        if isinstance(usage_obj, dict):
+            value = usage_obj.get(key)
+        else:
+            try:
+                extra = getattr(usage_obj, "model_extra", None)
+                value = extra.get(key) if isinstance(extra, dict) and key in extra else getattr(usage_obj, key, None)
+            except Exception:
+                value = None
+
+        if value is None:
+            continue
+
+        try:
+            return max(0, int(float(value or 0)))
+        except Exception:
+            continue
+
+    return 0
+
+
 class ProviderInterface(ABC):
     """
     Nexora provider interface.
@@ -920,12 +945,15 @@ class ProviderInterface(ABC):
             if not choices:
                 usage_obj = _obj_get_raw(chunk, "usage", None)
                 if usage_obj:
+                    input_tokens = _read_usage_token(usage_obj, "prompt_tokens", "input_tokens")
+                    output_tokens = _read_usage_token(usage_obj, "completion_tokens", "output_tokens")
+                    total_tokens = _read_usage_token(usage_obj, "total_tokens") or (input_tokens + output_tokens)
                     yield {
                         "type": "usage",
                         "usage": usage_obj,
-                        "input_tokens": int(getattr(usage_obj, "prompt_tokens", 0) or 0),
-                        "output_tokens": int(getattr(usage_obj, "completion_tokens", 0) or 0),
-                        "total_tokens": int(getattr(usage_obj, "total_tokens", 0) or 0),
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "total_tokens": total_tokens,
                     }
                 continue
 
@@ -1000,12 +1028,15 @@ class ProviderInterface(ABC):
 
             usage_obj = _obj_get_raw(chunk, "usage", None)
             if usage_obj:
+                input_tokens = _read_usage_token(usage_obj, "prompt_tokens", "input_tokens")
+                output_tokens = _read_usage_token(usage_obj, "completion_tokens", "output_tokens")
+                total_tokens = _read_usage_token(usage_obj, "total_tokens") or (input_tokens + output_tokens)
                 yield {
                     "type": "usage",
                     "usage": usage_obj,
-                    "input_tokens": int(getattr(usage_obj, "prompt_tokens", 0) or 0),
-                    "output_tokens": int(getattr(usage_obj, "completion_tokens", 0) or 0),
-                    "total_tokens": int(getattr(usage_obj, "total_tokens", 0) or 0),
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": total_tokens,
                 }
 
             if finish_reason:

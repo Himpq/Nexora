@@ -990,7 +990,7 @@ def _papi_extract_usage(response_obj: Any) -> Dict[str, int]:
         except Exception:
             return default
 
-    prompt_tokens = _read_usage('prompt_tokens', 0)
+    prompt_tokens = _read_usage('prompt_tokens', _read_usage('input_tokens', 0))
     completion_tokens = _read_usage('completion_tokens', _read_usage('output_tokens', 0))
     total_tokens = _read_usage('total_tokens', prompt_tokens + completion_tokens)
     return {
@@ -1818,6 +1818,12 @@ def _papi_stream_openai_chat(
             'model': model_name,
             'choices': [{'index': 0, 'delta': {}, 'finish_reason': final_finish_reason}],
         }
+        if not usage_payload:
+            _papi_log(
+                f"[PAPI_CHAT_STREAM_USAGE_MISSING] model={model_name} "
+                f"include_usage={'yes' if include_usage else 'no'} events={event_counts}",
+                level='error',
+            )
         if usage_payload and callable(usage_recorder):
             usage_recorder(
                 usage_payload,
@@ -1895,8 +1901,8 @@ def _papi_build_responses_payload(
 
     if usage:
         payload['usage'] = {
-            'input_tokens': int(usage.get('prompt_tokens', 0) or 0),
-            'output_tokens': int(usage.get('completion_tokens', 0) or 0),
+            'input_tokens': int(usage.get('prompt_tokens', usage.get('input_tokens', 0)) or 0),
+            'output_tokens': int(usage.get('completion_tokens', usage.get('output_tokens', 0)) or 0),
             'total_tokens': int(usage.get('total_tokens', 0) or 0),
         }
 

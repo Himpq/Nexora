@@ -16,7 +16,11 @@
         return {
             panel: document.getElementById('chatNotificationPopover'),
             toggle: document.getElementById('toggleNotificationPanel'),
-            badge: document.getElementById('chatNotificationBadge')
+            badge: document.getElementById('chatNotificationBadge'),
+            mobileTrigger: document.getElementById('mobileHeaderMenuTrigger'),
+            mobileItem: document.getElementById('mobileNotificationMenuItem'),
+            mobileTriggerBadge: document.getElementById('mobileHeaderNotificationBadge'),
+            mobileItemBadge: document.getElementById('mobileNotificationMenuBadge')
         };
     }
 
@@ -66,21 +70,52 @@
         }
     }
 
+    // 未读数需要同时驱动桌面铃铛和移动端折叠菜单入口。
     function updateBadge(count) {
         const elements = getElements();
-        const badge = elements.badge;
-        const normalized = Number(count || 0);
+        const rawCount = Number(count || 0);
+        const normalized = Number.isFinite(rawCount) ? Math.max(0, Math.floor(rawCount)) : 0;
+        const badges = [
+            elements.badge,
+            elements.mobileTriggerBadge,
+            elements.mobileItemBadge
+        ].filter(Boolean);
 
-        if (!badge) return;
+        const mobileMenuLabel = normalized > 0
+            ? `更多，${normalized > 99 ? '99+' : String(normalized)} 条未读通知`
+            : '更多';
+        const mobileItemLabel = normalized > 0
+            ? `通知，${normalized > 99 ? '99+' : String(normalized)} 条未读`
+            : '通知';
 
-        if (normalized <= 0) {
-            badge.hidden = true;
-            badge.textContent = '';
+        if (elements.mobileTrigger) {
+            elements.mobileTrigger.title = mobileMenuLabel;
+            elements.mobileTrigger.setAttribute('aria-label', mobileMenuLabel);
+        }
+
+        if (elements.mobileItem) {
+            elements.mobileItem.setAttribute('aria-label', mobileItemLabel);
+        }
+
+        if (!badges.length) {
             return;
         }
 
-        badge.hidden = false;
-        badge.textContent = normalized > 99 ? '99+' : String(normalized);
+        if (normalized <= 0) {
+            badges.forEach((badge) => {
+                badge.hidden = true;
+                badge.textContent = '';
+            });
+
+            return;
+        }
+
+        const displayText = normalized > 99 ? '99+' : String(normalized);
+
+        badges.forEach((badge) => {
+            badge.hidden = false;
+            badge.textContent = displayText;
+        });
     }
 
     function formatNotificationTime(value) {

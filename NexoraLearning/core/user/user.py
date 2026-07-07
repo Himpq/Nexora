@@ -366,29 +366,29 @@ def append_notification(
     return payload
 
 
+def _resolve_notification_id(payload: Dict[str, Any]) -> str:
+    explicit_id = str(payload.get("notification_id") or payload.get("id") or "").strip()
+
+    if explicit_id:
+        return explicit_id
+
+    stable_source = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha1(stable_source.encode("utf-8")).hexdigest()[:16]
+    return f"notice_{digest}"
+
+
 def list_notifications(cfg: Dict[str, Any], user_id: str) -> List[Dict[str, Any]]:
-    ensure_user_files(cfg, user_id)
     path = _notifications_jsonl_path(cfg, user_id)
     rows = _read_jsonl(path)
-    changed = False
     normalized: List[Dict[str, Any]] = []
 
     for row in rows:
         payload = dict(row)
-        notification_id = str(payload.get("notification_id") or payload.get("id") or "").strip()
-
-        if not notification_id:
-            notification_id = f"notice_{uuid.uuid4().hex[:16]}"
-            changed = True
-
+        notification_id = _resolve_notification_id(payload)
         if payload.get("notification_id") != notification_id:
             payload["notification_id"] = notification_id
-            changed = True
 
         normalized.append(payload)
-
-    if changed:
-        _write_jsonl_rows(path, normalized)
 
     return normalized
 
@@ -493,9 +493,10 @@ def list_question_bank_items(cfg: Dict[str, Any], user_id: str) -> List[Dict[str
 
 
 def read_memory(cfg: Dict[str, Any], user_id: str, memory_type: str) -> str:
-    ensure_user_files(cfg, user_id)
     path = _memory_path(cfg, user_id, memory_type)
     try:
+        if not path.exists():
+            return ""
         return path.read_text(encoding="utf-8")
     except Exception:
         return ""
@@ -510,7 +511,6 @@ def write_memory(cfg: Dict[str, Any], user_id: str, memory_type: str, content: s
 
 
 def read_lecture_context_memory(cfg: Dict[str, Any], user_id: str, lecture_id: str) -> str:
-    ensure_user_files(cfg, user_id)
     path = _lecture_context_memory_path(cfg, user_id, lecture_id)
     try:
         if not path.exists():
@@ -530,9 +530,11 @@ def write_lecture_context_memory(cfg: Dict[str, Any], user_id: str, lecture_id: 
 
 
 def list_lecture_context_memories(cfg: Dict[str, Any], user_id: str) -> Dict[str, str]:
-    ensure_user_files(cfg, user_id)
     root = _context_memories_dir(cfg, user_id)
     rows: Dict[str, str] = {}
+    if not root.exists():
+        return rows
+
     try:
         for path in sorted(root.glob("*.md")):
             lecture_id = str(path.stem or "").strip()
@@ -548,7 +550,6 @@ def list_lecture_context_memories(cfg: Dict[str, Any], user_id: str) -> Dict[str
 
 
 def get_user_state(cfg: Dict[str, Any], user_id: str) -> Dict[str, Any]:
-    ensure_user_files(cfg, user_id)
     return {
         "user": get_user(cfg, user_id),
         "learning": list_learning_records(cfg, user_id),

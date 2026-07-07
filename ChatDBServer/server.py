@@ -9,6 +9,7 @@ import base64
 import binascii
 import secrets
 import hashlib
+import mimetypes
 import re
 import shutil
 import threading
@@ -18,7 +19,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib import request as urllib_request, error as urllib_error, parse as urllib_parse
 from email.header import Header
 from email.utils import formatdate, make_msgid
-from flask import Flask, render_template, request, jsonify, session, redirect, url_for, Response, send_file, send_from_directory, has_request_context
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for, Response, send_file, send_from_directory, has_request_context, g
 from flask_cors import CORS
 from datetime import timedelta, datetime
 import time
@@ -41,6 +42,7 @@ from map.baidu import load_map_scene_for_map_id
 from secure import normalize_text, resolve_configured_path, safe_filename, safe_join_path
 from timeline import list_entries as list_timeline_entries, record_notes_snapshot_change
 from datastorage import safe_read_json, safe_write_json, get_path_lock
+from usage_logs import is_usage_log_path, read_usage_log_records, replace_usage_log_records
 from knowledge_word_exporter import KnowledgeWordExporter
 from runlog import init_run_logger
 import conversation_asset_store
@@ -94,6 +96,7 @@ app.config['SESSION_TYPE'] = 'filesystem'
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=7)
 app.config.setdefault('SESSION_COOKIE_HTTPONLY', True)
 app.config.setdefault('SESSION_COOKIE_SAMESITE', 'Lax')
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = timedelta(hours=1)
 sock = Sock(app)
 CORS(app)
 
@@ -252,6 +255,20 @@ def _set_no_store_headers(resp: Response) -> Response:
     return resp
 
 
+def _set_static_cache_headers(resp: Response) -> Response:
+    """为静态资源设置浏览器缓存；带版本号的资源允许长期缓存。"""
+    has_version_token = bool(str(request.args.get('v') or '').strip())
+
+    if has_version_token:
+        resp.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+    else:
+        resp.headers['Cache-Control'] = 'public, max-age=3600'
+
+    resp.headers.pop('Pragma', None)
+    resp.headers.pop('Expires', None)
+    return resp
+
+
 def _clear_session_cookie(resp: Response) -> Response:
     """Force-remove Flask session cookie from client."""
     cookie_name = str(app.config.get('SESSION_COOKIE_NAME', 'session') or 'session')
@@ -274,6 +291,9 @@ def apply_auth_response_cache_policy(resp: Response):
     """
     try:
         path = (request.path or '').strip() or '/'
+        if path.startswith('/static/'):
+            return _set_static_cache_headers(resp)
+
         content_type = str(resp.headers.get('Content-Type', '') or '').lower()
         is_html = 'text/html' in content_type
         protected_paths = {'/chat', '/knowledge', '/knowledge_graph', '/token_logs', '/login', '/logout'}
@@ -1845,15 +1865,49 @@ def _ensure_server_bootstrap_files():
 _ensure_server_bootstrap_files()
 
 
+_USERS_CACHE_LOCK = threading.Lock()
+_USERS_CACHE: Optional[Dict[str, Any]] = None
+_USERS_CACHE_STAT: Tuple[int, int] = (0, 0)
+
+
+def _users_file_stat() -> Tuple[int, int]:
+    try:
+        stat = os.stat(USERS_PATH)
+        return int(stat.st_mtime_ns), int(stat.st_size)
+    except OSError:
+        return 0, 0
+
+
 def load_users():
-    users = safe_read_json(USERS_PATH, default={})
-    if not isinstance(users, dict):
-        return {}
-    return users
+    global _USERS_CACHE, _USERS_CACHE_STAT
+
+    current_stat = _users_file_stat()
+
+    with _USERS_CACHE_LOCK:
+
+        if _USERS_CACHE is not None and current_stat == _USERS_CACHE_STAT:
+            return deepcopy(_USERS_CACHE)
+
+        users = safe_read_json(USERS_PATH, default={})
+
+        if not isinstance(users, dict):
+            users = {}
+
+        _USERS_CACHE = users
+        _USERS_CACHE_STAT = _users_file_stat()
+
+        return deepcopy(_USERS_CACHE)
 
 
 def save_users(users):
-    safe_write_json(USERS_PATH, users, indent=4)
+    global _USERS_CACHE, _USERS_CACHE_STAT
+
+    payload = users if isinstance(users, dict) else {}
+    safe_write_json(USERS_PATH, payload, indent=4)
+
+    with _USERS_CACHE_LOCK:
+        _USERS_CACHE = deepcopy(payload)
+        _USERS_CACHE_STAT = _users_file_stat()
 
 
 def _normalize_skill_mode(raw: Any) -> str:
@@ -4870,6 +4924,129 @@ def _refresh_generic_context_window_maps(config_obj, timeout=8.0):
     return out
 
 
+def _normalize_context_refresh_mode(raw: Any) -> str:
+    token = str(raw or '').strip().lower()
+
+    if token in {'0', 'false', 'off', 'no', 'none', 'cache', 'cached'}:
+        return 'cache'
+
+    if token in {'force', 'remote', 'live'}:
+        return 'force'
+
+    return 'async'
+
+
+def _cached_context_window_maps_for_config(config_obj: Dict[str, Any]) -> Tuple[Dict[str, int], Dict[str, int], Dict[str, int], Dict[str, Dict[str, int]]]:
+    """Read context-window cache without starting remote model catalog refresh."""
+    cfg = config_obj if isinstance(config_obj, dict) else {}
+    providers = cfg.get("providers", {}) if isinstance(cfg.get("providers"), dict) else {}
+    models = cfg.get("models", {}) if isinstance(cfg.get("models"), dict) else {}
+
+    volc_context_map = _read_cached_provider_context_window_map('volcengine')
+    aliyun_context_map = _read_cached_provider_context_window_map('aliyun')
+    ollama_context_map: Dict[str, int] = {}
+    generic_context_maps: Dict[str, Dict[str, int]] = {}
+    target_providers = set()
+
+    for model_info in models.values():
+
+        if not isinstance(model_info, dict):
+            continue
+
+        provider_name = str(model_info.get('provider') or '').strip()
+
+        if provider_name:
+            target_providers.add(provider_name)
+
+    for provider_name, provider_cfg in providers.items():
+
+        if not isinstance(provider_cfg, dict):
+            continue
+
+        api_type = str(provider_cfg.get("api_type", "") or "").strip().lower()
+
+        if api_type == 'ollama':
+            ollama_context_map.update(_read_cached_provider_context_window_map(provider_name))
+
+    for provider_name in sorted(target_providers):
+        provider_cfg = providers.get(provider_name)
+
+        if not isinstance(provider_cfg, dict):
+            continue
+
+        if not _is_generic_context_provider(provider_name, provider_cfg):
+            continue
+
+        generic_context_maps[provider_name.strip().lower()] = _read_cached_provider_context_window_map(provider_name)
+
+    return volc_context_map, aliyun_context_map, ollama_context_map, generic_context_maps
+
+
+def _resolve_context_window_maps_for_config(config_obj: Dict[str, Any], refresh_mode: str) -> Tuple[Dict[str, int], Dict[str, int], Dict[str, int], Dict[str, Dict[str, int]]]:
+    cfg = config_obj if isinstance(config_obj, dict) else {}
+    mode = _normalize_context_refresh_mode(refresh_mode)
+
+    if mode == 'cache':
+        return _cached_context_window_maps_for_config(cfg)
+
+    has_volcengine_model = any(
+        isinstance(info, dict) and str(info.get('provider', 'volcengine')).strip().lower() == 'volcengine'
+        for info in (cfg.get('models', {}) or {}).values()
+    )
+    has_aliyun_model = any(
+        isinstance(info, dict) and str(info.get('provider', '')).strip().lower() in {'aliyun', 'dashscope'}
+        for info in (cfg.get('models', {}) or {}).values()
+    )
+    has_ollama_model = any(
+        isinstance(provider_cfg, dict) and str(provider_cfg.get('api_type', '')).strip().lower() == 'ollama'
+        for provider_cfg in (cfg.get('providers', {}) or {}).values()
+    )
+    force_remote = mode == 'force'
+
+    volc_context_map = (
+        _refresh_volc_context_window_map(cfg, timeout=8.0, force_remote=force_remote)
+        if has_volcengine_model else {}
+    )
+    aliyun_context_map = (
+        _refresh_aliyun_context_window_map(cfg, timeout=8.0, force_remote=force_remote)
+        if has_aliyun_model else {}
+    )
+    ollama_context_map = (
+        _refresh_ollama_context_window_map(cfg, timeout=8.0, force_remote=force_remote)
+        if has_ollama_model else {}
+    )
+
+    if force_remote:
+        generic_context_maps = {}
+        providers = cfg.get("providers", {}) if isinstance(cfg.get("providers"), dict) else {}
+        models = cfg.get("models", {}) if isinstance(cfg.get("models"), dict) else {}
+        target_providers = {
+            str(info.get('provider') or '').strip()
+            for info in models.values()
+            if isinstance(info, dict) and str(info.get('provider') or '').strip()
+        }
+
+        for provider_name in sorted(target_providers):
+            provider_cfg = providers.get(provider_name)
+
+            if not isinstance(provider_cfg, dict):
+                continue
+
+            if not _is_generic_context_provider(provider_name, provider_cfg):
+                continue
+
+            generic_context_maps[provider_name.strip().lower()] = _refresh_generic_provider_context_window_map(
+                cfg,
+                provider_name,
+                timeout=8.0,
+                force_remote=True
+            )
+    else:
+        generic_context_maps = _refresh_generic_context_window_maps(cfg, timeout=8.0)
+
+    return volc_context_map, aliyun_context_map, ollama_context_map, generic_context_maps
+
+
 def _resolve_context_window_by_model_id(model_id, models_map):
     sid = _normalize_model_id_for_ctx(model_id)
     if not sid or not isinstance(models_map, dict):
@@ -5205,11 +5382,26 @@ def _temp_file_vector_title(file_alias: str) -> str:
     return f"temp_file::{str(file_alias or '').strip()}"
 
 
+def _temp_file_alias_from_ref(username: str, file_ref: str) -> str:
+    raw = str(file_ref or '').strip().replace('\\', '/').strip('/')
+    prefix = f"{username}/files/"
+    alt_prefix = f"files/{username}/"
+
+    if raw.startswith(prefix):
+        return raw[len(prefix):]
+
+    if raw.startswith(alt_prefix):
+        return raw[len(alt_prefix):]
+
+    return raw
+
+
 def _build_temp_file_where(username: str, file_ref: str):
-    raw = str(file_ref or '').strip().replace('\\', '/')
+    raw = str(file_ref or '').strip().replace('\\', '/').strip('/')
     if not raw:
         return None
-    base = os.path.basename(raw) if raw else ''
+    alias = _temp_file_alias_from_ref(username, raw)
+    base = os.path.basename(alias) if alias else ''
     candidates = []
 
     def _push(k, v):
@@ -5218,9 +5410,11 @@ def _build_temp_file_where(username: str, file_ref: str):
             return
         candidates.append({str(k): val})
 
-    _push('file_alias', raw)
+    _push('file_alias', alias)
     _push('sandbox_path', raw)
-    if base and base != raw:
+    if alias:
+        _push('sandbox_path', f"{username}/files/{alias}")
+    if base and base != alias:
         _push('file_alias', base)
         _push('sandbox_path', f"{username}/files/{base}")
     elif base:
@@ -5258,10 +5452,11 @@ def _filter_temp_file_query_result(result: dict, username: str, file_ref: str, t
     if not isinstance(result, dict):
         return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
 
-    raw = str(file_ref or '').strip().replace('\\', '/')
-    base = os.path.basename(raw) if raw else ''
-    expected_sandbox = f"{username}/files/{base}" if base else ""
-    expected_title = _temp_file_vector_title(base) if base else ""
+    raw = str(file_ref or '').strip().replace('\\', '/').strip('/')
+    alias = _temp_file_alias_from_ref(username, raw)
+    base = os.path.basename(alias) if alias else ''
+    expected_sandbox = f"{username}/files/{alias}" if alias else ""
+    expected_title = _temp_file_vector_title(alias) if alias else ""
 
     ids = result.get('ids', [[]])
     docs = result.get('documents', [[]])
@@ -5283,6 +5478,8 @@ def _filter_temp_file_query_result(result: dict, username: str, file_ref: str, t
 
         matched = False
         if raw and (m_alias == raw or m_path == raw):
+            matched = True
+        if not matched and alias and (m_alias == alias or m_path == expected_sandbox):
             matched = True
         if not matched and base and (
             m_alias == base
@@ -5398,7 +5595,14 @@ def _upload_task_mark_cancel(task_id: str) -> bool:
         return True
 
 
-def _run_upload_task(task_id: str, username: str, filename: str, raw: bytes, update_file_name: str = None):
+def _run_upload_task(
+    task_id: str,
+    username: str,
+    filename: str,
+    raw: bytes,
+    update_file_name: str = None,
+    target_path: str = '',
+):
     sentinel_cancel = '__UPLOAD_TASK_CANCELLED__'
     sandbox = UserFileSandbox(username)
     entry = None
@@ -5410,7 +5614,8 @@ def _run_upload_task(task_id: str, username: str, filename: str, raw: bytes, upd
         entry = sandbox.add_upload(
             file_bytes=raw,
             original_name=filename,
-            update_file_name=update_file_name
+            update_file_name=update_file_name,
+            target_path=target_path,
         )
         _upload_task_update(task_id, stage='parsing', progress=30, message='文件解析完成')
 
@@ -5421,11 +5626,15 @@ def _run_upload_task(task_id: str, username: str, filename: str, raw: bytes, upd
         vector_ids = []
         vector_message = ''
         try:
-            stored_rel = str(entry.get('stored_path') or '').replace('\\', '/')
-            abs_path = os.path.normpath(os.path.join(os.path.dirname(__file__), stored_rel))
-            if os.path.isfile(abs_path):
-                with open(abs_path, 'r', encoding='utf-8') as f:
-                    text = f.read()
+            if str(entry.get('parser_mode') or '').strip().lower() != 'image':
+                stored_rel = str(entry.get('stored_path') or '').replace('\\', '/')
+                abs_path = os.path.normpath(os.path.join(os.path.dirname(__file__), stored_rel))
+                if os.path.isfile(abs_path):
+                    with open(abs_path, 'r', encoding='utf-8') as f:
+                        text = f.read()
+                else:
+                    text = ''
+
             else:
                 text = ''
 
@@ -5780,23 +5989,156 @@ def _should_log_tool_stream_chunks():
         return False
 
 
+JS_BUNDLE_MANIFEST = {
+    "public-site-landing": (
+        "static/js/public_site/site.js",
+    ),
+    "public-site-status": (
+        "static/js/secure_render.js",
+        "static/js/public_site/site.js",
+        "static/js/public_site/status.js",
+    ),
+    "public-site-blog": (
+        "static/js/public_site/site.js",
+    ),
+}
+JS_BUNDLE_CACHE = {}
+JS_BUNDLE_CACHE_LOCK = threading.Lock()
+JS_BUNDLE_CACHE_LIMIT = 32
+JS_BUNDLE_VERSION_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
+JS_BUNDLE_STATIC_JS_DIR = os.path.abspath(os.path.join(BASE_DIR, "static", "js"))
+
+
+def _normalize_js_bundle_version(raw_version):
+    """校验资源版本号，保证缓存键由明确版本驱动。"""
+    version = str(raw_version or "").strip()
+
+    if not JS_BUNDLE_VERSION_PATTERN.fullmatch(version):
+        raise ValueError("js bundle version is required and must only contain letters, numbers, dot, underscore or hyphen")
+
+    return version
+
+
+def _resolve_js_bundle_file(relative_path):
+    """把 manifest 中的 JS 路径解析为 static/js 内的真实文件。"""
+    full_path = os.path.abspath(os.path.join(BASE_DIR, relative_path))
+
+    if os.path.commonpath([JS_BUNDLE_STATIC_JS_DIR, full_path]) != JS_BUNDLE_STATIC_JS_DIR:
+        raise ValueError(f"js bundle file is outside static/js: {relative_path}")
+
+    if not os.path.isfile(full_path):
+        raise FileNotFoundError(f"js bundle file is missing: {relative_path}")
+
+    return full_path
+
+
+def _read_js_bundle_source(relative_path):
+    """读取单个 JS 源文件，打包入口统一使用 UTF-8。"""
+    full_path = _resolve_js_bundle_file(relative_path)
+
+    with open(full_path, "r", encoding="utf-8-sig") as f:
+        source = f.read()
+
+    return source
+
+
+def _remember_js_bundle_payload(cache_key, payload):
+    """保存构建结果，并限制版本缓存数量。"""
+
+    if cache_key not in JS_BUNDLE_CACHE and len(JS_BUNDLE_CACHE) >= JS_BUNDLE_CACHE_LIMIT:
+        oldest_key = next(iter(JS_BUNDLE_CACHE))
+        del JS_BUNDLE_CACHE[oldest_key]
+
+    JS_BUNDLE_CACHE[cache_key] = payload
+
+
+def _build_js_bundle_payload(bundle_name, version):
+    """按 manifest 顺序拼接 JS，并按 bundle + version 缓存。"""
+    cache_key = (bundle_name, version)
+
+    with JS_BUNDLE_CACHE_LOCK:
+        cached = JS_BUNDLE_CACHE.get(cache_key)
+
+    if cached:
+        return cached
+
+    files = JS_BUNDLE_MANIFEST[bundle_name]
+    parts = []
+
+    for relative_path in files:
+        source = _read_js_bundle_source(relative_path).rstrip()
+        parts.append(f"/* source: {relative_path} */\n{source}\n;")
+
+    content = "\n\n".join(parts) + "\n"
+    content_bytes = content.encode("utf-8")
+    etag_seed = f"{bundle_name}\0{version}\0".encode("utf-8") + content_bytes
+    payload = {
+        "content": content,
+        "etag": '"' + hashlib.sha256(etag_seed).hexdigest() + '"',
+    }
+
+    with JS_BUNDLE_CACHE_LOCK:
+        _remember_js_bundle_payload(cache_key, payload)
+
+    return payload
+
+
+def _request_etag_matches(etag):
+    """判断浏览器缓存的 ETag 是否命中当前 bundle。"""
+    header_value = str(request.headers.get("If-None-Match") or "")
+    candidates = {item.strip() for item in header_value.split(",") if item.strip()}
+
+    return "*" in candidates or etag in candidates
+
+
+@app.route("/assets/js/<bundle_name>.js")
+def js_bundle(bundle_name):
+    """返回白名单 JS bundle，缓存生命周期由 v 查询参数控制。"""
+
+    if bundle_name not in JS_BUNDLE_MANIFEST:
+        return Response("unknown js bundle", status=404, mimetype="text/plain")
+
+    try:
+        version = _normalize_js_bundle_version(request.args.get("v"))
+    except ValueError as exc:
+        return Response(str(exc), status=400, mimetype="text/plain")
+
+    try:
+        payload = _build_js_bundle_payload(bundle_name, version)
+    except Exception as exc:
+        print(f"[JS_BUNDLE] build failed bundle={bundle_name}: {exc}")
+        return Response(f"js bundle build failed: {exc}", status=500, mimetype="text/plain")
+
+    if _request_etag_matches(payload["etag"]):
+        response = Response(status=304)
+    else:
+        response = Response(payload["content"], mimetype="application/javascript")
+
+    response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    response.headers["ETag"] = payload["etag"]
+    response.headers["X-Asset-Bundle"] = bundle_name
+    response.headers["X-Asset-Version"] = version
+
+    return response
+
+
 @app.route('/')
 def index():
     """首页：未登录展示 Landing，已登录进入聊天"""
     if 'username' in session:
         return redirect(url_for('chat', **request.args))
 
-    return render_template('introduce_2.html')
+    return render_template('public_site/landing.html')
 
 
 @app.route('/introduce')
 def introduce_page():
     """公开介绍页"""
-    return render_template('introduce_2.html')
+    return render_template('public_site/landing.html')
 
 
 @app.route('/introduce_2')
-def introduce_2_page():
+def legacy_introduce_page():
     """新版介绍页历史入口"""
     return redirect(url_for('introduce_page'))
 
@@ -5804,11 +6146,11 @@ def introduce_2_page():
 @app.route('/status')
 def status_page():
     """公开状态页"""
-    return render_template('status_2.html')
+    return render_template('public_site/status.html')
 
 
 @app.route('/status_2')
-def status_2_page():
+def legacy_status_page():
     """新版公开状态页历史入口"""
     return redirect(url_for('status_page'))
 
@@ -5816,11 +6158,11 @@ def status_2_page():
 @app.route('/blog')
 def board_page():
     """公告栏"""
-    return render_template('blog_2.html')
+    return render_template('public_site/blog.html')
 
 
 @app.route('/blog_2')
-def blog_2_page():
+def legacy_blog_page():
     """新版博客历史入口"""
     return redirect(url_for('board_page'))
     
@@ -5912,6 +6254,7 @@ def _validate_session_user():
         return
     try:
         users = load_users()
+        g.session_users_meta = users
         if username not in users:
             session.clear()
             if req_path.startswith('/api/'):
@@ -5924,6 +6267,18 @@ def _validate_session_user():
         return redirect(url_for('login'))
 
 
+def _get_request_users_meta() -> Dict[str, Any]:
+    users = getattr(g, 'session_users_meta', None)
+
+    if isinstance(users, dict):
+        return users
+
+    users = load_users()
+    g.session_users_meta = users
+
+    return users
+
+
 def require_login(f):
     """登录装饰器"""
     from functools import wraps
@@ -5934,7 +6289,7 @@ def require_login(f):
         # Verify the user actually exists in the database — prevents
         # forged session cookies from granting access to non-existent users.
         try:
-            users = load_users()
+            users = _get_request_users_meta()
             if session.get('username') not in users:
                 session.clear()
                 return jsonify({'success': False, 'message': '用户不存在，请重新登录'}), 401
@@ -5953,7 +6308,7 @@ def require_admin(f):
         if 'username' not in session:
             return jsonify({'success': False, 'message': '请先登录'}), 401
         try:
-            users = load_users()
+            users = _get_request_users_meta()
             if session.get('username') not in users:
                 session.clear()
                 return jsonify({'success': False, 'message': '用户不存在，请重新登录'}), 401
@@ -5976,17 +6331,22 @@ def get_user_info():
         return jsonify({'success': False, 'message': '未登录'}), 401
     
     try:
-        users = load_users()
+        users = getattr(g, 'session_users_meta', None)
+        if not isinstance(users, dict):
+            users = load_users()
             
         if username not in users:
             return jsonify({'success': False, 'message': '用户不存在'}), 404
             
         user_data = users[username]
         display_name = user_data.get('display_name', username)
+        lite_mode = _as_bool(request.args.get('lite') or request.headers.get('X-Nexora-User-Lite'), False)
         
-        # 获取用户统计信息
-        user_path = user_data.get('path', f'./data/users/{username}/')
-        stats = get_user_stats(username, user_path)
+        stats = {}
+        if not lite_mode:
+            # 完整用户信息接口会统计对话、知识库和 Token；跨服务鉴权只需要轻量身份字段。
+            user_path = user_data.get('path', f'./data/users/{username}/')
+            stats = get_user_stats(username, user_path)
         
         return jsonify({
             'success': True,
@@ -6646,10 +7006,9 @@ def get_user_stats(username, user_path):
         
         # 从token_usage.json获取统计信息
         token_usage_path = safe_join_path(user_path, 'token_usage.json')
-        if os.path.exists(token_usage_path):
-            with open(token_usage_path, 'r', encoding='utf-8') as f:
-                token_records = json.load(f)
-                
+        token_records = read_usage_log_records(token_usage_path)
+
+        if token_records:
             total_tokens = 0
             model_usage = {}
             
@@ -6775,6 +7134,9 @@ def _status_normalize_latency_ms(value: Any, output_tokens: int = 0, duration_hi
 
 
 def _read_json_list_safe(path: str) -> List[Dict[str, Any]]:
+    if is_usage_log_path(path):
+        return read_usage_log_records(path)
+
     if not os.path.exists(path):
         return []
     try:
@@ -7233,8 +7595,7 @@ def _reconcile_user_token_logs(
     if write_back:
         try:
             os.makedirs(os.path.dirname(token_file), exist_ok=True)
-            with open(token_file, 'w', encoding='utf-8') as f:
-                json.dump(result_logs, f, indent=4, ensure_ascii=False)
+            replace_usage_log_records(token_file, result_logs, indent=4)
         except Exception as e:
             report['write_error'] = str(e)
 
@@ -8131,17 +8492,18 @@ def admin_get_users():
             # 计算总 token 消耗 (从 token_usage.json 读取)
             total_tokens = 0
             user_token_file = safe_join_path(os.path.dirname(__file__), 'data', 'users', user_id, 'token_usage.json')
-            if os.path.exists(user_token_file):
-                try:
-                    with open(user_token_file, 'r', encoding='utf-8') as tf:
-                        tokens = json.load(tf)
-                        for log in tokens:
-                            t = log.get('total_tokens', None)
-                            if t is None:
-                                t = log.get('input_tokens', 0) + log.get('output_tokens', 0)
-                            total_tokens += int(t or 0)
-                except Exception as e:
-                    app.logger.warning('admin user token usage load failed for %s: %s', user_id, e)
+            try:
+                tokens = read_usage_log_records(user_token_file)
+
+                for log in tokens:
+                    t = log.get('total_tokens', None)
+
+                    if t is None:
+                        t = log.get('input_tokens', 0) + log.get('output_tokens', 0)
+
+                    total_tokens += int(t or 0)
+            except Exception as e:
+                app.logger.warning('admin user token usage load failed for %s: %s', user_id, e)
             
             user_list.append({
                 'user_id': user_id,
@@ -8550,17 +8912,18 @@ def admin_token_stats():
         user_dir = safe_join_path(os.path.dirname(__file__), "data", "users")
         for username in os.listdir(user_dir):
             token_file = safe_join_path(user_dir, username, "token_usage.json")
-            if os.path.exists(token_file):
-                try:
-                    with open(token_file, 'r', encoding='utf-8') as f:
-                        logs = json.load(f)
-                        for log in logs:
-                            t = log.get('total_tokens', None)
-                            if t is None:
-                                t = log.get('input_tokens', 0) + log.get('output_tokens', 0)
-                            total_tokens += int(t or 0)
-                except Exception as e:
-                    app.logger.warning('admin token stats load failed for %s: %s', username, e)
+            try:
+                logs = read_usage_log_records(token_file)
+
+                for log in logs:
+                    t = log.get('total_tokens', None)
+
+                    if t is None:
+                        t = log.get('input_tokens', 0) + log.get('output_tokens', 0)
+
+                    total_tokens += int(t or 0)
+            except Exception as e:
+                app.logger.warning('admin token stats load failed for %s: %s', username, e)
         return jsonify({'success': True, 'total': total_tokens})
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
@@ -8918,7 +9281,7 @@ def chat():
     if 'username' not in session:
         return redirect(url_for('login'))
     try:
-        users = load_users()
+        users = _get_request_users_meta()
         if session.get('username') not in users:
             session.clear()
             return redirect(url_for('login'))
@@ -9071,15 +9434,16 @@ def upload_file():
             allow_preview = ", ".join(sorted(list(UserFileSandbox.ALLOWED_UPLOAD_EXTS)))
             return jsonify({
                 'success': False,
-                'message': f'当前仅支持文本类 + docx/pdf/pptx 上传解析，后缀 {suffix or "(none)"} 不支持。支持后缀: {allow_preview}'
+                'message': f'当前仅支持文本类、docx/pdf/pptx 和常见图片上传，后缀 {suffix or "(none)"} 不支持。支持后缀: {allow_preview}'
             }), 400
 
         update_file_name = (request.form.get('update_file_name') or '').strip() or None
+        target_path = (request.form.get('target_path') or '').strip()
         raw = file.read()
-        task_id = _upload_task_create(username, filename)
+        task_id = _upload_task_create(username, filename, extra={'target_path': target_path} if target_path else None)
         worker = threading.Thread(
             target=_run_upload_task,
-            args=(task_id, username, filename, raw, update_file_name),
+            args=(task_id, username, filename, raw, update_file_name, target_path),
             daemon=True
         )
         worker.start()
@@ -9283,7 +9647,9 @@ def download_cloud_file():
         abs_path = sandbox._get_abs_path(entry)
 
         download_name = safe_filename(entry.get('original_name') or entry.get('alias') or 'download.txt', default='download.txt', max_len=180)
-        return send_file(abs_path, as_attachment=True, download_name=download_name)
+        inline = normalize_text(request.args.get('inline', ''), default='').lower() in {'1', 'true', 'yes', 'on'}
+        mimetype = mimetypes.guess_type(download_name)[0] or 'application/octet-stream'
+        return send_file(abs_path, as_attachment=not inline, download_name=download_name, mimetype=mimetype)
     except FileNotFoundError as e:
         return jsonify({'success': False, 'message': str(e)}), 404
     except Exception as e:
@@ -9454,7 +9820,41 @@ def get_conversation(conv_id):
     manager = ConversationManager(username)
     try:
         conversation = manager.ensure_conversation_compatibility(conv_id)
+        message_limit_raw = request.args.get('message_limit')
+        message_window = None
+
+        if message_limit_raw is not None:
+            try:
+                message_limit = int(str(message_limit_raw).strip())
+            except Exception:
+                return jsonify({'success': False, 'message': 'message_limit 必须是整数'}), 400
+
+            if message_limit <= 0 or message_limit > 200:
+                return jsonify({'success': False, 'message': 'message_limit 必须在 1 到 200 之间'}), 400
+
+            all_messages = conversation.get('messages', [])
+
+            if not isinstance(all_messages, list):
+                all_messages = []
+
+            total_messages = len(all_messages)
+            start_index = max(0, total_messages - message_limit)
+            end_index = total_messages - 1 if total_messages > 0 else -1
+            conversation = dict(conversation)
+            conversation['messages'] = all_messages[start_index:total_messages]
+            conversation['message_count'] = total_messages
+            message_window = {
+                'start_index': start_index,
+                'end_index': end_index,
+                'total': total_messages,
+                'limit': message_limit,
+                'has_more_before': start_index > 0,
+            }
+
         payload = {'success': True, 'conversation': conversation}
+
+        if message_window is not None:
+            payload['message_window'] = message_window
 
         if _as_bool(request.args.get('include_stream'), default=False):
             payload['stream_sessions'] = list_stream_sessions(
@@ -9464,6 +9864,106 @@ def get_conversation(conv_id):
             )
 
         return jsonify(payload)
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+
+@app.route('/api/conversations/<conv_id>/messages', methods=['GET'])
+@require_login
+def get_conversation_messages(conv_id):
+    """按真实消息索引分页读取对话消息。"""
+    username = session['username']
+    manager = ConversationManager(username)
+
+    try:
+        limit = int(str(request.args.get('limit') or '10').strip())
+    except Exception:
+        return jsonify({'success': False, 'message': 'limit 必须是整数'}), 400
+
+    if limit <= 0 or limit > 200:
+        return jsonify({'success': False, 'message': 'limit 必须在 1 到 200 之间'}), 400
+
+    try:
+        conversation = manager.ensure_conversation_compatibility(conv_id)
+        messages = conversation.get('messages', [])
+
+        if not isinstance(messages, list):
+            messages = []
+
+        total_messages = len(messages)
+        before_raw = request.args.get('before')
+
+        if before_raw is None or str(before_raw).strip() == '':
+            before_index = total_messages
+        else:
+            try:
+                before_index = int(str(before_raw).strip())
+            except Exception:
+                return jsonify({'success': False, 'message': 'before 必须是整数'}), 400
+
+        before_index = max(0, min(before_index, total_messages))
+        start_index = max(0, before_index - limit)
+        end_index = before_index - 1 if before_index > 0 else -1
+
+        return jsonify({
+            'success': True,
+            'messages': messages[start_index:before_index],
+            'start_index': start_index,
+            'end_index': end_index,
+            'total': total_messages,
+            'limit': limit,
+            'has_more_before': start_index > 0,
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)})
+
+
+def _build_conversation_user_turns(messages):
+    """构建轮次指示器需要的全量用户消息元数据。"""
+    user_turns = []
+
+    for index, message in enumerate(messages if isinstance(messages, list) else []):
+        if not isinstance(message, dict):
+            continue
+
+        role = str(message.get('role') or '').strip().lower()
+
+        if role != 'user':
+            continue
+
+        user_turns.append({
+            'message_index': index,
+            'role': 'user',
+            'content': message.get('content', ''),
+            'timestamp': message.get('timestamp') or message.get('created_at') or '',
+            'id': message.get('id') or '',
+        })
+
+    return user_turns
+
+
+@app.route('/api/conversations/<conv_id>/turns', methods=['GET'])
+@require_login
+def get_conversation_turns(conv_id):
+    """读取完整用户轮次列表，供窗口化消息渲染时保持轮次指示器完整。"""
+    username = session['username']
+    manager = ConversationManager(username)
+
+    try:
+        conversation = manager.ensure_conversation_compatibility(conv_id)
+        messages = conversation.get('messages', [])
+
+        if not isinstance(messages, list):
+            messages = []
+
+        user_turns = _build_conversation_user_turns(messages)
+
+        return jsonify({
+            'success': True,
+            'turns': user_turns,
+            'total_messages': len(messages),
+            'total_turns': len(user_turns),
+        })
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
 
@@ -9881,22 +10381,13 @@ def get_config():
                 blacklist = user_blacklists.get(username, perm_config.get('default_blacklist', []))
 
         config = get_config_all()
-        has_volcengine_model = any(
-            isinstance(info, dict) and str(info.get('provider', 'volcengine')).strip().lower() == 'volcengine'
-            for info in (config.get('models', {}) or {}).values()
-        )
-        has_aliyun_model = any(
-            isinstance(info, dict) and str(info.get('provider', '')).strip().lower() in {'aliyun', 'dashscope'}
-            for info in (config.get('models', {}) or {}).values()
-        )
-        has_ollama_model = any(
-            isinstance(provider_cfg, dict) and str(provider_cfg.get('api_type', '')).strip().lower() == 'ollama'
-            for provider_cfg in (config.get('providers', {}) or {}).values()
-        )
-        volc_context_map = _refresh_volc_context_window_map(config, timeout=8.0) if has_volcengine_model else {}
-        aliyun_context_map = _refresh_aliyun_context_window_map(config, timeout=8.0) if has_aliyun_model else {}
-        ollama_context_map = _refresh_ollama_context_window_map(config, timeout=8.0) if has_ollama_model else {}
-        generic_context_maps = _refresh_generic_context_window_maps(config, timeout=8.0)
+        context_refresh_mode = _normalize_context_refresh_mode(request.args.get('context_refresh', 'async'))
+        (
+            volc_context_map,
+            aliyun_context_map,
+            ollama_context_map,
+            generic_context_maps
+        ) = _resolve_context_window_maps_for_config(config, context_refresh_mode)
 
         providers_info = {}
         for provider_name, provider_cfg in (config.get('providers', {}) or {}).items():
@@ -9946,6 +10437,7 @@ def get_config():
             'models_config_version': models_sync_state.get('version', ''),
             'models_config_fingerprint': models_sync_state.get('fingerprint', ''),
             'models_config_updated_at': models_sync_state.get('updated_at', 0),
+            'context_refresh_mode': context_refresh_mode,
         })
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)})
@@ -11379,15 +11871,7 @@ def admin_tool_stats():
         if os.path.exists(user_dir):
             for username in os.listdir(user_dir):
                 tool_file = safe_join_path(user_dir, username, "tool_usage.json")
-                if not os.path.exists(tool_file):
-                    continue
-                try:
-                    with open(tool_file, 'r', encoding='utf-8') as f:
-                        logs = json.load(f)
-                except Exception:
-                    continue
-                if not isinstance(logs, list):
-                    continue
+                logs = read_usage_log_records(tool_file)
 
                 for log in logs:
                     ts = str(log.get('timestamp') or '')
@@ -11549,13 +12033,7 @@ def admin_token_timeseries():
     if os.path.exists(user_dir):
         for username in os.listdir(user_dir):
             token_file = safe_join_path(user_dir, username, "token_usage.json")
-            if not os.path.exists(token_file):
-                continue
-            try:
-                with open(token_file, 'r', encoding='utf-8') as f:
-                    logs = json.load(f)
-            except Exception:
-                continue
+            logs = read_usage_log_records(token_file)
 
             for log in logs:
                 ts = str(log.get('timestamp', ''))
@@ -11651,6 +12129,7 @@ def admin_upsert_provider(target_provider=None):
     api_key = data.get('api_key')
     base_url = data.get('base_url')
     api_type = _normalize_provider_api_type(data.get('api_type'))
+    user_agent = str(data.get('user_agent') or '').strip()
     settings = data.get('settings')
 
     if not provider:
@@ -11686,6 +12165,10 @@ def admin_upsert_provider(target_provider=None):
         provider_record['api_key'] = str(api_key)
         provider_record['base_url'] = str(base_url)
         provider_record['api_type'] = api_type or 'openai'
+        if user_agent:
+            provider_record['user_agent'] = user_agent
+        else:
+            provider_record.pop('user_agent', None)
 
         existing_settings = provider_record.get('settings', {}) if isinstance(provider_record.get('settings', {}), dict) else {}
         merged_settings = dict(existing_settings)
@@ -11989,24 +12472,6 @@ def _format_workspace_memory_tool(model, name: str, description: str, parameters
 
 
 def _workspace_memory_tool_definitions(model) -> List[Dict[str, Any]]:
-    write_parameters = {
-        "type": "object",
-        "properties": {
-            "content": {
-                "type": "string",
-                "description": "完整的 Workspace Markdown 记忆内容，最多 5000 字符。",
-            },
-            "expected_sha256": {
-                "type": "string",
-                "description": "可选，当前 Workspace 记忆内容 SHA256；不一致时拒绝修改。",
-            },
-            "dry_run": {
-                "type": "boolean",
-                "description": "为 true 时只预览差异，不写入。",
-            },
-        },
-        "required": ["content"],
-    }
     diff_parameters = {
         "type": "object",
         "properties": {
@@ -12076,12 +12541,6 @@ def _workspace_memory_tool_definitions(model) -> List[Dict[str, Any]]:
     return [
         _format_workspace_memory_tool(
             model,
-            "workspace_mem_write",
-            "覆盖当前 Workspace 的自动记忆。仅当需要整体重写记忆时使用；content 必须是完整 Markdown 记忆。",
-            write_parameters,
-        ),
-        _format_workspace_memory_tool(
-            model,
             "workspace_mem_edit",
             "使用结构化 edits 精确修改当前 Workspace 的自动记忆。适合修正、合并或删除已有记忆条目。",
             edit_parameters,
@@ -12117,22 +12576,6 @@ def _inject_workspace_memory_tools(model, username: str, workspace_context: Dict
 
     def _workspace_store():
         return find_store_for_visible_workspace(username, workspace_id)
-
-    def _make_write_handler():
-        def _handler(args: dict) -> str:
-            try:
-                payload = _workspace_store().write_workspace_memory(
-                    workspace_id,
-                    username,
-                    str((args or {}).get("content") or ""),
-                    expected_sha256=(args or {}).get("expected_sha256"),
-                    dry_run=_as_bool((args or {}).get("dry_run", False), False),
-                )
-                return _tool_result(payload)
-            except Exception as error:
-                return _tool_result({"success": False, "message": str(error)})
-
-        return _handler
 
     def _make_patch_handler():
         def _handler(args: dict) -> str:
@@ -12223,7 +12666,6 @@ def _inject_workspace_memory_tools(model, username: str, workspace_context: Dict
     for tool in _workspace_memory_tool_definitions(model):
         model.register_external_function_tool(tool)
 
-    model.tool_executor.handlers["workspace_mem_write"] = _make_write_handler()
     model.tool_executor.handlers["workspace_mem_patch"] = _make_patch_handler()
     model.tool_executor.handlers["workspace_mem_apply_diff"] = _make_apply_diff_handler()
     model.tool_executor.handlers["workspace_mem_edit"] = _make_edit_handler()
@@ -15784,11 +16226,15 @@ def agent_tunnel_socket(ws):
 
 from api.papi.routes import papi_bp
 app.register_blueprint(papi_bp)
+from api.files import files_bp
+app.register_blueprint(files_bp)
 from api.workspace.routes import workspace_bp
 app.register_blueprint(workspace_bp)
 from api.notification import configure_notification_realtime, notification_bp
 configure_notification_realtime(_send_browser_event_to_user)
 app.register_blueprint(notification_bp)
+from api.testapi import create_testapi_blueprint
+app.register_blueprint(create_testapi_blueprint(require_admin))
 
 if __name__ == '__main__':
     # 确保必要的目录存在

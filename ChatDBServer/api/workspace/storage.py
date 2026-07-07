@@ -15,8 +15,14 @@ DATA_DIR = os.path.join(BASE_DIR, "data")
 WORKSPACE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{8,48}$")
 USER_ID_RE = re.compile(r"^[^/\\\s][^/\\]{0,127}$")
 VISIBILITY_VALUES = {"share", "private"}
+WORKSPACE_TASK_STATUS_VALUES = {"todo", "doing", "blocked", "done", "cancelled"}
+WORKSPACE_TASK_SOURCE_VALUES = {"manual", "conversation", "knowledge", "file", "mail", "memory", "other"}
+WORKSPACE_TASK_COLOR_VALUES = {"blue", "green", "amber", "rose", "violet", "cyan", "slate"}
+WORKSPACE_TASK_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 WORKSPACE_TEXT_LIMIT = 5000
 WORKSPACE_FILE_REF_LIMIT = 260
+WORKSPACE_TASK_NOTES_LIMIT = 1000
+WORKSPACE_ACTIVITY_LIMIT = 200
 
 
 def utc_now_iso() -> str:
@@ -178,7 +184,7 @@ def normalize_shared_users(value: Any, owner_username: str) -> List[str]:
 
 
 def normalize_workspace_file_ref(value: Any, default_username: str) -> Dict[str, str]:
-    raw = str(value or "").replace("\\", "/").strip()
+    raw = str(value or "").replace("\\", "/").strip().strip("/")
     default_user = validate_username(default_username)
 
     if not raw:
@@ -190,19 +196,22 @@ def normalize_workspace_file_ref(value: Any, default_username: str) -> Dict[str,
     owner = default_user
     alias_source = raw
     marker = "/files/"
+    alt_prefix = f"files/{default_user}/"
 
     if marker in raw:
         owner_raw, alias_raw = raw.split(marker, 1)
-        owner = validate_username(owner_raw)
+        owner = validate_username(owner_raw.strip("/"))
         alias_source = alias_raw
+    elif raw.startswith(alt_prefix):
+        alias_source = raw[len(alt_prefix):]
 
-    alias = os.path.basename(alias_source.replace("\\", "/").strip())
+    alias = alias_source.replace("\\", "/").strip().strip("/")
 
-    if not alias or alias in {".", ".."}:
+    if not alias or alias in {".", ".."} or "/../" in f"/{alias}/" or "/./" in f"/{alias}/":
         raise ValueError("file_ref is invalid")
 
-    if len(alias) > 180:
-        raise ValueError("file alias cannot exceed 180 characters")
+    if len(alias) > 260:
+        raise ValueError("file alias cannot exceed 260 characters")
 
     return {
         "added_by": owner,
@@ -246,6 +255,58 @@ def new_workspace_id() -> str:
     return "ws_" + secrets.token_urlsafe(12).replace("-", "_")
 
 
+def new_workspace_task_id() -> str:
+    return "task_" + secrets.token_urlsafe(10).replace("-", "_")
+
+
+def new_workspace_activity_id() -> str:
+    return "act_" + secrets.token_urlsafe(10).replace("-", "_")
+
+
+def normalize_workspace_task_status(value: Any) -> str:
+    status = normalize_text(value or "todo", 32).lower() or "todo"
+
+    if status not in WORKSPACE_TASK_STATUS_VALUES:
+        raise ValueError("task status must be todo, doing, blocked, done or cancelled")
+
+    return status
+
+
+def normalize_workspace_task_source_type(value: Any) -> str:
+    source_type = normalize_text(value or "manual", 32).lower() or "manual"
+
+    if source_type not in WORKSPACE_TASK_SOURCE_VALUES:
+        raise ValueError("task source_type must be manual, conversation, knowledge, file, mail, memory or other")
+
+    return source_type
+
+
+def normalize_workspace_task_color(value: Any) -> str:
+    color = normalize_text(value or "blue", 32).lower() or "blue"
+
+    if color not in WORKSPACE_TASK_COLOR_VALUES:
+        raise ValueError("task color must be blue, green, amber, rose, violet, cyan or slate")
+
+    return color
+
+
+def normalize_workspace_task_date(value: Any, field_name: str) -> str:
+    text = normalize_text(value, 32)
+
+    if not text:
+        return ""
+
+    if not WORKSPACE_TASK_DATE_RE.match(text):
+        raise ValueError(f"{field_name} must use YYYY-MM-DD")
+
+    try:
+        datetime.strptime(text, "%Y-%m-%d")
+    except ValueError:
+        raise ValueError(f"{field_name} must be a valid date")
+
+    return text
+
+
 def default_workspace_payload(
     owner_username: str,
     workspace_id: str,
@@ -281,6 +342,18 @@ def default_workspace_payload(
         "conversations": [],
         "knowledge_documents": [],
         "workspace_files": [],
+        "workspace_tasks": [],
+        "workspace_activity": [{
+            "activity_id": new_workspace_activity_id(),
+            "action": "workspace_created",
+            "resource_type": "workspace",
+            "title": title,
+            "subtitle": "",
+            "actor": owner_username,
+            "time": now,
+            "ref": workspace_id,
+            "metadata": {},
+        }],
         "temp_netdisk": {
             "files": [],
         },
@@ -339,6 +412,8 @@ class WorkspaceStore:
         shared_users = normalize_shared_users(settings.get("shared_users", []), owner)
         conversations = self._normalize_conversations(workspace.get("conversations", []), owner)
         knowledge_documents = self._normalize_knowledge_documents(workspace.get("knowledge_documents", []), owner)
+        workspace_tasks = self._normalize_workspace_tasks(workspace.get("workspace_tasks", []), owner)
+        workspace_activity = self._normalize_workspace_activity(workspace.get("workspace_activity", []), owner)
         raw_workspace_files = workspace.get("workspace_files")
 
         if raw_workspace_files is None:
@@ -366,6 +441,8 @@ class WorkspaceStore:
             "conversations": conversations,
             "knowledge_documents": knowledge_documents,
             "workspace_files": workspace_files,
+            "workspace_tasks": workspace_tasks,
+            "workspace_activity": workspace_activity,
             "temp_netdisk": {"files": []},
         }
 
@@ -495,6 +572,132 @@ class WorkspaceStore:
 
         return result
 
+    def _normalize_workspace_tasks(self, value: Any, owner_username: str) -> List[Dict[str, Any]]:
+        if value is None:
+            return []
+
+        if not isinstance(value, list):
+            raise ValueError("workspace_tasks must be a list")
+
+        result: List[Dict[str, Any]] = []
+        seen = set()
+
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+
+            task_id = normalize_text(item.get("task_id"), 80)
+            title = normalize_text(item.get("title"), 160)
+
+            if not task_id or not title or task_id in seen:
+                continue
+
+            created_by = validate_username(str(item.get("created_by") or owner_username))
+            updated_by = validate_username(str(item.get("updated_by") or created_by))
+            seen.add(task_id)
+            result.append({
+                "task_id": task_id,
+                "title": title,
+                "status": normalize_workspace_task_status(item.get("status")),
+                "color": normalize_workspace_task_color(item.get("color")),
+                "assignee": normalize_text(item.get("assignee") or created_by, 128),
+                "start_date": normalize_workspace_task_date(item.get("start_date"), "start_date"),
+                "due_date": normalize_workspace_task_date(item.get("due_date"), "due_date"),
+                "source_type": normalize_workspace_task_source_type(item.get("source_type")),
+                "source_title": normalize_text(item.get("source_title"), 180),
+                "source_ref": normalize_text(item.get("source_ref"), 260),
+                "notes": normalize_workspace_markdown(item.get("notes"), WORKSPACE_TASK_NOTES_LIMIT),
+                "created_by": created_by,
+                "created_at": normalize_text(item.get("created_at"), 64),
+                "updated_by": updated_by,
+                "updated_at": normalize_text(item.get("updated_at"), 64),
+            })
+
+        return result
+
+    def _normalize_workspace_activity(self, value: Any, owner_username: str) -> List[Dict[str, Any]]:
+        if value is None:
+            return []
+
+        if not isinstance(value, list):
+            raise ValueError("workspace_activity must be a list")
+
+        result: List[Dict[str, Any]] = []
+        seen = set()
+
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+
+            activity_id = normalize_text(item.get("activity_id"), 80) or new_workspace_activity_id()
+
+            if activity_id in seen:
+                continue
+
+            action = normalize_text(item.get("action"), 64)
+            resource_type = normalize_text(item.get("resource_type") or item.get("type"), 32)
+            title = normalize_text(item.get("title"), 180)
+            actor = validate_username(str(item.get("actor") or item.get("actor_username") or owner_username))
+            time = normalize_text(item.get("time") or item.get("created_at") or item.get("updated_at"), 64)
+
+            if not action or not resource_type or not title or not time:
+                continue
+
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            safe_metadata: Dict[str, str] = {}
+
+            for key, raw_value in metadata.items():
+                key_text = normalize_text(key, 64)
+                value_text = normalize_text(raw_value, 180)
+
+                if key_text and value_text:
+                    safe_metadata[key_text] = value_text
+
+            seen.add(activity_id)
+            result.append({
+                "activity_id": activity_id,
+                "action": action,
+                "resource_type": resource_type,
+                "title": title,
+                "subtitle": normalize_text(item.get("subtitle"), 220),
+                "actor": actor,
+                "time": time,
+                "ref": normalize_text(item.get("ref"), 260),
+                "metadata": safe_metadata,
+            })
+
+        result.sort(key=lambda row: str(row.get("time") or ""), reverse=True)
+        return result[:WORKSPACE_ACTIVITY_LIMIT]
+
+    def _append_workspace_activity(
+        self,
+        workspace: Dict[str, Any],
+        *,
+        action: str,
+        resource_type: str,
+        title: str,
+        actor: str,
+        time: str = "",
+        subtitle: str = "",
+        ref: str = "",
+        metadata: Dict[str, Any] = None,
+    ) -> None:
+        owner = validate_username(str(workspace.get("owner_username") or self.username))
+        created_at = normalize_text(time, 64) or utc_now_iso()
+        activity = self._normalize_workspace_activity(workspace.get("workspace_activity", []), owner)
+        activity.insert(0, {
+            "activity_id": new_workspace_activity_id(),
+            "action": normalize_text(action, 64),
+            "resource_type": normalize_text(resource_type, 32),
+            "title": normalize_text(title, 180) or "Workspace 活动",
+            "subtitle": normalize_text(subtitle, 220),
+            "actor": validate_username(actor),
+            "time": created_at,
+            "ref": normalize_text(ref, 260),
+            "metadata": metadata if isinstance(metadata, dict) else {},
+        })
+        workspace["workspace_activity"] = self._normalize_workspace_activity(activity, owner)
+
     def create_workspace(self, title: str, shared_users: Any = None) -> Dict[str, Any]:
         workspace_id = new_workspace_id()
 
@@ -604,6 +807,16 @@ class WorkspaceStore:
                 "added_at": now,
                 "title": title,
             })
+            self._append_workspace_activity(
+                workspace,
+                action="conversation_added",
+                resource_type="conversation",
+                title=title or cid,
+                actor=actor,
+                time=now,
+                subtitle="添加了对话",
+                ref=cid,
+            )
 
         workspace["conversations"] = conversations
         workspace["updated_at"] = now
@@ -660,6 +873,17 @@ class WorkspaceStore:
                 "added_by": actor,
                 "added_at": now,
             })
+            self._append_workspace_activity(
+                workspace,
+                action="knowledge_added",
+                resource_type="knowledge",
+                title=safe_title,
+                actor=actor,
+                time=now,
+                subtitle="添加了知识库",
+                ref=safe_title,
+                metadata={"visibility": safe_visibility},
+            )
 
         workspace["knowledge_documents"] = documents
         workspace["updated_at"] = now
@@ -693,6 +917,8 @@ class WorkspaceStore:
             raise PermissionError("workspace file must belong to current user")
 
         entry = self._get_sandbox_file_entry(actor, ref["file_ref"])
+        ref["alias"] = normalize_text(entry.get("alias") or ref["alias"], 260)
+        ref["file_ref"] = normalize_text(entry.get("sandbox_path") or ref["file_ref"], WORKSPACE_FILE_REF_LIMIT)
         workspace = self._read_workspace(wid)
         self._assert_can_edit(workspace, actor)
         owner = validate_username(str(workspace.get("owner_username") or self.username))
@@ -725,8 +951,243 @@ class WorkspaceStore:
                 "added_at": now,
                 "pin": False,
             })
+            self._append_workspace_activity(
+                workspace,
+                action="file_added",
+                resource_type="file",
+                title=title,
+                actor=actor,
+                time=now,
+                subtitle="添加了文件",
+                ref=ref["file_ref"],
+                metadata={"visibility": safe_visibility},
+            )
 
         workspace["workspace_files"] = files
+        workspace["updated_at"] = now
+        saved = self._write_workspace(workspace)
+        return self._filter_for_viewer(saved, actor)
+
+    def _normalize_task_mutation_payload(
+        self,
+        payload: Dict[str, Any],
+        actor_username: str,
+        require_title: bool = False,
+    ) -> Dict[str, Any]:
+        """Normalize user supplied task fields before saving Workspace metadata."""
+        if not isinstance(payload, dict):
+            raise ValueError("task payload must be an object")
+
+        actor = validate_username(actor_username)
+        fields: Dict[str, Any] = {}
+
+        if require_title or "title" in payload:
+            title = normalize_text(payload.get("title"), 160)
+
+            if not title:
+                raise ValueError("task title is required")
+
+            fields["title"] = title
+
+        if require_title or "status" in payload:
+            fields["status"] = normalize_workspace_task_status(payload.get("status"))
+
+        if require_title or "color" in payload:
+            fields["color"] = normalize_workspace_task_color(payload.get("color"))
+
+        if require_title or "assignee" in payload:
+            assignee = normalize_text(payload.get("assignee") or actor, 128)
+
+            if not assignee:
+                raise ValueError("task assignee is required")
+
+            fields["assignee"] = assignee
+
+        if require_title or "start_date" in payload:
+            fields["start_date"] = normalize_workspace_task_date(payload.get("start_date"), "start_date")
+
+        if require_title or "due_date" in payload:
+            fields["due_date"] = normalize_workspace_task_date(payload.get("due_date"), "due_date")
+
+        if require_title or "source_type" in payload:
+            fields["source_type"] = normalize_workspace_task_source_type(payload.get("source_type"))
+
+        if require_title or "source_title" in payload:
+            fields["source_title"] = normalize_text(payload.get("source_title"), 180)
+
+        if require_title or "source_ref" in payload:
+            fields["source_ref"] = normalize_text(payload.get("source_ref"), 260)
+
+        if require_title or "notes" in payload:
+            fields["notes"] = validate_workspace_markdown(
+                payload.get("notes"),
+                "task notes",
+                WORKSPACE_TASK_NOTES_LIMIT,
+            )
+
+        return fields
+
+    def create_workspace_task(
+        self,
+        workspace_id: str,
+        actor_username: str,
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Create a Workspace task as a first-class office item."""
+        wid = validate_workspace_id(workspace_id)
+        actor = validate_username(actor_username)
+        fields = self._normalize_task_mutation_payload(payload, actor, require_title=True)
+        workspace = self._read_workspace(wid)
+        self._assert_can_edit(workspace, actor)
+        owner = validate_username(str(workspace.get("owner_username") or self.username))
+        tasks = self._normalize_workspace_tasks(workspace.get("workspace_tasks", []), owner)
+        existing_ids = {str(item.get("task_id") or "") for item in tasks if isinstance(item, dict)}
+        task_id = new_workspace_task_id()
+
+        while task_id in existing_ids:
+            task_id = new_workspace_task_id()
+
+        now = utc_now_iso()
+        task = {
+            "task_id": task_id,
+            "created_by": actor,
+            "created_at": now,
+            "updated_by": actor,
+            "updated_at": now,
+        }
+        task.update(fields)
+        tasks.append(task)
+        self._append_workspace_activity(
+            workspace,
+            action="task_created",
+            resource_type="task",
+            title=str(task.get("title") or "未命名任务"),
+            actor=actor,
+            time=now,
+            subtitle="创建了任务",
+            ref=task_id,
+            metadata={"status": str(task.get("status") or "todo")},
+        )
+        workspace["workspace_tasks"] = tasks
+        workspace["updated_at"] = now
+        saved = self._write_workspace(workspace)
+        return self._filter_for_viewer(saved, actor)
+
+    def update_workspace_task(
+        self,
+        workspace_id: str,
+        task_id: str,
+        actor_username: str,
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Update a Workspace task without changing unrelated resources."""
+        wid = validate_workspace_id(workspace_id)
+        tid = normalize_text(task_id, 80)
+        actor = validate_username(actor_username)
+
+        if not tid:
+            raise ValueError("task_id is required")
+
+        fields = self._normalize_task_mutation_payload(payload, actor, require_title=False)
+
+        if not fields:
+            raise ValueError("task update payload is empty")
+
+        workspace = self._read_workspace(wid)
+        self._assert_can_edit(workspace, actor)
+        owner = validate_username(str(workspace.get("owner_username") or self.username))
+        tasks = self._normalize_workspace_tasks(workspace.get("workspace_tasks", []), owner)
+        matched = False
+        now = utc_now_iso()
+
+        activity_title = ""
+        activity_action = "task_updated"
+        activity_metadata: Dict[str, Any] = {}
+
+        for item in tasks:
+            if item.get("task_id") != tid:
+                continue
+
+            previous_status = normalize_workspace_task_status(item.get("status"))
+            item.update(fields)
+            item["updated_by"] = actor
+            item["updated_at"] = now
+            next_status = normalize_workspace_task_status(item.get("status"))
+            activity_title = str(item.get("title") or "未命名任务")
+            activity_metadata["status"] = next_status
+
+            if previous_status != next_status:
+                activity_action = "task_status_updated"
+                activity_metadata["previous_status"] = previous_status
+
+            matched = True
+            break
+
+        if not matched:
+            raise FileNotFoundError(f"workspace task not found: {tid}")
+
+        workspace["workspace_tasks"] = tasks
+        self._append_workspace_activity(
+            workspace,
+            action=activity_action,
+            resource_type="task",
+            title=activity_title,
+            actor=actor,
+            time=now,
+            subtitle="更新了任务",
+            ref=tid,
+            metadata=activity_metadata,
+        )
+        workspace["updated_at"] = now
+        saved = self._write_workspace(workspace)
+        return self._filter_for_viewer(saved, actor)
+
+    def delete_workspace_task(
+        self,
+        workspace_id: str,
+        task_id: str,
+        actor_username: str,
+    ) -> Dict[str, Any]:
+        """Delete a Workspace task while keeping linked resources untouched."""
+        wid = validate_workspace_id(workspace_id)
+        tid = normalize_text(task_id, 80)
+        actor = validate_username(actor_username)
+
+        if not tid:
+            raise ValueError("task_id is required")
+
+        workspace = self._read_workspace(wid)
+        self._assert_can_edit(workspace, actor)
+        owner = validate_username(str(workspace.get("owner_username") or self.username))
+        tasks = self._normalize_workspace_tasks(workspace.get("workspace_tasks", []), owner)
+        deleted_task = None
+        next_tasks = []
+
+        for item in tasks:
+            if not isinstance(item, dict):
+                continue
+
+            if item.get("task_id") == tid:
+                deleted_task = item
+                continue
+
+            next_tasks.append(item)
+
+        if len(next_tasks) == len(tasks):
+            raise FileNotFoundError(f"workspace task not found: {tid}")
+
+        workspace["workspace_tasks"] = next_tasks
+        now = utc_now_iso()
+        self._append_workspace_activity(
+            workspace,
+            action="task_deleted",
+            resource_type="task",
+            title=str((deleted_task or {}).get("title") or "未命名任务"),
+            actor=actor,
+            time=now,
+            subtitle="删除了任务",
+            ref=tid,
+        )
         workspace["updated_at"] = now
         saved = self._write_workspace(workspace)
         return self._filter_for_viewer(saved, actor)
@@ -759,6 +1220,7 @@ class WorkspaceStore:
         owner = validate_username(str(workspace.get("owner_username") or self.username))
         conversations = self._normalize_conversations(workspace.get("conversations", []), owner)
         matched = False
+        activity_title = cid
 
         for item in conversations:
             if item.get("conversation_id") != cid:
@@ -768,6 +1230,7 @@ class WorkspaceStore:
                 continue
 
             item["visibility"] = safe_visibility
+            activity_title = str(item.get("title") or cid)
             matched = True
             break
 
@@ -775,7 +1238,19 @@ class WorkspaceStore:
             raise FileNotFoundError(f"workspace conversation not found: {cid}")
 
         workspace["conversations"] = conversations
-        workspace["updated_at"] = utc_now_iso()
+        now = utc_now_iso()
+        self._append_workspace_activity(
+            workspace,
+            action="conversation_shared" if safe_visibility == "share" else "conversation_private",
+            resource_type="conversation",
+            title=activity_title,
+            actor=actor,
+            time=now,
+            subtitle="设为 Share" if safe_visibility == "share" else "设为 Private",
+            ref=cid,
+            metadata={"visibility": safe_visibility},
+        )
+        workspace["updated_at"] = now
         saved = self._write_workspace(workspace)
         return self._filter_for_viewer(saved, actor)
 
@@ -861,7 +1336,19 @@ class WorkspaceStore:
             raise FileNotFoundError(f"workspace knowledge not found: {safe_title}")
 
         workspace["knowledge_documents"] = documents
-        workspace["updated_at"] = utc_now_iso()
+        now = utc_now_iso()
+        self._append_workspace_activity(
+            workspace,
+            action="knowledge_shared" if safe_visibility == "share" else "knowledge_private",
+            resource_type="knowledge",
+            title=safe_title,
+            actor=actor,
+            time=now,
+            subtitle="设为 Share" if safe_visibility == "share" else "设为 Private",
+            ref=safe_title,
+            metadata={"visibility": safe_visibility},
+        )
+        workspace["updated_at"] = now
         saved = self._write_workspace(workspace)
         return self._filter_for_viewer(saved, actor)
 
@@ -939,6 +1426,7 @@ class WorkspaceStore:
         owner = validate_username(str(workspace.get("owner_username") or self.username))
         files = self._normalize_workspace_files(workspace.get("workspace_files", []), owner)
         matched = False
+        activity_title = ref["alias"]
 
         for item in files:
             if item.get("added_by") != actor:
@@ -948,6 +1436,7 @@ class WorkspaceStore:
                 continue
 
             item["visibility"] = safe_visibility
+            activity_title = str(item.get("title") or item.get("alias") or ref["alias"])
             matched = True
             break
 
@@ -955,7 +1444,19 @@ class WorkspaceStore:
             raise FileNotFoundError(f"workspace file not found: {ref['file_ref']}")
 
         workspace["workspace_files"] = files
-        workspace["updated_at"] = utc_now_iso()
+        now = utc_now_iso()
+        self._append_workspace_activity(
+            workspace,
+            action="file_shared" if safe_visibility == "share" else "file_private",
+            resource_type="file",
+            title=activity_title,
+            actor=actor,
+            time=now,
+            subtitle="设为 Share" if safe_visibility == "share" else "设为 Private",
+            ref=ref["file_ref"],
+            metadata={"visibility": safe_visibility},
+        )
+        workspace["updated_at"] = now
         saved = self._write_workspace(workspace)
         return self._filter_for_viewer(saved, actor)
 
@@ -1010,6 +1511,9 @@ class WorkspaceStore:
         workspace = self._read_workspace(wid)
         self._assert_owner(workspace, actor)
         settings = workspace.get("settings") if isinstance(workspace.get("settings"), dict) else {}
+        previous_title = normalize_text(workspace.get("title") or "Untitled Workspace", 120) or "Untitled Workspace"
+        previous_shared_users = normalize_shared_users(settings.get("shared_users", []), actor)
+        now = utc_now_iso()
 
         if "title" in settings_updates:
             title = normalize_text(settings_updates.get("title"), 120)
@@ -1019,8 +1523,49 @@ class WorkspaceStore:
 
             workspace["title"] = title
 
+            if title != previous_title:
+                self._append_workspace_activity(
+                    workspace,
+                    action="workspace_renamed",
+                    resource_type="workspace",
+                    title=title,
+                    actor=actor,
+                    time=now,
+                    subtitle=f"原名称：{previous_title}",
+                    ref=wid,
+                )
+
         if "shared_users" in settings_updates:
-            settings["shared_users"] = normalize_shared_users(settings_updates.get("shared_users"), actor)
+            next_shared_users = normalize_shared_users(settings_updates.get("shared_users"), actor)
+            added_users = [item for item in next_shared_users if item not in previous_shared_users]
+            removed_users = [item for item in previous_shared_users if item not in next_shared_users]
+            settings["shared_users"] = next_shared_users
+
+            for shared_user in added_users:
+                self._append_workspace_activity(
+                    workspace,
+                    action="workspace_shared",
+                    resource_type="workspace",
+                    title=normalize_text(workspace.get("title") or previous_title, 120),
+                    actor=actor,
+                    time=now,
+                    subtitle=f"分享给 {shared_user}",
+                    ref=wid,
+                    metadata={"target_user": shared_user},
+                )
+
+            for shared_user in removed_users:
+                self._append_workspace_activity(
+                    workspace,
+                    action="workspace_unshared",
+                    resource_type="workspace",
+                    title=normalize_text(workspace.get("title") or previous_title, 120),
+                    actor=actor,
+                    time=now,
+                    subtitle=f"移除 {shared_user}",
+                    ref=wid,
+                    metadata={"target_user": shared_user},
+                )
 
         if "conversation_sharing_enabled" in settings_updates:
             settings["conversation_sharing_enabled"] = bool(settings_updates.get("conversation_sharing_enabled"))
@@ -1034,11 +1579,21 @@ class WorkspaceStore:
                 "enabled": True,
                 "content": prompt_content,
                 "updated_by": actor,
-                "updated_at": utc_now_iso(),
+                "updated_at": now,
             }
+            self._append_workspace_activity(
+                workspace,
+                action="workspace_prompt_updated",
+                resource_type="workspace_prompt",
+                title=normalize_text(workspace.get("title") or previous_title, 120),
+                actor=actor,
+                time=now,
+                subtitle="更新了 Workspace Prompt",
+                ref=wid,
+            )
 
         workspace["settings"] = settings
-        workspace["updated_at"] = utc_now_iso()
+        workspace["updated_at"] = now
         saved = self._write_workspace(workspace)
         return self._filter_for_viewer(saved, actor)
 
@@ -1174,6 +1729,17 @@ class WorkspaceStore:
             "updated_by": actor,
             "updated_at": now,
         }
+        self._append_workspace_activity(
+            workspace,
+            action="workspace_memory_updated",
+            resource_type="workspace_memory",
+            title=normalize_text(workspace.get("title") or "Workspace", 120),
+            actor=actor,
+            time=now,
+            subtitle="更新了 Workspace 记忆",
+            ref=wid,
+            metadata={"mode": str((stats or {}).get("mode") or "patch")},
+        )
         workspace["updated_at"] = now
         self._write_workspace(workspace)
 
@@ -1588,6 +2154,205 @@ class WorkspaceStore:
 
         return result
 
+    def _overview_item_time(self, item: Dict[str, Any]) -> str:
+        return normalize_text(
+            item.get("updated_at")
+            or item.get("added_at")
+            or item.get("created_at"),
+            64,
+        )
+
+    def _filter_workspace_activity_for_visible_resources(
+        self,
+        activity_items: List[Dict[str, Any]],
+        conversations: List[Dict[str, Any]],
+        knowledge_documents: List[Dict[str, Any]],
+        workspace_files: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        conversation_refs = {
+            normalize_text(item.get("conversation_id"), 80)
+            for item in conversations
+            if isinstance(item, dict)
+        }
+        knowledge_refs = {
+            normalize_text(item.get("title"), 160)
+            for item in knowledge_documents
+            if isinstance(item, dict)
+        }
+        file_refs = set()
+
+        for item in workspace_files:
+            if not isinstance(item, dict):
+                continue
+
+            file_refs.add(normalize_text(item.get("file_ref"), WORKSPACE_FILE_REF_LIMIT))
+            file_refs.add(normalize_text(item.get("alias"), 260))
+
+        allowed_global_types = {"workspace", "workspace_memory", "workspace_prompt", "task"}
+        result: List[Dict[str, Any]] = []
+
+        for item in activity_items:
+            if not isinstance(item, dict):
+                continue
+
+            resource_type = normalize_text(item.get("resource_type") or item.get("type"), 32)
+            ref = normalize_text(item.get("ref"), 260)
+            title = normalize_text(item.get("title"), 180)
+
+            if resource_type in allowed_global_types:
+                result.append(item)
+                continue
+
+            if resource_type == "conversation" and ref in conversation_refs:
+                result.append(item)
+                continue
+
+            if resource_type == "knowledge" and (ref in knowledge_refs or title in knowledge_refs):
+                result.append(item)
+                continue
+
+            if resource_type == "file" and ref in file_refs:
+                result.append(item)
+
+        return result
+
+    def _build_workspace_overview(self, workspace: Dict[str, Any]) -> Dict[str, Any]:
+        """Build the Workspace office overview from visible detail resources."""
+        conversations = workspace.get("conversations", [])
+        knowledge_documents = workspace.get("knowledge_documents", [])
+        workspace_files = workspace.get("workspace_files", [])
+        workspace_tasks = workspace.get("workspace_tasks", [])
+        activity_items = workspace.get("workspace_activity", [])
+        task_status_counts = {
+            status: 0
+            for status in sorted(WORKSPACE_TASK_STATUS_VALUES)
+        }
+        recent_items: List[Dict[str, Any]] = []
+        pinned_resources: List[Dict[str, Any]] = []
+        open_tasks: List[Dict[str, Any]] = []
+        today = datetime.utcnow().date().isoformat()
+
+        for item in workspace_tasks:
+            if not isinstance(item, dict):
+                continue
+
+            status = normalize_workspace_task_status(item.get("status"))
+            task_status_counts[status] = task_status_counts.get(status, 0) + 1
+
+            if status not in {"done", "cancelled"}:
+                open_tasks.append(dict(item))
+
+            recent_items.append({
+                "type": "task",
+                "title": normalize_text(item.get("title") or "未命名任务", 160),
+                "subtitle": normalize_text(item.get("assignee"), 128),
+                "time": self._overview_item_time(item),
+                "status": status,
+                "ref": normalize_text(item.get("task_id"), 80),
+            })
+
+        for item in conversations:
+            if not isinstance(item, dict):
+                continue
+
+            title = normalize_text(item.get("title") or item.get("conversation_id") or "Untitled Conversation", 160)
+            recent_items.append({
+                "type": "conversation",
+                "title": title,
+                "subtitle": normalize_text(item.get("last_user_question"), 180),
+                "time": self._overview_item_time(item),
+                "ref": normalize_text(item.get("conversation_id"), 80),
+            })
+
+            if bool(item.get("pin", False)):
+                pinned_resources.append({
+                    "type": "conversation",
+                    "title": title,
+                    "subtitle": normalize_text(item.get("added_by"), 128),
+                    "time": self._overview_item_time(item),
+                    "ref": normalize_text(item.get("conversation_id"), 80),
+                })
+
+        for item in knowledge_documents:
+            if not isinstance(item, dict):
+                continue
+
+            title = normalize_text(item.get("title") or "知识库文档", 160)
+            recent_items.append({
+                "type": "knowledge",
+                "title": title,
+                "subtitle": normalize_text(item.get("added_by"), 128),
+                "time": self._overview_item_time(item),
+                "ref": title,
+            })
+
+            if bool(item.get("pin", False)):
+                pinned_resources.append({
+                    "type": "knowledge",
+                    "title": title,
+                    "subtitle": normalize_text(item.get("added_by"), 128),
+                    "time": self._overview_item_time(item),
+                    "ref": title,
+                })
+
+        for item in workspace_files:
+            if not isinstance(item, dict):
+                continue
+
+            title = normalize_text(
+                item.get("title")
+                or item.get("original_name")
+                or item.get("alias")
+                or "文件",
+                180,
+            )
+            recent_items.append({
+                "type": "file",
+                "title": title,
+                "subtitle": normalize_text(item.get("added_by"), 128),
+                "time": self._overview_item_time(item),
+                "ref": normalize_text(item.get("file_ref") or item.get("alias"), WORKSPACE_FILE_REF_LIMIT),
+            })
+
+            if bool(item.get("pin", False)):
+                pinned_resources.append({
+                    "type": "file",
+                    "title": title,
+                    "subtitle": normalize_text(item.get("added_by"), 128),
+                    "time": self._overview_item_time(item),
+                    "ref": normalize_text(item.get("file_ref") or item.get("alias"), WORKSPACE_FILE_REF_LIMIT),
+                })
+
+        recent_items.sort(key=lambda item: str(item.get("time") or ""), reverse=True)
+        pinned_resources.sort(key=lambda item: str(item.get("time") or ""), reverse=True)
+        open_tasks.sort(key=lambda item: (
+            normalize_workspace_task_date(item.get("due_date"), "due_date") or "9999-99-99",
+            normalize_workspace_task_date(item.get("start_date"), "start_date") or "9999-99-99",
+            str(item.get("created_at") or ""),
+        ))
+
+        overdue_task_count = len([
+            item for item in open_tasks
+            if normalize_workspace_task_date(item.get("due_date"), "due_date")
+            and normalize_workspace_task_date(item.get("due_date"), "due_date") < today
+        ])
+
+        return {
+            "resource_counts": {
+                "conversations": len(conversations),
+                "knowledge_documents": len(knowledge_documents),
+                "workspace_files": len(workspace_files),
+                "workspace_tasks": len(workspace_tasks),
+            },
+            "task_status_counts": task_status_counts,
+            "open_task_count": len(open_tasks),
+            "overdue_task_count": overdue_task_count,
+            "upcoming_tasks": open_tasks[:8],
+            "recent_items": recent_items[:10],
+            "activity_items": activity_items[:12],
+            "pinned_resources": pinned_resources[:8],
+        }
+
     def _filter_for_viewer(
         self,
         workspace: Dict[str, Any],
@@ -1602,6 +2367,7 @@ class WorkspaceStore:
         conversations = workspace.get("conversations", [])
         knowledge_documents = workspace.get("knowledge_documents", [])
         workspace_files = workspace.get("workspace_files", [])
+        workspace_tasks = workspace.get("workspace_tasks", [])
 
         conversations = [
             item for item in conversations
@@ -1615,6 +2381,16 @@ class WorkspaceStore:
             item for item in workspace_files
             if isinstance(item, dict) and self._resource_visible_to_viewer(item, viewer)
         ]
+        workspace_tasks = [
+            item for item in workspace_tasks
+            if isinstance(item, dict)
+        ]
+        workspace_activity = self._filter_workspace_activity_for_visible_resources(
+            self._normalize_workspace_activity(workspace.get("workspace_activity", []), owner),
+            conversations,
+            knowledge_documents,
+            workspace_files,
+        )
 
         if include_conversation_detail:
             result["conversations"] = self._conversation_snapshots_for_detail(conversations)
@@ -1631,10 +2407,18 @@ class WorkspaceStore:
         else:
             result["workspace_files"] = workspace_files
 
+        result["workspace_tasks"] = workspace_tasks
+        result["workspace_activity"] = workspace_activity
         result["conversation_count"] = len(conversations)
         result["knowledge_document_count"] = len(knowledge_documents)
         result["workspace_file_count"] = len(workspace_files)
         result["file_count"] = len(workspace_files)
+        result["workspace_task_count"] = len(workspace_tasks)
+        result["open_task_count"] = len([
+            item for item in workspace_tasks
+            if normalize_workspace_task_status(item.get("status")) not in {"done", "cancelled"}
+        ])
+        result["overview"] = self._build_workspace_overview(result)
         return result
 
     def _summary_for_viewer(
@@ -1661,6 +2445,8 @@ class WorkspaceStore:
             "conversation_count": filtered.get("conversation_count", 0),
             "knowledge_document_count": len(filtered.get("knowledge_documents", [])),
             "workspace_file_count": len(filtered.get("workspace_files", [])),
+            "workspace_task_count": len(filtered.get("workspace_tasks", [])),
+            "open_task_count": filtered.get("open_task_count", 0),
             "temp_file_count": len(filtered.get("workspace_files", [])),
         }
 

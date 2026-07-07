@@ -4,6 +4,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from datastorage import safe_append_jsonl, safe_read_json, safe_read_jsonl_tail
+from usage_logs import read_usage_log_records
 
 try:
     from papi.token_logger import iter_papi_token_log_entries
@@ -449,11 +450,7 @@ def _collect_usage_summary(model_quotas: Optional[Dict[str, Dict[str, Any]]] = N
     if os.path.exists(user_root):
         for username in os.listdir(user_root):
             token_file = os.path.join(user_root, username, 'token_usage.json')
-            if not os.path.exists(token_file):
-                continue
-            logs = safe_read_json(token_file, default=[])
-            if not isinstance(logs, list):
-                continue
+            logs = read_usage_log_records(token_file)
 
             for log in logs:
                 if not isinstance(log, dict):

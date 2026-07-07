@@ -63,10 +63,15 @@ class OpenAIProvider(ProviderInterface):
         return True
 
     def create_client(self, api_key: str, base_url: str, timeout: float = 120.0):
+        user_agent = str(self.provider_config.get("user_agent") or "Nexora/1.0").strip() or "Nexora/1.0"
+
         return OpenAI(
             api_key=api_key,
             base_url=base_url,
             timeout=timeout,
+            default_headers={
+                "User-Agent": user_agent,
+            },
         )
 
     def list_models(

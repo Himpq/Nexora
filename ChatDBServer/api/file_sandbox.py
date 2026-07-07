@@ -41,7 +41,8 @@ class UserFileSandbox:
         ".xml", ".html", ".css", ".sql", ".csv", ".log"
     }
     PARSED_BINARY_EXTS = {".docx", ".pdf", ".pptx"}
-    ALLOWED_UPLOAD_EXTS = ALLOWED_TEXT_EXTS | PARSED_BINARY_EXTS
+    IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+    ALLOWED_UPLOAD_EXTS = ALLOWED_TEXT_EXTS | PARSED_BINARY_EXTS | IMAGE_EXTS
     FILE_READ_MAX_LINES = 500
     FILE_READ_MAX_CHARS = 10000
 
@@ -75,8 +76,46 @@ class UserFileSandbox:
     def _save_index(self, data: Dict[str, Any]) -> None:
         safe_write_json(self.index_path, data, indent=2)
 
+    def _sanitize_alias_directory(self, path: str) -> str:
+        raw = str(path or "").replace("\\", "/").strip().strip("/")
+
+        if not raw:
+            return ""
+
+        parts = []
+
+        for segment in raw.split("/"):
+            piece = str(segment or "").strip()
+
+            if not piece:
+                continue
+
+            if piece in {".", ".."}:
+                raise ValueError("invalid file directory")
+
+            parts.append(safe_filename(piece, default="folder", max_len=80))
+
+            if len(parts) > 6:
+                raise ValueError("file directory cannot exceed 6 levels")
+
+        return "/".join(parts)
+
     def _sanitize_alias(self, name: str) -> str:
-        return safe_filename(name, default="untitled.txt", max_len=120)
+        raw = str(name or "").replace("\\", "/").strip().strip("/")
+
+        if not raw:
+            return "untitled.txt"
+
+        segments = raw.split("/")
+        filename = segments[-1]
+        directory = self._sanitize_alias_directory("/".join(segments[:-1]))
+        safe_name = safe_filename(filename, default="untitled.txt", max_len=120)
+        alias = f"{directory}/{safe_name}" if directory else safe_name
+
+        if len(alias) > 260:
+            raise ValueError("file alias cannot exceed 260 characters")
+
+        return alias
 
     def _unique_alias(self, desired_name: str, files: Dict[str, Any]) -> str:
         alias = self._sanitize_alias(desired_name)
@@ -100,13 +139,20 @@ class UserFileSandbox:
         return b.decode("utf-8", errors="replace"), "utf-8-replace"
 
     def _resolve_alias(self, file_ref: str) -> str:
-        ref = str(file_ref or "").strip()
+        ref = str(file_ref or "").replace("\\", "/").strip().strip("/")
         prefix = f"{self.username}/files/"
+        alt_prefix = f"files/{self.username}/"
+
         if ref.startswith(prefix):
             ref = ref[len(prefix):]
+
+        if ref.startswith(alt_prefix):
+            ref = ref[len(alt_prefix):]
+
         if not ref:
             raise ValueError("file_ref is empty")
-        return os.path.basename(ref)
+
+        return self._sanitize_alias(ref)
 
     def _extract_text_from_docx(self, b: bytes) -> str:
         try:
@@ -252,7 +298,13 @@ class UserFileSandbox:
             return text, "pptx-extract", "pptx"
         raise ValueError(f"unsupported file extension: {ext}")
 
-    def add_upload(self, file_bytes: bytes, original_name: str, update_file_name: Optional[str] = None) -> Dict[str, Any]:
+    def add_upload(
+        self,
+        file_bytes: bytes,
+        original_name: str,
+        update_file_name: Optional[str] = None,
+        target_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
         if not isinstance(file_bytes, (bytes, bytearray)):
             raise ValueError("file_bytes must be bytes")
         original_name = os.path.basename(str(original_name or "").strip())
@@ -262,21 +314,33 @@ class UserFileSandbox:
         if ext not in self.ALLOWED_UPLOAD_EXTS:
             raise ValueError(f"unsupported file extension: {ext}")
 
-        text, detected_encoding, parser_mode = self._extract_upload_text(bytes(file_bytes), ext)
+        is_image = ext in self.IMAGE_EXTS
+        detected_encoding = "binary" if is_image else ""
+        parser_mode = "image" if is_image else ""
+        text = "" if is_image else None
+
+        if not is_image:
+            text, detected_encoding, parser_mode = self._extract_upload_text(bytes(file_bytes), ext)
 
         # docx/pdf/pptx 解析后统一存为可编辑文本文件
-        storage_ext = ext if ext in self.ALLOWED_TEXT_EXTS else ".md"
+        storage_ext = ext if ext in (self.ALLOWED_TEXT_EXTS | self.IMAGE_EXTS) else ".md"
         random_name = f"{uuid.uuid4().hex}{storage_ext}"
         stored_path = os.path.join(self.temp_dir, random_name)
 
         with self._lock:
             index = self._load_index()
             files = index.get("files", {})
-            desired_alias = update_file_name or original_name
+            target_dir = self._sanitize_alias_directory(str(target_path or ""))
+            desired_name = update_file_name or original_name
+            desired_alias = f"{target_dir}/{desired_name}" if target_dir else desired_name
             alias = self._unique_alias(desired_alias, files)
 
-            with open(stored_path, "w", encoding="utf-8") as f:
-                f.write(text)
+            if is_image:
+                with open(stored_path, "wb") as f:
+                    f.write(bytes(file_bytes))
+            else:
+                with open(stored_path, "w", encoding="utf-8") as f:
+                    f.write(str(text or ""))
 
             now = int(time.time())
             entry = {
@@ -541,6 +605,11 @@ class UserFileSandbox:
         alias_ext = os.path.splitext(str(entry.get("alias") or ""))[1].lower()
         return alias_ext == ".docx" and str(entry.get("parser_mode") or "") == "docx-generated"
 
+    def _is_image_entry(self, entry: Dict[str, Any]) -> bool:
+        source_ext = str(entry.get("source_ext") or "").lower()
+        alias_ext = os.path.splitext(str(entry.get("alias") or ""))[1].lower()
+        return source_ext in self.IMAGE_EXTS or alias_ext in self.IMAGE_EXTS or str(entry.get("parser_mode") or "") == "image"
+
     def _reject_docx_text_mutation(self, entry: Dict[str, Any], tool_name: str) -> None:
         alias_ext = os.path.splitext(str(entry.get("alias") or ""))[1].lower()
 
@@ -557,6 +626,9 @@ class UserFileSandbox:
     ) -> Dict[str, Any]:
         entry = self._get_entry(file_ref)
         abs_path = self._get_abs_path(entry)
+
+        if self._is_image_entry(entry):
+            raise ValueError("图片文件不支持文本读取，请使用预览或下载。")
 
         if self._is_generated_docx_entry(entry):
             with open(abs_path, "rb") as f:

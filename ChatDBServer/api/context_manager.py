@@ -581,6 +581,7 @@ class ChatContextManager:
             "[系统注入]",
             "## Skill Instructions",
             "## Learning Context",
+            "## Workspace Operating Contract",
             "## Workspace Mode",
             "## Workspace Memory Context",
             "## Workspace Custom Instructions",

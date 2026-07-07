@@ -27,6 +27,7 @@ from provider_factory import create_provider_adapter
 from temp_context_store import TempContextStore
 from server_quota import get_generation_quota_gate
 from stream_runtime import is_stream_cancelled_error
+from usage_logs import append_usage_log_record
 from longterm.longterm_api import (
     build_longterm_hook_payload,
     build_longterm_prompt_block,
@@ -3282,20 +3283,7 @@ class Model:
             }
 
             with _TOOL_USAGE_LOG_LOCK:
-                logs = []
-                if os.path.exists(log_path):
-                    try:
-                        with open(log_path, "r", encoding="utf-8") as f:
-                            logs = json.load(f)
-                    except Exception:
-                        logs = []
-                if not isinstance(logs, list):
-                    logs = []
-                logs.insert(0, entry)
-                if len(logs) > 5000:
-                    logs = logs[:5000]
-                with open(log_path, "w", encoding="utf-8") as f:
-                    json.dump(logs, f, ensure_ascii=False, indent=2)
+                append_usage_log_record(log_path, entry)
         except Exception as log_err:
             print(f"[TOOL_LOG] failed: {log_err}")
 
@@ -3443,7 +3431,6 @@ class Model:
             "append_learning_memory",
             "update_learning_memory",
             "write_learning_memory",
-            "workspace_mem_write",
             "workspace_mem_patch",
             "workspace_mem_apply_diff",
             "workspace_mem_edit",
@@ -3572,7 +3559,6 @@ class Model:
             "cloud_file_find",
             "cloud_file_list",
             "cloud_file_remove",
-            "workspace_mem_write",
             "workspace_mem_patch",
             "workspace_mem_apply_diff",
             "workspace_mem_edit",
@@ -5159,20 +5145,15 @@ class Model:
                         current_turn_system_injections.append(learning_hint)
 
             workspace_context = normalized_conversation_mode_payload.get("workspace_context")
-            workspace_mode_hint = prompts.build_workspace_mode_prompt(workspace_context)
+            workspace_contract_hint = prompts.build_workspace_operating_contract_prompt(workspace_context)
 
-            if workspace_mode_hint:
-                current_turn_system_injections.append(workspace_mode_hint)
+            if workspace_contract_hint:
+                current_turn_system_injections.append(workspace_contract_hint)
 
             workspace_memory_hint = prompts.build_workspace_memory_injection_prompt(workspace_context)
 
             if workspace_memory_hint:
                 current_turn_system_injections.append(workspace_memory_hint)
-
-            workspace_prompt_hint = prompts.build_workspace_prompt_injection_prompt(workspace_context)
-
-            if workspace_prompt_hint:
-                current_turn_system_injections.append(workspace_prompt_hint)
 
             workspace_knowledge_hint = prompts.build_workspace_knowledge_injection_prompt(workspace_context)
 

@@ -1,4 +1,3 @@
-﻿
 // --- Helper: Create Thinking Block ---
 function toggleThinkingBlockCollapsed(thinkingBlock) {
     if (!thinkingBlock) return;
@@ -1126,11 +1125,17 @@ let currentConversationId = null;
 let currentAbortController = null;
 let isGenerating = false;
 let lastAgentOnline = false;
+const chatMessageWindowApi = getNexoraChatMessageWindow();
+const chatMessageVersionsApi = getNexoraChatMessageVersions();
+const conversationMessageWindowState = chatMessageWindowApi.state;
 
 let shouldAutoScroll = true; // Auto-scroll control
 let _isJumping = false; // Temporarily block scroll listener during jump
 const MESSAGES_AUTO_SCROLL_NEAR_BOTTOM_PX = 50;
 const MESSAGES_AUTO_SCROLL_BREAK_UP_PX = 0;
+const CONVERSATION_INITIAL_MESSAGE_LIMIT = chatMessageWindowApi.CONVERSATION_INITIAL_MESSAGE_LIMIT;
+const CONVERSATION_PREVIOUS_MESSAGE_LIMIT = chatMessageWindowApi.CONVERSATION_PREVIOUS_MESSAGE_LIMIT;
+const CONVERSATION_HISTORY_LOAD_TOP_PX = 80;
 let uploadedFileIds = []; // Uploaded files {id, name}
 let isUploadingFiles = false;
 let currentUploadXhr = null;
@@ -1139,6 +1144,7 @@ let uploadCancelledByUser = false;
 let currentUsername = null;
 let currentUserRole = 'member';
 let currentUserAvatarUrl = '';
+let currentUserIdentityRequest = null;
 let currentUserPreferences = null;
 let learningModeEnabled = false;
 let learningRuntimeEnabled = true;
@@ -1160,10 +1166,7 @@ let adminUserTokenSelectorState = {
     visible: false,
 };
 let adminSystemSettingsState = null;
-let adminSystemCustomControlsBound = false;
-let adminSystemSelectMenuSeq = 0;
-const adminSystemSelectDockState = new WeakMap();
-const ADMIN_SYSTEM_HEALTH_TIMEOUT_MS = 3000;
+const ADMIN_SYSTEM_HEALTH_TIMEOUT_MS = 30000;
 let adminSystemSelectedModule = 'runtime';
 let adminGenImageApisCache = [];
 let adminSelectedGenImageApiId = '';
@@ -1247,7 +1250,6 @@ let tokenMiniState = {
 };
 let conversationNavigationSeq = 0;
 let activeConversationLoadController = null;
-let conversationListRequestSeq = 0;
 const TOKEN_BUDGET_DEFAULT_LIMIT = 0;
 let tokenBudgetState = {
     contextWindow: TOKEN_BUDGET_DEFAULT_LIMIT,
@@ -1283,9 +1285,12 @@ const CLIENT_TOOL_POLL_NO_CONV_MS = 5000;
 const CLIENT_TOOL_POLL_ERROR_MS = 3500;
 const CLIENT_TOOL_POLL_HIT_MS = 220;
 const CLIENT_TOOL_PULL_WAIT_MS = 12000;
+const MODEL_CONTEXT_REFRESH_DELAY_MS = 1200;
+const MODEL_CONTEXT_RELOAD_DELAY_MS = 12000;
 let clientToolPollDelayMs = CLIENT_TOOL_POLL_MIN_MS;
 let modelOptionsDockState = null;
 let modelSelectListenersBound = false;
+let modelContextRefreshScheduled = false;
 let isBatchRenderingMessages = false;
 let renderLastUserMessageIndexHint = -1;
 let userPromptEditState = {
@@ -1298,18 +1303,152 @@ let userPromptEditState = {
     originalText: '',
     saving: false
 };
-const STREAM_RESUME_STATE_KEY = 'nexora_stream_resume_v1';
-const STREAM_RESUME_STATES_KEY = 'nexora_stream_resume_map_v1';
 const STREAM_STATUS_SYNC_INTERVAL_MS = 2500;
 const STREAM_ATTACH_RETRY_DELAY_MS = 350;
 const STREAM_ATTACH_RETRY_MAX = 12;
 let streamResumeRestoredOnce = false;
-let conversationStreamStates = new Map();
-let backgroundStreamStatusSyncInFlight = false;
-let streamSessionMonitorIds = new Set();
-let streamStatusSyncTimer = null;
-let streamAttachRetryTimers = new Map();
 let hoverProxyMessageEl = null;
+
+const streamStateController = getNexoraChatStreaming().createStreamStateController({
+    localStorage,
+    getCurrentConversationId: () => currentConversationId,
+    onSyncGenerationState: (options = {}) => syncGenerationStateForCurrentConversation(options),
+    onInvalidateConversationList: () => invalidateConversationListForStreamState(),
+    clearStreamAttachRetry: (conversationId) => clearStreamAttachRetry(conversationId)
+});
+const streamSessionMonitorController = getNexoraChatStreaming().createStreamSessionMonitorController({
+    normalizeConversationStreamState,
+    setConversationStreamState,
+    markConversationStreamFinished,
+    moveConversationStreamState,
+    getConversationStreamState,
+    readStreamRegenerateFlag,
+    readStreamAssistantIndexFromMeta,
+    readStreamRegenerateIndexFromMeta,
+    isTerminalStreamSessionChunk,
+    loadConversations,
+    isCurrentConversation,
+    renderConversationSnapshotFromServer
+});
+const streamStatusSyncController = getNexoraChatStreaming().createStreamStatusSyncController({
+    statusSyncIntervalMs: STREAM_STATUS_SYNC_INTERVAL_MS,
+    getConversationStreamIdsForStatusSync,
+    forEachConversationStreamState: streamStateController.forEachConversationStreamState,
+    setConversationStreamState,
+    markConversationStreamFinished,
+    isCurrentConversation,
+    moveConversationStreamState,
+    applyStreamSessionMetaRows,
+    renderConversationSnapshotFromServer,
+    getStoredRunningStreamStates,
+    attachStreamSessionMonitor,
+    getCurrentConversationId: () => currentConversationId
+});
+const streamLifecycleController = getNexoraChatStreamLifecycle().createStreamLifecycleController({
+    attachRetryDelayMs: STREAM_ATTACH_RETRY_DELAY_MS,
+    attachRetryMax: STREAM_ATTACH_RETRY_MAX,
+    isCurrentConversation,
+    getCurrentConversationId: () => currentConversationId,
+    getConversationStreamState,
+    setConversationStreamState,
+    normalizeConversationStreamState,
+    normalizeStreamMessageIndex,
+    syncGenerationStateForCurrentConversation,
+    syncStoredConversationStreamStatus,
+    resumeActiveStreamAfterReload,
+    attachStreamSessionMonitor,
+    getVisibleMessageCount: () => (
+        els.messagesContainer
+            ? els.messagesContainer.querySelectorAll('.message').length
+            : 0
+    )
+});
+const conversationListController = getNexoraChatConversations().createConversationListController({
+    getConversationListElement: () => els.conversationList,
+    getCurrentConversationId: () => currentConversationId,
+    getConversationStreamState,
+    getConversationListCache: () => conversationListCache,
+    setConversationListCache: (items) => {
+        conversationListCache = Array.isArray(items) ? items : [];
+    },
+    getConversationTitleElement: () => els.conversationTitle,
+    getConversationRenameElements: () => ({
+        modal: els.conversationRenameModal,
+        input: els.conversationRenameInput,
+        closeBtn: els.closeConversationRenameModalBtn,
+        cancelBtn: els.cancelConversationRenameBtn,
+        saveBtn: els.confirmConversationRenameBtn
+    }),
+    bindBackdropSafeClose,
+    showToast,
+    isChatMobileLayout,
+    showPinContextMenu,
+    getCurrentViewingKnowledge: () => currentViewingKnowledge,
+    closeKnowledgeView,
+    markConversationStreamRead,
+    loadConversation,
+    deleteConversation
+});
+const conversationNavigationController = getNexoraChatConversations().createConversationNavigationController({
+    getKnowledgeViewerElement: () => document.getElementById('knowledgeViewer'),
+    resetWorkspaceReadonlyConversationStateForConversationLoad,
+    closeLearningReaderFromHost,
+    closeKnowledgeView,
+    exitLearningFeedComposeMode,
+    setCurrentConversationHasImageHistory: (value) => {
+        currentConversationHasImageHistory = !!value;
+    },
+    getLearningSidebarMode: () => learningSidebarMode,
+    normalizeWorkspaceConversationHeaderContext: normalizeWorkspaceConversationHeaderContextForConversationLoad,
+    renderWorkspaceConversationHierarchy: renderWorkspaceConversationHierarchyForConversationLoad,
+    resolveNewConversationMode,
+    shouldPreserveLearningMainPanelForNewConversation,
+    shouldKeepCurrentRunningConversationPanel,
+    resetCurrentConversationLongtermState: resetCurrentConversationLongtermStateForNewConversation,
+    detachCurrentVisibleStreamForNavigation,
+    setCurrentConversationId: (conversationId) => {
+        currentConversationId = conversationId;
+    },
+    beginConversationNavigation,
+    resetKnowledgeNavigationForConversationLoad,
+    resetConversationMessageWindowState,
+    syncBrowserCurrentConversation,
+    invalidateConversationListForStreamState,
+    syncGenerationStateForCurrentConversation,
+    setLearningHeaderModeForConversationLoad,
+    clearLearningWelcomeState,
+    resetLearningStateForNewConversation,
+    syncNotesForConversation,
+    applyLearningSidebarMode,
+    clearWorkspaceHierarchySlot: clearWorkspaceHierarchySlotForConversationLoad,
+    renderWelcomeScreen,
+    getMessagesContainer: () => els.messagesContainer,
+    detachVisibleStreamReaderBeforeConversationRender,
+    resetTurnIndicatorForConversationLoad,
+    resetTokenUiForConversationLoad,
+    pushConversationHistory,
+    getConversationInitialMessageLimit: () => CONVERSATION_INITIAL_MESSAGE_LIMIT,
+    isActiveConversationNavigation,
+    applyStreamSessionMetaRows,
+    getConversationStreamState,
+    syncStoredConversationStreamStatus,
+    getConversationTitleElement: () => els.conversationTitle,
+    syncLearningHeaderMode,
+    resetTokenUiForNewConversation,
+    pushNewConversationHistory,
+    loadConversations,
+    confirmModalAsync,
+    removeConversationStreamState,
+    markConversationStreamRead,
+    attachRunningStreamToCurrentConversation,
+    getCurrentConversationId: () => currentConversationId
+});
+const adminSystemControlsController = getNexoraChatAdmin().createAdminSystemControlsController({
+    normalizeModelProviderKey,
+    compareModelProviderKeys,
+    getModelProviderLabel,
+    renderProviderIconHtml
+});
 let isMessageInputComposing = false;
 let selectedModelId = null;
 let modelCatalog = [];
@@ -1481,16 +1620,19 @@ const SETTINGS_COMPANION_MODE = (() => {
         return false;
     }
 })();
+
+function getDirectConversationUrlTarget(params = null) {
+    return getNexoraChatConversations().getDirectConversationUrlTarget(params);
+}
+
+function hasConversationUrlTarget(params = null) {
+    return getNexoraChatConversations().hasConversationUrlTarget(params);
+}
+
 let pinContextMenuState = null;
 let pinContextMenuBusy = false;
-let conversationRenameState = {
-    conversationId: '',
-    initialTitle: '',
-    saving: false
-};
 let pendingRegenerateFilter = { conversationId: '', index: -1 };
 let conversationListCache = [];
-let conversationListRenderSignature = '';
 let basisKnowledgeListCache = [];
 let trashViewState = {
     loading: false,
@@ -2516,402 +2658,138 @@ function normalizeStrongPunctuationBoundaries(text) {
     return out.join('\n');
 }
 
+function getNexoraChatSharedModule(name) {
+    const shared = window.NexoraChatShared;
+
+    if (!shared || typeof shared.getModule !== 'function') {
+        throw new Error('NexoraChatShared 未初始化，无法读取 Chat 功能模块');
+    }
+
+    return shared.getModule(name);
+}
+
+function getNexoraChatLatex() {
+    return getNexoraChatSharedModule('latex');
+}
+
+function getNexoraChatMarkdown() {
+    return getNexoraChatSharedModule('markdown');
+}
+
+function getNexoraChatStreaming() {
+    return getNexoraChatSharedModule('streaming');
+}
+
+function getNexoraChatStreamLifecycle() {
+    return getNexoraChatSharedModule('streamLifecycle');
+}
+
+function getNexoraChatConversations() {
+    return getNexoraChatSharedModule('conversations');
+}
+
+function getNexoraChatAdmin() {
+    return getNexoraChatSharedModule('admin');
+}
+
+function getNexoraChatMessageWindow() {
+    return getNexoraChatSharedModule('messageWindow');
+}
+
+function getNexoraChatMessageVersions() {
+    return getNexoraChatSharedModule('messageVersions');
+}
+
+function getNexoraChatFiles() {
+    return getNexoraChatSharedModule('files');
+}
+
+function getChatStreamingRenderDeps() {
+    return {
+        renderMathInElementSync: renderMathInElementSyncPreferred,
+        renderMathSafe,
+    };
+}
+
+function getChatMarkdownRenderDeps() {
+    return {
+        marked,
+        normalizeStrongPunctuationBoundaries,
+        normalizeLatexSyntax,
+        needsAggressiveLatexRecovery,
+        wrapBareLatexFragmentsOutsideMath,
+        protectKnowledgeReferencesInMarkdown,
+        protectFileReferencesInMarkdown,
+        restoreKnowledgeReferencesInHtml,
+        restoreFileReferencesInHtml,
+        rewriteHtmlFragmentLinksToNewTab,
+        captureLatexRenderDebug,
+        streamMathFindOpenTailInfo,
+        streamMathBuildProvisionalClosedTail,
+        protectMathSegmentsForMarkdown,
+        restoreMathSegmentsFromHtml,
+    };
+}
+
+function getChatLatexRenderDeps() {
+    return {
+        renderMarkdownWithNewTabLinks,
+        bindSourceMarkdown,
+        renderMathInElement: window.renderMathInElement,
+        onMathRendered: () => {
+            if (Date.now() <= __messagesBottomPinUntilTs && shouldAutoScroll) {
+                pinMessagesToBottomFor(900);
+            }
+        },
+    };
+}
+
 function stripUnbalancedInlineDollarsByLine(text) {
-    const src = String(text || '');
-    if (!src) return src;
-    const lines = src.split('\n');
-    const cleaned = lines.map((line) => {
-        const raw = String(line || '');
-        if (!raw) return raw;
-        if (raw.includes('$$') || raw.includes('\\[') || raw.includes('\\]')) return raw;
-        const positions = findUnescapedSingleDollarPositions(raw);
-        if (positions.length % 2 === 0) return raw;
-
-        if (positions.length === 1) {
-            const p = positions[0];
-            const left = raw.slice(0, p);
-            const right = raw.slice(p + 1);
-            if (looksLikeMathText(right)) return `${left}$${right}$`;
-            if (looksLikeMathText(left)) return `$${left}$${right}`;
-        }
-
-        // 仍不平衡时，删除最后一个孤立 `$`，尽量保留前面已成对片段。
-        const lastPos = positions[positions.length - 1];
-        return raw.slice(0, lastPos) + raw.slice(lastPos + 1);
-    });
-    return cleaned.join('\n');
+    return getNexoraChatLatex().stripUnbalancedInlineDollarsByLine(text);
 }
 
 function countUnescapedSingleDollars(line) {
-    const src = String(line || '');
-    if (!src) return 0;
-    let count = 0;
-    for (let i = 0; i < src.length; i += 1) {
-        if (src[i] !== '$') continue;
-        if (i > 0 && src[i - 1] === '\\') continue;
-        if ((i > 0 && src[i - 1] === '$') || (i + 1 < src.length && src[i + 1] === '$')) continue;
-        count += 1;
-    }
-    return count;
+    return getNexoraChatLatex().countUnescapedSingleDollars(line);
 }
 
 function findUnescapedSingleDollarPositions(line) {
-    const src = String(line || '');
-    const pos = [];
-    for (let i = 0; i < src.length; i += 1) {
-        if (src[i] !== '$') continue;
-        if (i > 0 && src[i - 1] === '\\') continue;
-        if ((i > 0 && src[i - 1] === '$') || (i + 1 < src.length && src[i + 1] === '$')) continue;
-        pos.push(i);
-    }
-    return pos;
+    return getNexoraChatLatex().findUnescapedSingleDollarPositions(line);
 }
 
 function looksLikeMathText(s) {
-    const src = String(s || '').trim();
-    if (!src) return false;
-    return /[=+\-*/^_{}\\]|\\[a-zA-Z]+|[A-Za-z]\s*\(|\d+\s*[A-Za-z]/.test(src);
+    return getNexoraChatLatex().looksLikeMathText(s);
 }
 
 function normalizeTableLineMathNoise(text) {
-    const src = String(text || '');
-    if (!src) return src;
-    const lines = src.split('\n');
-    const cleaned = lines.map((line) => {
-        let row = String(line || '');
-        const pipeCount = (row.match(/\|/g) || []).length;
-        if (pipeCount < 2) return row;
-        // 去掉表格分隔符附近误插入的美元符，避免整行被当作数学块。
-        row = row.replace(/\$+\s*\|/g, '|');
-        row = row.replace(/\|\s*\$+/g, '|');
-        return row;
-    });
-    return cleaned.join('\n');
+    return getNexoraChatLatex().normalizeTableLineMathNoise(text);
 }
 
 function escapeLikelyCurrencyDollars(text) {
-    const src = String(text || '');
-    if (!src) return src;
-    // 将“$1,000 / -$500,000”这类金额标记转义为普通文本，避免被 KaTeX 当作数学分隔符。
-    // 仅在数字后不是数学运算符/变量时触发，不影响 `$x$`、`$2x+1$` 等正常公式。
-    return src.replace(
-        /(^|[^\w\\])\$([+-]?\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+(?:\.\d+)?)(?=($|[\s，,。；;：:、%\])）】>]|[\u3400-\u9fff]))/g,
-        (_, pre, num) => `${pre}\\$${num}`
-    );
+    return getNexoraChatLatex().escapeLikelyCurrencyDollars(text);
 }
 
 function isLikelyPureMathSpan(body) {
-    const src = String(body || '').trim();
-    if (!src) return false;
-    const cjkCount = (src.match(/[\u3400-\u9fff]/g) || []).length;
-    const mathTokenCount = (src.match(/[=+\-*/^_{}\\]|\\[a-zA-Z]+|\d/g) || []).length;
-    if (!/\\[a-zA-Z]+|[=+\-*/^_{}]/.test(src)) return false;
-    if (cjkCount > 0 && cjkCount * 2 > mathTokenCount) return false;
-    return true;
+    return getNexoraChatLatex().isLikelyPureMathSpan(body);
 }
 
 function normalizeMathBlockLineBreaks(text) {
-    const src = String(text || '');
-    if (!src) return src;
-    const fixRows = (body) => String(body || '').replace(/(^|[^\\])\\\s*\n/g, '$1\\\\\n');
-    let out = src.replace(/\$\$([\s\S]*?)\$\$/g, (_, body) => `$$${fixRows(body)}$$`);
-    out = out.replace(/\\begin\{(align\*?|cases|matrix|pmatrix|bmatrix|Bmatrix|vmatrix|Vmatrix|smallmatrix)\}([\s\S]*?)\\end\{\1\}/g, (_, env, body) => {
-        return `\\begin{${env}}${fixRows(body)}\\end{${env}}`;
-    });
-    return out;
+    return getNexoraChatLatex().normalizeMathBlockLineBreaks(text);
 }
 
 function collapseDisplayMathForMarkdown(text) {
-    const src = String(text || '');
-    if (!src) return src;
-    const normalizeBody = (body) => String(body || '')
-        .replace(/\r\n/g, '\n')
-        .replace(/[ \t]*\n[ \t]*/g, '\n')
-        .trim()
-        .replace(/\n+/g, ' ');
-    let out = src.replace(/\$\$([\s\S]*?)\$\$/g, (_, body) => `$$${normalizeBody(body)}$$`);
-    out = out.replace(/\\\[([\s\S]*?)\\\]/g, (_, body) => `\\[${normalizeBody(body)}\\]`);
-    return out;
+    return getNexoraChatLatex().collapseDisplayMathForMarkdown(text);
 }
 
 function normalizeFencedLatexBlocks(text) {
-    let src = String(text || '');
-    if (!src) return src;
-    src = src.replace(/```([^\n`]*)\n?([\s\S]*?)```/g, (_, langRaw, body) => {
-        const lang = String(langRaw || '').trim().toLowerCase();
-        const content = String(body || '').replace(/\r\n/g, '\n').trim();
-        if (!content) return '';
-
-        if (/(^|[\s,])(latex|tex|math)([\s,]|$)/.test(lang)) {
-            return content;
-        }
-        if (lang) {
-            return `\`\`\`${langRaw}\n${body}\`\`\``;
-        }
-
-        const hasMath = /\\begin\{(?:equation\*?|align\*?|alignat\*?|gather\*?|CD|center)\}|\\\[|\\\(|\$\$|\$(?:\\.|[^$\n\\])+\$/.test(content);
-        const hasProgrammingSignals = /\b(function|const|let|var|class|if|return|import|export|from|public|private|def)\b|=>|<\/?[a-z][^>]*>|^\s*[{}[\];]+\s*$/m.test(content);
-        if (hasMath && !hasProgrammingSignals) {
-            return content;
-        }
-        return `\`\`\`${langRaw}\n${body}\`\`\``;
-    });
-    return src;
+    return getNexoraChatLatex().normalizeFencedLatexBlocks(text);
 }
 
 function normalizeCenterLikeMathBlocks(text) {
-    let src = String(text || '');
-    if (!src) return src;
-
-    const hasDisplayDelimiters = (body) => {
-        const t = String(body || '').trim();
-        if (!t) return false;
-        if (/^\\\[[\s\S]*\\\]$/.test(t)) return true;
-        if (/^\$\$[\s\S]*\$\$$/.test(t)) return true;
-        if (/^\\begin\{(?:equation\*?|align\*?|alignat\*?|gather\*?|CD)\}[\s\S]*\\end\{(?:equation\*?|align\*?|alignat\*?|gather\*?|CD)\}$/.test(t)) return true;
-        return false;
-    };
-
-    const normalizeBody = (body) => String(body || '')
-        .replace(/\r\n/g, '\n')
-        .replace(/[ \t]*\n[ \t]*/g, '\n')
-        .trim();
-
-    src = src.replace(/\\begin\{center\}([\s\S]*?)\\end\{center\}/g, (_, body) => {
-        const inner = normalizeBody(body);
-        if (!inner) return '';
-        if (hasDisplayDelimiters(inner)) return inner;
-        if (!isLikelyPureMathSpan(inner)) return inner;
-        return `\\[${inner.replace(/\n+/g, ' ')}\\]`;
-    });
-
-    // `\centering` is layout command from LaTeX document mode; drop it in chat markdown mode.
-    src = src.replace(/(^|\n)\s*\\centering\b\s*(?=\n|$)/g, '$1');
-
-    return src;
+    return getNexoraChatLatex().normalizeCenterLikeMathBlocks(text);
 }
 
 function normalizeIndentedGfmTables(text) {
-    const src = String(text || '');
-    if (!src) return src;
-    const lines = src.split('\n');
-    const out = [];
-
-    const hasEscapedCharBefore = (line, index) => {
-        let count = 0;
-        for (let i = index - 1; i >= 0 && line[i] === '\\'; i -= 1) {
-            count += 1;
-        }
-        return count % 2 === 1;
-    };
-
-    const readBacktickRun = (line, index) => {
-        let end = index;
-        while (end < line.length && line[end] === '`') {
-            end += 1;
-        }
-        return end - index;
-    };
-
-    const splitMarkdownTableCells = (line) => {
-        let body = String(line || '').replace(/\r$/, '').trim();
-        if (!body) return [];
-        if (body.startsWith('|')) {
-            body = body.slice(1);
-        }
-        if (body.endsWith('|') && !hasEscapedCharBefore(body, body.length - 1)) {
-            body = body.slice(0, -1);
-        }
-
-        const cells = [];
-        let current = '';
-        let codeSpanFence = 0;
-
-        for (let i = 0; i < body.length; i += 1) {
-            const ch = body[i];
-
-            if (ch === '`') {
-                const run = readBacktickRun(body, i);
-                if (codeSpanFence === 0) {
-                    codeSpanFence = run;
-                } else if (run === codeSpanFence) {
-                    codeSpanFence = 0;
-                }
-                current += body.slice(i, i + run);
-                i += run - 1;
-                continue;
-            }
-
-            if (ch === '|' && codeSpanFence === 0 && !hasEscapedCharBefore(body, i)) {
-                cells.push(current.trim());
-                current = '';
-                continue;
-            }
-
-            current += ch;
-        }
-
-        cells.push(current.trim());
-        return cells;
-    };
-
-    const isMarkdownTableSeparatorCells = (cells) => {
-        if (!Array.isArray(cells) || cells.length < 2) return false;
-        return cells.every((cell) => /^:?-{3,}:?$/.test(String(cell || '').replace(/\s+/g, '')));
-    };
-
-    const getMarkdownTableRow = (line) => {
-        const raw = String(line || '');
-        const trimmed = raw.trim();
-        if (!trimmed || !trimmed.includes('|')) return null;
-        if (/^(#{1,6}\s|[-*+]\s+|\d+[.)]\s+|>)/.test(trimmed)) return null;
-
-        const cells = splitMarkdownTableCells(raw);
-        if (cells.length < 2) return null;
-        if (!cells.some((cell) => String(cell || '').trim())) return null;
-
-        return {
-            cells,
-            isSeparator: isMarkdownTableSeparatorCells(cells)
-        };
-    };
-
-    const normalizeMarkdownTableSeparatorCells = (cells) => {
-        if (!Array.isArray(cells) || cells.length < 2) return [];
-        return cells.map((cell) => {
-            const compact = String(cell || '').replace(/\s+/g, '');
-            const left = compact.startsWith(':');
-            const right = compact.endsWith(':');
-            return `${left ? ':' : ''}---${right ? ':' : ''}`;
-        });
-    };
-
-    const escapeMarkdownTableCellPipes = (cell) => {
-        const src = String(cell || '').trim();
-        let outText = '';
-
-        for (let i = 0; i < src.length; i += 1) {
-            const ch = src[i];
-            if (ch === '|' && !hasEscapedCharBefore(src, i)) {
-                outText += '\\|';
-                continue;
-            }
-            outText += ch;
-        }
-
-        return outText;
-    };
-
-    const formatMarkdownTableRow = (cells) => {
-        return `| ${cells.map((cell) => escapeMarkdownTableCellPipes(cell)).join(' | ')} |`;
-    };
-
-    const collectMarkdownTableBlock = (start) => {
-        const header = getMarkdownTableRow(lines[start]);
-        if (!header || header.isSeparator) return null;
-
-        let nextIndex = start + 1;
-        if (
-            nextIndex < lines.length
-            && String(lines[nextIndex] || '').trim() === ''
-            && getMarkdownTableRow(lines[nextIndex + 1])
-        ) {
-            nextIndex += 1;
-        }
-
-        const next = getMarkdownTableRow(lines[nextIndex]);
-        if (!next || next.cells.length !== header.cells.length) return null;
-
-        if (next.isSeparator) {
-            const rows = [];
-            let endIndex = nextIndex;
-            for (let i = nextIndex + 1; i < lines.length; i += 1) {
-                const row = getMarkdownTableRow(lines[i]);
-                if (!row || row.isSeparator || row.cells.length !== header.cells.length) break;
-                rows.push(row);
-                endIndex = i;
-            }
-
-            return {
-                endIndex,
-                header,
-                separatorCells: normalizeMarkdownTableSeparatorCells(next.cells),
-                rows
-            };
-        }
-
-        const rows = [next];
-        let endIndex = nextIndex;
-        for (let i = nextIndex + 1; i < lines.length; i += 1) {
-            const row = getMarkdownTableRow(lines[i]);
-            if (!row || row.isSeparator || row.cells.length !== header.cells.length) break;
-            rows.push(row);
-            endIndex = i;
-        }
-
-        const beforeIsBoundary = start === 0 || String(lines[start - 1] || '').trim() === '';
-        const afterIsBoundary = endIndex + 1 >= lines.length || String(lines[endIndex + 1] || '').trim() === '';
-        const hasEnoughRows = rows.length >= 2;
-        if (!hasEnoughRows && !(beforeIsBoundary && afterIsBoundary)) return null;
-
-        return {
-            endIndex,
-            header,
-            separatorCells: Array.from({ length: header.cells.length }, () => '---'),
-            rows
-        };
-    };
-
-    const readFenceMarker = (line) => {
-        const match = String(line || '').match(/^\s*(`{3,}|~{3,})/);
-        if (!match) return null;
-        return {
-            char: match[1][0],
-            length: match[1].length
-        };
-    };
-
-    let activeFence = null;
-
-    for (let i = 0; i < lines.length; i += 1) {
-        const line = String(lines[i] || '');
-        const fence = readFenceMarker(line);
-
-        if (fence) {
-            if (!activeFence) {
-                activeFence = fence;
-            } else if (fence.char === activeFence.char && fence.length >= activeFence.length) {
-                activeFence = null;
-            }
-            out.push(line);
-            continue;
-        }
-
-        if (activeFence) {
-            out.push(line);
-            continue;
-        }
-
-        const block = collectMarkdownTableBlock(i);
-        if (!block) {
-            out.push(line);
-            continue;
-        }
-
-        // 把模型输出的隐式表格统一转成 GFM 表格，避免 marked 按普通段落处理。
-        if (out.length > 0 && String(out[out.length - 1] || '').trim() !== '') {
-            out.push('');
-        }
-
-        out.push(formatMarkdownTableRow(block.header.cells));
-        out.push(formatMarkdownTableRow(block.separatorCells));
-        block.rows.forEach((row) => {
-            out.push(formatMarkdownTableRow(row.cells));
-        });
-        i = block.endIndex;
-    }
-
-    return out.join('\n');
+    return getNexoraChatMarkdown().normalizeIndentedGfmTables(text);
 }
 
 function needsAggressiveLatexRecovery(text) {
@@ -3076,25 +2954,7 @@ function wrapBareLatexFragments(text) {
 }
 
 function splitMathAwareSegments(text) {
-    const src = String(text || '');
-    if (!src) return [];
-
-    const segments = [];
-    const pattern = /(\\begin\{(?:equation\*?|align\*?|alignat\*?|gather\*?|CD)\}[\s\S]*?\\end\{(?:equation\*?|align\*?|alignat\*?|gather\*?|CD)\}|\\\[[\s\S]*?\\\]|\$\$[\s\S]*?\$\$|\\\([\s\S]*?\\\)|\$(?:\\.|[^$\n\\])+\$)/g;
-    let last = 0;
-    let m;
-    while ((m = pattern.exec(src)) !== null) {
-        const idx = m.index;
-        if (idx > last) {
-            segments.push({ isMath: false, text: src.slice(last, idx) });
-        }
-        segments.push({ isMath: true, text: String(m[0] || '') });
-        last = idx + m[0].length;
-    }
-    if (last < src.length) {
-        segments.push({ isMath: false, text: src.slice(last) });
-    }
-    return segments;
+    return getNexoraChatLatex().splitMathAwareSegments(text);
 }
 
 function shouldCaptureLatexRenderDebug(text) {
@@ -3134,62 +2994,19 @@ function captureLatexRenderDebug(stage, raw, normalized, html) {
 }
 
 function protectMathSegmentsForMarkdown(text) {
-    const segs = splitMathAwareSegments(text);
-    if (!segs.length) return { text: String(text || ''), map: [] };
-    const map = [];
-    let out = '';
-    let idx = 0;
-    for (const seg of segs) {
-        if (!seg.isMath) {
-            out += seg.text;
-            continue;
-        }
-        const token = `@@NX_MSEG_${idx}@@`;
-        map.push({ token, math: seg.text });
-        out += token;
-        idx += 1;
-    }
-    return { text: out, map };
+    return getNexoraChatLatex().protectMathSegmentsForMarkdown(text);
 }
 
 function restoreMathSegmentsFromHtml(html, map) {
-    let out = String(html || '');
-    const arr = Array.isArray(map) ? map : [];
-    for (const item of arr) {
-        if (!item || !item.token) continue;
-        out = out.split(String(item.token)).join(String(item.math || ''));
-    }
-    return out;
+    return getNexoraChatLatex().restoreMathSegmentsFromHtml(html, map);
 }
 
 function looksLikeLatexRenderableCodeBlock(text, className = '') {
-    const src = String(text || '').trim();
-    if (!src) return false;
-    const lang = String(className || '').toLowerCase();
-    if (/\blanguage-(latex|tex|math)\b|\blatex\b|\btex\b/.test(lang)) return true;
-    const hasMath = /\\begin\{(?:equation\*?|align\*?|alignat\*?|gather\*?|CD)\}|\\\[|\\\(|\$\$|\$(?:\\.|[^$\n\\])+\$/.test(src);
-    if (!hasMath) return false;
-    const hasProgrammingSignals = /\b(function|const|let|var|class|if|return|import|export|from|public|private|def)\b|=>|<\/?[a-z][^>]*>|^\s*[{}[\];]+\s*$/m.test(src);
-    if (hasProgrammingSignals) return false;
-    return true;
+    return getNexoraChatLatex().looksLikeLatexRenderableCodeBlock(text, className);
 }
 
 function promoteLatexCodeBlocks(root) {
-    if (!root || typeof root.querySelectorAll !== 'function') return;
-    const codeNodes = Array.from(root.querySelectorAll('pre > code'));
-    codeNodes.forEach((codeEl) => {
-        const preEl = codeEl && codeEl.parentElement;
-        if (!preEl || preEl.dataset.latexPromoted === '1') return;
-        const raw = String(codeEl.textContent || '');
-        const cls = String(codeEl.className || '');
-        if (!looksLikeLatexRenderableCodeBlock(raw, cls)) return;
-        const holder = document.createElement('div');
-        holder.className = 'latex-code-render';
-        holder.innerHTML = renderMarkdownWithNewTabLinks(raw, { breaks: false });
-        bindSourceMarkdown(holder, raw);
-        preEl.dataset.latexPromoted = '1';
-        preEl.replaceWith(holder);
-    });
+    return getNexoraChatLatex().promoteLatexCodeBlocks(root, getChatLatexRenderDeps());
 }
 
 function wrapBareLatexFragmentsOutsideMath(text) {
@@ -3380,271 +3197,29 @@ function restoreFileReferencesInHtml(html, refs = []) {
 }
 
 function renderMarkdownWithNewTabLinks(text, options = {}) {
-    let raw = String(text || '');
-    const opts = (options && typeof options === 'object') ? options : {};
-    if (opts.streamingMathProvisional) {
-        const openInfo = streamMathFindOpenTailInfo(raw);
-        if (openInfo && Number(openInfo.index) >= 0) {
-            const i = Number(openInfo.index);
-            const stable = raw.slice(0, i);
-            const tail = raw.slice(i);
-            raw = `${stable}${streamMathBuildProvisionalClosedTail(tail, openInfo.type)}`;
-        }
-    }
-    const normalizedText = normalizeStrongPunctuationBoundaries(normalizeLatexSyntax(raw));
-    const withBareLatexWrapped = needsAggressiveLatexRecovery(raw)
-        ? wrapBareLatexFragmentsOutsideMath(normalizedText)
-        : normalizedText;
-    const protectedKnowledgeReferences = protectKnowledgeReferencesInMarkdown(withBareLatexWrapped);
-    const protectedFileReferences = protectFileReferencesInMarkdown(protectedKnowledgeReferences.text);
-    const shielded = protectMathSegmentsForMarkdown(protectedFileReferences.text);
-    const html = marked.parse(String(shielded.text || ''), { gfm: true, breaks: opts.breaks !== false });
-    const restoredHtml = restoreMathSegmentsFromHtml(html, shielded.map);
-    const restoredFileHtml = restoreFileReferencesInHtml(restoredHtml, protectedFileReferences.refs);
-    const restoredKnowledgeHtml = restoreKnowledgeReferencesInHtml(restoredFileHtml, protectedKnowledgeReferences.refs);
-    captureLatexRenderDebug('chat_markdown', raw, withBareLatexWrapped, restoredKnowledgeHtml);
-    return rewriteHtmlFragmentLinksToNewTab(restoredKnowledgeHtml);
+    return getNexoraChatMarkdown().renderMarkdownWithNewTabLinks(text, options, getChatMarkdownRenderDeps());
 }
 
 function shouldUseStreamingMarkdownBreaks(root) {
-    if (!root) return true;
-    if (root.classList && root.classList.contains('thinking-content')) return true;
-    if (root.classList && root.classList.contains('tool-output')) return false;
-    if (typeof root.closest === 'function') {
-        if (root.closest('.thinking-block')) return true;
-        if (root.closest('.tool-usage')) return false;
-    }
-    return true;
+    return getNexoraChatMarkdown().shouldUseStreamingMarkdownBreaks(root);
 }
 
 function renderStreamingMarkdownWithNewTabLinks(text, options = {}) {
-    const opts = (options && typeof options === 'object') ? options : {};
-    return renderMarkdownWithNewTabLinks(text, {
-        ...opts,
-        breaks: opts.breaks !== false
-    });
+    return getNexoraChatMarkdown().renderStreamingMarkdownWithNewTabLinks(text, options, getChatMarkdownRenderDeps());
 }
 
 function renderStreamBlockMarkdown(root, text, options = {}) {
-    const opts = (options && typeof options === 'object') ? { ...options } : {};
-    if (!Object.prototype.hasOwnProperty.call(opts, 'breaks')) {
-        opts.breaks = shouldUseStreamingMarkdownBreaks(root);
-    }
-    return renderMarkdownWithNewTabLinks(text, opts);
+    return getNexoraChatMarkdown().renderStreamBlockMarkdown(root, text, options, getChatMarkdownRenderDeps());
 }
 
 
 
 function renderMarkdownForNotes(text) {
-    const raw = String(text || '');
-    const normalizedText = normalizeStrongPunctuationBoundaries(normalizeLatexSyntax(raw));
-    const withBareLatexWrapped = needsAggressiveLatexRecovery(raw)
-        ? wrapBareLatexFragmentsOutsideMath(normalizedText)
-        : normalizedText;
-    // Notes 专用：不把单换行渲染成 <br>，避免选中 LaTeX 文本时出现逐字换行。
-    const shielded = protectMathSegmentsForMarkdown(withBareLatexWrapped);
-    const html = marked.parse(String(shielded.text || ''), { gfm: true, breaks: false });
-    const restoredHtml = restoreMathSegmentsFromHtml(html, shielded.map);
-    captureLatexRenderDebug('notes_markdown', raw, withBareLatexWrapped, restoredHtml);
-    return rewriteHtmlFragmentLinksToNewTab(restoredHtml);
-}
-
-const __mathRenderTimerMap = new WeakMap();
-const __mathRenderRetryMap = new WeakMap();
-const __mathLazyStateMap = new WeakMap();
-let __mathLazyObserver = null;
-
-function isLiveStreamMathRenderRoot(root) {
-    if (!root) return false;
-    if (root.classList && root.classList.contains('stream-live-tail')) return true;
-    if (root.dataset && String(root.dataset.streamLive || '') === '1') return true;
-    if (typeof root.closest === 'function') {
-        if (root.closest('.stream-live-tail')) return true;
-        if (root.closest('[data-stream-live="1"]')) return true;
-    }
-    return false;
-}
-
-function isMathRenderRootVisible(root) {
-    if (!root || !root.isConnected) return false;
-    if (typeof root.getBoundingClientRect !== 'function') return false;
-    const style = window.getComputedStyle ? window.getComputedStyle(root) : null;
-    if (style && (style.display === 'none' || style.visibility === 'hidden')) return false;
-    const rect = root.getBoundingClientRect();
-    if (!rect || rect.width <= 0 || rect.height <= 0) return false;
-    const vw = Math.max(0, window.innerWidth || document.documentElement.clientWidth || 0);
-    const vh = Math.max(0, window.innerHeight || document.documentElement.clientHeight || 0);
-    const margin = 80;
-    return (
-        rect.bottom >= -margin
-        && rect.right >= -margin
-        && rect.top <= (vh + margin)
-        && rect.left <= (vw + margin)
-    );
-}
-
-function getMathRenderSourceText(root) {
-    if (!root) return '';
-    const source = String(root.__sourceMarkdown || root.dataset.sourceMarkdown || root.textContent || '').trim();
-    return source;
-}
-
-function hasVisibleMathMarkers(text) {
-    const src = String(text || '');
-    if (!src.trim()) return false;
-    return /\\begin\{(?:equation\*?|align\*?|alignat\*?|gather\*?|CD|cases|matrix|pmatrix|bmatrix|Bmatrix|vmatrix|Vmatrix|smallmatrix)\}|\\\[|\\\]|\$\$|\$(?:\\.|[^$\n\\])+\$|\\\(|\\\)/.test(src);
-}
-
-function estimateMathPlaceholderHeight(root) {
-    const src = getMathRenderSourceText(root);
-    if (!hasVisibleMathMarkers(src)) return 0;
-    const lines = Math.max(1, src.split('\n').length);
-    const blockCount = (src.match(/\\begin\{(?:equation\*?|align\*?|alignat\*?|gather\*?|CD|cases|matrix|pmatrix|bmatrix|Bmatrix|vmatrix|Vmatrix|smallmatrix)\}|\\\[|\$\$/g) || []).length;
-    const inlineCount = (src.match(/\$(?:\\.|[^$\n\\])+\$|\\\(|\\\)/g) || []).length;
-    const lengthScore = Math.min(1200, Math.floor(src.length * 0.08));
-    const lineScore = Math.min(900, lines * 18);
-    const blockScore = blockCount * 140;
-    const inlineScore = inlineCount * 18;
-    return Math.max(120, Math.min(2400, lengthScore + lineScore + blockScore + inlineScore));
-}
-
-function applyMathLazyPlaceholder(root) {
-    if (!root || !root.classList) return;
-    const height = estimateMathPlaceholderHeight(root);
-    if (height > 0) {
-        root.classList.add('math-lazy-pending');
-        root.style.minHeight = `${height}px`;
-        root.dataset.mathLazyPlaceholder = String(height);
-    }
-}
-
-function clearMathLazyPlaceholder(root) {
-    if (!root || !root.classList) return;
-    root.classList.remove('math-lazy-pending');
-    if (root.dataset && root.dataset.mathLazyPlaceholder) {
-        delete root.dataset.mathLazyPlaceholder;
-        root.style.minHeight = '';
-    }
-}
-
-function ensureMathLazyObserver() {
-    if (__mathLazyObserver) return __mathLazyObserver;
-    if (typeof IntersectionObserver !== 'function') return null;
-    __mathLazyObserver = new IntersectionObserver((entries) => {
-        entries.forEach((entry) => {
-            const target = entry && entry.target;
-            if (!target) return;
-            if (!entry.isIntersecting) return;
-            const state = __mathLazyStateMap.get(target);
-            if (!state || !state.pending) return;
-            state.pending = false;
-            if (typeof __mathLazyObserver.unobserve === 'function') {
-                try { __mathLazyObserver.unobserve(target); } catch (_) {}
-            }
-            renderMathSafe(target, { force: true });
-        });
-    }, {
-        root: null,
-        rootMargin: '180px 0px',
-        threshold: 0.01
-    });
-    return __mathLazyObserver;
-}
-
-function scheduleLazyMathRender(root) {
-    if (!root) return;
-    const observer = ensureMathLazyObserver();
-    const state = __mathLazyStateMap.get(root) || {};
-    state.pending = true;
-    state.observed = true;
-    __mathLazyStateMap.set(root, state);
-    applyMathLazyPlaceholder(root);
-    if (!observer) {
-        const timer = setTimeout(() => renderMathSafe(root, { force: true }), 120);
-        __mathRenderTimerMap.set(root, timer);
-        return;
-    }
-    try {
-        observer.observe(root);
-    } catch (_) {
-        const timer = setTimeout(() => renderMathSafe(root, { force: true }), 160);
-        __mathRenderTimerMap.set(root, timer);
-    }
+    return getNexoraChatMarkdown().renderMarkdownForNotes(text, getChatMarkdownRenderDeps());
 }
 
 function renderMathSafe(root, options = {}) {
-    if (!root) return;
-    const opts = (options && typeof options === 'object') ? options : {};
-    const force = !!opts.force;
-    const prevTimer = __mathRenderTimerMap.get(root);
-    if (prevTimer) clearTimeout(prevTimer);
-    const immediateForStream = isLiveStreamMathRenderRoot(root);
-    if (!force && !isMathRenderRootVisible(root)) {
-        if (hasVisibleMathMarkers(getMathRenderSourceText(root))) {
-            scheduleLazyMathRender(root);
-        }
-        return;
-    }
-    const runRender = () => {
-        try {
-            clearMathLazyPlaceholder(root);
-            if (typeof renderMathInElement !== 'function') {
-                const retries = (__mathRenderRetryMap.get(root) || 0) + 1;
-                __mathRenderRetryMap.set(root, retries);
-                if (retries <= 20) {
-                    const retryDelay = immediateForStream ? 26 : 80;
-                    const retryTimer = setTimeout(() => renderMathSafe(root, { force: true }), retryDelay);
-                    __mathRenderTimerMap.set(root, retryTimer);
-                }
-                return;
-            }
-
-            __mathRenderRetryMap.set(root, 0);
-            if (String(root.innerHTML || '').includes('nx-mseg-placeholder')) {
-                console.warn('LaTeX placeholder leaked into render root', root);
-            }
-            promoteLatexCodeBlocks(root);
-            renderMathInElement(root, {
-                delimiters: [
-                    { left: '$$', right: '$$', display: true },
-                    { left: '\\[', right: '\\]', display: true },
-                    { left: '\\begin{equation}', right: '\\end{equation}', display: true },
-                    { left: '\\begin{equation*}', right: '\\end{equation*}', display: true },
-                    { left: '\\begin{align}', right: '\\end{align}', display: true },
-                    { left: '\\begin{align*}', right: '\\end{align*}', display: true },
-                    { left: '\\begin{alignat}', right: '\\end{alignat}', display: true },
-                    { left: '\\begin{alignat*}', right: '\\end{alignat*}', display: true },
-                    { left: '\\begin{gather}', right: '\\end{gather}', display: true },
-                    { left: '\\begin{gather*}', right: '\\end{gather*}', display: true },
-                    { left: '\\begin{CD}', right: '\\end{CD}', display: true },
-                    { left: '$', right: '$', display: false },
-                    { left: '\\(', right: '\\)', display: false }
-                ],
-                ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
-                throwOnError: false
-            });
-            if (Date.now() <= __messagesBottomPinUntilTs && shouldAutoScroll) {
-                pinMessagesToBottomFor(900);
-            }
-            const state = __mathLazyStateMap.get(root);
-            if (state) {
-                state.pending = false;
-                __mathLazyStateMap.set(root, state);
-            }
-        } catch (e) {
-            console.warn('LaTeX render failed:', e);
-            clearMathLazyPlaceholder(root);
-        }
-    };
-
-    if (immediateForStream) {
-        __mathRenderTimerMap.set(root, null);
-        runRender();
-        return;
-    }
-
-    const timer = setTimeout(runRender, 80);
-    __mathRenderTimerMap.set(root, timer);
+    return getNexoraChatLatex().renderMathSafe(root, options, getChatLatexRenderDeps());
 }
 
 function rewriteCitationRefsMarkdown(text, citationMap) {
@@ -6995,13 +6570,30 @@ function toggleMobileSidebar() {
 let fileCenterState = {
     files: [],
     query: '',
+    currentPath: '',
     selectedFileRef: '',
     sortBy: 'created_desc',
     searchTimer: 0,
     view: 'home',
     detailFileRef: '',
     detailRequestSeq: 0,
-    contextFileRef: ''
+    detailFileItem: null,
+    detailReadUrl: '',
+    detailInlineUrl: '',
+    detailDownloadUrl: '',
+    contextFileRef: '',
+    detailReturnTarget: '',
+    listScrollTop: 0
+};
+
+let fileCenterUploadDialogState = {
+    files: [],
+    activeCode: '',
+    downloadUrl: '',
+    heartbeatTimer: 0,
+    eventTimer: 0,
+    lastEventId: 0,
+    busy: false
 };
 
 function getCloudFileAlias(file) {
@@ -7011,7 +6603,7 @@ function getCloudFileAlias(file) {
 
 function getCloudFileSandboxPath(file) {
     const src = (file && typeof file === 'object') ? file : {};
-    return String(src.sandbox_path || src.path || '').trim();
+    return String(src.sandbox_path || src.file_ref || src.path || '').trim();
 }
 
 function getCloudFileOriginalName(file) {
@@ -7041,7 +6633,7 @@ function getCloudFileCreatedAt(file) {
 }
 
 function getCloudFileRef(file) {
-    return getCloudFileAlias(file) || getCloudFileSandboxPath(file);
+    return getCloudFileSandboxPath(file) || getCloudFileAlias(file);
 }
 
 function getCloudFileBasename(value) {
@@ -7054,17 +6646,166 @@ function getCloudFileBasename(value) {
 }
 
 function getCloudFileExtension(file) {
-    const name = getCloudFileDisplayName(file).toLowerCase();
-    const match = name.match(/\.([a-z0-9]+)$/);
+    const src = (file && typeof file === 'object') ? file : {};
+    const sourceExt = String(src.source_ext || '').trim().replace(/^\./, '').toLowerCase();
 
-    return match ? match[1] : '';
+    if (sourceExt) {
+        return sourceExt;
+    }
+
+    const candidates = [
+        getCloudFileAlias(file),
+        getCloudFileOriginalName(file),
+        getCloudFileSandboxPath(file),
+        getCloudFileDisplayName(file),
+    ];
+
+    for (const item of candidates) {
+        const name = String(item || '').trim().toLowerCase();
+        const match = name.match(/\.([a-z0-9]+)$/);
+
+        if (match) {
+            return match[1];
+        }
+    }
+
+    return '';
+}
+
+function isCloudFileImage(file) {
+    return ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(getCloudFileExtension(file));
+}
+
+function renderCloudFileCardMedia(file, imageUrl = '') {
+    const displayName = getCloudFileDisplayName(file);
+    const safeImageUrl = String(imageUrl || '').trim();
+
+    if (isCloudFileImage(file) && safeImageUrl) {
+        return `
+            <span class="file-center-thumb-wrap">
+                <img class="file-center-thumb" src="${escapeHtml(safeImageUrl)}" alt="${escapeHtml(displayName)}" loading="lazy">
+            </span>
+        `;
+    }
+
+    return `
+        <span class="file-center-file-icon ${escapeHtml(getCloudFileToneClass(file))}">
+            <i class="${escapeHtml(getCloudFileIconClass(file))}" aria-hidden="true"></i>
+        </span>
+    `;
 }
 
 function getCloudFileDisplayName(file) {
-    return getCloudFileAlias(file)
+    const alias = getCloudFileAlias(file);
+
+    return getCloudFileBasename(alias)
         || getCloudFileOriginalName(file)
         || getCloudFileBasename(getCloudFileSandboxPath(file))
         || '文件';
+}
+
+function normalizeFileCenterPath(value) {
+    return String(value || '')
+        .replace(/\\/g, '/')
+        .split('/')
+        .map((part) => String(part || '').trim())
+        .filter(Boolean)
+        .join('/');
+}
+
+function getFileCenterParentPathFromFileRef(fileRef) {
+    const ref = normalizeFileCenterPath(fileRef);
+    const marker = '/files/';
+    const markerIndex = ref.indexOf(marker);
+    const aliasPath = markerIndex >= 0
+        ? normalizeFileCenterPath(ref.slice(markerIndex + marker.length))
+        : ref;
+    const parts = aliasPath.split('/').filter(Boolean);
+
+    if (parts.length <= 1) {
+        return '';
+    }
+
+    parts.pop();
+    return parts.join('/');
+}
+
+function getFileCenterItemAliasPath(file) {
+    const alias = normalizeFileCenterPath(getCloudFileAlias(file));
+
+    if (alias) {
+        return alias;
+    }
+
+    const sandboxPath = normalizeFileCenterPath(getCloudFileSandboxPath(file));
+    const marker = '/files/';
+    const markerIndex = sandboxPath.indexOf(marker);
+
+    if (markerIndex >= 0) {
+        return normalizeFileCenterPath(sandboxPath.slice(markerIndex + marker.length));
+    }
+
+    return normalizeFileCenterPath(getCloudFileBasename(sandboxPath));
+}
+
+function fileCenterFileMatchesQuery(file, query) {
+    const keyword = String(query || '').trim().toLowerCase();
+
+    if (!keyword) {
+        return true;
+    }
+
+    const haystack = [
+        getCloudFileAlias(file),
+        getCloudFileOriginalName(file),
+        getCloudFileSandboxPath(file),
+    ].join(' ').toLowerCase();
+
+    return haystack.includes(keyword);
+}
+
+function buildFileCenterListUrl(query, currentPath = '') {
+    const params = new URLSearchParams();
+    const path = normalizeFileCenterPath(currentPath);
+    const keyword = String(query || '').trim();
+    const requestQuery = path || keyword;
+
+    if (requestQuery) {
+        params.set('q', requestQuery);
+    }
+
+    params.set('limit', '1000');
+
+    return `/api/files/list?${params.toString()}`;
+}
+
+function normalizeFileCenterDetailFileItem(file, fileRef) {
+    if (!file || typeof file !== 'object') {
+        return null;
+    }
+
+    const normalized = { ...file };
+    const ref = String(
+        fileRef
+        || normalized.file_ref
+        || normalized.sandbox_path
+        || normalized.path
+        || normalized.alias
+        || '',
+    ).trim();
+
+    if (!ref) {
+        return null;
+    }
+
+    normalized.file_ref = ref;
+    normalized.sandbox_path = ref;
+
+    if (!String(normalized.alias || '').trim()) {
+        normalized.alias = getCloudFileBasename(ref);
+    }
+
+    return normalized;
 }
 
 function getCloudFileIconClass(file) {
@@ -7078,6 +6819,7 @@ function getCloudFileToneClass(file) {
     const ext = getCloudFileExtension(file);
 
     if (['pdf'].includes(ext)) return 'tone-pdf';
+    if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(ext)) return 'tone-image';
     if (['doc', 'docx'].includes(ext)) return 'tone-doc';
     if (['xls', 'xlsx', 'csv'].includes(ext)) return 'tone-sheet';
     if (['ppt', 'pptx'].includes(ext)) return 'tone-slide';
@@ -7089,13 +6831,62 @@ function getCloudFileToneClass(file) {
     return 'tone-file';
 }
 
+function getCloudFileInlineUrl(fileRef, inlineUrl = '') {
+    const ref = String(fileRef || '').trim();
+    const explicitInlineUrl = String(inlineUrl || '').trim();
+
+    if (!ref) {
+        return '';
+    }
+
+    if (explicitInlineUrl) {
+        return explicitInlineUrl;
+    }
+
+    return `/api/files/download?file_ref=${encodeURIComponent(ref)}&inline=1`;
+}
+
+function getFileCenterDetailUrl(fileRef, stateKey) {
+    const ref = String(fileRef || '').trim();
+    const detailRef = String(fileCenterState.detailFileRef || '').trim();
+
+    if (!ref || ref !== detailRef) {
+        return '';
+    }
+
+    return String(fileCenterState[stateKey] || '').trim();
+}
+
+function getFileCenterReadUrl(fileRef) {
+    const ref = String(fileRef || '').trim();
+    const detailReadUrl = getFileCenterDetailUrl(ref, 'detailReadUrl');
+
+    if (detailReadUrl) {
+        return detailReadUrl;
+    }
+
+    return `/api/files/read?file_ref=${encodeURIComponent(ref)}`;
+}
+
 function findFileCenterItem(fileRef) {
     const ref = String(fileRef || '').trim();
 
     if (!ref) return null;
 
     const items = Array.isArray(fileCenterState.files) ? fileCenterState.files : [];
-    return items.find((item) => getCloudFileRef(item) === ref) || null;
+    const file = items.find((item) => getCloudFileRef(item) === ref);
+
+    if (file) {
+        return file;
+    }
+
+    const detailFileItem = fileCenterState.detailFileItem;
+
+    if (detailFileItem && getCloudFileRef(detailFileItem) === ref) {
+        return detailFileItem;
+    }
+
+    return null;
 }
 
 function formatFileSize(bytes) {
@@ -7643,6 +7434,129 @@ function sortFileCenterItems(items) {
     return arr;
 }
 
+function buildFileCenterDirectoryEntries(files, currentPath = '', query = '') {
+    const sourceFiles = Array.isArray(files) ? files : [];
+    const folderMap = new Map();
+    const directFiles = [];
+    const path = normalizeFileCenterPath(currentPath);
+    const hasQuery = !!String(query || '').trim();
+
+    sourceFiles.forEach((file) => {
+        const aliasPath = getFileCenterItemAliasPath(file);
+
+        if (!aliasPath) {
+            directFiles.push({ kind: 'file', file });
+            return;
+        }
+
+        const prefix = path ? `${path}/` : '';
+
+        if (path && aliasPath !== path && !aliasPath.startsWith(prefix)) {
+            return;
+        }
+
+        if (hasQuery) {
+            directFiles.push({ kind: 'file', file });
+            return;
+        }
+
+        const remainder = path ? aliasPath.slice(prefix.length) : aliasPath;
+
+        if (!remainder) {
+            return;
+        }
+
+        const parts = remainder.split('/').filter(Boolean);
+
+        if (parts.length <= 1) {
+            directFiles.push({ kind: 'file', file });
+            return;
+        }
+
+        const folderName = parts[0];
+        const folderPath = path ? `${path}/${folderName}` : folderName;
+        const prev = folderMap.get(folderPath) || {
+            kind: 'folder',
+            name: folderName,
+            path: folderPath,
+            count: 0,
+            updatedAt: 0,
+        };
+
+        prev.count += 1;
+        prev.updatedAt = Math.max(prev.updatedAt, getCloudFileUpdatedAt(file), getCloudFileCreatedAt(file));
+        folderMap.set(folderPath, prev);
+    });
+
+    return [
+        ...Array.from(folderMap.values()),
+        ...directFiles,
+    ];
+}
+
+function sortFileCenterDirectoryEntries(entries) {
+    const arr = Array.isArray(entries) ? [...entries] : [];
+
+    arr.sort((a, b) => {
+        const folderCompare = (a.kind === 'folder' ? 0 : 1) - (b.kind === 'folder' ? 0 : 1);
+
+        if (folderCompare !== 0) {
+            return folderCompare;
+        }
+
+        if (a.kind === 'folder' && b.kind === 'folder') {
+            if (fileCenterState.sortBy === 'created_desc') {
+                const updatedCompare = Number(b.updatedAt || 0) - Number(a.updatedAt || 0);
+
+                if (updatedCompare !== 0) {
+                    return updatedCompare;
+                }
+            }
+
+            return String(a.name || '').localeCompare(String(b.name || ''), undefined, {
+                numeric: true,
+                sensitivity: 'base'
+            });
+        }
+
+        return sortFileCenterItems([a.file, b.file])[0] === a.file ? -1 : 1;
+    });
+
+    return arr;
+}
+
+function openFileCenterFolder(path) {
+    const nextPath = normalizeFileCenterPath(path);
+
+    if (!nextPath) {
+        return;
+    }
+
+    fileCenterState.currentPath = nextPath;
+    fileCenterState.selectedFileRef = '';
+    resetFileCenterListScrollPosition();
+    hideFileCenterContextMenu();
+    renderFileCenterHomeView({ loading: true });
+    void loadFileCenterFiles({ keepSelection: false });
+}
+
+function openFileCenterParentFolder() {
+    const path = normalizeFileCenterPath(fileCenterState.currentPath);
+
+    if (!path) {
+        return;
+    }
+
+    const parts = path.split('/').filter(Boolean);
+    parts.pop();
+    fileCenterState.currentPath = parts.join('/');
+    fileCenterState.selectedFileRef = '';
+    resetFileCenterListScrollPosition();
+    hideFileCenterContextMenu();
+    renderFileCenterHomeView({ loading: true });
+    void loadFileCenterFiles({ keepSelection: false });
+}
+
 function getFileCenterSortLabel(sortBy = fileCenterState.sortBy) {
     return sortBy === 'name_asc' ? '文件名称' : '上传时间';
 }
@@ -7666,6 +7580,7 @@ function setFileCenterSort(sortBy) {
     if (nextSort !== 'created_desc' && nextSort !== 'name_asc') return;
 
     fileCenterState.sortBy = nextSort;
+    resetFileCenterListScrollPosition();
 
     const label = document.getElementById('fileCenterSortLabel');
 
@@ -7834,12 +7749,19 @@ function closeFileCenterOrReturn(event) {
 
     if (fileCenterState && fileCenterState.view === 'detail') {
         const detailRef = String(fileCenterState.detailFileRef || '').trim();
+        const detailReturnTarget = String(fileCenterState.detailReturnTarget || '').trim();
+
+        if (detailReturnTarget === 'workspace-files' && typeof window.returnToWorkspaceFilesFromFileDetail === 'function') {
+            fileCenterState.detailReturnTarget = '';
+            window.returnToWorkspaceFilesFromFileDetail();
+            return;
+        }
 
         if (detailRef) {
             fileCenterState.selectedFileRef = detailRef;
         }
 
-        renderFileCenterHomeView();
+        renderFileCenterHomeView({ restoreScroll: true });
         return;
     }
 
@@ -7891,6 +7813,19 @@ function getFileCenterShell() {
     return document.getElementById('fileCenterShell');
 }
 
+function captureFileCenterListScrollPosition() {
+    getNexoraChatFiles().captureFileCenterScrollPosition(fileCenterState);
+}
+
+function resetFileCenterListScrollPosition() {
+    getNexoraChatFiles().resetFileCenterScrollPosition(fileCenterState);
+}
+
+// Files 列表会在详情切换时整体重绘，返回时必须把滚动位置写回真实滚动容器。
+function restoreFileCenterListScrollPosition() {
+    getNexoraChatFiles().restoreFileCenterScrollPosition(fileCenterState);
+}
+
 function renderFileCenterDetailContentLoading() {
     const content = document.getElementById('fileCenterDetailContent');
 
@@ -7902,6 +7837,7 @@ function renderFileCenterDetailContentLoading() {
 async function loadFileCenterDetailContent(fileRef) {
     const ref = String(fileRef || '').trim();
     const content = document.getElementById('fileCenterDetailContent');
+    const file = findFileCenterItem(ref);
 
     if (!ref || !content) return;
 
@@ -7909,8 +7845,18 @@ async function loadFileCenterDetailContent(fileRef) {
     fileCenterState.detailRequestSeq = requestSeq;
     renderFileCenterDetailContentLoading();
 
+    if (file && isCloudFileImage(file)) {
+        const imageUrl = getCloudFileInlineUrl(ref, getFileCenterDetailUrl(ref, 'detailInlineUrl'));
+        content.innerHTML = `
+            <div class="file-center-detail-image-wrap">
+                <img class="file-center-detail-image" src="${escapeHtml(imageUrl)}" alt="${escapeHtml(getCloudFileDisplayName(file))}">
+            </div>
+        `;
+        return;
+    }
+
     try {
-        const res = await fetch(`/api/files/read?file_ref=${encodeURIComponent(ref)}`, { cache: 'no-store' });
+        const res = await fetch(getFileCenterReadUrl(ref), { cache: 'no-store' });
         const data = await res.json();
 
         if (requestSeq !== fileCenterState.detailRequestSeq) return;
@@ -7943,6 +7889,8 @@ function renderFileCenterHomeView(options = {}) {
 
     if (!shell) return;
 
+    const currentPath = normalizeFileCenterPath(fileCenterState.currentPath);
+    fileCenterState.currentPath = currentPath;
     fileCenterState.view = 'home';
     fileCenterState.detailFileRef = '';
     fileCenterState.detailRequestSeq += 1;
@@ -7955,10 +7903,14 @@ function renderFileCenterHomeView(options = {}) {
                 <h1>Files</h1>
                 <div class="file-center-count-line">
                     <span id="fileCenterCount">0</span>
-                    <span>个文件</span>
+                    <span>项</span>
                 </div>
+                <div class="file-center-breadcrumb" id="fileCenterBreadcrumb">${escapeHtml(currentPath || '全部文件')}</div>
             </div>
             <div class="file-center-actions">
+                <button class="file-center-tool-btn" id="fileCenterBackBtn" type="button" title="返回上一级" aria-label="返回上一级"${currentPath ? '' : ' disabled'}>
+                    <i class="fa-solid fa-arrow-left" aria-hidden="true"></i>
+                </button>
                 <label class="file-center-search">
                     <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>
                     <input id="fileCenterSearchInput" type="search" placeholder="搜索文件" aria-label="搜索文件" value="${escapeHtml(fileCenterState.query)}">
@@ -7981,7 +7933,7 @@ function renderFileCenterHomeView(options = {}) {
                     <i class="fa-solid fa-upload" aria-hidden="true"></i>
                     <span>上传</span>
                 </button>
-                <input id="fileCenterUploadInput" type="file" accept=".txt,.md,.py,.c,.h,.hpp,.cpp,.cc,.cxx,.js,.ts,.tsx,.jsx,.java,.go,.rs,.cs,.php,.rb,.swift,.kt,.kts,.scala,.sh,.bash,.zsh,.bat,.ps1,.json,.yaml,.yml,.toml,.ini,.cfg,.xml,.html,.css,.sql,.csv,.log,.docx,.pdf,.pptx" multiple hidden>
+                <input id="fileCenterUploadInput" type="file" accept=".txt,.md,.py,.c,.h,.hpp,.cpp,.cc,.cxx,.js,.ts,.tsx,.jsx,.java,.go,.rs,.cs,.php,.rb,.swift,.kt,.kts,.scala,.sh,.bash,.zsh,.bat,.ps1,.json,.yaml,.yml,.toml,.ini,.cfg,.xml,.html,.css,.sql,.csv,.log,.docx,.pdf,.pptx,.png,.jpg,.jpeg,.gif,.webp,.bmp" multiple hidden>
             </div>
         </div>
 
@@ -8003,6 +7955,10 @@ function renderFileCenterHomeView(options = {}) {
     }
 
     renderFileCenterList(fileCenterState.files);
+
+    if (options && options.restoreScroll === true) {
+        restoreFileCenterListScrollPosition();
+    }
 }
 
 function openFileCenterFileDetail(fileRef) {
@@ -8011,6 +7967,10 @@ function openFileCenterFileDetail(fileRef) {
     const shell = getFileCenterShell();
 
     if (!file || !shell) return;
+
+    if (fileCenterState.view === 'home') {
+        captureFileCenterListScrollPosition();
+    }
 
     const displayName = getCloudFileDisplayName(file);
     const meta = getFileCenterMetaParts(file).join(' · ');
@@ -8045,7 +8005,10 @@ function renderFileCenterList(files) {
 
     if (!list) return;
 
-    const items = sortFileCenterItems(files);
+    const query = String(fileCenterState.query || '').trim();
+    const visibleFiles = (Array.isArray(files) ? files : []).filter((file) => fileCenterFileMatchesQuery(file, query));
+    const entries = buildFileCenterDirectoryEntries(visibleFiles, fileCenterState.currentPath, query);
+    const items = sortFileCenterDirectoryEntries(entries);
 
     if (count) {
         count.textContent = String(items.length);
@@ -8058,12 +8021,28 @@ function renderFileCenterList(files) {
     }
 
     const currentRef = String(fileCenterState.selectedFileRef || '').trim();
-    const currentExists = currentRef && items.some((item) => getCloudFileRef(item) === currentRef);
+    const currentExists = currentRef && items.some((item) => item.kind === 'file' && getCloudFileRef(item.file) === currentRef);
     const activeRef = currentExists ? currentRef : '';
     fileCenterState.selectedFileRef = activeRef;
 
     list.innerHTML = `
-        ${items.map((file) => {
+        ${items.map((entry) => {
+            if (entry.kind === 'folder') {
+                const title = `${entry.path}\n${entry.count} 个项目`;
+
+                return `
+                    <div class="file-center-card file-center-folder-card" role="option" tabindex="0" aria-selected="false" data-folder-path="${escapeHtml(entry.path)}" title="${escapeHtml(title)}">
+                        <div class="file-center-card-icon-wrap">
+                            <span class="file-center-file-icon tone-folder">
+                                <i class="fa-regular fa-folder" aria-hidden="true"></i>
+                            </span>
+                        </div>
+                        <div class="file-center-card-name">${escapeHtml(entry.name)}</div>
+                    </div>
+                `;
+            }
+
+            const file = entry.file;
             const fileRef = getCloudFileRef(file);
             const displayName = getCloudFileDisplayName(file);
             const originalName = getCloudFileOriginalName(file);
@@ -8080,15 +8059,27 @@ function renderFileCenterList(files) {
             return `
                 <div class="file-center-card${activeClass}" role="option" tabindex="0" aria-selected="${fileRef === activeRef ? 'true' : 'false'}" data-file-ref="${escapeHtml(fileRef)}" title="${escapeHtml(title)}">
                     <div class="file-center-card-icon-wrap">
-                        <span class="file-center-file-icon ${escapeHtml(getCloudFileToneClass(file))}">
-                            <i class="${escapeHtml(getCloudFileIconClass(file))}" aria-hidden="true"></i>
-                        </span>
+                        ${renderCloudFileCardMedia(file, getCloudFileInlineUrl(fileRef))}
                     </div>
                     <div class="file-center-card-name">${escapeHtml(displayName)}</div>
                 </div>
             `;
         }).join('')}
     `;
+
+    list.querySelectorAll('.file-center-folder-card[data-folder-path]').forEach((row) => {
+        const readPath = () => normalizeFileCenterPath(row.getAttribute('data-folder-path'));
+
+        row.addEventListener('click', () => {
+            openFileCenterFolder(readPath());
+        });
+        row.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') {
+                event.preventDefault();
+                openFileCenterFolder(readPath());
+            }
+        });
+    });
 
     list.querySelectorAll('.file-center-card[data-file-ref]').forEach((row) => {
         const readRef = () => String(row.getAttribute('data-file-ref') || '').trim();
@@ -8133,13 +8124,14 @@ async function loadFileCenterFiles(options = {}) {
     const searchInput = document.getElementById('fileCenterSearchInput');
     const keepSelection = options && options.keepSelection === true;
 
-    if (!list) return;
+    if (!list) return false;
 
     const query = String(searchInput ? searchInput.value : fileCenterState.query || '').trim();
     fileCenterState.query = query;
 
     if (!keepSelection) {
         fileCenterState.selectedFileRef = '';
+        resetFileCenterListScrollPosition();
     }
 
     list.innerHTML = '<div class="file-center-empty">加载中...</div>';
@@ -8149,20 +8141,22 @@ async function loadFileCenterFiles(options = {}) {
     }
 
     try {
-        const url = `/api/files/list${query ? `?q=${encodeURIComponent(query)}` : ''}`;
+        const url = buildFileCenterListUrl(query, fileCenterState.currentPath);
         const res = await fetch(url, { cache: 'no-store' });
         const data = await res.json();
 
         if (!data || !data.success) {
             const message = String((data && data.message) || '文件列表读取失败');
             list.innerHTML = `<div class="file-center-empty">${escapeHtml(message)}</div>`;
-            return;
+            return false;
         }
 
         fileCenterState.files = Array.isArray(data.files) ? data.files : [];
         renderFileCenterList(fileCenterState.files);
+        return true;
     } catch (error) {
         list.innerHTML = '<div class="file-center-empty">文件列表读取失败</div>';
+        return false;
     }
 }
 
@@ -8171,8 +8165,484 @@ async function handleFileCenterUploadChange(input) {
 
     if (!files.length) return;
 
-    await handleFileUploadFiles(files, {
+    setFileCenterUploadDialogFiles(files);
+}
+
+async function uploadFileCenterFiles(files, clearInput) {
+    const selectedFiles = Array.from(files || []);
+
+    if (!selectedFiles.length) {
+        showToast('请先选择文件');
+        return false;
+    }
+
+    await handleFileUploadFiles(selectedFiles, {
         source: 'file-center',
+        attachToInput: false,
+        uploadImagesAsFiles: true,
+        targetPath: normalizeFileCenterPath(fileCenterState.currentPath),
+        clearInput: () => {
+            if (typeof clearInput === 'function') {
+                clearInput();
+            }
+        }
+    });
+    await loadFileCenterFiles({ keepSelection: true });
+
+    return true;
+}
+
+function ensureFileCenterUploadDialog() {
+    let modal = document.getElementById('fileCenterUploadDialog');
+
+    if (modal) {
+        return modal;
+    }
+
+    modal = document.createElement('div');
+    modal.id = 'fileCenterUploadDialog';
+    modal.className = 'modal-backdrop file-center-upload-dialog-backdrop';
+    modal.setAttribute('aria-hidden', 'true');
+    modal.innerHTML = `
+        <div class="file-center-upload-dialog" role="dialog" aria-modal="true" aria-labelledby="fileCenterUploadDialogTitle">
+            <div class="file-center-upload-dialog-head">
+                <div>
+                    <h3 id="fileCenterUploadDialogTitle">上传文件</h3>
+                    <p>选择文件后可直接上传到 Files，也可以开启临时在线传输。</p>
+                </div>
+                ${getNexoraChatFiles().renderUploadDialogCloseButton()}
+            </div>
+            <div class="file-center-upload-dialog-body">
+                <section class="file-center-upload-dropzone" id="fileCenterUploadDropzone" tabindex="0" role="button" aria-label="选择或拖拽文件">
+                    <i class="fa-solid fa-cloud-arrow-up" aria-hidden="true"></i>
+                    <strong>拖拽文件到这里</strong>
+                    <span>或点击打开文件选择窗口</span>
+                    <div class="file-center-upload-selected" id="fileCenterUploadSelected">未选择文件</div>
+                </section>
+                <aside class="file-center-upload-actions">
+                    <button class="file-center-upload-action primary" id="fileCenterUploadDirectBtn" type="button">
+                        <i class="fa-solid fa-upload" aria-hidden="true"></i>
+                        <span>直接上传</span>
+                    </button>
+                    <button class="file-center-upload-action" id="fileCenterUploadTransferBtn" type="button">
+                        <i class="fa-solid fa-link" aria-hidden="true"></i>
+                        <span>在线传输</span>
+                    </button>
+                    <div class="file-center-live-transfer-panel" id="fileCenterLiveTransferPanel" hidden>
+                        <div class="file-center-live-transfer-status" id="fileCenterLiveTransferStatus">等待创建传输链接</div>
+                        <div class="file-center-live-transfer-link-row" id="fileCenterLiveTransferLinkRow" hidden>
+                            <input id="fileCenterLiveTransferLinkInput" type="text" readonly value="">
+                            <button class="file-center-tool-btn" id="fileCenterLiveTransferCopyBtn" type="button" title="复制下载地址" aria-label="复制下载地址">
+                                <i class="fa-regular fa-copy" aria-hidden="true"></i>
+                            </button>
+                        </div>
+                        <div class="file-center-live-transfer-code" id="fileCenterLiveTransferCode"></div>
+                        <div class="file-center-live-transfer-events" id="fileCenterLiveTransferEvents"></div>
+                    </div>
+                </aside>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+    bindFileCenterUploadDialog(modal);
+
+    return modal;
+}
+
+function bindFileCenterUploadDialog(modal) {
+    const closeBtn = modal.querySelector('#fileCenterUploadDialogClose');
+    const dropzone = modal.querySelector('#fileCenterUploadDropzone');
+    const directBtn = modal.querySelector('#fileCenterUploadDirectBtn');
+    const transferBtn = modal.querySelector('#fileCenterUploadTransferBtn');
+    const copyBtn = modal.querySelector('#fileCenterLiveTransferCopyBtn');
+
+    if (closeBtn) {
+        closeBtn.addEventListener('click', () => {
+            closeFileCenterUploadDialog();
+        });
+    }
+
+    if (dropzone) {
+        const openPicker = () => {
+            const input = document.getElementById('fileCenterUploadInput');
+
+            if (input) {
+                input.click();
+            }
+        };
+
+        dropzone.addEventListener('click', openPicker);
+        dropzone.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter' && event.key !== ' ' && event.key !== 'Spacebar') return;
+
+            event.preventDefault();
+            openPicker();
+        });
+        dropzone.addEventListener('dragover', (event) => {
+            event.preventDefault();
+            dropzone.classList.add('drag-over');
+        });
+        dropzone.addEventListener('dragleave', () => {
+            dropzone.classList.remove('drag-over');
+        });
+        dropzone.addEventListener('drop', (event) => {
+            event.preventDefault();
+            dropzone.classList.remove('drag-over');
+            setFileCenterUploadDialogFiles(event.dataTransfer ? event.dataTransfer.files : []);
+        });
+    }
+
+    if (directBtn) {
+        directBtn.addEventListener('click', () => {
+            void directUploadFromFileCenterDialog();
+        });
+    }
+
+    if (transferBtn) {
+        transferBtn.addEventListener('click', () => {
+            void createLiveTransferFromFileCenterDialog();
+        });
+    }
+
+    if (copyBtn) {
+        copyBtn.addEventListener('click', async () => {
+            const text = String(fileCenterUploadDialogState.downloadUrl || '').trim();
+
+            if (!text) {
+                showToast('暂无可复制的下载地址');
+                return;
+            }
+
+            try {
+                await copyTextToClipboardSafe(text);
+                showToast('下载地址已复制');
+            } catch (error) {
+                showToast('复制失败');
+            }
+        });
+    }
+
+    if (window.__fileCenterUploadBeforeUnloadBound !== true) {
+        window.__fileCenterUploadBeforeUnloadBound = true;
+        window.addEventListener('beforeunload', () => {
+            revokeActiveFileCenterLiveTransfer({ beacon: true });
+        });
+    }
+}
+
+function openFileCenterUploadDialog() {
+    const modal = ensureFileCenterUploadDialog();
+
+    modal.classList.add('active');
+    modal.setAttribute('aria-hidden', 'false');
+    renderFileCenterUploadDialog();
+}
+
+function closeFileCenterUploadDialog() {
+    const modal = document.getElementById('fileCenterUploadDialog');
+
+    revokeActiveFileCenterLiveTransfer();
+    stopFileCenterLiveTransferTimers();
+    fileCenterUploadDialogState = {
+        files: [],
+        activeCode: '',
+        downloadUrl: '',
+        heartbeatTimer: 0,
+        eventTimer: 0,
+        lastEventId: 0,
+        busy: false
+    };
+
+    const input = document.getElementById('fileCenterUploadInput');
+
+    if (input) {
+        input.value = '';
+    }
+
+    if (modal) {
+        modal.classList.remove('active');
+        modal.setAttribute('aria-hidden', 'true');
+    }
+}
+
+function setFileCenterUploadDialogFiles(fileList) {
+    fileCenterUploadDialogState.files = Array.from(fileList || []).filter(Boolean);
+    renderFileCenterUploadDialog();
+}
+
+function renderFileCenterUploadDialog() {
+    const selected = document.getElementById('fileCenterUploadSelected');
+    const panel = document.getElementById('fileCenterLiveTransferPanel');
+    const status = document.getElementById('fileCenterLiveTransferStatus');
+    const linkRow = document.getElementById('fileCenterLiveTransferLinkRow');
+    const linkInput = document.getElementById('fileCenterLiveTransferLinkInput');
+    const codeEl = document.getElementById('fileCenterLiveTransferCode');
+
+    if (selected) {
+        const files = fileCenterUploadDialogState.files;
+
+        if (!files.length) {
+            selected.textContent = '未选择文件';
+        } else {
+            selected.innerHTML = files.map((file) => {
+                const name = escapeHtml(String(file.name || '未命名文件'));
+                const size = escapeHtml(formatFileSize(Number(file.size || 0)));
+
+                return `<span>${name}<small>${size}</small></span>`;
+            }).join('');
+        }
+    }
+
+    if (panel) {
+        panel.hidden = !fileCenterUploadDialogState.activeCode && !fileCenterUploadDialogState.busy;
+    }
+
+    if (status && !fileCenterUploadDialogState.activeCode && !fileCenterUploadDialogState.busy) {
+        status.textContent = '等待创建传输链接';
+    }
+
+    if (linkRow) {
+        linkRow.hidden = !fileCenterUploadDialogState.downloadUrl;
+    }
+
+    if (linkInput) {
+        linkInput.value = fileCenterUploadDialogState.downloadUrl || '';
+    }
+
+    if (codeEl) {
+        codeEl.textContent = fileCenterUploadDialogState.activeCode
+            ? `读取码：${fileCenterUploadDialogState.activeCode}`
+            : '';
+    }
+}
+
+async function directUploadFromFileCenterDialog() {
+    if (fileCenterUploadDialogState.busy) return;
+
+    const files = Array.from(fileCenterUploadDialogState.files || []);
+
+    if (!files.length) {
+        showToast('请先选择文件');
+        return;
+    }
+
+    fileCenterUploadDialogState.busy = true;
+    renderFileCenterUploadDialog();
+
+    try {
+        const uploaded = await uploadFileCenterFiles(files, () => {
+            const input = document.getElementById('fileCenterUploadInput');
+
+            if (input) {
+                input.value = '';
+            }
+        });
+
+        if (uploaded) {
+            fileCenterUploadDialogState.files = [];
+            showToast('文件已上传');
+            closeFileCenterUploadDialog();
+        }
+    } finally {
+        fileCenterUploadDialogState.busy = false;
+        renderFileCenterUploadDialog();
+    }
+}
+
+async function createLiveTransferFromFileCenterDialog() {
+    if (fileCenterUploadDialogState.busy) return;
+
+    const files = Array.from(fileCenterUploadDialogState.files || []);
+
+    if (!files.length) {
+        showToast('请先选择文件');
+        return;
+    }
+
+    if (files.length !== 1) {
+        showToast('在线传输一次只能选择一个文件');
+        return;
+    }
+
+    await revokeActiveFileCenterLiveTransfer();
+    stopFileCenterLiveTransferTimers();
+    fileCenterUploadDialogState.busy = true;
+    updateFileCenterLiveTransferStatus('正在创建在线传输...');
+    renderFileCenterUploadDialog();
+
+    try {
+        const form = new FormData();
+        form.append('file', files[0], files[0].name || 'transfer.bin');
+        form.append('expires_in_minutes', '30');
+        form.append('max_downloads', '1');
+
+        const res = await fetch('/api/files/live-transfer/create', {
+            method: 'POST',
+            body: form
+        });
+        const data = await res.json();
+
+        if (!data || !data.success) {
+            throw new Error(String((data && data.message) || '创建在线传输失败'));
+        }
+
+        const transfer = data.transfer || {};
+        const code = String(transfer.code || '').trim();
+
+        if (!code) {
+            throw new Error('后端未返回读取码');
+        }
+
+        fileCenterUploadDialogState.activeCode = code;
+        fileCenterUploadDialogState.downloadUrl = new URL(`/api/files/transfer/${encodeURIComponent(code)}/download`, window.location.origin).toString();
+        fileCenterUploadDialogState.lastEventId = 0;
+        updateFileCenterLiveTransferStatus('在线传输已开启。保持此窗口打开，接收端才能下载。');
+        startFileCenterLiveTransferTimers(code);
+        renderFileCenterUploadDialog();
+    } catch (error) {
+        updateFileCenterLiveTransferStatus(String((error && error.message) || '创建在线传输失败'));
+        showToast(String((error && error.message) || '创建在线传输失败'));
+    } finally {
+        fileCenterUploadDialogState.busy = false;
+        renderFileCenterUploadDialog();
+    }
+}
+
+function updateFileCenterLiveTransferStatus(text) {
+    const panel = document.getElementById('fileCenterLiveTransferPanel');
+    const status = document.getElementById('fileCenterLiveTransferStatus');
+
+    if (panel) {
+        panel.hidden = false;
+    }
+
+    if (status) {
+        status.textContent = String(text || '');
+    }
+}
+
+function startFileCenterLiveTransferTimers(code) {
+    stopFileCenterLiveTransferTimers();
+
+    const sendHeartbeat = async () => {
+        const activeCode = String(fileCenterUploadDialogState.activeCode || '').trim();
+
+        if (!activeCode || activeCode !== code) return;
+
+        try {
+            const res = await fetch(`/api/files/live-transfer/${encodeURIComponent(code)}/heartbeat`, {
+                method: 'POST',
+                cache: 'no-store'
+            });
+            const data = await res.json();
+
+            if (!data || !data.success) {
+                throw new Error(String((data && data.message) || '在线传输已失效'));
+            }
+        } catch (error) {
+            updateFileCenterLiveTransferStatus(String((error && error.message) || '在线传输已失效'));
+            stopFileCenterLiveTransferTimers();
+        }
+    };
+    const pollEvents = async () => {
+        const activeCode = String(fileCenterUploadDialogState.activeCode || '').trim();
+
+        if (!activeCode || activeCode !== code) return;
+
+        try {
+            const res = await fetch(`/api/files/live-transfer/${encodeURIComponent(code)}/events?since=${encodeURIComponent(fileCenterUploadDialogState.lastEventId || 0)}`, {
+                cache: 'no-store'
+            });
+            const data = await res.json();
+
+            if (!data || !data.success) return;
+
+            renderFileCenterLiveTransferEvents(data.events || []);
+        } catch (error) {
+            console.warn('poll live transfer events failed', error);
+        }
+    };
+
+    void sendHeartbeat();
+    void pollEvents();
+    fileCenterUploadDialogState.heartbeatTimer = window.setInterval(sendHeartbeat, 5000);
+    fileCenterUploadDialogState.eventTimer = window.setInterval(pollEvents, 2000);
+}
+
+function renderFileCenterLiveTransferEvents(events) {
+    const list = document.getElementById('fileCenterLiveTransferEvents');
+    const items = Array.isArray(events) ? events : [];
+
+    if (!list || !items.length) return;
+
+    const html = items.map((event) => {
+        const eventId = Number(event.id || 0);
+        const at = Number(event.at || 0) * 1000;
+        const timeText = at ? new Date(at).toLocaleString() : '';
+        const ip = escapeHtml(String(event.ip || '未知 IP'));
+        const ua = escapeHtml(String(event.user_agent || '未知 UA'));
+
+        fileCenterUploadDialogState.lastEventId = Math.max(fileCenterUploadDialogState.lastEventId || 0, eventId);
+
+        return `
+            <div class="file-center-live-transfer-event">
+                <strong>已下载</strong>
+                <span>${escapeHtml(timeText)}</span>
+                <code>${ip}</code>
+                <small>${ua}</small>
+            </div>
+        `;
+    }).join('');
+
+    list.insertAdjacentHTML('afterbegin', html);
+    updateFileCenterLiveTransferStatus('接收端已下载文件，IP 与 UA 已记录。');
+}
+
+function stopFileCenterLiveTransferTimers() {
+    if (fileCenterUploadDialogState.heartbeatTimer) {
+        window.clearInterval(fileCenterUploadDialogState.heartbeatTimer);
+        fileCenterUploadDialogState.heartbeatTimer = 0;
+    }
+
+    if (fileCenterUploadDialogState.eventTimer) {
+        window.clearInterval(fileCenterUploadDialogState.eventTimer);
+        fileCenterUploadDialogState.eventTimer = 0;
+    }
+}
+
+async function revokeActiveFileCenterLiveTransfer(options = {}) {
+    const code = String(fileCenterUploadDialogState.activeCode || '').trim();
+
+    if (!code) return;
+
+    fileCenterUploadDialogState.activeCode = '';
+    fileCenterUploadDialogState.downloadUrl = '';
+
+    const url = `/api/files/live-transfer/${encodeURIComponent(code)}/revoke`;
+
+    if (options && options.beacon === true && navigator.sendBeacon) {
+        navigator.sendBeacon(url, new Blob([], { type: 'application/octet-stream' }));
+        return;
+    }
+
+    try {
+        await fetch(url, {
+            method: 'POST',
+            cache: 'no-store',
+            keepalive: !!(options && options.beacon === true)
+        });
+    } catch (error) {
+        console.warn('revoke live transfer failed', error);
+    }
+}
+
+async function handleCloudFilePanelUploadChange(input) {
+    const files = Array.from((input && input.files) ? input.files : []);
+
+    if (!files.length) return;
+
+    await handleFileUploadFiles(files, {
+        source: 'cloud-file-panel',
         attachToInput: false,
         uploadImagesAsFiles: true,
         clearInput: () => {
@@ -8180,20 +8650,30 @@ async function handleFileCenterUploadChange(input) {
         }
     });
     input.value = '';
-    await loadFileCenterFiles({ keepSelection: true });
+    await loadCloudFiles();
 }
 
 function bindFileCenterView() {
     installFileCenterSortDropdownCloseHandlers();
     installFileCenterSelectionClearHandler();
 
+    const list = document.getElementById('fileCenterList');
     const searchInput = document.getElementById('fileCenterSearchInput');
     const sortDropdown = document.getElementById('fileCenterSortDropdown');
     const sortTrigger = document.getElementById('fileCenterSortTrigger');
     const sortMenu = document.getElementById('fileCenterSortMenu');
     const refreshBtn = document.getElementById('fileCenterRefreshBtn');
+    const backBtn = document.getElementById('fileCenterBackBtn');
     const uploadBtn = document.getElementById('fileCenterUploadBtn');
     const uploadInput = document.getElementById('fileCenterUploadInput');
+
+    if (list) {
+        list.addEventListener('scroll', () => {
+            if (fileCenterState.view !== 'home') return;
+
+            captureFileCenterListScrollPosition();
+        }, { passive: true });
+    }
 
     if (searchInput) {
         searchInput.addEventListener('input', () => {
@@ -8238,9 +8718,15 @@ function bindFileCenterView() {
         });
     }
 
+    if (backBtn) {
+        backBtn.addEventListener('click', () => {
+            openFileCenterParentFolder();
+        });
+    }
+
     if (uploadBtn && uploadInput) {
         uploadBtn.addEventListener('click', () => {
-            uploadInput.click();
+            openFileCenterUploadDialog();
         });
         uploadInput.addEventListener('change', () => {
             void handleFileCenterUploadChange(uploadInput);
@@ -8249,7 +8735,20 @@ function bindFileCenterView() {
 }
 
 // 文件中心是主内容区入口，保留右侧 Cloud Files 抽屉作为聊天中的快捷工具。
-window.openFilesFrameView = function() {
+window.openFilesFrameView = function(options = {}) {
+    const detailFileRef = String((options && options.detailFileRef) || '').trim();
+    const detailReturnTarget = String((options && options.detailReturnTarget) || '').trim();
+    const detailFileItem = normalizeFileCenterDetailFileItem(
+        options && options.detailFileItem,
+        detailFileRef,
+    );
+    const detailReadUrl = String((options && options.detailReadUrl) || '').trim();
+    const detailInlineUrl = String((options && options.detailInlineUrl) || '').trim();
+    const detailDownloadUrl = String((options && options.detailDownloadUrl) || '').trim();
+    const initialPath = normalizeFileCenterPath(
+        (options && options.currentPath) || getFileCenterParentPathFromFileRef(detailFileRef),
+    );
+
     closeKnowledgePanel();
     closeCloudFilePanel();
     exitLearningFeedComposeMode({ clear: false });
@@ -8308,15 +8807,22 @@ window.openFilesFrameView = function() {
     clearFileCenterSearchTimer();
     hideFileCenterContextMenu();
     fileCenterState = {
-        files: [],
+        files: detailFileItem ? [detailFileItem] : [],
         query: '',
-        selectedFileRef: '',
+        currentPath: initialPath,
+        selectedFileRef: detailFileRef,
         sortBy: 'created_desc',
         searchTimer: 0,
         view: 'home',
-        detailFileRef: '',
+        detailFileRef: detailFileRef,
         detailRequestSeq: 0,
-        contextFileRef: ''
+        detailFileItem: detailFileItem,
+        detailReadUrl: detailReadUrl,
+        detailInlineUrl: detailInlineUrl,
+        detailDownloadUrl: detailDownloadUrl,
+        contextFileRef: '',
+        detailReturnTarget: detailReturnTarget,
+        listScrollTop: 0
     };
 
     viewer.innerHTML = `
@@ -8326,7 +8832,29 @@ window.openFilesFrameView = function() {
     `;
 
     renderFileCenterHomeView({ loading: true });
-    void loadFileCenterFiles();
+
+    if (detailFileRef && detailFileItem) {
+        openFileCenterFileDetail(detailFileRef);
+        _syncTurnIndicatorVisibility();
+        return;
+    }
+
+    void loadFileCenterFiles({ keepSelection: !!detailFileRef }).then((loaded) => {
+        if (!detailFileRef) {
+            return;
+        }
+
+        if (!loaded) {
+            return;
+        }
+
+        if (!findFileCenterItem(detailFileRef)) {
+            showToast('Files 页面中未找到该文件');
+            return;
+        }
+
+        openFileCenterFileDetail(detailFileRef);
+    });
     _syncTurnIndicatorVisibility();
 };
 
@@ -8381,6 +8909,8 @@ const els = {
     btnToggleFilePanel: document.getElementById('btnToggleFilePanel'),
     refreshKnowledgeBtn: document.getElementById('refreshKnowledgeBtn'),
     refreshCloudFilesBtn: document.getElementById('refreshCloudFilesBtn'),
+    uploadCloudFilesBtn: document.getElementById('uploadCloudFilesBtn'),
+    cloudFileUploadInput: document.getElementById('cloudFileUploadInput'),
     createBlankBasisBtn: document.getElementById('createBlankBasisBtn'),
     bulkVectorizeBtn: document.getElementById('bulkVectorizeBtn'),
     panelBasisList: document.getElementById('panelBasisKnowledgeList'),
@@ -8500,6 +9030,132 @@ const els = {
     knowledgeSearchInput: document.getElementById('knowledgeSearchInput'),
     knowledgeSearchBtn: document.getElementById('knowledgeSearchBtn')
 };
+
+function resetKnowledgeViewRuntimeState() {
+    currentViewingKnowledge = null;
+    pendingHighlightData = null;
+    navigationStack = [];
+}
+
+function ensureExternalViewerBaseHeaderState(headerTitle, headerLeft, headerRight) {
+    if (originalHeaderState) {
+        return;
+    }
+
+    if (chatHeaderBaseState) {
+        originalHeaderState = {
+            title: chatHeaderBaseState.title,
+            leftHTML: chatHeaderBaseState.leftHTML,
+            rightHTML: chatHeaderBaseState.rightHTML,
+        };
+        return;
+    }
+
+    originalHeaderState = {
+        title: headerTitle ? headerTitle.textContent : 'Untitled Conversation',
+        leftHTML: headerLeft ? headerLeft.innerHTML : '',
+        rightHTML: headerRight ? headerRight.innerHTML : '',
+    };
+}
+
+function closePrimaryPanelsForExternalView() {
+    closeKnowledgePanel();
+    closeCloudFilePanel();
+    exitLearningFeedComposeMode({ clear: false });
+}
+
+function clearConversationSelectionForExternalView(options = {}) {
+    const opts = (options && typeof options === 'object') ? options : {};
+    const activeConversationId = String(currentConversationId || '').trim();
+
+    if (activeConversationId || opts.detachStream === true) {
+        detachCurrentVisibleStreamForNavigation('');
+    }
+
+    currentConversationId = null;
+    syncBrowserCurrentConversation();
+    syncGenerationStateForCurrentConversation();
+    syncNotesForConversation(null);
+    resetConversationListRenderSignature();
+    renderConversationList(conversationListCache);
+    resetComposerConversationContextUsage();
+
+    if (opts.resetKnowledgeView === true) {
+        resetKnowledgeViewRuntimeState();
+    }
+
+    return {
+        activeConversationId,
+    };
+}
+
+function installNexoraChatBridge() {
+    window.NexoraChat = {
+        get currentConversationId() {
+            return currentConversationId;
+        },
+
+        set currentConversationId(value) {
+            currentConversationId = value ? String(value).trim() : null;
+        },
+
+        get currentUsername() {
+            return currentUsername;
+        },
+
+        get elements() {
+            return els;
+        },
+
+        get messagesContainer() {
+            return els.messagesContainer;
+        },
+
+        get messageInput() {
+            return els.messageInput;
+        },
+
+        getElement(name) {
+            return els[String(name || '').trim()] || null;
+        },
+
+        setElement(name, element) {
+            const key = String(name || '').trim();
+
+            if (!key) {
+                throw new Error('NexoraChat.setElement 需要明确的元素名称');
+            }
+
+            els[key] = element || null;
+            return els[key];
+        },
+
+        clearConversationSelection: clearConversationSelectionForExternalView,
+        closePrimaryPanelsForExternalView,
+        ensureExternalViewerBaseHeaderState,
+        resetKnowledgeViewRuntimeState,
+        resetComposerConversationContextUsage,
+        resizeMessageInput,
+        loadModels,
+        closeAllSelects,
+        createNewConversation,
+        loadConversation,
+        sendMessage,
+        showToast,
+        loadKnowledge,
+        openKnowledgeAtChunk,
+        renderMarkdownWithNewTabLinks,
+        bindSourceMarkdown,
+        renderMathSafe,
+        placeInteractiveCardsBelowToolChain,
+
+        openFilesFrameView(options = {}) {
+            return window.openFilesFrameView(options);
+        },
+    };
+}
+
+installNexoraChatBridge();
 
 function parseCssPx(value, fallback = 0) {
     const parsed = Number.parseFloat(String(value || ''));
@@ -8721,15 +9377,25 @@ async function ensureLearningModeAssets() {
 function registerLearningModeChatBridge() {
     const api = window.NexoraLearningMode;
     if (!api || typeof api.registerChatBridge !== 'function') return;
+    const chatBridge = window.NexoraChat;
+
+    if (!chatBridge) {
+        throw new Error('NexoraChat bridge 未初始化，无法注册 NexoraLearningMode');
+    }
+
     api.registerChatBridge({
-        sendMessage,
+        sendMessage: chatBridge.sendMessage,
         getCachedPuzzleStates: () => cachedPuzzleStates,
         ensureLearningModeAssets,
-        placeInteractiveCardsBelowToolChain,
+        placeInteractiveCardsBelowToolChain: chatBridge.placeInteractiveCardsBelowToolChain,
         learningInteractionLocks,
         getLearningInteractionLockKey,
-        get messagesContainer() { return els.messagesContainer; },
-        get messageInput() { return els.messageInput; },
+        renderMarkdownWithNewTabLinks: chatBridge.renderMarkdownWithNewTabLinks,
+        bindSourceMarkdown: chatBridge.bindSourceMarkdown,
+        renderMathSafe: chatBridge.renderMathSafe,
+        get currentConversationId() { return chatBridge.currentConversationId; },
+        get messagesContainer() { return chatBridge.messagesContainer; },
+        get messageInput() { return chatBridge.messageInput; },
         get frontendUrl() { return NEXORA_LEARNING_FRONTEND_URL; },
         get username() { return currentUsername; },
     });
@@ -8751,8 +9417,12 @@ function isLearningWorkspaceActive() {
 }
 
 // 学习模式偏好异步加载完成后，按当前会话状态恢复侧栏，避免覆盖 cid 导航结果。
-function resolveLearningSidebarModeAfterPreferenceLoad() {
+function resolveLearningSidebarModeAfterPreferenceLoad(options = {}) {
     if (!learningModeEnabled) return 'nexora';
+
+    if (options && options.suppressAutoLearningOpen) {
+        return 'nexora';
+    }
 
     const hasConversation = !!String(currentConversationId || '').trim();
 
@@ -9264,7 +9934,10 @@ async function renderWelcomeScreen() {
     }
 }
 
-async function applyLearningMode(enabled) {
+async function applyLearningMode(enabled, options = {}) {
+    const opts = (options && typeof options === 'object') ? options : {};
+    const suppressAutoLearningOpen = !!opts.suppressAutoLearningOpen;
+
     if (enabled && !learningRuntimeEnabled) {
         enabled = false;
     }
@@ -9284,16 +9957,23 @@ async function applyLearningMode(enabled) {
     } else {
         clearLearningWelcomeState();
     }
-    learningSidebarMode = resolveLearningSidebarModeAfterPreferenceLoad();
+    learningSidebarMode = resolveLearningSidebarModeAfterPreferenceLoad({
+        suppressAutoLearningOpen
+    });
     if (!learningModeEnabled) {
         if (currentConversationMode === 'learning') currentConversationMode = 'chat';
         if (learningHeaderMode === 'learning') learningHeaderMode = 'chat';
     }
     applyLearningSidebarMode(learningSidebarMode);
-    if (learningModeEnabled && !String(currentConversationId || '').trim()) {
+
+    if (learningModeEnabled && !String(currentConversationId || '').trim() && !suppressAutoLearningOpen) {
         currentConversationMode = 'learning';
         learningHeaderMode = 'learning';
+    } else if (suppressAutoLearningOpen && !String(currentConversationId || '').trim()) {
+        currentConversationMode = 'chat';
+        learningHeaderMode = 'chat';
     }
+
     await syncLearningHeaderMode();
     if (!currentConversationId) {
         await renderWelcomeScreen();
@@ -9444,20 +10124,13 @@ async function ensureNotesStorageUserId() {
     if (existing) return existing;
 
     try {
-        const res = await fetch('/api/user/info', {
-            method: 'GET',
-            credentials: 'include',
-            cache: 'no-store'
-        });
-        const data = await res.json().catch(() => ({}));
-        const user = data && data.success && data.user ? data.user : null;
-        const userId = normalizeNotesStorageUserId(user && user.id);
-        if (!userId) return '';
+        const identity = await loadCurrentUserIdentity();
+        const userId = normalizeNotesStorageUserId(identity && identity.id);
 
-        currentUsername = userId;
-        currentUserRole = user.role || currentUserRole || 'member';
-        currentUserAvatarUrl = user.avatar_url || currentUserAvatarUrl || '';
-        updateSidebarUserProfile(user.username || user.id, currentUserAvatarUrl);
+        if (!userId) {
+            return '';
+        }
+
         return userId;
     } catch (_) {
         return '';
@@ -10020,6 +10693,11 @@ async function jumpToChatSource(anchor) {
         await loadConversation(targetConversationId);
     }
 
+    const idx = Number(anchor && anchor.messageIndex);
+    if (Number.isFinite(idx) && idx >= 0) {
+        await ensureConversationMessageIndexLoaded(idx);
+    }
+
     const root = els.messagesContainer || document.getElementById('messagesContainer');
     if (!root) {
         showToast('来源对话不存在或已删除');
@@ -10032,7 +10710,6 @@ async function jumpToChatSource(anchor) {
     }
 
     let targetEl = null;
-    const idx = Number(anchor && anchor.messageIndex);
     if (Number.isFinite(idx) && idx >= 0) {
         const byIndex = root.querySelector(`.message[data-index="${Math.floor(idx)}"]`);
         if (byIndex && messageElementMatchesAnchor(byIndex, anchor)) {
@@ -11537,7 +12214,7 @@ function installAuthFetchGuard() {
 
 async function ensureAuthenticatedSession() {
     try {
-        const res = await fetch('/api/user/info', {
+        const res = await fetch('/api/user/info?lite=1', {
             method: 'GET',
             credentials: 'include',
             cache: 'no-store'
@@ -11603,15 +12280,7 @@ function showPinContextMenu(x, y, payload) {
 }
 
 async function setConversationPinned(conversationId, pin) {
-    const cid = String(conversationId || '').trim();
-    if (!cid) return false;
-    const res = await fetch(`/api/conversations/${encodeURIComponent(cid)}/pin`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pin: !!pin })
-    });
-    const data = await res.json();
-    return !!(data && data.success);
+    return conversationListController.setConversationPinned(conversationId, pin);
 }
 
 async function setBasisKnowledgePinned(title, pin) {
@@ -11627,199 +12296,35 @@ async function setBasisKnowledgePinned(title, pin) {
 }
 
 function setConversationPinLocal(conversationId, pin) {
-    const cid = String(conversationId || '').trim();
-    if (!cid) return false;
-    let found = false;
-    const source = Array.isArray(conversationListCache) ? conversationListCache : [];
-    conversationListCache = source.map((item) => {
-        const src = (item && typeof item === 'object') ? item : {};
-        const itemId = String(src.conversation_id || src.id || '').trim();
-        if (itemId !== cid) return src;
-        found = true;
-        return { ...src, pin: !!pin };
-    });
-    if (found) {
-        renderConversationList(conversationListCache);
-    }
-    return found;
+    return conversationListController.setConversationPinLocal(conversationId, pin);
 }
 
 function getConversationTitleFromCache(conversationId) {
-    const cid = String(conversationId || '').trim();
-    if (!cid) return '';
-    const source = Array.isArray(conversationListCache) ? conversationListCache : [];
-    for (const item of source) {
-        const src = (item && typeof item === 'object') ? item : {};
-        const itemId = String(src.conversation_id || src.id || '').trim();
-        if (itemId !== cid) continue;
-        return String(src.title || src.preview || '').trim();
-    }
-    return '';
+    return conversationListController.getConversationTitleFromCache(conversationId);
 }
 
 function setConversationTitleLocal(conversationId, title) {
-    const cid = String(conversationId || '').trim();
-    const safeTitle = String(title || '').trim();
-    if (!cid || !safeTitle) return false;
-    let found = false;
-    const source = Array.isArray(conversationListCache) ? conversationListCache : [];
-    conversationListCache = source.map((item) => {
-        const src = (item && typeof item === 'object') ? item : {};
-        const itemId = String(src.conversation_id || src.id || '').trim();
-        if (itemId !== cid) return src;
-        found = true;
-        return {
-            ...src,
-            title: safeTitle
-        };
-    });
-    if (found) {
-        renderConversationList(conversationListCache);
-        if (String(currentConversationId || '').trim() === cid && els.conversationTitle) {
-            els.conversationTitle.textContent = safeTitle;
-        }
-    }
-    return found;
+    return conversationListController.setConversationTitleLocal(conversationId, title);
 }
 
 async function setConversationTitle(conversationId, title) {
-    const cid = String(conversationId || '').trim();
-    const safeTitle = String(title || '').trim();
-    if (!cid || !safeTitle) return false;
-    const res = await fetch(`/api/conversations/${encodeURIComponent(cid)}/title`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: safeTitle })
-    });
-    const data = await res.json();
-    return !!(data && data.success);
+    return conversationListController.setConversationTitle(conversationId, title);
 }
 
 function closeConversationRenameModal(force = false) {
-    if (conversationRenameState.saving && !force) return;
-    const modal = els.conversationRenameModal || document.getElementById('conversationRenameModal');
-    if (!modal) return;
-    modal.classList.remove('active');
-    modal.setAttribute('aria-hidden', 'true');
-    conversationRenameState = {
-        conversationId: '',
-        initialTitle: '',
-        saving: false
-    };
+    return conversationListController.closeConversationRenameModal(force);
 }
 
 function openConversationRenameModal(conversationId, title) {
-    const cid = String(conversationId || '').trim();
-    if (!cid) return;
-    const modal = els.conversationRenameModal || document.getElementById('conversationRenameModal');
-    const input = els.conversationRenameInput || document.getElementById('conversationRenameInput');
-    if (!modal || !input) return;
-    const safeTitle = String(title || getConversationTitleFromCache(cid) || '').trim();
-    conversationRenameState = {
-        conversationId: cid,
-        initialTitle: safeTitle,
-        saving: false
-    };
-    input.value = safeTitle;
-    modal.classList.add('active');
-    modal.setAttribute('aria-hidden', 'false');
-    requestAnimationFrame(() => {
-        try {
-            input.focus({ preventScroll: true });
-            input.select();
-        } catch (_) {
-            input.focus();
-        }
-    });
+    return conversationListController.openConversationRenameModal(conversationId, title);
 }
 
 async function submitConversationRename() {
-    if (conversationRenameState.saving) return;
-    const cid = String(conversationRenameState.conversationId || '').trim();
-    const oldTitle = String(conversationRenameState.initialTitle || '').trim();
-    const input = els.conversationRenameInput || document.getElementById('conversationRenameInput');
-    const saveBtn = els.confirmConversationRenameBtn || document.getElementById('confirmConversationRenameBtn');
-    if (!cid || !input) return;
-
-    const nextTitle = String(input.value || '').trim();
-    if (!nextTitle) {
-        showToast('标题不能为空');
-        input.focus();
-        return;
-    }
-    if (nextTitle.length > 120) {
-        showToast('标题长度不能超过120');
-        input.focus();
-        return;
-    }
-    if (nextTitle === oldTitle) {
-        closeConversationRenameModal(true);
-        return;
-    }
-
-    const patched = setConversationTitleLocal(cid, nextTitle);
-    conversationRenameState.saving = true;
-    if (saveBtn) saveBtn.disabled = true;
-    try {
-        const ok = await setConversationTitle(cid, nextTitle);
-        if (!ok) {
-            if (patched) setConversationTitleLocal(cid, oldTitle);
-            showToast('修改标题失败');
-            return;
-        }
-        await loadConversations();
-        closeConversationRenameModal(true);
-        showToast('标题已更新');
-    } catch (_) {
-        if (patched) setConversationTitleLocal(cid, oldTitle);
-        showToast('修改标题失败');
-    } finally {
-        conversationRenameState.saving = false;
-        if (saveBtn) saveBtn.disabled = false;
-    }
+    return conversationListController.submitConversationRename();
 }
 
 function bindConversationRenameModal() {
-    const modal = els.conversationRenameModal || document.getElementById('conversationRenameModal');
-    if (!modal || modal.dataset.bindDone === '1') return;
-    modal.dataset.bindDone = '1';
-    bindBackdropSafeClose(modal, () => closeConversationRenameModal());
-
-    const closeBtn = els.closeConversationRenameModalBtn || document.getElementById('closeConversationRenameModalBtn');
-    const cancelBtn = els.cancelConversationRenameBtn || document.getElementById('cancelConversationRenameBtn');
-    const saveBtn = els.confirmConversationRenameBtn || document.getElementById('confirmConversationRenameBtn');
-    const input = els.conversationRenameInput || document.getElementById('conversationRenameInput');
-
-    if (closeBtn) {
-        closeBtn.addEventListener('click', (e) => {
-            e.preventDefault();
-            closeConversationRenameModal();
-        });
-    }
-    if (cancelBtn) {
-        cancelBtn.addEventListener('click', (e) => {
-            e.preventDefault();
-            closeConversationRenameModal();
-        });
-    }
-    if (saveBtn) {
-        saveBtn.addEventListener('click', async (e) => {
-            e.preventDefault();
-            await submitConversationRename();
-        });
-    }
-    if (input) {
-        input.addEventListener('keydown', async (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                await submitConversationRename();
-            }
-            if (e.key === 'Escape') {
-                e.preventDefault();
-                closeConversationRenameModal();
-            }
-        });
-    }
+    return conversationListController.bindConversationRenameModal();
 }
 
 function formatTrashTypeLabel(type) {
@@ -13375,16 +13880,23 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (SETTINGS_COMPANION_MODE) {
         return;
     }
-    loadModels();
+    loadModels({
+        contextRefresh: 'cache',
+        refreshContextAfterLoad: true
+    });
     hydrateConversationStreamStatesFromStorage();
+    const urlParams = new URLSearchParams(window.location.search || '');
+    const hasConversationTargetInUrl = hasConversationUrlTarget(urlParams);
+
     // applyLearningMode 内部同步部分会立即设置 learningModeEnabled 等状态，
     // 异步部分（资产加载）在后台进行，不阻塞对话加载。
-    const learningPromise = applyLearningMode(!!(prefs && prefs.learning_mode))
+    const learningPromise = applyLearningMode(!!(prefs && prefs.learning_mode), {
+        suppressAutoLearningOpen: hasConversationTargetInUrl
+    })
         .catch(err => console.error('初始化学习模式失败:', err));
 
     // Check URL param for conversation ID
-    const urlParams = new URLSearchParams(window.location.search);
-    let cid = urlParams.get('cid');
+    let cid = getDirectConversationUrlTarget(urlParams);
     const mailEntryCanOpen = await refreshMailEntryVisibility();
     const shouldRestoreMailView = isMailViewUrl() && mailEntryCanOpen;
     if (isMailViewUrl() && !mailEntryCanOpen) {
@@ -13410,7 +13922,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 deferStreamAttach: !!(resumeCid && cid === resumeCid)
             });
         } else {
-            if (learningModeEnabled) {
+            if (learningModeEnabled && !hasConversationTargetInUrl) {
                 await createNewConversation(false, 'learning');
                 await renderWelcomeScreen();
                 await learningPromise;
@@ -13421,6 +13933,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 syncGenerationStateForCurrentConversation();
                 return;
             }
+
             loadConversations();
             applyTokenMiniDisplay(0, 0);
             tokenBudgetState.roundInput = 0;
@@ -13816,6 +14329,8 @@ function initUI() {
             const userScrolledUp = currentScrollTop < (__messagesLastObservedScrollTop - MESSAGES_AUTO_SCROLL_BREAK_UP_PX);
             const hasUserScrollIntent = Date.now() <= __messagesUserScrollIntentUntilTs;
 
+            maybeLoadPreviousConversationMessagesFromScroll();
+
             if (Date.now() <= __messagesBottomPinUntilTs) {
                 if (hasUserScrollIntent && userScrolledUp) {
                     breakMessagesAutoScroll();
@@ -13888,6 +14403,14 @@ function initUI() {
     if (els.refreshCloudFilesBtn) {
         els.refreshCloudFilesBtn.addEventListener('click', () => loadCloudFiles());
     }
+    if (els.uploadCloudFilesBtn && els.cloudFileUploadInput) {
+        els.uploadCloudFilesBtn.addEventListener('click', () => {
+            els.cloudFileUploadInput.click();
+        });
+        els.cloudFileUploadInput.addEventListener('change', () => {
+            void handleCloudFilePanelUploadChange(els.cloudFileUploadInput);
+        });
+    }
 
     // New Chat
     if (els.newChatBtn) {
@@ -13912,9 +14435,16 @@ function initUI() {
 
     window.addEventListener('popstate', () => {
         const params = new URLSearchParams(window.location.search || '');
-        const cid = String(params.get('cid') || params.get('id') || '').trim();
+        const cid = getDirectConversationUrlTarget(params);
+
         if (cid) {
             void loadConversation(cid, { pushHistory: false });
+            return;
+        }
+
+        if (hasConversationUrlTarget(params)) {
+            applyLearningSidebarMode('nexora');
+            void syncLearningHeaderMode();
             return;
         }
 
@@ -15366,238 +15896,19 @@ function shouldKeepCurrentRunningConversationPanel(targetConversationId, options
 }
 
 async function loadConversations() {
-    const requestSeq = ++conversationListRequestSeq;
-    try {
-        const res = await fetch('/api/conversations');
-        const data = await res.json();
-        if (requestSeq !== conversationListRequestSeq) return;
-        const list = Array.isArray(data) ? data : (data.conversations || []);
-        conversationListCache = Array.isArray(list) ? [...list] : [];
-        renderConversationList(conversationListCache);
-    } catch (e) {
-        console.error("Failed to load conversations", e);
-    }
+    return conversationListController.loadConversations();
 }
 
 function buildConversationListSignature(conversations) {
-    const currentId = String(currentConversationId || '').trim();
-    const orderedConversations = Array.isArray(conversations) ? [...conversations] : [];
-    const toUpdatedTs = (raw) => {
-        const t = Date.parse(String(raw || ''));
-        return Number.isFinite(t) ? t : 0;
-    };
-
-    orderedConversations.sort((a, b) => {
-        const aPin = !!(a && a.pin);
-        const bPin = !!(b && b.pin);
-        if (aPin !== bPin) return aPin ? -1 : 1;
-        return toUpdatedTs((b && b.updated_at) || '') - toUpdatedTs((a && a.updated_at) || '');
-    });
-
-    return JSON.stringify({
-        currentId,
-        items: orderedConversations.map((item) => {
-            const src = (item && typeof item === 'object') ? item : {};
-            const cid = String(src.conversation_id || src.id || '');
-            const streamState = getConversationStreamState(cid);
-            return {
-                conversation_id: cid,
-                title: String(src.title || src.preview || ''),
-                updated_at: String(src.updated_at || ''),
-                pin: !!src.pin,
-                conversation_mode: String(src.conversation_mode || ''),
-                longterm_active: !!src.longterm_active,
-                longterm_task: String(src.longterm_task || ''),
-                longterm_step: String(src.longterm_step || ''),
-                message_count: Number(src.message_count || 0),
-                tags: Array.isArray(src.tags) ? src.tags.map((tag) => String(tag || '').trim().toLowerCase()) : [],
-                preview: String(src.preview || ''),
-                stream_status: String(streamState && streamState.status || ''),
-                stream_unread: !!(streamState && streamState.unread),
-            };
-        }),
-    });
+    return conversationListController.buildConversationListSignature(conversations);
 }
 
 function renderConversationList(conversations) {
-    if(!els.conversationList) return;
+    return conversationListController.renderConversationList(conversations);
+}
 
-    const normalized = Array.isArray(conversations) ? conversations : [];
-    const signature = buildConversationListSignature(normalized);
-    if (signature === conversationListRenderSignature) {
-        return;
-    }
-    conversationListRenderSignature = signature;
-
-    els.conversationList.innerHTML = '';
-
-    const toUpdatedTs = (raw) => {
-        const t = Date.parse(String(raw || ''));
-        return Number.isFinite(t) ? t : 0;
-    };
-    const orderedConversations = Array.isArray(conversations) ? [...conversations] : [];
-    orderedConversations.sort((a, b) => {
-        const aPin = !!(a && a.pin);
-        const bPin = !!(b && b.pin);
-        if (aPin !== bPin) return aPin ? -1 : 1;
-        return toUpdatedTs((b && b.updated_at) || '') - toUpdatedTs((a && a.updated_at) || '');
-    });
-
-    const bindConversationItemMobileLongPress = (itemEl, getPayload) => {
-        if (!itemEl || typeof getPayload !== 'function') return;
-        let timer = null;
-        let startX = 0;
-        let startY = 0;
-        let lastX = 0;
-        let lastY = 0;
-        let longPressed = false;
-        const HOLD_MS = 460;
-        const MOVE_TOLERANCE = 12;
-        const clearTimer = () => {
-            if (timer) {
-                clearTimeout(timer);
-                timer = null;
-            }
-        };
-
-        itemEl.addEventListener('touchstart', (e) => {
-            if (!isChatMobileLayout()) return;
-            if (!e.touches || e.touches.length !== 1) return;
-            if (e.target && e.target.closest && e.target.closest('.delete-chat')) return;
-            const t = e.touches[0];
-            startX = Number(t.clientX || 0);
-            startY = Number(t.clientY || 0);
-            lastX = startX;
-            lastY = startY;
-            longPressed = false;
-            clearTimer();
-            timer = setTimeout(() => {
-                longPressed = true;
-                itemEl.dataset.longPressOpen = '1';
-                showPinContextMenu(lastX, lastY, getPayload());
-            }, HOLD_MS);
-        }, { passive: true });
-
-        itemEl.addEventListener('touchmove', (e) => {
-            if (!timer || !e.touches || !e.touches.length) return;
-            const t = e.touches[0];
-            lastX = Number(t.clientX || 0);
-            lastY = Number(t.clientY || 0);
-            const dx = Math.abs(lastX - startX);
-            const dy = Math.abs(lastY - startY);
-            if (dx > MOVE_TOLERANCE || dy > MOVE_TOLERANCE) {
-                clearTimer();
-            }
-        }, { passive: true });
-
-        itemEl.addEventListener('touchend', (e) => {
-            clearTimer();
-            if (!longPressed) return;
-            longPressed = false;
-            e.preventDefault();
-            e.stopPropagation();
-        });
-        itemEl.addEventListener('touchcancel', () => {
-            clearTimer();
-            longPressed = false;
-        }, { passive: true });
-    };
-
-    orderedConversations.forEach(c => {
-        const div = document.createElement('div');
-        const cid = String(c.conversation_id || c.id || '').trim(); // Handle both
-        const currentId = String(currentConversationId || '').trim();
-        const streamState = getConversationStreamState(cid);
-        const streamRunning = !!(streamState && String(streamState.status || '') === 'running');
-        const streamUnread = !!(streamState && streamState.unread && String(streamState.status || '') === 'done');
-        div.className = `conversation-item ${cid === currentId ? 'active' : ''}${streamRunning ? ' is-streaming' : ''}${streamUnread ? ' has-stream-unread' : ''}`;
-        div.dataset.conversationId = String(cid || '');
-        const isPinned = !!(c && c.pin);
-        div.dataset.pin = isPinned ? '1' : '0';
-        const isLongterm = String(c && c.conversation_mode || '').trim() === 'longterm' || !!(c && c.longterm_active);
-        const isLongtermActive = !!(c && c.longterm_active);
-        const tags = Array.isArray(c && c.tags) ? c.tags.map((item) => String(item || '').trim().toLowerCase()) : [];
-        const isLearningConversation = tags.includes('learning') || String(c && c.conversation_mode || '').trim() === 'learning';
-        
-        const titleSpan = document.createElement('span');
-        titleSpan.className = 'title'; // Add class for CSS styling
-        if (isLearningConversation) {
-            const learningIcon = document.createElement('i');
-            learningIcon.className = 'fa-solid fa-book-open conversation-mode-icon';
-            learningIcon.setAttribute('aria-hidden', 'true');
-            learningIcon.title = 'Learning 对话';
-            titleSpan.appendChild(learningIcon);
-        }
-        if (isLongterm) {
-            const modeIcon = document.createElement('i');
-            modeIcon.className = `fa-solid fa-diagram-project conversation-mode-icon${isLongtermActive ? ' active' : ''}`;
-            modeIcon.setAttribute('aria-hidden', 'true');
-            modeIcon.title = isLongtermActive ? 'Longterm 执行中' : 'Longterm 模式';
-            titleSpan.appendChild(modeIcon);
-        }
-        if (isPinned) {
-            const pinIcon = document.createElement('i');
-            pinIcon.className = 'fa-solid fa-thumbtack conversation-pin-icon';
-            pinIcon.setAttribute('aria-hidden', 'true');
-            titleSpan.appendChild(pinIcon);
-        }
-        titleSpan.appendChild(document.createTextNode(c.title || c.preview || `Conversation ${cid}`));
-        div.appendChild(titleSpan);
-        const rightWrap = document.createElement('span');
-        rightWrap.className = 'conversation-item-right';
-        if (streamRunning || streamUnread) {
-            const indicator = document.createElement('span');
-            indicator.className = streamRunning ? 'conversation-stream-indicator is-loading' : 'conversation-stream-indicator is-unread';
-            indicator.setAttribute('aria-hidden', 'true');
-            indicator.title = streamRunning ? '模型正在回复' : '回复已完成';
-            if (streamRunning) {
-                indicator.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i>';
-            }
-            rightWrap.appendChild(indicator);
-        }
-        
-        div.onclick = () => {
-            if (div.dataset.longPressOpen === '1') {
-                div.dataset.longPressOpen = '0';
-                return;
-            }
-            // 如果当前正在查看知识库详情，先关闭
-            if (currentViewingKnowledge) {
-                closeKnowledgeView();
-            }
-            markConversationStreamRead(cid);
-            loadConversation(cid);
-        };
-        div.addEventListener('contextmenu', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            showPinContextMenu(e.clientX, e.clientY, {
-                targetType: 'conversation',
-                conversationId: String(cid || ''),
-                conversationTitle: String(c.title || c.preview || `Conversation ${cid}`),
-                pinned: isPinned
-            });
-        });
-        bindConversationItemMobileLongPress(div, () => ({
-            targetType: 'conversation',
-            conversationId: String(cid || ''),
-            conversationTitle: String(c.title || c.preview || `Conversation ${cid}`),
-            pinned: !!(div.dataset.pin === '1')
-        }));
-        
-        // Delete button
-        const delBtn = document.createElement('button');
-        delBtn.className = 'btn-icon-small delete-chat';
-        delBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
-        delBtn.onclick = (e) => {
-            e.stopPropagation();
-            deleteConversation(cid);
-        };
-        rightWrap.appendChild(delBtn);
-        div.appendChild(rightWrap);
-        
-        els.conversationList.appendChild(div);
-    });
+function resetConversationListRenderSignature() {
+    return conversationListController.resetConversationListRenderSignature();
 }
 
 function normalizeLongtermState(raw) {
@@ -16012,19 +16323,8 @@ function setLongtermMode(active, state = {}) {
     renderLongtermPlanPanel();
 }
 
-async function createNewConversation(silent = false, targetMode = null, options = {}) {
-    const opts = (options && typeof options === 'object') ? options : {};
-    const viewer = document.getElementById('knowledgeViewer');
-    if (viewer && viewer.style.display !== 'none') {
-        closeKnowledgeView();
-    }
-    exitLearningFeedComposeMode();
-    currentConversationHasImageHistory = false;
-    const normalizedTargetMode = String(targetMode || '').trim().toLowerCase();
-    const preferNexoraChat = normalizedTargetMode === 'chat' && String(learningSidebarMode || '').trim().toLowerCase() === 'nexora';
-    const resolvedMode = preferNexoraChat ? 'chat' : resolveNewConversationMode(targetMode);
-    const preserveLearningMainPanel = shouldPreserveLearningMainPanelForNewConversation(resolvedMode);
-    currentConversationMode = resolvedMode;
+function resetCurrentConversationLongtermStateForNewConversation(resolvedMode) {
+    currentConversationMode = String(resolvedMode || 'chat').trim() || 'chat';
     currentConversationLongtermState = {
         active: false,
         task: '',
@@ -16035,147 +16335,132 @@ async function createNewConversation(silent = false, targetMode = null, options 
     currentConversationLongtermAutoContinueKind = '';
     currentConversationLongtermConfirmationInFlight = false;
     renderLongtermPlanPanel();
-    if(!silent) {
-        detachCurrentVisibleStreamForNavigation('');
-        // Clear UI
-        currentConversationId = null;
-        syncGenerationStateForCurrentConversation();
-        learningHeaderMode = resolvedMode === 'learning' ? 'learning' : 'chat';
-        learningWelcomeMounted = false;
-        if (!preserveLearningMainPanel) {
-            learningMainMounted = false;
-        }
-        syncNotesForConversation(null);
-        applyLearningSidebarMode(resolvedMode === 'learning' ? 'learning' : 'nexora');
-        clearWorkspaceHierarchySlot();
-        await renderWelcomeScreen();
-        els.conversationTitle.textContent = resolvedMode === 'learning' ? 'New Learning' : 'New Chat';
-        void syncLearningHeaderMode();
-        tokenMiniState.baseInput = 0;
-        tokenMiniState.baseOutput = 0;
-        resetTokenMiniStreamPart();
-        tokenBudgetState.roundInput = 0;
-        resetTokenBudgetBreakdown();
-        applyTokenMiniDisplay(0, 0);
-        renderTokenBudgetUi();
-        if(opts.pushHistory !== false && window.history.pushState) window.history.pushState({}, '', '/chat');
-        
-        // Refresh list to remove active state
-        loadConversations();
+}
+
+function resetLearningStateForNewConversation(resolvedMode, preserveLearningMainPanel) {
+    learningHeaderMode = String(resolvedMode || '').trim() === 'learning' ? 'learning' : 'chat';
+    learningWelcomeMounted = false;
+
+    if (!preserveLearningMainPanel) {
+        learningMainMounted = false;
     }
 }
 
-async function loadConversation(id, options = {}) {
-    const opts = (options && typeof options === 'object') ? options : {};
-    const targetConversationId = String(id || '').trim();
-    if (!targetConversationId) return;
+function resetTokenUiForNewConversation() {
+    tokenMiniState.baseInput = 0;
+    tokenMiniState.baseOutput = 0;
+    resetTokenMiniStreamPart();
+    tokenBudgetState.roundInput = 0;
+    resetTokenBudgetBreakdown();
+    applyTokenMiniDisplay(0, 0);
+    renderTokenBudgetUi();
+}
 
-    if (typeof resetWorkspaceReadonlyConversationState === 'function') {
-        resetWorkspaceReadonlyConversationState();
+function pushNewConversationHistory() {
+    if (window.history.pushState) {
+        window.history.pushState({}, '', '/chat');
+    }
+}
+
+function getWorkspaceFunctionForConversationLoad(name) {
+    const functionName = String(name || '').trim();
+    const fn = functionName ? window[functionName] : null;
+
+    if (typeof fn !== 'function') {
+        throw new Error(`workspace.js 未初始化，缺少 ${functionName}`);
     }
 
-    closeLearningReaderFromHost('host_conversation_navigation', 'nexora');
+    return fn;
+}
 
-    const viewer = document.getElementById('knowledgeViewer');
-    // 如果当前在知识/邮件等 viewer 页面，先统一恢复聊天 Header 与布局
-    if (viewer && viewer.style.display !== 'none') {
-        closeKnowledgeView();
-    }
+function resetWorkspaceReadonlyConversationStateForConversationLoad() {
+    return getWorkspaceFunctionForConversationLoad('resetWorkspaceReadonlyConversationState')();
+}
 
-    const workspaceHeaderContext = normalizeWorkspaceConversationHeaderContext(opts.workspaceContext);
+function normalizeWorkspaceConversationHeaderContextForConversationLoad(context) {
+    return getWorkspaceFunctionForConversationLoad('normalizeWorkspaceConversationHeaderContext')(context);
+}
 
-    if (workspaceHeaderContext) {
-        renderWorkspaceConversationHierarchy(workspaceHeaderContext);
-    } else {
-        clearWorkspaceHierarchySlot();
-    }
+function renderWorkspaceConversationHierarchyForConversationLoad(context) {
+    return getWorkspaceFunctionForConversationLoad('renderWorkspaceConversationHierarchy')(context);
+}
 
-    const deferStreamAttach = !!opts.deferStreamAttach;
+function clearWorkspaceHierarchySlotForConversationLoad() {
+    return getWorkspaceFunctionForConversationLoad('clearWorkspaceHierarchySlot')();
+}
 
-    if (!deferStreamAttach && shouldKeepCurrentRunningConversationPanel(targetConversationId, opts)) {
-        markConversationStreamRead(targetConversationId);
-        attachRunningStreamToCurrentConversation(targetConversationId);
-        syncGenerationStateForCurrentConversation();
-        loadConversations();
-        return;
-    }
-
-    const navToken = beginConversationNavigation(targetConversationId);
-    detachCurrentVisibleStreamForNavigation(targetConversationId);
-
-    // 清空导航栈和知识相关状态（直接跳转到新对话）
+function resetKnowledgeNavigationForConversationLoad() {
     navigationStack = [];
     currentSearchQuery = '';
     currentViewingKnowledge = null;
     originalHeaderState = null;
     cachedPuzzleStates = {};
+}
 
-    currentConversationId = targetConversationId;
-    syncBrowserCurrentConversation();
-    invalidateConversationListForStreamState();
-    syncGenerationStateForCurrentConversation();
+function setLearningHeaderModeForConversationLoad() {
     learningHeaderMode = learningReaderOpened ? 'learning' : 'chat';
-    void syncLearningHeaderMode();
-    clearLearningWelcomeState();
-    syncNotesForConversation(targetConversationId);
-    els.messagesContainer.innerHTML = ''; // Loading state
-    // DOM 已清空，先分离目标对话的旧读取器，再由后续 attach 绑定到新 DOM。
-    detachVisibleStreamReaderBeforeConversationRender(targetConversationId);
-    // Clear turn indicator
+}
+
+function resetTurnIndicatorForConversationLoad() {
     const turnIndicatorLines = document.getElementById('turnIndicatorLines');
+
     if (turnIndicatorLines) {
         turnIndicatorLines.innerHTML = '';
         turnIndicatorLines._turnsData = null;
     }
+
     turnIndicatorState.userMessages = [];
+    turnIndicatorState.fullConversationId = '';
+    turnIndicatorState.hasFullTurnList = false;
+    turnIndicatorState.turnLoadToken += 1;
     hideTurnListPopup();
-    tokenMiniState.conversationId = targetConversationId;
+}
+
+function resetTokenUiForConversationLoad(conversationId) {
+    tokenMiniState.conversationId = String(conversationId || '').trim();
     tokenMiniState.baseInput = 0;
     tokenMiniState.baseOutput = 0;
     resetTokenMiniStreamPart();
     tokenBudgetState.roundInput = 0;
     resetTokenBudgetBreakdown();
     renderTokenMiniFromState();
-    
-    // Update URL
-    if(opts.pushHistory !== false && window.history.pushState) window.history.pushState({}, '', `/chat?cid=${targetConversationId}`);
+}
+
+function pushConversationHistory(conversationId) {
+    const cid = String(conversationId || '').trim();
+
+    if (!cid) {
+        return;
+    }
+
+    if (window.history.pushState) {
+        window.history.pushState({}, '', `/chat?cid=${cid}`);
+    }
+}
+
+async function createNewConversation(silent = false, targetMode = null, options = {}) {
+    return conversationNavigationController.createNewConversation(silent, targetMode, options);
+}
+
+async function loadConversation(id, options = {}) {
+    const preparedLoad = conversationNavigationController.prepareConversationLoad(id, options);
+
+    if (!preparedLoad || preparedLoad.useCurrentRunningPanel) {
+        return;
+    }
+
+    const targetConversationId = preparedLoad.conversationId;
+    const deferStreamAttach = !!preparedLoad.deferStreamAttach;
+    const navToken = preparedLoad.navToken;
 
     try {
-        // Load messages
-        const res = await fetch(`/api/conversations/${encodeURIComponent(targetConversationId)}?include_stream=1`, {
-            signal: navToken.controller.signal
-        });
-        const data = await res.json();
-        if (!isActiveConversationNavigation(navToken)) return;
+        const loadedConversation = await conversationNavigationController.loadConversationDetailWithStreamState(preparedLoad);
+
+        if (!loadedConversation || !loadedConversation.active) return;
+
+        const data = loadedConversation.data;
         
         if (data.success && data.conversation) {
-            applyStreamSessionMetaRows(data.stream_sessions, targetConversationId);
-            markConversationStreamRead(targetConversationId);
-            // 如果 applyStreamSessionMetaRows 未发现 running stream，主动查询服务器
-            const stateAfterMeta = getConversationStreamState(targetConversationId);
-            if (!stateAfterMeta || String(stateAfterMeta.status || '') !== 'running') {
-                await syncStoredConversationStreamStatus({
-                    conversationIds: [targetConversationId],
-                    force: true
-                });
-            }
-            // 如果仍然没有发现 running stream，直接调 status API 兜底
-            const stateAfterSync = getConversationStreamState(targetConversationId);
-            if (!stateAfterSync || String(stateAfterSync.status || '') !== 'running') {
-                try {
-                    const statusRes = await fetch('/api/chat/stream/status', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ conversation_ids: [targetConversationId] })
-                    });
-                    const statusData = await statusRes.json().catch(() => ({}));
-                    if (statusData && Array.isArray(statusData.sessions)) {
-                        applyStreamSessionMetaRows(statusData.sessions, targetConversationId);
-                    }
-                } catch (_) {}
-            }
-            syncGenerationStateForCurrentConversation();
-
             // 缓存服务端 puzzle 状态
             cachedPuzzleStates = (data.conversation.puzzle_states && typeof data.conversation.puzzle_states === 'object')
                 ? data.conversation.puzzle_states : {};
@@ -16186,14 +16471,32 @@ async function loadConversation(id, options = {}) {
             learningHeaderMode = loadedSidebarMode === 'learning' ? 'learning' : 'chat';
             void syncLearningHeaderMode();
             // Render
-            let renderMsgs = data.conversation.messages;
+            let renderMsgs = Array.isArray(data.conversation.messages) ? data.conversation.messages : [];
+            const messageWindow = (data.message_window && typeof data.message_window === 'object')
+                ? data.message_window
+                : {};
+            const renderStartIndexRaw = Number(messageWindow.start_index);
+            const renderStartIndex = Number.isFinite(renderStartIndexRaw) && renderStartIndexRaw >= 0
+                ? Math.floor(renderStartIndexRaw)
+                : 0;
             if (pendingRegenerateFilter.index >= 0
                 && pendingRegenerateFilter.conversationId === targetConversationId
-                && pendingRegenerateFilter.index < renderMsgs.length) {
-                renderMsgs = renderMsgs.slice(0, pendingRegenerateFilter.index + 1);
+                && pendingRegenerateFilter.index >= renderStartIndex
+                && pendingRegenerateFilter.index < renderStartIndex + renderMsgs.length) {
+                renderMsgs = renderMsgs.slice(0, pendingRegenerateFilter.index - renderStartIndex + 1);
                 pendingRegenerateFilter = { conversationId: '', index: -1 };
             }
-            renderMessages(renderMsgs, false, { instant: true });
+            const indexedRenderMsgs = setConversationMessageWindowFromPayload(
+                targetConversationId,
+                renderMsgs,
+                {
+                    ...messageWindow,
+                    start_index: renderStartIndex,
+                    end_index: renderStartIndex + renderMsgs.length - 1
+                }
+            );
+            renderMessages(indexedRenderMsgs, false, { instant: true });
+            void loadConversationTurnIndicatorList(targetConversationId, navToken);
             applyTokenBudgetFromConversationMessages(data.conversation.messages || []);
             if(els.conversationTitle) els.conversationTitle.textContent = data.conversation.title || "Conversation " + targetConversationId;
             if (!deferStreamAttach) {
@@ -16255,12 +16558,7 @@ async function loadConversation(id, options = {}) {
 }
 
 async function deleteConversation(id) {
-    const ok = await confirmModalAsync('删除会话', '确定删除该会话吗？此操作不可撤销。', 'danger');
-    if (!ok) return;
-    removeConversationStreamState(id);
-    await fetch(`/api/conversations/${id}`, { method: 'DELETE' });
-    if(String(currentConversationId || '').trim() === String(id || '').trim()) createNewConversation();
-    loadConversations();
+    return conversationNavigationController.deleteConversation(id);
 }
 
 // --- Messaging ---
@@ -16909,7 +17207,16 @@ async function syncConversationMessagesFromServer(conversationId, options = {}) 
             return false;
         }
         const msgs = convData.conversation.messages || [];
-        renderMessages(msgs, !!silent, { instant: !!instant });
+        const indexedMsgs = setConversationMessageWindowFromPayload(cid, msgs, {
+            start_index: 0,
+            end_index: msgs.length - 1,
+            total: msgs.length,
+            has_more_before: false
+        });
+        renderMessages(indexedMsgs, !!silent, {
+            instant: !!instant,
+            preserveScrollAnchor: true
+        });
         refreshConversationImageHistoryFlag(msgs);
         applyTokenBudgetFromConversationMessages(msgs);
         await refreshTokenMiniForConversation(cid, { keepStreamPart: false });
@@ -16955,11 +17262,27 @@ async function renderConversationSnapshotFromServer(conversationId, options = {}
 
     const instant = opts.instant !== false;
     const silent = opts.silent !== false;
-    renderMessages(snapshot.messages, !!silent, { instant: !!instant });
+    const shouldRender = opts.render !== false;
+    const cid = String(conversationId || currentConversationId || '').trim();
+
+    if (shouldRender) {
+        const indexedMessages = setConversationMessageWindowFromPayload(cid, snapshot.messages, {
+            start_index: 0,
+            end_index: snapshot.messages.length - 1,
+            total: snapshot.messages.length,
+            has_more_before: false
+        });
+        renderMessages(indexedMessages, !!silent, {
+            instant: !!instant,
+            preserveScrollAnchor: opts.preserveScrollAnchor !== false
+        });
+    } else {
+        syncConversationMessageWindowFromSnapshot(cid, snapshot.messages);
+    }
+
     refreshConversationImageHistoryFlag(snapshot.messages);
     applyTokenBudgetFromConversationMessages(snapshot.messages);
 
-    const cid = String(conversationId || currentConversationId || '').trim();
     if (cid) {
         applyStreamSessionMetaRows(snapshot.stream_sessions, cid);
         await refreshTokenMiniForConversation(cid, { keepStreamPart: false });
@@ -17249,283 +17572,55 @@ function stopGeneration() {
 }
 
 function loadActiveStreamResumeState() {
-    try {
-        const raw = localStorage.getItem(STREAM_RESUME_STATE_KEY);
-        if (!raw) return null;
-        const parsed = JSON.parse(raw);
-        if (!parsed || typeof parsed !== 'object') return null;
-        const streamId = String(parsed.stream_id || '').trim();
-        if (!streamId) return null;
-        const assistantIndex = normalizeStreamMessageIndex(parsed.assistant_index);
-        const isRegenerate = readStreamRegenerateFlag(parsed, false);
-        const regenerateIndex = isRegenerate
-            ? (normalizeStreamMessageIndex(parsed.regenerate_index) ?? assistantIndex)
-            : null;
-        return {
-            stream_id: streamId,
-            conversation_id: String(parsed.conversation_id || '').trim(),
-            assistant_index: assistantIndex,
-            is_regenerate: isRegenerate,
-            regenerate_index: regenerateIndex,
-            started_at: Number.isFinite(Number(parsed.started_at)) ? Number(parsed.started_at) : Date.now(),
-            updated_at: Number.isFinite(Number(parsed.updated_at)) ? Number(parsed.updated_at) : Date.now(),
-            last_seq: Number.isFinite(Number(parsed.last_seq)) ? Number(parsed.last_seq) : 0
-        };
-    } catch (_) {
-        return null;
-    }
+    return streamStateController.loadActiveStreamResumeState();
 }
 
 function saveActiveStreamResumeState(nextState) {
-    const incoming = (nextState && typeof nextState === 'object') ? nextState : {};
-    const streamId = String(incoming.stream_id || '').trim();
-    if (!streamId) return;
-    const now = Date.now();
-    const previous = loadActiveStreamResumeState() || {};
-    const assistantIndex = normalizeStreamMessageIndex(incoming.assistant_index) ?? normalizeStreamMessageIndex(previous.assistant_index);
-    const isRegenerate = readStreamRegenerateFlag(incoming, !!previous.is_regenerate);
-    const regenerateIndex = isRegenerate
-        ? (normalizeStreamMessageIndex(incoming.regenerate_index) ?? normalizeStreamMessageIndex(previous.regenerate_index) ?? assistantIndex)
-        : null;
-    const payload = {
-        stream_id: streamId,
-        conversation_id: String(incoming.conversation_id || currentConversationId || '').trim(),
-        assistant_index: assistantIndex,
-        is_regenerate: isRegenerate,
-        regenerate_index: regenerateIndex,
-        started_at: Number.isFinite(Number(incoming.started_at)) ? Number(incoming.started_at) : now,
-        updated_at: now,
-        last_seq: Number.isFinite(Number(incoming.last_seq)) ? Number(incoming.last_seq) : 0
-    };
-    try {
-        localStorage.setItem(STREAM_RESUME_STATE_KEY, JSON.stringify(payload));
-    } catch (_) {
-        // ignore localStorage quota / privacy mode errors
-    }
-    if (payload.conversation_id) {
-        setConversationStreamState(payload.conversation_id, {
-            ...payload,
-            status: 'running',
-            unread: false,
-            stopping: false
-        });
-    }
+    return streamStateController.saveActiveStreamResumeState(nextState);
 }
 
 function attachRunningStreamToCurrentConversation(conversationId) {
-    const cid = String(conversationId || '').trim();
-    if (!cid || !isCurrentConversation(cid)) return;
-
-    const state = getConversationStreamState(cid);
-    if (!state || String(state.status || '') !== 'running') {
-        console.debug('[StreamAttach] no running stream to attach', {
-            conversation_id: cid,
-            has_state: !!state,
-            status: state ? String(state.status || '') : '',
-            stream_id: state ? String(state.stream_id || '') : ''
-        });
-        syncGenerationStateForCurrentConversation();
-        return;
-    }
-
-    if (!String(state.stream_id || '').trim()) {
-        console.warn('[StreamAttach] running conversation has no stream id yet', {
-            conversation_id: cid,
-            has_controller: !!state.controller,
-            controller_aborted: isAbortControllerAborted(state.controller),
-            monitoring: !!state.monitoring
-        });
-        scheduleStreamAttachRetry(cid, 'missing_stream_id');
-        syncGenerationStateForCurrentConversation();
-        return;
-    }
-
-    clearStreamAttachRetry(cid);
-
-    if (!Number.isFinite(Number(state.assistant_index)) || Number(state.assistant_index) < 0) {
-        const regenerateIndex = state.is_regenerate ? normalizeStreamMessageIndex(state.regenerate_index) : null;
-        const nextAssistantIndex = regenerateIndex !== null
-            ? regenerateIndex
-            : (els.messagesContainer
-                ? els.messagesContainer.querySelectorAll('.message').length
-                : 0);
-        setConversationStreamState(cid, {
-            assistant_index: nextAssistantIndex
-        });
-        console.debug('[StreamAttach] inferred assistant index for running stream', {
-            conversation_id: cid,
-            stream_id: String(state.stream_id || ''),
-            assistant_index: nextAssistantIndex
-        });
-    }
-
-    const latestState = getConversationStreamState(cid) || state;
-    if (latestState.controller && !latestState.monitoring && !isAbortControllerAborted(latestState.controller)) {
-        console.debug('[StreamAttach] active stream reader is already bound', {
-            conversation_id: cid,
-            stream_id: String(latestState.stream_id || '')
-        });
-        syncGenerationStateForCurrentConversation();
-        return;
-    }
-
-    void resumeActiveStreamAfterReload({
-        force: true,
-        state: latestState,
-        conversationId: cid,
-        allowSwitch: false,
-        showToast: false
-    });
+    return streamLifecycleController.attachRunningStreamToCurrentConversation(conversationId);
 }
 
 function patchActiveStreamResumeState(patch) {
-    const extra = (patch && typeof patch === 'object') ? patch : {};
-    const prev = loadActiveStreamResumeState() || {};
-    const merged = { ...prev, ...extra };
-    saveActiveStreamResumeState(merged);
+    return streamStateController.patchActiveStreamResumeState(patch);
 }
 
 function clearStreamAttachRetry(conversationId) {
-    const cid = String(conversationId || '').trim();
-    if (!cid) return;
-
-    const timer = streamAttachRetryTimers.get(cid);
-    if (timer) {
-        clearTimeout(timer);
-    }
-    streamAttachRetryTimers.delete(cid);
+    return streamLifecycleController.clearStreamAttachRetry(conversationId);
 }
 
 function clearAllStreamAttachRetries() {
-    streamAttachRetryTimers.forEach((timer) => {
-        if (timer) clearTimeout(timer);
-    });
-    streamAttachRetryTimers.clear();
+    return streamLifecycleController.clearAllStreamAttachRetries();
 }
 
 function scheduleStreamAttachRetry(conversationId, reason = 'pending_stream_id', attempt = 1) {
-    const cid = String(conversationId || '').trim();
-    if (!cid || !isCurrentConversation(cid)) return;
-    if (streamAttachRetryTimers.has(cid)) return;
-
-    const safeAttempt = Math.max(1, Number(attempt) || 1);
-    const delayMs = Math.min(1200, STREAM_ATTACH_RETRY_DELAY_MS * safeAttempt);
-    const timer = setTimeout(async () => {
-        streamAttachRetryTimers.delete(cid);
-
-        if (!isCurrentConversation(cid)) return;
-
-        await syncStoredConversationStreamStatus({ conversationIds: [cid] });
-        const latestState = getConversationStreamState(cid);
-        const latestStatus = String(latestState && latestState.status || '').trim();
-        const latestStreamId = String(latestState && latestState.stream_id || '').trim();
-
-        if (latestStatus === 'running' && latestStreamId) {
-            attachRunningStreamToCurrentConversation(cid);
-            return;
-        }
-
-        if (latestStatus === 'running' && safeAttempt < STREAM_ATTACH_RETRY_MAX) {
-            scheduleStreamAttachRetry(cid, reason, safeAttempt + 1);
-            return;
-        }
-
-        console.error('[StreamAttach] stream id still unresolved for running conversation', {
-            conversation_id: cid,
-            reason: String(reason || ''),
-            attempt: safeAttempt,
-            status: latestStatus || 'none',
-            has_state: !!latestState
-        });
-        syncGenerationStateForCurrentConversation();
-    }, delayMs);
-
-    streamAttachRetryTimers.set(cid, timer);
+    return streamLifecycleController.scheduleStreamAttachRetry(conversationId, reason, attempt);
 }
 
 function clearActiveStreamResumeState() {
-    try {
-        localStorage.removeItem(STREAM_RESUME_STATE_KEY);
-    } catch (_) {
-        // ignore
-    }
+    return streamStateController.clearActiveStreamResumeState();
 }
 
 function normalizeStreamMessageIndex(value) {
-    const n = Number(value);
-    if (!Number.isFinite(n) || n < 0) return null;
-    return Math.floor(n);
+    return streamStateController.normalizeStreamMessageIndex(value);
 }
 
 function readStreamRegenerateFlag(source, defaultValue = false) {
-    const src = (source && typeof source === 'object') ? source : {};
-    if (Object.prototype.hasOwnProperty.call(src, 'is_regenerate')) {
-        return !!src.is_regenerate;
-    }
-    if (Object.prototype.hasOwnProperty.call(src, 'isRegenerate')) {
-        return !!src.isRegenerate;
-    }
-    return !!defaultValue;
+    return streamStateController.readStreamRegenerateFlag(source, defaultValue);
 }
 
-function readStreamAssistantIndexFromMeta(source, fallback = null) {
-    const src = (source && typeof source === 'object') ? source : {};
-    return normalizeStreamMessageIndex(src.assistant_index)
-        ?? normalizeStreamMessageIndex(src.assistantIndex)
-        ?? normalizeStreamMessageIndex(fallback);
+function readStreamAssistantIndexFromMeta(source, defaultIndex = null) {
+    return streamStateController.readStreamAssistantIndexFromMeta(source, defaultIndex);
 }
 
-function readStreamRegenerateIndexFromMeta(source, fallback = null) {
-    const src = (source && typeof source === 'object') ? source : {};
-    return normalizeStreamMessageIndex(src.regenerate_index)
-        ?? normalizeStreamMessageIndex(src.regenerateIndex)
-        ?? normalizeStreamMessageIndex(fallback);
+function readStreamRegenerateIndexFromMeta(source, defaultIndex = null) {
+    return streamStateController.readStreamRegenerateIndexFromMeta(source, defaultIndex);
 }
 
 function stripHistoryTimeMarkerEchoForStream(text) {
-    const value = String(text || '');
-
-    if (!value) {
-        return { text: '', removed: false, pending: false };
-    }
-
-    const timeMatch = value.match(/^\[TIME\]\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s*(?:\r?\n)?/);
-
-    if (timeMatch) {
-        return { text: value.slice(timeMatch[0].length), removed: true, pending: false };
-    }
-
-    const oldMatch = value.match(/^\[\{TIME:\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\}?\]?\s*(?:\r?\n)?/);
-
-    if (oldMatch) {
-        return { text: value.slice(oldMatch[0].length), removed: true, pending: false };
-    }
-
-    const newMatch = value.match(/^\[历史消息时间:\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\]\s*(?:\([^)\n]*不要在回答中复述[^)\n]*\)\s*)?(?:\r?\n)?/);
-
-    if (newMatch) {
-        return { text: value.slice(newMatch[0].length), removed: true, pending: false };
-    }
-
-    const waitPrefixes = ['[TIME]', '[{TIME:', '[历史消息时间:'];
-
-    if (waitPrefixes.some((prefix) => prefix.startsWith(value))) {
-        return { text: '', removed: false, pending: true };
-    }
-
-    if (value.startsWith('[{TIME:') && !value.includes('\n') && value.length < 64) {
-        return { text: '', removed: false, pending: true };
-    }
-
-    if (value.startsWith('[TIME]') && !value.includes('\n') && value.length < 64) {
-        return { text: '', removed: false, pending: true };
-    }
-
-    if (value.startsWith('[历史消息时间:') && !value.includes('\n') && value.length < 96) {
-        return { text: '', removed: false, pending: true };
-    }
-
-    return { text: value, removed: false, pending: false };
+    return streamStateController.stripHistoryTimeMarkerEchoForStream(text);
 }
 
 function resolveAssistantIndexForStreamResume(state, fallbackIndex = null) {
@@ -17555,342 +17650,74 @@ function resolveAssistantIndexForStreamResume(state, fallbackIndex = null) {
 }
 
 function isAbortControllerAborted(controller) {
-    return !!(controller && controller.signal && controller.signal.aborted);
+    return streamLifecycleController.isAbortControllerAborted(controller);
 }
 
 function markStreamControllerDetachOnly(controller, context = {}) {
-    if (!controller) return false;
-    if (isAbortControllerAborted(controller)) return false;
-
-    try {
-        controller.__nexoraDetachOnly = true;
-        controller.__nexoraSuppressDetachAutoAttach = !!context.suppressAutoAttach;
-        controller.abort();
-        console.debug('[StreamDetach] detached visible stream reader', {
-            conversation_id: String(context.conversation_id || ''),
-            stream_id: String(context.stream_id || ''),
-            reason: String(context.reason || 'navigation'),
-            suppress_auto_attach: !!context.suppressAutoAttach
-        });
-        return true;
-    } catch (abortError) {
-        console.error('[StreamDetach] abort visible stream reader failed', {
-            conversation_id: String(context.conversation_id || ''),
-            stream_id: String(context.stream_id || ''),
-            error: abortError
-        });
-        return false;
-    }
+    return streamLifecycleController.markStreamControllerDetachOnly(controller, context);
 }
 
 function shouldAutoAttachDetachedStream(controller) {
-    return !(controller && controller.__nexoraSuppressDetachAutoAttach);
+    return streamLifecycleController.shouldAutoAttachDetachedStream(controller);
 }
 
 function detachCurrentVisibleStreamForNavigation(nextConversationId = '') {
-    const activeCid = String(currentConversationId || '').trim();
-    const nextCid = String(nextConversationId || '').trim();
-    if (!activeCid || (nextCid && activeCid === nextCid)) return;
-
-    const state = getConversationStreamState(activeCid);
-    if (state && String(state.status || '') === 'running') {
-        const streamId = String(state.stream_id || '').trim();
-        const controller = state.controller || null;
-        const patch = {
-            status: 'running',
-            monitoring: false
-        };
-
-        if (streamId && controller) {
-            markStreamControllerDetachOnly(controller, {
-                conversation_id: activeCid,
-                stream_id: streamId,
-                reason: 'conversation_navigation'
-            });
-            patch.controller = null;
-        } else if (controller && !isAbortControllerAborted(controller)) {
-            try { controller.abort(); } catch (_) {}
-            patch.controller = null;
-        }
-
-        const latestState = setConversationStreamState(activeCid, patch) || state;
-
-        if (streamId) {
-            attachStreamSessionMonitor({
-                ...latestState,
-                conversation_id: activeCid,
-                stream_id: streamId,
-                controller: null,
-                monitoring: false
-            });
-        }
-    }
+    return streamLifecycleController.detachCurrentVisibleStreamForNavigation(nextConversationId);
 }
 
 function detachVisibleStreamReaderBeforeConversationRender(conversationId = '') {
-    const cid = String(conversationId || '').trim();
-    if (!cid) return;
-
-    const state = getConversationStreamState(cid);
-    if (!state || String(state.status || '') !== 'running') return;
-
-    const controller = state.controller || null;
-    if (!controller || isAbortControllerAborted(controller)) return;
-
-    const streamId = String(state.stream_id || '').trim();
-    const patch = {
-        status: 'running',
-        controller: null,
-        monitoring: false
-    };
-
-    if (streamId && !state.monitoring) {
-        markStreamControllerDetachOnly(controller, {
-            conversation_id: cid,
-            stream_id: streamId,
-            reason: 'conversation_panel_reload',
-            suppressAutoAttach: true
-        });
-        setConversationStreamState(cid, patch);
-        return;
-    }
-
-    try {
-        controller.abort();
-    } catch (abortError) {
-        console.error('[StreamDetach] abort stale stream reader before conversation render failed', {
-            conversation_id: cid,
-            stream_id: streamId,
-            monitoring: !!state.monitoring,
-            error: abortError
-        });
-    }
-
-    setConversationStreamState(cid, patch);
+    return streamLifecycleController.detachVisibleStreamReaderBeforeConversationRender(conversationId);
 }
 
 function attachDetachedStreamConsumer(conversationId, state = null) {
-    const cid = String(conversationId || '').trim();
-    if (!cid) return;
-
-    const latestState = normalizeConversationStreamState(state || getConversationStreamState(cid));
-    if (!latestState || !String(latestState.stream_id || '').trim()) return;
-
-    const detachedState = {
-        ...latestState,
-        conversation_id: cid,
-        controller: null,
-        monitoring: false
-    };
-
-    if (isCurrentConversation(cid)) {
-        const existingState = getConversationStreamState(cid);
-        if (
-            existingState
-            && existingState.monitoring
-            && existingState.controller
-            && !isAbortControllerAborted(existingState.controller)
-        ) {
-            try {
-                existingState.controller.abort();
-            } catch (abortError) {
-                console.error('[StreamAttach] abort background monitor for foreground takeover failed', {
-                    conversation_id: cid,
-                    stream_id: String(existingState.stream_id || ''),
-                    error: abortError
-                });
-            }
-        }
-
-        void resumeActiveStreamAfterReload({
-            force: true,
-            state: detachedState,
-            conversationId: cid,
-            allowSwitch: false,
-            showToast: false
-        });
-        return;
-    }
-
-    attachStreamSessionMonitor(detachedState);
+    return streamLifecycleController.attachDetachedStreamConsumer(conversationId, state);
 }
 
 function normalizeConversationStreamState(raw) {
-    const src = (raw && typeof raw === 'object') ? raw : {};
-    const conversationId = String(src.conversation_id || src.conversationId || '').trim();
-    const streamId = String(src.stream_id || src.streamId || '').trim();
-    const status = String(src.status || (streamId ? 'running' : '')).trim().toLowerCase();
-    if (!conversationId) return null;
-    const assistantIndex = normalizeStreamMessageIndex(src.assistant_index);
-    const isRegenerate = readStreamRegenerateFlag(src, false);
-    const regenerateIndex = isRegenerate
-        ? (normalizeStreamMessageIndex(src.regenerate_index) ?? assistantIndex)
-        : null;
-    return {
-        conversation_id: conversationId,
-        stream_id: streamId,
-        status: status === 'done' ? 'done' : 'running',
-        unread: !!src.unread,
-        assistant_index: assistantIndex,
-        is_regenerate: isRegenerate,
-        regenerate_index: regenerateIndex,
-        started_at: Number.isFinite(Number(src.started_at)) ? Number(src.started_at) : Date.now(),
-        updated_at: Number.isFinite(Number(src.updated_at)) ? Number(src.updated_at) : Date.now(),
-        last_seq: Number.isFinite(Number(src.last_seq)) ? Number(src.last_seq) : 0,
-        error: String(src.error || '').trim(),
-        controller: src.controller || null,
-        monitoring: !!src.monitoring,
-        stopping: !!src.stopping
-    };
+    return streamStateController.normalizeConversationStreamState(raw);
 }
 
 function serializeConversationStreamState(state) {
-    const normalized = normalizeConversationStreamState(state);
-    if (!normalized) return null;
-    return {
-        conversation_id: normalized.conversation_id,
-        stream_id: normalized.stream_id,
-        status: normalized.status,
-        unread: !!normalized.unread,
-        assistant_index: normalized.assistant_index,
-        is_regenerate: !!normalized.is_regenerate,
-        regenerate_index: normalized.regenerate_index,
-        started_at: normalized.started_at,
-        updated_at: normalized.updated_at,
-        last_seq: normalized.last_seq,
-        error: normalized.error,
-        stopping: !!normalized.stopping
-    };
+    return streamStateController.serializeConversationStreamState(state);
 }
 
 function hydrateConversationStreamStatesFromStorage() {
-    conversationStreamStates = new Map();
-    try {
-        const raw = localStorage.getItem(STREAM_RESUME_STATES_KEY);
-        const parsed = raw ? JSON.parse(raw) : {};
-        const rows = Array.isArray(parsed)
-            ? parsed
-            : Object.keys(parsed || {}).map((key) => ({ ...(parsed[key] || {}), conversation_id: parsed[key] && parsed[key].conversation_id ? parsed[key].conversation_id : key }));
-        rows.forEach((row) => {
-            const normalized = normalizeConversationStreamState(row);
-            if (!normalized) return;
-            if (normalized.status === 'running' && !normalized.stream_id) return;
-            conversationStreamStates.set(normalized.conversation_id, normalized);
-        });
-    } catch (_) {
-        conversationStreamStates = new Map();
-    }
+    return streamStateController.hydrateConversationStreamStatesFromStorage();
 }
 
 function persistConversationStreamStates() {
-    try {
-        const payload = {};
-        conversationStreamStates.forEach((state, cid) => {
-            const serialized = serializeConversationStreamState(state);
-            if (serialized) payload[cid] = serialized;
-        });
-        localStorage.setItem(STREAM_RESUME_STATES_KEY, JSON.stringify(payload));
-    } catch (_) {
-        // ignore localStorage quota / privacy mode errors
-    }
+    return streamStateController.persistConversationStreamStates();
 }
 
 function invalidateConversationListForStreamState() {
-    conversationListRenderSignature = '';
+    resetConversationListRenderSignature();
     if (Array.isArray(conversationListCache) && conversationListCache.length) {
         renderConversationList(conversationListCache);
     }
 }
 
 function getConversationStreamState(conversationId) {
-    const cid = String(conversationId || '').trim();
-    if (!cid) return null;
-    return conversationStreamStates.get(cid) || null;
+    return streamStateController.getConversationStreamState(conversationId);
 }
 
 function buildConversationStreamListStateSignature(state) {
-    const normalized = normalizeConversationStreamState(state);
-    if (!normalized) return '';
-    return [
-        normalized.status,
-        normalized.unread ? '1' : '0',
-        normalized.stream_id ? '1' : '0',
-        normalized.error ? '1' : '0'
-    ].join('|');
+    return streamStateController.buildConversationStreamListStateSignature(state);
 }
 
 function isConversationStreamRunning(conversationId) {
-    const state = getConversationStreamState(conversationId);
-    return !!(state && String(state.status || '') === 'running');
+    return streamStateController.isConversationStreamRunning(conversationId);
 }
 
 function setConversationStreamState(conversationId, patch = {}) {
-    const cid = String(conversationId || (patch && patch.conversation_id) || '').trim();
-    if (!cid) return null;
-    const existing = getConversationStreamState(cid);
-    const prev = existing || { conversation_id: cid };
-    const prevListSignature = existing ? buildConversationStreamListStateSignature(existing) : '';
-    const merged = normalizeConversationStreamState({
-        ...prev,
-        ...(patch || {}),
-        conversation_id: cid,
-        updated_at: Date.now()
-    });
-    if (!merged) return null;
-    if (prev && prev.controller && !(patch && Object.prototype.hasOwnProperty.call(patch, 'controller'))) {
-        merged.controller = prev.controller;
-    }
-    conversationStreamStates.set(cid, merged);
-    persistConversationStreamStates();
-    syncGenerationStateForCurrentConversation({ render: false });
-    if (buildConversationStreamListStateSignature(merged) !== prevListSignature) {
-        invalidateConversationListForStreamState();
-    }
-    return merged;
+    return streamStateController.setConversationStreamState(conversationId, patch);
 }
 
 function removeConversationStreamState(conversationId) {
-    const cid = String(conversationId || '').trim();
-    if (!cid) return;
-    clearStreamAttachRetry(cid);
-    conversationStreamStates.delete(cid);
-    persistConversationStreamStates();
-    syncGenerationStateForCurrentConversation({ render: false });
-    invalidateConversationListForStreamState();
+    return streamStateController.removeConversationStreamState(conversationId);
 }
 
 function moveConversationStreamState(fromConversationId, toConversationId) {
-    const fromCid = String(fromConversationId || '').trim();
-    const toCid = String(toConversationId || '').trim();
-    if (!toCid) return null;
-    if (!fromCid || fromCid === toCid) {
-        return setConversationStreamState(toCid, { conversation_id: toCid });
-    }
-
-    const fromState = getConversationStreamState(fromCid);
-    if (!fromState) {
-        return setConversationStreamState(toCid, { conversation_id: toCid });
-    }
-
-    const toState = getConversationStreamState(toCid) || {};
-    const merged = normalizeConversationStreamState({
-        ...fromState,
-        ...toState,
-        conversation_id: toCid,
-        stream_id: toState.stream_id || fromState.stream_id,
-        status: toState.status || fromState.status,
-        unread: !!(toState.unread || fromState.unread),
-        controller: fromState.controller || toState.controller || null,
-        monitoring: !!(fromState.monitoring || toState.monitoring),
-        updated_at: Date.now()
-    });
-    if (!merged) return null;
-    conversationStreamStates.delete(fromCid);
-    conversationStreamStates.set(toCid, merged);
-    persistConversationStreamStates();
-    syncGenerationStateForCurrentConversation({ render: false });
-    invalidateConversationListForStreamState();
-    return merged;
+    return streamStateController.moveConversationStreamState(fromConversationId, toConversationId);
 }
 
 function isCurrentConversation(conversationId) {
@@ -17898,41 +17725,15 @@ function isCurrentConversation(conversationId) {
 }
 
 function markConversationStreamFinished(conversationId, options = {}) {
-    const cid = String(conversationId || '').trim();
-    if (!cid) return;
-    clearStreamAttachRetry(cid);
-    const opts = (options && typeof options === 'object') ? options : {};
-    const activeCid = String(currentConversationId || '').trim();
-    if (cid && activeCid === cid && !opts.forceUnread) {
-        removeConversationStreamState(cid);
-        return;
-    }
-    setConversationStreamState(cid, {
-        status: 'done',
-        unread: true,
-        controller: null,
-        monitoring: false,
-        stopping: false,
-        error: String(opts.error || '').trim()
-    });
+    return streamStateController.markConversationStreamFinished(conversationId, options);
 }
 
 function isTerminalStreamSessionChunk(chunk) {
-    if (!chunk || typeof chunk !== 'object') return false;
-    if (String(chunk.type || '').trim() !== 'stream_session') return false;
-
-    const status = String(chunk.status || '').trim().toLowerCase();
-    return status === 'done' || chunk.done === true;
+    return streamStateController.isTerminalStreamSessionChunk(chunk);
 }
 
 function markConversationStreamRead(conversationId) {
-    const state = getConversationStreamState(conversationId);
-    if (!state) return;
-    if (String(state.status || '') === 'done') {
-        removeConversationStreamState(conversationId);
-    } else {
-        setConversationStreamState(conversationId, { unread: false });
-    }
+    return streamStateController.markConversationStreamRead(conversationId);
 }
 
 function syncGenerationStateForCurrentConversation(options = {}) {
@@ -17948,370 +17749,43 @@ function syncGenerationStateForCurrentConversation(options = {}) {
 }
 
 function getConversationStreamIdsForStatusSync() {
-    const ids = [];
-    conversationStreamStates.forEach((state) => {
-        const sid = String(state && state.stream_id || '').trim();
-        if (sid) ids.push(sid);
-    });
-    return ids;
+    return streamStateController.getConversationStreamIdsForStatusSync();
 }
 
 function applyStreamSessionMetaRows(rows, sourceConversationId = '') {
-    const sessions = Array.isArray(rows) ? rows : [];
-    sessions.forEach((meta) => {
-        if (!meta || typeof meta !== 'object') return;
-
-        const cid = String(meta.conversation_id || sourceConversationId || '').trim();
-        const sid = String(meta.stream_id || '').trim();
-        const status = String(meta.status || '').trim().toLowerCase();
-        if (!cid || !sid) return;
-
-        const existing = getConversationStreamState(cid) || {};
-        const sameStream = String(existing.stream_id || '').trim() === sid;
-        if (status === 'running') {
-            const metaIsRegenerate = readStreamRegenerateFlag(meta, sameStream ? !!existing.is_regenerate : false);
-            const metaAssistantIndex = readStreamAssistantIndexFromMeta(
-                meta,
-                sameStream ? existing.assistant_index : null
-            );
-            const metaRegenerateIndex = metaIsRegenerate
-                ? readStreamRegenerateIndexFromMeta(meta, sameStream ? existing.regenerate_index : metaAssistantIndex)
-                : null;
-
-            setConversationStreamState(cid, {
-                conversation_id: cid,
-                stream_id: sid,
-                status: 'running',
-                unread: !!existing.unread,
-                is_regenerate: metaIsRegenerate,
-                assistant_index: metaAssistantIndex,
-                regenerate_index: metaRegenerateIndex,
-                last_seq: Number.isFinite(Number(meta.last_seq)) ? Number(meta.last_seq) : Number(existing.last_seq || 0),
-                stopping: !!existing.stopping,
-                error: String(meta.error || existing.error || '').trim()
-            });
-            return;
-        }
-
-        if (sameStream) {
-            markConversationStreamFinished(cid, {
-                error: String(meta.error || '').trim()
-            });
-        }
-    });
+    return streamStateController.applyStreamSessionMetaRows(rows, sourceConversationId);
 }
 
 async function syncStoredConversationStreamStatus(options = {}) {
-    const opts = (options && typeof options === 'object') ? options : {};
-    const streamIds = getConversationStreamIdsForStatusSync();
-    const conversationIds = Array.isArray(opts.conversationIds)
-        ? opts.conversationIds.map((item) => String(item || '').trim()).filter(Boolean)
-        : [];
-    if (!streamIds.length && !conversationIds.length) return;
-    if (backgroundStreamStatusSyncInFlight && !opts.force) return;
-    backgroundStreamStatusSyncInFlight = true;
-    const finishedVisibleConversationIds = [];
-    try {
-        const res = await fetch('/api/chat/stream/status', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                stream_ids: streamIds,
-                conversation_ids: conversationIds
-            })
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data || data.success === false) return;
-        const rows = Array.isArray(data.sessions) ? data.sessions : [];
-        const metaById = new Map(rows.map((row) => [String(row && row.stream_id || '').trim(), row]));
-        const metaByCid = new Map(rows.filter((row) => row && row.conversation_id).map((row) => [String(row.conversation_id || '').trim(), row]));
-        conversationStreamStates.forEach((state, cid) => {
-            if (!state || String(state.status || '') !== 'running') return;
-            if (state.controller) return;
-            const sid = String(state.stream_id || '').trim();
-            let meta = sid ? metaById.get(sid) : null;
-            if (!meta && !sid) {
-                // 本地无 stream_id，尝试从服务器响应中通过 conversation_id 发现
-                const discovered = metaByCid.get(cid) || null;
-                if (discovered && String(discovered.status || '').trim().toLowerCase() === 'running') {
-                    const discoveredSid = String(discovered.stream_id || '').trim();
-                    if (discoveredSid) {
-                        setConversationStreamState(cid, { stream_id: discoveredSid });
-                        meta = discovered;
-                    }
-                }
-            }
-            if (!meta) {
-                markConversationStreamFinished(cid, { error: 'stream session not found' });
-                return;
-            }
-            const status = String(meta.status || '').trim().toLowerCase();
-            if (status !== 'running') {
-                markConversationStreamFinished(cid, { error: String(meta.error || '') });
-                if (isCurrentConversation(cid)) {
-                    finishedVisibleConversationIds.push(cid);
-                }
-                return;
-            }
-            const metaCid = String(meta.conversation_id || cid).trim() || cid;
-            if (metaCid !== cid) {
-                moveConversationStreamState(cid, metaCid);
-            }
-            setConversationStreamState(metaCid, {
-                conversation_id: metaCid,
-                status: 'running'
-            });
-        });
-        applyStreamSessionMetaRows(rows);
-        for (const cid of finishedVisibleConversationIds) {
-            await renderConversationSnapshotFromServer(cid, { instant: true, silent: true });
-        }
-    } catch (_) {
-        // Network errors should not clear local stream state.
-    } finally {
-        backgroundStreamStatusSyncInFlight = false;
-    }
+    return streamStatusSyncController.syncStoredConversationStreamStatus(options);
 }
 
 function getStoredRunningStreamStates() {
-    const rows = [];
-    conversationStreamStates.forEach((state) => {
-        const normalized = normalizeConversationStreamState(state);
-        if (!normalized) return;
-        if (String(normalized.status || '') !== 'running') return;
-        rows.push(normalized);
-    });
-    return rows;
+    return streamStateController.getStoredRunningStreamStates();
 }
 
 function startStoredStreamSessionMonitors(options = {}) {
-    const opts = (options && typeof options === 'object') ? options : {};
-    const skipConversationId = String(opts.skipConversationId || '').trim();
-    getStoredRunningStreamStates().forEach((state) => {
-        const cid = String(state.conversation_id || '').trim();
-        if (skipConversationId && cid === skipConversationId) return;
-        if (state.controller) return;
-        attachStreamSessionMonitor(state);
-    });
+    return streamStatusSyncController.startStoredStreamSessionMonitors(options);
 }
 
 async function tickConversationStreamStatusSync() {
-    const runningStates = getStoredRunningStreamStates();
-    if (!runningStates.length) return;
-
-    startStoredStreamSessionMonitors({
-        skipConversationId: String(currentConversationId || '').trim()
-    });
-    await syncStoredConversationStreamStatus();
+    return streamStatusSyncController.tickConversationStreamStatusSync();
 }
 
 function startConversationStreamStatusSync() {
-    if (streamStatusSyncTimer) return;
-
-    streamStatusSyncTimer = setInterval(() => {
-        void tickConversationStreamStatusSync();
-    }, STREAM_STATUS_SYNC_INTERVAL_MS);
+    return streamStatusSyncController.startConversationStreamStatusSync();
 }
 
 function stopConversationStreamStatusSync() {
-    if (!streamStatusSyncTimer) return;
-
-    clearInterval(streamStatusSyncTimer);
-    streamStatusSyncTimer = null;
+    return streamStatusSyncController.stopConversationStreamStatusSync();
 }
 
 function attachStreamSessionMonitor(state) {
-    const normalized = normalizeConversationStreamState(state);
-    if (!normalized || !normalized.stream_id) return;
-
-    const streamId = String(normalized.stream_id || '').trim();
-    if (!streamId || streamSessionMonitorIds.has(streamId)) return;
-
-    streamSessionMonitorIds.add(streamId);
-    void consumeStreamSessionMonitor(normalized).finally(() => {
-        streamSessionMonitorIds.delete(streamId);
-    });
+    return streamSessionMonitorController.attachStreamSessionMonitor(state);
 }
 
 async function consumeStreamSessionMonitor(state) {
-    const streamId = String(state.stream_id || '').trim();
-    let monitorConversationId = String(state.conversation_id || '').trim();
-    const fromSeq = Number.isFinite(Number(state.last_seq)) ? Number(state.last_seq) : 0;
-    const controller = new AbortController();
-    let monitorCompleted = false;
-
-    if (monitorConversationId) {
-        setConversationStreamState(monitorConversationId, {
-            controller,
-            monitoring: true,
-            status: 'running'
-        });
-    }
-
-    try {
-        const response = await fetch('/api/chat/stream/reconnect', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-            body: JSON.stringify({
-                stream_id: streamId,
-                from_seq: fromSeq
-            }),
-            signal: controller.signal
-        });
-
-        if (!response.ok || !response.body) {
-            throw new Error(`stream monitor reconnect failed: HTTP ${response.status}`);
-        }
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-
-        while (true) {
-            const { value, done } = await reader.read();
-
-            if (value) {
-                buffer += decoder.decode(value, { stream: !done });
-            }
-
-            if (done) {
-                buffer += decoder.decode();
-            }
-
-            const lines = buffer.split('\n');
-            buffer = done ? '' : (lines.pop() || '');
-
-            for (const line of lines) {
-                if (!line.startsWith('data: ')) continue;
-
-                const payloadText = line.slice(6);
-                if (payloadText === '[DONE]') {
-                    monitorCompleted = true;
-                    if (monitorConversationId) {
-                        markConversationStreamFinished(monitorConversationId);
-                    }
-                    continue;
-                }
-
-                let chunk = null;
-
-                try {
-                    chunk = JSON.parse(payloadText);
-                } catch (parseError) {
-                    console.error('[StreamMonitor] invalid SSE payload', parseError, payloadText);
-                    continue;
-                }
-
-                if (!chunk || typeof chunk !== 'object') continue;
-
-                const incomingCid = String(chunk.conversation_id || '').trim();
-                if (incomingCid && incomingCid !== monitorConversationId) {
-                    moveConversationStreamState(monitorConversationId, incomingCid);
-                    monitorConversationId = incomingCid;
-                } else if (incomingCid) {
-                    monitorConversationId = incomingCid;
-                }
-
-                if (Number.isFinite(Number(chunk._stream_seq)) && monitorConversationId) {
-                    setConversationStreamState(monitorConversationId, {
-                        last_seq: Number(chunk._stream_seq)
-                    });
-                }
-
-                if (chunk.type === 'stream_cancel_requested') {
-                    if (monitorConversationId) {
-                        setConversationStreamState(monitorConversationId, {
-                            stopping: true,
-                            monitoring: true
-                        });
-                    }
-                    continue;
-                }
-
-                if (chunk.type === 'stream_session') {
-                    const sid = String(chunk.stream_id || streamId || '').trim();
-                    const sessionCid = String(chunk.conversation_id || monitorConversationId || '').trim();
-
-                    if (sessionCid && sessionCid !== monitorConversationId) {
-                        moveConversationStreamState(monitorConversationId, sessionCid);
-                        monitorConversationId = sessionCid;
-                    } else if (sessionCid) {
-                        monitorConversationId = sessionCid;
-                    }
-
-                    if (monitorConversationId) {
-                        const previousState = getConversationStreamState(monitorConversationId) || {};
-                        const sameStream = String(previousState.stream_id || '').trim() === sid;
-                        const sessionIsRegenerate = readStreamRegenerateFlag(chunk, sameStream ? !!previousState.is_regenerate : false);
-                        const sessionAssistantIndex = readStreamAssistantIndexFromMeta(
-                            chunk,
-                            sameStream ? previousState.assistant_index : null
-                        );
-                        const sessionRegenerateIndex = sessionIsRegenerate
-                            ? readStreamRegenerateIndexFromMeta(chunk, sameStream ? previousState.regenerate_index : sessionAssistantIndex)
-                            : null;
-
-                        setConversationStreamState(monitorConversationId, {
-                            stream_id: sid,
-                            status: 'running',
-                            is_regenerate: sessionIsRegenerate,
-                            assistant_index: sessionAssistantIndex,
-                            regenerate_index: sessionRegenerateIndex,
-                            controller,
-                            monitoring: true,
-                            stopping: !!chunk.cancel_requested
-                        });
-                    }
-
-                    if (isTerminalStreamSessionChunk(chunk)) {
-                        monitorCompleted = true;
-                        if (monitorConversationId) {
-                            markConversationStreamFinished(monitorConversationId, {
-                                error: String(chunk.error || '').trim()
-                            });
-                        }
-                    }
-                }
-            }
-
-            if (done) break;
-        }
-    } catch (error) {
-        if (error && error.name === 'AbortError') return;
-
-        console.error('[StreamMonitor] SSE monitor failed', {
-            stream_id: streamId,
-            conversation_id: monitorConversationId,
-            error: String((error && error.message) || error || '')
-        });
-
-        if (monitorConversationId) {
-            setConversationStreamState(monitorConversationId, {
-                controller: null,
-                monitoring: false,
-                error: String((error && error.message) || error || 'stream monitor failed')
-            });
-        }
-    } finally {
-        if (monitorConversationId) {
-            const latest = getConversationStreamState(monitorConversationId);
-            if (latest && latest.controller === controller) {
-                setConversationStreamState(monitorConversationId, {
-                    controller: null,
-                    monitoring: false
-                });
-            }
-        }
-
-        loadConversations();
-        if (monitorCompleted && monitorConversationId && isCurrentConversation(monitorConversationId)) {
-            await renderConversationSnapshotFromServer(monitorConversationId, {
-                instant: true,
-                silent: true
-            });
-        }
-    }
+    return streamSessionMonitorController.consumeStreamSessionMonitor(state);
 }
 
 function findAssistantIndexAfterUserMessage(userIndex) {
@@ -18429,163 +17903,27 @@ function formatToolsModeLabel(mode) {
 }
 
 function hasLikelyMathForThinkingStream(text) {
-    return /(\$\$|\\\(|\\\[|\\begin\{(?:equation\*?|align\*?|alignat\*?|gather\*?|CD)\}|(^|[^\\])\$[^$\s])/m.test(String(text || ''));
+    return getNexoraChatStreaming().hasLikelyMathForThinkingStream(text);
 }
 
 function streamMathIsEscapedAt(text, index) {
-    const src = String(text || '');
-    let slashCount = 0;
-    for (let i = Number(index) - 1; i >= 0 && src[i] === '\\'; i -= 1) {
-        slashCount += 1;
-    }
-    return slashCount % 2 === 1;
+    return getNexoraChatStreaming().streamMathIsEscapedAt(text, index);
 }
 
 function streamMathFindOpenTailInfo(text) {
-    const src = String(text || '');
-    if (!src) return { index: -1, type: '' };
-    const envNames = ['equation', 'equation*', 'align', 'align*', 'alignat', 'alignat*', 'gather', 'gather*', 'CD'];
-    let activeType = '';
-    let activeIndex = -1;
-
-    for (let i = 0; i < src.length; i += 1) {
-        if (!activeType) {
-            let openedEnv = '';
-            for (const envName of envNames) {
-                const token = `\\begin{${envName}}`;
-                if (src.slice(i, i + token.length) === token && !streamMathIsEscapedAt(src, i)) {
-                    openedEnv = envName;
-                    break;
-                }
-            }
-            if (openedEnv) {
-                activeType = `env:${openedEnv}`;
-                activeIndex = i;
-                i += (`\\begin{${openedEnv}}`.length - 1);
-                continue;
-            }
-            if (src.slice(i, i + 2) === '$$' && !streamMathIsEscapedAt(src, i)) {
-                activeType = '$$';
-                activeIndex = i;
-                i += 1;
-                continue;
-            }
-            if (src.slice(i, i + 2) === '\\[' && !streamMathIsEscapedAt(src, i)) {
-                activeType = '\\[';
-                activeIndex = i;
-                i += 1;
-                continue;
-            }
-            if (src.slice(i, i + 2) === '\\(' && !streamMathIsEscapedAt(src, i)) {
-                activeType = '\\(';
-                activeIndex = i;
-                i += 1;
-                continue;
-            }
-            if (
-                src[i] === '$' &&
-                !streamMathIsEscapedAt(src, i) &&
-                src[i - 1] !== '$' &&
-                src[i + 1] !== '$'
-            ) {
-                activeType = '$';
-                activeIndex = i;
-            }
-            continue;
-        }
-
-        if (activeType.startsWith('env:')) {
-            const envName = activeType.slice(4);
-            const closeToken = `\\end{${envName}}`;
-            if (src.slice(i, i + closeToken.length) === closeToken && !streamMathIsEscapedAt(src, i)) {
-                activeType = '';
-                activeIndex = -1;
-                i += closeToken.length - 1;
-            }
-            continue;
-        }
-        if (activeType === '$$') {
-            if (src.slice(i, i + 2) === '$$' && !streamMathIsEscapedAt(src, i)) {
-                activeType = '';
-                activeIndex = -1;
-                i += 1;
-            }
-            continue;
-        }
-        if (activeType === '\\[') {
-            if (src.slice(i, i + 2) === '\\]' && !streamMathIsEscapedAt(src, i)) {
-                activeType = '';
-                activeIndex = -1;
-                i += 1;
-            }
-            continue;
-        }
-        if (activeType === '\\(') {
-            if (src.slice(i, i + 2) === '\\)' && !streamMathIsEscapedAt(src, i)) {
-                activeType = '';
-                activeIndex = -1;
-                i += 1;
-            }
-            continue;
-        }
-        if (
-            activeType === '$' &&
-            src[i] === '$' &&
-            !streamMathIsEscapedAt(src, i) &&
-            src[i - 1] !== '$' &&
-            src[i + 1] !== '$'
-        ) {
-            activeType = '';
-            activeIndex = -1;
-        }
-    }
-
-    return activeType ? { index: activeIndex, type: activeType } : { index: -1, type: '' };
+    return getNexoraChatStreaming().streamMathFindOpenTailInfo(text);
 }
 
 function streamMathBuildProvisionalClosedTail(rawTail, openType) {
-    const tail = String(rawTail || '');
-    const type = String(openType || '');
-    if (!tail || !type) return tail;
-    if (type.startsWith('env:')) {
-        const envName = type.slice(4).trim();
-        if (!envName) return tail;
-        return `${tail}\\end{${envName}}`;
-    }
-    if (type === '$$') return `${tail}$$`;
-    if (type === '\\[') return `${tail}\\]`;
-    if (type === '\\(') return `${tail}\\)`;
-    if (type === '$') return `${tail}$`;
-    return tail;
+    return getNexoraChatStreaming().streamMathBuildProvisionalClosedTail(rawTail, openType);
 }
 
 function renderMathInElementSyncPreferred(root) {
-    if (!root || typeof renderMathInElement !== 'function') return false;
-    try {
-        promoteLatexCodeBlocks(root);
-        renderMathInElement(root, {
-            delimiters: [
-                { left: '$$', right: '$$', display: true },
-                { left: '\\[', right: '\\]', display: true },
-                { left: '\\begin{equation}', right: '\\end{equation}', display: true },
-                { left: '\\begin{equation*}', right: '\\end{equation*}', display: true },
-                { left: '\\begin{align}', right: '\\end{align}', display: true },
-                { left: '\\begin{align*}', right: '\\end{align*}', display: true },
-                { left: '\\begin{alignat}', right: '\\end{alignat}', display: true },
-                { left: '\\begin{alignat*}', right: '\\end{alignat*}', display: true },
-                { left: '\\begin{gather}', right: '\\end{gather}', display: true },
-                { left: '\\begin{gather*}', right: '\\end{gather*}', display: true },
-                { left: '\\begin{CD}', right: '\\end{CD}', display: true },
-                { left: '$', right: '$', display: false },
-                { left: '\\(', right: '\\)', display: false }
-            ],
-            ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
-            throwOnError: false
-        });
-        return true;
-    } catch (_) {
-        return false;
-    }
+    return getNexoraChatLatex().renderMathInElementSync(root, getChatLatexRenderDeps());
+}
+
+function renderCompletedStreamMath(root) {
+    return getNexoraChatStreaming().renderCompletedStreamMath(root, getChatStreamingRenderDeps());
 }
 
 function saveComposerPrefsToStorage() {
@@ -19278,7 +18616,6 @@ async function sendMessage(options = {}) {
     let currentSegmentContent = '';
     let currentContentSpan = null;
     let liveHistoryTimeMarkerBuffer = '';
-    let streamRenderFinalized = false;
     const toolArgsDeltaSeenByCallId = new Set();
     const debugScopeKey = `chat:${aiMsgId}`;
     let debugReplyText = '';
@@ -19308,724 +18645,64 @@ async function sendMessage(options = {}) {
         snapshotInitialized: false
     };
     syncStreamingModelBadgeEstimate(aiMsgDiv, modelBadgeState, model);
-    const streamRenderStateByBlock = new WeakMap();
-    let streamRenderDebugSeq = 0;
-    const STREAM_RENDER_DEBUG_KEY = 'nexora_stream_render_debug_v1';
-    const hasLikelyMathDelimiter = (text) => /(\$\$|\\\(|\\\[|\\begin\{(?:equation\*?|align\*?|alignat\*?|gather\*?|CD)\}|(^|[^\\])\$[^$\s])/m.test(String(text || ''));
-    const hasLikelyUnbalancedMarkdownInline = (text) => {
-        const src = String(text || '');
-        if (!src) return false;
-        const countUnescapedToken = (token) => {
-            const t = String(token || '');
-            if (!t) return 0;
-            const len = t.length;
-            let count = 0;
-            for (let i = 0; i <= src.length - len; i += 1) {
-                if (src.slice(i, i + len) !== t) continue;
-                if (i > 0 && src[i - 1] === '\\') continue;
-                count += 1;
-                i += (len - 1);
-            }
-            return count;
-        };
-        const countUnescapedChar = (ch) => {
-            const c = String(ch || '');
-            if (!c) return 0;
-            let count = 0;
-            for (let i = 0; i < src.length; i += 1) {
-                if (src[i] !== c) continue;
-                if (i > 0 && src[i - 1] === '\\') continue;
-                count += 1;
-            }
-            return count;
-        };
-        if (countUnescapedChar('`') % 2 !== 0) return true;
-        if (countUnescapedToken('**') % 2 !== 0) return true;
-        if (countUnescapedToken('__') % 2 !== 0) return true;
-        if (countUnescapedToken('~~') % 2 !== 0) return true;
-        return false;
-    };
-
-    function isStreamRenderDebugEnabled() {
-        try {
-            if (window.__nexoraStreamRenderDebug === true) return true;
-            return localStorage.getItem(STREAM_RENDER_DEBUG_KEY) === '1';
-        } catch (_) {
-            return window.__nexoraStreamRenderDebug === true;
-        }
-    }
-
-    try {
-        if (typeof window.__nexoraSetStreamRenderDebug !== 'function') {
-            window.__nexoraSetStreamRenderDebug = function(enabled) {
-                const on = !!enabled;
-                window.__nexoraStreamRenderDebug = on;
-                try {
-                    localStorage.setItem(STREAM_RENDER_DEBUG_KEY, on ? '1' : '0');
-                } catch (_) {
-                    // ignore
-                }
-                return on;
-            };
-        }
-        if (typeof window.__nexoraIsStreamRenderDebugEnabled !== 'function') {
-            window.__nexoraIsStreamRenderDebugEnabled = function() {
-                return isStreamRenderDebugEnabled();
-            };
-        }
-    } catch (_) {
-        // ignore global helper setup errors
-    }
+    const streamRenderController = getNexoraChatStreaming().createStreamRenderController({
+        document,
+        requestAnimationFrame,
+        cancelAnimationFrame,
+        setTimeout,
+        clearTimeout,
+        renderStreamBlockMarkdown,
+        renderMarkdownWithNewTabLinks,
+        renderMathInElementSync: renderMathInElementSyncSafe,
+        renderMathSafe,
+        renderCompletedStreamMath,
+        bindSourceMarkdown,
+        rewriteCitationRefsMarkdown,
+        highlightCode,
+        finishReasoningThinkingBlock,
+        placeInteractiveCardsBelowToolChain,
+        toStreamRenderDebugSnippet,
+        pushStreamRenderDebug
+    });
+    getNexoraChatStreaming().setupStreamRenderDebugGlobals();
 
     function toStreamRenderDebugSnippet(text, limit = 120) {
-        const src = String(text || '').replace(/\r\n/g, '\n').replace(/\n/g, '↩');
-        if (src.length <= limit) return src;
-        return `${src.slice(0, limit)}...`;
+        return getNexoraChatStreaming().toStreamRenderDebugSnippet(text, limit);
     }
 
     function pushStreamRenderDebug(stage, state, payload = {}) {
-        if (!isStreamRenderDebugEnabled()) return;
-        try {
-            const extra = (payload && typeof payload === 'object') ? payload : {};
-            const entry = {
-                ts: Date.now(),
-                stage: String(stage || 'trace'),
-                conversationId: String(currentConversationId || ''),
-                msgId: String(aiMsgId || ''),
-                blockId: String((state && state.debugId) || (extra && extra.blockId) || ''),
-                ...extra
-            };
-            const store = Array.isArray(window.__nexoraStreamRenderDebugLog) ? window.__nexoraStreamRenderDebugLog : [];
-            store.push(entry);
-            while (store.length > 600) store.shift();
-            window.__nexoraStreamRenderDebugLog = store;
-            window.__nexoraStreamRenderDebugLast = entry;
-            if (typeof window.__nexoraDumpStreamRenderDebug !== 'function') {
-                window.__nexoraDumpStreamRenderDebug = function() {
-                    try {
-                        const arr = Array.isArray(window.__nexoraStreamRenderDebugLog) ? window.__nexoraStreamRenderDebugLog : [];
-                        console.log('[NexoraStreamRenderDump]', arr);
-                        return arr;
-                    } catch (_) {
-                        return [];
-                    }
-                };
-            }
-        } catch (_) {
-            // ignore debug log errors
-        }
-    }
-
-    function isEscapedAt(text, index) {
-        const src = String(text || '');
-        let slashCount = 0;
-        for (let i = Number(index) - 1; i >= 0 && src[i] === '\\'; i -= 1) {
-            slashCount += 1;
-        }
-        return (slashCount % 2) === 1;
-    }
-
-    function countEscapedMathDelimiter(text, delimiter) {
-        const src = String(text || '');
-        const target = String(delimiter || '');
-        if (!src || !target) return 0;
-        let count = 0;
-        for (let i = 0; i <= src.length - target.length; i += 1) {
-            if (src.slice(i, i + target.length) !== target) continue;
-            if (isEscapedAt(src, i)) continue;
-            count += 1;
-            i += target.length - 1;
-        }
-        return count;
-    }
-
-    function countLatexEnvironmentBoundary(text, envName, kind = 'begin') {
-        const src = String(text || '');
-        const env = String(envName || '').trim();
-        if (!src || !env) return 0;
-        const token = kind === 'end' ? `\\end{${env}}` : `\\begin{${env}}`;
-        let count = 0;
-        for (let i = 0; i <= src.length - token.length; i += 1) {
-            if (src.slice(i, i + token.length) !== token) continue;
-            if (isEscapedAt(src, i)) continue;
-            count += 1;
-            i += token.length - 1;
-        }
-        return count;
-    }
-
-    function hasOpenMathDelimiters(text) {
-        const src = String(text || '');
-        if (!src) return false;
-        const envNames = ['equation', 'equation*', 'align', 'align*', 'alignat', 'alignat*', 'gather', 'gather*', 'CD'];
-        if (countUnescapedDoubleDollar(src) % 2 !== 0) return true;
-        if (countEscapedMathDelimiter(src, '\\[') !== countEscapedMathDelimiter(src, '\\]')) return true;
-        if (countEscapedMathDelimiter(src, '\\(') !== countEscapedMathDelimiter(src, '\\)')) return true;
-        for (const envName of envNames) {
-            if (countLatexEnvironmentBoundary(src, envName, 'begin') !== countLatexEnvironmentBoundary(src, envName, 'end')) {
-                return true;
-            }
-        }
-        return countUnescapedSingleDollars(src) % 2 !== 0;
-    }
-
-    function findOpenMathTailInfo(text) {
-        const src = String(text || '');
-        if (!src) return { index: -1, type: '' };
-        const envNames = ['equation', 'equation*', 'align', 'align*', 'alignat', 'alignat*', 'gather', 'gather*', 'CD'];
-
-        let activeType = '';
-        let activeIndex = -1;
-
-        for (let i = 0; i < src.length; i += 1) {
-            if (!activeType) {
-                let openedEnv = '';
-                for (const envName of envNames) {
-                    const token = `\\begin{${envName}}`;
-                    if (src.slice(i, i + token.length) === token && !isEscapedAt(src, i)) {
-                        openedEnv = envName;
-                        break;
-                    }
-                }
-                if (openedEnv) {
-                    activeType = `env:${openedEnv}`;
-                    activeIndex = i;
-                    i += (`\\begin{${openedEnv}}`.length - 1);
-                    continue;
-                }
-                if (src.slice(i, i + 2) === '$$' && !isEscapedAt(src, i)) {
-                    activeType = '$$';
-                    activeIndex = i;
-                    i += 1;
-                    continue;
-                }
-                if (src.slice(i, i + 2) === '\\[' && !isEscapedAt(src, i)) {
-                    activeType = '\\[';
-                    activeIndex = i;
-                    i += 1;
-                    continue;
-                }
-                if (src.slice(i, i + 2) === '\\(' && !isEscapedAt(src, i)) {
-                    activeType = '\\(';
-                    activeIndex = i;
-                    i += 1;
-                    continue;
-                }
-                if (
-                    src[i] === '$' &&
-                    !isEscapedAt(src, i) &&
-                    src[i - 1] !== '$' &&
-                    src[i + 1] !== '$'
-                ) {
-                    activeType = '$';
-                    activeIndex = i;
-                }
-                continue;
-            }
-
-            if (activeType.startsWith('env:')) {
-                const envName = activeType.slice(4);
-                const closeToken = `\\end{${envName}}`;
-                if (src.slice(i, i + closeToken.length) === closeToken && !isEscapedAt(src, i)) {
-                    activeType = '';
-                    activeIndex = -1;
-                    i += closeToken.length - 1;
-                }
-                continue;
-            }
-
-            if (activeType === '$$') {
-                if (src.slice(i, i + 2) === '$$' && !isEscapedAt(src, i)) {
-                    activeType = '';
-                    activeIndex = -1;
-                    i += 1;
-                }
-                continue;
-            }
-
-            if (activeType === '\\[') {
-                if (src.slice(i, i + 2) === '\\]' && !isEscapedAt(src, i)) {
-                    activeType = '';
-                    activeIndex = -1;
-                    i += 1;
-                }
-                continue;
-            }
-
-            if (activeType === '\\(') {
-                if (src.slice(i, i + 2) === '\\)' && !isEscapedAt(src, i)) {
-                    activeType = '';
-                    activeIndex = -1;
-                    i += 1;
-                }
-                continue;
-            }
-
-            if (
-                activeType === '$' &&
-                src[i] === '$' &&
-                !isEscapedAt(src, i) &&
-                src[i - 1] !== '$' &&
-                src[i + 1] !== '$'
-            ) {
-                activeType = '';
-                activeIndex = -1;
-            }
-        }
-
-        return activeType ? { index: activeIndex, type: activeType } : { index: -1, type: '' };
-    }
-
-    function findOpenMathTailStart(text) {
-        return findOpenMathTailInfo(text).index;
-    }
-
-    function buildProvisionalClosedMathTail(rawTail, openType) {
-        const tail = String(rawTail || '');
-        const type = String(openType || '');
-        if (!tail || !type) return tail;
-        if (type.startsWith('env:')) {
-            const envName = type.slice(4).trim();
-            if (!envName) return tail;
-            return `${tail}\\end{${envName}}`;
-        }
-        if (type === '$$') return `${tail}$$`;
-        if (type === '\\[') return `${tail}\\]`;
-        if (type === '\\(') return `${tail}\\)`;
-        if (type === '$') return `${tail}$`;
-        return tail;
+        getNexoraChatStreaming().pushStreamRenderDebug(stage, state, payload, {
+            conversationId: currentConversationId,
+            msgId: aiMsgId
+        });
     }
 
     function ensureStreamBlockState(block) {
-        if (!block) return null;
-        let state = streamRenderStateByBlock.get(block);
-        if (!state || typeof state !== 'object') {
-            const renderedEl = document.createElement('div');
-            renderedEl.className = 'stream-rendered';
-            const liveEl = document.createElement('div');
-            liveEl.className = 'stream-live-tail';
-            block.innerHTML = '';
-            block.appendChild(renderedEl);
-            block.appendChild(liveEl);
-            state = {
-                renderedEl,
-                liveEl,
-                liveRaw: '',
-                mathRenderRaf: null,
-                mathRenderTimer: null,
-                mathRenderPending: null,
-                lastRenderedSource: '',
-                lastRenderedMode: '',
-                lastStablePrefix: '',
-                liveRawTailEl: null,
-                lastMathRenderTs: 0,
-                debugId: ''
-            };
-            streamRenderDebugSeq += 1;
-            state.debugId = `sr_${Date.now().toString(36)}_${streamRenderDebugSeq}`;
-            if (block.dataset) block.dataset.streamDebugId = state.debugId;
-            streamRenderStateByBlock.set(block, state);
-            pushStreamRenderDebug('state_init', state, {
-                blockTag: String((block && block.tagName) || '').toLowerCase()
-            });
-        }
-        return state;
+        return streamRenderController.ensureStreamBlockState(block);
     }
 
     function clearLiveMathRenderSchedule(state) {
-        if (!state || typeof state !== 'object') return;
-        if (state.mathRenderRaf) {
-            cancelAnimationFrame(state.mathRenderRaf);
-            state.mathRenderRaf = null;
-        }
-        if (state.mathRenderTimer) {
-            clearTimeout(state.mathRenderTimer);
-            state.mathRenderTimer = null;
-        }
-        state.mathRenderPending = null;
+        return streamRenderController.clearLiveMathRenderSchedule(state);
     }
 
     function renderMathInElementSyncSafe(root) {
-        if (!root || typeof renderMathInElement !== 'function') return false;
-        try {
-            promoteLatexCodeBlocks(root);
-            renderMathInElement(root, {
-                delimiters: [
-                    { left: '$$', right: '$$', display: true },
-                    { left: '\\[', right: '\\]', display: true },
-                    { left: '\\begin{equation}', right: '\\end{equation}', display: true },
-                    { left: '\\begin{equation*}', right: '\\end{equation*}', display: true },
-                    { left: '\\begin{align}', right: '\\end{align}', display: true },
-                    { left: '\\begin{align*}', right: '\\end{align*}', display: true },
-                    { left: '\\begin{alignat}', right: '\\end{alignat}', display: true },
-                    { left: '\\begin{alignat*}', right: '\\end{alignat*}', display: true },
-                    { left: '\\begin{gather}', right: '\\end{gather}', display: true },
-                    { left: '\\begin{gather*}', right: '\\end{gather*}', display: true },
-                    { left: '\\begin{CD}', right: '\\end{CD}', display: true },
-                    { left: '$', right: '$', display: false },
-                    { left: '\\(', right: '\\)', display: false }
-                ],
-                ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
-                throwOnError: false
-            });
-            return true;
-        } catch (_) {
-            return false;
-        }
-    }
-
-    function applyScratchIntoLiveEl(liveEl, scratch) {
-        if (!liveEl || !scratch) return;
-        liveEl.innerHTML = '';
-        while (scratch.firstChild) {
-            liveEl.appendChild(scratch.firstChild);
-        }
-    }
-
-    function scheduleLiveMathRender(state, payload) {
-        if (!state || !state.liveEl || !payload) return;
-        state.mathRenderPending = payload;
-        if (state.mathRenderRaf || state.mathRenderTimer) return;
-        const now = Date.now();
-        const mode = String(payload.mode || '');
-        const minGapMs = mode === 'math_closed' ? 80 : (mode === 'math_open' ? 50 : 34);
-        const waitMs = Math.max(0, minGapMs - (now - Number(state.lastMathRenderTs || 0)));
-        pushStreamRenderDebug('math_schedule', state, {
-            mode,
-            waitMs,
-            srcLen: String(payload.sourceText || '').length,
-            hasOpenMath: !!payload.hasOpenMath
-        });
-        state.mathRenderTimer = setTimeout(() => {
-            state.mathRenderTimer = null;
-            state.mathRenderRaf = requestAnimationFrame(() => {
-            state.mathRenderRaf = null;
-            const job = state.mathRenderPending;
-            state.mathRenderPending = null;
-            if (!job || !state.liveEl) return;
-
-            const sourceText = String(job.sourceText || '');
-            const scratch = document.createElement('div');
-            scratch.className = 'stream-live-tail';
-
-            if (job.hasOpenMath) {
-                const stablePrefix = String(job.stablePrefix || '');
-                const provisionalTail = String(job.provisionalTail || '');
-                const composed = `${stablePrefix}${provisionalTail}`;
-                let rendered = false;
-                if (composed.trim()) {
-                    scratch.innerHTML = renderStreamBlockMarkdown(state.liveEl, composed);
-                    rendered = renderMathInElementSyncSafe(scratch);
-                }
-                if (!rendered) {
-                    const hasPreviousRenderedView = !!(state.liveEl && state.liveEl.childNodes && state.liveEl.childNodes.length > 0);
-                    const prevMode = String(state.lastRenderedMode || '');
-                    const canHoldPrevRendered = hasPreviousRenderedView && prevMode !== 'raw' && prevMode !== 'raw_open_head';
-                    if (canHoldPrevRendered) {
-                        bindSourceMarkdown(state.liveEl, sourceText);
-                        state.lastRenderedSource = sourceText;
-                        state.lastRenderedMode = 'hold_math_open_render_fail';
-                        state.lastStablePrefix = stablePrefix;
-                        state.liveRawTailEl = null;
-                        state.lastMathRenderTs = Date.now();
-                        pushStreamRenderDebug('math_open_hold_prev', state, {
-                            prevMode,
-                            stableLen: stablePrefix.length,
-                            tailLen: String(job.unstableTail || '').length
-                        });
-                        return;
-                    }
-                    scratch.innerHTML = renderStreamBlockMarkdown(state.liveEl, stablePrefix);
-                    if (hasLikelyMathDelimiter(stablePrefix) && !hasOpenMathDelimiters(stablePrefix)) {
-                        renderMathInElementSyncSafe(scratch);
-                    }
-                    const rawTailEl = document.createElement('span');
-                    rawTailEl.className = 'stream-live-tail-raw-segment';
-                    rawTailEl.textContent = String(job.unstableTail || '');
-                    scratch.appendChild(rawTailEl);
-                    pushStreamRenderDebug('math_open_fallback_raw_tail', state, {
-                        stableLen: stablePrefix.length,
-                        tailLen: String(job.unstableTail || '').length
-                    });
-                }
-            } else {
-                scratch.innerHTML = renderStreamBlockMarkdown(state.liveEl, sourceText);
-                if (job.hasMath) {
-                    renderMathInElementSyncSafe(scratch);
-                }
-            }
-
-            bindSourceMarkdown(state.liveEl, sourceText);
-            state.liveEl.classList.remove('stream-live-raw');
-            applyScratchIntoLiveEl(state.liveEl, scratch);
-            state.lastRenderedSource = sourceText;
-            state.lastRenderedMode = String(job.mode || '');
-            state.lastStablePrefix = job.hasOpenMath ? String(job.stablePrefix || '') : '';
-            state.liveRawTailEl = job.hasOpenMath ? state.liveEl.querySelector('.stream-live-tail-raw-segment') : null;
-            state.lastMathRenderTs = Date.now();
-            pushStreamRenderDebug('math_applied', state, {
-                mode: state.lastRenderedMode,
-                srcLen: sourceText.length,
-                katexCount: state.liveEl.querySelectorAll ? state.liveEl.querySelectorAll('.katex').length : 0,
-                hasRawTailNode: !!state.liveRawTailEl
-            });
-            });
-        }, waitMs);
+        return getNexoraChatLatex().renderMathInElementSync(root, getChatLatexRenderDeps());
     }
 
     function renderStreamFragment(rawText, citationMap, root = null) {
-        const sourceText = rewriteCitationRefsMarkdown(String(rawText || ''), citationMap || {});
-        const frag = document.createElement('div');
-        frag.className = 'stream-fragment';
-        frag.innerHTML = renderStreamBlockMarkdown(root, sourceText);
-        bindSourceMarkdown(frag, sourceText);
-        highlightCode(frag);
-        return frag;
+        return streamRenderController.renderStreamFragment(rawText, citationMap, root);
     }
 
     function renderLiveStreamTail(block, citationMap) {
-        const state = ensureStreamBlockState(block);
-        if (!state) return;
-        const raw = String(state.liveRaw || '');
-        if (!raw) {
-            clearLiveMathRenderSchedule(state);
-            state.liveEl.innerHTML = '';
-            state.liveEl.classList.remove('stream-live-raw');
-            state.lastRenderedSource = '';
-            state.lastRenderedMode = '';
-            state.lastStablePrefix = '';
-            state.liveRawTailEl = null;
-            pushStreamRenderDebug('tail_empty', state);
-            return;
-        }
-
-        const sourceText = rewriteCitationRefsMarkdown(raw, citationMap || {});
-        const hasUnbalancedInlineMd = hasLikelyUnbalancedMarkdownInline(sourceText);
-        const hasMath = hasLikelyMathDelimiter(sourceText);
-        const openTailInfo = hasMath ? findOpenMathTailInfo(sourceText) : { index: -1, type: '' };
-        const openTailStart = Number(openTailInfo.index);
-        const hasOpenMath = openTailStart >= 0;
-        const canHoldRenderedView = () => {
-            const mode = String(state.lastRenderedMode || '');
-            if (!mode) return false;
-            return mode !== 'raw' && mode !== 'raw_open_head';
-        };
-        block.__streamSourceMarkdown = rewriteCitationRefsMarkdown(String(block.dataset.streamRaw || ''), citationMap || {});
-
-        if (hasUnbalancedInlineMd) {
-            clearLiveMathRenderSchedule(state);
-            if (canHoldRenderedView()) {
-                // Keep last rendered DOM to avoid raw<->render flicker when markdown tokens are mid-stream.
-                state.liveEl.classList.remove('stream-live-raw');
-                bindSourceMarkdown(state.liveEl, sourceText);
-                state.lastRenderedSource = sourceText;
-                state.lastRenderedMode = 'hold_unbalanced_md';
-                pushStreamRenderDebug('tail_hold_unbalanced_md', state, {
-                    srcLen: sourceText.length,
-                    srcHead: toStreamRenderDebugSnippet(sourceText)
-                });
-                return;
-            }
-            state.liveEl.classList.remove('stream-live-raw');
-            state.liveEl.innerHTML = renderStreamBlockMarkdown(state.liveEl, sourceText);
-            bindSourceMarkdown(state.liveEl, sourceText);
-            state.lastRenderedSource = sourceText;
-            state.lastRenderedMode = 'markdown_unbalanced';
-            state.lastStablePrefix = '';
-            state.liveRawTailEl = null;
-            pushStreamRenderDebug('tail_raw_unbalanced_md', state, {
-                srcLen: sourceText.length,
-                srcHead: toStreamRenderDebugSnippet(sourceText)
-            });
-            return;
-        }
-
-        if (hasOpenMath) {
-            const stablePrefix = sourceText.slice(0, openTailStart);
-            const unstableTail = sourceText.slice(openTailStart);
-            if (!stablePrefix.trim()) {
-                clearLiveMathRenderSchedule(state);
-                if (canHoldRenderedView()) {
-                    // Avoid flashing back to raw text when formula head is still incomplete.
-                    state.liveEl.classList.remove('stream-live-raw');
-                    bindSourceMarkdown(state.liveEl, sourceText);
-                    state.lastRenderedSource = sourceText;
-                    state.lastRenderedMode = 'hold_math_open_head';
-                    state.liveRawTailEl = null;
-                    pushStreamRenderDebug('tail_hold_math_open_head', state, {
-                        openType: String(openTailInfo.type || ''),
-                        tailLen: unstableTail.length
-                    });
-                    return;
-                }
-                state.liveEl.classList.remove('stream-live-raw');
-                state.liveEl.innerHTML = renderStreamBlockMarkdown(state.liveEl, sourceText);
-                bindSourceMarkdown(state.liveEl, sourceText);
-                state.lastRenderedSource = sourceText;
-                state.lastRenderedMode = 'markdown_open_head';
-                state.lastStablePrefix = '';
-                state.liveRawTailEl = null;
-                pushStreamRenderDebug('tail_raw_math_open_head', state, {
-                    openType: String(openTailInfo.type || ''),
-                    tailLen: unstableTail.length
-                });
-                return;
-            }
-            if (
-                state.lastRenderedMode === 'math_open' &&
-                state.lastStablePrefix === stablePrefix &&
-                state.liveRawTailEl &&
-                state.liveRawTailEl.isConnected
-            ) {
-                clearLiveMathRenderSchedule(state);
-                state.liveRawTailEl.textContent = unstableTail;
-                bindSourceMarkdown(state.liveEl, sourceText);
-                state.lastRenderedSource = sourceText;
-                pushStreamRenderDebug('tail_update_raw_tail_only', state, {
-                    stableLen: stablePrefix.length,
-                    tailLen: unstableTail.length
-                });
-                return;
-            }
-            const mode = 'math_open';
-            if (state.lastRenderedSource === sourceText && state.lastRenderedMode === mode) return;
-            scheduleLiveMathRender(state, {
-                mode,
-                sourceText,
-                hasMath: true,
-                hasOpenMath: true,
-                stablePrefix,
-                unstableTail,
-                openMathType: String(openTailInfo.type || ''),
-                provisionalTail: buildProvisionalClosedMathTail(unstableTail, openTailInfo.type)
-            });
-            pushStreamRenderDebug('tail_schedule_math_open', state, {
-                stableLen: stablePrefix.length,
-                tailLen: unstableTail.length,
-                openType: String(openTailInfo.type || '')
-            });
-            return;
-        }
-
-        if (hasMath) {
-            const mode = 'math_closed';
-            if (state.lastRenderedSource === sourceText && state.lastRenderedMode === mode) return;
-            scheduleLiveMathRender(state, {
-                mode,
-                sourceText,
-                hasMath: true,
-                hasOpenMath: false,
-                stablePrefix: '',
-                unstableTail: ''
-            });
-            pushStreamRenderDebug('tail_schedule_math_closed', state, {
-                srcLen: sourceText.length,
-                srcHead: toStreamRenderDebugSnippet(sourceText)
-            });
-            return;
-        }
-
-        clearLiveMathRenderSchedule(state);
-        state.liveEl.classList.remove('stream-live-raw');
-        state.liveEl.innerHTML = renderStreamBlockMarkdown(state.liveEl, sourceText);
-        bindSourceMarkdown(state.liveEl, sourceText);
-        highlightCode(state.liveEl);
-        state.lastRenderedSource = sourceText;
-        state.lastRenderedMode = 'plain';
-        state.lastStablePrefix = '';
-        state.liveRawTailEl = null;
-        pushStreamRenderDebug('tail_plain', state, {
-            srcLen: sourceText.length,
-            srcHead: toStreamRenderDebugSnippet(sourceText)
-        });
+        return streamRenderController.renderLiveStreamTail(block, citationMap);
     }
 
     function flushStableStreamTail(block, citationMap, force = false) {
-        const state = ensureStreamBlockState(block);
-        if (!state) return;
-        const raw = String(state.liveRaw || '');
-        pushStreamRenderDebug('flush_enter', state, {
-            force: !!force,
-            rawLen: raw.length,
-            hasMath: hasLikelyMathDelimiter(raw),
-            hasOpenMath: hasOpenMathDelimiters(raw)
-        });
-        if (!raw) {
-            renderLiveStreamTail(block, citationMap);
-            return;
-        }
-        const hasUnbalancedInlineMd = hasLikelyUnbalancedMarkdownInline(raw);
-        if (!force && hasUnbalancedInlineMd) {
-            renderLiveStreamTail(block, citationMap);
-            return;
-        }
-        const hasMath = hasLikelyMathDelimiter(raw);
-        if (!force && hasMath && hasOpenMathDelimiters(raw)) {
-            renderLiveStreamTail(block, citationMap);
-            return;
-        }
-        if (!force) {
-            renderLiveStreamTail(block, citationMap);
-            return;
-        }
-
-        // force=true is used when closing current stream block (e.g. tool row inserted).
-        // Commit once and avoid showing raw latex before KaTeX by rendering sync first.
-        const fragment = renderStreamFragment(raw, citationMap, block);
-        if (hasLikelyMathDelimiter(raw)) {
-            const syncOk = renderMathInElementSyncSafe(fragment);
-            pushStreamRenderDebug('flush_force_math_sync', state, {
-                rawLen: raw.length,
-                syncOk
-            });
-            if (!syncOk) {
-                try { renderMathSafe(fragment); } catch (_) {}
-            }
-        }
-        state.renderedEl.appendChild(fragment);
-        state.liveRaw = '';
-        renderLiveStreamTail(block, citationMap);
+        return streamRenderController.flushStableStreamTail(block, citationMap, force);
     }
 
     function finalizeStreamingContentRender() {
-        if (streamRenderFinalized) return;
-        streamRenderFinalized = true;
-        try {
-            const blocks = aiMsgDiv.querySelectorAll('.content-body[data-stream-live="1"]');
-            blocks.forEach((block) => {
-                const state = ensureStreamBlockState(block);
-                clearLiveMathRenderSchedule(state);
-                const raw = String(block.dataset.streamRaw || '');
-                const sourceText = rewriteCitationRefsMarkdown(raw, aiMsgDiv.__citationUrlMap || {});
-                block.innerHTML = renderMarkdownWithNewTabLinks(sourceText);
-                bindSourceMarkdown(block, sourceText);
-                renderMathSafe(block);
-                highlightCode(block);
-                block.dataset.streamLive = '0';
-            });
-            const thinkingBlocks = aiMsgDiv.querySelectorAll('.thinking-block.reasoning-thinking-block[data-stream-live="1"] .thinking-content');
-            thinkingBlocks.forEach((contentDiv) => {
-                const state = ensureStreamBlockState(contentDiv);
-                clearLiveMathRenderSchedule(state);
-                const raw = String(contentDiv.dataset.streamRaw || '');
-                if (raw) {
-                    const sourceText = rewriteCitationRefsMarkdown(raw, aiMsgDiv.__citationUrlMap || {});
-                    contentDiv.innerHTML = renderMarkdownWithNewTabLinks(sourceText, { breaks: true });
-                    bindSourceMarkdown(contentDiv, sourceText);
-                    highlightCode(contentDiv);
-                    try { renderMathSafe(contentDiv); } catch (_) {}
-                } else {
-                    try { renderMathSafe(contentDiv); } catch (_) {}
-                }
-                const host = contentDiv.closest('.thinking-block.reasoning-thinking-block');
-                if (host) finishReasoningThinkingBlock(host, raw);
-            });
-            const longtermBlocks = aiMsgDiv.querySelectorAll('.thinking-block.longterm-hook-block[data-longterm-plan="1"]');
-            longtermBlocks.forEach((block) => {
-                block.dataset.streamLive = '0';
-            });
-            placeLearningCardsBelowToolChain(aiMsgDiv);
-        } catch (_) {}
+        return streamRenderController.finalizeStreamingContentRender(aiMsgDiv);
     }
 
     function ensureVisibleAssistantStreamBinding() {
@@ -20688,7 +19365,12 @@ async function sendMessage(options = {}) {
             await finishTokenMiniStreaming(streamConversationId);
         }
         if (streamEndedTerminally && isStreamVisible() && (!streamAbortedByUser || streamServerFinalized)) {
-            await renderConversationSnapshotFromServer(streamConversationId, { instant: true, silent: true });
+            await renderConversationSnapshotFromServer(streamConversationId, {
+                instant: true,
+                silent: true,
+                render: !(streamCompleted && !streamAbortedByUser && !streamEndedWithError),
+                preserveScrollAnchor: true
+            });
         }
         loadConversations(); // Update list preview
         if (String(currentConversationId || '').trim() === String(streamConversationId || '').trim()) {
@@ -22422,11 +21104,235 @@ function appendUserAttachments(contentEl, msg) {
     }
 }
 
+function readMessageRenderIndex(message, defaultIndex = 0) {
+    return chatMessageWindowApi.readMessageRenderIndex(message, defaultIndex);
+}
+
+function buildIndexedMessageRows(messages, indexOffset = 0) {
+    return chatMessageWindowApi.buildIndexedMessageRows(messages, indexOffset);
+}
+
+function resetConversationMessageWindowState(conversationId = '') {
+    return chatMessageWindowApi.resetConversationMessageWindowState(conversationId);
+}
+
+function mergeIndexedMessageRows(firstRows, secondRows) {
+    return chatMessageWindowApi.mergeIndexedMessageRows(firstRows, secondRows);
+}
+
+function setConversationMessageWindowFromPayload(conversationId, messages, messageWindow) {
+    return chatMessageWindowApi.setConversationMessageWindowFromPayload(conversationId, messages, messageWindow);
+}
+
+function refreshConversationMessageWindowRange() {
+    return chatMessageWindowApi.refreshConversationMessageWindowRange();
+}
+
+function syncConversationMessageWindowFromSnapshot(conversationId, messages) {
+    return chatMessageWindowApi.syncConversationMessageWindowFromSnapshot(conversationId, messages);
+}
+
+function rememberVisibleMessageInWindow(message, messageIndex) {
+    return chatMessageWindowApi.rememberVisibleMessageInWindow(currentConversationId, message, messageIndex);
+}
+
+function prependConversationMessageRows(indexedRows, options = {}) {
+    const opts = (options && typeof options === 'object') ? options : {};
+    const container = els.messagesContainer;
+    const rows = Array.isArray(indexedRows) ? indexedRows : [];
+
+    if (!container || !rows.length) {
+        return 0;
+    }
+
+    const existingIndices = new Set(
+        Array.from(container.querySelectorAll('.message[data-index]'))
+            .map((row) => Number(row && row.dataset ? row.dataset.index : NaN))
+            .filter((value) => Number.isFinite(value) && value >= 0)
+            .map((value) => Math.floor(value))
+    );
+    const rowsToRender = rows
+        .filter((row, position) => {
+            const messageIndex = readMessageRenderIndex(row, position);
+            return !existingIndices.has(messageIndex);
+        })
+        .sort((a, b) => readMessageRenderIndex(a, 0) - readMessageRenderIndex(b, 0));
+
+    if (!rowsToRender.length) {
+        return 0;
+    }
+
+    const anchor = opts.anchor || captureMessagesScrollAnchor(container);
+    const firstExistingMessage = container.querySelector('.message');
+    const previousBatchState = isBatchRenderingMessages;
+    const previousLastUserHint = renderLastUserMessageIndexHint;
+    renderLastUserMessageIndexHint = getLastUserMessageIndexFromMessages(conversationMessageWindowState.messages || []);
+    isBatchRenderingMessages = true;
+
+    try {
+        rowsToRender.forEach((row, position) => {
+            appendMessage(row, readMessageRenderIndex(row, position), {
+                beforeNode: firstExistingMessage
+            });
+        });
+    } finally {
+        isBatchRenderingMessages = previousBatchState;
+        renderLastUserMessageIndexHint = previousLastUserHint;
+    }
+
+    refreshLastUserPromptEditButtons();
+    bindTurnIndicatorDomElements(turnIndicatorState.userMessages || []);
+    markTurnIndicatorLayoutDirty();
+    scheduleTurnIndicatorLayoutRefresh({ animate: false, forceScroll: false });
+    scheduleTurnIndicatorActiveUpdate({ animate: false, forceScroll: false });
+    notifyLearningSidebarBridge();
+
+    if (opts.preserveScroll !== false && anchor) {
+        restoreMessagesScrollAnchor(anchor);
+        requestAnimationFrame(() => restoreMessagesScrollAnchor(anchor));
+        setTimeout(() => restoreMessagesScrollAnchor(anchor), 120);
+    }
+
+    return rowsToRender.length;
+}
+
+async function loadPreviousConversationMessages(reason = 'scroll', options = {}) {
+    const opts = (options && typeof options === 'object') ? options : {};
+    const cid = String(currentConversationId || '').trim();
+    const state = conversationMessageWindowState;
+
+    if (!cid || state.conversationId !== cid || !state.hasMoreBefore || state.loadingBefore) {
+        return false;
+    }
+
+    const targetIndexRaw = Number(opts.targetIndex);
+    const targetIndex = Number.isFinite(targetIndexRaw) && targetIndexRaw >= 0
+        ? Math.floor(targetIndexRaw)
+        : null;
+    const beforeIndex = Math.max(0, Number(state.loadedStartIndex || 0));
+    const targetStartIndex = Math.max(
+        0,
+        targetIndex !== null && targetIndex < beforeIndex
+            ? targetIndex
+            : beforeIndex - CONVERSATION_PREVIOUS_MESSAGE_LIMIT
+    );
+    const requestLimit = Math.max(
+        CONVERSATION_PREVIOUS_MESSAGE_LIMIT,
+        Math.min(200, beforeIndex - targetStartIndex)
+    );
+
+    if (beforeIndex <= 0) {
+        state.hasMoreBefore = false;
+        return false;
+    }
+
+    const container = els.messagesContainer;
+    const preserveScroll = opts.preserveScroll !== false;
+    const scrollAnchor = preserveScroll ? captureMessagesScrollAnchor(container) : null;
+    breakMessagesAutoScroll();
+    state.loadingBefore = true;
+
+    try {
+        const params = new URLSearchParams();
+        params.set('before', String(beforeIndex));
+        params.set('limit', String(requestLimit));
+
+        const res = await fetch(`/api/conversations/${encodeURIComponent(cid)}/messages?${params.toString()}`);
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok || !data || !data.success) {
+            showToast(String((data && data.message) || '加载更早消息失败'));
+            return false;
+        }
+
+        const rows = Array.isArray(data.messages) ? data.messages : [];
+        const startIndexRaw = Number(data.start_index);
+        const startIndex = Number.isFinite(startIndexRaw) && startIndexRaw >= 0
+            ? Math.floor(startIndexRaw)
+            : Math.max(0, beforeIndex - rows.length);
+        const indexedRows = buildIndexedMessageRows(rows, startIndex);
+
+        if (!indexedRows.length) {
+            state.hasMoreBefore = false;
+            return false;
+        }
+
+        state.messages = mergeIndexedMessageRows(state.messages, indexedRows);
+        state.total = Math.max(Number(state.total || 0), Number(data.total || 0), state.messages.length);
+        state.hasMoreBefore = !!data.has_more_before;
+        refreshConversationMessageWindowRange();
+
+        prependConversationMessageRows(indexedRows, {
+            preserveScroll,
+            anchor: scrollAnchor
+        });
+        _syncTurnIndicatorVisibility();
+
+        return true;
+    } catch (error) {
+        showToast(String((error && error.message) || '加载更早消息失败'));
+        return false;
+    } finally {
+        state.loadingBefore = false;
+    }
+}
+
+function maybeLoadPreviousConversationMessagesFromScroll() {
+    const container = els.messagesContainer;
+
+    if (!container || _isJumping) {
+        return;
+    }
+
+    if (Date.now() > __messagesUserScrollIntentUntilTs) {
+        return;
+    }
+
+    if (Number(container.scrollTop || 0) > CONVERSATION_HISTORY_LOAD_TOP_PX) {
+        return;
+    }
+
+    void loadPreviousConversationMessages('scroll');
+}
+
+async function ensureConversationMessageIndexLoaded(messageIndex) {
+    const targetIndex = Number(messageIndex);
+
+    if (!Number.isFinite(targetIndex) || targetIndex < 0) {
+        return false;
+    }
+
+    if (getMessageElementByIndex(targetIndex)) {
+        return true;
+    }
+
+    let guard = 0;
+
+    while (
+        guard < 80
+        && conversationMessageWindowState.conversationId === String(currentConversationId || '').trim()
+        && conversationMessageWindowState.hasMoreBefore
+        && targetIndex < Number(conversationMessageWindowState.loadedStartIndex || 0)
+    ) {
+        guard += 1;
+        const loaded = await loadPreviousConversationMessages('jump', {
+            preserveScroll: false,
+            targetIndex
+        });
+
+        if (!loaded || getMessageElementByIndex(targetIndex)) {
+            break;
+        }
+    }
+
+    return !!getMessageElementByIndex(targetIndex);
+}
+
 function getLastUserMessageIndexFromMessages(messages) {
     const arr = Array.isArray(messages) ? messages : [];
     for (let i = arr.length - 1; i >= 0; i -= 1) {
         const role = String((arr[i] && arr[i].role) || '').trim();
-        if (role === 'user') return i;
+        if (role === 'user') return readMessageRenderIndex(arr[i], i);
     }
     return -1;
 }
@@ -22440,6 +21346,20 @@ function getLastUserMessageIndexFromDom() {
         if (Number.isFinite(idx) && idx > last) last = idx;
     });
     return last;
+}
+
+function getNextVisibleMessageIndex() {
+    if (!els.messagesContainer) return 0;
+    let maxIndex = -1;
+    Array.from(els.messagesContainer.querySelectorAll('.message')).forEach((row) => {
+        const rowIndex = Number(row && row.dataset ? row.dataset.index : NaN);
+
+        if (Number.isFinite(rowIndex) && rowIndex > maxIndex) {
+            maxIndex = Math.floor(rowIndex);
+        }
+    });
+
+    return maxIndex >= 0 ? maxIndex + 1 : els.messagesContainer.querySelectorAll('.message').length;
 }
 
 function resetUserPromptInlineEditor(options = {}) {
@@ -22716,10 +21636,12 @@ window.toggleEditUserPrompt = async function(index) {
     });
 };
 
-function appendMessage(msg, index) {
-    // If index is not provided (live message), calculate it based on current message count
+function appendMessage(msg, index, options = {}) {
+    const appendOptions = (options && typeof options === 'object') ? options : {};
+
+    // If index is not provided (live message), continue from the largest visible server index.
     if (index === undefined || index === null) {
-        index = els.messagesContainer.querySelectorAll('.message').length;
+        index = getNextVisibleMessageIndex();
     }
     
     const div = document.createElement('div');
@@ -22999,7 +21921,12 @@ function appendMessage(msg, index) {
         content.appendChild(actions);
     }
 
-    els.messagesContainer.appendChild(div);
+    if (appendOptions.beforeNode && appendOptions.beforeNode.parentNode === els.messagesContainer) {
+        els.messagesContainer.insertBefore(div, appendOptions.beforeNode);
+    } else {
+        els.messagesContainer.appendChild(div);
+    }
+
     clearLearningWelcomeState();
     
     // Remove welcome screen if exists
@@ -23008,6 +21935,7 @@ function appendMessage(msg, index) {
 
     if (!isBatchRenderingMessages) {
         refreshLastUserPromptEditButtons();
+        rememberVisibleMessageInWindow(msg, index);
     }
 
     // Update turn indicator
@@ -23024,10 +21952,7 @@ function appendMessage(msg, index) {
 }
 
 function normalizeVariantTimestamp(v) {
-    const raw = String((v && v.timestamp) || '').trim();
-    if (!raw) return 0;
-    const t = Date.parse(raw);
-    return Number.isFinite(t) ? t : 0;
+    return chatMessageVersionsApi.normalizeVariantTimestamp(v);
 }
 
 let __messagesBottomPinRaf = null;
@@ -23107,6 +22032,58 @@ function scrollMessagesToBottomNow() {
     __messagesLastObservedScrollTop = Number(container.scrollTop || 0);
 }
 
+function captureMessagesScrollAnchor(container = els.messagesContainer) {
+    if (!container) return null;
+
+    const viewportTop = Number(container.scrollTop || 0);
+    const rows = Array.from(container.querySelectorAll('.message[data-index]'));
+
+    for (const row of rows) {
+        const messageIndex = Number(row && row.dataset ? row.dataset.index : NaN);
+
+        if (!Number.isFinite(messageIndex) || messageIndex < 0) {
+            continue;
+        }
+
+        const rowTop = Number(row.offsetTop || 0);
+        const rowBottom = rowTop + Number(row.offsetHeight || 0);
+
+        if (rowBottom < viewportTop) {
+            continue;
+        }
+
+        return {
+            messageIndex: Math.floor(messageIndex),
+            topOffset: rowTop - viewportTop
+        };
+    }
+
+    return null;
+}
+
+function restoreMessagesScrollAnchor(anchor, container = els.messagesContainer) {
+    if (!container || !anchor || typeof anchor !== 'object') {
+        return false;
+    }
+
+    const messageIndex = Number(anchor.messageIndex);
+
+    if (!Number.isFinite(messageIndex) || messageIndex < 0) {
+        return false;
+    }
+
+    const row = getMessageElementByIndex(messageIndex);
+
+    if (!row) {
+        return false;
+    }
+
+    container.scrollTop = Math.max(0, Number(row.offsetTop || 0) - Number(anchor.topOffset || 0));
+    __messagesLastObservedScrollTop = Number(container.scrollTop || 0);
+
+    return true;
+}
+
 function queueMessagesBottomPinScroll() {
     if (__messagesBottomPinRaf) return;
 
@@ -23180,75 +22157,15 @@ function pinMessagesToBottomFor(durationMs = 900) {
 }
 
 function variantSignature(v) {
-    const ts = String((v && v.timestamp) || '');
-    const content = String((v && v.content) || '');
-    return `${ts}::${content.slice(0, 120)}`;
+    return chatMessageVersionsApi.variantSignature(v);
 }
 
 function isMeaningfulVersionVariant(v) {
-    const item = (v && typeof v === 'object') ? v : {};
-    const content = String(item.content || '').trim();
-    if (content) return true;
-    const metadata = (item.metadata && typeof item.metadata === 'object') ? item.metadata : {};
-    if (Array.isArray(metadata.process_steps) && metadata.process_steps.length > 0) return true;
-    const reasoning = String(metadata.reasoning_content || '').trim();
-    if (reasoning) return true;
-    return false;
+    return chatMessageVersionsApi.isMeaningfulVersionVariant(v);
 }
 
 function buildVersionNavigation(msg) {
-    const rawVersions = (msg && msg.metadata && Array.isArray(msg.metadata.versions)) ? msg.metadata.versions : [];
-    const versions = rawVersions
-        .map((v, i) => {
-            const src = (v && typeof v === 'object') ? v : {};
-            return { ...src, __serverIndex: i };
-        })
-        .filter((v) => isMeaningfulVersionVariant(v));
-    const currentVariant = {
-        content: msg ? msg.content : '',
-        timestamp: msg ? msg.timestamp : '',
-        __serverIndex: rawVersions.length,
-        __isCurrent: true
-    };
-    const pool = versions.map((v) => ({
-        content: v.content || '',
-        timestamp: v.timestamp || '',
-        __serverIndex: Number(v.__serverIndex),
-        __isCurrent: false
-    }));
-    pool.push(currentVariant);
-    if (pool.length <= 1) {
-        return {
-            total: 1,
-            current: 1,
-            prevIndex: null,
-            nextIndex: null
-        };
-    }
-
-    // 按时间升序；无时间时保持原顺序（serverIndex）
-    const sorted = pool
-        .map((v, i) => ({ ...v, __originOrder: i }))
-        .sort((a, b) => {
-            const ta = normalizeVariantTimestamp(a);
-            const tb = normalizeVariantTimestamp(b);
-            if (ta !== tb) return ta - tb;
-            return a.__originOrder - b.__originOrder;
-        });
-
-    const currentSig = variantSignature(currentVariant);
-    let currentPos = sorted.findIndex(v => variantSignature(v) === currentSig && v.__isCurrent);
-    if (currentPos < 0) currentPos = sorted.length - 1;
-
-    const prev = currentPos > 0 ? sorted[currentPos - 1] : null;
-    const next = currentPos < sorted.length - 1 ? sorted[currentPos + 1] : null;
-
-    return {
-        total: sorted.length,
-        current: currentPos + 1,
-        prevIndex: prev ? Number(prev.__serverIndex) : null,
-        nextIndex: next ? Number(next.__serverIndex) : null
-    };
+    return chatMessageVersionsApi.buildVersionNavigation(msg);
 }
 
 function renderLongtermHookBlock(hook) {
@@ -23346,6 +22263,7 @@ function buildRegeneratePendingAssistantMessage(sourceMessage, state = {}) {
     }
 
     return {
+        __message_index: source.__message_index,
         role: 'assistant',
         content: '',
         pending: true,
@@ -23360,7 +22278,9 @@ function resolveMessagesForActiveStreamRender(messages) {
     if (!plan) return rows;
 
     const assistantIndex = Number(plan.assistant_index);
-    if (assistantIndex < 0 || assistantIndex >= rows.length) {
+    const assistantPosition = rows.findIndex((row, index) => readMessageRenderIndex(row, index) === assistantIndex);
+
+    if (assistantIndex < 0 || assistantPosition < 0) {
         console.warn('[RegenerateBranch] running stream target is outside snapshot', {
             conversation_id: plan.conversation_id,
             assistant_index: assistantIndex,
@@ -23369,9 +22289,9 @@ function resolveMessagesForActiveStreamRender(messages) {
         return rows;
     }
 
-    const visibleRows = rows.slice(0, assistantIndex + 1);
-    visibleRows[assistantIndex] = buildRegeneratePendingAssistantMessage(
-        rows[assistantIndex],
+    const visibleRows = rows.slice(0, assistantPosition + 1);
+    visibleRows[assistantPosition] = buildRegeneratePendingAssistantMessage(
+        rows[assistantPosition],
         plan.state
     );
 
@@ -23444,7 +22364,9 @@ function applyRegenerateStreamDomWindow(conversationId, assistantIndex, preferre
 
 function renderMessages(messages, noScroll, options = {}) {
     resetUserPromptInlineEditor();
-    const renderRows = resolveMessagesForActiveStreamRender(messages);
+    const opts = (options && typeof options === 'object') ? options : {};
+    const indexedRows = buildIndexedMessageRows(messages, opts.indexOffset);
+    const renderRows = resolveMessagesForActiveStreamRender(indexedRows);
 
     // preserve welcome if empty
     refreshConversationImageHistoryFlag(renderRows);
@@ -23460,7 +22382,6 @@ function renderMessages(messages, noScroll, options = {}) {
     clearLearningWelcomeState();
     void syncLearningHeaderMode();
 
-    const opts = (options && typeof options === 'object') ? options : {};
     const instant = !!opts.instant;
     
     // Save current scroll position
@@ -23468,6 +22389,9 @@ function renderMessages(messages, noScroll, options = {}) {
     const oldScrollHeight = els.messagesContainer.scrollHeight;
     const oldClientHeight = els.messagesContainer.clientHeight;
     const wasNearBottom = (oldScrollHeight - oldScrollTop - oldClientHeight) <= 40;
+    const scrollAnchor = opts.preserveScrollAnchor
+        ? captureMessagesScrollAnchor(els.messagesContainer)
+        : null;
     const prevInlineScrollBehavior = els.messagesContainer.style.scrollBehavior;
     if (instant) {
         els.messagesContainer.style.scrollBehavior = 'auto';
@@ -23478,7 +22402,7 @@ function renderMessages(messages, noScroll, options = {}) {
     try {
         els.messagesContainer.innerHTML = '';
         const _tRender0 = performance.now();
-        renderRows.forEach((m, i) => appendMessage(m, i));
+        renderRows.forEach((m, i) => appendMessage(m, readMessageRenderIndex(m, i)));
         const _tRender1 = performance.now();
         console.log(`[renderMessages] appendMessage ×${renderRows.length} = ${(_tRender1-_tRender0).toFixed(1)}ms`);
     } finally {
@@ -23494,11 +22418,18 @@ function renderMessages(messages, noScroll, options = {}) {
     // Restore or scroll
     let shouldPinBottom = false;
     if (noScroll) {
-        if (wasNearBottom || shouldAutoScroll) {
+        const anchorRestored = !wasNearBottom && !shouldAutoScroll && scrollAnchor
+            ? restoreMessagesScrollAnchor(scrollAnchor, els.messagesContainer)
+            : false;
+
+        if (anchorRestored) {
+            requestAnimationFrame(() => restoreMessagesScrollAnchor(scrollAnchor, els.messagesContainer));
+        } else if (wasNearBottom || shouldAutoScroll) {
             scrollMessagesToBottomNow();
             shouldPinBottom = true;
         } else {
             els.messagesContainer.scrollTop = oldScrollTop;
+            __messagesLastObservedScrollTop = Number(els.messagesContainer.scrollTop || 0);
         }
     } else if (shouldAutoScroll || wasNearBottom) {
         scrollMessagesToBottomNow();
@@ -23528,7 +22459,7 @@ function renderMessages(messages, noScroll, options = {}) {
     console.log(`[renderMessages] all sync work done, scheduling turnIndicator in 200ms`);
     setTimeout(() => {
         const _tTI = performance.now();
-        renderTurnIndicator(resolveMessagesForActiveStreamRender(renderRows), { animate: false });
+        renderTurnIndicator(renderRows, { animate: false });
         console.log(`[renderTurnIndicator] total = ${(performance.now()-_tTI).toFixed(1)}ms`);
     }, 200);
 }
@@ -23537,6 +22468,9 @@ function renderMessages(messages, noScroll, options = {}) {
 const turnIndicatorState = {
     popupHideTimer: null,
     userMessages: [],
+    fullConversationId: '',
+    hasFullTurnList: false,
+    turnLoadToken: 0,
     activeTurnIndex: -1,
     visibleTurnCount: 7,
     activeLineEl: null,
@@ -23627,8 +22561,8 @@ function rebuildTurnIndicatorLayoutCacheChunked(buildToken, startIndex) {
 
         if (!msgEl || !msgEl.isConnected) {
             const messageIndex = Number(userMsgs[index].messageIndex);
-            msgEl = (messageIndex >= 0 && messageIndex < messagesContainer.children.length)
-                ? messagesContainer.children[messageIndex]
+            msgEl = Number.isFinite(messageIndex) && messageIndex >= 0
+                ? messagesContainer.querySelector(`.message[data-index="${Math.floor(messageIndex)}"]`)
                 : null;
         }
 
@@ -23657,27 +22591,29 @@ function findActiveTurnIndexByViewportMiddle(viewportMiddle) {
     const centers = turnIndicatorState.messageCenters || [];
     if (!centers.length) return -1;
 
-    let low = 0;
-    let high = centers.length - 1;
-    let activeIndex = 0;
+    let firstLoadedIndex = -1;
+    let activeIndex = -1;
 
-    while (low <= high) {
-        const mid = Math.floor((low + high) / 2);
-        const center = centers[mid];
+    for (let index = 0; index < centers.length; index++) {
+        const center = Number(centers[index]);
 
-        if (center === null || center === undefined) {
-            break;
+        if (!Number.isFinite(center)) {
+            continue;
+        }
+
+        if (firstLoadedIndex < 0) {
+            firstLoadedIndex = index;
         }
 
         if (center <= viewportMiddle) {
-            activeIndex = mid;
-            low = mid + 1;
-        } else {
-            high = mid - 1;
+            activeIndex = index;
+            continue;
         }
+
+        break;
     }
 
-    return activeIndex;
+    return activeIndex >= 0 ? activeIndex : firstLoadedIndex;
 }
 
 function _shouldShowTurnIndicator() {
@@ -23708,9 +22644,137 @@ function _syncTurnIndicatorVisibility() {
     hideTurnListPopup();
 }
 
-function renderTurnIndicator(messages, options = {}) {
-    const container = document.getElementById('turnIndicatorLines');
+function collectTurnIndicatorUserMessages(messages) {
+    const rows = Array.isArray(messages) ? messages : [];
+    const userMsgs = [];
+
+    for (let index = 0; index < rows.length; index++) {
+        const msg = rows[index];
+
+        if (String((msg && msg.role) || '').toLowerCase() !== 'user') {
+            continue;
+        }
+
+        userMsgs.push({
+            msg: msg,
+            messageIndex: readMessageRenderIndex(msg, index),
+            domElement: null
+        });
+    }
+
+    return userMsgs;
+}
+
+function normalizeServerTurnIndicatorRows(turns) {
+    const rows = Array.isArray(turns) ? turns : [];
+    const userMsgs = [];
+
+    for (const row of rows) {
+        const messageIndex = Number(row && row.message_index);
+
+        if (!Number.isFinite(messageIndex) || messageIndex < 0) {
+            continue;
+        }
+
+        const safeIndex = Math.floor(messageIndex);
+        userMsgs.push({
+            msg: {
+                id: row && row.id ? row.id : '',
+                role: 'user',
+                content: row ? row.content : '',
+                timestamp: row && row.timestamp ? row.timestamp : '',
+                __message_index: safeIndex
+            },
+            messageIndex: safeIndex,
+            domElement: null
+        });
+    }
+
+    return userMsgs;
+}
+
+function bindTurnIndicatorDomElements(userMsgs) {
     const messagesContainer = els.messagesContainer;
+    const rows = Array.isArray(userMsgs) ? userMsgs : [];
+
+    rows.forEach((item) => {
+        item.domElement = null;
+    });
+
+    if (!messagesContainer || !rows.length) {
+        return rows;
+    }
+
+    const messageElsByIndex = new Map();
+    Array.from(messagesContainer.querySelectorAll('.message.user')).forEach((row) => {
+        const rowIndex = Number(row && row.dataset ? row.dataset.index : NaN);
+
+        if (Number.isFinite(rowIndex) && rowIndex >= 0) {
+            messageElsByIndex.set(Math.floor(rowIndex), row);
+        }
+    });
+
+    for (const item of rows) {
+        const messageIndex = Number(item && item.messageIndex);
+
+        if (Number.isFinite(messageIndex) && messageIndex >= 0) {
+            item.domElement = messageElsByIndex.get(Math.floor(messageIndex)) || null;
+        }
+    }
+
+    return rows;
+}
+
+async function loadConversationTurnIndicatorList(conversationId, navToken = null) {
+    const cid = String(conversationId || '').trim();
+
+    if (!cid) {
+        return false;
+    }
+
+    const loadToken = turnIndicatorState.turnLoadToken + 1;
+    turnIndicatorState.turnLoadToken = loadToken;
+
+    try {
+        const fetchOptions = {};
+
+        if (navToken && navToken.controller && navToken.controller.signal) {
+            fetchOptions.signal = navToken.controller.signal;
+        }
+
+        const res = await fetch(`/api/conversations/${encodeURIComponent(cid)}/turns`, fetchOptions);
+        const data = await res.json().catch(() => ({}));
+
+        if (navToken && !isActiveConversationNavigation(navToken)) {
+            return false;
+        }
+
+        if (loadToken !== turnIndicatorState.turnLoadToken || cid !== String(currentConversationId || '').trim()) {
+            return false;
+        }
+
+        if (!res.ok || !data || !data.success) {
+            showToast(String((data && data.message) || '加载完整轮次失败'));
+            return false;
+        }
+
+        const userMsgs = normalizeServerTurnIndicatorRows(data.turns);
+        turnIndicatorState.fullConversationId = cid;
+        turnIndicatorState.hasFullTurnList = true;
+        renderTurnIndicatorUserMessages(userMsgs, { animate: false, forceScroll: true });
+        return true;
+    } catch (error) {
+        if (error && error.name === 'AbortError') {
+            return false;
+        }
+
+        showToast(String((error && error.message) || '加载完整轮次失败'));
+        return false;
+    }
+}
+
+function renderTurnIndicatorUserMessages(userMsgs, options = {}) {
+    const container = document.getElementById('turnIndicatorLines');
     const panel = document.getElementById('turnIndicatorPanel');
     if (!container) return;
 
@@ -23719,35 +22783,19 @@ function renderTurnIndicator(messages, options = {}) {
     turnIndicatorState.activeTurnIndex = -1;
     turnIndicatorState.activeLineEl = null;
 
-    if (!messages || !messages.length || !_shouldShowTurnIndicator()) {
+    if (!Array.isArray(userMsgs) || !userMsgs.length || !_shouldShowTurnIndicator()) {
         if (panel) panel.classList.remove('visible');
+        turnIndicatorState.userMessages = [];
+        turnIndicatorState.messageCenters = [];
         return;
     }
 
-    // Collect user messages from data (no DOM query needed)
-    const userMsgs = [];
-    for (let i = 0; i < messages.length; i++) {
-        const msg = messages[i];
-        if (String(msg.role || '').toLowerCase() === 'user') {
-            userMsgs.push({ msg, messageIndex: i, domElement: null });
-        }
-    }
-
-    if (messagesContainer) {
-        const messageEls = messagesContainer.children;
-        for (let i = 0; i < userMsgs.length; i++) {
-            const messageIndex = Number(userMsgs[i].messageIndex);
-            if (messageIndex >= 0 && messageIndex < messageEls.length) {
-                userMsgs[i].domElement = messageEls[messageIndex] || null;
-            }
-        }
-    }
-
-    turnIndicatorState.userMessages = userMsgs;
+    const boundUserMsgs = bindTurnIndicatorDomElements(userMsgs);
+    turnIndicatorState.userMessages = boundUserMsgs;
 
     // Use DocumentFragment for batch DOM insert
     const frag = document.createDocumentFragment();
-    for (let i = 0; i < userMsgs.length; i++) {
+    for (let i = 0; i < boundUserMsgs.length; i++) {
         const line = document.createElement('div');
         line.className = 'turn-indicator-line';
         line.dataset.turnIndex = i;
@@ -23774,7 +22822,21 @@ function renderTurnIndicator(messages, options = {}) {
     }
 
     markTurnIndicatorLayoutDirty();
-    scheduleTurnIndicatorLayoutRefresh({ animate: !!options.animate, forceScroll: true });
+    scheduleTurnIndicatorLayoutRefresh({
+        animate: !!options.animate,
+        forceScroll: options.forceScroll !== false
+    });
+}
+
+function renderTurnIndicator(messages, options = {}) {
+    const cid = String(currentConversationId || '').trim();
+    const hasFullList = turnIndicatorState.hasFullTurnList
+        && turnIndicatorState.fullConversationId === cid;
+    const userMsgs = hasFullList
+        ? turnIndicatorState.userMessages
+        : collectTurnIndicatorUserMessages(messages);
+
+    renderTurnIndicatorUserMessages(userMsgs, options);
 }
 
 function appendTurnIndicatorLine(role, msg) {
@@ -23788,9 +22850,14 @@ function appendTurnIndicatorLine(role, msg) {
     const roleLower = String(role || '').toLowerCase();
 
     if (roleLower === 'user') {
+        const panel = document.getElementById('turnIndicatorPanel');
+        const lastMessageRow = els.messagesContainer ? els.messagesContainer.lastElementChild : null;
+        const lastMessageIndex = Number(lastMessageRow && lastMessageRow.dataset ? lastMessageRow.dataset.index : NaN);
         turnIndicatorState.userMessages.push({
             msg: msg,
-            messageIndex: Math.max(0, els.messagesContainer ? (els.messagesContainer.children.length - 1) : 0),
+            messageIndex: Number.isFinite(lastMessageIndex) && lastMessageIndex >= 0
+                ? Math.floor(lastMessageIndex)
+                : Math.max(0, els.messagesContainer ? (els.messagesContainer.children.length - 1) : 0),
             domElement: null
         });
         markTurnIndicatorLayoutDirty();
@@ -23799,6 +22866,8 @@ function appendTurnIndicatorLine(role, msg) {
         line.className = 'turn-indicator-line';
         line.dataset.turnIndex = container.children.length;
         container.appendChild(line);
+
+        if (panel) panel.classList.add('visible');
 
         // Keep the latest user turn centered inside the 7-line window.
         setActiveTurnLine(container.children.length - 1, { animate: false, forceScroll: true });
@@ -23904,7 +22973,7 @@ function showTurnListPopup() {
         div.title = displayText;
 
         div.addEventListener('click', () => {
-            jumpToUserMessage(idx);
+            void jumpToUserMessage(idx);
             hideTurnListPopup();
         });
 
@@ -23945,7 +23014,7 @@ function scheduleHideTurnListPopup() {
     }, 300);
 }
 
-function jumpToUserMessage(turnIndex) {
+async function jumpToUserMessage(turnIndex) {
     const userMsgs = turnIndicatorState.userMessages || [];
     const item = userMsgs[turnIndex];
     if (!item) return;
@@ -23964,32 +23033,31 @@ function jumpToUserMessage(turnIndex) {
         return;
     }
 
-    // Fallback: find by messageIndex
-    const allMessageEls = root.children;
-    if (item.messageIndex >= 0 && item.messageIndex < allMessageEls.length) {
-        const candidate = allMessageEls[item.messageIndex];
-        if (candidate && candidate.classList.contains('message') && candidate.classList.contains('user')) {
+    const messageIndex = Number(item.messageIndex);
+    if (Number.isFinite(messageIndex) && messageIndex >= 0) {
+        const candidate = root.querySelector(`.message.user[data-index="${Math.floor(messageIndex)}"]`);
+
+        if (candidate) {
             item.domElement = candidate;
             scrollToAndHighlight(candidate);
             return;
         }
-    }
 
-    // Last fallback: find the Nth user message
-    const userEls = root.querySelectorAll('.message.user');
-    let userCount = 0;
-    for (let i = 0; i < userMsgs.length; i++) {
-        if (userMsgs[i] === item) {
-            targetEl = userEls[userCount] || null;
-            break;
+        const loaded = await ensureConversationMessageIndexLoaded(messageIndex);
+        const loadedCandidate = loaded
+            ? root.querySelector(`.message.user[data-index="${Math.floor(messageIndex)}"]`)
+            : null;
+
+        if (loadedCandidate) {
+            item.domElement = loadedCandidate;
+            scrollToAndHighlight(loadedCandidate);
+            markTurnIndicatorLayoutDirty();
+            scheduleTurnIndicatorLayoutRefresh({ animate: false, forceScroll: true });
+            return;
         }
-        userCount++;
     }
 
-    if (targetEl) {
-        item.domElement = targetEl;
-        scrollToAndHighlight(targetEl);
-    }
+    showToast('目标轮次尚未加载完成');
 }
 
 function scrollToAndHighlight(messageEl) {
@@ -24913,121 +23981,40 @@ function resolveContentBodyForFullTextUpdate(messageDiv, displayText) {
     return { body, text: String(displayText || '') };
 }
 
+const streamMessageDomController = getNexoraChatStreaming().createStreamMessageDomController({
+    resolveAssistantStreamMessageDiv,
+    resolveContentBodyForFullTextUpdate,
+    applyLongtermPlanFromText,
+    renderStreamingMarkdownWithNewTabLinks,
+    renderMarkdownWithNewTabLinks,
+    bindSourceMarkdown,
+    highlightCode,
+    resolveReasoningThinkingBlockForAppend,
+    markReasoningThinkingBlockLive,
+    readReasoningContentRaw,
+    buildReasoningAppendText,
+    updateThinkingBlockSummary,
+    finishReasoningThinkingBlock,
+    renderCompletedStreamMath,
+    pinMessagesToBottomFor,
+    scheduleLearningSidebarBridgeNotify,
+    getShouldAutoScroll: () => shouldAutoScroll
+});
+
 function renderStreamingContentSegment(messageDiv, body, rawText, source = 'stream-segment') {
-
-    if (!messageDiv || !body) {
-        return;
-    }
-
-    const planInfo = applyLongtermPlanFromText(rawText, { source, messageDiv });
-    const bodyText = String(planInfo && planInfo.text !== undefined ? planInfo.text : rawText || '');
-
-    body.dataset.streamLive = '1';
-    body.dataset.streamRaw = bodyText;
-    body.innerHTML = renderStreamingMarkdownWithNewTabLinks(bodyText, {
-        streamingMathProvisional: true
-    });
-    bindSourceMarkdown(body, bodyText);
-    highlightCode(body);
+    return streamMessageDomController.renderStreamingContentSegment(messageDiv, body, rawText, source);
 }
 
 function updateMessageDivContent(index, fullText, preferredMessageDiv = null) {
-    const messageDiv = resolveAssistantStreamMessageDiv(index, preferredMessageDiv);
-    if (!messageDiv) return;
-    const planInfo = applyLongtermPlanFromText(fullText, { source: 'stream', messageDiv });
-    const displayText = String(planInfo && planInfo.text !== undefined ? planInfo.text : fullText || '');
-    const resolved = resolveContentBodyForFullTextUpdate(messageDiv, displayText);
-    const body = resolved.body;
-    const bodyText = resolved.text;
-    
-    body.dataset.streamLive = '1';
-    body.innerHTML = renderStreamingMarkdownWithNewTabLinks(bodyText, {
-        streamingMathProvisional: true
-    });
-    bindSourceMarkdown(body, bodyText);
-    highlightCode(body);
-    
-    if (shouldAutoScroll) pinMessagesToBottomFor(700);
-    scheduleLearningSidebarBridgeNotify();
+    return streamMessageDomController.updateMessageDivContent(index, fullText, preferredMessageDiv);
 }
 
 function updateMessageDivThinking(index, delta, preferredMessageDiv = null) {
-    const messageDiv = resolveAssistantStreamMessageDiv(index, preferredMessageDiv);
-    if (!messageDiv) return;
-    
-    const content = messageDiv.querySelector('.message-content') || messageDiv;
-    const wasReasoningSegmentOpen = !!messageDiv.__reasoningSegmentOpen;
-    const thinkingBlock = resolveReasoningThinkingBlockForAppend(messageDiv, content);
-
-    if (!thinkingBlock) return;
-
-    markReasoningThinkingBlockLive(thinkingBlock);
-    
-    const textTarget = thinkingBlock.querySelector('.thinking-content');
-    const currentRaw = readReasoningContentRaw(textTarget);
-    const appendText = buildReasoningAppendText(
-        currentRaw,
-        delta,
-        !wasReasoningSegmentOpen
-    );
-    const raw = `${currentRaw}${appendText}`;
-    textTarget.dataset.rawText = raw;
-    textTarget.dataset.streamRaw = raw;
-    textTarget.innerHTML = renderMarkdownWithNewTabLinks(raw, {
-        breaks: true,
-        streamingMathProvisional: true
-    });
-    bindSourceMarkdown(textTarget, raw);
-    highlightCode(textTarget);
-    updateThinkingBlockSummary(thinkingBlock, raw);
-    if (shouldAutoScroll) {
-        pinMessagesToBottomFor(700);
-    }
-    scheduleLearningSidebarBridgeNotify();
+    return streamMessageDomController.updateMessageDivThinking(index, delta, preferredMessageDiv);
 }
 
 function finalizeMessageRenderForIndex(index, preferredMessageDiv = null) {
-    const messageDiv = resolveAssistantStreamMessageDiv(index, preferredMessageDiv);
-    if (!messageDiv) return;
-
-    const bodies = Array.from(messageDiv.querySelectorAll('.content-body'));
-    bodies.forEach((body) => {
-        const isLive = String(body.dataset.streamLive || '') === '1';
-        if (!isLive) return;
-        const sourceText = String(
-            (typeof body.__sourceMarkdown === 'string')
-                ? body.__sourceMarkdown
-                : (body.dataset.streamRaw || body.textContent || '')
-        );
-        body.dataset.streamLive = '0';
-        body.innerHTML = renderMarkdownWithNewTabLinks(sourceText);
-        bindSourceMarkdown(body, sourceText);
-        renderMathSafe(body);
-        highlightCode(body);
-    });
-
-    const thinkingBlocks = Array.from(messageDiv.querySelectorAll('.thinking-block.reasoning-thinking-block'));
-    thinkingBlocks.forEach((block) => {
-        const contentDiv = block.querySelector('.thinking-content');
-        if (!contentDiv) return;
-        const isLive = String(contentDiv.dataset.streamLive || '') === '1'
-            || String(block.dataset.streamLive || '') === '1';
-        if (!isLive) return;
-        const sourceText = String(
-            (typeof contentDiv.__sourceMarkdown === 'string')
-                ? contentDiv.__sourceMarkdown
-                : (contentDiv.dataset.rawText || contentDiv.dataset.streamRaw || contentDiv.textContent || '')
-        );
-        contentDiv.innerHTML = renderMarkdownWithNewTabLinks(sourceText, { breaks: true });
-        bindSourceMarkdown(contentDiv, sourceText);
-        renderMathSafe(contentDiv);
-        highlightCode(contentDiv);
-        finishReasoningThinkingBlock(block, sourceText);
-    });
-
-    if (shouldAutoScroll) {
-        pinMessagesToBottomFor(900);
-    }
+    return streamMessageDomController.finalizeMessageRenderForIndex(index, preferredMessageDiv);
 }
 
 function collapseReasoningBlocksForMessage(messageDiv) {
@@ -25210,193 +24197,44 @@ function updateMessageDivTools(index, data, preferredMessageDiv = null) {
     scheduleLearningSidebarBridgeNotify();
 }
 
-const STREAM_PREFILL_RENDER_CHUNK_TYPES = new Set([
-    'content',
-    'reasoning_content',
-    'web_search',
-    'search_meta',
-    'context_compression_status',
-    'function_call_delta',
-    'function_call',
-    'function_call_running',
-    'function_result',
-    'learning_card',
-    'question',
-    'puzzle',
-    'model_info',
-    'token_usage'
-]);
+const streamPrefillReplayController = getNexoraChatStreaming().createStreamPrefillReplayController({
+    stripHistoryTimeMarkerEchoForStream,
+    createContentSpan,
+    renderStreamingMarkdownWithNewTabLinks,
+    renderMarkdownWithNewTabLinks,
+    bindSourceMarkdown,
+    highlightCode,
+    resolveReasoningThinkingBlockForAppend,
+    markReasoningThinkingBlockLive,
+    readReasoningContentRaw,
+    buildReasoningAppendText,
+    updateThinkingBlockSummary,
+    updateMessageModelBadge,
+    getStreamingModelBadgeName,
+    safeTokenInt,
+    getTokenMiniStreamOutput: () => tokenMiniState.streamOutput,
+    getTokenMiniEstimatedStreamOutput: () => tokenMiniState.estimatedStreamOutput,
+    updateMessageDivTools
+});
 
 function getStreamPrefillChunkSeq(chunk) {
-    const seq = Number(chunk && chunk._stream_seq);
-
-    return Number.isFinite(seq) && seq > 0 ? Math.floor(seq) : 0;
+    return streamPrefillReplayController.getStreamPrefillChunkSeq(chunk);
 }
 
 function renderStreamPrefillContentChunk(assistantDiv, prefillState, chunk) {
-    let contentText = String(chunk && chunk.content || '');
-
-    if (!contentText) {
-        return false;
-    }
-
-    if (!prefillState.currentSegmentContent && !prefillState.seenVisibleContent) {
-        const checked = stripHistoryTimeMarkerEchoForStream(`${String(prefillState.pendingHistoryTimeMarker || '')}${contentText}`);
-
-        if (checked.pending) {
-            prefillState.pendingHistoryTimeMarker = `${String(prefillState.pendingHistoryTimeMarker || '')}${contentText}`;
-            return false;
-        }
-
-        prefillState.pendingHistoryTimeMarker = '';
-        contentText = checked.text;
-
-        if (checked.removed) {
-            console.warn('[StreamSanitize] stripped echoed history time marker from cached stream chunk');
-        }
-
-        if (!contentText) {
-            return false;
-        }
-    }
-
-    assistantDiv.__reasoningSegmentOpen = false;
-
-    if (assistantDiv.__contentAfterGeneratedImage) {
-        prefillState.currentContentSpan = createContentSpan(assistantDiv, { afterGeneratedImage: true });
-        prefillState.currentSegmentContent = '';
-        assistantDiv.__contentAfterGeneratedImage = false;
-    } else if (!prefillState.currentContentSpan || !prefillState.currentContentSpan.isConnected) {
-        prefillState.currentContentSpan = createContentSpan(assistantDiv);
-        prefillState.currentSegmentContent = '';
-    }
-
-    prefillState.currentSegmentContent += contentText;
-
-    const contentSpan = prefillState.currentContentSpan;
-    contentSpan.dataset.streamRaw = prefillState.currentSegmentContent;
-    contentSpan.dataset.streamLive = '1';
-    contentSpan.innerHTML = renderStreamingMarkdownWithNewTabLinks(prefillState.currentSegmentContent, {
-        streamingMathProvisional: true
-    });
-    bindSourceMarkdown(contentSpan, prefillState.currentSegmentContent);
-    highlightCode(contentSpan);
-    prefillState.seenVisibleContent = true;
-
-    return true;
+    return streamPrefillReplayController.renderStreamPrefillContentChunk(assistantDiv, prefillState, chunk);
 }
 
 function renderStreamPrefillReasoningChunk(assistantDiv, chunk) {
-    const reasoningText = String(chunk && chunk.content || '');
-
-    if (!reasoningText) {
-        return false;
-    }
-
-    const msgContentContainer = assistantDiv.querySelector('.message-content') || assistantDiv;
-    const wasReasoningSegmentOpen = !!assistantDiv.__reasoningSegmentOpen;
-    const thinkingBlock = resolveReasoningThinkingBlockForAppend(assistantDiv, msgContentContainer);
-
-    const thinkingContent = thinkingBlock.querySelector('.thinking-content');
-    const currentRaw = readReasoningContentRaw(thinkingContent);
-    const appendText = buildReasoningAppendText(
-        currentRaw,
-        reasoningText,
-        !wasReasoningSegmentOpen
-    );
-    const nextRaw = `${currentRaw}${appendText}`;
-    markReasoningThinkingBlockLive(thinkingBlock);
-    thinkingContent.dataset.streamRaw = nextRaw;
-    thinkingContent.innerHTML = renderMarkdownWithNewTabLinks(nextRaw, {
-        breaks: true,
-        streamingMathProvisional: true
-    });
-    bindSourceMarkdown(thinkingContent, nextRaw);
-    highlightCode(thinkingContent);
-    updateThinkingBlockSummary(thinkingBlock, nextRaw);
-
-    return true;
+    return streamPrefillReplayController.renderStreamPrefillReasoningChunk(assistantDiv, chunk);
 }
 
 function renderStreamPrefillProcessChunk(assistantDiv, assistantIndex, prefillState, chunk) {
-    const chunkType = String(chunk && chunk.type || '').trim();
-
-    if (!STREAM_PREFILL_RENDER_CHUNK_TYPES.has(chunkType)) {
-        return false;
-    }
-
-    if (chunkType === 'content') {
-        return renderStreamPrefillContentChunk(assistantDiv, prefillState, chunk);
-    }
-
-    if (chunkType === 'reasoning_content') {
-        return renderStreamPrefillReasoningChunk(assistantDiv, chunk);
-    }
-
-    if (chunkType === 'model_info') {
-        updateMessageModelBadge(assistantDiv, {
-            modelName: String(chunk.model_name || getStreamingModelBadgeName()),
-            searchFlag: (typeof chunk.search_enabled === 'boolean') ? chunk.search_enabled : 'unknown',
-            inputTokens: 0,
-            outputTokens: Math.max(safeTokenInt(tokenMiniState.streamOutput), safeTokenInt(tokenMiniState.estimatedStreamOutput))
-        });
-
-        return false;
-    }
-
-    if (chunkType === 'token_usage') {
-        updateMessageModelBadge(assistantDiv, {
-            modelName: getStreamingModelBadgeName(),
-            searchFlag: 'unknown',
-            inputTokens: safeTokenInt(chunk.input_tokens),
-            outputTokens: Math.max(safeTokenInt(chunk.output_tokens), safeTokenInt(tokenMiniState.streamOutput), safeTokenInt(tokenMiniState.estimatedStreamOutput))
-        });
-
-        return false;
-    }
-
-    assistantDiv.__reasoningSegmentOpen = false;
-    prefillState.currentContentSpan = null;
-    prefillState.currentSegmentContent = '';
-    updateMessageDivTools(assistantIndex, chunk, assistantDiv);
-
-    return true;
+    return streamPrefillReplayController.renderStreamPrefillProcessChunk(assistantDiv, assistantIndex, prefillState, chunk);
 }
 
 function replayStreamPrefillChunks(assistantDiv, chunks, assistantIndex) {
-    const rows = Array.isArray(chunks) ? chunks : [];
-    const prefillState = {
-        currentContentSpan: null,
-        currentSegmentContent: '',
-        pendingHistoryTimeMarker: '',
-        seenVisibleContent: false
-    };
-    let rendered = false;
-    let lastSeq = 0;
-    let lastRenderedType = '';
-
-    rows.forEach((chunk) => {
-        if (!chunk || typeof chunk !== 'object') {
-            return;
-        }
-
-        const seq = getStreamPrefillChunkSeq(chunk);
-
-        if (seq > 0) {
-            lastSeq = Math.max(lastSeq, seq);
-        }
-
-        if (renderStreamPrefillProcessChunk(assistantDiv, assistantIndex, prefillState, chunk)) {
-            rendered = true;
-            lastRenderedType = String(chunk.type || '').trim();
-        }
-    });
-
-    return {
-        rendered,
-        lastSeq,
-        endedWithContent: lastRenderedType === 'content'
-    };
+    return streamPrefillReplayController.replayStreamPrefillChunks(assistantDiv, chunks, assistantIndex);
 }
 
 async function resumeActiveStreamAfterReload(options = {}) {
@@ -26086,7 +24924,12 @@ async function resumeActiveStreamAfterReload(options = {}) {
             && String(currentConversationId || '').trim() === reconnectBoundConversationId
             && (!streamAbortedByUser || streamServerFinalized)
         ) {
-            await renderConversationSnapshotFromServer(reconnectBoundConversationId, { instant: true, silent: true });
+            await renderConversationSnapshotFromServer(reconnectBoundConversationId, {
+                instant: true,
+                silent: true,
+                render: !(streamCompleted && !streamAbortedByUser && !streamEndedWithError),
+                preserveScrollAnchor: true
+            });
         }
         if (streamCompleted) {
             loadConversations();
@@ -27029,39 +25872,62 @@ function createToastUiKnowledgeEditor(initialValue = '') {
     let fullscreen = false;
     let previewRenderDebounceTimer = 0;
     let previewBridgeCleanupFns = [];
-    const queueToastPreviewRender = (preserveScroll = false, delay = 32) => {
+    let lastRenderedPreviewMarkdown = null;
+    const previewRenderTypingDelay = 180;
+
+    const queueToastPreviewRender = (preserveScroll = false, delay = previewRenderTypingDelay) => {
+        if (viewMode === 'edit') return;
+
         if (previewRenderDebounceTimer) {
             clearTimeout(previewRenderDebounceTimer);
             previewRenderDebounceTimer = 0;
         }
+
         previewRenderDebounceTimer = setTimeout(() => {
             previewRenderDebounceTimer = 0;
             renderToastPreview(preserveScroll);
         }, Math.max(0, Number(delay || 0)));
     };
+
     const renderToastPreview = (preserveScroll = true) => {
+        if (viewMode === 'edit') return;
+
         const pane = ensureToastCustomPreviewPane();
         const root = getToastPreviewContentRoot();
         if (!pane || !root) return;
         const progress = preserveScroll ? readScrollableProgress(pane) : { top: 0, ratio: 0 };
         const markdown = String(editor.getMarkdown() || '');
+        if (lastRenderedPreviewMarkdown === markdown) {
+            if (preserveScroll) {
+                requestAnimationFrame(() => {
+                    applyScrollableProgress(pane, progress.top, progress.ratio);
+                });
+            }
+            return;
+        }
+
+        lastRenderedPreviewMarkdown = markdown;
         root.innerHTML = renderMarkdownForNotes(markdown);
         bindSourceMarkdown(root, markdown);
         renderMathSafe(root);
-        logKnowledgeEditorDebug('toastPreviewRender', {
-            preserveScroll,
-            markdownLength: markdown.length,
-            pane: summarizeKnowledgeEditorNode(pane),
-            root: summarizeKnowledgeEditorNode(root)
-        });
+        if (isKnowledgeEditorDebugEnabled()) {
+            logKnowledgeEditorDebug('toastPreviewRender', {
+                preserveScroll,
+                markdownLength: markdown.length,
+                pane: summarizeKnowledgeEditorNode(pane),
+                root: summarizeKnowledgeEditorNode(root)
+            });
+        }
         if (preserveScroll) {
             requestAnimationFrame(() => {
                 applyScrollableProgress(pane, progress.top, progress.ratio);
-                logKnowledgeEditorDebug('toastPreviewRenderRestore', {
-                    top: progress.top,
-                    ratio: progress.ratio,
-                    pane: summarizeKnowledgeEditorNode(pane)
-                });
+                if (isKnowledgeEditorDebugEnabled()) {
+                    logKnowledgeEditorDebug('toastPreviewRenderRestore', {
+                        top: progress.top,
+                        ratio: progress.ratio,
+                        pane: summarizeKnowledgeEditorNode(pane)
+                    });
+                }
             });
         }
     };
@@ -27545,7 +26411,7 @@ function createToastUiKnowledgeEditor(initialValue = '') {
         if (cmd) {
             if (viewMode === 'preview') return;
             void handleToolbarCommand(cmd);
-            requestAnimationFrame(() => renderToastPreview(false));
+            queueToastPreviewRender(false, 0);
             return;
         }
         if (action === 'preview') {
@@ -27610,7 +26476,7 @@ function createToastUiKnowledgeEditor(initialValue = '') {
     setViewMode('preview');
     try {
         if (typeof editor.on === 'function') {
-            const onEditorChange = () => queueToastPreviewRender(false, 0);
+            const onEditorChange = () => queueToastPreviewRender(true);
             editor.on('change', onEditorChange);
         }
     } catch (_) {}
@@ -27666,13 +26532,13 @@ function createToastUiKnowledgeEditor(initialValue = '') {
     const bindPreviewBridge = () => {
         const proseMirror = getToastProseMirrorEl();
         if (!proseMirror) return;
-        const queue = () => queueToastPreviewRender(false, 0);
+        const queue = () => queueToastPreviewRender(true);
         proseMirror.addEventListener('input', queue);
         proseMirror.addEventListener('keyup', queue);
         proseMirror.addEventListener('paste', queue);
         proseMirror.addEventListener('cut', queue);
         proseMirror.addEventListener('compositionend', queue);
-        const observer = new MutationObserver(() => queueToastPreviewRender(false, 0));
+        const observer = new MutationObserver(() => queueToastPreviewRender(true));
         observer.observe(proseMirror, {
             childList: true,
             subtree: true,
@@ -27765,10 +26631,12 @@ function createToastUiKnowledgeEditor(initialValue = '') {
         addLineWidget: () => ({ clear: () => {} })
     };
 
-    return {
+    const toastKnowledgeEditorApi = {
         __editorType: 'toastui',
         __editor: editor,
         __alignedBound: true,
+        __queuePreviewRender: queueToastPreviewRender,
+        __renderPreviewNow: renderToastPreview,
         get __viewMode() {
             return viewMode;
         },
@@ -27779,6 +26647,7 @@ function createToastUiKnowledgeEditor(initialValue = '') {
             if (typeof nextValue === 'undefined') {
                 return editor.getMarkdown();
             }
+            lastRenderedPreviewMarkdown = null;
             editor.setMarkdown(String(nextValue || ''), false);
             renderToastPreview(false);
             return String(nextValue || '');
@@ -27820,7 +26689,8 @@ function createToastUiKnowledgeEditor(initialValue = '') {
         },
         codemirror: codemirrorCompat
     };
-    easyMDE.__cleanupPreviewBridge = () => {
+
+    toastKnowledgeEditorApi.__cleanupPreviewBridge = () => {
         if (previewRenderDebounceTimer) {
             clearTimeout(previewRenderDebounceTimer);
             previewRenderDebounceTimer = 0;
@@ -27830,6 +26700,8 @@ function createToastUiKnowledgeEditor(initialValue = '') {
         });
         previewBridgeCleanupFns = [];
     };
+
+    return toastKnowledgeEditorApi;
 }
 
 function getKnowledgePreviewContentEl() {
@@ -30346,7 +29218,13 @@ function applyCodeMirrorProgress(preferredTop = 0, preferredRatio = 0) {
     } catch (_) {}
 }
 
+function isKnowledgeEditorDebugEnabled() {
+    return !!window.__NEXORA_KNOWLEDGE_EDITOR_DEBUG;
+}
+
 function logKnowledgeEditorDebug(message, details = null) {
+    if (!isKnowledgeEditorDebugEnabled()) return;
+
     try {
         if (details != null) {
             console.debug('[KnowledgeEditor]', message, details);
@@ -31071,12 +29949,14 @@ function syncKnowledgeEditorMirrorScroll(fromPreview) {
     scrollResetTimer = setTimeout(() => { lastScrollSource = null; }, 50);
 
     knowledgeEditorScrollSyncLock = true;
-    logKnowledgeEditorDebug('mirrorScroll:start', {
-        fromPreview,
-        preview: summarizeKnowledgeEditorNode(preview),
-        scroller: summarizeKnowledgeEditorNode(scroller),
-        layout: collectKnowledgeEditorLayoutSnapshot()
-    });
+    if (isKnowledgeEditorDebugEnabled()) {
+        logKnowledgeEditorDebug('mirrorScroll:start', {
+            fromPreview,
+            preview: summarizeKnowledgeEditorNode(preview),
+            scroller: summarizeKnowledgeEditorNode(scroller),
+            layout: collectKnowledgeEditorLayoutSnapshot()
+        });
+    }
     requestAnimationFrame(() => {
         try {
             if (fromPreview) {
@@ -31126,11 +30006,13 @@ function syncKnowledgeEditorMirrorScroll(fromPreview) {
         } finally {
             requestAnimationFrame(() => {
                 knowledgeEditorScrollSyncLock = false;
-                logKnowledgeEditorDebug('mirrorScroll:end', {
-                    fromPreview,
-                    preview: summarizeKnowledgeEditorNode(preview),
-                    scroller: summarizeKnowledgeEditorNode(scroller)
-                });
+                if (isKnowledgeEditorDebugEnabled()) {
+                    logKnowledgeEditorDebug('mirrorScroll:end', {
+                        fromPreview,
+                        preview: summarizeKnowledgeEditorNode(preview),
+                        scroller: summarizeKnowledgeEditorNode(scroller)
+                    });
+                }
             });
         }
     });
@@ -31165,93 +30047,115 @@ function bindKnowledgeEditorScrollTracking() {
     if (!title) return;
 
     const preview = getKnowledgeEditorPreviewEl();
-    if (preview && preview.dataset.nexoraScrollBoundTitle !== title) {
-        preview.dataset.nexoraScrollBoundTitle = title;
+    if (preview && preview.dataset.nexoraScrollBound !== '1') {
+        preview.dataset.nexoraScrollBound = '1';
         preview.addEventListener('scroll', () => {
             cancelKnowledgeEditorRestores();
             if (knowledgeEditorModeSwitchActive || knowledgeEditorScrollSyncLock) return;
-            const state = getKnowledgeEditorState(title);
+            const activeTitle = String(currentViewingKnowledge || knowledgeEditorScrollState.activeTitle || '').trim();
+            if (!activeTitle) return;
+
+            const state = getKnowledgeEditorState(activeTitle);
             const progress = readScrollableProgress(preview);
             state.previewTop = progress.top;
             state.previewRatio = progress.ratio;
-            knowledgeEditorScrollState.activeTitle = title;
-            logKnowledgeEditorDebug('previewScroll', {
-                title,
-                top: progress.top,
-                ratio: progress.ratio,
-                preview: summarizeKnowledgeEditorNode(preview)
-            });
+            knowledgeEditorScrollState.activeTitle = activeTitle;
+            if (isKnowledgeEditorDebugEnabled()) {
+                logKnowledgeEditorDebug('previewScroll', {
+                    title: activeTitle,
+                    top: progress.top,
+                    ratio: progress.ratio,
+                    preview: summarizeKnowledgeEditorNode(preview)
+                });
+            }
             syncKnowledgeEditorMirrorScroll(true);
         }, { passive: true });
     }
 
     const scroller = getKnowledgeEditorScrollerEl();
-    if (scroller && scroller.dataset.nexoraScrollBoundTitle !== title) {
-        scroller.dataset.nexoraScrollBoundTitle = title;
+    if (scroller && scroller.dataset.nexoraScrollBound !== '1') {
+        scroller.dataset.nexoraScrollBound = '1';
         scroller.addEventListener('scroll', () => {
             cancelKnowledgeEditorRestores();
             if (knowledgeEditorModeSwitchActive || knowledgeEditorScrollSyncLock) return;
             if (!easyMDE || !easyMDE.codemirror) return;
-            const state = getKnowledgeEditorState(title);
+            const activeTitle = String(currentViewingKnowledge || knowledgeEditorScrollState.activeTitle || '').trim();
+            if (!activeTitle) return;
+
+            const state = getKnowledgeEditorState(activeTitle);
             const progress = (easyMDE && easyMDE.__editorType === 'toastui')
                 ? readScrollableProgress(scroller)
                 : readCodeMirrorProgress();
             state.editTop = progress.top;
             state.editRatio = progress.ratio;
-            knowledgeEditorScrollState.activeTitle = title;
-            logKnowledgeEditorDebug('editScroll', {
-                title,
-                top: progress.top,
-                ratio: progress.ratio,
-                scroller: summarizeKnowledgeEditorNode(scroller)
-            });
+            knowledgeEditorScrollState.activeTitle = activeTitle;
+            if (isKnowledgeEditorDebugEnabled()) {
+                logKnowledgeEditorDebug('editScroll', {
+                    title: activeTitle,
+                    top: progress.top,
+                    ratio: progress.ratio,
+                    scroller: summarizeKnowledgeEditorNode(scroller)
+                });
+            }
             syncKnowledgeEditorMirrorScroll(false);
         }, { passive: true });
     }
 
     if (easyMDE && easyMDE.__editorType === 'toastui' && easyMDE.codemirror && typeof easyMDE.codemirror.on === 'function') {
-        if (easyMDE.codemirror.__nexoraScrollBoundTitle !== title) {
-            easyMDE.codemirror.__nexoraScrollBoundTitle = title;
+        if (easyMDE.codemirror.__nexoraScrollBound !== true) {
+            easyMDE.codemirror.__nexoraScrollBound = true;
             easyMDE.codemirror.on('scroll', () => {
                 cancelKnowledgeEditorRestores();
                 if (knowledgeEditorModeSwitchActive || knowledgeEditorScrollSyncLock) return;
-                const state = getKnowledgeEditorState(title);
+                const activeTitle = String(currentViewingKnowledge || knowledgeEditorScrollState.activeTitle || '').trim();
+                if (!activeTitle) return;
+
+                const state = getKnowledgeEditorState(activeTitle);
                 const progress = readCodeMirrorProgress();
                 state.editTop = progress.top;
                 state.editRatio = progress.ratio;
-                knowledgeEditorScrollState.activeTitle = title;
-                logKnowledgeEditorDebug('editScroll:cm', {
-                    title,
-                    top: progress.top,
-                    ratio: progress.ratio,
-                    scroller: summarizeKnowledgeEditorNode(getKnowledgeEditorScrollerEl())
-                });
+                knowledgeEditorScrollState.activeTitle = activeTitle;
+                if (isKnowledgeEditorDebugEnabled()) {
+                    logKnowledgeEditorDebug('editScroll:cm', {
+                        title: activeTitle,
+                        top: progress.top,
+                        ratio: progress.ratio,
+                        scroller: summarizeKnowledgeEditorNode(getKnowledgeEditorScrollerEl())
+                    });
+                }
                 syncKnowledgeEditorMirrorScroll(false);
             });
         }
     }
 
     const proseMirror = getToastProseMirrorEl();
-    if (proseMirror && proseMirror.dataset.nexoraPmBoundTitle !== title) {
-        proseMirror.dataset.nexoraPmBoundTitle = title;
+    if (proseMirror && proseMirror.dataset.nexoraPmBound !== '1') {
+        proseMirror.dataset.nexoraPmBound = '1';
         proseMirror.addEventListener('scroll', () => {
             cancelKnowledgeEditorRestores();
             if (knowledgeEditorModeSwitchActive || knowledgeEditorScrollSyncLock) return;
-            const state = getKnowledgeEditorState(title);
+            const activeTitle = String(currentViewingKnowledge || knowledgeEditorScrollState.activeTitle || '').trim();
+            if (!activeTitle) return;
+
+            const state = getKnowledgeEditorState(activeTitle);
             const progress = readScrollableProgress(proseMirror);
             state.editTop = progress.top;
             state.editRatio = progress.ratio;
-            knowledgeEditorScrollState.activeTitle = title;
-            logKnowledgeEditorDebug('editScroll:pm', {
-                title,
-                top: progress.top,
-                ratio: progress.ratio,
-                scroller: summarizeKnowledgeEditorNode(proseMirror)
-            });
+            knowledgeEditorScrollState.activeTitle = activeTitle;
+            if (isKnowledgeEditorDebugEnabled()) {
+                logKnowledgeEditorDebug('editScroll:pm', {
+                    title: activeTitle,
+                    top: progress.top,
+                    ratio: progress.ratio,
+                    scroller: summarizeKnowledgeEditorNode(proseMirror)
+                });
+            }
             syncKnowledgeEditorMirrorScroll(false);
         }, { passive: true });
         const refreshPreviewFromPm = () => {
-            requestAnimationFrame(() => renderToastPreview(false));
+            if (easyMDE && typeof easyMDE.__queuePreviewRender === 'function') {
+                easyMDE.__queuePreviewRender(true);
+            }
         };
         proseMirror.addEventListener('input', refreshPreviewFromPm);
         proseMirror.addEventListener('keyup', refreshPreviewFromPm);
@@ -32158,11 +31062,65 @@ async function refreshChatOllamaProviderStatuses(providerKeys = [], options = {}
     refreshChatOllamaStatusIndicators();
 }
 
+function normalizeModelContextRefreshMode(raw) {
+    const token = String(raw || '').trim().toLowerCase();
+
+    if (['0', 'false', 'off', 'no', 'none', 'cache', 'cached'].includes(token)) {
+        return 'cache';
+    }
+
+    if (['force', 'remote', 'live'].includes(token)) {
+        return 'force';
+    }
+
+    return 'async';
+}
+
+function buildModelConfigUrl(contextRefresh) {
+    const params = new URLSearchParams();
+    params.set('context_refresh', normalizeModelContextRefreshMode(contextRefresh));
+
+    return `/api/config?${params.toString()}`;
+}
+
+function scheduleModelContextRefreshAfterLoad() {
+    if (modelContextRefreshScheduled) {
+        return;
+    }
+
+    modelContextRefreshScheduled = true;
+
+    window.setTimeout(() => {
+        loadModels({
+            contextRefresh: 'async',
+            refreshContextAfterLoad: false,
+            forceOllamaStatus: false,
+        })
+            .then((ok) => {
+                if (!ok) {
+                    return;
+                }
+
+                window.setTimeout(() => {
+                    loadModels({
+                        contextRefresh: 'cache',
+                        refreshContextAfterLoad: false,
+                        forceOllamaStatus: false,
+                    });
+                }, MODEL_CONTEXT_RELOAD_DELAY_MS);
+            })
+            .catch((err) => {
+                console.error('Error refreshing model context windows', err);
+            });
+    }, MODEL_CONTEXT_REFRESH_DELAY_MS);
+}
+
 async function loadModels(options = {}) {
     const loadOptions = options && typeof options === 'object' ? options : {};
+    const contextRefresh = normalizeModelContextRefreshMode(loadOptions.contextRefresh || 'async');
 
     try {
-        const res = await fetch('/api/config');
+        const res = await fetch(buildModelConfigUrl(contextRefresh));
         const data = await res.json();
         if(data.models) {
             updateBrowserModelConfigVersion(data);
@@ -32193,6 +31151,10 @@ async function loadModels(options = {}) {
                 });
             } else {
                 subscribeBrowserOllamaStatus([]);
+            }
+
+            if (loadOptions.refreshContextAfterLoad) {
+                scheduleModelContextRefreshAfterLoad();
             }
 
             return true;
@@ -32972,11 +31934,17 @@ async function pollUploadTask(taskId, file, index, total) {
     throw new Error('上传任务超时');
 }
 
-function uploadSingleFileWithProgress(file, index, total) {
+function uploadSingleFileWithProgress(file, index, total, options = {}) {
     return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         const formData = new FormData();
+        const uploadOptions = (options && typeof options === 'object') ? options : {};
         formData.append('file', file);
+
+        if (uploadOptions.targetPath) {
+            formData.append('target_path', String(uploadOptions.targetPath || '').trim());
+        }
+
         currentUploadXhr = xhr;
 
         xhr.open('POST', '/api/upload', true);
@@ -33169,7 +32137,9 @@ async function handleFileUploadFiles(fileList, options = {}) {
                     await appendUploadedImageEntry(file, i, files.length);
                     await new Promise((resolve) => setTimeout(resolve, 160));
                 } else {
-                    const data = await uploadSingleFileWithProgress(file, i, files.length);
+                    const data = await uploadSingleFileWithProgress(file, i, files.length, {
+                        targetPath: options && options.targetPath,
+                    });
                     if (attachToInput) {
                         appendUploadedFileEntry(data, file.name);
                         updateFilePreview();
@@ -33359,36 +32329,85 @@ function updateSidebarUserProfile(displayName, avatarUrl) {
     }
 }
 
+function applyCurrentUserIdentity(user) {
+    if (!user || typeof user !== 'object') {
+        throw new Error('用户身份接口返回为空');
+    }
+
+    const userId = String(user.id || '').trim();
+
+    if (!userId) {
+        throw new Error('用户身份接口缺少用户ID');
+    }
+
+    const displayName = String(user.username || userId).trim() || userId;
+
+    currentUsername = userId;
+    currentUserRole = user.role || 'member';
+    currentUserAvatarUrl = user.avatar_url || '';
+    updateSidebarUserProfile(displayName, currentUserAvatarUrl);
+
+    return {
+        id: userId,
+        username: displayName,
+        role: currentUserRole,
+        avatar_url: currentUserAvatarUrl
+    };
+}
+
+async function loadCurrentUserIdentity() {
+    if (currentUserIdentityRequest) {
+        return currentUserIdentityRequest;
+    }
+
+    const request = (async () => {
+        const res = await fetch('/api/user/info?lite=1', {
+            method: 'GET',
+            credentials: 'include',
+            cache: 'no-store'
+        });
+        const data = await res.json();
+
+        if (!res.ok || !data || !data.success || !data.user) {
+            throw new Error((data && data.message) ? data.message : `用户身份读取失败 HTTP ${res.status}`);
+        }
+
+        return applyCurrentUserIdentity(data.user);
+    })();
+
+    currentUserIdentityRequest = request;
+
+    try {
+        return await request;
+    } finally {
+        if (currentUserIdentityRequest === request) {
+            currentUserIdentityRequest = null;
+        }
+    }
+}
+
 // --- Admin Functions ---
 // 查用户色并显示管理菜单
 async function checkUserRole() {
     try {
-        const res = await fetch('/api/user/info');
-        const data = await res.json();
-        if (data.success) {
-            // API 返回结构是 data.user.{username, role}
-            currentUsername = data.user.id;
-            currentUserRole = data.user.role;
-            const displayName = data.user.username || data.user.id;
-            currentUserAvatarUrl = data.user.avatar_url || '';
-            updateSidebarUserProfile(displayName, currentUserAvatarUrl);
+        await loadCurrentUserIdentity();
 
-            // 处理管理员入口显示（迁移到设置页面）
-            const settingsAdminGap = document.getElementById('settingsAdminGap');
-            const settingsAdminBtns = document.querySelectorAll('#settingsModal .settings-admin-entry');
-            if (currentUserRole === 'admin') {
-                document.body.classList.add('is-admin');
-                if (settingsAdminGap) settingsAdminGap.style.display = '';
-                settingsAdminBtns.forEach((btn) => { btn.style.display = ''; });
-                console.log('[ADMIN] User is admin, showing settings admin entry');
-                void checkAdminQuotaOverageAlertOnRefresh();
-            } else {
-                document.body.classList.remove('is-admin');
-                if (settingsAdminGap) settingsAdminGap.style.display = 'none';
-                settingsAdminBtns.forEach((btn) => { btn.style.display = 'none'; });
-                console.log('[ADMIN] User is not admin, hiding settings admin entry');
-                adminQuotaOverageNoticeChecked = false;
-            }
+        // 处理管理员入口显示（迁移到设置页面）
+        const settingsAdminGap = document.getElementById('settingsAdminGap');
+        const settingsAdminBtns = document.querySelectorAll('#settingsModal .settings-admin-entry');
+
+        if (currentUserRole === 'admin') {
+            document.body.classList.add('is-admin');
+            if (settingsAdminGap) settingsAdminGap.style.display = '';
+            settingsAdminBtns.forEach((btn) => { btn.style.display = ''; });
+            console.log('[ADMIN] User is admin, showing settings admin entry');
+            void checkAdminQuotaOverageAlertOnRefresh();
+        } else {
+            document.body.classList.remove('is-admin');
+            if (settingsAdminGap) settingsAdminGap.style.display = 'none';
+            settingsAdminBtns.forEach((btn) => { btn.style.display = 'none'; });
+            console.log('[ADMIN] User is not admin, hiding settings admin entry');
+            adminQuotaOverageNoticeChecked = false;
         }
     } catch (err) {
         console.log('Failed to check user role', err);
@@ -33577,38 +32596,74 @@ function resetAdminSystemHealthTestButtonsByInput(inputId) {
     });
 }
 
-// 健康检查必须由浏览器直接访问组件服务，避免经过 Nexora 后端和任何 API Key。
-function buildAdminSystemHealthUrl(baseUrl, healthPath) {
-    const text = String(baseUrl || '').trim();
-    const path = String(healthPath || '').trim();
+function getAdminSystemHealthServiceApiName(sectionName) {
+    const serviceNames = {
+        rag_database: 'NexoraDB',
+        nexora_search: 'NexoraSearch',
+        nexora_learning: 'NexoraLearning',
+        nexora_mail: 'NexoraMail',
+    };
 
-    if (!text) throw new Error('Service URL 不能为空');
-    if (!path || path.charAt(0) !== '/') throw new Error('Health Path 未配置');
+    const section = String(sectionName || '').trim();
+    const serviceName = serviceNames[section];
 
-    const url = new URL(text);
+    if (!serviceName) throw new Error('未知服务测试类型');
 
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-        throw new Error('Service URL 必须以 http:// 或 https:// 开头');
-    }
-
-    const basePath = url.pathname.replace(/\/+$/, '');
-    url.pathname = `${basePath}${path}`;
-    url.search = '';
-    url.hash = '';
-
-    return url.toString();
+    return serviceName;
 }
 
-function formatAdminSystemHealthFetchError(err) {
-    if (err && err.name === 'AbortError') return '测试超时';
+function getAdminSystemHealthServicePayload(sectionName) {
+    const section = String(sectionName || '').trim();
+    const payload = getAdminSystemSettingsSectionPayload(section);
+    const services = payload && payload.services && typeof payload.services === 'object' ? payload.services : {};
+    const serviceConfig = services[section] && typeof services[section] === 'object' ? services[section] : {};
+    const serviceUrl = String(serviceConfig.service_url || serviceConfig.frontend_url || '').trim();
+    const timeout = serviceConfig.timeout || serviceConfig.request_timeout || '';
 
-    const message = String((err && err.message) || '访问失败');
+    return {
+        service_url: serviceUrl,
+        timeout,
+    };
+}
 
-    if (err instanceof TypeError && /failed to fetch/i.test(message)) {
-        return '浏览器无法读取响应，请检查 health 接口是否返回 Access-Control-Allow-Origin';
+function buildAdminSystemHealthTestPayload(button) {
+    const section = button ? String(button.dataset.adminSystemHealthTest || '').trim() : '';
+    const healthPath = button ? String(button.dataset.adminSystemHealthPath || '').trim() : '';
+    const serviceName = getAdminSystemHealthServiceApiName(section);
+    const payload = getAdminSystemHealthServicePayload(section);
+
+    if (!healthPath || healthPath.charAt(0) !== '/') {
+        throw new Error('Health Path 未配置');
     }
 
-    return message;
+    payload.health_path = healthPath;
+
+    return {
+        serviceName,
+        payload,
+    };
+}
+
+async function parseAdminSystemHealthTestResponse(response) {
+    const text = await response.text();
+
+    if (!text) return {};
+
+    try {
+        return JSON.parse(text);
+    } catch (err) {
+        throw new Error('服务端测试接口返回非 JSON 响应');
+    }
+}
+
+function formatAdminSystemHealthFailureMessage(data, defaultMessage) {
+    const payload = data && typeof data === 'object' ? data : {};
+    const message = String(payload.message || defaultMessage || '测试失败').trim();
+    const status = payload.upstream_status ? `HTTP ${payload.upstream_status}` : '';
+    const errorType = payload.error_type ? String(payload.error_type) : '';
+    const detail = [status, errorType].filter(Boolean).join('，');
+
+    return detail ? `${message}（${detail}）` : message;
 }
 
 async function testAdminSystemServiceHealth(button) {
@@ -33617,20 +32672,18 @@ async function testAdminSystemServiceHealth(button) {
         return;
     }
 
-    const inputId = button ? String(button.dataset.adminSystemUrlInput || '').trim() : '';
-    const input = inputId ? document.getElementById(inputId) : null;
     const label = getAdminSystemHealthTestLabel(button);
-    let healthUrl = '';
+    let requestInfo = null;
 
     try {
-        healthUrl = buildAdminSystemHealthUrl(input ? input.value : '', button ? button.dataset.adminSystemHealthPath : '');
+        requestInfo = buildAdminSystemHealthTestPayload(button);
     } catch (err) {
         const message = String((err && err.message) || '服务测试配置错误');
 
         setAdminSystemHealthTestButtonState(button, 'error');
         setAdminSystemStatus(`${label} 测试失败：${message}`, 'error');
         showToast(`${label} 测试失败：${message}`);
-        console.error('[AdminSystemHealthTest] invalid config', { label, inputId, error: err });
+        console.error('[AdminSystemHealthTest] invalid config', { label, error: err });
         return;
     }
 
@@ -33643,25 +32696,29 @@ async function testAdminSystemServiceHealth(button) {
     setAdminSystemStatus(`${label} 正在测试...`);
 
     try {
-        const response = await fetch(healthUrl, {
-            method: 'GET',
+        const response = await fetch(`/api/test/${encodeURIComponent(requestInfo.serviceName)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
             cache: 'no-store',
-            credentials: 'omit',
             signal: controller.signal,
+            body: JSON.stringify(requestInfo.payload),
         });
+        const data = await parseAdminSystemHealthTestResponse(response);
 
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        if (!response.ok || !data || !data.success) {
+            throw new Error(formatAdminSystemHealthFailureMessage(data, `HTTP ${response.status}`));
+        }
 
         setAdminSystemHealthTestButtonState(button, 'success');
         setAdminSystemStatus(`${label} 服务正常`, 'ok');
         showToast(`${label} 服务正常`);
     } catch (err) {
-        const message = formatAdminSystemHealthFetchError(err);
+        const message = err && err.name === 'AbortError' ? '测试超时' : String((err && err.message) || '测试失败');
 
         setAdminSystemHealthTestButtonState(button, 'error');
         setAdminSystemStatus(`${label} 服务异常：${message}`, 'error');
         showToast(`${label} 服务异常：${message}`);
-        console.error('[AdminSystemHealthTest] failed', { label, healthUrl, error: err });
+        console.error('[AdminSystemHealthTest] failed', { label, requestInfo, error: err });
     } finally {
         window.clearTimeout(timeoutId);
     }
@@ -33691,462 +32748,83 @@ function bindAdminSystemHealthTestButtons() {
 }
 
 function getAdminSystemSelectRoot(valueId) {
-    const id = String(valueId || '').trim();
+    return adminSystemControlsController.getAdminSystemSelectRoot(valueId);
+}
 
-    if (!id) return null;
-
-    const roots = document.querySelectorAll('#settingsModal [data-admin-system-select]');
-
-    return Array.from(roots).find((node) => String(node.dataset.adminSystemSelect || '') === id) || null;
+function getAdminSystemSelectRoots() {
+    return adminSystemControlsController.getAdminSystemSelectRoots();
 }
 
 function getAdminSystemSelectValueId(root) {
-    return root ? String(root.dataset.adminSystemSelect || '').trim() : '';
+    return adminSystemControlsController.getAdminSystemSelectValueId(root);
 }
 
 function getAdminSystemSelectMenu(root) {
-    if (!root) return null;
-
-    const dockState = adminSystemSelectDockState.get(root);
-
-    if (dockState && dockState.menu) return dockState.menu;
-
-    const menu = root.querySelector('[data-admin-system-select-menu]');
-
-    if (menu) {
-        menu.dataset.adminSystemSelectOwner = getAdminSystemSelectValueId(root);
-    }
-
-    return menu;
+    return adminSystemControlsController.getAdminSystemSelectMenu(root);
 }
 
 function getAdminSystemSelectRootFromMenu(menu) {
-    const ownerId = menu ? String(menu.dataset.adminSystemSelectOwner || '').trim() : '';
-
-    return ownerId ? getAdminSystemSelectRoot(ownerId) : null;
+    return adminSystemControlsController.getAdminSystemSelectRootFromMenu(menu);
 }
 
 function dockAdminSystemSelectMenu(root) {
-    const menu = getAdminSystemSelectMenu(root);
-    const dockTarget = document.getElementById('settingsModal') || document.body;
-
-    if (!root || !menu || menu.parentElement === dockTarget) return menu;
-
-    const dockState = {
-        menu,
-        parent: menu.parentNode,
-        nextSibling: menu.nextSibling,
-    };
-
-    adminSystemSelectMenuSeq += 1;
-    menu.dataset.adminSystemSelectOwner = getAdminSystemSelectValueId(root);
-    menu.dataset.adminSystemDocked = '1';
-    menu.id = menu.id || `adminSystemSelectMenu${adminSystemSelectMenuSeq}`;
-    adminSystemSelectDockState.set(root, dockState);
-    dockTarget.appendChild(menu);
-
-    return menu;
+    return adminSystemControlsController.dockAdminSystemSelectMenu(root);
 }
 
 function undockAdminSystemSelectMenu(root) {
-    const dockState = root ? adminSystemSelectDockState.get(root) : null;
-
-    if (!dockState || !dockState.menu) return;
-
-    const menu = dockState.menu;
-    const parent = dockState.parent;
-    const nextSibling = dockState.nextSibling;
-
-    if (parent && parent.isConnected) {
-
-        if (nextSibling && nextSibling.parentNode === parent) {
-            parent.insertBefore(menu, nextSibling);
-        } else {
-            parent.appendChild(menu);
-        }
-    }
-
-    delete menu.dataset.adminSystemDocked;
-    menu.classList.remove('is-open');
-    adminSystemSelectDockState.delete(root);
+    return adminSystemControlsController.undockAdminSystemSelectMenu(root);
 }
 
 function resetAdminSystemSelectMenuPosition(root) {
-    const menu = getAdminSystemSelectMenu(root);
-
-    if (!menu) return;
-
-    menu.style.left = '';
-    menu.style.top = '';
-    menu.style.width = '';
-    menu.style.maxHeight = '';
-    menu.style.setProperty('--admin-system-select-menu-width', '');
+    return adminSystemControlsController.resetAdminSystemSelectMenuPosition(root);
 }
 
 function positionAdminSystemSelectMenu(root) {
-    if (!root) return;
-
-    const trigger = root.querySelector('[data-admin-system-select-trigger]');
-    const menu = getAdminSystemSelectMenu(root);
-
-    if (!trigger || !menu) return;
-
-    const rect = trigger.getBoundingClientRect();
-    const viewportWidth = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
-    const viewportHeight = Math.max(document.documentElement.clientHeight || 0, window.innerHeight || 0);
-    const margin = 12;
-    const isModelMenu = menu.classList.contains('is-model-menu');
-    const preferredWidth = isModelMenu ? Math.max(rect.width, 560) : rect.width;
-    const width = Math.max(220, Math.min(preferredWidth, viewportWidth - margin * 2));
-    const left = Math.max(margin, Math.min(rect.left, viewportWidth - width - margin));
-    const belowSpace = viewportHeight - rect.bottom - margin;
-    const aboveSpace = rect.top - margin;
-    const menuMaxHeight = Math.max(160, Math.min(isModelMenu ? 420 : 280, Math.max(belowSpace, aboveSpace)));
-    const openBelow = belowSpace >= Math.min(menuMaxHeight, 220) || belowSpace >= aboveSpace;
-    const top = openBelow
-        ? Math.min(rect.bottom + 8, viewportHeight - margin - menuMaxHeight)
-        : Math.max(margin, rect.top - 8 - menuMaxHeight);
-
-    menu.style.setProperty('--admin-system-select-menu-width', `${width}px`);
-    menu.style.width = `${width}px`;
-    menu.style.left = `${left}px`;
-    menu.style.top = `${Math.max(margin, top)}px`;
-    menu.style.maxHeight = `${menuMaxHeight}px`;
+    return adminSystemControlsController.positionAdminSystemSelectMenu(root);
 }
 
 function repositionOpenAdminSystemSelect() {
-    const root = document.querySelector('#settingsModal [data-admin-system-select].open');
-
-    if (root) positionAdminSystemSelectMenu(root);
+    return adminSystemControlsController.repositionOpenAdminSystemSelect();
 }
 
 function closeAdminSystemSelects(exceptRoot = null) {
-    document.querySelectorAll('#settingsModal [data-admin-system-select].open').forEach((root) => {
-
-        if (exceptRoot && root === exceptRoot) return;
-
-        root.classList.remove('open');
-        const menu = getAdminSystemSelectMenu(root);
-
-        if (menu) menu.classList.remove('is-open');
-
-        resetAdminSystemSelectMenuPosition(root);
-        undockAdminSystemSelectMenu(root);
-
-        const trigger = root.querySelector('[data-admin-system-select-trigger]');
-
-        if (trigger) trigger.setAttribute('aria-expanded', 'false');
-    });
+    return adminSystemControlsController.closeAdminSystemSelects(exceptRoot);
 }
 
 function setAdminSystemSelectOpen(root, open) {
-    if (!root) return;
-
-    const shouldOpen = !!open;
-    const trigger = root.querySelector('[data-admin-system-select-trigger]');
-    const menu = shouldOpen ? dockAdminSystemSelectMenu(root) : getAdminSystemSelectMenu(root);
-
-    root.classList.toggle('open', shouldOpen);
-
-    if (trigger) trigger.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
-
-    if (menu) menu.classList.toggle('is-open', shouldOpen);
-
-    if (shouldOpen) {
-        positionAdminSystemSelectMenu(root);
-    } else {
-        resetAdminSystemSelectMenuPosition(root);
-        undockAdminSystemSelectMenu(root);
-    }
+    return adminSystemControlsController.setAdminSystemSelectOpen(root, open);
 }
 
 function syncAdminSystemSelectDisplay(valueId) {
-    const id = String(valueId || '').trim();
-    const input = document.getElementById(id);
-    const root = getAdminSystemSelectRoot(id);
-
-    if (!input || !root) return;
-
-    const value = String(input.value || '');
-    const labelEl = root.querySelector('[data-admin-system-select-label]');
-    const menu = getAdminSystemSelectMenu(root);
-    const optionNodes = menu ? Array.from(menu.querySelectorAll('[data-admin-system-select-option]')) : [];
-    const selectedOption = optionNodes.find((node) => String(node.dataset.value || '') === value) || null;
-    const labelText = selectedOption
-        ? String(selectedOption.dataset.label || selectedOption.textContent || '').trim()
-        : (value || '不指定');
-
-    optionNodes.forEach((node) => {
-        const active = String(node.dataset.value || '') === value;
-        node.classList.toggle('active', active);
-        node.setAttribute('aria-selected', active ? 'true' : 'false');
-    });
-
-    if (labelEl) labelEl.textContent = labelText || '不指定';
+    return adminSystemControlsController.syncAdminSystemSelectDisplay(valueId);
 }
 
 function setAdminSystemCustomSelectValue(valueId, value) {
-    const id = String(valueId || '').trim();
-    const input = document.getElementById(id);
-
-    if (!input) return;
-
-    input.value = value == null ? '' : String(value);
-    syncAdminSystemSelectDisplay(id);
+    return adminSystemControlsController.setAdminSystemCustomSelectValue(valueId, value);
 }
 
 function buildAdminSystemSelectOption(item, currentValue) {
-    const value = String(item && item.value != null ? item.value : '');
-    const label = String(item && item.label != null ? item.label : (value || '不指定'));
-    const meta = String(item && item.meta != null ? item.meta : '');
-    const active = value === currentValue;
-    const option = document.createElement('button');
-    const main = document.createElement('span');
-
-    option.type = 'button';
-    option.className = 'admin-system-select-option';
-    option.dataset.adminSystemSelectOption = '1';
-    option.dataset.value = value;
-    option.dataset.label = label;
-    option.setAttribute('role', 'option');
-    option.setAttribute('aria-selected', active ? 'true' : 'false');
-    option.classList.toggle('active', active);
-
-    if (item && item.stale) option.classList.add('is-stale');
-
-    main.className = 'admin-system-select-option-main';
-    main.textContent = label || '不指定';
-    option.appendChild(main);
-
-    if (meta) {
-        const metaEl = document.createElement('span');
-        metaEl.className = 'admin-system-select-option-meta';
-        metaEl.textContent = meta;
-        option.appendChild(metaEl);
-    }
-
-    return option;
+    return adminSystemControlsController.buildAdminSystemSelectOption(item, currentValue);
 }
 
 function buildAdminSystemModelSelectChip(item, currentValue) {
-    const value = String(item && item.value != null ? item.value : '');
-    const label = String(item && item.label != null ? item.label : (value || '不指定'));
-    const meta = String(item && item.meta != null ? item.meta : '');
-    const active = value === currentValue;
-    const chip = document.createElement('button');
-    const name = document.createElement('span');
-
-    chip.type = 'button';
-    chip.className = 'admin-system-select-option admin-system-model-chip';
-    chip.dataset.adminSystemSelectOption = '1';
-    chip.dataset.value = value;
-    chip.dataset.label = label;
-    chip.setAttribute('role', 'option');
-    chip.setAttribute('aria-selected', active ? 'true' : 'false');
-    chip.classList.toggle('active', active);
-
-    if (item && item.stale) chip.classList.add('is-stale');
-
-    name.className = 'admin-system-model-chip-name';
-    name.textContent = label || '不指定';
-    chip.appendChild(name);
-
-    if (meta) {
-        const metaEl = document.createElement('span');
-        metaEl.className = 'admin-system-model-chip-meta';
-        metaEl.textContent = meta;
-        chip.appendChild(metaEl);
-    }
-
-    if (value) chip.title = value;
-
-    return chip;
+    return adminSystemControlsController.buildAdminSystemModelSelectChip(item, currentValue);
 }
 
 function appendAdminSystemModelSelectGroups(menu, optionItems, currentValue) {
-    const groups = new Map();
-
-    optionItems.forEach((item) => {
-        const value = String(item && item.value != null ? item.value : '');
-        const provider = value ? normalizeModelProviderKey(item && item.provider) : '__default__';
-
-        if (!groups.has(provider)) groups.set(provider, []);
-
-        groups.get(provider).push(item);
-    });
-
-    const sortedProviders = Array.from(groups.keys()).sort((a, b) => {
-
-        if (a === '__default__') return -1;
-        if (b === '__default__') return 1;
-
-        return compareModelProviderKeys(a, b);
-    });
-
-    sortedProviders.forEach((providerKey) => {
-        const group = document.createElement('div');
-        const title = document.createElement('div');
-        const main = document.createElement('span');
-        const label = document.createElement('span');
-        const providerLabel = providerKey === '__default__' ? '默认' : getModelProviderLabel(providerKey);
-
-        group.className = 'admin-system-model-group';
-        title.className = 'admin-system-model-group-title';
-        main.className = 'provider-title-main';
-        label.className = 'label';
-        label.textContent = providerLabel;
-        main.innerHTML = renderProviderIconHtml(providerKey, { className: 'provider-logo provider-logo-sm', label: providerLabel });
-        main.appendChild(label);
-        title.appendChild(main);
-        group.appendChild(title);
-
-        const chips = document.createElement('div');
-        chips.className = 'admin-system-model-chip-wrap';
-
-        groups.get(providerKey).forEach((item) => {
-            chips.appendChild(buildAdminSystemModelSelectChip(item, currentValue));
-        });
-
-        group.appendChild(chips);
-        menu.appendChild(group);
-    });
+    return adminSystemControlsController.appendAdminSystemModelSelectGroups(menu, optionItems, currentValue);
 }
 
 function setAdminSystemSelectOptions(valueId, optionItems, selectedValue, options = {}) {
-    const id = String(valueId || '').trim();
-    const root = getAdminSystemSelectRoot(id);
-    const menu = getAdminSystemSelectMenu(root);
-
-    if (!root || !menu) return;
-
-    menu.dataset.adminSystemSelectOwner = id;
-
-    const currentValue = String(selectedValue == null ? '' : selectedValue).trim();
-    const items = Array.isArray(optionItems) ? optionItems : [];
-    const modelMenu = !!(options && options.modelMenu);
-
-    menu.innerHTML = '';
-    menu.classList.toggle('is-model-menu', modelMenu);
-
-    if (modelMenu) {
-        const scroll = document.createElement('div');
-
-        scroll.className = 'admin-system-select-scroll';
-        appendAdminSystemModelSelectGroups(scroll, items, currentValue);
-        menu.appendChild(scroll);
-    } else {
-        items.forEach((item) => {
-            menu.appendChild(buildAdminSystemSelectOption(item, currentValue));
-        });
-    }
-
-    setAdminSystemCustomSelectValue(id, currentValue);
+    return adminSystemControlsController.setAdminSystemSelectOptions(valueId, optionItems, selectedValue, options);
 }
 
 function setAdminSystemSwitchState(button, value) {
-    if (!button) return;
-
-    const enabled = !!value;
-    const isCheckbox = button instanceof HTMLInputElement && button.type === 'checkbox';
-
-    if (isCheckbox) {
-        const wrap = button.closest('.admin-system-enable-check');
-        const label = wrap ? wrap.querySelector('span') : null;
-
-        button.checked = enabled;
-        button.dataset.checked = enabled ? '1' : '0';
-        button.setAttribute('aria-checked', enabled ? 'true' : 'false');
-
-        if (wrap) wrap.classList.toggle('is-on', enabled);
-        if (label) label.textContent = enabled ? '启用' : '关闭';
-
-        return;
-    }
-
-    const stateText = button.querySelector('[data-admin-system-switch-text]');
-
-    button.dataset.checked = enabled ? '1' : '0';
-    button.classList.toggle('is-on', enabled);
-    button.setAttribute('aria-pressed', enabled ? 'true' : 'false');
-
-    if (stateText) stateText.textContent = enabled ? '启用' : '停用';
+    return adminSystemControlsController.setAdminSystemSwitchState(button, value);
 }
 
 function initAdminSystemCustomControls() {
-    document.querySelectorAll('#settingsModal [data-admin-system-switch]').forEach((button) => {
-
-        if (button.dataset.bound === '1') return;
-
-        button.dataset.bound = '1';
-        setAdminSystemSwitchState(button, button.checked || button.classList.contains('is-on') || button.dataset.checked === '1');
-
-        if (button instanceof HTMLInputElement && button.type === 'checkbox') {
-            button.addEventListener('change', () => {
-                setAdminSystemSwitchState(button, button.checked);
-            });
-        } else {
-            button.addEventListener('click', () => {
-                setAdminSystemSwitchState(button, button.dataset.checked !== '1');
-            });
-        }
-    });
-
-    document.querySelectorAll('#settingsModal [data-admin-system-select]').forEach((root) => {
-        syncAdminSystemSelectDisplay(getAdminSystemSelectValueId(root));
-    });
-
-    if (adminSystemCustomControlsBound) return;
-
-    adminSystemCustomControlsBound = true;
-
-    document.addEventListener('click', (event) => {
-        const target = event.target;
-
-        if (!(target instanceof Element)) {
-            closeAdminSystemSelects();
-            return;
-        }
-
-        const option = target.closest('[data-admin-system-select-option]');
-
-        if (option) {
-            const menu = option.closest('[data-admin-system-select-menu]');
-            const root = option.closest('[data-admin-system-select]') || getAdminSystemSelectRootFromMenu(menu);
-
-            if (root) {
-                event.preventDefault();
-                setAdminSystemCustomSelectValue(getAdminSystemSelectValueId(root), option.dataset.value || '');
-                closeAdminSystemSelects();
-                return;
-            }
-        }
-
-        const trigger = target.closest('[data-admin-system-select-trigger]');
-
-        if (trigger) {
-            const root = trigger.closest('[data-admin-system-select]');
-
-            if (root) {
-                event.preventDefault();
-                const shouldOpen = !root.classList.contains('open');
-                closeAdminSystemSelects(root);
-                setAdminSystemSelectOpen(root, shouldOpen);
-                return;
-            }
-        }
-
-        if (target.closest('[data-admin-system-select-menu][data-admin-system-docked="1"]')) return;
-
-        if (!target.closest('[data-admin-system-select]')) closeAdminSystemSelects();
-    });
-
-    document.addEventListener('keydown', (event) => {
-
-        if (event.key === 'Escape') closeAdminSystemSelects();
-    });
-
-    window.addEventListener('resize', repositionOpenAdminSystemSelect);
-    document.addEventListener('scroll', repositionOpenAdminSystemSelect, true);
+    return adminSystemControlsController.initAdminSystemCustomControls();
 }
 
 function setAdminSystemStatus(text, tone = '') {
@@ -36913,6 +35591,8 @@ function openAdminConfigModal(mode, payload = {}) {
     const modelFields = document.getElementById('adminConfigModelFields');
     if (!modal || !title || !providerFields || !modelFields) return;
 
+    initAdminSystemCustomControls();
+
     const modalTitle = mode === 'provider'
         ? (payload.provider || payload.originalKey || '新建供应商')
         : (payload.name || payload.model_id || payload.originalKey || '新建模型');
@@ -36929,7 +35609,8 @@ function openAdminConfigModal(mode, payload = {}) {
         document.getElementById('adminProviderNameInput').value = payload.provider || '';
         document.getElementById('adminProviderApiKeyInput').value = payload.api_key || '';
         document.getElementById('adminProviderBaseUrlInput').value = payload.base_url || '';
-        document.getElementById('adminProviderApiTypeInput').value = normalizeAdminApiType(payload.api_type || 'openai');
+        setAdminSystemCustomSelectValue('adminProviderApiTypeInput', normalizeAdminApiType(payload.api_type || 'openai'));
+        document.getElementById('adminProviderUserAgentInput').value = payload.user_agent || '';
         document.getElementById('adminProviderKeepAliveInput').value = payload.keep_alive || '5m';
         syncAdminProviderApiTypeFields();
     } else {
@@ -36960,6 +35641,7 @@ function syncAdminProviderApiTypeFields() {
 
 window.closeAdminConfigModal = function() {
     const modal = document.getElementById('adminConfigModal');
+    closeAdminSystemSelects();
     if (modal) modal.classList.remove('active');
     adminConfigState = { mode: '', originalKey: '' };
 };
@@ -36971,6 +35653,7 @@ async function saveAdminConfigModal() {
             const apiKey = document.getElementById('adminProviderApiKeyInput').value || '';
             const baseUrl = document.getElementById('adminProviderBaseUrlInput').value || '';
             const apiType = normalizeAdminApiType(document.getElementById('adminProviderApiTypeInput').value || 'openai');
+            const userAgent = (document.getElementById('adminProviderUserAgentInput').value || '').trim();
             const keepAlive = (document.getElementById('adminProviderKeepAliveInput').value || '').trim() || '5m';
             if (!provider) {
                 showToast('供应商名称是必填项');
@@ -36989,6 +35672,7 @@ async function saveAdminConfigModal() {
                     api_key: apiKey,
                     base_url: baseUrl,
                     api_type: apiType,
+                    user_agent: userAgent,
                     settings: apiType === 'ollama' ? { keep_alive: keepAlive } : {}
                 })
             });
@@ -37197,6 +35881,7 @@ async function openProviderEditor(providerName = '') {
         api_key: current.api_key || '',
         base_url: current.base_url || '',
         api_type: current.api_type || 'openai',
+        user_agent: current.user_agent || '',
         keep_alive: getAdminProviderKeepAlive(current)
     });
 }

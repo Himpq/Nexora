@@ -64,7 +64,6 @@ class ToolResultPresenter:
             "knowledge_list": self._render_knowledge_list,
             "memory_profile_read": self._render_user_profile_memory,
             "memory_short_update": self._render_user_profile_update,
-            "workspace_mem_write": self._render_workspace_memory_update,
             "workspace_mem_patch": self._render_workspace_memory_update,
             "workspace_mem_apply_diff": self._render_workspace_memory_update,
             "workspace_mem_edit": self._render_workspace_memory_update,
@@ -2358,7 +2357,6 @@ class ToolResultPresenter:
             return self._render_cached_payload(tool_name or "workspace_mem", payload)
 
         title_map = {
-            "workspace_mem_write": ("## Workspace Memory Written", "## Workspace Memory Write Failed"),
             "workspace_mem_patch": ("## Workspace Memory Patched", "## Workspace Memory Patch Failed"),
             "workspace_mem_apply_diff": ("## Workspace Memory Diff Applied", "## Workspace Memory Diff Failed"),
             "workspace_mem_edit": ("## Workspace Memory Edited", "## Workspace Memory Edit Failed"),

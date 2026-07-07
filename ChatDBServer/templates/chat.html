@@ -19,15 +19,16 @@
     <script src="https://uicdn.toast.com/editor/latest/toastui-editor-all.min.js"></script>
 
     <!-- App Styles -->
-    <link rel="stylesheet" href="/static/css/style.css?v=20260702_file_center_no_select_01">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260707_file_upload_transfer_dialog_01">
     <link rel="stylesheet" href="/static/css/notification.css?v=20260630_chat_notification_07">
     <link rel="stylesheet" href="/static/css/message_avatar.css?v=20260630_user_avatar_slot_01">
-    <link rel="stylesheet" href="/static/css/workspace_projects.css?v=20260630_workspace_multi_user_01">
+    <link rel="stylesheet" href="/static/css/workspace_projects.css?v=20260705_workspace_detail_equal_height_01">
     <link rel="stylesheet" href="/static/css/execution_flow.css?v=20260624_stream_breaks_01">
     <link rel="stylesheet" href="/static/css/nexora_map_renderer.css?v=20260626_tianditu_tile_fix_01">
     <link rel="stylesheet" href="/static/css/admin_map_settings.css?v=20260628_admin_controls_04">
     <link rel="stylesheet" href="/static/css/learning_course_workspace.css?v=20260616_01">
     <link rel="stylesheet" href="/static/css/easymde_override.css?v=20260416_12">
+    <link rel="stylesheet" href="/static/css/chat_files.css?v=20260707_files_split_01">
 </head>
 <body>
     <div class="app-container">
@@ -150,11 +151,13 @@
                    <div class="mobile-header-menu" id="mobileHeaderMenu">
                         <button class="btn-icon mobile-header-menu-trigger" id="mobileHeaderMenuTrigger" title="更多" aria-haspopup="menu" aria-expanded="false">
                             <i class="fa-solid fa-ellipsis-vertical"></i>
+                            <span class="mobile-notification-badge" id="mobileHeaderNotificationBadge" hidden></span>
                         </button>
                         <div class="mobile-header-menu-panel" id="mobileHeaderMenuPanel" aria-hidden="true">
                             <button type="button" class="mobile-header-menu-item" id="mobileNotificationMenuItem">
                                 <i class="fa-regular fa-bell"></i>
                                 <span>通知</span>
+                                <span class="mobile-notification-badge" id="mobileNotificationMenuBadge" hidden></span>
                             </button>
                             <button type="button" class="mobile-header-menu-item" id="mobileNotesMenuItem">
                                 <i class="fa-solid fa-note-sticky"></i>
@@ -373,6 +376,10 @@
                     </div>
                 </div>
                 <div class="k-actions" style="align-self: flex-start; margin-top: 2px;">
+                    <button class="btn-icon-small" id="uploadCloudFilesBtn" title="Upload">
+                        <i class="fa-solid fa-upload" aria-hidden="true"></i>
+                    </button>
+                    <input id="cloudFileUploadInput" type="file" accept=".txt,.md,.py,.c,.h,.hpp,.cpp,.cc,.cxx,.js,.ts,.tsx,.jsx,.java,.go,.rs,.cs,.php,.rb,.swift,.kt,.kts,.scala,.sh,.bash,.zsh,.bat,.ps1,.json,.yaml,.yml,.toml,.ini,.cfg,.xml,.html,.css,.sql,.csv,.log,.docx,.pdf,.pptx,.png,.jpg,.jpeg,.gif,.webp,.bmp" multiple hidden>
                     <button class="btn-icon-small" id="refreshCloudFilesBtn" title="Refresh">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
                     </button>
@@ -702,9 +709,19 @@
     
     <!-- Scripts -->
     <script src="/static/js/learning_workspace_layout.js?v=20260614_01"></script>
-    <script src="/static/js/chat.js?v=20260702_file_center_return_selection_01"></script>
-    <script src="/static/js/workspace.js?v=20260630_workspace_multi_user_01"></script>
-    <script src="/static/js/notification.js?v=20260630_chat_notification_10"></script>
+    <script src="/static/js/chat_shared.js?v=20260706_feature_split_09"></script>
+    <script src="/static/js/chat_message_window.js?v=20260706_feature_split_09"></script>
+    <script src="/static/js/chat_message_versions.js?v=20260706_feature_split_09"></script>
+    <script src="/static/js/chat_latex.js?v=20260706_feature_split_09"></script>
+    <script src="/static/js/chat_streaming.js?v=20260706_feature_split_11_stream_status_sync_01"></script>
+    <script src="/static/js/chat_stream_lifecycle.js?v=20260706_feature_split_12_stream_lifecycle_01"></script>
+    <script src="/static/js/chat_conversations.js?v=20260706_feature_split_18_conversation_detail_stream_01"></script>
+    <script src="/static/js/chat_admin.js?v=20260706_feature_split_13_admin_conversations_01"></script>
+    <script src="/static/js/chat_markdown.js?v=20260706_feature_split_09"></script>
+    <script src="/static/js/chat_files.js?v=20260707_files_split_01"></script>
+    <script src="/static/js/chat.js?v=20260707_files_split_01"></script>
+    <script src="/static/js/workspace.js?v=20260705_workspace_model_select_01"></script>
+    <script src="/static/js/notification.js?v=20260704_mobile_notification_menu_01"></script>
     <script src="/static/js/message_avatar.js?v=20260630_user_avatar_slot_01"></script>
     <script>
         window.NEXORA_MAP_RENDERER_CONFIG = {{ map_renderer_config | tojson }};
@@ -839,16 +856,53 @@
                     </div>
                     <div class="form-group" style="margin-bottom: 10px;">
                         <label>api_type</label>
-                        <input id="adminProviderApiTypeInput" class="input-modern" placeholder="openai / openai_compatible / dashscope / volcengine / ollama / vllm" value="openai">
+                        <div class="admin-system-select admin-provider-api-type-select" data-admin-system-select="adminProviderApiTypeInput">
+                            <input id="adminProviderApiTypeInput" type="hidden" data-admin-system-value value="openai">
+                            <button class="admin-system-select-trigger" type="button" data-admin-system-select-trigger aria-haspopup="listbox" aria-expanded="false">
+                                <span class="admin-system-select-label" data-admin-system-select-label>openai</span>
+                                <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+                            </button>
+                            <div class="admin-system-select-menu" data-admin-system-select-menu role="listbox" aria-label="api_type">
+                                <button class="admin-system-select-option active" type="button" data-admin-system-select-option data-value="openai" data-label="openai" role="option" aria-selected="true">
+                                    <span class="admin-system-select-option-main">openai</span>
+                                    <span class="admin-system-select-option-meta">OpenAI</span>
+                                </button>
+                                <button class="admin-system-select-option" type="button" data-admin-system-select-option data-value="openai_compatible" data-label="openai_compatible" role="option" aria-selected="false">
+                                    <span class="admin-system-select-option-main">openai_compatible</span>
+                                    <span class="admin-system-select-option-meta">OpenAI-compatible</span>
+                                </button>
+                                <button class="admin-system-select-option" type="button" data-admin-system-select-option data-value="dashscope" data-label="dashscope" role="option" aria-selected="false">
+                                    <span class="admin-system-select-option-main">dashscope</span>
+                                    <span class="admin-system-select-option-meta">DashScope</span>
+                                </button>
+                                <button class="admin-system-select-option" type="button" data-admin-system-select-option data-value="volcengine" data-label="volcengine" role="option" aria-selected="false">
+                                    <span class="admin-system-select-option-main">volcengine</span>
+                                    <span class="admin-system-select-option-meta">Ark</span>
+                                </button>
+                                <button class="admin-system-select-option" type="button" data-admin-system-select-option data-value="ollama" data-label="ollama" role="option" aria-selected="false">
+                                    <span class="admin-system-select-option-main">ollama</span>
+                                    <span class="admin-system-select-option-meta">Local</span>
+                                </button>
+                                <button class="admin-system-select-option" type="button" data-admin-system-select-option data-value="vllm" data-label="vllm" role="option" aria-selected="false">
+                                    <span class="admin-system-select-option-main">vllm</span>
+                                    <span class="admin-system-select-option-meta">vLLM</span>
+                                </button>
+                            </div>
+                        </div>
                         <div style="margin-top: 6px; font-size: 11px; color: #64748b; line-height: 1.45;">这是 provider_factory 的分流键；默认值为 openai。</div>
                     </div>
                     <div class="form-group" style="margin-bottom: 10px;">
                         <label>API Key</label>
                         <input id="adminProviderApiKeyInput" class="input-modern" placeholder="api key">
                     </div>
-                    <div class="form-group" style="margin-bottom: 0;">
+                    <div class="form-group" style="margin-bottom: 10px;">
                         <label>Base URL</label>
                         <input id="adminProviderBaseUrlInput" class="input-modern" placeholder="https://...">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>User-Agent</label>
+                        <input id="adminProviderUserAgentInput" class="input-modern" placeholder="Nexora/1.0">
+                        <div style="margin-top: 6px; font-size: 11px; color: #64748b; line-height: 1.45;">留空使用 Nexora 默认 UA；仅在供应商网关拦截时修改。</div>
                     </div>
                     <div id="adminProviderOllamaSettings" class="form-group" style="margin-top: 10px; margin-bottom: 0; display: none;">
                         <label>Ollama keep_alive</label>
